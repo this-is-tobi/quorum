@@ -1,0 +1,110 @@
+# Quorum
+
+A multi-agent security-review pipeline: an LLM proposes candidate vulnerabilities in a diff, then three independent voters — blind to each other's reasoning — each judge the same candidate from a different fixed angle before it's reported. Talks to any OpenAI-compatible `/chat/completions` endpoint, zero third-party dependencies.
+
+## Status
+
+Early / under active iteration. Currently implements the finder + independent panel + code-computed quorum (roughly phase 0-1 of the design). Escalation on marginal (2/3) splits, cross-model verification, and a patch-generation loop are on the [roadmap](#roadmap), not yet built here.
+
+## Why a panel instead of "ask a second model"
+
+Letting verifiers see each other's reasoning measurably converges results toward agreement rather than correctness, and a verifying model is worse at judging its own confidence than a proposing one is. So the three votes here run fully independently — no shared context between them — and the keep/discard decision plus its confidence ceiling (`3/3` -> `high`, `2/3` -> `medium`, otherwise discarded) is ordinary arithmetic in [`src/pipeline.ts`](./src/pipeline.ts), never a number a model reports about itself. Three voters is close to the cost-effective floor, not a placeholder for more: self-consistency research shows most of the achievable gain from repeated sampling arrives within a handful of samples, and each additional parallel call has a real latency cost.
+
+This is expected to disagree with itself between runs sometimes — that's inherent to the approach, not a bug. A `2/3` split today is a real, still-open design gap: without the escalation phase, it lands as `medium` confidence and stops there rather than triggering a repanel and a dedicated adversarial pass.
+
+## Key features
+
+- Zero dependencies at runtime — plain `fetch`, works under Bun or Node
+- Model-agnostic per role: point the finder and the panel at different backends (`RESEARCH_*` / `VOTER_*` env vars, `VOTER_*` falls back to `RESEARCH_*`)
+- Compiles to a standalone binary via Bun (`bun run compile`) — no runtime dependency to distribute
+- Defensive JSON extraction rather than trusting `response_format` schema enforcement, since OpenAI-compatible servers vary in how much of the real API surface they implement
+- Explicit untrusted-content framing around the diff itself in every prompt, since the diff is attacker-influenced input on any real PR
+
+## Prerequisites
+
+- [Bun](https://bun.sh/) >= 1.3
+- An OpenAI-compatible `/chat/completions` endpoint (a local [Ollama](https://ollama.com/) install, self-hosted vLLM/TGI/llama.cpp server, or a hosted API such as OpenAI)
+
+## Installation
+
+```bash
+git clone https://github.com/this-is-tobi/quorum.git
+cd quorum
+bun install
+```
+
+## Usage
+
+```bash
+# Run against a diff file
+RESEARCH_MODEL=qwen3.6:27b bun run start ./my.diff
+
+# Or pipe a diff on stdin
+git diff origin/main...HEAD | RESEARCH_MODEL=qwen3.6:27b bun run start
+
+# Compile to a standalone binary
+bun run compile
+./bin/quorum ./my.diff
+```
+
+The process exits `1` when any kept finding reaches `high` confidence (unanimous 3/3), so it can gate CI without any extra parsing — `0` otherwise, including when findings were kept only at `medium` confidence.
+
+## Configuration
+
+All configuration is environment variables — no config file.
+
+```bash
+export RESEARCH_BASE_URL="http://localhost:11434/v1"  # default: that (Ollama)
+export RESEARCH_API_KEY="not-needed"                   # omit entirely for endpoints with no auth
+export RESEARCH_MODEL="qwen3.6:27b"                    # required
+
+# Optional - point the panel at a different backend than the finder
+export VOTER_MODEL="gpt-5.4"
+export VOTER_BASE_URL="https://api.openai.com/v1"
+export VOTER_API_KEY="sk-..."
+```
+
+## API
+
+```typescript
+import { runQuorum } from './src/pipeline.ts'
+
+const diff = await Bun.file('./my.diff').text()
+const { kept, discarded } = await runQuorum(diff, message => console.error(message))
+
+for (const finding of kept) {
+  console.log(`${finding.file}:${finding.line} [${finding.confidence}] ${finding.summary}`)
+}
+```
+
+## Architecture
+
+```
+diff -> research (1 call)  ->  dedup  ->  panel (3 independent calls per finding)  ->  kept / discarded
+```
+
+- **`src/types.ts`** — shared interfaces for the whole pipeline
+- **`src/client.ts`** — the OpenAI-compatible chat-completion client: role-based env resolution, defensive JSON extraction
+- **`src/pipeline.ts`** — `research` (find candidates), `dedup` (drop repeats), `panel` (independent 3-vote judgment), `runQuorum` (wires them together)
+- **`src/main.ts`** — CLI entry point
+
+## Testing
+
+```bash
+bun run test        # unit tests (pure logic only: dedup, panel's vote arithmetic, client's JSON extraction - no network, no model calls, all model I/O is mocked)
+bun run test:cov    # same, with coverage
+```
+
+> [!NOTE]
+> Use `bun run test`, not bare `bun test` — the latter invokes Bun's own built-in test runner instead of the Vitest setup these specs are written against.
+
+## Roadmap
+
+- Escalation pass on `2/3` splits: repanel with an adversarial angle instead of settling for `medium`
+- Cross-model verification as a first-class mode, not just an env-var fallback
+- A patch-generation loop for kept findings
+- Multi-platform compiled release assets attached to GitHub Releases
+
+## Contributing
+
+This is a personal tool under active iteration — issues and PRs are welcome, but expect the design to keep shifting until the phases above land.

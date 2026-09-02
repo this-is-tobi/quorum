@@ -1,0 +1,21 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "semanticCommits": "enabled",
+  "packageRules": [
+    {
+      "description": "Actions used only by this repo's own CI/CD workflows don't affect consumers, so keep them as chores - no need to cut a release for internal tooling bumps.",
+      "matchManagers": ["github-actions"],
+      "matchFileNames": [".github/workflows/**"],
+      "semanticCommitType": "chore",
+      "commitMessageTopic": "{{depName}}"
+    },
+    {
+      "description": "this-is-tobi/github-workflows is referenced via its moving v0 major tag on purpose - don't pin or bump it.",
+      "matchDepNames": ["this-is-tobi/github-workflows"],
+      "enabled": false
+    }
+  ]
+}
