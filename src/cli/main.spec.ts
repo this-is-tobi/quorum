@@ -93,6 +93,16 @@ describe('runCli', () => {
     expect(JSON.parse(stdout()).kept[0]).toMatchObject({ file: 'a.js', confidence: 'high' })
   })
 
+  it('exits 0 when the panel keeps a finding only at medium confidence', async () => {
+    process.env.RESEARCH_MODEL = 'm'
+    stubModel(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(false))
+    const { io, stdout } = harness({ stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const result = JSON.parse(stdout())
+    expect(result.kept).toHaveLength(1)
+    expect(result.kept[0]).toMatchObject({ file: 'a.js', confidence: 'medium', keptVotes: 2 })
+  })
+
   it('exits 0 when the panel discards every finding', async () => {
     process.env.RESEARCH_MODEL = 'm'
     stubModel(JSON.stringify({ findings: [FINDING] }), vote(false), vote(false), vote(true))
