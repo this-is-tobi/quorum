@@ -4,6 +4,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.spec.ts'],
+    // Keep the suite light enough for a laptop: never more than two test workers.
+    maxWorkers: 2,
     coverage: {
       provider: 'istanbul',
       include: ['src/**/*.ts'],
