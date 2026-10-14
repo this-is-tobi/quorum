@@ -13,6 +13,11 @@
       "commitMessageTopic": "{{depName}}"
     },
     {
+      "description": "Runtime dependencies ship with the tool, so a bump is user-facing. config:recommended already commits them as 'fix' (a patch release, listed under Bug Fixes); commit them as 'build' instead so release-please lists them under Dependencies and still cuts a patch release (see release-please-config.json). Dev tooling keeps the default 'chore' and does not release.",
+      "matchDepTypes": ["dependencies"],
+      "semanticCommitType": "build"
+    },
+    {
       "description": "this-is-tobi/github-workflows is referenced via its moving v0 major tag on purpose - don't pin or bump it.",
       "matchDepNames": ["this-is-tobi/github-workflows"],
       "enabled": false
