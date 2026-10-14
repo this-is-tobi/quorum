@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { Finding } from './types.ts'
+import type { Finding } from './core/types.ts'
 
 vi.mock('./client.ts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./client.ts')>()

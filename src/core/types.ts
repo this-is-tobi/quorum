@@ -1,7 +1,7 @@
 /**
  * Shared types for the Quorum security-review pipeline.
  *
- * @see ../README.md for the module overview and usage.
+ * @see ../../README.md for the module overview and usage.
  */
 
 /**

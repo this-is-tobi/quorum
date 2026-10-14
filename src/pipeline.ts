@@ -1,5 +1,5 @@
 import { chatJSON, UNTRUSTED_CONTENT_NOTICE } from './client.ts'
-import type { Finding, Lens, LensVote, QuorumResult, Verdict, Vote } from './types.ts'
+import type { Finding, Lens, LensVote, QuorumResult, Verdict, Vote } from './core/types.ts'
 
 /**
  * The three fixed, orthogonal angles every panel vote is judged from. Three
