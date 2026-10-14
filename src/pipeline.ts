@@ -1,4 +1,6 @@
 import { chat } from './client.ts'
+import { createLimiter, DEFAULT_CONCURRENCY } from './core/concurrency.ts'
+import type { Limiter } from './core/concurrency.ts'
 import { diffSectionFor, splitDiff } from './core/diff.ts'
 import { parseResearchReply, parseVoteReply } from './core/output.ts'
 import { defaultPrompts, renderTemplate, researchRequest, voteRequest } from './core/prompts.ts'
@@ -31,10 +33,10 @@ export const LENSES: readonly Lens[] = [
  * without a `findings` array fails the run (fail closed), and invalid findings are dropped with a reason.
  *
  * @example
- * const { findings, invalid } = await research(diffText)
+ * const { findings, invalid } = await research(diffText, createLimiter(4))
  */
-export async function research(diff: string): Promise<{ findings: Finding[], invalid: string[] }> {
-  return parseResearchReply(await chat('RESEARCH', researchRequest(defaultPrompts.research, diff)))
+export async function research(diff: string, limit: Limiter): Promise<{ findings: Finding[], invalid: string[] }> {
+  return parseResearchReply(await limit(() => chat('RESEARCH', researchRequest(defaultPrompts.research, diff))))
 }
 
 /**
@@ -59,14 +61,14 @@ export function dedup(findings: Finding[]): Finding[] {
  * votes or their reasoning - independence is the point, not an oversight. Letting verifiers see
  * each other's reasoning measurably converges results toward consensus rather than correctness.
  */
-async function vote(finding: Finding, lens: Lens, diffContext: string): Promise<LensVote> {
+async function vote(finding: Finding, lens: Lens, diffContext: string, limit: Limiter): Promise<LensVote> {
   const instructions = renderTemplate(defaultPrompts.vote, {
     'lens.id': lens.angle,
     'lens.question': lens.question,
     'panel.size': String(LENSES.length),
   })
   try {
-    const result = parseVoteReply(await chat('VOTER', voteRequest(instructions, finding, diffContext)))
+    const result = parseVoteReply(await limit(() => chat('VOTER', voteRequest(instructions, finding, diffContext))))
     return { angle: lens.angle, vote: result, error: null }
   } catch (error) {
     return { angle: lens.angle, vote: null, error: (error as Error).message }
@@ -80,11 +82,11 @@ async function vote(finding: Finding, lens: Lens, diffContext: string): Promise<
  * capped at 'medium' no matter how certain any one voter sounded.
  *
  * @example
- * const verdict = await panel(finding, diffSectionForTheFile)
+ * const verdict = await panel(finding, diffSectionForTheFile, createLimiter(4))
  * if (verdict.confidence) console.log(`kept: ${verdict.confidence}`)
  */
-export async function panel(finding: Finding, diffContext: string): Promise<Verdict> {
-  const votes = await Promise.all(LENSES.map(lens => vote(finding, lens, diffContext)))
+export async function panel(finding: Finding, diffContext: string, limit: Limiter): Promise<Verdict> {
+  const votes = await Promise.all(LENSES.map(lens => vote(finding, lens, diffContext, limit)))
   const keptVotes = votes.filter(v => v.vote?.keep).length
   const confidence = keptVotes === 3 ? 'high' : keptVotes === 2 ? 'medium' : undefined
   return { ...finding, keptVotes, confidence, votes }
@@ -100,14 +102,15 @@ export async function panel(finding: Finding, diffContext: string): Promise<Verd
  */
 export async function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult> {
   const log = onProgress ?? (() => {})
+  const limit = createLimiter(DEFAULT_CONCURRENCY)
 
-  const { findings, invalid } = await research(diff)
+  const { findings, invalid } = await research(diff, limit)
   if (invalid.length > 0) log(`${invalid.length} invalid finding(s) dropped`)
   const candidates = dedup(findings)
   log(`${candidates.length} candidate(s) after dedup`)
 
   const sections = splitDiff(diff)
-  const verdicts = await Promise.all(candidates.map(finding => panel(finding, diffSectionFor(sections, finding.file, diff))))
+  const verdicts = await Promise.all(candidates.map(finding => panel(finding, diffSectionFor(sections, finding.file, diff), limit)))
   const kept = verdicts.filter(v => v.confidence)
   const discarded = verdicts.filter(v => !v.confidence)
   log(`${kept.length} kept, ${discarded.length} discarded by panel`)
