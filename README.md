@@ -18,7 +18,7 @@ This is expected to disagree with itself between runs sometimes — that's inher
 - Model-agnostic per role: point the finder and the panel at different backends (`RESEARCH_*` / `VOTER_*` env vars, `VOTER_*` falls back to `RESEARCH_*`)
 - Compiles to a standalone binary via Bun (`bun run compile`) — no runtime dependency to distribute
 - Defensive JSON extraction rather than trusting `response_format` schema enforcement, since OpenAI-compatible servers vary in how much of the real API surface they implement, followed by schema validation: a malformed research reply fails the run instead of silently reporting nothing
-- Explicit untrusted-content framing around the diff itself in every prompt, since the diff is attacker-influenced input on any real PR
+- Untrusted data is fenced: instructions go in the system message, while the diff and every model-derived finding field go in the user message inside tags carrying a random nonce, since the diff is attacker-influenced input on any real PR. Voters receive the diff section of the file a finding cites.
 
 ## Prerequisites
 
