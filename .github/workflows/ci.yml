@@ -81,6 +81,7 @@ jobs:
     - expose-vars
     permissions:
       contents: read
+      security-events: write
       pull-requests: write
     with:
       PR_NUMBER: ${{ github.event.pull_request.number }}
