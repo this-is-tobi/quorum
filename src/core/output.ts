@@ -23,24 +23,41 @@ const ResearchReplySchema = z.object({ findings: z.array(FindingReplySchema) })
 export const researchReplyJsonSchema = toWireSchema(ResearchReplySchema)
 export const voteReplyJsonSchema = toWireSchema(VoteReplySchema)
 
-const THINK_BLOCK = /<think>[\s\S]*?<\/think>/gi
-const CODE_FENCE = /```(?:json)?([\s\S]*?)```/i
+const MAX_REPLY_CHARS = 1_000_000
+const MAX_BRACE_GROUPS = 100
 const DIGITS = /^\d+$/
 
+/** A JSON object found in a reply, and where it starts in the text that was scanned. */
+interface FoundObject {
+  value: Record<string, unknown>
+  start: number
+}
+
 /**
- * Pull the first JSON object out of a model reply. Models wrap JSON in prose, code fences or
- * reasoning blocks despite instructions, so this drops `<think>` blocks, prefers a fenced block,
- * and otherwise scans for the first balanced, parseable object. A greedy regex would break as soon
- * as a reply contains two brace groups.
+ * Pull the one JSON object out of a model reply. Models wrap JSON in prose, code fences or
+ * reasoning blocks despite instructions, so this drops reasoning, ignores fence markers and scans
+ * for balanced, parseable objects. It fails closed instead of guessing: a reply holding several
+ * different objects is ambiguous (text echoed from the diff could pose as the answer), and a reply
+ * too large or too noisy to scan cheaply is refused. The same object twice (a fenced copy next to
+ * a prose copy) is accepted.
  *
- * @throws OutputError when the reply contains no JSON object
+ * @throws OutputError when the reply has no object, several different objects, or cannot be scanned safely
  */
 export function extractJsonObject(text: string, stage: string): Record<string, unknown> {
-  const cleaned = text.replace(THINK_BLOCK, '')
-  const fenced = CODE_FENCE.exec(cleaned)?.[1]
-  const found = (fenced === undefined ? undefined : firstObject(fenced)) ?? firstObject(cleaned)
-  if (!found) throw new OutputError(stage, 'reply contains no JSON object', text)
-  return found
+  if (text.length > MAX_REPLY_CHARS) {
+    throw new OutputError(stage, `reply is longer than ${MAX_REPLY_CHARS} characters`, text)
+  }
+  const { visible, truncatedAt } = withoutReasoning(text)
+  const answers = topLevelObjects(visible, stage, text)
+    .filter(found => truncatedAt === -1 || found.start < truncatedAt)
+    .map(found => found.value)
+  const [first] = answers
+  if (!first) throw new OutputError(stage, 'reply contains no JSON object', text)
+  const key = JSON.stringify(first)
+  if (answers.some(other => JSON.stringify(other) !== key)) {
+    throw new OutputError(stage, 'reply contains several different JSON objects', text)
+  }
+  return first
 }
 
 /**
@@ -75,18 +92,50 @@ export function parseVoteReply(text: string): Vote {
   return result.data
 }
 
-function firstObject(text: string): Record<string, unknown> | undefined {
+/**
+ * Drop closed reasoning blocks in one linear pass (a lazy pattern over the whole reply would rescan
+ * it from every unclosed opener) and report where a block that never closes opens, as an index into
+ * `visible` (-1 when every block closed). Such a reply was cut off mid-reasoning: whatever starts
+ * after that opener is a draft, never the answer. A literal `<think>` inside the answer's own JSON
+ * is not affected, because the object that holds it starts before the opener.
+ */
+function withoutReasoning(text: string): { visible: string, truncatedAt: number } {
+  const opener = /<think>/gi
+  const closer = /<\/think>/gi
+  let visible = ''
+  let from = 0
+  for (let open = opener.exec(text); open; open = opener.exec(text)) {
+    visible += text.slice(from, open.index)
+    closer.lastIndex = open.index + open[0].length
+    const close = closer.exec(text)
+    if (!close) return { visible: visible + text.slice(open.index), truncatedAt: visible.length }
+    from = close.index + close[0].length
+    opener.lastIndex = from
+  }
+  return { visible: visible + text.slice(from), truncatedAt: -1 }
+}
+
+/** Every balanced, parseable JSON object that is not nested in another one, in order. */
+function topLevelObjects(text: string, stage: string, reply: string): FoundObject[] {
+  const found: FoundObject[] = []
+  let groups = 0
   for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
+    if (++groups > MAX_BRACE_GROUPS) {
+      throw new OutputError(stage, `reply has too many brace groups to scan safely (more than ${MAX_BRACE_GROUPS})`, reply)
+    }
     const end = closingBrace(text, start)
     if (end === -1) continue
     try {
       const value: unknown = JSON.parse(text.slice(start, end + 1))
-      if (isRecord(value)) return value
+      if (isRecord(value)) {
+        found.push({ value, start })
+        start = end
+      }
     } catch {
       // Not JSON from this brace: try the next one.
     }
   }
-  return undefined
+  return found
 }
 
 /** Index of the brace closing the object opened at `start`, ignoring braces inside strings; -1 if unbalanced. */
