@@ -44,3 +44,6 @@ node_modules/
 
 # Compiled standalone binary (bun run compile)
 /bin/
+
+# Local working notes (backlog, findings, ADRs, specs, plans) - kept out of the repo
+/.local/
