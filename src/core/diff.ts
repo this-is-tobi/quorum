@@ -5,15 +5,20 @@ const PATH_PREFIX = /^(?:[ab]\/|\.\/)/
 /**
  * Split a git-style unified diff into sections keyed by file path. Only `diff --git` lines open a
  * section: inside a hunk every line starts with ' ', '+', '-' or '\', so that text cannot appear
- * there. A diff without such headers (plain `diff -u` output) comes back as one section keyed ''
- * rather than risk a wrong split.
+ * there. Outside hunks it can (a `format-patch` series carries unindented commit messages), so a
+ * path seen more than once keeps every occurrence, in order, rather than the last one winning.
+ * A diff without such headers (plain `diff -u` output) comes back as one section keyed '' rather
+ * than risk a wrong split.
  */
 export function splitDiff(diff: string): Map<string, string> {
   const sections = new Map<string, string>()
   let path = ''
   let lines: string[] = []
   const flush = (): void => {
-    if (lines.length > 0) sections.set(path, lines.join('\n'))
+    if (lines.length === 0) return
+    const text = lines.join('\n')
+    const previous = sections.get(path)
+    sections.set(path, previous === undefined ? text : `${previous}\n${text}`)
   }
   for (const line of diff.split('\n')) {
     if (line.startsWith(GIT_HEADER)) {

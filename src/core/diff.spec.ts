@@ -28,6 +28,21 @@ describe('splitDiff', () => {
     expect([...splitDiff(diff).keys()]).toEqual(['my file.js', 'caf\\303\\251.js'])
   })
 
+  it('keeps every hunk when a path appears more than once', () => {
+    const series = [
+      'diff --git a/src/a.js b/src/a.js',
+      '@@ -1 +1 @@',
+      '+exec(cmd)',
+      'diff --git a/src/a.js b/src/a.js',
+      '@@ -1 +1 @@',
+      '+harmless()',
+    ].join('\n')
+    const sections = splitDiff(series)
+    expect([...sections.keys()]).toEqual(['src/a.js'])
+    expect(sections.get('src/a.js')).toBe(series)
+    expect(diffSectionFor(sections, 'src/a.js', series)).toContain('+exec(cmd)')
+  })
+
   it('returns a plain unified diff as a single unkeyed section', () => {
     const plain = '--- a.js\n+++ a.js\n@@ -1 +1 @@\n+x'
     expect([...splitDiff(plain).entries()]).toEqual([['', plain]])
