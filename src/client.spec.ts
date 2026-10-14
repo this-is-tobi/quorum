@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chat, roleConfig } from './client.ts'
+import { ConfigError } from './core/errors.ts'
 import type { CompletionRequest } from './core/ports.ts'
 
 const request: CompletionRequest = {
@@ -59,8 +60,9 @@ describe('roleConfig', () => {
 })
 
 describe('chat', () => {
-  it('throws when the role model is unset', async () => {
-    await expect(chat('RESEARCH', request)).rejects.toThrow('RESEARCH_MODEL is not set')
+  it('throws a ConfigError naming the variable when the role model is unset', async () => {
+    await expect(chat('RESEARCH', request)).rejects.toThrow(ConfigError)
+    await expect(chat('RESEARCH', request)).rejects.toThrow(/RESEARCH_MODEL/)
   })
 
   it('returns the reply text untouched', async () => {
@@ -86,6 +88,13 @@ describe('chat', () => {
       text: async () => 'internal error',
     }))
     await expect(chat('RESEARCH', request)).rejects.toThrow('call failed: 500')
+  })
+
+  it('truncates long error bodies', async () => {
+    process.env.RESEARCH_MODEL = 'qwen3.6:27b'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 502, text: async () => 'x'.repeat(10_000) }))
+    const error = (await chat('RESEARCH', request).catch((caught: Error) => caught)) as Error
+    expect(error.message.length).toBeLessThan(600)
   })
 
   it('sends the instructions as a system message before the data', async () => {

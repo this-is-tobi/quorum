@@ -47,7 +47,7 @@ bun run compile
 ./bin/quorum ./my.diff
 ```
 
-The process exits `1` when any kept finding reaches `high` confidence (unanimous 3/3), so it can gate CI without any extra parsing — `0` otherwise, including when findings were kept only at `medium` confidence.
+Exit codes: `0` when no kept finding reaches `high` confidence (including findings kept only at `medium`); `1` when at least one does (unanimous 3/3), so it can gate CI without extra parsing; `2` for usage or configuration errors (no diff given on an interactive terminal, missing file, no model configured); `3` when the run itself fails (for example the model endpoint is unreachable or returns an unusable reply). An empty diff exits `0` without calling any model.
 
 ## Configuration
 
@@ -86,7 +86,7 @@ diff -> research (1 call)  ->  dedup  ->  panel (3 independent calls per finding
 - **`src/types.ts`** — shared interfaces for the whole pipeline
 - **`src/client.ts`** — the OpenAI-compatible chat-completion client: role-based env resolution, defensive JSON extraction
 - **`src/pipeline.ts`** — `research` (find candidates), `dedup` (drop repeats), `panel` (independent 3-vote judgment), `runQuorum` (wires them together)
-- **`src/main.ts`** — CLI entry point
+- **`src/cli/`** — CLI: `bin.ts` is the process entry point, `main.ts` holds the testable `runCli`
 
 ## Testing
 

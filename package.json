@@ -13,8 +13,8 @@
     "bun": ">=1.3.0"
   },
   "scripts": {
-    "start": "bun run ./src/main.ts",
-    "compile": "bun build --compile ./src/main.ts --outfile ./bin/quorum",
+    "start": "bun run ./src/cli/bin.ts",
+    "compile": "bun build --compile ./src/cli/bin.ts --outfile ./bin/quorum",
     "typecheck": "tsc --noEmit",
     "format": "eslint . --fix",
     "lint": "eslint .",
