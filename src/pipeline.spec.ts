@@ -8,7 +8,7 @@ vi.mock('./client.ts', async (importOriginal) => {
 })
 
 const { chat } = await import('./client.ts')
-const { dedup, panel, research } = await import('./pipeline.ts')
+const { dedup, panel, research, runQuorum } = await import('./pipeline.ts')
 const mockChat = vi.mocked(chat)
 
 const finding: Finding = {
@@ -56,7 +56,7 @@ describe('dedup', () => {
 describe('panel', () => {
   it('grants high confidence on a unanimous 3/3 keep', async () => {
     mockChat.mockResolvedValue(vote(true, 'convinced'))
-    const verdict = await panel(finding)
+    const verdict = await panel(finding, '+exec(cmd)')
     expect(verdict.keptVotes).toBe(3)
     expect(verdict.confidence).toBe('high')
   })
@@ -66,14 +66,14 @@ describe('panel', () => {
       .mockResolvedValueOnce(vote(true, 'a'))
       .mockResolvedValueOnce(vote(true, 'b'))
       .mockResolvedValueOnce(vote(false, 'c'))
-    const verdict = await panel(finding)
+    const verdict = await panel(finding, '+exec(cmd)')
     expect(verdict.keptVotes).toBe(2)
     expect(verdict.confidence).toBe('medium')
   })
 
   it('discards on a 0/3 split', async () => {
     mockChat.mockResolvedValue(vote(false, 'not convinced'))
-    const verdict = await panel(finding)
+    const verdict = await panel(finding, '+exec(cmd)')
     expect(verdict.keptVotes).toBe(0)
     expect(verdict.confidence).toBeUndefined()
   })
@@ -83,7 +83,7 @@ describe('panel', () => {
       .mockResolvedValueOnce(vote(true, 'a'))
       .mockResolvedValueOnce(vote(true, 'b'))
       .mockRejectedValueOnce(new Error('endpoint down'))
-    const verdict = await panel(finding)
+    const verdict = await panel(finding, '+exec(cmd)')
     expect(verdict.keptVotes).toBe(2)
     expect(verdict.confidence).toBe('medium')
     expect(verdict.votes[2]).toMatchObject({ angle: 'defenses', vote: null, error: 'endpoint down' })
@@ -94,9 +94,23 @@ describe('panel', () => {
       .mockResolvedValueOnce(vote(true))
       .mockResolvedValueOnce(vote(true))
       .mockResolvedValueOnce('I cannot answer in JSON')
-    const verdict = await panel(finding)
+    const verdict = await panel(finding, '+exec(cmd)')
     expect(verdict.keptVotes).toBe(2)
     expect(verdict.votes[2]).toMatchObject({ angle: 'defenses', vote: null })
     expect(verdict.votes[2].error).toMatch(/vote reply unusable/)
+  })
+})
+
+describe('runQuorum', () => {
+  it('gives voters the diff section of the cited file only', async () => {
+    const diff = 'diff --git a/a.js b/a.js\n+exec(cmd)\ndiff --git a/other.js b/other.js\n+UNRELATED'
+    mockChat.mockResolvedValueOnce(JSON.stringify({ findings: [finding] })).mockResolvedValue(vote(true))
+    await runQuorum(diff)
+    const voteContents = mockChat.mock.calls.slice(1).map(([, request]) => request.messages[0].content)
+    expect(voteContents).toHaveLength(3)
+    for (const content of voteContents) {
+      expect(content).toContain('+exec(cmd)')
+      expect(content).not.toContain('UNRELATED')
+    }
   })
 })
