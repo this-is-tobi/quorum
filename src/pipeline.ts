@@ -102,6 +102,10 @@ export async function panel(finding: Finding, diffContext: string, limit: Limite
  */
 export async function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult> {
   const log = onProgress ?? (() => {})
+  if (diff.trim() === '') {
+    log('empty diff: nothing to review')
+    return { kept: [], discarded: [] }
+  }
   const limit = createLimiter(DEFAULT_CONCURRENCY)
 
   const { findings, invalid } = await research(diff, limit)

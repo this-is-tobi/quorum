@@ -104,6 +104,11 @@ describe('panel', () => {
 })
 
 describe('runQuorum', () => {
+  it('returns without any model call for an empty diff', async () => {
+    await expect(runQuorum('  \n')).resolves.toEqual({ kept: [], discarded: [] })
+    expect(mockChat).not.toHaveBeenCalled()
+  })
+
   it('gives voters the diff section of the cited file only', async () => {
     const diff = 'diff --git a/a.js b/a.js\n+exec(cmd)\ndiff --git a/other.js b/other.js\n+UNRELATED'
     mockChat.mockResolvedValueOnce(JSON.stringify({ findings: [finding] })).mockResolvedValue(vote(true))

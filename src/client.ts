@@ -1,5 +1,8 @@
+import { ConfigError } from './core/errors.ts'
 import type { CompletionRequest } from './core/ports.ts'
 import type { Role, RoleConfig } from './core/types.ts'
+
+const MAX_ERROR_BODY = 500
 
 /**
  * Resolve connection settings for a role from the environment.
@@ -45,7 +48,7 @@ export function roleConfig(role: Role): RoleConfig {
 export async function chat(role: Role, request: CompletionRequest): Promise<string> {
   const config = roleConfig(role)
   if (!config.model) {
-    throw new Error(`${role}_MODEL is not set`)
+    throw new ConfigError([{ path: `${role}_MODEL`, message: 'is not set' }])
   }
 
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
@@ -64,7 +67,8 @@ export async function chat(role: Role, request: CompletionRequest): Promise<stri
   })
 
   if (!response.ok) {
-    throw new Error(`${role} call failed: ${response.status} ${await response.text()}`)
+    const text = await response.text()
+    throw new Error(`${role} call failed: ${response.status} ${text.slice(0, MAX_ERROR_BODY)}`)
   }
 
   const body = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }

@@ -20,3 +20,19 @@ export class OutputError extends QuorumError {
     this.snippet = snippet
   }
 }
+
+/** One configuration problem; `path` locates it, e.g. 'policy.medium' or 'RESEARCH_MODEL'. */
+export interface ConfigIssue {
+  path: string
+  message: string
+}
+
+/** Invalid configuration or usage, carrying every issue at once. The CLI maps it to exit code 2. */
+export class ConfigError extends QuorumError {
+  readonly issues: readonly ConfigIssue[]
+
+  constructor(issues: readonly ConfigIssue[]) {
+    super(issues.map(issue => (issue.path ? `${issue.path}: ${issue.message}` : issue.message)).join('\n'))
+    this.issues = issues
+  }
+}
