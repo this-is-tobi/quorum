@@ -74,3 +74,6 @@ export interface QuorumResult {
   kept: Verdict[]
   discarded: Verdict[]
 }
+
+/** A finding exactly as the research model reports it: the wire shape validated by core/output.ts. */
+export type FindingDetails = Finding

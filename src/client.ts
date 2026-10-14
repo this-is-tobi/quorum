@@ -38,27 +38,15 @@ export function roleConfig(role: Role): RoleConfig {
   }
 }
 
-const JSON_BLOB = /\{[\s\S]*\}/
-
 /**
- * Send one prompt to an OpenAI-compatible /chat/completions endpoint and
- * defensively extract a JSON object from the reply.
+ * Send one prompt to an OpenAI-compatible /chat/completions endpoint and return the reply text.
  *
- * Deliberately not relying on response_format's strict json_schema mode:
- * OpenAI-compatible servers vary widely in how much of the real API surface
- * they implement (this has been verified against both Ollama and OpenAI
- * itself), so this asks for the shape in the prompt AND requests basic
- * json_object mode, then extracts/parses the reply itself. That's a real
- * tradeoff against a tool like the Claude Code CLI's --json-schema (which
- * validates and retries for you): portability traded for validation we now
- * own ourselves.
+ * Still requests basic json_object mode but never trusts it: OpenAI-compatible servers vary in how
+ * much of the API they implement, so callers extract and validate the reply with core/output.ts.
  *
- * @throws if the role's model is unset, the request fails, or the reply has no parseable JSON object
- *
- * @example
- * const { findings } = await chatJSON<{ findings: unknown[] }>('RESEARCH', 'List findings as {"findings":[]}')
+ * @throws if the role's model is unset or the request fails
  */
-export async function chatJSON<T>(role: Role, prompt: string): Promise<T> {
+export async function chat(role: Role, prompt: string): Promise<string> {
   const config = roleConfig(role)
   if (!config.model) {
     throw new Error(`${role}_MODEL is not set`)
@@ -83,12 +71,7 @@ export async function chatJSON<T>(role: Role, prompt: string): Promise<T> {
   }
 
   const body = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
-  const text = body.choices?.[0]?.message?.content ?? ''
-  const match = text.match(JSON_BLOB) // some models wrap JSON in prose despite instructions
-  if (!match) {
-    throw new Error(`${role} response had no JSON: ${text.slice(0, 200)}`)
-  }
-  return JSON.parse(match[0]) as T
+  return body.choices?.[0]?.message?.content ?? ''
 }
 
 export { UNTRUSTED_CONTENT_NOTICE }

@@ -1,5 +1,6 @@
-import { chatJSON, UNTRUSTED_CONTENT_NOTICE } from './client.ts'
-import type { Finding, Lens, LensVote, QuorumResult, Verdict, Vote } from './core/types.ts'
+import { chat, UNTRUSTED_CONTENT_NOTICE } from './client.ts'
+import { parseResearchReply, parseVoteReply } from './core/output.ts'
+import type { Finding, Lens, LensVote, QuorumResult, Verdict } from './core/types.ts'
 
 /**
  * The three fixed, orthogonal angles every panel vote is judged from. Three
@@ -26,12 +27,13 @@ export const LENSES: readonly Lens[] = [
 ]
 
 /**
- * Ask the research role to propose candidate findings in a diff.
+ * Ask the research role to propose candidate findings in a diff. The reply is validated: one
+ * without a `findings` array fails the run (fail closed), and invalid findings are dropped with a reason.
  *
  * @example
- * const candidates = await research(diffText)
+ * const { findings, invalid } = await research(diffText)
  */
-export async function research(diff: string): Promise<Finding[]> {
+export async function research(diff: string): Promise<{ findings: Finding[], invalid: string[] }> {
   const shape = '{"findings":[{"file":string,"line":number,"category":string,"sink":string,"summary":string}]}'
   const prompt = [
     'Review this diff for security vulnerabilities. For each candidate, cite the exact',
@@ -44,8 +46,7 @@ export async function research(diff: string): Promise<Finding[]> {
     diff,
   ].join('\n')
 
-  const { findings } = await chatJSON<{ findings: Finding[] }>('RESEARCH', prompt)
-  return findings ?? []
+  return parseResearchReply(await chat('RESEARCH', prompt))
 }
 
 /**
@@ -88,7 +89,7 @@ async function vote(finding: Finding, lens: Lens): Promise<LensVote> {
   ].join('\n')
 
   try {
-    const result = await chatJSON<Vote>('VOTER', prompt)
+    const result = parseVoteReply(await chat('VOTER', prompt))
     return { angle: lens.angle, vote: result, error: null }
   } catch (error) {
     return { angle: lens.angle, vote: null, error: (error as Error).message }
@@ -126,7 +127,9 @@ export async function panel(finding: Finding): Promise<Verdict> {
 export async function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult> {
   const log = onProgress ?? (() => {})
 
-  const candidates = dedup(await research(diff))
+  const { findings, invalid } = await research(diff)
+  if (invalid.length > 0) log(`${invalid.length} invalid finding(s) dropped`)
+  const candidates = dedup(findings)
   log(`${candidates.length} candidate(s) after dedup`)
 
   const verdicts = await Promise.all(candidates.map(panel))
