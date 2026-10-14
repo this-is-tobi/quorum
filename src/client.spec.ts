@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { chatJSON, roleConfig } from './client.ts'
+import { chat, roleConfig } from './client.ts'
 
 const ENV_KEYS = ['RESEARCH_BASE_URL', 'RESEARCH_API_KEY', 'RESEARCH_MODEL', 'VOTER_BASE_URL', 'VOTER_API_KEY', 'VOTER_MODEL']
 const original: Record<string, string | undefined> = {}
@@ -51,30 +51,24 @@ describe('roleConfig', () => {
   })
 })
 
-describe('chatJSON', () => {
+describe('chat', () => {
   it('throws when the role model is unset', async () => {
-    await expect(chatJSON('RESEARCH', 'prompt')).rejects.toThrow('RESEARCH_MODEL is not set')
+    await expect(chat('RESEARCH', 'prompt')).rejects.toThrow('RESEARCH_MODEL is not set')
   })
 
-  it('extracts JSON even when the model wraps it in prose', async () => {
+  it('returns the reply text untouched', async () => {
     process.env.RESEARCH_MODEL = 'qwen3.6:27b'
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({
-        choices: [{ message: { content: 'Sure, here you go:\n{"keep":true,"reasoning":"ok"}\nHope that helps!' } }],
-      }),
+      json: async () => ({ choices: [{ message: { content: 'Sure: {"keep":true}' } }] }),
     }))
-    const result = await chatJSON('RESEARCH', 'prompt')
-    expect(result).toEqual({ keep: true, reasoning: 'ok' })
+    await expect(chat('RESEARCH', 'prompt')).resolves.toBe('Sure: {"keep":true}')
   })
 
-  it('throws a descriptive error when the reply has no JSON', async () => {
+  it('returns an empty string when the reply has no content', async () => {
     process.env.RESEARCH_MODEL = 'qwen3.6:27b'
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ choices: [{ message: { content: 'no json here' } }] }),
-    }))
-    await expect(chatJSON('RESEARCH', 'prompt')).rejects.toThrow('had no JSON')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ choices: [] }) }))
+    await expect(chat('RESEARCH', 'prompt')).resolves.toBe('')
   })
 
   it('throws when the endpoint responds with an error status', async () => {
@@ -84,6 +78,6 @@ describe('chatJSON', () => {
       status: 500,
       text: async () => 'internal error',
     }))
-    await expect(chatJSON('RESEARCH', 'prompt')).rejects.toThrow('call failed: 500')
+    await expect(chat('RESEARCH', 'prompt')).rejects.toThrow('call failed: 500')
   })
 })

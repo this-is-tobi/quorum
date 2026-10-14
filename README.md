@@ -1,6 +1,6 @@
 # Quorum
 
-A multi-agent security-review pipeline: an LLM proposes candidate vulnerabilities in a diff, then three independent voters — blind to each other's reasoning — each judge the same candidate from a different fixed angle before it's reported. Talks to any OpenAI-compatible `/chat/completions` endpoint, zero third-party dependencies.
+A multi-agent security-review pipeline: an LLM proposes candidate vulnerabilities in a diff, then three independent voters — blind to each other's reasoning — each judge the same candidate from a different fixed angle before it's reported. Talks to any OpenAI-compatible `/chat/completions` endpoint, with a single small runtime dependency ([zod](https://zod.dev), which validates every model reply).
 
 ## Status
 
@@ -14,10 +14,10 @@ This is expected to disagree with itself between runs sometimes — that's inher
 
 ## Key features
 
-- Zero dependencies at runtime — plain `fetch`, works under Bun or Node
+- One small runtime dependency (`zod`, validating every model reply) — plain `fetch`, works under Bun or Node
 - Model-agnostic per role: point the finder and the panel at different backends (`RESEARCH_*` / `VOTER_*` env vars, `VOTER_*` falls back to `RESEARCH_*`)
 - Compiles to a standalone binary via Bun (`bun run compile`) — no runtime dependency to distribute
-- Defensive JSON extraction rather than trusting `response_format` schema enforcement, since OpenAI-compatible servers vary in how much of the real API surface they implement
+- Defensive JSON extraction rather than trusting `response_format` schema enforcement, since OpenAI-compatible servers vary in how much of the real API surface they implement, followed by schema validation: a malformed research reply fails the run instead of silently reporting nothing
 - Explicit untrusted-content framing around the diff itself in every prompt, since the diff is attacker-influenced input on any real PR
 
 ## Prerequisites
