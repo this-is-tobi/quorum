@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { OutputError } from './errors.ts'
 import { extractJsonObject, parseResearchReply, parseVoteReply, researchReplyJsonSchema, voteReplyJsonSchema } from './output.ts'
 
-const finding = { file: 'a.js', line: 1, category: 'CWE-78', sink: 'exec(cmd)', summary: 'command injection' }
+const finding = { file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }
 
 describe('extractJsonObject', () => {
   it('parses a bare JSON object', () => {
@@ -167,5 +167,11 @@ describe('reply JSON Schemas', () => {
     expect(voteReplyJsonSchema).toMatchObject({ type: 'object', required: ['keep', 'reasoning'], additionalProperties: false })
     expect(researchReplyJsonSchema).toMatchObject({ type: 'object', required: ['findings'] })
     expect(researchReplyJsonSchema).not.toHaveProperty('$schema')
+  })
+
+  it('asks the finder for a quote, not a sink', () => {
+    const schema = JSON.stringify(researchReplyJsonSchema)
+    expect(schema).toContain('"quote"')
+    expect(schema).not.toContain('"sink"')
   })
 })

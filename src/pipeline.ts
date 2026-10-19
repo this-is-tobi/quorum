@@ -5,6 +5,7 @@ import { diffSectionFor, splitDiff } from './core/diff.ts'
 import { parseResearchReply, parseVoteReply } from './core/output.ts'
 import { defaultPrompts, renderTemplate, researchRequest, voteRequest } from './core/prompts.ts'
 import type { Finding, Lens, LensVote, QuorumResult, Verdict } from './core/types.ts'
+import { verifyFindings } from './core/verify.ts'
 
 /**
  * The three fixed, orthogonal angles every panel vote is judged from. Three is not an arbitrary
@@ -29,14 +30,22 @@ export const LENSES: readonly Lens[] = [
 ]
 
 /**
- * Ask the research role to propose candidate findings in a diff. The reply is validated: one
- * without a `findings` array fails the run (fail closed), and invalid findings are dropped with a reason.
+ * Ask the research role to propose candidate findings in a diff, then check each against the diff.
+ * The reply is validated: one without a `findings` array fails the run (fail closed), and findings
+ * that are malformed, or cite a file or line the diff does not contain, are dropped with a reason.
+ * What survives carries evidence read from the diff, never the finder's quote.
  *
  * @example
  * const { findings, invalid } = await research(diffText, createLimiter(4))
  */
-export async function research(diff: string, limit: Limiter): Promise<{ findings: Finding[], invalid: string[] }> {
-  return parseResearchReply(await limit(() => chat('RESEARCH', researchRequest(defaultPrompts.research, diff))))
+export async function research(
+  diff: string,
+  limit: Limiter,
+  sections: ReadonlyMap<string, string> = splitDiff(diff),
+): Promise<{ findings: Finding[], invalid: string[] }> {
+  const parsed = parseResearchReply(await limit(() => chat('RESEARCH', researchRequest(defaultPrompts.research, diff))))
+  const checked = verifyFindings(parsed.findings, sections)
+  return { findings: checked.findings, invalid: [...parsed.invalid, ...checked.invalid] }
 }
 
 /**
@@ -108,12 +117,12 @@ export async function runQuorum(diff: string, onProgress?: (message: string) => 
   }
   const limit = createLimiter(DEFAULT_CONCURRENCY)
 
-  const { findings, invalid } = await research(diff, limit)
+  const sections = splitDiff(diff)
+  const { findings, invalid } = await research(diff, limit, sections)
   if (invalid.length > 0) log(`${invalid.length} invalid finding(s) dropped`)
   const candidates = dedup(findings)
   log(`${candidates.length} candidate(s) after dedup`)
 
-  const sections = splitDiff(diff)
   const verdicts = await Promise.all(candidates.map(finding => panel(finding, diffSectionFor(sections, finding.file, diff), limit)))
   const kept = verdicts.filter(v => v.confidence)
   const discarded = verdicts.filter(v => !v.confidence)

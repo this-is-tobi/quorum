@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { defaultPrompts, fence, renderTemplate, researchRequest, voteRequest } from './prompts.ts'
 
-const finding = { file: 'a.js', line: 3, category: 'CWE-78', sink: 'exec(cmd)', summary: 'command injection' }
+const finding = { file: 'a.js', line: 3, category: 'CWE-78', summary: 'command injection', evidence: '+exec(cmd)', quoteMatched: true }
 
 describe('fence', () => {
   it('wraps content in tags carrying a random nonce', () => {
@@ -35,12 +35,20 @@ describe('researchRequest', () => {
 })
 
 describe('voteRequest', () => {
-  it('fences the finding and its diff context in the user message', () => {
-    const request = voteRequest('Judge it.', finding, '+exec(cmd)')
+  it('fences the claim, the code evidence and the diff context separately in the user message', () => {
+    const request = voteRequest('Judge it.', finding, '+exec(cmd)\n+other()')
     const content = request.messages[0].content
-    expect(content).toMatch(/<untrusted-finding-[0-9a-f]{8}>[\s\S]*exec\(cmd\)[\s\S]*<\/untrusted-finding-/)
-    expect(content).toMatch(/<untrusted-diff-[0-9a-f]{8}>\n\+exec\(cmd\)\n<\/untrusted-diff-/)
+    expect(content).toMatch(/<untrusted-claim-[0-9a-f]{8}>[\s\S]*unverified\): command injection[\s\S]*<\/untrusted-claim-/)
+    expect(content).toMatch(/<untrusted-evidence-[0-9a-f]{8}>\n\+exec\(cmd\)\n<\/untrusted-evidence-/)
+    expect(content).toMatch(/<untrusted-diff-[0-9a-f]{8}>\n\+exec\(cmd\)\n\+other\(\)\n<\/untrusted-diff-/)
     expect(request.system).not.toContain('exec(cmd)')
+    expect(request.system).not.toContain('command injection')
+  })
+})
+
+describe('defaultPrompts.vote', () => {
+  it('names the claim, the evidence and the diff block a voter receives', () => {
+    expect(defaultPrompts.vote).toMatch(/claim[\s\S]*unverified[\s\S]*evidence[\s\S]*read from the diff[\s\S]*diff section/)
   })
 })
 

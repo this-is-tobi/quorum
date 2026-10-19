@@ -20,8 +20,8 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const DIFF = 'diff --git a/a.js b/a.js\n+exec(cmd)\n'
-const FINDING = { file: 'a.js', line: 1, category: 'CWE-78', sink: 'exec(cmd)', summary: 'command injection' }
+const DIFF = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-safe()\n+exec(cmd)\n'
+const FINDING = { file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }
 const vote = (keep: boolean): string => JSON.stringify({ keep, reasoning: 'r' })
 
 function harness(options: { argv?: string[], stdin?: string, isTTY?: boolean } = {}): { io: CliIO, stdout: () => string, stderr: () => string } {

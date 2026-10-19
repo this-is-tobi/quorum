@@ -26,15 +26,21 @@ export interface RoleConfig {
 }
 
 /**
- * A candidate issue proposed by the research role, before panel review.
+ * A candidate issue after the harness checked it against the diff. The finder supplies the file,
+ * line, category and claim; the evidence is read from the diff by code, never from the finder.
  */
 export interface Finding {
+  /** The diff's own path; for a diff without per-file headers, the finder's name for it, cleaned. */
   file: string
   line: number
+  /** The finder's category, cleaned and capped like the summary. */
   category: string
-  /** The exact offending code, quoted verbatim from the diff. */
-  sink: string
+  /** The finder's claim, stripped of control, format and other invisible characters and capped. */
   summary: string
+  /** The diff lines around `line` with their +, - or space markers (carriage returns removed), capped. */
+  evidence: string
+  /** Whether the finder's quote appears in the evidence: a measure of hallucinated citations. */
+  quoteMatched: boolean
 }
 
 /**
@@ -75,5 +81,12 @@ export interface QuorumResult {
   discarded: Verdict[]
 }
 
-/** A finding exactly as the research model reports it: the wire shape validated by core/output.ts. */
-export type FindingDetails = Finding
+/** A finding exactly as the finder reports it: the wire shape validated by core/output.ts. */
+export interface FindingDetails {
+  file: string
+  line: number
+  category: string
+  /** The code the finder says the finding is about. It is only compared with the evidence and is never forwarded. */
+  quote: string
+  summary: string
+}

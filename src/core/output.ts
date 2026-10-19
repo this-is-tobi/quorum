@@ -7,7 +7,7 @@ const FindingReplySchema = z.object({
   file: z.string(),
   line: z.int(),
   category: z.string(),
-  sink: z.string(),
+  quote: z.string(),
   summary: z.string(),
 })
 
