@@ -25,7 +25,7 @@ describe('splitDiff', () => {
 
   it('keys paths containing spaces and git-quoted paths', () => {
     const diff = 'diff --git a/my file.js b/my file.js\n+x\ndiff --git "a/caf\\303\\251.js" "b/caf\\303\\251.js"\n+y'
-    expect([...splitDiff(diff).keys()]).toEqual(['my file.js', 'caf\\303\\251.js'])
+    expect([...splitDiff(diff).keys()]).toEqual(['my file.js', 'caf\u00E9.js'])
   })
 
   it('keeps every hunk when a path appears more than once', () => {
@@ -87,11 +87,67 @@ describe('splitDiff', () => {
 
   it('keys a quoted path without its quotes, whatever its prefixes', () => {
     const quoted = ['diff --git "caf\\303\\251.js" "caf\\303\\251.js"', '+x', 'diff --git "i/lib/\\303\\251.js" "w/lib/\\303\\251.js"', '+y'].join('\n')
-    expect([...splitDiff(quoted).keys()]).toEqual(['caf\\303\\251.js', 'lib/\\303\\251.js'])
+    expect([...splitDiff(quoted).keys()]).toEqual(['caf\u00E9.js', 'lib/\u00E9.js'])
   })
 
   it('keys a rename to a quoted name by its new path', () => {
-    expect([...splitDiff('diff --git a/old.js "b/caf\\303\\251.js"\n+x').keys()]).toEqual(['caf\\303\\251.js'])
+    expect([...splitDiff('diff --git a/old.js "b/caf\\303\\251.js"\n+x').keys()]).toEqual(['caf\u00E9.js'])
+  })
+
+  it('keys a rename between two quoted names by the decoded new name', () => {
+    const rename = 'diff --git "a/donn\\303\\251es.js" "b/donn\\303\\251es2.js"\nsimilarity index 71%'
+    expect([...splitDiff(rename).keys()]).toEqual(['données2.js'])
+  })
+
+  it('decodes the octal escapes git writes for a non-ASCII name', () => {
+    const accented = ['diff --git "a/donn\\303\\251es.js" "b/donn\\303\\251es.js"', '@@ -1 +1 @@', '-old()', '+new()'].join('\n')
+    const sections = splitDiff(accented)
+    expect([...sections.keys()]).toEqual(['donn\u00E9es.js'])
+    expect(locate(sections, 'donn\u00E9es.js', 1)).toEqual({ path: 'donn\u00E9es.js', evidence: '-old()\n+new()' })
+  })
+
+  it('decodes the escapes for a quote, a backslash and the control characters', () => {
+    const quoted = [
+      'diff --git "a/we\\"ird\\\\name.js" "b/we\\"ird\\\\name.js"',
+      '+x',
+      'diff --git "a/tab\\there.js" "b/tab\\there.js"',
+      '+y',
+      'diff --git a/old.js "b/line\\nbreak\\a\\b\\f\\r\\v.js"',
+      '+z',
+    ].join('\n')
+    expect([...splitDiff(quoted).keys()]).toEqual(['we"ird\\name.js', 'tab\there.js', 'line\nbreak\u0007\b\f\r\v.js'])
+  })
+
+  it('reads an invalid escape or UTF-8 sequence without throwing', () => {
+    const invalid = [
+      'diff --git "a/bad\\377\\303.js" "b/bad\\377\\303.js"',
+      '+x',
+      'diff --git "a/odd\\777\\q.js" "b/odd\\777\\q.js"',
+      '+y',
+      'diff --git "a/end\\" "b/end\\"',
+      '+z',
+    ].join('\n')
+    expect([...splitDiff(invalid).keys()]).toEqual(['bad\uFFFD\uFFFD.js', 'odd\\777\\q.js', 'end\\'])
+  })
+
+  it('keeps a byte-order mark in a decoded name, so it cannot pose as the file without it', () => {
+    const decoy = ['diff --git a/src/auth.js b/src/auth.js', '+real', 'diff --git "a/\\357\\273\\277src/auth.js" "b/\\357\\273\\277src/auth.js"', '+decoy'].join('\n')
+    const sections = splitDiff(decoy)
+    expect([...sections.keys()]).toEqual(['src/auth.js', '\uFEFFsrc/auth.js'])
+    expect(sections.get('src/auth.js')).not.toContain('+decoy')
+  })
+
+  it('decodes only a quoted name', () => {
+    const unquoted = ['diff --git a/x\\303.js b/x\\303.js', '+x', 'diff --git a/old.js b/y\\303.js', '+y'].join('\n')
+    expect([...splitDiff(unquoted).keys()]).toEqual(['x\\303.js', 'y\\303.js'])
+  })
+
+  it('decodes a long quoted name in linear time', () => {
+    const name = '\\303\\251'.repeat(20_000)
+    const started = performance.now()
+    const sections = splitDiff(`diff --git "a/${name}" "b/${name}"\n+x`)
+    expect(performance.now() - started).toBeLessThan(300)
+    expect([...sections.keys()].map(key => key === '\u00E9'.repeat(20_000))).toEqual([true])
   })
 
   it('keeps a file whose name contains " b/" apart from the file it imitates', () => {
@@ -164,6 +220,33 @@ describe('sectionFor', () => {
 
   it('resolves a unique path suffix to the diff\'s own path', () => {
     expect(sectionFor(sections, 'b.js')?.path).toBe('lib/b.js')
+  })
+
+  it('looks a path up as written before it strips an a/ or b/ prefix', () => {
+    const lookalike = [
+      'diff --git a/b/src/auth.js b/b/src/auth.js',
+      '@@ -40 +40 @@',
+      '-check(user)',
+      '+skipCheck(user)',
+      'diff --git a/src/auth.js b/src/auth.js',
+      '@@ -40 +40 @@',
+      '-check(user)',
+      '+stillChecks(user)',
+    ].join('\n')
+    const both = splitDiff(lookalike)
+    expect([...both.keys()]).toEqual(['b/src/auth.js', 'src/auth.js'])
+    expect(sectionFor(both, 'b/src/auth.js')?.path).toBe('b/src/auth.js')
+    expect(sectionFor(both, 'src/auth.js')?.path).toBe('src/auth.js')
+    expect(locate(both, ' b/src/auth.js ', 40)).toEqual({ path: 'b/src/auth.js', evidence: '-check(user)\n+skipCheck(user)' })
+    expect(locate(both, 'src/auth.js', 40)).toEqual({ path: 'src/auth.js', evidence: '-check(user)\n+stillChecks(user)' })
+    expect(locate(both, 'a/src/auth.js', 40)?.path).toBe('src/auth.js')
+    expect(diffSectionFor(both, 'b/src/auth.js', lookalike)).toContain('+skipCheck(user)')
+    expect(diffSectionFor(both, 'b/src/auth.js', lookalike)).not.toContain('+stillChecks(user)')
+  })
+
+  it('matches a unique path suffix on the path without its a/ or b/ prefix', () => {
+    expect(sectionFor(sections, 'b/b.js')?.path).toBe('lib/b.js')
+    expect(sectionFor(sections, './b.js')?.path).toBe('lib/b.js')
   })
 
   it('returns undefined when the file is not in the diff or the suffix is ambiguous', () => {
@@ -256,7 +339,7 @@ describe('locate', () => {
 
   it('returns undefined for a line outside every hunk', () => {
     for (const line of [0, 9, 15, 40, 99]) {
-      expect(locate(sections, 'src/a.js', line)).toBeUndefined()
+      expect(locate(sections, 'src/a.js', line), `line ${line}`).toBeUndefined()
     }
   })
 
@@ -315,13 +398,25 @@ describe('locate', () => {
 
   it('does not read the next header block as hunk lines after a cut-off hunk', () => {
     const series = ['diff --git a/a.js b/a.js', '@@ -1,9 +1,9 @@', ' keep()', 'diff --git a/a.js b/a.js', '--- a/a.js', '+++ b/a.js', '@@ -20 +20 @@', '-old()', '+new()'].join('\n')
-    const sections = splitDiff(series)
-    expect(locate(sections, 'a.js', 2)).toBeUndefined()
-    expect(locate(sections, 'a.js', 20)).toEqual({ path: 'a.js', evidence: '-old()\n+new()' })
+    const repeated = splitDiff(series)
+    expect(locate(repeated, 'a.js', 2)).toBeUndefined()
+    expect(locate(repeated, 'a.js', 20)).toEqual({ path: 'a.js', evidence: '-old()\n+new()' })
   })
 
   it('does not absorb the next file header into a cut-off hunk', () => {
     const truncated = ['diff --git a/a.js b/a.js', '@@ -1,9 +1,9 @@', ' keep()', 'diff --git a/b.js b/b.js', '+++ b/b.js'].join('\n')
     expect(locate(splitDiff(truncated), 'a.js', 1)).toEqual({ path: 'a.js', evidence: ' keep()' })
+  })
+
+  it('locates a thousand findings in one large file in linear time', () => {
+    const rows = Array.from({ length: 100_000 }, (_, index) => `+line ${index}`)
+    const large = splitDiff(['diff --git a/large.js b/large.js', '@@ -0,0 +1,100000 @@', ...rows].join('\n'))
+    let located = 0
+    const started = performance.now()
+    for (let finding = 0; finding < 1_000; finding++) {
+      if (locate(large, 'large.js', 100_000 - finding) !== undefined) located++
+    }
+    expect(performance.now() - started).toBeLessThan(300)
+    expect(located).toBe(1_000)
   })
 })

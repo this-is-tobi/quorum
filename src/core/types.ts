@@ -37,7 +37,7 @@ export interface Finding {
   category: string
   /** The finder's claim, stripped of control, format and other invisible characters and capped. */
   summary: string
-  /** The diff lines around `line` with their +, - or space markers (carriage returns removed), capped. */
+  /** The diff lines around `line` with their +, - or space markers (a line's trailing carriage return removed), capped. */
   evidence: string
   /** Whether the finder's quote appears in the evidence: a measure of hallucinated citations. */
   quoteMatched: boolean

@@ -46,6 +46,12 @@ describe('voteRequest', () => {
   })
 })
 
+describe('defaultPrompts.research', () => {
+  it('asks for the quote copied verbatim from the diff, without the diff markers', () => {
+    expect(defaultPrompts.research).toMatch(/verbatim from the diff[^.]*without the[^.]*markers?/)
+  })
+})
+
 describe('defaultPrompts.vote', () => {
   it('names the claim, the evidence and the diff block a voter receives', () => {
     expect(defaultPrompts.vote).toMatch(/claim[\s\S]*unverified[\s\S]*evidence[\s\S]*read from the diff[\s\S]*diff section/)
