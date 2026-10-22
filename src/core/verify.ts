@@ -60,9 +60,11 @@ export function verifyFindings(details: readonly FindingDetails[], sections: Rea
 const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
 /**
- * Whether the quote appears in the evidence once diff markers and whitespace are ignored. Both
- * sides are bounded (`MAX_QUOTE`, `MAX_SEARCH`) because both come from attacker-influenced text and
- * a substring search is quadratic in the worst case.
+ * Whether the quote appears in the evidence's code: the leading +, - or space marker is removed
+ * from every evidence row and whitespace is collapsed on both sides. The quote itself is not
+ * stripped of markers, so a quote that keeps its own does not match. Both sides are bounded
+ * (`MAX_QUOTE`, `MAX_SEARCH`) because both come from attacker-influenced text and a substring
+ * search is quadratic in the worst case.
  */
 function quoteAppearsIn(evidence: string, quote: string): boolean {
   const wanted = collapse(quote)

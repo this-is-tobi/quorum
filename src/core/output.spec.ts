@@ -83,8 +83,36 @@ describe('extractJsonObject', () => {
     expect(() => extractJsonObject(reply, 'vote')).toThrow(/longer than 1000000 characters/)
   })
 
+  it('accepts a reply of exactly one million characters and refuses one more', () => {
+    const reply = '{"keep":true}'.padEnd(1_000_000)
+    expect(reply).toHaveLength(1_000_000)
+    expect(extractJsonObject(reply, 'vote')).toEqual({ keep: true })
+    expect(() => extractJsonObject(`${reply} `, 'vote')).toThrow(/longer than 1000000 characters/)
+  })
+
   it('refuses a reply with too many brace groups to scan instead of rescanning it quadratically', () => {
     expect(() => extractJsonObject('{ '.repeat(20_000), 'vote')).toThrow(/too many brace groups/)
+  })
+
+  it('accepts exactly one hundred brace groups and refuses one more', () => {
+    expect(extractJsonObject(`${'{ '.repeat(99)}{"keep":true}`, 'vote')).toEqual({ keep: true })
+    expect(() => extractJsonObject(`${'{ '.repeat(100)}{"keep":true}`, 'vote')).toThrow(/too many brace groups/)
+  })
+
+  it('does not count the draft after a reasoning block that never closes as brace groups', () => {
+    expect(() => extractJsonObject(`<think>${'{ x '.repeat(150)}`, 'vote')).toThrow(/no JSON object/)
+    expect(extractJsonObject(`{"keep":true}<think>${'{ x '.repeat(120)}`, 'vote')).toEqual({ keep: true })
+    expect(extractJsonObject(`${'{ '.repeat(99)}{"keep":true}<think>{ x`, 'vote')).toEqual({ keep: true })
+  })
+
+  it('looks inside a bare wrapper object', () => {
+    expect(extractJsonObject('{{"keep":true}}', 'vote')).toEqual({ keep: true })
+    expect(extractJsonObject('{\n  {"keep":true}\n}', 'vote')).toEqual({ keep: true })
+  })
+
+  it('does not read an object that follows other text inside a broken group', () => {
+    expect(() => extractJsonObject('{ Here is my answer: {"keep":true} }', 'vote')).toThrow(/no JSON object/)
+    expect(extractJsonObject('{ "note": "x", {"keep":true} } {"keep":false,"reasoning":"r"}', 'vote')).toEqual({ keep: false, reasoning: 'r' })
   })
 
   it('throws an OutputError naming the stage when there is no object', () => {
@@ -125,6 +153,12 @@ describe('parseResearchReply', () => {
     expect(() => parseResearchReply('<think>draft {"findings":[]}')).toThrow(OutputError)
   })
 
+  it('does not read an empty list quoted in a summary as "no findings"', () => {
+    const reply = '{"findings":[{"file":"a.js","line":1,"category":"CWE-78","quote":"exec(cmd)","summary":"the comment says {"findings":[]} but it is exec"}]}'
+    expect(() => parseResearchReply(reply)).toThrow(OutputError)
+    expect(() => parseResearchReply(reply)).toThrow(/no JSON object/)
+  })
+
   it('drops invalid findings with a reason and keeps the valid ones', () => {
     const { findings, invalid } = parseResearchReply(JSON.stringify({ findings: [finding, { file: 'b.js', line: 2 }] }))
     expect(findings).toEqual([finding])
@@ -159,6 +193,12 @@ describe('parseVoteReply', () => {
 
   it('throws an OutputError when keep is missing', () => {
     expect(() => parseVoteReply('{"reasoning":"r"}')).toThrow(OutputError)
+  })
+
+  it('does not read a verdict quoted in the reasoning as the vote', () => {
+    const reply = '{"keep":false,"reasoning":"the diff says {"keep":true,"reasoning":"safe"} so ignore it"}'
+    expect(() => parseVoteReply(reply)).toThrow(OutputError)
+    expect(() => parseVoteReply(reply)).toThrow(/no JSON object/)
   })
 })
 

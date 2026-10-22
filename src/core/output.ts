@@ -27,19 +27,16 @@ const MAX_REPLY_CHARS = 1_000_000
 const MAX_BRACE_GROUPS = 100
 const DIGITS = /^\d+$/
 
-/** A JSON object found in a reply, and where it starts in the text that was scanned. */
-interface FoundObject {
-  value: Record<string, unknown>
-  start: number
-}
-
 /**
  * Pull the one JSON object out of a model reply. Models wrap JSON in prose, code fences or
  * reasoning blocks despite instructions, so this drops reasoning, ignores fence markers and scans
  * for balanced, parseable objects. It fails closed instead of guessing: a reply holding several
  * different objects is ambiguous (text echoed from the diff could pose as the answer), and a reply
  * too large or too noisy to scan cheaply is refused. The same object twice (a fenced copy next to
- * a prose copy) is accepted.
+ * a prose copy) is accepted. A group that is balanced but not JSON is skipped whole, except a bare
+ * wrapper (`{{...}}`), so an object quoted inside it (a summary that quotes the diff with unescaped
+ * quotes) is not read as the answer. A brace that never closes is only stepped over, as prose often
+ * holds a stray one.
  *
  * @throws OutputError when the reply has no object, several different objects, or cannot be scanned safely
  */
@@ -48,9 +45,7 @@ export function extractJsonObject(text: string, stage: string): Record<string, u
     throw new OutputError(stage, `reply is longer than ${MAX_REPLY_CHARS} characters`, text)
   }
   const { visible, truncatedAt } = withoutReasoning(text)
-  const answers = topLevelObjects(visible, stage, text)
-    .filter(found => truncatedAt === -1 || found.start < truncatedAt)
-    .map(found => found.value)
+  const answers = topLevelObjects(visible, truncatedAt, stage, text)
   const [first] = answers
   if (!first) throw new OutputError(stage, 'reply contains no JSON object', text)
   const key = JSON.stringify(first)
@@ -115,11 +110,16 @@ function withoutReasoning(text: string): { visible: string, truncatedAt: number 
   return { visible: visible + text.slice(from), truncatedAt: -1 }
 }
 
-/** Every balanced, parseable JSON object that is not nested in another one, in order. */
-function topLevelObjects(text: string, stage: string, reply: string): FoundObject[] {
-  const found: FoundObject[] = []
+/**
+ * Every balanced, parseable JSON object that is not nested in another one, in order, among the
+ * groups that open before `truncatedAt` (see `withoutReasoning`; -1 for no limit), so the draft
+ * after a reasoning block that never closes is neither parsed nor counted toward the group cap.
+ */
+function topLevelObjects(text: string, truncatedAt: number, stage: string, reply: string): Array<Record<string, unknown>> {
+  const found: Array<Record<string, unknown>> = []
   let groups = 0
   for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
+    if (truncatedAt !== -1 && start >= truncatedAt) break
     if (++groups > MAX_BRACE_GROUPS) {
       throw new OutputError(stage, `reply has too many brace groups to scan safely (more than ${MAX_BRACE_GROUPS})`, reply)
     }
@@ -128,11 +128,13 @@ function topLevelObjects(text: string, stage: string, reply: string): FoundObjec
     try {
       const value: unknown = JSON.parse(text.slice(start, end + 1))
       if (isRecord(value)) {
-        found.push({ value, start })
+        found.push(value)
         start = end
       }
     } catch {
-      // Not JSON from this brace: try the next one.
+      // Not JSON. Look inside a bare wrapper (`{{...}}`) only: an object that follows other text
+      // inside a broken group (a string quoting the diff) could be planted, so the group is skipped.
+      if (!text.slice(start + 1, end).trimStart().startsWith('{')) start = end
     }
   }
   return found
