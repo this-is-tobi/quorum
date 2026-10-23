@@ -19,7 +19,7 @@ This is expected to disagree with itself between runs sometimes — that's inher
 - Compiles to a standalone binary via Bun (`bun run compile`) — no runtime dependency to distribute
 - Defensive JSON extraction rather than trusting `response_format` schema enforcement, since OpenAI-compatible servers vary in how much of the real API surface they implement, followed by strict validation: a reply must hold exactly one JSON object (one cut off inside a reasoning block, holding several different objects, holding a group that opens like a JSON object but never closes or does not parse, or an object that repeats a key, fails the research call, or that vote; a research reply whose object holds a key other than `findings` fails too), and a malformed research reply fails the run instead of silently reporting nothing; an unparseable vote is recorded in `votes[].error` and counts as a reject, and the finding is `unreviewed` rather than discarded when that vote could still have kept it
 - Untrusted data is fenced: instructions go in the system message, while the diff and every model-derived finding field go in the user message inside tags carrying a random nonce, since the diff is attacker-influenced input on any real PR. The code a finding points at is never taken from the finder: the harness reads it from the diff (a finding must cite a line inside a hunk of the diff and, when the diff has per-file headers, one of its files, or it is dropped), and voters receive that text, the diff section of the cited file, and the finder's summary and category, cleaned and capped, as an unverified claim.
-- What the run could not review is reported as incomplete, not hidden: a finding whose failed votes could still have kept it is reported as `unreviewed` rather than discarded, a finding the harness could not read, a kept finding whose failed vote could have raised it to `high`, a research reply whose findings were all unusable and findings beyond the cap of 50 per reply are recorded in `meta.incomplete`, and the CLI exits `4` so CI fails until the run is complete
+- The gaps the harness detects are reported, not hidden: a finding whose failed votes could still have kept it is reported as `unreviewed` rather than discarded, a finding the harness could not read, a kept finding whose failed vote could have raised it to `high`, a research reply whose findings were all unusable and findings beyond the cap of 50 per reply are recorded in `meta.incomplete`, and the CLI exits `4` so CI fails until the run is complete
 
 ## Prerequisites
 
@@ -48,7 +48,7 @@ bun run compile
 ./bin/quorum ./my.diff
 ```
 
-Exit codes: `0` when the review is complete and no kept finding reaches `high` confidence (including findings kept only at `medium`); `1` when at least one does (unanimous 3/3), so it can gate CI without extra parsing; `2` for usage or configuration errors (no diff given on an interactive terminal, missing file, no model configured); `3` when the run itself fails (for example the research model's endpoint is unreachable or returns an unusable reply; a failing voter leaves its finding `unreviewed` instead); `4` when the review is incomplete: a finding is `unreviewed` because a failed vote could still have kept it, the finder reported a finding the harness could not read, a kept finding has a failed vote that could have raised it to `high`, the research reply listed only unusable findings, or it listed more than 50 findings and the rest were not reviewed. A kept `high` finding takes precedence over an incomplete review. An empty diff exits `0` without calling any model.
+Exit codes: `0` when the review is complete and no kept finding reaches `high` confidence (including findings kept only at `medium`); `1` when at least one does (unanimous 3/3), so it can gate CI without extra parsing; `2` for usage or configuration errors (no diff given on an interactive terminal, missing file, no model configured); `3` when the run itself fails (for example the research model's endpoint is unreachable or returns an unusable reply; a failing voter does not fail the run; see `4`); `4` when the review is incomplete: a finding is `unreviewed` because a failed vote could still have kept it, the finder reported a finding the harness could not read, a kept finding has a failed vote that could have raised it to `high`, the research reply listed only unusable findings, or it listed more than 50 findings and the rest were not reviewed. A kept `high` finding takes precedence over an incomplete review. An empty diff exits `0` without calling any model.
 
 ## Configuration
 
@@ -92,7 +92,7 @@ diff -> research (1 call)  ->  dedup  ->  panel (3 independent calls per finding
 ## Testing
 
 ```bash
-bun run test        # unit tests (pure logic only: dedup, panel's vote arithmetic, the reply parsing in `src/core/output.ts` - no network, no model calls, all model I/O is mocked)
+bun run test        # unit tests (pure logic only: dedup, panel's vote arithmetic, the reply parsing in src/core/output.ts - no network, no model calls, all model I/O is mocked)
 bun run test:cov    # same, with coverage
 ```
 

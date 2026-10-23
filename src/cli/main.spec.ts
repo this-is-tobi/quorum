@@ -175,7 +175,7 @@ describe('runCli', () => {
     const result = JSON.parse(stdout())
     expect(result.kept).toHaveLength(1)
     expect(result.kept[0].confidence).toBe('medium')
-    expect(result.meta.incomplete).toEqual([{ reason: 'vote-failed', detail: expect.stringMatching(/^a\.js:1 is kept at medium/) }])
+    expect(result.meta.incomplete).toEqual([{ reason: 'vote-failed', detail: expect.stringMatching(/^"a\.js":1 is kept at medium/) }])
     expect(stderr()).toContain('vote-failed')
   })
 })

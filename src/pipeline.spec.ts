@@ -182,7 +182,7 @@ describe('runQuorum', () => {
     expect(result.kept).toHaveLength(1)
     expect(result.kept[0]).toMatchObject({ keptVotes: 2, totalVotes: 3, confidence: 'medium' })
     expect(result.unreviewed).toEqual([])
-    expect(result.meta.incomplete).toEqual([{ reason: 'vote-failed', detail: 'a.js:1 is kept at medium, but 1 failed vote(s) could have made it high' }])
+    expect(result.meta.incomplete).toEqual([{ reason: 'vote-failed', detail: '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high' }])
   })
 
   it('carries an unusable research reply into meta.incomplete without voting', async () => {
