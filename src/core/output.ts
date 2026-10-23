@@ -26,6 +26,8 @@ export const voteReplyJsonSchema = toWireSchema(VoteReplySchema)
 const MAX_REPLY_CHARS = 1_000_000
 const MAX_BRACE_GROUPS = 100
 const DIGITS = /^\d+$/
+/** A quote, brace or bracket: what the model's own continuation holds when planted text closed its object early. */
+const JSON_SYNTAX = /["{}[\]]/
 /** The scans below read character codes: on Bun's engine, indexing a string of non-Latin-1 text allocates a string per character. */
 const QUOTE = 0x22
 const COMMA = 0x2C
@@ -44,26 +46,43 @@ const CLOSE_BRACE = 0x7D
  * parse means the reply is cut off or malformed (and an object quoted inside it, or echoed next to
  * it, could be planted); an object that repeats a key is refused, because `JSON.parse` keeps the
  * last value and text planted in an unescaped string could close that string early and supply it;
- * and a reply too large or too noisy to scan cheaply is refused. The same object twice (a fenced
- * copy next to a prose copy) is accepted. A group that opens like prose (`{` followed by anything
- * else) is skipped whole when it is balanced, except a bare wrapper (`{{...}}`), and only stepped
- * over when it never closes, as prose often holds a stray brace.
+ * text after the answer that reads like JSON syntax (a quote, brace or bracket) is refused too,
+ * because it is what the model's own continuation leaves behind when planted text closed a string
+ * and the object early (a forced reject, a swayed summary, later findings swallowed), while under
+ * constrained decoding nothing follows the one JSON value; and a reply too large or too noisy to
+ * scan cheaply is refused. Plain prose after the answer, fence markers and the same object twice
+ * (a fenced copy next to a prose copy) are accepted. A group that opens like prose (`{` followed by
+ * anything else) is skipped whole when it is balanced, except a bare wrapper (`{{...}}`), and only
+ * stepped over when it never closes, as prose often holds a stray brace.
  *
- * @throws OutputError when the reply has no object, several different objects, a broken object, a repeated key, or cannot be scanned safely
+ * @throws OutputError when the reply has no object, several different objects, a broken object, a repeated key, JSON syntax after the answer, or cannot be scanned safely
  */
 export function extractJsonObject(text: string, stage: string): Record<string, unknown> {
   if (text.length > MAX_REPLY_CHARS) {
     throw new OutputError(stage, `reply is longer than ${MAX_REPLY_CHARS} characters`, text)
   }
   const { visible, truncatedAt } = withoutReasoning(text)
-  const answers = topLevelObjects(visible, truncatedAt, stage, text)
-  const [first] = answers
+  const [first, ...copies] = topLevelObjects(visible, truncatedAt, stage, text)
   if (!first) throw new OutputError(stage, 'reply contains no JSON object', text)
-  const key = JSON.stringify(first)
-  if (answers.some(other => JSON.stringify(other) !== key)) {
+  const key = JSON.stringify(first.value)
+  if (copies.some(other => JSON.stringify(other.value) !== key)) {
     throw new OutputError(stage, 'reply contains several different JSON objects', text)
   }
-  return first
+  if (JSON_SYNTAX.test(textAfter(visible, first, copies))) {
+    throw new OutputError(stage, 'reply continues after its JSON object with text that reads like JSON syntax (text planted in a string could have closed the object early)', text)
+  }
+  return first.value
+}
+
+/** The reply after its answer, with the later copies of that answer cut out: whatever is left was written after the object closed. */
+function textAfter(visible: string, first: Answer, copies: Answer[]): string {
+  let tail = ''
+  let from = first.end + 1
+  for (const copy of copies) {
+    tail += visible.slice(from, copy.start)
+    from = copy.end + 1
+  }
+  return tail + visible.slice(from)
 }
 
 /** A parsed research reply: the findings read, why the others among the ones read were dropped, and how many were listed in all. */
@@ -141,15 +160,23 @@ function withoutReasoning(text: string): { visible: string, truncatedAt: number 
   return { visible: visible + text.slice(from), truncatedAt: -1 }
 }
 
+/** A parsed top-level object with the span of reply text it occupies (a bare wrapper's own braces included). */
+interface Answer {
+  value: Record<string, unknown>
+  start: number
+  end: number
+}
+
 /**
  * Every balanced, parseable JSON object that is not nested in another one, in order, among the
  * groups that open before `truncatedAt` (see `withoutReasoning`; -1 for no limit), so the draft
  * after a reasoning block that never closes is neither parsed nor counted toward the group cap.
+ * Each comes with the span it occupies, so the caller can tell what was written after the answer.
  *
  * @throws OutputError when a group that opens like a JSON object never closes or does not parse, or an object repeats a key
  */
-function topLevelObjects(text: string, truncatedAt: number, stage: string, reply: string): Array<Record<string, unknown>> {
-  const found: Array<Record<string, unknown>> = []
+function topLevelObjects(text: string, truncatedAt: number, stage: string, reply: string): Answer[] {
+  const found: Answer[] = []
   // Sticky, so the check reads only what follows the brace: characters a reader cannot see (the
   // classes `verify.ts` strips from finder text), then a quote or the end of the reply. Linear
   // over the reply.
@@ -159,6 +186,8 @@ function topLevelObjects(text: string, truncatedAt: number, stage: string, reply
     return objectOpener.test(text)
   }
   let groups = 0
+  // The bare wrapper (`{{...}}`) last stepped into: its own braces belong to the span of the object inside it.
+  let wrapper: { start: number, end: number } | undefined
   for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
     if (truncatedAt !== -1 && start >= truncatedAt) break
     if (++groups > MAX_BRACE_GROUPS) {
@@ -177,12 +206,17 @@ function topLevelObjects(text: string, truncatedAt: number, stage: string, reply
       if (opensLikeObject(start)) throw new OutputError(stage, 'reply contains a group that opens like a JSON object but does not parse', reply)
       // Prose, not JSON. Look inside a bare wrapper (`{{...}}`) only: an object that follows other
       // text inside a broken group could be planted, so the group is skipped whole.
-      if (!text.slice(start + 1, end).trimStart().startsWith('{')) start = end
+      if (text.slice(start + 1, end).trimStart().startsWith('{')) wrapper = { start, end }
+      else start = end
       continue
     }
     if (!isRecord(value)) continue
     if (repeatsKey(json)) throw new OutputError(stage, 'reply contains a JSON object that repeats a key', reply)
-    found.push(value)
+    const span = wrapper && wrapper.end > end && text.slice(end + 1, wrapper.end).trim() === ''
+      ? { start: wrapper.start, end: wrapper.end }
+      : { start, end }
+    found.push({ value, ...span })
+    wrapper = undefined
     start = end
   }
   return found
