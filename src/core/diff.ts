@@ -10,10 +10,13 @@ const QUOTED_ESCAPES = new Map([['a', '\x07'], ['b', '\b'], ['f', '\f'], ['n', '
 /** One byte as git writes it in a quoted name: a backslash then three octal digits (0 to 255). */
 const OCTAL_BYTE = /^[0-3][0-7]{2}$/
 /**
- * Git's names are UTF-8: a malformed sequence becomes U+FFFD. A byte-order mark is kept, or a name
+ * Git's names are UTF-8. A run of bytes that is not valid UTF-8 makes the decoder throw, and
+ * `decodeQuoted` then keeps each byte as a lone surrogate. A byte-order mark is kept, or a name
  * that starts with one would read as the name without it.
  */
-const NAME_DECODER = new TextDecoder('utf-8', { ignoreBOM: true })
+const NAME_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+/** A byte of a name that is not valid UTF-8 becomes the lone surrogate at this code plus the byte. */
+const SURROGATE_ESCAPE = 0xDC00
 
 const isQuoted = (name: string): boolean => name.startsWith('"') && name.endsWith('"')
 
@@ -22,18 +25,31 @@ function unquote(name: string): string {
   return isQuoted(name) ? name.slice(1, -1) : name
 }
 
+/** A path without the `a/`, `b/` or `./` prefix a diff, or a model, may put in front of it. */
+function withoutPrefix(path: string): string {
+  return path.replace(PATH_PREFIX, '')
+}
+
 /**
  * Decode the inside of a quoted name (`core.quotePath` writes every non-ASCII byte as `\NNN`): a
  * backslash escape stands for one character (`\n`, `\t`, `\"`, `\\`, ...) and the `\NNN` bytes of a
- * run are decoded together as UTF-8. An escape git never writes is kept as it is, so no name fails
- * to decode. One pass over the name and no pattern that can backtrack.
+ * run are decoded together as UTF-8. An escape git never writes is kept as it is. A run of bytes
+ * that is not valid UTF-8 becomes one lone surrogate per byte (U+DC00 plus the byte, as Python
+ * names a file it cannot decode): no valid name holds a lone surrogate, so two such names never
+ * share a key, nor does one share a key with a name that spells out its escapes, and
+ * `JSON.stringify` writes the surrogate as an escape. One pass over the name and no pattern that
+ * can backtrack.
  */
 function decodeQuoted(quoted: string): string {
   const bytes: number[] = []
   let name = ''
   const flush = (): void => {
     if (bytes.length === 0) return
-    name += NAME_DECODER.decode(Uint8Array.from(bytes))
+    try {
+      name += NAME_DECODER.decode(Uint8Array.from(bytes))
+    } catch {
+      name += bytes.map(byte => String.fromCharCode(SURROGATE_ESCAPE + byte)).join('')
+    }
     bytes.length = 0
   }
   for (let at = 0; at < quoted.length; at++) {
@@ -148,24 +164,44 @@ export function splitDiff(diff: string): Map<string, string> {
 }
 
 /**
- * The section of `file`: the path as written first (a repository can have a `b/` directory of its
- * own), then without an `a/`, `b/` or `./` prefix, then a unique path-suffix match on that
- * (models often shorten paths). `path` is the diff's own path. A diff without per-file headers has
- * a single unkeyed section, which stands for any file. Undefined when nothing, or more than one
- * section, matches.
+ * The section of `file`: the path exactly as given first (a key can start or end with a character
+ * `trim()` removes, and a verified finding's file is such a key), then trimmed (a repository can
+ * have a `b/` directory of its own, so the path is tried before its prefix goes), then without an
+ * `a/`, `b/` or `./` prefix, then, for a citation copied from a header in git's quoted spelling
+ * (`"b/donn\303\251es.js"`), the decoded name with and without its prefix, and last a unique
+ * path-suffix match on the trimmed path without its prefix (models often shorten paths). `path` is
+ * the diff's own path. A diff without per-file headers has a single unkeyed section, which stands
+ * for any file. Undefined when nothing, or more than one section, matches.
  */
 export function sectionFor(sections: ReadonlyMap<string, string>, file: string): { path: string, text: string } | undefined {
   const written = file.trim()
-  const asWritten = written === '' ? undefined : sections.get(written)
-  if (asWritten !== undefined) return { path: written, text: asWritten }
-  const wanted = written.replace(PATH_PREFIX, '')
-  const exact = wanted === '' ? undefined : sections.get(wanted)
-  if (exact !== undefined) return { path: wanted, text: exact }
+  for (const path of citedSpellings(file, written)) {
+    const text = sections.get(path)
+    if (text !== undefined) return { path, text }
+  }
+  const wanted = withoutPrefix(written)
   const unkeyed = sections.get('')
   if (sections.size === 1 && unkeyed !== undefined) return { path: '', text: unkeyed }
   const candidates = [...sections.keys()].filter(path => path !== '' && (path.endsWith(`/${wanted}`) || wanted.endsWith(`/${path}`)))
   const [only] = candidates
   return candidates.length === 1 && only !== undefined ? { path: only, text: sections.get(only) ?? '' } : undefined
+}
+
+/**
+ * The spellings a cited file is looked up under, in order: exactly as given, trimmed, without its
+ * prefix and, when the citation carries git's quoting (a backslash escape or surrounding quotes),
+ * the decoded name with and without its prefix. Neither the given spelling nor a decoded one is
+ * trimmed: a name can start or end with a character `trim()` removes (a tab, a byte-order mark),
+ * and those spellings are the ones that reach it. The empty spelling is left out, as '' keys the
+ * preamble.
+ */
+function citedSpellings(given: string, written: string): string[] {
+  const spellings = [given, written, withoutPrefix(written)]
+  if (written.includes('\\') || isQuoted(written)) {
+    const decoded = decodeQuoted(unquote(written))
+    spellings.push(decoded, withoutPrefix(decoded))
+  }
+  return spellings.filter(path => path !== '')
 }
 
 /**

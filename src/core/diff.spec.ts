@@ -127,7 +127,7 @@ describe('splitDiff', () => {
       'diff --git "a/end\\" "b/end\\"',
       '+z',
     ].join('\n')
-    expect([...splitDiff(invalid).keys()]).toEqual(['bad\uFFFD\uFFFD.js', 'odd\\777\\q.js', 'end\\'])
+    expect([...splitDiff(invalid).keys()]).toEqual(['bad\uDCFF\uDCC3.js', 'odd\\777\\q.js', 'end\\'])
   })
 
   it('keeps a byte-order mark in a decoded name, so it cannot pose as the file without it', () => {
@@ -242,6 +242,73 @@ describe('sectionFor', () => {
     expect(locate(both, 'a/src/auth.js', 40)?.path).toBe('src/auth.js')
     expect(diffSectionFor(both, 'b/src/auth.js', lookalike)).toContain('+skipCheck(user)')
     expect(diffSectionFor(both, 'b/src/auth.js', lookalike)).not.toContain('+stillChecks(user)')
+  })
+
+  it('resolves a citation in git\'s escaped spelling to the decoded name', () => {
+    const accented = splitDiff(['diff --git "a/donn\\303\\251es.js" "b/donn\\303\\251es.js"', '@@ -1 +1 @@', '-old()', '+new()'].join('\n'))
+    expect(sectionFor(accented, 'donn\\303\\251es.js')?.path).toBe('donn\u00E9es.js')
+    expect(sectionFor(accented, 'b/donn\\303\\251es.js')?.path).toBe('donn\u00E9es.js')
+    expect(sectionFor(accented, '"b/donn\\303\\251es.js"')?.path).toBe('donn\u00E9es.js')
+    expect(locate(accented, 'donn\\303\\251es.js', 1)).toEqual({ path: 'donn\u00E9es.js', evidence: '-old()\n+new()' })
+  })
+
+  it('does not trim a decoded name, so a name that starts with a tab is still found', () => {
+    const tabbed = splitDiff('diff --git "a/\\tx.js" "b/\\tx.js"\n+x')
+    expect([...tabbed.keys()]).toEqual(['\tx.js'])
+    expect(sectionFor(tabbed, '\\tx.js')?.path).toBe('\tx.js')
+  })
+
+  it('looks a citation up as written before it decodes it', () => {
+    const both = splitDiff(['diff --git "a/donn\\\\303\\\\251es.js" "b/donn\\\\303\\\\251es.js"', '+literal', 'diff --git "a/donn\\303\\251es.js" "b/donn\\303\\251es.js"', '+accented'].join('\n'))
+    expect([...both.keys()]).toEqual(['donn\\303\\251es.js', 'donn\u00E9es.js'])
+    expect(sectionFor(both, 'donn\\303\\251es.js')?.text).toContain('+literal')
+    expect(sectionFor(both, 'donn\u00E9es.js')?.text).toContain('+accented')
+  })
+
+  it('does not resolve a backslash path to the forward-slash file', () => {
+    expect(sectionFor(sections, 'src\\a.js')).toBeUndefined()
+  })
+
+  it('resolves every key of a diff to itself, untrimmed', () => {
+    const tricky = [
+      'diff --git a/src/auth.js b/src/auth.js',
+      '+real',
+      'diff --git "a/\\357\\273\\277src/auth.js" "b/\\357\\273\\277src/auth.js"',
+      '+bom',
+      'diff --git "a/\\tx.js" "b/\\tx.js"',
+      '+tab',
+      'diff --git a/ y.js b/ y.js',
+      '+space',
+      'diff --git "a/we\\"ird.js" "b/we\\"ird.js"',
+      '+quote',
+    ].join('\n')
+    const keyed = splitDiff(tricky)
+    expect(keyed.size).toBe(5)
+    for (const key of keyed.keys()) {
+      expect(sectionFor(keyed, key)?.path, JSON.stringify(key)).toBe(key)
+    }
+  })
+
+  it('gives a citation holding a real tab the tab-named file, not its trimmed look-alike', () => {
+    const both = splitDiff(['diff --git "a/\\tx.js" "b/\\tx.js"', '+tabbed', 'diff --git a/x.js b/x.js', '+plain'].join('\n'))
+    expect(sectionFor(both, '\tx.js')?.text).toContain('+tabbed')
+    expect(sectionFor(both, 'x.js')?.text).toContain('+plain')
+  })
+
+  it('keeps the bytes of a name that is not valid UTF-8 as lone surrogates, so two such names stay apart', () => {
+    const invalid = ['diff --git "a/x\\376.js" "b/x\\376.js"', '+decoy()', 'diff --git "a/x\\377.js" "b/x\\377.js"', '+exec(cmd)'].join('\n')
+    const apart = splitDiff(invalid)
+    expect([...apart.keys()]).toEqual(['x\uDCFE.js', 'x\uDCFF.js'])
+    expect(sectionFor(apart, 'x\\377.js')?.text).toContain('+exec(cmd)')
+    expect(sectionFor(apart, 'x\\377.js')?.text).not.toContain('+decoy()')
+  })
+
+  it('keeps such a name apart from a file literally named after its escapes', () => {
+    const pair = ['diff --git "a/x\\377.js" "b/x\\377.js"', '+decoy()', 'diff --git "a/x\\\\377.js" "b/x\\\\377.js"', '+literal()'].join('\n')
+    const apart = splitDiff(pair)
+    expect([...apart.keys()]).toEqual(['x\uDCFF.js', 'x\\377.js'])
+    expect(sectionFor(apart, 'x\\\\377.js')?.text).toContain('+literal()')
+    expect(sectionFor(apart, 'x\\\\377.js')?.text).not.toContain('+decoy()')
   })
 
   it('matches a unique path suffix on the path without its a/ or b/ prefix', () => {

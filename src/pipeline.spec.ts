@@ -155,6 +155,28 @@ describe('runQuorum', () => {
     }
   })
 
+  it('gives voters the section of the file the finding resolved to, even for a name trim() would change', async () => {
+    const decoy = [
+      'diff --git a/src/auth.js b/src/auth.js',
+      '@@ -40 +40 @@',
+      '-check(user)',
+      '+skipCheck(user)',
+      'diff --git "a/\\357\\273\\277src/auth.js" "b/\\357\\273\\277src/auth.js"',
+      '@@ -40 +40 @@',
+      '-a()',
+      '+benign()',
+    ].join('\n')
+    const cited = { ...reported, file: '\\357\\273\\277src/auth.js', line: 40, quote: 'benign()' }
+    mockChat.mockResolvedValueOnce(JSON.stringify({ findings: [cited] })).mockResolvedValue(vote(true))
+    const result = await runQuorum(decoy)
+    expect(result.kept[0]).toMatchObject({ file: '\uFEFFsrc/auth.js', evidence: '-a()\n+benign()' })
+    expect(mockChat).toHaveBeenCalledTimes(4)
+    for (const [, request] of mockChat.mock.calls.slice(1)) {
+      expect(request.messages[0].content).toContain('+benign()')
+      expect(request.messages[0].content).not.toContain('+skipCheck(user)')
+    }
+  })
+
   it('never forwards the finder\'s quote to a voter', async () => {
     const quote = 'FINDER-WRITTEN CODE the diff does not contain'
     mockChat.mockResolvedValueOnce(JSON.stringify({ findings: [{ ...reported, quote }] })).mockResolvedValue(vote(true))
