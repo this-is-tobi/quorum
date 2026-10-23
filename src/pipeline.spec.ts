@@ -52,11 +52,12 @@ describe('research', () => {
     await expect(research(diff, limit)).rejects.toThrow(OutputError)
   })
 
-  it('keeps verified findings and reports invalid ones', async () => {
-    mockChat.mockResolvedValue(JSON.stringify({ findings: [reported, { file: 'x.js' }] }))
+  it('keeps verified findings, reports invalid ones and records a gap only for an unreadable one', async () => {
+    mockChat.mockResolvedValue(JSON.stringify({ findings: [reported, { ...reported, file: 'missing.js' }, { file: 'x.js' }] }))
     const result = await research(diff, limit)
     expect(result.findings).toEqual([finding])
-    expect(result.invalid).toHaveLength(1)
+    expect(result.invalid).toHaveLength(2)
+    expect(result.incomplete).toEqual([{ reason: 'finding-unreadable', detail: expect.stringMatching(/^findings\[2\]: /) }])
   })
 
   it('drops a finding that cites code outside the diff, and says so', async () => {
@@ -141,9 +142,41 @@ describe('panel', () => {
 })
 
 describe('runQuorum', () => {
-  it('returns without any model call for an empty diff', async () => {
-    await expect(runQuorum('  \n')).resolves.toEqual({ kept: [], discarded: [] })
+  it('returns an empty, complete result without any model call for an empty diff', async () => {
+    await expect(runQuorum('  \n')).resolves.toEqual({ kept: [], discarded: [], unreviewed: [], meta: { incomplete: [] } })
     expect(mockChat).not.toHaveBeenCalled()
+  })
+
+  it('reports a finding unreviewed, not discarded, when its failed votes could have kept it', async () => {
+    mockChat
+      .mockResolvedValueOnce(JSON.stringify({ findings: [reported] }))
+      .mockResolvedValueOnce(vote(true))
+      .mockRejectedValue(new Error('endpoint down'))
+    const result = await runQuorum(diff)
+    expect(result.kept).toEqual([])
+    expect(result.discarded).toEqual([])
+    expect(result.unreviewed).toHaveLength(1)
+    expect(result.unreviewed[0]).toMatchObject({ file: 'a.js', keptVotes: 1, totalVotes: 3 })
+    expect(result.unreviewed[0].votes.filter(lensVote => lensVote.error === 'endpoint down')).toHaveLength(2)
+  })
+
+  it('discards a finding whose two rejections a failed vote could not overturn', async () => {
+    mockChat
+      .mockResolvedValueOnce(JSON.stringify({ findings: [reported] }))
+      .mockResolvedValueOnce(vote(false))
+      .mockResolvedValueOnce(vote(false))
+      .mockRejectedValue(new Error('endpoint down'))
+    const result = await runQuorum(diff)
+    expect(result.discarded).toHaveLength(1)
+    expect(result.unreviewed).toEqual([])
+  })
+
+  it('carries an unusable research reply into meta.incomplete without voting', async () => {
+    mockChat.mockResolvedValue(JSON.stringify({ findings: [{ file: 'x.js' }] }))
+    const result = await runQuorum(diff)
+    expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['finding-unreadable', 'research-unusable'])
+    expect(result.meta.incomplete[1]).toEqual({ reason: 'research-unusable', detail: '1 finding(s) reported, none usable' })
+    expect(mockChat).toHaveBeenCalledTimes(1)
   })
 
   it('gives voters the diff section of the cited file only', async () => {

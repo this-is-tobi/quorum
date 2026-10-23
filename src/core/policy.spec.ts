@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { confidenceFor, defaultPolicy, resolvePolicy } from './policy.ts'
+import { confidenceFor, defaultPolicy, resolvePolicy, verdictStatus } from './policy.ts'
 import type { Rule } from './policy.ts'
+import type { Verdict } from './types.ts'
 
 describe('resolvePolicy', () => {
   it.each([
@@ -63,5 +64,35 @@ describe('confidenceFor', () => {
   it('returns undefined when no enabled level is reached', () => {
     expect(confidenceFor(0, thresholds)).toBeUndefined()
     expect(confidenceFor(1, { high: 3, medium: 2, low: null })).toBeUndefined()
+  })
+})
+
+describe('verdictStatus', () => {
+  const thresholds = { high: 3, medium: 2, low: null }
+  /** A panel's ballots: true or false for a cast vote, null for one that failed. */
+  const ballots = (...outcomes: Array<boolean | null>): Pick<Verdict, 'keptVotes' | 'votes'> => ({
+    keptVotes: outcomes.filter(keep => keep === true).length,
+    votes: outcomes.map(keep => (keep === null
+      ? { angle: 'impact' as const, vote: null, error: 'endpoint down' }
+      : { angle: 'impact' as const, vote: { keep, reasoning: 'r' }, error: null })),
+  })
+
+  it('keeps a finding that reaches a level even though another vote failed', () => {
+    expect(verdictStatus(ballots(true, true, null), thresholds)).toBe('kept')
+  })
+
+  it('reports a finding unreviewed when its failed votes could have lifted it to a level', () => {
+    expect(verdictStatus(ballots(true, null, null), thresholds)).toBe('unreviewed')
+    expect(verdictStatus(ballots(true, false, null), thresholds)).toBe('unreviewed')
+    expect(verdictStatus(ballots(null, null, null), thresholds)).toBe('unreviewed')
+  })
+
+  it('discards a finding whose failed votes could not have changed the outcome', () => {
+    expect(verdictStatus(ballots(false, false, null), thresholds)).toBe('discarded')
+    expect(verdictStatus(ballots(false, false, false), thresholds)).toBe('discarded')
+  })
+
+  it('measures the failed votes against the lowest enabled level', () => {
+    expect(verdictStatus(ballots(false, false, null), { high: 3, medium: 2, low: 1 })).toBe('unreviewed')
   })
 })

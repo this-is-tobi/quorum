@@ -1,5 +1,5 @@
 import type { ConfigIssue } from './errors.ts'
-import type { Confidence, Thresholds } from './types.ts'
+import type { Confidence, Thresholds, Verdict, VerdictStatus } from './types.ts'
 
 /** How many kept votes a confidence level needs. `off` (or `false`) disables the level. */
 export type Rule = 'unanimous' | 'majority' | 'any' | 'off' | false | { minVotes: number } | { minRatio: number }
@@ -59,6 +59,18 @@ export function confidenceFor(keptVotes: number, thresholds: Thresholds): Confid
     const needed = thresholds[level]
     return needed !== null && keptVotes >= needed
   })
+}
+
+/**
+ * Where a verdict lands. A discard never rests on a failed vote (ADR-0012): the votes that failed
+ * are counted as if they had been kept, and when that would reach an enabled level the outcome was
+ * never decided, so the finding is unreviewed. Two explicit rejects next to one failed vote are a
+ * decided discard under the default policy, because one more keep would still reach no level.
+ */
+export function verdictStatus(verdict: Pick<Verdict, 'keptVotes' | 'votes'>, thresholds: Thresholds): VerdictStatus {
+  if (confidenceFor(verdict.keptVotes, thresholds) !== undefined) return 'kept'
+  const failed = verdict.votes.filter(vote => vote.vote === null).length
+  return confidenceFor(verdict.keptVotes + failed, thresholds) === undefined ? 'discarded' : 'unreviewed'
 }
 
 function resolveRule(rule: Rule, lensCount: number, path: string, issues: ConfigIssue[]): number | null {
