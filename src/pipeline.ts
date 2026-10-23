@@ -113,8 +113,8 @@ export async function panel(finding: Finding, diffContext: string, limit: Limite
  * Full pipeline: find candidates in a diff, then panel-verify each independently before reporting.
  * Each voter receives the diff section of the file its finding cites. A finding whose failed votes
  * left it undecided is `unreviewed`, a kept finding whose failed votes could have raised it is
- * recorded in `meta.incomplete`, and research gaps are there too: an incomplete review never
- * reads as a clean one (ADR-0012).
+ * recorded in `meta.incomplete`, and research gaps are there too: the gaps the harness detects
+ * never read as a clean review (ADR-0012).
  *
  * @example
  * const { kept, discarded, unreviewed, meta } = await runQuorum(diffText)
@@ -143,7 +143,8 @@ export async function runQuorum(diff: string, onProgress?: (message: string) => 
     const undecided = undecidedLevel(verdict, THRESHOLDS)
     if (undecided === undefined) continue
     const failed = verdict.votes.filter(lensVote => lensVote.vote === null).length
-    const entry: IncompleteEntry = { reason: 'vote-failed', detail: `${verdict.file}:${verdict.line} is kept at ${verdict.confidence}, but ${failed} failed vote(s) could have made it ${undecided}` }
+    // The file name is JSON-quoted: a decoded diff path can hold control characters, and this line reaches stderr.
+    const entry: IncompleteEntry = { reason: 'vote-failed', detail: `${JSON.stringify(verdict.file)}:${verdict.line} is kept at ${verdict.confidence}, but ${failed} failed vote(s) could have made it ${undecided}` }
     result.meta.incomplete.push(entry)
     log(`incomplete: ${entry.reason} (${entry.detail})`)
   }
