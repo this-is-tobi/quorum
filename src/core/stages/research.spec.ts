@@ -76,4 +76,25 @@ describe('checkReply', () => {
     expect(outcome.invalid).toHaveLength(50)
     expect(outcome.incomplete.map(entry => entry.reason)).toEqual(['findings-capped', 'research-unusable'])
   })
+
+  it('fails closed when planted text moves the rest of the reply under another key', () => {
+    const moved = '{"findings":[{"file":"a.js","line":1,"category":"CWE-78","quote":"x","summary":"style nit"}],"notes":[{"q":"","summary":"command injection"},{"file":"b.js","line":1,"category":"CWE-95","quote":"eval(input)","summary":"code injection"}]}'
+    expect(() => checkReply(moved, sections)).toThrow(OutputError)
+    expect(() => checkReply(moved, sections)).toThrow(/top-level key/)
+  })
+
+  it('reads only the first maxFindings listed entries, even when none of them is readable', () => {
+    const flood = `{"findings":[${Array.from({ length: 5_000 }).fill('1').join(',')}]}`
+    const started = performance.now()
+    const outcome = checkReply(flood, sections)
+    expect(performance.now() - started).toBeLessThan(300)
+    expect(outcome.findings).toEqual([])
+    expect(outcome.invalid).toHaveLength(50)
+    expect(outcome.incomplete).toHaveLength(52)
+    expect(outcome.incomplete.filter(entry => entry.reason === 'finding-unreadable')).toHaveLength(50)
+    expect(outcome.incomplete.slice(50)).toEqual([
+      { reason: 'findings-capped', detail: '4950 of 5000 reported findings were not reviewed (the cap is 50)' },
+      { reason: 'research-unusable', detail: '5000 finding(s) reported, none usable' },
+    ])
+  })
 })
