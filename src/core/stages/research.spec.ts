@@ -58,6 +58,12 @@ describe('checkReply', () => {
     expect(outcome.incomplete).toEqual([{ reason: 'findings-capped', detail: '1 of 51 reported findings were not reviewed (the cap is 50)' }])
   })
 
+  it('does not report a reply of exactly maxFindings findings as capped', () => {
+    const outcome = checkReply(reply(Array.from({ length: 50 }).fill(reported)), sections)
+    expect(outcome.findings).toHaveLength(50)
+    expect(outcome.incomplete).toEqual([])
+  })
+
   it('rejects a cap that is not a positive integer', () => {
     expect(() => checkReply(reply([]), sections, 0)).toThrow(RangeError)
     expect(() => checkReply(reply([]), sections, 1.5)).toThrow(RangeError)
@@ -94,7 +100,7 @@ describe('checkReply', () => {
     expect(outcome.incomplete.filter(entry => entry.reason === 'finding-unreadable')).toHaveLength(50)
     expect(outcome.incomplete.slice(50)).toEqual([
       { reason: 'findings-capped', detail: '4950 of 5000 reported findings were not reviewed (the cap is 50)' },
-      { reason: 'research-unusable', detail: '5000 finding(s) reported, none usable' },
+      { reason: 'research-unusable', detail: '5000 finding(s) reported, the first 50 read, none usable' },
     ])
   })
 })

@@ -69,6 +69,10 @@ describe('resolvePolicy', () => {
     expect(resolvePolicy(rules, 3).issues.map(issue => issue.path)).toEqual(['policy.high', 'policy.medium', 'policy.low'])
   })
 
+  it('rejects a rule that holds both minVotes and minRatio', () => {
+    expect(resolvePolicy({ high: { minVotes: 2, minRatio: 1 } as unknown as Rule, medium: 'off', low: 'off' }, 3).issues).toEqual([expect.objectContaining({ path: 'policy.high' })])
+  })
+
   it('requires at least one lens', () => {
     expect(resolvePolicy(defaultPolicy, 0)).toEqual({ thresholds: { high: null, medium: null, low: null }, issues: [{ path: 'lenses', message: 'at least one lens is required' }], warnings: [] })
   })
