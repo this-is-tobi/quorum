@@ -3,6 +3,7 @@ import { createLimiter, DEFAULT_CONCURRENCY } from './core/concurrency.ts'
 import type { Limiter } from './core/concurrency.ts'
 import { diffSectionFor, splitDiff } from './core/diff.ts'
 import { parseResearchReply, parseVoteReply } from './core/output.ts'
+import { confidenceFor, defaultPolicy, resolvePolicy } from './core/policy.ts'
 import { defaultPrompts, renderTemplate, researchRequest, voteRequest } from './core/prompts.ts'
 import type { Finding, Lens, LensVote, QuorumResult, Verdict } from './core/types.ts'
 import { verifyFindings } from './core/verify.ts'
@@ -28,6 +29,9 @@ export const LENSES: readonly Lens[] = [
     question: 'Do existing checks elsewhere already neutralize this?',
   },
 ]
+
+/** The default policy resolved for the three lenses: 3/3 → high, 2/3 → medium, low disabled. */
+const THRESHOLDS = resolvePolicy(defaultPolicy, LENSES.length).thresholds
 
 /**
  * Ask the research role to propose candidate findings in a diff, then check each against the diff.
@@ -86,9 +90,10 @@ async function vote(finding: Finding, lens: Lens, diffContext: string, limit: Li
 
 /**
  * Run the independent 3-voter panel on one finding and compute the quorum verdict. The keep/discard
- * decision and the confidence ceiling are ordinary arithmetic here, not something any voter's
- * self-reported confidence gets to override: unanimous 3/3 is a ceiling of 'high', a 2/3 split is
- * capped at 'medium' no matter how certain any one voter sounded.
+ * decision and the confidence ceiling are ordinary arithmetic here, the policy's thresholds over
+ * the kept votes, not something any voter's self-reported confidence gets to override: unanimous
+ * 3/3 is a ceiling of 'high', a 2/3 split is capped at 'medium' no matter how certain any one voter
+ * sounded.
  *
  * @example
  * const verdict = await panel(finding, diffSectionForTheFile, createLimiter(4))
@@ -97,8 +102,7 @@ async function vote(finding: Finding, lens: Lens, diffContext: string, limit: Li
 export async function panel(finding: Finding, diffContext: string, limit: Limiter): Promise<Verdict> {
   const votes = await Promise.all(LENSES.map(lens => vote(finding, lens, diffContext, limit)))
   const keptVotes = votes.filter(v => v.vote?.keep).length
-  const confidence = keptVotes === 3 ? 'high' : keptVotes === 2 ? 'medium' : undefined
-  return { ...finding, keptVotes, confidence, votes }
+  return { ...finding, keptVotes, totalVotes: votes.length, confidence: confidenceFor(keptVotes, THRESHOLDS), votes }
 }
 
 /**
