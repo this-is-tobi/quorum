@@ -173,11 +173,11 @@ describe('extractJsonObject', () => {
 
 describe('parseResearchReply', () => {
   it('returns valid findings', () => {
-    expect(parseResearchReply(JSON.stringify({ findings: [finding] }))).toEqual({ findings: [finding], invalid: [] })
+    expect(parseResearchReply(JSON.stringify({ findings: [finding] }))).toEqual({ findings: [finding], invalid: [], listed: 1 })
   })
 
   it('accepts an explicit empty list', () => {
-    expect(parseResearchReply('{"findings":[]}')).toEqual({ findings: [], invalid: [] })
+    expect(parseResearchReply('{"findings":[]}')).toEqual({ findings: [], invalid: [], listed: 0 })
   })
 
   it('fails closed when the findings array is missing', () => {
@@ -241,6 +241,19 @@ describe('parseResearchReply', () => {
     const { findings, invalid } = parseResearchReply(JSON.stringify({ findings: [{ ...finding, line: 0 }, { ...finding, file: ' ' }] }))
     expect(findings).toEqual([])
     expect(invalid).toHaveLength(2)
+  })
+
+  it('refuses a reply whose object holds a key other than findings', () => {
+    expect(() => parseResearchReply('{"findings":[],"notes":[]}')).toThrow(/top-level key/)
+    expect(() => parseResearchReply(JSON.stringify({ findings: [finding], summary: 'done' }))).toThrow(OutputError)
+  })
+
+  it('reads at most the given number of listed findings and reports how many were listed', () => {
+    expect(parseResearchReply(JSON.stringify({ findings: [finding, finding, { file: 'x' }] }), 2)).toEqual({ findings: [finding, finding], invalid: [], listed: 3 })
+    const partlyRead = parseResearchReply(JSON.stringify({ findings: [{ file: 'x' }, finding] }), 1)
+    expect(partlyRead.findings).toEqual([])
+    expect(partlyRead.invalid).toEqual([expect.stringMatching(/^findings\[0\]: /)])
+    expect(partlyRead.listed).toBe(2)
   })
 })
 

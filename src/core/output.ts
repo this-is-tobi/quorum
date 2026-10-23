@@ -66,18 +66,36 @@ export function extractJsonObject(text: string, stage: string): Record<string, u
   return first
 }
 
+/** A parsed research reply: the findings read, why the others among the ones read were dropped, and how many were listed in all. */
+export interface ResearchReply {
+  findings: FindingDetails[]
+  /** One reason per finding, among the first `limit` listed, that does not match the schema. */
+  invalid: string[]
+  /** How many findings the reply listed, read or not. */
+  listed: number
+}
+
 /**
- * Validate a research reply. A missing or non-array `findings` fails the run: a malformed reply
- * must never read as "no findings". Individual invalid findings are dropped, each with a reason.
+ * Validate a research reply. The envelope must be exactly `{ findings: [...] }`: a missing or
+ * non-array `findings` fails the run, because a malformed reply must never read as "no findings",
+ * and so does any other top-level key, because text planted in an unescaped string could close
+ * the findings array early and move the rest of the reply under a key of its own, where it would
+ * be dropped without a trace. Only the first `limit` listed findings are read, so a flooded reply
+ * costs bounded work; each of those that does not match the schema is reported with its index, and
+ * the count of listed findings lets the caller record what was not read.
  */
-export function parseResearchReply(text: string): { findings: FindingDetails[], invalid: string[] } {
+export function parseResearchReply(text: string, limit = Infinity): ResearchReply {
   const reply = extractJsonObject(text, 'research')
   if (!Array.isArray(reply.findings)) {
     throw new OutputError('research', 'reply has no "findings" array', text)
   }
+  const extraKeys = Object.keys(reply).filter(key => key !== 'findings').length
+  if (extraKeys > 0) {
+    throw new OutputError('research', `reply has ${extraKeys} top-level key(s) other than "findings"`, text)
+  }
   const findings: FindingDetails[] = []
   const invalid: string[] = []
-  reply.findings.forEach((item: unknown, index: number) => {
+  reply.findings.slice(0, limit).forEach((item: unknown, index: number) => {
     const result = FindingReplySchema.safeParse(normalizeFinding(item))
     if (!result.success) {
       invalid.push(`findings[${index}]: ${describeIssue(result.error)}`)
@@ -87,7 +105,7 @@ export function parseResearchReply(text: string): { findings: FindingDetails[], 
       findings.push(result.data)
     }
   })
-  return { findings, invalid }
+  return { findings, invalid, listed: reply.findings.length }
 }
 
 /** Validate one vote reply; unknown fields such as a self-reported confidence are dropped. */
