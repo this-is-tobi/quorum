@@ -3,11 +3,11 @@ import { createLimiter, DEFAULT_CONCURRENCY } from './core/concurrency.ts'
 import type { Limiter } from './core/concurrency.ts'
 import { diffSectionFor, splitDiff } from './core/diff.ts'
 import { parseVoteReply } from './core/output.ts'
-import { confidenceFor, defaultPolicy, resolvePolicy, verdictStatus } from './core/policy.ts'
+import { confidenceFor, defaultPolicy, resolvePolicy, undecidedLevel, verdictStatus } from './core/policy.ts'
 import { defaultPrompts, renderTemplate, researchRequest, voteRequest } from './core/prompts.ts'
 import { checkReply, DEFAULT_MAX_FINDINGS } from './core/stages/research.ts'
 import type { ResearchOutcome } from './core/stages/research.ts'
-import type { Finding, Lens, LensVote, QuorumResult, Verdict } from './core/types.ts'
+import type { Finding, IncompleteEntry, Lens, LensVote, QuorumResult, Verdict } from './core/types.ts'
 
 /**
  * The three fixed, orthogonal angles every panel vote is judged from. Three is not an arbitrary
@@ -110,8 +110,9 @@ export async function panel(finding: Finding, diffContext: string, limit: Limite
 /**
  * Full pipeline: find candidates in a diff, then panel-verify each independently before reporting.
  * Each voter receives the diff section of the file its finding cites. A finding whose failed votes
- * left it undecided is `unreviewed`, and research gaps are in `meta.incomplete`: an incomplete
- * review never reads as a clean one (ADR-0012).
+ * left it undecided is `unreviewed`, a kept finding whose failed votes could have raised it is
+ * recorded in `meta.incomplete`, and research gaps are there too: an incomplete review never
+ * reads as a clean one (ADR-0012).
  *
  * @example
  * const { kept, discarded, unreviewed, meta } = await runQuorum(diffText)
@@ -136,6 +137,14 @@ export async function runQuorum(diff: string, onProgress?: (message: string) => 
 
   const verdicts = await Promise.all(candidates.map(finding => panel(finding, diffSectionFor(sections, finding.file, diff), limit)))
   for (const verdict of verdicts) result[verdictStatus(verdict, THRESHOLDS)].push(verdict)
+  for (const verdict of result.kept) {
+    const undecided = undecidedLevel(verdict, THRESHOLDS)
+    if (undecided === undefined) continue
+    const failed = verdict.votes.filter(lensVote => lensVote.vote === null).length
+    const entry: IncompleteEntry = { reason: 'vote-failed', detail: `${verdict.file}:${verdict.line} is kept at ${verdict.confidence}, but ${failed} failed vote(s) could have made it ${undecided}` }
+    result.meta.incomplete.push(entry)
+    log(`incomplete: ${entry.reason} (${entry.detail})`)
+  }
   log(`${result.kept.length} kept, ${result.discarded.length} discarded, ${result.unreviewed.length} unreviewed by panel`)
 
   return result

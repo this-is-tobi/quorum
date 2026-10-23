@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { confidenceFor, defaultPolicy, resolvePolicy, verdictStatus } from './policy.ts'
+import { confidenceFor, defaultPolicy, resolvePolicy, undecidedLevel, verdictStatus } from './policy.ts'
 import type { PolicyRules, Rule } from './policy.ts'
 import type { Verdict } from './types.ts'
+
+/** A panel's ballots: true or false for a cast vote, null for one that failed. */
+function ballots(...outcomes: Array<boolean | null>): Pick<Verdict, 'keptVotes' | 'votes'> {
+  return {
+    keptVotes: outcomes.filter(keep => keep === true).length,
+    votes: outcomes.map(keep => (keep === null
+      ? { angle: 'impact' as const, vote: null, error: 'endpoint down' }
+      : { angle: 'impact' as const, vote: { keep, reasoning: 'r' }, error: null })),
+  }
+}
 
 describe('resolvePolicy', () => {
   it.each([
@@ -86,13 +96,6 @@ describe('confidenceFor', () => {
 
 describe('verdictStatus', () => {
   const thresholds = { high: 3, medium: 2, low: null }
-  /** A panel's ballots: true or false for a cast vote, null for one that failed. */
-  const ballots = (...outcomes: Array<boolean | null>): Pick<Verdict, 'keptVotes' | 'votes'> => ({
-    keptVotes: outcomes.filter(keep => keep === true).length,
-    votes: outcomes.map(keep => (keep === null
-      ? { angle: 'impact' as const, vote: null, error: 'endpoint down' }
-      : { angle: 'impact' as const, vote: { keep, reasoning: 'r' }, error: null })),
-  })
 
   it('keeps a finding that reaches a level even though another vote failed', () => {
     expect(verdictStatus(ballots(true, true, null), thresholds)).toBe('kept')
@@ -111,5 +114,20 @@ describe('verdictStatus', () => {
 
   it('measures the failed votes against the lowest enabled level', () => {
     expect(verdictStatus(ballots(false, false, null), { high: 3, medium: 2, low: 1 })).toBe('unreviewed')
+  })
+})
+
+describe('undecidedLevel', () => {
+  const thresholds = { high: 3, medium: 2, low: null }
+
+  it('names the level a failed vote could still have reached above the earned one', () => {
+    expect(undecidedLevel({ ...ballots(true, true, null), confidence: 'medium' }, thresholds)).toBe('high')
+    expect(undecidedLevel({ ...ballots(true, null, null), confidence: 'low' }, { high: 3, medium: 2, low: 1 })).toBe('high')
+  })
+
+  it('returns undefined when every vote was cast or the failed votes could not change the level', () => {
+    expect(undecidedLevel({ ...ballots(true, true, true), confidence: 'high' }, thresholds)).toBeUndefined()
+    expect(undecidedLevel({ ...ballots(true, true, false), confidence: 'medium' }, thresholds)).toBeUndefined()
+    expect(undecidedLevel({ ...ballots(true, true, null), confidence: 'medium' }, { high: null, medium: 2, low: null })).toBeUndefined()
   })
 })

@@ -78,6 +78,19 @@ export function verdictStatus(verdict: Pick<Verdict, 'keptVotes' | 'votes'>, thr
 }
 
 /**
+ * The higher level a kept verdict's failed votes leave undecided: the level its kept plus failed
+ * votes would reach, when that is above the level it earned; undefined when the failed votes could
+ * not have changed it. Such a verdict stays kept at its earned confidence, but the review is
+ * incomplete (ADR-0012), because the gate between two levels rested on a vote never cast.
+ */
+export function undecidedLevel(verdict: Pick<Verdict, 'keptVotes' | 'votes' | 'confidence'>, thresholds: Thresholds): Confidence | undefined {
+  const failed = verdict.votes.filter(vote => vote.vote === null).length
+  if (failed === 0) return undefined
+  const reachable = confidenceFor(verdict.keptVotes + failed, thresholds)
+  return reachable !== undefined && reachable !== verdict.confidence ? reachable : undefined
+}
+
+/**
  * Resolve one rule. `rule` is typed `unknown` on purpose: a value outside the `Rule` type (what
  * untyped configuration could hand over) is reported as an issue at `path`, never thrown, and no
  * rule resolves below one vote, so no level can be granted to a finding with zero kept votes.
