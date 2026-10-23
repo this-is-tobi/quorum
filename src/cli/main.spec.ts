@@ -21,6 +21,9 @@ afterEach(() => {
 })
 
 const DIFF = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-safe()\n+exec(cmd)\n'
+/** Two added lines, so two findings can be cited. */
+const TWO_LINE_DIFF = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1,2 @@\n-safe()\n+exec(cmd)\n+eval(x)\n'
+const SECOND_FINDING = { file: 'a.js', line: 2, category: 'CWE-95', quote: 'eval(x)', summary: 'code injection' }
 const FINDING = { file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }
 const vote = (keep: boolean): string => JSON.stringify({ keep, reasoning: 'r' })
 
@@ -108,5 +111,59 @@ describe('runCli', () => {
     stubModel(JSON.stringify({ findings: [FINDING] }), vote(false), vote(false), vote(true))
     const { io } = harness({ stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
+  })
+
+  it('exits 4 when every voter fails, instead of reading the outage as a clean review', async () => {
+    process.env.RESEARCH_MODEL = 'm'
+    stubModel(JSON.stringify({ findings: [FINDING] })).mockRejectedValue(new TypeError('fetch failed'))
+    const { io, stdout, stderr } = harness({ stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    const result = JSON.parse(stdout())
+    expect(result.kept).toEqual([])
+    expect(result.discarded).toEqual([])
+    expect(result.unreviewed).toHaveLength(1)
+    expect(stderr()).toContain('1 unreviewed')
+  })
+
+  it('exits 4 when the research reply lists only unusable findings', async () => {
+    process.env.RESEARCH_MODEL = 'm'
+    const fetchMock = stubModel(JSON.stringify({ findings: [{ file: 'x.js' }] }))
+    const { io, stdout, stderr } = harness({ stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    const reasons = JSON.parse(stdout()).meta.incomplete.map((entry: { reason: string }) => entry.reason)
+    expect(reasons).toEqual(['finding-unreadable', 'research-unusable'])
+    expect(stderr()).toContain('research-unusable')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('exits 4 when one finding is unreadable, even though another is kept', async () => {
+    process.env.RESEARCH_MODEL = 'm'
+    stubModel(JSON.stringify({ findings: [FINDING, { file: 'a.js' }] }), vote(true), vote(true), vote(false))
+    const { io, stdout, stderr } = harness({ stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    const result = JSON.parse(stdout())
+    expect(result.kept).toHaveLength(1)
+    expect(result.meta.incomplete).toEqual([{ reason: 'finding-unreadable', detail: expect.stringMatching(/^findings\[1\]: /) }])
+    expect(stderr()).toContain('finding-unreadable')
+  })
+
+  it('exits 1 when a high finding is kept, even if another finding is unreviewed', async () => {
+    process.env.RESEARCH_MODEL = 'm'
+    stubModel(JSON.stringify({ findings: [FINDING, SECOND_FINDING] }), vote(true), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
+    const { io, stdout } = harness({ stdin: TWO_LINE_DIFF })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    const result = JSON.parse(stdout())
+    expect(result.kept).toHaveLength(1)
+    expect(result.unreviewed).toHaveLength(1)
+  })
+
+  it('exits 0 when a failed vote could not have changed a discard', async () => {
+    process.env.RESEARCH_MODEL = 'm'
+    stubModel(JSON.stringify({ findings: [FINDING] }), vote(false), vote(false)).mockRejectedValue(new TypeError('fetch failed'))
+    const { io, stdout } = harness({ stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const result = JSON.parse(stdout())
+    expect(result.discarded).toHaveLength(1)
+    expect(result.unreviewed).toEqual([])
   })
 })
