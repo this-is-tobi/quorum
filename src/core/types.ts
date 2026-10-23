@@ -86,10 +86,32 @@ export interface Verdict extends Finding {
   votes: LensVote[]
 }
 
+/**
+ * Where a verdict lands: kept at some confidence, discarded, or unreviewed because its failed votes
+ * left it undecided (ADR-0012).
+ */
+export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
+
+/**
+ * Work the run could not review: a research reply with findings but none usable, findings beyond
+ * the cap, or a finding the harness could not read. It is reported and counted, never dropped
+ * silently (ADR-0012).
+ */
+export interface IncompleteEntry {
+  reason: 'research-unusable' | 'findings-capped' | 'finding-unreadable'
+  detail: string
+}
+
 /** Final pipeline output. */
 export interface QuorumResult {
   kept: Verdict[]
   discarded: Verdict[]
+  /** Findings a failed vote left undecided: neither kept nor cleared. */
+  unreviewed: Verdict[]
+  meta: {
+    /** Gaps that are not findings. An entry here, or an unreviewed finding, makes the review incomplete. */
+    incomplete: IncompleteEntry[]
+  }
 }
 
 /** A finding exactly as the finder reports it: the wire shape validated by core/output.ts. */

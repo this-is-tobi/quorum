@@ -2,11 +2,12 @@ import { chat } from './client.ts'
 import { createLimiter, DEFAULT_CONCURRENCY } from './core/concurrency.ts'
 import type { Limiter } from './core/concurrency.ts'
 import { diffSectionFor, splitDiff } from './core/diff.ts'
-import { parseResearchReply, parseVoteReply } from './core/output.ts'
-import { confidenceFor, defaultPolicy, resolvePolicy } from './core/policy.ts'
+import { parseVoteReply } from './core/output.ts'
+import { confidenceFor, defaultPolicy, resolvePolicy, verdictStatus } from './core/policy.ts'
 import { defaultPrompts, renderTemplate, researchRequest, voteRequest } from './core/prompts.ts'
+import { checkReply, DEFAULT_MAX_FINDINGS } from './core/stages/research.ts'
+import type { ResearchOutcome } from './core/stages/research.ts'
 import type { Finding, Lens, LensVote, QuorumResult, Verdict } from './core/types.ts'
-import { verifyFindings } from './core/verify.ts'
 
 /**
  * The three fixed, orthogonal angles every panel vote is judged from. Three is not an arbitrary
@@ -35,21 +36,22 @@ const THRESHOLDS = resolvePolicy(defaultPolicy, LENSES.length).thresholds
 
 /**
  * Ask the research role to propose candidate findings in a diff, then check each against the diff.
- * The reply is validated: one without a `findings` array fails the run (fail closed), and findings
- * that are malformed, or cite a file or line the diff does not contain, are dropped with a reason.
+ * The reply is validated: one without a `findings` array fails the run (fail closed), findings that
+ * are malformed, or cite a file or line the diff does not contain, are dropped with a reason, only
+ * the first `maxFindings` are read, and a reply with no usable finding is recorded as incomplete.
  * What survives carries evidence read from the diff, never the finder's quote.
  *
  * @example
- * const { findings, invalid } = await research(diffText, createLimiter(4))
+ * const { findings, invalid, incomplete } = await research(diffText, createLimiter(4))
  */
 export async function research(
   diff: string,
   limit: Limiter,
   sections: ReadonlyMap<string, string> = splitDiff(diff),
-): Promise<{ findings: Finding[], invalid: string[] }> {
-  const parsed = parseResearchReply(await limit(() => chat('RESEARCH', researchRequest(defaultPrompts.research, diff))))
-  const checked = verifyFindings(parsed.findings, sections)
-  return { findings: checked.findings, invalid: [...parsed.invalid, ...checked.invalid] }
+  maxFindings: number = DEFAULT_MAX_FINDINGS,
+): Promise<ResearchOutcome> {
+  const reply = await limit(() => chat('RESEARCH', researchRequest(defaultPrompts.research, diff)))
+  return checkReply(reply, sections, maxFindings)
 }
 
 /**
@@ -107,30 +109,34 @@ export async function panel(finding: Finding, diffContext: string, limit: Limite
 
 /**
  * Full pipeline: find candidates in a diff, then panel-verify each independently before reporting.
- * Each voter receives the diff section of the file its finding cites.
+ * Each voter receives the diff section of the file its finding cites. A finding whose failed votes
+ * left it undecided is `unreviewed`, and research gaps are in `meta.incomplete`: an incomplete
+ * review never reads as a clean one (ADR-0012).
  *
  * @example
- * const { kept, discarded } = await runQuorum(diffText)
- * console.log(`${kept.length} kept, ${discarded.length} discarded by panel`)
+ * const { kept, discarded, unreviewed, meta } = await runQuorum(diffText)
+ * console.log(`${kept.length} kept, ${discarded.length} discarded, ${unreviewed.length} unreviewed`)
  */
 export async function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult> {
   const log = onProgress ?? (() => {})
+  const result: QuorumResult = { kept: [], discarded: [], unreviewed: [], meta: { incomplete: [] } }
   if (diff.trim() === '') {
     log('empty diff: nothing to review')
-    return { kept: [], discarded: [] }
+    return result
   }
   const limit = createLimiter(DEFAULT_CONCURRENCY)
 
   const sections = splitDiff(diff)
-  const { findings, invalid } = await research(diff, limit, sections)
+  const { findings, invalid, incomplete } = await research(diff, limit, sections)
   if (invalid.length > 0) log(`${invalid.length} invalid finding(s) dropped`)
+  for (const entry of incomplete) log(`incomplete: ${entry.reason} (${entry.detail})`)
+  result.meta.incomplete = incomplete
   const candidates = dedup(findings)
   log(`${candidates.length} candidate(s) after dedup`)
 
   const verdicts = await Promise.all(candidates.map(finding => panel(finding, diffSectionFor(sections, finding.file, diff), limit)))
-  const kept = verdicts.filter(v => v.confidence)
-  const discarded = verdicts.filter(v => !v.confidence)
-  log(`${kept.length} kept, ${discarded.length} discarded by panel`)
+  for (const verdict of verdicts) result[verdictStatus(verdict, THRESHOLDS)].push(verdict)
+  log(`${result.kept.length} kept, ${result.discarded.length} discarded, ${result.unreviewed.length} unreviewed by panel`)
 
-  return { kept, discarded }
+  return result
 }
