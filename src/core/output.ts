@@ -26,19 +26,30 @@ export const voteReplyJsonSchema = toWireSchema(VoteReplySchema)
 const MAX_REPLY_CHARS = 1_000_000
 const MAX_BRACE_GROUPS = 100
 const DIGITS = /^\d+$/
+/** The scans below read character codes: on Bun's engine, indexing a string of non-Latin-1 text allocates a string per character. */
+const QUOTE = 0x22
+const COMMA = 0x2C
+const OPEN_BRACKET = 0x5B
+const BACKSLASH = 0x5C
+const CLOSE_BRACKET = 0x5D
+const OPEN_BRACE = 0x7B
+const CLOSE_BRACE = 0x7D
 
 /**
  * Pull the one JSON object out of a model reply. Models wrap JSON in prose, code fences or
  * reasoning blocks despite instructions, so this drops reasoning, ignores fence markers and scans
  * for balanced, parseable objects. It fails closed instead of guessing: a reply holding several
- * different objects is ambiguous (text echoed from the diff could pose as the answer), and a reply
- * too large or too noisy to scan cheaply is refused. The same object twice (a fenced copy next to
- * a prose copy) is accepted. A group that is balanced but not JSON is skipped whole, except a bare
- * wrapper (`{{...}}`), so an object quoted inside it (a summary that quotes the diff with unescaped
- * quotes) is not read as the answer. A brace that never closes is only stepped over, as prose often
- * holds a stray one.
+ * different objects is ambiguous (text echoed from the diff could pose as the answer); a group that
+ * opens like a JSON object (`{`, then `"` or the end of the reply) but never closes or does not
+ * parse means the reply is cut off or malformed (and an object quoted inside it, or echoed next to
+ * it, could be planted); an object that repeats a key is refused, because `JSON.parse` keeps the
+ * last value and text planted in an unescaped string could close that string early and supply it;
+ * and a reply too large or too noisy to scan cheaply is refused. The same object twice (a fenced
+ * copy next to a prose copy) is accepted. A group that opens like prose (`{` followed by anything
+ * else) is skipped whole when it is balanced, except a bare wrapper (`{{...}}`), and only stepped
+ * over when it never closes, as prose often holds a stray brace.
  *
- * @throws OutputError when the reply has no object, several different objects, or cannot be scanned safely
+ * @throws OutputError when the reply has no object, several different objects, a broken object, a repeated key, or cannot be scanned safely
  */
 export function extractJsonObject(text: string, stage: string): Record<string, unknown> {
   if (text.length > MAX_REPLY_CHARS) {
@@ -114,9 +125,19 @@ function withoutReasoning(text: string): { visible: string, truncatedAt: number 
  * Every balanced, parseable JSON object that is not nested in another one, in order, among the
  * groups that open before `truncatedAt` (see `withoutReasoning`; -1 for no limit), so the draft
  * after a reasoning block that never closes is neither parsed nor counted toward the group cap.
+ *
+ * @throws OutputError when a group that opens like a JSON object never closes or does not parse, or an object repeats a key
  */
 function topLevelObjects(text: string, truncatedAt: number, stage: string, reply: string): Array<Record<string, unknown>> {
   const found: Array<Record<string, unknown>> = []
+  // Sticky, so the check reads only what follows the brace: characters a reader cannot see (the
+  // classes `verify.ts` strips from finder text), then a quote or the end of the reply. Linear
+  // over the reply.
+  const objectOpener = /\{[\s\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}]*(?:"|$)/uy
+  const opensLikeObject = (start: number): boolean => {
+    objectOpener.lastIndex = start
+    return objectOpener.test(text)
+  }
   let groups = 0
   for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
     if (truncatedAt !== -1 && start >= truncatedAt) break
@@ -124,18 +145,25 @@ function topLevelObjects(text: string, truncatedAt: number, stage: string, reply
       throw new OutputError(stage, `reply has too many brace groups to scan safely (more than ${MAX_BRACE_GROUPS})`, reply)
     }
     const end = closingBrace(text, start)
-    if (end === -1) continue
-    try {
-      const value: unknown = JSON.parse(text.slice(start, end + 1))
-      if (isRecord(value)) {
-        found.push(value)
-        start = end
-      }
-    } catch {
-      // Not JSON. Look inside a bare wrapper (`{{...}}`) only: an object that follows other text
-      // inside a broken group (a string quoting the diff) could be planted, so the group is skipped.
-      if (!text.slice(start + 1, end).trimStart().startsWith('{')) start = end
+    if (end === -1) {
+      if (opensLikeObject(start)) throw new OutputError(stage, 'reply contains a group that opens like a JSON object but never closes (the reply may be cut off)', reply)
+      continue
     }
+    const json = text.slice(start, end + 1)
+    let value: unknown
+    try {
+      value = JSON.parse(json)
+    } catch {
+      if (opensLikeObject(start)) throw new OutputError(stage, 'reply contains a group that opens like a JSON object but does not parse', reply)
+      // Prose, not JSON. Look inside a bare wrapper (`{{...}}`) only: an object that follows other
+      // text inside a broken group could be planted, so the group is skipped whole.
+      if (!text.slice(start + 1, end).trimStart().startsWith('{')) start = end
+      continue
+    }
+    if (!isRecord(value)) continue
+    if (repeatsKey(json)) throw new OutputError(stage, 'reply contains a JSON object that repeats a key', reply)
+    found.push(value)
+    start = end
   }
   return found
 }
@@ -146,25 +174,61 @@ function closingBrace(text: string, start: number): number {
   let inString = false
   let escaped = false
   for (let index = start; index < text.length; index++) {
-    const char = text[index]
+    const code = text.charCodeAt(index)
     if (inString) {
       if (escaped) {
         escaped = false
-      } else if (char === '\\') {
+      } else if (code === BACKSLASH) {
         escaped = true
-      } else if (char === '"') {
+      } else if (code === QUOTE) {
         inString = false
       }
-    } else if (char === '"') {
+    } else if (code === QUOTE) {
       inString = true
-    } else if (char === '{') {
+    } else if (code === OPEN_BRACE) {
       depth++
-    } else if (char === '}') {
+    } else if (code === CLOSE_BRACE) {
       depth--
       if (depth === 0) return index
     }
   }
   return -1
+}
+
+/**
+ * Whether valid JSON text repeats a key inside one of its objects. `JSON.parse` keeps the last of
+ * two values for a key, so text planted in a string the model did not escape could close that
+ * string early and supply a second `findings` or `keep` that overrides the real one. One pass over
+ * text that `JSON.parse` already accepted, so every string closes and every bracket is matched.
+ */
+function repeatsKey(json: string): boolean {
+  // One entry per open bracket: the keys seen so far in an object, or undefined inside an array.
+  const open: Array<Set<string> | undefined> = []
+  let expectKey = false
+  for (let index = 0; index < json.length; index++) {
+    const code = json.charCodeAt(index)
+    if (code === QUOTE) {
+      let close = index + 1
+      while (close < json.length && json.charCodeAt(close) !== QUOTE) close += json.charCodeAt(close) === BACKSLASH ? 2 : 1
+      const keys = open.at(-1)
+      if (expectKey && keys) {
+        const key = String(JSON.parse(json.slice(index, close + 1)))
+        if (keys.has(key)) return true
+        keys.add(key)
+      }
+      expectKey = false
+      index = close
+    } else if (code === OPEN_BRACE || code === OPEN_BRACKET) {
+      open.push(code === OPEN_BRACE ? new Set() : undefined)
+      expectKey = code === OPEN_BRACE
+    } else if (code === CLOSE_BRACE || code === CLOSE_BRACKET) {
+      open.pop()
+      expectKey = false
+    } else if (code === COMMA) {
+      expectKey = open.at(-1) !== undefined
+    }
+  }
+  return false
 }
 
 /** Local models often quote numbers: accept "42" for line, reject anything else non-numeric. */
