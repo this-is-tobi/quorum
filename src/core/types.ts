@@ -81,6 +81,7 @@ export interface Thresholds {
  */
 export interface Verdict extends Finding {
   keptVotes: number
+  /** The number of votes asked for, failed votes included. */
   totalVotes: number
   confidence?: Confidence
   votes: LensVote[]

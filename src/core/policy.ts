@@ -30,6 +30,10 @@ export function resolvePolicy(rules: PolicyRules, lensCount: number): ResolvedPo
   const issues: ConfigIssue[] = []
   const warnings: string[] = []
   const thresholds: Thresholds = { high: null, medium: null, low: null }
+  if (!Number.isInteger(lensCount) || lensCount < 1) {
+    issues.push({ path: 'lenses', message: 'at least one lens is required' })
+    return { thresholds, issues, warnings }
+  }
   for (const level of LEVELS) {
     thresholds[level] = resolveRule(rules[level], lensCount, `policy.${level}`, issues)
   }
@@ -73,17 +77,30 @@ export function verdictStatus(verdict: Pick<Verdict, 'keptVotes' | 'votes'>, thr
   return confidenceFor(verdict.keptVotes + failed, thresholds) === undefined ? 'discarded' : 'unreviewed'
 }
 
-function resolveRule(rule: Rule, lensCount: number, path: string, issues: ConfigIssue[]): number | null {
+/**
+ * Resolve one rule. `rule` is typed `unknown` on purpose: a value outside the `Rule` type (what
+ * untyped configuration could hand over) is reported as an issue at `path`, never thrown, and no
+ * rule resolves below one vote, so no level can be granted to a finding with zero kept votes.
+ */
+function resolveRule(rule: unknown, lensCount: number, path: string, issues: ConfigIssue[]): number | null {
   if (rule === 'off' || rule === false) return null
   if (rule === 'unanimous') return lensCount
   if (rule === 'majority') return Math.floor(lensCount / 2) + 1
   if (rule === 'any') return 1
-  if ('minVotes' in rule) {
-    if (Number.isInteger(rule.minVotes) && rule.minVotes >= 1 && rule.minVotes <= lensCount) return rule.minVotes
-    issues.push({ path, message: `minVotes must be an integer between 1 and ${lensCount}` })
-    return null
+  if (typeof rule === 'object' && rule !== null) {
+    if ('minVotes' in rule) {
+      const { minVotes } = rule
+      if (typeof minVotes === 'number' && Number.isInteger(minVotes) && minVotes >= 1 && minVotes <= lensCount) return minVotes
+      issues.push({ path, message: `minVotes must be an integer between 1 and ${lensCount}` })
+      return null
+    }
+    if ('minRatio' in rule) {
+      const { minRatio } = rule
+      if (typeof minRatio === 'number' && minRatio > 0 && minRatio <= 1) return Math.max(1, Math.ceil(minRatio * lensCount - 1e-9))
+      issues.push({ path, message: 'minRatio must be a number greater than 0 and at most 1' })
+      return null
+    }
   }
-  if (rule.minRatio > 0 && rule.minRatio <= 1) return Math.ceil(rule.minRatio * lensCount - 1e-9)
-  issues.push({ path, message: 'minRatio must be greater than 0 and at most 1' })
+  issues.push({ path, message: 'expected unanimous, majority, any, off, { minVotes } or { minRatio }' })
   return null
 }
