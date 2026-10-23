@@ -172,6 +172,19 @@ describe('runQuorum', () => {
     expect(result.unreviewed).toEqual([])
   })
 
+  it('records a kept finding whose failed vote could have raised it to high as incomplete', async () => {
+    mockChat
+      .mockResolvedValueOnce(JSON.stringify({ findings: [reported] }))
+      .mockResolvedValueOnce(vote(true))
+      .mockResolvedValueOnce(vote(true))
+      .mockRejectedValue(new Error('endpoint down'))
+    const result = await runQuorum(diff)
+    expect(result.kept).toHaveLength(1)
+    expect(result.kept[0]).toMatchObject({ keptVotes: 2, totalVotes: 3, confidence: 'medium' })
+    expect(result.unreviewed).toEqual([])
+    expect(result.meta.incomplete).toEqual([{ reason: 'vote-failed', detail: 'a.js:1 is kept at medium, but 1 failed vote(s) could have made it high' }])
+  })
+
   it('carries an unusable research reply into meta.incomplete without voting', async () => {
     mockChat.mockResolvedValue(JSON.stringify({ findings: [{ file: 'x.js' }] }))
     const result = await runQuorum(diff)
@@ -206,6 +219,7 @@ describe('runQuorum', () => {
     mockChat.mockResolvedValueOnce(JSON.stringify({ findings: [cited] })).mockResolvedValue(vote(true))
     const result = await runQuorum(decoy)
     expect(result.kept[0]).toMatchObject({ file: '\uFEFFsrc/auth.js', evidence: '-a()\n+benign()' })
+    expect(result.meta.incomplete).toEqual([])
     expect(mockChat).toHaveBeenCalledTimes(4)
     for (const [, request] of mockChat.mock.calls.slice(1)) {
       expect(request.messages[0].content).toContain('+benign()')

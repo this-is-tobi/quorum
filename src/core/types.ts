@@ -95,11 +95,11 @@ export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
 
 /**
  * Work the run could not review: a research reply with findings but none usable, findings beyond
- * the cap, or a finding the harness could not read. It is reported and counted, never dropped
- * silently (ADR-0012).
+ * the cap, a finding the harness could not read, or a kept finding whose failed votes could have
+ * raised it to a higher level. It is reported and counted, never dropped silently (ADR-0012).
  */
 export interface IncompleteEntry {
-  reason: 'research-unusable' | 'findings-capped' | 'finding-unreadable'
+  reason: 'research-unusable' | 'findings-capped' | 'finding-unreadable' | 'vote-failed'
   detail: string
 }
 

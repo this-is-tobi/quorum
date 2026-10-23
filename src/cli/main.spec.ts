@@ -166,4 +166,16 @@ describe('runCli', () => {
     expect(result.discarded).toHaveLength(1)
     expect(result.unreviewed).toEqual([])
   })
+
+  it('exits 4 when a kept medium finding has a failed vote that could have made it high', async () => {
+    process.env.RESEARCH_MODEL = 'm'
+    stubModel(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
+    const { io, stdout, stderr } = harness({ stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    const result = JSON.parse(stdout())
+    expect(result.kept).toHaveLength(1)
+    expect(result.kept[0].confidence).toBe('medium')
+    expect(result.meta.incomplete).toEqual([{ reason: 'vote-failed', detail: expect.stringMatching(/^a\.js:1 is kept at medium/) }])
+    expect(stderr()).toContain('vote-failed')
+  })
 })
