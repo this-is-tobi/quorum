@@ -64,14 +64,25 @@ export interface LensVote {
   error: string | null
 }
 
+/** A confidence level a kept finding reaches; 'low' only when the policy enables it. */
+export type Confidence = 'high' | 'medium' | 'low'
+
+/** The kept votes each level needs once the policy is resolved for a lens count; null for a disabled level. */
+export interface Thresholds {
+  high: number | null
+  medium: number | null
+  low: number | null
+}
+
 /**
- * A finding after the panel has voted on it. `confidence` is derived from
- * the vote split, never self-reported by a model: 3/3 -> 'high', 2/3 ->
- * 'medium', anything else -> discarded (confidence undefined).
+ * A finding after the panel has voted on it. `confidence` is the highest level whose threshold the
+ * kept votes reach, computed by the policy and never self-reported by a model: with the default
+ * policy and three lenses, 3/3 -> 'high', 2/3 -> 'medium', anything else -> no confidence.
  */
 export interface Verdict extends Finding {
   keptVotes: number
-  confidence?: 'high' | 'medium'
+  totalVotes: number
+  confidence?: Confidence
   votes: LensVote[]
 }
 

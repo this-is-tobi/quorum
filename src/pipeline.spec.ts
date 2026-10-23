@@ -91,10 +91,11 @@ describe('dedup', () => {
 })
 
 describe('panel', () => {
-  it('grants high confidence on a unanimous 3/3 keep', async () => {
+  it('grants high confidence on a unanimous 3/3 keep and reports the vote count', async () => {
     mockChat.mockResolvedValue(vote(true, 'convinced'))
     const verdict = await panel(finding, '+exec(cmd)', limit)
     expect(verdict.keptVotes).toBe(3)
+    expect(verdict.totalVotes).toBe(3)
     expect(verdict.confidence).toBe('high')
   })
 
@@ -105,6 +106,7 @@ describe('panel', () => {
       .mockResolvedValueOnce(vote(false, 'c'))
     const verdict = await panel(finding, '+exec(cmd)', limit)
     expect(verdict.keptVotes).toBe(2)
+    expect(verdict.totalVotes).toBe(3)
     expect(verdict.confidence).toBe('medium')
   })
 
