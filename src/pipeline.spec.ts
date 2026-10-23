@@ -125,6 +125,7 @@ describe('panel', () => {
       .mockRejectedValueOnce(new Error('endpoint down'))
     const verdict = await panel(finding, '+exec(cmd)', limit)
     expect(verdict.keptVotes).toBe(2)
+    expect(verdict.totalVotes).toBe(3)
     expect(verdict.confidence).toBe('medium')
     expect(verdict.votes[2]).toMatchObject({ angle: 'defenses', vote: null, error: 'endpoint down' })
   })

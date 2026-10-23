@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { confidenceFor, defaultPolicy, resolvePolicy, verdictStatus } from './policy.ts'
-import type { Rule } from './policy.ts'
+import type { PolicyRules, Rule } from './policy.ts'
 import type { Verdict } from './types.ts'
 
 describe('resolvePolicy', () => {
@@ -18,6 +18,8 @@ describe('resolvePolicy', () => {
     [{ minRatio: 0.66 }, 3, 2],
     [{ minRatio: 0.5 }, 4, 2],
     [{ minRatio: 1 }, 5, 5],
+    [{ minRatio: 1e-10 }, 3, 1],
+    [{ minRatio: 0.07 }, 100, 7],
   ] as Array<[Rule, number, number]>)('resolves %j with %i lens(es) to %i vote(s)', (rule, lenses, votes) => {
     expect(resolvePolicy({ high: rule, medium: 'off', low: 'off' }, lenses).thresholds.high).toBe(votes)
   })
@@ -40,6 +42,7 @@ describe('resolvePolicy', () => {
   it('rejects out-of-range rules', () => {
     const resolved = resolvePolicy({ high: { minVotes: 4 }, medium: { minRatio: 0 }, low: 'off' }, 3)
     expect(resolved.issues.map(issue => issue.path)).toEqual(['policy.high', 'policy.medium'])
+    expect(resolvePolicy({ high: { minVotes: 1.5 }, medium: { minRatio: 1.01 }, low: { minVotes: 0 } }, 3).issues.map(issue => issue.path)).toEqual(['policy.high', 'policy.medium', 'policy.low'])
   })
 
   it('rejects a lower level that needs more votes than a higher one', () => {
@@ -49,6 +52,20 @@ describe('resolvePolicy', () => {
 
   it('requires at least one enabled level', () => {
     expect(resolvePolicy({ high: 'off', medium: false, low: 'off' }, 3).issues).toEqual([expect.objectContaining({ path: 'policy' })])
+  })
+
+  it('reports a rule outside the type as an issue instead of throwing', () => {
+    const rules = { high: 'unanimus', medium: null, low: { minRatio: '0.5' } } as unknown as PolicyRules
+    expect(resolvePolicy(rules, 3).issues.map(issue => issue.path)).toEqual(['policy.high', 'policy.medium', 'policy.low'])
+  })
+
+  it('requires at least one lens', () => {
+    expect(resolvePolicy(defaultPolicy, 0)).toEqual({ thresholds: { high: null, medium: null, low: null }, issues: [{ path: 'lenses', message: 'at least one lens is required' }], warnings: [] })
+  })
+
+  it('checks the order across every enabled level', () => {
+    expect(resolvePolicy({ high: 'any', medium: 'off', low: { minVotes: 2 } }, 3).issues).toEqual([expect.objectContaining({ path: 'policy.low' })])
+    expect(resolvePolicy({ high: 'unanimous', medium: { minVotes: 2 }, low: 'unanimous' }, 3).issues).toEqual([expect.objectContaining({ path: 'policy.low' })])
   })
 })
 
