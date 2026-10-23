@@ -17,11 +17,12 @@ export interface ResearchOutcome {
  * Turn a research reply into what the panel receives. The reply is parsed strictly (a malformed
  * envelope, or one with a key other than `findings`, throws, so it never reads as "no findings"),
  * only the first `maxFindings` findings it lists are read and checked against the diff (the work
- * spent on a reply built to flood the run stays bounded, whatever the entries hold), and nothing is
- * dropped silently: a finding that does not match the reply schema (what planted text that closes
- * a string early leaves behind), findings beyond the cap, and a reply whose findings were all
- * unusable, are recorded as incomplete, which fails the run (ADR-0012). A finding that cites code
- * outside the diff is only dropped with its reason: it was read, and it is wrong.
+ * spent on a reply built to flood the run stays bounded, whatever the entries hold), and nothing
+ * the harness read is dropped silently: a finding that does not match the reply schema (what
+ * planted text that closes a string early leaves behind), findings beyond the cap, and a reply
+ * whose findings were all unusable, are recorded as incomplete, which fails the run (ADR-0012).
+ * A finding that cites code outside the diff is only dropped with its reason: it was read, and
+ * it is wrong.
  *
  * @throws OutputError when the reply is not one JSON object holding a `findings` array and nothing else
  * @throws RangeError when `maxFindings` is not a positive integer
@@ -40,7 +41,9 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
     })
   }
   if (parsed.listed > 0 && checked.findings.length === 0) {
-    incomplete.push({ reason: 'research-unusable', detail: `${parsed.listed} finding(s) reported, none usable` })
+    const reported = `${parsed.listed} finding(s) reported`
+    const detail = parsed.listed > maxFindings ? `${reported}, the first ${maxFindings} read, none usable` : `${reported}, none usable`
+    incomplete.push({ reason: 'research-unusable', detail })
   }
   return { findings: checked.findings, invalid: [...parsed.invalid, ...checked.invalid], incomplete }
 }

@@ -36,10 +36,12 @@ const THRESHOLDS = resolvePolicy(defaultPolicy, LENSES.length).thresholds
 
 /**
  * Ask the research role to propose candidate findings in a diff, then check each against the diff.
- * The reply is validated: one without a `findings` array fails the run (fail closed), findings that
- * are malformed, or cite a file or line the diff does not contain, are dropped with a reason, only
- * the first `maxFindings` are read, and a reply with no usable finding is recorded as incomplete.
- * What survives carries evidence read from the diff, never the finder's quote.
+ * The reply is validated: one without a `findings` array fails the run (fail closed), a reply
+ * whose object holds a key other than `findings` fails the run too, a finding that does not match
+ * the reply schema is recorded as incomplete, a finding citing a file or line the diff does not
+ * contain is dropped with a reason, only the first `maxFindings` are read, and a reply with no
+ * usable finding is recorded as incomplete. What survives carries evidence read from the diff,
+ * never the finder's quote.
  *
  * @example
  * const { findings, invalid, incomplete } = await research(diffText, createLimiter(4))

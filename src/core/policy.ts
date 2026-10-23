@@ -22,9 +22,10 @@ export interface ResolvedPolicy {
 }
 
 /**
- * Resolve policy rules against the lens count. Invalid rules, and a level needing more votes than
- * the one above it, are issues. A level needing exactly as many votes as the one above can never
- * apply; that is only a warning, because the default policy hits it legitimately with 1 or 2 lenses.
+ * Resolve policy rules against the lens count. Invalid rules, a lens count below one, and a level
+ * needing more votes than the one above it, are issues. A level needing exactly as many votes as
+ * the one above can never apply; that is only a warning, because the default policy hits it
+ * legitimately with 1 or 2 lenses.
  */
 export function resolvePolicy(rules: PolicyRules, lensCount: number): ResolvedPolicy {
   const issues: ConfigIssue[] = []
@@ -101,6 +102,10 @@ function resolveRule(rule: unknown, lensCount: number, path: string, issues: Con
   if (rule === 'majority') return Math.floor(lensCount / 2) + 1
   if (rule === 'any') return 1
   if (typeof rule === 'object' && rule !== null) {
+    if ('minVotes' in rule && 'minRatio' in rule) {
+      issues.push({ path, message: 'a rule holds either minVotes or minRatio, not both' })
+      return null
+    }
     if ('minVotes' in rule) {
       const { minVotes } = rule
       if (typeof minVotes === 'number' && Number.isInteger(minVotes) && minVotes >= 1 && minVotes <= lensCount) return minVotes

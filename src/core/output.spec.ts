@@ -255,6 +255,10 @@ describe('parseResearchReply', () => {
     expect(partlyRead.invalid).toEqual([expect.stringMatching(/^findings\[0\]: /)])
     expect(partlyRead.listed).toBe(2)
   })
+
+  it.each([0, 1.5])('refuses a limit of %s, which is neither a positive integer nor Infinity', (limit) => {
+    expect(() => parseResearchReply('{"findings":[]}', limit)).toThrow(RangeError)
+  })
 })
 
 describe('parseVoteReply', () => {

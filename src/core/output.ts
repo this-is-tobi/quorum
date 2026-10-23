@@ -82,9 +82,11 @@ export interface ResearchReply {
  * the findings array early and move the rest of the reply under a key of its own, where it would
  * be dropped without a trace. Only the first `limit` listed findings are read, so a flooded reply
  * costs bounded work; each of those that does not match the schema is reported with its index, and
- * the count of listed findings lets the caller record what was not read.
+ * the count of listed findings lets the caller record what was not read. `limit` must be a
+ * positive integer, or Infinity to read every listed finding.
  */
 export function parseResearchReply(text: string, limit = Infinity): ResearchReply {
+  if (limit !== Infinity && (!Number.isInteger(limit) || limit < 1)) throw new RangeError(`limit must be a positive integer or Infinity, got ${limit}`)
   const reply = extractJsonObject(text, 'research')
   if (!Array.isArray(reply.findings)) {
     throw new OutputError('research', 'reply has no "findings" array', text)
