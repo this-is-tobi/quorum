@@ -3,8 +3,8 @@ import { roleConfig } from '../client.ts'
 import { ConfigError } from '../core/errors.ts'
 import { runQuorum } from '../pipeline.ts'
 
-/** Exit codes (ADR-0008). */
-export const EXIT = { ok: 0, finding: 1, usage: 2, runtime: 3 } as const
+/** Exit codes (ADR-0008, amended by ADR-0012). */
+export const EXIT = { ok: 0, finding: 1, usage: 2, runtime: 3, incomplete: 4 } as const
 
 export interface CliIO {
   /** Arguments after the executable and script, e.g. `process.argv.slice(2)`. */
@@ -18,7 +18,9 @@ const USAGE = 'Usage: quorum <diff-file>\n       git diff | quorum\n'
 
 /**
  * Run one review and return the process exit code. Never throws: usage and configuration problems
- * exit 2, runtime failures exit 3, so CI can tell a broken run from a real finding (exit 1).
+ * exit 2, runtime failures exit 3, and an incomplete review (a finding its failed votes left
+ * undecided, or a research gap) exits 4 unless a `high` finding was kept, so CI can tell a broken
+ * run and a partial review from a real finding (exit 1) and from a clean one (exit 0).
  */
 export async function runCli(io: CliIO): Promise<number> {
   let diff: string
@@ -36,7 +38,8 @@ export async function runCli(io: CliIO): Promise<number> {
     io.stderr.write(`Panel will use ${voter.model} @ ${voter.baseUrl}\n`)
     const result = await runQuorum(diff, message => io.stderr.write(`${message}\n`))
     io.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
-    return result.kept.some(verdict => verdict.confidence === 'high') ? EXIT.finding : EXIT.ok
+    if (result.kept.some(verdict => verdict.confidence === 'high')) return EXIT.finding
+    return result.unreviewed.length > 0 || result.meta.incomplete.length > 0 ? EXIT.incomplete : EXIT.ok
   } catch (error) {
     io.stderr.write(`Error: ${errorMessage(error)}\n`)
     return error instanceof ConfigError ? EXIT.usage : EXIT.runtime
