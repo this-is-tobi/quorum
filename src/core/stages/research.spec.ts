@@ -83,6 +83,13 @@ describe('checkReply', () => {
     expect(outcome.incomplete.map(entry => entry.reason)).toEqual(['findings-capped', 'research-unusable'])
   })
 
+  it('records the findings swallowed into a nested field as unreadable, even with nothing trailing the object', () => {
+    const nested = '{"findings":[{"file":"a.js","line":1,"category":"CWE-78","quote":"x","summary":"nit","extra":[{"q":"","summary":"command injection"},{"file":"b.js","line":1,"category":"CWE-95","quote":"y"}]}]}'
+    const outcome = checkReply(nested, sections)
+    expect(outcome.findings).toEqual([])
+    expect(outcome.incomplete.map(entry => entry.reason)).toEqual(['finding-unreadable', 'research-unusable'])
+  })
+
   it('fails closed when planted text moves the rest of the reply under another key', () => {
     const moved = '{"findings":[{"file":"a.js","line":1,"category":"CWE-78","quote":"x","summary":"style nit"}],"notes":[{"q":"","summary":"command injection"},{"file":"b.js","line":1,"category":"CWE-95","quote":"eval(input)","summary":"code injection"}]}'
     expect(() => checkReply(moved, sections)).toThrow(OutputError)

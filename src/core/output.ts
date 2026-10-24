@@ -50,8 +50,9 @@ const CLOSE_BRACE = 0x7D
  * because it is what the model's own continuation leaves behind when planted text closed a string
  * and the object early (a forced reject, a swayed summary, later findings swallowed). That works
  * only where the continuation is written: a server that enforces JSON stops generating when the
- * root object closes, so there a planted early close leaves nothing to refuse, and the structural
- * answer is schema-enforced output with the verdict written first; and a reply too large or too
+ * root object closes, so there a planted early close leaves nothing to refuse. For a vote the
+ * structural answer is schema-enforced output with the verdict written first; for a research reply
+ * no grammar or code rule can see findings that were never written; and a reply too large or too
  * noisy to scan cheaply is refused. Plain prose after the answer, fence markers and the same object
  * twice (a fenced copy next to a prose copy) are accepted. A group that opens like prose (`{`
  * followed by anything else) is skipped whole when it is balanced, except a bare wrapper
@@ -72,7 +73,7 @@ export function extractJsonObject(text: string, stage: string): Record<string, u
   }
   const at = syntaxAfterAnswer(visible, first, copies)
   if (at !== -1) {
-    throw new OutputError(stage, `reply continues after its JSON object with text that reads like JSON syntax (at character ${at} of the reply without its reasoning blocks; text planted in a string could have closed the object early)`, text)
+    throw new OutputError(stage, `reply continues after its JSON object with text that reads like JSON syntax (at position ${at} of the reply with its closed reasoning blocks removed; text planted in a string could have closed the object early)`, text)
   }
   return first.value
 }
@@ -129,11 +130,23 @@ export function parseResearchReply(text: string, limit = Infinity): ResearchRepl
       invalid.push(`findings[${index}]: ${describeIssue(result.error)}`)
     } else if (result.data.line < 1 || result.data.file.trim() === '') {
       invalid.push(`findings[${index}]: file must be non-empty and line at least 1`)
+    } else if (hasNestedExtra(item)) {
+      invalid.push(`findings[${index}]: carries a nested object or array outside the reply schema`)
     } else {
       findings.push(result.data)
     }
   })
   return { findings, invalid, listed: reply.findings.length }
+}
+
+/**
+ * Whether a finding holds an object or array under a key the reply schema does not name. The schema
+ * strips unknown keys, and a scalar extra (a self-reported confidence) is harmless, but planted text
+ * that closes a string early can open such a field and let the model's own later findings be written
+ * inside it, where stripping would drop them without a trace.
+ */
+function hasNestedExtra(item: unknown): boolean {
+  return isRecord(item) && Object.entries(item).some(([key, value]) => !Object.hasOwn(FindingReplySchema.shape, key) && typeof value === 'object' && value !== null)
 }
 
 /** Validate one vote reply; unknown fields such as a self-reported confidence are dropped. */
