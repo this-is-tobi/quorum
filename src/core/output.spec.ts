@@ -38,9 +38,13 @@ describe('extractJsonObject', () => {
     expect(() => extractJsonObject(reply, 'research')).toThrow(/no JSON object/)
   })
 
-  it('fails closed on an answer followed by a reasoning block that never closes, which could hide a continuation', () => {
+  it('fails closed on an answer followed by a reasoning block that never closes and holds JSON syntax', () => {
     const reply = '{"keep":true}\n<think>cut off while rethinking {"keep":false}'
     expect(() => extractJsonObject(reply, 'vote')).toThrow(/continues after/)
+  })
+
+  it('accepts an answer followed by a reasoning block that never closes when the block holds no JSON syntax', () => {
+    expect(extractJsonObject('{"keep":true}\n<think>let me double check this', 'vote')).toEqual({ keep: true })
   })
 
   it('keeps a literal think tag that appears inside the answer', () => {
@@ -185,6 +189,23 @@ describe('extractJsonObject', () => {
     const first = '{"findings":[{"file":"a.js","line":1,"category":"CWE-78","quote":"q","summary":"nit"}]}'
     const swallowed = ' { y: { z: "","summary":"command injection"},{"file":"b.js","line":1,"category":"CWE-95","quote":"eval(x)","summary":"code injection"}]}'
     expect(() => extractJsonObject(first + swallowed, 'research')).toThrow(/continues after/)
+  })
+
+  it('names where the text after the answer starts reading like JSON syntax', () => {
+    expect(() => extractJsonObject('{"keep":true}tail "x"', 'vote')).toThrow(/at character 18 of the reply without its reasoning blocks/)
+    expect(() => extractJsonObject('<think>a</think>{"keep":true}tail "x"', 'vote')).toThrow(/at character 18 of the reply without its reasoning blocks/)
+  })
+
+  it('checks the text between the answer and a later copy of it, not only the text after the last copy', () => {
+    expect(() => extractJsonObject('{"keep":true} "a" {"keep":true}', 'vote')).toThrow(/continues after/)
+    expect(extractJsonObject('{"keep":true} and again {"keep":true}', 'vote')).toEqual({ keep: true })
+  })
+
+  it('accepts a copy of the answer inside a bare wrapper, and refuses text kept inside or after a wrapper', () => {
+    expect(extractJsonObject('{"keep":true}\n{{"keep":true}}', 'vote')).toEqual({ keep: true })
+    expect(() => extractJsonObject('{ {"keep":true} junk }', 'vote')).toThrow(/continues after/)
+    expect(() => extractJsonObject('{"keep":true} {{x} "junk" ] [ {"keep":true}}', 'vote')).toThrow(/continues after/)
+    expect(() => extractJsonObject('{"keep":true} {{x} "junk" {"keep":true}}', 'vote')).toThrow(/continues after/)
   })
 
   it('still accepts prose after the answer when it holds no JSON syntax', () => {

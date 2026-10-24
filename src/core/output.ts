@@ -48,12 +48,14 @@ const CLOSE_BRACE = 0x7D
  * last value and text planted in an unescaped string could close that string early and supply it;
  * text after the answer that reads like JSON syntax (a quote, brace or bracket) is refused too,
  * because it is what the model's own continuation leaves behind when planted text closed a string
- * and the object early (a forced reject, a swayed summary, later findings swallowed), while under
- * constrained decoding nothing follows the one JSON value; and a reply too large or too noisy to
- * scan cheaply is refused. Plain prose after the answer, fence markers and the same object twice
- * (a fenced copy next to a prose copy) are accepted. A group that opens like prose (`{` followed by
- * anything else) is skipped whole when it is balanced, except a bare wrapper (`{{...}}`), and only
- * stepped over when it never closes, as prose often holds a stray brace.
+ * and the object early (a forced reject, a swayed summary, later findings swallowed). That works
+ * only where the continuation is written: a server that enforces JSON stops generating when the
+ * root object closes, so there a planted early close leaves nothing to refuse, and the structural
+ * answer is schema-enforced output with the verdict written first; and a reply too large or too
+ * noisy to scan cheaply is refused. Plain prose after the answer, fence markers and the same object
+ * twice (a fenced copy next to a prose copy) are accepted. A group that opens like prose (`{`
+ * followed by anything else) is skipped whole when it is balanced, except a bare wrapper
+ * (`{{...}}`), and only stepped over when it never closes, as prose often holds a stray brace.
  *
  * @throws OutputError when the reply has no object, several different objects, a broken object, a repeated key, JSON syntax after the answer, or cannot be scanned safely
  */
@@ -68,21 +70,26 @@ export function extractJsonObject(text: string, stage: string): Record<string, u
   if (copies.some(other => JSON.stringify(other.value) !== key)) {
     throw new OutputError(stage, 'reply contains several different JSON objects', text)
   }
-  if (JSON_SYNTAX.test(textAfter(visible, first, copies))) {
-    throw new OutputError(stage, 'reply continues after its JSON object with text that reads like JSON syntax (text planted in a string could have closed the object early)', text)
+  const at = syntaxAfterAnswer(visible, first, copies)
+  if (at !== -1) {
+    throw new OutputError(stage, `reply continues after its JSON object with text that reads like JSON syntax (at character ${at} of the reply without its reasoning blocks; text planted in a string could have closed the object early)`, text)
   }
   return first.value
 }
 
-/** The reply after its answer, with the later copies of that answer cut out: whatever is left was written after the object closed. */
-function textAfter(visible: string, first: Answer, copies: Answer[]): string {
-  let tail = ''
+/**
+ * Index in `visible` of the first quote, brace or bracket written after the answer, not counting the
+ * later copies of that answer (the text between copies is checked too); -1 when there is none.
+ */
+function syntaxAfterAnswer(visible: string, first: Answer, copies: Answer[]): number {
   let from = first.end + 1
   for (const copy of copies) {
-    tail += visible.slice(from, copy.start)
+    const found = visible.slice(from, copy.start).search(JSON_SYNTAX)
+    if (found !== -1) return from + found
     from = copy.end + 1
   }
-  return tail + visible.slice(from)
+  const found = visible.slice(from).search(JSON_SYNTAX)
+  return found === -1 ? -1 : from + found
 }
 
 /** A parsed research reply: the findings read, why the others among the ones read were dropped, and how many were listed in all. */
@@ -186,7 +193,8 @@ function topLevelObjects(text: string, truncatedAt: number, stage: string, reply
     return objectOpener.test(text)
   }
   let groups = 0
-  // The bare wrapper (`{{...}}`) last stepped into: its own braces belong to the span of the object inside it.
+  // The bare wrapper (`{{...}}`) last stepped into: its own braces belong to the span of the object
+  // inside it, but only when that object is the wrapper's whole content (blank before and after it).
   let wrapper: { start: number, end: number } | undefined
   for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
     if (truncatedAt !== -1 && start >= truncatedAt) break
@@ -212,7 +220,7 @@ function topLevelObjects(text: string, truncatedAt: number, stage: string, reply
     }
     if (!isRecord(value)) continue
     if (repeatsKey(json)) throw new OutputError(stage, 'reply contains a JSON object that repeats a key', reply)
-    const span = wrapper && wrapper.end > end && text.slice(end + 1, wrapper.end).trim() === ''
+    const span = wrapper && wrapper.end > end && isBlank(text, wrapper.start + 1, start) && isBlank(text, end + 1, wrapper.end)
       ? { start: wrapper.start, end: wrapper.end }
       : { start, end }
     found.push({ value, ...span })
@@ -220,6 +228,11 @@ function topLevelObjects(text: string, truncatedAt: number, stage: string, reply
     start = end
   }
   return found
+}
+
+/** Whether `text` holds only whitespace between `from` (inclusive) and `to` (exclusive). */
+function isBlank(text: string, from: number, to: number): boolean {
+  return text.slice(from, to).trim() === ''
 }
 
 /** Index of the brace closing the object opened at `start`, ignoring braces inside strings; -1 if unbalanced. */
