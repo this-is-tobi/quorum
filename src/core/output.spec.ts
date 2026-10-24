@@ -192,8 +192,12 @@ describe('extractJsonObject', () => {
   })
 
   it('names where the text after the answer starts reading like JSON syntax', () => {
-    expect(() => extractJsonObject('{"keep":true}tail "x"', 'vote')).toThrow(/at character 18 of the reply without its reasoning blocks/)
-    expect(() => extractJsonObject('<think>a</think>{"keep":true}tail "x"', 'vote')).toThrow(/at character 18 of the reply without its reasoning blocks/)
+    const where = (position: number): RegExp => new RegExp(`at position ${position} of the reply with its closed reasoning blocks removed`)
+    expect(() => extractJsonObject('{"keep":true}tail "x"', 'vote')).toThrow(where(18))
+    expect(() => extractJsonObject('<think>a</think>{"keep":true}tail "x"', 'vote')).toThrow(where(18))
+    expect(() => extractJsonObject('{"keep":true} "a" {"keep":true}', 'vote')).toThrow(where(14))
+    expect(() => extractJsonObject('{"keep":true} {"keep":true} "z"', 'vote')).toThrow(where(28))
+    expect(() => extractJsonObject('{"keep":true}\n<think>x "y"', 'vote')).toThrow(where(23))
   })
 
   it('checks the text between the answer and a later copy of it, not only the text after the last copy', () => {
@@ -302,6 +306,21 @@ describe('parseResearchReply', () => {
   it('refuses a reply whose object holds a key other than findings', () => {
     expect(() => parseResearchReply('{"findings":[],"notes":[]}')).toThrow(/top-level key/)
     expect(() => parseResearchReply(JSON.stringify({ findings: [finding], summary: 'done' }))).toThrow(OutputError)
+  })
+
+  it('marks a finding unreadable when it carries a nested object or array outside the schema, where swallowed findings would hide', () => {
+    const swallowed = { ...finding, extra: [{ ...finding, line: 2 }] }
+    const read = parseResearchReply(JSON.stringify({ findings: [swallowed, finding] }))
+    expect(read.findings).toEqual([finding])
+    expect(read.invalid).toEqual([expect.stringMatching(/^findings\[0\]: .*nested object or array/)])
+    expect(parseResearchReply(JSON.stringify({ findings: [{ ...finding, meta: { note: 'x' } }] })).invalid).toHaveLength(1)
+    const proto = '{"findings":[{"file":"a.js","line":1,"category":"CWE-78","quote":"q","summary":"s","__proto__":[{"file":"b.js"}]}]}'
+    expect(parseResearchReply(proto)).toMatchObject({ findings: [], invalid: [expect.stringMatching(/nested object or array/)] })
+  })
+
+  it('still tolerates a scalar or null field outside the schema', () => {
+    const read = parseResearchReply(JSON.stringify({ findings: [{ ...finding, confidence: 'high', note: null, rank: 2 }] }))
+    expect(read).toEqual({ findings: [finding], invalid: [], listed: 1 })
   })
 
   it('does not read a reply whose later findings were nested under a planted key by two early closes', () => {
