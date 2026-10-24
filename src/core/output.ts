@@ -96,7 +96,7 @@ function syntaxAfterAnswer(visible: string, first: Answer, copies: Answer[]): nu
 /** A parsed research reply: the findings read, why the others among the ones read were dropped, and how many were listed in all. */
 export interface ResearchReply {
   findings: FindingDetails[]
-  /** One reason per finding, among the first `limit` listed, that does not match the schema. */
+  /** One reason per finding, among the first `limit` listed, that is unreadable: it does not match the schema, or holds a nested object or array outside it. */
   invalid: string[]
   /** How many findings the reply listed, read or not. */
   listed: number
@@ -108,9 +108,11 @@ export interface ResearchReply {
  * and so does any other top-level key, because text planted in an unescaped string could close
  * the findings array early and move the rest of the reply under a key of its own, where it would
  * be dropped without a trace. Only the first `limit` listed findings are read, so a flooded reply
- * costs bounded work; each of those that does not match the schema is reported with its index, and
- * the count of listed findings lets the caller record what was not read. `limit` must be a
- * positive integer, or Infinity to read every listed finding.
+ * costs bounded work; each of those that does not match the schema, or holds a nested object or
+ * array under a key the schema does not name (where findings swallowed by planted text would hide,
+ * since the schema strips unknown keys), is reported with its index, and the count of listed
+ * findings lets the caller record what was not read. `limit` must be a positive integer, or
+ * Infinity to read every listed finding.
  */
 export function parseResearchReply(text: string, limit = Infinity): ResearchReply {
   if (limit !== Infinity && (!Number.isInteger(limit) || limit < 1)) throw new RangeError(`limit must be a positive integer or Infinity, got ${limit}`)
