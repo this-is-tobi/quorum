@@ -5,6 +5,8 @@ const MAX_ERROR_BODY = 500
 const REDACTED = '[redacted]'
 const UNKNOWN_ENDPOINT = 'the endpoint'
 const PLAIN_IDENTIFIER = /^[A-Z]\w{0,39}$/i
+/** A JSON unicode escape (a backslash, then u00 and two hex digits) for printable ASCII, U+0020 to U+007E. */
+const ESCAPED_PRINTABLE_ASCII = /\\u00(2[0-9a-fA-F]|[3-6][0-9a-fA-F]|7[0-9a-eA-E])/g
 
 export interface PostJsonOptions {
   providerId: string
@@ -23,14 +25,19 @@ function echoedForms(secret: string): string[] {
   return [...new Set(forms)].sort((a, b) => b.length - a.length)
 }
 
+/** Go and .NET write `&`, `<`, `>` and `+` as escapes in JSON, so a key echoed by them would not match as is. */
+function decodeEscapedAscii(text: string): string {
+  return text.replace(ESCAPED_PRINTABLE_ASCII, (_escape, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
+}
+
 /**
- * Server or model text made safe to put in an error message: the secret redacted first, so a key cut
- * in half by the limit cannot survive, then cut to `max` characters, then written as one JSON string
- * so a line break cannot start a workflow command in a log.
+ * Server or model text made safe to put in an error message: the secret redacted first (after any
+ * escaped echo of it is decoded), so a key cut in half by the limit cannot survive, then cut to `max`
+ * characters, then written as one JSON string so a line break cannot start a workflow command in a log.
  */
 export function snippet(text: string, max: number, secret?: string): string {
   const redacted = secret
-    ? echoedForms(secret).reduce((current, form) => current.split(form).join(REDACTED), text)
+    ? echoedForms(secret).reduce((current, form) => current.split(form).join(REDACTED), decodeEscapedAscii(text))
     : text
   return JSON.stringify(redacted.slice(0, max))
 }
