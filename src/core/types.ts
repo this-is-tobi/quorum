@@ -4,6 +4,8 @@
  * @see ../../README.md for the module overview and usage.
  */
 
+import type { PolicyRules } from './policy.ts'
+
 /**
  * A candidate issue after the harness checked it against the diff. The finder supplies the file,
  * line, category and claim; the evidence is read from the diff by code, never from the finder.
@@ -30,17 +32,44 @@ export interface Vote {
   reasoning: string
 }
 
-/** One of the three fixed, orthogonal angles a voter is assigned. */
+/** One angle a voter judges a finding from: the question it is asked, and the id its vote reports. */
 export interface Lens {
-  angle: 'reachability' | 'impact' | 'defenses'
+  /** Names the lens in `LensVote.angle` and in the vote template's `{{lens.id}}`. */
+  id: string
   question: string
 }
 
 /** One lens's vote, or the error if that call failed. */
 export interface LensVote {
-  angle: Lens['angle']
+  /** The id of the lens the vote was cast from. */
+  angle: string
   vote: Vote | null
   error: string | null
+}
+
+/** Instruction templates, one per stage. `{{name}}` placeholders are filled by renderTemplate. */
+export interface Prompts {
+  research: string
+  vote: string
+}
+
+/**
+ * What a run reviews, as data: the instructions of both stages, the lenses of the panel, and how
+ * the votes are graded.
+ */
+export interface Profile {
+  /** Names the profile; matches `^[a-z][a-z0-9_-]*$`. */
+  id: string
+  /** The `research` and `vote` instruction templates, owned by the profile. */
+  prompts: Prompts
+  /** The angles of the panel: at least one, ids unique within the profile. */
+  lenses: readonly Lens[]
+  /** How many kept votes each confidence level needs; `defaultPolicy` when unset. */
+  policy?: PolicyRules
+  /** Whether its kept high findings set exit code 1; true when unset. */
+  gating?: boolean
+  /** Reference text the caller already loaded; the core never reads files. */
+  guidelines?: string
 }
 
 /** A confidence level a kept finding reaches; 'low' only when the policy enables it. */
