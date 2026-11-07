@@ -110,7 +110,7 @@ describe('runCli', () => {
     stubModel(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(true))
     const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.finding)
-    expect(JSON.parse(stdout()).kept[0]).toMatchObject({ file: 'a.js', confidence: 'high' })
+    expect(JSON.parse(stdout()).kept[0]).toMatchObject({ id: '235f5feb3565', profile: 'security', file: 'a.js', confidence: 'high' })
   })
 
   it('exits 0 when the panel keeps a finding only at medium confidence', async () => {
