@@ -120,6 +120,12 @@ describe('providersFromEnv', () => {
     expect(() => providersFromEnv({ RESEARCH_MODEL: 'qwen', RESEARCH_BASE_URL: 'localhost:11434/v1' })).toThrow(/research\.baseUrl/)
   })
 
+  it('reports a voter base URL without a scheme, not the model it would then need', () => {
+    const env = { RESEARCH_MODEL: 'qwen', VOTER_BASE_URL: 'localhost:11434/v1' }
+    expect(() => providersFromEnv(env)).toThrow(/voter\.baseUrl/)
+    expect(() => providersFromEnv(env)).not.toThrow(/VOTER_MODEL/)
+  })
+
   it('requires VOTER_MODEL for a voter on another origin, and says why', () => {
     const env = { RESEARCH_MODEL: 'qwen', VOTER_BASE_URL: 'https://api.example.com/v1' }
     expect(() => providersFromEnv(env)).toThrow(ConfigError)
