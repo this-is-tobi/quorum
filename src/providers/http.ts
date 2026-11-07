@@ -87,12 +87,15 @@ export async function postJson<T>(options: PostJsonOptions): Promise<T> {
     ? fail('aborted', 'request aborted')
     : fail('network', `${what} ${originOf(url)} failed${codeSuffix(error)}`)
 
+  // Outside the try: a body that cannot be serialized is a programming error, not a network failure to retry.
+  const payload = JSON.stringify(body)
+
   let response: Response
   try {
     response = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
-      body: JSON.stringify(body),
+      body: payload,
       signal,
     })
   } catch (error) {
