@@ -1,7 +1,7 @@
 import type { ConfigIssue } from './errors.ts'
 import { defaultPolicy, resolvePolicy } from './policy.ts'
 import { PLACEHOLDER } from './prompts.ts'
-import type { Profile } from './types.ts'
+import type { Profile, Thresholds } from './types.ts'
 
 const ID_PATTERN = /^[a-z][a-z0-9_-]*$/
 
@@ -35,6 +35,17 @@ export function profileIssues(profile: Profile): ConfigIssue[] {
   issues.push(...templateIssues(`${root}.prompts.research`, profile.prompts.research, researchVariableProblem))
   issues.push(...templateIssues(`${root}.prompts.vote`, profile.prompts.vote, voteVariableProblem))
   return issues
+}
+
+/**
+ * The vote thresholds of a profile: its policy, or the default one, resolved for its lens count.
+ * The profile must be one `profileIssues` accepts: the policy's own problems are not reported here.
+ *
+ * @example
+ * thresholdsFor(securityProfile) // -> { high: 3, medium: 2, low: null }
+ */
+export function thresholdsFor(profile: Profile): Thresholds {
+  return resolvePolicy(profile.policy ?? defaultPolicy, profile.lenses.length).thresholds
 }
 
 function idProblem(id: string): string | undefined {

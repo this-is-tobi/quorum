@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { profileIssues } from './profile.ts'
+import { profileIssues, thresholdsFor } from './profile.ts'
 import type { Profile } from './types.ts'
 
 const valid: Profile = {
@@ -74,5 +74,12 @@ describe('profileIssues', () => {
       { path: 'p.prompts.research', message: 'must not be empty' },
       { path: 'p.prompts.vote', message: 'must not be empty' },
     ])
+  })
+})
+
+describe('thresholdsFor', () => {
+  it('resolves the profile policy, or the default one, for its lens count', () => {
+    expect(thresholdsFor(valid)).toEqual({ high: 2, medium: 2, low: null })
+    expect(thresholdsFor({ ...valid, policy: { high: 'unanimous', medium: 'any', low: 'off' } })).toEqual({ high: 2, medium: 1, low: null })
   })
 })

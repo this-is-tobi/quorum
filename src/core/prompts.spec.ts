@@ -46,6 +46,23 @@ describe('voteRequest', () => {
   })
 })
 
+describe('guidelines', () => {
+  it('fences the guidelines as the last block of a research or a vote request', () => {
+    const research = researchRequest('R', 'diff --git a/x b/x', 'Use parameters.').messages[0].content
+    const vote = voteRequest('V', finding, '+exec(cmd)', 'Use parameters.').messages[0].content
+    for (const content of [research, vote]) {
+      expect(content).toMatch(/<\/untrusted-diff-[0-9a-f]{8}>\n\n<untrusted-guidelines-[0-9a-f]{8}>\nUse parameters\.\n<\/untrusted-guidelines-[0-9a-f]{8}>$/)
+    }
+  })
+
+  it('adds no block for absent or blank guidelines', () => {
+    for (const guidelines of [undefined, '', ' \n ']) {
+      expect(researchRequest('R', 'd', guidelines).messages[0].content).not.toContain('guidelines')
+      expect(voteRequest('V', finding, 'd', guidelines).messages[0].content).not.toContain('guidelines')
+    }
+  })
+})
+
 describe('renderTemplate', () => {
   it('fills known placeholders and leaves unknown ones untouched', () => {
     const values = { 'lens.id': 'impact', 'lens.question': 'Real?' }

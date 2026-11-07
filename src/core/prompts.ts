@@ -28,11 +28,15 @@ export function fence(label: string, content: string): string {
   return `<${tag}>\n${content}\n</${tag}>`
 }
 
-/** Research call: instructions in the system message, the fenced diff as the only user message. */
-export function researchRequest(instructions: string, diff: string): CompletionRequest {
+/**
+ * Research call: instructions in the system message, the fenced diff as the user message. The
+ * profile's guidelines, when they hold text, follow as one more fenced block: reference text the
+ * caller loaded, treated as data like the diff and never part of the system message.
+ */
+export function researchRequest(instructions: string, diff: string, guidelines?: string): CompletionRequest {
   return {
     system: systemMessage(instructions, researchReplyJsonSchema),
-    messages: [{ role: 'user', content: fence('diff', diff) }],
+    messages: [{ role: 'user', content: userMessage([fence('diff', diff)], guidelines) }],
     output: { name: 'research_findings', schema: researchReplyJsonSchema },
   }
 }
@@ -41,9 +45,10 @@ export function researchRequest(instructions: string, diff: string): CompletionR
  * One vote call, built only from the finding, the lens instructions and the diff context: no other
  * vote ever reaches it (blind voting, ADR-0006). The evidence is code read from the diff by the
  * harness; the finder's summary is the only text a model wrote, and it is fenced as an unverified
- * claim. Everything attacker-influenced is fenced.
+ * claim. Everything attacker-influenced is fenced, and so are the profile's guidelines, which close
+ * the message as in a research call.
  */
-export function voteRequest(instructions: string, finding: Finding, diffContext: string): CompletionRequest {
+export function voteRequest(instructions: string, finding: Finding, diffContext: string, guidelines?: string): CompletionRequest {
   const claim = [
     `Finding: ${finding.file}:${finding.line} [${finding.category}]`,
     `Claim by the finder (unverified): ${finding.summary}`,
@@ -52,10 +57,15 @@ export function voteRequest(instructions: string, finding: Finding, diffContext:
     system: systemMessage(instructions, voteReplyJsonSchema),
     messages: [{
       role: 'user',
-      content: [fence('claim', claim), fence('evidence', finding.evidence), fence('diff', diffContext)].join('\n\n'),
+      content: userMessage([fence('claim', claim), fence('evidence', finding.evidence), fence('diff', diffContext)], guidelines),
     }],
     output: { name: 'panel_vote', schema: voteReplyJsonSchema },
   }
+}
+
+function userMessage(blocks: readonly string[], guidelines: string | undefined): string {
+  const withGuidelines = guidelines !== undefined && guidelines.trim() !== '' ? [...blocks, fence('guidelines', guidelines)] : blocks
+  return withGuidelines.join('\n\n')
 }
 
 function systemMessage(instructions: string, schema: JsonSchema): string {
