@@ -4,36 +4,15 @@ import { diffSectionFor, splitDiff } from './core/diff.ts'
 import { parseVoteReply } from './core/output.ts'
 import type { Provider } from './core/ports.ts'
 import { confidenceFor, defaultPolicy, resolvePolicy, undecidedLevel, verdictStatus } from './core/policy.ts'
-import { defaultPrompts, renderTemplate, researchRequest, voteRequest } from './core/prompts.ts'
+import { renderTemplate, researchRequest, voteRequest } from './core/prompts.ts'
 import { checkReply, DEFAULT_MAX_FINDINGS } from './core/stages/research.ts'
 import type { ResearchOutcome } from './core/stages/research.ts'
 import type { Finding, IncompleteEntry, Lens, LensVote, QuorumResult, Verdict } from './core/types.ts'
 import { providersFromEnv } from './legacy.ts'
-
-/**
- * The three fixed, orthogonal angles every panel vote is judged from. Three is not an arbitrary
- * round number: self-consistency research shows most of the achievable gain from repeated sampling
- * arrives by roughly five to ten samples on a capable model, and running votes in parallel has a
- * real latency cost - three independent, non-debating, differently-angled votes is close to the
- * cost-effective floor, not a placeholder for "more agents later".
- */
-export const LENSES: readonly Lens[] = [
-  {
-    angle: 'reachability',
-    question: 'Is this sink actually reachable from untrusted input in normal flow - not just syntactically present?',
-  },
-  {
-    angle: 'impact',
-    question: 'If reached, is the impact real - not just bad-looking code?',
-  },
-  {
-    angle: 'defenses',
-    question: 'Do existing checks elsewhere already neutralize this?',
-  },
-]
+import { securityProfile } from './profiles/security.ts'
 
 /** The default policy resolved for the three lenses: 3/3 → high, 2/3 → medium, low disabled. */
-const THRESHOLDS = resolvePolicy(defaultPolicy, LENSES.length).thresholds
+const THRESHOLDS = resolvePolicy(defaultPolicy, securityProfile.lenses.length).thresholds
 
 /** The two model backends of a review: the researcher that proposes findings and the voter behind the panel. */
 export interface Providers {
@@ -60,7 +39,7 @@ export async function research(
   sections: ReadonlyMap<string, string> = splitDiff(diff),
   maxFindings: number = DEFAULT_MAX_FINDINGS,
 ): Promise<ResearchOutcome> {
-  const { text } = await limit(() => provider.complete(researchRequest(defaultPrompts.research, diff)))
+  const { text } = await limit(() => provider.complete(researchRequest(securityProfile.prompts.research, diff)))
   return checkReply(text, sections, maxFindings)
 }
 
@@ -87,17 +66,17 @@ export function dedup(findings: Finding[]): Finding[] {
  * each other's reasoning measurably converges results toward consensus rather than correctness.
  */
 async function vote(provider: Provider, finding: Finding, lens: Lens, diffContext: string, limit: Limiter): Promise<LensVote> {
-  const instructions = renderTemplate(defaultPrompts.vote, {
-    'lens.id': lens.angle,
+  const instructions = renderTemplate(securityProfile.prompts.vote, {
+    'lens.id': lens.id,
     'lens.question': lens.question,
-    'panel.size': String(LENSES.length),
+    'panel.size': String(securityProfile.lenses.length),
   })
   try {
     const { text } = await limit(() => provider.complete(voteRequest(instructions, finding, diffContext)))
     const result = parseVoteReply(text)
-    return { angle: lens.angle, vote: result, error: null }
+    return { angle: lens.id, vote: result, error: null }
   } catch (error) {
-    return { angle: lens.angle, vote: null, error: (error as Error).message }
+    return { angle: lens.id, vote: null, error: (error as Error).message }
   }
 }
 
@@ -113,7 +92,7 @@ async function vote(provider: Provider, finding: Finding, lens: Lens, diffContex
  * if (verdict.confidence) console.log(`kept: ${verdict.confidence}`)
  */
 export async function panel(provider: Provider, finding: Finding, diffContext: string, limit: Limiter): Promise<Verdict> {
-  const votes = await Promise.all(LENSES.map(lens => vote(provider, finding, lens, diffContext, limit)))
+  const votes = await Promise.all(securityProfile.lenses.map(lens => vote(provider, finding, lens, diffContext, limit)))
   const keptVotes = votes.filter(v => v.vote?.keep).length
   return { ...finding, keptVotes, totalVotes: votes.length, confidence: confidenceFor(keptVotes, THRESHOLDS), votes }
 }
