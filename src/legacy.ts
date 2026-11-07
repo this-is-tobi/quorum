@@ -22,14 +22,35 @@ function read(env: Env, name: string): string | undefined {
   return env[name]?.trim() || undefined
 }
 
+/** The origin of a URL, or undefined when it has none: the URL does not parse or its origin is opaque. */
+function originOf(url: string): string | undefined {
+  try {
+    const { origin } = new URL(url)
+    return origin === 'null' ? undefined : origin
+  } catch {
+    return undefined
+  }
+}
+
+/** URL lower-cases the scheme and host and drops a default port, so only the scheme, host or port tell origins apart. */
+function sameOrigin(a: string, b: string): boolean {
+  const origin = originOf(a)
+  return origin !== undefined && origin === originOf(b)
+}
+
 /**
- * Resolve connection settings for a role. VOTER_* falls back to RESEARCH_* field by field, so pointing
- * the panel at another backend is opt-in; RESEARCH_* never falls back to VOTER_*. An empty or blank
- * value is unset, and no key means no placeholder.
+ * Resolve connection settings for a role. RESEARCH_* never falls back to VOTER_*. VOTER_* falls back to
+ * RESEARCH_* field by field, but only while the voter has no base URL of its own or shares the research
+ * origin (scheme, host and port): a key is only sent to the endpoint it was configured for. On another
+ * origin the voter gets its own VOTER_* values and nothing else, so its model may come back empty. An
+ * empty or blank value is unset, and no key means no placeholder.
  */
 export function roleSettings(role: Role, env: Env): RoleSettings {
+  const researchBaseUrl = read(env, 'RESEARCH_BASE_URL') ?? DEFAULT_BASE_URL
+  const voterBaseUrl = read(env, 'VOTER_BASE_URL')
+  const inherits = role === 'VOTER' && (voterBaseUrl === undefined || sameOrigin(voterBaseUrl, researchBaseUrl))
   const get = (name: string): string | undefined =>
-    read(env, `${role}_${name}`) ?? (role === 'VOTER' ? read(env, `RESEARCH_${name}`) : undefined)
+    read(env, `${role}_${name}`) ?? (inherits ? read(env, `RESEARCH_${name}`) : undefined)
   return {
     baseUrl: get('BASE_URL') ?? DEFAULT_BASE_URL,
     apiKey: get('API_KEY'),
@@ -39,15 +60,21 @@ export function roleSettings(role: Role, env: Env): RoleSettings {
 
 function providerFor(role: Role, env: Env): Provider {
   const { baseUrl, apiKey, model } = roleSettings(role, env)
-  if (!model) throw new ConfigError([{ path: `${role}_MODEL`, message: 'is not set' }])
+  if (!model) {
+    const message = role === 'VOTER'
+      ? 'must be set when VOTER_BASE_URL has another scheme, host or port than RESEARCH_BASE_URL'
+      : 'is not set'
+    throw new ConfigError([{ path: `${role}_MODEL`, message }])
+  }
   return openaiCompatible({ id: role.toLowerCase(), baseUrl, apiKey, model })
 }
 
 /**
  * Build the research and voter providers from the environment.
  *
- * @throws ConfigError when a role has no model, a key has a character an HTTP header cannot carry or a
- * base URL is not http(s)
+ * @throws ConfigError when there is no research model, when a voter on another endpoint than the research
+ * one has no model of its own, when a key has a character an HTTP header cannot carry or when a base URL
+ * is not an http(s) URL with a host
  */
 export function providersFromEnv(env: Env): { research: Provider, voter: Provider } {
   return { research: providerFor('RESEARCH', env), voter: providerFor('VOTER', env) }

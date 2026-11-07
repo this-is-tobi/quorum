@@ -38,9 +38,30 @@ describe('roleSettings', () => {
   })
 
   it('gives the voter its own endpoint and key when both roles set them', () => {
-    const env = { RESEARCH_BASE_URL: 'https://r.example/v1', RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'https://v.example/v1', VOTER_API_KEY: 'sk-v' }
-    expect(roleSettings('VOTER', env)).toEqual({ baseUrl: 'https://v.example/v1', apiKey: 'sk-v', model: 'r' })
+    const env = { RESEARCH_BASE_URL: 'https://r.example/v1', RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'https://v.example/v1', VOTER_API_KEY: 'sk-v', VOTER_MODEL: 'v' }
+    expect(roleSettings('VOTER', env)).toEqual({ baseUrl: 'https://v.example/v1', apiKey: 'sk-v', model: 'v' })
     expect(roleSettings('RESEARCH', env)).toEqual({ baseUrl: 'https://r.example/v1', apiKey: 'sk-r', model: 'r' })
+  })
+
+  it('keeps every fallback for a voter on the same origin, whatever its path, letter case or default port', () => {
+    const pairs = [['http://h:11434/v1', 'HTTP://H:11434/gateway/v1'], ['https://h.example/v1', 'https://h.example:443/v2']] as const
+    for (const [researchBaseUrl, voterBaseUrl] of pairs) {
+      const env = { RESEARCH_BASE_URL: researchBaseUrl, RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: voterBaseUrl }
+      expect(roleSettings('VOTER', env), voterBaseUrl).toEqual({ baseUrl: voterBaseUrl, apiKey: 'sk-r', model: 'r' })
+    }
+  })
+
+  it('reuses neither the research key nor the research model for a voter on another origin', () => {
+    const env = { RESEARCH_BASE_URL: 'http://localhost:11434/v1', RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'https://api.example.com/v1' }
+    expect(roleSettings('VOTER', env)).toEqual({ baseUrl: 'https://api.example.com/v1', apiKey: undefined, model: '' })
+    expect(roleSettings('VOTER', { ...env, VOTER_API_KEY: 'sk-v', VOTER_MODEL: 'v' })).toEqual({ baseUrl: 'https://api.example.com/v1', apiKey: 'sk-v', model: 'v' })
+  })
+
+  it('counts another scheme, another port, or a URL without an http origin as another origin', () => {
+    const research = { RESEARCH_BASE_URL: 'https://h.example/v1', RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r' }
+    for (const voterBaseUrl of ['http://h.example/v1', 'https://h.example:8443/v1', 'h.example/v1', 'localhost:11434/v1']) {
+      expect(roleSettings('VOTER', { ...research, VOTER_BASE_URL: voterBaseUrl }), voterBaseUrl).toEqual({ baseUrl: voterBaseUrl, apiKey: undefined, model: '' })
+    }
   })
 
   it('trims surrounding whitespace, as fetch always did with a header value, and treats a blank value as unset', () => {
@@ -97,5 +118,24 @@ describe('providersFromEnv', () => {
 
   it('refuses a base URL without a scheme, a common slip', () => {
     expect(() => providersFromEnv({ RESEARCH_MODEL: 'qwen', RESEARCH_BASE_URL: 'localhost:11434/v1' })).toThrow(/research\.baseUrl/)
+  })
+
+  it('requires VOTER_MODEL for a voter on another origin, and says why', () => {
+    const env = { RESEARCH_MODEL: 'qwen', VOTER_BASE_URL: 'https://api.example.com/v1' }
+    expect(() => providersFromEnv(env)).toThrow(ConfigError)
+    expect(() => providersFromEnv(env)).toThrow('VOTER_MODEL: must be set when VOTER_BASE_URL has another scheme, host or port than RESEARCH_BASE_URL')
+  })
+
+  it('sends the research key to a voter on the same origin only', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(replyOk)
+    vi.stubGlobal('fetch', fetchMock)
+    const research = { RESEARCH_BASE_URL: 'https://r.example/v1', RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r' }
+    await providersFromEnv({ ...research, VOTER_BASE_URL: 'https://r.example/other/v1' }).voter.complete(request)
+    await providersFromEnv({ ...research, VOTER_BASE_URL: 'https://v.example/v1', VOTER_MODEL: 'v' }).voter.complete(request)
+    await providersFromEnv({ ...research, VOTER_BASE_URL: 'https://v.example/v1', VOTER_MODEL: 'v', VOTER_API_KEY: 'sk-v' }).voter.complete(request)
+    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ authorization: 'Bearer sk-r' })
+    expect(fetchMock.mock.calls[1][1].headers).not.toHaveProperty('authorization')
+    expect(fetchMock.mock.calls[2][1].headers).toMatchObject({ authorization: 'Bearer sk-v' })
+    expect(JSON.stringify(fetchMock.mock.calls.slice(1))).not.toContain('sk-r')
   })
 })
