@@ -41,7 +41,7 @@ export async function runCli(io: CliIO): Promise<number> {
     const voter = roleSettings('VOTER', io.env)
     io.stderr.write(`Research (${research.model} @ ${originOf(research.baseUrl)})...\n`)
     io.stderr.write(`Panel will use ${voter.model} @ ${originOf(voter.baseUrl)}\n`)
-    const result = await review(diff, providers, message => io.stderr.write(`${message}\n`))
+    const result = await review(diff, providers, { onProgress: message => io.stderr.write(`${message}\n`) })
     io.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
     if (result.kept.some(verdict => verdict.confidence === 'high')) return EXIT.finding
     return result.unreviewed.length > 0 || result.meta.incomplete.length > 0 ? EXIT.incomplete : EXIT.ok
