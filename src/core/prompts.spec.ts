@@ -68,4 +68,9 @@ describe('renderTemplate', () => {
     const values = { 'lens.id': 'impact', 'lens.question': 'Real?' }
     expect(renderTemplate('{{ lens.id }}: {{lens.question}} {{other}}', values)).toBe('impact: Real? {{other}}')
   })
+
+  it('leaves a name outside the values untouched, whatever dashes or spaces it holds', () => {
+    const values = { 'lens.id': 'impact' }
+    expect(renderTemplate('{{lens-id}} {{ a b }} {{lens.id}}', values)).toBe('{{lens-id}} {{ a b }} impact')
+  })
 })
