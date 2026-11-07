@@ -155,7 +155,7 @@ describe('runCli', () => {
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const result = JSON.parse(stdout())
     expect(result.kept).toHaveLength(1)
-    expect(result.meta.incomplete).toEqual([{ reason: 'finding-unreadable', detail: expect.stringMatching(/^findings\[1\]: /) }])
+    expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'finding-unreadable', detail: expect.stringMatching(/^findings\[1\]: /) }])
     expect(stderr()).toContain('finding-unreadable')
   })
 
@@ -184,7 +184,7 @@ describe('runCli', () => {
     const result = JSON.parse(stdout())
     expect(result.kept).toHaveLength(1)
     expect(result.kept[0].confidence).toBe('medium')
-    expect(result.meta.incomplete).toEqual([{ reason: 'vote-failed', detail: expect.stringMatching(/^"a\.js":1 is kept at medium/) }])
+    expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'vote-failed', file: 'a.js', detail: expect.stringMatching(/^"a\.js":1 is kept at medium/) }])
     expect(stderr()).toContain('vote-failed')
   })
 })

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { fence, renderTemplate, researchRequest, voteRequest } from './prompts.ts'
 
-const finding = { file: 'a.js', line: 3, category: 'CWE-78', summary: 'command injection', evidence: '+exec(cmd)', quoteMatched: true }
+const finding = { id: '0123456789ab', profile: 'security', file: 'a.js', line: 3, category: 'CWE-78', summary: 'command injection', evidence: '+exec(cmd)', quoteMatched: true }
 
 describe('fence', () => {
   it('wraps content in tags carrying a random nonce', () => {

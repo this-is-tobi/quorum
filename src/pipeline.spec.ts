@@ -29,6 +29,8 @@ const reported = { file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)'
 
 /** The same finding once the harness has verified it against `diff`. */
 const finding: Finding = {
+  id: '235f5feb3565',
+  profile: 'security',
   file: 'a.js',
   line: 1,
   category: 'CWE-78',
@@ -60,7 +62,7 @@ describe('research', () => {
     const result = await research(provider, diff, limit)
     expect(result.findings).toEqual([finding])
     expect(result.invalid).toHaveLength(2)
-    expect(result.incomplete).toEqual([{ reason: 'finding-unreadable', detail: expect.stringMatching(/^findings\[2\]: /) }])
+    expect(result.incomplete).toEqual([{ profile: 'security', reason: 'finding-unreadable', detail: expect.stringMatching(/^findings\[2\]: /) }])
   })
 
   it('drops a finding that cites code outside the diff, and says so', async () => {
@@ -81,7 +83,7 @@ describe('research', () => {
 })
 
 describe('dedup', () => {
-  it('drops repeats keyed by file:line:category', () => {
+  it('drops repeats keyed by file, line and category', () => {
     const a = { ...finding }
     const b = { ...finding, line: 2 }
     expect(dedup([a, b, a])).toEqual([a, b])
@@ -90,6 +92,12 @@ describe('dedup', () => {
   it('keeps findings that differ only by category', () => {
     const a = { ...finding }
     const b = { ...finding, category: 'CWE-89' }
+    expect(dedup([a, b])).toEqual([a, b])
+  })
+
+  it('keeps findings whose fields only collide once joined with colons', () => {
+    const a = { ...finding, file: 'a.js', line: 1, category: 'CWE-79:5:XSS' }
+    const b = { ...finding, file: 'a.js:1:CWE-79', line: 5, category: 'XSS' }
     expect(dedup([a, b])).toEqual([a, b])
   })
 })
@@ -185,14 +193,14 @@ describe('review', () => {
     expect(result.kept).toHaveLength(1)
     expect(result.kept[0]).toMatchObject({ keptVotes: 2, totalVotes: 3, confidence: 'medium' })
     expect(result.unreviewed).toEqual([])
-    expect(result.meta.incomplete).toEqual([{ reason: 'vote-failed', detail: '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high' }])
+    expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'vote-failed', file: 'a.js', detail: '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high' }])
   })
 
   it('carries an unusable research reply into meta.incomplete without voting', async () => {
     complete.mockResolvedValue(JSON.stringify({ findings: [{ file: 'x.js' }] }))
     const result = await review(diff, providers)
     expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['finding-unreadable', 'research-unusable'])
-    expect(result.meta.incomplete[1]).toEqual({ reason: 'research-unusable', detail: '1 finding(s) reported, none usable' })
+    expect(result.meta.incomplete[1]).toEqual({ profile: 'security', reason: 'research-unusable', detail: '1 finding(s) reported, none usable' })
     expect(complete).toHaveBeenCalledTimes(1)
   })
 

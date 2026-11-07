@@ -40,7 +40,7 @@ export async function research(
   maxFindings: number = DEFAULT_MAX_FINDINGS,
 ): Promise<ResearchOutcome> {
   const { text } = await limit(() => provider.complete(researchRequest(securityProfile.prompts.research, diff)))
-  return checkReply(text, sections, maxFindings)
+  return checkReply(text, sections, securityProfile.id, maxFindings)
 }
 
 /**
@@ -48,12 +48,13 @@ export async function research(
  * rediscovered at the same location - plain code, not a model, same as the quorum tally below.
  *
  * @example
- * dedup([a, b, a]) // -> [a, b], keyed by file:line:category
+ * dedup([a, b, a]) // -> [a, b], keyed by file, line and category
  */
 export function dedup(findings: Finding[]): Finding[] {
   const seen = new Set<string>()
   return findings.filter((finding) => {
-    const key = `${finding.file}:${finding.line}:${finding.category}`
+    // A JSON array, not colons: a file name and a category can hold colons, which would make two findings collide.
+    const key = JSON.stringify([finding.file, finding.line, finding.category])
     if (seen.has(key)) return false
     seen.add(key)
     return true
@@ -132,7 +133,7 @@ export async function review(diff: string, providers: Providers, onProgress?: (m
     if (undecided === undefined) continue
     const failed = verdict.votes.filter(lensVote => lensVote.vote === null).length
     // The file name is JSON-quoted: a decoded diff path can hold control characters, and this line reaches stderr.
-    const entry: IncompleteEntry = { reason: 'vote-failed', detail: `${JSON.stringify(verdict.file)}:${verdict.line} is kept at ${verdict.confidence}, but ${failed} failed vote(s) could have made it ${undecided}` }
+    const entry: IncompleteEntry = { profile: securityProfile.id, reason: 'vote-failed', file: verdict.file, detail: `${JSON.stringify(verdict.file)}:${verdict.line} is kept at ${verdict.confidence}, but ${failed} failed vote(s) could have made it ${undecided}` }
     result.meta.incomplete.push(entry)
     log(`incomplete: ${entry.reason} (${entry.detail})`)
   }
