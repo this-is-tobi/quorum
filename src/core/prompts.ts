@@ -10,7 +10,9 @@ export const UNTRUSTED_CONTENT_NOTICE
 /**
  * A `{{name}}` placeholder: anything between `{{` and `}}`. The renderer and the profile check
  * share this one definition, so a placeholder the check sees is one the renderer would fill, and
- * there is no escape for literal braces.
+ * there is no escape for literal braces. It carries the `g` flag and so a `lastIndex`: a consumer
+ * scanning with `matchAll` or `exec` must scan a copy (`new RegExp(PLACEHOLDER.source, 'g')`) and
+ * never rely on this instance's `lastIndex`.
  */
 export const PLACEHOLDER = /\{\{([^{}]*)\}\}/g
 

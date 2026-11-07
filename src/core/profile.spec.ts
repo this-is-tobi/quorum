@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { profileIssues, thresholdsFor } from './profile.ts'
+import { PLACEHOLDER } from './prompts.ts'
 import type { Profile } from './types.ts'
 
 const valid: Profile = {
@@ -68,6 +69,18 @@ describe('profileIssues', () => {
       { path: 'p.prompts.research', message: '{{diff}} is not allowed: the diff is appended automatically as fenced data' },
       { path: 'p.prompts.research', message: '{{lens.id}} is not allowed: the research template takes no variables' },
     ])
+  })
+
+  it('still refuses {{diff}} in the research template after a stray test() moved the shared regex', () => {
+    try {
+      PLACEHOLDER.test('xx {{diff}}')
+      expect(PLACEHOLDER.lastIndex).toBeGreaterThan(0)
+      expect(profileIssues({ ...valid, prompts: { ...valid.prompts, research: '{{diff}}' } })).toEqual([
+        { path: 'p.prompts.research', message: '{{diff}} is not allowed: the diff is appended automatically as fenced data' },
+      ])
+    } finally {
+      PLACEHOLDER.lastIndex = 0
+    }
   })
 
   it('refuses a vote variable outside the allowlist, a typo included, once per name', () => {

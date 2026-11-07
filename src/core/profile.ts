@@ -68,7 +68,7 @@ function templateIssues(path: string, template: string, problem: (name: string) 
   if (template.trim() === '') return [{ path, message: 'must not be empty' }]
   const issues: ConfigIssue[] = []
   const reported = new Set<string>()
-  for (const match of template.matchAll(PLACEHOLDER)) {
+  for (const match of template.matchAll(new RegExp(PLACEHOLDER.source, 'g'))) {
     const name = match[1].trim()
     if (reported.has(name)) continue
     reported.add(name)
