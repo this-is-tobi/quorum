@@ -37,6 +37,12 @@ describe('roleSettings', () => {
     expect(roleSettings('RESEARCH', env).model).toBe('qwen3.6:27b')
   })
 
+  it('gives the voter its own endpoint and key when both roles set them', () => {
+    const env = { RESEARCH_BASE_URL: 'https://r.example/v1', RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'https://v.example/v1', VOTER_API_KEY: 'sk-v' }
+    expect(roleSettings('VOTER', env)).toEqual({ baseUrl: 'https://v.example/v1', apiKey: 'sk-v', model: 'r' })
+    expect(roleSettings('RESEARCH', env)).toEqual({ baseUrl: 'https://r.example/v1', apiKey: 'sk-r', model: 'r' })
+  })
+
   it('trims surrounding whitespace, as fetch always did with a header value, and treats a blank value as unset', () => {
     const env = { RESEARCH_MODEL: ' qwen ', RESEARCH_API_KEY: ' sk-test\n', RESEARCH_BASE_URL: ' http://h/v1\r\n', VOTER_MODEL: '  ', VOTER_API_KEY: ' ' }
     expect(roleSettings('RESEARCH', env)).toEqual({ baseUrl: 'http://h/v1', apiKey: 'sk-test', model: 'qwen' })
