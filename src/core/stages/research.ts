@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { parseResearchReply } from '../output.ts'
 import type { Finding, IncompleteEntry } from '../types.ts'
 import { verifyFindings } from '../verify.ts'
@@ -14,6 +15,16 @@ export interface ResearchOutcome {
 }
 
 /**
+ * The id of a finding, stable across runs: the first 12 hex characters of SHA-256 over the JSON
+ * array `[profile, file, line, category]`. The fields go in as a JSON array, not joined with
+ * colons, because a file name and a category can hold colons: joined, two different findings
+ * could produce one string and share an id, while an array keeps every field apart.
+ */
+export function findingId(profile: string, file: string, line: number, category: string): string {
+  return createHash('sha256').update(JSON.stringify([profile, file, line, category])).digest('hex').slice(0, 12)
+}
+
+/**
  * Turn a research reply into what the panel receives. The reply is parsed strictly (a malformed
  * envelope, or one with a key other than `findings`, throws, so it never reads as "no findings"),
  * only the first `maxFindings` findings it lists are read and checked against the diff (the work
@@ -22,28 +33,31 @@ export interface ResearchOutcome {
  * planted text that closes a string early leaves behind), findings beyond the cap, and a reply
  * whose findings were all unusable, are recorded as incomplete, which fails the run (ADR-0012).
  * A finding that cites code outside the diff is only dropped with its reason: it was read, and
- * it is wrong.
+ * it is wrong. Every finding it keeps is named by `findingId` and tagged with `profile`, and every
+ * incomplete entry it records is tagged with `profile` too.
  *
  * @throws OutputError when the reply is not one JSON object holding a `findings` array and nothing else
  * @throws RangeError when `maxFindings` is not a positive integer
  */
-export function checkReply(text: string, sections: ReadonlyMap<string, string>, maxFindings = DEFAULT_MAX_FINDINGS): ResearchOutcome {
+export function checkReply(text: string, sections: ReadonlyMap<string, string>, profile: string, maxFindings = DEFAULT_MAX_FINDINGS): ResearchOutcome {
   if (!Number.isInteger(maxFindings) || maxFindings < 1) {
     throw new RangeError(`maxFindings must be a positive integer, got ${maxFindings}`)
   }
   const parsed = parseResearchReply(text, maxFindings)
   const checked = verifyFindings(parsed.findings, sections)
-  const incomplete = parsed.invalid.map((detail): IncompleteEntry => ({ reason: 'finding-unreadable', detail }))
+  const findings = checked.findings.map((finding): Finding => ({ id: findingId(profile, finding.file, finding.line, finding.category), profile, ...finding }))
+  const incomplete = parsed.invalid.map((detail): IncompleteEntry => ({ profile, reason: 'finding-unreadable', detail }))
   if (parsed.listed > maxFindings) {
     incomplete.push({
+      profile,
       reason: 'findings-capped',
       detail: `${parsed.listed - maxFindings} of ${parsed.listed} reported findings were not reviewed (the cap is ${maxFindings})`,
     })
   }
-  if (parsed.listed > 0 && checked.findings.length === 0) {
+  if (parsed.listed > 0 && findings.length === 0) {
     const reported = `${parsed.listed} finding(s) reported`
     const detail = parsed.listed > maxFindings ? `${reported}, the first ${maxFindings} read, none usable` : `${reported}, none usable`
-    incomplete.push({ reason: 'research-unusable', detail })
+    incomplete.push({ profile, reason: 'research-unusable', detail })
   }
-  return { findings: checked.findings, invalid: [...parsed.invalid, ...checked.invalid], incomplete }
+  return { findings, invalid: [...parsed.invalid, ...checked.invalid], incomplete }
 }

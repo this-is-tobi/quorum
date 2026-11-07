@@ -11,6 +11,10 @@ import type { PolicyRules } from './policy.ts'
  * line, category and claim; the evidence is read from the diff by code, never from the finder.
  */
 export interface Finding {
+  /** Names the finding, stable across runs: the first 12 hex characters of SHA-256 over the JSON array `[profile, file, line, category]`. */
+  id: string
+  /** The id of the profile whose run found it. */
+  profile: string
   /** The diff's own path; for a diff without per-file headers, the finder's name for it, cleaned. */
   file: string
   line: number
@@ -107,7 +111,11 @@ export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
  * raised it to a higher level. It is reported and counted, never dropped silently (ADR-0012).
  */
 export interface IncompleteEntry {
+  /** The id of the profile whose run has the gap. */
+  profile: string
   reason: 'research-unusable' | 'findings-capped' | 'finding-unreadable' | 'vote-failed'
+  /** The file of the finding the gap is about, when it is about one finding the harness could read. */
+  file?: string
   detail: string
 }
 

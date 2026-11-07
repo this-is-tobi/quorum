@@ -1,6 +1,9 @@
 import { locate } from './diff.ts'
 import type { Finding, FindingDetails } from './types.ts'
 
+/** A finding as the harness verified it, before the research stage names it and tags its profile. */
+export type VerifiedFinding = Omit<Finding, 'id' | 'profile'>
+
 const MAX_SUMMARY = 500
 const MAX_CATEGORY = 80
 const MAX_FILE = 260
@@ -31,8 +34,8 @@ const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}]/gu
  * evidence is the diff's lines around the cited one, and the finder's quote is only compared with
  * them. The summary and category are the only finder-written text left, cleaned and capped.
  */
-export function verifyFindings(details: readonly FindingDetails[], sections: ReadonlyMap<string, string>): { findings: Finding[], invalid: string[] } {
-  const findings: Finding[] = []
+export function verifyFindings(details: readonly FindingDetails[], sections: ReadonlyMap<string, string>): { findings: VerifiedFinding[], invalid: string[] } {
+  const findings: VerifiedFinding[] = []
   const invalid: string[] = []
   for (const detail of details) {
     const located = locate(sections, detail.file, detail.line)
