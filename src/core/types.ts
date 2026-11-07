@@ -5,27 +5,6 @@
  */
 
 /**
- * Which side of the pipeline a model call belongs to: the finder that reads
- * a diff and proposes candidates, or a voter that independently judges one
- * candidate from a single fixed angle.
- */
-export type Role = 'RESEARCH' | 'VOTER'
-
-/**
- * Resolved connection settings for one role. VOTER falls back to the
- * RESEARCH_* env vars when its own are unset, so a single-backend setup only
- * needs to configure RESEARCH_*.
- */
-export interface RoleConfig {
-  /** Base URL of an OpenAI-compatible endpoint, e.g. http://localhost:11434/v1 for Ollama. */
-  baseUrl: string
-  /** Bearer token. Use any placeholder for endpoints that don't require auth. */
-  apiKey: string
-  /** Model name/tag as the endpoint expects it, e.g. 'qwen3.6:27b' or 'gpt-5.4'. */
-  model: string
-}
-
-/**
  * A candidate issue after the harness checked it against the diff. The finder supplies the file,
  * line, category and claim; the evidence is read from the diff by code, never from the finder.
  */
