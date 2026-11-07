@@ -18,18 +18,28 @@ export interface OpenAICompatibleOptions {
 }
 
 const MAX_MODEL_TEXT = 200
-const HTTP_URL = /^https?:\/\//i
+const HTTP_URL_WITH_HOST = /^https?:\/\/[^/\\?#\s]/i
 const NOT_HEADER_SAFE = /[^\x21-\x7E]/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** A scheme, then a host: URL parsing skips extra slashes, so `https:///v1` would otherwise send the request to a host named `v1`. */
+function isHttpUrlWithHost(baseUrl: string): boolean {
+  if (!HTTP_URL_WITH_HOST.test(baseUrl)) return false
+  try {
+    return new URL(baseUrl).host !== ''
+  } catch {
+    return false
+  }
+}
+
 /** Neither message repeats the value: a base URL can carry credentials, and a key is a secret. */
 function assertValidOptions({ id, baseUrl, apiKey }: OpenAICompatibleOptions): void {
   const issues: ConfigIssue[] = []
-  if (!HTTP_URL.test(baseUrl)) {
-    issues.push({ path: `${id}.baseUrl`, message: 'must start with http:// or https://' })
+  if (!isHttpUrlWithHost(baseUrl)) {
+    issues.push({ path: `${id}.baseUrl`, message: 'must be an http:// or https:// URL with a host' })
   }
   if (apiKey !== undefined && NOT_HEADER_SAFE.test(apiKey)) {
     issues.push({ path: `${id}.apiKey`, message: 'must only contain visible ASCII characters, which an HTTP header can carry' })
@@ -89,7 +99,7 @@ function readReply(reply: unknown, { id, model, apiKey }: Pick<OpenAICompatibleO
  * A provider for any OpenAI-compatible `/chat/completions` endpoint. The key, when there is one, travels
  * only in the `Authorization` header (invariant I1).
  *
- * @throws ConfigError when the base URL is not http(s) or the key cannot be an HTTP header value
+ * @throws ConfigError when the base URL is not an http(s) URL with a host or the key cannot be an HTTP header value
  */
 export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
   assertValidOptions(options)
