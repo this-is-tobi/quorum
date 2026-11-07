@@ -59,6 +59,15 @@ describe('postJson', () => {
     expect(init).toMatchObject({ method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer k' }, body: '{"a":1}', signal })
   })
 
+  it('lets a body that cannot be serialized fail as a programming error, before any request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const error = await postJson({ ...options, body: { n: 1n } }).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error).not.toBeInstanceOf(ProviderError)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('truncates the error body to 500 characters, writes it as one JSON string and marks 5xx as retryable', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503, text: async () => 'x'.repeat(10_000) }))
     const error = await postJson(options).catch((caught: unknown) => caught)
