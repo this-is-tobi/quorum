@@ -1,7 +1,9 @@
 import { readFile } from 'node:fs/promises'
-import { roleConfig } from '../client.ts'
 import { ConfigError } from '../core/errors.ts'
-import { runQuorum } from '../pipeline.ts'
+import { providersFromEnv, roleSettings } from '../legacy.ts'
+import type { Env } from '../legacy.ts'
+import { review } from '../pipeline.ts'
+import { originOf } from '../providers/http.ts'
 
 /** Exit codes (ADR-0008, amended by ADR-0012). */
 export const EXIT = { ok: 0, finding: 1, usage: 2, runtime: 3, incomplete: 4 } as const
@@ -9,6 +11,8 @@ export const EXIT = { ok: 0, finding: 1, usage: 2, runtime: 3, incomplete: 4 } a
 export interface CliIO {
   /** Arguments after the executable and script, e.g. `process.argv.slice(2)`. */
   argv: readonly string[]
+  /** Environment variables, e.g. `process.env`. */
+  env: Env
   stdin: AsyncIterable<Uint8Array | string> & { isTTY?: boolean }
   stdout: { write: (text: string) => unknown }
   stderr: { write: (text: string) => unknown }
@@ -32,11 +36,12 @@ export async function runCli(io: CliIO): Promise<number> {
   }
 
   try {
-    const research = roleConfig('RESEARCH')
-    const voter = roleConfig('VOTER')
-    io.stderr.write(`Research (${research.model} @ ${research.baseUrl})...\n`)
-    io.stderr.write(`Panel will use ${voter.model} @ ${voter.baseUrl}\n`)
-    const result = await runQuorum(diff, message => io.stderr.write(`${message}\n`))
+    const providers = providersFromEnv(io.env)
+    const research = roleSettings('RESEARCH', io.env)
+    const voter = roleSettings('VOTER', io.env)
+    io.stderr.write(`Research (${research.model} @ ${originOf(research.baseUrl)})...\n`)
+    io.stderr.write(`Panel will use ${voter.model} @ ${originOf(voter.baseUrl)}\n`)
+    const result = await review(diff, providers, message => io.stderr.write(`${message}\n`))
     io.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
     if (result.kept.some(verdict => verdict.confidence === 'high')) return EXIT.finding
     return result.unreviewed.length > 0 || result.meta.incomplete.length > 0 ? EXIT.incomplete : EXIT.ok

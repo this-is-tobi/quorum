@@ -1,6 +1,6 @@
 import { EXIT, runCli } from './main.ts'
 
-runCli({ argv: process.argv.slice(2), stdin: process.stdin, stdout: process.stdout, stderr: process.stderr })
+runCli({ argv: process.argv.slice(2), env: process.env, stdin: process.stdin, stdout: process.stdout, stderr: process.stderr })
   .then((code) => {
     process.exitCode = code
   })

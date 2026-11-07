@@ -1,24 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EXIT, runCli } from './main.ts'
 import type { CliIO } from './main.ts'
 
-const ENV_KEYS = ['RESEARCH_BASE_URL', 'RESEARCH_API_KEY', 'RESEARCH_MODEL', 'VOTER_BASE_URL', 'VOTER_API_KEY', 'VOTER_MODEL']
-const saved: Record<string, string | undefined> = {}
-
-beforeEach(() => {
-  for (const key of ENV_KEYS) {
-    saved[key] = process.env[key]
-    delete process.env[key]
-  }
-})
-
 afterEach(() => {
-  for (const key of ENV_KEYS) {
-    if (saved[key] === undefined) delete process.env[key]
-    else process.env[key] = saved[key]
-  }
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
 })
+
+/** The environment of a configured run. */
+const MODEL = { RESEARCH_MODEL: 'm' }
 
 const DIFF = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-safe()\n+exec(cmd)\n'
 /** Two added lines, so two findings can be cited. */
@@ -27,7 +17,7 @@ const SECOND_FINDING = { file: 'a.js', line: 2, category: 'CWE-95', quote: 'eval
 const FINDING = { file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }
 const vote = (keep: boolean): string => JSON.stringify({ keep, reasoning: 'r' })
 
-function harness(options: { argv?: string[], stdin?: string, isTTY?: boolean } = {}): { io: CliIO, stdout: () => string, stderr: () => string } {
+function harness(options: { argv?: string[], stdin?: string, isTTY?: boolean, env?: Record<string, string> } = {}): { io: CliIO, stdout: () => string, stderr: () => string } {
   const out: string[] = []
   const err: string[] = []
   async function* chunks(): AsyncGenerator<string> {
@@ -35,6 +25,7 @@ function harness(options: { argv?: string[], stdin?: string, isTTY?: boolean } =
   }
   const io: CliIO = {
     argv: options.argv ?? [],
+    env: options.env ?? {},
     stdin: Object.assign(chunks(), { isTTY: options.isTTY ?? false }),
     stdout: { write: text => out.push(text) },
     stderr: { write: text => err.push(text) },
@@ -66,12 +57,30 @@ describe('runCli', () => {
   })
 
   it('exits 0 without calling the model for an empty diff', async () => {
-    process.env.RESEARCH_MODEL = 'm'
     const fetchMock = stubModel()
-    const { io, stdout } = harness({ stdin: '  \n' })
+    const { io, stdout } = harness({ env: MODEL, stdin: '  \n' })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(fetchMock).not.toHaveBeenCalled()
     expect(JSON.parse(stdout())).toMatchObject({ kept: [], discarded: [] })
+  })
+
+  it('reads the injected environment and never process.env', async () => {
+    vi.stubEnv('RESEARCH_MODEL', 'leaked')
+    const fetchMock = stubModel()
+    const { io, stderr } = harness({ stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toContain('RESEARCH_MODEL')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('prints the origin of each role\'s endpoint, never its credentials, path or query, from the injected environment', async () => {
+    vi.stubEnv('RESEARCH_MODEL', 'leaked')
+    const env = { RESEARCH_MODEL: 'banner-model', RESEARCH_BASE_URL: 'https://user:pw-secret@h.example/token-secret/v1?key=q-secret' }
+    const { io, stderr } = harness({ stdin: '  \n', env })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stderr()).toContain('Research (banner-model @ https://h.example)...')
+    expect(stderr()).toContain('Panel will use banner-model @ https://h.example')
+    expect(stderr()).not.toMatch(/secret|leaked/)
   })
 
   it('exits 2 when no model is configured', async () => {
@@ -82,24 +91,21 @@ describe('runCli', () => {
   })
 
   it('exits 3 when the model endpoint fails', async () => {
-    process.env.RESEARCH_MODEL = 'm'
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')))
-    const { io } = harness({ stdin: DIFF })
+    const { io } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.runtime)
   })
 
   it('exits 1 on a unanimous finding and prints the result as JSON', async () => {
-    process.env.RESEARCH_MODEL = 'm'
     stubModel(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(true))
-    const { io, stdout } = harness({ stdin: DIFF })
+    const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.finding)
     expect(JSON.parse(stdout()).kept[0]).toMatchObject({ file: 'a.js', confidence: 'high' })
   })
 
   it('exits 0 when the panel keeps a finding only at medium confidence', async () => {
-    process.env.RESEARCH_MODEL = 'm'
     stubModel(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(false))
-    const { io, stdout } = harness({ stdin: DIFF })
+    const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
     const result = JSON.parse(stdout())
     expect(result.kept).toHaveLength(1)
@@ -107,16 +113,14 @@ describe('runCli', () => {
   })
 
   it('exits 0 when the panel discards every finding', async () => {
-    process.env.RESEARCH_MODEL = 'm'
     stubModel(JSON.stringify({ findings: [FINDING] }), vote(false), vote(false), vote(true))
-    const { io } = harness({ stdin: DIFF })
+    const { io } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
   })
 
   it('exits 4 when every voter fails, instead of reading the outage as a clean review', async () => {
-    process.env.RESEARCH_MODEL = 'm'
     stubModel(JSON.stringify({ findings: [FINDING] })).mockRejectedValue(new TypeError('fetch failed'))
-    const { io, stdout, stderr } = harness({ stdin: DIFF })
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const result = JSON.parse(stdout())
     expect(result.kept).toEqual([])
@@ -126,9 +130,8 @@ describe('runCli', () => {
   })
 
   it('exits 4 when the research reply lists only unusable findings', async () => {
-    process.env.RESEARCH_MODEL = 'm'
     const fetchMock = stubModel(JSON.stringify({ findings: [{ file: 'x.js' }] }))
-    const { io, stdout, stderr } = harness({ stdin: DIFF })
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const reasons = JSON.parse(stdout()).meta.incomplete.map((entry: { reason: string }) => entry.reason)
     expect(reasons).toEqual(['finding-unreadable', 'research-unusable'])
@@ -137,9 +140,8 @@ describe('runCli', () => {
   })
 
   it('exits 4 when one finding is unreadable, even though another is kept', async () => {
-    process.env.RESEARCH_MODEL = 'm'
     stubModel(JSON.stringify({ findings: [FINDING, { file: 'a.js' }] }), vote(true), vote(true), vote(false))
-    const { io, stdout, stderr } = harness({ stdin: DIFF })
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const result = JSON.parse(stdout())
     expect(result.kept).toHaveLength(1)
@@ -148,9 +150,8 @@ describe('runCli', () => {
   })
 
   it('exits 1 when a high finding is kept, even if another finding is unreviewed', async () => {
-    process.env.RESEARCH_MODEL = 'm'
     stubModel(JSON.stringify({ findings: [FINDING, SECOND_FINDING] }), vote(true), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
-    const { io, stdout } = harness({ stdin: TWO_LINE_DIFF })
+    const { io, stdout } = harness({ env: MODEL, stdin: TWO_LINE_DIFF })
     expect(await runCli(io)).toBe(EXIT.finding)
     const result = JSON.parse(stdout())
     expect(result.kept).toHaveLength(1)
@@ -158,9 +159,8 @@ describe('runCli', () => {
   })
 
   it('exits 0 when a failed vote could not have changed a discard', async () => {
-    process.env.RESEARCH_MODEL = 'm'
     stubModel(JSON.stringify({ findings: [FINDING] }), vote(false), vote(false)).mockRejectedValue(new TypeError('fetch failed'))
-    const { io, stdout } = harness({ stdin: DIFF })
+    const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
     const result = JSON.parse(stdout())
     expect(result.discarded).toHaveLength(1)
@@ -168,9 +168,8 @@ describe('runCli', () => {
   })
 
   it('exits 4 when a kept medium finding has a failed vote that could have made it high', async () => {
-    process.env.RESEARCH_MODEL = 'm'
     stubModel(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
-    const { io, stdout, stderr } = harness({ stdin: DIFF })
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const result = JSON.parse(stdout())
     expect(result.kept).toHaveLength(1)

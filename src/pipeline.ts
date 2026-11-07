@@ -1,13 +1,14 @@
-import { chat } from './client.ts'
 import { createLimiter, DEFAULT_CONCURRENCY } from './core/concurrency.ts'
 import type { Limiter } from './core/concurrency.ts'
 import { diffSectionFor, splitDiff } from './core/diff.ts'
 import { parseVoteReply } from './core/output.ts'
+import type { Provider } from './core/ports.ts'
 import { confidenceFor, defaultPolicy, resolvePolicy, undecidedLevel, verdictStatus } from './core/policy.ts'
 import { defaultPrompts, renderTemplate, researchRequest, voteRequest } from './core/prompts.ts'
 import { checkReply, DEFAULT_MAX_FINDINGS } from './core/stages/research.ts'
 import type { ResearchOutcome } from './core/stages/research.ts'
 import type { Finding, IncompleteEntry, Lens, LensVote, QuorumResult, Verdict } from './core/types.ts'
+import { providersFromEnv } from './legacy.ts'
 
 /**
  * The three fixed, orthogonal angles every panel vote is judged from. Three is not an arbitrary
@@ -34,8 +35,14 @@ export const LENSES: readonly Lens[] = [
 /** The default policy resolved for the three lenses: 3/3 → high, 2/3 → medium, low disabled. */
 const THRESHOLDS = resolvePolicy(defaultPolicy, LENSES.length).thresholds
 
+/** The two model backends of a review: the researcher that proposes findings and the voter behind the panel. */
+export interface Providers {
+  research: Provider
+  voter: Provider
+}
+
 /**
- * Ask the research role to propose candidate findings in a diff, then check each against the diff.
+ * Ask the research provider to propose candidate findings in a diff, then check each against the diff.
  * The reply is validated: one without a `findings` array fails the run (fail closed), a reply
  * whose object holds a key other than `findings` fails the run too, a finding that does not match
  * the reply schema is recorded as incomplete, a finding citing a file or line the diff does not
@@ -44,16 +51,17 @@ const THRESHOLDS = resolvePolicy(defaultPolicy, LENSES.length).thresholds
  * never the finder's quote.
  *
  * @example
- * const { findings, invalid, incomplete } = await research(diffText, createLimiter(4))
+ * const { findings, invalid, incomplete } = await research(provider, diffText, createLimiter(4))
  */
 export async function research(
+  provider: Provider,
   diff: string,
   limit: Limiter,
   sections: ReadonlyMap<string, string> = splitDiff(diff),
   maxFindings: number = DEFAULT_MAX_FINDINGS,
 ): Promise<ResearchOutcome> {
-  const reply = await limit(() => chat('RESEARCH', researchRequest(defaultPrompts.research, diff)))
-  return checkReply(reply, sections, maxFindings)
+  const { text } = await limit(() => provider.complete(researchRequest(defaultPrompts.research, diff)))
+  return checkReply(text, sections, maxFindings)
 }
 
 /**
@@ -78,14 +86,15 @@ export function dedup(findings: Finding[]): Finding[] {
  * votes or their reasoning - independence is the point, not an oversight. Letting verifiers see
  * each other's reasoning measurably converges results toward consensus rather than correctness.
  */
-async function vote(finding: Finding, lens: Lens, diffContext: string, limit: Limiter): Promise<LensVote> {
+async function vote(provider: Provider, finding: Finding, lens: Lens, diffContext: string, limit: Limiter): Promise<LensVote> {
   const instructions = renderTemplate(defaultPrompts.vote, {
     'lens.id': lens.angle,
     'lens.question': lens.question,
     'panel.size': String(LENSES.length),
   })
   try {
-    const result = parseVoteReply(await limit(() => chat('VOTER', voteRequest(instructions, finding, diffContext))))
+    const { text } = await limit(() => provider.complete(voteRequest(instructions, finding, diffContext)))
+    const result = parseVoteReply(text)
     return { angle: lens.angle, vote: result, error: null }
   } catch (error) {
     return { angle: lens.angle, vote: null, error: (error as Error).message }
@@ -100,27 +109,27 @@ async function vote(finding: Finding, lens: Lens, diffContext: string, limit: Li
  * sounded.
  *
  * @example
- * const verdict = await panel(finding, diffSectionForTheFile, createLimiter(4))
+ * const verdict = await panel(provider, finding, diffSectionForTheFile, createLimiter(4))
  * if (verdict.confidence) console.log(`kept: ${verdict.confidence}`)
  */
-export async function panel(finding: Finding, diffContext: string, limit: Limiter): Promise<Verdict> {
-  const votes = await Promise.all(LENSES.map(lens => vote(finding, lens, diffContext, limit)))
+export async function panel(provider: Provider, finding: Finding, diffContext: string, limit: Limiter): Promise<Verdict> {
+  const votes = await Promise.all(LENSES.map(lens => vote(provider, finding, lens, diffContext, limit)))
   const keptVotes = votes.filter(v => v.vote?.keep).length
   return { ...finding, keptVotes, totalVotes: votes.length, confidence: confidenceFor(keptVotes, THRESHOLDS), votes }
 }
 
 /**
- * Full pipeline: find candidates in a diff, then panel-verify each independently before reporting.
- * Each voter receives the diff section of the file its finding cites. A finding whose failed votes
- * left it undecided is `unreviewed`, a kept finding whose failed votes could have raised it is
- * recorded in `meta.incomplete`, and research gaps are there too: the gaps the harness detects
- * never read as a clean review (ADR-0012).
+ * Full pipeline: find candidates in a diff with the research provider, then panel-verify each
+ * independently with the voter provider before reporting. Each voter receives the diff section of
+ * the file its finding cites. A finding whose failed votes left it undecided is `unreviewed`, a kept
+ * finding whose failed votes could have raised it is recorded in `meta.incomplete`, and research
+ * gaps are there too: the gaps the harness detects never read as a clean review (ADR-0012).
  *
  * @example
- * const { kept, discarded, unreviewed, meta } = await runQuorum(diffText)
+ * const { kept, discarded, unreviewed, meta } = await review(diffText, { research: provider, voter: provider })
  * console.log(`${kept.length} kept, ${discarded.length} discarded, ${unreviewed.length} unreviewed`)
  */
-export async function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult> {
+export async function review(diff: string, providers: Providers, onProgress?: (message: string) => void): Promise<QuorumResult> {
   const log = onProgress ?? (() => {})
   const result: QuorumResult = { kept: [], discarded: [], unreviewed: [], meta: { incomplete: [] } }
   if (diff.trim() === '') {
@@ -130,14 +139,14 @@ export async function runQuorum(diff: string, onProgress?: (message: string) => 
   const limit = createLimiter(DEFAULT_CONCURRENCY)
 
   const sections = splitDiff(diff)
-  const { findings, invalid, incomplete } = await research(diff, limit, sections)
+  const { findings, invalid, incomplete } = await research(providers.research, diff, limit, sections)
   if (invalid.length > 0) log(`${invalid.length} invalid finding(s) dropped`)
   for (const entry of incomplete) log(`incomplete: ${entry.reason} (${entry.detail})`)
   result.meta.incomplete = incomplete
   const candidates = dedup(findings)
   log(`${candidates.length} candidate(s) after dedup`)
 
-  const verdicts = await Promise.all(candidates.map(finding => panel(finding, diffSectionFor(sections, finding.file, diff), limit)))
+  const verdicts = await Promise.all(candidates.map(finding => panel(providers.voter, finding, diffSectionFor(sections, finding.file, diff), limit)))
   for (const verdict of verdicts) result[verdictStatus(verdict, THRESHOLDS)].push(verdict)
   for (const verdict of result.kept) {
     const undecided = undecidedLevel(verdict, THRESHOLDS)
@@ -151,4 +160,17 @@ export async function runQuorum(diff: string, onProgress?: (message: string) => 
   log(`${result.kept.length} kept, ${result.discarded.length} discarded, ${result.unreviewed.length} unreviewed by panel`)
 
   return result
+}
+
+/**
+ * `review` with providers built from the RESEARCH_* / VOTER_* environment variables of `process.env`.
+ * A research model that is not set is a `ConfigError`, even for an empty diff.
+ *
+ * @deprecated Use review with explicit providers
+ *
+ * @example
+ * const { kept } = await runQuorum(diffText)
+ */
+export async function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult> {
+  return review(diff, providersFromEnv(process.env), onProgress)
 }

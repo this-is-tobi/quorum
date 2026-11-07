@@ -48,7 +48,7 @@ bun run compile
 ./bin/quorum ./my.diff
 ```
 
-Exit codes: `0` when the review is complete and no kept finding reaches `high` confidence (including findings kept only at `medium`); `1` when at least one does (unanimous 3/3), so it can gate CI without extra parsing; `2` for usage or configuration errors (no diff given on an interactive terminal, missing file, no model configured); `3` when the run itself fails (for example the research model's endpoint is unreachable or returns an unusable reply; a failing voter does not fail the run; see `4`); `4` when the review is incomplete: a finding is `unreviewed` because a failed vote could still have kept it, the finder reported a finding the harness could not read (one that does not match the reply schema, or holds a nested object or array outside it), a kept finding has a failed vote that could have raised it to `high`, the research reply listed only unusable findings, or it listed more than 50 findings and the rest were not reviewed. A kept `high` finding takes precedence over an incomplete review. An empty diff exits `0` without calling any model.
+Exit codes: `0` when the review is complete and no kept finding reaches `high` confidence (including findings kept only at `medium`); `1` when at least one does (unanimous 3/3), so it can gate CI without extra parsing; `2` for usage or configuration errors (no diff given on an interactive terminal, missing file, no model configured); `3` when the run itself fails (for example the research model's endpoint is unreachable, refuses, is cut off by its token limit or returns an unusable reply; a failing voter does not fail the run; see `4`); `4` when the review is incomplete: a finding is `unreviewed` because a failed vote could still have kept it, the finder reported a finding the harness could not read (one that does not match the reply schema, or holds a nested object or array outside it), a kept finding has a failed vote that could have raised it to `high`, the research reply listed only unusable findings, or it listed more than 50 findings and the rest were not reviewed. A kept `high` finding takes precedence over an incomplete review. An empty diff exits `0` without calling any model, once a research model is configured (`2` otherwise).
 
 ## Configuration
 
@@ -56,7 +56,7 @@ All configuration is environment variables — no config file.
 
 ```bash
 export RESEARCH_BASE_URL="http://localhost:11434/v1"  # default: that (Ollama)
-export RESEARCH_API_KEY="not-needed"                   # omit entirely for endpoints with no auth
+export RESEARCH_API_KEY="sk-..."                       # omit for endpoints with no auth: no Authorization header is sent without a key
 export RESEARCH_MODEL="qwen3.6:27b"                    # required
 
 # Optional - point the panel at a different backend than the finder
@@ -65,13 +65,17 @@ export VOTER_BASE_URL="https://api.openai.com/v1"
 export VOTER_API_KEY="sk-..."
 ```
 
+Models that reject `temperature: 0` (OpenAI's reasoning models, current Claude models) cannot be used through these variables yet; per-provider settings arrive with the configuration layer.
+
 ## API
 
 ```typescript
-import { runQuorum } from './src/pipeline.ts'
+import { review } from './src/pipeline.ts'
+import { openaiCompatible } from './src/providers/openai-compatible.ts'
 
+const provider = openaiCompatible({ id: 'local', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b' })
 const diff = await Bun.file('./my.diff').text()
-const { kept, discarded, unreviewed, meta } = await runQuorum(diff, message => console.error(message))
+const { kept, discarded, unreviewed, meta } = await review(diff, { research: provider, voter: provider }, message => console.error(message))
 
 for (const finding of kept) {
   console.log(`${finding.file}:${finding.line} [${finding.confidence}] ${finding.summary}`)
@@ -85,8 +89,9 @@ diff -> research (1 call)  ->  dedup  ->  panel (3 independent calls per finding
 ```
 
 - **`src/core/`** — the pure core, with no environment, network or process access: `types.ts` (shared interfaces), `policy.ts` (vote thresholds, confidence, and the kept / discarded / unreviewed status of a verdict), `stages/research.ts` (parses a research reply, caps it, checks each finding against the diff and records what could not be reviewed), `output.ts` (strict reply parsing), `diff.ts` and `verify.ts` (diff sections and code-derived evidence), `prompts.ts` (fenced requests), `concurrency.ts` (the shared call limit), `errors.ts` and `ports.ts`
-- **`src/client.ts`** — the OpenAI-compatible chat-completion client: role-based env resolution, the raw reply text (parsing lives in `src/core/output.ts`)
-- **`src/pipeline.ts`** — `research` (find candidates), `dedup` (drop repeats), `panel` (independent 3-vote judgment), `runQuorum` (wires them together)
+- **`src/providers/`** — model backends behind the `Provider` port: `openai-compatible.ts` (any OpenAI-compatible `/chat/completions` endpoint, with normalized `ProviderError`s) and `http.ts` (the shared JSON POST helper); a provider returns the raw reply text and parsing stays in `src/core/output.ts`
+- **`src/legacy.ts`** — the temporary `RESEARCH_*` / `VOTER_*` environment wiring that builds the providers; the config layer replaces it
+- **`src/pipeline.ts`** — `research` (find candidates), `dedup` (drop repeats), `panel` (independent 3-vote judgment), `review` (wires them together over explicit providers), `runQuorum` (deprecated: `review` with providers from the environment)
 - **`src/cli/`** — CLI: `bin.ts` is the process entry point, `main.ts` holds the testable `runCli`
 
 ## Testing
