@@ -23,7 +23,7 @@ function read(env: Env, name: string): string | undefined {
 }
 
 /** The origin of a URL, or undefined when it has none: the URL does not parse or its origin is opaque. */
-function originOf(url: string): string | undefined {
+function httpOrigin(url: string): string | undefined {
   try {
     const { origin } = new URL(url)
     return origin === 'null' ? undefined : origin
@@ -32,10 +32,13 @@ function originOf(url: string): string | undefined {
   }
 }
 
-/** URL lower-cases the scheme and host and drops a default port, so only the scheme, host or port tell origins apart. */
+/**
+ * URL lower-cases the scheme and host and drops a default port, so only the scheme, host or port tell
+ * origins apart. A URL without an http(s) origin matches nothing, itself included.
+ */
 function sameOrigin(a: string, b: string): boolean {
-  const origin = originOf(a)
-  return origin !== undefined && origin === originOf(b)
+  const origin = httpOrigin(a)
+  return origin !== undefined && origin === httpOrigin(b)
 }
 
 /**
@@ -62,6 +65,7 @@ function providerFor(role: Role, env: Env): Provider {
   const { baseUrl, apiKey, model } = roleSettings(role, env)
   const provider = openaiCompatible({ id: role.toLowerCase(), baseUrl, apiKey, model })
   if (!model) {
+    // The voter's model is only empty on another origin: on the same one it inherits the research model, built first.
     const message = role === 'VOTER'
       ? 'must be set when VOTER_BASE_URL has another scheme, host or port than RESEARCH_BASE_URL'
       : 'is not set'
