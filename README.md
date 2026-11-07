@@ -65,7 +65,7 @@ export VOTER_BASE_URL="https://api.openai.com/v1"
 export VOTER_API_KEY="sk-..."
 ```
 
-Every `VOTER_*` variable falls back to its `RESEARCH_*` counterpart when it is unset or empty, the key included: when `VOTER_BASE_URL` points at another host, set `VOTER_API_KEY` as well (to any placeholder if that endpoint needs no key), or the research key is sent to the voter's host.
+Each `VOTER_*` variable falls back to its `RESEARCH_*` counterpart when it is unset or empty, as long as the voter uses the same endpoint. When `VOTER_BASE_URL` has another scheme, host or port than `RESEARCH_BASE_URL`, nothing is inherited: `VOTER_MODEL` must be set (exit `2` otherwise), and the voter sends a key only when `VOTER_API_KEY` is set, so the research key never reaches another endpoint.
 
 Models that reject `temperature: 0` (OpenAI's reasoning models, current Claude models) cannot be used through these variables yet; per-provider settings arrive with the configuration layer.
 
