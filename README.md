@@ -48,7 +48,7 @@ bun run compile
 ./bin/quorum ./my.diff
 ```
 
-Exit codes: `0` when the review is complete and no kept finding reaches `high` confidence (including findings kept only at `medium`); `1` when at least one does (unanimous 3/3), so it can gate CI without extra parsing; `2` for usage or configuration errors (no diff given on an interactive terminal, missing file, no model configured); `3` when the run itself fails (for example the research model's endpoint is unreachable, refuses, is cut off by its token limit or returns an unusable reply; a failing voter does not fail the run; see `4`); `4` when the review is incomplete: a finding is `unreviewed` because a failed vote could still have kept it, the finder reported a finding the harness could not read (one that does not match the reply schema, or holds a nested object or array outside it), a kept finding has a failed vote that could have raised it to `high`, the research reply listed only unusable findings, or it listed more than 50 findings and the rest were not reviewed. A kept `high` finding takes precedence over an incomplete review. An empty diff exits `0` without calling any model, once a research model is configured (`2` otherwise).
+Exit codes: `0` when the review is complete and no kept finding reaches `high` confidence (including findings kept only at `medium`); `1` when at least one does (unanimous 3/3), so it can gate CI without extra parsing; `2` for usage or configuration errors (no diff given on an interactive terminal, missing file, no model configured, a base URL that is not an `http://` or `https://` URL with a host, an API key with a character an HTTP header cannot carry); `3` when the run itself fails (for example the research model's endpoint is unreachable, refuses, is cut off by its token limit or returns an unusable reply; a failing voter does not fail the run; see `4`); `4` when the review is incomplete: a finding is `unreviewed` because a failed vote could still have kept it, the finder reported a finding the harness could not read (one that does not match the reply schema, or holds a nested object or array outside it), a kept finding has a failed vote that could have raised it to `high`, the research reply listed only unusable findings, or it listed more than 50 findings and the rest were not reviewed. A kept `high` finding takes precedence over an incomplete review. An empty diff exits `0` without calling any model, once a research model is configured (`2` otherwise).
 
 ## Configuration
 
@@ -64,6 +64,8 @@ export VOTER_MODEL="gpt-5.4"
 export VOTER_BASE_URL="https://api.openai.com/v1"
 export VOTER_API_KEY="sk-..."
 ```
+
+Every `VOTER_*` variable falls back to its `RESEARCH_*` counterpart when it is unset or empty, the key included: when `VOTER_BASE_URL` points at another host, set `VOTER_API_KEY` as well (to any placeholder if that endpoint needs no key), or the research key is sent to the voter's host.
 
 Models that reject `temperature: 0` (OpenAI's reasoning models, current Claude models) cannot be used through these variables yet; per-provider settings arrive with the configuration layer.
 
