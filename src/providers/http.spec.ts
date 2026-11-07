@@ -1,0 +1,191 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ProviderError } from '../core/errors.ts'
+import { originOf, postJson, snippet } from './http.ts'
+
+const options = { providerId: 'p', url: 'http://h/x', body: {} }
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('snippet', () => {
+  it('redacts every occurrence of the secret before cutting, so a key cut in half cannot survive', () => {
+    expect(snippet('bad token: Bearer sk-secret', 100, 'sk-secret')).toBe('"bad token: Bearer [redacted]"')
+    expect(snippet('sk-secret and sk-secret', 100, 'sk-secret')).toBe('"[redacted] and [redacted]"')
+    expect(snippet(`${'a'.repeat(496)}sk-secret`, 500, 'sk-secret')).not.toContain('sk-')
+  })
+
+  it('redacts the secret as a JSON string would carry it, with or without escaped slashes', () => {
+    const secret = 'sk-a/b"c'
+    for (const echoed of [secret, 'sk-a/b\\"c', 'sk-a\\/b"c', 'sk-a\\/b\\"c']) {
+      expect(snippet(`invalid key ${echoed}!`, 100, secret), echoed).toBe('"invalid key [redacted]!"')
+    }
+  })
+
+  it('cuts to the given length and writes one JSON string, so a line break stays on one line', () => {
+    const text = `bad\n::error::forged${String.fromCharCode(27)}[2K`
+    expect(snippet(text, 100)).toBe(JSON.stringify(text))
+    expect(snippet('x'.repeat(1000), 10)).toBe(`"${'x'.repeat(10)}"`)
+  })
+})
+
+describe('originOf', () => {
+  it('keeps the scheme, host and port and drops credentials, path, query and fragment', () => {
+    expect(originOf('http://localhost:11434/v1')).toBe('http://localhost:11434')
+    expect(originOf('https://user:pw-secret@h.example/token-secret/v1?key=q-secret#frag')).toBe('https://h.example')
+  })
+
+  it('names the endpoint when the URL does not parse or has no http origin', () => {
+    expect(originOf('not a url')).toBe('the endpoint')
+    expect(originOf('localhost:11434/v1')).toBe('the endpoint')
+    expect(originOf('data:text/plain,secret')).toBe('the endpoint')
+  })
+})
+
+describe('postJson', () => {
+  it('sends the body as JSON with the given headers and signal, and returns the parsed reply', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ answer: 1 }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const signal = new AbortController().signal
+    await expect(postJson({ ...options, headers: { authorization: 'Bearer k' }, body: { a: 1 }, signal })).resolves.toEqual({ answer: 1 })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('http://h/x')
+    expect(init).toMatchObject({ method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer k' }, body: '{"a":1}', signal })
+  })
+
+  it('truncates the error body to 500 characters, writes it as one JSON string and marks 5xx as retryable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503, text: async () => 'x'.repeat(10_000) }))
+    const error = await postJson(options).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(ProviderError)
+    expect(error).toMatchObject({ kind: 'http', status: 503, retryable: true, message: `p: HTTP 503: ${JSON.stringify('x'.repeat(500))}` })
+    expect((error as Error).cause).toBeUndefined()
+  })
+
+  it('does not mark client errors as retryable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => 'bad request' }))
+    await expect(postJson(options)).rejects.toMatchObject({ kind: 'http', status: 400, retryable: false })
+  })
+
+  it('quotes, rather than strips, the control characters of an error body', async () => {
+    const body = `bad\n::error::forged${String.fromCharCode(27)}[2K`
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => body }))
+    await expect(postJson(options)).rejects.toMatchObject({ message: `p: HTTP 400: ${JSON.stringify(body)}` })
+  })
+
+  it('redacts the key from an error body that echoes it', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401, text: async () => 'bad token: Bearer sk-secret' }))
+    await expect(postJson({ ...options, secret: 'sk-secret' })).rejects.toMatchObject({ message: 'p: HTTP 401: "bad token: Bearer [redacted]"' })
+  })
+
+  it('still reports the status when the error body cannot be read', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      text: async () => {
+        throw new Error('stream error')
+      },
+    }))
+    await expect(postJson(options)).rejects.toMatchObject({ kind: 'http', status: 502, message: 'p: HTTP 502: ""' })
+  })
+
+  it('never copies the runtime error text, which can hold the URL with its credentials', async () => {
+    const url = 'https://user:pw-secret@api.example.com/v1/x?key=q-secret'
+    const cause = Object.assign(new Error('connect'), { code: 'ECONNREFUSED' })
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError(`Request cannot be constructed from a URL that includes credentials: ${url}`, { cause })))
+    const error = await postJson({ ...options, url }).catch((caught: Error) => caught) as Error
+    expect(error).toMatchObject({ kind: 'network', retryable: true, message: 'p: request to https://api.example.com failed (ECONNREFUSED)' })
+    expect(error.cause).toBeUndefined()
+  })
+
+  it('never copies the runtime error text, which can hold an invalid header value with the key', async () => {
+    const header = `Bearer sk-secret${String.fromCharCode(10)}X`
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError(`Headers.append: "${header}" is an invalid header value.`)))
+    const error = await postJson({ ...options, headers: { authorization: header } }).catch((caught: Error) => caught) as Error
+    expect(error.message).toBe('p: request to http://h failed')
+  })
+
+  it('names the code of the error itself, as Bun reports it', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(Object.assign(new TypeError('Unable to connect'), { code: 'ECONNREFUSED' })))
+    await expect(postJson(options)).rejects.toMatchObject({ kind: 'network', message: 'p: request to http://h failed (ECONNREFUSED)' })
+  })
+
+  it.each([
+    ['not an identifier'],
+    ['1ECONNREFUSED'],
+    ['A'.repeat(41)],
+  ])('ignores the error code %j, which is not a plain identifier', async (code) => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(Object.assign(new TypeError('fetch failed'), { code })))
+    await expect(postJson(options)).rejects.toMatchObject({ kind: 'network', message: 'p: request to http://h failed' })
+  })
+
+  it('still reports a network failure when reading the error code throws', async () => {
+    const hostile = new TypeError('fetch failed')
+    Object.defineProperty(hostile, 'code', {
+      get() {
+        throw new Error('boom')
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(hostile))
+    await expect(postJson(options)).rejects.toMatchObject({ name: 'ProviderError', kind: 'network', message: 'p: request to http://h failed' })
+  })
+
+  it.each([['not a url'], ['localhost:11434/v1']])('names the endpoint when the URL %j has no http origin', async (url) => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')))
+    await expect(postJson({ ...options, url })).rejects.toMatchObject({ kind: 'network', message: 'p: request to the endpoint failed' })
+  })
+
+  it('reports a request aborted before the call as aborted, not as a network failure', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new DOMException('aborted', 'AbortError')))
+    await expect(postJson({ ...options, signal: controller.signal })).rejects.toMatchObject({ kind: 'aborted', retryable: false, message: 'p: request aborted' })
+  })
+
+  it('reports a request aborted while in flight as aborted', async () => {
+    const controller = new AbortController()
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => {
+      controller.abort()
+      throw new DOMException('aborted', 'AbortError')
+    }))
+    await expect(postJson({ ...options, signal: controller.signal })).rejects.toMatchObject({ kind: 'aborted', retryable: false })
+  })
+
+  it('reports a connection lost while the reply is read as a network failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new TypeError('terminated')
+      },
+    }))
+    const error = await postJson(options).catch((caught: Error) => caught) as Error
+    expect(error).toMatchObject({ kind: 'network', retryable: true, message: 'p: reading the reply from http://h failed' })
+    expect(error.cause).toBeUndefined()
+  })
+
+  it('reports a request aborted while its reply is read as aborted', async () => {
+    const controller = new AbortController()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        controller.abort()
+        throw new DOMException('aborted', 'AbortError')
+      },
+    }))
+    await expect(postJson({ ...options, signal: controller.signal })).rejects.toMatchObject({ kind: 'aborted', message: 'p: request aborted' })
+  })
+
+  it('rejects a success response whose body is not JSON', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token')
+      },
+    }))
+    const error = await postJson(options).catch((caught: Error) => caught) as Error
+    expect(error).toMatchObject({ kind: 'invalid-response', retryable: false, message: 'p: response body is not JSON' })
+    expect(error.cause).toBeUndefined()
+  })
+})

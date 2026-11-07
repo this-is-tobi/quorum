@@ -124,3 +124,10 @@ export interface FindingDetails {
   quote: string
   summary: string
 }
+
+/** Token counts, and the cost when the adapter knows it, for one provider call. */
+export interface Usage {
+  inputTokens: number
+  outputTokens: number
+  costUsd?: number
+}
