@@ -26,6 +26,27 @@ describe('profileIssues', () => {
     ])
   })
 
+  it.each([undefined, null, 7])('refuses the profile id %j when it is not a string', (id) => {
+    expect(profileIssues({ ...valid, id } as unknown as Profile)).toEqual([
+      { path: 'profile.id', message: `must match ^[a-z][a-z0-9_-]*$, got ${JSON.stringify(id)}` },
+    ])
+  })
+
+  it.each([undefined, null])('refuses the lens id %j when it is not a string', (id) => {
+    const lenses = [{ id, question: 'Q?' }] as unknown as Profile['lenses']
+    expect(profileIssues({ ...valid, lenses })).toEqual([
+      { path: 'p.lenses.0.id', message: `must match ^[a-z][a-z0-9_-]*$, got ${JSON.stringify(id)}` },
+    ])
+  })
+
+  it('refuses every lens without an id as invalid, not as a repeat', () => {
+    const lenses = [{ question: 'A?' }, { question: 'B?' }] as unknown as Profile['lenses']
+    expect(profileIssues({ ...valid, lenses })).toEqual([
+      { path: 'p.lenses.0.id', message: 'must match ^[a-z][a-z0-9_-]*$, got undefined' },
+      { path: 'p.lenses.1.id', message: 'must match ^[a-z][a-z0-9_-]*$, got undefined' },
+    ])
+  })
+
   it('refuses an invalid or repeated lens id and an empty question', () => {
     const lenses = [{ id: 'a', question: 'A?' }, { id: 'Bad Id', question: 'B?' }, { id: 'a', question: '  ' }]
     expect(profileIssues({ ...valid, lenses })).toEqual([
