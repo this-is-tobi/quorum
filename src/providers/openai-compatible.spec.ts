@@ -71,12 +71,14 @@ describe('openaiCompatible', () => {
     }
   })
 
-  it('refuses a base URL that does not start with http:// or https://', () => {
-    for (const baseUrl of ['localhost:11434/v1', 'ftp://h/v1', '/v1', '']) {
+  it('refuses a base URL that is not an http:// or https:// URL with a host, without repeating it', () => {
+    for (const baseUrl of ['localhost:11434/v1', 'ftp://h/v1', '/v1', '', 'https:///v1', 'http://', 'https://user:secret@/v1', 'ftp://user:secret@h/v1']) {
       const build = (): unknown => openaiCompatible({ id: 'research', baseUrl, model: 'm' })
       expect(build, baseUrl).toThrow(ConfigError)
       expect(build, baseUrl).toThrow(/research\.baseUrl/)
+      expect(build, baseUrl).not.toThrow(/secret/)
     }
+    expect(() => openaiCompatible({ id: 'research', baseUrl: 'http://[::1]:11434/v1', model: 'm' })).not.toThrow()
   })
 
   it('omits temperature when configured as null and sends any other number as given', async () => {
