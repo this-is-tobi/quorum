@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { profileIssues } from '../core/profile.ts'
 import { securityProfile } from './security.ts'
 
 describe('securityProfile', () => {
@@ -40,5 +41,9 @@ describe('securityProfile', () => {
 
   it('names the claim, the evidence and the diff block a voter receives', () => {
     expect(securityProfile.prompts.vote).toMatch(/claim[\s\S]*unverified[\s\S]*evidence[\s\S]*read from the diff[\s\S]*diff section/)
+  })
+
+  it('is a valid profile', () => {
+    expect(profileIssues(securityProfile)).toEqual([])
   })
 })
