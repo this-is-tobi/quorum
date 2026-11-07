@@ -60,13 +60,14 @@ export function roleSettings(role: Role, env: Env): RoleSettings {
 
 function providerFor(role: Role, env: Env): Provider {
   const { baseUrl, apiKey, model } = roleSettings(role, env)
+  const provider = openaiCompatible({ id: role.toLowerCase(), baseUrl, apiKey, model })
   if (!model) {
     const message = role === 'VOTER'
       ? 'must be set when VOTER_BASE_URL has another scheme, host or port than RESEARCH_BASE_URL'
       : 'is not set'
     throw new ConfigError([{ path: `${role}_MODEL`, message }])
   }
-  return openaiCompatible({ id: role.toLowerCase(), baseUrl, apiKey, model })
+  return provider
 }
 
 /**
