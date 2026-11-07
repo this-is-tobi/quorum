@@ -70,6 +70,7 @@ describe('runCli', () => {
     const { io, stderr } = harness({ stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toContain('RESEARCH_MODEL')
+    expect(stderr()).not.toContain('Research (')
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -88,6 +89,15 @@ describe('runCli', () => {
     const { io, stderr } = harness({ stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toContain('RESEARCH_MODEL')
+  })
+
+  it('exits 2 for an empty diff when no model is configured, before any banner', async () => {
+    const fetchMock = stubModel()
+    const { io, stderr } = harness({ stdin: '  \n' })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toContain('RESEARCH_MODEL')
+    expect(stderr()).not.toContain('Research (')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('exits 3 when the model endpoint fails', async () => {

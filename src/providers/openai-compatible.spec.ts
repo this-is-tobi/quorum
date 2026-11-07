@@ -120,6 +120,12 @@ describe('openaiCompatible', () => {
     ['invalid-response', { choices: [{ message: { content: null } }] }, /no message content/],
     ['invalid-response', { error: { message: 'model not found' } }, /model not found/],
     ['invalid-response', null, /not a JSON object/],
+    ['invalid-response', [], /not a JSON object/],
+    ['invalid-response', { choices: 'abc' }, /no choices/],
+    ['invalid-response', { choices: [null] }, /no choices/],
+    ['invalid-response', { choices: ['x'] }, /no choices/],
+    ['invalid-response', { choices: [{ message: 'str' }] }, /no message content/],
+    ['refusal', { choices: [{ message: { content: null, refusal: {} } }] }, /model refused$/],
   ])('maps a %s reply to a ProviderError', async (kind, body, message) => {
     stubFetch(body)
     await expect(provider.complete(request)).rejects.toMatchObject({ name: 'ProviderError', kind, providerId: 'local', message: expect.stringMatching(message) })
