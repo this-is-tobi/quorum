@@ -48,8 +48,9 @@ export function thresholdsFor(profile: Profile): Thresholds {
   return resolvePolicy(profile.policy ?? defaultPolicy, profile.lenses.length).thresholds
 }
 
-function idProblem(id: string): string | undefined {
-  return ID_PATTERN.test(id) ? undefined : `must match ${ID_PATTERN.source}, got ${JSON.stringify(id)}`
+/** `unknown` on purpose: an untyped caller can hand over a missing id, and `RegExp.test` would read it as the text "undefined". */
+function idProblem(id: unknown): string | undefined {
+  return typeof id === 'string' && ID_PATTERN.test(id) ? undefined : `must match ${ID_PATTERN.source}, got ${JSON.stringify(id)}`
 }
 
 function researchVariableProblem(name: string): string {
