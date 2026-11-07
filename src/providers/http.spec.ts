@@ -22,6 +22,12 @@ describe('snippet', () => {
     }
   })
 
+  it('redacts the secret when a server writes some of its characters as unicode escapes', () => {
+    const backslash = String.fromCharCode(92)
+    const echoed = `sk-a${backslash}u0026b${backslash}u002Bc`
+    expect(snippet(`bad key ${echoed}`, 100, 'sk-a&b+c')).toBe('"bad key [redacted]"')
+  })
+
   it('cuts to the given length and writes one JSON string, so a line break stays on one line', () => {
     const text = `bad\n::error::forged${String.fromCharCode(27)}[2K`
     expect(snippet(text, 100)).toBe(JSON.stringify(text))
