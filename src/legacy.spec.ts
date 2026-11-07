@@ -49,6 +49,7 @@ describe('roleSettings', () => {
       const env = { RESEARCH_BASE_URL: researchBaseUrl, RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: voterBaseUrl }
       expect(roleSettings('VOTER', env), voterBaseUrl).toEqual({ baseUrl: voterBaseUrl, apiKey: 'sk-r', model: 'r' })
     }
+    expect(roleSettings('VOTER', { RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'http://localhost:11434/other' })).toEqual({ baseUrl: 'http://localhost:11434/other', apiKey: 'sk-r', model: 'r' })
   })
 
   it('reuses neither the research key nor the research model for a voter on another origin', () => {
@@ -62,6 +63,11 @@ describe('roleSettings', () => {
     for (const voterBaseUrl of ['http://h.example/v1', 'https://h.example:8443/v1', 'h.example/v1', 'localhost:11434/v1']) {
       expect(roleSettings('VOTER', { ...research, VOTER_BASE_URL: voterBaseUrl }), voterBaseUrl).toEqual({ baseUrl: voterBaseUrl, apiKey: undefined, model: '' })
     }
+  })
+
+  it('never matches a URL without an http origin, not even the same text', () => {
+    const env = { RESEARCH_BASE_URL: 'localhost:11434/v1', RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'localhost:11434/v1' }
+    expect(roleSettings('VOTER', env)).toEqual({ baseUrl: 'localhost:11434/v1', apiKey: undefined, model: '' })
   })
 
   it('trims surrounding whitespace, as fetch always did with a header value, and treats a blank value as unset', () => {
