@@ -32,7 +32,7 @@ The core never imports a profile. `src/cli/` is the one module that reads files 
 
 `review` runs every profile of the quorum at once, on a diff split into one section per file once for all of them, under one concurrency limit. Each profile goes through three stages on its own:
 
-1. **Research.** One call to the profile's research provider, with its research instructions, the fenced diff and its guidelines. The reply is parsed strictly, only the first `maxFindings` findings it lists are read, and each is checked against the diff: a finding that cites code outside the diff is dropped, and one the harness cannot read is a gap. Each finding kept is named by its id and tagged with its profile.
+1. **Research.** One call to the profile's research provider, with its research instructions, the fenced diff and its guidelines. The reply is parsed strictly, only the first `maxFindings` findings it lists are read, and each is checked against the diff: a finding that cites code outside the diff is dropped, and one the harness cannot read is a gap. Each finding that passes the check is named by its id and tagged with its profile.
 2. **Dedup.** Plain code drops a finding that repeats the file, line and category of an earlier one.
 3. **Panel.** Every finding goes to every lens, each vote to the lens's own provider, each voter receiving the claim, the evidence, the diff section of the cited file, and the guidelines when the profile has them. The verdict is computed in code from the votes, by the profile's thresholds.
 
