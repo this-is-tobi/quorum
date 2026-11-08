@@ -4,7 +4,7 @@ import { securityProfile } from '../profiles/security.ts'
 import { ConfigError, OutputError, ProviderError } from './errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts } from './ports.ts'
 import { createQuorum } from './quorum.ts'
-import type { Finding, Profile, Quorum, QuorumEvent, QuorumOptions, Usage } from './types.ts'
+import type { Finding, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, Usage } from './types.ts'
 
 /** Replies, in call order, for the one fake provider that plays both roles. */
 const complete = vi.fn<(request: CompletionRequest) => Promise<string>>()
@@ -642,6 +642,7 @@ describe('meta and events', () => {
         },
       },
       incomplete: [],
+      flags: [],
     })
     expect(result.meta).not.toHaveProperty('usage')
   })
@@ -650,7 +651,7 @@ describe('meta and events', () => {
     complete.mockResolvedValueOnce(findings(reported)).mockResolvedValue(vote(true))
     const result = await run().review({ diff })
     expect(Object.keys(result.kept[0])).toEqual(['id', 'profile', 'file', 'line', 'category', 'summary', 'evidence', 'quoteMatched', 'keptVotes', 'totalVotes', 'confidence', 'votes'])
-    expect(Object.keys(result.meta)).toEqual(['version', 'startedAt', 'durationMs', 'profiles', 'incomplete'])
+    expect(Object.keys(result.meta)).toEqual(['version', 'startedAt', 'durationMs', 'profiles', 'incomplete', 'flags'])
   })
 
   it('sums the usage providers report, ignoring counts that are not finite and non-negative', async () => {
@@ -668,7 +669,7 @@ describe('meta and events', () => {
     const events: QuorumEvent[] = []
     const result = await createQuorum({ profiles: [securityProfile], concurrency: 1 }, { ...portsFor(securityProfile, metered), events: event => events.push(event) }).review({ diff })
     expect(result.meta.usage).toEqual({ inputTokens: 11, outputTokens: 2, costUsd: 0.5 })
-    expect(Object.keys(result.meta)).toEqual(['version', 'startedAt', 'durationMs', 'profiles', 'usage', 'incomplete'])
+    expect(Object.keys(result.meta)).toEqual(['version', 'startedAt', 'durationMs', 'profiles', 'usage', 'incomplete', 'flags'])
     expect(events.flatMap(event => event.type === 'call' ? [event.usage] : [])).toEqual([
       { inputTokens: 1, outputTokens: 2, costUsd: 0.5 },
       { inputTokens: 10, outputTokens: 0 },
@@ -726,6 +727,58 @@ describe('meta and events', () => {
     expect(events.filter(event => event.type === 'call').at(-1)).toMatchObject({ role: 'vote', lens: 'defenses', ok: false })
     expect(events.flatMap(event => event.type === 'incomplete' ? [event.entry] : [])).toEqual(result.meta.incomplete)
     expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'vote-failed', file: 'a.js', detail: '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high' }])
+  })
+})
+
+describe('advisory flags', () => {
+  /** `diff` with a zero-width space on the added line of other.js, which no finding cites. */
+  const flaggedDiff = diff.replace('+UNRELATED', '+UNRELATED\u200B')
+  const flag = { code: 'hidden-characters', file: 'other.js', line: 1, detail: 'U+200B on 1 added line(s)' }
+  const answer = (request: CompletionRequest): string => isVote(request) ? vote(true) : findings(reported)
+
+  it('reports the flags of the diff in meta and as events, after run:start and before any stage', async () => {
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, fake('both', answer)), events: event => events.push(event) }).review({ diff: flaggedDiff })
+    expect(result.meta.flags).toEqual([flag])
+    expect(events.slice(0, 3).map(event => event.type)).toEqual(['run:start', 'flag', 'stage:start'])
+    expect(events[1]).toEqual({ type: 'flag', flag })
+  })
+
+  it('never lets a flag change a verdict or a gap', async () => {
+    const review = async (text: string): Promise<QuorumResult> => createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, fake('both', answer))).review({ diff: text })
+    const [clean, flagged] = await Promise.all([review(diff), review(flaggedDiff)])
+    expect(flagged.meta.flags).toHaveLength(1)
+    expect(flagged.kept).toEqual(clean.kept)
+    expect(flagged.kept[0]?.confidence).toBe('high')
+    expect(flagged.meta.incomplete).toEqual(clean.meta.incomplete)
+  })
+
+  it('records none for a blank diff, and sends no flag event', async () => {
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, fake('both', answer)), events: event => events.push(event) }).review({ diff: '  \n' })
+    expect(result.meta.flags).toEqual([])
+    expect(events.map(event => event.type)).toEqual(['run:start', 'run:end'])
+  })
+})
+
+describe('events as copies', () => {
+  it('hands the sink a copy of every event, so a sink that changes one changes nothing else', async () => {
+    const finder = fake('finder', () => findings(reported, { file: 'x.js' }))
+    const voter = fake('voter', () => vote(true))
+    const models: string[] = []
+    const vandal = (event: QuorumEvent): void => {
+      if (event.type === 'call') models.push(event.provider.model)
+      if (event.type === 'call') event.provider.model = 'changed'
+      if (event.type === 'run:start') event.providers.security.research.model = 'changed'
+      if (event.type === 'incomplete') event.entry.detail = 'changed'
+      if (event.type === 'flag') event.flag.detail = 'changed'
+    }
+    const result = await createQuorum({ profiles: [securityProfile], concurrency: 1 }, { ...portsFor(securityProfile, finder, voter), events: vandal }).review({ diff: diff.replace('+UNRELATED', '+UNRELATED\u200B') })
+    expect(models).toEqual(['finder-model', 'voter-model', 'voter-model', 'voter-model'])
+    expect(result.meta.profiles.security.providers.research.model).toBe('finder-model')
+    expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['finding-unreadable'])
+    expect(result.meta.incomplete[0]?.detail).not.toBe('changed')
+    expect(result.meta.flags[0]?.detail).toBe('U+200B on 1 added line(s)')
   })
 })
 

@@ -17,7 +17,11 @@ export interface CompletionRequest {
   signal?: AbortSignal
 }
 
-/** What a provider returns: the reply text, the model that produced it and, when reported, its usage. */
+/**
+ * What a provider returns: the reply text, the model that produced it and, when reported, its usage.
+ * `model` is server text: nothing shows or stores it today, and whatever does must render it through
+ * the sanitizer.
+ */
 export interface CompletionResponse {
   text: string
   model: string

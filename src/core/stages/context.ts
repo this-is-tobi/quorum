@@ -37,7 +37,7 @@ export interface ProfileRun {
 export interface RunContext {
   /** The review's one concurrency limit, shared by every profile. */
   readonly limit: Limiter
-  /** Delivers one event of the review; it delivers nothing once the review is aborted. */
+  /** Delivers one event of the review to the sink, as a copy; it delivers nothing once the review is aborted. */
   readonly emit: EventSink
   /**
    * Aborted when the caller's signal is, when the event sink throws, when a profile's research fails
