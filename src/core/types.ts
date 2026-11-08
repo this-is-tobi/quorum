@@ -1,5 +1,5 @@
 /**
- * Shared types for the Quorum security-review pipeline.
+ * Shared types of the quorum core: profiles, findings, verdicts, the result and its metadata, and events.
  *
  * @see ../../README.md for the module overview and usage.
  */
@@ -106,6 +106,9 @@ export interface Verdict extends Finding {
  */
 export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
 
+/** Why part of a review is missing, as an `IncompleteEntry` records it. */
+export type IncompleteReason = 'research-unusable' | 'findings-capped' | 'finding-unreadable' | 'vote-failed'
+
 /**
  * Work the run could not review: a research reply with findings but none usable, findings beyond
  * the cap, a finding the harness could not read, or a kept finding whose failed votes could have
@@ -114,23 +117,101 @@ export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
 export interface IncompleteEntry {
   /** The id of the profile whose run has the gap. */
   profile: string
-  reason: 'research-unusable' | 'findings-capped' | 'finding-unreadable' | 'vote-failed'
+  reason: IncompleteReason
   /** The file of the finding the gap is about, when it is about one finding the harness could read. */
   file?: string
   detail: string
 }
 
-/** Final pipeline output. */
+/** Names a provider in events and in `meta`: its id and model, captured when the quorum was created. */
+export interface ProviderRef {
+  id: string
+  model: string
+}
+
+/** Who reviews for one profile: its research provider, and the provider of each lens keyed by lens id. */
+export interface ProfileProviders {
+  research: ProviderRef
+  lenses: Record<string, ProviderRef>
+}
+
+/** What a review records about one of its profiles. */
+export interface ProfileMeta {
+  providers: ProfileProviders
+  /** The kept votes each confidence level needed: the profile's policy resolved for its lens count. */
+  policy: Thresholds
+  /** Whether its kept high findings set exit code 1. */
+  gating: boolean
+  /** How many findings it dropped for citing code outside the diff. */
+  invalidFindings: number
+}
+
+/** What a review records about itself, besides its verdicts. */
+export interface QuorumMeta {
+  /** The version of quorum that ran the review, read from package.json. */
+  version: string
+  /** When the review started, as an ISO 8601 timestamp. */
+  startedAt: string
+  /** How long the review took, in whole milliseconds. */
+  durationMs: number
+  /** One entry per profile, keyed by profile id, in the run's profile order. */
+  profiles: Record<string, ProfileMeta>
+  /** The usage summed over the calls that reported valid counts; absent when none did. */
+  usage?: Usage
+  /** Gaps that are not findings. An entry here, or an unreviewed finding, makes the review incomplete. */
+  incomplete: IncompleteEntry[]
+}
+
+/** Final review output. */
 export interface QuorumResult {
   kept: Verdict[]
   discarded: Verdict[]
   /** Findings a failed vote left undecided: neither kept nor cleared. */
   unreviewed: Verdict[]
-  meta: {
-    /** Gaps that are not findings. An entry here, or an unreviewed finding, makes the review incomplete. */
-    incomplete: IncompleteEntry[]
-  }
+  meta: QuorumMeta
 }
+
+/** What a quorum runs, and the limits every one of its reviews keeps to. */
+export interface QuorumOptions {
+  /** At least one, ids unique: each runs research, dedup and panel on its own, concurrently with the others. */
+  readonly profiles: readonly Profile[]
+  /** Maximum simultaneous provider calls per review, shared by every profile; `DEFAULT_CONCURRENCY` when unset. */
+  readonly concurrency?: number
+  /** How many findings of a research reply each profile sends to the panel; `DEFAULT_MAX_FINDINGS` when unset. */
+  readonly maxFindings?: number
+}
+
+/** A quorum built by createQuorum: its profiles compiled once, ready to review any number of diffs. */
+export interface Quorum {
+  /** Review one diff with every profile of the quorum. */
+  readonly review: (input: { readonly diff: string }) => Promise<QuorumResult>
+  /** Settings that cannot take full effect, such as a policy level that never applies; each starts at its profile id. */
+  readonly warnings: readonly string[]
+}
+
+/** The stages every profile runs through, in this order. */
+export type StageName = 'research' | 'dedup' | 'panel'
+
+/** What a review reports while it runs, delivered synchronously to the event sink as it happens. */
+export type QuorumEvent
+  /** The review starts: the profiles it runs, and who reviews for each. */
+  = | { type: 'run:start', profiles: string[], providers: Record<string, ProfileProviders> }
+    /** A stage of one profile starts. */
+    | { type: 'stage:start', profile: string, stage: StageName }
+    /** A stage of one profile ends; `count` is the findings it produced, or the verdicts for `panel`. */
+    | { type: 'stage:end', profile: string, stage: StageName, durationMs: number, count: number }
+    /** One per provider call, failed ones included: its latency inside its slot and its usage, when valid. */
+    | { type: 'call', profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, durationMs: number, ok: boolean, usage?: Usage }
+    /** A finding was dropped for citing code outside the diff, with the reason. */
+    | { type: 'finding:invalid', profile: string, reason: string }
+    /** A gap was recorded, as `meta.incomplete` will hold it. */
+    | { type: 'incomplete', entry: IncompleteEntry }
+    /** One lens voted on one finding; `keep` is null, with the error, when the vote failed. */
+    | { type: 'vote', profile: string, findingId: string, lens: string, keep: boolean | null, error?: string }
+    /** The panel decided one finding: its vote split, the confidence it earned and where it lands. */
+    | { type: 'verdict', profile: string, findingId: string, keptVotes: number, totalVotes: number, confidence?: Confidence, status: VerdictStatus }
+    /** The review ends: how many verdicts landed where, how many gaps it recorded, and how long it took. */
+    | { type: 'run:end', kept: number, discarded: number, unreviewed: number, incomplete: number, durationMs: number }
 
 /** A finding exactly as the finder reports it: the wire shape validated by core/output.ts. */
 export interface FindingDetails {
