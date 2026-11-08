@@ -28,6 +28,9 @@ interface Compiled {
   readonly sink: EventSink | undefined
 }
 
+/** What one review takes besides its input: the signal that stops it. */
+type ReviewOptions = NonNullable<Parameters<Quorum['review']>[1]>
+
 /** What a review counts from its own events, so its meta and its events cannot disagree. */
 interface Tally {
   usage?: Usage
@@ -49,14 +52,15 @@ interface Tally {
  *
  * Each profile is compiled into a frozen `ProfileRun`, its instructions rendered, its thresholds
  * resolved and its providers captured, so later changes to the caller's profiles or ports are not
- * seen. `warnings` lists what the profiles set that cannot take full effect.
+ * seen. `warnings` lists what the profiles set that cannot take full effect. Each review can be
+ * stopped through its own signal; a throwing event sink or a failing profile stops it too.
  *
  * @throws ConfigError listing every issue of the options and the ports
  *
  * @example
  * const voters = { reachability: model, impact: model, defenses: model }
  * const quorum = createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research: model, voters } } })
- * const { kept, meta } = await quorum.review({ diff: diffText })
+ * const { kept, meta } = await quorum.review({ diff: diffText }, { signal: controller.signal })
  */
 export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum {
   const issues = inputIssues(options, ports)
@@ -69,7 +73,7 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
     sink: ports.events,
   }
   const warnings: readonly string[] = Object.freeze(options.profiles.flatMap(profile => profileWarnings(profile)))
-  return Object.freeze({ review: (input: { readonly diff: string }) => review(compiled, input), warnings })
+  return Object.freeze({ review: (input: { readonly diff: string }, options?: ReviewOptions) => review(compiled, input, options), warnings })
 }
 
 /**
@@ -79,22 +83,49 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
  * verdicts and gaps in profile order. `meta.profiles[<id>].invalidFindings` and `meta.usage` are
  * counted from the events before the sink receives them.
  *
- * @throws ConfigError when `input` is not an object with a string `diff`
+ * Abort never fails open. The review's signal joins the caller's `signal` to an internal one; every
+ * stage and every call checks it, every request carries it, and it is checked once more after the
+ * profiles have run, a blank diff included, so an aborted review rejects with the signal's reason,
+ * whatever error a call it cut raised, and never resolves. No event is delivered once the review is
+ * aborted. A sink that throws aborts the review with its error, and a profile that fails aborts it
+ * with that failure: either way the review rejects with it and no other profile starts a call or
+ * sends an event. An abort after `run:end` has no effect: the review is over.
+ *
+ * @throws ConfigError listing every issue of the input and the options: a `diff` that is not a string, options that are not an object, a `signal` that is not an AbortSignal
+ * @throws the signal's reason once the review is aborted, before it starts or while it runs
+ * @throws the error of a sink that throws, or of a profile that fails: a ProviderError from its research call, an OutputError for its reply
  */
-async function review(compiled: Compiled, input: { readonly diff: string }): Promise<QuorumResult> {
-  if (!isRecord(input) || typeof input.diff !== 'string') throw new ConfigError([{ path: 'diff', message: 'must be a string' }])
+async function review(compiled: Compiled, input: { readonly diff: string }, options: ReviewOptions = {}): Promise<QuorumResult> {
+  const issues = reviewIssues(input, options)
+  if (issues.length > 0) throw new ConfigError(issues)
+  options.signal?.throwIfAborted()
+  const internal = new AbortController()
+  const signal = options.signal === undefined ? internal.signal : AbortSignal.any([options.signal, internal.signal])
   const startedAt = new Date().toISOString()
   const started = performance.now()
   const { runs, sink } = compiled
   const tally: Tally = { invalidFindings: new Map() }
   const emit = (event: QuorumEvent): void => {
+    if (signal.aborted) return
     if (event.type === 'call' && event.usage !== undefined) tally.usage = addUsage(tally.usage, event.usage)
     if (event.type === 'finding:invalid') tally.invalidFindings.set(event.profile, (tally.invalidFindings.get(event.profile) ?? 0) + 1)
-    sink?.(event)
+    try {
+      sink?.(event)
+    } catch (error) {
+      // The caller's bug surfaces instead of being swallowed, and ends the review: no profile starts another call.
+      internal.abort(error)
+      throw error
+    }
   }
-  const ctx: RunContext = { limit: createLimiter(compiled.concurrency), emit, maxFindings: compiled.maxFindings }
+  const ctx: RunContext = { limit: createLimiter(compiled.concurrency), emit, signal, maxFindings: compiled.maxFindings }
   emit({ type: 'run:start', profiles: runs.map(run => run.id), providers: Object.fromEntries(runs.map(run => [run.id, providersOf(run)])) })
-  const outcomes = await reviewAll(ctx, runs, input.diff)
+  const outcomes = await reviewAll(ctx, runs, input.diff).catch((error: unknown) => {
+    // One profile's failure ends the review: no other profile starts a call or sends an event.
+    const reason: unknown = signal.aborted ? signal.reason : error
+    internal.abort(reason)
+    throw reason
+  })
+  signal.throwIfAborted()
   const kept = outcomes.flatMap(outcome => outcome.kept)
   const discarded = outcomes.flatMap(outcome => outcome.discarded)
   const unreviewed = outcomes.flatMap(outcome => outcome.unreviewed)
@@ -125,6 +156,18 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, diff: string, sec
   const candidates = await stage(ctx, run.id, 'dedup', () => dedup(researched.findings), found => found.length)
   const judged = await stage(ctx, run.id, 'panel', () => panel(ctx, run, candidates, sections, diff), outcome => outcome.kept.length + outcome.discarded.length + outcome.unreviewed.length)
   return { ...judged, incomplete: [...researched.incomplete, ...judged.incomplete] }
+}
+
+/**
+ * Every problem with one review's input and options, so an untyped caller gets issues, never a
+ * TypeError. The signal must be a real AbortSignal: `AbortSignal.any` accepts nothing else.
+ */
+function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
+  const issues: ConfigIssue[] = []
+  if (!isRecord(input) || typeof input.diff !== 'string') issues.push({ path: 'diff', message: 'must be a string' })
+  if (!isRecord(options)) issues.push({ path: 'options', message: 'must be an object' })
+  else if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) issues.push({ path: 'signal', message: 'must be an AbortSignal' })
+  return issues
 }
 
 /** The usage of one more call added to a running total; `costUsd` is summed over the calls that reported one. */

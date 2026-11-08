@@ -183,8 +183,11 @@ export interface QuorumOptions {
 
 /** A quorum built by createQuorum: its profiles compiled once, ready to review any number of diffs. */
 export interface Quorum {
-  /** Review one diff with every profile of the quorum. */
-  readonly review: (input: { readonly diff: string }) => Promise<QuorumResult>
+  /**
+   * Review one diff with every profile of the quorum. Once `signal` aborts, the review stops and
+   * rejects with the signal's reason; an aborted review never resolves.
+   */
+  readonly review: (input: { readonly diff: string }, options?: { readonly signal?: AbortSignal }) => Promise<QuorumResult>
   /** Settings that cannot take full effect, such as a policy level that never applies; each starts at its profile id. */
   readonly warnings: readonly string[]
 }
