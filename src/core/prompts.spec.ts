@@ -73,4 +73,8 @@ describe('renderTemplate', () => {
     const values = { 'lens.id': 'impact' }
     expect(renderTemplate('{{lens-id}} {{ a b }} {{lens.id}}', values)).toBe('{{lens-id}} {{ a b }} impact')
   })
+
+  it('fills only the values it is given as its own, never a name found on the prototype', () => {
+    expect(renderTemplate('{{constructor}} {{toString}}', {})).toBe('{{constructor}} {{toString}}')
+  })
 })

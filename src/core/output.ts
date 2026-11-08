@@ -331,7 +331,8 @@ function describeIssue(error: z.ZodError): string {
   return issue ? `${issue.path.join('.') || '(root)'}: ${issue.message}` : 'invalid value'
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+/** Whether `value` is a non-null object that is not an array: the shape every untyped input is checked against before its fields are read. */
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 

@@ -5,13 +5,13 @@ import type { Confidence, Thresholds, Verdict, VerdictStatus } from './types.ts'
 export type Rule = 'unanimous' | 'majority' | 'any' | 'off' | false | { minVotes: number } | { minRatio: number }
 
 export interface PolicyRules {
-  high: Rule
-  medium: Rule
-  low: Rule
+  readonly high: Rule
+  readonly medium: Rule
+  readonly low: Rule
 }
 
-/** Today's arithmetic with three lenses: 3/3 → high, 2/3 → medium; low disabled. */
-export const defaultPolicy: PolicyRules = { high: 'unanimous', medium: 'majority', low: 'off' }
+/** Today's arithmetic with three lenses: 3/3 → high, 2/3 → medium; low disabled. Frozen: it is shared by every profile without a policy. */
+export const defaultPolicy: PolicyRules = Object.freeze({ high: 'unanimous', medium: 'majority', low: 'off' })
 
 const LEVELS: readonly Confidence[] = ['high', 'medium', 'low']
 
