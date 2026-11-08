@@ -1,7 +1,8 @@
 /**
  * Shared types of the quorum core: profiles, findings, verdicts, the result and its metadata, and events.
  *
- * @see ../../README.md for the module overview and usage.
+ * @see ../../docs/95-reference/40-architecture.md for the module overview.
+ * @see ../../docs/95-reference/30-library-api.md for usage.
  */
 
 import type { PolicyRules } from './policy.ts'
