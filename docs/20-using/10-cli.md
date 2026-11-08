@@ -32,9 +32,9 @@ A blank diff, empty or only whitespace, is reviewed without calling a model.
 
 ## stdout and stderr
 
-**stdout carries only the JSON result**, indented by two spaces and followed by a newline, written once the review ends. A script reads it whole; [The JSON result](../95-reference/20-json-result.md) has every field. When the run exits `2` or `3`, nothing was reviewed and stdout stays empty.
+**stdout carries only the JSON result**, indented by two spaces and followed by a newline, written once the review ends. A script reads it whole; [The JSON result](../95-reference/20-json-result.md) has every field. A hidden character in a string is written as a `\uXXXX` escape, which a JSON parser reads back: [Output handling](../30-security/30-output-handling.md#what-the-cli-writes). When the run exits `2` or `3`, nothing was reviewed and stdout stays empty.
 
-**stderr carries everything else**, in this order: the banner, the progress lines while the review runs, and an `Error:` line when it fails.
+**stderr carries everything else**, in this order: the banner, the progress lines while the review runs, and an `Error:` line when it fails. Every line is inert: a hidden character is shown as `<U+XXXX>`.
 
 ```text
 Research (qwen3.6:27b @ http://localhost:11434)...
@@ -47,6 +47,7 @@ The banner names the model of each role and the origin of its endpoint: the sche
 
 | Line | Printed |
 | --- | --- |
+| `flag: <code> at "<file>":<line> (<detail>)` | Once per [advisory flag](../30-security/30-output-handling.md#advisory-flags), before the research starts. It reads `at "<file>"` for a file name and `at line <line>` for a diff without per-file headers. A flag changes no exit code |
 | `invalid finding dropped: <reason>` | Once per finding that cites code outside the diff. The reason reads `<file>:<line> is not in the diff`, or `line <line> names no file` |
 | `incomplete: <reason> (<detail>)` | Once per gap, as it is recorded in `meta.incomplete`; [the reasons](../95-reference/20-json-result.md#incomplete-reasons) say what each detail holds |
 | `<n> candidate(s) after dedup` | When research and dedup are done: the findings the panel judges |
@@ -73,7 +74,7 @@ The `Error:` line says what failed. With the CLI's research provider, which is n
 | Failure | `Error:` line |
 | --- | --- |
 | The endpoint cannot be reached | `research: request to http://localhost:11434 failed (ECONNREFUSED)` |
-| It answers with an HTTP error | `research: HTTP 503: "model is loading"`, quoting up to 500 characters of the body |
+| It answers with an HTTP error | `research: HTTP 503: "model is loading"`, quoting up to 500 characters of the body, which shows its hidden characters as `<U+XXXX>` |
 | The model refuses | `research: model refused: "I cannot help with that."` |
 | The content filter stops the reply | `research: reply was stopped by the content filter` |
 | The token limit cuts the reply off | `research: reply was cut off by the token limit` |
@@ -112,7 +113,7 @@ exit $code
 - **`set -o pipefail`** makes a failing `git diff` fail the step. Without it, a base branch the job never fetched leaves quorum an empty stdin, which it reviews as a blank diff and passes with `0`.
 - **The base must be in the clone.** `origin/main...HEAD` needs `origin/main` and the commit where the branch left it, which a shallow clone may not have.
 - **A clean exit covers what the harness can detect.** An endpoint that cut an oversized prompt can still give a clean review of what was left, so bound the size of the diffs the job reviews: [What the harness cannot detect](../30-security/10-threat-model.md#what-the-harness-cannot-detect).
-- **The result is untrusted text.** It holds what models wrote about a change an attacker may have written: the [Threat model](../30-security/10-threat-model.md#model-written-text-is-untrusted) says how to treat it before you render it anywhere.
+- **The result is untrusted text.** It holds what models wrote about a change an attacker may have written: [Output handling](../30-security/30-output-handling.md#text-an-attacker-can-influence) says how to treat it before you render it anywhere.
 
 ## Next
 

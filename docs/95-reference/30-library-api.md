@@ -108,6 +108,7 @@ The sink receives every event of a review, synchronously and in order, as each t
 | Event | Fields | Sent |
 | --- | --- | --- |
 | `run:start` | `profiles`, the ids in order; `providers`, who reviews for each profile: `research` and `lenses`, each a `{ id, model }` | First, when the review starts |
+| `flag` | `flag`, as `meta.flags` holds it: [A flag](./20-json-result.md#a-flag) | Once per flag, right after `run:start`, before any stage |
 | `stage:start` | `profile`; `stage`: `research`, `dedup` or `panel` | When a stage of a profile starts |
 | `stage:end` | `profile`, `stage`; `durationMs`, the stage's wall-clock time, waits for a concurrency slot included; `count`, the findings it produced, or the verdicts for `panel` | When that stage ends |
 | `call` | `profile`; `role`: `research` or `vote`; `lens`, for a vote; `provider`, its `{ id, model }`; `durationMs`, the provider's latency inside its slot; `ok`; `usage`, when the call succeeded and its counts are valid | Once per provider call, failed ones included |
@@ -130,6 +131,7 @@ The first events of the review on [The JSON result](./20-json-result.md#an-examp
 
 - **The sink runs inside the review.** Each event is delivered before the review goes on, so a slow sink slows the review.
 - **Events carry no model text beyond `error` strings**, the file name a `finding:invalid` reason quotes, which is the finder's, cleaned and capped at 80 characters, and, for a diff without per-file headers, the `file` and `detail` of a `vote-failed` entry, which hold the finder's name for the file, cleaned and capped at 260.
+- **The sink gets a copy of each event.** Changing one changes neither the review nor its result.
 - **`meta` agrees with the events.** `meta.usage` and each `invalidFindings` are counted from them.
 - **A sink that throws aborts the review** with its error, so the bug surfaces instead of being swallowed: no profile starts another call, no further event is delivered, and the review rejects with that error, even when it threw on `run:end`.
 
@@ -172,9 +174,10 @@ A failed research call rejects the review with its `ProviderError`, and an unusa
 | `defaultPolicy` | `{ high: 'unanimous', medium: 'majority', low: 'off' }`, frozen |
 | `openaiCompatible` | The shipped provider: [Providers](../20-using/30-providers.md#openaicompatible) |
 | `QuorumError`, `ConfigError`, `ProviderError`, `OutputError` | The error classes |
+| `inertLine`, `inertJson` | Render a line for a terminal or a log, and a value as JSON, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |
 
-The types: `Confidence`, `Finding`, `IncompleteEntry`, `IncompleteReason`, `Lens`, `LensVote`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus` and `Vote`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `OpenAICompatibleOptions` and `StructuredOutput`.
+The types: `Confidence`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `Lens`, `LensVote`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus` and `Vote`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `OpenAICompatibleOptions` and `StructuredOutput`.
 
 The stages, the profile checks and the CLI's exit-code rule are not exported: a program reaches the stages through `createQuorum`, and applies the exit codes itself, as the example below does.
 
@@ -188,18 +191,23 @@ Deprecated: use `createQuorum` with explicit providers. `runQuorum` reviews `dif
 
 ## A complete example
 
-`review.ts`, at the root of the clone: the finder on a local model, the panel on a hosted one, a line on stderr per verdict and per gap, a ten-minute limit, the result on stdout, and the CLI's exit codes.
+`review.ts`, at the root of the clone: the finder on a local model, the panel on a hosted one, a line on stderr per verdict and per gap and the result on stdout, both inert, a ten-minute limit, and the CLI's exit codes.
 
 ```ts
 import { readFile } from 'node:fs/promises'
-import { ConfigError, createQuorum, openaiCompatible, securityProfile } from './src/index.ts'
+import { ConfigError, createQuorum, inertJson, inertLine, openaiCompatible, securityProfile } from './src/index.ts'
 import type { QuorumEvent, QuorumResult } from './src/index.ts'
 
 const USAGE = 'Usage: bun run ./review.ts <diff-file>'
 
 function progress(event: QuorumEvent): void {
-  if (event.type === 'verdict') console.error(`${event.findingId}: ${event.keptVotes}/${event.totalVotes} ${event.status}`)
-  if (event.type === 'incomplete') console.error(`incomplete: ${event.entry.reason} (${event.entry.detail})`)
+  if (event.type === 'verdict') console.error(inertLine(`${event.findingId}: ${event.keptVotes}/${event.totalVotes} ${event.status}`))
+  if (event.type === 'incomplete') console.error(inertLine(`incomplete: ${event.entry.reason} (${event.entry.detail})`))
+}
+
+/** The `Error:` line of a failure, inert: its message can hold text a server sent. */
+function errorLine(error: unknown): string {
+  return inertLine(`Error: ${error instanceof Error ? error.message : String(error)}`)
 }
 
 /** The CLI's rule: 1 for a kept high finding of a gating profile, 4 for an incomplete review, else 0. */
@@ -216,7 +224,7 @@ async function main(path: string | undefined): Promise<number> {
     if (path === undefined) throw new Error('no diff file given')
     diff = await readFile(path, 'utf8')
   } catch (error) {
-    console.error(`Error: ${error instanceof Error ? error.message : String(error)}\n${USAGE}`)
+    console.error(`${errorLine(error)}\n${USAGE}`)
     return 2
   }
   try {
@@ -225,10 +233,10 @@ async function main(path: string | undefined): Promise<number> {
     const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, panel]))
     const quorum = createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research: finder, voters } }, events: progress })
     const result = await quorum.review({ diff }, { signal: AbortSignal.timeout(10 * 60_000) })
-    console.log(JSON.stringify(result, null, 2))
+    console.log(inertJson(result))
     return exitCode(result)
   } catch (error) {
-    console.error(`Error: ${error instanceof Error ? error.message : String(error)}`)
+    console.error(errorLine(error))
     return error instanceof ConfigError ? 2 : 3
   }
 }
