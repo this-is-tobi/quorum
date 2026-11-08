@@ -69,20 +69,24 @@ export function elapsed(started: number): number {
 
 /**
  * Call a provider inside the review's concurrency limit and return its reply text. The review's
- * signal is checked inside the slot, before the provider is called, so a call still queued when the
- * review is aborted never starts; the request carries the signal, so the provider can stop a call
- * in flight. A failed research call aborts the review through `ctx.fail` before it leaves its slot,
- * so the queued call the slot goes to next never starts; a failed vote does not, since the panel
- * records it. The duration is measured inside the slot: the provider's latency, not the time the
- * call waited for a slot. A reply whose text is not a string is a `ProviderError`. Each call emits
- * one `call` event, which names the provider by the ref captured at creation, never by the live
- * object: failed, before the error is rethrown, or ok, with the usage when its counts are valid.
- * The ok event is emitted outside the `try` that catches the provider's failure, so a sink that
- * throws on it is never reported as a failed call.
+ * signal is checked inside the slot, before the request is built, so a call still queued when the
+ * review is aborted never starts. `buildRequest` runs inside the slot once that check passes: a
+ * request holds the diff or a section of it, and building it only there keeps the requests a
+ * review holds at once to its concurrency, whatever the number of findings and lenses (ADR-0009).
+ * The request carries the signal, so the provider can stop a call in flight. A failed research
+ * call aborts the review through `ctx.fail` before it leaves its slot, so the queued call the slot
+ * goes to next never starts; a failed vote does not, since the panel records it. The duration is
+ * measured inside the slot, once the request is built: the provider's latency, not the time the
+ * call waited for a slot or took to build its request. A reply whose text is not a string is a
+ * `ProviderError`. Each call emits one `call` event, which names the provider by the ref captured
+ * at creation, never by the live object: failed, before the error is rethrown, or ok, with the
+ * usage when its counts are valid. The ok event is emitted outside the `try` that catches the
+ * provider's failure, so a sink that throws on it is never reported as a failed call.
  */
-export async function callProvider(ctx: RunContext, requester: Requester, target: Target, request: CompletionRequest): Promise<string> {
+export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest): Promise<string> {
   return ctx.limit(async () => {
     ctx.signal.throwIfAborted()
+    const request = buildRequest()
     const started = performance.now()
     let response: CompletionResponse
     try {
