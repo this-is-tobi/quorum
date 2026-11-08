@@ -35,10 +35,11 @@ interface Judged {
  * self-reported confidence gets to override: with the security profile, unanimous 3/3 is a ceiling
  * of 'high', a 2/3 split is capped at 'medium' no matter how certain any one voter sounded.
  *
- * A failed vote counts as a reject and is recorded with its error, never as a crash. Each vote
- * emits a `vote` event. Once a finding's votes are in, its verdict emits a `verdict` event, and a
- * kept verdict whose failed votes leave a higher level undecided records a `vote-failed` gap,
- * reported by an `incomplete` event (ADR-0012).
+ * A failed vote counts as a reject and is recorded with its error, never as a crash, but a vote cut
+ * by the review's abort is not a failed vote: it rejects the panel with the abort's reason at once,
+ * without waiting for the votes still in flight. Each vote emits a `vote` event. Once a finding's
+ * votes are in, its verdict emits a `verdict` event, and a kept verdict whose failed votes leave a
+ * higher level undecided records a `vote-failed` gap, reported by an `incomplete` event (ADR-0012).
  */
 export async function panel(ctx: RunContext, run: ProfileRun, findings: readonly Finding[], sections: ReadonlyMap<string, string>, diff: string): Promise<PanelOutcome> {
   const judged = await Promise.all(findings.map(finding => judge(ctx, run, finding, diffSectionFor(sections, finding.file, diff))))
@@ -67,8 +68,10 @@ async function judge(ctx: RunContext, run: ProfileRun, finding: Finding, diffCon
 /**
  * One lens's vote on one finding, from the lens's own provider. A failed call or an unusable reply
  * is a vote of null with its error: the message of an `Error`, the text of anything else thrown.
- * The `vote` event is emitted after the vote's own `try`, so a sink that throws on it is never
- * recorded as a failed vote.
+ * Once the review is aborted, the vote rethrows the abort's reason instead, whatever the call
+ * raised, so an aborted review never resolves with a finding the abort left unreviewed. The `vote`
+ * event is emitted after the vote's own `try`, so a sink that throws on it is never recorded as a
+ * failed vote.
  */
 async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens: LensRun, diffContext: string): Promise<LensVote> {
   let lensVote: LensVote
@@ -76,6 +79,8 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
     const text = await callProvider(ctx, { profile: run.id, role: 'vote', lens: lens.id }, lens, voteRequest(lens.instructions, finding, diffContext, run.guidelines))
     lensVote = { angle: lens.id, vote: parseVoteReply(text), error: null }
   } catch (error) {
+    // Once the review is aborted, a failed call is not the voter's failure: the review rejects with the abort's reason.
+    ctx.signal.throwIfAborted()
     lensVote = { angle: lens.id, vote: null, error: error instanceof Error ? error.message : String(error) }
   }
   const { error } = lensVote

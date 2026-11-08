@@ -32,6 +32,11 @@ export interface CompletionResponse {
 export interface Provider {
   readonly id: string
   readonly model: string
+  /**
+   * Answer one request. It should honour `request.signal`, settling soon after the signal aborts:
+   * stopping a call in flight is cooperative, so a review can wait for a call it cut until the
+   * provider settles.
+   */
   complete: (request: CompletionRequest) => Promise<CompletionResponse>
 }
 

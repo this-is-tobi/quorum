@@ -37,8 +37,13 @@ export interface ProfileRun {
 export interface RunContext {
   /** The review's one concurrency limit, shared by every profile. */
   readonly limit: Limiter
-  /** Delivers one event of the review. */
+  /** Delivers one event of the review; it delivers nothing once the review is aborted. */
   readonly emit: EventSink
+  /**
+   * Aborted when the caller's signal is, when the event sink throws or when a profile fails: every
+   * stage and every call checks it, and every request carries it.
+   */
+  readonly signal: AbortSignal
   /** How many findings of a research reply each profile sends to the panel. */
   readonly maxFindings: number
 }
@@ -56,20 +61,23 @@ export function elapsed(started: number): number {
 }
 
 /**
- * Call a provider inside the review's concurrency limit and return its reply text. The duration is
- * measured inside the slot: the provider's latency, not the time the call waited for a slot. A
- * reply whose text is not a string is a `ProviderError`. Each call emits one `call` event, which
- * names the provider by the ref captured at creation, never by the live object: failed, before the
- * error is rethrown, or ok, with the usage when its counts are valid. The ok event is emitted
- * outside the `try` that catches the provider's failure, so a sink that throws on it is never
- * reported as a failed call.
+ * Call a provider inside the review's concurrency limit and return its reply text. The review's
+ * signal is checked inside the slot, before the provider is called, so a call still queued when the
+ * review is aborted never starts; the request carries the signal, so the provider can stop a call
+ * in flight. The duration is measured inside the slot: the provider's latency, not the time the
+ * call waited for a slot. A reply whose text is not a string is a `ProviderError`. Each call emits
+ * one `call` event, which names the provider by the ref captured at creation, never by the live
+ * object: failed, before the error is rethrown, or ok, with the usage when its counts are valid.
+ * The ok event is emitted outside the `try` that catches the provider's failure, so a sink that
+ * throws on it is never reported as a failed call.
  */
 export async function callProvider(ctx: RunContext, requester: Requester, target: Target, request: CompletionRequest): Promise<string> {
   return ctx.limit(async () => {
+    ctx.signal.throwIfAborted()
     const started = performance.now()
     let response: CompletionResponse
     try {
-      response = await target.provider.complete(request)
+      response = await target.provider.complete({ ...request, signal: ctx.signal })
       if (typeof response?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
     } catch (error) {
       ctx.emit({ type: 'call', ...requester, provider: target.ref, durationMs: elapsed(started), ok: false })
@@ -83,10 +91,13 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
 
 /**
  * Run one stage of a profile, sync or async, between its `stage:start` and `stage:end` events. The
+ * review's signal is checked before the stage starts, not after its step: an abort during the step
+ * is covered by the emit gate, the check in each call slot and the review's final check. The
  * duration is the stage's wall-clock time, queue waits included; `count` reads the number of items
  * the stage produced from its result.
  */
 export async function stage<T>(ctx: RunContext, profile: string, name: StageName, step: () => T, count: (result: Awaited<T>) => number): Promise<Awaited<T>> {
+  ctx.signal.throwIfAborted()
   ctx.emit({ type: 'stage:start', profile, stage: name })
   const started = performance.now()
   const result = await step()

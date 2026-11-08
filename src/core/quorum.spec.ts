@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
 import { securityProfile } from '../profiles/security.ts'
-import { ConfigError, OutputError } from './errors.ts'
+import { ConfigError, OutputError, ProviderError } from './errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts } from './ports.ts'
 import { createQuorum } from './quorum.ts'
 import type { Finding, Profile, Quorum, QuorumEvent, QuorumOptions, Usage } from './types.ts'
@@ -482,6 +482,19 @@ describe('review', () => {
     await expect(run().review({} as { diff: string })).rejects.toThrow('diff: must be a string')
   })
 
+  it('reports every issue of the review input and options in one ConfigError, never a TypeError', async () => {
+    const quorum = run()
+    await expect(quorum.review({} as { diff: string }, { signal: 'stop' as unknown as AbortSignal })).rejects.toMatchObject({
+      name: 'ConfigError',
+      issues: [{ path: 'diff', message: 'must be a string' }, { path: 'signal', message: 'must be an AbortSignal' }],
+    })
+    await expect(quorum.review({ diff }, null as unknown as { signal?: AbortSignal })).rejects.toMatchObject({
+      name: 'ConfigError',
+      issues: [{ path: 'options', message: 'must be an object' }],
+    })
+    expect(complete).not.toHaveBeenCalled()
+  })
+
   it('sends each lens to its own provider', async () => {
     const finder = fake('finder', () => findings(reported))
     const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, fake(lens.id, () => vote(true))]))
@@ -680,5 +693,135 @@ describe('meta and events', () => {
     expect(events.filter(event => event.type === 'call').at(-1)).toMatchObject({ role: 'vote', lens: 'defenses', ok: false })
     expect(events.flatMap(event => event.type === 'incomplete' ? [event.entry] : [])).toEqual(result.meta.incomplete)
     expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'vote-failed', file: 'a.js', detail: '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high' }])
+  })
+})
+
+describe('abort', () => {
+  it('rejects with the abort reason, before any event or call, when the signal is already aborted', async () => {
+    const model = fake('m', () => findings())
+    const events: QuorumEvent[] = []
+    const quorum = createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, model), events: event => events.push(event) })
+    await expect(quorum.review({ diff }, { signal: AbortSignal.abort() })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(model.requests).toEqual([])
+    expect(events).toEqual([])
+  })
+
+  it('stops a review aborted mid-run: no further call or event, and never a failed vote', async () => {
+    const controller = new AbortController()
+    const events: QuorumEvent[] = []
+    const finder = fake('finder', () => findings(reported))
+    const hanging = fake('hanging', request => new Promise<string>((_, reject) => {
+      request.signal?.addEventListener('abort', () => reject(new Error('connection reset')))
+      controller.abort()
+    }))
+    const quorum = createQuorum({ profiles: [securityProfile], concurrency: 1 }, { ...portsFor(securityProfile, finder, hanging), events: event => events.push(event) })
+    await expect(quorum.review({ diff }, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(finder.requests[0].signal).toBeInstanceOf(AbortSignal)
+    expect(hanging.requests).toHaveLength(1)
+    expect(events.map(event => event.type)).toEqual(['run:start', 'stage:start', 'call', 'stage:end', 'stage:start', 'stage:end', 'stage:start'])
+  })
+
+  it('rejects with the abort reason, not the error of the call it cut', async () => {
+    const controller = new AbortController()
+    const finder: Provider = {
+      id: 'finder',
+      model: 'finder-model',
+      async complete() {
+        controller.abort()
+        throw new ProviderError({ providerId: 'finder', kind: 'aborted', message: 'request aborted' })
+      },
+    }
+    const quorum = createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, finder))
+    await expect(quorum.review({ diff }, { signal: controller.signal })).rejects.toBe(controller.signal.reason)
+  })
+
+  it('refuses a signal that is not an AbortSignal', async () => {
+    await expect(run().review({ diff }, { signal: 'stop' as unknown as AbortSignal })).rejects.toThrow('signal: must be an AbortSignal')
+  })
+
+  it.each([
+    ['an empty diff, aborted by the sink as the run starts', '  \n', 'run:start'],
+    ['a diff, aborted by the sink as the last stage ends', diff, 'stage:end'],
+  ])('never resolves once aborted, even when nothing is left to run: %s', async (_name, text, abortOn) => {
+    const controller = new AbortController()
+    const model = fake('m', request => isVote(request) ? vote(true) : findings(reported))
+    const sink = (event: QuorumEvent): void => {
+      if (event.type === abortOn && (event.type !== 'stage:end' || event.stage === 'panel')) controller.abort()
+    }
+    const quorum = createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, model), events: sink })
+    await expect(quorum.review({ diff: text }, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('rejects as soon as an abort cuts a vote, without waiting for the votes still in flight', async () => {
+    const controller = new AbortController()
+    const finder = fake('finder', () => findings(reported))
+    const deaf = fake('deaf', () => new Promise<string>(() => {}))
+    const cut = fake('cut', request => new Promise<string>((_, reject) => {
+      request.signal?.addEventListener('abort', () => reject(new Error('connection reset')))
+      controller.abort()
+    }))
+    const quorum = createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research: finder, voters: { reachability: deaf, impact: deaf, defenses: cut } } } })
+    const outcome = quorum.review({ diff }, { signal: controller.signal }).then(() => 'resolved', (error: unknown) => error)
+    const pending = new Promise(resolve => setTimeout(resolve, 50, 'still pending'))
+    expect(await Promise.race([outcome, pending])).toMatchObject({ name: 'AbortError' })
+  })
+})
+
+describe('event sink', () => {
+  it('stops every profile once it throws, and the review rejects with its error', async () => {
+    const bug = new Error('sink bug')
+    const seen: QuorumEvent[] = []
+    const sink = (event: QuorumEvent): void => {
+      seen.push(event)
+      if (event.type === 'stage:end' && event.stage === 'research' && event.profile === 'security') throw bug
+    }
+    const security = fake('security', request => isVote(request) ? vote(true) : findings(reported))
+    const styled = fake('styled', request => isVote(request) ? vote(true) : findings(reported))
+    const ports = { profiles: { ...portsFor(securityProfile, security).profiles, ...portsFor(style, styled).profiles }, events: sink }
+    await expect(createQuorum({ profiles: [securityProfile, style], concurrency: 1 }, ports).review({ diff })).rejects.toBe(bug)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const sent = [...security.requests, ...styled.requests]
+    expect(sent.length).toBeLessThanOrEqual(2)
+    expect(sent.filter(isVote)).toEqual([])
+    expect(seen.at(-1)).toMatchObject({ type: 'stage:end', profile: 'security', stage: 'research' })
+  })
+
+  it('rejects with its error when it throws on a vote\'s call, instead of recording a failed vote', async () => {
+    const bug = new Error('sink bug')
+    const model = fake('m', request => isVote(request) ? vote(true) : findings(reported))
+    const sink = (event: QuorumEvent): void => {
+      if (event.type === 'call' && event.role === 'vote') throw bug
+    }
+    await expect(createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, model), events: sink }).review({ diff })).rejects.toBe(bug)
+  })
+
+  it('rejects with its error when it throws on the last event', async () => {
+    const bug = new Error('sink bug')
+    const model = fake('m', request => isVote(request) ? vote(true) : findings(reported))
+    const sink = (event: QuorumEvent): void => {
+      if (event.type === 'run:end') throw bug
+    }
+    await expect(createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, model), events: sink }).review({ diff })).rejects.toBe(bug)
+  })
+})
+
+describe('failure', () => {
+  it('stops the other profiles once one fails: no call starts and no event arrives after the rejection', async () => {
+    const events: QuorumEvent[] = []
+    const broken: Provider = {
+      id: 'broken',
+      model: 'broken-model',
+      async complete() {
+        throw new ProviderError({ providerId: 'broken', kind: 'http', message: 'endpoint down' })
+      },
+    }
+    const styled = fake('styled', request => isVote(request) ? vote(true) : findings(reported))
+    const ports = { profiles: { ...portsFor(securityProfile, broken).profiles, ...portsFor(style, styled).profiles }, events: (event: QuorumEvent) => { events.push(event) } }
+    await expect(createQuorum({ profiles: [securityProfile, style], concurrency: 1 }, ports).review({ diff })).rejects.toThrow('broken: endpoint down')
+    const delivered = events.length
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(styled.requests.filter(isVote)).toEqual([])
+    expect(events).toHaveLength(delivered)
   })
 })
