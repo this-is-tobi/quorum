@@ -503,6 +503,18 @@ describe('review', () => {
     await expect(run().review({} as { diff: string })).rejects.toThrow('diff: must be a string')
   })
 
+  it.each([
+    ['the diff text itself', diff],
+    ['null', null],
+  ])('names the input, not its diff, when the input is not an object: %s', async (_name, input) => {
+    await expect(run().review(input as unknown as { diff: string })).rejects.toMatchObject({
+      name: 'ConfigError',
+      message: 'input: must be an object holding the diff string',
+      issues: [{ path: 'input', message: 'must be an object holding the diff string' }],
+    })
+    expect(complete).not.toHaveBeenCalled()
+  })
+
   it('reports every issue of the review input and options in one ConfigError, never a TypeError', async () => {
     const quorum = run()
     await expect(quorum.review({} as { diff: string }, { signal: 'stop' as unknown as AbortSignal })).rejects.toMatchObject({

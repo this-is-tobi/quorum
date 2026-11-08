@@ -92,7 +92,7 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
  * it; any other failure aborts the review when the profiles' run rejects. Either way the review
  * rejects with the first reason. An abort after `run:end` has no effect: the review is over.
  *
- * @throws ConfigError listing every issue of the input and the options: a `diff` that is not a string, options that are not an object, a `signal` that is not an AbortSignal
+ * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, options that are not an object, a `signal` that is not an AbortSignal
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
  * @throws the error of a sink that throws, or of a profile that fails: a ProviderError from its research call, an OutputError for its reply
  */
@@ -164,11 +164,14 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, diff: string, sec
 
 /**
  * Every problem with one review's input and options, so an untyped caller gets issues, never a
- * TypeError. The signal must be a real AbortSignal: `AbortSignal.any` accepts nothing else.
+ * TypeError. An input that is not an object is named as the input, not as its diff: the likely
+ * mistake is the diff text passed on its own, as `runQuorum` takes it. The signal must be a real
+ * AbortSignal: `AbortSignal.any` accepts nothing else.
  */
 function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
   const issues: ConfigIssue[] = []
-  if (!isRecord(input) || typeof input.diff !== 'string') issues.push({ path: 'diff', message: 'must be a string' })
+  if (!isRecord(input)) issues.push({ path: 'input', message: 'must be an object holding the diff string' })
+  else if (typeof input.diff !== 'string') issues.push({ path: 'diff', message: 'must be a string' })
   if (!isRecord(options)) issues.push({ path: 'options', message: 'must be an object' })
   else if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) issues.push({ path: 'signal', message: 'must be an AbortSignal' })
   return issues

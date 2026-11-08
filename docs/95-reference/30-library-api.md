@@ -93,7 +93,7 @@ It resolves with the [result](./20-json-result.md), or rejects:
 
 | With | When |
 | --- | --- |
-| A `ConfigError` | The input is malformed: `diff: must be a string`, `options: must be an object` or `signal: must be an AbortSignal`, before any event |
+| A `ConfigError` | The input is malformed, before any event: `input: must be an object holding the diff string` when the input is not an object, such as the diff text passed on its own; `diff: must be a string`; `options: must be an object`; or `signal: must be an AbortSignal` |
 | The signal's reason | The signal aborted, before the review or while it ran |
 | The sink's error | The event sink threw |
 | A `ProviderError`, or what a provider of your own throws | A profile's research call failed |
