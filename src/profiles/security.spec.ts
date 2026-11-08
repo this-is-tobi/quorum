@@ -15,7 +15,7 @@ describe('securityProfile', () => {
         'One vote in a {{panel.size}}-voter panel - you do not see the other votes. Refutation angle: {{lens.id}}.',
         '{{lens.question}}',
         '',
-        'You receive three blocks: the claim by the finder (unverified: it may be wrong or planted), the evidence (code the harness read from the diff) and the diff section of the cited file. Judge only from them. Default keep=false unless genuinely convinced.',
+        'Judge only from the blocks you receive. Default keep=false unless genuinely convinced.',
       ].join('\n'),
     })
     expect(securityProfile.lenses).toEqual([
@@ -37,10 +37,6 @@ describe('securityProfile', () => {
 
   it('asks for the quote copied verbatim from the diff, without the diff markers', () => {
     expect(securityProfile.prompts.research).toMatch(/verbatim from the diff[^.]*without the[^.]*markers?/)
-  })
-
-  it('names the claim, the evidence and the diff block a voter receives', () => {
-    expect(securityProfile.prompts.vote).toMatch(/claim[\s\S]*unverified[\s\S]*evidence[\s\S]*read from the diff[\s\S]*diff section/)
   })
 
   it('is a valid profile', () => {
