@@ -16,9 +16,16 @@ export const UNTRUSTED_CONTENT_NOTICE
  */
 export const PLACEHOLDER = /\{\{([^{}]*)\}\}/g
 
-/** Fill `{{name}}` placeholders; unknown names are left untouched (templates are validated elsewhere). */
+/**
+ * Fill `{{name}}` placeholders; unknown names are left untouched (templates are validated
+ * elsewhere). Only a value `values` holds as its own is used: a placeholder named after an
+ * `Object.prototype` member, such as `{{constructor}}`, stays literal.
+ */
 export function renderTemplate(template: string, values: Readonly<Record<string, string>>): string {
-  return template.replace(PLACEHOLDER, (placeholder: string, name: string) => values[name.trim()] ?? placeholder)
+  return template.replace(PLACEHOLDER, (placeholder: string, name: string) => {
+    const key = name.trim()
+    return Object.hasOwn(values, key) ? values[key] : placeholder
+  })
 }
 
 /**

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { profileIssues, thresholdsFor } from './profile.ts'
+import { securityProfile } from '../profiles/security.ts'
+import { defaultPolicy } from './policy.ts'
+import { profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
 import { PLACEHOLDER } from './prompts.ts'
 import type { Profile } from './types.ts'
 
@@ -109,11 +111,79 @@ describe('profileIssues', () => {
       { path: 'p.prompts.vote', message: 'must not be empty' },
     ])
   })
+
+  it('reports a malformed profile from an untyped caller as issues, never a TypeError', () => {
+    const loose = { id: 'loose', prompts: { research: 1 }, lenses: [{ id: 'one' }, 'two'], policy: 'strict', gating: 'yes', guidelines: 42 } as unknown as Profile
+    expect(profileIssues(loose)).toEqual([
+      { path: 'loose.lenses.0.question', message: 'must be a string' },
+      { path: 'loose.lenses.1', message: 'must be an object with an id and a question' },
+      { path: 'loose.policy', message: 'must be an object with high, medium and low rules' },
+      { path: 'loose.prompts.research', message: 'must be a string' },
+      { path: 'loose.prompts.vote', message: 'must be a string' },
+      { path: 'loose.gating', message: 'must be true or false' },
+      { path: 'loose.guidelines', message: 'must be a string' },
+    ])
+  })
+
+  it('reports missing prompts and lenses as issues', () => {
+    expect(profileIssues({ id: 'bare' } as unknown as Profile)).toEqual([
+      { path: 'bare.lenses', message: 'must be an array of lenses' },
+      { path: 'bare.prompts', message: 'must be an object holding the research and vote templates' },
+    ])
+    expect(profileIssues({ ...valid, prompts: null } as unknown as Profile)).toEqual([{ path: 'p.prompts', message: 'must be an object holding the research and vote templates' }])
+  })
+
+  it('names a profile that is not an object, or whose id is invalid, by the root it is given', () => {
+    expect(profileIssues(null as unknown as Profile, 'profiles.2')).toEqual([{ path: 'profiles.2', message: 'must be an object' }])
+    expect(profileIssues(undefined as unknown as Profile, 'profiles.0')).toEqual([{ path: 'profiles.0', message: 'must be an object' }])
+    expect(profileIssues({ ...valid, id: 'Bad' }, 'profiles.1')).toEqual([{ path: 'profiles.1.id', message: 'must match ^[a-z][a-z0-9_-]*$, got "Bad"' }])
+  })
+
+  it('reports a hole in an untyped lens array as an issue, never a TypeError', () => {
+    const lenses = [...valid.lenses] as Profile['lenses'][number][]
+    lenses.length = 3
+    expect(profileIssues({ ...valid, lenses })).toEqual([{ path: 'p.lenses.2', message: 'must be an object with an id and a question' }])
+  })
 })
 
 describe('thresholdsFor', () => {
   it('resolves the profile policy, or the default one, for its lens count', () => {
     expect(thresholdsFor(valid)).toEqual({ high: 2, medium: 2, low: null })
     expect(thresholdsFor({ ...valid, policy: { high: 'unanimous', medium: 'any', low: 'off' } })).toEqual({ high: 2, medium: 1, low: null })
+  })
+})
+
+describe('profileWarnings', () => {
+  it('warns about a policy level that never applies with the profile\'s lens count', () => {
+    expect(profileWarnings({ ...valid, policy: { high: 'unanimous', medium: 'majority', low: 'off' } })).toEqual([
+      'p.policy.medium needs the same 2 vote(s) as policy.high with 2 lens(es), so it never applies',
+    ])
+  })
+
+  it('warns about a vote template that gives every lens the same instructions', () => {
+    expect(profileWarnings({ ...valid, policy: { high: 'unanimous', medium: 'any', low: 'off' }, prompts: { ...valid.prompts, vote: 'Judge this finding ({{panel.size}} voters).' } })).toEqual([
+      'p.prompts.vote uses neither {{lens.id}} nor {{lens.question}}, so every lens gets the same instructions',
+    ])
+  })
+
+  it('has nothing to say about the security profile, or about one lens without lens variables', () => {
+    expect(profileWarnings(securityProfile)).toEqual([])
+    expect(profileWarnings({ ...valid, policy: { high: 'unanimous', medium: 'off', low: 'off' }, prompts: { ...valid.prompts, vote: 'Judge it.' }, lenses: [valid.lenses[0]] })).toEqual([])
+    expect(profileWarnings({ ...valid, policy: { high: 'unanimous', medium: 'any', low: 'off' }, prompts: { ...valid.prompts, vote: 'Judge: {{lens.question}}' } })).toEqual([])
+  })
+})
+
+describe('profile', () => {
+  it('cannot be reassigned through its type, nor can the default policy be changed in place', () => {
+    const rename = (profile: Profile): void => {
+      // @ts-expect-error a profile is read-only
+      profile.id = 'other'
+    }
+    const loosen = (): void => {
+      // @ts-expect-error a policy is read-only
+      defaultPolicy.high = 'any'
+    }
+    expect([rename, loosen]).toHaveLength(2)
+    expect(Object.isFrozen(defaultPolicy)).toBe(true)
   })
 })

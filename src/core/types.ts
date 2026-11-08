@@ -39,8 +39,9 @@ export interface Vote {
 /** One angle a voter judges a finding from: the question it is asked, and the id its vote reports. */
 export interface Lens {
   /** Names the lens in `LensVote.angle` and in the vote template's `{{lens.id}}`. */
-  id: string
-  question: string
+  readonly id: string
+  /** What the voter judging from this lens is asked, filled into the vote template's `{{lens.question}}`. */
+  readonly question: string
 }
 
 /** One lens's vote, or the error if that call failed. */
@@ -53,8 +54,8 @@ export interface LensVote {
 
 /** Instruction templates, one per stage. `{{name}}` placeholders are filled by renderTemplate. */
 export interface Prompts {
-  research: string
-  vote: string
+  readonly research: string
+  readonly vote: string
 }
 
 /**
@@ -63,17 +64,17 @@ export interface Prompts {
  */
 export interface Profile {
   /** Names the profile; matches `^[a-z][a-z0-9_-]*$`. */
-  id: string
+  readonly id: string
   /** The `research` and `vote` instruction templates, owned by the profile. */
-  prompts: Prompts
+  readonly prompts: Prompts
   /** The angles of the panel: at least one, ids unique within the profile. */
-  lenses: readonly Lens[]
+  readonly lenses: readonly Lens[]
   /** How many kept votes each confidence level needs; `defaultPolicy` when unset. */
-  policy?: PolicyRules
+  readonly policy?: PolicyRules
   /** Whether its kept high findings set exit code 1; true when unset. */
-  gating?: boolean
+  readonly gating?: boolean
   /** Reference text the caller already loaded; the core never reads files. */
-  guidelines?: string
+  readonly guidelines?: string
 }
 
 /** A confidence level a kept finding reaches; 'low' only when the policy enables it. */
