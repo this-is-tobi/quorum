@@ -21,9 +21,9 @@ The core knows no domain, no model vendor and no process. A profile is data, an 
 
 | Layer | May import | May not use |
 | --- | --- | --- |
-| `src/core/` | Other core modules, `zod`, `node:crypto` and the `package.json` version | The globals `process`, `fetch`, `Bun`, `globalThis`, `global` and `self` |
+| `src/core/` | Other core modules, `zod`, `node:crypto` and the `package.json` version | The globals `process`, `fetch`, `WebSocket`, `EventSource`, `Worker`, `Bun`, `globalThis`, `global` and `self` |
 | `src/profiles/` | Types from `src/core/`, and nothing else | The same globals |
-| `src/providers/` | Its own modules, and `core/ports.ts`, `core/errors.ts` and `core/types.ts` | `process`, `Bun`, `globalThis`, `global` and `self`; it may use `fetch` |
+| `src/providers/` | Its own modules, and `core/ports.ts`, `core/errors.ts` and `core/types.ts` | `process`, `Bun`, `globalThis`, `global` and `self`; it may use `fetch`, `WebSocket`, `EventSource` and `Worker` |
 | `src/cli/`, `src/legacy.ts`, `src/index.ts` | Any layer | |
 
 The core never imports a profile. `src/cli/` is the one module that reads files and stdin and writes stdout and stderr, and `runQuorum` in `src/index.ts` reads `process.env`. `bun run lint` enforces the table through the overrides at the end of [`eslint.config.js`](../../eslint.config.js), on every production file; a spec file may import across layers.

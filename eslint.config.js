@@ -1,5 +1,9 @@
 import antfu from '@antfu/eslint-config'
 
+// The globals neither the core nor a profile may use: the process, the runtime, the network
+// (`fetch`, `WebSocket`, `EventSource`), another thread (`Worker`), and the global object itself.
+const ENVIRONMENT_GLOBALS = ['process', 'fetch', 'WebSocket', 'EventSource', 'Worker', 'Bun', 'globalThis', 'global', 'self']
+
 export default antfu(
   {
     stylistic: {
@@ -45,7 +49,7 @@ export default antfu(
     ignores: ['src/**/*.spec.ts'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [{ regex: '^(?!\\./(?!.*\\.\\.)|zod$|node:crypto$|\\.\\./\\.\\./package\\.json$)', message: 'The core imports only core modules, zod, node:crypto and package.json.' }] }],
-      'no-restricted-globals': ['error', 'process', 'fetch', 'Bun', 'globalThis', 'global', 'self'],
+      'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
     },
   },
   {
@@ -54,7 +58,7 @@ export default antfu(
     ignores: ['src/**/*.spec.ts'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [{ regex: '^(?!\\.\\.?/(?!.*\\.\\.)|zod$|node:crypto$|\\.\\./\\.\\./\\.\\./package\\.json$)', message: 'The core imports only core modules, zod, node:crypto and package.json.' }] }],
-      'no-restricted-globals': ['error', 'process', 'fetch', 'Bun', 'globalThis', 'global', 'self'],
+      'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
     },
   },
   {
@@ -68,7 +72,7 @@ export default antfu(
           { regex: '^\\.\\./core/', allowTypeImports: true, message: 'A profile imports only core types.' },
         ],
       }],
-      'no-restricted-globals': ['error', 'process', 'fetch', 'Bun', 'globalThis', 'global', 'self'],
+      'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
     },
   },
   {
