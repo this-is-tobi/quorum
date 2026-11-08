@@ -186,7 +186,9 @@ export interface QuorumOptions {
 export interface Quorum {
   /**
    * Review one diff with every profile of the quorum. Once `signal` aborts, the review stops and
-   * rejects with the signal's reason; an aborted review never resolves.
+   * rejects with the signal's reason; an aborted review never resolves. The review is over once it
+   * has sent `run:end`: an abort from that event's handler, or later, has no effect, and the review
+   * resolves with its result.
    */
   readonly review: (input: { readonly diff: string }, options?: { readonly signal?: AbortSignal }) => Promise<QuorumResult>
   /** Settings that cannot take full effect, such as a policy level that never applies; each starts at its profile id. */
