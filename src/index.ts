@@ -8,9 +8,12 @@ export { defaultPolicy } from './core/policy.ts'
 export type { PolicyRules, Rule } from './core/policy.ts'
 export type { ChatMessage, CompletionRequest, CompletionResponse, EventSink, JsonSchema, ProfilePorts, Provider, QuorumPorts } from './core/ports.ts'
 export { createQuorum } from './core/quorum.ts'
+export { inertJson, inertLine } from './core/sanitize.ts'
 export type {
   Confidence,
   Finding,
+  Flag,
+  FlagCode,
   IncompleteEntry,
   IncompleteReason,
   Lens,
