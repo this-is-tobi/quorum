@@ -18,7 +18,7 @@ The user message holds the data, each block in its own fence, joined by blank li
 | Research, one per profile | The diff; then the guidelines, when the profile has them |
 | Vote, one per lens per finding | The claim, the evidence, the diff section of the cited file; then the guidelines, when the profile has them |
 
-The claim is two lines, `Finding: <file>:<line> [<category>]` and `Claim by the finder (unverified): <summary>`, and its category and summary are the only text a model wrote that a voter reads. The evidence is the code the harness read from the diff around the cited line, and the diff section is the cited file's part of the diff, or the whole diff when no single section matches.
+The claim is two lines, `Finding: <file>:<line> [<category>]` and `Claim by the finder (unverified): <summary>`. Its category and summary, and, for a diff without per-file headers, its file name (cleaned, capped at 260 characters), are the only text a model wrote that a voter reads. The evidence is the code the harness read from the diff around the cited line, and the diff section is the cited file's part of the diff, or the whole diff when no single section matches.
 
 The first vote request of a review of the [Quick start](../10-getting-started/20-quickstart.md)'s diff, as the `reachability` voter received it. Its system message:
 
@@ -95,7 +95,7 @@ A template is text with `{{name}}` placeholders, and no logic: no condition, no 
 | `prompts.research` | None. The diff is appended to the request as fenced data, so `{{diff}}` is refused with its own message |
 | `prompts.vote` | `{{lens.id}}`, the lens's id; `{{lens.question}}`, its question; `{{panel.size}}`, the number of lenses of the profile |
 
-- **Anything else is refused**, by `createQuorum`, before any call: a typo in a template never reaches a model as literal text. [The checks](./40-profiles.md#the-checks) has the messages.
+- **Anything else is refused**, by `createQuorum`, before any call: a misspelled variable never reaches a model as literal text. Only a well-formed `{{name}}` is a variable, so text that never closes, such as `{{lens.id}`, is sent as written. [The checks](./40-profiles.md#the-checks) has the messages.
 - **A placeholder is anything between `{{` and `}}` that holds no brace**, and its name is trimmed, so `{{ lens.id }}` is `{{lens.id}}`.
 - **There is no escape for literal braces.** A template that needs `{{…}}` text of its own is refused.
 - **Templates are rendered once**, when the quorum is created: the vote template once per lens, the research template not at all.

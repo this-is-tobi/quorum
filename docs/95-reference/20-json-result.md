@@ -27,7 +27,7 @@ Each list keeps the order in which the finder listed its findings, the first pro
 | `quoteMatched` | boolean | Whether the code the finder quoted appears in the evidence, once each evidence line's marker is removed and whitespace is collapsed on both sides; a quote that keeps its own `+` or `-` does not match. A measure of hallucinated citations |
 | `keptVotes` | number | The votes that kept the finding |
 | `totalVotes` | number | The votes asked for, one per lens, failed ones included |
-| `confidence` | `"high"`, `"medium"` or `"low"` | The highest level the kept votes reach. Absent from a discarded or unreviewed verdict |
+| `confidence` | `"high"`, `"medium"` or `"low"` | The highest level the kept votes reach. A discarded or unreviewed verdict reached none: the JSON leaves the key out, and in the object `review` resolves with, the key is there with the value `undefined` |
 | `votes` | vote[] | One per lens, in the profile's lens order |
 
 Cleaned means stripped of control, format and other invisible characters, with whitespace collapsed to single spaces. A value cut at its cap ends with `…`. A trailing carriage return is removed from each evidence line.
@@ -53,7 +53,7 @@ A failed vote counts as a reject.
 | `usage` | object | Only when at least one call reported valid counts: `inputTokens` and `outputTokens` summed over those calls, then `costUsd`, summed over the calls that reported one, when any did |
 | `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's research gaps before its panel's. A review is complete when this list and `unreviewed` are both empty |
 
-A usage count is valid when it is a finite number of at least 0. `meta.usage` and each `invalidFindings` are counted from the review's own events, so the two cannot disagree.
+A usage count is valid when it is a finite number of at least 0. `meta.usage` and each `invalidFindings` are counted from the review's own events, so `meta` and the events cannot disagree.
 
 ### Per profile
 

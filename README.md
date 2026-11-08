@@ -23,7 +23,7 @@ quorum ./my.diff > result.json                # review a diff file
 git diff origin/main...HEAD | quorum > result.json   # or what your branch changes
 ```
 
-The JSON result goes to stdout, and the exit code says what to do with it: `0` for a complete review in which no gating profile kept a `high` finding, `1` when one did, `2` for a usage or configuration error, `3` when the research call failed, and `4` for an incomplete review. [Quick start](./docs/10-getting-started/20-quickstart.md) walks one review through, and [Start here](./docs/01-readme.md) lays out three tracks: review a diff, use it from code or review something else, and know what it protects against.
+The JSON result goes to stdout, and the exit code says what to do with it: `0` for a complete review in which no gating profile kept a `high` finding, `1` when one did, complete or not, `2` for a usage or configuration error, `3` when the research call failed, and `4` for an incomplete review otherwise. [Quick start](./docs/10-getting-started/20-quickstart.md) walks one review through, and [Start here](./docs/01-readme.md) lays out three tracks: review a diff, use it from code or review something else, and know what it protects against.
 
 ## Documentation
 
