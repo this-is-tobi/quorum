@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
 import { securityProfile } from '../profiles/security.ts'
 import { ConfigError, OutputError, ProviderError } from './errors.ts'
@@ -467,6 +467,27 @@ describe('review', () => {
     await run().review({ diff: wide })
     expect(complete).toHaveBeenCalledTimes(10)
     expect(peak).toBe(4)
+  })
+
+  it('builds each request only once its call holds a concurrency slot', async () => {
+    // Every fenced block draws one nonce, so the nonces drawn count the blocks of the requests built so far.
+    const nonces = vi.spyOn(crypto, 'randomUUID')
+    onTestFinished(() => nonces.mockRestore())
+    let held = (): void => {}
+    let release = (): void => {}
+    const firstVote = new Promise<void>((resolve) => { held = resolve })
+    complete.mockResolvedValueOnce(findings(reported)).mockImplementationOnce(async () => {
+      held()
+      await new Promise<void>((resolve) => { release = resolve })
+      return vote(true)
+    }).mockResolvedValue(vote(true))
+    const pending = run(securityProfile, { concurrency: 1 }).review({ diff })
+    await firstVote
+    // The research request's one block and the first vote's three: the two votes still queued have built nothing.
+    expect(nonces).toHaveBeenCalledTimes(4)
+    release()
+    expect((await pending).kept).toHaveLength(1)
+    expect(nonces).toHaveBeenCalledTimes(10)
   })
 
   it('reviews an empty diff without any model call, and still reports the run', async () => {

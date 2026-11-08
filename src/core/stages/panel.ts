@@ -76,7 +76,7 @@ async function judge(ctx: RunContext, run: ProfileRun, finding: Finding, diffCon
 async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens: LensRun, diffContext: string): Promise<LensVote> {
   let lensVote: LensVote
   try {
-    const text = await callProvider(ctx, { profile: run.id, role: 'vote', lens: lens.id }, lens, voteRequest(lens.instructions, finding, diffContext, run.guidelines))
+    const text = await callProvider(ctx, { profile: run.id, role: 'vote', lens: lens.id }, lens, () => voteRequest(lens.instructions, finding, diffContext, run.guidelines))
     lensVote = { angle: lens.id, vote: parseVoteReply(text), error: null }
   } catch (error) {
     // Once the review is aborted, a failed call is not the voter's failure: the review rejects with the abort's reason.

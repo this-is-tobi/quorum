@@ -82,7 +82,7 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
  * @throws OutputError when the reply is not one JSON object holding a `findings` array and nothing else
  */
 export async function research(ctx: RunContext, run: ProfileRun, diff: string, sections: ReadonlyMap<string, string>): Promise<ResearchOutcome> {
-  const text = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, researchRequest(run.research.instructions, diff, run.guidelines))
+  const text = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, () => researchRequest(run.research.instructions, diff, run.guidelines))
   let outcome: ResearchOutcome
   try {
     outcome = checkReply(text, sections, run.id, ctx.maxFindings)
