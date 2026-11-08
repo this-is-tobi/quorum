@@ -40,10 +40,17 @@ export interface RunContext {
   /** Delivers one event of the review; it delivers nothing once the review is aborted. */
   readonly emit: EventSink
   /**
-   * Aborted when the caller's signal is, when the event sink throws or when a profile fails: every
-   * stage and every call checks it, and every request carries it.
+   * Aborted when the caller's signal is, when the event sink throws, when a profile's research fails
+   * or when the profiles' run rejects: every stage and every call checks it, and every request
+   * carries it.
    */
   readonly signal: AbortSignal
+  /**
+   * Aborts the review with `error`, unless it is already aborted, so a caller's abort reason or a
+   * sink's error stays the reason. A research failure, the call or its reply, calls it where it
+   * fails, so no other profile starts a call after it.
+   */
+  readonly fail: (error: unknown) => void
   /** How many findings of a research reply each profile sends to the panel. */
   readonly maxFindings: number
 }
@@ -64,7 +71,9 @@ export function elapsed(started: number): number {
  * Call a provider inside the review's concurrency limit and return its reply text. The review's
  * signal is checked inside the slot, before the provider is called, so a call still queued when the
  * review is aborted never starts; the request carries the signal, so the provider can stop a call
- * in flight. The duration is measured inside the slot: the provider's latency, not the time the
+ * in flight. A failed research call aborts the review through `ctx.fail` before it leaves its slot,
+ * so the queued call the slot goes to next never starts; a failed vote does not, since the panel
+ * records it. The duration is measured inside the slot: the provider's latency, not the time the
  * call waited for a slot. A reply whose text is not a string is a `ProviderError`. Each call emits
  * one `call` event, which names the provider by the ref captured at creation, never by the live
  * object: failed, before the error is rethrown, or ok, with the usage when its counts are valid.
@@ -81,6 +90,8 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       if (typeof response?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
     } catch (error) {
       ctx.emit({ type: 'call', ...requester, provider: target.ref, durationMs: elapsed(started), ok: false })
+      // Still inside the slot: the queued call it is handed to next sees the abort and never starts.
+      if (requester.role === 'research') ctx.fail(error)
       throw error
     }
     const usage = checkedUsage(response.usage)
