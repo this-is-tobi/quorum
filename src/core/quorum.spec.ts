@@ -817,6 +817,16 @@ describe('event sink', () => {
     await expect(createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, model), events: sink }).review({ diff })).rejects.toBe(bug)
   })
 
+  it('rejects with its error when it throws on a vote\'s call, even when the caller passes a signal too', async () => {
+    const bug = new Error('sink bug')
+    const model = fake('m', request => isVote(request) ? vote(true) : findings(reported))
+    const sink = (event: QuorumEvent): void => {
+      if (event.type === 'call' && event.role === 'vote') throw bug
+    }
+    const quorum = createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, model), events: sink })
+    await expect(quorum.review({ diff }, { signal: new AbortController().signal })).rejects.toBe(bug)
+  })
+
   it('rejects with its error when it throws on the last event', async () => {
     const bug = new Error('sink bug')
     const model = fake('m', request => isVote(request) ? vote(true) : findings(reported))
