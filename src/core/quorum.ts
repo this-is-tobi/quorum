@@ -87,9 +87,10 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
  * stage and every call checks it, every request carries it, and it is checked once more after the
  * profiles have run, a blank diff included, so an aborted review rejects with the signal's reason,
  * whatever error a call it cut raised, and never resolves. No event is delivered once the review is
- * aborted. A sink that throws aborts the review with its error, and a profile that fails aborts it
- * with that failure: either way the review rejects with it and no other profile starts a call or
- * sends an event. An abort after `run:end` has no effect: the review is over.
+ * aborted. A sink that throws aborts the review with its error, and a research failure (the call or
+ * its reply) aborts it with that failure where it fails, so no other profile starts a call after
+ * it; any other failure aborts the review when the profiles' run rejects. Either way the review
+ * rejects with the first reason. An abort after `run:end` has no effect: the review is over.
  *
  * @throws ConfigError listing every issue of the input and the options: a `diff` that is not a string, options that are not an object, a `signal` that is not an AbortSignal
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
@@ -101,6 +102,9 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
   options.signal?.throwIfAborted()
   const internal = new AbortController()
   const signal = options.signal === undefined ? internal.signal : AbortSignal.any([options.signal, internal.signal])
+  const fail = (error: unknown): void => {
+    if (!signal.aborted) internal.abort(error)
+  }
   const startedAt = new Date().toISOString()
   const started = performance.now()
   const { runs, sink } = compiled
@@ -117,10 +121,10 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
       throw error
     }
   }
-  const ctx: RunContext = { limit: createLimiter(compiled.concurrency), emit, signal, maxFindings: compiled.maxFindings }
+  const ctx: RunContext = { limit: createLimiter(compiled.concurrency), emit, signal, fail, maxFindings: compiled.maxFindings }
   emit({ type: 'run:start', profiles: runs.map(run => run.id), providers: Object.fromEntries(runs.map(run => [run.id, providersOf(run)])) })
   const outcomes = await reviewAll(ctx, runs, input.diff).catch((error: unknown) => {
-    // One profile's failure ends the review: no other profile starts a call or sends an event.
+    // A research failure aborted the review where it failed; any other failure aborts it here. The first reason stays the reason.
     const reason: unknown = signal.aborted ? signal.reason : error
     internal.abort(reason)
     throw reason

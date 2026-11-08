@@ -821,7 +821,7 @@ describe('failure', () => {
     await expect(createQuorum({ profiles: [securityProfile, style], concurrency: 1 }, ports).review({ diff })).rejects.toThrow('broken: endpoint down')
     const delivered = events.length
     await new Promise(resolve => setTimeout(resolve, 20))
-    expect(styled.requests.filter(isVote)).toEqual([])
+    expect(styled.requests).toEqual([])
     expect(events).toHaveLength(delivered)
   })
 })

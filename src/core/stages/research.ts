@@ -74,14 +74,22 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
  * The research stage of one profile: one call to its research provider, with the profile's
  * research instructions, the diff and the guidelines, whose reply `checkReply` turns into what the
  * panel receives. Each finding dropped for citing code outside the diff is reported by a
- * `finding:invalid` event, and each gap by an `incomplete` event.
+ * `finding:invalid` event, and each gap by an `incomplete` event. A failed research call, or a
+ * reply that is not a valid envelope, fails the profile and aborts the review where it fails
+ * (`callProvider` aborts it for the call), so no other profile starts a call after it.
  *
  * @throws ProviderError, or whatever a custom provider throws, when the research call fails
  * @throws OutputError when the reply is not one JSON object holding a `findings` array and nothing else
  */
 export async function research(ctx: RunContext, run: ProfileRun, diff: string, sections: ReadonlyMap<string, string>): Promise<ResearchOutcome> {
   const text = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, researchRequest(run.research.instructions, diff, run.guidelines))
-  const outcome = checkReply(text, sections, run.id, ctx.maxFindings)
+  let outcome: ResearchOutcome
+  try {
+    outcome = checkReply(text, sections, run.id, ctx.maxFindings)
+  } catch (error) {
+    ctx.fail(error)
+    throw error
+  }
   for (const reason of outcome.invalid) ctx.emit({ type: 'finding:invalid', profile: run.id, reason })
   for (const entry of outcome.incomplete) ctx.emit({ type: 'incomplete', entry })
   return outcome
