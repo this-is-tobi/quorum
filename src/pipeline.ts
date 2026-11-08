@@ -7,9 +7,10 @@ import type { Provider } from './core/ports.ts'
 import { confidenceFor, undecidedLevel, verdictStatus } from './core/policy.ts'
 import { profileIssues, thresholdsFor } from './core/profile.ts'
 import { renderTemplate, researchRequest, voteRequest } from './core/prompts.ts'
+import { dedup } from './core/stages/dedup.ts'
 import { checkReply, DEFAULT_MAX_FINDINGS } from './core/stages/research.ts'
 import type { ResearchOutcome } from './core/stages/research.ts'
-import type { Finding, IncompleteEntry, Lens, LensVote, Profile, QuorumResult, Verdict } from './core/types.ts'
+import type { Finding, IncompleteEntry, Lens, LensVote, Profile, QuorumMeta, QuorumResult, Verdict } from './core/types.ts'
 import { providersFromEnv } from './legacy.ts'
 import { securityProfile } from './profiles/security.ts'
 
@@ -18,6 +19,9 @@ export interface Providers {
   research: Provider
   voter: Provider
 }
+
+/** A review's result without the meta this pipeline cannot fill: only its gaps. */
+export interface PipelineResult extends Omit<QuorumResult, 'meta'> { meta: Pick<QuorumMeta, 'incomplete'> }
 
 /** What a review runs besides its providers: the profile (the security one by default) and a progress callback. */
 export interface ReviewOptions {
@@ -48,24 +52,6 @@ export async function research(
 ): Promise<ResearchOutcome> {
   const { text } = await limit(() => provider.complete(researchRequest(profile.prompts.research, diff, profile.guidelines)))
   return checkReply(text, sections, profile.id, maxFindings)
-}
-
-/**
- * Drop candidates that independent lenses (once there is more than one) or repeated runs
- * rediscovered at the same location - plain code, not a model, same as the quorum tally below.
- *
- * @example
- * dedup([a, b, a]) // -> [a, b], keyed by file, line and category
- */
-export function dedup(findings: Finding[]): Finding[] {
-  const seen = new Set<string>()
-  return findings.filter((finding) => {
-    // A JSON array, not colons: a file name and a category can hold colons, which would make two findings collide.
-    const key = JSON.stringify([finding.file, finding.line, finding.category])
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
 }
 
 /**
@@ -121,12 +107,12 @@ export async function panel(profile: Profile, provider: Provider, finding: Findi
  * const { kept, discarded, unreviewed, meta } = await review(diffText, { research: provider, voter: provider }, { onProgress: console.error })
  * console.log(`${kept.length} kept, ${discarded.length} discarded, ${unreviewed.length} unreviewed`)
  */
-export async function review(diff: string, providers: Providers, options: ReviewOptions = {}): Promise<QuorumResult> {
+export async function review(diff: string, providers: Providers, options: ReviewOptions = {}): Promise<PipelineResult> {
   const profile = options.profile ?? securityProfile
   const issues = profileIssues(profile)
   if (issues.length > 0) throw new ConfigError(issues)
   const log = options.onProgress ?? (() => {})
-  const result: QuorumResult = { kept: [], discarded: [], unreviewed: [], meta: { incomplete: [] } }
+  const result: PipelineResult = { kept: [], discarded: [], unreviewed: [], meta: { incomplete: [] } }
   if (diff.trim() === '') {
     log('empty diff: nothing to review')
     return result
@@ -167,6 +153,6 @@ export async function review(diff: string, providers: Providers, options: Review
  * @example
  * const { kept } = await runQuorum(diffText)
  */
-export async function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult> {
+export async function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<PipelineResult> {
   return review(diff, providersFromEnv(process.env), { onProgress })
 }

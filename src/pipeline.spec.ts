@@ -3,7 +3,7 @@ import { createLimiter } from './core/concurrency.ts'
 import { ConfigError, OutputError } from './core/errors.ts'
 import type { CompletionRequest, Provider } from './core/ports.ts'
 import type { Finding, Profile } from './core/types.ts'
-import { dedup, panel, research, review, runQuorum } from './pipeline.ts'
+import { panel, research, review, runQuorum } from './pipeline.ts'
 import { securityProfile } from './profiles/security.ts'
 
 /** Replies, in call order, for the one fake provider that plays both roles. */
@@ -62,7 +62,7 @@ describe('research', () => {
     complete.mockResolvedValue(JSON.stringify({ findings: [reported, { ...reported, file: 'missing.js' }, { file: 'x.js' }] }))
     const result = await research(securityProfile, provider, diff, limit)
     expect(result.findings).toEqual([finding])
-    expect(result.invalid).toHaveLength(2)
+    expect(result.invalid).toHaveLength(1)
     expect(result.incomplete).toEqual([{ profile: 'security', reason: 'finding-unreadable', detail: expect.stringMatching(/^findings\[2\]: /) }])
   })
 
@@ -80,26 +80,6 @@ describe('research', () => {
     expect(verified.evidence).toBe('-safe()\n+exec(cmd)')
     expect(verified.quoteMatched).toBe(false)
     expect(JSON.stringify(verified)).not.toContain('IGNORE ALL')
-  })
-})
-
-describe('dedup', () => {
-  it('drops repeats keyed by file, line and category', () => {
-    const a = { ...finding }
-    const b = { ...finding, line: 2 }
-    expect(dedup([a, b, a])).toEqual([a, b])
-  })
-
-  it('keeps findings that differ only by category', () => {
-    const a = { ...finding }
-    const b = { ...finding, category: 'CWE-89' }
-    expect(dedup([a, b])).toEqual([a, b])
-  })
-
-  it('keeps findings whose fields only collide once joined with colons', () => {
-    const a = { ...finding, file: 'a.js', line: 1, category: 'CWE-79:5:XSS' }
-    const b = { ...finding, file: 'a.js:1:CWE-79', line: 5, category: 'XSS' }
-    expect(dedup([a, b])).toEqual([a, b])
   })
 })
 

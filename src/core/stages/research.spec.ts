@@ -36,9 +36,8 @@ describe('checkReply', () => {
   it('records a finding that fails the reply schema as unreadable, and still verifies the rest', () => {
     const outcome = checkReply(reply([{ file: 'x.js' }, reported]), sections, 'security')
     expect(outcome.findings).toHaveLength(1)
-    expect(outcome.invalid).toHaveLength(1)
-    expect(outcome.invalid[0]).toMatch(/^findings\[0\]: /)
-    expect(outcome.incomplete).toEqual([{ profile: 'security', reason: 'finding-unreadable', detail: outcome.invalid[0] }])
+    expect(outcome.invalid).toEqual([])
+    expect(outcome.incomplete).toEqual([{ profile: 'security', reason: 'finding-unreadable', detail: expect.stringMatching(/^findings\[0\]: /) }])
   })
 
   it('reports a finding cut short by planted text as unreadable instead of silently dropping it', () => {
@@ -119,7 +118,7 @@ describe('checkReply', () => {
     const outcome = checkReply(flood, sections, 'security')
     expect(performance.now() - started).toBeLessThan(300)
     expect(outcome.findings).toEqual([])
-    expect(outcome.invalid).toHaveLength(50)
+    expect(outcome.invalid).toEqual([])
     expect(outcome.incomplete).toHaveLength(52)
     expect(outcome.incomplete.filter(entry => entry.reason === 'finding-unreadable')).toHaveLength(50)
     expect(outcome.incomplete.slice(50)).toEqual([
