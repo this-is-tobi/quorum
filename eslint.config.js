@@ -45,7 +45,7 @@ export default antfu(
     ignores: ['src/**/*.spec.ts'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [{ regex: '^(?!\\./(?!.*\\.\\.)|zod$|node:crypto$|\\.\\./\\.\\./package\\.json$)', message: 'The core imports only core modules, zod, node:crypto and package.json.' }] }],
-      'no-restricted-globals': ['error', 'process', 'fetch', 'Bun', 'globalThis'],
+      'no-restricted-globals': ['error', 'process', 'fetch', 'Bun', 'globalThis', 'global', 'self'],
     },
   },
   {
@@ -54,7 +54,7 @@ export default antfu(
     ignores: ['src/**/*.spec.ts'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [{ regex: '^(?!\\.\\.?/(?!.*\\.\\.)|zod$|node:crypto$|\\.\\./\\.\\./\\.\\./package\\.json$)', message: 'The core imports only core modules, zod, node:crypto and package.json.' }] }],
-      'no-restricted-globals': ['error', 'process', 'fetch', 'Bun', 'globalThis'],
+      'no-restricted-globals': ['error', 'process', 'fetch', 'Bun', 'globalThis', 'global', 'self'],
     },
   },
   {
@@ -68,7 +68,7 @@ export default antfu(
           { regex: '^\\.\\./core/', allowTypeImports: true, message: 'A profile imports only core types.' },
         ],
       }],
-      'no-restricted-globals': ['error', 'process', 'fetch', 'Bun', 'globalThis'],
+      'no-restricted-globals': ['error', 'process', 'fetch', 'Bun', 'globalThis', 'global', 'self'],
     },
   },
   {
@@ -81,7 +81,7 @@ export default antfu(
           { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(ports|errors|types)\\.ts$)', message: 'A provider imports only its own modules and core/ports.ts, core/errors.ts and core/types.ts.' },
         ],
       }],
-      'no-restricted-globals': ['error', 'process', 'Bun', 'globalThis'],
+      'no-restricted-globals': ['error', 'process', 'Bun', 'globalThis', 'global', 'self'],
     },
   },
 )
