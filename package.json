@@ -3,7 +3,7 @@
   "type": "module",
   "version": "0.1.0",
   "packageManager": "bun@1.4.0",
-  "description": "Multi-agent security-review pipeline: an LLM proposes candidate vulnerabilities in a diff, then an independent panel votes on each before it's reported.",
+  "description": "Multi-agent code review for diffs: a model proposes candidate findings, then a panel of blind voters judges each before it's reported.",
   "repository": {
     "type": "git",
     "url": "https://github.com/this-is-tobi/quorum.git"

@@ -3,7 +3,10 @@
  * these names as deprecated aliases, so a caller written against this module keeps working.
  */
 import { ConfigError } from './core/errors.ts'
-import type { Provider } from './core/ports.ts'
+import type { EventSink, Provider } from './core/ports.ts'
+import { createQuorum } from './core/quorum.ts'
+import type { Quorum } from './core/types.ts'
+import { securityProfile } from './profiles/security.ts'
 import { openaiCompatible } from './providers/openai-compatible.ts'
 
 export type Env = Readonly<Record<string, string | undefined>>
@@ -83,4 +86,16 @@ function providerFor(role: Role, env: Env): Provider {
  */
 export function providersFromEnv(env: Env): { research: Provider, voter: Provider } {
   return { research: providerFor('RESEARCH', env), voter: providerFor('VOTER', env) }
+}
+
+/**
+ * Build a quorum that runs the security profile from the environment: the research provider
+ * researches, and the voter provider answers every lens of the panel.
+ *
+ * @throws what `providersFromEnv` throws
+ */
+export function quorumFromEnv(env: Env, events?: EventSink): Quorum {
+  const { research, voter } = providersFromEnv(env)
+  const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, voter]))
+  return createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research, voters } }, events })
 }

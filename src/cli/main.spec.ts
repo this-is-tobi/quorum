@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EXIT, runCli } from './main.ts'
+import type { QuorumResult, Verdict } from '../core/types.ts'
+import { EXIT, exitCodeFor, runCli } from './main.ts'
 import type { CliIO } from './main.ts'
 
 afterEach(() => {
@@ -58,10 +59,11 @@ describe('runCli', () => {
 
   it('exits 0 without calling the model for an empty diff', async () => {
     const fetchMock = stubModel()
-    const { io, stdout } = harness({ env: MODEL, stdin: '  \n' })
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: '  \n' })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(fetchMock).not.toHaveBeenCalled()
     expect(JSON.parse(stdout())).toMatchObject({ kept: [], discarded: [] })
+    expect(stderr()).toContain('empty diff: nothing to review')
   })
 
   it('reads the injected environment and never process.env', async () => {
@@ -186,5 +188,27 @@ describe('runCli', () => {
     expect(result.kept[0].confidence).toBe('medium')
     expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'vote-failed', file: 'a.js', detail: expect.stringMatching(/^"a\.js":1 is kept at medium/) }])
     expect(stderr()).toContain('vote-failed')
+  })
+})
+
+describe('exitCodeFor', () => {
+  const kept = (profile: string, confidence: Verdict['confidence']): Verdict => ({ profile, confidence }) as Verdict
+  const result = (verdicts: Verdict[], gating: Record<string, boolean>, gaps = 0): QuorumResult => ({
+    kept: verdicts,
+    discarded: [],
+    unreviewed: [],
+    meta: { profiles: Object.fromEntries(Object.entries(gating).map(([id, value]) => [id, { gating: value }])), incomplete: Array.from({ length: gaps }, () => ({})) },
+  }) as unknown as QuorumResult
+
+  it('exits 1 only for a kept high finding of a gating profile', () => {
+    expect(exitCodeFor(result([kept('style', 'high')], { style: false }))).toBe(EXIT.ok)
+    expect(exitCodeFor(result([kept('style', 'high')], { style: false }, 1))).toBe(EXIT.incomplete)
+    expect(exitCodeFor(result([kept('style', 'high'), kept('security', 'medium')], { style: false, security: true }))).toBe(EXIT.ok)
+    expect(exitCodeFor(result([kept('style', 'high'), kept('security', 'high')], { style: false, security: true }, 1))).toBe(EXIT.finding)
+  })
+
+  it('counts a profile missing from meta as gating, so a gap in the result never hides a finding', () => {
+    expect(exitCodeFor(result([kept('security', 'high')], {}))).toBe(EXIT.finding)
+    expect(exitCodeFor({ ...result([kept('security', 'high')], {}), meta: { profiles: { security: {} }, incomplete: [] } } as unknown as QuorumResult)).toBe(EXIT.finding)
   })
 })
