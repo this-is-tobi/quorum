@@ -8,7 +8,7 @@ How the code is laid out, which module may depend on which, what happens in a re
 | --- | --- |
 | `src/core/` | The core, with no access to the environment, the network, files or the process. `quorum.ts` is `createQuorum`: the input checks, the compiled profiles, and the review that runs them. `types.ts` holds the shared types, `ports.ts` the `Provider` port, `EventSink`, `ProfilePorts` and `QuorumPorts`, and `errors.ts` the error classes |
 | `src/core/stages/` | The stages of one profile: `research.ts`, `dedup.ts`, `panel.ts`, and `context.ts`, which they share: the compiled profile, a call inside the concurrency limit, and the stage events |
-| The rest of `src/core/` | `policy.ts`: the rules, thresholds, confidence and where a verdict lands. `profile.ts`: the profile checks and warnings. `prompts.ts`: templates, fences and the notices. `output.ts`: the strict parsing of replies. `diff.ts`: splitting a diff and locating a line in it. `verify.ts`: checking findings against the diff, and their evidence. `concurrency.ts`: the shared limiter |
+| The rest of `src/core/` | `policy.ts`: the rules, thresholds, confidence and where a verdict lands. `profile.ts`: the profile checks and warnings. `prompts.ts`: templates, fences and the notices. `output.ts`: the strict parsing of replies. `diff.ts`: splitting a diff and locating a line in it. `verify.ts`: checking findings against the diff, and their evidence. `concurrency.ts`: the shared limiter. `sanitize.ts`: the hidden-character class, and the inert rendering of a line and of JSON. `flags.ts`: the advisory flags read from the diff |
 | `src/profiles/` | Profiles, as data: `security.ts` |
 | `src/providers/` | Adapters behind the `Provider` port: `openai-compatible.ts`, and `http.ts`, the JSON POST it uses, which turns every failure into a `ProviderError` and redacts the key from what a server sends back |
 | `src/cli/` | The CLI: `bin.ts`, the process entry point; `main.ts`, `runCli` and the exit codes; `render.ts`, the progress lines |
@@ -30,13 +30,13 @@ The core never imports a profile. `src/cli/` is the one module that reads files 
 
 ## The stages of a review
 
-`review` runs every profile of the quorum at once, on a diff split into one section per file once for all of them, under one concurrency limit. Each profile goes through three stages on its own:
+`review` runs every profile of the quorum at once, on a diff split into one section per file once for all of them, under one concurrency limit. Before any stage, the harness reads the advisory flags from that split diff. Each profile goes through three stages on its own:
 
 1. **Research.** One call to the profile's research provider, with its research instructions, the fenced diff and its guidelines. The reply is parsed strictly, only the first `maxFindings` findings it lists are read, and each is checked against the diff: a finding that cites code outside the diff is dropped, and one the harness cannot read is a gap. Each finding that passes the check is named by its id and tagged with its profile.
 2. **Dedup.** Plain code drops a finding that repeats the file, line and category of an earlier one.
 3. **Panel.** Every finding goes to every lens, each vote to the lens's own provider, each voter receiving the claim, the evidence, the diff section of the cited file, and the guidelines when the profile has them. The verdict is computed in code from the votes, by the profile's thresholds.
 
-The result joins the profiles' verdicts and gaps in profile order, and its `meta.usage` and `invalidFindings` are counted from the review's own events. Every stage and every call checks the review's signal: [Abort](./30-library-api.md#abort).
+The result joins the profiles' verdicts and gaps in profile order, its `meta.usage` and `invalidFindings` are counted from the review's own events, its `meta.flags` holds the flags, and each event reaches the sink as a copy. Every stage and every call checks the review's signal: [Abort](./30-library-api.md#abort).
 
 ## Testing
 

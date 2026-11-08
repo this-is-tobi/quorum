@@ -43,6 +43,7 @@ The JSON result goes to stdout, and the exit code says what to do with it: `0` f
 
 *Security*
 - [Threat model](./docs/30-security/10-threat-model.md) *- The attacker, the assets, the residual risk stated plainly, the controls in place, and what the panel's independence is worth*
+- [Output handling](./docs/30-security/30-output-handling.md) *- What the CLI writes and how it is made inert, the advisory flags, and printing a review yourself*
 
 *Reference*
 - [Glossary](./docs/95-reference/10-glossary.md) *- The words these pages use in one particular way, and the acronyms they assume*

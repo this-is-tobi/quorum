@@ -14,13 +14,13 @@ What quorum answers goes to the JSON result on stdout and the lines on stderr, a
 | --- | --- | --- |
 | Verdict integrity | Suppress a real finding, sway a verdict, or forge a finding | Code-derived evidence, strict parsing, blind votes and arithmetic confidence, within the limits of the [residual risk](#residual-risk) |
 | Secrets: the model key, a CI token, repository credentials | Have a model read or leak them | A model path with no tool and no secret, and a key sent only to its own endpoint |
-| Output channels: CI logs, terminals, what renders the result | Turn model text into markup, a link, a workflow command or an escape sequence | The renderer, which must treat model text as untrusted: [below](#model-written-text-is-untrusted) |
+| Output channels: CI logs, terminals, what renders the result | Turn model text into markup, a link, a workflow command or an escape sequence | The CLI makes every line it writes and its JSON inert; anything else that renders the result must treat its text as untrusted: [Output handling](./30-output-handling.md) |
 | Availability and spend | Multiply the calls and their cost with a huge or finding-flooding pull request | `maxFindings`, the concurrency limit and the reply caps |
 | Coverage | Have the run review less than the whole change, silently | Unreviewed findings and incomplete reviews, exit `4`, for the gaps the harness detects; a model that read less than the whole diff is not one of them: [What the harness cannot detect](#what-the-harness-cannot-detect) |
 
 ## Residual risk
 
-A determined adaptive attacker may suppress or sway findings. In published studies no prompt-level defense held under adaptive attack, and a panel of blind voters filters false positives but cannot restore a finding the finder never proposed. Quorum keeps the model path harmless, raises the cost of an attack, and shows a human where to look: each verdict's vote split, its `quoteMatched` flag (whether the code the finder quoted appears in the evidence), the `invalidFindings` count of findings that cited code outside the diff, the unreviewed findings, and the entries of `meta.incomplete`. It assists a reviewer; it does not replace human review of untrusted changes.
+A determined adaptive attacker may suppress or sway findings. In published studies no prompt-level defense held under adaptive attack, and a panel of blind voters filters false positives but cannot restore a finding the finder never proposed. Quorum keeps the model path harmless, raises the cost of an attack, and shows a human where to look: each verdict's vote split, its `quoteMatched` flag (whether the code the finder quoted appears in the evidence), the `invalidFindings` count of findings that cited code outside the diff, the unreviewed findings, the advisory flags of `meta.flags`, and the entries of `meta.incomplete`. It assists a reviewer; it does not replace human review of untrusted changes.
 
 With no tool and no secret in the model path, the incident classes of 2025 and 2026, token theft and code execution through an AI agent in CI, do not apply. What remains is verdict manipulation, the places where model text is rendered, cost, and files that look trusted, such as guidelines read from the pull request's checkout.
 
@@ -69,6 +69,14 @@ Only the first `maxFindings` findings a research reply lists, 50 by default, are
 
 A discard never rests on a failed vote: a finding that a failed vote could still have kept is `unreviewed`. A finding the harness could not read, a kept finding whose failed votes could have raised it to a higher level, a research reply whose findings were all unusable, and findings beyond the cap are recorded in `meta.incomplete`. Either makes the review incomplete, so the CLI never exits `0` for a gap the harness detects: it exits `4`, or `1` when a gating profile also kept a `high` finding.
 
+### Advisory flags
+
+The harness reads the added lines and the file names of the diff by code, before any model sees them, and flags hidden characters and text addressed to an AI reviewer. A flag appears in `meta.flags`, in a `flag` event and in a `flag:` line on stderr, and it is never a gate: it changes no verdict, gap or exit code. It tells a human where to look, and it is not a defense: [Advisory flags](./30-output-handling.md#advisory-flags).
+
+### Inert output
+
+The CLI writes nothing that a terminal or a CI runner would act on, and nothing that hides text. Every line of stderr passes through `inertLine`, which shows each hidden character as `<U+XXXX>` and breaks the forms of a GitHub Actions workflow command, and stdout is written by `inertJson`, which escapes them and parses back to the same data. [What the CLI writes](./30-output-handling.md#what-the-cli-writes) has the details.
+
 ## What the harness cannot detect
 
 Quorum cannot tell when a model read less than the whole diff. It sends the diff whole, with no limit on its size and no budget for the model's context, and it checks what the model answered, never what the model read. An endpoint that truncates an oversized prompt answers all the same: Ollama's `/v1`, the CLI's default endpoint, cuts a prompt past the model's context length and still returns HTTP 200, so a review of what was left can come back clean, with exit `0`. This is a limit of the harness today. Bound the size of the diffs you review, and size the model's context for them.
@@ -82,17 +90,8 @@ Voters are blind to each other, so their reasoning is independent. Their errors 
 
 ## Model-written text is untrusted
 
-A result carries text that models wrote while reading a change an attacker may have written:
-
-| Field | Written by | Before it reaches the result |
-| --- | --- | --- |
-| `summary`, `category` | The finder | Stripped of control, format and other invisible characters, and capped |
-| `votes[].vote.reasoning` | A voter | Nothing: as the voter wrote it |
-| `votes[].error`, and the CLI's `Error:` line | The provider, or the core when a reply is unusable | The server text or reply they quote is a JSON string, cut short; a provider of your own writes its messages as it likes |
-| `file` | The pull request, which named the file | The diff's own path, which can hold any character a file name can; for a diff without per-file headers, the finder's name for it, cleaned |
-
-The JSON on stdout stays valid whatever these fields hold: it escapes their quotes, backslashes and control characters. The CLI's own lines carry file names cleaned or as JSON strings, and server text as JSON strings, so a line break cannot start a workflow command in a log. Whatever renders the result elsewhere, a pull request comment, a web page or a terminal, must treat these fields as untrusted input: escape them for its format, and never follow a link, a mention or a command found in them.
+A result carries text that models wrote, servers sent or the diff holds. Quorum stores it as it came and makes its own output inert, and [Output handling](./30-output-handling.md#text-an-attacker-can-influence) has the fields and what a renderer must do.
 
 ## Next
 
-[Glossary](../95-reference/10-glossary.md) — the words these pages use in one particular way, and the acronyms they assume.
+[Output handling](./30-output-handling.md) — what the CLI writes and how it is made inert, the advisory flags, and printing a review yourself.

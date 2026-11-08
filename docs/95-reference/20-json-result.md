@@ -1,6 +1,6 @@
 # The JSON result
 
-What a review returns: the JSON the CLI prints on stdout, and the object `review` resolves with. It holds three lists of verdicts and `meta`. Every field below is listed in the order it is written, which is the order of its keys in the JSON.
+What a review returns: the JSON the CLI prints on stdout, and the object `review` resolves with. It holds three lists of verdicts and `meta`. Every field below is listed in the order it is written, which is the order of its keys in the JSON. The CLI writes it with `inertJson`: a hidden character in a string is written as a `\uXXXX` escape, which a JSON parser reads back as the character.
 
 ## The top level
 
@@ -52,6 +52,7 @@ A failed vote counts as a reject.
 | `profiles` | object | One entry per profile, keyed by profile id, in the order of the review's profiles |
 | `usage` | object | Only when at least one call reported valid counts: `inputTokens` and `outputTokens` summed over those calls, then `costUsd`, summed over the calls that reported one, when any did |
 | `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's research gaps before its panel's. A review is complete when this list and `unreviewed` are both empty |
+| `flags` | flag[] | The advisory flags read from the diff, file by file in its order: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
 
 A usage count is valid when it is a finite number of at least 0. `meta.usage` and each `invalidFindings` are counted from the review's own events, so `meta` and the events cannot disagree.
 
@@ -72,6 +73,25 @@ A usage count is valid when it is a finite number of at least 0. `meta.usage` an
 | `reason` | string | One of the four [incomplete reasons](#incomplete-reasons) |
 | `file` | string | The file of the finding the gap is about, when it is about one finding the harness could read: only `vote-failed` has it |
 | `detail` | string | What is missing, in words |
+
+### A flag
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `code` | `"hidden-characters"` or `"ai-addressed-text"` | What the flag is about |
+| `file` | string | The diff's own path of the file the flag is about. The key is absent for a diff without per-file headers |
+| `line` | number | The first added line, in the new file, that the flag is about. The key is absent for a flag about the file name |
+| `detail` | string | What was found, in words the code wrote, never text of the diff |
+
+A file raises at most one flag for each row of this table, in this order:
+
+| `code` | About | `line` | `detail`, for instance |
+| --- | --- | --- | --- |
+| `hidden-characters` | The file name | Absent | `the file name holds U+202E` |
+| `hidden-characters` | The added lines | The first added line that holds one | `U+202E, U+200B on 3 added line(s)` |
+| `ai-addressed-text` | The added lines | The first added line that matches | `a chat-template token, a tool-call tag on 2 added line(s)` |
+
+A detail names at most eight code points or patterns, then `and N more`. [Advisory flags](../30-security/30-output-handling.md#advisory-flags) says what each code looks for. A flag never changes a verdict, a gap or the exit code.
 
 ## Incomplete reasons
 
@@ -253,7 +273,8 @@ A review of a diff that touches three files, run with fake providers that answer
         "reason": "finding-unreadable",
         "detail": "findings[4]: quote: Invalid input: expected string, received undefined"
       }
-    ]
+    ],
+    "flags": []
   }
 }
 ```
@@ -263,4 +284,4 @@ A review of a diff that touches three files, run with fake providers that answer
 - [The CLI](../20-using/10-cli.md#exit-codes) — the exit code each result leads to.
 - [Lenses and policy](../20-using/50-lenses-and-policy.md) — how kept votes become a confidence, and when a finding is unreviewed.
 - [Library API](./30-library-api.md#events) — the events a review sends while it builds this result.
-- [Threat model](../30-security/10-threat-model.md#model-written-text-is-untrusted) — which fields hold model-written text, and how to render them.
+- [Output handling](../30-security/30-output-handling.md#text-an-attacker-can-influence) — which fields hold text an attacker can influence, and how to render them.
