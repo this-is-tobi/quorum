@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { ConfigError } from '../core/errors.ts'
+import { inertJson, inertLine } from '../core/sanitize.ts'
 import type { QuorumResult } from '../core/types.ts'
 import { quorumFromEnv, roleSettings } from '../legacy.ts'
 import type { Env } from '../legacy.ts'
@@ -26,14 +27,17 @@ const USAGE = 'Usage: quorum <diff-file>\n       git diff | quorum\n'
  * exit 2, runtime failures exit 3, and an incomplete review (a finding its failed votes left
  * undecided, or a research gap) exits 4 unless a `high` finding was kept by a gating profile, so CI
  * can tell a broken run and a partial review from a real finding (exit 1) and from a clean one
- * (exit 0). `exitCodeFor` maps the result.
+ * (exit 0). `exitCodeFor` maps the result; advisory flags never change it.
+ *
+ * Everything the CLI writes is inert (invariant I3): each stderr line passes through `inertLine`, and
+ * the JSON result through `inertJson`.
  */
 export async function runCli(io: CliIO): Promise<number> {
   let diff: string
   try {
     diff = await readDiff(io)
   } catch (error) {
-    io.stderr.write(`Error: ${errorMessage(error)}\n${USAGE}`)
+    io.stderr.write(`${errorLines(error)}\n${USAGE}`)
     return EXIT.usage
   }
 
@@ -44,14 +48,14 @@ export async function runCli(io: CliIO): Promise<number> {
     })
     const research = roleSettings('RESEARCH', io.env)
     const voter = roleSettings('VOTER', io.env)
-    io.stderr.write(`Research (${research.model} @ ${originOf(research.baseUrl)})...\n`)
-    io.stderr.write(`Panel will use ${voter.model} @ ${originOf(voter.baseUrl)}\n`)
+    io.stderr.write(`${inertLine(`Research (${research.model} @ ${originOf(research.baseUrl)})...`)}\n`)
+    io.stderr.write(`${inertLine(`Panel will use ${voter.model} @ ${originOf(voter.baseUrl)}`)}\n`)
     if (diff.trim() === '') io.stderr.write('empty diff: nothing to review\n')
     const result = await quorum.review({ diff })
-    io.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+    io.stdout.write(`${inertJson(result)}\n`)
     return exitCodeFor(result)
   } catch (error) {
-    io.stderr.write(`Error: ${errorMessage(error)}\n`)
+    io.stderr.write(`${errorLines(error)}\n`)
     return error instanceof ConfigError ? EXIT.usage : EXIT.runtime
   }
 }
@@ -79,6 +83,16 @@ async function readDiff(io: CliIO): Promise<string> {
     text += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true })
   }
   return text + decoder.decode()
+}
+
+/**
+ * The `Error:` lines of a failure, each inert: a ConfigError's issues one per line, as its message
+ * lists them, and any other failure's message on one line, so a line break in a file name or in text
+ * a server sent cannot start a line of its own.
+ */
+function errorLines(error: unknown): string {
+  const lines = error instanceof ConfigError ? error.message.split('\n') : [errorMessage(error)]
+  return lines.map((line, index) => inertLine(index === 0 ? `Error: ${line}` : line)).join('\n')
 }
 
 function errorMessage(error: unknown): string {

@@ -43,6 +43,12 @@ function stubModel(...replies: string[]): ReturnType<typeof vi.fn> {
   return fetchMock
 }
 
+/** Every hidden class the sanitizer knows, to check that the CLI writes none of them. */
+const ANY_HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}]/u
+
+/** A failed HTTP reply whose body is `body`. */
+const failed = (body: string): unknown => ({ ok: false, status: 500, text: async () => body })
+
 describe('runCli', () => {
   it('exits 2 with usage instead of waiting on an interactive terminal', async () => {
     const fetchMock = stubModel()
@@ -210,5 +216,52 @@ describe('exitCodeFor', () => {
   it('counts a profile missing from meta as gating, so a gap in the result never hides a finding', () => {
     expect(exitCodeFor(result([kept('security', 'high')], {}))).toBe(EXIT.finding)
     expect(exitCodeFor({ ...result([kept('security', 'high')], {}), meta: { profiles: { security: {} }, incomplete: [] } } as unknown as QuorumResult)).toBe(EXIT.finding)
+  })
+})
+
+describe('inert output', () => {
+  it('writes the server text an error quotes inert, on one line', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(failed('\u009B2J\u202Eboom\n::error::x')))
+    const { io, stderr } = harness({ env: MODEL, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.runtime)
+    expect(stderr()).toContain('Error: research: HTTP 500: "<U+009B>2J<U+202E>boom\\n::error::x"\n')
+    expect(stderr().replaceAll('\n', '')).not.toMatch(ANY_HIDDEN)
+  })
+
+  it('keeps a configuration error to one issue per line, and any other error to one line', async () => {
+    const config = harness({ env: { ...MODEL, RESEARCH_BASE_URL: 'localhost:11434/v1', RESEARCH_API_KEY: 'sk bad' }, stdin: DIFF })
+    expect(await runCli(config.io)).toBe(EXIT.usage)
+    expect(config.stderr()).toBe('Error: research.baseUrl: must be an http:// or https:// URL with a host\nresearch.apiKey: must only contain visible ASCII characters, which an HTTP header can carry\n')
+    const missing = harness({ argv: ['no\nsuch.diff'], env: MODEL })
+    expect(await runCli(missing.io)).toBe(EXIT.usage)
+    expect(missing.stderr()).toMatch(/^Error: ENOENT: no such file or directory, open 'no<U\+000A>such\.diff'\nUsage:/)
+  })
+
+  it('writes the JSON result inert: it parses back to the text the servers sent', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ findings: [FINDING] }) } }] }) })
+      .mockResolvedValue(failed('\u009B2J\u202E')))
+    const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    expect(stdout().replaceAll('\n', '')).not.toMatch(ANY_HIDDEN)
+    expect(JSON.parse(stdout()).unreviewed[0].votes[0].error).toBe('voter: HTTP 500: "\u009B2J\u202E"')
+  })
+
+  it('writes no legacy workflow command, on stderr or in the JSON', async () => {
+    stubModel(JSON.stringify({ findings: [{ ...FINDING, file: '##[error]x.js' }, { ...FINDING, summary: '##[add-mask]e' }] }), vote(true), vote(true), vote(true))
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    expect(stderr()).toContain('invalid finding dropped: ##<U+005B>error]x.js:1 is not in the diff\n')
+    expect(stdout()).toContain('"summary": "##\\u005badd-mask]e"')
+    expect(`${stderr()}${stdout()}`).not.toContain('##[')
+    expect(JSON.parse(stdout()).kept[0].summary).toBe('##[add-mask]e')
+  })
+
+  it('prints a flag on stderr and keeps it out of the exit code', async () => {
+    stubModel(JSON.stringify({ findings: [] }))
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF.replace('+exec(cmd)', '+exec(cmd)\u202E') })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stderr()).toContain('flag: hidden-characters at "a.js":1 (U+202E on 1 added line(s))\n')
+    expect(JSON.parse(stdout()).meta.flags).toEqual([{ code: 'hidden-characters', file: 'a.js', line: 1, detail: 'U+202E on 1 added line(s)' }])
   })
 })
