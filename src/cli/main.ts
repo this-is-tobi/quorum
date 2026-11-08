@@ -1,9 +1,10 @@
 import { readFile } from 'node:fs/promises'
 import { ConfigError } from '../core/errors.ts'
-import { providersFromEnv, roleSettings } from '../legacy.ts'
+import type { QuorumResult } from '../core/types.ts'
+import { quorumFromEnv, roleSettings } from '../legacy.ts'
 import type { Env } from '../legacy.ts'
-import { review } from '../pipeline.ts'
 import { originOf } from '../providers/http.ts'
+import { renderEvent } from './render.ts'
 
 /** Exit codes (ADR-0008, amended by ADR-0012). */
 export const EXIT = { ok: 0, finding: 1, usage: 2, runtime: 3, incomplete: 4 } as const
@@ -23,8 +24,9 @@ const USAGE = 'Usage: quorum <diff-file>\n       git diff | quorum\n'
 /**
  * Run one review and return the process exit code. Never throws: usage and configuration problems
  * exit 2, runtime failures exit 3, and an incomplete review (a finding its failed votes left
- * undecided, or a research gap) exits 4 unless a `high` finding was kept, so CI can tell a broken
- * run and a partial review from a real finding (exit 1) and from a clean one (exit 0).
+ * undecided, or a research gap) exits 4 unless a `high` finding was kept by a gating profile, so CI
+ * can tell a broken run and a partial review from a real finding (exit 1) and from a clean one
+ * (exit 0). `exitCodeFor` maps the result.
  */
 export async function runCli(io: CliIO): Promise<number> {
   let diff: string
@@ -36,19 +38,33 @@ export async function runCli(io: CliIO): Promise<number> {
   }
 
   try {
-    const providers = providersFromEnv(io.env)
+    const quorum = quorumFromEnv(io.env, (event) => {
+      const line = renderEvent(event)
+      if (line !== undefined) io.stderr.write(`${line}\n`)
+    })
     const research = roleSettings('RESEARCH', io.env)
     const voter = roleSettings('VOTER', io.env)
     io.stderr.write(`Research (${research.model} @ ${originOf(research.baseUrl)})...\n`)
     io.stderr.write(`Panel will use ${voter.model} @ ${originOf(voter.baseUrl)}\n`)
-    const result = await review(diff, providers, { onProgress: message => io.stderr.write(`${message}\n`) })
+    if (diff.trim() === '') io.stderr.write('empty diff: nothing to review\n')
+    const result = await quorum.review({ diff })
     io.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
-    if (result.kept.some(verdict => verdict.confidence === 'high')) return EXIT.finding
-    return result.unreviewed.length > 0 || result.meta.incomplete.length > 0 ? EXIT.incomplete : EXIT.ok
+    return exitCodeFor(result)
   } catch (error) {
     io.stderr.write(`Error: ${errorMessage(error)}\n`)
     return error instanceof ConfigError ? EXIT.usage : EXIT.runtime
   }
+}
+
+/**
+ * The exit code of a finished review: 1 when a kept finding is `high` and its profile gates, 4 when
+ * the review is incomplete, 0 otherwise. A profile missing from `meta.profiles` counts as gating,
+ * so a gap in the result never hides a finding.
+ */
+export function exitCodeFor(result: QuorumResult): number {
+  const gates = (profile: string): boolean => Object.hasOwn(result.meta.profiles, profile) ? result.meta.profiles[profile].gating !== false : true
+  if (result.kept.some(verdict => verdict.confidence === 'high' && gates(verdict.profile))) return EXIT.finding
+  return result.unreviewed.length > 0 || result.meta.incomplete.length > 0 ? EXIT.incomplete : EXIT.ok
 }
 
 /** Read the diff from the file argument, or from stdin unless stdin is an interactive terminal. */

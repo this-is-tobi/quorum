@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from './core/errors.ts'
 import type { CompletionRequest } from './core/ports.ts'
-import { providersFromEnv, roleSettings } from './legacy.ts'
+import { providersFromEnv, quorumFromEnv, roleSettings } from './legacy.ts'
 
 const request: CompletionRequest = {
   system: 'instructions',
@@ -149,5 +149,27 @@ describe('providersFromEnv', () => {
     expect(fetchMock.mock.calls[1][1].headers).not.toHaveProperty('authorization')
     expect(fetchMock.mock.calls[2][1].headers).toMatchObject({ authorization: 'Bearer sk-v' })
     expect(JSON.stringify(fetchMock.mock.calls.slice(1))).not.toContain('sk-r')
+  })
+})
+
+describe('quorumFromEnv', () => {
+  it('runs the security profile: research on the research endpoint, every lens on the voter one', async () => {
+    const content = (text: string) => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: text } }] }) })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(content(JSON.stringify({ findings: [{ file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }] })))
+      .mockResolvedValue(content(JSON.stringify({ keep: true, reasoning: 'r' })))
+    vi.stubGlobal('fetch', fetchMock)
+    const types: string[] = []
+    const quorum = quorumFromEnv({ RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'https://v.example/v1', VOTER_MODEL: 'v' }, event => types.push(event.type))
+    const result = await quorum.review({ diff: 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-safe()\n+exec(cmd)\n' })
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'http://localhost:11434/v1/chat/completions',
+      'https://v.example/v1/chat/completions',
+      'https://v.example/v1/chat/completions',
+      'https://v.example/v1/chat/completions',
+    ])
+    const voter = { id: 'voter', model: 'v' }
+    expect(result.meta.profiles.security.providers).toEqual({ research: { id: 'research', model: 'r' }, lenses: { reachability: voter, impact: voter, defenses: voter } })
+    expect(types.at(-1)).toBe('run:end')
   })
 })
