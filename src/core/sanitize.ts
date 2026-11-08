@@ -22,7 +22,9 @@ export function codePointLabel(char: string): string {
 
 /** The distinct labels of the hidden characters in `text`, in the order they first appear. */
 export function hiddenLabels(text: string): string[] {
-  return [...new Set(Array.from(text.matchAll(HIDDEN), match => codePointLabel(match[0])))]
+  const labels = new Set<string>()
+  for (const [char] of text.matchAll(HIDDEN)) labels.add(codePointLabel(char))
+  return [...labels]
 }
 
 /**
