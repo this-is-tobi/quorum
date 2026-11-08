@@ -53,7 +53,7 @@ bun run format      # eslint --fix
 - **No network and no model call.** Every test uses fake providers, or a stubbed `fetch`. The controls of the threat model are checked by structure in the default suite, such as no environment value in any request, and vote requests that are the same whatever the other voters answer.
 - **`bun run test:cov`** measures coverage with Istanbul over `src/**/*.ts`, the specs and `src/cli/bin.ts` left out.
 - **`bun run lint`** applies `@antfu/eslint-config` and the dependency rule. From an editor's terminal, run it as `CI=1 bun run lint`: the config turns some rules off when it detects an editor.
-- **`src/docs.spec.ts`** holds these pages to their links: every relative link resolves to a file and every anchor to a heading of it, every page outside the start page and the reference section ends with a `## Next` that names one page, the README's table of contents lists every page, and neither the README nor any page holds a hidden character.
+- **`src/docs.spec.ts`** holds these pages to their links: every relative link resolves to a file and every anchor to a heading of it, every page outside the start page and the reference section ends with a `## Next` that names one page, the table of contents in the README's `## Documentation` section lists every page, and neither the README nor any page holds a hidden character.
 
 When you commit, the Git hooks that `bun install` sets up run lint-staged, which runs eslint on the staged files, and commitlint on the message, which must follow Conventional Commits.
 

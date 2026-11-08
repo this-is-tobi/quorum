@@ -59,7 +59,7 @@ A model that rejects `temperature: 0`, or an endpoint without that JSON mode, ca
 
 ## Configuration errors
 
-Each of these exits `2` with `Error:` and the message, before the banner and before any model call. No message repeats the value it is about: a base URL can carry credentials, and a key is a secret.
+Each of these exits `2` with `Error:` and the message, instead of the banner and before any model call. No message repeats the value it is about: a base URL can carry credentials, and a key is a secret.
 
 | Message | Cause |
 | --- | --- |

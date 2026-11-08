@@ -16,7 +16,7 @@ What quorum answers goes to the JSON result on stdout and the lines on stderr, a
 | Secrets: the model key, a CI token, repository credentials | Have a model read or leak them | A model path with no tool and no secret, and a key sent only to its own endpoint |
 | Output channels: CI logs, terminals, what renders the result | Turn model text into markup, a link, a workflow command or an escape sequence | The renderer, which must treat model text as untrusted: [below](#model-written-text-is-untrusted) |
 | Availability and spend | Multiply the calls and their cost with a huge or finding-flooding pull request | `maxFindings`, the concurrency limit and the reply caps |
-| Coverage | Have the run review less than the whole change, silently | Unreviewed findings and incomplete reviews, exit `4` |
+| Coverage | Have the run review less than the whole change, silently | Unreviewed findings and incomplete reviews, exit `4`, for the gaps the harness detects; a model that read less than the whole diff is not one of them: [What the harness cannot detect](#what-the-harness-cannot-detect) |
 
 ## Residual risk
 
@@ -51,7 +51,7 @@ The trailing-syntax rule works only where the model's continuation is written: a
 
 ### Code-derived evidence and the quote check
 
-A finding must cite a file of the diff and a line of the new file inside one of its hunks, or it is dropped with its reason. What a voter receives about the code is then read from the diff by the harness, never taken from the finder: the `file` is the diff's own path when the diff has per-file headers, and the `evidence` is the diff's lines around the cited one, capped at 2,000 characters. The finder's `quote` is only compared with the evidence, which sets `quoteMatched`; it is never sent to a voter. The finder's `summary` and `category` are the only text a model wrote that a voter reads: stripped of control, format and other invisible characters, capped at 500 and 80 characters, and fenced as an unverified claim.
+A finding must cite a line of the new file inside one of the diff's hunks and, when the diff has per-file headers, one of its files, or it is dropped with its reason. What a voter receives about the code is then read from the diff by the harness, never taken from the finder: the `file` is the diff's own path when the diff has per-file headers, and the `evidence` is the diff's lines around the cited one, capped at 2,000 characters. The finder's `quote` is only compared with the evidence, which sets `quoteMatched`; it is never sent to a voter. The only text a model wrote that a voter reads is the finder's `summary` and `category`, capped at 500 and 80 characters, and, for a diff without per-file headers, the file name, capped at 260: each stripped of control, format and other invisible characters, and fenced as an unverified claim.
 
 ### Blind votes and arithmetic confidence
 
@@ -63,11 +63,15 @@ All the data a model reads, the diff, the claim, the evidence, the diff section 
 
 ### `maxFindings` and the concurrency limit
 
-Only the first `maxFindings` findings a research reply lists, 50 by default, are read, and only those can reach the panel; the rest are counted in a `findings-capped` gap, so a reply built to flood the run costs bounded work. With the security profile and the default cap, a review of one diff makes at most 151 calls: one research call, and three votes for each of 50 findings. `concurrency`, 4 by default, caps the calls in flight across every profile of the review. Quorum does not cap the size of the diff it sends: a job that reviews untrusted changes can bound it before piping it in.
+Only the first `maxFindings` findings a research reply lists, 50 by default, are read, and only those can reach the panel; the rest are counted in a `findings-capped` gap, so a reply built to flood the run costs bounded work. With the security profile and the default cap, a review of one diff makes at most 151 calls: one research call, and three votes for each of 50 findings. `concurrency`, 4 by default, caps the calls in flight across every profile of the review. Quorum does not cap the size of the diff it sends: a job that reviews untrusted changes can bound it before piping it in, which also keeps it within the model's context ([below](#what-the-harness-cannot-detect)).
 
 ### Unreviewed and incomplete reviews
 
-A discard never rests on a failed vote: a finding that a failed vote could still have kept is `unreviewed`. A finding the harness could not read, a kept finding whose failed votes could have raised it to a higher level, a research reply whose findings were all unusable, and findings beyond the cap are recorded in `meta.incomplete`. Either makes the review incomplete, which the CLI never exits `0` for: it exits `4`, or `1` when a gating profile also kept a `high` finding. A review that did not cover the whole change never reads as clean.
+A discard never rests on a failed vote: a finding that a failed vote could still have kept is `unreviewed`. A finding the harness could not read, a kept finding whose failed votes could have raised it to a higher level, a research reply whose findings were all unusable, and findings beyond the cap are recorded in `meta.incomplete`. Either makes the review incomplete, so the CLI never exits `0` for a gap the harness detects: it exits `4`, or `1` when a gating profile also kept a `high` finding.
+
+## What the harness cannot detect
+
+Quorum cannot tell when a model read less than the whole diff. It sends the diff whole, with no limit on its size and no budget for the model's context, and it checks what the model answered, never what the model read. An endpoint that truncates an oversized prompt answers all the same: Ollama's `/v1`, the CLI's default endpoint, cuts a prompt past the model's context length and still returns HTTP 200, so a review of what was left can come back clean, with exit `0`. This is a limit of the harness today. Bound the size of the diffs you review, and size the model's context for them.
 
 ## Independence
 

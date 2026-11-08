@@ -28,8 +28,8 @@ function links(file: string): string[] {
   return [...prose.matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]).filter(target => !/^[a-z][a-z0-9+.-]*:/i.test(target))
 }
 
-/** Bidirectional controls, zero-width and other invisible format characters, and Unicode tags. */
-const HIDDEN: ReadonlyArray<readonly [number, number]> = [[0x200B, 0x200F], [0x202A, 0x202E], [0x2060, 0x2064], [0x2066, 0x2069], [0xFEFF, 0xFEFF], [0xE0000, 0xE007F]]
+/** Bidirectional controls, zero-width and other invisible format characters, variation selectors, and Unicode tags. */
+const HIDDEN: ReadonlyArray<readonly [number, number]> = [[0x00AD, 0x00AD], [0x061C, 0x061C], [0x180E, 0x180E], [0x200B, 0x200F], [0x202A, 0x202E], [0x2060, 0x2064], [0x2066, 0x2069], [0xFE00, 0xFE0F], [0xFEFF, 0xFEFF], [0xE0000, 0xE007F]]
 const isHidden = (char: string): boolean => HIDDEN.some(([low, high]) => (char.codePointAt(0) ?? 0) >= low && (char.codePointAt(0) ?? 0) <= high)
 
 describe('the documentation', () => {
@@ -52,7 +52,8 @@ describe('the documentation', () => {
   })
 
   it('lists every page in the README table of contents', () => {
-    const listed = new Set(links('README.md').map(target => target.split('#')[0].replace(/^\.\//, '')))
+    const contents = withoutFences(text('README.md')).split(/^## Documentation$/m)[1]?.split(/^## /m)[0] ?? ''
+    const listed = new Set([...contents.replace(/`[^`\n]*`/g, '').matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1].split('#')[0].replace(/^\.\//, '')))
     expect(pages.filter(page => page !== START && !listed.has(page))).toEqual([])
   })
 

@@ -129,7 +129,7 @@ The first events of the review on [The JSON result](./20-json-result.md#an-examp
 ```
 
 - **The sink runs inside the review.** Each event is delivered before the review goes on, so a slow sink slows the review.
-- **Events carry no model text beyond `error` strings** and the file name a `finding:invalid` reason quotes, which is the finder's, cleaned and capped at 80 characters.
+- **Events carry no model text beyond `error` strings**, the file name a `finding:invalid` reason quotes, which is the finder's, cleaned and capped at 80 characters, and, for a diff without per-file headers, the `file` and `detail` of a `vote-failed` entry, which hold the finder's name for the file, cleaned and capped at 260.
 - **`meta` agrees with the events.** `meta.usage` and each `invalidFindings` are counted from them.
 - **A sink that throws aborts the review** with its error, so the bug surfaces instead of being swallowed: no profile starts another call, no further event is delivered, and the review rejects with that error, even when it threw on `run:end`.
 
@@ -195,16 +195,12 @@ import { readFile } from 'node:fs/promises'
 import { ConfigError, createQuorum, openaiCompatible, securityProfile } from './src/index.ts'
 import type { QuorumEvent, QuorumResult } from './src/index.ts'
 
-const finder = openaiCompatible({ id: 'local', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b' })
-const panel = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', apiKey: process.env.OPENAI_API_KEY })
-const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, panel]))
+const USAGE = 'Usage: bun run ./review.ts <diff-file>'
 
 function progress(event: QuorumEvent): void {
   if (event.type === 'verdict') console.error(`${event.findingId}: ${event.keptVotes}/${event.totalVotes} ${event.status}`)
   if (event.type === 'incomplete') console.error(`incomplete: ${event.entry.reason} (${event.entry.detail})`)
 }
-
-const quorum = createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research: finder, voters } }, events: progress })
 
 /** The CLI's rule: 1 for a kept high finding of a gating profile, 4 for an incomplete review, else 0. */
 function exitCode(result: QuorumResult): number {
@@ -213,20 +209,38 @@ function exitCode(result: QuorumResult): number {
   return result.unreviewed.length > 0 || result.meta.incomplete.length > 0 ? 4 : 0
 }
 
-try {
-  const diff = await readFile(process.argv[2], 'utf8')
-  const result = await quorum.review({ diff }, { signal: AbortSignal.timeout(10 * 60_000) })
-  console.log(JSON.stringify(result, null, 2))
-  process.exitCode = exitCode(result)
-} catch (error) {
-  console.error(`Error: ${error instanceof Error ? error.message : String(error)}`)
-  process.exitCode = error instanceof ConfigError ? 2 : 3
+/** Review the diff file at `path`, with the CLI's exit codes: 2 for usage or configuration, 3 for a review that failed. */
+async function main(path: string | undefined): Promise<number> {
+  let diff: string
+  try {
+    if (path === undefined) throw new Error('no diff file given')
+    diff = await readFile(path, 'utf8')
+  } catch (error) {
+    console.error(`Error: ${error instanceof Error ? error.message : String(error)}\n${USAGE}`)
+    return 2
+  }
+  try {
+    const finder = openaiCompatible({ id: 'local', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b' })
+    const panel = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', apiKey: process.env.OPENAI_API_KEY?.trim() || undefined })
+    const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, panel]))
+    const quorum = createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research: finder, voters } }, events: progress })
+    const result = await quorum.review({ diff }, { signal: AbortSignal.timeout(10 * 60_000) })
+    console.log(JSON.stringify(result, null, 2))
+    return exitCode(result)
+  } catch (error) {
+    console.error(`Error: ${error instanceof Error ? error.message : String(error)}`)
+    return error instanceof ConfigError ? 2 : 3
+  }
 }
+
+process.exitCode = await main(process.argv[2])
 ```
 
 ```bash
 OPENAI_API_KEY=sk-... bun run ./review.ts ./my.diff > result.json
 ```
+
+It exits as the CLI does: `0`, `1` or `4` by the result; `2` when no file is given, the file cannot be read, or a setting is invalid, such as a key with a space inside it once trimmed; and `3` when the review fails, its ten-minute limit included.
 
 ## Related
 

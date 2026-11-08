@@ -12,19 +12,21 @@ export RESEARCH_MODEL=qwen3.6:27b
 
 ## 2. Review a diff
 
-Give it a diff file:
+Give it a diff file, and keep its exit status for step 5:
 
 ```bash
 quorum ./my.diff > result.json
+code=$?
 ```
 
 Or pipe what your branch changes since it left `origin/main`, which is what a pull request would show:
 
 ```bash
 git diff origin/main...HEAD | quorum > result.json
+code=$?
 ```
 
-Quorum reads stdin when no file is given and stdin is not a terminal. The review makes one call to the finder, then one call per lens for each finding that reaches the panel, so three per finding with the security profile, and never more than four at once.
+`code=$?` must come right after the `quorum` command, since every later command sets `$?` again. Quorum reads stdin when no file is given and stdin is not a terminal. The review makes one call to the finder, then one call per lens for each finding that reaches the panel, so three per finding with the security profile, and never more than four at once.
 
 ## 3. Read the progress
 
@@ -122,7 +124,7 @@ jq '.meta.incomplete' result.json
 ## 5. Read the exit code
 
 ```bash
-echo $?
+echo $code
 ```
 
 ```text

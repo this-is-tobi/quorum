@@ -54,7 +54,7 @@ const hosted = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com
 | `temperature` | `number \| null` | `0` | Sent as `temperature`; `null` leaves the field out, for a model that rejects it |
 | `structuredOutput` | `'prompt' \| 'json' \| 'schema'` | `'json'` | How the reply's shape reaches the endpoint |
 
-The body of every request holds `model`, `messages` (the system message first, as a `system` role, then the request's messages), `response_format` and `temperature`.
+The body of every request holds `model` and `messages`: the system message first, as a `system` role, then the request's messages. It also holds `response_format` unless `structuredOutput` is `prompt`, and `temperature` unless it is `null`.
 
 ### Structured output
 
@@ -113,7 +113,7 @@ Any object of the port's shape is a provider. It must:
 - **throw when the call fails**, a `ProviderError` with the closest `kind` for preference. A vote records the message of any `Error`, and the text of anything else thrown;
 - **report `usage` only when it knows it**: `inputTokens` and `outputTokens`, and `costUsd` when it knows the price.
 
-A provider can wrap another. Quorum sets no time limit on a call, so this one adds a limit to any provider, and reports a call that ran out of time as a `timeout`:
+A provider can wrap another. Quorum sets no time limit on a call, so this one adds a limit to any provider that honours its signal, as `openaiCompatible` does, and reports a call that ran out of time as a `timeout`. It does not stop a provider that ignores its signal: it waits for that call to settle, however long it takes:
 
 ```ts
 import { openaiCompatible, ProviderError } from './src/index.ts'
