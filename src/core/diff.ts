@@ -246,6 +246,34 @@ export function locate(sections: ReadonlyMap<string, string>, file: string, line
   return undefined
 }
 
+/** A line the diff adds to the new file. */
+export interface AddedLine {
+  /** The line's number in the new file. */
+  line: number
+  /** The line's text, without the `+` marker or a trailing carriage return. */
+  text: string
+}
+
+/**
+ * The lines the diff adds to `path`, in the order of the diff: the rows of its hunks marked `+`,
+ * read from the hunks `locate` reads, so they are cached with them. `path` is the diff's own path,
+ * a key of `sections` ('' for a diff without per-file headers). A path with no section has no
+ * added lines, and neither do the lines outside hunks, such as the commit message of a
+ * `format-patch` series.
+ */
+export function addedLines(sections: ReadonlyMap<string, string>, path: string): AddedLine[] {
+  const text = sections.get(path)
+  if (text === undefined) return []
+  const added: AddedLine[] = []
+  for (const hunk of hunksOf(sections, path, text)) {
+    for (const [offset, at] of hunk.rowOfLine.entries()) {
+      const row = hunk.rows[at]
+      if (row.startsWith('+')) added.push({ line: hunk.start + offset, text: row.slice(1) })
+    }
+  }
+  return added
+}
+
 interface Hunk {
   /** First new-file line of the hunk. */
   start: number
