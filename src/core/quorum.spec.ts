@@ -774,6 +774,18 @@ describe('abort', () => {
     await expect(quorum.review({ diff: text }, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' })
   })
 
+  it('resolves when the signal aborts from the run:end handler: the review is over', async () => {
+    const controller = new AbortController()
+    const model = fake('m', request => isVote(request) ? vote(true) : findings(reported))
+    const sink = (event: QuorumEvent): void => {
+      if (event.type === 'run:end') controller.abort()
+    }
+    const quorum = createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, model), events: sink })
+    const result = await quorum.review({ diff }, { signal: controller.signal })
+    expect(controller.signal.aborted).toBe(true)
+    expect(result.kept.map(verdict => verdict.id)).toEqual([finding.id])
+  })
+
   it('rejects as soon as an abort cuts a vote, without waiting for the votes still in flight', async () => {
     const controller = new AbortController()
     const finder = fake('finder', () => findings(reported))
