@@ -3,6 +3,7 @@ import { createLimiter, DEFAULT_CONCURRENCY } from './concurrency.ts'
 import { splitDiff } from './diff.ts'
 import { ConfigError } from './errors.ts'
 import type { ConfigIssue } from './errors.ts'
+import { diffFlags } from './flags.ts'
 import { isRecord } from './output.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts } from './ports.ts'
 import { profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
@@ -78,10 +79,14 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
 
 /**
  * One review of a diff by every profile of the quorum, concurrently, each through research, dedup
- * and panel under the review's one concurrency limit; a blank diff runs no stage. The review
- * reports itself through events, from `run:start` to `run:end`, and its result merges the profiles'
- * verdicts and gaps in profile order. `meta.profiles[<id>].invalidFindings` and `meta.usage` are
- * counted from the events before the sink receives them.
+ * and panel under the review's one concurrency limit; a blank diff runs no stage. The diff is split
+ * once, for every profile and for the advisory flags, which are read from it before any stage runs.
+ * Each is sent as a `flag` event right after `run:start` and kept in `meta.flags`, and none of them
+ * changes a verdict. Each event is handed to the sink as a copy, so a sink that changes one changes
+ * nothing else. The review reports itself through events, from `run:start` to `run:end`, and its
+ * result merges the profiles' verdicts and gaps in profile order.
+ * `meta.profiles[<id>].invalidFindings` and `meta.usage` are counted from the events before the
+ * sink receives them.
  *
  * Abort never fails open. The review's signal joins the caller's `signal` to an internal one; every
  * stage and every call checks it, every request carries it, and it is checked once more after the
@@ -108,13 +113,15 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
   const startedAt = new Date().toISOString()
   const started = performance.now()
   const { runs, sink } = compiled
+  const sections = input.diff.trim() === '' ? undefined : splitDiff(input.diff)
+  const flags = sections === undefined ? [] : diffFlags(sections)
   const tally: Tally = { invalidFindings: new Map() }
   const emit = (event: QuorumEvent): void => {
     if (signal.aborted) return
     if (event.type === 'call' && event.usage !== undefined) tally.usage = addUsage(tally.usage, event.usage)
     if (event.type === 'finding:invalid') tally.invalidFindings.set(event.profile, (tally.invalidFindings.get(event.profile) ?? 0) + 1)
     try {
-      sink?.(event)
+      sink?.(structuredClone(event))
     } catch (error) {
       // The caller's bug surfaces instead of being swallowed, and ends the review: no profile starts another call.
       internal.abort(error)
@@ -123,7 +130,8 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
   }
   const ctx: RunContext = { limit: createLimiter(compiled.concurrency), emit, signal, fail, maxFindings: compiled.maxFindings }
   emit({ type: 'run:start', profiles: runs.map(run => run.id), providers: Object.fromEntries(runs.map(run => [run.id, providersOf(run)])) })
-  const outcomes = await reviewAll(ctx, runs, input.diff).catch((error: unknown) => {
+  for (const flag of flags) emit({ type: 'flag', flag })
+  const outcomes = await reviewAll(ctx, runs, input.diff, sections).catch((error: unknown) => {
     // A research failure aborted the review where it failed; any other failure aborts it here. The first reason stays the reason.
     const reason: unknown = signal.aborted ? signal.reason : error
     internal.abort(reason)
@@ -142,15 +150,15 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
     profiles: Object.fromEntries(runs.map(run => [run.id, profileMeta(run, tally.invalidFindings.get(run.id) ?? 0)])),
     ...(tally.usage === undefined ? {} : { usage: tally.usage }),
     incomplete,
+    flags,
   }
   emit({ type: 'run:end', kept: kept.length, discarded: discarded.length, unreviewed: unreviewed.length, incomplete: incomplete.length, durationMs })
   return { kept, discarded, unreviewed, meta }
 }
 
-/** Run every profile through its stages at once; a blank diff runs no stage. The diff is split once, for every profile. */
-async function reviewAll(ctx: RunContext, runs: readonly ProfileRun[], diff: string): Promise<PanelOutcome[]> {
-  if (diff.trim() === '') return []
-  const sections = splitDiff(diff)
+/** Run every profile through its stages at once on the diff's sections; a blank diff, which has none, runs no stage. */
+async function reviewAll(ctx: RunContext, runs: readonly ProfileRun[], diff: string, sections: ReadonlyMap<string, string> | undefined): Promise<PanelOutcome[]> {
+  if (sections === undefined) return []
   return Promise.all(runs.map(run => reviewProfile(ctx, run, diff, sections)))
 }
 

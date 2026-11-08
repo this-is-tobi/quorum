@@ -178,6 +178,8 @@ export interface QuorumMeta {
   usage?: Usage
   /** Gaps that are not findings. An entry here, or an unreviewed finding, makes the review incomplete. */
   incomplete: IncompleteEntry[]
+  /** Advisory signals the harness read from the diff: where a human should look. They change no verdict and no exit code. */
+  flags: Flag[]
 }
 
 /** Final review output. */
@@ -219,6 +221,8 @@ export type StageName = 'research' | 'dedup' | 'panel'
 export type QuorumEvent
   /** The review starts: the profiles it runs, and who reviews for each. */
   = | { type: 'run:start', profiles: string[], providers: Record<string, ProfileProviders> }
+    /** An advisory flag read from the diff, sent before any stage starts. */
+    | { type: 'flag', flag: Flag }
     /** A stage of one profile starts. */
     | { type: 'stage:start', profile: string, stage: StageName }
     /** A stage of one profile ends; `count` is the findings it produced, or the verdicts for `panel`. */
