@@ -1,4 +1,5 @@
 import { locate } from './diff.ts'
+import { stripHidden } from './sanitize.ts'
 import type { Finding, FindingDetails } from './types.ts'
 
 /** A finding as the harness verified it, before the research stage names it and tags its profile. */
@@ -20,12 +21,6 @@ const MAX_QUOTE = 2000
 const MAX_SEARCH = 16_000
 /** Only the first `max * SCAN_FACTOR` characters of finder-written text are read, so cleaning stays cheap on hostile input. */
 const SCAN_FACTOR = 4
-/**
- * Characters a reader cannot see or a transport cannot carry: control, format (zero-width,
- * bidirectional, Unicode tag), unpaired surrogate and other default-ignorable ones (variation
- * selectors, Hangul fillers). With the `u` flag `\p{Cs}` matches only an unpaired half.
- */
-const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}]/gu
 
 /**
  * Check what the finder reported against the diff itself. A finding must cite a file of the diff
@@ -79,15 +74,6 @@ function quoteAppearsIn(evidence: string, quote: string): boolean {
 /** One line of plain text: the head of the value, whitespace collapsed, hidden characters removed, capped. */
 function plainText(value: string, max: number): string {
   return cap(collapse(stripHidden(collapse(value.slice(0, max * SCAN_FACTOR)))), max)
-}
-
-/**
- * Remove the hidden characters in one pass. One pass is enough: every unpaired surrogate half is
- * removed in the same pass, so removing a character never leaves two halves to join into a new
- * one, and the characters that remain are whole.
- */
-function stripHidden(text: string): string {
-  return text.replace(HIDDEN, '')
 }
 
 const isHighSurrogate = (unit: number): boolean => unit >= 0xD800 && unit <= 0xDBFF
