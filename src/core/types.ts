@@ -124,6 +124,23 @@ export interface IncompleteEntry {
   detail: string
 }
 
+/** What an advisory flag points at. */
+export type FlagCode = 'hidden-characters' | 'ai-addressed-text'
+
+/**
+ * An advisory signal the harness read from the diff by code, before any model saw it: it tells a
+ * human where to look, and never changes a verdict, a confidence or an exit code.
+ */
+export interface Flag {
+  code: FlagCode
+  /** The diff's own path for the file; absent for a diff without per-file headers. */
+  file?: string
+  /** The first added line, in the new file, the flag is about; absent when it is about the file name. */
+  line?: number
+  /** What was found, in words the code wrote: code points or the names of patterns, never text of the diff. */
+  detail: string
+}
+
 /** Names a provider in events and in `meta`: its id and model, captured when the quorum was created. */
 export interface ProviderRef {
   id: string
