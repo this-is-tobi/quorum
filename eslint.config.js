@@ -39,4 +39,49 @@ export default antfu(
       '**/*.d.ts',
     ],
   },
+  {
+    // The core is pure: a core module imports only core modules, zod, node:crypto and package.json.
+    files: ['src/core/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [{ regex: '^(?!\\./(?!.*\\.\\.)|zod$|node:crypto$|\\.\\./\\.\\./package\\.json$)', message: 'The core imports only core modules, zod, node:crypto and package.json.' }] }],
+      'no-restricted-globals': ['error', 'process', 'fetch', 'Bun', 'globalThis'],
+    },
+  },
+  {
+    // One level down (stages/), `../` is still the core; anything deeper must not climb out either.
+    files: ['src/core/*/**/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [{ regex: '^(?!\\.\\.?/(?!.*\\.\\.)|zod$|node:crypto$|\\.\\./\\.\\./\\.\\./package\\.json$)', message: 'The core imports only core modules, zod, node:crypto and package.json.' }] }],
+      'no-restricted-globals': ['error', 'process', 'fetch', 'Bun', 'globalThis'],
+    },
+  },
+  {
+    // A profile is data: it imports core types and nothing else.
+    files: ['src/profiles/**/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'ts/no-restricted-imports': ['error', {
+        patterns: [
+          { regex: '^(?!\\.\\./core/)', message: 'A profile imports only core types.' },
+          { regex: '^\\.\\./core/', allowTypeImports: true, message: 'A profile imports only core types.' },
+        ],
+      }],
+      'no-restricted-globals': ['error', 'process', 'fetch', 'Bun', 'globalThis'],
+    },
+  },
+  {
+    // An adapter sees the core only through its ports, errors and types.
+    files: ['src/providers/**/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [
+          { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(ports|errors|types)\\.ts$)', message: 'A provider imports only its own modules and core/ports.ts, core/errors.ts and core/types.ts.' },
+        ],
+      }],
+      'no-restricted-globals': ['error', 'process', 'Bun', 'globalThis'],
+    },
+  },
 )
