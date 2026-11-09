@@ -59,7 +59,7 @@ Both providers are built with `openaiCompatible` and its defaults, which no vari
 | `maxTokensField` | `max_tokens`, unused while no `maxTokens` is set |
 | `maxTokens`, `headers`, `query`, `extraBody` | None is set: no token limit, no extra header, no query parameter and nothing merged into the body |
 
-A model that rejects `temperature: 0`, or an endpoint without that JSON mode, cannot be used through these variables. OpenAI's reasoning models are among the models that reject `temperature: 0`, so the CLI cannot use them. A program builds its provider for a reasoning model with `temperature: null`, which leaves the field out, and `maxTokensField: 'max_completion_tokens'`, the body field that holds its `maxTokens` limit. It can also choose another `structuredOutput`: [the options of `openaiCompatible`](./30-providers.md#options).
+A model that rejects `temperature: 0`, or an endpoint without that JSON mode, cannot be used through these variables. OpenAI's reasoning models are among the models that reject `temperature: 0`, so the CLI cannot use them. A program builds its provider for a reasoning model with `temperature: null`, which leaves the field out, and `maxTokensField: 'max_completion_tokens'`, the body field that holds its `maxTokens` limit. It can also choose another `structuredOutput`: [the options of `openaiCompatible`](./30-providers.md#openaicompatible).
 
 ## Configuration errors
 

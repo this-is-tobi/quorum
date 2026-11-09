@@ -1,6 +1,6 @@
 # Providers
 
-A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds two from the environment; a program builds its own, with one of the four shipped adapters or from scratch. This page covers the port, the adapters and the options they share, the key header styles, the tool fields each adapter refuses, the limits of a request, the body each adapter sends and the replies it reads, the errors a provider raises, and writing a provider of your own.
+A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds two `openaiCompatible` providers from the environment; a program builds its own, with one of the four shipped adapters or from scratch. This page covers the port, the adapters and the options they share, the key header styles, the tool fields each adapter refuses, the limits of a request, the body each adapter sends and the replies it reads, the errors a provider raises, and writing a provider of your own.
 
 ## The port
 
@@ -66,7 +66,7 @@ Every adapter sends one JSON `POST` per call through the same hardened path, [Th
 | `apiKey` | `string` | None | Sent as `auth` says, and nowhere else. Without it, or with an empty one, no key header is sent |
 | `auth` | `'bearer' \| 'x-api-key' \| 'none' \| { header, prefix? }` | The adapter's | How the key is sent: [The key header](#the-key-header) |
 | `headers` | `Record<string, string>` | None | Sent with every request, names lower-cased. They cannot replace `content-type`, `content-length`, `host`, the key header, or `anthropic`'s `anthropic-version`. Their values are redacted from error messages, as the key is |
-| `query` | `Record<string, string>` | None | Added to every request URL. Not redacted from error messages: never put a key here |
+| `query` | `Record<string, string>` | None | Added to every request URL. Not redacted from error messages: never put a key here. A value equal to `apiKey` is refused |
 | `extraBody` | `Record<string, unknown>` | None | JSON values deep-merged into the body last: objects merge key by key, anything else replaces. A top-level key cannot replace a field the adapter writes for the conversation, or set one that offers the model a tool: [The tool fields](#the-tool-fields) |
 | `temperature` | `number \| null` | The adapter's | Sent where the protocol takes it; `null` leaves it out, for a model that rejects it |
 | `maxTokens` | `number` | None, but `anthropic`'s 16000 | The most tokens the reply may hold, in the protocol's own field |
@@ -108,7 +108,7 @@ Each adapter refuses, in `extraBody`, the body fields of its protocol that would
 
 | Adapter | Refused fields |
 | --- | --- |
-| `openaiCompatible` | `tools`, `tool_choice`, `parallel_tool_calls`, `functions`, `function_call` and `web_search_options`, which OpenAI and others take; OpenRouter's `plugins`, `deferred_tools`, `stop_server_tools_when`, `x_search_filter` and `preset`; xAI's `search_parameters`; Groq's `compound_custom`, `search_settings`, `include_domains`, `exclude_domains`, `disable_tool_validation` and `documents` |
+| `openaiCompatible` | `tools`, `tool_choice`, `parallel_tool_calls`, `functions`, `function_call` and `web_search_options`, which OpenAI and others take; OpenRouter's `plugins`, `deferred_tools`, `stop_server_tools_when`, `x_search_filter`, `preset` and `models`, a fallback list whose ids can bring tools as `:online` does; xAI's `search_parameters`; Groq's `compound_custom`, `search_settings`, `include_domains`, `exclude_domains`, `disable_tool_validation` and `documents` |
 | `anthropic` | `tools`, `tool_choice`, `mcp_servers`, which offers an MCP server's tools with no `tools` entry under a deprecated beta, `container`, which loads skills, and the beta's server-side fields `thread`, `fallbacks`, `fallback_credit_token`, `context_management` and `compaction` |
 | `gemini` | `tools`, `toolConfig`, and `cachedContent`, since a cached content can hold tools of its own |
 | `ollama` | `tools`, and `_debug_render_only`, which answers with the rendered template instead of a reply |
@@ -152,6 +152,7 @@ Each adapter checks its options when it is called, before any request, and throw
 | `<id>.headers.<name>` | `is set by the adapter and cannot be replaced` |
 | `<id>.headers.<name>` | `must be a string of printable ASCII characters` |
 | `<id>.query` | `must map names to strings` |
+| `<id>.query.<name>` | `holds the key, which travels only in the header auth names` |
 | `<id>.extraBody` | `must be an object of JSON values, with no __proto__ key` |
 | `<id>.extraBody.<key>` | `is written by the adapter and cannot be replaced` |
 | `<id>.extraBody.<key>` | `offers the model a tool, which quorum never does` |
@@ -161,9 +162,10 @@ Each adapter checks its options when it is called, before any request, and throw
 | `<id>.structuredOutput` | `must be prompt, json or schema` |
 | `<id>.structuredOutput` | `must be prompt or schema` |
 | `<id>.maxTokensField` | `must be max_tokens or max_completion_tokens` |
+| `<id>.query.<name>` | `would carry a key in the URL: set apiKey instead` |
 | `<id>.model` | `must be a Gemini model id, such as gemini-3.8-flash` |
 
-`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, and `model` by `gemini` only.
+`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, and `model` and a `key` query parameter by `gemini` only.
 
 ## `openaiCompatible`
 
@@ -231,7 +233,7 @@ A reply succeeds with the stop reason `end_turn` or `stop_sequence` and a text b
 For the Gemini API's `generateContent`, which Google now calls a legacy API, still supported:
 
 - **The model goes in the URL**, `/v1beta/models/<model>:generateContent`. It is written with or without a leading `models/`, which is stripped, and the id that remains must match `[a-z0-9][a-z0-9.-]*` in any letter case, as `gemini-3.8-flash` does: that keeps a `/`, a `?` or a `:` out of the path. Another is a configuration error, `<id>.model: must be a Gemini model id, such as gemini-3.8-flash`. A tuned model (`tunedModels/...`) is not supported.
-- **The key goes in `x-goog-api-key`** by default, never in the `key` query parameter, which error messages would not redact.
+- **The key goes in `x-goog-api-key`** by default, never in the `key` query parameter: a `query` entry named `key`, in any letter case, is a configuration error, since URLs get logged and error messages would not redact it.
 - **No temperature is sent unless one is set.** Current models ignore it, and Google says a future model will answer 400 to it.
 
 The body of every request holds, in this order:
@@ -258,7 +260,7 @@ A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose
 For Ollama's native chat API, on a local server or Ollama's cloud, `https://ollama.com`, which needs a key. Its base URL is the server's root, such as `http://localhost:11434`, without the `/v1` that `openaiCompatible` takes there:
 
 - **`truncate: false` keeps a prompt whole.** A prompt past the model's context is then a 400, `request (N tokens) exceeds the available context size (M tokens), try increasing it`, instead of its oldest messages dropped in silence. It needs Ollama 0.12.6 or later; an older server ignores the field and drops them.
-- **`shift: false` keeps it whole as the reply is written.** A reply that fills the model's context then stops, as a truncation, instead of part of the prompt dropped so the reply can go on. It needs the same versions, and a server that loaded the model with context shift on loads it again once.
+- **`shift: false` keeps it whole as the reply is written.** A reply that fills the model's context then stops, as a truncation, instead of part of the prompt dropped so the reply can go on. It needs the same versions, and a server that loaded the model with context shift on loads it again, as it does each time a client asks for the other setting.
 - **The key goes as `Authorization: Bearer <key>`**, only when one is set: a local server needs none.
 - **No `think` field.** A thinking model thinks as it does by default, and its thinking comes back apart, in `message.thinking`, which the adapter ignores.
 
