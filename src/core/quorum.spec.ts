@@ -24,6 +24,9 @@ const diff = [
   '+UNRELATED',
 ].join('\n')
 
+/** `diff` with a zero-width space on the added line of other.js, which no finding cites. */
+const flaggedDiff = diff.replace('+UNRELATED', '+UNRELATED\u200B')
+
 /** What the finder reports on the wire. */
 const reported = { file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }
 
@@ -731,8 +734,6 @@ describe('meta and events', () => {
 })
 
 describe('advisory flags', () => {
-  /** `diff` with a zero-width space on the added line of other.js, which no finding cites. */
-  const flaggedDiff = diff.replace('+UNRELATED', '+UNRELATED\u200B')
   const flag = { code: 'hidden-characters', file: 'other.js', line: 1, detail: 'U+200B on 1 added line(s)' }
   const answer = (request: CompletionRequest): string => isVote(request) ? vote(true) : findings(reported)
 
@@ -749,6 +750,8 @@ describe('advisory flags', () => {
     const [clean, flagged] = await Promise.all([review(diff), review(flaggedDiff)])
     expect(flagged.meta.flags).toHaveLength(1)
     expect(flagged.kept).toEqual(clean.kept)
+    expect(flagged.discarded).toEqual(clean.discarded)
+    expect(flagged.unreviewed).toEqual(clean.unreviewed)
     expect(flagged.kept[0]?.confidence).toBe('high')
     expect(flagged.meta.incomplete).toEqual(clean.meta.incomplete)
   })
@@ -773,11 +776,11 @@ describe('events as copies', () => {
       if (event.type === 'incomplete') event.entry.detail = 'changed'
       if (event.type === 'flag') event.flag.detail = 'changed'
     }
-    const result = await createQuorum({ profiles: [securityProfile], concurrency: 1 }, { ...portsFor(securityProfile, finder, voter), events: vandal }).review({ diff: diff.replace('+UNRELATED', '+UNRELATED\u200B') })
+    const result = await createQuorum({ profiles: [securityProfile], concurrency: 1 }, { ...portsFor(securityProfile, finder, voter), events: vandal }).review({ diff: flaggedDiff })
     expect(models).toEqual(['finder-model', 'voter-model', 'voter-model', 'voter-model'])
     expect(result.meta.profiles.security.providers.research.model).toBe('finder-model')
     expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['finding-unreadable'])
-    expect(result.meta.incomplete[0]?.detail).not.toBe('changed')
+    expect(result.meta.incomplete[0]?.detail).toBe('findings[1]: line: Invalid input: expected number, received undefined')
     expect(result.meta.flags[0]?.detail).toBe('U+200B on 1 added line(s)')
   })
 })
