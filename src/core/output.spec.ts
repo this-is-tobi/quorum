@@ -385,6 +385,20 @@ describe('reply JSON Schemas', () => {
     expect(researchReplyJsonSchema).not.toHaveProperty('$schema')
   })
 
+  it('stay in the portable subset every schema mode accepts: no numeric or string constraint, no format (F-29)', () => {
+    const finding = { type: 'object', properties: { file: { type: 'string' }, line: { type: 'integer' }, category: { type: 'string' }, quote: { type: 'string' }, summary: { type: 'string' } }, required: ['file', 'line', 'category', 'quote', 'summary'], additionalProperties: false }
+    expect(researchReplyJsonSchema).toEqual({ type: 'object', properties: { findings: { type: 'array', items: finding } }, required: ['findings'], additionalProperties: false })
+    expect(voteReplyJsonSchema).toEqual({ type: 'object', properties: { keep: { type: 'boolean' }, reasoning: { type: 'string' } }, required: ['keep', 'reasoning'], additionalProperties: false })
+  })
+
+  it('still refuses a line the wire schema no longer bounds', () => {
+    expect(parseResearchReply(JSON.stringify({ findings: [{ ...finding, line: 2 ** 53 }] }))).toEqual({
+      findings: [],
+      invalid: ['findings[0]: line: Too big: expected int to be <=9007199254740991'],
+      listed: 1,
+    })
+  })
+
   it('asks the finder for a quote, not a sink', () => {
     const schema = JSON.stringify(researchReplyJsonSchema)
     expect(schema).toContain('"quote"')

@@ -3,6 +3,13 @@ import { OutputError } from './errors.ts'
 import { HIDDEN_CLASS } from './sanitize.ts'
 import type { FindingDetails, Vote } from './types.ts'
 
+/**
+ * Keywords outside the portable subset every schema mode accepts: numeric and string constraints, and
+ * `format`. Strict modes refuse some of them (Anthropic documents numeric constraints as unsupported),
+ * and zod still enforces each one on the reply.
+ */
+const NON_PORTABLE_KEYWORDS: ReadonlySet<string> = new Set(['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'pattern', 'format'])
+
 /** Wire shape of one finding. Semantic checks (line >= 1, non-empty file) run after parsing. */
 const FindingReplySchema = z.object({
   file: z.string(),
@@ -337,7 +344,18 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** A schema without its non-portable keywords, at any depth. The names under `properties` are field names, never keywords. */
+function portable(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(portable)
+  if (!isRecord(schema)) return schema
+  return Object.fromEntries(Object.entries(schema)
+    .filter(([key]) => !NON_PORTABLE_KEYWORDS.has(key))
+    .map(([key, value]) => [key, key === 'properties' && isRecord(value)
+      ? Object.fromEntries(Object.entries(value).map(([name, field]) => [name, portable(field)]))
+      : portable(value)]))
+}
+
 function toWireSchema(schema: z.ZodType): Record<string, unknown> {
   const { $schema: _dialect, ...wire } = z.toJSONSchema(schema) as Record<string, unknown>
-  return wire
+  return portable(wire) as Record<string, unknown>
 }
