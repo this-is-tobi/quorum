@@ -36,6 +36,11 @@ export function stripHidden(text: string): string {
   return text.replace(HIDDEN, '')
 }
 
+/** The text with each hidden character replaced by a space: what a reader sees when an invisible character separates two words. */
+export function spaceHidden(text: string): string {
+  return text.replace(HIDDEN, ' ')
+}
+
 /**
  * One line of a terminal or a CI log. Every hidden character is shown as `<U+XXXX>`, so the line
  * holds no line break, starts no escape sequence, reorders nothing and hides nothing. Then both

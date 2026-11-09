@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { codePointLabel, hiddenLabels, inertJson, inertLine, stripHidden } from './sanitize.ts'
+import { codePointLabel, hiddenLabels, inertJson, inertLine, spaceHidden, stripHidden } from './sanitize.ts'
 
 /** Every hidden class the sanitizer knows, to check that an output holds none of them. */
 const ANY_HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}]/u
@@ -84,5 +84,9 @@ describe('the shared helpers', () => {
     expect(hiddenLabels('a\u200Bb\u{E0041}c\u200B\t')).toEqual(['U+200B', 'U+E0041', 'U+0009'])
     expect(stripHidden('a\u200Bb\u202Ec\u{E0041}d\uFE0Fe\u0085f\u2028g')).toBe('abcdefg')
     expect(['\u001B', '\u202E', '\u{E0041}', '\uDC80'].map(codePointLabel)).toEqual(['U+001B', 'U+202E', 'U+E0041', 'U+DC80'])
+  })
+
+  it('reads each hidden character as a space, and leaves an emoji and visible text alone', () => {
+    expect(spaceHidden('a\u200Bb\tc \u{1F600}d')).toBe('a b c \u{1F600}d')
   })
 })
