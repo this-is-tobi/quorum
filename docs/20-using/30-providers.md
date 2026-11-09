@@ -1,6 +1,6 @@
 # Providers
 
-A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds two from the environment; a program builds its own, with the shipped `openaiCompatible` adapter or from scratch. This page covers the port, `openaiCompatible` and the options every HTTP adapter shares, the key header styles, the limits of a request, the reply shapes it reads, the errors a provider raises, and writing a provider of your own.
+A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds two from the environment; a program builds its own, with one of the four shipped adapters or from scratch. This page covers the port, the adapters and the options they share, the key header styles, the tool fields each adapter refuses, the limits of a request, the body each adapter sends and the replies it reads, the errors a provider raises, and writing a provider of your own.
 
 ## The port
 
@@ -25,55 +25,57 @@ interface CompletionResponse {
 }
 ```
 
-- **Text in, text out.** A request carries the instructions in `system`, the fenced data in `messages` (one `user` message), the shape of the reply in `output` (named `research_findings` or `panel_vote`, with its JSON Schema), and the review's `signal`. The request has no field for a tool, a function, a file or a network capability, and quorum offers none to a model. A program's `extraBody` and `headers` are sent to the vendor as given, though: a field there that offers a tool or a server-side capability, such as `tools`, `functions`, OpenRouter's `plugins` or `web_search_options`, breaks the [model path with no tool](../30-security/10-threat-model.md#a-model-path-with-no-tool-and-no-secret).
+- **Text in, text out.** A request carries the instructions in `system`, the fenced data in `messages` (one `user` message), the shape of the reply in `output` (named `research_findings` or `panel_vote`, with its JSON Schema), and the review's `signal`. The request has no field for a tool, a function, a file or a network capability, and quorum offers none to a model. Each shipped adapter refuses the body fields of its protocol that would offer one, so `extraBody` cannot add them, but a model id can bring tools of its own, and `headers` are sent as given: [The tool fields](#the-tool-fields).
 - **No secret in a request.** No environment value, key or credential appears in a request: a key lives in the adapter that holds it.
 - **The core never trusts the reply.** It extracts and validates the JSON in `text` itself, whatever the provider did to get it, and reads `usage` (`inputTokens`, `outputTokens`, optional `costUsd`) only when its counts are finite numbers of at least 0.
 - **`id` and `model` name the provider** in events and in `meta`, as they were when the quorum was created.
 
 [Prompts](./60-prompts.md) shows what `system` and `messages` hold.
 
-## `openaiCompatible`
+## The adapters
 
-The shipped adapter, for any OpenAI-compatible `/chat/completions` endpoint: Ollama, vLLM, TGI, llama.cpp or a hosted API.
+Quorum ships one adapter per wire protocol:
+
+| Adapter | For | Endpoint | Default `auth` | Default `temperature` | Default `structuredOutput` |
+| --- | --- | --- | --- | --- | --- |
+| `openaiCompatible` | Any OpenAI-compatible endpoint: Ollama's `/v1`, vLLM, TGI, llama.cpp, LM Studio or a hosted API | `POST {baseUrl}/chat/completions` | `'bearer'` | `0` | `'json'` |
+| `anthropic` | The Anthropic Messages API, or a gateway that speaks it | `POST {baseUrl}/v1/messages` | `'bearer'` | Left out | `'prompt'` |
+| `gemini` | The Gemini API's `generateContent` | `POST {baseUrl}/v1beta/models/{model}:generateContent` | `{ header: 'x-goog-api-key' }` | Left out | `'json'` |
+| `ollama` | Ollama's native chat API, on a local server or Ollama's cloud | `POST {baseUrl}/api/chat` | `'bearer'` | `0` | `'json'` |
 
 ```ts
-import { openaiCompatible } from './src/index.ts'
+import { anthropic, gemini, ollama, openaiCompatible } from './src/index.ts'
 
-const local = openaiCompatible({ id: 'local', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b' })
+const local = ollama({ id: 'local', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b' })
+const claude = anthropic({ id: 'claude', baseUrl: 'https://api.anthropic.com', model: 'claude-opus-5-5', apiKey: process.env.ANTHROPIC_API_KEY, structuredOutput: 'schema' })
+const flash = gemini({ id: 'flash', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.8-flash', apiKey: process.env.GEMINI_API_KEY })
 const hosted = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-astra', apiKey: process.env.OPENAI_API_KEY, temperature: null, maxTokensField: 'max_completion_tokens' })
 ```
 
-The hosted provider sets `temperature: null` and `maxTokensField: 'max_completion_tokens'` because OpenAI's reasoning models reject a `temperature`, and OpenAI deprecates `max_tokens` for every model. `maxTokensField` takes effect once `maxTokens` is set.
+Every adapter sends one JSON `POST` per call through the same hardened path, [The limits of a request](#the-limits-of-a-request), passes the request's signal to `fetch`, and reports in `usage` every prompt token the request carried, cached ones included, and every token the model generated, thinking included, from the counts its protocol sends: never a cost. The counts a protocol keeps apart, such as Anthropic's cache tokens or Gemini's thought tokens, are added in when they are numbers; a reply without both main counts as numbers reports no `usage`.
+
+## The shared options
 
 ### Options
 
 | Option | Type | Default | Does |
 | --- | --- | --- | --- |
 | `id` | `string` | Required | Names the provider in events, `meta` and its error messages |
-| `baseUrl` | `string` | Required | An `http://` or `https://` URL with a host, and no user name, password, query or fragment. Requests go to it, its trailing slashes removed, followed by `/chat/completions` and the `query` |
-| `model` | `string` | Required | Sent as `model` in every request |
+| `baseUrl` | `string` | Required | An `http://` or `https://` URL with a host, and no user name, password, query or fragment. Requests go to it, its trailing slashes removed, followed by the adapter's path and the `query` |
+| `model` | `string` | Required | The model every request names: in the body, or in the URL for `gemini` |
 | `apiKey` | `string` | None | Sent as `auth` says, and nowhere else. Without it, or with an empty one, no key header is sent |
-| `auth` | `'bearer' \| 'x-api-key' \| 'none' \| { header, prefix? }` | `'bearer'` | How the key is sent: [The key header](#the-key-header) |
-| `headers` | `Record<string, string>` | None | Sent with every request, names lower-cased. They cannot replace `content-type`, `content-length`, `host` or the key header. Their values are redacted from error messages, as the key is |
+| `auth` | `'bearer' \| 'x-api-key' \| 'none' \| { header, prefix? }` | The adapter's | How the key is sent: [The key header](#the-key-header) |
+| `headers` | `Record<string, string>` | None | Sent with every request, names lower-cased. They cannot replace `content-type`, `content-length`, `host`, the key header, or `anthropic`'s `anthropic-version`. Their values are redacted from error messages, as the key is |
 | `query` | `Record<string, string>` | None | Added to every request URL. Not redacted from error messages: never put a key here |
-| `extraBody` | `Record<string, unknown>` | None | JSON values deep-merged into the body last: objects merge key by key, anything else replaces. It cannot replace `model`, `messages` or `stream` |
-| `temperature` | `number \| null` | `0` | Sent as `temperature`; `null` leaves it out, for a model that rejects it |
-| `maxTokens` | `number` | None | The most tokens the reply may hold, sent under `maxTokensField`. Not sent unless set |
-| `maxTokensField` | `'max_tokens' \| 'max_completion_tokens'` | `'max_tokens'` | The body field of `maxTokens`. OpenAI's reasoning models need `max_completion_tokens` |
-| `systemPrompt` | `'native' \| 'inline'` | `'native'` | `native` sends the system text as a `system` message; `inline` puts it at the head of the first user message, joined by a blank line, for a chat template that rejects a system role |
-| `structuredOutput` | `'prompt' \| 'json' \| 'schema'` | `'json'` | How the reply's shape reaches the endpoint: [Structured output](#structured-output) |
+| `extraBody` | `Record<string, unknown>` | None | JSON values deep-merged into the body last: objects merge key by key, anything else replaces. A top-level key cannot replace a field the adapter writes for the conversation, or set one that offers the model a tool: [The tool fields](#the-tool-fields) |
+| `temperature` | `number \| null` | The adapter's | Sent where the protocol takes it; `null` leaves it out, for a model that rejects it |
+| `maxTokens` | `number` | None, but `anthropic`'s 16000 | The most tokens the reply may hold, in the protocol's own field |
+| `systemPrompt` | `'native' \| 'inline'` | `'native'` | `native` sends the system text in the protocol's own place; `inline` puts it at the head of the first user message, joined by a blank line, for a chat template that rejects a system role |
+| `structuredOutput` | `'prompt' \| 'json' \| 'schema'` | The adapter's | How the reply's shape reaches the endpoint: [Structured output](#structured-output) |
 
 `systemPrompt: 'inline'` sends the instructions in the same user message as the fenced data, so they lose the role that sets them apart from it: a weaker separation than the one [Prompts](./60-prompts.md#the-layout-of-a-request) describes. When the conversation does not start with a user message, `inline` sends the system text as a user message of its own.
 
-`HttpProviderOptions` types every option here except `maxTokensField`, which `OpenAICompatibleOptions` adds.
-
-The body of every request holds, in this order:
-
-- `model` and `messages`: the request's messages, with the system text first as a `system` message, or inline at the head of the first user message;
-- `response_format`, unless `structuredOutput` is `prompt`;
-- `temperature`, unless it is `null`;
-- `maxTokens` under `maxTokensField`, when set;
-- then `extraBody`, merged.
+`HttpProviderOptions` types every option here. `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is.
 
 ### The key header
 
@@ -88,17 +90,35 @@ The body of every request holds, in this order:
 | `{ header: 'X-Token', prefix: 'Token ' }` | `x-token: Token <key>` |
 | `{ header: 'authorization', prefix: 'Basic ' }` | `authorization: Basic <key>`: basic auth, with the base64 of `user:password` as the key |
 
-A custom header name is lower-cased, and its `prefix` goes before the key. A request sends its headers in this order: the content type, the provider's own `headers`, then the key header.
+A custom header name is lower-cased, and its `prefix` goes before the key. A request sends its headers in this order: the content type, the provider's own `headers`, then the key header; `anthropic` sends its version header last.
 
 ### Structured output
 
-| Mode | `response_format` sent |
-| --- | --- |
-| `prompt` | None: the schema is only in the system message |
-| `json` | `{ "type": "json_object" }` |
-| `schema` | `{ "type": "json_schema", "json_schema": { "name": <output.name>, "schema": <output.schema>, "strict": true } }` |
+| Mode | `openaiCompatible` | `anthropic` | `gemini` | `ollama` |
+| --- | --- | --- | --- | --- |
+| `prompt` | No `response_format` | No `output_config` | No `responseMimeType` | No `format` |
+| `json` | `response_format: { "type": "json_object" }` | Refused: the Messages API has no JSON mode | `generationConfig.responseMimeType: "application/json"` | `format: "json"` |
+| `schema` | `response_format: { "type": "json_schema", "json_schema": { "name": <output.name>, "schema": <output.schema>, "strict": true } }` | `output_config: { "format": { "type": "json_schema", "schema": <output.schema> } }` | `generationConfig.responseMimeType: "application/json"` and `generationConfig.responseJsonSchema: <output.schema>` | `format: <output.schema>` |
 
-Every mode keeps the schema in the system message, and the core validates the reply the same way in each. `schema` asks the endpoint to enforce the shape; use it where the endpoint supports it, `json` where it supports only JSON mode, and `prompt` where it supports neither.
+Every mode keeps the schema in the system message, and the core validates the reply the same way in each. `schema` asks the endpoint to enforce the shape; use it where the endpoint supports it, `json` where it supports only JSON mode, and `prompt` where it supports neither. An endpoint can drop the field without a word: Ollama's and DeepSeek's Anthropic-compatible endpoints ignore `output_config.format`, so `schema` is enforced only where the endpoint supports it, and Anthropic accepts it only on the models its structured-outputs page lists.
+
+### The tool fields
+
+Each adapter refuses, in `extraBody`, the body fields of its protocol that would offer the model a tool or a server-side capability. A tool the server runs, such as a web search, code execution, a URL fetch or an MCP server, could carry the data out, and quorum offers a model none:
+
+| Adapter | Refused fields |
+| --- | --- |
+| `openaiCompatible` | `tools`, `tool_choice`, `parallel_tool_calls`, `functions`, `function_call` and `web_search_options`, which OpenAI and others take; OpenRouter's `plugins`, `deferred_tools`, `stop_server_tools_when`, `x_search_filter` and `preset`; xAI's `search_parameters`; Groq's `compound_custom`, `search_settings`, `include_domains`, `exclude_domains`, `disable_tool_validation` and `documents` |
+| `anthropic` | `tools`, `tool_choice`, `mcp_servers`, which offers an MCP server's tools with no `tools` entry under a deprecated beta, `container`, which loads skills, and the beta's server-side fields `thread`, `fallbacks`, `fallback_credit_token`, `context_management` and `compaction` |
+| `gemini` | `tools`, `toolConfig`, and `cachedContent`, since a cached content can hold tools of its own |
+| `ollama` | `tools`, and `_debug_render_only`, which answers with the rendered template instead of a reply |
+
+Each is a configuration error: `<id>.extraBody.<key>: offers the model a tool, which quorum never does`. A key matches in any letter case and with or without underscores, since Ollama's Go decoder reads a key in any letter case, U+017F matching `s` and U+212A matching `k`, and Gemini's proto JSON takes a field's snake_case name: `Tools` and `tool_config` are refused too, and so is a field the adapter writes, such as `Messages`. `openaiCompatible` lets `chat_template_kwargs` through: it sets chat-template variables, such as turning thinking off on vLLM or Together, and runs nothing on the server.
+
+Two ways around these checks remain, and both are the program's to avoid:
+
+- **A model id can bring tools of its own**, which no body check sees: OpenAI's search models search the web before every answer, and OpenRouter's `:online` suffix, its `openrouter/fusion` model and its `@preset/` ids add a web search or a stored preset's tools. Choose a model that runs no tool.
+- **`headers` are sent as given.** `anthropic` accepts an `anthropic-beta` header, which serves needs such as a longer context window: no documented beta header offers a tool by itself, and the body fields a beta would need are refused.
 
 ### The limits of a request
 
@@ -107,17 +127,11 @@ Every request goes through one hardened path:
 - **A redirect is not followed.** It is an `http` error that names it, `HTTP 307 (redirects are not followed): "<body>"`, so a key in any header never reaches another endpoint.
 - **A reply body over 16 MiB is refused**, without reading the rest.
 - **At most 64 KiB of an error body is read**, enough for the 500 characters a message quotes.
-- **Server text in a message is redacted** of the key, of the base URL's path and of the values of `headers`, before and after escaped ASCII is decoded, and cut to 500 characters (200 for model text and for a server error in a 2xx reply). A server echoes the path in a 404, and a gateway's own credential goes in a header, so both are redacted too.
+- **Server text in a message is redacted** of the key, of the base URL's path and of the values of `headers`, as written and trimmed, since `fetch` sends a header value trimmed; a value that is blank once trimmed redacts nothing. Every occurrence is redacted, and values that overlap in the text become one `[redacted]`. It is redacted once escaped ASCII is decoded, each value matched as written and with its own escapes decoded, then cut to 500 characters: 200 for model text and for a server error in a 2xx reply, 40 for a stop or finish reason. A server echoes the path in a 404, and a gateway's own credential goes in a header, so both are redacted too.
 
-### The reply
+### Configuration errors
 
-The text is the first choice's `message.content`: a string, or an array of parts whose `text` parts are joined, as Mistral sends it. Every other part is skipped, thinking parts included. `model` is the one the reply names, or the configured one when it names none. `usage` is read from `usage.prompt_tokens` and `usage.completion_tokens` when both are numbers; the adapter reports no cost.
-
-A top-level `error` in the reply fails the call before the choices are read, since some servers answer a failure with status 200 (OpenRouter does, for a failure during generation). The error is `{ message, code }` or a string. An `error` of `null` beside the choices is a success.
-
-### Its configuration errors
-
-`openaiCompatible` checks its options when it is called, before any request, and throws one `ConfigError` with each problem. No message repeats a value:
+Each adapter checks its options when it is called, before any request, and throws one `ConfigError` with each problem, in this order. No message repeats a value:
 
 | Path | Message |
 | --- | --- |
@@ -129,40 +143,161 @@ A top-level `error` in the reply fails the call before the choices are read, sin
 | `<id>.auth` | `must be bearer, x-api-key, none or { header, prefix }` |
 | `<id>.auth.header` | `must be an HTTP header name` |
 | `<id>.auth.header` | `must not be content-type, content-length or host` |
+| `<id>.auth.header` | `is set by the adapter and cannot be replaced` |
 | `<id>.auth.prefix` | `must only contain printable ASCII characters` |
 | `<id>.headers` | `must map names to strings` |
 | `<id>.headers.<name>` | `must be an HTTP header name` |
 | `<id>.headers.<name>` | `must not be content-type, content-length or host` |
 | `<id>.headers.<name>` | `is the header that carries the key: set apiKey instead` |
+| `<id>.headers.<name>` | `is set by the adapter and cannot be replaced` |
 | `<id>.headers.<name>` | `must be a string of printable ASCII characters` |
 | `<id>.query` | `must map names to strings` |
 | `<id>.extraBody` | `must be an object of JSON values, with no __proto__ key` |
 | `<id>.extraBody.<key>` | `is written by the adapter and cannot be replaced` |
+| `<id>.extraBody.<key>` | `offers the model a tool, which quorum never does` |
 | `<id>.temperature` | `must be a finite number, or null to leave it out` |
 | `<id>.maxTokens` | `must be a whole number of at least 1` |
-| `<id>.maxTokensField` | `must be max_tokens or max_completion_tokens` |
 | `<id>.systemPrompt` | `must be native or inline` |
 | `<id>.structuredOutput` | `must be prompt, json or schema` |
+| `<id>.structuredOutput` | `must be prompt or schema` |
+| `<id>.maxTokensField` | `must be max_tokens or max_completion_tokens` |
+| `<id>.model` | `must be a Gemini model id, such as gemini-3.8-flash` |
+
+`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, and `model` by `gemini` only.
+
+## `openaiCompatible`
+
+For any OpenAI-compatible `/chat/completions` endpoint. The hosted provider of [The adapters](#the-adapters) sets `temperature: null` and `maxTokensField: 'max_completion_tokens'` because OpenAI's reasoning models reject a `temperature`, and OpenAI deprecates `max_tokens` for every model.
+
+| Option | Type | Default | Does |
+| --- | --- | --- | --- |
+| `maxTokensField` | `'max_tokens' \| 'max_completion_tokens'` | `'max_tokens'` | The body field of `maxTokens`, once `maxTokens` is set. OpenAI's reasoning models need `max_completion_tokens` |
+
+The body of every request holds, in this order:
+
+- `model` and `messages`: the request's messages, with the system text first as a `system` message, or inline at the head of the first user message;
+- `response_format`, unless `structuredOutput` is `prompt`;
+- `temperature`, unless it is `null`;
+- `maxTokens` under `maxTokensField`, when set;
+- then `extraBody`, merged. It cannot replace `model`, `messages` or `stream`.
+
+The text is the first choice's `message.content`: a string, or an array of parts whose `text` parts are joined, as Mistral sends it. Every other part is skipped, thinking parts included. `model` is the one the reply names, or the configured one when it names none. `usage` is read from `usage.prompt_tokens` and `usage.completion_tokens`.
+
+A top-level `error` in the reply fails the call before the choices are read, since some servers answer a failure with status 200 (OpenRouter does, for a failure during generation). The error is `{ message, code }` or a string. An `error` of `null` beside the choices is a success.
+
+| The reply | Kind | Message |
+| --- | --- | --- |
+| A server error, its `code` an error status (400 to 599) | `http`, retryable as that status would be | `server error 502: "<message>"` |
+| A server error with no error status as its `code` | `invalid-response` | `server error: "<message>"`, and `server error: ""` for `{ "error": "" }`; the quote is left out only when `error` is an object without a string `message`, as in `{ "error": {} }` |
+| No first choice | `invalid-response` | `reply has no choices` |
+| `message.refusal` set | `refusal` | `model refused: "<up to 200 characters>"`, or `model refused` when it is not a string |
+| The finish reason `content_filter` | `refusal` | `reply was stopped by the content filter` |
+| The finish reason `length` or `model_length` | `truncated` | `reply was cut off by the token limit` |
+| The finish reason `error`, `insufficient_system_resource` or `aborted` | `invalid-response` | `reply ended early: "<finish reason>"` |
+| No message content | `invalid-response` | `reply has no message content` |
+
+## `anthropic`
+
+For the Anthropic Messages API, or a gateway that speaks it, such as Ollama's or DeepSeek's Anthropic-compatible endpoint:
+
+- **Every request names the API version** in `anthropic-version: 2026-10-21`, the current one, which Anthropic's TypeScript SDK sends since its 1.0.0. No `headers` entry can replace it; an `anthropic-beta` header goes through.
+- **The key goes as `Authorization: Bearer <key>`** by default: Anthropic documents it as its primary key header, `x-api-key` as a legacy fallback it still accepts, and the gateways take bearer. `auth: 'x-api-key'` sends the legacy header.
+- **No temperature is sent unless one is set.** Under `2026-10-21`, Anthropic answers 400 to any `temperature`, `top_p` or `top_k`, even at its default value; a gateway may accept one.
+- **`max_tokens` is always sent**, 16000 unless `maxTokens` is set: the Messages API requires it, and thinking counts toward it.
+- **No assistant prefill and no `thinking` field.** Current models reject a prefill, and Claude Opus 5.5 answers 400 to a request that turns thinking off.
+
+The body of every request holds, in this order:
+
+- `model`;
+- `max_tokens`;
+- `system`: the system text, unless `systemPrompt` is `inline`;
+- `messages`: the request's messages, each `{ role, content }` with its text;
+- `temperature`, when set;
+- `output_config: { format: { type: 'json_schema', schema: <output.schema> } }`, in `schema` mode;
+- then `extraBody`, merged: `{ output_config: { effort: 'low' } }` goes beside the format in `schema` mode. It cannot replace `model`, `messages`, `system` or `stream`.
+
+A reply succeeds with the stop reason `end_turn` or `stop_sequence` and a text block. The stop reason is read first, since a refused or cut-off reply can still hold some text. The text is the `text` of the `type: 'text'` blocks, joined: `thinking` and `redacted_thinking` blocks are skipped, as is every block of another type. `model` is the one the reply names, or the configured one. The input count is `usage.input_tokens`, plus `usage.cache_creation_input_tokens` and `usage.cache_read_input_tokens` when they are numbers; the output count is `usage.output_tokens`. A status outside 2xx is an `http` error that quotes Anthropic's `{ "type": "error", "error": { "type", "message" } }` body.
+
+| The reply | Kind | Message |
+| --- | --- | --- |
+| `stop_reason` `refusal` | `refusal` | `model refused` |
+| `stop_reason` `max_tokens` | `truncated` | `reply was cut off by the token limit` |
+| `stop_reason` `model_context_window_exceeded` | `truncated` | `reply was cut off: the context window is full` |
+| Any other `stop_reason`, `tool_use` and `pause_turn` included | `invalid-response` | `reply ended early: "<stop reason>"`, or `reply ended early` when it is not a string |
+| No text block | `invalid-response` | `reply has no text` |
+
+## `gemini`
+
+For the Gemini API's `generateContent`, which Google now calls a legacy API, still supported:
+
+- **The model goes in the URL**, `/v1beta/models/<model>:generateContent`. It is written with or without a leading `models/`, which is stripped, and the id that remains must match `[a-z0-9][a-z0-9.-]*` in any letter case, as `gemini-3.8-flash` does: that keeps a `/`, a `?` or a `:` out of the path. Another is a configuration error, `<id>.model: must be a Gemini model id, such as gemini-3.8-flash`. A tuned model (`tunedModels/...`) is not supported.
+- **The key goes in `x-goog-api-key`** by default, never in the `key` query parameter, which error messages would not redact.
+- **No temperature is sent unless one is set.** Gemini 3.6 Flash and newer models ignore it, and Google says a future model will answer 400 to it.
+
+The body of every request holds, in this order:
+
+- `contents`: each message as `{ role, parts: [{ text }] }`, an `assistant` message with the role `model`;
+- `systemInstruction: { parts: [{ text: <system text> }] }`, unless `systemPrompt` is `inline`;
+- `generationConfig`, left out when it would be empty: `temperature` when set, `maxOutputTokens` when `maxTokens` is set, `responseMimeType: 'application/json'` in `json` and `schema` mode, and `responseJsonSchema: <output.schema>` in `schema` mode, as Google's JavaScript SDK sends it (`responseSchema` is deprecated);
+- then `extraBody`, merged: `{ generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } }` goes beside the rest. It cannot replace `contents` or `systemInstruction`.
+
+A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose parts hold text. The text is the `text` of the first candidate's `content.parts`, joined, without the parts flagged as thoughts. `model` is the reply's `modelVersion`, or the configured model. The input count is `usageMetadata.promptTokenCount`; the output count is `usageMetadata.candidatesTokenCount`, plus `usageMetadata.thoughtsTokenCount` when it is a number. A status outside 2xx is an `http` error that quotes Google's `{ "error": { "code", "message", "status", "details" } }` body; a 402, which Google sends for a depleted prepay balance, is not retryable, unlike a 429.
+
+| The reply | Kind | Message |
+| --- | --- | --- |
+| `promptFeedback.blockReason` set | `refusal` | `prompt was blocked: "<reason>"` for a reason of 1 to 64 capital letters and underscores, such as `PROHIBITED_CONTENT`, and `prompt was blocked` for any other |
+| No first candidate | `invalid-response` | `reply has no candidates` |
+| `finishReason` `MAX_TOKENS` or `CONTINUATION` | `truncated` | `reply was cut off by the token limit` |
+| `finishReason` `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII` or `IMAGE_SAFETY` | `refusal` | `reply was stopped by the safety filter` |
+| No `finishReason`, or `null` | `invalid-response` | `reply has not finished` |
+| Any other `finishReason` | `invalid-response` | `reply ended early: "<finish reason>"`, or `reply ended early` when it is not a string |
+| No text part | `invalid-response` | `reply has no text` |
+
+## `ollama`
+
+For Ollama's native chat API, on a local server or Ollama's cloud, `https://ollama.com`, which needs a key. Its base URL is the server's root, such as `http://localhost:11434`, without the `/v1` that `openaiCompatible` takes there:
+
+- **`truncate: false` keeps a prompt whole.** A prompt past the model's context is then a 400, `request (N tokens) exceeds the available context size (M tokens), try increasing it`, instead of its oldest messages dropped in silence. It needs Ollama 0.12.6 or later; an older server ignores the field and drops them.
+- **`shift: false` keeps it whole as the reply is written.** A reply that fills the model's context then stops, as a truncation, instead of part of the prompt dropped so the reply can go on. It needs the same versions, and a server that loaded the model with context shift on loads it again once.
+- **The key goes as `Authorization: Bearer <key>`**, only when one is set: a local server needs none.
+- **No `think` field.** A thinking model thinks as it does by default, and its thinking comes back apart, in `message.thinking`, which the adapter ignores.
+
+The body of every request holds, in this order:
+
+- `model` and `messages`: the request's messages, with the system text first as a `system` message, or inline at the head of the first user message;
+- `stream: false`, `truncate: false` and `shift: false`;
+- `options`, left out when it would be empty: `temperature`, unless it is `null`, and `num_predict`, when `maxTokens` is set;
+- `format`: `'json'` in `json` mode, `<output.schema>` in `schema` mode;
+- then `extraBody`, merged: `{ options: { num_ctx: 32768 } }` goes beside the temperature. It cannot replace `model`, `messages`, `stream`, `truncate` or `shift`.
+
+A reply succeeds with `done: true`, the `done_reason` `stop` and a string `message.content`. The text is `message.content`, as it came: a `<think>` block left in it, by a model or a template Ollama cannot split, is for the core's reply parser to drop. `model` is the one the reply names, or the configured one; `usage` is read from `prompt_eval_count` and `eval_count`. A status outside 2xx is an `http` error that quotes Ollama's `{ "error": "<message>" }` body.
+
+| The reply | Kind | Message |
+| --- | --- | --- |
+| A string `error` | `invalid-response` | `server error: "<message>"` |
+| `done: true` and `done_reason` `length` | `truncated` | `reply was cut off by the token limit` |
+| No `done: true`, or a `done_reason` other than `stop` or `length` | `invalid-response` | `reply has not finished` |
+| No string `message.content` | `invalid-response` | `reply has no text` |
 
 ## `ProviderError`
 
-Every failure of an `openaiCompatible` call is a `ProviderError`, the error class the core exports for any provider to use. Its message starts with the provider id, and the adapter never puts a request header, a key or the runtime's own error text in it: text a server or a model sent is quoted as a JSON string and cut short, and a key the server echoes, the base URL's path or a value of `headers` is replaced by `[redacted]` first.
+Every failure of a shipped adapter's call is a `ProviderError`, the error class the core exports for any provider to use. Its message starts with the provider id, and the adapter never puts a request header, a key or the runtime's own error text in it: text a server or a model sent is quoted as a JSON string and cut short, and a key the server echoes, the base URL's path or a value of `headers` is replaced by `[redacted]` first.
 
 | Field | Holds |
 | --- | --- |
 | `providerId` | The provider's id |
 | `kind` | What went wrong, below |
-| `status` | The HTTP status, for `http`. For a server error in a 2xx reply, it is the status the body's `code` names |
+| `status` | The HTTP status, for `http`. For a server error in an `openaiCompatible` 2xx reply, it is the status the body's `code` names |
 | `retryable` | `true` for `network` and `timeout`, and for `http` with status 408, 409, 429 or 5xx: a caller may try the call again |
 
-| Kind | Raised by `openaiCompatible` when |
+| Kind | Raised when |
 | --- | --- |
-| `http` | The endpoint answers with a status outside 2xx: `HTTP 503: "model is loading"`, quoting up to 500 characters of the body. A 3xx adds `(redirects are not followed)`: `HTTP 307 (redirects are not followed): "moved"`. A server error in a 2xx reply, with an error status (400 to 599) as its `code`, reads `server error 502: "<message>"`, and is retryable as that status would be |
+| `http` | The endpoint answers with a status outside 2xx: `HTTP 503: "model is loading"`, quoting up to 500 characters of the body. A 3xx adds `(redirects are not followed)`: `HTTP 307 (redirects are not followed): "moved"`. Also an `openaiCompatible` server error in a 2xx reply whose `code` is an error status |
 | `network` | The request fails, `request to http://localhost:11434 failed (ECONNREFUSED)`, or reading the reply does, `reading the reply from <origin> failed` |
 | `aborted` | The review's signal stopped the request: `request aborted` |
-| `refusal` | The model refused, `model refused: "<up to 200 characters>"`, or the content filter stopped the reply (the finish reason `content_filter`), `reply was stopped by the content filter` |
-| `truncated` | The token limit or the model's context cut the reply off, with the finish reason `length` or `model_length`: `reply was cut off by the token limit` |
-| `invalid-response` | The body is not JSON (`response body is not JSON`), is over 16 MiB (`reply body is over 16 MiB`) or is not an object (`reply is not a JSON object`). Or the reply holds a server error with no error status as its `code` (`server error: "<message>"`, and `server error: ""` for `{ "error": "" }`; the quote is left out only when `error` is an object without a string `message`, as in `{ "error": {} }`), has no choices (`reply has no choices`), ended early with the finish reason `error`, `insufficient_system_resource` or `aborted` (`reply ended early: "<finish reason>"`), or has no message content (`reply has no message content`) |
+| `refusal` | The model refused, or a filter stopped the reply or the prompt: each adapter's reply table names its messages |
+| `truncated` | The token limit or the model's context cut the reply off: `reply was cut off by the token limit`, or `anthropic`'s `reply was cut off: the context window is full` |
+| `invalid-response` | The body is not JSON (`response body is not JSON`), is over 16 MiB (`reply body is over 16 MiB`) or is not an object (`reply is not a JSON object`), for every adapter. Or the reply holds an error, has not finished, ended early or holds no text, as each adapter's reply table words it |
 | `timeout`, `process`, `unsupported` | Never: these are for other providers |
 
 The core raises one more itself: a provider whose reply has no string `text` fails that call with `<id>: returned no reply text`, of kind `invalid-response`.
@@ -178,7 +313,7 @@ Any object of the port's shape is a provider. It must:
 - **throw when the call fails**, a `ProviderError` with the closest `kind` for preference. A vote records the message of any `Error`, and the text of anything else thrown;
 - **report `usage` only when it knows it**: `inputTokens` and `outputTokens`, and `costUsd` when it knows the price.
 
-A provider can wrap another. Quorum sets no time limit on a call, so this one adds a limit to any provider that honours its signal, as `openaiCompatible` does, and reports a call that ran out of time as a `timeout`. It does not stop a provider that ignores its signal: it waits for that call to settle, however long it takes:
+A provider can wrap another. Quorum sets no time limit on a call, so this one adds a limit to any provider that honours its signal, as the shipped adapters do, and reports a call that ran out of time as a `timeout`. It does not stop a provider that ignores its signal: it waits for that call to settle, however long it takes:
 
 ```ts
 import { openaiCompatible, ProviderError } from './src/index.ts'

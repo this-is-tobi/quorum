@@ -89,4 +89,4 @@ research.apiKey: must only contain visible ASCII characters, which an HTTP heade
 
 ## Next
 
-[Providers](./30-providers.md) — what a provider is, the `openaiCompatible` options this wiring leaves at their defaults, its errors, and writing a provider of your own.
+[Providers](./30-providers.md) — what a provider is, the shipped adapters, the `openaiCompatible` options this wiring leaves at their defaults, their errors, and writing a provider of your own.
