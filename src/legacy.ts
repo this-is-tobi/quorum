@@ -81,8 +81,8 @@ function providerFor(role: Role, env: Env): Provider {
  * Build the research and voter providers from the environment.
  *
  * @throws ConfigError when there is no research model, when a voter on another endpoint than the research
- * one has no model of its own, when a key has a character an HTTP header cannot carry or when a base URL
- * is not an http(s) URL with a host
+ * one has no model of its own, when a key has a character an HTTP header cannot carry, or when a base URL
+ * is not an http(s) URL with a host or holds a user name, a password, a query or a fragment
  */
 export function providersFromEnv(env: Env): { research: Provider, voter: Provider } {
   return { research: providerFor('RESEARCH', env), voter: providerFor('VOTER', env) }

@@ -2,7 +2,11 @@ import { ProviderError } from '../core/errors.ts'
 import type { ProviderErrorKind } from '../core/errors.ts'
 
 const MAX_ERROR_BODY = 500
-/** Enough of an error body for its 500-character snippet: the rest is never read. */
+/**
+ * Enough of an error body for its 500-character snippet: the rest is never read. The body is cut at this
+ * byte before it is redacted, so the cap must stay far above the quote, or a key cut in half at the cap
+ * could survive into the message.
+ */
 const MAX_ERROR_BYTES = 64 * 1024
 /** A reply body over this many bytes is refused: the core refuses reply text over 1,000,000 characters anyway. */
 const MAX_REPLY_BYTES = 16 * 1024 * 1024
@@ -19,7 +23,7 @@ export interface PostJsonOptions {
   headers?: Readonly<Record<string, string>>
   body: unknown
   signal?: AbortSignal
-  /** Values redacted from any server text that echoes them: the key, and the base URL's path. */
+  /** Values redacted from any server text that echoes them: the key, the base URL's path and the header values. */
   redact?: readonly string[]
 }
 
@@ -59,10 +63,13 @@ export function endpointUrl(baseUrl: string, path: string, query: Readonly<Recor
 }
 
 /**
- * What a provider redacts from server text: its key, and its base URL's path, which a server echoes in a
- * 404 (`Cannot POST /<path>/chat/completions`) and which some gateways use to carry a token.
+ * What a provider redacts from server text, each value once and no empty one: its key; its base URL's
+ * path, which a server echoes in a 404 (`Cannot POST /<path>/chat/completions`) and which some gateways
+ * use to carry a token; and the value of each of its headers, where a gateway's own credential goes.
+ * The base URL must already have passed `baseUrlIssues`: `new URL` throws on one that does not parse,
+ * and Node's `TypeError` carries the URL in `.input`.
  */
-export function redactionsOf(baseUrl: string, apiKey: string | undefined): string[] {
+export function redactionsOf(baseUrl: string, apiKey: string | undefined, headers: Readonly<Record<string, string>> = {}): string[] {
   const path = new URL(baseUrl).pathname.replace(/\/+$/, '')
   let decoded = path
   try {
@@ -70,7 +77,7 @@ export function redactionsOf(baseUrl: string, apiKey: string | undefined): strin
   } catch {
     // A path with a stray `%` is redacted as written.
   }
-  return [...new Set([apiKey ?? '', path, decoded])].filter(value => value !== '')
+  return [...new Set([apiKey ?? '', path, decoded, ...Object.values(headers)])].filter(value => value !== '')
 }
 
 /** The scheme, host and port of a URL: no credentials, path, query or fragment. */

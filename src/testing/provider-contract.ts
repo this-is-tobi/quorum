@@ -7,6 +7,14 @@ import { jsonReply, textReply } from './http.ts'
 
 type Body = Record<string, unknown>
 
+/** What one request handed to fetch. */
+interface Sent {
+  url: string
+  headers: Record<string, string>
+  body: Body
+  init: RequestInit
+}
+
 /** What the contract suite needs to know of one HTTP adapter. */
 export interface ContractSubject {
   /** The protocol, in the suite's title. */
@@ -46,13 +54,18 @@ export function describeProviderContract(subject: ContractSubject): void {
       vi.unstubAllGlobals()
     })
 
-    /** Send one request with `options` and return what reached fetch. */
-    async function send(options: Partial<HttpProviderOptions> = {}): Promise<{ url: string, headers: Record<string, string>, body: Body, init: RequestInit }> {
+    /** Send one request through `provider` and return what reached fetch. */
+    async function sendThrough(provider: Provider): Promise<Sent> {
       const fetchMock = vi.fn().mockImplementation(async () => jsonReply(subject.replies.ok))
       vi.stubGlobal('fetch', fetchMock)
-      await subject.make({ ...base, ...options }).complete(request)
+      await provider.complete(request)
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
       return { url, headers: init.headers as Record<string, string>, body: JSON.parse(init.body as string) as Body, init }
+    }
+
+    /** Send one request with `options` and return what reached fetch. */
+    async function send(options: Partial<HttpProviderOptions> = {}): Promise<Sent> {
+      return sendThrough(subject.make({ ...base, ...options }))
     }
 
     function issuesOf(options: Partial<HttpProviderOptions>): unknown {
@@ -112,6 +125,22 @@ export function describeProviderContract(subject: ContractSubject): void {
       expect(body).toMatchObject({ ...subject.mergeProbe.merged, top_k: 20, list: [2] })
     })
 
+    it('sends the extraBody, headers and query it was built with, whatever the caller changes in them later', async () => {
+      const nested = { a: 1 }
+      const extraBody: Body = { top_k: 20, nested }
+      const headers: Record<string, string> = { 'X-Team': 'security' }
+      const query: Record<string, string> = { 'api-version': '1' }
+      const provider = subject.make({ ...base, extraBody, headers, query })
+      Object.assign(extraBody, Object.fromEntries(subject.reservedBodyKeys.map(key => [key, 'x'])), { top_k: 99 })
+      nested.a = 2
+      headers['X-Team'] = 'changed'
+      headers.Authorization = 'Bearer forged'
+      query['api-version'] = '2'
+      const built = await send({ extraBody: { top_k: 20, nested: { a: 1 } }, headers: { 'X-Team': 'security' }, query: { 'api-version': '1' } })
+      const { url, headers: sentHeaders, body } = await sendThrough(provider)
+      expect({ url, headers: sentHeaders, body }).toEqual({ url: built.url, headers: built.headers, body: built.body })
+    })
+
     it('refuses every bad option at once, before any request, and repeats no value', () => {
       const issues = issuesOf({
         apiKey: 'sk-zz',
@@ -160,11 +189,11 @@ export function describeProviderContract(subject: ContractSubject): void {
       expect(issuesOf({ auth: { header: 'X-Key', prefix: 'Bearer\t' } })).toEqual([{ path: 'p.auth.prefix', message: 'must only contain printable ASCII characters' }])
     })
 
-    it('redacts its key and its base URL path from an error, and does not follow redirects', async () => {
-      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('key sk-k on /gw-secret/v1 refused', 401)))
-      await expect(subject.make({ ...base, baseUrl: 'https://h.example/gw-secret/v1', apiKey: 'sk-k' }).complete(request))
+    it('redacts its key, its base URL path and its header values from an error, and does not follow redirects', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('key sk-k on /gw-secret/v1 refused, x-gateway-token: gw-tok-123', 401)))
+      await expect(subject.make({ ...base, baseUrl: 'https://h.example/gw-secret/v1', apiKey: 'sk-k', headers: { 'X-Gateway-Token': 'gw-tok-123' } }).complete(request))
         .rejects
-        .toMatchObject({ kind: 'http', status: 401, retryable: false, message: 'p: HTTP 401: "key [redacted] on [redacted] refused"' })
+        .toMatchObject({ kind: 'http', status: 401, retryable: false, message: 'p: HTTP 401: "key [redacted] on [redacted] refused, x-gateway-token: [redacted]"' })
       expect((await send()).init.redirect).toBe('manual')
     })
 

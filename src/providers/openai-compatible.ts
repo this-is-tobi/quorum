@@ -104,9 +104,11 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
   if (!MAX_TOKENS_FIELDS.has(maxTokensField)) issues.push({ path: `${id}.maxTokensField`, message: 'must be max_tokens or max_completion_tokens' })
   if (!STRUCTURED_OUTPUTS.has(structuredOutput)) issues.push({ path: `${id}.structuredOutput`, message: 'must be prompt, json or schema' })
   if (issues.length > 0) throw new ConfigError(issues)
+  // Captured once checked, like the URL and the headers: a caller who changes the options later sends nothing unchecked.
+  const extra = extraBody === undefined ? undefined : structuredClone(extraBody)
   const url = endpointUrl(baseUrl, '/chat/completions', query)
   const sent = requestHeaders(auth, apiKey, headers)
-  const redact = redactionsOf(baseUrl, apiKey)
+  const redact = redactionsOf(baseUrl, apiKey, headers)
 
   return {
     id,
@@ -124,7 +126,7 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
           response_format: responseFormat(structuredOutput, request.output),
           temperature: temperature ?? undefined,
           [maxTokensField]: maxTokens,
-        }, extraBody),
+        }, extra),
         signal: request.signal,
         redact,
       })
