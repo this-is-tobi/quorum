@@ -32,7 +32,13 @@ A provider receives text and returns text. No tool, function, file or network ca
 
 ### A key sent only to its own endpoint
 
-`openaiCompatible` sends a key only in the `Authorization` header of its own endpoint, never in a URL or a body, and replaces it with `[redacted]` in any server text it quotes in an error. The CLI's panel inherits the finder's key only while it talks to the same origin, so no fallback carries a key to another endpoint, or from `https` to `http`: [The voter's fallback](../20-using/20-configuration.md#the-voters-fallback).
+`openaiCompatible` sends its `apiKey` only in the header its `auth` names, `Authorization` by default, and never in a URL, a body or another header. Three further rules keep the key from leaking:
+
+- **A base URL may not carry credentials.** A user name or a password is a configuration error, and the key goes in `apiKey`.
+- **No redirect is followed.** A redirect is an error, so the key header never reaches another endpoint.
+- **Server text is redacted.** The key and the base URL's path are replaced with `[redacted]` in any server text an error quotes. The `query` option is not redacted, so never put a key there.
+
+The CLI's panel inherits the finder's key only while it talks to the same origin, so no fallback carries a key to another endpoint, or from `https` to `http`: [The voter's fallback](../20-using/20-configuration.md#the-voters-fallback).
 
 ### Strict single-object parsing
 
