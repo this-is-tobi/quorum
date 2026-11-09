@@ -67,7 +67,7 @@ The hosted provider sets `temperature: null` and `maxTokensField: 'max_completio
 
 The body of every request holds, in this order:
 
-- `model` and `messages`: the system text first, as a `system` message or inline, then the request's messages;
+- `model` and `messages`: the request's messages, with the system text first as a `system` message, or inline at the head of the first user message;
 - `response_format`, unless `structuredOutput` is `prompt`;
 - `temperature`, unless it is `null`;
 - `maxTokens` under `maxTokensField`, when set;
