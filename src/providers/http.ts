@@ -69,20 +69,21 @@ function redactForms(text: string, forms: readonly string[]): string {
 }
 
 /**
- * Server or model text made safe to put in an error message. Each value in `redact` is replaced, in the
- * text as it came and again once escaped ASCII is decoded, so neither a value that holds an escape nor
- * an escaped echo of one survives. Each pass covers every occurrence of every form, overlapping ones
- * included, and replaces each covered range with one marker, so values that overlap in the text are
- * redacted whole and a marker is never matched again; the second pass runs only between the markers of
- * the first. Then the text is cut to `max` characters, after the redaction so a value cut in half cannot
- * survive, and written as one JSON string so a line break cannot start a workflow command in a log.
+ * Server or model text made safe to put in an error message. Escaped ASCII in the text is decoded first,
+ * and each value in `redact` is matched as written and with its own escapes decoded, so neither a value
+ * that holds an escape nor an escaped echo of one survives. One pass covers every occurrence of every
+ * form, overlapping ones included, and replaces each covered range with one marker, so values that
+ * overlap in the text are redacted whole, escaped or not, and a marker is never matched again. This
+ * catches a server that echoes a value: a server that holds the key can disguise it in any way, which no
+ * redaction can catch. Then the text is cut to `max` characters, after the redaction so a value cut in
+ * half cannot survive, and written as one JSON string so a line break cannot start a workflow command
+ * in a log.
  */
 export function snippet(text: string, max: number, redact: readonly string[] = []): string {
-  const forms = [...new Set(redact.filter(value => value !== '').flatMap(echoedForms))]
-  if (forms.length === 0) return JSON.stringify(text.slice(0, max))
-  const decoded = decodeEscapedAscii(redactForms(text, forms))
-  const redacted = decoded.split(REDACTED).map(piece => redactForms(piece, forms)).join(REDACTED)
-  return JSON.stringify(redacted.slice(0, max))
+  const written = redact.filter(value => value !== '').flatMap(echoedForms)
+  if (written.length === 0) return JSON.stringify(text.slice(0, max))
+  const forms = [...new Set([...written, ...written.map(decodeEscapedAscii)])]
+  return JSON.stringify(redactForms(decodeEscapedAscii(text), forms).slice(0, max))
 }
 
 /** The URL of an endpoint: the base URL without its trailing slashes, the endpoint's path, then the query. */
