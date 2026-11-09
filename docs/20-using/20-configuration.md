@@ -55,7 +55,7 @@ Both providers are built with `openaiCompatible` and its defaults, which no vari
 | `temperature` | `0` |
 | `structuredOutput` | `json`: every request asks for a JSON object with `response_format: { "type": "json_object" }` |
 
-A model that rejects `temperature: 0`, or an endpoint without that JSON mode, cannot be used through these variables. A program builds its provider with `temperature: null`, which leaves the field out, or with another `structuredOutput`: [Providers](./30-providers.md#openaicompatible).
+A model that rejects `temperature: 0`, or an endpoint without that JSON mode, cannot be used through these variables. A program builds its provider for a reasoning model with `temperature: null`, which leaves the field out, and `maxTokensField: 'max_completion_tokens'`, the body field that holds its `maxTokens` limit. It can also choose another `structuredOutput`: [the options of `openaiCompatible`](./30-providers.md#options).
 
 ## Configuration errors
 
@@ -66,8 +66,12 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `RESEARCH_MODEL: is not set` | No research model, for a blank diff too |
 | `VOTER_MODEL: must be set when VOTER_BASE_URL has another scheme, host or port than RESEARCH_BASE_URL` | A panel on another origin without a model of its own |
 | `research.baseUrl: must be an http:// or https:// URL with a host` | `RESEARCH_BASE_URL` is not an `http://` or `https://` URL with a host; a missing scheme is the usual slip |
+| `research.baseUrl: must not hold a user name or password: send a key with apiKey` | `RESEARCH_BASE_URL` holds a user name or a password; the key goes in `RESEARCH_API_KEY` |
+| `research.baseUrl: must not hold a query or a fragment` | `RESEARCH_BASE_URL` holds a `?` or a `#`; quorum appends the endpoint's path to the base URL |
 | `research.apiKey: must only contain visible ASCII characters, which an HTTP header can carry` | `RESEARCH_API_KEY`, once trimmed, holds a space, a control character or a character outside ASCII |
 | `voter.baseUrl: must be an http:// or https:// URL with a host` | The same, for the panel's base URL |
+| `voter.baseUrl: must not hold a user name or password: send a key with apiKey` | The same, for the panel's base URL; the key goes in `VOTER_API_KEY` |
+| `voter.baseUrl: must not hold a query or a fragment` | The same, for the panel's base URL |
 | `voter.apiKey: must only contain visible ASCII characters, which an HTTP header can carry` | The same, for the panel's key |
 
 The finder's settings are checked first, then the panel's, and for each the base URL and the key come before the model, so only the first role with a problem is reported. Its base URL and its key problems are reported together, one per line:

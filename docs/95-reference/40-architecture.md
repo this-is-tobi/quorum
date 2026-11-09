@@ -10,10 +10,11 @@ How the code is laid out, which module may depend on which, what happens in a re
 | `src/core/stages/` | The stages of one profile: `research.ts`, `dedup.ts`, `panel.ts`, and `context.ts`, which they share: the compiled profile, a call inside the concurrency limit, and the stage events |
 | The rest of `src/core/` | `policy.ts`: the rules, thresholds, confidence and where a verdict lands. `profile.ts`: the profile checks and warnings. `prompts.ts`: templates, fences and the notices. `output.ts`: the strict parsing of replies. `diff.ts`: splitting a diff and locating a line in it. `verify.ts`: checking findings against the diff, and their evidence. `concurrency.ts`: the shared limiter. `sanitize.ts`: the hidden-character class, and the inert rendering of a line and of JSON. `flags.ts`: the advisory flags read from the diff |
 | `src/profiles/` | Profiles, as data: `security.ts` |
-| `src/providers/` | Adapters behind the `Provider` port: `openai-compatible.ts`, and `http.ts`, the JSON POST it uses, which turns every failure into a `ProviderError` and redacts the key from what a server sends back |
+| `src/providers/` | Adapters behind the `Provider` port, and what they share. `openai-compatible.ts` is the adapter. `http.ts` is the request: no redirect is followed, reads are capped, every failure becomes a `ProviderError`, and the key and the base URL's path are redacted from what a server sends back. `options.ts` holds the shared options and their checks. `messages.ts` places the system text |
 | `src/cli/` | The CLI: `bin.ts`, the process entry point; `main.ts`, `runCli` and the exit codes; `render.ts`, the progress lines |
 | `src/legacy.ts` | The `RESEARCH_*` and `VOTER_*` environment wiring the CLI and `runQuorum` use, and the voter's fallback rule |
 | `src/index.ts` | The public API, and the deprecated `runQuorum` |
+| `src/testing/` | The test helpers, the provider contract suite and the recorded replies. Spec files import them; nothing else does |
 
 ## The dependency rule
 

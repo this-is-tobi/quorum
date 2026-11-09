@@ -177,7 +177,7 @@ A failed research call rejects the review with its `ProviderError`, and an unusa
 | `inertLine`, `inertJson` | Render a line for a terminal or a log, and a value as JSON, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |
 
-The types: `Confidence`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `Lens`, `LensVote`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus` and `Vote`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `OpenAICompatibleOptions` and `StructuredOutput`.
+The types: `Confidence`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `Lens`, `LensVote`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus` and `Vote`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `Auth`, `HttpProviderOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`. `HttpProviderOptions` holds the options an HTTP provider takes, and `OpenAICompatibleOptions` adds `maxTokensField`: [Providers](../20-using/30-providers.md#options).
 
 The stages, the profile checks and the CLI's exit-code rule are not exported: a program reaches the stages through `createQuorum`, and applies the exit codes itself, as the example below does.
 
@@ -236,7 +236,7 @@ async function main(path: string | undefined): Promise<number> {
   }
   try {
     const finder = openaiCompatible({ id: 'local', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b' })
-    const panel = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', apiKey: process.env.OPENAI_API_KEY?.trim() || undefined })
+    const panel = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-astra', apiKey: process.env.OPENAI_API_KEY?.trim() || undefined, temperature: null, maxTokensField: 'max_completion_tokens' })
     const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, panel]))
     const quorum = createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research: finder, voters } }, events: progress })
     const result = await quorum.review({ diff }, { signal: AbortSignal.timeout(10 * 60_000) })
