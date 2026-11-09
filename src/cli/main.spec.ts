@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { QuorumResult, Verdict } from '../core/types.ts'
+import { jsonReply, textReply } from '../testing/http.ts'
 import { EXIT, exitCodeFor, runCli } from './main.ts'
 import type { CliIO } from './main.ts'
 
@@ -37,7 +38,7 @@ function harness(options: { argv?: string[], stdin?: string, isTTY?: boolean, en
 function stubModel(...replies: string[]): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn()
   for (const content of replies) {
-    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [{ message: { content } }] }) })
+    fetchMock.mockImplementationOnce(async () => jsonReply({ choices: [{ message: { content } }] }))
   }
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
@@ -47,7 +48,7 @@ function stubModel(...replies: string[]): ReturnType<typeof vi.fn> {
 const ANY_HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}]/u
 
 /** A failed HTTP reply whose body is `body`. */
-const failed = (body: string): unknown => ({ ok: false, status: 500, text: async () => body })
+const failed = (body: string): Response => textReply(body, 500)
 
 describe('runCli', () => {
   it('exits 2 with usage instead of waiting on an interactive terminal', async () => {
@@ -84,12 +85,19 @@ describe('runCli', () => {
 
   it('prints the origin of each role\'s endpoint, never its credentials, path or query, from the injected environment', async () => {
     vi.stubEnv('RESEARCH_MODEL', 'leaked')
-    const env = { RESEARCH_MODEL: 'banner-model', RESEARCH_BASE_URL: 'https://user:pw-secret@h.example/token-secret/v1?key=q-secret' }
+    const env = { RESEARCH_MODEL: 'banner-model', RESEARCH_BASE_URL: 'https://h.example/token-secret/v1' }
     const { io, stderr } = harness({ stdin: '  \n', env })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stderr()).toContain('Research (banner-model @ https://h.example)...')
     expect(stderr()).toContain('Panel will use banner-model @ https://h.example')
     expect(stderr()).not.toMatch(/secret|leaked/)
+  })
+
+  it('exits 2 for a base URL holding credentials or a query, and prints neither', async () => {
+    const { io, stderr } = harness({ stdin: DIFF, env: { ...MODEL, RESEARCH_BASE_URL: 'https://user:pw-secret@h.example/v1?key=q-secret' } })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toContain('Error: research.baseUrl: must not hold a user name or password: send a key with apiKey\nresearch.baseUrl: must not hold a query or a fragment\n')
+    expect(stderr()).not.toContain('secret')
   })
 
   it('exits 2 when no model is configured', async () => {
@@ -233,7 +241,7 @@ describe('exitCodeFor', () => {
 
 describe('inert output', () => {
   it('writes the server text an error quotes inert, on one line', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(failed('\u009B2J\u202Eboom\n::error::x')))
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => failed('\u009B2J\u202Eboom\n::error::x')))
     const { io, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.runtime)
     expect(stderr()).toContain('Error: research: HTTP 500: "<U+009B>2J<U+202E>boom\\n::error::x"\n')
@@ -258,8 +266,8 @@ describe('inert output', () => {
 
   it('writes the JSON result inert: it parses back to the text the servers sent', async () => {
     vi.stubGlobal('fetch', vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ findings: [FINDING] }) } }] }) })
-      .mockResolvedValue(failed('\u009B2J\u202E')))
+      .mockImplementationOnce(async () => jsonReply({ choices: [{ message: { content: JSON.stringify({ findings: [FINDING] }) } }] }))
+      .mockImplementation(async () => failed('\u009B2J\u202E')))
     const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     expect(stdout().replaceAll('\n', '')).not.toMatch(ANY_HIDDEN)

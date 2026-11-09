@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as api from './index.ts'
 import { runQuorum } from './index.ts'
+import { jsonReply } from './testing/http.ts'
 
 const diff = [
   'diff --git a/a.js b/a.js',
@@ -35,7 +36,7 @@ describe('runQuorum', () => {
     vi.stubEnv('VOTER_BASE_URL', '')
     vi.stubEnv('VOTER_API_KEY', '')
     vi.stubEnv('VOTER_MODEL', '')
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"findings":[]}' } }] }) })
+    const fetchMock = vi.fn().mockImplementation(async () => jsonReply({ choices: [{ message: { content: '{"findings":[]}' } }] }))
     vi.stubGlobal('fetch', fetchMock)
     await runQuorum(diff)
     expect(fetchMock.mock.calls[0][0]).toBe('http://env.example/v1/chat/completions')
@@ -55,10 +56,10 @@ describe('runQuorum', () => {
     vi.stubEnv('VOTER_BASE_URL', '')
     vi.stubEnv('VOTER_API_KEY', '')
     vi.stubEnv('VOTER_MODEL', '')
-    const content = (text: string) => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: text } }] }) })
+    const content = (text: string): Response => jsonReply({ choices: [{ message: { content: text } }] })
     vi.stubGlobal('fetch', vi.fn()
-      .mockResolvedValueOnce(content(JSON.stringify({ findings: [{ file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }] })))
-      .mockResolvedValue(content(JSON.stringify({ keep: true, reasoning: 'r' }))))
+      .mockImplementationOnce(async () => content(JSON.stringify({ findings: [{ file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }] })))
+      .mockImplementation(async () => content(JSON.stringify({ keep: true, reasoning: 'r' }))))
     const lines: string[] = []
     await runQuorum(diff, line => lines.push(line))
     expect(lines).toEqual(['1 candidate(s) after dedup', '1 kept, 0 discarded, 0 unreviewed by panel'])
