@@ -232,7 +232,7 @@ For the Gemini API's `generateContent`, which Google now calls a legacy API, sti
 
 - **The model goes in the URL**, `/v1beta/models/<model>:generateContent`. It is written with or without a leading `models/`, which is stripped, and the id that remains must match `[a-z0-9][a-z0-9.-]*` in any letter case, as `gemini-3.8-flash` does: that keeps a `/`, a `?` or a `:` out of the path. Another is a configuration error, `<id>.model: must be a Gemini model id, such as gemini-3.8-flash`. A tuned model (`tunedModels/...`) is not supported.
 - **The key goes in `x-goog-api-key`** by default, never in the `key` query parameter, which error messages would not redact.
-- **No temperature is sent unless one is set.** Gemini 3.6 Flash and newer models ignore it, and Google says a future model will answer 400 to it.
+- **No temperature is sent unless one is set.** Current models ignore it, and Google says a future model will answer 400 to it.
 
 The body of every request holds, in this order:
 
