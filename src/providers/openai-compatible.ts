@@ -1,38 +1,23 @@
 import { ConfigError, ProviderError } from '../core/errors.ts'
-import type { ConfigIssue, ProviderErrorKind } from '../core/errors.ts'
+import type { ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import type { Usage } from '../core/types.ts'
 import { endpointUrl, postJson, redactionsOf, snippet } from './http.ts'
-import { baseUrlIssues } from './options.ts'
+import { shapeMessages } from './messages.ts'
+import { httpOptionIssues, isRecord, mergeBody, requestHeaders } from './options.ts'
+import type { Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 
-/** How the reply shape reaches the endpoint: described in the prompt only, as a JSON object, or as a strict schema. */
-export type StructuredOutput = 'prompt' | 'json' | 'schema'
-
-export interface OpenAICompatibleOptions {
-  id: string
-  baseUrl: string
-  model: string
-  apiKey?: string
-  /** `null` omits the field, for models that reject it. */
-  temperature?: number | null
-  structuredOutput?: StructuredOutput
+/** The options of an OpenAI-compatible provider. */
+export interface OpenAICompatibleOptions extends HttpProviderOptions {
+  /** The body field that carries `maxTokens`: `max_tokens`, or `max_completion_tokens`, which OpenAI's reasoning models need. */
+  maxTokensField?: 'max_tokens' | 'max_completion_tokens'
 }
 
 const MAX_MODEL_TEXT = 200
-const NOT_HEADER_SAFE = /[^\x21-\x7E]/
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** Neither message repeats the value: a base URL can carry credentials, and a key is a secret. */
-function assertValidOptions({ id, baseUrl, apiKey }: OpenAICompatibleOptions): void {
-  const issues: ConfigIssue[] = baseUrlIssues(`${id}.baseUrl`, baseUrl)
-  if (apiKey !== undefined && NOT_HEADER_SAFE.test(apiKey)) {
-    issues.push({ path: `${id}.apiKey`, message: 'must only contain visible ASCII characters, which an HTTP header can carry' })
-  }
-  if (issues.length > 0) throw new ConfigError(issues)
-}
+/** The body fields the adapter writes for the conversation, which `extraBody` cannot replace. */
+const RESERVED_BODY_KEYS = ['model', 'messages', 'stream']
+const MAX_TOKENS_FIELDS: ReadonlySet<unknown> = new Set(['max_tokens', 'max_completion_tokens'])
+const STRUCTURED_OUTPUTS: ReadonlySet<unknown> = new Set(['prompt', 'json', 'schema'])
 
 function responseFormat(mode: StructuredOutput, output: CompletionRequest['output']): unknown {
   if (mode === 'json') return { type: 'json_object' }
@@ -84,32 +69,37 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
 
 /**
  * A provider for any OpenAI-compatible `/chat/completions` endpoint. The key, when there is one, travels
- * only in the `Authorization` header (invariant I1).
+ * only in the header `auth` names, `Authorization: Bearer` by default (invariant I1).
  *
- * @throws ConfigError when the base URL is not an http(s) URL with a host or the key cannot be an HTTP header value
+ * @throws ConfigError with every problem of the options, before any request
  */
 export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
-  assertValidOptions(options)
-  const { id, baseUrl, model, apiKey, temperature = 0, structuredOutput = 'json' } = options
-  const url = endpointUrl(baseUrl, '/chat/completions')
-  const headers = apiKey ? { authorization: `Bearer ${apiKey}` } : undefined
+  const { id, baseUrl, model, apiKey, auth = 'bearer' as Auth, headers, query, extraBody, temperature = 0, maxTokens, maxTokensField = 'max_tokens', systemPrompt = 'native', structuredOutput = 'json' } = options
+  const issues = httpOptionIssues(options, auth, RESERVED_BODY_KEYS)
+  if (!MAX_TOKENS_FIELDS.has(maxTokensField)) issues.push({ path: `${id}.maxTokensField`, message: 'must be max_tokens or max_completion_tokens' })
+  if (!STRUCTURED_OUTPUTS.has(structuredOutput)) issues.push({ path: `${id}.structuredOutput`, message: 'must be prompt, json or schema' })
+  if (issues.length > 0) throw new ConfigError(issues)
+  const url = endpointUrl(baseUrl, '/chat/completions', query)
+  const sent = requestHeaders(auth, apiKey, headers)
   const redact = redactionsOf(baseUrl, apiKey)
 
   return {
     id,
     model,
     async complete(request) {
-      // JSON.stringify drops the undefined fields: no response_format for `prompt`, no temperature for null.
+      const { system, messages } = shapeMessages(request, systemPrompt)
+      // JSON.stringify drops the undefined fields: no response_format for `prompt`, no temperature for null, no limit unless set.
       const reply = await postJson<unknown>({
         providerId: id,
         url,
-        headers,
-        body: {
+        headers: sent,
+        body: mergeBody({
           model,
-          messages: [{ role: 'system', content: request.system }, ...request.messages],
+          messages: system === undefined ? messages : [{ role: 'system', content: system }, ...messages],
           response_format: responseFormat(structuredOutput, request.output),
           temperature: temperature ?? undefined,
-        },
+          [maxTokensField]: maxTokens,
+        }, extraBody),
         signal: request.signal,
         redact,
       })

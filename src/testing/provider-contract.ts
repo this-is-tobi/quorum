@@ -1,0 +1,179 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ConfigError } from '../core/errors.ts'
+import type { CompletionRequest, Provider } from '../core/ports.ts'
+import type { Usage } from '../core/types.ts'
+import type { HttpProviderOptions } from '../providers/options.ts'
+import { jsonReply, textReply } from './http.ts'
+
+type Body = Record<string, unknown>
+
+/** What the contract suite needs to know of one HTTP adapter. */
+export interface ContractSubject {
+  /** The protocol, in the suite's title. */
+  protocol: string
+  /** Builds the adapter under test. */
+  make: (options: HttpProviderOptions) => Provider
+  /** The headers the adapter always sends besides the content type, such as a version header. */
+  fixedHeaders: Readonly<Record<string, string>>
+  /** The key header the adapter sends by default, and its value for `key`. */
+  defaultKeyHeader: (key: string) => readonly [name: string, value: string]
+  /** Recorded replies, as the protocol sends them: a success whose text is `{}`, with the model and usage it names, a refusal and a truncation. */
+  replies: { ok: unknown, model: string, usage: Usage, refusal: unknown, truncated: unknown }
+  /** Where a sent body holds the system text, the first user message, the temperature and the token limit. */
+  read: {
+    system: (body: Body) => unknown
+    firstUser: (body: Body) => unknown
+    temperature: (body: Body) => unknown
+    maxTokens: (body: Body) => unknown
+  }
+  /** The body fields the adapter writes for the conversation, which `extraBody` cannot replace. */
+  reservedBodyKeys: readonly string[]
+  /** An `extraBody` that adds to an object the adapter writes, and the merged object the body then holds. */
+  mergeProbe: { extraBody: Body, merged: Body }
+}
+
+const request: CompletionRequest = {
+  system: 'instructions',
+  messages: [{ role: 'user', content: 'data' }],
+  output: { name: 'panel_vote', schema: { type: 'object' } },
+}
+const base = { id: 'p', baseUrl: 'https://h.example/v1', model: 'm' }
+
+/** The shared contract every HTTP adapter meets: where the key goes and nowhere else, its options, and its errors. */
+export function describeProviderContract(subject: ContractSubject): void {
+  describe(`the ${subject.protocol} provider contract`, () => {
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    /** Send one request with `options` and return what reached fetch. */
+    async function send(options: Partial<HttpProviderOptions> = {}): Promise<{ url: string, headers: Record<string, string>, body: Body, init: RequestInit }> {
+      const fetchMock = vi.fn().mockImplementation(async () => jsonReply(subject.replies.ok))
+      vi.stubGlobal('fetch', fetchMock)
+      await subject.make({ ...base, ...options }).complete(request)
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+      return { url, headers: init.headers as Record<string, string>, body: JSON.parse(init.body as string) as Body, init }
+    }
+
+    function issuesOf(options: Partial<HttpProviderOptions>): unknown {
+      try {
+        subject.make({ ...base, ...options } as HttpProviderOptions)
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConfigError)
+        return (error as ConfigError).issues
+      }
+      return []
+    }
+
+    it('sends the key in the header its auth style names, and nowhere else', async () => {
+      const cases: Array<[HttpProviderOptions['auth'], readonly [string, string]]> = [
+        [undefined, subject.defaultKeyHeader('sk-k')],
+        ['bearer', ['authorization', 'Bearer sk-k']],
+        ['x-api-key', ['x-api-key', 'sk-k']],
+        [{ header: 'Api-Key' }, ['api-key', 'sk-k']],
+        [{ header: 'X-Token', prefix: 'Token ' }, ['x-token', 'Token sk-k']],
+      ]
+      for (const [auth, [name, value]] of cases) {
+        const { url, headers, body } = await send({ apiKey: 'sk-k', auth })
+        expect(headers, JSON.stringify(auth)).toEqual({ 'content-type': 'application/json', ...subject.fixedHeaders, [name]: value })
+        expect(`${url}${JSON.stringify(body)}`).not.toContain('sk-k')
+      }
+    })
+
+    it('sends no key header without a key, with an empty one, or under auth none', async () => {
+      for (const options of [{}, { apiKey: '' }, { auth: 'none' as const }]) {
+        expect((await send(options)).headers, JSON.stringify(options)).toEqual({ 'content-type': 'application/json', ...subject.fixedHeaders })
+      }
+    })
+
+    it('sends its own headers, lower-cased, and adds its query to the URL', async () => {
+      const { url, headers } = await send({ headers: { 'X-Team': 'security' }, query: { 'api-version': '2024-10-21', 'a b': 'c&d' } })
+      expect(headers).toMatchObject({ 'x-team': 'security' })
+      expect(new URL(url).search).toBe('?api-version=2024-10-21&a+b=c%26d')
+    })
+
+    it('puts the system text in its own place natively, and at the head of the first user message inline', async () => {
+      const native = await send()
+      expect(subject.read.system(native.body)).toBe('instructions')
+      expect(subject.read.firstUser(native.body)).toBe('data')
+      const inline = await send({ systemPrompt: 'inline' })
+      expect(subject.read.system(inline.body)).toBeUndefined()
+      expect(subject.read.firstUser(inline.body)).toBe('instructions\n\ndata')
+    })
+
+    it('sends a set temperature and token limit, and no temperature for null', async () => {
+      const set = await send({ temperature: 0.3, maxTokens: 900 })
+      expect([subject.read.temperature(set.body), subject.read.maxTokens(set.body)]).toEqual([0.3, 900])
+      expect(subject.read.temperature((await send({ temperature: null })).body)).toBeUndefined()
+    })
+
+    it('deep-merges extraBody into the body last: objects merge key by key, anything else replaces', async () => {
+      const { body } = await send({ extraBody: { ...subject.mergeProbe.extraBody, top_k: 20, list: [2] } })
+      expect(body).toMatchObject({ ...subject.mergeProbe.merged, top_k: 20, list: [2] })
+    })
+
+    it('refuses every bad option at once, before any request, and repeats no value', () => {
+      const issues = issuesOf({
+        apiKey: 'sk-zz',
+        auth: 'none',
+        headers: { 'Content-Type': 'text/plain', 'bad name': 'v', 'X-Token': 'zz-value\n' },
+        extraBody: { [subject.reservedBodyKeys[0] ?? 'model']: 'x' },
+        temperature: Number.NaN,
+        maxTokens: 0,
+      })
+      expect(issues).toEqual([
+        { path: 'p.apiKey', message: 'is set, but auth is none, so it would never be sent' },
+        { path: 'p.headers.Content-Type', message: 'must not be content-type, content-length or host' },
+        { path: 'p.headers.bad name', message: 'must be an HTTP header name' },
+        { path: 'p.headers.X-Token', message: 'must be a string of printable ASCII characters' },
+        { path: `p.extraBody.${subject.reservedBodyKeys[0] ?? 'model'}`, message: 'is written by the adapter and cannot be replaced' },
+        { path: 'p.temperature', message: 'must be a finite number, or null to leave it out' },
+        { path: 'p.maxTokens', message: 'must be a whole number of at least 1' },
+      ])
+      expect(JSON.stringify(issues)).not.toContain('zz')
+    })
+
+    it('refuses an extraBody holding a value with no JSON form', () => {
+      for (const extraBody of [{ a: undefined }, { a: new Date(0) }, { a: { b: Number.NaN } }, JSON.parse('{"__proto__":{"x":1}}') as Body]) {
+        expect(issuesOf({ extraBody }), JSON.stringify(Object.keys(extraBody))).toEqual([{ path: 'p.extraBody', message: 'must be an object of JSON values, with no __proto__ key' }])
+      }
+    })
+
+    it('refuses a base URL it cannot use and a key a header cannot carry, without repeating either', () => {
+      const issues = issuesOf({ baseUrl: 'https://user:zz-pw@h.example/v1?k=zz-q', apiKey: 'sk-zz\n' })
+      expect(issues).toEqual([
+        { path: 'p.baseUrl', message: 'must not hold a user name or password: send a key with apiKey' },
+        { path: 'p.baseUrl', message: 'must not hold a query or a fragment' },
+        { path: 'p.apiKey', message: 'must only contain visible ASCII characters, which an HTTP header can carry' },
+      ])
+      expect(JSON.stringify(issues)).not.toContain('zz')
+      expect(issuesOf({ baseUrl: 'localhost:11434/v1' })).toEqual([{ path: 'p.baseUrl', message: 'must be an http:// or https:// URL with a host' }])
+    })
+
+    it('refuses a header that would carry the key, a custom auth header quorum sets, and a bad prefix', () => {
+      expect(issuesOf({ headers: { [subject.defaultKeyHeader('k')[0]]: 'x' } })).toEqual([
+        { path: `p.headers.${subject.defaultKeyHeader('k')[0]}`, message: 'is the header that carries the key: set apiKey instead' },
+      ])
+      const shouted = subject.defaultKeyHeader('k')[0].toUpperCase()
+      expect(issuesOf({ headers: { [shouted]: 'x' } })).toEqual([{ path: `p.headers.${shouted}`, message: 'is the header that carries the key: set apiKey instead' }])
+      expect(issuesOf({ auth: { header: 'Host' } })).toEqual([{ path: 'p.auth.header', message: 'must not be content-type, content-length or host' }])
+      expect(issuesOf({ auth: { header: 'X-Key', prefix: 'Bearer\t' } })).toEqual([{ path: 'p.auth.prefix', message: 'must only contain printable ASCII characters' }])
+    })
+
+    it('redacts its key and its base URL path from an error, and does not follow redirects', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('key sk-k on /gw-secret/v1 refused', 401)))
+      await expect(subject.make({ ...base, baseUrl: 'https://h.example/gw-secret/v1', apiKey: 'sk-k' }).complete(request))
+        .rejects
+        .toMatchObject({ kind: 'http', status: 401, retryable: false, message: 'p: HTTP 401: "key [redacted] on [redacted] refused"' })
+      expect((await send()).init.redirect).toBe('manual')
+    })
+
+    it('passes the request signal to fetch', async () => {
+      const fetchMock = vi.fn().mockImplementation(async () => jsonReply(subject.replies.ok))
+      vi.stubGlobal('fetch', fetchMock)
+      const signal = new AbortController().signal
+      await subject.make(base).complete({ ...request, signal })
+      expect((fetchMock.mock.calls[0] as [string, RequestInit])[1].signal).toBe(signal)
+    })
+  })
+}

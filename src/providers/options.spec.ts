@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { baseUrlIssues } from './options.ts'
+import { baseUrlIssues, mergeBody } from './options.ts'
 
 describe('baseUrlIssues', () => {
   it('accepts an http or https URL with a host', () => {
@@ -22,5 +22,15 @@ describe('baseUrlIssues', () => {
     for (const baseUrl of ['https://user:pw-secret@h/v1', 'https://user@h/v1', 'https://:pw-secret@h/v1']) {
       expect(baseUrlIssues('p.baseUrl', baseUrl), baseUrl).toEqual([{ path: 'p.baseUrl', message: 'must not hold a user name or password: send a key with apiKey' }])
     }
+  })
+})
+
+describe('mergeBody', () => {
+  it('merges objects key by key, replaces arrays and anything else, and changes neither input', () => {
+    const body = { model: 'm', options: { temperature: 0, stop: ['a'] }, n: 1 }
+    const extra = { options: { num_ctx: 32768, stop: ['b'] }, n: { two: 2 } }
+    expect(mergeBody(body, extra)).toEqual({ model: 'm', options: { temperature: 0, stop: ['b'], num_ctx: 32768 }, n: { two: 2 } })
+    expect(body).toEqual({ model: 'm', options: { temperature: 0, stop: ['a'] }, n: 1 })
+    expect(mergeBody(body, undefined)).toBe(body)
   })
 })
