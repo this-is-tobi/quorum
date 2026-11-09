@@ -168,6 +168,29 @@ export function describeProviderContract(subject: ContractSubject): void {
       expect((await send()).init.redirect).toBe('manual')
     })
 
+    it('returns the text, the model and the usage of a recorded reply', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(subject.replies.ok)))
+      await expect(subject.make(base).complete(request)).resolves.toEqual({ text: '{}', model: subject.replies.model, usage: subject.replies.usage })
+    })
+
+    it('maps a recorded refusal to a refusal and a recorded truncation to truncated, neither retryable', async () => {
+      for (const [reply, kind] of [[subject.replies.refusal, 'refusal'], [subject.replies.truncated, 'truncated']] as const) {
+        vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(reply)))
+        await expect(subject.make(base).complete(request), kind).rejects.toMatchObject({ name: 'ProviderError', kind, retryable: false, providerId: 'p' })
+      }
+    })
+
+    it('reports a 5xx or 429 as retryable, another status as not, and a body that is not a JSON object as invalid-response', async () => {
+      for (const [status, retryable] of [[503, true], [429, true], [400, false], [404, false]] as const) {
+        vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('nope', status)))
+        await expect(subject.make(base).complete(request), String(status)).rejects.toMatchObject({ kind: 'http', status, retryable, message: `p: HTTP ${status}: "nope"` })
+      }
+      for (const body of ['<html>', '[]', 'null']) {
+        vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply(body, 200)))
+        await expect(subject.make(base).complete(request), body).rejects.toMatchObject({ kind: 'invalid-response', retryable: false })
+      }
+    })
+
     it('passes the request signal to fetch', async () => {
       const fetchMock = vi.fn().mockImplementation(async () => jsonReply(subject.replies.ok))
       vi.stubGlobal('fetch', fetchMock)

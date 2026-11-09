@@ -4,7 +4,7 @@ import type { CompletionRequest } from '../core/ports.ts'
 import { jsonReply } from '../testing/http.ts'
 import { openaiCompatible } from './openai-compatible.ts'
 import type { OpenAICompatibleOptions } from './openai-compatible.ts'
-import { chatCompletion, refusal, truncated } from '../testing/fixtures/openai-compatible.ts'
+import { chatCompletion, mistralChunks, openRouterGenerationError, refusal, stringError, truncated } from '../testing/fixtures/openai-compatible.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
 
 const request: CompletionRequest = {
@@ -109,7 +109,13 @@ describe('openaiCompatible', () => {
     ['truncated', { choices: [{ finish_reason: 'length', message: { content: '{"kee' } }] }, /cut off/],
     ['invalid-response', { choices: [] }, /no choices/],
     ['invalid-response', { choices: [{ message: { content: null } }] }, /no message content/],
-    ['invalid-response', { error: { message: 'model not found' } }, /model not found/],
+    ['invalid-response', { error: { message: 'model not found' } }, /^local: server error: "model not found"$/],
+    ['invalid-response', stringError, /^local: server error: "'response_format.type' must be 'json_schema' or 'text'"$/],
+    ['invalid-response', { error: {} }, /^local: server error$/],
+    ['truncated', { choices: [{ finish_reason: 'model_length', message: { content: '{"kee' } }] }, /cut off/],
+    ['invalid-response', { choices: [{ finish_reason: 'insufficient_system_resource', message: { content: '' } }] }, /^local: reply ended early: "insufficient_system_resource"$/],
+    ['invalid-response', { choices: [{ finish_reason: 'error', message: { content: '' } }] }, /^local: reply ended early: "error"$/],
+    ['invalid-response', { choices: [{ message: { content: [{ type: 'thinking', thinking: [] }] } }] }, /no message content/],
     ['invalid-response', null, /not a JSON object/],
     ['invalid-response', [], /not a JSON object/],
     ['invalid-response', { choices: 'abc' }, /no choices/],
@@ -122,11 +128,32 @@ describe('openaiCompatible', () => {
     await expect(provider.complete(request)).rejects.toMatchObject({ name: 'ProviderError', kind, providerId: 'local', message: expect.stringMatching(message) })
   })
 
+  it('reports a server error sent with status 200 by its own code, so a 5xx stays retryable (OpenRouter)', async () => {
+    stubFetch(openRouterGenerationError)
+    await expect(provider.complete(request)).rejects.toMatchObject({ kind: 'http', status: 502, retryable: true, message: 'local: server error 502: "Provider returned error"' })
+  })
+
+  it('reads a reply whose error is null as a success, and a server error whose code is not an error status as not retryable', async () => {
+    stubFetch({ ...chatCompletion, error: null })
+    await expect(provider.complete(request)).resolves.toMatchObject({ text: '{}' })
+    for (const [code, kind, retryable] of [['rate_limit_exceeded', 'invalid-response', false], [200, 'invalid-response', false], [429, 'http', true]] as const) {
+      stubFetch({ error: { code, message: 'slow down' } })
+      await expect(provider.complete(request), String(code)).rejects.toMatchObject({ kind, retryable })
+    }
+  })
+
+  it('joins the text parts of a content array and skips its thinking parts (Mistral)', async () => {
+    stubFetch(mistralChunks)
+    await expect(provider.complete(request)).resolves.toEqual({ text: '{"keep":true,"reasoning":"r"}', model: 'magistral-medium-2610', usage: { inputTokens: 40, outputTokens: 12 } })
+    stubFetch({ choices: [{ message: { content: [{ type: 'reasoning', text: 'a plan' }, { type: 'text', text: '{}' }] } }] })
+    await expect(provider.complete(request)).resolves.toMatchObject({ text: '{}' })
+  })
+
   it('caps the refusal and the server error at 200 characters before quoting them', async () => {
     stubFetch({ choices: [{ message: { content: null, refusal: 'r'.repeat(1000) } }] })
     await expect(provider.complete(request)).rejects.toMatchObject({ message: `local: model refused: ${JSON.stringify('r'.repeat(200))}` })
     stubFetch({ error: { message: 'e'.repeat(1000) } })
-    await expect(provider.complete(request)).rejects.toMatchObject({ message: `local: reply has no choices: server error ${JSON.stringify('e'.repeat(200))}` })
+    await expect(provider.complete(request)).rejects.toMatchObject({ message: `local: server error: ${JSON.stringify('e'.repeat(200))}` })
   })
 
   it('writes the refusal and the server error as JSON strings, so a line break cannot start a workflow command in a log', async () => {
@@ -146,6 +173,6 @@ describe('openaiCompatible', () => {
     stubFetch({ choices: [{ message: { content: null, refusal: 'your key sk-secret is not allowed' } }] })
     await expect(keyed.complete(request)).rejects.toMatchObject({ message: 'local: model refused: "your key [redacted] is not allowed"' })
     stubFetch({ error: { message: 'bad key sk-secret' } })
-    await expect(keyed.complete(request)).rejects.toMatchObject({ message: 'local: reply has no choices: server error "bad key [redacted]"' })
+    await expect(keyed.complete(request)).rejects.toMatchObject({ message: 'local: server error: "bad key [redacted]"' })
   })
 })
