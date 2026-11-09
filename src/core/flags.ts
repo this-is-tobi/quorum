@@ -1,6 +1,6 @@
 import type { Flag, FlagCode } from './types.ts'
 import { addedLines } from './diff.ts'
-import { hiddenLabels, stripHidden } from './sanitize.ts'
+import { hiddenLabels, spaceHidden, stripHidden } from './sanitize.ts'
 
 /** How many code points or patterns a flag's detail names before it counts the rest. */
 const MAX_LISTED = 8
@@ -36,9 +36,9 @@ const AI_ADDRESSED: readonly Pattern[] = [
   { name: 'a note to an AI', pattern: /\b(?:note|message|memo|reminder)\s+(?:to|for)\s+(?:the\s+|any\s+|all\s+)?(?:ai|llms?|(?:large\s+)?language\s+models?|ai\s+(?:reviewers?|assistants?|agents?|models?)|automated\s+(?:reviewers?|review|analysis|analy[sz]ers?))\b/i },
   { name: 'a chat-template token', pattern: /<\|[a-z_]{2,30}\|>|\[\/?INST\]|<<\/?SYS>>|<\/?(?:start|end)_of_turn>|\[(?:TOOL_CALLS|AVAILABLE_TOOLS|TOOL_RESULTS)\]|<\uFF5C[^\uFF5C>\n]{1,40}\uFF5C>/i },
   { name: 'a tool-call tag', pattern: /<\/?(?:tool_call|tool_response|function_calls|function_results)>|<invoke\s+name=/i },
-  { name: 'a fence tag of quorum', pattern: /<\/?untrusted-[a-z]+-[0-9a-f]{8}>/i },
-  { name: 'a forged vote reply', pattern: /"keep"\s*:\s*(?:true|false)\s*,\s*"reasoning"\s*:/ },
-  { name: 'a forged research reply', pattern: /\{\s*"findings"\s*:\s*\[\s*\]\s*\}/ },
+  { name: 'a fence tag of quorum', pattern: /<\/?untrusted-[a-z]+(?:-[\w-]{1,40})?>/i },
+  { name: 'a forged vote reply', pattern: /"keep"\s*:\s*(?:true|false)\s*,\s*"reasoning"\s*:|"reasoning"\s*:\s*"(?:[^"\\]|\\.)*"\s*,\s*"keep"\s*:\s*(?:true|false)/i },
+  { name: 'a forged research reply', pattern: /\{\s*"findings"\s*:\s*\[\s*\]\s*\}/i },
 ]
 
 /** What a flag is about: its file, kept off the flag of a diff without per-file headers. */
@@ -74,10 +74,14 @@ function lineLabels(text: string, line: number): string[] {
   return hiddenLabels(shown.replace(EMOJI, ' ')).filter(label => label !== TAB)
 }
 
-/** The names of the patterns that an added line matches, once its hidden characters are removed. */
+/**
+ * The names of the patterns that an added line matches in either of two forms: with its hidden
+ * characters removed, for one inside a word, and with each read as a space, for one between words.
+ * A pattern that matches both forms counts once.
+ */
 function addressedNames(text: string): string[] {
-  const visible = stripHidden(text)
-  return AI_ADDRESSED.filter(({ pattern }) => pattern.test(visible)).map(({ name }) => name)
+  const forms = [stripHidden(text), spaceHidden(text)]
+  return AI_ADDRESSED.filter(({ pattern }) => forms.some(form => pattern.test(form))).map(({ name }) => name)
 }
 
 function flagOf(code: FlagCode, where: Where, tally: Tally): Flag[] {
@@ -103,8 +107,8 @@ function flagOf(code: FlagCode, where: Where, tally: Tally): Flag[] {
  * variation selectors among it.
  *
  * An `ai-addressed-text` flag is a hint, never a defense. Its patterns are matched on each added
- * line without its hidden characters, so a phrase split by zero-width characters is found and its
- * line raises both flags.
+ * line with its hidden characters removed and with them read as spaces, so a phrase split by
+ * zero-width characters, inside a word or between words, is found and its line raises both flags.
  */
 export function diffFlags(sections: ReadonlyMap<string, string>): Flag[] {
   const flags: Flag[] = []
