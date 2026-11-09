@@ -144,7 +144,7 @@ Quorum's value rests on the last two: voters that see each other's reasoning con
 
 A fence stops the diff from closing its own block, and the notices tell the model which text is data. Neither stops a model from following instructions written inside a fence: in published studies, no prompt-level defense held under adaptive attack. Fencing raises the cost of an attack, and costs nothing.
 
-The controls are elsewhere: the code a voter sees is read from the diff by the harness, every reply is parsed strictly, the confidence is arithmetic, and the model path holds no tool and no secret. The [Threat model](../30-security/10-threat-model.md#controls-in-place) lists them.
+The controls are elsewhere: the code a voter sees is read from the diff by the harness, every reply is parsed strictly, the confidence is arithmetic, and the model path holds no tool and no secret, as long as a program's `extraBody` and `headers` add none: the adapters send them as given ([Providers](./30-providers.md#the-port)). The [Threat model](../30-security/10-threat-model.md#controls-in-place) lists them.
 
 ## Next
 

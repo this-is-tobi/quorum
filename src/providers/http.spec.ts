@@ -35,10 +35,30 @@ describe('snippet', () => {
     expect(snippet(`bad key ${key} on /tok3n/v1`, 100, [key, '/tok3n/v1'])).toBe('"bad key [redacted] on [redacted]"')
   })
 
+  it('redacts a value inside another as one, so the shorter never leaves the rest of the longer', () => {
+    expect(snippet('bad key sk-secret', 100, ['sk', 'sk-secret'])).toBe('"bad key [redacted]"')
+  })
+
+  it('redacts values that overlap in the text as one run, and every occurrence of a value, overlapping ones included', () => {
+    expect(snippet('abc123xyz', 100, redactionsOf('https://h', 'abc123', { 'X-Gateway-Token': '123xyz' }))).toBe('"[redacted]"')
+    expect(snippet('xaaay', 100, ['aa'])).toBe('"x[redacted]y"')
+  })
+
   it('cuts to the given length and writes one JSON string, so a line break stays on one line', () => {
     const text = `bad\n::error::forged${String.fromCharCode(27)}[2K`
     expect(snippet(text, 100)).toBe(JSON.stringify(text))
     expect(snippet('x'.repeat(1000), 10)).toBe(`"${'x'.repeat(10)}"`)
+  })
+
+  it('redacts each form of the text in one pass, so a marker it inserts is never matched again, even by single letters', () => {
+    const text = 'a dead end. '.repeat(5462)
+    const expected = text.replace(/[ade]/g, '[redacted]')
+    expect(snippet(text, expected.length, ['e', 'd', 'a'])).toBe(JSON.stringify(expected))
+  })
+
+  it('redacts the decoded text only between the markers of the first pass', () => {
+    const backslash = String.fromCharCode(92)
+    expect(snippet(`e${backslash}u0065`, 100, ['e'])).toBe('"[redacted][redacted]"')
   })
 })
 
@@ -66,6 +86,18 @@ describe('redactionsOf', () => {
 
   it('lists every value of the caller\'s headers too, once, and no empty one', () => {
     expect(redactionsOf('https://h/v1', 'sk-1', { 'X-Gateway-Token': 'gw-tok-1', 'X-Team': '', 'X-Copy': 'sk-1' })).toEqual(['sk-1', '/v1', 'gw-tok-1'])
+  })
+
+  it('lists each header value trimmed too, since fetch sends it trimmed and a server echoes that', () => {
+    const redact = redactionsOf('https://h', undefined, { 'X-Gateway-Token': ' gw-tok-1  ' })
+    expect(redact).toEqual([' gw-tok-1  ', 'gw-tok-1'])
+    expect(snippet('token gw-tok-1 refused', 100, redact)).toBe('"token [redacted] refused"')
+  })
+
+  it('lists no header value that is blank once trimmed, so a header of spaces redacts nothing', () => {
+    const redact = redactionsOf('https://h', undefined, { 'X-Blank': '   ' })
+    expect(redact).toEqual([])
+    expect(snippet('a   b', 100, redact)).toBe('"a   b"')
   })
 
   it('lists nothing for a URL without a path and no key', () => {
