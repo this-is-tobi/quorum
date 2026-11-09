@@ -60,6 +60,10 @@ describe('redactionsOf', () => {
     expect(redactionsOf('https://h/tok%20en/v1//', 'sk-1')).toEqual(['sk-1', '/tok%20en/v1', '/tok en/v1'])
   })
 
+  it('lists every value of the caller\'s headers too, once, and no empty one', () => {
+    expect(redactionsOf('https://h/v1', 'sk-1', { 'X-Gateway-Token': 'gw-tok-1', 'X-Team': '', 'X-Copy': 'sk-1' })).toEqual(['sk-1', '/v1', 'gw-tok-1'])
+  })
+
   it('lists nothing for a URL without a path and no key', () => {
     expect(redactionsOf('http://localhost:11434', undefined)).toEqual([])
     expect(redactionsOf('http://localhost:11434/', '')).toEqual([])

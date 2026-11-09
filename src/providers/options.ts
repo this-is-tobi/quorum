@@ -29,7 +29,10 @@ export interface HttpProviderOptions {
   /** Sent as `auth` says, and nowhere else. No key, or an empty one, sends no key header. */
   apiKey?: string
   auth?: Auth
-  /** Extra request headers. They cannot replace `content-type`, `content-length`, `host` or the key header. */
+  /**
+   * Extra request headers. They cannot replace `content-type`, `content-length`, `host` or the key header.
+   * Their values are redacted from error messages, as the key is, so a gateway's own credential can go here.
+   */
   headers?: Readonly<Record<string, string>>
   /** Query parameters added to every request URL. They are not redacted from error messages: never put a key here. */
   query?: Readonly<Record<string, string>>
@@ -123,8 +126,9 @@ export function httpOptionIssues(options: HttpProviderOptions, auth: Auth, reser
   }
   const authProblems = authIssues(id, auth, apiKey)
   issues.push(...authProblems)
-  if (headers !== undefined) issues.push(...headerIssues(id, headers, authProblems.length === 0 ? keyHeaderName(auth) : undefined))
-  if (query !== undefined && !Object.values(query).every(value => typeof value === 'string')) {
+  if (headers !== undefined && !isRecord(headers)) issues.push({ path: `${id}.headers`, message: 'must map names to strings' })
+  else if (headers !== undefined) issues.push(...headerIssues(id, headers, authProblems.length === 0 ? keyHeaderName(auth) : undefined))
+  if (query !== undefined && (!isRecord(query) || !Object.values(query).every(value => typeof value === 'string'))) {
     issues.push({ path: `${id}.query`, message: 'must map names to strings' })
   }
   if (extraBody !== undefined) {
