@@ -36,8 +36,10 @@ export type {
   Vote,
 } from './core/types.ts'
 export { securityProfile } from './profiles/security.ts'
+export type { SystemPrompt } from './providers/messages.ts'
 export { openaiCompatible } from './providers/openai-compatible.ts'
-export type { OpenAICompatibleOptions, StructuredOutput } from './providers/openai-compatible.ts'
+export type { OpenAICompatibleOptions } from './providers/openai-compatible.ts'
+export type { Auth, HttpProviderOptions, StructuredOutput } from './providers/options.ts'
 
 /**
  * Review a diff with the security profile and providers built from the RESEARCH_* / VOTER_*

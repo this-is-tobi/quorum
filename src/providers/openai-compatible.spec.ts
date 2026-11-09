@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
-import { jsonReply, textReply } from '../testing/http.ts'
+import { jsonReply } from '../testing/http.ts'
 import { openaiCompatible } from './openai-compatible.ts'
+import type { OpenAICompatibleOptions } from './openai-compatible.ts'
+import { chatCompletion, refusal, truncated } from '../testing/fixtures/openai-compatible.ts'
+import { describeProviderContract } from '../testing/provider-contract.ts'
 
 const request: CompletionRequest = {
   system: 'instructions',
@@ -27,6 +30,25 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+type Body = Record<string, unknown>
+const conversation = (body: Body): Array<{ role: string, content: string }> => body.messages as Array<{ role: string, content: string }>
+
+describeProviderContract({
+  protocol: 'openai-compatible',
+  make: options => openaiCompatible(options),
+  fixedHeaders: {},
+  defaultKeyHeader: key => ['authorization', `Bearer ${key}`],
+  replies: { ok: chatCompletion, model: 'gpt-6-astra-2026-09-30', usage: { inputTokens: 19, outputTokens: 10 }, refusal, truncated },
+  read: {
+    system: body => conversation(body).find(message => message.role === 'system')?.content,
+    firstUser: body => conversation(body).find(message => message.role === 'user')?.content,
+    temperature: body => body.temperature,
+    maxTokens: body => body.max_tokens,
+  },
+  reservedBodyKeys: ['model', 'messages', 'stream'],
+  mergeProbe: { extraBody: { response_format: { added: true } }, merged: { response_format: { type: 'json_object', added: true } } },
+})
+
 describe('openaiCompatible', () => {
   const provider = openaiCompatible({ id: 'local', baseUrl: 'http://localhost:11434/v1//', model: 'qwen' })
 
@@ -43,53 +65,6 @@ describe('openaiCompatible', () => {
     })
   })
 
-  it('sends no authorization header without a key or with an empty one, and a bearer token with one', async () => {
-    const fetchMock = stubFetch(ok)
-    await provider.complete(request)
-    await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', apiKey: '' }).complete(request)
-    await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', apiKey: 'sk-test' }).complete(request)
-    expect(sent(fetchMock, 0).headers).not.toHaveProperty('authorization')
-    expect(sent(fetchMock, 1).headers).not.toHaveProperty('authorization')
-    expect(sent(fetchMock, 2).headers).toMatchObject({ authorization: 'Bearer sk-test' })
-  })
-
-  it('sends the key in the authorization header only: not in the URL, another header or the body', async () => {
-    const fetchMock = stubFetch(ok)
-    await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', apiKey: 'sk-test' }).complete(request)
-    const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('http://h/v1/chat/completions')
-    expect(init.headers).toEqual({ 'content-type': 'application/json', authorization: 'Bearer sk-test' })
-    expect(init.body).not.toContain('sk-test')
-  })
-
-  it('refuses a key with a character outside visible ASCII, which an HTTP header cannot carry, without repeating it', () => {
-    const keys = [`sk-test${String.fromCharCode(10)}`, 'sk test', `sk-t${String.fromCharCode(0)}est`, `sk-t${String.fromCharCode(127)}est`, `sk-t${String.fromCharCode(0x200B)}est`]
-    for (const key of keys) {
-      const build = (): unknown => openaiCompatible({ id: 'research', baseUrl: 'http://h/v1', model: 'm', apiKey: key })
-      expect(build, JSON.stringify(key)).toThrow(ConfigError)
-      expect(build, JSON.stringify(key)).toThrow(/research\.apiKey/)
-      expect(build, JSON.stringify(key)).not.toThrow(/sk-/)
-    }
-  })
-
-  it('refuses a base URL that is not an http:// or https:// URL with a host, without repeating it', () => {
-    for (const baseUrl of ['localhost:11434/v1', 'ftp://h/v1', '/v1', '', 'https:///v1', 'http://', 'https://user:secret@/v1', 'ftp://user:secret@h/v1']) {
-      const build = (): unknown => openaiCompatible({ id: 'research', baseUrl, model: 'm' })
-      expect(build, baseUrl).toThrow(ConfigError)
-      expect(build, baseUrl).toThrow(/research\.baseUrl/)
-      expect(build, baseUrl).not.toThrow(/secret/)
-    }
-    expect(() => openaiCompatible({ id: 'research', baseUrl: 'http://[::1]:11434/v1', model: 'm' })).not.toThrow()
-  })
-
-  it('omits temperature when configured as null and sends any other number as given', async () => {
-    const fetchMock = stubFetch(ok)
-    await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', temperature: null }).complete(request)
-    await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', temperature: 0.7 }).complete(request)
-    expect(sent(fetchMock, 0).body).not.toHaveProperty('temperature')
-    expect(sent(fetchMock, 1).body).toMatchObject({ temperature: 0.7 })
-  })
-
   it.each([
     ['prompt', undefined],
     ['json', { type: 'json_object' }],
@@ -98,6 +73,21 @@ describe('openaiCompatible', () => {
     const fetchMock = stubFetch(ok)
     await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', structuredOutput }).complete(request)
     expect(sent(fetchMock).body.response_format).toEqual(responseFormat)
+  })
+
+  it('sends the token limit as max_completion_tokens when maxTokensField says so', async () => {
+    const fetchMock = stubFetch(ok)
+    await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', maxTokens: 900, maxTokensField: 'max_completion_tokens' }).complete(request)
+    expect(sent(fetchMock).body).toMatchObject({ max_completion_tokens: 900 })
+    expect(sent(fetchMock).body).not.toHaveProperty('max_tokens')
+  })
+
+  it('refuses a token-limit field or a structured-output mode it does not know', () => {
+    const options = { id: 'x', baseUrl: 'http://h/v1', model: 'm', maxTokensField: 'max_output_tokens', structuredOutput: 'grammar' } as unknown as OpenAICompatibleOptions
+    expect(() => openaiCompatible(options)).toThrow(new ConfigError([
+      { path: 'x.maxTokensField', message: 'must be max_tokens or max_completion_tokens' },
+      { path: 'x.structuredOutput', message: 'must be prompt, json or schema' },
+    ]))
   })
 
   it('returns the text, the model the endpoint reports and the usage', async () => {
@@ -157,18 +147,5 @@ describe('openaiCompatible', () => {
     await expect(keyed.complete(request)).rejects.toMatchObject({ message: 'local: model refused: "your key [redacted] is not allowed"' })
     stubFetch({ error: { message: 'bad key sk-secret' } })
     await expect(keyed.complete(request)).rejects.toMatchObject({ message: 'local: reply has no choices: server error "bad key [redacted]"' })
-  })
-
-  it('redacts the key from an HTTP error body that echoes it', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('invalid key sk-secret', 401)))
-    const keyed = openaiCompatible({ id: 'local', baseUrl: 'http://h/v1', model: 'm', apiKey: 'sk-secret' })
-    await expect(keyed.complete(request)).rejects.toMatchObject({ kind: 'http', message: 'local: HTTP 401: "invalid key [redacted]"' })
-  })
-
-  it('passes the abort signal to fetch', async () => {
-    const fetchMock = stubFetch(ok)
-    const signal = new AbortController().signal
-    await provider.complete({ ...request, signal })
-    expect(fetchMock.mock.calls[0][1].signal).toBe(signal)
   })
 })
