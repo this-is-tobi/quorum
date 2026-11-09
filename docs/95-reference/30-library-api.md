@@ -152,7 +152,7 @@ An aborted review never resolves, and never fails open:
 - **No event is delivered once the review is aborted.**
 - **One failed profile stops the others.** A profile whose research fails aborts the review with that error, and the review rejects with it. When the research call itself fails, the review is aborted before the call's concurrency slot is released, so no other profile starts a call after it. When the reply is not a valid envelope, the review is aborted when the reply is checked, which happens after the call has released its slot, so a call another profile had queued may already have started. Either way, no event arrives after the rejection.
 - **An abort after `run:end` has no effect**: the review is over, and resolves with its result.
-- **Stopping a call in flight is cooperative.** The shipped `openaiCompatible` adapter passes the signal to `fetch`. A provider that ignores it can keep an aborted review waiting until its call settles, unless another call of the review stops on the signal first; the review then rejects all the same.
+- **Stopping a call in flight is cooperative.** The shipped adapters pass the signal to `fetch`. A provider that ignores it can keep an aborted review waiting until its call settles, unless another call of the review stops on the signal first; the review then rejects all the same.
 
 ## Errors
 
@@ -172,12 +172,15 @@ A failed research call rejects the review with its `ProviderError`, and an unusa
 | `createQuorum` | Build a quorum |
 | `securityProfile` | The default profile, frozen: [Profiles](../20-using/40-profiles.md#the-security-profile) |
 | `defaultPolicy` | `{ high: 'unanimous', medium: 'majority', low: 'off' }`, frozen |
-| `openaiCompatible` | The shipped provider: [Providers](../20-using/30-providers.md#openaicompatible) |
+| `anthropic` | The Anthropic Messages adapter: [Providers](../20-using/30-providers.md#anthropic) |
+| `gemini` | The Gemini `generateContent` adapter: [Providers](../20-using/30-providers.md#gemini) |
+| `ollama` | The Ollama native chat adapter: [Providers](../20-using/30-providers.md#ollama) |
+| `openaiCompatible` | The OpenAI-compatible adapter: [Providers](../20-using/30-providers.md#openaicompatible) |
 | `QuorumError`, `ConfigError`, `ProviderError`, `OutputError` | The error classes |
 | `inertLine`, `inertJson` | Render a line for a terminal or a log, and a value as JSON, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |
 
-The types: `Confidence`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `Lens`, `LensVote`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus` and `Vote`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `Auth`, `HttpProviderOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`. `HttpProviderOptions` holds the options an HTTP provider takes, and `OpenAICompatibleOptions` adds `maxTokensField`: [Providers](../20-using/30-providers.md#options).
+The types: `Confidence`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `Lens`, `LensVote`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus` and `Vote`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options).
 
 The stages, the profile checks and the CLI's exit-code rule are not exported: a program reaches the stages through `createQuorum`, and applies the exit codes itself, as the example below does.
 
@@ -259,7 +262,7 @@ It exits as the CLI does: `0`, `1` or `4` by the result; `2` when no file is giv
 
 ## Related
 
-- [Providers](../20-using/30-providers.md) — the provider port, `openaiCompatible` and writing a provider.
+- [Providers](../20-using/30-providers.md) — the provider port, the shipped adapters and writing a provider.
 - [Profiles](../20-using/40-profiles.md) — writing a profile, and running several in one review.
 - [The JSON result](./20-json-result.md) — every field `review` resolves with.
 - [Architecture](./40-architecture.md) — the modules behind this API, and the stages of a review.

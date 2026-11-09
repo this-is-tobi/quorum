@@ -28,15 +28,15 @@ With no tool and no secret in the model path, the incident classes of 2025 and 2
 
 ### A model path with no tool and no secret
 
-A provider receives text and returns text. Quorum offers no tool, function, file or network capability to a model, and the request type has no field for one. A program's `extraBody` and `headers` are sent to the vendor as given, so a field there that offers a tool or a server-side capability, such as `tools`, `functions`, OpenRouter's `plugins` or `web_search_options`, breaks this control. No environment value, key, token or credential appears in any request: keys live in the adapters, and the core never reads the environment. The suite checks with fake providers that no environment value reaches a request, the key variables of the environment wiring included.
+A provider receives text and returns text. Quorum offers no tool, function, file or network capability to a model, and the request type has no field for one. Each shipped adapter refuses, in a program's `extraBody`, the body fields of its protocol that would offer one, such as `tools`, OpenRouter's `plugins`, Anthropic's `mcp_servers` or Gemini's `cachedContent`, in any letter case and with or without underscores: [The tool fields](../20-using/30-providers.md#the-tool-fields). Two gaps remain. A model id can bring tools of its own, which no body check sees: OpenAI's search models search the web before every answer, and OpenRouter's `:online` models add a web search. And `headers` are sent as given. A program that sets either breaks this control. No environment value, key, token or credential appears in any request: keys live in the adapters, and the core never reads the environment. The suite checks with fake providers that no environment value reaches a request, the key variables of the environment wiring included.
 
 ### A key sent only to its own endpoint
 
-`openaiCompatible` sends its `apiKey` only in the header its `auth` names, `Authorization` by default, and never in a URL, a body or another header. Three further rules keep the key from leaking:
+Each shipped adapter sends its `apiKey` only in the header its `auth` names, `Authorization` by default and `x-goog-api-key` for `gemini`, and never in a URL, a body or another header. Three further rules keep the key from leaking:
 
 - **A base URL may not carry credentials.** A user name or a password is a configuration error, and the key goes in `apiKey`.
 - **No redirect is followed.** A redirect is an error, so the key header never reaches another endpoint.
-- **Server text is redacted.** The key, the base URL's path and the values of the `headers` option are replaced with `[redacted]` in any server text an error quotes. The `query` option is not redacted, so never put a key there.
+- **Server text is redacted.** The key, the base URL's path and the values of the `headers` option, as written and trimmed, are replaced with `[redacted]` in any server text an error quotes. The `query` option is not redacted, so never put a key there.
 
 The CLI's panel inherits the finder's key only while it talks to the same origin, so no fallback carries a key to another endpoint, or from `https` to `http`: [The voter's fallback](../20-using/20-configuration.md#the-voters-fallback).
 
@@ -85,7 +85,7 @@ The CLI writes nothing that a terminal or a GitHub Actions runner would act on, 
 
 ## What the harness cannot detect
 
-Quorum cannot tell when a model read less than the whole diff. It sends the diff whole, with no limit on its size and no budget for the model's context, and it checks what the model answered, never what the model read. An endpoint that truncates an oversized prompt answers all the same: Ollama's `/v1`, the CLI's default endpoint, cuts a prompt past the model's context length and still returns HTTP 200, so a review of what was left can come back clean, with exit `0`. This is a limit of the harness today. Bound the size of the diffs you review, and size the model's context for them.
+Quorum cannot tell when a model read less than the whole diff. It sends the diff whole, with no limit on its size and no budget for the model's context, and it checks what the model answered, never what the model read. An endpoint that truncates an oversized prompt answers all the same: Ollama's `/v1`, the CLI's default endpoint, cuts a prompt past the model's context length and still returns HTTP 200, so a review of what was left can come back clean, with exit `0`. A program that reaches Ollama through the `ollama` adapter avoids it: the adapter sends `truncate: false`, which turns that prompt into an error on Ollama 0.12.6 and later. This is a limit of the harness today. Bound the size of the diffs you review, and size the model's context for them.
 
 ## Independence
 
