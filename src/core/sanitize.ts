@@ -1,13 +1,21 @@
 /**
  * Renders the text that models, servers and diffs wrote for the places a person reads it: a
  * terminal, a CI log, the JSON result. The text is stored as it came, and each sink renders it
- * inert (invariant I3), so nothing in it acts on a terminal or a runner, or hides from the reader.
+ * inert (invariant I3): nothing in it acts on a terminal or a GitHub Actions runner, and no
+ * character of the hidden class below hides from the reader.
  *
  * @see ../../docs/30-security/30-output-handling.md
  */
 
-/** Controls (C0, DEL, C1), format characters, unpaired surrogate halves, other default-ignorable code points, line and paragraph separators. */
-const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}]/gu
+/**
+ * The body of the hidden-character class, for a character class under the `u` flag: controls (C0,
+ * DEL, C1), format characters, unpaired surrogate halves, other default-ignorable code points, and
+ * line and paragraph separators. Every check for hidden characters is built from it.
+ */
+export const HIDDEN_CLASS = String.raw`\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}`
+
+/** The hidden class, matched one character at a time over the whole text. */
+const HIDDEN = new RegExp(`[${HIDDEN_CLASS}]`, 'gu')
 
 /** `::` after any leading whitespace: how a GitHub Actions workflow command starts once the runner trims the line. */
 const COMMAND_START = /^(\s*):(?=:)/u
@@ -43,11 +51,12 @@ export function spaceHidden(text: string): string {
 
 /**
  * One line of a terminal or a CI log. Every hidden character is shown as `<U+XXXX>`, so the line
- * holds no line break, starts no escape sequence, reorders nothing and hides nothing. Then both
- * forms of a GitHub Actions workflow command are broken: a line that starts with `::` once its
- * leading whitespace is trimmed shows its first colon as `<U+003A>`, and each `##[` shows its
- * bracket as `<U+005B>`. Apply it to the whole line: two inert pieces printed side by side can
- * still meet as `::` or `##[`.
+ * holds no line break and starts no escape sequence, and no character of the class reorders or
+ * hides its text. Strong right-to-left letters are outside the class, and can still reorder the
+ * line under the bidi algorithm. Then both forms of a GitHub Actions workflow command are broken:
+ * a line that starts with `::` once its leading whitespace is trimmed shows its first colon as
+ * `<U+003A>`, and each `##[` shows its bracket as `<U+005B>`. Apply it to the whole line: two
+ * inert pieces printed side by side can still meet as `::` or `##[`.
  */
 export function inertLine(text: string): string {
   return text
