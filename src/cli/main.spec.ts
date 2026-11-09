@@ -114,6 +114,18 @@ describe('runCli', () => {
     expect(await runCli(io)).toBe(EXIT.runtime)
   })
 
+  it('exits 3 with a fixed text, instead of throwing, for a failure that has no text form', async () => {
+    const reply = {
+      get ok(): boolean {
+        throw Object.create(null)
+      },
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply))
+    const { io, stderr } = harness({ env: MODEL, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.runtime)
+    expect(stderr()).toContain('Error: an error with no text form\n')
+  })
+
   it('exits 1 on a unanimous finding and prints the result as JSON', async () => {
     stubModel(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(true))
     const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
@@ -225,6 +237,13 @@ describe('inert output', () => {
     const { io, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.runtime)
     expect(stderr()).toContain('Error: research: HTTP 500: "<U+009B>2J<U+202E>boom\\n::error::x"\n')
+    expect(stderr().replaceAll('\n', '')).not.toMatch(ANY_HIDDEN)
+  })
+
+  it('writes the banner inert, a model name with a hidden character included', async () => {
+    const { io, stderr } = harness({ env: { RESEARCH_MODEL: 'm\u202E' }, stdin: '  \n' })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stderr()).toContain('Research (m<U+202E> @')
     expect(stderr().replaceAll('\n', '')).not.toMatch(ANY_HIDDEN)
   })
 
