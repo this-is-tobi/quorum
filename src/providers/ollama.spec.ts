@@ -43,7 +43,7 @@ describeProviderContract({
     temperature: body => runtime(body).temperature,
     maxTokens: body => runtime(body).num_predict,
   },
-  reservedBodyKeys: ['model', 'messages', 'stream', 'truncate'],
+  reservedBodyKeys: ['model', 'messages', 'stream', 'truncate', 'shift'],
   toolBodyKeys: ['tools', '_debug_render_only'],
   structuredOutputs: ['prompt', 'json', 'schema'],
   mergeProbe: { extraBody: { options: { num_ctx: 32768 } }, merged: { options: { temperature: 0, num_ctx: 32768 } } },
@@ -60,7 +60,7 @@ describe('ollama', () => {
     const { url, headers, body } = sent(fetchMock)
     expect(url).toBe('http://localhost:11434/api/chat')
     expect(headers).toEqual({ 'content-type': 'application/json' })
-    expect(body).toEqual({ model: 'qwen3.6:27b', messages, stream: false, truncate: false, options: { temperature: 0 }, format: 'json' })
+    expect(body).toEqual({ model: 'qwen3.6:27b', messages, stream: false, truncate: false, shift: false, options: { temperature: 0 }, format: 'json' })
   })
 
   it.each([
@@ -76,13 +76,13 @@ describe('ollama', () => {
   it('sends the token limit as num_predict, and leaves the temperature out for null', async () => {
     const fetchMock = stubFetch(chatResponse)
     await ollama({ ...options, temperature: null, maxTokens: 900 }).complete(request)
-    expect(sent(fetchMock).body).toEqual({ model: 'qwen3.6:27b', messages, stream: false, truncate: false, options: { num_predict: 900 }, format: 'json' })
+    expect(sent(fetchMock).body).toEqual({ model: 'qwen3.6:27b', messages, stream: false, truncate: false, shift: false, options: { num_predict: 900 }, format: 'json' })
   })
 
   it('sends no options when it would be empty', async () => {
     const fetchMock = stubFetch(chatResponse)
     await ollama({ ...options, temperature: null }).complete(request)
-    expect(sent(fetchMock).body).toEqual({ model: 'qwen3.6:27b', messages, stream: false, truncate: false, format: 'json' })
+    expect(sent(fetchMock).body).toEqual({ model: 'qwen3.6:27b', messages, stream: false, truncate: false, shift: false, format: 'json' })
   })
 
   it('returns the content as it came, a think block included, and ignores the thinking, with the model and the usage', async () => {
