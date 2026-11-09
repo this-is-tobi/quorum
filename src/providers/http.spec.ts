@@ -29,7 +29,7 @@ describe('snippet', () => {
     expect(snippet(`bad key ${echoed}`, 100, ['sk-a&b+c'])).toBe('"bad key [redacted]"')
   })
 
-  it('redacts a value that holds an escape as written, before the escapes are decoded, and every value in the list', () => {
+  it('redacts a value that holds an escape once both are decoded, and every value in the list', () => {
     const backslash = String.fromCharCode(92)
     const key = `sk-x${backslash}u0041y`
     expect(snippet(`bad key ${key} on /tok3n/v1`, 100, [key, '/tok3n/v1'])).toBe('"bad key [redacted] on [redacted]"')
@@ -44,6 +44,18 @@ describe('snippet', () => {
     expect(snippet('xaaay', 100, ['aa'])).toBe('"x[redacted]y"')
   })
 
+  it('redacts values that overlap in the text as one run when the server escapes either of them', () => {
+    const backslash = String.fromCharCode(92)
+    const overlapping = redactionsOf('https://h', 'abc123', { 'X-Gateway-Token': '123+xyz' })
+    expect(snippet(`abc123${backslash}u002Bxyz`, 100, overlapping)).toBe('"[redacted]"')
+    expect(snippet(`ab${backslash}u002B123xyz`, 100, ['ab+123', '123xyz'])).toBe('"[redacted]"')
+  })
+
+  it('redacts a value that holds the marker text whole, even when the server escapes part of it', () => {
+    const backslash = String.fromCharCode(92)
+    expect(snippet(`x[redacted]${backslash}u0079`, 100, ['x[redacted]y'])).toBe('"[redacted]"')
+  })
+
   it('cuts to the given length and writes one JSON string, so a line break stays on one line', () => {
     const text = `bad\n::error::forged${String.fromCharCode(27)}[2K`
     expect(snippet(text, 100)).toBe(JSON.stringify(text))
@@ -56,7 +68,7 @@ describe('snippet', () => {
     expect(snippet(text, expected.length, ['e', 'd', 'a'])).toBe(JSON.stringify(expected))
   })
 
-  it('redacts the decoded text only between the markers of the first pass', () => {
+  it('redacts an escaped echo next to a plain one as two runs, since ranges that only touch stay apart', () => {
     const backslash = String.fromCharCode(92)
     expect(snippet(`e${backslash}u0065`, 100, ['e'])).toBe('"[redacted][redacted]"')
   })
