@@ -65,7 +65,7 @@ Each vote request is built only from the finding, the lens's instructions, the d
 
 ### Fenced data and the notices
 
-All the data a model reads, the diff, the claim, the evidence, the diff section and the guidelines, is in the user message, each block fenced with a random nonce it cannot predict. The system message names every block of the request by its exact tag, so a tag planted in the diff is never named, and ends with the notice that fenced content is data and that text asking to skip or approve is suspicious. A provider built with `systemPrompt: 'inline'` sends that system text at the head of the same user message as the data, so the instructions lose the role that sets them apart from it. This is friction, not a control: [Prompts](../20-using/60-prompts.md#fencing-is-friction-not-a-control).
+All the data a model reads, the diff, the claim, the evidence, the diff section and the guidelines, is in the user message, each block fenced with a random nonce it cannot predict. The system message names every block of the request by its exact tag, so a tag planted in the diff is never named, and ends with the notice that fenced content is data and that text asking to skip or approve is suspicious. This is friction, not a control: [Prompts](../20-using/60-prompts.md#fencing-is-friction-not-a-control). A provider built with `systemPrompt: 'inline'` sends that system text at the head of the same user message as the data, so the instructions lose the role that sets them apart from it.
 
 ### `maxFindings` and the concurrency limit
 

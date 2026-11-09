@@ -27,11 +27,10 @@ export interface PostJsonOptions {
   redact?: readonly string[]
 }
 
-/** Every form in which a server may echo the secret, longest first. */
+/** Every form in which a server may echo the secret. */
 function echoedForms(secret: string): string[] {
   const asJson = JSON.stringify(secret).slice(1, -1)
-  const forms = [secret, asJson].flatMap(form => [form, form.replaceAll('/', '\\/')])
-  return [...new Set(forms)].sort((a, b) => b.length - a.length)
+  return [secret, asJson].flatMap(form => [form, form.replaceAll('/', '\\/')])
 }
 
 /** Go and .NET write `&`, `<`, `>` and `+` as escapes in JSON, so a key echoed by them would not match as is. */
@@ -39,20 +38,50 @@ function decodeEscapedAscii(text: string): string {
   return text.replace(ESCAPED_PRINTABLE_ASCII, (_escape, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
 }
 
+/**
+ * The ranges of `text` that the forms cover, in order: every occurrence of every form, overlapping ones
+ * included, with the ranges that overlap merged. Ranges that only touch stay apart.
+ */
+function coveredRanges(text: string, forms: readonly string[]): Array<[start: number, end: number]> {
+  const found: Array<[start: number, end: number]> = []
+  for (const form of forms) {
+    for (let at = text.indexOf(form); at !== -1; at = text.indexOf(form, at + 1)) found.push([at, at + form.length])
+  }
+  found.sort((a, b) => a[0] - b[0])
+  const merged: Array<[start: number, end: number]> = []
+  for (const [start, end] of found) {
+    const last = merged.at(-1)
+    if (last !== undefined && start < last[1]) last[1] = Math.max(last[1], end)
+    else merged.push([start, end])
+  }
+  return merged
+}
+
+/** `text` with each range the forms cover replaced by one marker, in one pass, so no marker is ever matched. */
 function redactForms(text: string, forms: readonly string[]): string {
-  return forms.reduce((current, form) => current.split(form).join(REDACTED), text)
+  let redacted = ''
+  let copied = 0
+  for (const [start, end] of coveredRanges(text, forms)) {
+    redacted += `${text.slice(copied, start)}${REDACTED}`
+    copied = end
+  }
+  return redacted + text.slice(copied)
 }
 
 /**
  * Server or model text made safe to put in an error message. Each value in `redact` is replaced, in the
  * text as it came and again once escaped ASCII is decoded, so neither a value that holds an escape nor
- * an escaped echo of one survives. Then the text is cut to `max` characters, after the redaction so a
- * value cut in half cannot survive, and written as one JSON string so a line break cannot start a
- * workflow command in a log.
+ * an escaped echo of one survives. Each pass covers every occurrence of every form, overlapping ones
+ * included, and replaces each covered range with one marker, so values that overlap in the text are
+ * redacted whole and a marker is never matched again; the second pass runs only between the markers of
+ * the first. Then the text is cut to `max` characters, after the redaction so a value cut in half cannot
+ * survive, and written as one JSON string so a line break cannot start a workflow command in a log.
  */
 export function snippet(text: string, max: number, redact: readonly string[] = []): string {
-  const forms = [...new Set(redact.filter(value => value !== '').flatMap(echoedForms))].sort((a, b) => b.length - a.length)
-  const redacted = forms.length === 0 ? text : redactForms(decodeEscapedAscii(redactForms(text, forms)), forms)
+  const forms = [...new Set(redact.filter(value => value !== '').flatMap(echoedForms))]
+  if (forms.length === 0) return JSON.stringify(text.slice(0, max))
+  const decoded = decodeEscapedAscii(redactForms(text, forms))
+  const redacted = decoded.split(REDACTED).map(piece => redactForms(piece, forms)).join(REDACTED)
   return JSON.stringify(redacted.slice(0, max))
 }
 
@@ -65,7 +94,9 @@ export function endpointUrl(baseUrl: string, path: string, query: Readonly<Recor
 /**
  * What a provider redacts from server text, each value once and no empty one: its key; its base URL's
  * path, which a server echoes in a 404 (`Cannot POST /<path>/chat/completions`) and which some gateways
- * use to carry a token; and the value of each of its headers, where a gateway's own credential goes.
+ * use to carry a token; and the value of each of its headers, where a gateway's own credential goes,
+ * as written and trimmed, since `fetch` sends it trimmed and a server echoes what it received. A value
+ * that is blank once trimmed is left out: it holds no secret, and would redact every run of spaces.
  * The base URL must already have passed `baseUrlIssues`: `new URL` throws on one that does not parse,
  * and Node's `TypeError` carries the URL in `.input`.
  */
@@ -77,7 +108,8 @@ export function redactionsOf(baseUrl: string, apiKey: string | undefined, header
   } catch {
     // A path with a stray `%` is redacted as written.
   }
-  return [...new Set([apiKey ?? '', path, decoded, ...Object.values(headers)])].filter(value => value !== '')
+  const values = Object.values(headers).flatMap(value => [value, value.trim()])
+  return [...new Set([apiKey ?? '', path, decoded, ...values])].filter(value => value.trim() !== '')
 }
 
 /** The scheme, host and port of a URL: no credentials, path, query or fragment. */
