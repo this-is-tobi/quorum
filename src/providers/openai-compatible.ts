@@ -32,36 +32,61 @@ function usageOf(reply: Record<string, unknown>): Usage | undefined {
   return typeof inputTokens === 'number' && typeof outputTokens === 'number' ? { inputTokens, outputTokens } : undefined
 }
 
+/** Finish reasons that end a reply before the model is done, besides the token limit and the content filter. */
+const ENDED_EARLY: ReadonlySet<unknown> = new Set(['error', 'insufficient_system_resource', 'aborted'])
+/** Finish reasons of a reply cut off by a limit: the token limit, or the model's context (Mistral's `model_length`). */
+const CUT_OFF: ReadonlySet<unknown> = new Set(['length', 'model_length'])
+
+/** The status a server error carries in its `code`, when that is an HTTP error status. */
+function statusOf(code: unknown): number | undefined {
+  return typeof code === 'number' && Number.isInteger(code) && code >= 400 && code <= 599 ? code : undefined
+}
+
+/** The text of a message's content: a string, or the `text` parts of an array of parts (Mistral), joined; thinking parts are skipped. */
+function textOf(content: unknown): string | undefined {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return undefined
+  const texts = content.flatMap(part => isRecord(part) && part.type === 'text' && typeof part.text === 'string' ? [part.text] : [])
+  return texts.length === 0 ? undefined : texts.join('')
+}
+
 /**
  * Turn a chat completion reply into text, or a `ProviderError`. Every property is read defensively: the
- * reply is untrusted, and a malformed shape must fail as a provider error, not as a `TypeError`.
+ * reply is untrusted, and a malformed shape must fail as a provider error, not as a `TypeError`. A
+ * server error comes first, since some servers answer 200 with one beside an empty choice (OpenRouter,
+ * for a failure during generation), as `{ error: { message, code } }` or `{ error: "text" }`.
  */
 function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 'id' | 'model'>, redact: readonly string[]): CompletionResponse {
-  const fail = (kind: ProviderErrorKind, message: string): ProviderError => new ProviderError({ providerId: id, kind, message })
+  const fail = (kind: ProviderErrorKind, message: string, status?: number): ProviderError => new ProviderError({ providerId: id, kind, message, status })
 
   if (!isRecord(reply)) throw fail('invalid-response', 'reply is not a JSON object')
 
-  const choice: unknown = Array.isArray(reply.choices) ? reply.choices[0] : undefined
-  if (!isRecord(choice)) {
-    const serverError = isRecord(reply.error) && typeof reply.error.message === 'string'
-      ? `: server error ${snippet(reply.error.message, MAX_MODEL_TEXT, redact)}`
-      : ''
-    throw fail('invalid-response', `reply has no choices${serverError}`)
+  const { error } = reply
+  if (typeof error === 'string' || isRecord(error)) {
+    const text = typeof error === 'string' ? error : error.message
+    const quoted = typeof text === 'string' ? `: ${snippet(text, MAX_MODEL_TEXT, redact)}` : ''
+    const status = isRecord(error) ? statusOf(error.code) : undefined
+    throw status === undefined ? fail('invalid-response', `server error${quoted}`) : fail('http', `server error ${status}${quoted}`, status)
   }
+
+  const choice: unknown = Array.isArray(reply.choices) ? reply.choices[0] : undefined
+  if (!isRecord(choice)) throw fail('invalid-response', 'reply has no choices')
 
   const message = isRecord(choice.message) ? choice.message : {}
   if (message.refusal) {
     const refusal = message.refusal
     throw fail('refusal', typeof refusal === 'string' ? `model refused: ${snippet(refusal, MAX_MODEL_TEXT, redact)}` : 'model refused')
   }
-  if (choice.finish_reason === 'content_filter') throw fail('refusal', 'reply was stopped by the content filter')
-  if (choice.finish_reason === 'length') throw fail('truncated', 'reply was cut off by the token limit')
+  const reason = choice.finish_reason
+  if (reason === 'content_filter') throw fail('refusal', 'reply was stopped by the content filter')
+  if (CUT_OFF.has(reason)) throw fail('truncated', 'reply was cut off by the token limit')
+  if (ENDED_EARLY.has(reason)) throw fail('invalid-response', `reply ended early: ${JSON.stringify(reason)}`)
 
-  const { content } = message
-  if (typeof content !== 'string') throw fail('invalid-response', 'reply has no message content')
+  const text = textOf(message.content)
+  if (text === undefined) throw fail('invalid-response', 'reply has no message content')
 
   return {
-    text: content,
+    text,
     model: typeof reply.model === 'string' && reply.model !== '' ? reply.model : model,
     usage: usageOf(reply),
   }
