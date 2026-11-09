@@ -217,7 +217,11 @@ export interface Quorum {
 /** The stages every profile runs through, in this order. */
 export type StageName = 'research' | 'dedup' | 'panel'
 
-/** What a review reports while it runs, delivered synchronously to the event sink as it happens. */
+/**
+ * What a review reports while it runs, delivered synchronously to the event sink as it happens.
+ * Events are plain data, which the review hands the sink as copies; a field that a structured
+ * clone cannot copy, or whose class matters, does not belong in one.
+ */
 export type QuorumEvent
   /** The review starts: the profiles it runs, and who reviews for each. */
   = | { type: 'run:start', profiles: string[], providers: Record<string, ProfileProviders> }
