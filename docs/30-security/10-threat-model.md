@@ -14,7 +14,7 @@ What quorum answers goes to the JSON result on stdout and the lines on stderr, a
 | --- | --- | --- |
 | Verdict integrity | Suppress a real finding, sway a verdict, or forge a finding | Code-derived evidence, strict parsing, blind votes and arithmetic confidence, within the limits of the [residual risk](#residual-risk) |
 | Secrets: the model key, a CI token, repository credentials | Have a model read or leak them | A model path with no tool and no secret, and a key sent only to its own endpoint |
-| Output channels: CI logs, terminals, what renders the result | Turn model text into markup, a link, a workflow command or an escape sequence | The CLI makes every line it writes and its JSON inert; anything else that renders the result must treat its text as untrusted: [Output handling](./30-output-handling.md) |
+| Output channels: CI logs, terminals, what renders the result | Turn model text into markup, a link, a workflow command or an escape sequence | The CLI makes the text it writes inert for a terminal and a GitHub Actions log; anything else that renders the result must treat its text as untrusted: [Output handling](./30-output-handling.md) |
 | Availability and spend | Multiply the calls and their cost with a huge or finding-flooding pull request | `maxFindings`, the concurrency limit and the reply caps |
 | Coverage | Have the run review less than the whole change, silently | Unreviewed findings and incomplete reviews, exit `4`, for the gaps the harness detects; a model that read less than the whole diff is not one of them: [What the harness cannot detect](#what-the-harness-cannot-detect) |
 
@@ -75,7 +75,7 @@ The harness reads the added lines and the file names of the diff by code, before
 
 ### Inert output
 
-The CLI writes nothing that a terminal or a CI runner would act on, and nothing that hides text. Every line of stderr passes through `inertLine`, which shows each hidden character as `<U+XXXX>` and breaks the forms of a GitHub Actions workflow command, and stdout is written by `inertJson`, which escapes them and parses back to the same data. [What the CLI writes](./30-output-handling.md#what-the-cli-writes) has the details.
+The CLI writes nothing that a terminal or a GitHub Actions runner would act on, and shows or escapes every hidden character of the class in the text it carries. Every line of stderr that carries text from outside the CLI passes through `inertLine`, which shows each hidden character as `<U+XXXX>` and breaks the forms of a GitHub Actions workflow command, and stdout is written by `inertJson`, which escapes them and parses back to the same data. [What the CLI writes](./30-output-handling.md#what-the-cli-writes) has the details and the limits.
 
 ## What the harness cannot detect
 
@@ -90,7 +90,7 @@ Voters are blind to each other, so their reasoning is independent. Their errors 
 
 ## Model-written text is untrusted
 
-A result carries text that models wrote, servers sent or the diff holds. Quorum stores it as it came and makes its own output inert, and [Output handling](./30-output-handling.md#text-an-attacker-can-influence) has the fields and what a renderer must do.
+A result carries text that models wrote, servers sent or the diff holds. Quorum stores it as it came, apart from some cleaning, and makes its own output inert. [Output handling](./30-output-handling.md#text-an-attacker-can-influence) has the fields, the cleaning and what a renderer must do.
 
 ## Next
 
