@@ -1,11 +1,10 @@
-import { ConfigError, ProviderError } from '../core/errors.ts'
-import type { ProviderErrorKind } from '../core/errors.ts'
+import { ConfigError } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
-import type { Usage } from '../core/types.ts'
 import { endpointUrl, postJson, redactionsOf, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
 import { httpOptionIssues, isRecord, mergeBody, requestHeaders } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
+import { endedEarly, joinedText, MAX_MODEL_TEXT, replyFailure, tokenUsage } from './reply.ts'
 
 /** The options of an OpenAI-compatible provider. */
 export interface OpenAICompatibleOptions extends HttpProviderOptions {
@@ -13,7 +12,6 @@ export interface OpenAICompatibleOptions extends HttpProviderOptions {
   maxTokensField?: 'max_tokens' | 'max_completion_tokens'
 }
 
-const MAX_MODEL_TEXT = 200
 /**
  * The protocol's rules. The tool fields are the union over the OpenAI-compatible vendors: OpenAI's and
  * the others' function tools and web search, OpenRouter's plugins, server-tool loop and presets, xAI's
@@ -53,13 +51,6 @@ function responseFormat(mode: StructuredOutput, output: CompletionRequest['outpu
   return undefined
 }
 
-function usageOf(reply: Record<string, unknown>): Usage | undefined {
-  const usage = reply.usage
-  if (!isRecord(usage)) return undefined
-  const { prompt_tokens: inputTokens, completion_tokens: outputTokens } = usage
-  return typeof inputTokens === 'number' && typeof outputTokens === 'number' ? { inputTokens, outputTokens } : undefined
-}
-
 /** Finish reasons that end a reply before the model is done, besides the token limit and the content filter. */
 const ENDED_EARLY: ReadonlySet<unknown> = new Set(['error', 'insufficient_system_resource', 'aborted'])
 /** Finish reasons of a reply cut off by a limit: the token limit, or the model's context (Mistral's `model_length`). */
@@ -72,10 +63,7 @@ function statusOf(code: unknown): number | undefined {
 
 /** The text of a message's content: a string, or the `text` parts of an array of parts (Mistral), joined; thinking parts are skipped. */
 function textOf(content: unknown): string | undefined {
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return undefined
-  const texts = content.flatMap(part => isRecord(part) && part.type === 'text' && typeof part.text === 'string' ? [part.text] : [])
-  return texts.length === 0 ? undefined : texts.join('')
+  return typeof content === 'string' ? content : joinedText(content, part => part.type === 'text')
 }
 
 /**
@@ -85,7 +73,7 @@ function textOf(content: unknown): string | undefined {
  * for a failure during generation), as `{ error: { message, code } }` or `{ error: "text" }`.
  */
 function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 'id' | 'model'>, redact: readonly string[]): CompletionResponse {
-  const fail = (kind: ProviderErrorKind, message: string, status?: number): ProviderError => new ProviderError({ providerId: id, kind, message, status })
+  const fail = replyFailure(id)
 
   if (!isRecord(reply)) throw fail('invalid-response', 'reply is not a JSON object')
 
@@ -108,7 +96,7 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
   const reason = choice.finish_reason
   if (reason === 'content_filter') throw fail('refusal', 'reply was stopped by the content filter')
   if (CUT_OFF.has(reason)) throw fail('truncated', 'reply was cut off by the token limit')
-  if (ENDED_EARLY.has(reason)) throw fail('invalid-response', `reply ended early: ${JSON.stringify(reason)}`)
+  if (ENDED_EARLY.has(reason)) throw fail('invalid-response', endedEarly(reason, redact))
 
   const text = textOf(message.content)
   if (text === undefined) throw fail('invalid-response', 'reply has no message content')
@@ -116,7 +104,7 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
   return {
     text,
     model: typeof reply.model === 'string' && reply.model !== '' ? reply.model : model,
-    usage: usageOf(reply),
+    usage: tokenUsage(reply.usage, ['prompt_tokens'], ['completion_tokens']),
   }
 }
 
