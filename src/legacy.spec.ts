@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from './core/errors.ts'
 import type { CompletionRequest } from './core/ports.ts'
 import { providersFromEnv, quorumFromEnv, roleSettings } from './legacy.ts'
+import { jsonReply } from './testing/http.ts'
 
 const request: CompletionRequest = {
   system: 'instructions',
@@ -9,7 +10,7 @@ const request: CompletionRequest = {
   output: { name: 'panel_vote', schema: {} },
 }
 
-const replyOk = { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{}' } }] }) }
+const replyOk = (): Response => jsonReply({ choices: [{ message: { content: '{}' } }] })
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -96,7 +97,7 @@ describe('providersFromEnv', () => {
   })
 
   it('reproduces the request of the first import: the Ollama URL, json_object and temperature 0', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(replyOk)
+    const fetchMock = vi.fn().mockImplementation(async () => replyOk())
     vi.stubGlobal('fetch', fetchMock)
     await providersFromEnv({ RESEARCH_MODEL: 'qwen' }).voter.complete(request)
     const [url, init] = fetchMock.mock.calls[0]
@@ -105,7 +106,7 @@ describe('providersFromEnv', () => {
   })
 
   it('sends no authorization header unless a key is set, and never a placeholder', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(replyOk)
+    const fetchMock = vi.fn().mockImplementation(async () => replyOk())
     vi.stubGlobal('fetch', fetchMock)
     await providersFromEnv({ RESEARCH_MODEL: 'qwen' }).research.complete(request)
     await providersFromEnv({ RESEARCH_MODEL: 'qwen', RESEARCH_API_KEY: 'sk-test' }).research.complete(request)
@@ -139,7 +140,7 @@ describe('providersFromEnv', () => {
   })
 
   it('sends the research key to a voter on the same origin only', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(replyOk)
+    const fetchMock = vi.fn().mockImplementation(async () => replyOk())
     vi.stubGlobal('fetch', fetchMock)
     const research = { RESEARCH_BASE_URL: 'https://r.example/v1', RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r' }
     await providersFromEnv({ ...research, VOTER_BASE_URL: 'https://r.example/other/v1' }).voter.complete(request)
@@ -154,10 +155,10 @@ describe('providersFromEnv', () => {
 
 describe('quorumFromEnv', () => {
   it('runs the security profile: research on the research endpoint, every lens on the voter one', async () => {
-    const content = (text: string) => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: text } }] }) })
+    const content = (text: string): Response => jsonReply({ choices: [{ message: { content: text } }] })
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(content(JSON.stringify({ findings: [{ file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }] })))
-      .mockResolvedValue(content(JSON.stringify({ keep: true, reasoning: 'r' })))
+      .mockImplementationOnce(async () => content(JSON.stringify({ findings: [{ file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }] })))
+      .mockImplementation(async () => content(JSON.stringify({ keep: true, reasoning: 'r' })))
     vi.stubGlobal('fetch', fetchMock)
     const types: string[] = []
     const quorum = quorumFromEnv({ RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'https://v.example/v1', VOTER_MODEL: 'v' }, event => types.push(event.type))

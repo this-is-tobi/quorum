@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
+import { jsonReply, textReply } from '../testing/http.ts'
 import { openaiCompatible } from './openai-compatible.ts'
 
 const request: CompletionRequest = {
@@ -12,7 +13,7 @@ const request: CompletionRequest = {
 const ok = { choices: [{ finish_reason: 'stop', message: { content: '{}' } }] }
 
 function stubFetch(body: unknown): ReturnType<typeof vi.fn> {
-  const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => body })
+  const fetchMock = vi.fn().mockImplementation(async () => jsonReply(body))
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
 }
@@ -159,7 +160,7 @@ describe('openaiCompatible', () => {
   })
 
   it('redacts the key from an HTTP error body that echoes it', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401, text: async () => 'invalid key sk-secret' }))
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('invalid key sk-secret', 401)))
     const keyed = openaiCompatible({ id: 'local', baseUrl: 'http://h/v1', model: 'm', apiKey: 'sk-secret' })
     await expect(keyed.complete(request)).rejects.toMatchObject({ kind: 'http', message: 'local: HTTP 401: "invalid key [redacted]"' })
   })
