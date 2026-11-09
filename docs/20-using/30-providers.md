@@ -25,7 +25,7 @@ interface CompletionResponse {
 }
 ```
 
-- **Text in, text out.** A request carries the instructions in `system`, the fenced data in `messages` (one `user` message), the shape of the reply in `output` (named `research_findings` or `panel_vote`, with its JSON Schema), and the review's `signal`. The request has no field for a tool, a function, a file or a network capability, so none is ever offered to a model.
+- **Text in, text out.** A request carries the instructions in `system`, the fenced data in `messages` (one `user` message), the shape of the reply in `output` (named `research_findings` or `panel_vote`, with its JSON Schema), and the review's `signal`. The request has no field for a tool, a function, a file or a network capability, and quorum offers none to a model. A program's `extraBody` and `headers` are sent to the vendor as given, though: a field there that offers a tool or a server-side capability, such as `tools`, `functions`, OpenRouter's `plugins` or `web_search_options`, breaks the [model path with no tool](../30-security/10-threat-model.md#a-model-path-with-no-tool-and-no-secret).
 - **No secret in a request.** No environment value, key or credential appears in a request: a key lives in the adapter that holds it.
 - **The core never trusts the reply.** It extracts and validates the JSON in `text` itself, whatever the provider did to get it, and reads `usage` (`inputTokens`, `outputTokens`, optional `costUsd`) only when its counts are finite numbers of at least 0.
 - **`id` and `model` name the provider** in events and in `meta`, as they were when the quorum was created.
@@ -54,7 +54,7 @@ The hosted provider sets `temperature: null` and `maxTokensField: 'max_completio
 | `model` | `string` | Required | Sent as `model` in every request |
 | `apiKey` | `string` | None | Sent as `auth` says, and nowhere else. Without it, or with an empty one, no key header is sent |
 | `auth` | `'bearer' \| 'x-api-key' \| 'none' \| { header, prefix? }` | `'bearer'` | How the key is sent: [The key header](#the-key-header) |
-| `headers` | `Record<string, string>` | None | Sent with every request, names lower-cased. They cannot replace `content-type`, `content-length`, `host` or the key header |
+| `headers` | `Record<string, string>` | None | Sent with every request, names lower-cased. They cannot replace `content-type`, `content-length`, `host` or the key header. Their values are redacted from error messages, as the key is |
 | `query` | `Record<string, string>` | None | Added to every request URL. Not redacted from error messages: never put a key here |
 | `extraBody` | `Record<string, unknown>` | None | JSON values deep-merged into the body last: objects merge key by key, anything else replaces. It cannot replace `model`, `messages` or `stream` |
 | `temperature` | `number \| null` | `0` | Sent as `temperature`; `null` leaves it out, for a model that rejects it |
@@ -62,6 +62,8 @@ The hosted provider sets `temperature: null` and `maxTokensField: 'max_completio
 | `maxTokensField` | `'max_tokens' \| 'max_completion_tokens'` | `'max_tokens'` | The body field of `maxTokens`. OpenAI's reasoning models need `max_completion_tokens` |
 | `systemPrompt` | `'native' \| 'inline'` | `'native'` | `native` sends the system text as a `system` message; `inline` puts it at the head of the first user message, joined by a blank line, for a chat template that rejects a system role |
 | `structuredOutput` | `'prompt' \| 'json' \| 'schema'` | `'json'` | How the reply's shape reaches the endpoint: [Structured output](#structured-output) |
+
+`systemPrompt: 'inline'` sends the instructions in the same user message as the fenced data, so they lose the role that sets them apart from it: a weaker separation than the one [Prompts](./60-prompts.md#the-layout-of-a-request) describes. When the conversation does not start with a user message, `inline` sends the system text as a user message of its own.
 
 `HttpProviderOptions` types every option here except `maxTokensField`, which `OpenAICompatibleOptions` adds.
 
@@ -84,6 +86,7 @@ The body of every request holds, in this order:
 | `'none'` | none; a key set as well is a configuration error |
 | `{ header: 'api-key' }` | `api-key: <key>` |
 | `{ header: 'X-Token', prefix: 'Token ' }` | `x-token: Token <key>` |
+| `{ header: 'authorization', prefix: 'Basic ' }` | `authorization: Basic <key>`: basic auth, with the base64 of `user:password` as the key |
 
 A custom header name is lower-cased, and its `prefix` goes before the key. A request sends its headers in this order: the content type, the provider's own `headers`, then the key header.
 
@@ -104,7 +107,7 @@ Every request goes through one hardened path:
 - **A redirect is not followed.** It is an `http` error that names it, `HTTP 307 (redirects are not followed): "<body>"`, so a key in any header never reaches another endpoint.
 - **A reply body over 16 MiB is refused**, without reading the rest.
 - **At most 64 KiB of an error body is read**, enough for the 500 characters a message quotes.
-- **Server text in a message is redacted** of the key and of the base URL's path, before and after escaped ASCII is decoded, and cut to 500 characters (200 for model text). A server echoes the path in a 404, so the path is redacted too.
+- **Server text in a message is redacted** of the key, of the base URL's path and of the values of `headers`, before and after escaped ASCII is decoded, and cut to 500 characters (200 for model text and for a server error in a 2xx reply). A server echoes the path in a 404, and a gateway's own credential goes in a header, so both are redacted too.
 
 ### The reply
 
@@ -127,6 +130,7 @@ A top-level `error` in the reply fails the call before the choices are read, sin
 | `<id>.auth.header` | `must be an HTTP header name` |
 | `<id>.auth.header` | `must not be content-type, content-length or host` |
 | `<id>.auth.prefix` | `must only contain printable ASCII characters` |
+| `<id>.headers` | `must map names to strings` |
 | `<id>.headers.<name>` | `must be an HTTP header name` |
 | `<id>.headers.<name>` | `must not be content-type, content-length or host` |
 | `<id>.headers.<name>` | `is the header that carries the key: set apiKey instead` |
@@ -142,13 +146,13 @@ A top-level `error` in the reply fails the call before the choices are read, sin
 
 ## `ProviderError`
 
-Every failure of an `openaiCompatible` call is a `ProviderError`, the error class the core exports for any provider to use. Its message starts with the provider id, and the adapter never puts a request header, a key or the runtime's own error text in it: text a server or a model sent is quoted as a JSON string and cut short, and a key the server echoes, or the base URL's path, is replaced by `[redacted]` first.
+Every failure of an `openaiCompatible` call is a `ProviderError`, the error class the core exports for any provider to use. Its message starts with the provider id, and the adapter never puts a request header, a key or the runtime's own error text in it: text a server or a model sent is quoted as a JSON string and cut short, and a key the server echoes, the base URL's path or a value of `headers` is replaced by `[redacted]` first.
 
 | Field | Holds |
 | --- | --- |
 | `providerId` | The provider's id |
 | `kind` | What went wrong, below |
-| `status` | The HTTP status, for `http` |
+| `status` | The HTTP status, for `http`. For a server error in a 2xx reply, it is the status the body's `code` names |
 | `retryable` | `true` for `network` and `timeout`, and for `http` with status 408, 409, 429 or 5xx: a caller may try the call again |
 
 | Kind | Raised by `openaiCompatible` when |
@@ -158,7 +162,7 @@ Every failure of an `openaiCompatible` call is a `ProviderError`, the error clas
 | `aborted` | The review's signal stopped the request: `request aborted` |
 | `refusal` | The model refused, `model refused: "<up to 200 characters>"`, or the content filter stopped the reply (the finish reason `content_filter`), `reply was stopped by the content filter` |
 | `truncated` | The token limit or the model's context cut the reply off, with the finish reason `length` or `model_length`: `reply was cut off by the token limit` |
-| `invalid-response` | The body is not JSON (`response body is not JSON`), is over 16 MiB (`reply body is over 16 MiB`) or is not an object (`reply is not a JSON object`). Or the reply holds a server error with no error status as its `code` (`server error: "<message>"`, the quote left out when the server sends no text), has no choices (`reply has no choices`), ended early with the finish reason `error`, `insufficient_system_resource` or `aborted` (`reply ended early: "<finish reason>"`), or has no message content (`reply has no message content`) |
+| `invalid-response` | The body is not JSON (`response body is not JSON`), is over 16 MiB (`reply body is over 16 MiB`) or is not an object (`reply is not a JSON object`). Or the reply holds a server error with no error status as its `code` (`server error: "<message>"`, and `server error: ""` for `{ "error": "" }`; the quote is left out only when `error` is an object without a string `message`, as in `{ "error": {} }`), has no choices (`reply has no choices`), ended early with the finish reason `error`, `insufficient_system_resource` or `aborted` (`reply ended early: "<finish reason>"`), or has no message content (`reply has no message content`) |
 | `timeout`, `process`, `unsupported` | Never: these are for other providers |
 
 The core raises one more itself: a provider whose reply has no string `text` fails that call with `<id>: returned no reply text`, of kind `invalid-response`.
