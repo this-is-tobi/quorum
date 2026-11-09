@@ -14,7 +14,7 @@ export type OllamaOptions = HttpProviderOptions
  * 200 with the rendered template instead of a reply.
  */
 const RULES: Omit<AdapterRules, 'auth'> = {
-  reservedBodyKeys: ['model', 'messages', 'stream', 'truncate'],
+  reservedBodyKeys: ['model', 'messages', 'stream', 'truncate', 'shift'],
   toolBodyKeys: ['tools', '_debug_render_only'],
   fixedHeaders: [],
   structuredOutputs: ['prompt', 'json', 'schema'],
@@ -55,7 +55,9 @@ function readReply(reply: unknown, { id, model }: Pick<OllamaOptions, 'id' | 'mo
  * A provider for Ollama's native chat API, `/api/chat`, on a local server or Ollama's cloud. The key, when
  * there is one, travels only in the header `auth` names, `Authorization: Bearer` by default (invariant
  * I1); a local server needs none. `truncate: false` makes a prompt past the model's context a 400, instead
- * of its oldest messages dropped in silence (Ollama 0.12.6 or later; an older server ignores the field).
+ * of its oldest messages dropped in silence, and `shift: false` makes a reply that fills the context
+ * stop as a truncation, instead of part of the prompt dropped so the reply can go on (Ollama 0.12.6 or
+ * later; an older server ignores both fields).
  *
  * @throws ConfigError with every problem of the options, before any request
  */
@@ -84,6 +86,7 @@ export function ollama(options: OllamaOptions): Provider {
           messages: system === undefined ? messages : [{ role: 'system', content: system }, ...messages],
           stream: false,
           truncate: false,
+          shift: false,
           options: unlessEmpty({ temperature: temperature ?? undefined, num_predict: maxTokens }),
           format: format(structuredOutput, request.output),
         }, extra),
