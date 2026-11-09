@@ -130,7 +130,7 @@ The first events of the review on [The JSON result](./20-json-result.md#an-examp
 ```
 
 - **The sink runs inside the review.** Each event is delivered before the review goes on, so a slow sink slows the review.
-- **Events carry no model text beyond `error` strings**, the file name a `finding:invalid` reason quotes, which is the finder's, cleaned and capped at 80 characters, and, for a diff without per-file headers, the `file` and `detail` of a `vote-failed` entry, which hold the finder's name for the file, cleaned and capped at 260.
+- **Events carry no model text beyond `error` strings**, the file name a `finding:invalid` reason quotes, which is the finder's, cleaned and capped at 80 characters, and, for a diff without per-file headers, the `file` and `detail` of a `vote-failed` entry, which hold the finder's name for the file, cleaned and capped at 260. The `file` of a `flag` event is the diff's own path, and absent for a diff without per-file headers.
 - **The sink gets a copy of each event.** Changing one changes neither the review nor its result.
 - **`meta` agrees with the events.** `meta.usage` and each `invalidFindings` are counted from them.
 - **A sink that throws aborts the review** with its error, so the bug surfaces instead of being swallowed: no profile starts another call, no further event is delivered, and the review rejects with that error, even when it threw on `run:end`.
@@ -187,7 +187,7 @@ The stages, the profile checks and the CLI's exit-code rule are not exported: a 
 declare function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult>
 ```
 
-Deprecated: use `createQuorum` with explicit providers. `runQuorum` reviews `diff` with the security profile and providers built from the `RESEARCH_*` and `VOTER_*` variables of `process.env`, exactly as the CLI builds them: [Configuration](../20-using/20-configuration.md). `onProgress` receives the CLI's progress lines, but neither its banner nor `empty diff: nothing to review`, which the CLI writes itself. A research model that is not set rejects with a `ConfigError`, for an empty diff too.
+Deprecated: use `createQuorum` with explicit providers. `runQuorum` reviews `diff` with the security profile and providers built from the `RESEARCH_*` and `VOTER_*` variables of `process.env`, exactly as the CLI builds them: [Configuration](../20-using/20-configuration.md). `onProgress` receives the CLI's progress lines, the `flag:` lines included, each one inert, but neither its banner nor `empty diff: nothing to review`, which the CLI writes itself. A research model that is not set rejects with a `ConfigError`, for an empty diff too.
 
 ## A complete example
 
@@ -224,7 +224,8 @@ async function main(path: string | undefined): Promise<number> {
     if (path === undefined) throw new Error('no diff file given')
     diff = await readFile(path, 'utf8')
   } catch (error) {
-    console.error(`${errorLine(error)}\n${USAGE}`)
+    console.error(errorLine(error))
+    console.error(USAGE)
     return 2
   }
   try {

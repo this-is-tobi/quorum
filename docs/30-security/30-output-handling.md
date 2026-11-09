@@ -1,6 +1,6 @@
 # Output handling
 
-Quorum writes the JSON result on stdout, and a banner, progress lines and `Error:` lines on stderr. All of it can carry text that models wrote, servers sent or the diff holds, and an attacker can influence that text. Quorum stores it as it came and makes each place that prints it inert, so that nothing in it acts on a terminal or a CI log, and nothing in it hides from the person reading. It also flags the hidden characters and the text addressed to an AI reviewer that a diff holds, as a hint to a human. Read this page before you print a review yourself.
+Quorum writes the JSON result on stdout, and a banner, progress lines and `Error:` lines on stderr. All of it can carry text that models wrote, servers sent or the diff holds, and an attacker can influence that text. Quorum stores it as it came, apart from the cleaning the table below lists, and makes each place that prints it inert: nothing in it acts on a terminal or a GitHub Actions log, and every hidden character of the class defined below is shown or escaped. It also flags the hidden characters and the text addressed to an AI reviewer that a diff holds, as a hint to a human. Read this page before you print a review yourself.
 
 ## Text an attacker can influence
 
@@ -29,7 +29,7 @@ The CLI writes to two streams, and each has its own function. Both act on the sa
 The class leaves out what acts on no terminal and hides no text: the other spaces, which print as spaces; private-use and unassigned code points, which print as a glyph or a box; U+2800 and U+FFFC; and look-alike letters, which no character property finds.
 
 - **stdout** is the JSON result, written by `inertJson`. It is what `JSON.stringify` writes, with every hidden character it would leave raw written as a `\uXXXX` escape: DEL, the C1 controls, the format and other default-ignorable characters, and the line and paragraph separators. A `##[` inside a string is written `##\u005b`. A JSON parser reads the escapes back as the characters, so the data is exact. No line of it can start a workflow command: after its indentation, each line starts with a quote, a bracket, a brace or a literal, and none holds `##[`.
-- **stderr**: every line passes through `inertLine`, the banner and the progress lines included. A hidden character is shown as `<U+XXXX>`, with its code point in upper-case hexadecimal, four digits at least, and a character above U+FFFF as one label. So a line holds no line break of its own, starts no escape sequence, reorders nothing and hides nothing. A line that would start with `::`, after any leading whitespace, shows its first colon as `<U+003A>`, and each `##[` shows its bracket as `<U+005B>`.
+- **stderr**: every line that carries text from outside the CLI passes through `inertLine`: the banner, the progress lines and the `Error:` lines. The usage text and `empty diff: nothing to review` are constants, and the CLI writes them as they are. A hidden character is shown as `<U+XXXX>`, with its code point in upper-case hexadecimal, four digits at least, and a character above U+FFFF as one label. So a line holds no line break of its own and starts no escape sequence, and no character of the class reorders or hides its text. A line that would start with `::`, after any leading whitespace, shows its first colon as `<U+003A>`, and each `##[` shows its bracket as `<U+005B>`.
 - **Errors**: a configuration error keeps one issue per line, each line inert. Any other error is one line, so a line break in a file name, or in text a server sent, cannot start a line of its own.
 
 ### An example
@@ -47,7 +47,7 @@ The escape character and the bell arrive as `\u001b` and `\u0007` text, not as c
 
 **Terminals read some controls as commands.** GNOME Terminal (VTE), the VS Code terminal (xterm.js) and WezTerm read a UTF-8 C1 control such as U+009B as the start of an escape sequence. xterm, kitty, Alacritty, iTerm2 and Windows Terminal ignore it. An ESC-based sequence works everywhere. So `inertLine` shows every control, not the ones one terminal acts on.
 
-**The GitHub Actions runner reads workflow commands in a log.** It reads them on stdout and stderr alike, in two forms. One is a line that starts with `::` once its leading whitespace is trimmed. The other is a legacy `##[command]`, which the runner finds anywhere in a line. A model or a diff could otherwise add an annotation, or mask text in the log: `##[add-mask]e` hides every later `e`. Quorum makes these two forms inert; it does not yet handle the logging commands of other CI systems, such as `##vso[` of Azure Pipelines and `##teamcity[` of TeamCity.
+**The GitHub Actions runner reads workflow commands in a log.** It reads them on stdout and stderr alike, in two forms. One is a line that starts with `::` once its leading whitespace is trimmed. The other is a legacy `##[command]`, which the runner finds anywhere in a line. A model or a diff could otherwise add an annotation, or mask text in the log: `##[add-mask]e` hides every later `e`. Quorum makes these two forms inert; it does not handle the logging commands of other CI systems, such as `##vso[` of Azure Pipelines and `##teamcity[` of TeamCity.
 
 **The runner splits lines on LF and CR.** That is why a CR inside a text is shown too, as the other controls are.
 
@@ -144,6 +144,7 @@ function show(result: QuorumResult): void {
 Pass `events` as `ports.events` of `createQuorum`: [Library API](../95-reference/30-library-api.md#events) has the events.
 
 - **Apply `inertLine` to the whole line you print**, never to its pieces apart. Two inert pieces printed side by side can still meet as `::` or `##[`.
+- **`inertLine` turns every line break into `<U+000A>`**, so a text of several lines, such as a vote's `reasoning`, prints as one long line. To keep its lines, split the text on its line breaks and apply `inertLine` to each one: `text.split('\n').map(line => inertLine(line)).join('\n')`.
 - **For Markdown, HTML or a pull request comment, escape for that format yourself.** Quorum has no Markdown renderer yet.
 - **URLs stay as they are.** `inertLine` leaves them alone, and GitHub's log viewer makes a raw URL clickable. Never follow a link, a mention or a command found in the result.
 

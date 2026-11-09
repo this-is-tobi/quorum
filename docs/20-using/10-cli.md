@@ -17,7 +17,7 @@ git diff origin/main...HEAD | quorum
 - **One argument** is the path of a diff file, read as UTF-8.
 - **No argument** reads the diff from stdin, until it closes. When stdin is a terminal, quorum prints `Error: no diff given` and the usage, and exits `2`, instead of waiting for input.
 - **A second argument** is an error: `Error: unexpected arguments: …` names the extra ones, then the usage, exit `2`.
-- **There are no flags.** Every argument is a file path, so `quorum --help` looks for a file named `--help`, prints `Error: ENOENT: no such file or directory, open '--help'` and the usage, and exits `2`. A file that cannot be read fails the same way.
+- **There are no command-line flags.** Every argument is a file path, so `quorum --help` looks for a file named `--help`, prints `Error: ENOENT: no such file or directory, open '--help'` and the usage, and exits `2`. A file that cannot be read fails the same way.
 
 ## What it reads
 
@@ -74,7 +74,7 @@ The `Error:` line says what failed. With the CLI's research provider, which is n
 | Failure | `Error:` line |
 | --- | --- |
 | The endpoint cannot be reached | `research: request to http://localhost:11434 failed (ECONNREFUSED)` |
-| It answers with an HTTP error | `research: HTTP 503: "model is loading"`, quoting up to 500 characters of the body, which shows its hidden characters as `<U+XXXX>` |
+| It answers with an HTTP error | `research: HTTP 503: "model is loading"`, quoting up to 500 characters of the body; the hidden characters that JSON leaves raw show as `<U+XXXX>` |
 | The model refuses | `research: model refused: "I cannot help with that."` |
 | The content filter stops the reply | `research: reply was stopped by the content filter` |
 | The token limit cuts the reply off | `research: reply was cut off by the token limit` |
