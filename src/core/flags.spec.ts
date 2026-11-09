@@ -50,6 +50,11 @@ describe('diffFlags', () => {
     ])
   })
 
+  it('numbers an added line of a modified file in the new file, past the removed rows', () => {
+    const diff = ['diff --git a/a.js b/a.js', '--- a/a.js', '+++ b/a.js', '@@ -10,5 +10,5 @@', ' ten()', '-old()', '-older()', ' eleven()', '+twelve\u202E()', '+thirteen()', ' end()'].join('\n')
+    expect(flagsOf(diff)).toEqual([{ code: 'hidden-characters', file: 'a.js', line: 12, detail: 'U+202E on 1 added line(s)' }])
+  })
+
   it('flags a file name that holds hidden characters, as git quotes it or not', () => {
     const named = { code: 'hidden-characters', file: 'src/\u202Egnp.js', detail: 'the file name holds U+202E' }
     expect(flagsOf(newFile(['clean()'], 'src/\u202Egnp.js'))).toEqual([named])

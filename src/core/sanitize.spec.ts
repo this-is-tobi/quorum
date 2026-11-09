@@ -31,6 +31,8 @@ describe('inertLine', () => {
     expect(inertLine('::add-mask::secret')).toBe('<U+003A>:add-mask::secret')
     expect(inertLine(' \u00A0::error::x')).toBe(' \u00A0<U+003A>:error::x')
     expect(inertLine('\n::set-env name=x::y')).toBe('<U+000A>::set-env name=x::y')
+    expect(inertLine('\u3000::error::x')).toBe('\u3000<U+003A>:error::x')
+    expect(inertLine('\u0085::error::x')).toBe('<U+0085>::error::x')
     expect(inertLine('note: a::b')).toBe('note: a::b')
   })
 
@@ -76,6 +78,7 @@ describe('inertJson', () => {
 
   it('refuses a value that has no JSON form', () => {
     expect(() => inertJson(undefined)).toThrow(TypeError)
+    expect(() => inertJson(undefined)).toThrow(/^the value has no JSON form$/)
   })
 })
 
