@@ -2,7 +2,7 @@ import { ConfigError } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { endpointUrl, postJson, redactionsOf, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { httpOptionIssues, isRecord, mergeBody, requestHeaders } from './options.ts'
+import { httpOptionIssues, isRecord, mergeBody, requestHeaders, unlessEmpty } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { endedEarly, joinedText, replyFailure, tokenUsage } from './reply.ts'
 
@@ -34,13 +34,12 @@ interface Generation {
 
 /** The generation config of a request, or undefined when it would be empty. */
 function generationConfig({ temperature, maxTokens, structuredOutput }: Generation, output: CompletionRequest['output']): Record<string, unknown> | undefined {
-  const config = {
+  return unlessEmpty({
     temperature: temperature ?? undefined,
     maxOutputTokens: maxTokens,
     responseMimeType: structuredOutput === 'prompt' ? undefined : 'application/json',
     responseJsonSchema: structuredOutput === 'schema' ? output.schema : undefined,
-  }
-  return Object.values(config).every(value => value === undefined) ? undefined : config
+  })
 }
 
 /**

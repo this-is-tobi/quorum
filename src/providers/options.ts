@@ -217,6 +217,11 @@ export function mergeBody(body: Record<string, unknown>, extra: Readonly<Record<
   return merged
 }
 
+/** `fields`, or undefined when every one of them is undefined, so the body leaves out an object that would be empty. */
+export function unlessEmpty(fields: Record<string, unknown>): Record<string, unknown> | undefined {
+  return Object.values(fields).every(value => value === undefined) ? undefined : fields
+}
+
 /** Whether `value` is a non-null object that is not an array. */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
