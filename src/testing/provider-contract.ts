@@ -146,7 +146,7 @@ export function describeProviderContract(subject: ContractSubject): void {
         apiKey: 'sk-zz',
         auth: 'none',
         headers: { 'Content-Type': 'text/plain', 'bad name': 'v', 'X-Token': 'zz-value\n' },
-        extraBody: { [subject.reservedBodyKeys[0] ?? 'model']: 'x' },
+        extraBody: Object.fromEntries(subject.reservedBodyKeys.map(key => [key, 'x'])),
         temperature: Number.NaN,
         maxTokens: 0,
       })
@@ -155,7 +155,7 @@ export function describeProviderContract(subject: ContractSubject): void {
         { path: 'p.headers.Content-Type', message: 'must not be content-type, content-length or host' },
         { path: 'p.headers.bad name', message: 'must be an HTTP header name' },
         { path: 'p.headers.X-Token', message: 'must be a string of printable ASCII characters' },
-        { path: `p.extraBody.${subject.reservedBodyKeys[0] ?? 'model'}`, message: 'is written by the adapter and cannot be replaced' },
+        ...subject.reservedBodyKeys.map(key => ({ path: `p.extraBody.${key}`, message: 'is written by the adapter and cannot be replaced' })),
         { path: 'p.temperature', message: 'must be a finite number, or null to leave it out' },
         { path: 'p.maxTokens', message: 'must be a whole number of at least 1' },
       ])

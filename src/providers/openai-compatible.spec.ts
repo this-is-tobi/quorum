@@ -136,7 +136,8 @@ describe('openaiCompatible', () => {
   it('reads a reply whose error is null as a success, and a server error whose code is not an error status as not retryable', async () => {
     stubFetch({ ...chatCompletion, error: null })
     await expect(provider.complete(request)).resolves.toMatchObject({ text: '{}' })
-    for (const [code, kind, retryable] of [['rate_limit_exceeded', 'invalid-response', false], [200, 'invalid-response', false], [429, 'http', true]] as const) {
+    const notAnErrorStatus = ['rate_limit_exceeded', 200, 399, 600, 502.5, '502'].map(code => [code, 'invalid-response', false] as const)
+    for (const [code, kind, retryable] of [...notAnErrorStatus, [429, 'http', true] as const]) {
       stubFetch({ error: { code, message: 'slow down' } })
       await expect(provider.complete(request), String(code)).rejects.toMatchObject({ kind, retryable })
     }
