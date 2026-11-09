@@ -23,7 +23,7 @@ interface Pattern {
 /**
  * Text that speaks to an AI reviewer instead of a person, in forms rare in ordinary code: the
  * markup of chat templates and tool calls (in the research run, only LLM libraries held any),
- * quorum's own fence tags and reply shapes, and three narrow phrasings. Looser phrasings ("you are
+ * quorum's own fence tags and reply shapes, and four narrow phrasings. Looser phrasings ("you are
  * an AI assistant", "do not report") are common in AI code and in `SECURITY.md` files, so they are
  * left out. A match is a hint, never a defense: a phrase split across lines, written with
  * look-alike letters, in another language or encoded is not matched, and comments that fabricate
@@ -70,7 +70,8 @@ function listed(items: readonly string[]): string {
 /** The labels of the hidden characters of an added line, less the ones the rules leave alone. */
 function lineLabels(text: string, line: number): string[] {
   const shown = line === 1 && text.startsWith(BOM) ? text.slice(BOM.length) : text
-  // A space, not nothing, so that what surrounds an emoji cannot join: two halves of a surrogate pair, or a byte-order mark that would then start line 1.
+  // A space, not nothing, so that what surrounds an emoji cannot join: two halves of a surrogate
+  // pair, or a byte-order mark that would then start line 1.
   return hiddenLabels(shown.replace(EMOJI, ' ')).filter(label => label !== TAB)
 }
 
@@ -84,6 +85,7 @@ function addressedNames(text: string): string[] {
   return AI_ADDRESSED.filter(({ pattern }) => forms.some(form => pattern.test(form))).map(({ name }) => name)
 }
 
+/** The flag of `code` at the first line `tally` counted, or none when it counted no line. */
 function flagOf(code: FlagCode, where: Where, tally: Tally): Flag[] {
   return tally.lines === 0 ? [] : [{ code, ...where, line: tally.first, detail: `${listed([...tally.found])} on ${tally.lines} added line(s)` }]
 }

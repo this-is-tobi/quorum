@@ -44,7 +44,7 @@ export interface Provider {
   complete: (request: CompletionRequest) => Promise<CompletionResponse>
 }
 
-/** Receives every event of a review, synchronously and in order. */
+/** Receives every event of a review, synchronously and in order, each as a copy. */
 export type EventSink = (event: QuorumEvent) => void
 
 /** The providers of one profile: its research provider, and one voter per lens keyed by lens id. */
@@ -56,5 +56,6 @@ export interface ProfilePorts {
 /** What a quorum is wired to: the providers of every profile, keyed by profile id, and an optional event sink. */
 export interface QuorumPorts {
   readonly profiles: Readonly<Record<string, ProfilePorts>>
+  /** The sink that receives every event of a review, synchronously and in order, each as a copy. */
   readonly events?: EventSink
 }

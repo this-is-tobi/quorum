@@ -205,9 +205,15 @@ function progress(event: QuorumEvent): void {
   if (event.type === 'incomplete') console.error(inertLine(`incomplete: ${event.entry.reason} (${event.entry.detail})`))
 }
 
-/** The `Error:` line of a failure, inert: its message can hold text a server sent. */
+/** The `Error:` line of a failure, inert: its message can hold text a server sent, and a value with no text form gets a fixed one. */
 function errorLine(error: unknown): string {
-  return inertLine(`Error: ${error instanceof Error ? error.message : String(error)}`)
+  let message: string
+  try {
+    message = error instanceof Error ? error.message : String(error)
+  } catch {
+    message = 'an error with no text form'
+  }
+  return inertLine(`Error: ${message}`)
 }
 
 /** The CLI's rule: 1 for a kept high finding of a gating profile, 4 for an incomplete review, else 0. */

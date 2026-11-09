@@ -26,7 +26,7 @@ The CLI writes to two streams, and each has its own function. Both act on the sa
 - the other default-ignorable code points, such as variation selectors and Hangul fillers;
 - the line and paragraph separators.
 
-The class leaves out what acts on no terminal and hides no text: the other spaces, which print as spaces; private-use and unassigned code points, which print as a glyph or a box; U+2800 and U+FFFC; and look-alike letters, which no character property finds.
+The class leaves out what acts on no terminal and what no character property marks as invisible: the other spaces, which print as spaces; private-use and unassigned code points, which print as a glyph or a box; U+2800, which prints as a blank, and U+FFFC, which prints as a box; and look-alike letters, which no character property finds. U+2800 and look-alike letters can still hide text from a reader.
 
 - **stdout** is the JSON result, written by `inertJson`. It is what `JSON.stringify` writes, with every hidden character it would leave raw written as a `\uXXXX` escape: DEL, the C1 controls, the format and other default-ignorable characters, and the line and paragraph separators. A `##[` inside a string is written `##\u005b`. A JSON parser reads the escapes back as the characters, so the data is exact. No line of it can start a workflow command: after its indentation, each line starts with a quote, a bracket, a brace or a literal, and none holds `##[`.
 - **stderr**: every line that carries text from outside the CLI passes through `inertLine`: the banner, the progress lines and the `Error:` lines. The usage text and `empty diff: nothing to review` are constants, and the CLI writes them as they are. A hidden character is shown as `<U+XXXX>`, with its code point in upper-case hexadecimal, four digits at least, and a character above U+FFFF as one label. So a line holds no line break of its own and starts no escape sequence, and no character of the class reorders or hides its text. A line that would start with `::`, after any leading whitespace, shows its first colon as `<U+003A>`, and each `##[` shows its bracket as `<U+005B>`.
@@ -66,15 +66,15 @@ The second code knows nine kinds of text, and a flag names each by these words:
 
 - **a chat-template token**: the markup that chat models read as a turn or a tool call, such as the `<|...|>` tokens of ChatML, harmony and Llama 3, Llama's `[INST]` and `<<SYS>>`, Gemma's turn tags, Mistral's tool markers and DeepSeek's tokens in full-width bars;
 - **a tool-call tag**: `<tool_call>`, `<tool_response>`, `<function_calls>`, `<function_results>` or `<invoke name=`;
-- **a fence tag of quorum**: the tag quorum fences a block of data with, such as `<untrusted-diff-1a2b3c4d>`. Nothing else writes one, so it is the strongest signal;
-- **a forged vote reply**: a `keep` and a `reasoning` written in the shape of a voter's reply;
+- **a fence tag of quorum**: the tag quorum fences a block of data with, such as `<untrusted-diff-1a2b3c4d>`, or one of that name without a nonce or with a nonce of another shape, such as `</untrusted-diff>`. Nothing else writes one, so it is the strongest signal;
+- **a forged vote reply**: a `keep` and a `reasoning`, in either order, written in the shape of a voter's reply;
 - **a forged research reply**: an empty `findings` list written in the shape of the finder's reply;
 - **an instruction to ignore earlier instructions**;
 - **an instruction to approve the change**: to mark or treat it as safe, secure, correct or clean;
 - **an instruction not to report it**: not to flag or report the change as a vulnerability, a security issue or a finding;
 - **a note to an AI**: a note, message, memo or reminder addressed to an AI, an LLM or an automated reviewer.
 
-Each kind is matched on one added line at a time, once the line's hidden characters are removed. All but the two forged replies ignore letter case. A phrase split by zero-width characters still matches, and its line raises both flags. Looser phrasings, such as "you are a helpful assistant" or "do not report", are left out: they match ordinary code and docs, the usual sentence of a `SECURITY.md` file included.
+Each kind is matched on one added line at a time, in two forms: with the line's hidden characters removed, and with them read as spaces. The first form finds a phrase with a hidden character inside a word, and the second a phrase with one between words. All nine kinds ignore letter case. A phrase split by zero-width characters still matches, and its line raises both flags. Looser phrasings, such as "you are a helpful assistant" or "do not report", are left out: they match ordinary code and docs, the usual sentence of a `SECURITY.md` file included.
 
 ### Where they look
 
@@ -89,7 +89,7 @@ In an added line, a `hidden-characters` flag does not count:
 - the tab;
 - the line ends of a CRLF file: the diff reader drops the carriage return that ends a row, so one inside a line is still flagged;
 - a byte-order mark that starts the first line of a file;
-- the joiners, variation selectors and tag characters inside an emoji sequence of the Unicode RGI set. That covers sequences joined with a zero-width joiner, emoji presentation, keycaps, skin tones and the three subdivision flags.
+- the joiners, variation selectors and tag characters inside an emoji sequence of the Unicode RGI set. That covers sequences joined with a zero-width joiner, emoji presentation, keycaps, skin tones and the three subdivision flags. The exemption follows the Unicode data of the runtime, so an emoji newer than that data may be flagged on an older runtime.
 
 Everything else in the class is flagged, a lone joiner and variation selectors stacked after an emoji, which can smuggle bytes, included. The name of a file has no exception.
 
@@ -114,7 +114,7 @@ Quorum raises at most one flag per file, code and subject, so a file raises at m
 ### What they are not
 
 - **They change nothing.** No verdict, gap or exit code reads a flag.
-- **They are a hint, not a defense.** A phrase split across lines, written with look-alike letters, in another language or encoded is not matched. The most effective attack in the research, comments that fabricate an analyzer's verdict, reads like an ordinary comment. [Residual risk](./10-threat-model.md#residual-risk) says what remains.
+- **They are a hint, not a defense.** A phrase split across lines, written with look-alike letters, in another language or encoded is not matched. Neither is a phrase with a zero-width character both inside a word and between words, though its line still raises `hidden-characters`. The most effective attack in the research, comments that fabricate an analyzer's verdict, reads like an ordinary comment. [Residual risk](./10-threat-model.md#residual-risk) says what remains.
 - **They flag some honest text.** Text in a script that uses joiners or direction marks, such as Persian or Hindi, raises a `hidden-characters` flag too.
 
 ## Printing a review yourself
@@ -144,7 +144,7 @@ function show(result: QuorumResult): void {
 Pass `events` as `ports.events` of `createQuorum`: [Library API](../95-reference/30-library-api.md#events) has the events.
 
 - **Apply `inertLine` to the whole line you print**, never to its pieces apart. Two inert pieces printed side by side can still meet as `::` or `##[`.
-- **`inertLine` turns every line break into `<U+000A>`**, so a text of several lines, such as a vote's `reasoning`, prints as one long line. To keep its lines, split the text on its line breaks and apply `inertLine` to each one: `text.split('\n').map(line => inertLine(line)).join('\n')`.
+- **`inertLine` shows each line break as its own label**: LF as `<U+000A>`, CR as `<U+000D>`, and U+0085, U+2028 and U+2029 as `<U+0085>`, `<U+2028>` and `<U+2029>`. So a text of several lines, such as a vote's `reasoning`, prints as one long line. To keep its lines, split the text on LF and CRLF and apply `inertLine` to each line: `text.split(/\r?\n/).map(line => inertLine(line)).join('\n')`. The other breaks stay as labels.
 - **For Markdown, HTML or a pull request comment, escape for that format yourself.** Quorum has no Markdown renderer yet.
 - **URLs stay as they are.** `inertLine` leaves them alone, and GitHub's log viewer makes a raw URL clickable. Never follow a link, a mention or a command found in the result.
 
