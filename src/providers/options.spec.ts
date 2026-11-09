@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ConfigIssue } from '../core/errors.ts'
 import { baseUrlIssues, httpOptionIssues, mergeBody, requestHeaders } from './options.ts'
-import type { Auth, HttpProviderOptions } from './options.ts'
+import type { AdapterRules, Auth, HttpProviderOptions } from './options.ts'
 
 describe('baseUrlIssues', () => {
   it('accepts an http or https URL with a host', () => {
@@ -29,9 +29,10 @@ describe('baseUrlIssues', () => {
 
 describe('httpOptionIssues', () => {
   const base = { id: 'p', baseUrl: 'https://h/v1', model: 'm' }
-  /** The issues of `options` over the base ones, under `options.auth` when it names one, as given, and bearer otherwise. */
-  const issuesOf = (options: Record<string, unknown>): ConfigIssue[] =>
-    httpOptionIssues({ ...base, ...options } as HttpProviderOptions, ('auth' in options ? options.auth : 'bearer') as Auth, ['model', 'messages', 'stream'])
+  const rules: AdapterRules = { auth: 'bearer', reservedBodyKeys: ['model', 'messages', 'stream'], toolBodyKeys: ['tools', 'toolConfig'], fixedHeaders: ['x-version'], structuredOutputs: ['prompt', 'json', 'schema'] }
+  /** The issues of `options` over the base ones, under `rules` and `options.auth` when it names one, as given. */
+  const issuesOf = (options: Record<string, unknown>, overrides: Partial<AdapterRules> = {}): ConfigIssue[] =>
+    httpOptionIssues({ ...base, ...options } as HttpProviderOptions, { ...rules, ...('auth' in options ? { auth: options.auth as Auth } : {}), ...overrides })
 
   it.each([['null', null], ['a string', 'abc'], ['an array', ['a']]])('refuses headers or a query that is %s, as it maps no names to strings', (_name, value) => {
     expect(issuesOf({ headers: value })).toEqual([{ path: 'p.headers', message: 'must map names to strings' }])
@@ -67,13 +68,56 @@ describe('httpOptionIssues', () => {
     expect(found).toEqual(issues)
     expect(JSON.stringify(found)).not.toMatch(/sk|secret/)
   })
+
+  it('refuses each extraBody key that offers the model a tool, and each the adapter writes, one issue per key in its order', () => {
+    expect(issuesOf({ extraBody: { toolConfig: {}, top_k: 20, model: 'x', tools: [], chat_template_kwargs: {} } })).toEqual([
+      { path: 'p.extraBody.toolConfig', message: 'offers the model a tool, which quorum never does' },
+      { path: 'p.extraBody.model', message: 'is written by the adapter and cannot be replaced' },
+      { path: 'p.extraBody.tools', message: 'offers the model a tool, which quorum never does' },
+    ])
+  })
+
+  it('matches an extraBody key in any letter case and with or without underscores, as Go and proto JSON servers read it', () => {
+    expect(issuesOf({ extraBody: { Tools: [], tool_config: {}, TOOL_CONFIG: {}, Messages: [], STREAM: true } })).toEqual([
+      { path: 'p.extraBody.Tools', message: 'offers the model a tool, which quorum never does' },
+      { path: 'p.extraBody.tool_config', message: 'offers the model a tool, which quorum never does' },
+      { path: 'p.extraBody.TOOL_CONFIG', message: 'offers the model a tool, which quorum never does' },
+      { path: 'p.extraBody.Messages', message: 'is written by the adapter and cannot be replaced' },
+      { path: 'p.extraBody.STREAM', message: 'is written by the adapter and cannot be replaced' },
+    ])
+  })
+
+  it('folds a key as Go does, so the long s and the Kelvin sign are s and k', () => {
+    const tool = `tool${String.fromCharCode(0x17F)}`
+    const fallback = `fallbac${String.fromCharCode(0x212A)}_credit_token`
+    expect(issuesOf({ extraBody: { [tool]: [], [fallback]: 'x' } }, { toolBodyKeys: ['tools', 'fallback_credit_token'] })).toEqual([
+      { path: `p.extraBody.${tool}`, message: 'offers the model a tool, which quorum never does' },
+      { path: `p.extraBody.${fallback}`, message: 'offers the model a tool, which quorum never does' },
+    ])
+  })
+
+  it('refuses a header the adapter always sends, in any letter case, and a custom auth header that would replace it', () => {
+    expect(issuesOf({ headers: { 'x-version': '1', 'X-VERSION': '2', 'X-Other': '3' } })).toEqual([
+      { path: 'p.headers.x-version', message: 'is set by the adapter and cannot be replaced' },
+      { path: 'p.headers.X-VERSION', message: 'is set by the adapter and cannot be replaced' },
+    ])
+    expect(issuesOf({ auth: { header: 'X-Version' } })).toEqual([{ path: 'p.auth.header', message: 'is set by the adapter and cannot be replaced' }])
+  })
+
+  it('accepts each structured-output mode the protocol supports, and names them when it refuses another', () => {
+    for (const structuredOutput of ['prompt', 'json', 'schema']) expect(issuesOf({ structuredOutput }), structuredOutput).toEqual([])
+    expect(issuesOf({ structuredOutput: 'yaml' })).toEqual([{ path: 'p.structuredOutput', message: 'must be prompt, json or schema' }])
+    expect(issuesOf({ structuredOutput: 1 })).toEqual([{ path: 'p.structuredOutput', message: 'must be prompt, json or schema' }])
+    expect(issuesOf({ structuredOutput: 'json' }, { structuredOutputs: ['prompt', 'schema'] })).toEqual([{ path: 'p.structuredOutput', message: 'must be prompt or schema' }])
+    expect(issuesOf({ structuredOutput: 'json' }, { structuredOutputs: ['prompt'] })).toEqual([{ path: 'p.structuredOutput', message: 'must be prompt' }])
+  })
 })
 
 describe('requestHeaders', () => {
   it('sends basic auth as a custom key header with a Basic prefix, the key the base64 of user:password', () => {
     const auth = { header: 'authorization', prefix: 'Basic ' }
     const apiKey = btoa('user:password')
-    expect(httpOptionIssues({ id: 'p', baseUrl: 'https://h/v1', model: 'm', apiKey, auth }, auth, ['model'])).toEqual([])
+    expect(httpOptionIssues({ id: 'p', baseUrl: 'https://h/v1', model: 'm', apiKey, auth }, { auth, reservedBodyKeys: ['model'], toolBodyKeys: [], fixedHeaders: [], structuredOutputs: ['prompt'] })).toEqual([])
     expect(requestHeaders(auth, apiKey)).toEqual({ authorization: 'Basic dXNlcjpwYXNzd29yZA==' })
   })
 })

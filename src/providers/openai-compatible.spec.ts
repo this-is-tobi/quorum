@@ -46,6 +46,27 @@ describeProviderContract({
     maxTokens: body => body.max_tokens,
   },
   reservedBodyKeys: ['model', 'messages', 'stream'],
+  toolBodyKeys: [
+    'tools',
+    'tool_choice',
+    'parallel_tool_calls',
+    'functions',
+    'function_call',
+    'web_search_options',
+    'plugins',
+    'deferred_tools',
+    'stop_server_tools_when',
+    'x_search_filter',
+    'preset',
+    'search_parameters',
+    'compound_custom',
+    'search_settings',
+    'include_domains',
+    'exclude_domains',
+    'disable_tool_validation',
+    'documents',
+  ],
+  structuredOutputs: ['prompt', 'json', 'schema'],
   mergeProbe: { extraBody: { response_format: { added: true } }, merged: { response_format: { type: 'json_object', added: true } } },
 })
 
@@ -85,9 +106,15 @@ describe('openaiCompatible', () => {
   it('refuses a token-limit field or a structured-output mode it does not know', () => {
     const options = { id: 'x', baseUrl: 'http://h/v1', model: 'm', maxTokensField: 'max_output_tokens', structuredOutput: 'grammar' } as unknown as OpenAICompatibleOptions
     expect(() => openaiCompatible(options)).toThrow(new ConfigError([
-      { path: 'x.maxTokensField', message: 'must be max_tokens or max_completion_tokens' },
       { path: 'x.structuredOutput', message: 'must be prompt, json or schema' },
+      { path: 'x.maxTokensField', message: 'must be max_tokens or max_completion_tokens' },
     ]))
+  })
+
+  it('sends chat_template_kwargs, which sets template variables, such as turning thinking off, and runs nothing on the server', async () => {
+    const fetchMock = stubFetch(ok)
+    await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', extraBody: { chat_template_kwargs: { enable_thinking: false } } }).complete(request)
+    expect(sent(fetchMock).body).toMatchObject({ chat_template_kwargs: { enable_thinking: false } })
   })
 
   it('returns the text, the model the endpoint reports and the usage', async () => {

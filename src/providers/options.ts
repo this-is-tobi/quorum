@@ -9,6 +9,7 @@ const NOT_PRINTABLE_ASCII = /[^\x20-\x7E]/
 /** Headers quorum sets, or the runtime does: no option may replace them. */
 const RESERVED_HEADERS: ReadonlySet<string> = new Set(['content-type', 'content-length', 'host'])
 const SYSTEM_PROMPTS: ReadonlySet<unknown> = new Set(['native', 'inline'])
+const FIXED_HEADER = 'is set by the adapter and cannot be replaced'
 
 /**
  * How a provider sends its key: `Authorization: Bearer <key>`, `x-api-key: <key>`, not at all, or in a
@@ -30,13 +31,17 @@ export interface HttpProviderOptions {
   apiKey?: string
   auth?: Auth
   /**
-   * Extra request headers. They cannot replace `content-type`, `content-length`, `host` or the key header.
-   * Their values are redacted from error messages, as the key is, so a gateway's own credential can go here.
+   * Extra request headers. They cannot replace `content-type`, `content-length`, `host`, the key header or
+   * a header the adapter always sends. Their values are redacted from error messages, as the key is, so a
+   * gateway's own credential can go here.
    */
   headers?: Readonly<Record<string, string>>
   /** Query parameters added to every request URL. They are not redacted from error messages: never put a key here. */
   query?: Readonly<Record<string, string>>
-  /** JSON values deep-merged into the request body last: objects merge key by key, anything else replaces. */
+  /**
+   * JSON values deep-merged into the request body last: objects merge key by key, anything else replaces.
+   * A top-level key cannot replace a field the adapter writes for the conversation, or offer the model a tool.
+   */
   extraBody?: Readonly<Record<string, unknown>>
   /** `null` leaves the field out, for models that reject it. */
   temperature?: number | null
@@ -44,6 +49,20 @@ export interface HttpProviderOptions {
   maxTokens?: number
   systemPrompt?: SystemPrompt
   structuredOutput?: StructuredOutput
+}
+
+/** What an adapter declares of its protocol, which the shared checks hold the options to. */
+export interface AdapterRules {
+  /** The resolved auth style: the option, or the adapter's default. */
+  auth: Auth
+  /** Body fields the adapter writes for the conversation: `extraBody` cannot replace them. */
+  reservedBodyKeys: readonly string[]
+  /** Body fields that would offer the model a tool or a server-side capability: `extraBody` cannot set them. */
+  toolBodyKeys: readonly string[]
+  /** Headers the adapter always sends, lower-cased: `headers` cannot replace them. */
+  fixedHeaders: readonly string[]
+  /** The structured-output modes the protocol supports. */
+  structuredOutputs: readonly StructuredOutput[]
 }
 
 /** A scheme, then a host: URL parsing skips extra slashes, so `https:///v1` would otherwise send the request to a host named `v1`. */
@@ -89,7 +108,7 @@ function isJsonValue(value: unknown): boolean {
   return (prototype === Object.prototype || prototype === null) && Object.entries(value).every(([key, field]) => key !== '__proto__' && isJsonValue(field))
 }
 
-function authIssues(id: string, auth: unknown, apiKey: string | undefined): ConfigIssue[] {
+function authIssues(id: string, auth: unknown, apiKey: string | undefined, fixedHeaders: readonly string[]): ConfigIssue[] {
   if (auth === 'bearer' || auth === 'x-api-key') return []
   if (auth === 'none') return apiKey ? [{ path: `${id}.apiKey`, message: 'is set, but auth is none, so it would never be sent' }] : []
   if (!isRecord(auth) || typeof auth.header !== 'string' || (auth.prefix !== undefined && typeof auth.prefix !== 'string')) {
@@ -98,45 +117,71 @@ function authIssues(id: string, auth: unknown, apiKey: string | undefined): Conf
   const issues: ConfigIssue[] = []
   if (!HEADER_NAME.test(auth.header)) issues.push({ path: `${id}.auth.header`, message: 'must be an HTTP header name' })
   else if (RESERVED_HEADERS.has(auth.header.toLowerCase())) issues.push({ path: `${id}.auth.header`, message: 'must not be content-type, content-length or host' })
+  else if (fixedHeaders.includes(auth.header.toLowerCase())) issues.push({ path: `${id}.auth.header`, message: FIXED_HEADER })
   if (typeof auth.prefix === 'string' && NOT_PRINTABLE_ASCII.test(auth.prefix)) issues.push({ path: `${id}.auth.prefix`, message: 'must only contain printable ASCII characters' })
   return issues
 }
 
-function headerIssues(id: string, headers: Readonly<Record<string, string>>, keyHeader: string | undefined): ConfigIssue[] {
+function headerIssues(id: string, headers: Readonly<Record<string, string>>, keyHeader: string | undefined, fixedHeaders: readonly string[]): ConfigIssue[] {
   return Object.entries(headers).flatMap(([name, value]): ConfigIssue[] => {
     const path = `${id}.headers.${name}`
     if (!HEADER_NAME.test(name)) return [{ path, message: 'must be an HTTP header name' }]
     const lower = name.toLowerCase()
     if (RESERVED_HEADERS.has(lower)) return [{ path, message: 'must not be content-type, content-length or host' }]
     if (lower === keyHeader) return [{ path, message: 'is the header that carries the key: set apiKey instead' }]
+    if (fixedHeaders.includes(lower)) return [{ path, message: FIXED_HEADER }]
     return typeof value === 'string' && !NOT_PRINTABLE_ASCII.test(value) ? [] : [{ path, message: 'must be a string of printable ASCII characters' }]
   })
 }
 
 /**
- * The problems of the options every HTTP adapter shares, `reservedBodyKeys` naming the body fields the
- * adapter writes itself, which `extraBody` cannot replace. No message repeats a value: a key, a header
- * value or a URL can be a secret.
+ * A body key as a lenient server reads it: Go's JSON decoder (Ollama) matches a key in any letter case,
+ * folding U+017F (long s) to `s` and U+212A (Kelvin sign) to `k`, which upper case then lower case does
+ * too; and proto JSON (Gemini) takes a field's snake_case name. So `Tools` and `tool_config` are `tools`
+ * and `toolConfig` there.
  */
-export function httpOptionIssues(options: HttpProviderOptions, auth: Auth, reservedBodyKeys: readonly string[]): ConfigIssue[] {
-  const { id, baseUrl, apiKey, headers, query, extraBody, temperature, maxTokens, systemPrompt } = options
+function bodyKeyForm(key: string): string {
+  return key.toUpperCase().toLowerCase().replaceAll('_', '')
+}
+
+/** The problems of the top-level `extraBody` keys, one per key in its order: a key the adapter writes, or one that offers a tool. */
+function extraBodyIssues(id: string, extraBody: Readonly<Record<string, unknown>>, rules: AdapterRules): ConfigIssue[] {
+  const reserved = new Set(rules.reservedBodyKeys.map(bodyKeyForm))
+  const tools = new Set(rules.toolBodyKeys.map(bodyKeyForm))
+  return Object.keys(extraBody).flatMap((key): ConfigIssue[] => {
+    const path = `${id}.extraBody.${key}`
+    const form = bodyKeyForm(key)
+    if (reserved.has(form)) return [{ path, message: 'is written by the adapter and cannot be replaced' }]
+    return tools.has(form) ? [{ path, message: 'offers the model a tool, which quorum never does' }] : []
+  })
+}
+
+/** The words of a list as a message names them: commas between them, and `or` before the last. */
+function wordList(words: readonly string[]): string {
+  return words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} or ${words.at(-1)}`
+}
+
+/**
+ * The problems of the options every HTTP adapter shares, under the rules the adapter declares. No
+ * message repeats a value: a key, a header value or a URL can be a secret.
+ */
+export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRules): ConfigIssue[] {
+  const { id, baseUrl, apiKey, headers, query, extraBody, temperature, maxTokens, systemPrompt, structuredOutput } = options
+  const { auth, fixedHeaders, structuredOutputs } = rules
   const issues = [...baseUrlIssues(`${id}.baseUrl`, baseUrl)]
   if (apiKey !== undefined && NOT_VISIBLE_ASCII.test(apiKey)) {
     issues.push({ path: `${id}.apiKey`, message: 'must only contain visible ASCII characters, which an HTTP header can carry' })
   }
-  const authProblems = authIssues(id, auth, apiKey)
+  const authProblems = authIssues(id, auth, apiKey, fixedHeaders)
   issues.push(...authProblems)
   if (headers !== undefined && !isRecord(headers)) issues.push({ path: `${id}.headers`, message: 'must map names to strings' })
-  else if (headers !== undefined) issues.push(...headerIssues(id, headers, authProblems.length === 0 ? keyHeaderName(auth) : undefined))
+  else if (headers !== undefined) issues.push(...headerIssues(id, headers, authProblems.length === 0 ? keyHeaderName(auth) : undefined, fixedHeaders))
   if (query !== undefined && (!isRecord(query) || !Object.values(query).every(value => typeof value === 'string'))) {
     issues.push({ path: `${id}.query`, message: 'must map names to strings' })
   }
   if (extraBody !== undefined) {
-    if (!isJsonValue(extraBody) || !isRecord(extraBody)) {
-      issues.push({ path: `${id}.extraBody`, message: 'must be an object of JSON values, with no __proto__ key' })
-    } else {
-      for (const key of reservedBodyKeys.filter(key => Object.hasOwn(extraBody, key))) issues.push({ path: `${id}.extraBody.${key}`, message: 'is written by the adapter and cannot be replaced' })
-    }
+    if (!isJsonValue(extraBody) || !isRecord(extraBody)) issues.push({ path: `${id}.extraBody`, message: 'must be an object of JSON values, with no __proto__ key' })
+    else issues.push(...extraBodyIssues(id, extraBody, rules))
   }
   if (temperature !== undefined && temperature !== null && !Number.isFinite(temperature)) {
     issues.push({ path: `${id}.temperature`, message: 'must be a finite number, or null to leave it out' })
@@ -145,6 +190,9 @@ export function httpOptionIssues(options: HttpProviderOptions, auth: Auth, reser
     issues.push({ path: `${id}.maxTokens`, message: 'must be a whole number of at least 1' })
   }
   if (systemPrompt !== undefined && !SYSTEM_PROMPTS.has(systemPrompt)) issues.push({ path: `${id}.systemPrompt`, message: 'must be native or inline' })
+  if (structuredOutput !== undefined && !structuredOutputs.includes(structuredOutput)) {
+    issues.push({ path: `${id}.structuredOutput`, message: `must be ${wordList(structuredOutputs)}` })
+  }
   return issues
 }
 

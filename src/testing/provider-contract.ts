@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
+import type { ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest, Provider } from '../core/ports.ts'
 import type { Usage } from '../core/types.ts'
-import type { HttpProviderOptions } from '../providers/options.ts'
+import type { HttpProviderOptions, StructuredOutput } from '../providers/options.ts'
 import { jsonReply, textReply } from './http.ts'
 
 type Body = Record<string, unknown>
@@ -25,8 +26,11 @@ export interface ContractSubject {
   fixedHeaders: Readonly<Record<string, string>>
   /** The key header the adapter sends by default, and its value for `key`. */
   defaultKeyHeader: (key: string) => readonly [name: string, value: string]
-  /** Recorded replies, as the protocol sends them: a success whose text is `{}`, with the model and usage it names, a refusal and a truncation. */
-  replies: { ok: unknown, model: string, usage: Usage, refusal: unknown, truncated: unknown }
+  /**
+   * Recorded replies, as the protocol sends them: a success whose text is `{}`, with the model and usage it
+   * names, a truncation and, when the protocol has one, a refusal.
+   */
+  replies: { ok: unknown, model: string, usage: Usage, refusal?: unknown, truncated: unknown }
   /** Where a sent body holds the system text, the first user message, the temperature and the token limit. */
   read: {
     system: (body: Body) => unknown
@@ -36,9 +40,18 @@ export interface ContractSubject {
   }
   /** The body fields the adapter writes for the conversation, which `extraBody` cannot replace. */
   reservedBodyKeys: readonly string[]
-  /** An `extraBody` that adds to an object the adapter writes, and the merged object the body then holds. */
-  mergeProbe: { extraBody: Body, merged: Body }
+  /** The body fields that would offer the model a tool or a server-side capability, which `extraBody` cannot set. */
+  toolBodyKeys: readonly string[]
+  /** The structured-output modes the protocol supports. */
+  structuredOutputs: readonly StructuredOutput[]
+  /**
+   * An `extraBody` that adds to an object the adapter writes, the options under which it writes that
+   * object, and the merged object the body then holds.
+   */
+  mergeProbe: { options?: Partial<HttpProviderOptions>, extraBody: Body, merged: Body }
 }
+
+const MODES: readonly StructuredOutput[] = ['prompt', 'json', 'schema']
 
 const request: CompletionRequest = {
   system: 'instructions',
@@ -49,6 +62,9 @@ const base = { id: 'p', baseUrl: 'https://h.example/v1', model: 'm' }
 
 /** The shared contract every HTTP adapter meets: where the key goes and nowhere else, its options, and its errors. */
 export function describeProviderContract(subject: ContractSubject): void {
+  /** The message that refuses a mode, naming the subject's modes. */
+  const modesMessage = subject.structuredOutputs.length === MODES.length ? 'must be prompt, json or schema' : `must be ${subject.structuredOutputs.join(' or ')}`
+
   describe(`the ${subject.protocol} provider contract`, () => {
     afterEach(() => {
       vi.unstubAllGlobals()
@@ -121,7 +137,7 @@ export function describeProviderContract(subject: ContractSubject): void {
     })
 
     it('deep-merges extraBody into the body last: objects merge key by key, anything else replaces', async () => {
-      const { body } = await send({ extraBody: { ...subject.mergeProbe.extraBody, top_k: 20, list: [2] } })
+      const { body } = await send({ ...subject.mergeProbe.options, extraBody: { ...subject.mergeProbe.extraBody, top_k: 20, list: [2] } })
       expect(body).toMatchObject({ ...subject.mergeProbe.merged, top_k: 20, list: [2] })
     })
 
@@ -131,7 +147,7 @@ export function describeProviderContract(subject: ContractSubject): void {
       const headers: Record<string, string> = { 'X-Team': 'security' }
       const query: Record<string, string> = { 'api-version': '1' }
       const provider = subject.make({ ...base, extraBody, headers, query })
-      Object.assign(extraBody, Object.fromEntries(subject.reservedBodyKeys.map(key => [key, 'x'])), { top_k: 99 })
+      Object.assign(extraBody, Object.fromEntries([...subject.reservedBodyKeys, ...subject.toolBodyKeys].map(key => [key, 'x'])), { top_k: 99 })
       nested.a = 2
       headers['X-Team'] = 'changed'
       headers.Authorization = 'Bearer forged'
@@ -142,24 +158,35 @@ export function describeProviderContract(subject: ContractSubject): void {
     })
 
     it('refuses every bad option at once, before any request, and repeats no value', () => {
+      const fixed = Object.keys(subject.fixedHeaders).map(name => name.toUpperCase())
       const issues = issuesOf({
         apiKey: 'sk-zz',
         auth: 'none',
-        headers: { 'Content-Type': 'text/plain', 'bad name': 'v', 'X-Token': 'zz-value\n' },
-        extraBody: Object.fromEntries(subject.reservedBodyKeys.map(key => [key, 'x'])),
+        headers: { 'Content-Type': 'text/plain', 'bad name': 'v', 'X-Token': 'zz-value\n', ...Object.fromEntries(fixed.map(name => [name, 'zz-fixed'])) },
+        extraBody: Object.fromEntries([...subject.reservedBodyKeys, ...subject.toolBodyKeys].map(key => [key, 'x'])),
         temperature: Number.NaN,
         maxTokens: 0,
+        structuredOutput: 'yaml' as StructuredOutput,
       })
       expect(issues).toEqual([
         { path: 'p.apiKey', message: 'is set, but auth is none, so it would never be sent' },
         { path: 'p.headers.Content-Type', message: 'must not be content-type, content-length or host' },
         { path: 'p.headers.bad name', message: 'must be an HTTP header name' },
         { path: 'p.headers.X-Token', message: 'must be a string of printable ASCII characters' },
+        ...fixed.map(name => ({ path: `p.headers.${name}`, message: 'is set by the adapter and cannot be replaced' })),
         ...subject.reservedBodyKeys.map(key => ({ path: `p.extraBody.${key}`, message: 'is written by the adapter and cannot be replaced' })),
+        ...subject.toolBodyKeys.map(key => ({ path: `p.extraBody.${key}`, message: 'offers the model a tool, which quorum never does' })),
         { path: 'p.temperature', message: 'must be a finite number, or null to leave it out' },
         { path: 'p.maxTokens', message: 'must be a whole number of at least 1' },
+        { path: 'p.structuredOutput', message: modesMessage },
       ])
       expect(JSON.stringify(issues)).not.toContain('zz')
+    })
+
+    it('accepts each structured-output mode the protocol supports, and refuses the others', () => {
+      for (const mode of MODES) {
+        expect(issuesOf({ structuredOutput: mode }), mode).toEqual(subject.structuredOutputs.includes(mode) ? [] : [{ path: 'p.structuredOutput', message: modesMessage }])
+      }
     })
 
     it('refuses an extraBody holding a value with no JSON form', () => {
@@ -202,8 +229,10 @@ export function describeProviderContract(subject: ContractSubject): void {
       await expect(subject.make(base).complete(request)).resolves.toEqual({ text: '{}', model: subject.replies.model, usage: subject.replies.usage })
     })
 
-    it('maps a recorded refusal to a refusal and a recorded truncation to truncated, neither retryable', async () => {
-      for (const [reply, kind] of [[subject.replies.refusal, 'refusal'], [subject.replies.truncated, 'truncated']] as const) {
+    it('maps a recorded refusal, when the protocol has one, to a refusal and a recorded truncation to truncated, neither retryable', async () => {
+      const cases: Array<[unknown, ProviderErrorKind]> = [[subject.replies.truncated, 'truncated']]
+      if (subject.replies.refusal !== undefined) cases.unshift([subject.replies.refusal, 'refusal'])
+      for (const [reply, kind] of cases) {
         vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(reply)))
         await expect(subject.make(base).complete(request), kind).rejects.toMatchObject({ name: 'ProviderError', kind, retryable: false, providerId: 'p' })
       }
