@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { hiddenLabels } from './core/sanitize.ts'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -28,9 +29,8 @@ function links(file: string): string[] {
   return [...prose.matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]).filter(target => !/^[a-z][a-z0-9+.-]*:/i.test(target))
 }
 
-/** Bidirectional controls, zero-width and other invisible format characters, variation selectors, and Unicode tags. */
-const HIDDEN: ReadonlyArray<readonly [number, number]> = [[0x00AD, 0x00AD], [0x061C, 0x061C], [0x180E, 0x180E], [0x200B, 0x200F], [0x202A, 0x202E], [0x2060, 0x2064], [0x2066, 0x2069], [0xFE00, 0xFE0F], [0xFEFF, 0xFEFF], [0xE0000, 0xE007F]]
-const isHidden = (char: string): boolean => HIDDEN.some(([low, high]) => (char.codePointAt(0) ?? 0) >= low && (char.codePointAt(0) ?? 0) <= high)
+/** The code points of the sanitizer's hidden class that a line holds, the tab aside, as `U+XXXX` labels. */
+const hiddenIn = (line: string): string[] => hiddenLabels(line.replaceAll('\t', ''))
 
 describe('the documentation', () => {
   it('resolves every relative link to a file, and every anchor to a heading of that file', () => {
@@ -57,8 +57,11 @@ describe('the documentation', () => {
     expect(pages.filter(page => page !== START && !listed.has(page))).toEqual([])
   })
 
-  it('holds no hidden character in the README or any page', () => {
-    const found = files.flatMap(file => text(file).split('\n').flatMap((line, index) => [...line].some(isHidden) ? [`${file}:${index + 1}`] : []))
+  it('holds no hidden character in the README or any page, but line feeds and tabs', () => {
+    const found = files.flatMap(file => text(file).split('\n').flatMap((line, index) => {
+      const labels = hiddenIn(line)
+      return labels.length > 0 ? [`${file}:${index + 1} holds ${labels.join(', ')}`] : []
+    }))
     expect(found).toEqual([])
   })
 })

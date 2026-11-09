@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { OutputError } from './errors.ts'
+import { HIDDEN_CLASS } from './sanitize.ts'
 import type { FindingDetails, Vote } from './types.ts'
 
 /** Wire shape of one finding. Semantic checks (line >= 1, non-empty file) run after parsing. */
@@ -199,10 +200,10 @@ interface Answer {
  */
 function topLevelObjects(text: string, truncatedAt: number, stage: string, reply: string): Answer[] {
   const found: Answer[] = []
-  // Sticky, so the check reads only what follows the brace: characters a reader cannot see (the
-  // classes `verify.ts` strips from finder text), then a quote or the end of the reply. Linear
+  // Sticky, so the check reads only what follows the brace: whitespace and the characters a reader
+  // cannot see (the hidden class of `sanitize.ts`), then a quote or the end of the reply. Linear
   // over the reply.
-  const objectOpener = /\{[\s\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}]*(?:"|$)/uy
+  const objectOpener = new RegExp(`\\{[\\s${HIDDEN_CLASS}]*(?:"|$)`, 'uy')
   const opensLikeObject = (start: number): boolean => {
     objectOpener.lastIndex = start
     return objectOpener.test(text)
