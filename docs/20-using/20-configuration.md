@@ -21,9 +21,9 @@ A local finder, and a panel on a hosted API:
 
 ```bash
 export RESEARCH_MODEL=qwen3.6:27b
-export VOTER_BASE_URL=https://api.openai.com/v1
-export VOTER_MODEL=gpt-5.4
-export VOTER_API_KEY="$OPENAI_API_KEY"
+export VOTER_BASE_URL=https://api.mistral.ai/v1
+export VOTER_MODEL=mistral-small-latest
+export VOTER_API_KEY="$MISTRAL_API_KEY"
 ```
 
 The `RESEARCH_*` variables never fall back to the `VOTER_*` ones.
@@ -52,10 +52,14 @@ Both providers are built with `openaiCompatible` and its defaults, which no vari
 
 | Setting | Value |
 | --- | --- |
+| `auth` | `bearer`: a key is sent as `Authorization: Bearer <key>` |
 | `temperature` | `0` |
 | `structuredOutput` | `json`: every request asks for a JSON object with `response_format: { "type": "json_object" }` |
+| `systemPrompt` | `native`: the instructions go in a `system` message of their own |
+| `maxTokensField` | `max_tokens`, unused while no `maxTokens` is set |
+| `maxTokens`, `headers`, `query`, `extraBody` | None is set: no token limit, no extra header, no query parameter and nothing merged into the body |
 
-A model that rejects `temperature: 0`, or an endpoint without that JSON mode, cannot be used through these variables. A program builds its provider for a reasoning model with `temperature: null`, which leaves the field out, and `maxTokensField: 'max_completion_tokens'`, the body field that holds its `maxTokens` limit. It can also choose another `structuredOutput`: [the options of `openaiCompatible`](./30-providers.md#options).
+A model that rejects `temperature: 0`, or an endpoint without that JSON mode, cannot be used through these variables. OpenAI's reasoning models are among the models that reject `temperature: 0`, so the CLI cannot use them. A program builds its provider for a reasoning model with `temperature: null`, which leaves the field out, and `maxTokensField: 'max_completion_tokens'`, the body field that holds its `maxTokens` limit. It can also choose another `structuredOutput`: [the options of `openaiCompatible`](./30-providers.md#options).
 
 ## Configuration errors
 
@@ -66,13 +70,15 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `RESEARCH_MODEL: is not set` | No research model, for a blank diff too |
 | `VOTER_MODEL: must be set when VOTER_BASE_URL has another scheme, host or port than RESEARCH_BASE_URL` | A panel on another origin without a model of its own |
 | `research.baseUrl: must be an http:// or https:// URL with a host` | `RESEARCH_BASE_URL` is not an `http://` or `https://` URL with a host; a missing scheme is the usual slip |
-| `research.baseUrl: must not hold a user name or password: send a key with apiKey` | `RESEARCH_BASE_URL` holds a user name or a password; the key goes in `RESEARCH_API_KEY` |
+| `research.baseUrl: must not hold a user name or password: send a key with apiKey` | `RESEARCH_BASE_URL` holds a user name or a password. The CLI sends a key only from `RESEARCH_API_KEY`, as `Authorization: Bearer <key>` |
 | `research.baseUrl: must not hold a query or a fragment` | `RESEARCH_BASE_URL` holds a `?` or a `#`; quorum appends the endpoint's path to the base URL |
 | `research.apiKey: must only contain visible ASCII characters, which an HTTP header can carry` | `RESEARCH_API_KEY`, once trimmed, holds a space, a control character or a character outside ASCII |
 | `voter.baseUrl: must be an http:// or https:// URL with a host` | The same, for the panel's base URL |
-| `voter.baseUrl: must not hold a user name or password: send a key with apiKey` | The same, for the panel's base URL; the key goes in `VOTER_API_KEY` |
+| `voter.baseUrl: must not hold a user name or password: send a key with apiKey` | The same, for the panel's base URL and its key, `VOTER_API_KEY` |
 | `voter.baseUrl: must not hold a query or a fragment` | The same, for the panel's base URL |
 | `voter.apiKey: must only contain visible ASCII characters, which an HTTP header can carry` | The same, for the panel's key |
+
+A server behind basic auth refuses a bearer key, so the CLI cannot reach it. A program can: it sets `auth: { header: 'authorization', prefix: 'Basic ' }` and passes the base64 of `user:password` as `apiKey`, as [The key header](./30-providers.md#the-key-header) shows.
 
 The finder's settings are checked first, then the panel's, and for each the base URL and the key come before the model, so only the first role with a problem is reported. Its base URL and its key problems are reported together, one per line:
 

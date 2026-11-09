@@ -28,7 +28,7 @@ With no tool and no secret in the model path, the incident classes of 2025 and 2
 
 ### A model path with no tool and no secret
 
-A provider receives text and returns text. No tool, function, file or network capability is ever offered to a model, and the request type has no field for one. No environment value, key, token or credential appears in any request: keys live in the adapters, and the core never reads the environment. The suite checks with fake providers that no environment value reaches a request, the key variables of the environment wiring included.
+A provider receives text and returns text. Quorum offers no tool, function, file or network capability to a model, and the request type has no field for one. A program's `extraBody` and `headers` are sent to the vendor as given, so a field there that offers a tool or a server-side capability, such as `tools`, `functions`, OpenRouter's `plugins` or `web_search_options`, breaks this control. No environment value, key, token or credential appears in any request: keys live in the adapters, and the core never reads the environment. The suite checks with fake providers that no environment value reaches a request, the key variables of the environment wiring included.
 
 ### A key sent only to its own endpoint
 
@@ -36,7 +36,7 @@ A provider receives text and returns text. No tool, function, file or network ca
 
 - **A base URL may not carry credentials.** A user name or a password is a configuration error, and the key goes in `apiKey`.
 - **No redirect is followed.** A redirect is an error, so the key header never reaches another endpoint.
-- **Server text is redacted.** The key and the base URL's path are replaced with `[redacted]` in any server text an error quotes. The `query` option is not redacted, so never put a key there.
+- **Server text is redacted.** The key, the base URL's path and the values of the `headers` option are replaced with `[redacted]` in any server text an error quotes. The `query` option is not redacted, so never put a key there.
 
 The CLI's panel inherits the finder's key only while it talks to the same origin, so no fallback carries a key to another endpoint, or from `https` to `http`: [The voter's fallback](../20-using/20-configuration.md#the-voters-fallback).
 
@@ -65,7 +65,7 @@ Each vote request is built only from the finding, the lens's instructions, the d
 
 ### Fenced data and the notices
 
-All the data a model reads, the diff, the claim, the evidence, the diff section and the guidelines, is in the user message, each block fenced with a random nonce it cannot predict. The system message names every block of the request by its exact tag, so a tag planted in the diff is never named, and ends with the notice that fenced content is data and that text asking to skip or approve is suspicious. This is friction, not a control: [Prompts](../20-using/60-prompts.md#fencing-is-friction-not-a-control).
+All the data a model reads, the diff, the claim, the evidence, the diff section and the guidelines, is in the user message, each block fenced with a random nonce it cannot predict. The system message names every block of the request by its exact tag, so a tag planted in the diff is never named, and ends with the notice that fenced content is data and that text asking to skip or approve is suspicious. A provider built with `systemPrompt: 'inline'` sends that system text at the head of the same user message as the data, so the instructions lose the role that sets them apart from it. This is friction, not a control: [Prompts](../20-using/60-prompts.md#fencing-is-friction-not-a-control).
 
 ### `maxFindings` and the concurrency limit
 
