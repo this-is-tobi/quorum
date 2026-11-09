@@ -95,6 +95,16 @@ function errorLines(error: unknown): string {
   return lines.map((line, index) => inertLine(index === 0 ? `Error: ${line}` : line)).join('\n')
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+/**
+ * The text of a failure, for any value a promise can reject with: an `Error`'s message, else the
+ * value's text form, else a fixed text when even that throws, as it does for an object without a
+ * prototype. It never throws, so neither do the lines built from it.
+ */
+export function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  try {
+    return String(error)
+  } catch {
+    return 'an error with no text form'
+  }
 }
