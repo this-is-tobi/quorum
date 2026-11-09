@@ -1,4 +1,5 @@
 import { ConfigError } from '../core/errors.ts'
+import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { endpointUrl, postJson, redactionsOf, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
@@ -24,6 +25,13 @@ const RULES: Omit<AdapterRules, 'auth'> = {
 const CUT_OFF: ReadonlySet<unknown> = new Set(['MAX_TOKENS', 'CONTINUATION'])
 /** The finish reasons of a reply the safety filter stopped. */
 const FILTERED: ReadonlySet<unknown> = new Set(['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'IMAGE_SAFETY'])
+
+/** A `key` query parameter, in any letter case, would put the key in the URL: it travels only in the header `auth` names. */
+function keyParameterIssues(id: string, query: Readonly<Record<string, unknown>>): ConfigIssue[] {
+  return Object.keys(query)
+    .filter(name => name.toLowerCase() === 'key')
+    .map(name => ({ path: `${id}.query.${name}`, message: 'would carry a key in the URL: set apiKey instead' }))
+}
 
 /** What shapes the generation config: the options that set it, and the mode. */
 interface Generation {
@@ -86,6 +94,7 @@ export function gemini(options: GeminiOptions): Provider {
   const { id, baseUrl, model, apiKey, auth = { header: 'x-goog-api-key' } as Auth, headers, query, extraBody, temperature, maxTokens, systemPrompt = 'native', structuredOutput = 'json' } = options
   const modelId = typeof model === 'string' ? model.replace(/^models\//, '') : ''
   const issues = httpOptionIssues(options, { ...RULES, auth })
+  if (isRecord(query)) issues.push(...keyParameterIssues(id, query))
   if (!MODEL_ID.test(modelId)) issues.push({ path: `${id}.model`, message: 'must be a Gemini model id, such as gemini-3.8-flash' })
   if (issues.length > 0) throw new ConfigError(issues)
   // Captured once checked, like the URL and the headers: a caller who changes the options later sends nothing unchecked.

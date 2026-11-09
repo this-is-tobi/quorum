@@ -37,6 +37,7 @@ describe('snippet', () => {
 
   it('redacts a value inside another as one, so the shorter never leaves the rest of the longer', () => {
     expect(snippet('bad key sk-secret', 100, ['sk', 'sk-secret'])).toBe('"bad key [redacted]"')
+    expect(snippet('bad key sk-secret', 100, ['sk-secret', 'sec'])).toBe('"bad key [redacted]"')
   })
 
   it('redacts values that overlap in the text as one run, and every occurrence of a value, overlapping ones included', () => {
@@ -63,9 +64,14 @@ describe('snippet', () => {
   })
 
   it('redacts each form of the text in one pass, so a marker it inserts is never matched again, even by single letters', () => {
-    const text = 'a dead end. '.repeat(5462)
+    // 5461 repeats of 12 characters, the most that fit in the 64 KiB that snippet redacts
+    const text = 'a dead end. '.repeat(5461)
     const expected = text.replace(/[ade]/g, '[redacted]')
     expect(snippet(text, expected.length, ['e', 'd', 'a'])).toBe(JSON.stringify(expected))
+  })
+
+  it('redacts only the first 64 KiB of a longer text, which is more than any quote shows', () => {
+    expect(snippet(`${'x'.repeat(64 * 1024)}sk-secret`, 70_000, ['sk-secret'])).toBe(JSON.stringify('x'.repeat(64 * 1024)))
   })
 
   it('redacts an escaped echo next to a plain one as two runs, since ranges that only touch stay apart', () => {

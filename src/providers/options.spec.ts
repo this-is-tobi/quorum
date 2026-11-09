@@ -69,6 +69,12 @@ describe('httpOptionIssues', () => {
     expect(JSON.stringify(found)).not.toMatch(/sk|secret/)
   })
 
+  it('refuses a query value that is the key, whatever its name', () => {
+    expect(issuesOf({ apiKey: 'sk-1', query: { api_key: 'sk-1', v: '1' } })).toEqual([
+      { path: 'p.query.api_key', message: 'holds the key, which travels only in the header auth names' },
+    ])
+  })
+
   it('refuses each extraBody key that offers the model a tool, and each the adapter writes, one issue per key in its order', () => {
     expect(issuesOf({ extraBody: { toolConfig: {}, top_k: 20, model: 'x', tools: [], chat_template_kwargs: {} } })).toEqual([
       { path: 'p.extraBody.toolConfig', message: 'offers the model a tool, which quorum never does' },
@@ -78,12 +84,14 @@ describe('httpOptionIssues', () => {
   })
 
   it('matches an extraBody key in any letter case and with or without underscores, as Go and proto JSON servers read it', () => {
-    expect(issuesOf({ extraBody: { Tools: [], tool_config: {}, TOOL_CONFIG: {}, Messages: [], STREAM: true } })).toEqual([
+    const longS = `${String.fromCharCode(0x17F)}tream`
+    expect(issuesOf({ extraBody: { Tools: [], tool_config: {}, TOOL_CONFIG: {}, Messages: [], STREAM: true, [longS]: true } })).toEqual([
       { path: 'p.extraBody.Tools', message: 'offers the model a tool, which quorum never does' },
       { path: 'p.extraBody.tool_config', message: 'offers the model a tool, which quorum never does' },
       { path: 'p.extraBody.TOOL_CONFIG', message: 'offers the model a tool, which quorum never does' },
       { path: 'p.extraBody.Messages', message: 'is written by the adapter and cannot be replaced' },
       { path: 'p.extraBody.STREAM', message: 'is written by the adapter and cannot be replaced' },
+      { path: `p.extraBody.${longS}`, message: 'is written by the adapter and cannot be replaced' },
     ])
   })
 
