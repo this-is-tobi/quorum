@@ -94,10 +94,12 @@ describe('runCli', () => {
   })
 
   it('exits 2 for a base URL holding credentials or a query, and prints neither', async () => {
+    const fetchMock = stubModel()
     const { io, stderr } = harness({ stdin: DIFF, env: { ...MODEL, RESEARCH_BASE_URL: 'https://user:pw-secret@h.example/v1?key=q-secret' } })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toContain('Error: research.baseUrl: must not hold a user name or password: send a key with apiKey\nresearch.baseUrl: must not hold a query or a fragment\n')
     expect(stderr()).not.toContain('secret')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('exits 2 when no model is configured', async () => {

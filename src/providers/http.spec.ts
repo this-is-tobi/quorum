@@ -60,6 +60,10 @@ describe('redactionsOf', () => {
     expect(redactionsOf('https://h/tok%20en/v1//', 'sk-1')).toEqual(['sk-1', '/tok%20en/v1', '/tok en/v1'])
   })
 
+  it('lists a path with a stray % as written, since it cannot be decoded', () => {
+    expect(redactionsOf('https://h/a%zz/v1', undefined)).toEqual(['/a%zz/v1'])
+  })
+
   it('lists every value of the caller\'s headers too, once, and no empty one', () => {
     expect(redactionsOf('https://h/v1', 'sk-1', { 'X-Gateway-Token': 'gw-tok-1', 'X-Team': '', 'X-Copy': 'sk-1' })).toEqual(['sk-1', '/v1', 'gw-tok-1'])
   })
