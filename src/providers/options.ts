@@ -156,6 +156,13 @@ function extraBodyIssues(id: string, extraBody: Readonly<Record<string, unknown>
   })
 }
 
+/** The query entries whose value is the key, which travels only in the header `auth` names. No message repeats the value. */
+function queryKeyIssues(id: string, query: Readonly<Record<string, string>>, apiKey: string): ConfigIssue[] {
+  return Object.entries(query)
+    .filter(([, value]) => value === apiKey)
+    .map(([name]) => ({ path: `${id}.query.${name}`, message: 'holds the key, which travels only in the header auth names' }))
+}
+
 /** The words of a list as a message names them: commas between them, and `or` before the last. */
 function wordList(words: readonly string[]): string {
   return words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} or ${words.at(-1)}`
@@ -178,6 +185,8 @@ export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRul
   else if (headers !== undefined) issues.push(...headerIssues(id, headers, authProblems.length === 0 ? keyHeaderName(auth) : undefined, fixedHeaders))
   if (query !== undefined && (!isRecord(query) || !Object.values(query).every(value => typeof value === 'string'))) {
     issues.push({ path: `${id}.query`, message: 'must map names to strings' })
+  } else if (query !== undefined && typeof apiKey === 'string' && apiKey !== '') {
+    issues.push(...queryKeyIssues(id, query, apiKey))
   }
   if (extraBody !== undefined) {
     if (!isJsonValue(extraBody) || !isRecord(extraBody)) issues.push({ path: `${id}.extraBody`, message: 'must be an object of JSON values, with no __proto__ key' })

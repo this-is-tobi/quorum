@@ -58,6 +58,7 @@ describeProviderContract({
     'stop_server_tools_when',
     'x_search_filter',
     'preset',
+    'models',
     'search_parameters',
     'compound_custom',
     'search_settings',

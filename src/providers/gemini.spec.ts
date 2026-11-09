@@ -117,6 +117,10 @@ describe('gemini', () => {
     expect(() => gemini({ ...options, model } as unknown as GeminiOptions)).toThrow(new ConfigError([{ path: 'gemini.model', message: 'must be a Gemini model id, such as gemini-3.8-flash' }]))
   })
 
+  it('refuses a key query parameter in any letter case, which would put a key in the URL', () => {
+    expect(() => gemini({ ...options, query: { KEY: 'x' } })).toThrow(new ConfigError([{ path: 'gemini.query.KEY', message: 'would carry a key in the URL: set apiKey instead' }]))
+  })
+
   it('returns the parts that are not thoughts, joined, with the model version and the usage', async () => {
     stubFetch(withThoughts)
     await expect(provider.complete(request)).resolves.toEqual({ text: '{"keep":false,"reasoning":"r"}', model: 'gemini-3.8-flash', usage: { inputTokens: 1840, outputTokens: 340 } })
@@ -169,7 +173,7 @@ describe('gemini', () => {
     await expect(gemini({ ...options, apiKey: 'KEY_IN_REASON' }).complete(request)).rejects.toMatchObject({ message: 'gemini: prompt was blocked: "[redacted]"' })
   })
 
-  it('quotes the error body of a non-2xx reply, and does not retry a 402 for a depleted prepay balance', async () => {
+  it('quotes the error body of a non-2xx reply, and reports a 402 as not retryable for a depleted prepay balance', async () => {
     stubFetch(invalidKey, 400)
     await expect(provider.complete(request)).rejects.toMatchObject({ kind: 'http', status: 400, retryable: false, message: `gemini: HTTP 400: ${JSON.stringify(JSON.stringify(invalidKey))}` })
     stubFetch({ error: { code: 402, message: 'prepay balance depleted', status: 'RESOURCE_EXHAUSTED' } }, 402)

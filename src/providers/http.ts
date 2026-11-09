@@ -69,21 +69,23 @@ function redactForms(text: string, forms: readonly string[]): string {
 }
 
 /**
- * Server or model text made safe to put in an error message. Escaped ASCII in the text is decoded first,
- * and each value in `redact` is matched as written and with its own escapes decoded, so neither a value
- * that holds an escape nor an escaped echo of one survives. One pass covers every occurrence of every
- * form, overlapping ones included, and replaces each covered range with one marker, so values that
- * overlap in the text are redacted whole, escaped or not, and a marker is never matched again. This
- * catches a server that echoes a value: a server that holds the key can disguise it in any way, which no
- * redaction can catch. Then the text is cut to `max` characters, after the redaction so a value cut in
- * half cannot survive, and written as one JSON string so a line break cannot start a workflow command
- * in a log.
+ * Server or model text made safe to put in an error message. The text is first cut to 64 KiB, as much as
+ * an error body holds and far more than a quote shows, so a 16 MiB reply costs no more to quote than an
+ * error body. Escaped ASCII in what is left is decoded, and each value in `redact` is matched as written
+ * and with its own escapes decoded, so neither a value that holds an escape nor an escaped echo of one
+ * survives. One pass covers every occurrence of every form, overlapping ones included, and replaces each
+ * covered range with one marker, so values that overlap in the text are redacted whole, escaped or not,
+ * and a marker is never matched again. This catches a server that echoes a value: a server that holds
+ * the key can disguise it in any way, which no redaction can catch. Then the text is cut to `max`
+ * characters, after the redaction so a value cut in half cannot survive, and written as one JSON string
+ * so a line break cannot start a workflow command in a log.
  */
 export function snippet(text: string, max: number, redact: readonly string[] = []): string {
+  const head = text.slice(0, MAX_ERROR_BYTES)
   const written = redact.filter(value => value !== '').flatMap(echoedForms)
-  if (written.length === 0) return JSON.stringify(text.slice(0, max))
+  if (written.length === 0) return JSON.stringify(head.slice(0, max))
   const forms = [...new Set([...written, ...written.map(decodeEscapedAscii)])]
-  return JSON.stringify(redactForms(decodeEscapedAscii(text), forms).slice(0, max))
+  return JSON.stringify(redactForms(decodeEscapedAscii(head), forms).slice(0, max))
 }
 
 /** The URL of an endpoint: the base URL without its trailing slashes, the endpoint's path, then the query. */
