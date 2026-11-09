@@ -5,7 +5,7 @@ import type { Usage } from '../core/types.ts'
 import { endpointUrl, postJson, redactionsOf, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
 import { httpOptionIssues, isRecord, mergeBody, requestHeaders } from './options.ts'
-import type { Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
+import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 
 /** The options of an OpenAI-compatible provider. */
 export interface OpenAICompatibleOptions extends HttpProviderOptions {
@@ -14,10 +14,38 @@ export interface OpenAICompatibleOptions extends HttpProviderOptions {
 }
 
 const MAX_MODEL_TEXT = 200
-/** The body fields the adapter writes for the conversation, which `extraBody` cannot replace. */
-const RESERVED_BODY_KEYS = ['model', 'messages', 'stream']
+/**
+ * The protocol's rules. The tool fields are the union over the OpenAI-compatible vendors: OpenAI's and
+ * the others' function tools and web search, OpenRouter's plugins, server-tool loop and presets, xAI's
+ * live search and Groq's built-in tools. Not `chat_template_kwargs`, which sets chat-template variables,
+ * such as turning thinking off on vLLM or Together, and runs nothing on the server.
+ */
+const RULES: Omit<AdapterRules, 'auth'> = {
+  reservedBodyKeys: ['model', 'messages', 'stream'],
+  toolBodyKeys: [
+    'tools',
+    'tool_choice',
+    'parallel_tool_calls',
+    'functions',
+    'function_call',
+    'web_search_options',
+    'plugins',
+    'deferred_tools',
+    'stop_server_tools_when',
+    'x_search_filter',
+    'preset',
+    'search_parameters',
+    'compound_custom',
+    'search_settings',
+    'include_domains',
+    'exclude_domains',
+    'disable_tool_validation',
+    'documents',
+  ],
+  fixedHeaders: [],
+  structuredOutputs: ['prompt', 'json', 'schema'],
+}
 const MAX_TOKENS_FIELDS: ReadonlySet<unknown> = new Set(['max_tokens', 'max_completion_tokens'])
-const STRUCTURED_OUTPUTS: ReadonlySet<unknown> = new Set(['prompt', 'json', 'schema'])
 
 function responseFormat(mode: StructuredOutput, output: CompletionRequest['output']): unknown {
   if (mode === 'json') return { type: 'json_object' }
@@ -100,9 +128,8 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
  */
 export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
   const { id, baseUrl, model, apiKey, auth = 'bearer' as Auth, headers, query, extraBody, temperature = 0, maxTokens, maxTokensField = 'max_tokens', systemPrompt = 'native', structuredOutput = 'json' } = options
-  const issues = httpOptionIssues(options, auth, RESERVED_BODY_KEYS)
+  const issues = httpOptionIssues(options, { ...RULES, auth })
   if (!MAX_TOKENS_FIELDS.has(maxTokensField)) issues.push({ path: `${id}.maxTokensField`, message: 'must be max_tokens or max_completion_tokens' })
-  if (!STRUCTURED_OUTPUTS.has(structuredOutput)) issues.push({ path: `${id}.structuredOutput`, message: 'must be prompt, json or schema' })
   if (issues.length > 0) throw new ConfigError(issues)
   // Captured once checked, like the URL and the headers: a caller who changes the options later sends nothing unchecked.
   const extra = extraBody === undefined ? undefined : structuredClone(extraBody)
