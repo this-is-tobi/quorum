@@ -46,6 +46,8 @@ export type { OllamaOptions } from './providers/ollama.ts'
 export { openaiCompatible } from './providers/openai-compatible.ts'
 export type { OpenAICompatibleOptions } from './providers/openai-compatible.ts'
 export type { Auth, HttpProviderOptions, StructuredOutput } from './providers/options.ts'
+export { presets } from './providers/presets.ts'
+export type { Preset, PresetName, Protocol } from './providers/presets.ts'
 
 /**
  * Review a diff with the security profile and providers built from the RESEARCH_* / VOTER_*
