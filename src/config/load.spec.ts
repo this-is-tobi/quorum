@@ -3,10 +3,11 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { readConfigFile } from './load.ts'
+import { configFileSchema } from './schema.ts'
 
 const SECRET = 'sk-planted-secret'
 const TAB = String.fromCharCode(9)
@@ -132,6 +133,23 @@ describe('readConfigFile', () => {
     file('key.yaml', `providers:\n  p: {preset: openai, apiKey: ${SECRET}}\n`)
     expect(await issuesOf('key.yaml')).toEqual([{ path: 'key.yaml: providers.p.apiKey', message: 'is not a known field' }])
   })
+
+  it.each([
+    ['an error', new RangeError(SECRET), 'could not be checked (RangeError)'],
+    ['a string', SECRET, 'could not be checked (a value that is not an error)'],
+  ])('reports %s thrown by the schema check of a data file by its name, at the file', async (_name, thrown, message) => {
+    file('quorum.yaml', 'concurrency: 1\n')
+    const safeParse = vi.spyOn(configFileSchema, 'safeParse').mockImplementation(() => {
+      throw thrown
+    })
+    try {
+      const issues = await issuesOf('quorum.yaml')
+      expect(issues).toEqual([{ path: 'quorum.yaml', message }])
+      expect(JSON.stringify(issues)).not.toContain('planted')
+    } finally {
+      safeParse.mockRestore()
+    }
+  })
 })
 
 describe('readConfigFile on YAML', () => {
@@ -246,6 +264,55 @@ describe('readConfigFile on a wide mapping', () => {
   })
 })
 
+describe('readConfigFile on a deep file', () => {
+  const LEVELS = 5000
+
+  // Under Node the parser may refuse a file this deep with its own resource issue before any walk of ours;
+  // under Bun it reads it whole, and only the check of the duplicate keys, which stops at the depth limit, keeps it fast.
+  it('refuses JSON nested 5000 deep within a second', async () => {
+    file('deep.json', `${'{"a":'.repeat(LEVELS)}1${'}'.repeat(LEVELS)}`)
+    const started = performance.now()
+    expect(await issuesOf('deep.json')).not.toEqual([])
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
+
+  it('refuses YAML nested 5000 deep within a second', async () => {
+    file('deep.yaml', `a: ${'['.repeat(LEVELS)}${']'.repeat(LEVELS)}\n`)
+    const started = performance.now()
+    expect(await issuesOf('deep.yaml')).not.toEqual([])
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
+})
+
+describe('readConfigFile on a file of many values', () => {
+  const MANY = { path: 'many.json', message: 'holds more than 10000 values' }
+
+  /** A JSON config whose one profile holds `count` empty lenses: the schema finds two issues in each. */
+  const lenses = (count: number): string => `{"version":1,"profiles":{"p":{"lenses":[${Array.from<string>({ length: count }).fill('{}').join(',')}]}}}`
+  /** A JSON config of `count` headers, which holds `count` + 4 values: the root, providers, one provider and its headers. */
+  const headers = (count: number): string => JSON.stringify({ providers: { p: { headers: Object.fromEntries(Array.from({ length: count }, (_, index) => [`h${index}`, 'v'])) } } })
+
+  it('refuses a file of more than 10000 values with one issue at the file', async () => {
+    // 205 KiB, whose 140000 schema issues were more than the runtime takes in one call.
+    file('many.json', lenses(70_000))
+    expect(await issuesOf('many.json')).toEqual([MANY])
+  })
+
+  it('reads a config of exactly 10000 values, and refuses one with a value more', async () => {
+    file('full.json', headers(9996))
+    file('many.json', headers(9997))
+    expect(await issuesOf('full.json')).toEqual([])
+    expect(await issuesOf('many.json')).toEqual([MANY])
+  })
+
+  it('refuses a code config that refers to itself twice', async () => {
+    file('self.mts', 'const a = {}\na.l = a\na.r = a\nexport default a\n')
+    const started = performance.now()
+    expect(await issuesOf('self.mts')).toEqual([{ path: 'self.mts', message: 'holds more than 10000 values' }])
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
+})
+
 describe('readConfigFile on a __proto__ key', () => {
   const PROTO = 'is not allowed as a key: it can replace the prototype of an object'
 
@@ -258,6 +325,8 @@ describe('readConfigFile on a __proto__ key', () => {
     ['headers.json', '{"providers": {"a": {"headers": {"__proto__": {"polluted": "yes"}}}}}', 'providers.a.headers.__proto__'],
     ['extra.yaml', 'providers:\n  a:\n    extraBody: {options: {__proto__: {polluted: true}}}\n', 'providers.a.extraBody.options.__proto__'],
     ['extra.json', '{"providers": {"a": {"extraBody": {"options": {"__proto__": {"polluted": true}}}}}}', 'providers.a.extraBody.options.__proto__'],
+    ['query.yaml', 'providers:\n  a:\n    query: {__proto__: {polluted: "yes"}}\n', 'providers.a.query.__proto__'],
+    ['query.json', '{"providers": {"a": {"query": {"__proto__": {"polluted": "yes"}}}}}', 'providers.a.query.__proto__'],
     ['quoted.yaml', 'profiles:\n  t:\n    lenses:\n      - {"__proto__": {polluted: true}}\n', 'profiles.t.lenses.0.__proto__'],
   ])('refuses the key in %s at its path, and changes no prototype', async (name, content, path) => {
     file(name, content)
@@ -420,6 +489,15 @@ describe('readConfigFile on prompt files', () => {
     // A further file that does not exist: reading stops at the 17th, so it is never opened.
     file('quorum.json', profilesNaming([...names, 'missing.md']))
     expect(await issuesOf('quorum.json')).toEqual([{ path: 'quorum.json: profiles.p16.prompts.research.file', message: 'takes the prompt files over 1 MiB in total' }])
+  })
+
+  it('counts an oversized prompt file as 64 KiB toward the total', async () => {
+    const names = Array.from({ length: 20 }, (_, index) => file(`big${index}.md`, 'x'.repeat(65 * 1024)))
+    file('quorum.json', profilesNaming(names))
+    expect(await issuesOf('quorum.json')).toEqual([
+      ...Array.from({ length: 16 }, (_, index) => ({ path: `quorum.json: profiles.p${index}.prompts.research.file`, message: 'is over 64 KiB' })),
+      { path: 'quorum.json: profiles.p16.prompts.research.file', message: 'takes the prompt files over 1 MiB in total' },
+    ])
   })
 })
 
