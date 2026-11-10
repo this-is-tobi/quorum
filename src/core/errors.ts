@@ -27,12 +27,34 @@ export interface ConfigIssue {
   message: string
 }
 
-/** Invalid configuration or usage, carrying every issue at once. The CLI maps it to exit code 2. */
+/** A path segment a message may print: a record key is the user's text, and a pasted secret could be one. */
+const SAFE_SEGMENT = /^[\w$-]{1,64}$/
+
+/** True for an index, or a name of 1 to 64 ASCII letters, digits, `_`, `$` and `-`: the only segments an issue path prints as written. */
+export function isSafeSegment(segment: PropertyKey): boolean {
+  return typeof segment === 'number' || (typeof segment === 'string' && SAFE_SEGMENT.test(segment))
+}
+
+/** A path as an issue names it: its segments joined with `.`, each one that is not a safe segment printed as `*`. */
+export function issuePath(segments: readonly PropertyKey[]): string {
+  return segments.map(segment => isSafeSegment(segment) ? String(segment) : '*').join('.')
+}
+
+/** The issues a `ConfigError` message lists: a config of thousands of values can carry as many issues. */
+const LISTED_ISSUES = 50
+
+/**
+ * Invalid configuration or usage, carrying every issue at once in `issues`. The message lists the first
+ * 50 of them, one per line, and counts the rest. The CLI maps it to exit code 2.
+ */
 export class ConfigError extends QuorumError {
   readonly issues: readonly ConfigIssue[]
 
   constructor(issues: readonly ConfigIssue[]) {
-    super(issues.map(issue => (issue.path ? `${issue.path}: ${issue.message}` : issue.message)).join('\n'))
+    const lines = issues.slice(0, LISTED_ISSUES).map(issue => (issue.path ? `${issue.path}: ${issue.message}` : issue.message))
+    const rest = issues.length - LISTED_ISSUES
+    if (rest > 0) lines.push(`and ${rest} more issue${rest === 1 ? '' : 's'}`)
+    super(lines.join('\n'))
     this.issues = issues
   }
 }

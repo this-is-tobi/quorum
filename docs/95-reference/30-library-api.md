@@ -159,7 +159,7 @@ An aborted review never resolves, and never fails open:
 | Class | Extends | Fields | Thrown for |
 | --- | --- | --- | --- |
 | `QuorumError` | `Error` | `name`, the class's own name | The base of every error quorum raises on purpose |
-| `ConfigError` | `QuorumError` | `issues`, each a `{ path, message }`; the message holds one `path: message` line per issue | Invalid configuration or input, every issue at once. The CLI exits `2` on it |
+| `ConfigError` | `QuorumError` | `issues`, each a `{ path, message }`, every one; the message holds one `path: message` line per issue for the first 50, then `and <n> more issues` | Invalid configuration or input, every issue at once. The CLI exits `2` on it |
 | `ProviderError` | `QuorumError` | `providerId`, `kind`, `status`, `retryable` | A provider call that failed: [`ProviderError`](../20-using/30-providers.md#providererror) |
 | `OutputError` | `QuorumError` | `stage`, `reason`; `snippet`, the first 200 characters of the reply | A model reply that could not be read: `<stage> reply unusable: <reason> (reply starts: "<snippet>")` |
 

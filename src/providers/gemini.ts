@@ -1,3 +1,4 @@
+import { issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson, snippet } from './http.ts'
@@ -31,7 +32,7 @@ const FILTERED: ReadonlySet<unknown> = new Set(['SAFETY', 'RECITATION', 'BLOCKLI
 function keyParameterIssues(id: string, query: Readonly<Record<string, unknown>>): ConfigIssue[] {
   return Object.keys(query)
     .filter(name => name.toLowerCase() === 'key')
-    .map(name => ({ path: `${id}.query.${name}`, message: 'would carry a key in the URL: set apiKey instead' }))
+    .map(name => ({ path: `${id}.${issuePath(['query', name])}`, message: 'would carry a key in the URL: set apiKey instead' }))
 }
 
 /** What shapes the generation config: the options that set it, and the mode. */

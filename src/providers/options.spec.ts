@@ -96,7 +96,7 @@ describe('httpOptionIssues', () => {
       { path: 'p.extraBody.TOOL_CONFIG', message: 'offers the model a tool, which quorum never does' },
       { path: 'p.extraBody.Messages', message: 'is written by the adapter and cannot be replaced' },
       { path: 'p.extraBody.STREAM', message: 'is written by the adapter and cannot be replaced' },
-      { path: `p.extraBody.${longS}`, message: 'is written by the adapter and cannot be replaced' },
+      { path: 'p.extraBody.*', message: 'is written by the adapter and cannot be replaced' },
     ])
   })
 
@@ -104,9 +104,19 @@ describe('httpOptionIssues', () => {
     const tool = `tool${String.fromCharCode(0x17F)}`
     const fallback = `fallbac${String.fromCharCode(0x212A)}_credit_token`
     expect(issuesOf({ extraBody: { [tool]: [], [fallback]: 'x' } }, { toolBodyKeys: ['tools', 'fallback_credit_token'] })).toEqual([
-      { path: `p.extraBody.${tool}`, message: 'offers the model a tool, which quorum never does' },
-      { path: `p.extraBody.${fallback}`, message: 'offers the model a tool, which quorum never does' },
+      { path: 'p.extraBody.*', message: 'offers the model a tool, which quorum never does' },
+      { path: 'p.extraBody.*', message: 'offers the model a tool, which quorum never does' },
     ])
+  })
+
+  it('prints a header name, a body key or a query name that is not a safe name as *, since it could be a pasted secret', () => {
+    const token = `sk-${'a'.repeat(70)}`
+    expect(issuesOf({ headers: { [token]: `v${String.fromCharCode(1)}`, [`x${String.fromCharCode(10)}y`]: 'v' } })).toEqual([
+      { path: 'p.headers.*', message: 'must be a string of printable ASCII characters' },
+      { path: 'p.headers.*', message: 'must be an HTTP header name' },
+    ])
+    expect(issuesOf({ extraBody: { [`tool${String.fromCharCode(0x17F)}`]: [] } })).toEqual([{ path: 'p.extraBody.*', message: 'offers the model a tool, which quorum never does' }])
+    expect(issuesOf({ apiKey: 'sk-k', query: { [token]: 'sk-k' } })).toEqual([{ path: 'p.query.*', message: 'holds the key, which travels only in the header auth names' }])
   })
 
   it('refuses a header the adapter always sends, in any letter case, and a custom auth header that would replace it', () => {

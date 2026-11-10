@@ -227,6 +227,8 @@ Each adapter checks its options when it is called, before any request, and throw
 
 `is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, and `model` and a `key` query parameter by `gemini` only.
 
+A header name, an `extraBody` key or a `query` name is printed in a path only when it is a safe name, at most 64 ASCII letters, digits, `_`, `$` and `-`. Any other prints as `*`, since a secret pasted as a name would otherwise show.
+
 ## `openaiCompatible`
 
 For any OpenAI-compatible `/chat/completions` endpoint. The hosted provider of [The adapters](#the-adapters) sets `temperature: null` and `maxTokensField: 'max_completion_tokens'`, as the `openai` preset does, because OpenAI's reasoning models reject a `temperature`, and OpenAI deprecates `max_tokens` for every model.

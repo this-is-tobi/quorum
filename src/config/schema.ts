@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { ConfigError } from '../core/errors.ts'
+import { ConfigError, isSafeSegment, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { JsonSchema, Provider } from '../core/ports.ts'
 import { securityProfile } from '../profiles/security.ts'
@@ -13,8 +13,6 @@ const NAME = /^[a-z][a-z0-9_-]*$/
 /** An environment variable name, as a POSIX shell takes one. A JSON Schema pattern takes no flags, and messages print it as written. */
 // eslint-disable-next-line regexp/use-ignore-case, regexp/prefer-w
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
-/** A path segment a message may print: a record key is the user's text, and a pasted secret could be one. */
-const SAFE_SEGMENT = /^[\w$-]{1,64}$/
 
 /** Every protocol, as a record, so the type checker reports a protocol this list misses. */
 const PROTOCOLS: Readonly<Record<Protocol, true>> = { 'openai-compatible': true, anthropic: true, gemini: true, ollama: true }
@@ -167,7 +165,7 @@ function wording(issue: z.core.$ZodRawIssue): string | undefined {
 
 /** A path as an issue names it: its segments joined with `.`, each one that is not a safe name or an index printed as `*`, after `prefix` and `: `. */
 export function configPath(segments: readonly PropertyKey[], prefix?: string): string {
-  const path = segments.map(key => typeof key === 'number' || (typeof key === 'string' && SAFE_SEGMENT.test(key)) ? String(key) : '*').join('.')
+  const path = issuePath(segments)
   if (prefix === undefined) return path
   return path === '' ? prefix : `${prefix}: ${path}`
 }
@@ -191,7 +189,7 @@ function shapedOption(options: readonly (readonly z.core.$ZodIssue[])[]): readon
 function issuesOf(issue: z.core.$ZodIssue, base: readonly PropertyKey[], prefix: string | undefined): ConfigIssue[] {
   const path = [...base, ...issue.path]
   if (issue.code === 'unrecognized_keys') {
-    const known = issue.keys.filter(key => SAFE_SEGMENT.test(key)).map(key => ({ path: configPath([...path, key], prefix), message: 'is not a known field' }))
+    const known = issue.keys.filter(key => isSafeSegment(key)).map(key => ({ path: configPath([...path, key], prefix), message: 'is not a known field' }))
     return known.length < issue.keys.length ? [...known, { path: configPath(path, prefix), message: 'holds a field that is not known' }] : known
   }
   const shaped = issue.code === 'invalid_union' ? shapedOption(issue.errors) : undefined
