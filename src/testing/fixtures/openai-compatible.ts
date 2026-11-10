@@ -51,3 +51,38 @@ export const mistralChunks = {
 
 /** The error body LM Studio sends when it refuses a request: a bare string. Ollama's native API sends the same shape. */
 export const stringError = { error: '\'response_format.type\' must be \'json_schema\' or \'text\'' }
+
+/**
+ * Groq's reply from `openai/gpt-oss-120b` after a browser search the model ran by itself, with no `tools`
+ * in the request: each tool call in `message.executed_tools`, beside the content (Groq's built-in tools page).
+ */
+export const groqBrowserSearch = {
+  id: 'chatcmpl-0f3c9a52-7d1e-4b8a-9c6f-2e5d8b1a4c7e',
+  object: 'chat.completion',
+  created: 1762651234,
+  model: 'openai/gpt-oss-120b',
+  choices: [{
+    index: 0,
+    message: {
+      role: 'assistant',
+      content: '{}',
+      reasoning: 'Search for the advisory first.',
+      executed_tools: [{ index: 0, type: 'browser_search', arguments: '{"query":"exec command injection advisory"}', output: 'Title: Advisory' }],
+    },
+    logprobs: null,
+    finish_reason: 'stop',
+  }],
+  usage: { prompt_tokens: 220, completion_tokens: 40, total_tokens: 260 },
+}
+
+/** A reply of OpenAI's search model, which searches before every answer: the sources it used as `url_citation` annotations (`ChatCompletionResponseMessage.annotations`). */
+export const searchCitations = {
+  ...chatCompletion,
+  model: 'gpt-5-search-api',
+  choices: [{
+    index: 0,
+    message: { role: 'assistant', content: '{}', refusal: null, annotations: [{ type: 'url_citation', url_citation: { start_index: 0, end_index: 2, title: 'Advisory', url: 'https://advisories.example/1' } }] },
+    logprobs: null,
+    finish_reason: 'stop',
+  }],
+}

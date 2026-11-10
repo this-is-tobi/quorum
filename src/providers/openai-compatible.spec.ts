@@ -4,7 +4,7 @@ import type { CompletionRequest } from '../core/ports.ts'
 import { sent, stubFetch } from '../testing/http.ts'
 import { openaiCompatible } from './openai-compatible.ts'
 import type { OpenAICompatibleOptions } from './openai-compatible.ts'
-import { chatCompletion, mistralChunks, openRouterGenerationError, refusal, stringError, truncated } from '../testing/fixtures/openai-compatible.ts'
+import { chatCompletion, groqBrowserSearch, mistralChunks, openRouterGenerationError, refusal, searchCitations, stringError, truncated } from '../testing/fixtures/openai-compatible.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
 
 const request: CompletionRequest = {
@@ -55,6 +55,7 @@ describeProviderContract({
     'exclude_domains',
     'disable_tool_validation',
     'documents',
+    'data_sources',
   ],
   structuredOutputs: ['prompt', 'json', 'schema'],
   mergeProbe: { extraBody: { response_format: { added: true } }, merged: { response_format: { type: 'json_object', added: true } } },
@@ -184,6 +185,39 @@ describe('openaiCompatible', () => {
       expect([...message].some(char => char.charCodeAt(0) < 32)).toBe(false)
       expect(message).toContain('::error::forged')
     }
+  })
+
+  const ranTool = 'the server ran a tool for this reply, which quorum never allows'
+  const withMessage = (fields: Body): Body => ({ choices: [{ finish_reason: 'stop', message: { content: '{}', ...fields } }] })
+
+  it('fails a reply that shows a tool the server ran, Groq\'s executed_tools or a url_citation annotation, as not retryable', async () => {
+    const shapes = [searchCitations, withMessage({ executed_tools: [{}] }), withMessage({ annotations: [null, { type: 'file_citation' }, { type: 'url_citation' }] })]
+    for (const body of shapes) {
+      stubFetch(body)
+      await expect(provider.complete(request)).rejects.toMatchObject({ name: 'ProviderError', kind: 'invalid-response', retryable: false, message: `local: ${ranTool}` })
+    }
+  })
+
+  it('fails Groq\'s reply of gpt-oss after a browser search it ran by itself, though no preset refused the model id', async () => {
+    stubFetch(groqBrowserSearch)
+    const groq = openaiCompatible({ id: 'groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'openai/gpt-oss-120b', apiKey: 'gsk-k' })
+    await expect(groq.complete(request)).rejects.toMatchObject({ name: 'ProviderError', kind: 'invalid-response', retryable: false, message: `groq: ${ranTool}` })
+  })
+
+  it('reads as a success an empty executed_tools, one that is not an array, and annotations without a url_citation', async () => {
+    for (const fields of [{ executed_tools: [] }, { executed_tools: null }, { executed_tools: {} }, { annotations: [] }, { annotations: [null, 'url_citation', { type: 'file_citation' }] }]) {
+      stubFetch(withMessage(fields))
+      await expect(provider.complete(request), JSON.stringify(fields)).resolves.toMatchObject({ text: '{}' })
+    }
+  })
+
+  it('reads a server error before a tool the server ran, and that tool before a refusal or a finish reason', async () => {
+    stubFetch({ error: { message: 'model not found' }, ...withMessage({ executed_tools: [{}] }) })
+    await expect(provider.complete(request)).rejects.toMatchObject({ message: 'local: server error: "model not found"' })
+    stubFetch(withMessage({ content: null, refusal: 'no', executed_tools: [{}] }))
+    await expect(provider.complete(request)).rejects.toMatchObject({ message: `local: ${ranTool}` })
+    stubFetch({ choices: [{ finish_reason: 'length', message: { content: '{"kee', annotations: [{ type: 'url_citation' }] } }] })
+    await expect(provider.complete(request)).rejects.toMatchObject({ message: `local: ${ranTool}` })
   })
 
   it('redacts the key from a refusal or a server error that echoes it', async () => {
