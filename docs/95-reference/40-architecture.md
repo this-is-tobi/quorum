@@ -11,9 +11,11 @@ How the code is laid out, which module may depend on which, what happens in a re
 | The rest of `src/core/` | `policy.ts`: the rules, thresholds, confidence and where a verdict lands. `profile.ts`: the profile checks and warnings. `prompts.ts`: templates, fences and the notices. `output.ts`: the strict parsing of replies. `diff.ts`: splitting a diff and locating a line in it. `verify.ts`: checking findings against the diff, and their evidence. `concurrency.ts`: the shared limiter. `sanitize.ts`: the hidden-character class, and the inert rendering of a line and of JSON. `flags.ts`: the advisory flags read from the diff |
 | `src/profiles/` | Profiles, as data: `security.ts` |
 | `src/providers/` | Adapters behind the `Provider` port, and what they share. `openai-compatible.ts`, `anthropic.ts`, `gemini.ts` and `ollama.ts` are the adapters, each with the reader of its replies. `http.ts` is the request: no redirect is followed, reads are capped, every failure becomes a `ProviderError`, and the key, the base URL's path and the header values are redacted from what a server sends back. `options.ts` holds the shared options and their checks, under the rules each adapter declares: the body fields it writes, its tool fields, the headers it always sends and its structured-output modes; and `prepareHttp`, which runs those checks, then the adapter's own, and builds what every request sends, the URL, the headers, the values to redact and a copy of `extraBody`. `presets.ts` holds the presets, frozen data. `build.ts` builds a provider from a spec that names a preset or a protocol, after the spec's checks and the adapter's; it is not exported from the package, since the configuration file still to come calls it. `reply.ts` holds what the readers share: the failure, the token counts, the message of a reply that ended early, and the joined text of its parts. `messages.ts` places the system text |
+| `src/config/` | The building blocks of the config files, which nothing calls yet. `schema.ts` holds the zod schemas of a config, strict at every level: the file variant, for YAML and JSON, which is data only, and the code variant, for TS and JS, where a provider may also hold its key or be an object implementing `Provider`; their types, `QuorumConfig` and `QuorumConfigFile`; the issues a parse reports, which repeat no value and print a key that is not a safe name as `*`; and the JSON Schema of the file variant. `load.ts` reads one named file into a checked config: a regular file of at most 1 MiB in UTF-8, holding YAML 1.2 of the core schema, which refuses an unknown tag, a YAML 1.1 tag such as `!!binary`, an alias and a repeated key; JSON, which refuses a repeated key; or a module whose default export is the config. Its value must be plain data, a provider object aside, with no `__proto__` key; then the schema checks it, and every prompt file it names is read once, however many profiles name it: at most 64 KiB each and 1 MiB in all. A prompt path is read as given, relative to the config file or absolute, and is not confined to its directory: a config is trusted like code. `define.ts` is `defineConfig`. Layering a file with the environment and the defaults, and building its providers, come next |
 | `src/cli/` | The CLI: `bin.ts`, the process entry point; `main.ts`, `runCli` and the exit codes; `render.ts`, the progress lines |
 | `src/legacy.ts` | The `RESEARCH_*` and `VOTER_*` environment wiring the CLI and `runQuorum` use, and the voter's fallback rule |
 | `src/index.ts` | The public API, and the deprecated `runQuorum` |
+| `schema/quorum.schema.json` | The JSON Schema of a YAML or JSON config, for editors: draft-07, generated from the file variant by `bun run schema`, which runs `scripts/schema.ts`, and committed |
 | `src/testing/` | The test helpers, among them the `fetch` stub the adapter specs share, the provider contract suite every adapter's spec runs, and each protocol's recorded replies. Spec files import them; nothing else does |
 
 ## The dependency rule
@@ -25,9 +27,10 @@ The core knows no domain, no model vendor and no process. A profile is data, an 
 | `src/core/` | Other core modules, `zod`, `node:crypto` and the `package.json` version | The globals `process`, `fetch`, `WebSocket`, `EventSource`, `Worker`, `Bun`, `globalThis`, `global` and `self` |
 | `src/profiles/` | Types from `src/core/`, and nothing else | The same globals |
 | `src/providers/` | Its own modules, and `core/ports.ts`, `core/errors.ts` and `core/types.ts` | `process`, `Bun`, `globalThis`, `global` and `self`; it may use `fetch`, `WebSocket`, `EventSource` and `Worker` |
+| `src/config/` | Its own modules, `src/core/`, `src/profiles/`, `src/providers/`, `zod`, `yaml`, `node:fs`, `node:fs/promises`, `node:path` and `node:url` | `fetch`, `WebSocket`, `EventSource` and `Worker`; it may read `process` |
 | `src/cli/`, `src/legacy.ts`, `src/index.ts` | Any layer | |
 
-The core never imports a profile. `src/cli/` is the one module that reads files and stdin and writes stdout and stderr, and `runQuorum` in `src/index.ts` reads `process.env`. `bun run lint` enforces the table through the overrides at the end of [`eslint.config.js`](../../eslint.config.js), on every production file; a spec file may import across layers.
+The core never imports a profile. `src/config/` reads the config file it is named and the prompt files that file names, `src/cli/` is the one module that reads the diff and stdin and writes stdout and stderr, and `runQuorum` in `src/index.ts` reads `process.env`. `bun run lint` enforces the table through the overrides at the end of [`eslint.config.js`](../../eslint.config.js), on every production file; a spec file may import across layers.
 
 ## The stages of a review
 
@@ -47,12 +50,15 @@ bun run test:cov    # the same, with coverage
 bun run typecheck   # tsc --noEmit
 bun run lint        # eslint, the Markdown pages and their code blocks included
 bun run format      # eslint --fix
+bun run schema      # write schema/quorum.schema.json from the zod schema
 ```
 
 - **`bun run test` runs Vitest under Node**, once, on every `src/**/*.spec.ts`. Never run bare `bun test`, which starts Bun's own test runner instead of the Vitest setup the specs are written for, and never run Vitest in watch mode.
 - **At most two test workers**, set in [`vitest.config.ts`](../../vitest.config.ts), so the suite stays light on a laptop.
 - **No network and no model call.** Every test uses fake providers, or a stubbed `fetch`. The controls of the threat model are checked by structure in the default suite, such as no environment value in any request, and vote requests that are the same whatever the other voters answer.
 - **`bun run test:cov`** measures coverage with Istanbul over `src/**/*.ts`, the specs and `src/cli/bin.ts` left out.
+- **Files and processes.** `src/config/load.spec.ts` writes the files it reads to fresh temporary directories, removed afterwards, and runs one `node` process on the loader: vitest's own import transforms TypeScript that Node itself refuses, such as an `enum`, so only a real `node` shows what Node reports.
+- **`src/config/schema.spec.ts`** fails when `schema/quorum.schema.json` differs from the JSON Schema of the zod schema, byte for byte: run `bun run schema` after changing the schema, and commit the file.
 - **`bun run lint`** applies `@antfu/eslint-config` and the dependency rule. From an editor's terminal, run it as `CI=1 bun run lint`: the config turns some rules off when it detects an editor.
 - **`src/docs.spec.ts`** holds these pages to their links: every relative link resolves to a file and every anchor to a heading of it, every page outside the start page and the reference section ends with a `## Next` that names one page, the table of contents in the README's `## Documentation` section lists every page, and neither the README nor any page holds a hidden character.
 
