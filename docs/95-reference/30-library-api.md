@@ -1,6 +1,6 @@
 # Library API
 
-The TypeScript API that `src/index.ts` exports: `createQuorum` and its ports, a review and its events, abort, the errors, and every export. There is no npm package yet: a program imports `src/index.ts` from a clone, and the examples on this page do so from a file at the root of the clone. Bun runs it as it is; the code is erasable TypeScript only, so a Node release that strips types loads it too.
+The TypeScript API that `src/index.ts` exports: `createQuorum` and its ports, a review and its events, abort, the errors, the config types, and every export. There is no npm package yet: a program imports `src/index.ts` from a clone, and the examples on this page do so from a file at the root of the clone. Bun runs it as it is; the code is erasable TypeScript only, so Node 22.18 or later, which strips types by default and is what the `engines` field of `package.json` asks for, loads it too.
 
 ## `createQuorum`
 
@@ -165,11 +165,41 @@ An aborted review never resolves, and never fails open:
 
 A failed research call rejects the review with its `ProviderError`, and an unusable research reply with its `OutputError`. The same errors from a vote are recorded in the vote's `error` instead.
 
+## Config types
+
+```ts
+declare function defineConfig(config: QuorumConfig): QuorumConfig
+```
+
+No command and no exported function reads a config file yet. These exports let a config be written and type-checked ahead of that:
+
+- **`QuorumConfig`** types what a TS or JS config exports as its default: `$schema`, for an editor, `version`, `providers`, `roles`, `concurrency`, `maxFindings` and `profiles`, every one optional. A provider is an object implementing `Provider`, or its settings, every one optional too: `preset`, `protocol`, `baseUrl`, `model`, `apiKeyEnv` and `apiKey`, then `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt`, as [Providers](../20-using/30-providers.md#options) describes them.
+- **`QuorumConfigFile`** types what a YAML or JSON config holds: the same settings, as data only, so a provider is always its settings, and names the environment variable that holds its key in `apiKeyEnv`, never holding one.
+- **`defineConfig`** returns the config it is given, as it is. Wrapping a default export in it has the editor check every field.
+
+A config that imports nothing from quorum when it runs types its object with `import type` and `satisfies` instead, since `import type` is erased:
+
+```ts
+// quorum.config.mts
+import type { QuorumConfig } from './src/index.ts'
+
+export default {
+  providers: {
+    local: { preset: 'ollama', model: 'qwen3.6:27b' },
+    hosted: { preset: 'openai', model: 'gpt-5', apiKey: process.env.OPENAI_API_KEY },
+  },
+  roles: { research: 'local', voter: 'hosted' },
+} satisfies QuorumConfig
+```
+
+The `.mts` extension makes the file an ES module whatever the nearest `package.json` says: Node refuses `export` in a `.ts` or `.js` file of a package whose `package.json` says `"type": "commonjs"`. Node also strips erasable TypeScript only, so a config holds no `enum`, `namespace` or parameter property. An editor checks a YAML or JSON config against the JSON Schema committed as [`schema/quorum.schema.json`](../../schema/quorum.schema.json).
+
 ## Exports
 
 | Values | |
 | --- | --- |
 | `createQuorum` | Build a quorum |
+| `defineConfig` | Type a TS config: [Config types](#config-types) |
 | `securityProfile` | The default profile, frozen: [Profiles](../20-using/40-profiles.md#the-security-profile) |
 | `defaultPolicy` | `{ high: 'unanimous', medium: 'majority', low: 'off' }`, frozen |
 | `anthropic` | The Anthropic Messages adapter: [Providers](../20-using/30-providers.md#anthropic) |
@@ -181,7 +211,7 @@ A failed research call rejects the review with its `ProviderError`, and an unusa
 | `inertLine`, `inertJson` | Render a line for a terminal or a log, and a value as JSON, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |
 
-The types: `Confidence`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `Lens`, `LensVote`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus` and `Vote`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
+The types: `Confidence`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `Lens`, `LensVote`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus` and `Vote`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `QuorumConfig` and `QuorumConfigFile`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
 
 The stages, the profile checks and the CLI's exit-code rule are not exported: a program reaches the stages through `createQuorum`, and applies the exit codes itself, as the example below does.
 
