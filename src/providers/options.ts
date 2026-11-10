@@ -175,7 +175,7 @@ function queryKeyIssues(id: string, query: Readonly<Record<string, string>>, api
 }
 
 /** The words of a list as a message names them: commas between them, and `or` before the last. */
-function wordList(words: readonly string[]): string {
+export function wordList(words: readonly string[]): string {
   return words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} or ${words.at(-1)}`
 }
 
