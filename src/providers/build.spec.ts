@@ -223,7 +223,6 @@ describe('buildProvider', () => {
     ['a no-break space', 'groq', `openai/gpt-oss${String.fromCharCode(0xA0)}120b`],
     ['a delete character', 'groq', `openai/gpt-oss${String.fromCharCode(0x7F)}120b`],
     ['an empty string', 'groq', ''],
-    ['no model', 'groq', undefined],
     ['a number', 'groq', 120],
     ['an array holding a tool id', 'groq', ['openai/gpt-oss-120b']],
     ['a Symbol', 'groq', Symbol('openai/gpt-oss-120b')],
@@ -251,6 +250,7 @@ describe('buildProvider', () => {
     ['the vllm preset pointed at Groq\'s base URL', { preset: 'vllm', baseUrl: GROQ }],
     ['the same origin in another letter case, with another path', { protocol: 'openai-compatible', baseUrl: 'HTTPS://API.GROQ.COM/v9' }],
     ['the same origin with its default port written out', { protocol: 'openai-compatible', baseUrl: 'https://api.groq.com:443/openai/v1' }],
+    ['Groq\'s host with a trailing dot', { protocol: 'openai-compatible', baseUrl: 'https://api.groq.com./openai/v1' }],
   ])('refuses the Groq tool model gpt-oss through %s', (_name, spec) => {
     expect(issuesOf({ id: 'p', ...spec, model: 'openai/gpt-oss-120b' })).toEqual([toolModel])
   })
@@ -277,8 +277,46 @@ describe('buildProvider', () => {
   it('gives a base URL that is no URL no origin, so only the named preset\'s list applies, and leaves the URL to the adapter', () => {
     const adapterIssue = { path: 'p.baseUrl', message: 'must be an http:// or https:// URL with a host' }
     expect(issuesOf({ id: 'p', protocol: 'openai-compatible', baseUrl: 'api.groq.com', model: 'openai/gpt-oss-120b' })).toEqual([adapterIssue])
-    expect(issuesOf({ id: 'p', protocol: 'openai-compatible', baseUrl: 42, model: 'openai/gpt-oss-120b' })).toEqual([adapterIssue])
     expect(issuesOf({ id: 'p', preset: 'groq', baseUrl: 'api.groq.com', model: 'openai/gpt-oss-120b' })).toEqual([toolModel, adapterIssue])
+  })
+
+  it('reads only the spec\'s own fields: a polluted Object.prototype fills no field and reaches no adapter', async () => {
+    const proto = Object.prototype as Record<string, unknown>
+    const planted: Record<string, unknown> = { baseUrl: 'https://evil.example/v1', apiKey: 'sk-planted', systemPrompt: 'inline' }
+    for (const [key, value] of Object.entries(planted)) proto[key] = value
+    try {
+      expect(issuesOf({ id: 'p', preset: 'azure-openai', model: 'd' })).toEqual([{ path: 'p.baseUrl', message: 'is required: the azure-openai preset has none' }])
+      const built = await send({ id: 'p', protocol: 'openai-compatible', baseUrl: 'https://h.example', model: 'm' })
+      expect(built.headers).toEqual({ 'content-type': 'application/json' })
+      expect(built.body.messages).toEqual(conversation)
+    } finally {
+      for (const key of Object.keys(planted)) delete proto[key]
+    }
+  })
+
+  it('reads each field once, so a getter cannot show the checks one model and the adapter another', () => {
+    let reads = 0
+    const spec = { id: 'p', preset: 'groq', get model() {
+      reads += 1
+      return reads === 1 ? 'openai/gpt-oss-120b' : 'llama-3.3-70b-versatile'
+    } }
+    expect(issuesOf(spec)).toEqual([toolModel])
+    expect(reads).toBe(1)
+  })
+
+  it.each<[string, unknown]>([
+    ['an array', [GROQ]],
+    // eslint-disable-next-line no-new-wrappers, unicorn/new-for-builtins -- the input is a String object
+    ['a String object', new String(GROQ)],
+    ['a number', 42],
+    ['null', null],
+  ])('refuses a base URL that is %s with that message alone', (_name, baseUrl) => {
+    expect(issuesOf({ id: 'p', protocol: 'openai-compatible', baseUrl, model: 'openai/gpt-oss-120b' })).toEqual([{ path: 'p.baseUrl', message: 'must be a string' }])
+  })
+
+  it('refuses a spec without a model as one that needs one', () => {
+    expect(issuesOf({ id: 'p', preset: 'groq' })).toEqual([{ path: 'p.model', message: 'is required' }])
+    expect(issuesOf({ id: 'p', preset: 'groq', model: undefined })).toEqual([{ path: 'p.model', message: 'is required' }])
   })
 
   it('builds from the original presets after a caller tried to change them', async () => {

@@ -40,6 +40,16 @@ describe('httpOptionIssues', () => {
     expect(issuesOf({ query: value })).toEqual([{ path: 'p.query', message: 'must map names to strings' }])
   })
 
+  it('refuses headers or a query held in a Headers, a Map or a class instance, whose entries are not its own fields', () => {
+    expect(issuesOf({ headers: new Headers({ 'x-team': 'a' }) })).toEqual([{ path: 'p.headers', message: 'must map names to strings' }])
+    expect(issuesOf({ query: new Map([['v', '1']]) })).toEqual([{ path: 'p.query', message: 'must map names to strings' }])
+    expect(issuesOf({ headers: Object.setPrototypeOf({ 'x-team': 'a' }, null) })).toEqual([])
+  })
+
+  it('refuses a header name that repeats another in another letter case, which one request cannot send twice', () => {
+    expect(issuesOf({ headers: { 'X-Team': 'a', 'x-team': 'b' } })).toEqual([{ path: 'p.headers.x-team', message: 'repeats a header name in another letter case' }])
+  })
+
   const visibleAscii = { path: 'p.apiKey', message: 'must only contain visible ASCII characters, which an HTTP header can carry' }
   const withHost = { path: 'p.baseUrl', message: 'must be an http:// or https:// URL with a host' }
   const authShape = { path: 'p.auth', message: 'must be bearer, x-api-key, none or { header, prefix }' }

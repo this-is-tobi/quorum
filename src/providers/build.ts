@@ -3,11 +3,11 @@ import type { ConfigIssue } from '../core/errors.ts'
 import type { Provider } from '../core/ports.ts'
 import { anthropic } from './anthropic.ts'
 import { gemini } from './gemini.ts'
+import { httpOrigin } from './http.ts'
 import { ollama } from './ollama.ts'
 import { openaiCompatible } from './openai-compatible.ts'
 import type { OpenAICompatibleOptions } from './openai-compatible.ts'
 import { wordList } from './options.ts'
-import type { HttpProviderOptions } from './options.ts'
 import { presets } from './presets.ts'
 import type { Preset, PresetName, Protocol } from './presets.ts'
 
@@ -44,73 +44,86 @@ function matchesModel(pattern: string, model: string): boolean {
   return new RegExp(`^${literals.join('.*')}$`, 'i').test(model)
 }
 
-/** The origin of a base URL: its scheme, host and port, the host in lower case and a default port dropped. A value that is no URL has none. */
-function originOf(baseUrl: unknown): string | undefined {
-  return typeof baseUrl === 'string' && URL.canParse(baseUrl) ? new URL(baseUrl).origin : undefined
-}
-
 /** The tool-model patterns of the presets whose default base URL has an origin, by that origin, computed once. */
 const TOOL_MODELS_AT_ORIGIN = new Map<string, string[]>()
 for (const { baseUrl, toolModels } of Object.values(presets)) {
-  const origin = originOf(baseUrl)
+  const origin = httpOrigin(baseUrl)
   if (origin !== undefined) TOOL_MODELS_AT_ORIGIN.set(origin, [...TOOL_MODELS_AT_ORIGIN.get(origin) ?? [], ...toolModels])
 }
 
 /** The patterns that hold a model: the named preset's, and those of every preset whose base URL has the origin of `baseUrl`. */
 function toolModelPatterns(preset: Preset | undefined, baseUrl: unknown): readonly string[] {
-  const origin = originOf(baseUrl)
+  const origin = httpOrigin(baseUrl)
   return [...preset?.toolModels ?? [], ...origin === undefined ? [] : TOOL_MODELS_AT_ORIGIN.get(origin) ?? []]
 }
 
-/** The preset a name names, or undefined: a name is looked up among the table's own keys only, never its prototype's. */
-function presetOf(name: string): Preset | undefined {
-  return Object.hasOwn(presets, name) ? presets[name as PresetName] : undefined
+/** `entries` as an object with no prototype: a field they lack reads `undefined`, whatever `Object.prototype` holds. */
+function withoutPrototype<T>(entries: Iterable<readonly [string, unknown]>): T {
+  return Object.setPrototypeOf(Object.fromEntries(entries), null) as T
 }
+
+/** The preset a name names, or undefined: a name is looked up among the table's own keys only, never its prototype's, and the row is a copy that has no prototype either. */
+function presetOf(name: unknown): Preset | undefined {
+  return typeof name === 'string' && Object.hasOwn(presets, name) ? withoutPrototype<Preset>(Object.entries(presets[name as PresetName])) : undefined
+}
+
+/** The fields of a spec as the builder reads them: whatever a caller or a config put in each. */
+type Fields = Readonly<Partial<Record<keyof ProviderSpec, unknown>>>
+
+/** The fields that make the builder's own decisions: the adapter is handed the others, and `maxTokensField` only when it takes it. */
+const BUILDER_FIELDS: ReadonlySet<string> = new Set(['preset', 'protocol', 'maxTokensField'])
 
 /**
  * Build a provider from a spec: the preset fills in `baseUrl`, `auth`, `structuredOutput`, `temperature`
  * and, for `openai-compatible`, `maxTokensField`, and any of them set on the spec wins. The model must be
  * a visible ASCII id, and is refused when a pattern of its preset, or of any preset whose base URL has the
  * spec's origin, says the model runs tools on the server by itself. No message repeats a value of the spec.
+ * Only the spec's own fields are read, once each, so a polluted `Object.prototype` fills none of them and
+ * a getter cannot show the checks one value and the adapter another.
  *
  * @throws ConfigError with every problem of the spec and of the adapter's options, before any request; the
  * spec's problems alone while the protocol, the base URL or the model is unusable
  */
 export function buildProvider(spec: ProviderSpec): Provider {
-  const { preset: name, protocol: named, maxTokensField, ...options } = spec
-  const { id, model } = spec
+  const entries = Object.entries(spec)
+  const own = withoutPrototype<Fields>(entries)
+  const { id, model, preset: name, protocol: named, maxTokensField } = own
   const preset = name === undefined ? undefined : presetOf(name)
   const issues: ConfigIssue[] = []
   if (name !== undefined && preset === undefined) issues.push({ path: `${id}.preset`, message: `must be one of ${wordList(Object.keys(presets))}` })
 
   let protocol = named === undefined ? preset?.protocol : undefined
   if (named === undefined && name === undefined) issues.push({ path: `${id}.protocol`, message: 'is required without a preset' })
-  else if (named !== undefined && !Object.hasOwn(ADAPTERS, named)) issues.push({ path: `${id}.protocol`, message: `must be ${wordList(Object.keys(ADAPTERS))}` })
+  else if (named !== undefined && !(typeof named === 'string' && Object.hasOwn(ADAPTERS, named))) issues.push({ path: `${id}.protocol`, message: `must be ${wordList(Object.keys(ADAPTERS))}` })
   else if (named !== undefined && preset !== undefined && named !== preset.protocol) issues.push({ path: `${id}.protocol`, message: `must be ${preset.protocol}, the protocol of the ${name} preset` })
   else if (named !== undefined) protocol = named as Protocol
 
-  const baseUrl = filled(spec.baseUrl, preset?.baseUrl)
+  const baseUrl = filled(own.baseUrl, preset?.baseUrl)
   if (baseUrl === undefined && name === undefined) issues.push({ path: `${id}.baseUrl`, message: 'is required without a preset' })
   else if (baseUrl === undefined && preset !== undefined) issues.push({ path: `${id}.baseUrl`, message: `is required: the ${name} preset has none` })
+  else if (baseUrl !== undefined && typeof baseUrl !== 'string') issues.push({ path: `${id}.baseUrl`, message: 'must be a string' })
 
   if (maxTokensField !== undefined && protocol !== undefined && protocol !== 'openai-compatible') {
     issues.push({ path: `${id}.maxTokensField`, message: 'is only for the openai-compatible protocol' })
   }
   const usableModel = typeof model === 'string' && MODEL_ID.test(model)
-  if (!usableModel) issues.push({ path: `${id}.model`, message: 'must be a model id of visible ASCII characters, with no space' })
+  if (model === undefined) issues.push({ path: `${id}.model`, message: 'is required' })
+  else if (!usableModel) issues.push({ path: `${id}.model`, message: 'must be a model id of visible ASCII characters, with no space' })
   else if (toolModelPatterns(preset, baseUrl).some(pattern => matchesModel(pattern, model))) issues.push({ path: `${id}.model`, message: TOOL_MODEL })
-  if (protocol === undefined || baseUrl === undefined || !usableModel) throw new ConfigError(issues)
+  if (protocol === undefined || typeof baseUrl !== 'string' || !usableModel) throw new ConfigError(issues)
 
-  const shared: HttpProviderOptions = {
-    ...options,
-    baseUrl,
-    auth: filled(spec.auth, preset?.auth),
-    structuredOutput: filled(spec.structuredOutput, preset?.structuredOutput),
-    temperature: filled(spec.temperature, preset?.temperature),
-  }
+  const fields: Array<[string, unknown]> = [
+    ...entries.filter(([key]) => !BUILDER_FIELDS.has(key)),
+    ['baseUrl', baseUrl],
+    ['auth', filled(own.auth, preset?.auth)],
+    ['structuredOutput', filled(own.structuredOutput, preset?.structuredOutput)],
+    ['temperature', filled(own.temperature, preset?.temperature)],
+  ]
+  if (protocol === 'openai-compatible') fields.push(['maxTokensField', filled(maxTokensField, preset?.maxTokensField)])
+  const options = withoutPrototype<OpenAICompatibleOptions>(fields)
   let adapterIssues: readonly ConfigIssue[] = []
   try {
-    const provider = ADAPTERS[protocol](protocol === 'openai-compatible' ? { ...shared, maxTokensField: filled(maxTokensField, preset?.maxTokensField) } : shared)
+    const provider = ADAPTERS[protocol](options)
     if (issues.length === 0) return provider
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error

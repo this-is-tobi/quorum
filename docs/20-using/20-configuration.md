@@ -38,7 +38,7 @@ Each `VOTER_*` variable falls back to its `RESEARCH_*` counterpart only while th
 | The same origin as `RESEARCH_BASE_URL` | `VOTER_BASE_URL` | `VOTER_API_KEY`, else `RESEARCH_API_KEY` | `VOTER_MODEL`, else `RESEARCH_MODEL` |
 | Another origin, or no `http(s)` origin | `VOTER_BASE_URL` | `VOTER_API_KEY`, else no key | `VOTER_MODEL`, which is then required |
 
-The origin is the scheme, the host and the port, compared once both URLs are parsed. Letter case, a default port written out (`:443` on `https`) and the path never make another origin, so a gateway that serves several paths on one origin shares its key. `http` against `https`, or another port, does, so a fallback never carries a key from an encrypted connection to a cleartext one. A value without an `http(s)` origin, such as `localhost:11434/v1` without its scheme, or one that does not parse as a URL, inherits nothing, and then fails the base URL check below.
+The origin is the scheme, the host and the port, compared once both URLs are parsed. Letter case, a default port written out (`:443` on `https`), one trailing dot after the host (`h.example.` is `h.example`) and the path never make another origin, so a gateway that serves several paths on one origin shares its key. `http` against `https`, or another port, does, so a fallback never carries a key from an encrypted connection to a cleartext one. A value without an `http(s)` origin, such as `localhost:11434/v1` without its scheme, or one that does not parse as a URL, inherits nothing, and then fails the base URL check below.
 
 A panel on another endpoint must name its model. The finder's model name usually means nothing there, and an error before the review is better than a review in which every vote fails.
 
