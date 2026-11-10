@@ -53,6 +53,11 @@ describe('roleSettings', () => {
     expect(roleSettings('VOTER', { RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'http://localhost:11434/other' })).toEqual({ baseUrl: 'http://localhost:11434/other', apiKey: 'sk-r', model: 'r' })
   })
 
+  it('keeps every fallback for a voter whose host differs only by a trailing dot', () => {
+    const env = { RESEARCH_BASE_URL: 'https://h.example/v1', RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'https://h.example./v1' }
+    expect(roleSettings('VOTER', env)).toEqual({ baseUrl: 'https://h.example./v1', apiKey: 'sk-r', model: 'r' })
+  })
+
   it('reuses neither the research key nor the research model for a voter on another origin', () => {
     const env = { RESEARCH_BASE_URL: 'http://localhost:11434/v1', RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'https://api.example.com/v1' }
     expect(roleSettings('VOTER', env)).toEqual({ baseUrl: 'https://api.example.com/v1', apiKey: undefined, model: '' })

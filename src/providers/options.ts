@@ -114,9 +114,7 @@ function isJsonValue(value: unknown): boolean {
   if (value === null || typeof value === 'boolean' || typeof value === 'string') return true
   if (typeof value === 'number') return Number.isFinite(value)
   if (Array.isArray(value)) return value.every(isJsonValue)
-  if (!isRecord(value)) return false
-  const prototype = Object.getPrototypeOf(value)
-  return (prototype === Object.prototype || prototype === null) && Object.entries(value).every(([key, field]) => key !== '__proto__' && isJsonValue(field))
+  return isPlainRecord(value) && Object.entries(value).every(([key, field]) => key !== '__proto__' && isJsonValue(field))
 }
 
 function authIssues(id: string, auth: unknown, apiKey: string | undefined, fixedHeaders: readonly string[]): ConfigIssue[] {
@@ -133,7 +131,9 @@ function authIssues(id: string, auth: unknown, apiKey: string | undefined, fixed
   return issues
 }
 
+/** The problems of the header names and values, one per name in its order; a name that repeats an earlier one in another letter case has that problem alone: the checks before it refuse a name in every letter case. */
 function headerIssues(id: string, headers: Readonly<Record<string, string>>, keyHeader: string | undefined, fixedHeaders: readonly string[]): ConfigIssue[] {
+  const seen = new Set<string>()
   return Object.entries(headers).flatMap(([name, value]): ConfigIssue[] => {
     const path = `${id}.${issuePath(['headers', name])}`
     if (!HEADER_NAME.test(name)) return [{ path, message: 'must be an HTTP header name' }]
@@ -141,6 +141,8 @@ function headerIssues(id: string, headers: Readonly<Record<string, string>>, key
     if (RESERVED_HEADERS.has(lower)) return [{ path, message: 'must not be content-type, content-length or host' }]
     if (lower === keyHeader) return [{ path, message: 'is the header that carries the key: set apiKey instead' }]
     if (fixedHeaders.includes(lower)) return [{ path, message: FIXED_HEADER }]
+    if (seen.has(lower)) return [{ path, message: 'repeats a header name in another letter case' }]
+    seen.add(lower)
     return typeof value === 'string' && !NOT_PRINTABLE_ASCII.test(value) ? [] : [{ path, message: 'must be a string of printable ASCII characters' }]
   })
 }
@@ -193,9 +195,9 @@ export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRul
   }
   const authProblems = authIssues(id, auth, apiKey, fixedHeaders)
   issues.push(...authProblems)
-  if (headers !== undefined && !isRecord(headers)) issues.push({ path: `${id}.headers`, message: 'must map names to strings' })
+  if (headers !== undefined && !isPlainRecord(headers)) issues.push({ path: `${id}.headers`, message: 'must map names to strings' })
   else if (headers !== undefined) issues.push(...headerIssues(id, headers, authProblems.length === 0 ? keyHeaderName(auth) : undefined, fixedHeaders))
-  if (query !== undefined && (!isRecord(query) || !Object.values(query).every(value => typeof value === 'string'))) {
+  if (query !== undefined && (!isPlainRecord(query) || !Object.values(query).every(value => typeof value === 'string'))) {
     issues.push({ path: `${id}.query`, message: 'must map names to strings' })
   } else if (query !== undefined && typeof apiKey === 'string' && apiKey !== '') {
     issues.push(...queryKeyIssues(id, query, apiKey))
@@ -265,4 +267,11 @@ export function unlessEmpty(fields: Record<string, unknown>): Record<string, unk
 /** Whether `value` is a non-null object that is not an array. */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Whether `value` is an object that is not an array and whose prototype is `Object.prototype` or none: its entries are its own fields. */
+export function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
 }

@@ -84,7 +84,7 @@ A preset is a row of data for a vendor's or a server's endpoint: the protocol it
 
 ### The model ids a preset refuses
 
-A model id can bring tools of its own, which no body check sees. A preset lists the ids of its vendor that run a tool on the server by themselves, as patterns where `*` stands for any text, possibly empty, and every other character for itself. A provider built from the preset refuses a model that a pattern matches whole, in any letter case: `<id>.model: runs tools on the server by itself, which quorum never allows`. The patterns also apply to a provider whose base URL has a preset's origin (its scheme, host and port), whether or not it names a preset: a provider with only a protocol, pointed at Groq's endpoint, is held to Groq's patterns, and so is one built from another preset and pointed there. The host is read in lower case and a default port is dropped, so `HTTPS://API.GROQ.COM:443/v9` has Groq's origin; another port is another origin.
+A model id can bring tools of its own, which no body check sees. A preset lists the ids of its vendor that run a tool on the server by themselves, as patterns where `*` stands for any text, possibly empty, and every other character for itself. A provider built from the preset refuses a model that a pattern matches whole, in any letter case: `<id>.model: runs tools on the server by itself, which quorum never allows`. The patterns also apply to a provider whose base URL has a preset's origin (its scheme, host and port), whether or not it names a preset: a provider with only a protocol, pointed at Groq's endpoint, is held to Groq's patterns, and so is one built from another preset and pointed there. The host is read in lower case, a default port is dropped and so is one trailing dot, so `HTTPS://API.GROQ.COM:443/v9` and `https://api.groq.com./openai/v1` have Groq's origin; another port is another origin.
 
 | Preset | Refused model ids | Why |
 | --- | --- | --- |
@@ -100,7 +100,7 @@ The other presets know no such id: on `azure-openai` the model is a deployment n
 
 `presets` is exported read-only: the table, each row, its `auth` and its `toolModels` are frozen, so a change throws a `TypeError` in strict-mode code, as every ES module is; elsewhere the write is ignored, and the values never change either way, so no program can alter the defaults another provider reads. A row has the fields `protocol`, `baseUrl`, `auth`, `apiKeyEnv`, `structuredOutput`, `temperature`, `maxTokensField` and `toolModels`, and `apiKeyEnv` is the "Key variable" column. `Preset` types a row, `PresetName` names one and `Protocol` names the four wire protocols. No command and no exported function builds a provider from a preset yet: the configuration file still to come will, and the checks below and the model-id refusals apply from then on. Until then a program that passes a preset's values to an adapter itself gets only the adapter's checks. Those already refuse, in every adapter, the body fields that offer a tool; the reply check of `openaiCompatible` is the one that covers a tool a model id brings, [`openaiCompatible`](#openaicompatible), and it has limits. It runs after the server ran the tool: it keeps a review from being built on the tool's output, but what the tool sent has already left, and a search query can quote the diff. Groq reports `executed_tools` whatever the model does, while a `url_citation` appears only when the reply cites a source, so a search model that cites nothing can pass. So choose a model that runs no tool.
 
-A provider built from a preset or a protocol is checked first for the problems below, then with its adapter's own checks, [Configuration errors](#configuration-errors), and every problem comes in one `ConfigError`, these first. While the protocol, the base URL or the model is unusable, these come alone. No message repeats a value:
+A provider built from a preset or a protocol is checked first for the problems below, then with its adapter's own checks, [Configuration errors](#configuration-errors), and every problem comes in one `ConfigError`, these first. While the protocol, the base URL or the model is unusable, these come alone. The builder reads a spec's fields once each, and only its own: a field that only a prototype holds, such as one planted on `Object.prototype`, is unset, and a getter is called once, so the checks and the adapter see the same value. No message repeats a value:
 
 | Path | Message |
 | --- | --- |
@@ -110,7 +110,9 @@ A provider built from a preset or a protocol is checked first for the problems b
 | `<id>.protocol` | `must be <protocol>, the protocol of the <preset> preset`, for a protocol other than the preset's |
 | `<id>.baseUrl` | `is required without a preset` |
 | `<id>.baseUrl` | `is required: the azure-openai preset has none` |
+| `<id>.baseUrl` | `must be a string`, for a base URL that is set to anything else, `null` and a `String` object included |
 | `<id>.maxTokensField` | `is only for the openai-compatible protocol` |
+| `<id>.model` | `is required`, for a model that is unset |
 | `<id>.model` | `must be a model id of visible ASCII characters, with no space` |
 | `<id>.model` | `runs tools on the server by itself, which quorum never allows` |
 
@@ -210,6 +212,7 @@ Each adapter checks its options when it is called, before any request, and throw
 | `<id>.headers.<name>` | `must not be content-type, content-length or host` |
 | `<id>.headers.<name>` | `is the header that carries the key: set apiKey instead` |
 | `<id>.headers.<name>` | `is set by the adapter and cannot be replaced` |
+| `<id>.headers.<name>` | `repeats a header name in another letter case` |
 | `<id>.headers.<name>` | `must be a string of printable ASCII characters` |
 | `<id>.query` | `must map names to strings` |
 | `<id>.query.<name>` | `holds the key, which travels only in the header auth names` |
@@ -224,6 +227,8 @@ Each adapter checks its options when it is called, before any request, and throw
 | `<id>.maxTokensField` | `must be max_tokens or max_completion_tokens` |
 | `<id>.query.<name>` | `would carry a key in the URL: set apiKey instead` |
 | `<id>.model` | `must be a Gemini model id, such as gemini-3.8-flash` |
+
+`headers` and `query` must be plain objects, an object literal or one with no prototype: a `Headers` or a `Map` is refused with `must map names to strings`, since its entries are not its own fields. A header name that repeats an earlier one in another letter case is refused at the later one, since one request cannot send both.
 
 `is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, and `model` and a `key` query parameter by `gemini` only.
 

@@ -125,6 +125,19 @@ export function originOf(url: string): string {
   }
 }
 
+/**
+ * The origin of an http(s) URL as endpoints are compared: its scheme, its host in lower case without one
+ * trailing dot (`api.groq.com.` names `api.groq.com`), and a port that is not the scheme's default.
+ * Anything that is not a string URL with the `http:` or `https:` scheme has none.
+ */
+export function httpOrigin(url: unknown): string | undefined {
+  if (typeof url !== 'string' || !URL.canParse(url)) return undefined
+  const { protocol, hostname, port } = new URL(url)
+  if (protocol !== 'http:' && protocol !== 'https:') return undefined
+  const host = hostname.length > 1 && hostname.endsWith('.') ? hostname.slice(0, -1) : hostname
+  return `${protocol}//${host}${port === '' ? '' : `:${port}`}`
+}
+
 /** The error's `code`, or its cause's, as ` (ECONNREFUSED)`, when it is a plain identifier. Never throws. */
 function codeSuffix(error: unknown): string {
   try {

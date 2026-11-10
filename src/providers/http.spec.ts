@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ProviderError } from '../core/errors.ts'
 import { brokenReply, jsonReply, streamedReply, textReply } from '../testing/http.ts'
-import { endpointUrl, originOf, postJson, redactionsOf, snippet } from './http.ts'
+import { endpointUrl, httpOrigin, originOf, postJson, redactionsOf, snippet } from './http.ts'
 
 const options = { providerId: 'p', url: 'http://h/x', body: {} }
 
@@ -90,6 +90,30 @@ describe('originOf', () => {
     expect(originOf('not a url')).toBe('the endpoint')
     expect(originOf('localhost:11434/v1')).toBe('the endpoint')
     expect(originOf('data:text/plain,secret')).toBe('the endpoint')
+  })
+})
+
+describe('httpOrigin', () => {
+  it('keeps the scheme, the host in lower case and a port that is not the default', () => {
+    expect(httpOrigin('HTTPS://API.Groq.com:443/openai/v1?x=1#y')).toBe('https://api.groq.com')
+    expect(httpOrigin('http://localhost:11434/v1')).toBe('http://localhost:11434')
+    expect(httpOrigin('http://[::1]:8080/v1')).toBe('http://[::1]:8080')
+  })
+
+  it('drops one trailing dot of the host, which names the same host', () => {
+    expect(httpOrigin('https://api.groq.com./openai/v1')).toBe('https://api.groq.com')
+  })
+
+  it.each<[string, unknown]>([
+    ['a text without a scheme', 'api.groq.com/v1'],
+    ['another scheme', 'ws://h.example/v1'],
+    ['a file URL', 'file:///etc/hosts'],
+    ['a number', 42],
+    // eslint-disable-next-line no-new-wrappers, unicorn/new-for-builtins -- the input is a String object
+    ['a String object', new String('https://h.example')],
+    ['undefined', undefined],
+  ])('gives %s no origin', (_name, url) => {
+    expect(httpOrigin(url)).toBeUndefined()
   })
 })
 

@@ -7,6 +7,7 @@ import type { EventSink, Provider } from './core/ports.ts'
 import { createQuorum } from './core/quorum.ts'
 import type { Quorum } from './core/types.ts'
 import { securityProfile } from './profiles/security.ts'
+import { httpOrigin } from './providers/http.ts'
 import { openaiCompatible } from './providers/openai-compatible.ts'
 
 export type Env = Readonly<Record<string, string | undefined>>
@@ -25,19 +26,9 @@ function read(env: Env, name: string): string | undefined {
   return env[name]?.trim() || undefined
 }
 
-/** The origin of a URL, or undefined when it has none: the URL does not parse or its origin is opaque. */
-function httpOrigin(url: string): string | undefined {
-  try {
-    const { origin } = new URL(url)
-    return origin === 'null' ? undefined : origin
-  } catch {
-    return undefined
-  }
-}
-
 /**
- * URL lower-cases the scheme and host and drops a default port, so only the scheme, host or port tell
- * origins apart. A URL without an http(s) origin matches nothing, itself included.
+ * The scheme, host or port tell origins apart: letter case, a default port and one trailing dot of the
+ * host do not (`httpOrigin`). A URL without an http(s) origin matches nothing, itself included.
  */
 function sameOrigin(a: string, b: string): boolean {
   const origin = httpOrigin(a)
