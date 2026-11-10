@@ -8,7 +8,7 @@ import type { Document, YAMLError } from 'yaml'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { checkConfig, configCodeSchema, configFileSchema, configPath, isProvider, parseConfig } from './schema.ts'
-import type { QuorumConfig } from './schema.ts'
+import type { ConfigInput, QuorumConfig } from './schema.ts'
 
 /** The most a config file may hold: a named FIFO or a huge file never hangs the load or fills memory. */
 const CONFIG_LIMIT = 1024 * 1024
@@ -32,7 +32,7 @@ const STAGES = ['research', 'vote'] as const
 /** A config file once read and checked. */
 export interface LoadedConfig {
   /** The checked config, with the text of every prompt file in place of its `{ file }`. */
-  readonly config: QuorumConfig
+  readonly config: ConfigInput
   /** The absolute path of the file. */
   readonly source: string
 }
@@ -298,7 +298,7 @@ function checkData(parsed: Read<unknown>, path: string): QuorumConfig {
  * @throws ConfigError with the problem of every prompt file that cannot be read, at its path, or with
  * those found so far and the file that takes the prompt files over 1 MiB in total
  */
-async function readPromptFiles(config: QuorumConfig, directory: string, path: string): Promise<QuorumConfig> {
+async function readPromptFiles(config: QuorumConfig, directory: string, path: string): Promise<ConfigInput> {
   const issues: ConfigIssue[] = []
   const reads = new Map<string, Read<string>>()
   let total = 0
@@ -322,7 +322,8 @@ async function readPromptFiles(config: QuorumConfig, directory: string, path: st
     }
   }
   if (issues.length > 0) throw new ConfigError(issues)
-  return config
+  // The loop above replaced every `{ file }` in the profiles, the only place a prompt can be.
+  return config as ConfigInput
 }
 
 /**
