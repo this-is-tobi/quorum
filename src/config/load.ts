@@ -1,26 +1,33 @@
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
-import { extname, resolve } from 'node:path'
+import { dirname, extname, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { isScalar, LineCounter, parseDocument, visit } from 'yaml'
 import type { Document, YAMLError } from 'yaml'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
-import { configFileSchema, configPath, parseConfig } from './schema.ts'
+import { configCodeSchema, configFileSchema, configPath, isProvider, parseConfig } from './schema.ts'
 import type { QuorumConfig } from './schema.ts'
 
 /** The most a config file may hold: a named FIFO or a huge file never hangs the load or fills memory. */
 const CONFIG_LIMIT = 1024 * 1024
+/** The most a prompt file may hold. */
+const PROMPT_LIMIT = 64 * 1024
 /** How many keys deep a value of a config may sit: deeper data could overflow the stack of a walk over it. */
 const MAX_DEPTH = 64
 
-type Format = 'yaml' | 'json'
+type Format = 'yaml' | 'json' | 'code'
 
 /** The format of each extension a config may have, read from the map alone, never from an object's prototype. */
-const FORMATS: ReadonlyMap<string, Format> = new Map([['.yaml', 'yaml'], ['.yml', 'yaml'], ['.json', 'json']])
+const FORMATS: ReadonlyMap<string, Format> = new Map([['.yaml', 'yaml'], ['.yml', 'yaml'], ['.json', 'json'], ['.mts', 'code'], ['.mjs', 'code'], ['.ts', 'code'], ['.js', 'code']])
+/** A name a message may give what a config threw: a class name, never text the config could have written a secret into. */
+const ERROR_NAME = /^[A-Z][A-Za-z]{0,63}$/
+const STAGES = ['research', 'vote'] as const
 
 /** A config file once read and checked. */
 export interface LoadedConfig {
+  /** The checked config, with the text of every prompt file in place of its `{ file }`. */
   readonly config: QuorumConfig
   /** The absolute path of the file. */
   readonly source: string
@@ -62,12 +69,14 @@ async function readBounded(absolute: string, limit: number, size: string): Promi
   }
 }
 
-/** UTF-8 text, a leading byte-order mark dropped (the decoder's default), or undefined for bytes that are not UTF-8. */
-function utf8(bytes: Uint8Array): string | undefined {
+/** The UTF-8 text of a regular file of at most `limit` bytes, a leading byte-order mark dropped (the decoder's default). */
+async function readText(absolute: string, limit: number, size: string): Promise<Read<string>> {
+  const bytes = await readBounded(absolute, limit, size)
+  if ('problem' in bytes) return bytes
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    return { value: new TextDecoder('utf-8', { fatal: true }).decode(bytes.value) }
   } catch {
-    return undefined
+    return { problem: 'is not UTF-8 text' }
   }
 }
 
@@ -165,16 +174,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Every value of a parsed config that is not plain data (an object of data, an array, a string, a finite
+ * Every value of a config that is not plain data (an object of data, an array, a string, a finite
  * number, a boolean or null), every own `__proto__` key, and every value more than `MAX_DEPTH` keys
  * deep, each at its path after the file's. A record drops a `__proto__` key silently, and a later merge
  * could turn one into a prototype change: it is refused here, before any schema reads the data.
  * `constructor` and `prototype` stay allowed: they are valid names, and only `__proto__` runs a setter.
+ * Only a code config can hand over the rest: a provider object, which is not entered, and `undefined`,
+ * which leaves a field unset.
  */
 function dataIssues(value: unknown, segments: readonly PropertyKey[], file: string, depth = 0): ConfigIssue[] {
   if (depth > MAX_DEPTH) return [{ path: configPath(segments, file), message: `is nested more than ${MAX_DEPTH} keys deep` }]
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return []
+  if (value === null || value === undefined || typeof value === 'string' || typeof value === 'boolean') return []
   if (typeof value === 'number') return Number.isFinite(value) ? [] : [{ path: configPath(segments, file), message: 'must be a finite number' }]
+  if (isProvider(value)) return []
   if (Array.isArray(value)) return value.flatMap((item, index) => dataIssues(item, [...segments, index], file, depth + 1))
   if (!isPlainObject(value)) return [{ path: configPath(segments, file), message: 'must be plain data: an object, an array, a string, a finite number, true, false or null' }]
   return Object.keys(value).flatMap(key => key === '__proto__'
@@ -182,27 +194,108 @@ function dataIssues(value: unknown, segments: readonly PropertyKey[], file: stri
     : dataIssues(value[key], [...segments, key], file, depth + 1))
 }
 
+/** The name a message gives what a config threw. Reading it can run the config's code too, so nothing it throws gets out. */
+function thrownName(error: unknown): string {
+  try {
+    if (typeof error !== 'object' || error === null) return 'a value that is not an error'
+    const { name } = error as { name?: unknown }
+    return typeof name === 'string' && ERROR_NAME.test(name) ? name : 'an error'
+  } catch {
+    return 'an error'
+  }
+}
+
+/** What a failed import means, read from what Node says: its code, then the error's name. Its message is never used. */
+function importProblem(error: unknown): string {
+  let code: unknown
+  try {
+    code = (error as { code?: unknown } | null)?.code
+  } catch {
+    code = undefined
+  }
+  if (code === 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX') return 'uses TypeScript that Node cannot strip (an enum, a namespace or a parameter property)'
+  if (code === 'ERR_UNKNOWN_FILE_EXTENSION') return 'needs Node 22.18 or later to load TypeScript: name it .mjs'
+  if (code === 'ERR_MODULE_NOT_FOUND') return 'imports a module that cannot be found'
+  const name = thrownName(error)
+  if (name === 'SyntaxError') return 'has a syntax error (a .ts or .js config with export in a "type": "commonjs" package needs the .mts or .mjs extension)'
+  return `failed to load (${name})`
+}
+
 /**
- * Read one named config file into a checked config. The path resolves against `options.cwd` (the
- * working directory by default), and the extension chooses the format: `.yaml` or `.yml` for YAML, `.json`
- * for JSON, both data only. The file must be a regular file of at most 1 MiB, in UTF-8; its value must be
- * a mapping of plain data, with no `__proto__` key; then the file schema checks it. Issues name the path
- * as the caller gave it, and never quote the file or repeat the runtime's message.
- *
- * @throws ConfigError with the first problem of the file, or every problem of its data, or every issue of the schema
+ * A TS or JS config: the plain object its module exports as its default, checked by the code schema. The
+ * config is trusted code, but what it throws can hold a secret, so a throw while it loads, or while its
+ * object is read, is reported by its name alone.
  */
-export async function readConfigFile(path: string, options: { readonly cwd?: string } = {}): Promise<LoadedConfig> {
-  const source = resolve(options.cwd ?? process.cwd(), path)
-  const format = FORMATS.get(extname(source))
-  if (format === undefined) fail(path, 'must end in .yaml, .yml or .json')
-  const bytes = await readBounded(source, CONFIG_LIMIT, '1 MiB')
-  if ('problem' in bytes) fail(path, bytes.problem)
-  const text = utf8(bytes.value)
-  if (text === undefined) fail(path, 'is not UTF-8 text')
-  const parsed = format === 'yaml' ? parseYaml(text) : parseJson(text)
+async function loadCode(source: string, path: string): Promise<QuorumConfig> {
+  let module: { default?: unknown }
+  try {
+    module = await import(pathToFileURL(source).href) as { default?: unknown }
+  } catch (error) {
+    fail(path, importProblem(error))
+  }
+  try {
+    const value = module.default
+    if (!isPlainObject(value)) fail(path, 'must export an object as its default')
+    const issues = dataIssues(value, [], path)
+    if (issues.length > 0) throw new ConfigError(issues)
+    return parseConfig(configCodeSchema, value, path)
+  } catch (error) {
+    // A getter or a proxy of the config runs its code while the object is read.
+    if (error instanceof ConfigError) throw error
+    fail(path, `failed to load (${thrownName(error)})`)
+  }
+}
+
+/** A YAML or JSON config: its parsed value, which must be a mapping of plain data, checked by the file schema. */
+function checkData(parsed: Read<unknown>, path: string): QuorumConfig {
   if ('problem' in parsed) fail(path, parsed.problem)
   if (!isPlainObject(parsed.value)) fail(path, 'must hold a mapping of settings')
   const issues = dataIssues(parsed.value, [], path)
   if (issues.length > 0) throw new ConfigError(issues)
-  return { config: parseConfig(configFileSchema, parsed.value, path), source }
+  return parseConfig(configFileSchema, parsed.value, path)
+}
+
+/**
+ * Put the text of every prompt file in place of its `{ file }`, read relative to `directory` (an absolute
+ * path stays absolute) as UTF-8 text of at most 64 KiB. `config` is the schema's output, a copy, so the
+ * caller's own objects are never changed.
+ *
+ * @throws ConfigError with the problem of every prompt file that cannot be read, at its path
+ */
+async function readPromptFiles(config: QuorumConfig, directory: string, path: string): Promise<QuorumConfig> {
+  const issues: ConfigIssue[] = []
+  for (const [id, { prompts }] of Object.entries(config.profiles ?? {})) {
+    if (prompts === undefined) continue
+    for (const stage of STAGES) {
+      const prompt = prompts[stage]
+      if (typeof prompt !== 'object') continue
+      const text = await readText(resolve(directory, prompt.file), PROMPT_LIMIT, '64 KiB')
+      if ('problem' in text) issues.push({ path: configPath(['profiles', id, 'prompts', stage, 'file'], path), message: text.problem })
+      else prompts[stage] = text.value
+    }
+  }
+  if (issues.length > 0) throw new ConfigError(issues)
+  return config
+}
+
+/**
+ * Read one named config file into a checked config. The path resolves against `options.cwd` (the
+ * working directory by default), and the extension chooses the format: `.yaml` or `.yml` for YAML and
+ * `.json` for JSON, both data only, and `.mts`, `.mjs`, `.ts` or `.js` for a module whose default export
+ * is the config, which runs as code. The file must be a regular file of at most 1 MiB, in UTF-8. A data
+ * file's value must be a mapping of plain data, a module's default a plain object; neither may hold a
+ * `__proto__` key; then the schema of its variant checks it, and every prompt file it names is read.
+ * Issues name the path as the caller gave it, and never quote a file, repeat the runtime's message or
+ * repeat what a config threw.
+ *
+ * @throws ConfigError with the first problem of the file, or every problem of its data, or every issue of the schema, or of its prompt files
+ */
+export async function readConfigFile(path: string, options: { readonly cwd?: string } = {}): Promise<LoadedConfig> {
+  const source = resolve(options.cwd ?? process.cwd(), path)
+  const format = FORMATS.get(extname(source))
+  if (format === undefined) fail(path, 'must end in .yaml, .yml, .json, .mts, .mjs, .ts or .js')
+  const text = await readText(source, CONFIG_LIMIT, '1 MiB')
+  if ('problem' in text) fail(path, text.problem)
+  const config = format === 'code' ? await loadCode(source, path) : checkData(format === 'yaml' ? parseYaml(text.value) : parseJson(text.value), path)
+  return { config: await readPromptFiles(config, dirname(source), path), source }
 }

@@ -1,7 +1,9 @@
+import { spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { readConfigFile } from './load.ts'
@@ -20,8 +22,9 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-/** Write `content` to `name` in the test's directory, and return the name. */
+/** Write `content` to `name` in the test's directory, its folders made as needed, and return the name. */
 function file(name: string, content: string | Uint8Array): string {
+  mkdirSync(join(dir, name, '..'), { recursive: true })
   writeFileSync(join(dir, name), content)
   return name
 }
@@ -64,8 +67,8 @@ describe('readConfigFile', () => {
     expect((await readConfigFile(join(dir, name), { cwd: '/nowhere' })).config).toEqual({ maxFindings: 3 })
   })
 
-  it.each(['quorum.toml', 'quorum', 'quorum.YAML', 'quorum.yaml.bak', 'quorum.constructor', 'quorum.__proto__'])('refuses the extension of %s, and reads nothing', async (name) => {
-    expect(await issuesOf(name)).toEqual([{ path: name, message: 'must end in .yaml, .yml or .json' }])
+  it.each(['quorum.toml', 'quorum', 'quorum.YAML', 'quorum.yaml.bak', 'quorum.cts', 'quorum.cjs', 'quorum.tsx', 'quorum.constructor', 'quorum.__proto__'])('refuses the extension of %s, and reads nothing', async (name) => {
+    expect(await issuesOf(name)).toEqual([{ path: name, message: 'must end in .yaml, .yml, .json, .mts, .mjs, .ts or .js' }])
   })
 
   it('refuses a missing file, a directory and a device, naming the path as the caller gave it', async () => {
@@ -268,5 +271,177 @@ describe('readConfigFile on a __proto__ key', () => {
     const config = await configOf('names.yaml')
     expect(Object.keys(config.providers as object)).toEqual(['constructor', 'prototype'])
     expect(Object.getPrototypeOf(config.providers)).toBe(Object.prototype)
+  })
+})
+
+/** A provider object written as a module's source, its reply fixed. */
+const PROVIDER_SOURCE = '{ id: "mine", model: "m", async complete() { return { text: "{}", model: "m" } } }'
+
+describe('readConfigFile on a TS or JS config', () => {
+  it.each(['quorum.config.mts', 'quorum.config.mjs', 'quorum.config.ts', 'quorum.config.js'])('reads %s, a module whose default export is the config, key included', async (name) => {
+    file(name, 'export default { concurrency: 2, providers: { keyed: { preset: "openai", apiKey: "sk-k" } } }\n')
+    expect(await readConfigFile(name, { cwd: dir })).toEqual({ config: { concurrency: 2, providers: { keyed: { preset: 'openai', apiKey: 'sk-k' } } }, source: join(dir, name) })
+  })
+
+  it('reads a provider object, and one built from a class, handing both back as they are', async () => {
+    file('providers.mts', `class Echo { id = "echo"; model = "m"; async complete() { return { text: "{}", model: "m" } } }\nexport const mine = ${PROVIDER_SOURCE}\nexport const echo = new Echo()\nexport default { providers: { mine, echo }, roles: { research: "mine" } }\n`)
+    const module = await import(pathToFileURL(join(dir, 'providers.mts')).href) as Record<string, unknown>
+    const providers = (await configOf('providers.mts')).providers as Record<string, unknown>
+    expect(providers.mine).toBe(module.mine)
+    expect(providers.echo).toBe(module.echo)
+  })
+
+  it('leaves a field set to undefined unset, as a spread of an unset value gives', async () => {
+    file('unset.mts', 'export default { providers: { p: { preset: "ollama", model: undefined } } }\n')
+    expect(await configOf('unset.mts')).toEqual({ providers: { p: { preset: 'ollama' } } })
+  })
+
+  it.each([
+    ['no default export', 'export const config = { concurrency: 1 }'],
+    ['a function', 'export default () => ({ concurrency: 1 })'],
+    ['an array', 'export default [{ concurrency: 1 }]'],
+    ['null', 'export default null'],
+    ['a class instance', 'export default new Map([["concurrency", 1]])'],
+  ])('refuses %s as the default export', async (_name, source) => {
+    file('bad.mts', `${source}\n`)
+    expect(await issuesOf('bad.mts')).toEqual([{ path: 'bad.mts', message: 'must export an object as its default' }])
+  })
+
+  it('refuses a value that is not plain data, and a __proto__ key, as in a data file', async () => {
+    file('data.mts', 'export default { profiles: { team: new Date(0) }, providers: { ["__proto__"]: { model: "m" }, p: { maxTokens: 2n ** 64n } } }\n')
+    expect(await issuesOf('data.mts')).toEqual([
+      { path: 'data.mts: profiles.team', message: 'must be plain data: an object, an array, a string, a finite number, true, false or null' },
+      { path: 'data.mts: providers.__proto__', message: 'is not allowed as a key: it can replace the prototype of an object' },
+      { path: 'data.mts: providers.p.maxTokens', message: 'must be plain data: an object, an array, a string, a finite number, true, false or null' },
+    ])
+  })
+
+  it('reports the schema\'s issues at their paths after the file\'s', async () => {
+    file('bad.mts', 'export default { version: 2, providers: { p: { preset: "gpt" } } }\n')
+    expect(await issuesOf('bad.mts')).toEqual([
+      { path: 'bad.mts: version', message: 'must be 1, the only config version this quorum reads: upgrade quorum to read a later one' },
+      { path: 'bad.mts: providers.p.preset', message: 'must be one of ollama, ollama-cloud, lmstudio, llamacpp, vllm, openai, azure-openai, openrouter, groq, mistral, deepseek, together, fireworks, xai, anthropic or gemini' },
+    ])
+  })
+
+  it.each([
+    ['an Error', `throw new Error("${SECRET}")`, 'failed to load (Error)'],
+    ['a TypeError from its own code', `const key = undefined; key.trim(); export default {}`, 'failed to load (TypeError)'],
+    ['a string', `throw "${SECRET}"`, 'failed to load (a value that is not an error)'],
+    ['undefined', 'throw undefined', 'failed to load (a value that is not an error)'],
+    ['an error named with its text', `const error = new Error("x"); error.name = "${SECRET}"; throw error`, 'failed to load (an error)'],
+    ['an object whose name cannot be read', `throw { get name() { throw new Error("${SECRET}") } }`, 'failed to load (an error)'],
+    ['a getter of its object', `export default { get concurrency() { throw new RangeError("${SECRET}") } }`, 'failed to load (RangeError)'],
+    ['a proxy as its object', `export default new Proxy({}, { getPrototypeOf() { throw new Error("${SECRET}") } })`, 'failed to load (Error)'],
+  ])('reports a config that throws %s by its name, never by what it says', async (_name, source, message) => {
+    file('throws.mts', `${source}\n`)
+    const issues = await issuesOf('throws.mts')
+    expect(issues).toEqual([{ path: 'throws.mts', message }])
+    expect(JSON.stringify(issues)).not.toContain('planted')
+  })
+})
+
+describe('readConfigFile on prompt files', () => {
+  const team = (research: string, vote = '{file: ./vote.md}'): string => `profiles:\n  team:\n    prompts: {research: ${research}, vote: ${vote}}\n`
+
+  it('reads every prompt file relative to the directory of the config, and keeps an inline prompt', async () => {
+    file('conf/prompts/research.md', 'Look for {{nothing}}.\n')
+    file('conf/vote.md', `${BOM}Vote from {{lens.id}}.\n`)
+    file('conf/quorum.yaml', `${team('{file: ./prompts/research.md}')}  other:\n    prompts: {research: inline text}\n`)
+    expect(await configOf('conf/quorum.yaml')).toEqual({
+      profiles: { team: { prompts: { research: 'Look for {{nothing}}.\n', vote: 'Vote from {{lens.id}}.\n' } }, other: { prompts: { research: 'inline text' } } },
+    })
+  })
+
+  it('reads a prompt file at an absolute path as it is', async () => {
+    file('elsewhere/research.md', 'absolute')
+    file('vote.md', 'vote')
+    file('quorum.json', JSON.stringify({ profiles: { team: { prompts: { research: { file: join(dir, 'elsewhere/research.md') }, vote: { file: 'vote.md' } } } } }))
+    expect(await configOf('quorum.json')).toEqual({ profiles: { team: { prompts: { research: 'absolute', vote: 'vote' } } } })
+  })
+
+  it('reads a prompt file of a code config, and leaves the module\'s own object as it was', async () => {
+    file('research.md', 'from a file')
+    file('quorum.mts', 'export const prompts = { research: { file: "./research.md" } }\nexport default { profiles: { team: { prompts } } }\n')
+    expect(await configOf('quorum.mts')).toEqual({ profiles: { team: { prompts: { research: 'from a file' } } } })
+    const module = await import(pathToFileURL(join(dir, 'quorum.mts')).href) as { prompts: unknown }
+    expect(module.prompts).toEqual({ research: { file: './research.md' } })
+  })
+
+  it('reports every prompt file that cannot be read, each at its path', async () => {
+    mkdirSync(join(dir, 'folder.md'))
+    file('latin1.md', Uint8Array.from([0xE9]))
+    file('full.md', 'x'.repeat(64 * 1024))
+    file('over.md', 'x'.repeat(64 * 1024 + 1))
+    file('quorum.yaml', `${team('{file: missing.md}', '{file: folder.md}')}  other:\n    prompts: {research: {file: latin1.md}, vote: {file: over.md}}\n  fine:\n    prompts: {research: {file: full.md}}\n`)
+    expect(await issuesOf('quorum.yaml')).toEqual([
+      { path: 'quorum.yaml: profiles.team.prompts.research.file', message: 'does not exist' },
+      { path: 'quorum.yaml: profiles.team.prompts.vote.file', message: 'is not a file' },
+      { path: 'quorum.yaml: profiles.other.prompts.research.file', message: 'is not UTF-8 text' },
+      { path: 'quorum.yaml: profiles.other.prompts.vote.file', message: 'is over 64 KiB' },
+    ])
+  })
+
+  it('reads no prompt file while the schema finds an issue', async () => {
+    file('quorum.yaml', `${team('{file: missing.md}')}concurrency: 0\n`)
+    expect(await issuesOf('quorum.yaml')).toEqual([{ path: 'quorum.yaml: concurrency', message: 'must be at least 1' }])
+  })
+})
+
+describe.skipIf('bun' in process.versions)('readConfigFile under Node itself, which vitest\'s own import does not show', () => {
+  const LOAD = pathToFileURL(fileURLToPath(new URL('./load.ts', import.meta.url))).href
+  const SCHEMA = fileURLToPath(new URL('./schema.ts', import.meta.url))
+  let root: string
+  let results: Record<string, unknown>
+  let stderr: string
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'quorum-node-'))
+    const write = (name: string, content: string): void => {
+      mkdirSync(join(root, name, '..'), { recursive: true })
+      writeFileSync(join(root, name), content)
+    }
+    write('typed.mts', `import type { QuorumConfig } from '${SCHEMA}'\nexport default { concurrency: 2 } satisfies QuorumConfig\n`)
+    write('enum.ts', `enum Level { High }\nexport default { concurrency: Level.High, note: '${SECRET}' }\n`)
+    write('cjs/package.json', '{"type": "commonjs"}\n')
+    write('cjs/quorum.config.ts', `export default { concurrency: 1, note: '${SECRET}' }\n`)
+    write('cjs/quorum.config.mts', 'export default { concurrency: 3 }\n')
+    write('missing.mts', `import config from './nowhere.ts'\nexport default config\n`)
+    write('run.mjs', [
+      `import { readConfigFile } from '${LOAD}'`,
+      'const results = {}',
+      'for (const name of process.argv.slice(2)) {',
+      '  results[name] = await readConfigFile(name).then(loaded => loaded.config, error => error.issues ?? error.name)',
+      '}',
+      'console.log(JSON.stringify(results))',
+    ].join('\n'))
+    const run = spawnSync(process.execPath, ['run.mjs', 'typed.mts', 'enum.ts', 'cjs/quorum.config.ts', 'cjs/quorum.config.mts', 'missing.mts'], { cwd: root, encoding: 'utf8', timeout: 60_000 })
+    results = JSON.parse(run.stdout) as Record<string, unknown>
+    stderr = run.stderr
+  })
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('loads a .mts config typed with import type and satisfies, and one inside a commonjs package', () => {
+    expect(results['typed.mts']).toEqual({ concurrency: 2 })
+    expect(results['cjs/quorum.config.mts']).toEqual({ concurrency: 3 })
+  })
+
+  it('reports an enum, which Node cannot strip', () => {
+    expect(results['enum.ts']).toEqual([{ path: 'enum.ts', message: 'uses TypeScript that Node cannot strip (an enum, a namespace or a parameter property)' }])
+  })
+
+  it('reports an export in a .ts config of a commonjs package, and names the extension that works', () => {
+    expect(results['cjs/quorum.config.ts']).toEqual([{ path: 'cjs/quorum.config.ts', message: 'has a syntax error (a .ts or .js config with export in a "type": "commonjs" package needs the .mts or .mjs extension)' }])
+  })
+
+  it('reports an import that cannot be found', () => {
+    expect(results['missing.mts']).toEqual([{ path: 'missing.mts', message: 'imports a module that cannot be found' }])
+  })
+
+  it('leaves the text of a config out of what Node itself writes', () => {
+    expect(stderr).not.toContain('planted')
   })
 })
