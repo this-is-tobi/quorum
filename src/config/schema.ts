@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
-import type { Provider } from '../core/ports.ts'
+import type { JsonSchema, Provider } from '../core/ports.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { wordList } from '../providers/options.ts'
 import type { StructuredOutput } from '../providers/options.ts'
@@ -116,6 +116,15 @@ export const configCodeSchema = configSchema(z.union([
   z.custom<Provider>(isProvider),
   z.strictObject({ ...providerShape, apiKey: z.string().optional().describe('The key itself, which only a code config may hold') }),
 ], { error: 'must be the settings of a provider, or an object whose complete is a function' }))
+
+/**
+ * The JSON Schema of a YAML or JSON config, for editors: draft-07, which the YAML language server and
+ * VS Code read in full, and the input side, so a field with a default is never required. `bun run schema`
+ * writes it to `schema/quorum.schema.json`.
+ */
+export function configJsonSchema(): JsonSchema {
+  return z.toJSONSchema(configFileSchema, { target: 'draft-07', io: 'input' }) as JsonSchema
+}
 
 /** What a TS or JS config exports as its default. */
 export type QuorumConfig = z.input<typeof configCodeSchema>

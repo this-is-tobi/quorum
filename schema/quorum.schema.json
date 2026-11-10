@@ -1,0 +1,506 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "The JSON Schema of this file, for editors; quorum does not read it",
+      "type": "string"
+    },
+    "version": {
+      "description": "The version of the config format: 1",
+      "type": "number",
+      "const": 1
+    },
+    "providers": {
+      "description": "The model endpoints, by name",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "preset": {
+            "description": "A preset: the defaults of a vendor's documented endpoint, which the fields set here override",
+            "type": "string",
+            "enum": [
+              "ollama",
+              "ollama-cloud",
+              "lmstudio",
+              "llamacpp",
+              "vllm",
+              "openai",
+              "azure-openai",
+              "openrouter",
+              "groq",
+              "mistral",
+              "deepseek",
+              "together",
+              "fireworks",
+              "xai",
+              "anthropic",
+              "gemini"
+            ]
+          },
+          "protocol": {
+            "description": "The wire protocol; required without a preset, and the preset's own when both are set",
+            "type": "string",
+            "enum": [
+              "openai-compatible",
+              "anthropic",
+              "gemini",
+              "ollama"
+            ]
+          },
+          "baseUrl": {
+            "description": "The http(s) URL of the endpoint, with no credentials, query or fragment; required without a preset, or with one that has none",
+            "type": "string"
+          },
+          "model": {
+            "description": "The model id sent with every request",
+            "type": "string"
+          },
+          "apiKeyEnv": {
+            "description": "The environment variable that holds the key; a preset names its vendor's own",
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "auth": {
+            "description": "How the key is sent: bearer, x-api-key, none, or in a header of its own after an optional prefix",
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "bearer",
+                  "x-api-key",
+                  "none"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "header": {
+                    "type": "string",
+                    "description": "The header that carries the key"
+                  },
+                  "prefix": {
+                    "description": "The text sent before the key in that header",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "header"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "headers": {
+            "description": "Extra request headers; their values are redacted from error messages, as the key is",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "query": {
+            "description": "Query parameters added to every request URL; they are not redacted, so never put a key here",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "extraBody": {
+            "description": "JSON values deep-merged into the request body last",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "$ref": "#/definitions/__schema0"
+            }
+          },
+          "structuredOutput": {
+            "description": "How the reply shape reaches the endpoint: described in the prompt, as a JSON object, or as a strict schema",
+            "type": "string",
+            "enum": [
+              "prompt",
+              "json",
+              "schema"
+            ]
+          },
+          "temperature": {
+            "description": "The sampling temperature; null leaves the field out",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "maxTokens": {
+            "description": "The most tokens the reply may hold",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "maxTokensField": {
+            "description": "The body field that carries maxTokens, on the openai-compatible protocol",
+            "type": "string",
+            "enum": [
+              "max_tokens",
+              "max_completion_tokens"
+            ]
+          },
+          "systemPrompt": {
+            "description": "Where the instructions go: the protocol's system field, or inline in the first message",
+            "type": "string",
+            "enum": [
+              "native",
+              "inline"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "roles": {
+      "description": "The providers every profile uses, unless it names its own",
+      "type": "object",
+      "properties": {
+        "research": {
+          "description": "The provider that looks for candidate findings",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "voter": {
+          "description": "The provider every lens votes with, unless the lens names its own",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "concurrency": {
+      "description": "The most provider calls in flight at once in one review, shared by every profile",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "maxFindings": {
+      "description": "The most findings of a research reply each profile reads, the only ones that can reach its panel",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "profiles": {
+      "description": "The review profiles, by id: a built-in profile, one that extends it, or one of your own",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "extends": {
+            "description": "The built-in profile this one starts from",
+            "type": "string",
+            "enum": [
+              "security"
+            ]
+          },
+          "gating": {
+            "description": "Whether its kept high findings set exit code 1",
+            "type": "boolean"
+          },
+          "roles": {
+            "description": "The providers of this profile, over the top-level roles",
+            "type": "object",
+            "properties": {
+              "research": {
+                "description": "The provider that looks for candidate findings",
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]*$"
+              },
+              "voter": {
+                "description": "The provider every lens votes with, unless the lens names its own",
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]*$"
+              }
+            },
+            "additionalProperties": false
+          },
+          "prompts": {
+            "description": "The instruction templates of the profile",
+            "type": "object",
+            "properties": {
+              "research": {
+                "description": "The research instructions: a template, or { file }",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "file": {
+                        "type": "string",
+                        "description": "The file that holds the template, relative to the directory of the config file"
+                      }
+                    },
+                    "required": [
+                      "file"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "vote": {
+                "description": "The vote instructions, which take {{lens.id}}, {{lens.question}} and {{panel.size}}: a template, or { file }",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "file": {
+                        "type": "string",
+                        "description": "The file that holds the template, relative to the directory of the config file"
+                      }
+                    },
+                    "required": [
+                      "file"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "lenses": {
+            "description": "The angles of the panel: at least one",
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_-]*$",
+                  "description": "Names the lens"
+                },
+                "question": {
+                  "type": "string",
+                  "description": "What the voter judging from this lens is asked"
+                },
+                "provider": {
+                  "description": "The provider of this lens, over the roles",
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_-]*$"
+                }
+              },
+              "required": [
+                "id",
+                "question"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "policy": {
+            "description": "How many kept votes each confidence level needs: unanimous, majority, any, off or false, { minVotes } or { minRatio }",
+            "type": "object",
+            "properties": {
+              "high": {
+                "description": "The kept votes a high finding needs",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "unanimous",
+                      "majority",
+                      "any",
+                      "off"
+                    ]
+                  },
+                  {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "minVotes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991,
+                        "description": "The kept votes the level needs"
+                      }
+                    },
+                    "required": [
+                      "minVotes"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "minRatio": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 1,
+                        "description": "The share of the lenses whose kept votes the level needs, above 0 and at most 1"
+                      }
+                    },
+                    "required": [
+                      "minRatio"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "medium": {
+                "description": "The kept votes a medium finding needs",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "unanimous",
+                      "majority",
+                      "any",
+                      "off"
+                    ]
+                  },
+                  {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "minVotes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991,
+                        "description": "The kept votes the level needs"
+                      }
+                    },
+                    "required": [
+                      "minVotes"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "minRatio": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 1,
+                        "description": "The share of the lenses whose kept votes the level needs, above 0 and at most 1"
+                      }
+                    },
+                    "required": [
+                      "minRatio"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "low": {
+                "description": "The kept votes a low finding needs",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "unanimous",
+                      "majority",
+                      "any",
+                      "off"
+                    ]
+                  },
+                  {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "minVotes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991,
+                        "description": "The kept votes the level needs"
+                      }
+                    },
+                    "required": [
+                      "minVotes"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "minRatio": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 1,
+                        "description": "The share of the lenses whose kept votes the level needs, above 0 and at most 1"
+                      }
+                    },
+                    "required": [
+                      "minRatio"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "__schema0": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/__schema0"
+          }
+        },
+        {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "$ref": "#/definitions/__schema0"
+          }
+        }
+      ]
+    }
+  }
+}
