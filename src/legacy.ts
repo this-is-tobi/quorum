@@ -2,6 +2,8 @@
  * The RESEARCH_* / VOTER_* environment wiring, kept until the config layer replaces it. That layer keeps
  * these names as deprecated aliases, so a caller written against this module keeps working.
  */
+import { envValue } from './config/env.ts'
+import type { Env } from './config/env.ts'
 import { ConfigError } from './core/errors.ts'
 import type { EventSink, Provider } from './core/ports.ts'
 import { createQuorum } from './core/quorum.ts'
@@ -10,7 +12,7 @@ import { securityProfile } from './profiles/security.ts'
 import { httpOrigin } from './providers/http.ts'
 import { openaiCompatible } from './providers/openai-compatible.ts'
 
-export type Env = Readonly<Record<string, string | undefined>>
+export type { Env }
 export type Role = 'RESEARCH' | 'VOTER'
 
 export interface RoleSettings {
@@ -20,11 +22,6 @@ export interface RoleSettings {
 }
 
 const DEFAULT_BASE_URL = 'http://localhost:11434/v1'
-
-/** A value counts once trimmed, as `fetch` always trimmed a header value: a pasted newline must not break a key. */
-function read(env: Env, name: string): string | undefined {
-  return env[name]?.trim() || undefined
-}
 
 /**
  * The scheme, host or port tell origins apart: letter case, a default port and one trailing dot of the
@@ -43,11 +40,11 @@ function sameOrigin(a: string, b: string): boolean {
  * empty or blank value is unset, and no key means no placeholder.
  */
 export function roleSettings(role: Role, env: Env): RoleSettings {
-  const researchBaseUrl = read(env, 'RESEARCH_BASE_URL') ?? DEFAULT_BASE_URL
-  const voterBaseUrl = read(env, 'VOTER_BASE_URL')
+  const researchBaseUrl = envValue(env, 'RESEARCH_BASE_URL') ?? DEFAULT_BASE_URL
+  const voterBaseUrl = envValue(env, 'VOTER_BASE_URL')
   const inherits = role === 'VOTER' && (voterBaseUrl === undefined || sameOrigin(voterBaseUrl, researchBaseUrl))
   const get = (name: string): string | undefined =>
-    read(env, `${role}_${name}`) ?? (inherits ? read(env, `RESEARCH_${name}`) : undefined)
+    envValue(env, `${role}_${name}`) ?? (inherits ? envValue(env, `RESEARCH_${name}`) : undefined)
   return {
     baseUrl: get('BASE_URL') ?? DEFAULT_BASE_URL,
     apiKey: get('API_KEY'),

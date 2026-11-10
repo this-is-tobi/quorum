@@ -8,8 +8,8 @@ import { ollama } from './ollama.ts'
 import { openaiCompatible } from './openai-compatible.ts'
 import type { OpenAICompatibleOptions } from './openai-compatible.ts'
 import { wordList } from './options.ts'
-import { presets } from './presets.ts'
-import type { Preset, PresetName, Protocol } from './presets.ts'
+import { presetOf, presets } from './presets.ts'
+import type { Preset, Protocol } from './presets.ts'
 
 /** A provider described as data: a preset, or a protocol, and the options of that protocol's adapter. */
 export interface ProviderSpec extends Omit<OpenAICompatibleOptions, 'baseUrl'> {
@@ -60,11 +60,6 @@ function toolModelPatterns(preset: Preset | undefined, baseUrl: unknown): readon
 /** `entries` as an object with no prototype: a field they lack reads `undefined`, whatever `Object.prototype` holds. */
 function withoutPrototype<T>(entries: Iterable<readonly [string, unknown]>): T {
   return Object.setPrototypeOf(Object.fromEntries(entries), null) as T
-}
-
-/** The preset a name names, or undefined: a name is looked up among the table's own keys only, never its prototype's, and the row is a copy that has no prototype either. */
-function presetOf(name: unknown): Preset | undefined {
-  return typeof name === 'string' && Object.hasOwn(presets, name) ? withoutPrototype<Preset>(Object.entries(presets[name as PresetName])) : undefined
 }
 
 /** The fields of a spec as the builder reads them: whatever a caller or a config put in each. */

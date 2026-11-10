@@ -176,9 +176,9 @@ function queryKeyIssues(id: string, query: Readonly<Record<string, string>>, api
     .map(([name]) => ({ path: `${id}.${issuePath(['query', name])}`, message: 'holds the key, which travels only in the header auth names' }))
 }
 
-/** The words of a list as a message names them: commas between them, and `or` before the last. */
-export function wordList(words: readonly string[]): string {
-  return words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} or ${words.at(-1)}`
+/** The words of a list as a message names them: commas between them, and the conjunction before the last. */
+export function wordList(words: readonly string[], conjunction: 'or' | 'and' = 'or'): string {
+  return words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} ${conjunction} ${words.at(-1)}`
 }
 
 /**
