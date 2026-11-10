@@ -1,8 +1,7 @@
-import { ConfigError } from '../core/errors.ts'
 import type { CompletionResponse, Provider } from '../core/ports.ts'
-import { endpointUrl, postJson, redactionsOf } from './http.ts'
+import { postJson } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { httpOptionIssues, isRecord, mergeBody, requestHeaders } from './options.ts'
+import { isRecord, mergeBody, prepareHttp } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions } from './options.ts'
 import { endedEarly, joinedText, replyFailure, tokenUsage } from './reply.ts'
 
@@ -63,15 +62,10 @@ function readReply(reply: unknown, { id, model }: Pick<AnthropicOptions, 'id' | 
  * @throws ConfigError with every problem of the options, before any request
  */
 export function anthropic(options: AnthropicOptions): Provider {
-  const { id, baseUrl, model, apiKey, auth = 'bearer' as Auth, headers, query, extraBody, temperature, maxTokens = DEFAULT_MAX_TOKENS, systemPrompt = 'native', structuredOutput = 'prompt' } = options
-  const issues = httpOptionIssues(options, { ...RULES, auth })
-  if (issues.length > 0) throw new ConfigError(issues)
-  // Captured once checked, like the URL and the headers: a caller who changes the options later sends nothing unchecked.
-  const extra = extraBody === undefined ? undefined : structuredClone(extraBody)
-  const url = endpointUrl(baseUrl, '/v1/messages', query)
+  const { id, model, auth = 'bearer' as Auth, temperature, maxTokens = DEFAULT_MAX_TOKENS, systemPrompt = 'native', structuredOutput = 'prompt' } = options
+  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/v1/messages')
   // The version goes last, so no header can replace it.
-  const sent = { ...requestHeaders(auth, apiKey, headers), 'anthropic-version': ANTHROPIC_VERSION }
-  const redact = redactionsOf(baseUrl, apiKey, headers)
+  const sent = { ...headers, 'anthropic-version': ANTHROPIC_VERSION }
 
   return {
     id,
@@ -90,7 +84,7 @@ export function anthropic(options: AnthropicOptions): Provider {
           messages,
           temperature: temperature ?? undefined,
           output_config: structuredOutput === 'schema' ? { format: { type: 'json_schema', schema: request.output.schema } } : undefined,
-        }, extra),
+        }, extraBody),
         signal: request.signal,
         redact,
       })

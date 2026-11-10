@@ -1,8 +1,23 @@
 /** Test helpers for code that calls `fetch`. A body is read once, so build a fresh reply for every call. */
 
+import { vi } from 'vitest'
+
 /** A reply holding `body` as JSON, as a server sends it. */
 export function jsonReply(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+}
+
+/** A stub put in place of the global `fetch`, answering every call with `body` as JSON. */
+export function stubFetch(body: unknown, status = 200): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn().mockImplementation(async () => jsonReply(body, status))
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
+/** What one call of a fetch stub sent, the first by default: the URL, the headers and the parsed body. */
+export function sent(fetchMock: ReturnType<typeof vi.fn>, call = 0): { url: string, headers: Record<string, string>, body: Record<string, unknown> } {
+  const [url, init] = fetchMock.mock.calls[call]
+  return { url, headers: init.headers, body: JSON.parse(init.body) }
 }
 
 /** A reply holding `text` as it is. */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
-import { baseUrlIssues, httpOptionIssues, mergeBody, requestHeaders } from './options.ts'
+import { baseUrlIssues, httpOptionIssues, mergeBody, prepareHttp, requestHeaders } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions } from './options.ts'
 
 describe('baseUrlIssues', () => {
@@ -75,6 +76,10 @@ describe('httpOptionIssues', () => {
     ])
   })
 
+  it('finds no key in an empty query value when the key is empty, since no key is sent', () => {
+    expect(issuesOf({ apiKey: '', query: { a: '' } })).toEqual([])
+  })
+
   it('refuses each extraBody key that offers the model a tool, and each the adapter writes, one issue per key in its order', () => {
     expect(issuesOf({ extraBody: { toolConfig: {}, top_k: 20, model: 'x', tools: [], chat_template_kwargs: {} } })).toEqual([
       { path: 'p.extraBody.toolConfig', message: 'offers the model a tool, which quorum never does' },
@@ -112,12 +117,51 @@ describe('httpOptionIssues', () => {
     expect(issuesOf({ auth: { header: 'X-Version' } })).toEqual([{ path: 'p.auth.header', message: 'is set by the adapter and cannot be replaced' }])
   })
 
+  it('refuses a header the adapter declares in another letter case, as a header or a custom auth header', () => {
+    const declared = { fixedHeaders: ['X-Version'] }
+    expect(issuesOf({ headers: { 'x-version': '1' } }, declared)).toEqual([{ path: 'p.headers.x-version', message: 'is set by the adapter and cannot be replaced' }])
+    expect(issuesOf({ auth: { header: 'x-version' } }, declared)).toEqual([{ path: 'p.auth.header', message: 'is set by the adapter and cannot be replaced' }])
+  })
+
   it('accepts each structured-output mode the protocol supports, and names them when it refuses another', () => {
     for (const structuredOutput of ['prompt', 'json', 'schema']) expect(issuesOf({ structuredOutput }), structuredOutput).toEqual([])
     expect(issuesOf({ structuredOutput: 'yaml' })).toEqual([{ path: 'p.structuredOutput', message: 'must be prompt, json or schema' }])
     expect(issuesOf({ structuredOutput: 1 })).toEqual([{ path: 'p.structuredOutput', message: 'must be prompt, json or schema' }])
     expect(issuesOf({ structuredOutput: 'json' }, { structuredOutputs: ['prompt', 'schema'] })).toEqual([{ path: 'p.structuredOutput', message: 'must be prompt or schema' }])
     expect(issuesOf({ structuredOutput: 'json' }, { structuredOutputs: ['prompt'] })).toEqual([{ path: 'p.structuredOutput', message: 'must be prompt' }])
+  })
+})
+
+describe('prepareHttp', () => {
+  const rules: AdapterRules = { auth: 'bearer', reservedBodyKeys: ['model'], toolBodyKeys: ['tools'], fixedHeaders: [], structuredOutputs: ['prompt', 'json'] }
+
+  it('returns the URL, the headers and the redactions the helpers build, and a copy of extraBody', () => {
+    const extraBody = { top_k: 20, nested: { a: 1 } }
+    const options = { id: 'p', baseUrl: 'https://h.example/gw/v1/', model: 'm', apiKey: 'sk-k', headers: { 'X-Team': ' security ' }, query: { 'api-version': '1' }, extraBody }
+    const prepared = prepareHttp(options, rules, '/chat/completions')
+    expect(prepared).toEqual({
+      url: 'https://h.example/gw/v1/chat/completions?api-version=1',
+      headers: { 'x-team': ' security ', authorization: 'Bearer sk-k' },
+      redact: ['sk-k', '/gw/v1', ' security ', 'security'],
+      extraBody: { top_k: 20, nested: { a: 1 } },
+    })
+    extraBody.top_k = 99
+    extraBody.nested.a = 2
+    expect(prepared.extraBody).toEqual({ top_k: 20, nested: { a: 1 } })
+    expect(prepareHttp({ id: 'p', baseUrl: 'https://h.example', model: 'm' }, rules, '/x')).toEqual({ url: 'https://h.example/x', headers: {}, redact: [], extraBody: undefined })
+  })
+
+  it('throws every shared issue, then the adapter\'s, in one ConfigError, before building anything', () => {
+    const adapterIssues = [{ path: 'p.model', message: 'must be a model id' }]
+    const options = { id: 'p', baseUrl: 'h.example', model: 'm', maxTokens: 0, extraBody: { tools: [] } }
+    expect(() => prepareHttp(options, rules, '/x', adapterIssues)).toThrow(new ConfigError([
+      { path: 'p.baseUrl', message: 'must be an http:// or https:// URL with a host' },
+      { path: 'p.extraBody.tools', message: 'offers the model a tool, which quorum never does' },
+      { path: 'p.maxTokens', message: 'must be a whole number of at least 1' },
+      { path: 'p.model', message: 'must be a model id' },
+    ]))
+    expect(() => prepareHttp({ id: 'p', baseUrl: 'https://h.example', model: 'm' }, rules, '/x', adapterIssues)).toThrow(new ConfigError(adapterIssues))
+    expect(() => prepareHttp({ ...options, baseUrl: 'https://h.example' }, rules, '/x')).toThrow(ConfigError)
   })
 })
 

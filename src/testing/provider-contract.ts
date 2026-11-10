@@ -213,6 +213,9 @@ export function describeProviderContract(subject: ContractSubject): void {
       const shouted = subject.defaultKeyHeader('k')[0].toUpperCase()
       expect(issuesOf({ headers: { [shouted]: 'x' } })).toEqual([{ path: `p.headers.${shouted}`, message: 'is the header that carries the key: set apiKey instead' }])
       expect(issuesOf({ auth: { header: 'Host' } })).toEqual([{ path: 'p.auth.header', message: 'must not be content-type, content-length or host' }])
+      for (const name of Object.keys(subject.fixedHeaders).map(fixed => fixed.toUpperCase())) {
+        expect(issuesOf({ auth: { header: name } }), name).toEqual([{ path: 'p.auth.header', message: 'is set by the adapter and cannot be replaced' }])
+      }
       expect(issuesOf({ auth: { header: 'X-Key', prefix: 'Bearer\t' } })).toEqual([{ path: 'p.auth.prefix', message: 'must only contain printable ASCII characters' }])
     })
 

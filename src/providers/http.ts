@@ -3,9 +3,9 @@ import type { ProviderErrorKind } from '../core/errors.ts'
 
 const MAX_ERROR_BODY = 500
 /**
- * Enough of an error body for its 500-character snippet: the rest is never read. The body is cut at this
- * byte before it is redacted, so the cap must stay far above the quote, or a key cut in half at the cap
- * could survive into the message.
+ * Enough of an error body for its 500-character snippet: the rest is never read, and `snippet` redacts no
+ * more of any text than this. The body is cut at this byte before it is redacted, so the cap must stay
+ * far above the quote, or a key cut in half at the cap could survive into the message.
  */
 const MAX_ERROR_BYTES = 64 * 1024
 /** A reply body over this many bytes is refused: the core refuses reply text over 1,000,000 characters anyway. */
