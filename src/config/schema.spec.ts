@@ -1,13 +1,14 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import type { z } from 'zod'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionResponse, Provider } from '../core/ports.ts'
-import { configCodeSchema, configFileSchema, configIssues, configJsonSchema, parseConfig } from './schema.ts'
+import { configCodeSchema, configFileSchema, configInputSchema, configIssues, configJsonSchema, parseConfig, unknownName } from './schema.ts'
 import type { QuorumConfigFile } from './schema.ts'
 
 /** The issues of the ConfigError that parsing `value` with `schema` throws, each after the file name; none when it parses. */
-function issuesOf(value: unknown, schema: typeof configFileSchema | typeof configCodeSchema = configFileSchema): readonly ConfigIssue[] {
+function issuesOf(value: unknown, schema: z.ZodType = configFileSchema): readonly ConfigIssue[] {
   try {
     parseConfig(schema, value, 'q.yaml')
   } catch (error) {
@@ -304,6 +305,30 @@ describe('configCodeSchema', () => {
 
   it('checks every other field as the file variant does', () => {
     expect(issuesOf({ version: 2, colour: 1, profiles: { team: { lenses: [] } } }, configCodeSchema)).toEqual(issuesOf({ version: 2, colour: 1, profiles: { team: { lenses: [] } } }))
+  })
+})
+
+describe('configInputSchema', () => {
+  it('takes a prompt as a string only, since a program\'s config is read from no file', () => {
+    expect(issuesOf({ profiles: { team: { prompts: { research: { file: 'r.md' } } } } }, configInputSchema)).toEqual([at('profiles.team.prompts.research', 'must be a string')])
+    expect(parseConfig(configInputSchema, { providers: { mine: fakeProvider, key: { preset: 'openai', apiKey: 'sk-k' } }, profiles: { team: { prompts: { research: 'Find it.' } } } })).toEqual({ providers: { mine: fakeProvider, key: { preset: 'openai', apiKey: 'sk-k' } }, profiles: { team: { prompts: { research: 'Find it.' } } } })
+  })
+})
+
+describe('unknownName', () => {
+  it('suggests a defined name one or two edits away, the first on a tie', () => {
+    expect(unknownName('roles.voter', 'provider', 'claud', ['local', 'claude'])).toEqual({ path: 'roles.voter', message: 'unknown provider "claud" (did you mean "claude"?)' })
+    expect(unknownName('p', 'provider', 'mian', ['main'])).toEqual({ path: 'p', message: 'unknown provider "mian" (did you mean "main"?)' })
+    expect(unknownName('p', 'provider', 'ab', ['ac', 'ad'])).toEqual({ path: 'p', message: 'unknown provider "ab" (did you mean "ac"?)' })
+  })
+
+  it('lists the defined names when none is close', () => {
+    expect(unknownName('QUORUM_PROFILES', 'profile', 'style', ['team-style', 'security'])).toEqual({ path: 'QUORUM_PROFILES', message: 'unknown profile "style": the profiles are team-style and security' })
+  })
+
+  it('never repeats a name that is not a safe name, nor lists one', () => {
+    const long = `sk-${'a'.repeat(70)}`
+    expect(unknownName('roles.research', 'provider', long, ['local', long])).toEqual({ path: 'roles.research', message: 'names an unknown provider: the providers are local and *' })
   })
 })
 

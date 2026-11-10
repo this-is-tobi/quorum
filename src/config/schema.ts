@@ -64,28 +64,31 @@ const rule = z.union([
   z.strictObject({ minRatio: z.number().gt(0).lte(1).describe('The share of the lenses whose kept votes the level needs, above 0 and at most 1') }),
 ], { error: 'must be unanimous, majority, any, off, false, { minVotes } or { minRatio }' })
 
-const profile = z.strictObject({
-  extends: z.enum([securityProfile.id]).optional().describe('The built-in profile this one starts from'),
-  gating: z.boolean().optional().describe('Whether its kept high findings set exit code 1'),
-  roles: roles.optional().describe('The providers of this profile, over the top-level roles'),
-  prompts: z.strictObject({
-    research: prompt.optional().describe('The research instructions: a template, or { file }'),
-    vote: prompt.optional().describe('The vote instructions, which take {{lens.id}}, {{lens.question}} and {{panel.size}}: a template, or { file }'),
-  }).optional().describe('The instruction templates of the profile'),
-  lenses: z.array(z.strictObject({
-    id: name.describe('Names the lens'),
-    question: z.string().describe('What the voter judging from this lens is asked'),
-    provider: name.optional().describe('The provider of this lens, over the roles'),
-  })).min(1).optional().describe('The angles of the panel: at least one'),
-  policy: z.strictObject({
-    high: rule.optional().describe('The kept votes a high finding needs'),
-    medium: rule.optional().describe('The kept votes a medium finding needs'),
-    low: rule.optional().describe('The kept votes a low finding needs'),
-  }).optional().describe('How many kept votes each confidence level needs: unanimous, majority, any, off or false, { minVotes } or { minRatio }'),
-})
+/** A profile entry, around the schema of one prompt: a string or `{ file }` in a file, a string only in code. */
+function profileSchema<R extends z.ZodType>(promptForm: R) {
+  return z.strictObject({
+    extends: z.enum([securityProfile.id]).optional().describe('The built-in profile this one starts from'),
+    gating: z.boolean().optional().describe('Whether its kept high findings set exit code 1'),
+    roles: roles.optional().describe('The providers of this profile, over the top-level roles'),
+    prompts: z.strictObject({
+      research: promptForm.optional().describe('The research instructions: a template, or { file }'),
+      vote: promptForm.optional().describe('The vote instructions, which take {{lens.id}}, {{lens.question}} and {{panel.size}}: a template, or { file }'),
+    }).optional().describe('The instruction templates of the profile'),
+    lenses: z.array(z.strictObject({
+      id: name.describe('Names the lens'),
+      question: z.string().describe('What the voter judging from this lens is asked'),
+      provider: name.optional().describe('The provider of this lens, over the roles'),
+    })).min(1).optional().describe('The angles of the panel: at least one'),
+    policy: z.strictObject({
+      high: rule.optional().describe('The kept votes a high finding needs'),
+      medium: rule.optional().describe('The kept votes a medium finding needs'),
+      low: rule.optional().describe('The kept votes a low finding needs'),
+    }).optional().describe('How many kept votes each confidence level needs: unanimous, majority, any, off or false, { minVotes } or { minRatio }'),
+  })
+}
 
-/** A config of either variant, around the schema of one provider entry, in the order editors show the fields. */
-function configSchema<P extends z.ZodType>(provider: P) {
+/** A config of either variant, around the schema of one provider entry and of one prompt, in the order editors show the fields. */
+function configSchema<P extends z.ZodType, R extends z.ZodType>(provider: P, promptForm: R) {
   return z.strictObject({
     $schema: z.string().optional().describe('The JSON Schema of this file, for editors; quorum does not read it'),
     version: z.literal(1, { error: VERSION }).optional().describe('The version of the config format: 1'),
@@ -93,7 +96,7 @@ function configSchema<P extends z.ZodType>(provider: P) {
     roles: roles.optional().describe('The providers every profile uses, unless it names its own'),
     concurrency: z.int().min(1).optional().describe('The most provider calls in flight at once in one review, shared by every profile'),
     maxFindings: z.int().min(1).optional().describe('The most findings of a research reply each profile reads, the only ones that can reach its panel'),
-    profiles: z.record(name, profile).optional().describe('The review profiles, by id: a built-in profile, one that extends it, or one of your own'),
+    profiles: z.record(name, profileSchema(promptForm)).optional().describe('The review profiles, by id: a built-in profile, one that extends it, or one of your own'),
   })
 }
 
@@ -107,13 +110,19 @@ export function isProvider(value: unknown): value is Provider {
  * one. Every object is strict, so a typo is an issue. It checks shapes only: a field a later layer can
  * fill is optional, and the references between fields are checked once the layers are merged.
  */
-export const configFileSchema = configSchema(z.strictObject(providerShape))
+export const configFileSchema = configSchema(z.strictObject(providerShape), prompt)
 
-/** A TS or JS config: the file variant, where a provider may also hold its key, or be an object implementing `Provider`. */
-export const configCodeSchema = configSchema(z.union([
+/** What a code config may hold as a provider: settings that may hold their key, or an object implementing `Provider`. */
+const codeProvider = z.union([
   z.custom<Provider>(isProvider),
   z.strictObject({ ...providerShape, apiKey: z.string().optional().describe('The key itself, which only a code config may hold') }),
-], { error: 'must be the settings of a provider, or an object whose complete is a function' }))
+], { error: 'must be the settings of a provider, or an object whose complete is a function' })
+
+/** A TS or JS config: the file variant, where a provider may also hold its key, or be an object implementing `Provider`. */
+export const configCodeSchema = configSchema(codeProvider, prompt)
+
+/** The code variant a program hands over, which reads no file: a prompt is its text, never a `{ file }`. */
+export const configInputSchema = configSchema(codeProvider, z.string())
 
 /**
  * The JSON Schema of a YAML or JSON config, for editors: draft-07, which the YAML language server and
@@ -126,6 +135,8 @@ export function configJsonSchema(): JsonSchema {
 
 /** What a TS or JS config exports as its default. */
 export type QuorumConfig = z.input<typeof configCodeSchema>
+/** A config whose prompts are strings: what a program hands to `fromConfig`, and what `readConfigFile` returns once it has read every prompt file. */
+export type ConfigInput = z.input<typeof configInputSchema>
 /** What a YAML or JSON config holds. */
 export type QuorumConfigFile = z.input<typeof configFileSchema>
 /** One provider of a config as data: its fields, as opposed to an object implementing `Provider`. */
@@ -228,4 +239,47 @@ export function parseConfig<T>(schema: z.ZodType<T>, value: unknown, prefix?: st
   const checked = checkConfig(schema, value, prefix)
   if ('issues' in checked) throw new ConfigError(checked.issues)
   return checked.config
+}
+
+/** The most edits a defined name may be from an unknown one and still be suggested. */
+const SUGGESTED_EDITS = 2
+
+/** The edits (insertions, deletions and substitutions) that turn one name into another. Both are safe names, at most 64 characters, so the table stays small. */
+function editDistance(from: string, to: string): number {
+  let previous = Array.from({ length: to.length + 1 }, (_, column) => column)
+  for (let row = 1; row <= from.length; row++) {
+    const current = [row]
+    for (let column = 1; column <= to.length; column++) {
+      const substitution = previous[column - 1] + (from[row - 1] === to[column - 1] ? 0 : 1)
+      current.push(Math.min(previous[column] + 1, current[column - 1] + 1, substitution))
+    }
+    previous = current
+  }
+  return previous[to.length]
+}
+
+/** The defined safe name nearest to `name` within two edits, the first of the nearest ones on a tie. */
+function closestName(name: string, defined: readonly string[]): string | undefined {
+  let closest: { readonly name: string, readonly edits: number } | undefined
+  for (const candidate of defined) {
+    if (!isSafeSegment(candidate) || Math.abs(candidate.length - name.length) > SUGGESTED_EDITS) continue
+    const edits = editDistance(name, candidate)
+    if (edits <= SUGGESTED_EDITS && (closest === undefined || edits < closest.edits)) closest = { name: candidate, edits }
+  }
+  return closest?.name
+}
+
+/**
+ * The issue of a reference to a provider or a profile that is not defined, at `path`. A name that is a safe
+ * name is quoted, with the defined name one or two edits away when there is one, or else with the defined
+ * names. A name that is not a safe name is never repeated, nor listed: a mistyped reference can be a
+ * secret pasted in the wrong place.
+ */
+export function unknownName(path: string, kind: 'provider' | 'profile', name: string, defined: readonly string[]): ConfigIssue {
+  const safe = isSafeSegment(name)
+  const suggestion = safe ? closestName(name, defined) : undefined
+  if (suggestion !== undefined) return { path, message: `unknown ${kind} "${name}" (did you mean "${suggestion}"?)` }
+  const subject = safe ? `unknown ${kind} "${name}"` : `names an unknown ${kind}`
+  if (defined.length === 0) return { path, message: subject }
+  return { path, message: `${subject}: the ${kind}s are ${wordList(defined.map(known => isSafeSegment(known) ? known : '*'), 'and')}` }
 }
