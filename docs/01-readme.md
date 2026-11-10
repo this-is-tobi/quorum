@@ -20,7 +20,7 @@ Nothing needs reading in order. Pick what you came to do: each track lists its p
 2. [Quick start](./10-getting-started/20-quickstart.md) — point it at a model, review a diff, and read the progress, the result and the exit code.
 3. [The CLI](./20-using/10-cli.md) — the invocation, what goes to stdout and stderr, every exit code, and what each should do to a CI job.
 4. [Configuration](./20-using/20-configuration.md) — the `RESEARCH_*` and `VOTER_*` variables, how the panel falls back to the finder's settings, and the errors a bad value causes.
-5. [Providers](./20-using/30-providers.md) — what a provider is, the shipped adapters, the `openaiCompatible` options the environment leaves at their defaults, and writing a provider of your own.
+5. [Providers](./20-using/30-providers.md) — what a provider is, the shipped adapters, the presets, the `openaiCompatible` options the environment leaves at their defaults, and writing a provider of your own.
 
 ### B. Use it from code, or review something else
 

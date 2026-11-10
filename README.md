@@ -36,7 +36,7 @@ The JSON result goes to stdout, and the exit code says what to do with it: `0` f
 *Using it*
 - [The CLI](./docs/20-using/10-cli.md) *- The invocation, stdout and stderr, every exit code and its causes, and gating a CI job on them*
 - [Configuration](./docs/20-using/20-configuration.md) *- The `RESEARCH_*` and `VOTER_*` variables, the voter's fallback, and the errors a bad value causes*
-- [Providers](./docs/20-using/30-providers.md) *- The provider port, the shipped adapters and their options, `ProviderError`, and writing a provider of your own*
+- [Providers](./docs/20-using/30-providers.md) *- The provider port, the shipped adapters and their options, the presets, `ProviderError`, and writing a provider of your own*
 - [Profiles](./docs/20-using/40-profiles.md) *- The security profile, writing your own, several in one review, gating and guidelines*
 - [Lenses and policy](./docs/20-using/50-lenses-and-policy.md) *- The panel's questions, the rules that turn kept votes into a confidence, failed votes, and what a level means*
 - [Prompts](./docs/20-using/60-prompts.md) *- The layout of every request, the templates and their variables, the notices, and what is not configurable*
