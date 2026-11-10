@@ -3,7 +3,7 @@ import { open } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { dirname, extname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { isScalar, LineCounter, parseDocument, visit } from 'yaml'
+import { isMap, isPair, isScalar, isSeq, LineCounter, parseDocument } from 'yaml'
 import type { Document, YAMLError } from 'yaml'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
@@ -18,6 +18,8 @@ const PROMPT_LIMIT = 64 * 1024
 const PROMPT_TOTAL_LIMIT = 1024 * 1024
 /** How many keys deep a value of a config may sit: deeper data could overflow the stack of a walk over it. */
 const MAX_DEPTH = 64
+/** How many values a config may hold: more would be a walk and a schema check of unbounded work, and issues of unbounded number. */
+const MAX_VALUES = 10_000
 
 type Format = 'yaml' | 'json' | 'code'
 
@@ -35,8 +37,8 @@ export interface LoadedConfig {
   readonly source: string
 }
 
-/** What a read found, or the problem with the file, as an issue words it. */
-type Read<T> = { readonly value: T } | { readonly problem: string }
+/** What a read found, or the problem with the file, as an issue words it, and how many bytes the problem counts toward a total. */
+type Read<T> = { readonly value: T } | { readonly problem: string, readonly counted?: number }
 
 function fail(path: string, message: string): never {
   throw new ConfigError([{ path, message }])
@@ -63,7 +65,7 @@ async function readBounded(absolute: string, limit: number, size: string): Promi
     for (let read = -1; read !== 0 && length < buffer.length; length += read) {
       read = (await handle.read(buffer, length, buffer.length - length, length)).bytesRead
     }
-    return length > limit ? { problem: `is over ${size}` } : { value: buffer.subarray(0, length) }
+    return length > limit ? { problem: `is over ${size}`, counted: limit } : { value: buffer.subarray(0, length) }
   } catch {
     return { problem: 'cannot be read' }
   } finally {
@@ -104,25 +106,30 @@ function yamlProblem(error: YAMLError, lines: LineCounter): string {
  * package's `uniqueKeys` compares each key with every earlier key of its mapping, which takes seconds on
  * a mapping of tens of thousands of keys; a set per mapping takes one pass. Every key is a scalar here,
  * compared by its value as the package compares them: `stringKeys` refuses any other key in YAML, and
- * JSON has no other.
+ * JSON has no other. The walk keeps its own stack, in the order of the package's `visit` (which copies its
+ * path at every node, so it takes seconds on a document thousands deep), and enters no node more than
+ * `MAX_DEPTH` keys deep: `dataIssues` refuses that data whatever the walk finds there.
  */
 function repeatedKeyAt(doc: Document): number | undefined {
-  let offset: number | undefined
-  visit(doc, {
-    Map(_, map) {
-      const seen = new Set<unknown>()
-      for (const { key } of map.items) {
-        const value = isScalar(key) ? key.value : key
-        if (seen.has(value)) {
-          offset = (isScalar(key) ? key.range?.[0] : undefined) ?? 0
-          return visit.BREAK
+  const stack: { node: unknown, depth: number }[] = [{ node: doc.contents, depth: 0 }]
+  for (let entry = stack.pop(); entry !== undefined; entry = stack.pop()) {
+    const { node, depth } = entry
+    if (depth > MAX_DEPTH) continue
+    if (isPair(node)) {
+      stack.push({ node: node.value, depth }, { node: node.key, depth })
+    } else if (isMap(node) || isSeq(node)) {
+      if (isMap(node)) {
+        const seen = new Set<unknown>()
+        for (const { key } of node.items) {
+          const value = isScalar(key) ? key.value : key
+          if (seen.has(value)) return (isScalar(key) ? key.range?.[0] : undefined) ?? 0
+          seen.add(value)
         }
-        seen.add(value)
       }
-      return undefined
-    },
-  })
-  return offset
+      for (let index = node.items.length - 1; index >= 0; index--) stack.push({ node: node.items[index], depth: depth + 1 })
+    }
+  }
+  return undefined
 }
 
 /**
@@ -186,18 +193,27 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * could turn one into a prototype change: it is refused here, before any schema reads the data.
  * `constructor` and `prototype` stay allowed: they are valid names, and only `__proto__` runs a setter.
  * Only a code config can hand over the rest: a provider object, which is not entered, and `undefined`,
- * which leaves a field unset.
+ * which leaves a field unset. Every value the walk visits counts, a provider object too, and past
+ * `MAX_VALUES` it stops and the config has that one issue, at the file: the schema never sees more data
+ * than that, and an object that refers to itself ends the walk instead of repeating it.
  */
-function dataIssues(value: unknown, segments: readonly PropertyKey[], file: string, depth = 0): ConfigIssue[] {
+function dataIssues(value: unknown, file: string): ConfigIssue[] {
+  const budget = { left: MAX_VALUES }
+  const issues = valueIssues(value, [], file, 0, budget)
+  return budget.left < 0 ? [{ path: file, message: `holds more than ${MAX_VALUES} values` }] : issues
+}
+
+function valueIssues(value: unknown, segments: readonly PropertyKey[], file: string, depth: number, budget: { left: number }): ConfigIssue[] {
+  if (--budget.left < 0) return []
   if (depth > MAX_DEPTH) return [{ path: configPath(segments, file), message: `is nested more than ${MAX_DEPTH} keys deep` }]
   if (value === null || value === undefined || typeof value === 'string' || typeof value === 'boolean') return []
   if (typeof value === 'number') return Number.isFinite(value) ? [] : [{ path: configPath(segments, file), message: 'must be a finite number' }]
   if (isProvider(value)) return []
-  if (Array.isArray(value)) return value.flatMap((item, index) => dataIssues(item, [...segments, index], file, depth + 1))
+  if (Array.isArray(value)) return value.flatMap((item, index) => valueIssues(item, [...segments, index], file, depth + 1, budget))
   if (!isPlainObject(value)) return [{ path: configPath(segments, file), message: 'must be plain data: an object, an array, a string, a finite number, true, false or null' }]
   return Object.keys(value).flatMap(key => key === '__proto__'
     ? [{ path: configPath([...segments, key], file), message: 'is not allowed as a key: it can replace the prototype of an object' }]
-    : dataIssues(value[key], [...segments, key], file, depth + 1))
+    : valueIssues(value[key], [...segments, key], file, depth + 1, budget))
 }
 
 /** The name a message gives what a config threw. Reading it can run the config's code too, so nothing it throws gets out. */
@@ -244,7 +260,7 @@ async function loadCode(source: string, path: string): Promise<QuorumConfig> {
   let checked: { readonly config: QuorumConfig } | { readonly issues: ConfigIssue[] }
   try {
     const value = module.default
-    const issues = isPlainObject(value) ? dataIssues(value, [], path) : [{ path, message: 'must export an object as its default' }]
+    const issues = isPlainObject(value) ? dataIssues(value, path) : [{ path, message: 'must export an object as its default' }]
     checked = issues.length > 0 ? { issues } : checkConfig(configCodeSchema, value, path)
   } catch (error) {
     fail(path, `failed to load (${thrownName(error)})`)
@@ -253,21 +269,31 @@ async function loadCode(source: string, path: string): Promise<QuorumConfig> {
   return checked.config
 }
 
-/** A YAML or JSON config: its parsed value, which must be a mapping of plain data, checked by the file schema. */
+/**
+ * A YAML or JSON config: its parsed value, which must be a mapping of plain data, checked by the file
+ * schema. A throw from the schema check that is no `ConfigError` is one issue at the file, by its name
+ * alone, so the read of a data file only ever throws a `ConfigError`.
+ */
 function checkData(parsed: Read<unknown>, path: string): QuorumConfig {
   if ('problem' in parsed) fail(path, parsed.problem)
   if (!isPlainObject(parsed.value)) fail(path, 'must hold a mapping of settings')
-  const issues = dataIssues(parsed.value, [], path)
+  const issues = dataIssues(parsed.value, path)
   if (issues.length > 0) throw new ConfigError(issues)
-  return parseConfig(configFileSchema, parsed.value, path)
+  try {
+    return parseConfig(configFileSchema, parsed.value, path)
+  } catch (error) {
+    if (error instanceof ConfigError) throw error
+    fail(path, `could not be checked (${thrownName(error)})`)
+  }
 }
 
 /**
  * Put the text of every prompt file in place of its `{ file }`, read relative to `directory` (an absolute
  * path stays absolute) as UTF-8 text of at most 64 KiB. Each distinct path is read once, so a file named
  * by many profiles costs once and every place holds the same text, and the distinct files may hold 1 MiB
- * in all, counted in bytes as read: the file that takes the total over it is an issue, and reading stops
- * there. `config` is the schema's output, a copy, so the caller's own objects are never changed.
+ * in all, counted in bytes as read, an oversized file as 64 KiB: the file that takes the total over it is
+ * an issue, and reading stops there. `config` is the schema's output, a copy, so the caller's own
+ * objects are never changed.
  *
  * @throws ConfigError with the problem of every prompt file that cannot be read, at its path, or with
  * those found so far and the file that takes the prompt files over 1 MiB in total
@@ -286,7 +312,7 @@ async function readPromptFiles(config: QuorumConfig, directory: string, path: st
       let text = reads.get(absolute)
       if (text === undefined) {
         const bytes = await readBounded(absolute, PROMPT_LIMIT, '64 KiB')
-        total += 'problem' in bytes ? 0 : bytes.value.length
+        total += 'problem' in bytes ? bytes.counted ?? 0 : bytes.value.length
         if (total > PROMPT_TOTAL_LIMIT) throw new ConfigError([...issues, { path: at, message: 'takes the prompt files over 1 MiB in total' }])
         text = 'problem' in bytes ? bytes : decode(bytes.value)
         reads.set(absolute, text)
