@@ -171,7 +171,7 @@ export function describeProviderContract(subject: ContractSubject): void {
       expect(issues).toEqual([
         { path: 'p.apiKey', message: 'is set, but auth is none, so it would never be sent' },
         { path: 'p.headers.Content-Type', message: 'must not be content-type, content-length or host' },
-        { path: 'p.headers.bad name', message: 'must be an HTTP header name' },
+        { path: 'p.headers.*', message: 'must be an HTTP header name' },
         { path: 'p.headers.X-Token', message: 'must be a string of printable ASCII characters' },
         ...fixed.map(name => ({ path: `p.headers.${name}`, message: 'is set by the adapter and cannot be replaced' })),
         ...subject.reservedBodyKeys.map(key => ({ path: `p.extraBody.${key}`, message: 'is written by the adapter and cannot be replaced' })),

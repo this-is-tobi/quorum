@@ -1,4 +1,4 @@
-import { ConfigError } from '../core/errors.ts'
+import { ConfigError, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { endpointUrl, redactionsOf } from './http.ts'
 import type { SystemPrompt } from './messages.ts'
@@ -135,7 +135,7 @@ function authIssues(id: string, auth: unknown, apiKey: string | undefined, fixed
 
 function headerIssues(id: string, headers: Readonly<Record<string, string>>, keyHeader: string | undefined, fixedHeaders: readonly string[]): ConfigIssue[] {
   return Object.entries(headers).flatMap(([name, value]): ConfigIssue[] => {
-    const path = `${id}.headers.${name}`
+    const path = `${id}.${issuePath(['headers', name])}`
     if (!HEADER_NAME.test(name)) return [{ path, message: 'must be an HTTP header name' }]
     const lower = name.toLowerCase()
     if (RESERVED_HEADERS.has(lower)) return [{ path, message: 'must not be content-type, content-length or host' }]
@@ -160,7 +160,7 @@ function extraBodyIssues(id: string, extraBody: Readonly<Record<string, unknown>
   const reserved = new Set(rules.reservedBodyKeys.map(bodyKeyForm))
   const tools = new Set(rules.toolBodyKeys.map(bodyKeyForm))
   return Object.keys(extraBody).flatMap((key): ConfigIssue[] => {
-    const path = `${id}.extraBody.${key}`
+    const path = `${id}.${issuePath(['extraBody', key])}`
     const form = bodyKeyForm(key)
     if (reserved.has(form)) return [{ path, message: 'is written by the adapter and cannot be replaced' }]
     return tools.has(form) ? [{ path, message: 'offers the model a tool, which quorum never does' }] : []
@@ -171,7 +171,7 @@ function extraBodyIssues(id: string, extraBody: Readonly<Record<string, unknown>
 function queryKeyIssues(id: string, query: Readonly<Record<string, string>>, apiKey: string): ConfigIssue[] {
   return Object.entries(query)
     .filter(([, value]) => value === apiKey)
-    .map(([name]) => ({ path: `${id}.query.${name}`, message: 'holds the key, which travels only in the header auth names' }))
+    .map(([name]) => ({ path: `${id}.${issuePath(['query', name])}`, message: 'holds the key, which travels only in the header auth names' }))
 }
 
 /** The words of a list as a message names them: commas between them, and `or` before the last. */

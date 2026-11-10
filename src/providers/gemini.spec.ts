@@ -110,6 +110,11 @@ describe('gemini', () => {
     expect(() => gemini({ ...options, query: { KEY: 'x' } })).toThrow(new ConfigError([{ path: 'gemini.query.KEY', message: 'would carry a key in the URL: set apiKey instead' }]))
   })
 
+  it('prints a key query name that is not a safe name as *', () => {
+    const kelvinKey = `${String.fromCharCode(0x212A)}ey`
+    expect(() => gemini({ ...options, query: { [kelvinKey]: 'x' } })).toThrow(new ConfigError([{ path: 'gemini.query.*', message: 'would carry a key in the URL: set apiKey instead' }]))
+  })
+
   it('returns the parts that are not thoughts, joined, with the model version and the usage', async () => {
     stubFetch(withThoughts)
     await expect(provider.complete(request)).resolves.toEqual({ text: '{"keep":false,"reasoning":"r"}', model: 'gemini-3.8-flash', usage: { inputTokens: 1840, outputTokens: 340 } })
