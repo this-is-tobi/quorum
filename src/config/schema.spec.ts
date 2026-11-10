@@ -1,8 +1,9 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionResponse, Provider } from '../core/ports.ts'
-import { configCodeSchema, configFileSchema, configIssues, parseConfig } from './schema.ts'
+import { configCodeSchema, configFileSchema, configIssues, configJsonSchema, parseConfig } from './schema.ts'
 import type { QuorumConfigFile } from './schema.ts'
 
 /** The issues of the ConfigError that parsing `value` with `schema` throws, each after the file name; none when it parses. */
@@ -320,5 +321,50 @@ describe('configIssues', () => {
   it('puts the prefix and a colon before every path, and the prefix alone for the root', () => {
     const result = configFileSchema.safeParse({ colour: 1, 'a b': 2 })
     expect(configIssues(result.error!, 'q.json')).toEqual([{ path: 'q.json: colour', message: 'is not a known field' }, { path: 'q.json', message: 'holds a field that is not known' }])
+  })
+})
+
+/** The node of the generated JSON Schema at `keys`. */
+function node(...keys: string[]): unknown {
+  return keys.reduce<unknown>((value, key) => (value as Record<string, unknown> | undefined)?.[key], configJsonSchema())
+}
+
+/** The path of every property of a JSON Schema node, at any depth, that has no description. */
+function undescribed(value: unknown, path: string): string[] {
+  if (Array.isArray(value)) return value.flatMap((item, index) => undescribed(item, `${path}.${index}`))
+  if (typeof value !== 'object' || value === null) return []
+  const record = value as Record<string, unknown>
+  const own = typeof record.properties === 'object' && record.properties !== null
+    ? Object.entries(record.properties).filter(([, field]) => typeof (field as Record<string, unknown>).description !== 'string').map(([name]) => `${path}.properties.${name}`)
+    : []
+  return [...own, ...Object.entries(record).flatMap(([key, field]) => undescribed(field, `${path}.${key}`))]
+}
+
+describe('configJsonSchema', () => {
+  it('is a draft-07 schema that requires no field of the root', () => {
+    expect(node('$schema')).toBe('http://json-schema.org/draft-07/schema#')
+    expect(node('type')).toBe('object')
+    expect(node('required')).toBeUndefined()
+  })
+
+  it('refuses a key it does not know on the root, a provider and a profile', () => {
+    expect(node('additionalProperties')).toBe(false)
+    expect(node('properties', 'providers', 'additionalProperties', 'additionalProperties')).toBe(false)
+    expect(node('properties', 'profiles', 'additionalProperties', 'additionalProperties')).toBe(false)
+  })
+
+  it('holds the names of providers and the ids of profiles to the name pattern', () => {
+    expect(node('properties', 'providers', 'propertyNames')).toEqual({ type: 'string', pattern: '^[a-z][a-z0-9_-]*$' })
+    expect(node('properties', 'profiles', 'propertyNames')).toEqual({ type: 'string', pattern: '^[a-z][a-z0-9_-]*$' })
+  })
+
+  it('describes every field, for an editor to show, and offers no key field', () => {
+    expect(undescribed(configJsonSchema(), '#')).toEqual([])
+    expect(Object.keys(node('properties', 'providers', 'additionalProperties', 'properties') as object)).not.toContain('apiKey')
+  })
+
+  it('is what schema/quorum.schema.json holds, byte for byte', () => {
+    const committed = readFileSync(new URL('../../schema/quorum.schema.json', import.meta.url), 'utf8')
+    expect(committed, 'schema/quorum.schema.json differs from the zod schema: run bun run schema').toBe(`${JSON.stringify(configJsonSchema(), null, 2)}\n`)
   })
 })

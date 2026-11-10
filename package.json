@@ -15,6 +15,7 @@
   "scripts": {
     "start": "bun run ./src/cli/bin.ts",
     "compile": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig ./src/cli/bin.ts --outfile ./bin/quorum",
+    "schema": "bun run ./scripts/schema.ts",
     "typecheck": "tsc --noEmit",
     "format": "eslint . --fix",
     "lint": "eslint .",

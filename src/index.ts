@@ -2,6 +2,8 @@ import { renderEvent } from './cli/render.ts'
 import type { QuorumEvent, QuorumResult } from './core/types.ts'
 import { quorumFromEnv } from './legacy.ts'
 
+export { defineConfig } from './config/define.ts'
+export type { QuorumConfig, QuorumConfigFile } from './config/schema.ts'
 export { ConfigError, OutputError, ProviderError, QuorumError } from './core/errors.ts'
 export type { ConfigIssue, ProviderErrorKind } from './core/errors.ts'
 export { defaultPolicy } from './core/policy.ts'
