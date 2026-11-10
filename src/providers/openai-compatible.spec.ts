@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
-import { jsonReply } from '../testing/http.ts'
+import { sent, stubFetch } from '../testing/http.ts'
 import { openaiCompatible } from './openai-compatible.ts'
 import type { OpenAICompatibleOptions } from './openai-compatible.ts'
 import { chatCompletion, mistralChunks, openRouterGenerationError, refusal, stringError, truncated } from '../testing/fixtures/openai-compatible.ts'
@@ -14,17 +14,6 @@ const request: CompletionRequest = {
 }
 
 const ok = { choices: [{ finish_reason: 'stop', message: { content: '{}' } }] }
-
-function stubFetch(body: unknown): ReturnType<typeof vi.fn> {
-  const fetchMock = vi.fn().mockImplementation(async () => jsonReply(body))
-  vi.stubGlobal('fetch', fetchMock)
-  return fetchMock
-}
-
-function sent(fetchMock: ReturnType<typeof vi.fn>, call = 0): { url: string, headers: Record<string, string>, body: Record<string, unknown> } {
-  const [url, init] = fetchMock.mock.calls[call]
-  return { url, headers: init.headers, body: JSON.parse(init.body) }
-}
 
 afterEach(() => {
   vi.unstubAllGlobals()

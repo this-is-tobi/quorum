@@ -1,9 +1,8 @@
-import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
-import { endpointUrl, postJson, redactionsOf, snippet } from './http.ts'
+import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { httpOptionIssues, isRecord, mergeBody, requestHeaders, unlessEmpty } from './options.ts'
+import { isRecord, mergeBody, prepareHttp, unlessEmpty } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { endedEarly, joinedText, replyFailure, tokenUsage } from './reply.ts'
 
@@ -12,8 +11,10 @@ export type GeminiOptions = HttpProviderOptions
 
 /** A Gemini model id, such as `gemini-3.8-flash`. It goes in the URL's path, so it holds no `/`, `?`, `#`, `%` or `:`. */
 const MODEL_ID = /^[a-z0-9][a-z0-9.-]*$/i
+/** The longest block reason quoted, in characters: the pattern's bound and the quote's cut. */
+const MAX_BLOCK_REASON = 64
 /** A block reason as the API writes one: only one of this shape is quoted. */
-const BLOCK_REASON = /^[A-Z_]{1,64}$/
+const BLOCK_REASON = new RegExp(`^[A-Z_]{1,${MAX_BLOCK_REASON}}$`)
 /** The protocol's rules. The tool fields: `tools`, `toolConfig`, and `cachedContent`, since a cache can hold tools of its own. */
 const RULES: Omit<AdapterRules, 'auth'> = {
   reservedBodyKeys: ['contents', 'systemInstruction'],
@@ -60,7 +61,7 @@ function readReply(reply: unknown, { id, model }: Pick<GeminiOptions, 'id' | 'mo
 
   const blocked = isRecord(reply.promptFeedback) ? reply.promptFeedback.blockReason : undefined
   if (blocked !== undefined && blocked !== null) {
-    const quoted = typeof blocked === 'string' && BLOCK_REASON.test(blocked) ? `: ${snippet(blocked, 64, redact)}` : ''
+    const quoted = typeof blocked === 'string' && BLOCK_REASON.test(blocked) ? `: ${snippet(blocked, MAX_BLOCK_REASON, redact)}` : ''
     throw fail('refusal', `prompt was blocked${quoted}`)
   }
 
@@ -91,17 +92,12 @@ function readReply(reply: unknown, { id, model }: Pick<GeminiOptions, 'id' | 'mo
  * @throws ConfigError with every problem of the options, before any request
  */
 export function gemini(options: GeminiOptions): Provider {
-  const { id, baseUrl, model, apiKey, auth = { header: 'x-goog-api-key' } as Auth, headers, query, extraBody, temperature, maxTokens, systemPrompt = 'native', structuredOutput = 'json' } = options
+  const { id, model, auth = { header: 'x-goog-api-key' } as Auth, query, temperature, maxTokens, systemPrompt = 'native', structuredOutput = 'json' } = options
   const modelId = typeof model === 'string' ? model.replace(/^models\//, '') : ''
-  const issues = httpOptionIssues(options, { ...RULES, auth })
-  if (isRecord(query)) issues.push(...keyParameterIssues(id, query))
+  const issues = isRecord(query) ? keyParameterIssues(id, query) : []
   if (!MODEL_ID.test(modelId)) issues.push({ path: `${id}.model`, message: 'must be a Gemini model id, such as gemini-3.8-flash' })
-  if (issues.length > 0) throw new ConfigError(issues)
-  // Captured once checked, like the URL and the headers: a caller who changes the options later sends nothing unchecked.
-  const extra = extraBody === undefined ? undefined : structuredClone(extraBody)
-  const url = endpointUrl(baseUrl, `/v1beta/models/${modelId}:generateContent`, query)
-  const sent = requestHeaders(auth, apiKey, headers)
-  const redact = redactionsOf(baseUrl, apiKey, headers)
+  // The path is built before the checks, harmlessly: nothing is sent when they fail.
+  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, `/v1beta/models/${modelId}:generateContent`, issues)
 
   return {
     id,
@@ -112,12 +108,12 @@ export function gemini(options: GeminiOptions): Provider {
       const reply = await postJson<unknown>({
         providerId: id,
         url,
-        headers: sent,
+        headers,
         body: mergeBody({
           contents: messages.map(message => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] })),
           systemInstruction: system === undefined ? undefined : { parts: [{ text: system }] },
           generationConfig: generationConfig({ temperature, maxTokens, structuredOutput }, request.output),
-        }, extra),
+        }, extraBody),
         signal: request.signal,
         redact,
       })

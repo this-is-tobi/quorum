@@ -1,8 +1,7 @@
-import { ConfigError } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
-import { endpointUrl, postJson, redactionsOf, snippet } from './http.ts'
+import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { httpOptionIssues, isRecord, mergeBody, requestHeaders, unlessEmpty } from './options.ts'
+import { isRecord, mergeBody, prepareHttp, unlessEmpty } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { MAX_MODEL_TEXT, replyFailure, tokenUsage } from './reply.ts'
 
@@ -39,7 +38,7 @@ function readReply(reply: unknown, { id, model }: Pick<OllamaOptions, 'id' | 'mo
   if (typeof reply.error === 'string') throw fail('invalid-response', `server error: ${snippet(reply.error, MAX_MODEL_TEXT, redact)}`)
 
   if (reply.done !== true || !DONE.has(reply.done_reason)) throw fail('invalid-response', 'reply has not finished')
-  if (reply.done_reason === 'length') throw fail('truncated', 'reply was cut off by the token limit')
+  if (reply.done_reason === 'length') throw fail('truncated', 'reply was cut off by the token limit or the context')
 
   const message = isRecord(reply.message) ? reply.message : {}
   if (typeof message.content !== 'string') throw fail('invalid-response', 'reply has no text')
@@ -62,14 +61,8 @@ function readReply(reply: unknown, { id, model }: Pick<OllamaOptions, 'id' | 'mo
  * @throws ConfigError with every problem of the options, before any request
  */
 export function ollama(options: OllamaOptions): Provider {
-  const { id, baseUrl, model, apiKey, auth = 'bearer' as Auth, headers, query, extraBody, temperature = 0, maxTokens, systemPrompt = 'native', structuredOutput = 'json' } = options
-  const issues = httpOptionIssues(options, { ...RULES, auth })
-  if (issues.length > 0) throw new ConfigError(issues)
-  // Captured once checked, like the URL and the headers: a caller who changes the options later sends nothing unchecked.
-  const extra = extraBody === undefined ? undefined : structuredClone(extraBody)
-  const url = endpointUrl(baseUrl, '/api/chat', query)
-  const sent = requestHeaders(auth, apiKey, headers)
-  const redact = redactionsOf(baseUrl, apiKey, headers)
+  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, systemPrompt = 'native', structuredOutput = 'json' } = options
+  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/api/chat')
 
   return {
     id,
@@ -80,7 +73,7 @@ export function ollama(options: OllamaOptions): Provider {
       const reply = await postJson<unknown>({
         providerId: id,
         url,
-        headers: sent,
+        headers,
         body: mergeBody({
           model,
           messages: system === undefined ? messages : [{ role: 'system', content: system }, ...messages],
@@ -89,7 +82,7 @@ export function ollama(options: OllamaOptions): Provider {
           shift: false,
           options: unlessEmpty({ temperature: temperature ?? undefined, num_predict: maxTokens }),
           format: format(structuredOutput, request.output),
-        }, extra),
+        }, extraBody),
         signal: request.signal,
         redact,
       })

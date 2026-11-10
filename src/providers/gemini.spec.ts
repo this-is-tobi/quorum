@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
-import { jsonReply } from '../testing/http.ts'
+import { sent, stubFetch } from '../testing/http.ts'
 import { gemini } from './gemini.ts'
 import type { GeminiOptions } from './gemini.ts'
 import { candidate, generateContentResponse, invalidKey, promptBlocked, truncated, withThoughts } from '../testing/fixtures/gemini.ts'
@@ -12,17 +12,6 @@ const request: CompletionRequest = {
   system: 'instructions',
   messages: [{ role: 'user', content: 'data' }],
   output: { name: 'panel_vote', schema: { type: 'object' } },
-}
-
-function stubFetch(body: unknown, status = 200): ReturnType<typeof vi.fn> {
-  const fetchMock = vi.fn().mockImplementation(async () => jsonReply(body, status))
-  vi.stubGlobal('fetch', fetchMock)
-  return fetchMock
-}
-
-function sent(fetchMock: ReturnType<typeof vi.fn>): { url: string, headers: Record<string, string>, body: Record<string, unknown> } {
-  const [url, init] = fetchMock.mock.calls[0]
-  return { url, headers: init.headers, body: JSON.parse(init.body) }
 }
 
 afterEach(() => {
@@ -145,6 +134,7 @@ describe('gemini', () => {
   it.each<[ProviderErrorKind, unknown, string]>([
     ['refusal', promptBlocked, 'gemini: prompt was blocked: "PROHIBITED_CONTENT"'],
     ['refusal', { promptFeedback: { blockReason: 'Not A Reason' } }, 'gemini: prompt was blocked'],
+    ['refusal', { promptFeedback: { blockReason: 'A'.repeat(64) } }, `gemini: prompt was blocked: "${'A'.repeat(64)}"`],
     ['refusal', { promptFeedback: { blockReason: 'A'.repeat(65) } }, 'gemini: prompt was blocked'],
     ['refusal', { promptFeedback: { blockReason: 1 }, candidates: [candidate] }, 'gemini: prompt was blocked'],
     ['invalid-response', { promptFeedback: {} }, 'gemini: reply has no candidates'],

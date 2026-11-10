@@ -1,4 +1,6 @@
+import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
+import { endpointUrl, redactionsOf } from './http.ts'
 import type { SystemPrompt } from './messages.ts'
 
 const HTTP_URL_WITH_HOST = /^https?:\/\/[^/\\?#\s]/i
@@ -36,7 +38,7 @@ export interface HttpProviderOptions {
    * gateway's own credential can go here.
    */
   headers?: Readonly<Record<string, string>>
-  /** Query parameters added to every request URL. They are not redacted from error messages: never put a key here. */
+  /** Query parameters added to every request URL. They are not redacted from error messages: never put a key here, and a value equal to the key is refused. */
   query?: Readonly<Record<string, string>>
   /**
    * JSON values deep-merged into the request body last: objects merge key by key, anything else replaces.
@@ -59,10 +61,19 @@ export interface AdapterRules {
   reservedBodyKeys: readonly string[]
   /** Body fields that would offer the model a tool or a server-side capability: `extraBody` cannot set them. */
   toolBodyKeys: readonly string[]
-  /** Headers the adapter always sends, lower-cased: `headers` cannot replace them. */
+  /** Headers the adapter always sends: `headers` cannot replace them. */
   fixedHeaders: readonly string[]
   /** The structured-output modes the protocol supports. */
   structuredOutputs: readonly StructuredOutput[]
+}
+
+/** What an adapter sends with every request, once its options are checked. */
+export interface PreparedHttp {
+  url: string
+  headers: Record<string, string>
+  redact: string[]
+  /** A copy of `extraBody`, taken once checked: a caller who changes the options later sends nothing unchecked. */
+  extraBody: Record<string, unknown> | undefined
 }
 
 /** A scheme, then a host: URL parsing skips extra slashes, so `https:///v1` would otherwise send the request to a host named `v1`. */
@@ -174,7 +185,8 @@ function wordList(words: readonly string[]): string {
  */
 export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRules): ConfigIssue[] {
   const { id, baseUrl, apiKey, headers, query, extraBody, temperature, maxTokens, systemPrompt, structuredOutput } = options
-  const { auth, fixedHeaders, structuredOutputs } = rules
+  const { auth, structuredOutputs } = rules
+  const fixedHeaders = rules.fixedHeaders.map(name => name.toLowerCase())
   const issues = [...baseUrlIssues(`${id}.baseUrl`, baseUrl)]
   if (apiKey !== undefined && NOT_VISIBLE_ASCII.test(apiKey)) {
     issues.push({ path: `${id}.apiKey`, message: 'must only contain visible ASCII characters, which an HTTP header can carry' })
@@ -203,6 +215,25 @@ export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRul
     issues.push({ path: `${id}.structuredOutput`, message: `must be ${wordList(structuredOutputs)}` })
   }
   return issues
+}
+
+/**
+ * Check an adapter's options, then build what it sends with every request: the URL of `path` with the
+ * query, the headers, the values to redact and a copy of `extraBody`. Nothing is built from options
+ * that fail a check.
+ *
+ * @throws ConfigError with the problems of `httpOptionIssues`, then `adapterIssues`, before any request
+ */
+export function prepareHttp(options: HttpProviderOptions, rules: AdapterRules, path: string, adapterIssues: readonly ConfigIssue[] = []): PreparedHttp {
+  const issues = [...httpOptionIssues(options, rules), ...adapterIssues]
+  if (issues.length > 0) throw new ConfigError(issues)
+  const { baseUrl, apiKey, headers, query, extraBody } = options
+  return {
+    url: endpointUrl(baseUrl, path, query),
+    headers: requestHeaders(rules.auth, apiKey, headers),
+    redact: redactionsOf(baseUrl, apiKey, headers),
+    extraBody: extraBody === undefined ? undefined : structuredClone(extraBody),
+  }
 }
 
 /** The headers a provider sends besides the content type: its own, then its key as `auth` says. Names are lower-cased. */

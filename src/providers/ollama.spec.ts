@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
-import { jsonReply } from '../testing/http.ts'
+import { sent, stubFetch } from '../testing/http.ts'
 import { ollama } from './ollama.ts'
 import { chatResponse, contextExceeded, debugRender, truncated } from '../testing/fixtures/ollama.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
@@ -10,17 +10,6 @@ const request: CompletionRequest = {
   system: 'instructions',
   messages: [{ role: 'user', content: 'data' }],
   output: { name: 'panel_vote', schema: { type: 'object' } },
-}
-
-function stubFetch(body: unknown, status = 200): ReturnType<typeof vi.fn> {
-  const fetchMock = vi.fn().mockImplementation(async () => jsonReply(body, status))
-  vi.stubGlobal('fetch', fetchMock)
-  return fetchMock
-}
-
-function sent(fetchMock: ReturnType<typeof vi.fn>): { url: string, headers: Record<string, string>, body: Record<string, unknown> } {
-  const [url, init] = fetchMock.mock.calls[0]
-  return { url, headers: init.headers, body: JSON.parse(init.body) }
 }
 
 afterEach(() => {
@@ -100,7 +89,7 @@ describe('ollama', () => {
   const { done_reason: _doneReason, ...noDoneReason } = chatResponse
 
   it.each<[ProviderErrorKind, unknown, string]>([
-    ['truncated', truncated, 'local: reply was cut off by the token limit'],
+    ['truncated', truncated, 'local: reply was cut off by the token limit or the context'],
     ['invalid-response', { error: 'model "qwen9" not found, try pulling it first' }, 'local: server error: "model \\"qwen9\\" not found, try pulling it first"'],
     ['invalid-response', { ...chatResponse, done: false }, 'local: reply has not finished'],
     ['invalid-response', { ...chatResponse, done: 'true' }, 'local: reply has not finished'],

@@ -1,8 +1,7 @@
-import { ConfigError } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
-import { endpointUrl, postJson, redactionsOf, snippet } from './http.ts'
+import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { httpOptionIssues, isRecord, mergeBody, requestHeaders } from './options.ts'
+import { isRecord, mergeBody, prepareHttp } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { endedEarly, joinedText, MAX_MODEL_TEXT, replyFailure, tokenUsage } from './reply.ts'
 
@@ -14,8 +13,8 @@ export interface OpenAICompatibleOptions extends HttpProviderOptions {
 
 /**
  * The protocol's rules. The tool fields are the union over the OpenAI-compatible vendors: OpenAI's and
- * the others' function tools and web search, OpenRouter's plugins, server-tool loop and presets, xAI's
- * live search and Groq's built-in tools. Not `chat_template_kwargs`, which sets chat-template variables,
+ * the others' function tools and web search, OpenRouter's plugins, server-tool loop, presets and model
+ * fallbacks, xAI's live search and Groq's built-in tools. Not `chat_template_kwargs`, which sets chat-template variables,
  * such as turning thinking off on vLLM or Together, and runs nothing on the server.
  */
 const RULES: Omit<AdapterRules, 'auth'> = {
@@ -116,15 +115,9 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
  * @throws ConfigError with every problem of the options, before any request
  */
 export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
-  const { id, baseUrl, model, apiKey, auth = 'bearer' as Auth, headers, query, extraBody, temperature = 0, maxTokens, maxTokensField = 'max_tokens', systemPrompt = 'native', structuredOutput = 'json' } = options
-  const issues = httpOptionIssues(options, { ...RULES, auth })
-  if (!MAX_TOKENS_FIELDS.has(maxTokensField)) issues.push({ path: `${id}.maxTokensField`, message: 'must be max_tokens or max_completion_tokens' })
-  if (issues.length > 0) throw new ConfigError(issues)
-  // Captured once checked, like the URL and the headers: a caller who changes the options later sends nothing unchecked.
-  const extra = extraBody === undefined ? undefined : structuredClone(extraBody)
-  const url = endpointUrl(baseUrl, '/chat/completions', query)
-  const sent = requestHeaders(auth, apiKey, headers)
-  const redact = redactionsOf(baseUrl, apiKey, headers)
+  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, maxTokensField = 'max_tokens', systemPrompt = 'native', structuredOutput = 'json' } = options
+  const fieldIssues = MAX_TOKENS_FIELDS.has(maxTokensField) ? [] : [{ path: `${id}.maxTokensField`, message: 'must be max_tokens or max_completion_tokens' }]
+  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/chat/completions', fieldIssues)
 
   return {
     id,
@@ -135,14 +128,14 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
       const reply = await postJson<unknown>({
         providerId: id,
         url,
-        headers: sent,
+        headers,
         body: mergeBody({
           model,
           messages: system === undefined ? messages : [{ role: 'system', content: system }, ...messages],
           response_format: responseFormat(structuredOutput, request.output),
           temperature: temperature ?? undefined,
           [maxTokensField]: maxTokens,
-        }, extra),
+        }, extraBody),
         signal: request.signal,
         redact,
       })
