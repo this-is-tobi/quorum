@@ -30,6 +30,8 @@ install -m 0755 ./bin/quorum /usr/local/bin/quorum
 
 `bun run compile` writes `./bin/quorum`: one executable with the Bun runtime inside, for the system you build it on, which runs without Bun and without the clone. The second line copies it onto your `$PATH` (with `sudo` where `/usr/local/bin` is not yours; any directory on your `$PATH` will do).
 
+The binary reads no `.env` and no `bunfig.toml` from the directory it runs in, which a Bun-compiled binary does by default. Bun itself reads both from its working directory, so `bun run start` reads the clone's own, and a `bunfig.toml` can name code to run before quorum starts. In a directory you do not control, such as a pull request's checkout, run the binary: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
+
 The pages that follow write the command as `quorum`, which is that binary. Without it, read `quorum` as `bun run start` run from the clone.
 
 ## Check that it works

@@ -111,6 +111,7 @@ exit $code
 ```
 
 - **`set -o pipefail`** makes a failing `git diff` fail the step. Without it, a base branch the job never fetched leaves quorum an empty stdin, which it reviews as a blank diff and passes with `0`.
+- **Run the binary, not `bun run start`.** The job's working directory is the pull request's checkout, and Bun reads a `bunfig.toml` and a `.env` from its working directory: the pull request could add one that runs its code first, or one that points the finder at its own endpoint. The binary reads neither: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
 - **The base must be in the clone.** `origin/main...HEAD` needs `origin/main` and the commit where the branch left it, which a shallow clone may not have.
 - **A clean exit covers what the harness can detect.** An endpoint that cut an oversized prompt can still give a clean review of what was left, so bound the size of the diffs the job reviews: [What the harness cannot detect](../30-security/10-threat-model.md#what-the-harness-cannot-detect).
 - **The result is untrusted text.** It holds what models wrote about a change an attacker may have written: [Output handling](../30-security/30-output-handling.md#text-an-attacker-can-influence) says how to treat it before you render it anywhere.
