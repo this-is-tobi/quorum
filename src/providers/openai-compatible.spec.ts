@@ -204,8 +204,8 @@ describe('openaiCompatible', () => {
     await expect(groq.complete(request)).rejects.toMatchObject({ name: 'ProviderError', kind: 'invalid-response', retryable: false, message: `groq: ${ranTool}` })
   })
 
-  it('reads as a success an empty executed_tools, one that is not an array, and annotations without a url_citation', async () => {
-    for (const fields of [{ executed_tools: [] }, { executed_tools: null }, { executed_tools: {} }, { annotations: [] }, { annotations: [null, 'url_citation', { type: 'file_citation' }] }]) {
+  it('reads as a success an empty executed_tools, one that is not an array, annotations that are not an array, and annotations without a url_citation', async () => {
+    for (const fields of [{ executed_tools: [] }, { executed_tools: null }, { executed_tools: {} }, { annotations: [] }, { annotations: {} }, { annotations: null }, { annotations: [null, 'url_citation', { type: 'file_citation' }] }]) {
       stubFetch(withMessage(fields))
       await expect(provider.complete(request), JSON.stringify(fields)).resolves.toMatchObject({ text: '{}' })
     }
