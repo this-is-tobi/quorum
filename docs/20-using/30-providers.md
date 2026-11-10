@@ -1,6 +1,6 @@
 # Providers
 
-A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds two `openaiCompatible` providers from the environment; a program builds its own, with one of the four shipped adapters or from scratch. This page covers the port, the adapters and the options they share, the key header styles, the tool fields each adapter refuses, the limits of a request, the body each adapter sends and the replies it reads, the errors a provider raises, and writing a provider of your own.
+A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds two `openaiCompatible` providers from the environment; a program builds its own, with one of the four shipped adapters or from scratch. This page covers the port, the adapters, the presets, the options the adapters share, the key header styles, the tool fields each adapter refuses, the limits of a request, the body each adapter sends and the replies it reads, the errors a provider raises, and writing a provider of your own.
 
 ## The port
 
@@ -25,7 +25,7 @@ interface CompletionResponse {
 }
 ```
 
-- **Text in, text out.** A request carries the instructions in `system`, the fenced data in `messages` (one `user` message), the shape of the reply in `output` (named `research_findings` or `panel_vote`, with its JSON Schema), and the review's `signal`. The request has no field for a tool, a function, a file or a network capability, and quorum offers none to a model. Each shipped adapter refuses the body fields of its protocol that would offer one, so `extraBody` cannot add them, but a model id can bring tools of its own, and `headers` are sent as given: [The tool fields](#the-tool-fields).
+- **Text in, text out.** A request carries the instructions in `system`, the fenced data in `messages` (one `user` message), the shape of the reply in `output` (named `research_findings` or `panel_vote`, with its JSON Schema), and the review's `signal`. The request has no field for a tool, a function, a file or a network capability, and quorum offers none to a model. Each shipped adapter refuses the body fields of its protocol that would offer one, so `extraBody` cannot add them, but a model id can bring tools of its own, which only a preset's list refuses, and `headers` are sent as given: [The tool fields](#the-tool-fields).
 - **No secret in a request.** No environment value, key or credential appears in a request: a key lives in the adapter that holds it.
 - **The core never trusts the reply.** It extracts and validates the JSON in `text` itself, whatever the provider did to get it, and reads `usage` (`inputTokens`, `outputTokens`, optional `costUsd`) only when its counts are finite numbers of at least 0.
 - **`id` and `model` name the provider** in events and in `meta`, as they were when the quorum was created.
@@ -53,6 +53,65 @@ const hosted = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com
 ```
 
 Every adapter sends one JSON `POST` per call through the same hardened path, [The limits of a request](#the-limits-of-a-request), passes the request's signal to `fetch`, and reports in `usage` every prompt token the request carried, cached ones included, and every token the model generated, thinking included, from the counts its protocol sends: never a cost. The counts a protocol keeps apart, such as Anthropic's cache tokens or Gemini's thought tokens, are added in when they are numbers; a reply without both main counts as numbers reports no `usage`.
+
+## Presets
+
+A preset is a row of data for a vendor's or a server's endpoint: the protocol it speaks, and the defaults it fills in for a provider, `baseUrl`, `auth`, `structuredOutput`, `temperature` and, for the `openai-compatible` protocol, `maxTokensField`. Any of them set on the provider wins. A field set to `undefined` counts as unset, so a spread of a value that was never given keeps the preset's; `temperature: null` is set, and leaves the temperature out.
+
+| Preset | Protocol | Base URL | Key header | Key variable | `structuredOutput` | `temperature` | Token-limit field |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `ollama` | `ollama` | `http://localhost:11434` | `Authorization: Bearer` | None | `json` | `0` | `options.num_predict` |
+| `ollama-cloud` | `ollama` | `https://ollama.com` | `Authorization: Bearer` | `OLLAMA_API_KEY` | `json` | `0` | `options.num_predict` |
+| `lmstudio` | `openai-compatible` | `http://localhost:1234/v1` | `Authorization: Bearer` | None | `schema` | `0` | `max_tokens` |
+| `llamacpp` | `openai-compatible` | `http://127.0.0.1:9931/v1` | `Authorization: Bearer` | None | `json` | `0` | `max_tokens` |
+| `vllm` | `openai-compatible` | `http://localhost:8000/v1` | `Authorization: Bearer` | None | `json` | `0` | `max_tokens` |
+| `openai` | `openai-compatible` | `https://api.openai.com/v1` | `Authorization: Bearer` | `OPENAI_API_KEY` | `json` | Left out | `max_completion_tokens` |
+| `azure-openai` | `openai-compatible` | None: the provider sets its own | `api-key` | `AZURE_OPENAI_API_KEY` | `json` | Left out | `max_completion_tokens` |
+| `openrouter` | `openai-compatible` | `https://openrouter.ai/api/v1` | `Authorization: Bearer` | `OPENROUTER_API_KEY` | `prompt` | `0` | `max_tokens` |
+| `groq` | `openai-compatible` | `https://api.groq.com/openai/v1` | `Authorization: Bearer` | `GROQ_API_KEY` | `json` | `0` | `max_completion_tokens` |
+| `mistral` | `openai-compatible` | `https://api.mistral.ai/v1` | `Authorization: Bearer` | `MISTRAL_API_KEY` | `json` | `0` | `max_tokens` |
+| `deepseek` | `openai-compatible` | `https://api.deepseek.com` | `Authorization: Bearer` | `DEEPSEEK_API_KEY` | `json` | `0` | `max_tokens` |
+| `together` | `openai-compatible` | `https://api.together.ai/v1` | `Authorization: Bearer` | `TOGETHER_API_KEY` | `json` | `0` | `max_tokens` |
+| `fireworks` | `openai-compatible` | `https://api.fireworks.ai/inference/v1` | `Authorization: Bearer` | `FIREWORKS_API_KEY` | `json` | `0` | `max_tokens` |
+| `xai` | `openai-compatible` | `https://api.x.ai/v1` | `Authorization: Bearer` | `XAI_API_KEY` | `json` | `0` | `max_completion_tokens` |
+| `anthropic` | `anthropic` | `https://api.anthropic.com` | `Authorization: Bearer` | `ANTHROPIC_API_KEY` | `schema` | Left out | `max_tokens` |
+| `gemini` | `gemini` | `https://generativelanguage.googleapis.com` | `x-goog-api-key` | `GEMINI_API_KEY` | `json` | Left out | `generationConfig.maxOutputTokens` |
+
+- **The key variable** is the one the vendor documents for its key, for the configuration layer to read. A preset sends no key it is not given, and a local server needs none: `vllm`, `llamacpp` and `lmstudio` take one as a bearer token once the server is started with one.
+- **The defaults follow the vendors.** `temperature` is `0` unless the vendor rejects one, as OpenAI's reasoning models and Anthropic do, or its current models ignore it, as Gemini's do. `structuredOutput` is `json` where the server documents a JSON mode, `schema` where it documents only a schema (LM Studio, and Anthropic, which has no JSON mode), and `prompt` for OpenRouter, whose support depends on the model a request is routed to and which ignores a format the endpoint cannot honour. `openai`, `azure-openai`, `groq` and `xai` send `max_completion_tokens`, which their vendors document in place of a deprecated `max_tokens`. DeepSeek's base URL has no `/v1`.
+- **`ollama-cloud`** is Ollama's cloud, `https://ollama.com`, reached through the same native `/api/chat` as a local server, with a key.
+- **`azure-openai` has no base URL**: set your resource's v1 endpoint, `https://<resource>.openai.azure.com/openai/v1`, and name your deployment as the model. Without a base URL it is a configuration error.
+
+### The model ids a preset refuses
+
+A model id can bring tools of its own, which no body check sees. A preset lists the ids of its vendor that run a tool on the server by themselves, as patterns where `*` stands for any text, possibly empty, and every other character for itself. A provider built from the preset refuses a model that a pattern matches whole, in any letter case: `<id>.model: runs tools on the server by itself, which quorum never allows`.
+
+| Preset | Refused model ids | Why |
+| --- | --- | --- |
+| `openai` | `*search*`, `*computer-use*` | The search models, such as `gpt-5-search-api`, search the web before every answer, and the computer-use models drive a browser |
+| `openrouter` | `*:online*`, `*@preset/*`, `openrouter/fusion*`, `openrouter/auto*`, `perplexity/*`, `*search*` | `:online` adds a web search, a `@preset/` slug can hold tools, `openrouter/fusion` runs with web search and web fetch, `openrouter/auto` routes to a pool of models OpenRouter does not publish, which may hold search models, and Perplexity's models and any search model search by themselves |
+| `groq` | `openai/gpt-oss-*`, `groq/compound*`, `compound-beta*` | gpt-oss runs Groq's built-in web search and code execution by itself, which no parameter turns off, and the compound models run tools by themselves |
+| `xai` | `*multi-agent*` | The multi-agent model works only on the Responses API, where xAI runs its server-side tools |
+| `gemini` | `*deep-research*`, `*antigravity*`, `*computer-use*` | Deep Research and Antigravity are agents that search, fetch URLs and run code, and the computer-use models drive a browser. A Gemini id is matched with its `models/` prefix too |
+
+The other presets know no such id: on `azure-openai` the model is a deployment name you choose. A model no pattern knows, or one sent without a preset, can still run a tool: `openaiCompatible` then fails the reply that shows it, [`openaiCompatible`](#openaicompatible).
+
+### Presets as data
+
+`presets` is exported read-only: the table, each row, its `auth` and its `toolModels` are frozen, so a change throws a `TypeError` and no program can alter the defaults another provider reads. `Preset` types a row, `PresetName` names one and `Protocol` names the four wire protocols. Presets are data the configuration layer builds its providers from, with the checks below; a program that passes a preset's values to an adapter itself gets the adapter's checks but not the model-id refusals, and must choose a model that runs no tool.
+
+A provider built from a preset or a protocol is checked first for the problems below, then with its adapter's own checks, [Configuration errors](#configuration-errors), and every problem comes in one `ConfigError`, these first. While the protocol or the base URL is still unknown, these come alone. No message repeats a value:
+
+| Path | Message |
+| --- | --- |
+| `<id>.preset` | `must be one of ollama, ollama-cloud, lmstudio, llamacpp, vllm, openai, azure-openai, openrouter, groq, mistral, deepseek, together, fireworks, xai, anthropic or gemini` |
+| `<id>.protocol` | `is required without a preset` |
+| `<id>.protocol` | `must be openai-compatible, anthropic, gemini or ollama` |
+| `<id>.protocol` | `must be <protocol>, the protocol of the <preset> preset`, for a protocol other than the preset's |
+| `<id>.baseUrl` | `is required without a preset` |
+| `<id>.baseUrl` | `is required: the azure-openai preset has none` |
+| `<id>.maxTokensField` | `is only for the openai-compatible protocol` |
+| `<id>.model` | `runs tools on the server by itself, which quorum never allows` |
 
 ## The shared options
 
@@ -108,7 +167,7 @@ Each adapter refuses, in `extraBody`, the body fields of its protocol that would
 
 | Adapter | Refused fields |
 | --- | --- |
-| `openaiCompatible` | `tools`, `tool_choice`, `parallel_tool_calls`, `functions`, `function_call` and `web_search_options`, which OpenAI and others take; OpenRouter's `plugins`, `deferred_tools`, `stop_server_tools_when`, `x_search_filter`, `preset` and `models`, a fallback list whose ids can bring tools as `:online` does; xAI's `search_parameters`; Groq's `compound_custom`, `search_settings`, `include_domains`, `exclude_domains`, `disable_tool_validation` and `documents` |
+| `openaiCompatible` | `tools`, `tool_choice`, `parallel_tool_calls`, `functions`, `function_call` and `web_search_options`, which OpenAI and others take; OpenRouter's `plugins`, `deferred_tools`, `stop_server_tools_when`, `x_search_filter`, `preset` and `models`, a fallback list whose ids can bring tools as `:online` does; xAI's `search_parameters`; Groq's `compound_custom`, `search_settings`, `include_domains`, `exclude_domains`, `disable_tool_validation` and `documents`; Azure's `data_sources`, which grounds the reply on an external search index (On Your Data) |
 | `anthropic` | `tools`, `tool_choice`, `mcp_servers`, which offers an MCP server's tools with no `tools` entry under a deprecated beta, `container`, which loads skills, and the beta's server-side fields `thread`, `fallbacks`, `fallback_credit_token`, `context_management` and `compaction` |
 | `gemini` | `tools`, `toolConfig`, and `cachedContent`, since a cached content can hold tools of its own |
 | `ollama` | `tools`, and `_debug_render_only`, which answers with the rendered template instead of a reply |
@@ -117,7 +176,7 @@ Each is a configuration error: `<id>.extraBody.<key>: offers the model a tool, w
 
 Two ways around these checks remain, and both are the program's to avoid:
 
-- **A model id can bring tools of its own**, which no body check sees: OpenAI's search models search the web before every answer, and OpenRouter's `:online` suffix, its `openrouter/fusion` model and its `@preset/` ids add a web search or a stored preset's tools. Choose a model that runs no tool.
+- **A model id can bring tools of its own**, which no body check sees: OpenAI's search models search the web before every answer, and OpenRouter's `:online` suffix, its `openrouter/fusion` model and its `@preset/` ids add a web search or a stored preset's tools. A preset refuses the ids it knows, [The model ids a preset refuses](#the-model-ids-a-preset-refuses), and `openaiCompatible` fails a reply that shows a tool the server ran, but a model no list knows can still search before it answers. Choose a model that runs no tool.
 - **`headers` are sent as given.** `anthropic` accepts an `anthropic-beta` header, which serves needs such as a longer context window: no documented beta header offers a tool by itself, and the body fields a beta would need are refused.
 
 ### The limits of a request
@@ -169,7 +228,7 @@ Each adapter checks its options when it is called, before any request, and throw
 
 ## `openaiCompatible`
 
-For any OpenAI-compatible `/chat/completions` endpoint. The hosted provider of [The adapters](#the-adapters) sets `temperature: null` and `maxTokensField: 'max_completion_tokens'` because OpenAI's reasoning models reject a `temperature`, and OpenAI deprecates `max_tokens` for every model.
+For any OpenAI-compatible `/chat/completions` endpoint. The hosted provider of [The adapters](#the-adapters) sets `temperature: null` and `maxTokensField: 'max_completion_tokens'`, as the `openai` preset does, because OpenAI's reasoning models reject a `temperature`, and OpenAI deprecates `max_tokens` for every model.
 
 | Option | Type | Default | Does |
 | --- | --- | --- | --- |
@@ -185,13 +244,14 @@ The body of every request holds, in this order:
 
 The text is the first choice's `message.content`: a string, or an array of parts whose `text` parts are joined, as Mistral sends it. Every other part is skipped, thinking parts included. `model` is the one the reply names, or the configured one when it names none. `usage` is read from `usage.prompt_tokens` and `usage.completion_tokens`.
 
-A top-level `error` in the reply fails the call before the choices are read, since some servers answer a failure with status 200 (OpenRouter does, for a failure during generation). The error is `{ message, code }` or a string. An `error` of `null` beside the choices is a success.
+A top-level `error` in the reply fails the call before the choices are read, since some servers answer a failure with status 200 (OpenRouter does, for a failure during generation). The error is `{ message, code }` or a string. An `error` of `null` beside the choices is a success. A message that shows a tool the server ran fails next, before a refusal or a finish reason is read: a model or a gateway that ran a tool by itself leaves a review that cannot be trusted. An empty `executed_tools`, and `annotations` without a `url_citation`, are not one.
 
 | The reply | Kind | Message |
 | --- | --- | --- |
 | A server error, its `code` an error status (400 to 599) | `http`, retryable as that status would be | `server error 502: "<message>"` |
 | A server error with no error status as its `code` | `invalid-response` | `server error: "<message>"`, and `server error: ""` for `{ "error": "" }`; the quote is left out only when `error` is an object without a string `message`, as in `{ "error": {} }` |
 | No first choice | `invalid-response` | `reply has no choices` |
+| A non-empty `executed_tools` array in the message (Groq's built-in tools), or a `url_citation` entry in its `annotations` (OpenAI's search models, OpenRouter's web plugin) | `invalid-response` | `the server ran a tool for this reply, which quorum never allows` |
 | `message.refusal` set | `refusal` | `model refused: "<up to 200 characters>"`, or `model refused` when it is not a string |
 | The finish reason `content_filter` | `refusal` | `reply was stopped by the content filter` |
 | The finish reason `length` or `model_length` | `truncated` | `reply was cut off by the token limit` |
@@ -277,7 +337,7 @@ A reply succeeds with `done: true`, the `done_reason` `stop` and a string `messa
 | The reply | Kind | Message |
 | --- | --- | --- |
 | A string `error` | `invalid-response` | `server error: "<message>"` |
-| `done: true` and `done_reason` `length` | `truncated` | `reply was cut off by the token limit` |
+| `done: true` and `done_reason` `length` | `truncated` | `reply was cut off by the token limit or the context`: with `shift: false`, a reply that fills the context ends as `length` too |
 | No `done: true`, or a `done_reason` other than `stop` or `length` | `invalid-response` | `reply has not finished` |
 | No string `message.content` | `invalid-response` | `reply has no text` |
 
@@ -298,7 +358,7 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 | `network` | The request fails, `request to http://localhost:11434 failed (ECONNREFUSED)`, or reading the reply does, `reading the reply from <origin> failed` |
 | `aborted` | The review's signal stopped the request: `request aborted` |
 | `refusal` | The model refused, or a filter stopped the reply or the prompt: each adapter's reply table names its messages |
-| `truncated` | The token limit or the model's context cut the reply off: `reply was cut off by the token limit`, or `anthropic`'s `reply was cut off: the context window is full` |
+| `truncated` | The token limit or the model's context cut the reply off: `reply was cut off by the token limit`, `anthropic`'s `reply was cut off: the context window is full`, or `ollama`'s `reply was cut off by the token limit or the context` |
 | `invalid-response` | The body is not JSON (`response body is not JSON`), is over 16 MiB (`reply body is over 16 MiB`) or is not an object (`reply is not a JSON object`), for every adapter. Or the reply holds an error, has not finished, ended early or holds no text, as each adapter's reply table words it |
 | `timeout`, `process`, `unsupported` | Never: these are for other providers |
 
