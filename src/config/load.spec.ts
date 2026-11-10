@@ -347,6 +347,13 @@ describe('readConfigFile on a TS or JS config', () => {
     expect(issues).toEqual([{ path: 'throws.mts', message: 'failed to load (ConfigError)' }])
     expect(JSON.stringify(issues)).not.toContain('planted')
   })
+
+  it.each([1, 2, 3, 4, 5, 6])('a provider whose complete getter throws from read %i on never has its message printed', async (reads) => {
+    file('getter.mts', `let reads = 0\nconst mine = { get complete() { if (++reads >= ${reads}) throw new Error('${SECRET}'); return async () => ({ text: '{}', model: 'm' }) } }\nexport default { providers: { mine } }\n`)
+    const issues = await issuesOf('getter.mts')
+    expect([[], [{ path: 'getter.mts', message: 'failed to load (Error)' }]]).toContainEqual(issues)
+    expect(JSON.stringify(issues)).not.toContain('planted')
+  })
 })
 
 describe('readConfigFile on prompt files', () => {

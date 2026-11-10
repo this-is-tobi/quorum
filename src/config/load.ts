@@ -7,7 +7,7 @@ import { isScalar, LineCounter, parseDocument, visit } from 'yaml'
 import type { Document, YAMLError } from 'yaml'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
-import { configCodeSchema, configFileSchema, configPath, isProvider, parseConfig } from './schema.ts'
+import { checkConfig, configCodeSchema, configFileSchema, configPath, isProvider, parseConfig } from './schema.ts'
 import type { QuorumConfig } from './schema.ts'
 
 /** The most a config file may hold: a named FIFO or a huge file never hangs the load or fills memory. */
@@ -227,20 +227,12 @@ function importProblem(error: unknown): string {
   return `failed to load (${name})`
 }
 
-/** A copy of a config's data, each value read once: an object of data and an array are rebuilt, a provider object is kept as it is. */
-function copyOf(value: unknown): unknown {
-  if (isProvider(value)) return value
-  if (Array.isArray(value)) return value.map(copyOf)
-  if (typeof value !== 'object' || value === null) return value
-  return Object.fromEntries(Object.keys(value).map(key => [key, copyOf((value as Record<string, unknown>)[key])]))
-}
-
 /**
  * A TS or JS config: the plain object its module exports as its default, checked by the code schema. The
  * config is trusted code, but what it throws can hold a secret, so a throw while it loads, or while its
- * object is read (a getter or a proxy runs the config's code), is reported by its name alone, a
- * `ConfigError` included. The object is read once, inside the `try`, into a copy of plain data; the
- * issues of the loader itself are built and thrown from the copy, after it.
+ * object is read (a getter or a proxy runs the config's code, in the data walk and again in the schema's
+ * own reads), is reported by its name alone, a `ConfigError` included. Every read of the config's objects
+ * is inside the `try`; the issues of the loader itself are built there as values and thrown after it.
  */
 async function loadCode(source: string, path: string): Promise<QuorumConfig> {
   let module: { default?: unknown }
@@ -249,17 +241,16 @@ async function loadCode(source: string, path: string): Promise<QuorumConfig> {
   } catch (error) {
     fail(path, importProblem(error))
   }
-  let issues: ConfigIssue[]
-  let copy: unknown
+  let checked: { readonly config: QuorumConfig } | { readonly issues: ConfigIssue[] }
   try {
     const value = module.default
-    issues = isPlainObject(value) ? dataIssues(value, [], path) : [{ path, message: 'must export an object as its default' }]
-    copy = issues.length === 0 ? copyOf(value) : undefined
+    const issues = isPlainObject(value) ? dataIssues(value, [], path) : [{ path, message: 'must export an object as its default' }]
+    checked = issues.length > 0 ? { issues } : checkConfig(configCodeSchema, value, path)
   } catch (error) {
     fail(path, `failed to load (${thrownName(error)})`)
   }
-  if (issues.length > 0) throw new ConfigError(issues)
-  return parseConfig(configCodeSchema, copy, path)
+  if ('issues' in checked) throw new ConfigError(checked.issues)
+  return checked.config
 }
 
 /** A YAML or JSON config: its parsed value, which must be a mapping of plain data, checked by the file schema. */

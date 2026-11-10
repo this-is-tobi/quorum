@@ -201,12 +201,22 @@ export function configIssues(error: z.ZodError, prefix?: string): ConfigIssue[] 
 }
 
 /**
+ * Check `value` against a config schema, with the project's wording, and hand back the checked config or
+ * every issue at once, each at its path after `prefix`, without throwing them: a caller that guards the
+ * read of a value whose code can throw keeps the issues it builds out of that guard.
+ */
+export function checkConfig<T>(schema: z.ZodType<T>, value: unknown, prefix?: string): { readonly config: T } | { readonly issues: ConfigIssue[] } {
+  const result = schema.safeParse(value, { error: wording })
+  return result.success ? { config: result.data } : { issues: configIssues(result.error, prefix) }
+}
+
+/**
  * Check `value` against a config schema, with the project's wording.
  *
  * @throws ConfigError with every issue at once, each at its path after `prefix`
  */
 export function parseConfig<T>(schema: z.ZodType<T>, value: unknown, prefix?: string): T {
-  const result = schema.safeParse(value, { error: wording })
-  if (!result.success) throw new ConfigError(configIssues(result.error, prefix))
-  return result.data
+  const checked = checkConfig(schema, value, prefix)
+  if ('issues' in checked) throw new ConfigError(checked.issues)
+  return checked.config
 }
