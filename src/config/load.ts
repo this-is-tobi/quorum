@@ -14,6 +14,8 @@ import type { QuorumConfig } from './schema.ts'
 const CONFIG_LIMIT = 1024 * 1024
 /** The most a prompt file may hold. */
 const PROMPT_LIMIT = 64 * 1024
+/** The most the distinct prompt files of a config may hold together, whatever the number of profiles that name them. */
+const PROMPT_TOTAL_LIMIT = 1024 * 1024
 /** How many keys deep a value of a config may sit: deeper data could overflow the stack of a walk over it. */
 const MAX_DEPTH = 64
 
@@ -69,15 +71,19 @@ async function readBounded(absolute: string, limit: number, size: string): Promi
   }
 }
 
-/** The UTF-8 text of a regular file of at most `limit` bytes, a leading byte-order mark dropped (the decoder's default). */
-async function readText(absolute: string, limit: number, size: string): Promise<Read<string>> {
-  const bytes = await readBounded(absolute, limit, size)
-  if ('problem' in bytes) return bytes
+/** The UTF-8 text of `bytes`, a leading byte-order mark dropped (the decoder's default). */
+function decode(bytes: Uint8Array): Read<string> {
   try {
-    return { value: new TextDecoder('utf-8', { fatal: true }).decode(bytes.value) }
+    return { value: new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
   } catch {
     return { problem: 'is not UTF-8 text' }
   }
+}
+
+/** The UTF-8 text of a regular file of at most `limit` bytes. */
+async function readText(absolute: string, limit: number, size: string): Promise<Read<string>> {
+  const bytes = await readBounded(absolute, limit, size)
+  return 'problem' in bytes ? bytes : decode(bytes.value)
 }
 
 /** Where `offset` sits in the text, as a line and a column. */
@@ -221,10 +227,20 @@ function importProblem(error: unknown): string {
   return `failed to load (${name})`
 }
 
+/** A copy of a config's data, each value read once: an object of data and an array are rebuilt, a provider object is kept as it is. */
+function copyOf(value: unknown): unknown {
+  if (isProvider(value)) return value
+  if (Array.isArray(value)) return value.map(copyOf)
+  if (typeof value !== 'object' || value === null) return value
+  return Object.fromEntries(Object.keys(value).map(key => [key, copyOf((value as Record<string, unknown>)[key])]))
+}
+
 /**
  * A TS or JS config: the plain object its module exports as its default, checked by the code schema. The
  * config is trusted code, but what it throws can hold a secret, so a throw while it loads, or while its
- * object is read, is reported by its name alone.
+ * object is read (a getter or a proxy runs the config's code), is reported by its name alone, a
+ * `ConfigError` included. The object is read once, inside the `try`, into a copy of plain data; the
+ * issues of the loader itself are built and thrown from the copy, after it.
  */
 async function loadCode(source: string, path: string): Promise<QuorumConfig> {
   let module: { default?: unknown }
@@ -233,17 +249,17 @@ async function loadCode(source: string, path: string): Promise<QuorumConfig> {
   } catch (error) {
     fail(path, importProblem(error))
   }
+  let issues: ConfigIssue[]
+  let copy: unknown
   try {
     const value = module.default
-    if (!isPlainObject(value)) fail(path, 'must export an object as its default')
-    const issues = dataIssues(value, [], path)
-    if (issues.length > 0) throw new ConfigError(issues)
-    return parseConfig(configCodeSchema, value, path)
+    issues = isPlainObject(value) ? dataIssues(value, [], path) : [{ path, message: 'must export an object as its default' }]
+    copy = issues.length === 0 ? copyOf(value) : undefined
   } catch (error) {
-    // A getter or a proxy of the config runs its code while the object is read.
-    if (error instanceof ConfigError) throw error
     fail(path, `failed to load (${thrownName(error)})`)
   }
+  if (issues.length > 0) throw new ConfigError(issues)
+  return parseConfig(configCodeSchema, copy, path)
 }
 
 /** A YAML or JSON config: its parsed value, which must be a mapping of plain data, checked by the file schema. */
@@ -257,20 +273,34 @@ function checkData(parsed: Read<unknown>, path: string): QuorumConfig {
 
 /**
  * Put the text of every prompt file in place of its `{ file }`, read relative to `directory` (an absolute
- * path stays absolute) as UTF-8 text of at most 64 KiB. `config` is the schema's output, a copy, so the
- * caller's own objects are never changed.
+ * path stays absolute) as UTF-8 text of at most 64 KiB. Each distinct path is read once, so a file named
+ * by many profiles costs once and every place holds the same text, and the distinct files may hold 1 MiB
+ * in all, counted in bytes as read: the file that takes the total over it is an issue, and reading stops
+ * there. `config` is the schema's output, a copy, so the caller's own objects are never changed.
  *
- * @throws ConfigError with the problem of every prompt file that cannot be read, at its path
+ * @throws ConfigError with the problem of every prompt file that cannot be read, at its path, or with
+ * those found so far and the file that takes the prompt files over 1 MiB in total
  */
 async function readPromptFiles(config: QuorumConfig, directory: string, path: string): Promise<QuorumConfig> {
   const issues: ConfigIssue[] = []
+  const reads = new Map<string, Read<string>>()
+  let total = 0
   for (const [id, { prompts }] of Object.entries(config.profiles ?? {})) {
     if (prompts === undefined) continue
     for (const stage of STAGES) {
       const prompt = prompts[stage]
       if (typeof prompt !== 'object') continue
-      const text = await readText(resolve(directory, prompt.file), PROMPT_LIMIT, '64 KiB')
-      if ('problem' in text) issues.push({ path: configPath(['profiles', id, 'prompts', stage, 'file'], path), message: text.problem })
+      const at = configPath(['profiles', id, 'prompts', stage, 'file'], path)
+      const absolute = resolve(directory, prompt.file)
+      let text = reads.get(absolute)
+      if (text === undefined) {
+        const bytes = await readBounded(absolute, PROMPT_LIMIT, '64 KiB')
+        total += 'problem' in bytes ? 0 : bytes.value.length
+        if (total > PROMPT_TOTAL_LIMIT) throw new ConfigError([...issues, { path: at, message: 'takes the prompt files over 1 MiB in total' }])
+        text = 'problem' in bytes ? bytes : decode(bytes.value)
+        reads.set(absolute, text)
+      }
+      if ('problem' in text) issues.push({ path: at, message: text.problem })
       else prompts[stage] = text.value
     }
   }
@@ -284,9 +314,10 @@ async function readPromptFiles(config: QuorumConfig, directory: string, path: st
  * `.json` for JSON, both data only, and `.mts`, `.mjs`, `.ts` or `.js` for a module whose default export
  * is the config, which runs as code. The file must be a regular file of at most 1 MiB, in UTF-8. A data
  * file's value must be a mapping of plain data, a module's default a plain object; neither may hold a
- * `__proto__` key; then the schema of its variant checks it, and every prompt file it names is read.
- * Issues name the path as the caller gave it, and never quote a file, repeat the runtime's message or
- * repeat what a config threw.
+ * `__proto__` key; then the schema of its variant checks it, and every prompt file it names is read, once
+ * however many profiles name it: each of at most 64 KiB, and the distinct files 1 MiB in all. Issues name
+ * the path as the caller gave it, and never quote a file, repeat the runtime's message or repeat what a
+ * config threw.
  *
  * @throws ConfigError with the first problem of the file, or every problem of its data, or every issue of the schema, or of its prompt files
  */
