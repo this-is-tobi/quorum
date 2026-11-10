@@ -14,8 +14,9 @@ export interface OpenAICompatibleOptions extends HttpProviderOptions {
 /**
  * The protocol's rules. The tool fields are the union over the OpenAI-compatible vendors: OpenAI's and
  * the others' function tools and web search, OpenRouter's plugins, server-tool loop, presets and model
- * fallbacks, xAI's live search and Groq's built-in tools. Not `chat_template_kwargs`, which sets chat-template variables,
- * such as turning thinking off on vLLM or Together, and runs nothing on the server.
+ * fallbacks, xAI's live search, Groq's built-in tools, and Azure's `data_sources`, which grounds the reply
+ * on an external search index (On Your Data). Not `chat_template_kwargs`, which sets chat-template
+ * variables, such as turning thinking off on vLLM or Together, and runs nothing on the server.
  */
 const RULES: Omit<AdapterRules, 'auth'> = {
   reservedBodyKeys: ['model', 'messages', 'stream'],
@@ -39,6 +40,7 @@ const RULES: Omit<AdapterRules, 'auth'> = {
     'exclude_domains',
     'disable_tool_validation',
     'documents',
+    'data_sources',
   ],
   fixedHeaders: [],
   structuredOutputs: ['prompt', 'json', 'schema'],
@@ -61,6 +63,17 @@ function statusOf(code: unknown): number | undefined {
   return typeof code === 'number' && Number.isInteger(code) && code >= 400 && code <= 599 ? code : undefined
 }
 
+/**
+ * Whether a message shows a tool the server ran: a non-empty `executed_tools` (Groq's built-in tools), or
+ * a `url_citation` annotation (OpenAI's search models, OpenRouter's web plugin). A model or a gateway that
+ * runs a tool by itself leaves a review that cannot be trusted, whatever the request offered.
+ */
+function ranTool(message: Record<string, unknown>): boolean {
+  const { executed_tools: executed, annotations } = message
+  if (Array.isArray(executed) && executed.length > 0) return true
+  return Array.isArray(annotations) && annotations.some(entry => isRecord(entry) && entry.type === 'url_citation')
+}
+
 /** The text of a message's content: a string, or the `text` parts of an array of parts (Mistral), joined; thinking parts are skipped. */
 function textOf(content: unknown): string | undefined {
   return typeof content === 'string' ? content : joinedText(content, part => part.type === 'text')
@@ -70,7 +83,8 @@ function textOf(content: unknown): string | undefined {
  * Turn a chat completion reply into text, or a `ProviderError`. Every property is read defensively: the
  * reply is untrusted, and a malformed shape must fail as a provider error, not as a `TypeError`. A
  * server error comes first, since some servers answer 200 with one beside an empty choice (OpenRouter,
- * for a failure during generation), as `{ error: { message, code } }` or `{ error: "text" }`.
+ * for a failure during generation), as `{ error: { message, code } }` or `{ error: "text" }`. A tool the
+ * server ran comes next, before a refusal or a finish reason.
  */
 function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 'id' | 'model'>, redact: readonly string[]): CompletionResponse {
   const fail = replyFailure(id)
@@ -89,6 +103,7 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
   if (!isRecord(choice)) throw fail('invalid-response', 'reply has no choices')
 
   const message = isRecord(choice.message) ? choice.message : {}
+  if (ranTool(message)) throw fail('invalid-response', 'the server ran a tool for this reply, which quorum never allows')
   if (message.refusal) {
     const refusal = message.refusal
     throw fail('refusal', typeof refusal === 'string' ? `model refused: ${snippet(refusal, MAX_MODEL_TEXT, redact)}` : 'model refused')
