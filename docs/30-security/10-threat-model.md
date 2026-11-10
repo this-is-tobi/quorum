@@ -13,7 +13,7 @@ What quorum answers goes to the JSON result on stdout and the lines on stderr, a
 | Asset | The attacker wants to | What stands in the way |
 | --- | --- | --- |
 | Verdict integrity | Suppress a real finding, sway a verdict, or forge a finding | Code-derived evidence, strict parsing, blind votes and arithmetic confidence, within the limits of the [residual risk](#residual-risk) |
-| Secrets: the model key, a CI token, repository credentials | Have a model read or leak them | A model path with no tool and no secret, and a key sent only to its own endpoint |
+| Secrets: the model key, a CI token, repository credentials | Have a model read or leak them | A model path with no tool and no secret, a key sent only to its own endpoint, and a binary that reads nothing from the working directory |
 | Output channels: CI logs, terminals, what renders the result | Turn model text into markup, a link, a workflow command or an escape sequence | The CLI makes the text it writes inert for a terminal and a GitHub Actions log; anything else that renders the result must treat its text as untrusted: [Output handling](./30-output-handling.md) |
 | Availability and spend | Multiply the calls and their cost with a huge or finding-flooding pull request | `maxFindings`, the concurrency limit and the reply caps |
 | Coverage | Have the run review less than the whole change, silently | Unreviewed findings and incomplete reviews, exit `4`, for the gaps the harness detects; a model that read less than the whole diff is not one of them: [What the harness cannot detect](#what-the-harness-cannot-detect) |
@@ -39,6 +39,10 @@ Each shipped adapter sends its `apiKey` only in the header its `auth` names, `Au
 - **Server text is redacted.** The key, the base URL's path and the values of the `headers` option, as written and trimmed, are replaced with `[redacted]` in any server text an error quotes. The `query` option is not redacted, so never put a key there: a `query` value equal to the key is refused.
 
 The CLI's panel inherits the finder's key only while it talks to the same origin, so no fallback carries a key to another endpoint, or from `https` to `http`: [The voter's fallback](../20-using/20-configuration.md#the-voters-fallback).
+
+### Nothing read from the working directory
+
+In CI, quorum runs inside the checkout of the pull request it reviews, a directory the attacker writes. A Bun-compiled binary loads a `.env` and a `bunfig.toml` from its working directory by default: a `bunfig.toml` can `preload` code, which then runs with the job's secrets, and a `.env` can set any variable the environment leaves unset, such as the one that chooses the finder's endpoint, which would then receive its key. `bun run compile` turns both off, and a test holds the script to it. Bun itself, as `bun run start` or `bun ./src/cli/bin.ts`, reads both from the directory it runs in, before any of quorum's code runs, so run the binary in a checkout you do not control.
 
 ### Strict single-object parsing
 
