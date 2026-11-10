@@ -84,7 +84,7 @@ A preset is a row of data for a vendor's or a server's endpoint: the protocol it
 
 ### The model ids a preset refuses
 
-A model id can bring tools of its own, which no body check sees. A preset lists the ids of its vendor that run a tool on the server by themselves, as patterns where `*` stands for any text, possibly empty, and every other character for itself. A provider built from the preset refuses a model that a pattern matches whole, in any letter case: `<id>.model: runs tools on the server by itself, which quorum never allows`.
+A model id can bring tools of its own, which no body check sees. A preset lists the ids of its vendor that run a tool on the server by themselves, as patterns where `*` stands for any text, possibly empty, and every other character for itself. A provider built from the preset refuses a model that a pattern matches whole, in any letter case: `<id>.model: runs tools on the server by itself, which quorum never allows`. The patterns also apply to a provider whose base URL has a preset's origin (its scheme, host and port), whether or not it names a preset: a provider with only a protocol, pointed at Groq's endpoint, is held to Groq's patterns, and so is one built from another preset and pointed there. The host is read in lower case and a default port is dropped, so `HTTPS://API.GROQ.COM:443/v9` has Groq's origin; another port is another origin.
 
 | Preset | Refused model ids | Why |
 | --- | --- | --- |
@@ -94,13 +94,13 @@ A model id can bring tools of its own, which no body check sees. A preset lists 
 | `xai` | `*multi-agent*` | The multi-agent model works only on the Responses API, where xAI runs its server-side tools |
 | `gemini` | `*deep-research*`, `*antigravity*`, `*computer-use*` | Deep Research and Antigravity are agents that search, fetch URLs and run code, and the computer-use models drive a browser. A Gemini id is matched with its `models/` prefix too |
 
-The other presets know no such id: on `azure-openai` the model is a deployment name you choose. A model no pattern knows, or one sent without a preset, can still run a tool: `openaiCompatible` then fails the reply that shows it, [`openaiCompatible`](#openaicompatible).
+The other presets know no such id: on `azure-openai` the model is a deployment name you choose. A model no pattern knows, or one reached through a gateway or a proxy at another origin, can still run a tool, and `openaiCompatible` then fails the reply that shows it, [`openaiCompatible`](#openaicompatible).
 
 ### Presets as data
 
 `presets` is exported read-only: the table, each row, its `auth` and its `toolModels` are frozen, so a change throws a `TypeError` and no program can alter the defaults another provider reads. `Preset` types a row, `PresetName` names one and `Protocol` names the four wire protocols. No command and no exported function builds a provider from a preset yet: the configuration file still to come will, and the checks below and the model-id refusals apply from then on. Until then a program that passes a preset's values to an adapter itself gets only the adapter's checks, and must choose a model that runs no tool; the reply check of `openaiCompatible` is the control that applies now, [`openaiCompatible`](#openaicompatible).
 
-A provider built from a preset or a protocol is checked first for the problems below, then with its adapter's own checks, [Configuration errors](#configuration-errors), and every problem comes in one `ConfigError`, these first. While the protocol or the base URL is still unknown, these come alone. No message repeats a value:
+A provider built from a preset or a protocol is checked first for the problems below, then with its adapter's own checks, [Configuration errors](#configuration-errors), and every problem comes in one `ConfigError`, these first. While the protocol, the base URL or the model is unusable, these come alone. No message repeats a value:
 
 | Path | Message |
 | --- | --- |
@@ -111,6 +111,7 @@ A provider built from a preset or a protocol is checked first for the problems b
 | `<id>.baseUrl` | `is required without a preset` |
 | `<id>.baseUrl` | `is required: the azure-openai preset has none` |
 | `<id>.maxTokensField` | `is only for the openai-compatible protocol` |
+| `<id>.model` | `must be a model id of visible ASCII characters, with no space` |
 | `<id>.model` | `runs tools on the server by itself, which quorum never allows` |
 
 ## The shared options

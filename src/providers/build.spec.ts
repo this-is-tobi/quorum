@@ -63,6 +63,8 @@ function ollamaChat(model: string): Body {
 const bearer = { authorization: 'Bearer sk-k' }
 const AZURE = 'https://res.openai.azure.com/openai/v1'
 const toolModel = { path: 'p.model', message: 'runs tools on the server by itself, which quorum never allows' }
+const notVisibleAscii = { path: 'p.model', message: 'must be a model id of visible ASCII characters, with no space' }
+const GROQ = 'https://api.groq.com/openai/v1'
 
 describe('buildProvider', () => {
   it.each<[PresetName, string, string, Record<string, string>, Body]>([
@@ -169,6 +171,7 @@ describe('buildProvider', () => {
       toolModel,
     ])
     expect(issuesOf({ id: 'p', ...bad, preset: 'gpt', protocol: 'ollama' })).toEqual([{ path: 'p.preset', message: `must be one of ${names}` }])
+    expect(issuesOf({ id: 'p', ...bad, preset: 'openai', model: ' m', maxTokensField: 'max_tokens' })).toEqual([notVisibleAscii])
   })
 
   it('throws the spec\'s problems, then the adapter\'s, in one ConfigError, once the protocol and the base URL are known', () => {
@@ -210,9 +213,27 @@ describe('buildProvider', () => {
     expect(issuesOf({ id: 'p', preset: 'gemini', model: 'models/deep-research-max-preview-04-2026' })).toEqual([toolModel])
   })
 
-  it('matches a pattern in any Unicode letter case, the long s included, and across a line break', () => {
-    expect(issuesOf({ id: 'p', preset: 'openai', model: `gpt-5-${String.fromCharCode(0x17F)}earch-api` })).toEqual([toolModel])
-    expect(issuesOf({ id: 'p', preset: 'openai', model: `gpt-5${String.fromCharCode(10)}-search-api` })).toEqual([toolModel])
+  it.each<[string, string, unknown]>([
+    ['a leading space', 'groq', ' openai/gpt-oss-120b'],
+    ['a leading tab', 'groq', `${String.fromCharCode(9)}openai/gpt-oss-120b`],
+    ['a trailing space', 'groq', 'openai/gpt-oss-120b '],
+    ['a space inside', 'groq', 'openai/gpt-oss- 120b'],
+    ['a line break inside, which `.` would not cross', 'openai', `gpt-5${String.fromCharCode(10)}-search-api`],
+    ['the long s inside, which a server may fold to s', 'openai', `gpt-5-${String.fromCharCode(0x17F)}earch-api`],
+    ['a no-break space', 'groq', `openai/gpt-oss${String.fromCharCode(0xA0)}120b`],
+    ['a delete character', 'groq', `openai/gpt-oss${String.fromCharCode(0x7F)}120b`],
+    ['an empty string', 'groq', ''],
+    ['no model', 'groq', undefined],
+    ['a number', 'groq', 120],
+    ['an array holding a tool id', 'groq', ['openai/gpt-oss-120b']],
+    ['a Symbol', 'groq', Symbol('openai/gpt-oss-120b')],
+  ])('refuses a model that is not a string of visible ASCII characters, such as %s, with that message alone', (_name, preset, model) => {
+    expect(issuesOf({ id: 'p', preset, model })).toEqual([notVisibleAscii])
+  })
+
+  it('refuses a model that is not visible ASCII the same way without a preset', () => {
+    expect(issuesOf({ id: 'p', protocol: 'openai-compatible', baseUrl: GROQ, model: ' openai/gpt-oss-120b' })).toEqual([notVisibleAscii])
+    expect(issuesOf({ id: 'p', protocol: 'ollama', baseUrl: 'http://localhost:11434', model: Symbol('m') })).toEqual([notVisibleAscii])
   })
 
   it.each<[string, string]>([
@@ -225,8 +246,39 @@ describe('buildProvider', () => {
     expect(issuesOf({ id: 'p', preset, model })).toEqual([])
   })
 
-  it('checks a model id only against its preset: without one, any model id is the program\'s choice', () => {
-    expect(issuesOf({ id: 'p', protocol: 'openai-compatible', baseUrl: 'https://api.groq.com/openai/v1', model: 'openai/gpt-oss-120b' })).toEqual([])
+  it.each<[string, Record<string, unknown>]>([
+    ['a protocol and Groq\'s base URL, without a preset', { protocol: 'openai-compatible', baseUrl: GROQ }],
+    ['the vllm preset pointed at Groq\'s base URL', { preset: 'vllm', baseUrl: GROQ }],
+    ['the same origin in another letter case, with another path', { protocol: 'openai-compatible', baseUrl: 'HTTPS://API.GROQ.COM/v9' }],
+    ['the same origin with its default port written out', { protocol: 'openai-compatible', baseUrl: 'https://api.groq.com:443/openai/v1' }],
+  ])('refuses the Groq tool model gpt-oss through %s', (_name, spec) => {
+    expect(issuesOf({ id: 'p', ...spec, model: 'openai/gpt-oss-120b' })).toEqual([toolModel])
+  })
+
+  it('refuses a model through the origin of a preset other than the named one, and once when several lists match', () => {
+    expect(issuesOf({ id: 'p', preset: 'openai', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-5:online' })).toEqual([toolModel])
+    expect(issuesOf({ id: 'p', preset: 'openrouter', baseUrl: GROQ, model: 'openai/gpt-oss-120b:online' })).toEqual([toolModel])
+  })
+
+  it.each<[string, Record<string, unknown>, string]>([
+    ['another port of Groq\'s host, which is another origin', { protocol: 'openai-compatible', baseUrl: 'https://api.groq.com:8443/openai/v1' }, 'openai/gpt-oss-120b'],
+    ['plain http to Groq\'s host, which is another origin', { protocol: 'openai-compatible', baseUrl: 'http://api.groq.com/openai/v1' }, 'openai/gpt-oss-120b'],
+    ['a model the origin\'s preset allows', { protocol: 'openai-compatible', baseUrl: GROQ }, 'llama-3.3-70b-versatile'],
+    ['a local server, whose origin no preset with tool models has', { protocol: 'openai-compatible', baseUrl: 'http://localhost:8000/v1' }, 'gpt-5-search-api'],
+    ['a gateway at another origin', { preset: 'groq', baseUrl: 'https://gateway.example/groq' }, 'llama-3.3-70b-versatile'],
+  ])('allows %s', (_name, spec, model) => {
+    expect(issuesOf({ id: 'p', ...spec, model })).toEqual([])
+  })
+
+  it('still holds a model to the named preset\'s list when the base URL is moved to another origin', () => {
+    expect(issuesOf({ id: 'p', preset: 'groq', baseUrl: 'https://gateway.example/groq', model: 'openai/gpt-oss-120b' })).toEqual([toolModel])
+  })
+
+  it('gives a base URL that is no URL no origin, so only the named preset\'s list applies, and leaves the URL to the adapter', () => {
+    const adapterIssue = { path: 'p.baseUrl', message: 'must be an http:// or https:// URL with a host' }
+    expect(issuesOf({ id: 'p', protocol: 'openai-compatible', baseUrl: 'api.groq.com', model: 'openai/gpt-oss-120b' })).toEqual([adapterIssue])
+    expect(issuesOf({ id: 'p', protocol: 'openai-compatible', baseUrl: 42, model: 'openai/gpt-oss-120b' })).toEqual([adapterIssue])
+    expect(issuesOf({ id: 'p', preset: 'groq', baseUrl: 'api.groq.com', model: 'openai/gpt-oss-120b' })).toEqual([toolModel, adapterIssue])
   })
 
   it('builds from the original presets after a caller tried to change them', async () => {
