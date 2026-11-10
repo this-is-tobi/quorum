@@ -17,7 +17,6 @@ describe('defineConfig', () => {
     expect(defineConfig(code)).toBe(code)
     expect(defineConfig(data)).toBe(data)
     // @ts-expect-error a data config names the variable that holds a key, and never holds one
-    const keyed: QuorumConfigFile = { providers: { p: { apiKey: 'sk-k' } } }
-    expect(keyed).toBeDefined()
+    const _keyed: QuorumConfigFile = { providers: { p: { apiKey: 'sk-k' } } }
   })
 })

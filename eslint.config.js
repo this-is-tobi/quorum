@@ -90,7 +90,8 @@ export default antfu(
   },
   {
     // The configuration reads files and the environment, and builds on the core, the profiles and the
-    // providers; it never reaches the network or another thread.
+    // providers; it never reaches the network or another thread, nor the global object, which would
+    // reach them around this rule.
     files: ['src/config/**/*.ts'],
     ignores: ['src/**/*.spec.ts'],
     rules: {
@@ -99,7 +100,7 @@ export default antfu(
           { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./(core|profiles|providers)/(?!.*\\.\\.)|zod$|yaml$|node:(fs|fs/promises|path|url)$)', message: 'A config module imports only config modules, the core, the profiles, the providers, zod, yaml, node:fs, node:fs/promises, node:path and node:url.' },
         ],
       }],
-      'no-restricted-globals': ['error', 'fetch', 'WebSocket', 'EventSource', 'Worker'],
+      'no-restricted-globals': ['error', 'fetch', 'WebSocket', 'EventSource', 'Worker', 'globalThis', 'global', 'self'],
     },
   },
 )
