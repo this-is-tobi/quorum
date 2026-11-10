@@ -339,6 +339,14 @@ describe('readConfigFile on a TS or JS config', () => {
     expect(issues).toEqual([{ path: 'throws.mts', message }])
     expect(JSON.stringify(issues)).not.toContain('planted')
   })
+
+  it('does not print the issues of a ConfigError the config throws while it is read', async () => {
+    const errors = pathToFileURL(fileURLToPath(new URL('../core/errors.ts', import.meta.url))).href
+    file('throws.mts', `import { ConfigError } from ${JSON.stringify(errors)}\nexport default { get concurrency() { throw new ConfigError([{ path: 'x', message: '${SECRET}' }]) } }\n`)
+    const issues = await issuesOf('throws.mts')
+    expect(issues).toEqual([{ path: 'throws.mts', message: 'failed to load (ConfigError)' }])
+    expect(JSON.stringify(issues)).not.toContain('planted')
+  })
 })
 
 describe('readConfigFile on prompt files', () => {
@@ -385,6 +393,26 @@ describe('readConfigFile on prompt files', () => {
   it('reads no prompt file while the schema finds an issue', async () => {
     file('quorum.yaml', `${team('{file: missing.md}')}concurrency: 0\n`)
     expect(await issuesOf('quorum.yaml')).toEqual([{ path: 'quorum.yaml: concurrency', message: 'must be at least 1' }])
+  })
+
+  /** A JSON config of one profile per file, each profile's research prompt naming its file. */
+  const profilesNaming = (files: readonly string[]): string => JSON.stringify({ profiles: Object.fromEntries(files.map((name, index) => [`p${index}`, { prompts: { research: { file: name } } }])) })
+
+  it('reads a prompt file named by several profiles once, with the same text in each', async () => {
+    const text = 'x'.repeat(64 * 1024)
+    file('shared.md', text)
+    file('quorum.json', profilesNaming(Array.from<string>({ length: 32 }).fill('shared.md')))
+    const { profiles } = await configOf('quorum.json') as { profiles: Record<string, { prompts: { research: string } }> }
+    const texts = Object.values(profiles).map(profile => profile.prompts.research)
+    expect(texts).toHaveLength(32)
+    expect(new Set(texts)).toEqual(new Set([text]))
+  })
+
+  it('refuses prompt files over 1 MiB in total, at the file that takes them over', async () => {
+    const names = Array.from({ length: 17 }, (_, index) => file(`prompt${index}.md`, 'x'.repeat(64 * 1024)))
+    // A further file that does not exist: reading stops at the 17th, so it is never opened.
+    file('quorum.json', profilesNaming([...names, 'missing.md']))
+    expect(await issuesOf('quorum.json')).toEqual([{ path: 'quorum.json: profiles.p16.prompts.research.file', message: 'takes the prompt files over 1 MiB in total' }])
   })
 })
 
