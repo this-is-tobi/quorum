@@ -1,0 +1,324 @@
+import { describe, expect, it } from 'vitest'
+import { ConfigError } from '../core/errors.ts'
+import type { ConfigIssue } from '../core/errors.ts'
+import type { CompletionResponse, Provider } from '../core/ports.ts'
+import { configCodeSchema, configFileSchema, configIssues, parseConfig } from './schema.ts'
+import type { QuorumConfigFile } from './schema.ts'
+
+/** The issues of the ConfigError that parsing `value` with `schema` throws, each after the file name; none when it parses. */
+function issuesOf(value: unknown, schema: typeof configFileSchema | typeof configCodeSchema = configFileSchema): readonly ConfigIssue[] {
+  try {
+    parseConfig(schema, value, 'q.yaml')
+  } catch (error) {
+    expect(error).toBeInstanceOf(ConfigError)
+    return (error as ConfigError).issues
+  }
+  return []
+}
+
+/** One issue at `path` inside the file. */
+const at = (path: string, message: string): ConfigIssue => ({ path: `q.yaml: ${path}`, message })
+
+const RULES = 'must be unanimous, majority, any, off, false, { minVotes } or { minRatio }'
+const PRESETS = 'must be one of ollama, ollama-cloud, lmstudio, llamacpp, vllm, openai, azure-openai, openrouter, groq, mistral, deepseek, together, fireworks, xai, anthropic or gemini'
+const NAME = 'must match ^[a-z][a-z0-9_-]*$'
+
+/** Every field of the file variant, each with a valid value. */
+const FULL: QuorumConfigFile = {
+  $schema: 'https://example.test/quorum.schema.json',
+  version: 1,
+  providers: {
+    local: { preset: 'ollama', model: 'qwen3.6:27b' },
+    hosted_2: {
+      protocol: 'openai-compatible',
+      baseUrl: 'https://gateway.example/v1',
+      model: 'gpt-5',
+      apiKeyEnv: 'GATEWAY_KEY',
+      auth: { header: 'x-gateway-key', prefix: 'Key ' },
+      headers: { 'x-team': 'review' },
+      query: { 'api-version': '2026-10-01' },
+      extraBody: { reasoning: { effort: 'low', budget: [1, null, true] } },
+      structuredOutput: 'schema',
+      temperature: null,
+      maxTokens: 4096,
+      maxTokensField: 'max_completion_tokens',
+      systemPrompt: 'inline',
+    },
+    'x-api': { preset: 'anthropic', auth: 'x-api-key', temperature: 0.2 },
+  },
+  roles: { research: 'local', voter: 'hosted_2' },
+  concurrency: 4,
+  maxFindings: 50,
+  profiles: {
+    security: {},
+    'security-strict': { extends: 'security', policy: { high: 'unanimous', medium: 'unanimous', low: 'off' } },
+    'team-style': {
+      gating: false,
+      roles: { research: 'local', voter: 'local' },
+      prompts: { research: { file: './prompts/research.md' }, vote: 'Judge from {{lens.id}}: {{lens.question}}' },
+      lenses: [{ id: 'grounded', question: 'Is it backed by a convention?' }, { id: 'significant', question: 'Would a maintainer block on it?', provider: 'x-api' }],
+      policy: { high: { minVotes: 2 }, medium: { minRatio: 0.5 }, low: false },
+    },
+  },
+}
+
+const provider = (fields: Record<string, unknown>): unknown => ({ providers: { p: fields } })
+const profile = (fields: Record<string, unknown>): unknown => ({ profiles: { team: fields } })
+
+/** A provider object, as a code config can hand one over. */
+const fakeProvider: Provider = {
+  id: 'mine',
+  model: 'm',
+  complete: async (): Promise<CompletionResponse> => ({ text: '{"findings":[]}', model: 'm' }),
+}
+
+describe('configFileSchema', () => {
+  it('parses a config that sets every field, and returns its data', () => {
+    expect(parseConfig(configFileSchema, FULL)).toEqual(FULL)
+  })
+
+  it('parses an empty config: every field is optional, since a later layer can fill it', () => {
+    expect(parseConfig(configFileSchema, {})).toEqual({})
+  })
+
+  it.each<[string, unknown, ConfigIssue[]]>([
+    ['$schema', { $schema: 7 }, [at('$schema', 'must be a string')]],
+    ['concurrency', { concurrency: '4' }, [at('concurrency', 'must be a number')]],
+    ['maxFindings', { maxFindings: true }, [at('maxFindings', 'must be a number')]],
+    ['providers', { providers: ['local'] }, [at('providers', 'must be an object')]],
+    ['a provider', { providers: { p: 'ollama' } }, [at('providers.p', 'must be an object')]],
+    ['roles', { roles: 'local' }, [at('roles', 'must be an object')]],
+    ['roles.voter', { roles: { voter: 1 } }, [at('roles.voter', 'must be a string')]],
+    ['profiles', { profiles: 'security' }, [at('profiles', 'must be an object')]],
+    ['a profile', { profiles: { team: [] } }, [at('profiles.team', 'must be an object')]],
+    ['preset', provider({ preset: 1 }), [at('providers.p.preset', PRESETS)]],
+    ['protocol', provider({ protocol: 'openai' }), [at('providers.p.protocol', 'must be one of openai-compatible, anthropic, gemini or ollama')]],
+    ['baseUrl', provider({ baseUrl: 8080 }), [at('providers.p.baseUrl', 'must be a string')]],
+    ['model', provider({ model: null }), [at('providers.p.model', 'must be a string')]],
+    ['apiKeyEnv', provider({ apiKeyEnv: ['KEY'] }), [at('providers.p.apiKeyEnv', 'must be a string')]],
+    ['auth', provider({ auth: 'basic' }), [at('providers.p.auth', 'must be bearer, x-api-key, none or { header, prefix }')]],
+    ['auth.header', provider({ auth: { header: 1 } }), [at('providers.p.auth.header', 'must be a string')]],
+    ['auth.prefix', provider({ auth: { header: 'h', prefix: false } }), [at('providers.p.auth.prefix', 'must be a string')]],
+    ['headers', provider({ headers: 'x-team: review' }), [at('providers.p.headers', 'must be an object')]],
+    ['a header value', provider({ headers: { 'x-team': 1 } }), [at('providers.p.headers.x-team', 'must be a string')]],
+    ['a query value', provider({ query: { v: 2 } }), [at('providers.p.query.v', 'must be a string')]],
+    ['extraBody', provider({ extraBody: [1] }), [at('providers.p.extraBody', 'must be an object')]],
+    ['structuredOutput', provider({ structuredOutput: 'xml' }), [at('providers.p.structuredOutput', 'must be one of prompt, json or schema')]],
+    ['temperature', provider({ temperature: '0' }), [at('providers.p.temperature', 'must be a number')]],
+    ['maxTokens', provider({ maxTokens: 1.5 }), [at('providers.p.maxTokens', 'must be an integer')]],
+    ['maxTokensField', provider({ maxTokensField: 'max_output_tokens' }), [at('providers.p.maxTokensField', 'must be one of max_tokens or max_completion_tokens')]],
+    ['systemPrompt', provider({ systemPrompt: 'system' }), [at('providers.p.systemPrompt', 'must be one of native or inline')]],
+    ['extends', profile({ extends: 'code-review' }), [at('profiles.team.extends', 'must be security')]],
+    ['gating', profile({ gating: 'yes' }), [at('profiles.team.gating', 'must be true or false')]],
+    ['a profile\'s roles', profile({ roles: { research: 2 } }), [at('profiles.team.roles.research', 'must be a string')]],
+    ['prompts', profile({ prompts: 'review it' }), [at('profiles.team.prompts', 'must be an object')]],
+    ['a prompt', profile({ prompts: { research: 1 } }), [at('profiles.team.prompts.research', 'must be a string or { file }')]],
+    ['a prompt file', profile({ prompts: { vote: { file: 1 } } }), [at('profiles.team.prompts.vote.file', 'must be a string')]],
+    ['lenses', profile({ lenses: { id: 'a' } }), [at('profiles.team.lenses', 'must be an array')]],
+    ['a lens', profile({ lenses: ['a'] }), [at('profiles.team.lenses.0', 'must be an object')]],
+    ['a lens question', profile({ lenses: [{ id: 'a', question: 1 }] }), [at('profiles.team.lenses.0.question', 'must be a string')]],
+    ['policy', profile({ policy: 'strict' }), [at('profiles.team.policy', 'must be an object')]],
+  ])('reports a wrong type for %s at its path', (_name, value, issues) => {
+    expect(issuesOf(value)).toEqual(issues)
+  })
+
+  it('reports a required field that is missing, and a number that is not finite, in words of their own', () => {
+    expect(issuesOf(profile({ lenses: [{}], prompts: { research: {} } }))).toEqual([
+      at('profiles.team.prompts.research.file', 'is required'),
+      at('profiles.team.lenses.0.id', 'is required'),
+      at('profiles.team.lenses.0.question', 'is required'),
+    ])
+    expect(issuesOf(provider({ auth: { prefix: 'Key ' }, temperature: Number.POSITIVE_INFINITY }))).toEqual([
+      at('providers.p.auth.header', 'is required'),
+      at('providers.p.temperature', 'must be a finite number'),
+    ])
+  })
+
+  it.each<[string, unknown, string]>([
+    ['the root', { colour: 'blue' }, 'colour'],
+    ['a provider', provider({ modle: 'm' }), 'providers.p.modle'],
+    ['an auth header', provider({ auth: { header: 'h', suffix: 'x' } }), 'providers.p.auth.suffix'],
+    ['the roles', { roles: { reviewer: 'local' } }, 'roles.reviewer'],
+    ['a profile', profile({ guidelines: 'be kind' }), 'profiles.team.guidelines'],
+    ['a profile\'s roles', profile({ roles: { voters: 'local' } }), 'profiles.team.roles.voters'],
+    ['the prompts', profile({ prompts: { panel: 'x' } }), 'profiles.team.prompts.panel'],
+    ['a prompt file', profile({ prompts: { vote: { file: 'v.md', encoding: 'utf8' } } }), 'profiles.team.prompts.vote.encoding'],
+    ['a lens', profile({ lenses: [{ id: 'a', question: 'q', weight: 2 }] }), 'profiles.team.lenses.0.weight'],
+    ['the policy', profile({ policy: { critical: 'any' } }), 'profiles.team.policy.critical'],
+    ['a minVotes rule', profile({ policy: { high: { minVotes: 2, of: 3 } } }), 'profiles.team.policy.high.of'],
+  ])('reports an unknown key in %s at its own path', (_name, value, path) => {
+    expect(issuesOf(value)).toEqual([at(path, 'is not a known field')])
+  })
+
+  it('reports an own __proto__ key in a strict object as an unknown key, at the top level and in a provider', () => {
+    expect(issuesOf(JSON.parse('{"__proto__": {"polluted": true}}'))).toEqual([at('__proto__', 'is not a known field')])
+    expect(issuesOf(JSON.parse('{"providers": {"p": {"__proto__": {"model": "m"}}}}'))).toEqual([at('providers.p.__proto__', 'is not a known field')])
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  })
+
+  it('prints a key that is not a safe name as *, once for every such key of an object, since a record key is the user\'s text', () => {
+    const secret = 'sk planted secret'
+    expect(issuesOf({ [secret]: 1, 'other key': 2, colour: 3 })).toEqual([at('colour', 'is not a known field'), { path: 'q.yaml', message: 'holds a field that is not known' }])
+    expect(issuesOf({ providers: { [secret]: {} } })).toEqual([at('providers.*', `is a key that ${NAME}`)])
+    expect(issuesOf(provider({ headers: { [secret]: 1 } }))).toEqual([at('providers.p.headers.*', 'must be a string')])
+    expect(issuesOf(provider({ headers: { [`x-${'a'.repeat(63)}`]: 1 } }))).toEqual([at('providers.p.headers.*', 'must be a string')])
+    expect(issuesOf(provider({ headers: { [`x-${'a'.repeat(62)}`]: 1 } }))).toEqual([at(`providers.p.headers.x-${'a'.repeat(62)}`, 'must be a string')])
+  })
+
+  it.each<[string, unknown, ConfigIssue[]]>([
+    ['a provider name', { providers: { Local: {} } }, [at('providers.Local', `is a key that ${NAME}`)]],
+    ['a profile id', { profiles: { 'team style': {} } }, [at('profiles.*', `is a key that ${NAME}`)]],
+    ['a role', { roles: { research: 'Local' } }, [at('roles.research', NAME)]],
+    ['a profile role', profile({ roles: { voter: '1st' } }), [at('profiles.team.roles.voter', NAME)]],
+    ['a lens id', profile({ lenses: [{ id: 'Grounded', question: 'q' }] }), [at('profiles.team.lenses.0.id', NAME)]],
+    ['a lens provider', profile({ lenses: [{ id: 'a', question: 'q', provider: 'my provider' }] }), [at('profiles.team.lenses.0.provider', NAME)]],
+    ['a variable name', provider({ apiKeyEnv: '1KEY' }), [at('providers.p.apiKeyEnv', 'must match ^[A-Za-z_][A-Za-z0-9_]*$')]],
+  ])('holds %s to its pattern', (_name, value, issues) => {
+    expect(issuesOf(value)).toEqual(issues)
+  })
+
+  it('accepts names and variable names at the edges of their patterns', () => {
+    expect(issuesOf({ providers: { a: {}, 'a-b_c9': {}, constructor: {} }, roles: { research: 'constructor' } })).toEqual([])
+    expect(issuesOf(provider({ apiKeyEnv: '_lower_Case_9' }))).toEqual([])
+  })
+
+  it('refuses any version but 1, and says to upgrade quorum', () => {
+    const message = 'must be 1, the only config version this quorum reads: upgrade quorum to read a later one'
+    expect(issuesOf({ version: 2 })).toEqual([at('version', message)])
+    expect(issuesOf({ version: '1' })).toEqual([at('version', message)])
+    expect(issuesOf({ version: 1 })).toEqual([])
+  })
+
+  it('refuses a lens list that is empty', () => {
+    expect(issuesOf(profile({ lenses: [] }))).toEqual([at('profiles.team.lenses', 'must not be empty')])
+  })
+
+  it.each<[string, unknown]>([
+    ['unanimous', 'unanimous'],
+    ['majority', 'majority'],
+    ['any', 'any'],
+    ['off', 'off'],
+    ['false', false],
+    ['{ minVotes: 1 }', { minVotes: 1 }],
+    ['{ minRatio: 1 }', { minRatio: 1 }],
+    ['{ minRatio: 0.01 }', { minRatio: 0.01 }],
+  ])('accepts the rule %s', (_name, rule) => {
+    expect(issuesOf(profile({ policy: { high: rule } }))).toEqual([])
+  })
+
+  it.each<[string, unknown, ConfigIssue]>([
+    ['a word it does not know', 'sometimes', at('profiles.team.policy.high', RULES)],
+    ['true', true, at('profiles.team.policy.high', RULES)],
+    ['both minVotes and minRatio', { minVotes: 1, minRatio: 0.5 }, at('profiles.team.policy.high', RULES)],
+    ['minVotes of 0', { minVotes: 0 }, at('profiles.team.policy.high.minVotes', 'must be at least 1')],
+    ['minVotes of 1.5', { minVotes: 1.5 }, at('profiles.team.policy.high.minVotes', 'must be an integer')],
+    ['minRatio of 0', { minRatio: 0 }, at('profiles.team.policy.high.minRatio', 'must be greater than 0')],
+    ['minRatio of 1.5', { minRatio: 1.5 }, at('profiles.team.policy.high.minRatio', 'must be at most 1')],
+  ])('refuses the rule %s', (_name, rule, issue) => {
+    expect(issuesOf(profile({ policy: { high: rule } }))).toEqual([issue])
+  })
+
+  it('reports a value of a field that takes several forms by the one form it took, and by the field\'s own message when it took none or several', () => {
+    expect(issuesOf(profile({ prompts: { vote: { fil: 'v.md' } } }))).toEqual([at('profiles.team.prompts.vote.file', 'is required'), at('profiles.team.prompts.vote.fil', 'is not a known field')])
+    expect(issuesOf(profile({ policy: { high: { minVotes: 'two' } } }))).toEqual([at('profiles.team.policy.high.minVotes', 'must be a number')])
+    expect(issuesOf(profile({ policy: { high: { minVotes: 2, of: 3 } } }))).toEqual([at('profiles.team.policy.high.of', 'is not a known field')])
+    expect(issuesOf(profile({ policy: { high: { minVotes: 2, minRatio: 3 } } }))).toEqual([at('profiles.team.policy.high', RULES)])
+    expect(issuesOf(provider({ auth: ['bearer'] }))).toEqual([at('providers.p.auth', 'must be bearer, x-api-key, none or { header, prefix }')])
+  })
+
+  it.each<[string, unknown, ConfigIssue]>([
+    ['concurrency of 0', { concurrency: 0 }, at('concurrency', 'must be at least 1')],
+    ['concurrency of 2.5', { concurrency: 2.5 }, at('concurrency', 'must be an integer')],
+    ['maxFindings of -1', { maxFindings: -1 }, at('maxFindings', 'must be at least 1')],
+    ['maxFindings past the safe integers', { maxFindings: 2 ** 53 }, at('maxFindings', 'must be at most 9007199254740991')],
+    ['maxTokens of 0', provider({ maxTokens: 0 }), at('providers.p.maxTokens', 'must be at least 1')],
+  ])('holds a count to the bounds createQuorum checks: %s', (_name, value, issue) => {
+    expect(issuesOf(value)).toEqual([issue])
+  })
+
+  it('accepts the smallest counts', () => {
+    expect(issuesOf({ concurrency: 1, maxFindings: 1, providers: { p: { maxTokens: 1 } } })).toEqual([])
+  })
+
+  it('reports every issue at once', () => {
+    expect(issuesOf({ version: 2, concurrency: 0, providers: { p: { preset: 'gpt' } } })).toEqual([
+      at('version', 'must be 1, the only config version this quorum reads: upgrade quorum to read a later one'),
+      at('providers.p.preset', PRESETS),
+      at('concurrency', 'must be at least 1'),
+    ])
+  })
+
+  it('refuses a key and a provider object, which only a code config may hold', () => {
+    expect(issuesOf(provider({ preset: 'openai', apiKey: 'sk-k' }))).toEqual([at('providers.p.apiKey', 'is not a known field')])
+    expect(issuesOf({ providers: { p: fakeProvider } })).toEqual([at('providers.p.id', 'is not a known field'), at('providers.p.complete', 'is not a known field')])
+  })
+
+  it('repeats no value in a message', () => {
+    const secret = 'sk-planted-secret'
+    const values = [
+      { version: secret },
+      { $schema: [secret] },
+      provider({ preset: secret, protocol: secret, model: [secret], apiKeyEnv: secret, auth: secret, temperature: secret, maxTokens: secret }),
+      provider({ auth: { header: [secret] }, headers: { h: [secret] }, query: secret }),
+      profile({ extends: secret, gating: secret, prompts: { research: [secret] }, lenses: [{ id: secret, question: [secret] }], policy: { high: secret, medium: { minVotes: secret } } }),
+      { roles: { research: secret }, concurrency: secret, maxFindings: secret },
+    ]
+    for (const value of values) {
+      const issues = issuesOf(value)
+      expect(issues.length).toBeGreaterThan(0)
+      expect(JSON.stringify(issues)).not.toContain('planted')
+    }
+  })
+})
+
+describe('configCodeSchema', () => {
+  it('accepts a key on a provider, and a provider object, which it hands back as it is', () => {
+    const parsed = parseConfig(configCodeSchema, { providers: { keyed: { preset: 'openai', apiKey: 'sk-k' }, mine: fakeProvider } })
+    expect(parsed.providers?.keyed).toEqual({ preset: 'openai', apiKey: 'sk-k' })
+    expect(parsed.providers?.mine).toBe(fakeProvider)
+  })
+
+  it('accepts a provider object whose complete comes from its class', () => {
+    class Echo {
+      readonly id = 'echo'
+      readonly model = 'm'
+      async complete(): Promise<CompletionResponse> {
+        return { text: '{}', model: this.model }
+      }
+    }
+    const echo = new Echo()
+    expect(parseConfig(configCodeSchema, { providers: { echo } }).providers?.echo).toBe(echo)
+  })
+
+  it('reports a provider\'s settings at their field, and a value that is neither form at the entry', () => {
+    expect(issuesOf({ providers: { p: { preset: 'gpt', apiKey: 1 } } }, configCodeSchema)).toEqual([at('providers.p.preset', PRESETS), at('providers.p.apiKey', 'must be a string')])
+    expect(issuesOf({ providers: { p: { maxTokens: 0 } } }, configCodeSchema)).toEqual([at('providers.p.maxTokens', 'must be at least 1')])
+    expect(issuesOf({ providers: { p: { complete: 'not a function' } } }, configCodeSchema)).toEqual([at('providers.p.complete', 'is not a known field')])
+    expect(issuesOf({ providers: { p: 'openai' } }, configCodeSchema)).toEqual([at('providers.p', 'must be the settings of a provider, or an object whose complete is a function')])
+  })
+
+  it('reports a value in extraBody that is no JSON value, which only code can hand over', () => {
+    expect(issuesOf({ providers: { p: { extraBody: { think: () => false } } } }, configCodeSchema)).toEqual([at('providers.p.extraBody.think', 'matches none of the forms it can take')])
+  })
+
+  it('checks every other field as the file variant does', () => {
+    expect(issuesOf({ version: 2, colour: 1, profiles: { team: { lenses: [] } } }, configCodeSchema)).toEqual(issuesOf({ version: 2, colour: 1, profiles: { team: { lenses: [] } } }))
+  })
+})
+
+describe('configIssues', () => {
+  it('turns the issues of a plain safeParse into issues, one per unknown key, never naming a key that is not a safe name', () => {
+    const result = configFileSchema.safeParse({ colour: 1, [String.fromCharCode(0x200B)]: 2, providers: { p: { modle: 'm' } } })
+    expect(result.success).toBe(false)
+    expect(configIssues(result.error!)).toEqual([
+      { path: 'providers.p.modle', message: 'is not a known field' },
+      { path: 'colour', message: 'is not a known field' },
+      { path: '', message: 'holds a field that is not known' },
+    ])
+  })
+
+  it('puts the prefix and a colon before every path, and the prefix alone for the root', () => {
+    const result = configFileSchema.safeParse({ colour: 1, 'a b': 2 })
+    expect(configIssues(result.error!, 'q.json')).toEqual([{ path: 'q.json: colour', message: 'is not a known field' }, { path: 'q.json', message: 'holds a field that is not known' }])
+  })
+})
