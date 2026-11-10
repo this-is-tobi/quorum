@@ -1,6 +1,6 @@
 # Library API
 
-The TypeScript API that `src/index.ts` exports: `createQuorum` and its ports, a review and its events, abort, the errors, the config types, and every export. There is no npm package yet: a program imports `src/index.ts` from a clone, and the examples on this page do so from a file at the root of the clone. Bun runs it as it is; the code is erasable TypeScript only, so Node 22.18 or later, which strips types by default and is what the `engines` field of `package.json` asks for, loads it too.
+The TypeScript API that `src/index.ts` exports: `createQuorum` and its ports, a review and its events, abort, the errors, the config types, and every export. There is no npm package yet: a program imports `src/index.ts` from a clone, and the examples on this page do so from a file at the root of the clone. Bun runs it as it is; the code is erasable TypeScript only, so Node 22.18 or later on the 22 line, or 23.6 or later, which strip types by default and are what the `engines` field of `package.json` asks for, load it too.
 
 ## `createQuorum`
 
@@ -192,7 +192,7 @@ export default {
 } satisfies QuorumConfig
 ```
 
-The `.mts` extension makes the file an ES module whatever the nearest `package.json` says: Node refuses `export` in a `.ts` or `.js` file of a package whose `package.json` says `"type": "commonjs"`. Node also strips erasable TypeScript only, so a config holds no `enum`, `namespace` or parameter property. An editor checks a YAML or JSON config against the JSON Schema committed as [`schema/quorum.schema.json`](../../schema/quorum.schema.json).
+The `.mts` extension makes the file an ES module whatever the nearest `package.json` says: Node refuses `export` in a `.ts` or `.js` file of a package whose `package.json` says `"type": "commonjs"`. Node also strips erasable TypeScript only, so a config holds no `enum`, `namespace` or parameter property. An editor checks a YAML or JSON config against the JSON Schema committed as [`schema/quorum.schema.json`](../../schema/quorum.schema.json): a YAML file names it in a comment, `# yaml-language-server: $schema=<path or URL of the schema>`, and a JSON file in its `"$schema"` field.
 
 ## Exports
 
