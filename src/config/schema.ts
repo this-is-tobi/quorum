@@ -128,6 +128,8 @@ export function configJsonSchema(): JsonSchema {
 export type QuorumConfig = z.input<typeof configCodeSchema>
 /** What a YAML or JSON config holds. */
 export type QuorumConfigFile = z.input<typeof configFileSchema>
+/** One provider of a config as data: its fields, as opposed to an object implementing `Provider`. */
+export type ProviderSettings = Exclude<NonNullable<QuorumConfig['providers']>[string], Provider>
 
 /** What each type zod expects is called in a message. */
 const TYPE_WORDS: Readonly<Record<string, string>> = { string: 'a string', number: 'a number', int: 'an integer', boolean: 'true or false', object: 'an object', record: 'an object', array: 'an array' }
