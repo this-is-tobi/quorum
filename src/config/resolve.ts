@@ -1,13 +1,14 @@
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { Provider } from '../core/ports.ts'
-import { buildProvider } from '../providers/build.ts'
+import { buildProvider, isClaudeCode } from '../providers/build.ts'
 import type { ProviderSpec } from '../providers/build.ts'
 import { httpOrigin } from '../providers/http.ts'
 import { CONTEXT_REQUIRED } from '../providers/options.ts'
 import { presetOf, withoutPrototype } from '../providers/presets.ts'
 import type { Preset } from '../providers/presets.ts'
 import { billingWarnings, claudeCodeCommand } from './claude-code.ts'
+import type { CommandLookup } from './claude-code.ts'
 import { applyRoleOverrides, atVariables, baseUrlOf, envValue, namesModelOrEndpoint, PROFILE_ID, readEnv, setsContextSize, VARIABLE_NAME } from './env.ts'
 import type { Env, EnvLayer, ProviderEntry, RoleBinding } from './env.ts'
 import { own, resolveProfiles } from './profiles.ts'
@@ -99,10 +100,8 @@ interface KeyReading {
 
 const NO_KEY: KeyReading = Object.freeze({ apiKey: undefined, issues: Object.freeze([]), warnings: Object.freeze([]) })
 
-/** What a provider in use that runs `claude` gets besides its key: the executable found, and the warning of a key that is billed. */
-interface ClaudeReading {
-  readonly command?: string
-  readonly issues: readonly ConfigIssue[]
+/** What a provider in use that runs `claude` gets besides its key: the executable found, or why not, and the warning of a key that is billed. */
+interface ClaudeReading extends CommandLookup {
   readonly warnings: readonly string[]
 }
 
@@ -123,10 +122,10 @@ function readVariable(name: string, variable: string, env: Env): KeyReading {
  */
 function readKey(name: string, fields: ProviderSettings, env: Env, presetKey: boolean): KeyReading {
   // A key variable no mode would send is refused where it is written, and never read.
-  if (fields.protocol === 'claude-code' && fields.apiKeyEnv !== undefined && fields.auth !== 'api-key') return { apiKey: undefined, issues: [{ path: configPath(['providers', name, 'apiKeyEnv']), message: 'is set, but auth is not api-key' }], warnings: [] }
+  if (isClaudeCode(fields.protocol) && fields.apiKeyEnv !== undefined && fields.auth !== 'api-key') return { apiKey: undefined, issues: [{ path: configPath(['providers', name, 'apiKeyEnv']), message: 'is set, but auth is not api-key' }], warnings: [] }
   if (fields.apiKey !== undefined && fields.apiKey !== '') return { apiKey: fields.apiKey, issues: [], warnings: [] }
   if (fields.apiKeyEnv !== undefined) return readVariable(name, fields.apiKeyEnv, env)
-  if (fields.protocol === 'claude-code') return fields.auth === 'api-key' ? readVariable(name, CLAUDE_KEY_VARIABLE, env) : NO_KEY
+  if (isClaudeCode(fields.protocol)) return fields.auth === 'api-key' ? readVariable(name, CLAUDE_KEY_VARIABLE, env) : NO_KEY
   const preset = presetOf(fields.preset)
   const variable = preset?.apiKeyEnv
   if (preset === undefined || variable === undefined) return NO_KEY
@@ -151,7 +150,7 @@ interface CheckedSpec {
 
 /** The `claude` of a provider in use, when it runs one: found by `claudeCodeCommand`, with the billing warning. */
 function readClaude(name: string, fields: ProviderSettings, env: Env, variable: string | undefined): ClaudeReading {
-  if (fields.protocol !== 'claude-code') return NO_CLAUDE
+  if (!isClaudeCode(fields.protocol)) return NO_CLAUDE
   return { ...claudeCodeCommand(name, fields, variable, env), warnings: billingWarnings(name, fields, env) }
 }
 

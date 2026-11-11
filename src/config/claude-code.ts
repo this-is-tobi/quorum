@@ -2,7 +2,7 @@ import { accessSync, constants, statSync } from 'node:fs'
 import { extname, isAbsolute, join } from 'node:path'
 import type { ConfigIssue } from '../core/errors.ts'
 import { commandProblem } from '../providers/claude-code.ts'
-import { envValue } from './env.ts'
+import { CLAUDE_CODE_COMMAND, envValue } from './env.ts'
 import type { Env } from './env.ts'
 import { own } from './profiles.ts'
 import { configPath } from './schema.ts'
@@ -16,8 +16,7 @@ import type { ProviderSettings } from './schema.ts'
  */
 
 /** The issue of a provider whose command is neither set nor on `PATH`. */
-export const CLAUDE_NOT_FOUND = 'claude CLI not found; install Claude Code or set QUORUM_CLAUDE_CODE_COMMAND'
-const COMMAND_VARIABLE = 'QUORUM_CLAUDE_CODE_COMMAND'
+export const CLAUDE_NOT_FOUND = `claude CLI not found; install Claude Code or set ${CLAUDE_CODE_COMMAND}`
 const NO_EXECUTABLE = 'names no executable file'
 const DEFAULT_COMMAND = 'claude'
 
@@ -43,8 +42,11 @@ function searchPath(env: Env, platform: NodeJS.Platform): string | undefined {
  * environment's `PATH` that holds it (`;` separates the entries on Windows, `:` elsewhere, and a name with no
  * extension is looked up as `<name>.exe` there). A match is a regular file the process may run; any file
  * system error is no match. Never reads a relative entry, and never a variable the environment only inherits.
+ * A command the adapter refuses (a relative path with a separator, which would climb out of an entry, or a
+ * Windows script) names no executable.
  */
 export function findCommand(command: string, env: Env, platform: NodeJS.Platform = process.platform): string | undefined {
+  if (commandProblem(command) !== undefined) return undefined
   if (isAbsolute(command)) return isExecutableFile(command, platform) ? command : undefined
   const file = platform === 'win32' && extname(command) === '' ? `${command}.exe` : command
   const entries = (searchPath(env, platform) ?? '').split(platform === 'win32' ? ';' : ':').filter(entry => isAbsolute(entry))
@@ -52,7 +54,7 @@ export function findCommand(command: string, env: Env, platform: NodeJS.Platform
 }
 
 /** What a provider's command comes to: the executable it runs, or the issues that say why there is none. */
-interface CommandLookup {
+export interface CommandLookup {
   readonly command?: string
   readonly issues: readonly ConfigIssue[]
 }
@@ -68,7 +70,7 @@ export function claudeCodeCommand(name: string, settings: ProviderSettings, vari
   if (variable === undefined && named !== undefined && commandProblem(named) !== undefined) return { issues: [] }
   const found = findCommand(variable ?? named ?? DEFAULT_COMMAND, env)
   if (found !== undefined) return { command: found, issues: [] }
-  if (variable !== undefined) return { issues: [{ path: COMMAND_VARIABLE, message: NO_EXECUTABLE }] }
+  if (variable !== undefined) return { issues: [{ path: CLAUDE_CODE_COMMAND, message: NO_EXECUTABLE }] }
   if (named !== undefined) return { issues: [{ path: configPath(['providers', name, 'command']), message: NO_EXECUTABLE }] }
   return { issues: [{ path: configPath(['providers', name]), message: CLAUDE_NOT_FOUND }] }
 }

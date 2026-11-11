@@ -5,6 +5,7 @@ import { isProvider } from '../config/schema.ts'
 import type { EventSink, Provider } from '../core/ports.ts'
 import { inertLine } from '../core/sanitize.ts'
 import type { Flag, QuorumEvent } from '../core/types.ts'
+import { isClaudeCode } from '../providers/build.ts'
 import { originOf } from '../providers/http.ts'
 import { presetOf } from '../providers/presets.ts'
 
@@ -74,7 +75,7 @@ export function providerOrigin(spec: Exclude<ResolvedProvider, Provider>): strin
 
 /** Where a provider defined as data is reached, as the banner names it: its origin, or `claude-code` for the CLI, which has none. */
 function endpointOf(spec: Exclude<ResolvedProvider, Provider>): string {
-  return own(spec, 'protocol') === 'claude-code' ? 'claude-code' : providerOrigin(spec)
+  return isClaudeCode(own(spec, 'protocol')) ? 'claude-code' : providerOrigin(spec)
 }
 
 /** What a provider reads as in the banner: its model and where it is reached, a provider object by its config key. */

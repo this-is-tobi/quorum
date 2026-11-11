@@ -9,6 +9,7 @@ import type { Provider } from '../core/ports.ts'
 import { thresholdsFor } from '../core/profile.ts'
 import { inertLine } from '../core/sanitize.ts'
 import { DEFAULT_MAX_FINDINGS } from '../core/stages/research.ts'
+import { isClaudeCode } from '../providers/build.ts'
 import { providerOrigin } from './render.ts'
 
 /** What stands for a secret in the view: the word `http.ts` redacts with. */
@@ -43,7 +44,7 @@ function systemPromptView(value: unknown): string | undefined {
  * no origin and runs a `command` and `args`, and its `auth` is `inherit` when it sets none, as it runs.
  */
 function specView(spec: ProviderSpec): Record<string, unknown> {
-  const cli = own(spec, 'protocol') === 'claude-code'
+  const cli = isClaudeCode(own(spec, 'protocol'))
   return {
     preset: own(spec, 'preset'),
     protocol: own(spec, 'protocol'),

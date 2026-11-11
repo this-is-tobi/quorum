@@ -9,13 +9,18 @@ import { httpOrigin } from './http.ts'
 import { ollama } from './ollama.ts'
 import { openaiCompatible } from './openai-compatible.ts'
 import type { OpenAICompatibleOptions } from './openai-compatible.ts'
-import { isRecord, wordList } from './options.ts'
+import { isRecord, NOT_VISIBLE_ASCII, wordList } from './options.ts'
 import type { Auth } from './options.ts'
 import { presetOf, presets, withoutPrototype } from './presets.ts'
 import type { Preset, Protocol } from './presets.ts'
 
 /** Every protocol a provider can name: the wire protocol of an HTTP adapter, or `claude-code` for the installed Claude Code CLI. */
 export type ProviderProtocol = Protocol | 'claude-code'
+
+/** Whether `protocol` names the `claude-code` adapter, which runs a CLI: it has no endpoint, so no base URL, preset or HTTP option. */
+export function isClaudeCode(protocol: unknown): protocol is 'claude-code' {
+  return protocol === 'claude-code'
+}
 
 /** What building a provider takes besides its spec. */
 export interface BuildContext {
@@ -48,7 +53,6 @@ const ADAPTERS: Readonly<Record<Protocol, (options: OpenAICompatibleOptions) => 
 }
 const PROTOCOLS: readonly string[] = [...Object.keys(ADAPTERS), 'claude-code']
 const TOOL_MODEL = 'runs tools on the server by itself, which quorum never allows'
-const MODEL_ID = /^[\x21-\x7E]+$/
 
 /** The spec's value, or the preset's when the spec leaves it unset: a field set to `undefined` is unset, `null` is set. */
 function filled<T>(value: T | undefined, preset: T | undefined): T | undefined {
@@ -102,7 +106,7 @@ function claudeCodeFields(entries: Array<[string, unknown]>, env: BuildContext['
 
 /** The adapter of `protocol`, made from its options `fields`. */
 function makeAdapter(protocol: ProviderProtocol, fields: ReadonlyArray<readonly [string, unknown]>): Provider {
-  if (protocol === 'claude-code') return claudeCode(withoutPrototype<ClaudeCodeOptions>(fields))
+  if (isClaudeCode(protocol)) return claudeCode(withoutPrototype<ClaudeCodeOptions>(fields))
   return ADAPTERS[protocol](withoutPrototype<OpenAICompatibleOptions>(fields))
 }
 
@@ -135,7 +139,7 @@ export function buildProvider(spec: ProviderSpec, context: BuildContext = {}): P
   else if (named !== undefined && preset !== undefined && named !== preset.protocol) issues.push({ path: `${id}.protocol`, message: `must be ${preset.protocol}, the protocol of the ${name} preset` })
   else if (named !== undefined) protocol = named as ProviderProtocol
 
-  const cli = protocol === 'claude-code'
+  const cli = isClaudeCode(protocol)
   const baseUrl = filled(own.baseUrl, preset?.baseUrl)
   // A base URL is no option of the CLI: its adapter refuses one.
   if (!cli) {
@@ -152,7 +156,7 @@ export function buildProvider(spec: ProviderSpec, context: BuildContext = {}): P
       if (own[field] !== undefined) issues.push({ path: `${id}.${field}`, message: 'is only for the claude-code protocol' })
     }
   }
-  const usableModel = typeof model === 'string' && MODEL_ID.test(model)
+  const usableModel = typeof model === 'string' && model !== '' && !NOT_VISIBLE_ASCII.test(model)
   if (model === undefined) issues.push({ path: `${id}.model`, message: 'is required' })
   else if (!usableModel) issues.push({ path: `${id}.model`, message: 'must be a model id of visible ASCII characters, with no space' })
   else if (toolModelPatterns(preset, baseUrl).some(pattern => matchesModel(pattern, model))) issues.push({ path: `${id}.model`, message: TOOL_MODEL })

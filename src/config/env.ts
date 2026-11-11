@@ -65,7 +65,8 @@ export const VARIABLE_NAME = /^[A-Z][A-Z0-9_]{0,63}$/
 
 const canonicalName = (role: Role, suffix: string): string => `QUORUM_${role}_${suffix}`
 
-const CLAUDE_CODE_COMMAND = 'QUORUM_CLAUDE_CODE_COMMAND'
+/** The variable that names the executable of every `claude-code` provider. */
+export const CLAUDE_CODE_COMMAND = 'QUORUM_CLAUDE_CODE_COMMAND'
 
 /**
  * Every variable the environment layer reads: `QUORUM_CONFIG`, `QUORUM_PROFILES`, `QUORUM_CLAUDE_CODE_COMMAND`, the
