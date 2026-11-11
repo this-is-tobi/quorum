@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
-import { readConfigFile } from './load.ts'
+import { loadConfig, readConfigFile } from './load.ts'
 import { configFileSchema } from './schema.ts'
 
 const SECRET = 'sk-planted-secret'
@@ -556,5 +556,44 @@ describe.skipIf('bun' in process.versions)('readConfigFile under Node itself, wh
 
   it('leaves the text of a config out of what Node itself writes', () => {
     expect(stderr).not.toContain('planted')
+  })
+})
+
+describe('loadConfig', () => {
+  const NO_MODEL = 'no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one'
+
+  it('reads the file configPath names, then layers the environment over it', async () => {
+    const name = file('q.yaml', 'providers:\n  local: {preset: ollama, model: q}\n')
+    const loaded = await loadConfig({ cwd: dir, env: { QUORUM_RESEARCH_MODEL: 'other' }, configPath: name })
+    expect(loaded.config.providers.local).toMatchObject({ preset: 'ollama', model: 'other' })
+    expect(loaded.source).toBe(join(dir, name))
+    expect(loaded.warnings).toEqual([])
+  })
+
+  it('reads the file QUORUM_CONFIG names when no path is given, and a path given wins', async () => {
+    file('env.yaml', 'providers:\n  fromenv: {preset: ollama, model: q}\n')
+    file('flag.yaml', 'providers:\n  fromflag: {preset: ollama, model: q}\n')
+    expect(Object.keys((await loadConfig({ cwd: dir, env: { QUORUM_CONFIG: ' env.yaml ' } })).config.providers)).toEqual(['fromenv'])
+    expect(Object.keys((await loadConfig({ cwd: dir, env: { QUORUM_CONFIG: 'env.yaml' }, configPath: 'flag.yaml' })).config.providers)).toEqual(['fromflag'])
+  })
+
+  it('reads no file that is not named, whatever the working directory holds (ADR-0014)', async () => {
+    file('quorum.config.yaml', 'providers:\n  planted: {preset: ollama, model: q}\n')
+    await expect(loadConfig({ cwd: dir, env: {} })).rejects.toThrow(NO_MODEL)
+    const loaded = await loadConfig({ cwd: dir, env: { QUORUM_RESEARCH_MODEL: 'q' } })
+    expect(loaded.source).toBeUndefined()
+    expect(Object.keys(loaded.config.providers)).toEqual(['default'])
+  })
+
+  it('returns the config\'s warnings', async () => {
+    const loaded = await loadConfig({ cwd: dir, env: { RESEARCH_MODEL: 'q' } })
+    expect(loaded.warnings).toEqual(['RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead'])
+    expect(loaded.warnings).toBe(loaded.config.warnings)
+  })
+
+  it('puts the text of a prompt file in the profile that names it', async () => {
+    file('prompts/r.md', 'Find style issues.')
+    const name = file('q.yaml', 'providers:\n  local: {preset: ollama, model: q}\nprofiles:\n  team:\n    prompts: {research: {file: ./prompts/r.md}, vote: "Judge {{lens.id}}: {{lens.question}}"}\n    lenses: [{id: one, question: "Real?"}]\n')
+    expect((await loadConfig({ cwd: dir, env: {}, configPath: name })).config.profiles[0].profile.prompts.research).toBe('Find style issues.')
   })
 })

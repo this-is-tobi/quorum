@@ -2,7 +2,7 @@
 
 The CLI is configured by six environment variables and nothing else: three for the finder's endpoint, `RESEARCH_*`, and three for the panel's, `VOTER_*`. There is no configuration file and no flag. This page lists the variables and their defaults, the rule by which the panel falls back to the finder's settings, the settings no variable changes, and the errors a bad value causes.
 
-A program that uses quorum as a library builds its providers itself and reads none of these variables: [Providers](./30-providers.md).
+A program that uses quorum as a library builds its providers itself, as [Providers](./30-providers.md) shows, or has `fromConfig` build them, which also reads these variables, as deprecated aliases of `QUORUM_*` variables: [`loadConfig` and `fromConfig`](../95-reference/30-library-api.md#loadconfig-and-fromconfig).
 
 ## The variables
 

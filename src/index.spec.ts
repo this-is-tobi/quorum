@@ -23,8 +23,8 @@ afterEach(() => {
 })
 
 describe('the public API', () => {
-  it('exports createQuorum, defineConfig, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer and runQuorum', () => {
-    expect(Object.keys(api).sort()).toEqual(['ConfigError', 'OutputError', 'ProviderError', 'QuorumError', 'anthropic', 'createQuorum', 'defaultPolicy', 'defineConfig', 'gemini', 'inertJson', 'inertLine', 'ollama', 'openaiCompatible', 'presets', 'runQuorum', 'securityProfile'])
+  it('exports createQuorum, defineConfig, fromConfig, loadConfig, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer and runQuorum', () => {
+    expect(Object.keys(api).sort()).toEqual(['ConfigError', 'OutputError', 'ProviderError', 'QuorumError', 'anthropic', 'createQuorum', 'defaultPolicy', 'defineConfig', 'fromConfig', 'gemini', 'inertJson', 'inertLine', 'loadConfig', 'ollama', 'openaiCompatible', 'presets', 'runQuorum', 'securityProfile'])
   })
 })
 
