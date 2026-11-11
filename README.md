@@ -18,7 +18,7 @@ It needs Bun 1.3.0 or newer. [Installation](./docs/10-getting-started/10-install
 ## Try it
 
 ```bash
-export RESEARCH_MODEL=qwen3.6:27b             # a model your local Ollama serves
+export QUORUM_RESEARCH_MODEL=qwen3.6:27b      # a model your local Ollama serves
 quorum ./my.diff > result.json                # review a diff file
 git diff origin/main...HEAD | quorum > result.json   # or what your branch changes
 ```
@@ -35,7 +35,7 @@ The JSON result goes to stdout, and the exit code says what to do with it: `0` f
 
 *Using it*
 - [The CLI](./docs/20-using/10-cli.md) *- The invocation, stdout and stderr, every exit code and its causes, and gating a CI job on them*
-- [Configuration](./docs/20-using/20-configuration.md) *- The `RESEARCH_*` and `VOTER_*` variables, the voter's fallback, and the errors a bad value causes*
+- [Configuration](./docs/20-using/20-configuration.md) *- The config file and its trust model in CI, the `QUORUM_*` variables and the voter's fallback, the keys, `--print-config`, and the errors a bad setting causes*
 - [Providers](./docs/20-using/30-providers.md) *- The provider port, the shipped adapters and their options, the presets, `ProviderError`, and writing a provider of your own*
 - [Profiles](./docs/20-using/40-profiles.md) *- The security profile, writing your own, several in one review, gating and guidelines*
 - [Lenses and policy](./docs/20-using/50-lenses-and-policy.md) *- The panel's questions, the rules that turn kept votes into a confidence, failed votes, and what a level means*

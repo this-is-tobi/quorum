@@ -5,10 +5,10 @@ Five steps: point quorum at a model, review a diff, then read the three things i
 ## 1. Point it at a model
 
 ```bash
-export RESEARCH_MODEL=qwen3.6:27b
+export QUORUM_RESEARCH_MODEL=qwen3.6:27b
 ```
 
-`RESEARCH_MODEL` is the one variable quorum requires: the model, as your endpoint names it. With nothing else set, the finder and the panel both use that model at `http://localhost:11434/v1`, Ollama's default address, and send no key. A hosted API, or a panel on another model than the finder, takes a few more variables: [Configuration](../20-using/20-configuration.md).
+`QUORUM_RESEARCH_MODEL` is the one setting quorum requires: the model, as your endpoint names it. With nothing else set, the finder and the panel both use that model at `http://localhost:11434/v1`, Ollama's default address, and send no key. A hosted API, or a panel on another model than the finder, takes a few more `QUORUM_*` variables or a config file: [Configuration](../20-using/20-configuration.md).
 
 ## 2. Review a diff
 
