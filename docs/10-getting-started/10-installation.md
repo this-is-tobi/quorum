@@ -7,7 +7,7 @@ There is no npm package yet: a TypeScript program that uses quorum as a library 
 ## Prerequisites
 
 - **[Bun](https://bun.sh/) 1.3.0 or newer.** The `engines` field of [`package.json`](../../package.json) asks for it, and it installs the dependencies, runs the CLI and builds the binary.
-- **A model endpoint**, for the reviews themselves. With no config file it is an OpenAI-compatible `/chat/completions` endpoint that serves a model: [Ollama](https://ollama.com/) on your machine, a self-hosted vLLM, TGI or llama.cpp server, or a hosted API. A config file can name an Anthropic, Gemini or Ollama endpoint as well: [Configuration](../20-using/20-configuration.md). The check at the end of this page needs none.
+- **A model endpoint**, for the reviews themselves. With no config file and no preset it is an OpenAI-compatible `/chat/completions` endpoint that serves a model: [Ollama](https://ollama.com/) on your machine, a self-hosted vLLM, TGI or llama.cpp server, or a hosted API. `QUORUM_RESEARCH_PRESET` names a vendor's preset instead, such as `ollama` for Ollama's native protocol, which the quick start uses, and a config file can name an Anthropic, Gemini or Ollama endpoint as well: [Configuration](../20-using/20-configuration.md). The check at the end of this page needs none.
 
 ## From source
 
