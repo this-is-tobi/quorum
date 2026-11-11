@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import packageJson from '../../package.json' with { type: 'json' }
 import type { QuorumResult, Verdict } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
+import { chatResponse } from '../testing/fixtures/ollama.ts'
 import { chatReply, sent, stubChat, stubFetch, textReply } from '../testing/http.ts'
 import { EXIT, exitCodeFor, interruptSignal, runCli } from './main.ts'
 import type { CliIO } from './main.ts'
@@ -178,6 +179,16 @@ describe('runCli', () => {
       expect(stderr()).toBe('Error: no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens\n')
       expect(fetchMock).not.toHaveBeenCalled()
     }
+  })
+
+  it('runs against Ollama\'s native protocol from the variables alone, telling the server the context size and refusing an overflow', async () => {
+    const fetchMock = stubFetch({ ...chatResponse, message: { role: 'assistant', content: '{"findings":[]}' } })
+    const { io } = harness({ env: { QUORUM_RESEARCH_PRESET: 'ollama', QUORUM_RESEARCH_MODEL: 'qwen3.6:27b', QUORUM_RESEARCH_CONTEXT_TOKENS: '32768' }, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const { url, body } = sent(fetchMock)
+    expect(url).toBe('http://localhost:11434/api/chat')
+    expect(body).toMatchObject({ model: 'qwen3.6:27b', stream: false, truncate: false, shift: false, options: { num_ctx: 32768 } })
   })
 
   it('refuses a voter on another endpoint that states no context size of its own', async () => {

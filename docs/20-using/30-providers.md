@@ -212,14 +212,14 @@ A `contextTokens` that leaves no room for a request, at most the reply budget an
 
 | Adapter | Refused fields |
 | --- | --- |
-| `openaiCompatible` | `max_tokens` and `max_completion_tokens`, whichever `maxTokensField` names |
+| `openaiCompatible` | Both `max_tokens` and `max_completion_tokens`, whatever `maxTokensField` names |
 | `anthropic` | `max_tokens` |
 | `gemini` | `generationConfig.maxOutputTokens` |
 | `ollama` | `options.num_predict` |
 
 Each is a configuration error, `<id>.extraBody.<key>: sets the reply limit: use maxTokens`, where `<key>` is the field's path, such as `generationConfig.maxOutputTokens`. The key is matched as in [The tool fields](#the-tool-fields).
 
-The guard does not count the text that `extraBody` adds to a request, such as a vLLM `chat_template`, and the 512 tokens do not cover what a server adds beyond them, such as an Ollama Modelfile's `TEMPLATE` or `SYSTEM`. It trusts the number it is given: a server that loads a smaller context than `contextTokens` can still cut a prompt in silence, which is why `ollama` is told the context it counts with, below.
+The guard does not count the text that `extraBody` adds to a request, such as a vLLM `chat_template`, and the 512 tokens do not cover what a server adds beyond them, such as an Ollama Modelfile's `TEMPLATE` or `SYSTEM`. It does not see a server-side switch that truncates a prompt either, which `extraBody` can turn on: vLLM's `truncate_prompt_tokens`, or OpenRouter's `transforms` with `middle-out`. Do not set one. It trusts the number it is given: a server that loads a smaller context than `contextTokens` can still cut a prompt in silence, which is why `ollama` is told the context it counts with, below.
 
 ### Configuration errors
 
@@ -260,12 +260,12 @@ Each adapter checks its options when it is called, before any request, and throw
 | `<id>.structuredOutput` | `must be prompt or schema` |
 | `<id>.maxTokensField` | `must be max_tokens or max_completion_tokens` |
 | `<id>.query.<name>` | `would carry a key in the URL: set apiKey instead` |
+| `<id>.extraBody.generationConfig` | `must be written generationConfig` |
+| `<id>.extraBody.generationConfig` | `must be an object` |
 | `<id>.model` | `must be a Gemini model id, such as gemini-3.8-flash` |
 | `<id>.extraBody.options` | `must be written options` |
 | `<id>.extraBody.options.<key>` | `is set from contextTokens: set contextTokens instead` |
 | `<id>.extraBody.options` | `must be an object` |
-| `<id>.extraBody.generationConfig` | `must be written generationConfig` |
-| `<id>.extraBody.generationConfig` | `must be an object` |
 
 `headers` and `query` must be plain objects, an object literal or one with no prototype: a `Headers` or a `Map` is refused with `must map names to strings`, since its entries are not its own fields. A header name that repeats an earlier one in another letter case is refused at the later one, since one request cannot send both.
 

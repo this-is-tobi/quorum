@@ -18,13 +18,14 @@ It needs Bun 1.3.0 or newer. [Installation](./docs/10-getting-started/10-install
 ## Try it
 
 ```bash
+export QUORUM_RESEARCH_PRESET=ollama          # Ollama's native protocol, which tells the server the context size
 export QUORUM_RESEARCH_MODEL=qwen3.6:27b      # a model your local Ollama serves
 export QUORUM_RESEARCH_CONTEXT_TOKENS=32768   # its context window, in tokens
 quorum ./my.diff > result.json                # review a diff file
 git diff origin/main...HEAD | quorum > result.json   # or what your branch changes
 ```
 
-`QUORUM_RESEARCH_CONTEXT_TOKENS` is the model's context window in tokens, which quorum checks every request against, and without it the run exits `2` with a message that names it; Ollama sets it from your GPUs' memory (4096, 32768 or 262144) unless `OLLAMA_CONTEXT_LENGTH` says otherwise, so set `OLLAMA_CONTEXT_LENGTH` on the server to at least the same number.
+`QUORUM_RESEARCH_CONTEXT_TOKENS` is the model's context window in tokens, which quorum checks every request against, and without it the run exits `2` with a message that names it. `QUORUM_RESEARCH_PRESET=ollama` is set because on Ollama's OpenAI-compatible `/v1` a Modelfile's `num_ctx` outranks `OLLAMA_CONTEXT_LENGTH` and a thinking model's reasoning can run past the reserve, so Ollama would cut the prompt in silence, while the native protocol this preset speaks sends `num_ctx`, `truncate: false` and `shift: false`, telling the server the context size and refusing an overflow.
 
 The JSON result goes to stdout, and the exit code says what to do with it: `0` for a complete review in which no gating profile kept a `high` finding, `1` when one did, complete or not, `2` for a usage or configuration error, `3` when the research call failed, `4` when a gating profile's review is incomplete otherwise, and `130` when the run was interrupted. [Quick start](./docs/10-getting-started/20-quickstart.md) walks one review through, and [Start here](./docs/01-readme.md) lays out three tracks: review a diff, use it from code or review something else, and know what it protects against.
 

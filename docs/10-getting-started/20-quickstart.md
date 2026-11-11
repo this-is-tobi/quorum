@@ -1,15 +1,16 @@
 # Quick start
 
-Five steps: point quorum at a model, review a diff, then read the three things it gives back, which are progress on stderr, the result on stdout and an exit code. You need the `quorum` binary from [Installation](./10-installation.md) and an OpenAI-compatible endpoint that serves a model; the commands below assume Ollama on this machine.
+Five steps: point quorum at a model, review a diff, then read the three things it gives back, which are progress on stderr, the result on stdout and an exit code. You need the `quorum` binary from [Installation](./10-installation.md) and a model that an endpoint serves; the commands below assume Ollama on this machine.
 
 ## 1. Point it at a model
 
 ```bash
+export QUORUM_RESEARCH_PRESET=ollama
 export QUORUM_RESEARCH_MODEL=qwen3.6:27b
 export QUORUM_RESEARCH_CONTEXT_TOKENS=32768
 ```
 
-`QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` are the two settings quorum requires: the model, as your endpoint names it, and the model's context window in tokens, which quorum checks every request against ([The context size](../20-using/20-configuration.md#the-context-size)). Without the context size the run exits `2` with a message that names the variable, a blank diff included. Ollama sets that window from your GPUs' memory (4096, 32768 or 262144) unless `OLLAMA_CONTEXT_LENGTH` says otherwise, so set `OLLAMA_CONTEXT_LENGTH` on the server to at least the same number. With nothing else set, the finder and the panel both use that model at `http://localhost:11434/v1`, Ollama's default address, and send no key. A hosted API, or a panel on another model than the finder, takes a few more `QUORUM_*` variables or a config file: [Configuration](../20-using/20-configuration.md).
+`QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` are the two settings quorum requires: the model, as your endpoint names it, and the model's context window in tokens, which quorum checks every request against ([The context size](../20-using/20-configuration.md#the-context-size)). Without the context size the run exits `2` with a message that names the variable, a blank diff included. `QUORUM_RESEARCH_PRESET=ollama` is set because on Ollama's OpenAI-compatible `/v1` a Modelfile's `num_ctx` outranks `OLLAMA_CONTEXT_LENGTH` and a thinking model's reasoning can run past the reserve, so Ollama would cut the prompt in silence, while the native protocol this preset speaks sends `num_ctx`, `truncate: false` and `shift: false`, telling the server the context size and refusing an overflow; keep the number at most what `ollama show <model>` reports for the model. With nothing else set, the finder and the panel both use that model at `http://localhost:11434`, Ollama's default address, and send no key. A hosted API, or a panel on another model than the finder, takes a few more `QUORUM_*` variables or a config file: [Configuration](../20-using/20-configuration.md).
 
 ## 2. Review a diff
 
@@ -138,10 +139,12 @@ echo $code
 | `1` | A gating profile kept a `high` finding; the security profile gates | Fail: read the kept findings |
 | `2` | A usage or configuration error: nothing was reviewed | Fail: fix the command or the variables |
 | `3` | The research call failed: nothing was reviewed | Fail: fix the endpoint, or run again |
-| `4` | The review is incomplete, and no gating profile kept a `high` finding | Fail: run again, or read the unreviewed findings and `meta.incomplete` |
+| `4` | The review is incomplete, and no gating profile kept a `high` finding | Fail: read the unreviewed findings and `meta.incomplete`; run again only for a failed vote |
 | `130` | The run was interrupted by SIGINT or SIGTERM: nothing was reviewed | Fail: the job was cancelled, run it again |
 
 This run exits `1`: it kept a `high` finding, and `1` wins over the `4` that its unreviewed finding and its unreadable one would otherwise give.
+
+Running again does not fix a `request-too-large` gap, which the same diff on the same model repeats. A model with a larger window does, or a smaller diff. With the 32768 above, a research request leaves about 14.7 KB (14,757 bytes) of diff, so a longer branch needs one or the other: [What it counts, and what it costs](../20-using/20-configuration.md#what-it-counts-and-what-it-costs).
 
 ## Where to go next
 
