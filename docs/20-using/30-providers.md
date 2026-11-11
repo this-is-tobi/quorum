@@ -130,7 +130,7 @@ A provider built from a preset or a protocol is checked first for the problems b
 | `auth` | `'bearer' \| 'x-api-key' \| 'none' \| { header, prefix? }` | The adapter's | How the key is sent: [The key header](#the-key-header) |
 | `headers` | `Record<string, string>` | None | Sent with every request, names lower-cased. They cannot replace `content-type`, `content-length`, `host`, the key header, or `anthropic`'s `anthropic-version`. Their values are redacted from error messages, as the key is |
 | `query` | `Record<string, string>` | None | Added to every request URL. Not redacted from error messages: never put a key here. A value equal to `apiKey` is refused |
-| `extraBody` | `Record<string, unknown>` | None | JSON values deep-merged into the body last: objects merge key by key, anything else replaces. A top-level key cannot replace a field the adapter writes for the conversation, or set one that offers the model a tool: [The tool fields](#the-tool-fields) |
+| `extraBody` | `Record<string, unknown>` | None | JSON values deep-merged into the body last: objects merge key by key, anything else replaces. A top-level key cannot replace a field the adapter writes for the conversation, or set one that offers the model a tool: [The tool fields](#the-tool-fields). Nor can it set the reply limit, which `maxTokens` sets: [The size of a request](#the-size-of-a-request) |
 | `temperature` | `number \| null` | The adapter's | Sent where the protocol takes it; `null` leaves it out, for a model that rejects it |
 | `maxTokens` | `number` | None, but `anthropic`'s 16000; the size guard keeps 16000 for the reply when it is unset | The most tokens the reply may hold, in the protocol's own field |
 | `systemPrompt` | `'native' \| 'inline'` | `'native'` | `native` sends the system text in the protocol's own place; `inline` puts it at the head of the first user message, joined by a blank line, for a chat template that rejects a system role |
@@ -206,7 +206,18 @@ A request over the bound is not sent. The call fails with a `ProviderError` of k
 
 A `contextTokens` that leaves no room for a request, at most the reply budget and the 512 tokens, would refuse every request, so it is a configuration error when the adapter is called: `<id>.contextTokens: must be more than 16512, the 16000 tokens of the reply budget and 512 for the chat template`, the reply budget being `maxTokens` when it is set.
 
-The guard does not count the text that `extraBody` adds to a request, or what a server adds beyond the 512 tokens, such as an Ollama Modelfile's `TEMPLATE` or `SYSTEM`. It trusts the number it is given: a server that loads a smaller context than `contextTokens` can still cut a prompt in silence, which is why `ollama` is told the context it counts with, below.
+`extraBody` cannot set the reply limit. The guard reserves `maxTokens` for the reply, so a limit set there would send more than it reserved. Each adapter refuses these fields, in any letter case, and `maxTokens` sets the limit instead:
+
+| Adapter | Refused fields |
+| --- | --- |
+| `openaiCompatible` | `max_tokens` and `max_completion_tokens`, whichever `maxTokensField` names |
+| `anthropic` | `max_tokens` |
+| `gemini` | `generationConfig.maxOutputTokens` |
+| `ollama` | `options.num_predict` |
+
+Each is a configuration error, `<id>.extraBody.<key>: sets the reply limit: use maxTokens`, where `<key>` is the field's path, such as `generationConfig.maxOutputTokens`. The key is matched as in [The tool fields](#the-tool-fields).
+
+The guard does not count the text that `extraBody` adds to a request, such as a vLLM `chat_template`, and the 512 tokens do not cover what a server adds beyond them, such as an Ollama Modelfile's `TEMPLATE` or `SYSTEM`. It trusts the number it is given: a server that loads a smaller context than `contextTokens` can still cut a prompt in silence, which is why `ollama` is told the context it counts with, below.
 
 ### Configuration errors
 
@@ -236,6 +247,7 @@ Each adapter checks its options when it is called, before any request, and throw
 | `<id>.extraBody` | `must be an object of JSON values, with no __proto__ key` |
 | `<id>.extraBody.<key>` | `is written by the adapter and cannot be replaced` |
 | `<id>.extraBody.<key>` | `offers the model a tool, which quorum never does` |
+| `<id>.extraBody.<key>` | `sets the reply limit: use maxTokens` |
 | `<id>.temperature` | `must be a finite number, or null to leave it out` |
 | `<id>.maxTokens` | `must be a whole number of at least 1` |
 | `<id>.contextTokens` | `must be a whole number of at least 1` |
@@ -247,10 +259,11 @@ Each adapter checks its options when it is called, before any request, and throw
 | `<id>.query.<name>` | `would carry a key in the URL: set apiKey instead` |
 | `<id>.model` | `must be a Gemini model id, such as gemini-3.8-flash` |
 | `<id>.extraBody.options.<key>` | `is set from contextTokens: set contextTokens instead` |
+| `<id>.extraBody.options` | `must be an object` |
 
 `headers` and `query` must be plain objects, an object literal or one with no prototype: a `Headers` or a `Map` is refused with `must map names to strings`, since its entries are not its own fields. A header name that repeats an earlier one in another letter case is refused at the later one, since one request cannot send both.
 
-`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, `model` and a `key` query parameter by `gemini` only, and `options.num_ctx` in `extraBody` by `ollama` only. `must be more than <n>, ...` is checked against a valid `maxTokens` only, with `<r>` its value, else 16000, and `<n>` that and 512.
+`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, `model` and a `key` query parameter by `gemini` only, and `options.num_ctx` in `extraBody`, with an `extraBody.options` that is no object, by `ollama` only. `sets the reply limit: use maxTokens` names a field by its path, `<id>.extraBody.generationConfig.maxOutputTokens` for one that is nested. `must be more than <n>, ...` is checked against a valid `maxTokens` only, with `<r>` its value, else 16000, and `<n>` that and 512.
 
 A header name, an `extraBody` key or a `query` name is printed in a path only when it is a safe name, at most 64 ASCII letters, digits, `_`, `$` and `-`. Any other prints as `*`, since a secret pasted as a name would otherwise show.
 
@@ -268,7 +281,7 @@ The body of every request holds, in this order:
 - `response_format`, unless `structuredOutput` is `prompt`;
 - `temperature`, unless it is `null`;
 - `maxTokens` under `maxTokensField`, when set;
-- then `extraBody`, merged. It cannot replace `model`, `messages` or `stream`.
+- then `extraBody`, merged. It cannot replace `model`, `messages` or `stream`, or set `max_tokens` or `max_completion_tokens`, which `maxTokens` sets.
 
 The text is the first choice's `message.content`: a string, or an array of parts whose `text` parts are joined, as Mistral sends it. Every other part is skipped, thinking parts included. `model` is the one the reply names, or the configured one when it names none. `usage` is read from `usage.prompt_tokens` and `usage.completion_tokens`.
 
@@ -304,7 +317,7 @@ The body of every request holds, in this order:
 - `messages`: the request's messages, each `{ role, content }` with its text;
 - `temperature`, when set;
 - `output_config: { format: { type: 'json_schema', schema: <output.schema> } }`, in `schema` mode;
-- then `extraBody`, merged: `{ output_config: { effort: 'low' } }` goes beside the format in `schema` mode. It cannot replace `model`, `messages`, `system` or `stream`.
+- then `extraBody`, merged: `{ output_config: { effort: 'low' } }` goes beside the format in `schema` mode. It cannot replace `model`, `messages`, `system` or `stream`, or set `max_tokens`, which `maxTokens` sets.
 
 A reply succeeds with the stop reason `end_turn` or `stop_sequence` and a text block. The stop reason is read first, since a refused or cut-off reply can still hold some text. The text is the `text` of the `type: 'text'` blocks, joined: `thinking` and `redacted_thinking` blocks are skipped, as is every block of another type. `model` is the one the reply names, or the configured one. The input count is `usage.input_tokens`, plus `usage.cache_creation_input_tokens` and `usage.cache_read_input_tokens` when they are numbers; the output count is `usage.output_tokens`. A status outside 2xx is an `http` error that quotes Anthropic's `{ "type": "error", "error": { "type", "message" } }` body.
 
@@ -329,7 +342,7 @@ The body of every request holds, in this order:
 - `contents`: each message as `{ role, parts: [{ text }] }`, an `assistant` message with the role `model`;
 - `systemInstruction: { parts: [{ text: <system text> }] }`, unless `systemPrompt` is `inline`;
 - `generationConfig`, left out when it would be empty: `temperature` when set, `maxOutputTokens` when `maxTokens` is set, `responseMimeType: 'application/json'` in `json` and `schema` mode, and `responseJsonSchema: <output.schema>` in `schema` mode, as Google's JavaScript SDK sends it (`responseSchema` is deprecated);
-- then `extraBody`, merged: `{ generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } }` goes beside the rest. It cannot replace `contents` or `systemInstruction`.
+- then `extraBody`, merged: `{ generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } }` goes beside the rest. It cannot replace `contents` or `systemInstruction`, or set `generationConfig.maxOutputTokens`, which `maxTokens` sets.
 
 A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose parts hold text. The text is the `text` of the first candidate's `content.parts`, joined, without the parts flagged as thoughts. `model` is the reply's `modelVersion`, or the configured model. The input count is `usageMetadata.promptTokenCount`; the output count is `usageMetadata.candidatesTokenCount`, plus `usageMetadata.thoughtsTokenCount` when it is a number. A status outside 2xx is an `http` error that quotes Google's `{ "error": { "code", "message", "status", "details" } }` body; a 402, which Google sends for a depleted prepay balance, is not retryable, unlike a 429.
 
@@ -349,7 +362,7 @@ For Ollama's native chat API, on a local server or Ollama's cloud, `https://olla
 
 - **`truncate: false` keeps a prompt whole.** A prompt past the model's context is then a 400, `request (N tokens) exceeds the available context size (M tokens), try increasing it`, instead of its oldest messages dropped in silence. It needs Ollama 0.12.6 or later; an older server ignores the field and drops them.
 - **`shift: false` keeps it whole as the reply is written.** A reply that fills the model's context then stops, as a truncation, instead of part of the prompt dropped so the reply can go on. It needs the same versions, and a server that loaded the model with context shift on loads it again, as it does each time a client asks for the other setting.
-- **`num_ctx` from `contextTokens`.** The adapter sends `options.num_ctx`, so the server loads the context the size guard counts with; a larger value than the model's own maximum is cut to it, so keep `contextTokens` at most what `ollama show <model>` reports. `extraBody` cannot set `options.num_ctx`, in any letter case.
+- **`num_ctx` from `contextTokens`.** The adapter sends `options.num_ctx`, so the server loads the context the size guard counts with; a larger value than the model's own maximum is cut to it, so keep `contextTokens` at most what `ollama show <model>` reports. `extraBody` cannot set `options.num_ctx`, in any letter case, or replace `options` with anything but an object, which would drop it.
 - **The key goes as `Authorization: Bearer <key>`**, only when one is set: a local server needs none.
 - **No `think` field.** A thinking model thinks as it does by default, and its thinking comes back apart, in `message.thinking`, which the adapter ignores.
 
@@ -359,7 +372,7 @@ The body of every request holds, in this order:
 - `stream: false`, `truncate: false` and `shift: false`;
 - `options`, left out when it would be empty: `temperature`, unless it is `null`, `num_predict`, when `maxTokens` is set, and `num_ctx`, when `contextTokens` is set;
 - `format`: `'json'` in `json` mode, `<output.schema>` in `schema` mode;
-- then `extraBody`, merged: `{ options: { seed: 7 } }` goes beside the temperature. It cannot replace `model`, `messages`, `stream`, `truncate` or `shift`, or set `options.num_ctx`, which `contextTokens` sets.
+- then `extraBody`, merged: `{ options: { seed: 7 } }` goes beside the temperature. It cannot replace `model`, `messages`, `stream`, `truncate` or `shift`, or set `options.num_ctx`, which `contextTokens` sets, or `options.num_predict`, which `maxTokens` sets. Its `options` must be an object.
 
 A reply succeeds with `done: true`, the `done_reason` `stop` and a string `message.content`. The text is `message.content`, as it came: a `<think>` block left in it, by a model or a template Ollama cannot split, is for the core's reply parser to drop. `model` is the one the reply names, or the configured one; `usage` is read from `prompt_eval_count` and `eval_count`. A status outside 2xx is an `http` error that quotes Ollama's `{ "error": "<message>" }` body.
 

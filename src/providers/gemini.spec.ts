@@ -37,6 +37,7 @@ describeProviderContract({
   },
   reservedBodyKeys: ['contents', 'systemInstruction'],
   toolBodyKeys: ['tools', 'toolConfig', 'cachedContent'],
+  replyLimitPaths: [['generationConfig', 'maxOutputTokens']],
   structuredOutputs: ['prompt', 'json', 'schema'],
   mergeProbe: {
     extraBody: { generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } },

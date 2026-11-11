@@ -67,6 +67,11 @@ export interface AdapterRules {
   reservedBodyKeys: readonly string[]
   /** Body fields that would offer the model a tool or a server-side capability: `extraBody` cannot set them. */
   toolBodyKeys: readonly string[]
+  /**
+   * Body fields that set the reply limit, each as the keys leading to it: `extraBody` cannot set them, since
+   * the size guard reserves `maxTokens` for the reply and would reserve less than is sent.
+   */
+  replyLimitPaths: readonly (readonly string[])[]
   /** Headers the adapter always sends: `headers` cannot replace them. */
   fixedHeaders: readonly string[]
   /** The structured-output modes the protocol supports. */
@@ -163,16 +168,32 @@ export function bodyKeyForm(key: string): string {
   return key.toUpperCase().toLowerCase().replaceAll('_', '')
 }
 
-/** The problems of the top-level `extraBody` keys, one per key in its order: a key the adapter writes, or one that offers a tool. */
+/**
+ * The problems of the `extraBody` fields at `limits`, the paths below `trail` that set the reply limit, one per
+ * field in its order. A path goes through objects only: a field on it that is no object holds no limit.
+ */
+function replyLimitIssues(id: string, body: Readonly<Record<string, unknown>>, limits: readonly (readonly string[])[], trail: readonly string[] = []): ConfigIssue[] {
+  return Object.entries(body).flatMap(([key, value]): ConfigIssue[] => {
+    const below = limits.filter(([head]) => bodyKeyForm(head) === bodyKeyForm(key)).map(path => path.slice(1))
+    if (below.some(path => path.length === 0)) return [{ path: `${id}.${issuePath(['extraBody', ...trail, key])}`, message: 'sets the reply limit: use maxTokens' }]
+    return isRecord(value) && below.length > 0 ? replyLimitIssues(id, value, below, [...trail, key]) : []
+  })
+}
+
+/**
+ * The problems of `extraBody`: one per top-level key in its order, a key the adapter writes or one that offers
+ * a tool, then one per field that sets the reply limit.
+ */
 function extraBodyIssues(id: string, extraBody: Readonly<Record<string, unknown>>, rules: AdapterRules): ConfigIssue[] {
   const reserved = new Set(rules.reservedBodyKeys.map(bodyKeyForm))
   const tools = new Set(rules.toolBodyKeys.map(bodyKeyForm))
-  return Object.keys(extraBody).flatMap((key): ConfigIssue[] => {
+  const keyIssues = Object.keys(extraBody).flatMap((key): ConfigIssue[] => {
     const path = `${id}.${issuePath(['extraBody', key])}`
     const form = bodyKeyForm(key)
     if (reserved.has(form)) return [{ path, message: 'is written by the adapter and cannot be replaced' }]
     return tools.has(form) ? [{ path, message: 'offers the model a tool, which quorum never does' }] : []
   })
+  return [...keyIssues, ...replyLimitIssues(id, extraBody, rules.replyLimitPaths)]
 }
 
 /** The query entries whose value is the key, which travels only in the header `auth` names. No message repeats the value. */
@@ -187,6 +208,11 @@ export function wordList(words: readonly string[], conjunction: 'or' | 'and' = '
   return words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} ${conjunction} ${words.at(-1)}`
 }
 
+/** Whether `value` is a whole number of tokens, at least 1 and safe to count with. */
+function isTokenCount(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 1
+}
+
 /**
  * The problems of `contextTokens`: not a whole number of at least 1, or no more than the reply budget and the
  * chat template, which leaves no room for a request. The room is checked against a valid `maxTokens` only,
@@ -194,8 +220,8 @@ export function wordList(words: readonly string[], conjunction: 'or' | 'and' = '
  */
 function contextTokensIssues(id: string, contextTokens: number, maxTokens: number | undefined): ConfigIssue[] {
   const path = `${id}.contextTokens`
-  if (!Number.isSafeInteger(contextTokens) || contextTokens < 1) return [{ path, message: 'must be a whole number of at least 1' }]
-  if (maxTokens !== undefined && (!Number.isSafeInteger(maxTokens) || maxTokens < 1)) return []
+  if (!isTokenCount(contextTokens)) return [{ path, message: 'must be a whole number of at least 1' }]
+  if (maxTokens !== undefined && !isTokenCount(maxTokens)) return []
   const reply = maxTokens ?? DEFAULT_REPLY_TOKENS
   if (contextTokens > reply + TEMPLATE_TOKENS) return []
   return [{ path, message: `must be more than ${reply + TEMPLATE_TOKENS}, the ${reply} tokens of the reply budget and ${TEMPLATE_TOKENS} for the chat template` }]
@@ -229,7 +255,7 @@ export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRul
   if (temperature !== undefined && temperature !== null && !Number.isFinite(temperature)) {
     issues.push({ path: `${id}.temperature`, message: 'must be a finite number, or null to leave it out' })
   }
-  if (maxTokens !== undefined && (!Number.isSafeInteger(maxTokens) || maxTokens < 1)) {
+  if (maxTokens !== undefined && !isTokenCount(maxTokens)) {
     issues.push({ path: `${id}.maxTokens`, message: 'must be a whole number of at least 1' })
   }
   if (contextTokens !== undefined) issues.push(...contextTokensIssues(id, contextTokens, maxTokens))

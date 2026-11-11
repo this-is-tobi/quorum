@@ -43,6 +43,7 @@ const RULES: Omit<AdapterRules, 'auth'> = {
     'documents',
     'data_sources',
   ],
+  replyLimitPaths: [['max_tokens'], ['max_completion_tokens']],
   fixedHeaders: [],
   structuredOutputs: ['prompt', 'json', 'schema'],
 }

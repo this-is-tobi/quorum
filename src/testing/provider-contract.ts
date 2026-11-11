@@ -42,6 +42,8 @@ export interface ContractSubject {
   reservedBodyKeys: readonly string[]
   /** The body fields that would offer the model a tool or a server-side capability, which `extraBody` cannot set. */
   toolBodyKeys: readonly string[]
+  /** The body fields that set the reply limit, each as the keys leading to it, which `extraBody` cannot set. */
+  replyLimitPaths: readonly (readonly string[])[]
   /** The structured-output modes the protocol supports. */
   structuredOutputs: readonly StructuredOutput[]
   /**
@@ -216,6 +218,16 @@ export function describeProviderContract(subject: ContractSubject): void {
     it('accepts each structured-output mode the protocol supports, and refuses the others', () => {
       for (const mode of MODES) {
         expect(issuesOf({ structuredOutput: mode }), mode).toEqual(subject.structuredOutputs.includes(mode) ? [] : [{ path: 'p.structuredOutput', message: modesMessage }])
+      }
+    })
+
+    it('refuses an extraBody that sets the reply limit, in any letter case, since the guard reserves maxTokens, and repeats no value', () => {
+      for (const path of subject.replyLimitPaths) {
+        for (const keys of [path, path.map(key => key.toUpperCase())]) {
+          const issues = issuesOf({ extraBody: keys.reduceRight<unknown>((value, key) => ({ [key]: value }), 64000) as Body })
+          expect(issues, keys.join('.')).toEqual([{ path: `p.extraBody.${keys.join('.')}`, message: 'sets the reply limit: use maxTokens' }])
+          expect(JSON.stringify(issues)).not.toContain('64000')
+        }
       }
     })
 

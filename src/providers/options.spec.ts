@@ -30,7 +30,7 @@ describe('baseUrlIssues', () => {
 
 describe('httpOptionIssues', () => {
   const base = { id: 'p', baseUrl: 'https://h/v1', model: 'm' }
-  const rules: AdapterRules = { auth: 'bearer', reservedBodyKeys: ['model', 'messages', 'stream'], toolBodyKeys: ['tools', 'toolConfig'], fixedHeaders: ['x-version'], structuredOutputs: ['prompt', 'json', 'schema'] }
+  const rules: AdapterRules = { auth: 'bearer', reservedBodyKeys: ['model', 'messages', 'stream'], toolBodyKeys: ['tools', 'toolConfig'], replyLimitPaths: [['max_tokens'], ['generationConfig', 'maxOutputTokens']], fixedHeaders: ['x-version'], structuredOutputs: ['prompt', 'json', 'schema'] }
   /** The issues of `options` over the base ones, under `rules` and `options.auth` when it names one, as given. */
   const issuesOf = (options: Record<string, unknown>, overrides: Partial<AdapterRules> = {}): ConfigIssue[] =>
     httpOptionIssues({ ...base, ...options } as HttpProviderOptions, { ...rules, ...('auth' in options ? { auth: options.auth as Auth } : {}), ...overrides })
@@ -119,6 +119,19 @@ describe('httpOptionIssues', () => {
     ])
   })
 
+  it('refuses an extraBody field that sets the reply limit, as a key or as a path, in any letter case and as Go folds it', () => {
+    const message = 'sets the reply limit: use maxTokens'
+    expect(issuesOf({ extraBody: { Max_Tokens: 64000, top_k: 20, generationConfig: { MAXOUTPUTTOKENS: 1, temperature: 0 }, max: { tokens: 1 } } })).toEqual([
+      { path: 'p.extraBody.Max_Tokens', message },
+      { path: 'p.extraBody.generationConfig.MAXOUTPUTTOKENS', message },
+    ])
+    expect(issuesOf({ extraBody: { [`max_token${String.fromCharCode(0x17F)}`]: 1 } })).toEqual([{ path: 'p.extraBody.*', message }])
+  })
+
+  it('leaves a path the rules name alone when the object on the way is not an object, which sets no limit', () => {
+    expect(issuesOf({ extraBody: { generationConfig: null, GENERATION_CONFIG: [1], maxOutputTokens: 1 } })).toEqual([])
+  })
+
   it('prints a header name, a body key or a query name that is not a safe name as *, since it could be a pasted secret', () => {
     const token = `sk-${'a'.repeat(70)}`
     expect(issuesOf({ headers: { [token]: `v${String.fromCharCode(1)}`, [`x${String.fromCharCode(10)}y`]: 'v' } })).toEqual([
@@ -173,7 +186,7 @@ describe('httpOptionIssues', () => {
 })
 
 describe('prepareHttp', () => {
-  const rules: AdapterRules = { auth: 'bearer', reservedBodyKeys: ['model'], toolBodyKeys: ['tools'], fixedHeaders: [], structuredOutputs: ['prompt', 'json'] }
+  const rules: AdapterRules = { auth: 'bearer', reservedBodyKeys: ['model'], toolBodyKeys: ['tools'], replyLimitPaths: [], fixedHeaders: [], structuredOutputs: ['prompt', 'json'] }
 
   it('returns the URL, the headers and the redactions the helpers build, and a copy of extraBody', () => {
     const extraBody = { top_k: 20, nested: { a: 1 } }
@@ -209,7 +222,7 @@ describe('requestHeaders', () => {
   it('sends basic auth as a custom key header with a Basic prefix, the key the base64 of user:password', () => {
     const auth = { header: 'authorization', prefix: 'Basic ' }
     const apiKey = btoa('user:password')
-    expect(httpOptionIssues({ id: 'p', baseUrl: 'https://h/v1', model: 'm', apiKey, auth }, { auth, reservedBodyKeys: ['model'], toolBodyKeys: [], fixedHeaders: [], structuredOutputs: ['prompt'] })).toEqual([])
+    expect(httpOptionIssues({ id: 'p', baseUrl: 'https://h/v1', model: 'm', apiKey, auth }, { auth, reservedBodyKeys: ['model'], toolBodyKeys: [], replyLimitPaths: [], fixedHeaders: [], structuredOutputs: ['prompt'] })).toEqual([])
     expect(requestHeaders(auth, apiKey)).toEqual({ authorization: 'Basic dXNlcjpwYXNzd29yZA==' })
   })
 })

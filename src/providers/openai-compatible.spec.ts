@@ -57,6 +57,7 @@ describeProviderContract({
     'documents',
     'data_sources',
   ],
+  replyLimitPaths: [['max_tokens'], ['max_completion_tokens']],
   structuredOutputs: ['prompt', 'json', 'schema'],
   mergeProbe: { extraBody: { response_format: { added: true } }, merged: { response_format: { type: 'json_object', added: true } } },
 })

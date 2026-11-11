@@ -34,6 +34,7 @@ describeProviderContract({
   },
   reservedBodyKeys: ['model', 'messages', 'stream', 'truncate', 'shift'],
   toolBodyKeys: ['tools', '_debug_render_only'],
+  replyLimitPaths: [['options', 'num_predict']],
   structuredOutputs: ['prompt', 'json', 'schema'],
   mergeProbe: { extraBody: { options: { seed: 7 } }, merged: { options: { temperature: 0, seed: 7 } } },
 })
@@ -85,6 +86,18 @@ describe('ollama', () => {
       expect(issues, key).toEqual([{ path: `local.extraBody.options.${key}`, message: 'is set from contextTokens: set contextTokens instead' }])
     }
     expect(() => ollama({ ...options, extraBody: { Options: { Num_Ctx: 8192 } } })).toThrow('local.extraBody.Options.Num_Ctx: is set from contextTokens: set contextTokens instead')
+  })
+
+  it('refuses an options that is no object, which would drop num_ctx, with the path and no value', () => {
+    for (const [key, value] of [['options', null], ['Options', 'zz-value'], ['OPTIONS', ['zz-value']], ['options', 0]] as const) {
+      let issues: unknown
+      try {
+        ollama({ ...options, extraBody: { [key]: value } })
+      } catch (error) {
+        issues = (error as ConfigError).issues
+      }
+      expect(issues, key).toEqual([{ path: `local.extraBody.${key}`, message: 'must be an object' }])
+    }
   })
 
   it('sends no options when it would be empty', async () => {
