@@ -10,7 +10,7 @@ Nothing needs reading in order. Pick what you came to do: each track lists its p
 
 | Track | You want to | Read | Afterwards you can |
 | --- | --- | --- | --- |
-| **A. Review a diff** | Run quorum on your own changes, at a terminal or in CI | Five pages: Installation, Quick start, The CLI, Configuration, Providers | Review a diff from a file or a pipe, read its result and its exit code, gate a CI job on that code, and point the finder and the panel at the models you choose |
+| **A. Review a diff** | Run quorum on your own changes, at a terminal or in CI | Six pages: Installation, Quick start, The CLI, Configuration, Providers, Local models | Review a diff from a file or a pipe, read its result and its exit code, gate a CI job on that code, and point the finder and the panel at the models you choose, on a server of your own included |
 | **B. Use it from code, or review something else** | Call quorum from a TypeScript program, or review for something other than security | Five pages: Profiles, Lenses and policy, Prompts, Library API, The JSON result | Write a profile of your own, choose its lenses and how their votes are graded, run it through `createQuorum` with your providers, and follow a review through its events |
 | **C. Know what it protects against** | Decide what quorum can be trusted with before you run it on changes you did not write | Two pages: Threat model, Output handling | Say what an attacker who opens a pull request controls, which controls stand in their way today and what remains, and print a review without letting its text act on your terminal |
 
@@ -21,6 +21,7 @@ Nothing needs reading in order. Pick what you came to do: each track lists its p
 3. [The CLI](./20-using/10-cli.md) — the invocation, what goes to stdout and stderr, every exit code, and what each should do to a CI job.
 4. [Configuration](./20-using/20-configuration.md) — the config file and the trust it needs in CI, the `QUORUM_*` variables, how the panel falls back to the finder's settings, the context size each provider states, the keys, `--print-config`, and the errors a bad setting causes.
 5. [Providers](./20-using/30-providers.md) — what a provider is, the shipped adapters, the presets, the options a config sets on each, and writing a provider of your own.
+6. [Local models](./90-recipes/10-local-models.md) — Ollama, vLLM and llama.cpp: the window each gives a request, choosing a model, and what reasoning mode does to a request.
 
 ### B. Use it from code, or review something else
 
@@ -37,7 +38,7 @@ Nothing needs reading in order. Pick what you came to do: each track lists its p
 
 ## If you arrive with a job
 
-Start from the work instead of the feature. To gate pull requests in CI, read the [Quick start](./10-getting-started/20-quickstart.md), then [Using it in CI](./20-using/10-cli.md#using-it-in-ci). To put the panel on another model than the finder, or on a hosted API, read [The voter's fallback](./20-using/20-configuration.md#the-voters-fallback). To run it with a config file on pull requests, read [Trust](./20-using/20-configuration.md#trust) first. To read a result someone sent you, [The JSON result](./95-reference/20-json-result.md) has every field. To review for something other than security, start at [Writing a profile](./20-using/40-profiles.md#writing-a-profile). Before you run quorum on a pull request from someone you do not know, read the [Threat model](./30-security/10-threat-model.md).
+Start from the work instead of the feature. To gate pull requests in CI, read the [Quick start](./10-getting-started/20-quickstart.md), then [Using it in CI](./20-using/10-cli.md#using-it-in-ci). To put the panel on another model than the finder, or on a hosted API, read [The voter's fallback](./20-using/20-configuration.md#the-voters-fallback). To run it on a server of your own, Ollama, vLLM or llama.cpp, read [Local models](./90-recipes/10-local-models.md). To run it with a config file on pull requests, read [Trust](./20-using/20-configuration.md#trust) first. To read a result someone sent you, [The JSON result](./95-reference/20-json-result.md) has every field. To review for something other than security, start at [Writing a profile](./20-using/40-profiles.md#writing-a-profile). Before you run quorum on a pull request from someone you do not know, read the [Threat model](./30-security/10-threat-model.md).
 
 A word that seems to mean something particular — a lens, a verdict, unreviewed — is defined once in the [glossary](./95-reference/10-glossary.md), with the acronyms these pages assume.
 

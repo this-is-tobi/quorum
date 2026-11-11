@@ -150,4 +150,4 @@ Pass `events` as `ports.events` of `createQuorum`: [Library API](../95-reference
 
 ## Next
 
-[Glossary](../95-reference/10-glossary.md) — the words these pages use in one particular way, and the acronyms they assume.
+[Local models](../90-recipes/10-local-models.md) — running quorum against Ollama, vLLM and llama.cpp: the window each gives a request, choosing a model, and reasoning mode.
