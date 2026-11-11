@@ -5,7 +5,7 @@ import type { CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { wordList } from '../providers/options.ts'
 import type { StructuredOutput } from '../providers/options.ts'
-import { presets } from '../providers/presets.ts'
+import { presets, withoutPrototype } from '../providers/presets.ts'
 import type { PresetName, Protocol } from '../providers/presets.ts'
 
 /** A provider name, a profile id or a lens id: the pattern of every id the core takes. */
@@ -110,7 +110,7 @@ const SNAPSHOTS = new WeakSet<object>()
 
 /** A provider object as a snapshot: its fields as plain data, frozen, with no prototype. */
 function snapshot(fields: { readonly id?: string, readonly model: unknown, readonly complete: Provider['complete'] }): Provider {
-  const made = Object.freeze(Object.setPrototypeOf({ ...fields }, null)) as Provider
+  const made = Object.freeze(withoutPrototype<Provider>(Object.entries(fields)))
   SNAPSHOTS.add(made)
   return made
 }

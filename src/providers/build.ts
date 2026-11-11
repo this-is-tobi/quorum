@@ -8,7 +8,7 @@ import { ollama } from './ollama.ts'
 import { openaiCompatible } from './openai-compatible.ts'
 import type { OpenAICompatibleOptions } from './openai-compatible.ts'
 import { isRecord, wordList } from './options.ts'
-import { presetOf, presets } from './presets.ts'
+import { presetOf, presets, withoutPrototype } from './presets.ts'
 import type { Preset, Protocol } from './presets.ts'
 
 /** A provider described as data: a preset, or a protocol, and the options of that protocol's adapter. */
@@ -55,11 +55,6 @@ for (const { baseUrl, toolModels } of Object.values(presets)) {
 function toolModelPatterns(preset: Preset | undefined, baseUrl: unknown): readonly string[] {
   const origin = httpOrigin(baseUrl)
   return [...preset?.toolModels ?? [], ...origin === undefined ? [] : TOOL_MODELS_AT_ORIGIN.get(origin) ?? []]
-}
-
-/** `entries` as an object with no prototype: a field they lack reads `undefined`, whatever `Object.prototype` holds. */
-function withoutPrototype<T>(entries: Iterable<readonly [string, unknown]>): T {
-  return Object.setPrototypeOf(Object.fromEntries(entries), null) as T
 }
 
 /** `value` as an object with no prototype when it is a record, so its fields are its own; any other value as it is, for the adapter to refuse. */

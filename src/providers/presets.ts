@@ -83,7 +83,12 @@ export const presets: Readonly<Record<PresetName, Preset>> = deepFreeze<Record<P
   },
 })
 
+/** `entries` as an object with no prototype: a field they lack reads `undefined`, whatever `Object.prototype` holds. */
+export function withoutPrototype<T>(entries: Iterable<readonly [string, unknown]>): T {
+  return Object.setPrototypeOf(Object.fromEntries(entries), null) as T
+}
+
 /** The preset a name names, or undefined: a name is looked up among the table's own keys only, never its prototype's, and the row is a copy that has no prototype either. */
 export function presetOf(name: unknown): Preset | undefined {
-  return typeof name === 'string' && Object.hasOwn(presets, name) ? Object.setPrototypeOf(Object.fromEntries(Object.entries(presets[name as PresetName])), null) as Preset : undefined
+  return typeof name === 'string' && Object.hasOwn(presets, name) ? withoutPrototype<Preset>(Object.entries(presets[name as PresetName])) : undefined
 }

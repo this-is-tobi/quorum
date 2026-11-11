@@ -250,7 +250,8 @@ describe('resolveConfig', () => {
     expect(isResolvedConfig({ ...config })).toBe(false)
     expect(Object.isFrozen(config) && Object.isFrozen(config.providers) && Object.isFrozen(config.providers.local) && Object.isFrozen(config.profiles)).toBe(true)
     expect(Object.isFrozen(headers)).toBe(false)
-    expect(resolveConfig(config, { env: { QUORUM_RESEARCH_MODEL: 'other' } })).toBe(config)
+    // An environment that would refuse the resolution if it were read.
+    expect(resolveConfig(config, { env: { QUORUM_PROFILES: 'Bad Id' } })).toBe(config)
   })
 
   it('repeats no value in an issue or a warning', () => {

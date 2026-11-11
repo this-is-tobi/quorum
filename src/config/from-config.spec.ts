@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
-import type { Quorum } from '../core/types.ts'
+import type { Quorum, QuorumEvent } from '../core/types.ts'
 import { jsonReply, sent } from '../testing/http.ts'
 import { fromConfig } from './from-config.ts'
 import { resolveConfig } from './resolve.ts'
@@ -83,6 +83,15 @@ describe('fromConfig', () => {
     }
     const voter = { id: 'voter', model: 'mistral-small-latest' }
     expect(result.meta.profiles.security.providers).toEqual({ research: { id: 'default', model: 'qwen' }, lenses: { reachability: voter, impact: voter, defenses: voter } })
+  })
+
+  it('hands the events of a review to options.events, the run first and its end last', async () => {
+    stubReview()
+    const events: QuorumEvent[] = []
+    await (await fromConfig({}, { env: { QUORUM_RESEARCH_MODEL: 'qwen' }, events: event => events.push(event) })).review({ diff })
+    expect(events[0]).toMatchObject({ type: 'run:start', profiles: ['security'], providers: { security: { research: { id: 'default', model: 'qwen' } } } })
+    expect(events.at(-1)).toMatchObject({ type: 'run:end', kept: 1 })
+    expect(events.filter(event => event.type === 'call')).toHaveLength(4)
   })
 
   it('resolves a ConfigInput with process.env when no environment is given', async () => {
