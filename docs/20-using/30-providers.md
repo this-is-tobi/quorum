@@ -125,13 +125,14 @@ A provider built from a preset or a protocol is checked first for the problems b
 | `id` | `string` | Required | Names the provider in events, `meta` and its error messages |
 | `baseUrl` | `string` | Required | An `http://` or `https://` URL with a host, and no user name, password, query or fragment. Requests go to it, its trailing slashes removed, followed by the adapter's path and the `query` |
 | `model` | `string` | Required | The model every request names: in the body, or in the URL for `gemini` |
+| `contextTokens` | `number` | None: requests are not checked | The model's context window in tokens, prompt and reply together. A request that may not fit it is refused before it is sent: [The size of a request](#the-size-of-a-request) |
 | `apiKey` | `string` | None | Sent as `auth` says, and nowhere else. Without it, or with an empty one, no key header is sent |
 | `auth` | `'bearer' \| 'x-api-key' \| 'none' \| { header, prefix? }` | The adapter's | How the key is sent: [The key header](#the-key-header) |
 | `headers` | `Record<string, string>` | None | Sent with every request, names lower-cased. They cannot replace `content-type`, `content-length`, `host`, the key header, or `anthropic`'s `anthropic-version`. Their values are redacted from error messages, as the key is |
 | `query` | `Record<string, string>` | None | Added to every request URL. Not redacted from error messages: never put a key here. A value equal to `apiKey` is refused |
 | `extraBody` | `Record<string, unknown>` | None | JSON values deep-merged into the body last: objects merge key by key, anything else replaces. A top-level key cannot replace a field the adapter writes for the conversation, or set one that offers the model a tool: [The tool fields](#the-tool-fields) |
 | `temperature` | `number \| null` | The adapter's | Sent where the protocol takes it; `null` leaves it out, for a model that rejects it |
-| `maxTokens` | `number` | None, but `anthropic`'s 16000 | The most tokens the reply may hold, in the protocol's own field |
+| `maxTokens` | `number` | None, but `anthropic`'s 16000; the size guard keeps 16000 for the reply when it is unset | The most tokens the reply may hold, in the protocol's own field |
 | `systemPrompt` | `'native' \| 'inline'` | `'native'` | `native` sends the system text in the protocol's own place; `inline` puts it at the head of the first user message, joined by a blank line, for a chat template that rejects a system role |
 | `structuredOutput` | `'prompt' \| 'json' \| 'schema'` | The adapter's | How the reply's shape reaches the endpoint: [Structured output](#structured-output) |
 
@@ -191,6 +192,22 @@ Every request goes through one hardened path:
 - **At most 64 KiB of an error body is read**, enough for the 500 characters a message quotes.
 - **Server text in a message is redacted** of the key, of the base URL's path and of the values of `headers`, as written and trimmed, since `fetch` sends a header value trimmed; a value that is blank once trimmed redacts nothing. Every occurrence is redacted, and values that overlap in the text become one `[redacted]`. It is redacted once escaped ASCII is decoded, each value matched as written and with its own escapes decoded, then cut to 500 characters: 200 for model text and for a server error in a 2xx reply, 40 for a stop or finish reason. A server echoes the path in a 404, and a gateway's own credential goes in a header, so both are redacted too.
 
+### The size of a request
+
+Some endpoints cut a prompt that is too long for the model in silence and still answer 200, and a review of text the model never read is worse than none. So an adapter given `contextTokens` checks every request, research and vote alike, after shaping it and before sending it, and refuses one that may not fit:
+
+- **The text** is the system text and every message as the adapter sends them (`systemPrompt: 'inline'` counts the blank line that joins them), at one token per UTF-8 byte, and the reply schema's JSON once more, since a server may add it to the prompt.
+- **The chat template** takes 512 tokens, for what a server adds around the messages.
+- **The reply** takes `maxTokens`, else 16000. Only `anthropic` sends that number when `maxTokens` is unset; the other adapters send no limit then, so for them it is room the guard keeps, not a cap the server applies.
+
+A request is sent only when `text + 512 + reply <= contextTokens`. One token per byte is an upper bound for byte-level BPE and byte-fallback SentencePiece tokenizers, so the bound holds for any text, however it is padded. It costs room: code runs about three bytes to a token, so the guard accepts about a third of the diff that would really fit.
+
+A request over the bound is not sent. The call fails with a `ProviderError` of kind `too-large`, which is not retryable, and its message holds the provider id and numbers only, never the text or the URL: `<id>: may need <n> tokens, more than contextTokens (<c>): <t> for its text at one token per byte, 512 for the chat template and <r> for the reply`. The review records it as a gap: [`ProviderError`](#providererror).
+
+A `contextTokens` that leaves no room for a request, at most the reply budget and the 512 tokens, would refuse every request, so it is a configuration error when the adapter is called: `<id>.contextTokens: must be more than 16512, the 16000 tokens of the reply budget and 512 for the chat template`, the reply budget being `maxTokens` when it is set.
+
+The guard does not count the text that `extraBody` adds to a request, or what a server adds beyond the 512 tokens, such as an Ollama Modelfile's `TEMPLATE` or `SYSTEM`. It trusts the number it is given: a server that loads a smaller context than `contextTokens` can still cut a prompt in silence, which is why `ollama` is told the context it counts with, below.
+
 ### Configuration errors
 
 Each adapter checks its options when it is called, before any request, and throws one `ConfigError` with each problem, in this order. No message repeats a value:
@@ -221,16 +238,19 @@ Each adapter checks its options when it is called, before any request, and throw
 | `<id>.extraBody.<key>` | `offers the model a tool, which quorum never does` |
 | `<id>.temperature` | `must be a finite number, or null to leave it out` |
 | `<id>.maxTokens` | `must be a whole number of at least 1` |
+| `<id>.contextTokens` | `must be a whole number of at least 1` |
+| `<id>.contextTokens` | `must be more than <n>, the <r> tokens of the reply budget and 512 for the chat template` |
 | `<id>.systemPrompt` | `must be native or inline` |
 | `<id>.structuredOutput` | `must be prompt, json or schema` |
 | `<id>.structuredOutput` | `must be prompt or schema` |
 | `<id>.maxTokensField` | `must be max_tokens or max_completion_tokens` |
 | `<id>.query.<name>` | `would carry a key in the URL: set apiKey instead` |
 | `<id>.model` | `must be a Gemini model id, such as gemini-3.8-flash` |
+| `<id>.extraBody.options.<key>` | `is set from contextTokens: set contextTokens instead` |
 
 `headers` and `query` must be plain objects, an object literal or one with no prototype: a `Headers` or a `Map` is refused with `must map names to strings`, since its entries are not its own fields. A header name that repeats an earlier one in another letter case is refused at the later one, since one request cannot send both.
 
-`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, and `model` and a `key` query parameter by `gemini` only.
+`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, `model` and a `key` query parameter by `gemini` only, and `options.num_ctx` in `extraBody` by `ollama` only. `must be more than <n>, ...` is checked against a valid `maxTokens` only, with `<r>` its value, else 16000, and `<n>` that and 512.
 
 A header name, an `extraBody` key or a `query` name is printed in a path only when it is a safe name, at most 64 ASCII letters, digits, `_`, `$` and `-`. Any other prints as `*`, since a secret pasted as a name would otherwise show.
 
@@ -329,6 +349,7 @@ For Ollama's native chat API, on a local server or Ollama's cloud, `https://olla
 
 - **`truncate: false` keeps a prompt whole.** A prompt past the model's context is then a 400, `request (N tokens) exceeds the available context size (M tokens), try increasing it`, instead of its oldest messages dropped in silence. It needs Ollama 0.12.6 or later; an older server ignores the field and drops them.
 - **`shift: false` keeps it whole as the reply is written.** A reply that fills the model's context then stops, as a truncation, instead of part of the prompt dropped so the reply can go on. It needs the same versions, and a server that loaded the model with context shift on loads it again, as it does each time a client asks for the other setting.
+- **`num_ctx` from `contextTokens`.** The adapter sends `options.num_ctx`, so the server loads the context the size guard counts with; a larger value than the model's own maximum is cut to it, so keep `contextTokens` at most what `ollama show <model>` reports. `extraBody` cannot set `options.num_ctx`, in any letter case.
 - **The key goes as `Authorization: Bearer <key>`**, only when one is set: a local server needs none.
 - **No `think` field.** A thinking model thinks as it does by default, and its thinking comes back apart, in `message.thinking`, which the adapter ignores.
 
@@ -336,9 +357,9 @@ The body of every request holds, in this order:
 
 - `model` and `messages`: the request's messages, with the system text first as a `system` message, or inline at the head of the first user message;
 - `stream: false`, `truncate: false` and `shift: false`;
-- `options`, left out when it would be empty: `temperature`, unless it is `null`, and `num_predict`, when `maxTokens` is set;
+- `options`, left out when it would be empty: `temperature`, unless it is `null`, `num_predict`, when `maxTokens` is set, and `num_ctx`, when `contextTokens` is set;
 - `format`: `'json'` in `json` mode, `<output.schema>` in `schema` mode;
-- then `extraBody`, merged: `{ options: { num_ctx: 32768 } }` goes beside the temperature. It cannot replace `model`, `messages`, `stream`, `truncate` or `shift`.
+- then `extraBody`, merged: `{ options: { seed: 7 } }` goes beside the temperature. It cannot replace `model`, `messages`, `stream`, `truncate` or `shift`, or set `options.num_ctx`, which `contextTokens` sets.
 
 A reply succeeds with `done: true`, the `done_reason` `stop` and a string `message.content`. The text is `message.content`, as it came: a `<think>` block left in it, by a model or a template Ollama cannot split, is for the core's reply parser to drop. `model` is the one the reply names, or the configured one; `usage` is read from `prompt_eval_count` and `eval_count`. A status outside 2xx is an `http` error that quotes Ollama's `{ "error": "<message>" }` body.
 
@@ -368,7 +389,7 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 | `refusal` | The model refused, or a filter stopped the reply or the prompt: each adapter's reply table names its messages |
 | `truncated` | The token limit or the model's context cut the reply off: `reply was cut off by the token limit`, `anthropic`'s `reply was cut off: the context window is full`, or `ollama`'s `reply was cut off by the token limit or the context` |
 | `invalid-response` | The body is not JSON (`response body is not JSON`), is over 16 MiB (`reply body is over 16 MiB`) or is not an object (`reply is not a JSON object`), for every adapter. Or the reply holds an error, has not finished, ended early or holds no text, as each adapter's reply table words it |
-| `too-large` | A request may not fit the model's context, and the provider refused it before sending it. Not retryable. The review records it as a `request-too-large` gap, on research and on a vote alike, and never fails on it |
+| `too-large` | A request may not fit the model's context, and the provider refused it before sending it: `<id>: may need <n> tokens, more than contextTokens (<c>): ...`, with the numbers [The size of a request](#the-size-of-a-request) explains. Not retryable. The review records it as a `request-too-large` gap, on research and on a vote alike, and never fails on it |
 | `timeout`, `process`, `unsupported` | Never: these are for other providers |
 
 The core raises one more itself: a provider whose reply has no string `text` fails that call with `<id>: returned no reply text`, of kind `invalid-response`.

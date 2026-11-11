@@ -4,6 +4,7 @@ import { shapeMessages } from './messages.ts'
 import { isRecord, mergeBody, prepareHttp } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { endedEarly, joinedText, MAX_MODEL_TEXT, replyFailure, tokenUsage } from './reply.ts'
+import { checkFits, contextBudget } from './size.ts'
 
 /** The options of an OpenAI-compatible provider. */
 export interface OpenAICompatibleOptions extends HttpProviderOptions {
@@ -125,20 +126,23 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
 
 /**
  * A provider for any OpenAI-compatible `/chat/completions` endpoint. The key, when there is one, travels
- * only in the header `auth` names, `Authorization: Bearer` by default (invariant I1).
+ * only in the header `auth` names, `Authorization: Bearer` by default (invariant I1). It refuses, before
+ * any request, a request that may not fit `contextTokens`.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
-  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, maxTokensField = 'max_tokens', systemPrompt = 'native', structuredOutput = 'json' } = options
+  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, maxTokensField = 'max_tokens', systemPrompt = 'native', structuredOutput = 'json' } = options
   const fieldIssues = MAX_TOKENS_FIELDS.has(maxTokensField) ? [] : [{ path: `${id}.maxTokensField`, message: 'must be max_tokens or max_completion_tokens' }]
   const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/chat/completions', fieldIssues)
+  const budget = contextBudget(contextTokens, maxTokens)
 
   return {
     id,
     model,
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
+      checkFits(id, { system, messages }, request.output, budget)
       // JSON.stringify drops the undefined fields: no response_format for `prompt`, no temperature for null, no limit unless set.
       const reply = await postJson<unknown>({
         providerId: id,
