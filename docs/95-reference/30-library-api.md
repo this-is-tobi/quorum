@@ -317,6 +317,7 @@ A provider's key is the first of:
 | Path | Message | Cause |
 | --- | --- | --- |
 | The path as given | The file's own problem, such as `does not exist`, `is not valid YAML at line 2, column 1 (DUPLICATE_KEY)`, `has a syntax error` or `failed to load (Error)` | `loadConfig` could not read the file, or it is not valid |
+| `QUORUM_CONFIG` | `must be an absolute path` | `loadConfig` read a relative `QUORUM_CONFIG`; `configPath` may be relative to `cwd` |
 | `config` | `must be an object` | A `ConfigInput` that is not a plain object |
 | `config` | `could not be read (Error)` | A getter or a proxy of the config threw, one of a provider object's included: each provider object is read only here, and only the error's name is kept, `an error` when that is not a plain class name |
 | `config` | `holds more than 10000 values` | A `ConfigInput` too large to walk |

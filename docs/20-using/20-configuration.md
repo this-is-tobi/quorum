@@ -198,6 +198,7 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | Message | Cause |
 | --- | --- |
 | `--config: must name a file` | `--config=`, with no path |
+| `QUORUM_CONFIG: must be an absolute path` | A relative `QUORUM_CONFIG`: set once, it would resolve inside whatever checkout quorum runs in. `--config` may be relative |
 | `--profile: must be a profile id matching ^[a-z][a-z0-9_-]*$` | An empty `--profile`, or an id of another form |
 | `--profile: names a profile more than once` | `-p security -p security` |
 | `--profile: unknown profile "nmaing" (did you mean "naming"?)`, or `unknown profile "nope": the profiles are security` | An id that the config neither defines nor builds in. `QUORUM_PROFILES` has the same two problems under its own name, and `QUORUM_PROFILES: must list profile ids separated by commas, each matching ^[a-z][a-z0-9_-]*$` for an empty id or an id of another form |
