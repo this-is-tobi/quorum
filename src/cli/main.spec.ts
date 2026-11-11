@@ -1,10 +1,12 @@
+import { EventEmitter } from 'node:events'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import packageJson from '../../package.json' with { type: 'json' }
 import type { QuorumResult, Verdict } from '../core/types.ts'
 import { chatReply, sent, stubChat, stubFetch, textReply } from '../testing/http.ts'
-import { EXIT, exitCodeFor, runCli } from './main.ts'
+import { EXIT, exitCodeFor, interruptSignal, runCli } from './main.ts'
 import type { CliIO } from './main.ts'
 
 /** A directory of its own for the config files and the working directories of these tests. */
@@ -53,7 +55,7 @@ const TWO_YAML = [
   '',
 ].join('\n')
 
-function harness(options: { argv?: string[], cwd?: string, stdin?: string, isTTY?: boolean, env?: Record<string, string> } = {}): { io: CliIO, stdout: () => string, stderr: () => string } {
+function harness(options: { argv?: string[], cwd?: string, stdin?: string, isTTY?: boolean, env?: Record<string, string>, signal?: AbortSignal } = {}): { io: CliIO, stdout: () => string, stderr: () => string } {
   const out: string[] = []
   const err: string[] = []
   async function* chunks(): AsyncGenerator<string> {
@@ -66,9 +68,24 @@ function harness(options: { argv?: string[], cwd?: string, stdin?: string, isTTY
     stdin: Object.assign(chunks(), { isTTY: options.isTTY ?? false }),
     stdout: { write: text => out.push(text) },
     stderr: { write: text => err.push(text) },
+    signal: options.signal,
   }
   return { io, stdout: () => out.join(''), stderr: () => err.join('') }
 }
+
+/** The usage text, which `--help` prints on stdout and every usage error prints on stderr. */
+const USAGE = [
+  'Usage: quorum [options] [diff-file]',
+  '       git diff | quorum [options]',
+  '',
+  'Options:',
+  '  -c, --config <path>     Read this config file, over QUORUM_CONFIG',
+  '  -p, --profile <id>      Run only this profile; repeat it to run several',
+  '      --allow-incomplete  Exit 0 instead of 4 when the review is incomplete',
+  '  -h, --help              Print this help and exit',
+  '  -v, --version           Print the version and exit',
+  '',
+].join('\n')
 
 /** Every hidden class the sanitizer knows, to check that the CLI writes none of them. */
 const ANY_HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}]/u
@@ -81,7 +98,7 @@ describe('runCli', () => {
     const fetchMock = stubChat()
     const { io, stderr } = harness({ isTTY: true })
     expect(await runCli(io)).toBe(EXIT.usage)
-    expect(stderr()).toContain('Usage:')
+    expect(stderr()).toBe(`Error: no diff given\n${USAGE}`)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -192,6 +209,29 @@ describe('runCli', () => {
     expect(result.discarded).toEqual([])
     expect(result.unreviewed).toHaveLength(1)
     expect(stderr()).toContain('1 unreviewed')
+  })
+
+  it('turns 4 into 0 with --allow-incomplete, and keeps the result', async () => {
+    stubChat(JSON.stringify({ findings: [FINDING] })).mockRejectedValue(new TypeError('fetch failed'))
+    const { io, stdout } = harness({ argv: ['--allow-incomplete'], env: MODEL, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(JSON.parse(stdout()).unreviewed).toHaveLength(1)
+  })
+
+  it('still exits 1 with --allow-incomplete when a gating high finding is kept', async () => {
+    stubChat(JSON.stringify({ findings: [FINDING, SECOND_FINDING] }), vote(true), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
+    const { io } = harness({ argv: ['--allow-incomplete'], env: MODEL, stdin: TWO_LINE_DIFF })
+    expect(await runCli(io)).toBe(EXIT.finding)
+  })
+
+  it('exits 0 when only an advisory profile\'s review is incomplete', async () => {
+    write('advisory.yaml', 'profiles:\n  security: {gating: false}\n')
+    stubChat(JSON.stringify({ findings: [FINDING] })).mockRejectedValue(new TypeError('fetch failed'))
+    const { io, stdout } = harness({ cwd: dir, env: { ...MODEL, QUORUM_CONFIG: 'advisory.yaml' }, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const result = JSON.parse(stdout())
+    expect(result.unreviewed).toHaveLength(1)
+    expect(result.meta.profiles.security.gating).toBe(false)
   })
 
   it('exits 4 when the research reply lists only unusable findings', async () => {
@@ -324,23 +364,177 @@ describe('runCli', () => {
 
 describe('exitCodeFor', () => {
   const kept = (profile: string, confidence: Verdict['confidence']): Verdict => ({ profile, confidence }) as Verdict
-  const result = (verdicts: Verdict[], gating: Record<string, boolean>, gaps = 0): QuorumResult => ({
+  const result = (verdicts: Verdict[], gating: Record<string, boolean>, gaps: ReadonlyArray<string | undefined> = [], unreviewed: Verdict[] = []): QuorumResult => ({
     kept: verdicts,
     discarded: [],
-    unreviewed: [],
-    meta: { profiles: Object.fromEntries(Object.entries(gating).map(([id, value]) => [id, { gating: value }])), incomplete: Array.from({ length: gaps }, () => ({})) },
+    unreviewed,
+    meta: {
+      profiles: Object.fromEntries(Object.entries(gating).map(([id, value]) => [id, { gating: value }])),
+      incomplete: gaps.map(profile => profile === undefined ? {} : { profile }),
+    },
   }) as unknown as QuorumResult
 
   it('exits 1 only for a kept high finding of a gating profile', () => {
     expect(exitCodeFor(result([kept('style', 'high')], { style: false }))).toBe(EXIT.ok)
-    expect(exitCodeFor(result([kept('style', 'high')], { style: false }, 1))).toBe(EXIT.incomplete)
+    expect(exitCodeFor(result([kept('style', 'high')], { style: false }, [undefined]))).toBe(EXIT.incomplete)
     expect(exitCodeFor(result([kept('style', 'high'), kept('security', 'medium')], { style: false, security: true }))).toBe(EXIT.ok)
-    expect(exitCodeFor(result([kept('style', 'high'), kept('security', 'high')], { style: false, security: true }, 1))).toBe(EXIT.finding)
+    expect(exitCodeFor(result([kept('style', 'high'), kept('security', 'high')], { style: false, security: true }, [undefined]))).toBe(EXIT.finding)
   })
 
   it('counts a profile missing from meta as gating, so a gap in the result never hides a finding', () => {
     expect(exitCodeFor(result([kept('security', 'high')], {}))).toBe(EXIT.finding)
     expect(exitCodeFor({ ...result([kept('security', 'high')], {}), meta: { profiles: { security: {} }, incomplete: [] } } as unknown as QuorumResult)).toBe(EXIT.finding)
+  })
+
+  it('exits 4 for a gap of a gating profile, and 0 for one of an advisory profile', () => {
+    const gating = { security: true, style: false }
+    expect(exitCodeFor(result([], gating, ['security']))).toBe(EXIT.incomplete)
+    expect(exitCodeFor(result([], gating, ['style']))).toBe(EXIT.ok)
+    expect(exitCodeFor(result([], gating, [], [kept('style', undefined)]))).toBe(EXIT.ok)
+    expect(exitCodeFor(result([], gating, [], [kept('security', undefined)]))).toBe(EXIT.incomplete)
+    expect(exitCodeFor(result([], {}, ['team']))).toBe(EXIT.incomplete)
+  })
+
+  it('turns 4 into 0 with allowIncomplete, and never 1', () => {
+    expect(exitCodeFor(result([], { security: true }, ['security']), { allowIncomplete: true })).toBe(EXIT.ok)
+    expect(exitCodeFor(result([kept('security', 'high')], { security: true }, ['security']), { allowIncomplete: true })).toBe(EXIT.finding)
+  })
+})
+
+describe('flags', () => {
+  it('prints the help on stdout and exits 0, reading neither the diff nor a config', async () => {
+    for (const flag of ['--help', '-h']) {
+      const fetchMock = stubChat()
+      const { io, stdout, stderr } = harness({ argv: [flag, 'ignored.diff'], isTTY: true })
+      expect(await runCli(io)).toBe(EXIT.ok)
+      expect(stdout()).toBe(USAGE)
+      expect(stderr()).toBe('')
+      expect(fetchMock).not.toHaveBeenCalled()
+    }
+  })
+
+  it('prints the version on stdout and exits 0', async () => {
+    const { io, stdout } = harness({ argv: ['--version'] })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stdout()).toBe(`quorum ${packageJson.version}\n`)
+  })
+
+  it('reads a diff file named like a flag after --', async () => {
+    const { io, stderr } = harness({ argv: ['--', '--help'], env: MODEL })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toMatch(/^Error: ENOENT: no such file or directory, open '.*--help'\nUsage:/)
+  })
+
+  it('exits 2 for an unknown flag, naming it and never a value given with it', async () => {
+    const { io, stdout, stderr } = harness({ argv: ['--nope=sk-SECRET'], env: MODEL, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toBe(`Error: Unknown option '--nope'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "--nope"\n${USAGE}`)
+    expect(`${stdout()}${stderr()}`).not.toContain('SECRET')
+  })
+
+  it('keeps a usage error of several lines to one inert line each', async () => {
+    const { io, stderr } = harness({ argv: ['--config', '--help'], env: MODEL, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toBe(`Error: Option '--config' argument is ambiguous.\nDid you forget to specify the option argument for '--config'?\nTo specify an option argument starting with a dash use '--config=-XYZ'.\n${USAGE}`)
+  })
+
+  it('exits 2 for a second diff argument', async () => {
+    const { io, stderr } = harness({ argv: ['a.diff', 'b.diff'], env: MODEL })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toBe(`Error: unexpected arguments: b.diff\n${USAGE}`)
+  })
+
+  it('exits 2 for an empty --config instead of reading the working directory', async () => {
+    const { io, stderr } = harness({ argv: ['--config='], cwd: dir, env: MODEL, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toBe(`Error: --config: must name a file\n${USAGE}`)
+  })
+
+  it('reads the file --config names, over the one QUORUM_CONFIG names', async () => {
+    write('flag.yaml', 'providers:\n  flag: {protocol: openai-compatible, baseUrl: "https://flag.example/v1", model: f}\n')
+    const fetchMock = stubChat('{"findings":[]}')
+    const { io } = harness({ argv: ['-c', 'flag.yaml'], cwd: dir, env: { QUORUM_CONFIG: 'team.yaml' }, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(sent(fetchMock).url).toBe('https://flag.example/v1/chat/completions')
+  })
+
+  it('runs only the profiles --profile names, over QUORUM_PROFILES', async () => {
+    write('two.yaml', TWO_YAML)
+    stubFetch({ choices: [{ message: { content: '{"findings":[]}' } }] })
+    const team = harness({ argv: ['--profile', 'team'], cwd: dir, env: { QUORUM_CONFIG: 'two.yaml' }, stdin: DIFF })
+    expect(await runCli(team.io)).toBe(EXIT.ok)
+    expect(Object.keys(JSON.parse(team.stdout()).meta.profiles)).toEqual(['team'])
+    expect(team.stderr()).toContain('\nPanel will use grounded (m @ http://localhost:11434), significant (v @ https://v.example)\n')
+    const security = harness({ argv: ['-p', 'security'], cwd: dir, env: { QUORUM_CONFIG: 'two.yaml', QUORUM_PROFILES: 'team' }, stdin: DIFF })
+    expect(await runCli(security.io)).toBe(EXIT.ok)
+    expect(Object.keys(JSON.parse(security.stdout()).meta.profiles)).toEqual(['security'])
+  })
+
+  it.each<[string[], string]>([
+    [['--profile', 'security', '--profile', 'security'], 'Error: --profile: names a profile more than once\n'],
+    [['--profile', 'secrity'], 'Error: --profile: unknown profile "secrity" (did you mean "security"?)\n'],
+    [['-p', 'Security'], 'Error: --profile: must be a profile id matching ^[a-z][a-z0-9_-]*$\n'],
+  ])('exits 2 for --profile %j, before any request', async (argv, error) => {
+    const fetchMock = stubChat()
+    const { io, stderr } = harness({ argv, env: MODEL, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toBe(error)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('interrupts', () => {
+  it('exits 130 when its signal aborts the review, and writes no result', async () => {
+    const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF, signal: controller.signal })
+    const exit = runCli(io)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    controller.abort()
+    expect(await exit).toBe(130)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe('Research (m @ http://localhost:11434)...\nPanel will use m @ http://localhost:11434\ninterrupted\n')
+  })
+
+  it('exits 130 when its signal aborted before the review started, and calls no model', async () => {
+    const fetchMock = stubChat()
+    const controller = new AbortController()
+    controller.abort()
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF, signal: controller.signal })
+    expect(await runCli(io)).toBe(EXIT.interrupted)
+    expect(stdout()).toBe('')
+    expect(stderr()).toMatch(/\ninterrupted\n$/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('exits 3, never 130, when the review rejects with an AbortError its own signal did not raise', async () => {
+    write('rejects.mjs', 'export default { providers: { mine: { model: \'m\', complete: () => Promise.reject(undefined) } } }\n')
+    const controller = new AbortController()
+    const { io, stdout, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: 'rejects.mjs' }, stdin: DIFF, signal: controller.signal })
+    expect(await runCli(io)).toBe(EXIT.runtime)
+    expect(controller.signal.aborted).toBe(false)
+    expect(stdout()).toBe('')
+    expect(stderr()).toMatch(/\nError: .+\n$/)
+    expect(stderr()).not.toContain('interrupted')
+  })
+})
+
+describe('interruptSignal', () => {
+  it('aborts on the first SIGINT or SIGTERM, and exits 130 on the next', () => {
+    for (const [first, second] of [['SIGINT', 'SIGTERM'], ['SIGTERM', 'SIGINT'], ['SIGINT', 'SIGINT']]) {
+      const source = new EventEmitter()
+      const exit = vi.fn()
+      const signal = interruptSignal(source, exit)
+      expect(signal.aborted).toBe(false)
+      source.emit(first)
+      expect(signal.aborted).toBe(true)
+      expect(exit).not.toHaveBeenCalled()
+      source.emit(second)
+      expect(exit).toHaveBeenCalledExactlyOnceWith(130)
+    }
   })
 })
 

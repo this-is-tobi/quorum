@@ -1,10 +1,17 @@
 # The CLI
 
-The `quorum` command reviews one diff with the profiles its config selects, the security profile alone by default, prints the result as JSON and exits with a code that says what to do with it. This page is its whole surface: the invocation, what it reads, what goes to stdout and stderr, every exit code, and how a CI job should read them. Its settings are a config file that `QUORUM_CONFIG` names and the environment variables, on [Configuration](./20-configuration.md).
+The `quorum` command reviews one diff with the profiles its config selects, the security profile alone by default, prints the result as JSON and exits with a code that says what to do with it. This page is its whole surface: the invocation, what it reads, what goes to stdout and stderr, every exit code, and how a CI job should read them. Its settings are a config file that `--config` or `QUORUM_CONFIG` names and the environment variables, on [Configuration](./20-configuration.md).
 
 ```text
-Usage: quorum <diff-file>
-       git diff | quorum
+Usage: quorum [options] [diff-file]
+       git diff | quorum [options]
+
+Options:
+  -c, --config <path>     Read this config file, over QUORUM_CONFIG
+  -p, --profile <id>      Run only this profile; repeat it to run several
+      --allow-incomplete  Exit 0 instead of 4 when the review is incomplete
+  -h, --help              Print this help and exit
+  -v, --version           Print the version and exit
 ```
 
 ```bash
@@ -17,7 +24,19 @@ git diff origin/main...HEAD | quorum
 - **One argument** is the path of a diff file, read as UTF-8.
 - **No argument** reads the diff from stdin, until it closes. When stdin is a terminal, quorum prints `Error: no diff given` and the usage, and exits `2`, instead of waiting for input.
 - **A second argument** is an error: `Error: unexpected arguments: …` names the extra ones, then the usage, exit `2`.
-- **There are no command-line flags.** Every argument is a file path, so `quorum --help` looks for a file named `--help`, prints `Error: ENOENT: no such file or directory, open '--help'` and the usage, and exits `2`. A file that cannot be read fails the same way.
+- **A file that cannot be read** is an error: `Error: ENOENT: no such file or directory, open '…'`, then the usage, exit `2`.
+
+The flags go before or after the file:
+
+| Flag | Effect |
+| --- | --- |
+| `-c, --config <path>` | Read this config file, over `QUORUM_CONFIG`; a relative path is read from the working directory. An empty path is a usage error, so the working directory is never read as a config |
+| `-p, --profile <id>` | Run only this profile, over `QUORUM_PROFILES`. It takes one id, and repeats to run several: `-p security -p team`. An id that is repeated, malformed or unknown is a usage error before any model call |
+| `--allow-incomplete` | Exit `0` instead of `4` when a gating profile's review is incomplete. A kept `high` finding of a gating profile still exits `1` |
+| `-h, --help` | Print the usage on stdout and exit `0`, reading neither a diff nor a config. It wins over `--version` |
+| `-v, --version` | Print `quorum <version>` on stdout and exit `0`, reading neither a diff nor a config |
+
+A value that starts with `-` takes the form `--flag=value`, as `--config=-odd.yaml`: `--config -odd.yaml` is an error, since quorum cannot tell the value from a flag. `--` ends the flags, so `quorum -- --help` reads a file named `--help`. An unknown flag, a flag without its value, a value given to a flag that takes none, and an empty `--config` are usage errors: `Error:` and what is wrong (`Unknown option '--nope'`), then the usage, exit `2`. The message names the flag and never the value given with it.
 
 ## What it reads
 
@@ -32,7 +51,7 @@ A blank diff, empty or only whitespace, is reviewed without calling a model.
 
 ## stdout and stderr
 
-**stdout carries only the JSON result**, indented by two spaces and followed by a newline, written once the review ends. A script reads it whole; [The JSON result](../95-reference/20-json-result.md) has every field. A hidden character in a string is written as a `\uXXXX` escape, which a JSON parser reads back: [Output handling](../30-security/30-output-handling.md#what-the-cli-writes). When the run exits `2` or `3`, nothing was reviewed and stdout stays empty.
+**stdout carries only the JSON result**, indented by two spaces and followed by a newline, written once the review ends. A script reads it whole; [The JSON result](../95-reference/20-json-result.md) has every field. A hidden character in a string is written as a `\uXXXX` escape, which a JSON parser reads back: [Output handling](../30-security/30-output-handling.md#what-the-cli-writes). When the run exits `2`, `3` or `130`, nothing was reviewed and stdout stays empty.
 
 **stderr carries everything else**, in this order: the `warning:` lines, the banner, the progress lines while the review runs, and an `Error:` line when it fails. Every line is inert: a hidden character is shown as `<U+XXXX>`.
 
@@ -60,13 +79,14 @@ When several profiles run, the `invalid finding dropped`, `incomplete` and `cand
 
 | Code | Meaning |
 | --- | --- |
-| `0` | The review is complete, and no gating profile kept a `high` finding: nothing was found, every finding was discarded, or findings were kept at `medium` at most. A blank diff exits `0` without calling a model, once the configuration is valid |
+| `0` | The review is complete, and no gating profile kept a `high` finding: nothing was found, every finding was discarded, or findings were kept at `medium` at most. What a profile with `gating: false` finds, and its gaps, change no code. A blank diff exits `0` without calling a model, once the configuration is valid. `--allow-incomplete` also exits `0` where `4` would be the code |
 | `1` | A gating profile kept at least one finding at `high` confidence. The security profile gates, and with its three lenses `high` means all three kept the finding |
-| `2` | A usage or configuration error, before any model call: no diff given on a terminal, more than one argument, a diff file that cannot be read, a research model that is not set, a voter on another endpoint without a model of its own, a base URL that is not an `http://` or `https://` URL with a host, or a key with a character an HTTP header cannot carry. The configuration is checked before the diff is reviewed, so a blank diff meets these errors too. [Configuration errors](./20-configuration.md#configuration-errors) lists the messages |
+| `2` | A usage or configuration error, before any model call: an unknown flag, a flag without its value, an empty `--config`, a `--profile` that is repeated, malformed or unknown, no diff given on a terminal, more than one argument, a diff file that cannot be read, a research model that is not set, a voter on another endpoint without a model of its own, a base URL that is not an `http://` or `https://` URL with a host, or a key with a character an HTTP header cannot carry. The configuration is checked before the diff is reviewed, so a blank diff meets these errors too. [Configuration errors](./20-configuration.md#configuration-errors) lists the messages |
 | `3` | The research call failed: its endpoint is unreachable, answers with an HTTP error, refuses, stops on its content filter, is cut off by its token limit, or sends a body or a reply quorum cannot use. Or the run stopped with nothing left to wait for, as a provider object whose call never settles leaves it: `Error: the run stopped without a result`, and never `0`. A failing voter does not fail the run: see `4` |
-| `4` | The review is incomplete, and no gating profile kept a `high` finding: a finding is `unreviewed` because a failed vote could still have kept it, or `meta.incomplete` holds a gap, which is a finding the harness could not read (`finding-unreadable`), a research reply whose findings were all unusable (`research-unusable`), findings beyond the cap of 50 (`findings-capped`), or a kept finding whose failed votes could have raised it to a higher level (`vote-failed`) |
+| `4` | The review of a gating profile is incomplete, and no gating profile kept a `high` finding: a finding is `unreviewed` because a failed vote could still have kept it, or `meta.incomplete` holds a gap, which is a finding the harness could not read (`finding-unreadable`), a research reply whose findings were all unusable (`research-unusable`), findings beyond the cap of 50 (`findings-capped`), or a kept finding whose failed votes could have raised it to a higher level (`vote-failed`). A gap of a profile with `gating: false` is in the result and on stderr, and changes no code. `--allow-incomplete` turns this `4` into `0` |
+| `130` | The CLI received SIGINT or SIGTERM and stopped the review: nothing is written on stdout, and `interrupted` on stderr. A second signal exits `130` at once, without waiting for a provider that ignores the first |
 
-`1` wins over `4`: a kept `high` finding exits `1` even when the review is also incomplete. `2` and `3` end the run before there is a result.
+`2`, `3` and `130` end the run before there is a result. After them `1` wins over `4`: a kept `high` finding of a gating profile exits `1` even when the review is also incomplete. `--allow-incomplete` turns `4` into `0` and never `1`. A run that stops with nothing left to wait for exits `3` (`Error: the run stopped without a result`), never `0`; `130` is decided from the CLI's own signal alone, so an abort error the CLI did not raise exits `3`.
 
 A voter that fails, because its endpoint is down or its reply is unusable, does not end the run. Its vote counts as a reject, and its error is recorded in the vote's `error`. What follows depends on what that vote could have changed: the finding is `unreviewed` when the vote could have kept it, kept with a `vote-failed` gap when it could have raised its level, and unchanged otherwise. Two rejects and one failure is a decided discard under the security profile, so such a run can still exit `0`. [Failed votes](./50-lenses-and-policy.md#failed-votes) has the arithmetic.
 
@@ -96,7 +116,8 @@ Every code but `0` fails a CI step, which is right for each of them; they differ
 | `1` | Fail, and point at the kept findings in the result |
 | `2` | Fail: the job's command or variables are wrong, and nothing was reviewed |
 | `3` | Fail: the research endpoint failed, and nothing was reviewed; running it again may pass |
-| `4` | Fail: the review has a gap the harness detected; run it again, or read the unreviewed findings and `meta.incomplete` |
+| `4` | Fail: a gating profile's review has a gap the harness detected; run it again, or read the unreviewed findings and `meta.incomplete` |
+| `130` | Fail: the job was cancelled or interrupted, and nothing was reviewed |
 
 A step that keeps the result and says which case it hit:
 

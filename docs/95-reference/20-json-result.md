@@ -62,7 +62,7 @@ A usage count is valid when it is a finite number of at least 0. `meta.usage` an
 | --- | --- | --- |
 | `providers` | object | `research`, the `{ id, model }` of the research provider, then `lenses`, the `{ id, model }` of each lens's provider, keyed by lens id |
 | `policy` | object | `high`, `medium` and `low`: the kept votes each level needed, `null` for a level that is off |
-| `gating` | boolean | Whether its kept `high` findings set exit code `1` |
+| `gating` | boolean | Whether its kept `high` findings set exit code `1`, and its gaps exit code `4` |
 | `invalidFindings` | number | How many findings it dropped for citing code outside the diff |
 
 ### An incomplete entry
@@ -102,7 +102,7 @@ A detail names at most eight code points or patterns, then `and N more`. [Adviso
 | `research-unusable` | The reply lists findings, and not one of those read is usable: each was unreadable or cited code outside the diff | `2 finding(s) reported, none usable`, or, when the cap applied, `62 finding(s) reported, the first 50 read, none usable` |
 | `vote-failed` | A kept finding's failed votes, had they been keeps, would have raised it to a higher level | `"src/a.js":12 is kept at medium, but 1 failed vote(s) could have made it high`, the file written as a JSON string |
 
-Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4`, unless a gating profile kept a `high` finding.
+Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4` for a gap of a gating profile, unless a gating profile kept a `high` finding.
 
 ## An example
 

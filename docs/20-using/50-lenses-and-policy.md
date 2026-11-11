@@ -75,7 +75,7 @@ A vote fails when its call fails or its reply is unusable. It is recorded with i
 - **Unreviewed.** When the finding reaches no level, quorum counts its failed votes as if they had been keeps. If that would reach an enabled level, the outcome was never decided: the finding is `unreviewed`, neither kept nor cleared.
 - **Kept, with a gap.** When a kept finding's failed votes, counted as keeps, would reach a higher level than the one it earned, it stays kept at its level, and a `vote-failed` entry in `meta.incomplete` records that the gate between the two levels rested on a vote never cast.
 
-Both make the review incomplete: the CLI exits `4`, unless a gating profile kept a `high` finding. Under the security profile:
+Both make the review incomplete: for a gating profile, the CLI exits `4`, unless a gating profile kept a `high` finding. Under the security profile:
 
 | Kept | Rejected | Failed | Verdict |
 | --- | --- | --- | --- |
