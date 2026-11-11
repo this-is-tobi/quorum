@@ -304,8 +304,7 @@ export function applyRoleOverrides(
     } else if (isProvider(base)) {
       issues.push(...objectIssues('VOTER', voterVariables, roles.research))
     } else {
-      const unnamedProtocol = builtIn && !isSet(layer.research, 'preset') && !isSet(layer.research, 'protocol')
-      const derived = derivedVoter(base, layer.voter, voterVariables, unnamedProtocol)
+      const derived = derivedVoter(base, layer.voter, voterVariables, builtIn && !startsAfresh(researchVariables))
       issues.push(...derived.issues)
       result = { ...result, voter: derived.provider }
       voterRole = 'voter'
