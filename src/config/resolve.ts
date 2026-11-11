@@ -35,6 +35,8 @@ const DEFAULT_PROVIDER: ProviderSettings = { protocol: 'openai-compatible', base
 const NO_MODEL = 'no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one'
 /** The only variable names a message prints: a key pasted where a name belongs must never show. */
 const VARIABLE_NAME = /^[A-Z][A-Z0-9_]{0,63}$/
+const VOTER_KEY = 'QUORUM_VOTER_API_KEY'
+const VOTER_MODEL = 'QUORUM_VOTER_MODEL'
 const LOOPBACK_IPV4 = /^127(?:\.\d{1,3}){3}$/
 
 /** The configs this module resolved: a frozen copy is recognised by its identity, never by its shape. */
@@ -88,11 +90,11 @@ function unsetKey(provider: string, variable: string): ConfigIssue {
 interface KeyReading {
   /** Always an own field, so a polluted `Object.prototype` fills none. */
   readonly apiKey: string | undefined
-  readonly issues: ConfigIssue[]
-  readonly warnings: string[]
+  readonly issues: readonly ConfigIssue[]
+  readonly warnings: readonly string[]
 }
 
-const NO_KEY: KeyReading = { apiKey: undefined, issues: [], warnings: [] }
+const NO_KEY: KeyReading = Object.freeze({ apiKey: undefined, issues: Object.freeze([]), warnings: Object.freeze([]) })
 
 /** The key a variable holds, or the issue that it is not set. */
 function readVariable(name: string, variable: string, env: Env): KeyReading {
@@ -102,17 +104,19 @@ function readVariable(name: string, variable: string, env: Env): KeyReading {
 
 /**
  * The key of a spec that a profile uses: its own `apiKey`, else the variable `apiKeyEnv` names, else its
- * preset's own variable, which is read only while the base URL is the preset's endpoint (I1): at another
- * one it is not read, and the warning says so.
+ * preset's own variable, which is read only while the base URL is the preset's endpoint (I1) and `presetKey`
+ * allows it: at another endpoint it is not read, and the warning says so.
  */
-function readKey(name: string, fields: ProviderSettings, env: Env): KeyReading {
+function readKey(name: string, fields: ProviderSettings, env: Env, presetKey: boolean): KeyReading {
   if (fields.apiKey !== undefined) return { apiKey: fields.apiKey, issues: [], warnings: [] }
   if (fields.apiKeyEnv !== undefined) return readVariable(name, fields.apiKeyEnv, env)
   const preset = presetOf(fields.preset)
   const variable = preset?.apiKeyEnv
   if (preset === undefined || variable === undefined) return NO_KEY
-  if (atPresetOrigin(fields.preset, preset, baseUrlOf(fields))) return readVariable(name, variable, env)
-  return { apiKey: undefined, issues: [], warnings: [`${configPath(['providers', name, 'baseUrl'])}: is not the endpoint of the ${fields.preset} preset, so ${variable} is not sent: set apiKeyEnv to send a key`] }
+  const notSent = (reason: string, remedy: string): KeyReading => ({ apiKey: undefined, issues: [], warnings: [`${configPath(['providers', name, 'baseUrl'])}: ${reason}, so ${variable} is not sent: set ${remedy} to send a key`] })
+  if (!presetKey) return notSent('is not the endpoint of the research provider', VOTER_KEY)
+  if (!atPresetOrigin(fields.preset, preset, baseUrlOf(fields))) return notSent(`is not the endpoint of the ${fields.preset} preset`, 'apiKeyEnv')
+  return readVariable(name, variable, env)
 }
 
 /** The warnings of a key that is sent over plain http to a host other than this machine. */
@@ -130,11 +134,12 @@ interface CheckedSpec {
 
 /**
  * One provider's spec, checked by the builder. A spec in use gets its key first; one that is not is
- * checked without a key, and none of its variables is read.
+ * checked without a key, and none of its variables is read. `presetKey` is false for a provider that
+ * is never sent its preset's key variable.
  */
-function checkSpec(name: string, entry: ProviderSettings, inUse: boolean, env: Env): CheckedSpec {
+function checkSpec(name: string, entry: ProviderSettings, inUse: boolean, env: Env, presetKey: boolean): CheckedSpec {
   const fields = ownFields(entry)
-  const key = inUse ? readKey(name, fields, env) : NO_KEY
+  const key = inUse ? readKey(name, fields, env, presetKey) : NO_KEY
   const { apiKeyEnv: _apiKeyEnv, apiKey: _apiKey, ...rest } = fields
   // The builder refuses a spec with no model, and a spec it refuses is never kept.
   const spec = (key.apiKey === undefined ? rest : { ...rest, apiKey: key.apiKey }) as Omit<ProviderSpec, 'id'>
@@ -148,13 +153,8 @@ function checkSpec(name: string, entry: ProviderSettings, inUse: boolean, env: E
   return { spec, issues, warnings: [...key.warnings, ...cleartextWarnings(name, key.apiKey, baseUrlOf(fields))] }
 }
 
-/** The built-in default provider has no model: say what to set, not that a field of a provider nobody wrote is missing. */
-function explainMissingModel(issue: ConfigIssue): ConfigIssue {
-  return issue.path === `providers.${DEFAULT_NAME}.model` && issue.message === 'is required' ? { path: '', message: NO_MODEL } : issue
-}
-
-/** Every provider of the config checked by the builder, and the specs and objects a profile uses. */
-function checkProviders(providers: Readonly<Record<string, ProviderEntry>>, inUse: ReadonlySet<string>, env: Env, builtIn: boolean): { providers: Array<[string, ResolvedProvider]>, issues: ConfigIssue[], warnings: string[] } {
+/** Every provider of the config checked by the builder, and the specs and objects a profile uses. `withheld` names the provider that is never sent its preset's key variable. */
+function checkProviders(providers: Readonly<Record<string, ProviderEntry>>, inUse: ReadonlySet<string>, env: Env, withheld: string | undefined): { providers: Array<[string, ResolvedProvider]>, issues: ConfigIssue[], warnings: string[] } {
   const result: Array<[string, ResolvedProvider]> = []
   const issues: ConfigIssue[] = []
   const warnings: string[] = []
@@ -164,12 +164,30 @@ function checkProviders(providers: Readonly<Record<string, ProviderEntry>>, inUs
       if (used) result.push([name, entry])
       continue
     }
-    const checked = checkSpec(name, entry, used, env)
-    issues.push(...builtIn ? checked.issues.map(explainMissingModel) : checked.issues)
+    const checked = checkSpec(name, entry, used, env, name !== withheld)
+    issues.push(...checked.issues)
     warnings.push(...checked.warnings)
     if (used) result.push([name, structuredClone(checked.spec)])
   }
   return { providers: result, issues, warnings }
+}
+
+/**
+ * A missing model is reported where the user sets it. The built-in default's is what to set, not that a
+ * field of a provider nobody wrote is missing. A derived voter's is `QUORUM_VOTER_MODEL`, which the role
+ * overrides already reported (`reportedVoter` names it then): the builder's second report is dropped.
+ */
+function reportMissingModel(issues: readonly ConfigIssue[], builtIn: boolean, reportedVoter: string | undefined): ConfigIssue[] {
+  return issues.flatMap((issue) => {
+    if (issue.message !== 'is required') return [issue]
+    if (builtIn && issue.path === `providers.${DEFAULT_NAME}.model`) return [{ path: '', message: NO_MODEL }]
+    return reportedVoter !== undefined && issue.path === `providers.${reportedVoter}.model` ? [] : [issue]
+  })
+}
+
+/** The origin of a provider's settings, as endpoints are compared; none for a provider object. */
+function originOf(entry: ProviderEntry | undefined): string | undefined {
+  return entry === undefined || isProvider(entry) ? undefined : httpOrigin(baseUrlOf(ownFields(entry)))
 }
 
 /** The providers research and the voter are bound to: `roles`, else the only provider, else research. Or the issues of the roles. */
@@ -215,9 +233,14 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
     providers: Object.keys(applied.providers),
   })
   const inUse = new Set(profiles.profiles.flatMap(({ research, voters }) => [research, ...Object.values(voters)]))
-  const checked = checkProviders(applied.providers, inUse, env, builtIn)
+  // The voter the variables derived is the one the role moved to. On another origin than research's, with no
+  // preset of its own, it is never sent a preset's key variable: that is research's key by another name (ADR-0013).
+  const derived = applied.roles.voter === bound.roles.voter ? undefined : applied.roles.voter
+  const elsewhere = derived !== undefined && own(layer.voter, 'preset') === undefined && originOf(applied.providers[derived]) !== originOf(applied.providers[applied.roles.research])
+  const checked = checkProviders(applied.providers, inUse, env, elsewhere ? derived : undefined)
 
-  const issues = [...applied.issues, ...profiles.issues, ...checked.issues]
+  const reportedVoter = applied.issues.some(issue => issue.path === VOTER_MODEL) ? derived : undefined
+  const issues = [...applied.issues, ...profiles.issues, ...reportMissingModel(checked.issues, builtIn, reportedVoter)]
   if (issues.length > 0) throw new ConfigError(issues)
 
   const concurrency = own(input, 'concurrency')

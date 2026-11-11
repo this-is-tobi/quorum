@@ -9,6 +9,8 @@ import type { ConfigInput, ProviderSettings } from './schema.ts'
 // A fixture held in a constant is typed ProviderSettings, so `protocol` and `preset` keep their literal types.
 const SECRET = 'sk-zz-secret'
 const NO_MODEL = 'no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one'
+const PROFILES = 'must list profile ids separated by commas, each matching ^[a-z][a-z0-9_-]*$'
+const VOTER_MODEL = 'must be set when the voter variables name another endpoint than the research provider\'s'
 const LOCAL = { protocol: 'openai-compatible', baseUrl: 'http://localhost:11434/v1' }
 const TEAM = { prompts: { research: 'Find style issues in this diff.', vote: 'Judge from {{lens.id}}: {{lens.question}}' }, lenses: [{ id: 'grounded', question: 'Is it backed by a stated convention?' }] }
 const all = (name: string) => ({ reachability: name, impact: name, defenses: name })
@@ -103,7 +105,7 @@ describe('resolveConfig', () => {
     expect(resolve({ providers: { corp } }, { CORP_KEY: 'sk-file', QUORUM_RESEARCH_API_KEY: 'sk-env' }).providers.corp).toMatchObject({ apiKey: 'sk-env' })
   })
 
-  it('never gives a derived voter on another endpoint the research key, whichever way it was set', () => {
+  it('never gives a derived voter on another endpoint the research key, set by apiKeyEnv, the openai preset\'s variable or a RESEARCH_ variable', () => {
     const voterEnv = { QUORUM_VOTER_BASE_URL: 'https://v.example/v1', QUORUM_VOTER_MODEL: 'v' }
     const byVariable = resolve({ providers: { main: { protocol: 'openai-compatible', baseUrl: 'https://r.example/v1', model: 'r', apiKeyEnv: 'R_KEY' } } }, { R_KEY: 'sk-r', ...voterEnv })
     expect(byVariable.providers.voter).toEqual({ protocol: 'openai-compatible', baseUrl: 'https://v.example/v1', model: 'v' })
@@ -112,6 +114,32 @@ describe('resolveConfig', () => {
     for (const env of [{ QUORUM_RESEARCH_API_KEY: 'sk-r' }, { RESEARCH_API_KEY: 'sk-r' }]) {
       expect(JSON.stringify(resolve({}, { QUORUM_RESEARCH_MODEL: 'r', ...env, ...voterEnv }).providers.voter)).not.toContain('sk-r')
     }
+  })
+
+  it('never gives a derived voter on another Azure host the research preset\'s key', () => {
+    const az: ProviderSettings = { preset: 'azure-openai', baseUrl: 'https://a.openai.azure.com/openai/v1', model: 'review' }
+    const elsewhere = { AZURE_OPENAI_API_KEY: 'az-k', QUORUM_VOTER_BASE_URL: 'https://b.openai.azure.com/openai/v1', QUORUM_VOTER_MODEL: 'v' }
+    const config = resolve({ providers: { az } }, elsewhere)
+    expect(config.providers.az).toMatchObject({ apiKey: 'az-k' })
+    expect(config.providers.voter).not.toHaveProperty('apiKey')
+    expect(config.warnings).toEqual(['providers.voter.baseUrl: is not the endpoint of the research provider, so AZURE_OPENAI_API_KEY is not sent: set QUORUM_VOTER_API_KEY to send a key'])
+  })
+
+  it('gives a derived voter the preset\'s key when its own variables name the preset, or while it stays on the research host', () => {
+    const az: ProviderSettings = { preset: 'azure-openai', baseUrl: 'https://a.openai.azure.com/openai/v1', model: 'review' }
+    const env = { AZURE_OPENAI_API_KEY: 'az-k', QUORUM_VOTER_MODEL: 'v' }
+    const named = resolve({ providers: { az } }, { ...env, QUORUM_VOTER_PRESET: 'azure-openai', QUORUM_VOTER_BASE_URL: 'https://b.openai.azure.com/openai/v1' })
+    expect(named.providers.voter).toMatchObject({ apiKey: 'az-k' })
+    const same = resolve({ providers: { az } }, env)
+    expect(same.providers.voter).toMatchObject({ apiKey: 'az-k' })
+    expect(same.warnings).toEqual([])
+  })
+
+  it('reports a derived voter with no model once, at QUORUM_VOTER_MODEL', () => {
+    const voter = { QUORUM_VOTER_BASE_URL: 'https://v.example/v1' }
+    const only = [{ path: 'QUORUM_VOTER_MODEL', message: VOTER_MODEL }]
+    expect(issuesOf({}, { QUORUM_RESEARCH_MODEL: 'r', ...voter })).toEqual(only)
+    expect(issuesOf({ providers: { main: { preset: 'anthropic', model: 'claude-sonnet-5' } } }, { ANTHROPIC_API_KEY: 'sk-a', ...voter })).toEqual(only)
   })
 
   it('warns when a key would travel over plain http to another machine, and not to this one', () => {
@@ -125,6 +153,23 @@ describe('resolveConfig', () => {
     expect(issuesOf({ providers: { main, spare: { preset: 'anthropic', model: 'claude-sonnet-5', structuredOutput: 'json' } }, roles: { research: 'main' } })).toEqual([{ path: 'providers.spare.structuredOutput', message: 'must be prompt or schema' }])
     expect(Object.keys(resolve({ providers: { main, spare: { preset: 'anthropic', model: 'claude-sonnet-5' } }, roles: { research: 'main' } }).providers)).toEqual(['main'])
     expect(issuesOf({ providers: { local: { preset: 'ollama' } } })).toEqual([{ path: 'providers.local.model', message: 'is required' }])
+  })
+
+  it('throws the issues of the environment alone, before any provider is checked', () => {
+    const broken: ProviderSettings = { preset: 'ollama' }
+    expect(issuesOf({ providers: { local: broken } }, { QUORUM_PROFILES: 'Bad Id' })).toEqual([{ path: 'QUORUM_PROFILES', message: PROFILES }])
+  })
+
+  it('throws the issue of a profile QUORUM_PROFILES names that is not defined', () => {
+    expect(issuesOf({ providers: { local: { preset: 'ollama', model: 'q' } } }, { QUORUM_PROFILES: 'nope' })).toEqual([{ path: 'QUORUM_PROFILES', message: 'unknown profile "nope": the profiles are security' }])
+  })
+
+  it('throws the issue of a variable aimed at a provider object, with the builder\'s issues after it', () => {
+    const broken: ProviderSettings = { preset: 'ollama' }
+    expect(issuesOf({ providers: { mine: object, broken }, roles: { research: 'mine' } }, { QUORUM_RESEARCH_MODEL: 'q' })).toEqual([
+      { path: 'QUORUM_RESEARCH_MODEL', message: 'cannot change providers.mine, an object implementing Provider' },
+      { path: 'providers.broken.model', message: 'is required' },
+    ])
   })
 
   it('runs the profiles QUORUM_PROFILES names over the config\'s', () => {
