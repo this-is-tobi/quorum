@@ -1,8 +1,9 @@
 import type { ChildProcess } from 'node:child_process'
 import { spawn } from 'node:child_process'
+import { rmSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue, ProviderError } from '../core/errors.ts'
 import type { ChatMessage, CompletionRequest, CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
@@ -561,12 +562,19 @@ interface RunDirectory {
   readonly systemFile: string
 }
 
-/** How to start `claude`: the executable, its arguments, its working directory and its whole environment. */
+/** A run in flight: its directory, and the pid that leads its process group while `claude` lives, for `stopLiveRuns`. */
+export interface LiveRun {
+  readonly dir: string
+  pid?: number
+}
+
+/** How to start `claude`: the executable, its arguments, its working directory and its whole environment, and the run it belongs to. */
 interface Launch {
   readonly command: string
   readonly args: readonly string[]
   readonly cwd: string
   readonly env: Readonly<Record<string, string>>
+  readonly live: LiveRun
 }
 
 /** What a run came to: the process's end, and whether its stdout went past the cap and was cut. */
@@ -589,11 +597,15 @@ async function removeRun(dir: string): Promise<void> {
   await rm(dir, { recursive: true, force: true }).catch(() => {})
 }
 
-/** Make the directory of one run, its working and scratch directories and the system text's file (mode 0600), or remove what was made and fail. */
-async function prepareRun(system: string, fail: Failure): Promise<RunDirectory> {
+/**
+ * Make the directory of one run, its working and scratch directories and the system text's file (mode 0600),
+ * or remove what was made and fail. The directory is at an absolute path, though `TMPDIR` is relative: the
+ * child resolves the path of the system text against a working directory of its own.
+ */
+export async function prepareRun(system: string, fail: Failure): Promise<RunDirectory> {
   let dir: string | undefined
   try {
-    dir = await mkdtemp(join(tmpdir(), RUN_DIRECTORY_PREFIX))
+    dir = await mkdtemp(join(resolve(tmpdir()), RUN_DIRECTORY_PREFIX))
     const run = { dir, cwd: join(dir, 'cwd'), tmp: join(dir, 'tmp'), systemFile: join(dir, 'system.txt') }
     await mkdir(run.cwd)
     await mkdir(run.tmp)
@@ -653,6 +665,37 @@ function killGroup(pid: number): void {
   }
 }
 
+/** The runs in flight, whose groups and directories must not outlive quorum. */
+const liveRuns = new Set<LiveRun>()
+
+/**
+ * What quorum does as it exits while a run is live: SIGKILL each run's process group and remove each run's
+ * directory, synchronously, since nothing else runs after an `exit` listener. Any error is ignored, as there
+ * is nothing left to do about it. A detached group takes no signal from the terminal, so without this an
+ * exit that skips the abort (a second interrupt, `process.exit`) would leave `claude` running and billing.
+ * A SIGKILL of quorum, or a death by a default signal, runs no listener.
+ */
+export function stopLiveRuns(): void {
+  for (const { dir, pid } of liveRuns) {
+    if (pid !== undefined) killGroup(pid)
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // The directory holds no secret, and quorum is exiting.
+    }
+  }
+}
+
+/** Add `run` to the live runs, listening for the exit while there is one. Returns what removes it again, and the listener with the last. */
+export function trackRun(run: LiveRun): () => void {
+  liveRuns.add(run)
+  if (liveRuns.size === 1) process.on('exit', stopLiveRuns)
+  return () => {
+    liveRuns.delete(run)
+    if (liveRuns.size === 0) process.off('exit', stopLiveRuns)
+  }
+}
+
 /**
  * Start `claude` and settle once it has closed, or fails to start: the message goes to its stdin, which is
  * then ended (an error there is ignored, since the exit says what happened), and its stdout and stderr are
@@ -660,8 +703,11 @@ function killGroup(pid: number): void {
  * it starts can be stopped with it: the signal's abort, or stdout past its cap, sends SIGTERM to the group,
  * then SIGKILL `KILL_GRACE_MS` later if the child has not closed, and the child's exit sends SIGKILL to
  * what is left of the group, since a process that still holds the pipes keeps `close` from ever firing.
- * The listener and the timer go once it has closed. A synchronous throw of `spawn`, or an `error` event
- * before the child runs, is a `process` failure, and there is no child to wait for.
+ * A process that left the group (it called `setsid`, or was started detached) is beyond that kill and may
+ * hold the pipes still, so `KILL_GRACE_MS` after the child's exit its stdout and stderr are destroyed and
+ * `close` fires. The listener and the timers go once it has closed. A synchronous throw of `spawn`, or an
+ * `error` event before the child runs, is a `process` failure, and there is no child to wait for. The pid
+ * that leads the group is kept in `launch.live` while the child lives, for `stopLiveRuns`.
  */
 function runChild(launch: Launch, input: string, signal: AbortSignal | undefined, fail: Failure): Promise<Finished> {
   return new Promise((resolve, reject) => {
@@ -673,7 +719,9 @@ function runChild(launch: Launch, input: string, signal: AbortSignal | undefined
       reject(startFailure(error))
       return
     }
+    if (GROUPED) launch.live.pid = child.pid
     let killTimer: ReturnType<typeof setTimeout> | undefined
+    let pipeTimer: ReturnType<typeof setTimeout> | undefined
     // The group when the child leads one, else the child alone.
     const send = (name: 'SIGTERM' | 'SIGKILL'): void => {
       if (GROUPED && child.pid !== undefined) {
@@ -692,6 +740,8 @@ function runChild(launch: Launch, input: string, signal: AbortSignal | undefined
     }
     const release = (): void => {
       clearTimeout(killTimer)
+      clearTimeout(pipeTimer)
+      launch.live.pid = undefined
       signal?.removeEventListener('abort', stop)
     }
     const stdout = readCapped(child.stdout, MAX_STDOUT_BYTES, stop)
@@ -707,6 +757,10 @@ function runChild(launch: Launch, input: string, signal: AbortSignal | undefined
     })
     child.once('exit', () => {
       if (GROUPED && child.pid !== undefined) killGroup(child.pid)
+      pipeTimer = setTimeout(() => {
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+      }, KILL_GRACE_MS)
     })
     child.once('close', (code, endedBy) => {
       release()
@@ -787,8 +841,10 @@ async function requireVersion(launch: Launch, signal: AbortSignal | undefined, f
  * 9. the message written to its stdin, which is then ended;
  * 10. stdout read to 16 MiB and stderr to 64 KiB, the rest dropped: more stdout stops the child, and is `invalid-response`;
  * 11. on the signal's abort, or stdout past its cap: SIGTERM to the group, then SIGKILL after `KILL_GRACE_MS`;
- *     when the child exits, SIGKILL to what is left of the group, so no process keeps the pipes open;
- * 12. once the child has closed, the directory removed, on every path, before the call settles;
+ *     when the child exits, SIGKILL to what is left of the group, and `KILL_GRACE_MS` later its pipes closed,
+ *     so no process, one that left the group included, keeps the call from settling;
+ * 12. once the child has closed, the directory removed, on every path, before the call settles, and when
+ *     quorum exits first, the group killed and the directory removed (`stopLiveRuns`);
  * 13. an aborted signal: `aborted`; else `readResult`'s reply or failure, with every credential of the
  *     child's environment redacted from the text it quotes (`credentialValues`).
  *
@@ -815,18 +871,21 @@ export function claudeCode(options: ClaudeCodeOptions): Provider {
       const { signal } = request
       throwIfAborted(signal, fail)
       const run = await prepareRun(request.system, fail)
+      const live: LiveRun = { dir: run.dir }
+      const untrack = trackRun(live)
       try {
         throwIfAborted(signal, fail)
         const environment = childEnv(env, auth, apiKey, run.tmp)
-        await requireVersion({ command, args: [], cwd: run.cwd, env: environment }, signal, fail)
+        await requireVersion({ command, args: [], cwd: run.cwd, env: environment, live }, signal, fail)
         throwIfAborted(signal, fail)
-        const launch = { command, args: claudeArgs({ model, auth, structuredOutput, args }, run.systemFile, request.output.schema), cwd: run.cwd, env: environment }
+        const launch = { command, args: claudeArgs({ model, auth, structuredOutput, args }, run.systemFile, request.output.schema), cwd: run.cwd, env: environment, live }
         const finished = await runChild(launch, message.content, signal, fail)
         throwIfAborted(signal, fail)
         if (finished.overflow) throw fail('invalid-response', 'reply is over 16 MiB')
         return readResult(finished.run, { id, model, structuredOutput, redact: credentialValues(environment) })
       } finally {
         await removeRun(run.dir)
+        untrack()
       }
     },
   }
