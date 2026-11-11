@@ -178,9 +178,14 @@ export function namesModelOrEndpoint(overrides: RoleOverrides): boolean {
   return MODEL_OR_ENDPOINT.some(field => isSet(overrides, field))
 }
 
+/** Whether the variables of a role set a context size of their own. */
+export function setsContextSize(overrides: RoleOverrides): boolean {
+  return isSet(overrides, 'contextTokens')
+}
+
 /** Whether a provider's context size stays when these variables are set on it: unless they name a model or an endpoint and set no context size of their own. */
 function keepsContext(overrides: RoleOverrides): boolean {
-  return !namesModelOrEndpoint(overrides) || isSet(overrides, 'contextTokens')
+  return !namesModelOrEndpoint(overrides) || setsContextSize(overrides)
 }
 
 /** The settings the variables are set on: as they are, or without their context size when it would not describe the model the variables name. */
@@ -216,7 +221,7 @@ function derivedVoter(base: ProviderSettings, overrides: RoleOverrides, variable
   const origin = httpOrigin(baseUrlOf(base))
   const sameEndpoint = origin !== undefined && origin === httpOrigin(own(fields, 'baseUrl') ?? baseUrlOf(base))
   const { apiKeyEnv: _apiKeyEnv, apiKey: _apiKey, headers: _headers, query: _query, extraBody: _extraBody, model: _model, contextTokens: _contextTokens, ...endpoint } = base
-  const provider: ProviderSettings = startsAfresh(variables) ? fields : { ...inheritedBy(overrides, sameEndpoint ? base : endpoint), ...fields }
+  const provider: ProviderSettings = startsAfresh(variables) ? fields : { ...(sameEndpoint ? inheritedBy(overrides, base) : endpoint), ...fields }
   const needsModel = (startsAfresh(variables) || !sameEndpoint) && provider.model === undefined
   return { provider, issues: needsModel ? [{ path: canonicalName('VOTER', 'MODEL'), message: 'must be set when the voter variables name another endpoint than the research provider\'s' }] : [] }
 }

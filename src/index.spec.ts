@@ -46,6 +46,16 @@ describe('runQuorum', () => {
     await expect(runQuorum('  \n')).rejects.toMatchObject({ name: 'ConfigError', message })
   })
 
+  it('reports a provider with no context size as a configuration error, even for an empty diff, and sends nothing', async () => {
+    isolateEnv({ RESEARCH_MODEL: 'env-model' })
+    const fetchMock = vi.fn().mockImplementation(async () => chatReply('{"findings":[]}'))
+    vi.stubGlobal('fetch', fetchMock)
+    const message = 'no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens'
+    await expect(runQuorum(diff)).rejects.toMatchObject({ name: 'ConfigError', message })
+    await expect(runQuorum('  \n')).rejects.toMatchObject({ name: 'ConfigError', message })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('sends onProgress the progress lines the CLI prints', async () => {
     isolateEnv({ RESEARCH_MODEL: 'env-model', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' })
     vi.stubGlobal('fetch', vi.fn()

@@ -92,10 +92,28 @@ describe('the context size variables', () => {
     expect(readEnv({ QUORUM_RESEARCH_CONTEXT_TOKENS: ' 131072 ', QUORUM_VOTER_CONTEXT_TOKENS: '8192' })).toEqual({ research: { contextTokens: 131072 }, voter: { contextTokens: 8192 }, warnings: [], issues: [] })
   })
 
-  it.each([['32k'], ['0'], ['-1'], ['1.5'], ['1e5'], ['0x10'], ['1000000000']])('refuses QUORUM_RESEARCH_CONTEXT_TOKENS=%j at the variable, repeating no value', (value) => {
+  it.each([
+    ['32k'],
+    ['0'],
+    ['-1'],
+    ['1.5'],
+    ['1e5'],
+    ['0x10'],
+    ['1000000000'],
+    ['+5'],
+    ['05'],
+    ['1\n2'],
+    [String.fromCharCode(0x0665)],
+    [String.fromCharCode(0xFF15)],
+    [`${String.fromCharCode(0xFF11)}${String.fromCharCode(0xFF12)}`],
+  ])('refuses QUORUM_RESEARCH_CONTEXT_TOKENS=%j at the variable, repeating no value', (value) => {
     const layer = readEnv({ QUORUM_RESEARCH_CONTEXT_TOKENS: value })
     expect(layer.issues).toEqual([{ path: 'QUORUM_RESEARCH_CONTEXT_TOKENS', message: FORM }])
     expect(layer.research).toEqual({})
+  })
+
+  it.each([[''], ['  '], ['\n']])('reads QUORUM_VOTER_CONTEXT_TOKENS=%j, a blank value, as unset', (value) => {
+    expect(readEnv({ QUORUM_VOTER_CONTEXT_TOKENS: value })).toEqual({ research: {}, voter: {}, warnings: [], issues: [] })
   })
 })
 
@@ -284,6 +302,13 @@ describe('the context size through the role variables', () => {
 
   it('gives a derived voter the context size its own variable sets', () => {
     expect(apply({ main: sized }, shared, { voter: { baseUrl: 'https://v.example/v1', model: 'v', contextTokens: 32768 } }).providers.voter).toMatchObject({ contextTokens: 32768 })
+  })
+
+  it('gives a derived voter that sets only a context size of its own the research provider\'s model and endpoint', () => {
+    const result = apply({ main: sized }, shared, { voter: { contextTokens: 32768 } })
+    expect(result.providers.voter).toEqual({ ...sized, contextTokens: 32768 })
+    expect(result.providers.main).toEqual(sized)
+    expect(result).toMatchObject({ roles: { research: 'main', voter: 'voter' }, issues: [] })
   })
 
   it('drops the context size of the voter\'s own provider when the voter variables set its model', () => {
