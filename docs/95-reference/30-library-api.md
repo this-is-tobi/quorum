@@ -171,10 +171,11 @@ A failed research call rejects the review with its `ProviderError`, and an unusa
 declare function defineConfig(config: QuorumConfig): QuorumConfig
 ```
 
-No command and no exported function reads a config file yet. These exports let a config be written and type-checked ahead of that:
+`loadConfig` reads a named config file and `fromConfig` builds a quorum from a config: [`loadConfig` and `fromConfig`](#loadconfig-and-fromconfig). The CLI reads no config file yet, and keeps the `RESEARCH_*` and `VOTER_*` wiring of [Configuration](../20-using/20-configuration.md). These exports write and type-check a config:
 
 - **`QuorumConfig`** types what a TS or JS config exports as its default: `$schema`, for an editor, `version`, `providers`, `roles`, `concurrency`, `maxFindings` and `profiles`, every one optional. A provider is an object implementing `Provider`, or its settings, every one optional too: `preset`, `protocol`, `baseUrl`, `model`, `apiKeyEnv` and `apiKey`, then `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt`, as [Providers](../20-using/30-providers.md#options) describes them.
 - **`QuorumConfigFile`** types what a YAML or JSON config holds: the same settings, as data only, so a provider is always its settings, and names the environment variable that holds its key in `apiKeyEnv`, never holding one.
+- **`ConfigInput`** types what `fromConfig` takes: the settings of `QuorumConfig`, with every prompt a string, since a program's config reads no file and so holds no `{ file }`.
 - **`defineConfig`** returns the config it is given, as it is. Wrapping a default export in it has the editor check every field.
 
 A config that imports nothing from quorum when it runs types its object with `import type` and `satisfies` instead, since `import type` is erased:
@@ -194,12 +195,156 @@ export default {
 
 The `.mts` extension makes the file an ES module whatever the nearest `package.json` says: Node refuses `export` in a `.ts` or `.js` file of a package whose `package.json` says `"type": "commonjs"`. Node also strips erasable TypeScript only, so a config holds no `enum`, `namespace` or parameter property. An editor checks a YAML or JSON config against the JSON Schema committed as [`schema/quorum.schema.json`](../../schema/quorum.schema.json): a YAML file names it in a comment, `# yaml-language-server: $schema=<path or URL of the schema>`, and a JSON file in its `"$schema"` field.
 
+## `loadConfig` and `fromConfig`
+
+```ts
+declare function loadConfig(options?: {
+  readonly cwd?: string
+  readonly env?: Env
+  readonly configPath?: string
+}): Promise<{ readonly config: ResolvedConfig, readonly source: string | undefined, readonly warnings: readonly string[] }>
+
+declare function fromConfig(
+  config: ConfigInput | ResolvedConfig,
+  options?: { readonly env?: Env, readonly events?: EventSink },
+): Promise<Quorum>
+
+type Env = Readonly<Record<string, string | undefined>>
+```
+
+`loadConfig` reads the config file it is named, if any, lays the environment over it and resolves the result into a `ResolvedConfig`: every layer merged, every reference bound, every key read. `fromConfig` builds a quorum from a config: a `ConfigInput`, which it checks and resolves, or a `ResolvedConfig`, which it uses as it is. Both read `process.env` when no `env` is given, and both throw one `ConfigError` with every issue at once, before anything is sent.
+
+```ts
+import { fromConfig, inertLine, loadConfig } from './src/index.ts'
+
+const { config } = await loadConfig({ configPath: 'quorum.yaml' })
+const quorum = await fromConfig(config)
+for (const warning of quorum.warnings) console.error(inertLine(`warning: ${warning}`))
+const result = await quorum.review({ diff })
+```
+
+`fromConfig({}, { env: process.env })` needs no file: the environment alone names a provider and a model. No command reads `QUORUM_*` or a config file yet: the CLI keeps `RESEARCH_*` and `VOTER_*` until it switches to these two functions.
+
+- **`options.cwd`** is the directory a relative `configPath` and `QUORUM_CONFIG` resolve against, the working directory by default. `source` is the absolute path of the file read, and `undefined` when none was.
+- **`options.events`** is the event sink of the quorum, as `createQuorum` takes it.
+- **A `ResolvedConfig`** holds `providers`, the ones a profile that runs uses, by name: a spec with its key read into `apiKey`, or an object implementing `Provider`; `profiles`, each a `ResolvedProfile`: its `profile`, `research`, the name of its research provider, and `voters`, the name of each lens's provider, by lens id; `concurrency`, `maxFindings`, and `warnings`. It is a copy, frozen except for the provider objects, which are the program's own.
+- **A `ResolvedConfig` holds the keys it read**, as a code config does: never print or log one. The CLI's `--print-config`, still to come, will redact them.
+- **`fromConfig` of a `ResolvedConfig` reads no environment**: what `loadConfig` resolved is what runs, whatever `options.env` holds.
+
+### Layering
+
+Each layer sits over the one before it: the built-in defaults, then the file `configPath` names (else the one `QUORUM_CONFIG` names), then the environment.
+
+- **The built-in defaults.** A config that defines no provider gets one named `default`: the `openai-compatible` protocol at `http://localhost:11434/v1`, Ollama's address, with no model, so `QUORUM_RESEARCH_MODEL` or a file must set one. A config with no `profiles` field runs the `security` profile.
+- **A profile over its base.** A profile named after a built-in profile, or with `extends`, starts from it: its prompts and its policy levels replace the base's one field at a time, and its lenses replace the base's lenses as a whole.
+- **`undefined` is unset, `null` is set.** In a program's config or a code config, a field set to `undefined` leaves the layer below's value in place, as if it were not written; `null` is a value, such as `temperature: null`, which leaves the field out of the request.
+- **No file is searched for.** A file loads only when it is named, by `configPath` first, then `QUORUM_CONFIG`: a `quorum.config.yaml` in the working directory is never read, since in CI that directory is a pull request's checkout, and a pull request could plant one.
+
+### The environment variables
+
+| Variable | Sets |
+| --- | --- |
+| `QUORUM_CONFIG` | `loadConfig` only: the config file to read, when `configPath` is not given |
+| `QUORUM_PROFILES` | The profiles that run: ids separated by commas, each a profile the config defines or a built-in one, none twice |
+| `QUORUM_RESEARCH_PRESET`, `QUORUM_VOTER_PRESET` | A role's provider, built from a [preset](../20-using/30-providers.md#presets) |
+| `QUORUM_RESEARCH_PROTOCOL`, `QUORUM_VOTER_PROTOCOL` | A role's provider, built from a wire protocol: `openai-compatible`, `anthropic`, `gemini` or `ollama` |
+| `QUORUM_RESEARCH_BASE_URL`, `QUORUM_VOTER_BASE_URL` | The base URL of a role's provider |
+| `QUORUM_RESEARCH_MODEL`, `QUORUM_VOTER_MODEL` | The model of a role's provider |
+| `QUORUM_RESEARCH_API_KEY`, `QUORUM_VOTER_API_KEY` | The key of a role's provider, as a literal `apiKey` |
+| `RESEARCH_BASE_URL`, `RESEARCH_API_KEY`, `RESEARCH_MODEL`, `VOTER_BASE_URL`, `VOTER_API_KEY`, `VOTER_MODEL` | Deprecated aliases: each is read as the `QUORUM_` variable of the same name |
+
+- **The `QUORUM_` form wins** over its alias when both are set, and one warning names every alias that is set, whichever form won: `RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead`. A preset and a protocol have no alias.
+- **Every value is trimmed, and a blank one is unset.** Only the variables the environment holds itself are read, never one an object it inherits from holds.
+- **`QUORUM_PROFILES` refuses what would review nothing or the wrong thing**: an empty id, an id that is not lower-case letters, digits, `_` and `-` after a letter, or an id named twice.
+
+### The role variables
+
+- **The research variables** set the provider `roles.research` names, which a voter or a lens that shares it inherits.
+- **The voter variables** set the provider `roles.voter` names when that is another provider than research's. When the voter shares the research provider, they derive a provider named `voter` from it, and bind the voter role to it. A config that already has a provider named `voter` cannot be derived over: rename it.
+- **A derived voter keeps what is safe on its endpoint**, as the voter's fallback of [Configuration](../20-using/20-configuration.md#the-voters-fallback) does, and a key, header, query parameter, body field or model never reaches another origin:
+
+| `QUORUM_VOTER_BASE_URL` | The voter's base URL | Its key | Its model | The rest of the research provider's settings |
+| --- | --- | --- | --- | --- |
+| Unset | The research provider's | `QUORUM_VOTER_API_KEY`, else the research provider's key | `QUORUM_VOTER_MODEL`, else the research provider's | All kept |
+| The same origin as the research provider's | `QUORUM_VOTER_BASE_URL` | `QUORUM_VOTER_API_KEY`, else the research provider's key | `QUORUM_VOTER_MODEL`, else the research provider's | All kept |
+| Another origin, or no `http(s)` origin | `QUORUM_VOTER_BASE_URL` | `QUORUM_VOTER_API_KEY`, else none: a preset's own variable is not read | `QUORUM_VOTER_MODEL`, which is then required | `apiKeyEnv`, `headers`, `query`, `extraBody` and `model` dropped; the preset, protocol, `auth`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt` kept |
+| A `QUORUM_VOTER_PRESET` or `QUORUM_VOTER_PROTOCOL` is set | Its own, or the preset's | `QUORUM_VOTER_API_KEY`, else the preset's own variable at the preset's origin | `QUORUM_VOTER_MODEL`, which is then required | None: the provider is built from the voter variables alone |
+
+The origin is compared as the voter's fallback compares it: the scheme, the host in lower case with no trailing dot, and a port that is not the default.
+
+- **A `PRESET` or `PROTOCOL` variable builds the role's provider afresh.** `QUORUM_RESEARCH_PRESET=anthropic` is not merged into the `default` provider, whose protocol it would contradict: the research provider is a provider of that preset, from the role's variables alone. `BASE_URL`, `MODEL` and `API_KEY` alone override fields of the provider they reach.
+- **No variable changes a provider object.** A role bound to an object that implements `Provider` with a variable set for it is an issue at the variable, never an ignored one.
+
+### Roles and profiles
+
+- **The role defaults.** One provider binds both roles. Several need `roles.research`, or the config is refused; `roles.voter` is `roles.research` when unset. A profile's own `roles` override the top-level ones, and a lens's `provider` overrides both.
+- **Which profiles run.** The ones `QUORUM_PROFILES` names, else the ones `profiles` defines, else `security`. `profiles: {}` with no selection is refused: a run that reviews nothing never passes.
+- **A profile's base.** A profile named after a built-in profile starts from it, so `profiles: { security: { gating: false } }` is the security profile without gating; so does one with `extends`. A profile of its own needs both prompts and its lenses. Its `gating` is the base's, else `true`.
+- **Every defined profile and provider is checked**, whether or not a run selects or uses it, so a broken definition fails every run, as an unknown field does.
+
+### Keys
+
+A provider's key is the first of:
+
+1. A literal `apiKey`: a program's or a code config's, or `QUORUM_<ROLE>_API_KEY`, which wins over a variable a file names with `apiKeyEnv`.
+2. The variable `apiKeyEnv` names. A variable that is not set is an issue, never a silent run without a key.
+3. The preset's own variable (`OPENAI_API_KEY` for `openai`), only while the base URL keeps the preset's origin. At another origin it is not read, and a warning says so.
+4. For `azure-openai`, whose preset has no base URL, `AZURE_OPENAI_API_KEY`, only on an `https` host under `openai.azure.com`.
+
+- **`AZURE_OPENAI_API_KEY` is one variable for every Azure resource.** It is read for any host under `openai.azure.com`, so a voter whose own variables name the `azure-openai` preset on another Azure host sends that key there.
+- **A `QUORUM_<ROLE>_BASE_URL` set on a provider with an explicit `apiKeyEnv` keeps that key at the new URL.** It overrides the provider itself, not a fallback. A preset's own variable is withheld off its origin, with a warning.
+- **A voter derived onto another origin gets no key of the research provider**, whichever way it was set: `apiKey`, `apiKeyEnv`, a preset's variable or a `QUORUM_RESEARCH_API_KEY`.
+- **Keys are read only for the providers a profile that runs uses**, so a CI job that runs one profile needs that profile's keys alone. Every provider is still checked, without its key.
+- **A key sent over plain `http` to a host other than this machine** (`localhost`, `*.localhost`, `127.0.0.0/8` and `[::1]` are this machine) is warned about.
+- **A resolved config holds its keys**, so never print or log one. No message or warning repeats a key, a URL, a header value or a variable's value, and a variable's name is printed only when it is an upper-case name.
+
+### Warnings and errors
+
+`loadConfig` returns the config's `warnings`: the deprecation line, a preset's key that is not sent, and a key sent over plain `http`. The `warnings` of the quorum `fromConfig` returns hold those first, then the core's: a profile setting that cannot take full effect, [Warnings](../20-using/40-profiles.md#warnings). A provider object is named by its config key in events and in `meta`, whatever `id` it holds.
+
+| Path | Message | Cause |
+| --- | --- | --- |
+| The path as given | The file's own problem, such as `does not exist`, `is not valid YAML at line 2, column 1 (DUPLICATE_KEY)` or `failed to load (Error)` | `loadConfig` could not read the file, or it is not valid |
+| `config` | `must be an object` | A `ConfigInput` that is not a plain object |
+| `config` | `could not be read (Error)` | A getter or a proxy of the config threw: only the error's name is kept, `an error` when that is not a plain class name |
+| `config` | `holds more than 10000 values` | A `ConfigInput` too large to walk |
+| `<path>` | `is not allowed as a key: it can replace the prototype of an object`, `must be plain data: an object, an array, a string, a finite number, true, false or null`, `must be a finite number`, or `is nested more than 64 keys deep` | A `ConfigInput` that holds data a config may not |
+| `<path>` | The schema's: `is not a known field`, `is required`, `must be a string`, `must be at least 1`, and the like | A field of the wrong shape, at its path |
+| `QUORUM_PROFILES` | `must list profile ids separated by commas, each matching ^[a-z][a-z0-9_-]*$` | An empty id, or an id of another form |
+| `QUORUM_PROFILES` | `names a profile more than once` | `security,security` |
+| `QUORUM_PROFILES` | `unknown profile "tema" (did you mean "team"?)`, or `unknown profile "style": the profiles are team and security` | An id that is neither defined nor built in |
+| `QUORUM_VOTER_MODEL` | `must be set when the voter variables name another endpoint than the research provider's` | The voter variables name another origin, a preset or a protocol, and no model |
+| `QUORUM_RESEARCH_MODEL`, and the other variables of a role | `cannot change providers.mine, an object implementing Provider` | A variable set for a role bound to a provider object |
+| `providers.voter` | `is the name the voter variables give the provider they derive: rename this provider` | The voter variables derive a provider, and one is already named `voter` |
+| `profiles` | `must hold at least one profile, or be left out` | `profiles: {}` with no `QUORUM_PROFILES` |
+| `profiles.<id>.prompts.research`, `profiles.<id>.prompts.vote`, `profiles.<id>.lenses` | `is required: the profile extends no built-in profile` | A profile of its own without prompts or lenses |
+| `roles.research`, `roles.voter`, `profiles.<id>.roles.research`, `profiles.<id>.roles.voter`, `profiles.<id>.lenses.<index>.provider` | `unknown provider "claud" (did you mean "claude"?)`, or `unknown provider "x": the providers are a and b` | A reference to a provider that is not defined: the defined name one or two edits away, else the names. A name that is not a safe name is not repeated: `names an unknown provider` |
+| `roles.research` | `is required when several providers are defined` | Several providers, and no research role |
+| `profiles.<id>` and below | The profile's own issues: [The checks](../20-using/40-profiles.md#the-checks) | A profile that fails a check |
+| No path | `no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one` | The built-in provider has no model |
+| `providers.<name>` | `CORP_KEY is not set` | The variable `apiKeyEnv` names, or the preset's own, is not set |
+| `providers.<name>.apiKeyEnv` | `names a variable that is not set` | The same, for a name that is not an upper-case variable name: a key pasted there is never printed |
+| `providers.<name>.<field>` | The builder's: [Presets as data](../20-using/30-providers.md#presets-as-data) and [Configuration errors](../20-using/30-providers.md#configuration-errors) | A provider that the builder refuses, defined or derived |
+| `providers.<name>` | `could not be read (Error)` | A provider object whose `model` or `complete` threw when read: only the error's name is kept |
+| `providers.<name>.model` | `must be a string` | A provider object whose model is not a string |
+
+The warnings, each starting at the path it is about:
+
+| Warning | Cause |
+| --- | --- |
+| `RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead` | A deprecated alias is set; one line names every alias, and every `QUORUM_` variable to set instead |
+| `providers.gpt.baseUrl: is not the endpoint of the openai preset, so OPENAI_API_KEY is not sent: set apiKeyEnv to send a key` | A provider of a preset whose base URL is not the preset's origin |
+| `providers.voter.baseUrl: is not the endpoint of the research provider, so OPENAI_API_KEY is not sent: set QUORUM_VOTER_API_KEY to send a key` | A derived voter on another origin than research's, whose provider keeps a preset that has a key variable |
+| `providers.gpu.baseUrl: sends the key over plain http to a host other than this machine` | A key that would travel in cleartext |
+
 ## Exports
 
 | Values | |
 | --- | --- |
 | `createQuorum` | Build a quorum |
 | `defineConfig` | Type a TS config: [Config types](#config-types) |
+| `fromConfig` | Build a quorum from a config: [`loadConfig` and `fromConfig`](#loadconfig-and-fromconfig) |
+| `loadConfig` | Read a named config file and resolve it with the environment: [`loadConfig` and `fromConfig`](#loadconfig-and-fromconfig) |
 | `securityProfile` | The default profile, frozen: [Profiles](../20-using/40-profiles.md#the-security-profile) |
 | `defaultPolicy` | `{ high: 'unanimous', medium: 'majority', low: 'off' }`, frozen |
 | `anthropic` | The Anthropic Messages adapter: [Providers](../20-using/30-providers.md#anthropic) |
@@ -211,7 +356,7 @@ The `.mts` extension makes the file an ES module whatever the nearest `package.j
 | `inertLine`, `inertJson` | Render a line for a terminal or a log, and a value as JSON, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |
 
-The types: `Confidence`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `Lens`, `LensVote`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus` and `Vote`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `QuorumConfig` and `QuorumConfigFile`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
+The types: `Confidence`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `Lens`, `LensVote`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus` and `Vote`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
 
 The stages, the profile checks and the CLI's exit-code rule are not exported: a program reaches the stages through `createQuorum`, and applies the exit codes itself, as the example below does.
 

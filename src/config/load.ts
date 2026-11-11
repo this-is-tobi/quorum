@@ -5,8 +5,13 @@ import { dirname, extname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isMap, isPair, isScalar, isSeq, LineCounter, parseDocument } from 'yaml'
 import type { Document, YAMLError } from 'yaml'
+import type { z } from 'zod'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
+import { envValue } from './env.ts'
+import type { Env } from './env.ts'
+import { resolveConfig } from './resolve.ts'
+import type { ResolvedConfig } from './resolve.ts'
 import { checkConfig, configCodeSchema, configFileSchema, configPath, isProvider, parseConfig } from './schema.ts'
 import type { ConfigInput, QuorumConfig } from './schema.ts'
 
@@ -197,13 +202,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * `MAX_VALUES` it stops and the config has that one issue, at the file: the schema never sees more data
  * than that, and an object that refers to itself ends the walk instead of repeating it.
  */
-function dataIssues(value: unknown, file: string): ConfigIssue[] {
+function dataIssues(value: unknown, file: string | undefined): ConfigIssue[] {
   const budget = { left: MAX_VALUES }
   const issues = valueIssues(value, [], file, 0, budget)
-  return budget.left < 0 ? [{ path: file, message: `holds more than ${MAX_VALUES} values` }] : issues
+  return budget.left < 0 ? [{ path: file ?? 'config', message: `holds more than ${MAX_VALUES} values` }] : issues
 }
 
-function valueIssues(value: unknown, segments: readonly PropertyKey[], file: string, depth: number, budget: { left: number }): ConfigIssue[] {
+function valueIssues(value: unknown, segments: readonly PropertyKey[], file: string | undefined, depth: number, budget: { left: number }): ConfigIssue[] {
   if (--budget.left < 0) return []
   if (depth > MAX_DEPTH) return [{ path: configPath(segments, file), message: `is nested more than ${MAX_DEPTH} keys deep` }]
   if (value === null || value === undefined || typeof value === 'string' || typeof value === 'boolean') return []
@@ -217,7 +222,7 @@ function valueIssues(value: unknown, segments: readonly PropertyKey[], file: str
 }
 
 /** The name a message gives what a config threw. Reading it can run the config's code too, so nothing it throws gets out. */
-function thrownName(error: unknown): string {
+export function thrownName(error: unknown): string {
   try {
     if (typeof error !== 'object' || error === null) return 'a value that is not an error'
     const { name } = error as { name?: unknown }
@@ -244,12 +249,30 @@ function importProblem(error: unknown): string {
 }
 
 /**
- * A TS or JS config: the plain object its module exports as its default, checked by the code schema. The
- * config is trusted code, but what it throws can hold a secret, so a throw while it loads, or while its
- * object is read (a getter or a proxy runs the config's code, in the data walk and again in the schema's
- * own reads), is reported by its name alone, a `ConfigError` included. Every read of the config's objects
- * is inside the `try`; the issues of the loader itself are built there as values and thrown after it.
+ * The plain object a config's code hands over, checked by `schema`: `read` returns it, then it must be a
+ * plain object, hold plain data, and pass the schema. The config is trusted code, but what it throws can
+ * hold a secret, so a throw while it is read (a getter or a proxy runs the config's code, in the data walk
+ * and again in the schema's own reads) is one issue by the error's name alone, a `ConfigError` included,
+ * at `words.file`, else at `config`. Every read of the config's objects is inside the `try`; the issues of
+ * the check itself are built there as values and thrown after it.
+ *
+ * @throws ConfigError with the issue of a throw, or every issue of the data and the schema
  */
+export function checkCodeValue<T>(schema: z.ZodType<T>, read: () => unknown, words: { readonly file?: string, readonly notAnObject: string, readonly threw: string }): T {
+  const at = words.file ?? 'config'
+  let checked: { readonly config: T } | { readonly issues: ConfigIssue[] }
+  try {
+    const value = read()
+    const issues = isPlainObject(value) ? dataIssues(value, words.file) : [{ path: at, message: words.notAnObject }]
+    checked = issues.length > 0 ? { issues } : checkConfig(schema, value, words.file)
+  } catch (error) {
+    fail(at, `${words.threw} (${thrownName(error)})`)
+  }
+  if ('issues' in checked) throw new ConfigError(checked.issues)
+  return checked.config
+}
+
+/** A TS or JS config: the plain object its module exports as its default, checked by the code schema. */
 async function loadCode(source: string, path: string): Promise<QuorumConfig> {
   let module: { default?: unknown }
   try {
@@ -257,16 +280,7 @@ async function loadCode(source: string, path: string): Promise<QuorumConfig> {
   } catch (error) {
     fail(path, importProblem(error))
   }
-  let checked: { readonly config: QuorumConfig } | { readonly issues: ConfigIssue[] }
-  try {
-    const value = module.default
-    const issues = isPlainObject(value) ? dataIssues(value, path) : [{ path, message: 'must export an object as its default' }]
-    checked = issues.length > 0 ? { issues } : checkConfig(configCodeSchema, value, path)
-  } catch (error) {
-    fail(path, `failed to load (${thrownName(error)})`)
-  }
-  if ('issues' in checked) throw new ConfigError(checked.issues)
-  return checked.config
+  return checkCodeValue(configCodeSchema, () => module.default, { file: path, notAnObject: 'must export an object as its default', threw: 'failed to load' })
 }
 
 /**
@@ -347,4 +361,22 @@ export async function readConfigFile(path: string, options: { readonly cwd?: str
   if ('problem' in text) fail(path, text.problem)
   const config = format === 'code' ? await loadCode(source, path) : checkData(format === 'yaml' ? parseYaml(text.value) : parseJson(text.value), path)
   return { config: await readPromptFiles(config, dirname(source), path), source }
+}
+
+/**
+ * Load the config a run uses: the file `options.configPath` names, else the one `QUORUM_CONFIG` names, read
+ * as `readConfigFile` reads it, or none, and then the layers of the environment over it, resolved as
+ * `resolveConfig` resolves them. No file is ever searched for, whatever the working directory holds: a
+ * checkout can plant one, so a file loads only when it is named (ADR-0014). `options.env` defaults to
+ * `process.env`. The resolved config holds the keys it read: never print or log one.
+ *
+ * @returns the resolved config, the absolute path of the file it came from (none without a file) and its warnings
+ * @throws ConfigError with every problem of the file or of the resolution
+ */
+export async function loadConfig(options: { readonly cwd?: string, readonly env?: Env, readonly configPath?: string } = {}): Promise<{ readonly config: ResolvedConfig, readonly source: string | undefined, readonly warnings: readonly string[] }> {
+  const env = options.env ?? process.env
+  const path = options.configPath ?? envValue(env, 'QUORUM_CONFIG')
+  const loaded = path === undefined ? undefined : await readConfigFile(path, { cwd: options.cwd })
+  const config = resolveConfig(loaded?.config ?? {}, { env })
+  return { config, source: loaded?.source, warnings: config.warnings }
 }
