@@ -212,7 +212,7 @@ declare function fromConfig(
 type Env = Readonly<Record<string, string | undefined>>
 ```
 
-`loadConfig` reads the config file it is named, if any, lays the environment over it and resolves the result into a `ResolvedConfig`: every layer merged, every reference bound, every key read. `fromConfig` builds a quorum from a config: a `ConfigInput`, which it checks and resolves, or a `ResolvedConfig`, which it uses as it is. Both read `process.env` when no `env` is given, and both throw one `ConfigError` with every issue at once, before anything is sent.
+`loadConfig` reads the config file it is named, if any, lays the environment over it and resolves the result into a `ResolvedConfig`: every layer merged, every reference bound, every key read. `fromConfig` builds a quorum from a config: a `ConfigInput`, which it checks and resolves, or a `ResolvedConfig`, which it uses as it is. Both read `process.env` when no `env` is given, and both throw a `ConfigError` before anything is sent, with every issue of the step that failed: `loadConfig`, those of the file, or else those of the resolution; `fromConfig`, those of the config's check, or else those of the resolution and the providers.
 
 ```ts
 import { fromConfig, inertLine, loadConfig } from './src/index.ts'
@@ -300,13 +300,13 @@ A provider's key is the first of:
 
 ### Warnings and errors
 
-`loadConfig` returns the config's `warnings`: the deprecation line, a preset's key that is not sent, and a key sent over plain `http`. The `warnings` of the quorum `fromConfig` returns hold those first, then the core's: a profile setting that cannot take full effect, [Warnings](../20-using/40-profiles.md#warnings). A provider object is named by its config key in events and in `meta`, whatever `id` it holds.
+`loadConfig` returns the config's `warnings`: the deprecation line, a preset's key that is not sent, and a key sent over plain `http`. The `warnings` of the quorum `fromConfig` returns hold those first, then the core's: a profile setting that cannot take full effect, [Warnings](../20-using/40-profiles.md#warnings). A provider object is read once, when its config is checked, into a snapshot that calls the object as it is, and is named by its config key in events and in `meta`, whatever `id` it holds.
 
 | Path | Message | Cause |
 | --- | --- | --- |
 | The path as given | The file's own problem, such as `does not exist`, `is not valid YAML at line 2, column 1 (DUPLICATE_KEY)` or `failed to load (Error)` | `loadConfig` could not read the file, or it is not valid |
 | `config` | `must be an object` | A `ConfigInput` that is not a plain object |
-| `config` | `could not be read (Error)` | A getter or a proxy of the config threw: only the error's name is kept, `an error` when that is not a plain class name |
+| `config` | `could not be read (Error)` | A getter or a proxy of the config threw, one of a provider object's included: each provider object is read once, here, and only the error's name is kept, `an error` when that is not a plain class name |
 | `config` | `holds more than 10000 values` | A `ConfigInput` too large to walk |
 | `<path>` | `is not allowed as a key: it can replace the prototype of an object`, `must be plain data: an object, an array, a string, a finite number, true, false or null`, `must be a finite number`, or `is nested more than 64 keys deep` | A `ConfigInput` that holds data a config may not |
 | `<path>` | The schema's: `is not a known field`, `is required`, `must be a string`, `must be at least 1`, and the like | A field of the wrong shape, at its path |
@@ -325,10 +325,9 @@ A provider's key is the first of:
 | `providers.<name>` | `CORP_KEY is not set` | The variable `apiKeyEnv` names, or the preset's own, is not set |
 | `providers.<name>.apiKeyEnv` | `names a variable that is not set` | The same, for a name that is not an upper-case variable name: a key pasted there is never printed |
 | `providers.<name>.<field>` | The builder's: [Presets as data](../20-using/30-providers.md#presets-as-data) and [Configuration errors](../20-using/30-providers.md#configuration-errors) | A provider that the builder refuses, defined or derived |
-| `providers.<name>` | `could not be read (Error)` | A provider object whose `model` or `complete` threw when read: only the error's name is kept |
 | `providers.<name>.model` | `must be a string` | A provider object whose model is not a string |
 
-The warnings, each starting at the path it is about:
+The warnings, each but the first starting at the path it is about:
 
 | Warning | Cause |
 | --- | --- |

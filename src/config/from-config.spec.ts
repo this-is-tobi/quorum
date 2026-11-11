@@ -7,6 +7,7 @@ import { fromConfig } from './from-config.ts'
 import { resolveConfig } from './resolve.ts'
 import type { ConfigInput } from './schema.ts'
 
+const SECRET = 'sk-planted-secret'
 const diff = ['diff --git a/a.js b/a.js', '--- a/a.js', '+++ b/a.js', '@@ -1 +1 @@', '-safe()', '+exec(cmd)'].join('\n')
 const content = (text: string): Response => jsonReply({ choices: [{ message: { content: text } }] })
 const finding = JSON.stringify({ findings: [{ file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }] })
@@ -107,8 +108,23 @@ describe('fromConfig', () => {
     const complete = async (): Promise<CompletionResponse> => ({ text: '', model: 'm' })
     expect(await issuesOf({ providers: { mine: { get model(): never {
       throw new Error('sk-zz-secret')
-    }, complete } } })).toEqual([{ path: 'providers.mine', message: 'could not be read (Error)' }])
+    }, complete } } })).toEqual([{ path: 'config', message: 'could not be read (Error)' }])
     expect(await issuesOf({ providers: { mine: { model: 7, complete } } })).toEqual([{ path: 'providers.mine.model', message: 'must be a string' }])
+  })
+
+  it.each([1, 2, 3, 4, 5, 6, 7, 8])('a provider whose complete getter throws from read %i on never has its message printed', async (reads) => {
+    let seen = 0
+    const mine = {
+      model: 'm',
+      get complete() {
+        seen += 1
+        if (seen >= reads) throw new Error(SECRET)
+        return async (): Promise<CompletionResponse> => ({ text: '{"findings":[]}', model: 'm' })
+      },
+    }
+    const issues = await issuesOf({ providers: { mine } })
+    expect([[], [{ path: 'config', message: 'could not be read (Error)' }]]).toContainEqual(issues)
+    expect(JSON.stringify(issues)).not.toContain(SECRET)
   })
 
   it('lists the config\'s warnings, then the core\'s', async () => {
