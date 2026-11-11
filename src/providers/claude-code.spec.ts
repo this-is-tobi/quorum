@@ -742,8 +742,16 @@ describe('claudeCode', () => {
     const began = Date.now()
     const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, ms?: number) => {
       if (ms !== VERSION_CHECK_MS) return realSetTimeout(handler, ms)
+      // The record is read while the fake may still be writing it: a line that does not parse yet is no start.
+      const started = (): boolean => {
+        try {
+          return readFakeVersionRecords(dir, 'silent').length > 0
+        } catch {
+          return false
+        }
+      }
       const fire = (): void => {
-        if (readFakeVersionRecords(dir, 'silent').length > 0 || Date.now() - began > 5000) handler()
+        if (started() || Date.now() - began > 5000) handler()
         else realSetTimeout(fire, 50)
       }
       return realSetTimeout(fire, 400)
