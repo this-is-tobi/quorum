@@ -140,8 +140,8 @@ profiles:
       medium: 2
       low: null
     prompts:
-      research: sha256:1d112d6a2eded6cc0108c2b46a6e13aa9e3359df2e1ce1908bb10b08f4011583
-      vote: sha256:108ef252bca6e9a789d4fa5bd2f535a17e7fa836be9b29f11845490a9776b129
+      research: sha256:<64 hex digits>
+      vote: sha256:<64 hex digits>
 concurrency: 4
 maxFindings: 50
 warnings: []
@@ -153,7 +153,7 @@ warnings: []
 | `providers` | Each provider a profile that runs uses, by its config key, in the order the config defines them. A provider defined as data prints the fields it sets, in this order: `preset`, `protocol`, `origin` (always), `model`, `apiKey`, `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature` (`null` too), `maxTokens`, `maxTokensField` and `systemPrompt`. A provider object, which a TS or JS config defines, prints `implements: Provider` and its `model` |
 | `profiles` | Each profile that runs, by id, in run order: `gating` (`true` unless the profile sets `false`), `research` (the provider that looks for findings), `lenses` (the provider each lens votes through), `thresholds` (the kept votes each confidence level needs, `null` for a level the policy disables) and `prompts` (`research` and `vote`, each as a hash) |
 | `concurrency`, `maxFindings` | The values the review applies: the config's, else the defaults, `4` and `50` |
-| `warnings` | The warnings a run prints as `warning:` lines before its banner |
+| `warnings` | The config's warnings: the deprecated variables, the variables nothing reads and the keys that are not sent or sent in cleartext. A run prints these as `warning:` lines before its banner, and adds the warnings of the profiles, such as a policy level that is never reached: [Warnings](./40-profiles.md#warnings) |
 
 What it leaves out, so that the output can stay in a public CI log:
 
@@ -196,11 +196,12 @@ exit $code
 ```
 
 - **`set -o pipefail`** makes a failing `git diff` fail the step. Without it, a base branch the job never fetched leaves quorum an empty stdin, which it reviews as a blank diff and passes with `0`.
-- **Run the binary, not `bun run start`.** The job's working directory is the pull request's checkout, and Bun reads a `bunfig.toml` and a `.env` from its working directory: the pull request could add one that runs its code first, or one that points the finder at its own endpoint. A `.env` can also set `QUORUM_CONFIG`, which names a config the pull request wrote (and a TS or JS one runs), and any `QUORUM_*` variable. The binary reads neither: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
+- **Run the binary, or Node, not `bun run start`.** The job's working directory is the pull request's checkout, and Bun reads a `bunfig.toml` and a `.env` from its working directory: the pull request could add one that runs its code first, or one that points the finder at its own endpoint. A `.env` can also set `QUORUM_CONFIG`, which names a config the pull request wrote (and a TS or JS one runs), and any `QUORUM_*` variable. The binary reads neither, and neither does Node: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
+- **Name a config from the base branch.** A config file loads only when `--config` or `QUORUM_CONFIG` names it, and in CI it must come from the base branch or another path the pull request cannot write, its prompt files included: [Trust](./20-configuration.md#trust).
 - **The base must be in the clone.** `origin/main...HEAD` needs `origin/main` and the commit where the branch left it, which a shallow clone may not have.
 - **A clean exit covers what the harness can detect.** An endpoint that cut an oversized prompt can still give a clean review of what was left, so bound the size of the diffs the job reviews: [What the harness cannot detect](../30-security/10-threat-model.md#what-the-harness-cannot-detect).
 - **The result is untrusted text.** It holds what models wrote about a change an attacker may have written: [Output handling](../30-security/30-output-handling.md#text-an-attacker-can-influence) says how to treat it before you render it anywhere.
 
 ## Next
 
-[Configuration](./20-configuration.md) — the environment variables that pick the finder's and the panel's endpoints, models and keys, and the errors a bad value causes.
+[Configuration](./20-configuration.md) — the config file and how to name it, how the layers combine, the `QUORUM_*` variables, the voter's fallback, the keys, the trust a named config needs in CI, and the errors a bad setting causes.

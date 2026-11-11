@@ -38,7 +38,7 @@ Cleaned means stripped of control, format and other invisible characters, with w
 | --- | --- | --- |
 | `angle` | string | The id of the lens the vote was cast from |
 | `vote` | object or `null` | `keep`, a boolean, then `reasoning`, a string; `null` when the vote failed |
-| `error` | string or `null` | `null`, or why the vote failed: the message of the error, such as `voter: HTTP 503: "model is loading"`, or the text of anything else the provider threw |
+| `error` | string or `null` | `null`, or why the vote failed: the message of the error, such as `default: HTTP 503: "model is loading"`, or the text of anything else the provider threw |
 
 A failed vote counts as a reject.
 
@@ -106,7 +106,7 @@ Each gap makes the review incomplete, as an unreviewed finding does: the CLI exi
 
 ## An example
 
-A review of a diff that touches three files, run with fake providers that answer for the security profile. The finder listed five findings: one cited `src/auth.js`, which the diff does not touch, and was dropped (`invalidFindings` is 1); one had no `quote` and could not be read (the `finding-unreadable` gap). The three others went to the panel. The SQL injection was kept by all three lenses: `high`. The path traversal was kept by one: `discarded`. The session token got one keep, one reject and a vote whose endpoint answered 503: one more keep would have reached `medium`, so it is `unreviewed`. The CLI would exit `1` for this result.
+A review of a diff that touches three files, run on the one provider, named `default`, that the CLI builds from `QUORUM_RESEARCH_MODEL` alone, answering for the finder and every voter; its replies are fake. The finder listed five findings: one cited `src/auth.js`, which the diff does not touch, and was dropped (`invalidFindings` is 1); one had no `quote` and could not be read (the `finding-unreadable` gap). The three others went to the panel. The SQL injection was kept by all three lenses: `high`. The path traversal was kept by one: `discarded`. The session token got one keep, one reject and a vote whose endpoint answered 503: one more keep would have reached `medium`, so it is `unreviewed`. The CLI would exit `1` for this result.
 
 ```json
 {
@@ -215,7 +215,7 @@ A review of a diff that touches three files, run with fake providers that answer
         {
           "angle": "impact",
           "vote": null,
-          "error": "voter: HTTP 503: \"model is loading\""
+          "error": "default: HTTP 503: \"model is loading\""
         },
         {
           "angle": "defenses",
@@ -236,20 +236,20 @@ A review of a diff that touches three files, run with fake providers that answer
       "security": {
         "providers": {
           "research": {
-            "id": "research",
+            "id": "default",
             "model": "qwen3.6:27b"
           },
           "lenses": {
             "reachability": {
-              "id": "voter",
+              "id": "default",
               "model": "qwen3.6:27b"
             },
             "impact": {
-              "id": "voter",
+              "id": "default",
               "model": "qwen3.6:27b"
             },
             "defenses": {
-              "id": "voter",
+              "id": "default",
               "model": "qwen3.6:27b"
             }
           }

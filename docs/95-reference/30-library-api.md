@@ -121,9 +121,9 @@ The sink receives every event of a review, synchronously and in order, as each t
 The first events of the review on [The JSON result](./20-json-result.md#an-example), as the sink received them:
 
 ```text
-{"type":"run:start","profiles":["security"],"providers":{"security":{"research":{"id":"research","model":"qwen3.6:27b"},"lenses":{"reachability":{"id":"voter","model":"qwen3.6:27b"},"impact":{"id":"voter","model":"qwen3.6:27b"},"defenses":{"id":"voter","model":"qwen3.6:27b"}}}}}
+{"type":"run:start","profiles":["security"],"providers":{"security":{"research":{"id":"default","model":"qwen3.6:27b"},"lenses":{"reachability":{"id":"default","model":"qwen3.6:27b"},"impact":{"id":"default","model":"qwen3.6:27b"},"defenses":{"id":"default","model":"qwen3.6:27b"}}}}}
 {"type":"stage:start","profile":"security","stage":"research"}
-{"type":"call","profile":"security","role":"research","provider":{"id":"research","model":"qwen3.6:27b"},"durationMs":0,"ok":true,"usage":{"inputTokens":1840,"outputTokens":412}}
+{"type":"call","profile":"security","role":"research","provider":{"id":"default","model":"qwen3.6:27b"},"durationMs":0,"ok":true,"usage":{"inputTokens":1840,"outputTokens":412}}
 {"type":"finding:invalid","profile":"security","reason":"src/auth.js:3 is not in the diff"}
 {"type":"incomplete","entry":{"profile":"security","reason":"finding-unreadable","detail":"findings[4]: quote: Invalid input: expected string, received undefined"}}
 {"type":"stage:end","profile":"security","stage":"research","durationMs":8,"count":3}

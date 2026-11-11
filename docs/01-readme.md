@@ -19,7 +19,7 @@ Nothing needs reading in order. Pick what you came to do: each track lists its p
 1. [Installation](./10-getting-started/10-installation.md) — Bun, the clone, a standalone binary on your `$PATH`, and a check that it works without a model.
 2. [Quick start](./10-getting-started/20-quickstart.md) — point it at a model, review a diff, and read the progress, the result and the exit code.
 3. [The CLI](./20-using/10-cli.md) — the invocation, what goes to stdout and stderr, every exit code, and what each should do to a CI job.
-4. [Configuration](./20-using/20-configuration.md) — the `RESEARCH_*` and `VOTER_*` variables, how the panel falls back to the finder's settings, and the errors a bad value causes.
+4. [Configuration](./20-using/20-configuration.md) — the config file and the trust it needs in CI, the `QUORUM_*` variables, how the panel falls back to the finder's settings, the keys, `--print-config`, and the errors a bad setting causes.
 5. [Providers](./20-using/30-providers.md) — what a provider is, the shipped adapters, the presets, the `openaiCompatible` options the environment leaves at their defaults, and writing a provider of your own.
 
 ### B. Use it from code, or review something else
@@ -37,7 +37,7 @@ Nothing needs reading in order. Pick what you came to do: each track lists its p
 
 ## If you arrive with a job
 
-Start from the work instead of the feature. To gate pull requests in CI, read the [Quick start](./10-getting-started/20-quickstart.md), then [Using it in CI](./20-using/10-cli.md#using-it-in-ci). To put the panel on another model than the finder, or on a hosted API, read [The voter's fallback](./20-using/20-configuration.md#the-voters-fallback). To read a result someone sent you, [The JSON result](./95-reference/20-json-result.md) has every field. To review for something other than security, start at [Writing a profile](./20-using/40-profiles.md#writing-a-profile). Before you run quorum on a pull request from someone you do not know, read the [Threat model](./30-security/10-threat-model.md).
+Start from the work instead of the feature. To gate pull requests in CI, read the [Quick start](./10-getting-started/20-quickstart.md), then [Using it in CI](./20-using/10-cli.md#using-it-in-ci). To put the panel on another model than the finder, or on a hosted API, read [The voter's fallback](./20-using/20-configuration.md#the-voters-fallback). To run it with a config file on pull requests, read [Trust](./20-using/20-configuration.md#trust) first. To read a result someone sent you, [The JSON result](./95-reference/20-json-result.md) has every field. To review for something other than security, start at [Writing a profile](./20-using/40-profiles.md#writing-a-profile). Before you run quorum on a pull request from someone you do not know, read the [Threat model](./30-security/10-threat-model.md).
 
 A word that seems to mean something particular — a lens, a verdict, unreviewed — is defined once in the [glossary](./95-reference/10-glossary.md), with the acronyms these pages assume.
 
