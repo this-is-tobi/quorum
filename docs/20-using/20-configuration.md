@@ -270,7 +270,7 @@ providers:
 - **`auth`** is `inherit`, `login` or `api-key`, `inherit` when unset: [The auth modes](#the-auth-modes).
 - **`args`** passes `--effort`, `--fallback-model`, `--max-budget-usd` and, in `api-key` mode, `--betas`, each followed by its value or written `--flag=value`. No other flag is accepted, so `args` cannot loosen the isolation: [Claude Code options](./30-providers.md#claude-code-options).
 - **`structuredOutput`** is `schema` by default, and `prompt` leaves the reply's shape to the prompt.
-- **`apiKeyEnv`** names the variable that holds the key in `api-key` mode, `ANTHROPIC_API_KEY` by default.
+- **`apiKeyEnv`** names the variable that holds the key in `api-key` mode, `ANTHROPIC_API_KEY` by default. Under `inherit` or `login` it is refused, `providers.claude.apiKeyEnv: is set, but auth is not api-key`, and the variable is never read.
 - **A YAML or JSON provider cannot name the executable.** `command` is code-only: [Where the command comes from](#where-the-command-comes-from).
 
 ### The Claude Code version
@@ -323,7 +323,7 @@ A provider's key is the first of these:
 2. **The variable `apiKeyEnv` names.** A variable that is not set is an error, `providers.gateway: GATEWAY_KEY is not set`, never a silent run without a key.
 3. **The preset's own variable** (`OPENAI_API_KEY` for `openai`, `MISTRAL_API_KEY` for `mistral`: the column of [Presets](./30-providers.md#presets)), only while the base URL keeps the preset's origin. At another origin it is not read, and a warning says so.
 
-A `claude-code` provider has no preset, and takes a key in `api-key` mode only: the first two sources, else `ANTHROPIC_API_KEY`. In another mode a key is refused, `providers.claude.apiKey: is set, but auth is not api-key, so it would never be sent`: [The auth modes](#the-auth-modes).
+A `claude-code` provider has no preset, and takes a key in `api-key` mode only: the first two sources, else `ANTHROPIC_API_KEY`. In another mode a key is refused, `providers.claude.apiKey: is set, but auth is not api-key, so it would never be sent`, and so is an `apiKeyEnv`, `providers.claude.apiKeyEnv: is set, but auth is not api-key`, which is not read: [The auth modes](#the-auth-modes).
 
 Three more rules keep a key at its own endpoint:
 

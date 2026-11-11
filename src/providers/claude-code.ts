@@ -167,8 +167,9 @@ const CREDENTIAL_VARIABLES: ReadonlySet<string> = new Set([
 ])
 /**
  * The variables whose values no quoted text may repeat, whichever the mode keeps in the child's environment:
- * the credentials `login` and `api-key` remove, the Claude Code login's own token, and the bearer tokens and
- * keys of the cloud providers. A text that comes back from `claude` can echo any of them.
+ * the credentials `login` and `api-key` remove, the Claude Code login's own token and its refresh token, the
+ * passphrase of a client key, and the bearer tokens, keys and session tokens of the cloud providers. A text
+ * that comes back from `claude` can echo any of them.
  */
 const REDACTED_VARIABLES: ReadonlySet<string> = new Set([
   'ANTHROPIC_API_KEY',
@@ -179,6 +180,10 @@ const REDACTED_VARIABLES: ReadonlySet<string> = new Set([
   'ANTHROPIC_AWS_API_KEY',
   'ANTHROPIC_FOUNDRY_API_KEY',
   'ANTHROPIC_FOUNDRY_AUTH_TOKEN',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'CLAUDE_CODE_OAUTH_REFRESH_TOKEN',
+  'CLAUDE_CODE_CLIENT_KEY_PASSPHRASE',
 ])
 const CLOUD_PROVIDER_PREFIX = 'CLAUDE_CODE_USE_'
 const KEY_VARIABLE = 'ANTHROPIC_API_KEY'
@@ -514,7 +519,7 @@ function signalName(signal: string): string {
 /**
  * The reply of a result, or the `ProviderError` it amounts to, in this order: a prompt too long, a
  * refusal, an error (anything but an `is_error` of `false` is one), a child a signal ended or a non-zero
- * exit after a success, a tool the server ran, then the text. Claude Code
+ * exit after a success, a tool the server ran, a reply the token limit cut off, then the text. Claude Code
  * reports an API error as exit 1 with `subtype: "success"` and `is_error: true`, so the JSON on stdout is
  * read before the exit code.
  */
@@ -527,6 +532,7 @@ function readFinished(result: Record<string, unknown>, run: ClaudeRun, context: 
   if (run.code !== null && run.code !== 0) throw fail('process', `claude exited ${run.code} after its result`, run.code)
   const modelUsage = isRecord(result.modelUsage) ? Object.values(result.modelUsage).filter(isRecord) : []
   if (ranServerTool(result, modelUsage)) throw fail('invalid-response', 'the server ran a tool for this reply, which quorum never allows')
+  if (result.stop_reason === 'max_tokens') throw fail('truncated', 'reply was cut off by the token limit')
   const text = replyText(result, context.structuredOutput, fail)
   const usage = sumUsage(modelUsage, result.total_cost_usd)
   const models = isRecord(result.modelUsage) ? Object.keys(result.modelUsage) : []

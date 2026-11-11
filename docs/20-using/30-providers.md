@@ -483,7 +483,7 @@ Not everything is off, and no flag of this list turns the rest off: an organizat
 
 - **`ANTHROPIC_BASE_URL` goes under `login` and `api-key`**, since a login or a key sent through another host is what [the threat model](../30-security/10-threat-model.md#a-key-sent-only-to-its-own-endpoint) rules out. A gateway stays reachable through `inherit`. `ANTHROPIC_CUSTOM_HEADERS` goes because a header can carry another credential, and `ANTHROPIC_UNIX_SOCKET` because it sends every request through a local socket, as a base URL would. A `CLAUDE_CODE_USE_` prefix catches a cloud provider added later.
 - **The key of `api-key`** is `apiKey`, else the environment's `ANTHROPIC_API_KEY`, trimmed. With neither, Claude Code has no credential and the call fails: the CLI's resolution refuses it earlier, [Claude Code](./20-configuration.md#claude-code).
-- **A text that quotes `claude`'s output is redacted** of the values of the credential variables the child holds, as written and trimmed: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_CUSTOM_HEADERS`, `AWS_BEARER_TOKEN_BEDROCK`, `ANTHROPIC_AWS_API_KEY`, `ANTHROPIC_FOUNDRY_API_KEY` and `ANTHROPIC_FOUNDRY_AUTH_TOKEN`. A reply from `claude` can echo any of them.
+- **A text that quotes `claude`'s output is redacted** of the values of the credential variables the child holds, as written and trimmed: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`, `CLAUDE_CODE_CLIENT_KEY_PASSPHRASE`, `ANTHROPIC_CUSTOM_HEADERS`, `AWS_BEARER_TOKEN_BEDROCK`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `ANTHROPIC_AWS_API_KEY`, `ANTHROPIC_FOUNDRY_API_KEY` and `ANTHROPIC_FOUNDRY_AUTH_TOKEN`. A reply from `claude` can echo any of them.
 
 ### The size of a Claude Code request
 
@@ -495,7 +495,7 @@ The guard of [The size of a request](#the-size-of-a-request), with two differenc
 
 ### Claude Code replies and errors
 
-`claude -p --output-format=json` prints one JSON object. Only the unknown-model error and two success runs were observed live: the shapes of a refusal, a prompt too long and an auth failure follow Claude Code's documentation. Claude Code reports an API error as exit `1` with that object on stdout, `subtype: "success"` and `is_error: true`, so the object is read before the exit code, in this order:
+`claude -p --output-format=json` prints one JSON object. Only the unknown-model error and two success runs were observed live: the shapes of a refusal, a reply cut off by the token limit, a prompt too long and an auth failure follow Claude Code's documentation. Claude Code reports an API error as exit `1` with that object on stdout, `subtype: "success"` and `is_error: true`, so the object is read before the exit code, in this order:
 
 | The result | Kind | Message |
 | --- | --- | --- |
@@ -506,6 +506,7 @@ The guard of [The size of a request](#the-size-of-a-request), with two differenc
 | A signal ended `claude` after a success result | `process` | `claude was stopped by SIGTERM after its result` |
 | A non-zero exit after a success result | `process` | `claude exited 1 after its result` |
 | A tool the server ran: `usage.server_tool_use` or a model's `webSearchRequests` above 0 | `invalid-response` | `the server ran a tool for this reply, which quorum never allows` |
+| A success result with `stop_reason` `max_tokens`, checked before the text | `truncated` | `reply was cut off by the token limit` |
 | `schema` mode and no structured output, though no error is reported | `invalid-response` | `reply has no structured output`, or `reply structured output could not be serialized` |
 | `prompt` mode and no `result` text | `invalid-response` | `reply has no text` |
 

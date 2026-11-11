@@ -206,8 +206,14 @@ describe('credentialValues', () => {
     ANTHROPIC_AWS_API_KEY: 'aws-key',
     ANTHROPIC_FOUNDRY_API_KEY: 'foundry-key',
     ANTHROPIC_FOUNDRY_AUTH_TOKEN: 'foundry-tok',
+    AWS_SECRET_ACCESS_KEY: 'aws-secret',
+    AWS_SESSION_TOKEN: 'aws-session',
+    CLAUDE_CODE_OAUTH_REFRESH_TOKEN: 'oauth-refresh',
+    CLAUDE_CODE_CLIENT_KEY_PASSPHRASE: 'passphrase',
   }
   const env = { PATH: '/usr/bin', HOME: '/home/u', ANTHROPIC_BASE_URL: 'https://gw.example', ...SECRETS }
+  /** What `login` and `api-key` keep: every credential but the four they remove. */
+  const KEPT_BY_LOGIN = ['aws-bearer', 'aws-key', 'foundry-key', 'foundry-tok', 'oauth', 'aws-secret', 'aws-session', 'oauth-refresh', 'passphrase']
   const valuesOf = (auth: 'inherit' | 'login' | 'api-key', apiKey?: string): string[] => credentialValues(childEnv(env, auth, apiKey, '/run/tmp')).sort()
 
   it('holds every credential the child receives under inherit, and nothing else', () => {
@@ -215,11 +221,11 @@ describe('credentialValues', () => {
   })
 
   it('holds the credentials login keeps, which are not the ones it removes', () => {
-    expect(valuesOf('login')).toEqual(['aws-bearer', 'aws-key', 'foundry-key', 'foundry-tok', 'oauth'])
+    expect(valuesOf('login')).toEqual([...KEPT_BY_LOGIN].sort())
   })
 
   it('holds the key api-key sends, not the one it replaces', () => {
-    expect(valuesOf('api-key', 'sk-mine')).toEqual(['aws-bearer', 'aws-key', 'foundry-key', 'foundry-tok', 'oauth', 'sk-mine'])
+    expect(valuesOf('api-key', 'sk-mine')).toEqual([...KEPT_BY_LOGIN, 'sk-mine'].sort())
     expect(valuesOf('api-key')).toContain('sk-env')
   })
 
@@ -396,6 +402,16 @@ describe('readResult', () => {
 
   it('reads a refusal', () => {
     expect(failure(() => read(fixtures.refusal))).toMatchObject({ kind: 'refusal', message: 'cc: model refused' })
+  })
+
+  it('reads a reply the token limit cut off as truncated, in both modes, before it reads the text', () => {
+    const cut = { kind: 'truncated', retryable: false, message: 'cc: reply was cut off by the token limit' }
+    expect(failure(() => read(change(fixtures.schema, { stop_reason: 'max_tokens' })))).toMatchObject(cut)
+    expect(failure(() => read(change(fixtures.plain, { stop_reason: 'max_tokens' }), { structuredOutput: 'prompt' }))).toMatchObject(cut)
+    // Before the text: a cut reply with no structured output is not read as a reply that has none.
+    expect(failure(() => read(change(fixtures.schema, { stop_reason: 'max_tokens', structured_output: undefined })))).toMatchObject(cut)
+    // An error result stays an error.
+    expect(failure(() => read(change(fixtures.unknownModel, { stop_reason: 'max_tokens' }), { code: 1 }))).toMatchObject({ kind: 'http', status: 404 })
   })
 
   it('fails a schema run that ends without structured output, though it reports no error', () => {
