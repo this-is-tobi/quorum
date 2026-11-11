@@ -18,6 +18,7 @@ export type OllamaOptions = HttpProviderOptions
 const RULES: Omit<AdapterRules, 'auth'> = {
   reservedBodyKeys: ['model', 'messages', 'stream', 'truncate', 'shift'],
   toolBodyKeys: ['tools', '_debug_render_only'],
+  replyLimitPaths: [['options', 'num_predict']],
   fixedHeaders: [],
   structuredOutputs: ['prompt', 'json', 'schema'],
 }
@@ -25,13 +26,15 @@ const RULES: Omit<AdapterRules, 'auth'> = {
 const DONE: ReadonlySet<unknown> = new Set(['stop', 'length'])
 
 /**
- * The `num_ctx` keys of an `extraBody` options object, which `contextTokens` sets. The server reads a key in
- * any letter case, so the options object and `num_ctx` are matched as it reads them.
+ * The problems of an `extraBody` options that would undo `contextTokens`: a `num_ctx` key, which it sets, and
+ * a value that is no object, which would replace the options the adapter sends and drop `num_ctx` with them.
+ * The server reads a key in any letter case, so the options object and `num_ctx` are matched as it reads them.
  */
 function numCtxIssues(id: string, extraBody: unknown): ConfigIssue[] {
   if (!isRecord(extraBody)) return []
   return Object.entries(extraBody).flatMap(([key, value]): ConfigIssue[] => {
-    if (bodyKeyForm(key) !== 'options' || !isRecord(value)) return []
+    if (bodyKeyForm(key) !== 'options') return []
+    if (!isRecord(value)) return [{ path: `${id}.${issuePath(['extraBody', key])}`, message: 'must be an object' }]
     return Object.keys(value)
       .filter(name => bodyKeyForm(name) === 'numctx')
       .map(name => ({ path: `${id}.${issuePath(['extraBody', key, name])}`, message: 'is set from contextTokens: set contextTokens instead' }))

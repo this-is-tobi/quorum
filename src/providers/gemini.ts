@@ -21,6 +21,7 @@ const BLOCK_REASON = new RegExp(`^[A-Z_]{1,${MAX_BLOCK_REASON}}$`)
 const RULES: Omit<AdapterRules, 'auth'> = {
   reservedBodyKeys: ['contents', 'systemInstruction'],
   toolBodyKeys: ['tools', 'toolConfig', 'cachedContent'],
+  replyLimitPaths: [['generationConfig', 'maxOutputTokens']],
   fixedHeaders: [],
   structuredOutputs: ['prompt', 'json', 'schema'],
 }

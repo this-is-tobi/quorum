@@ -23,6 +23,7 @@ const ANTHROPIC_VERSION = '2026-10-21'
 const RULES: Omit<AdapterRules, 'auth'> = {
   reservedBodyKeys: ['model', 'messages', 'system', 'stream'],
   toolBodyKeys: ['tools', 'tool_choice', 'mcp_servers', 'container', 'thread', 'fallbacks', 'fallback_credit_token', 'context_management', 'compaction'],
+  replyLimitPaths: [['max_tokens']],
   fixedHeaders: ['anthropic-version'],
   structuredOutputs: ['prompt', 'schema'],
 }

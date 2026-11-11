@@ -33,6 +33,7 @@ describeProviderContract({
   },
   reservedBodyKeys: ['model', 'messages', 'system', 'stream'],
   toolBodyKeys: ['tools', 'tool_choice', 'mcp_servers', 'container', 'thread', 'fallbacks', 'fallback_credit_token', 'context_management', 'compaction'],
+  replyLimitPaths: [['max_tokens']],
   structuredOutputs: ['prompt', 'schema'],
   mergeProbe: {
     options: { structuredOutput: 'schema' },
