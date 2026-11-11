@@ -84,6 +84,7 @@ describe('childEnv', () => {
     ANTHROPIC_PROFILE: 'work',
     ANTHROPIC_FEDERATION_RULE_ID: 'r',
     ANTHROPIC_ORGANIZATION_ID: 'o',
+    ANTHROPIC_CUSTOM_HEADERS: 'Authorization: Bearer other',
     CLAUDE_CODE_USE_BEDROCK: '1',
     CLAUDE_CODE_USE_VERTEX: '1',
     CLAUDE_CODE_USE_FOUNDRY: '1',
@@ -110,14 +111,31 @@ describe('childEnv', () => {
     CLAUDE_CODE_USE_POWERSHELL_TOOL: '1',
     CLAUDE_CODE_EXTRA_BODY: '{"tools":[]}',
   }
-  const env = { ...KEPT, ...CREDENTIALS, ...SESSION, ...CAPABILITIES, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0', DISABLE_COMPACT: '0', CLAUDE_CODE_TMPDIR: '/elsewhere', UNSET: undefined }
-  const ISOLATION = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', DISABLE_COMPACT: '1', CLAUDE_CODE_TMPDIR: '/run/tmp' }
+  const env = {
+    ...KEPT,
+    ...CREDENTIALS,
+    ...SESSION,
+    ...CAPABILITIES,
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+    DISABLE_COMPACT: '0',
+    CLAUDE_CODE_TMPDIR: '/elsewhere',
+    CLAUDE_CODE_AUTO_CONNECT_IDE: 'true',
+    ENABLE_CLAUDEAI_MCP_SERVERS: 'true',
+    UNSET: undefined,
+  }
+  const ISOLATION = {
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+    DISABLE_COMPACT: '1',
+    CLAUDE_CODE_TMPDIR: '/run/tmp',
+    CLAUDE_CODE_AUTO_CONNECT_IDE: 'false',
+    ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+  }
 
-  it('passes the environment through under inherit, without the parent session\'s variables or what loads or adds, and with the isolation set', () => {
+  it('passes the environment through under inherit, without the parent session\'s variables or what loads or adds, and with the isolation set, the connectors off', () => {
     expect(childEnv(env, 'inherit', undefined, '/run/tmp')).toEqual({ ...KEPT, ...CREDENTIALS, ...ISOLATION })
   })
 
-  it('removes every credential and endpoint variable under login, so the Claude Code login answers', () => {
+  it('removes every credential, header and endpoint variable under login, so the Claude Code login answers', () => {
     expect(childEnv(env, 'login', undefined, '/run/tmp')).toEqual({ ...KEPT, ...ISOLATION })
   })
 
@@ -138,14 +156,16 @@ describe('childEnv', () => {
       claude_code_messaging_token: 'parent-secret',
       claude_code_tmpdir: '/elsewhere',
       Disable_Compact: '0',
+      enable_claudeai_mcp_servers: 'true',
+      Anthropic_Custom_Headers: 'X: y',
     }
     expect(childEnv(mixed, 'login', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', ...ISOLATION })
     expect(childEnv(mixed, 'api-key', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', ...ISOLATION, ANTHROPIC_API_KEY: 'sk-win' })
-    expect(childEnv(mixed, 'inherit', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', Anthropic_Api_Key: 'sk-win', claude_code_use_bedrock: '1', ...ISOLATION })
+    expect(childEnv(mixed, 'inherit', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', Anthropic_Api_Key: 'sk-win', claude_code_use_bedrock: '1', Anthropic_Custom_Headers: 'X: y', ...ISOLATION })
   })
 
   it('reads only the environment\'s own variables', () => {
-    expect(childEnv(Object.create({ ANTHROPIC_API_KEY: 'inherited' }) as Record<string, string>, 'inherit', undefined, '/t')).toEqual({ CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', DISABLE_COMPACT: '1', CLAUDE_CODE_TMPDIR: '/t' })
+    expect(childEnv(Object.create({ ANTHROPIC_API_KEY: 'inherited' }) as Record<string, string>, 'inherit', undefined, '/t')).toEqual({ ...ISOLATION, CLAUDE_CODE_TMPDIR: '/t' })
   })
 })
 
