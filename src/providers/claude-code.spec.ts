@@ -1,8 +1,13 @@
-import { describe, expect, it, vi } from 'vitest'
-import { ProviderError } from '../core/errors.ts'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ConfigError, ProviderError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
+import type { ChatMessage, CompletionRequest } from '../core/ports.ts'
+import { fakeClaudeEnv, isRunning, readFakeRecord, writeFakeClaude } from '../testing/claude.ts'
 import * as fixtures from '../testing/fixtures/claude-code.ts'
-import { childEnv, claudeArgs, claudeCodeIssues, readResult } from './claude-code.ts'
+import { childEnv, claudeArgs, claudeCode, claudeCodeIssues, KILL_GRACE_MS, readResult } from './claude-code.ts'
 import type { ClaudeCodeOptions } from './claude-code.ts'
 import { CONTEXT_REQUIRED } from './options.ts'
 
@@ -364,4 +369,125 @@ describe('readResult', () => {
     const two = `${JSON.stringify({ ...JSON.parse(fixtures.schema), modelUsage: { a: { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 3, cacheCreationInputTokens: 4 }, b: { inputTokens: 10, outputTokens: 20 } } })}\n`
     expect(read(two)).toEqual({ text: '{"keep":true}', model: 'sonnet', usage: { inputTokens: 18, outputTokens: 22, costUsd: 0.000525 } })
   })
+})
+
+describe('claudeCode', () => {
+  const request: CompletionRequest = { system: 'instructions', messages: [{ role: 'user', content: 'data' }], output: { name: 'panel_vote', schema: { type: 'object' } } }
+  let dir = ''
+  let runs = ''
+  let claude = ''
+  let missing = ''
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'quorum-cc-spec-'))
+    runs = join(dir, 'runs')
+    mkdirSync(runs)
+    claude = writeFakeClaude(dir)
+    missing = join(dir, 'missing')
+  })
+  // The run directories go under the spec's own directory, so each test sees them go.
+  beforeEach(() => {
+    vi.stubEnv('TMPDIR', runs)
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('refuses its options when it is called, before any request', () => {
+    expect(() => claudeCode({ ...options, auth: 'bearer' as never })).toThrow(ConfigError)
+    expect(() => claudeCode({ ...options, auth: 'bearer' as never })).toThrow('cc.auth: must be inherit, login or api-key')
+  })
+
+  it.each<[ChatMessage[]]>([
+    [[]],
+    [[{ role: 'assistant', content: 'x' }]],
+    [[{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }, { role: 'user', content: 'c' }]],
+  ])('takes only a request of one user message, not %j', async (messages) => {
+    await expect(claudeCode({ ...options, command: missing }).complete({ ...request, messages })).rejects.toMatchObject({ kind: 'unsupported', message: 'cc: takes a request of exactly one user message' })
+  })
+
+  it('refuses a message that would run as a Claude Code command, before starting claude', async () => {
+    await expect(claudeCode({ ...options, command: missing }).complete({ ...request, messages: [{ role: 'user', content: '  /model opus' }] })).rejects.toMatchObject({ kind: 'unsupported', message: 'cc: a message that starts with / would run as a Claude Code command' })
+  })
+
+  it('refuses a message over the 10000000 bytes Claude Code reads on stdin, before starting claude', async () => {
+    const huge = { ...request, messages: [{ role: 'user' as const, content: 'a'.repeat(10_000_001) }] }
+    await expect(claudeCode({ ...options, contextTokens: 999_999_999, command: missing }).complete(huge)).rejects.toMatchObject({ kind: 'too-large', message: 'cc: the message is 10000001 bytes, more than the 10000000 Claude Code reads on stdin' })
+  })
+
+  it('refuses a request that may not fit contextTokens, keeping 4096 tokens for what Claude Code adds', async () => {
+    await expect(claudeCode({ ...options, contextTokens: 20128, command: missing }).complete(request)).rejects.toMatchObject({
+      kind: 'too-large',
+      message: 'cc: may need 20129 tokens, more than contextTokens (20128): 33 for its text at one token per byte, 4096 for the chat template and 16000 for the reply',
+    })
+  })
+
+  it('rejects as aborted, and starts nothing, when the signal has already aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    await expect(claudeCode({ ...options, command: missing }).complete({ ...request, signal: controller.signal })).rejects.toMatchObject({ kind: 'aborted', message: 'cc: request aborted' })
+    expect(readdirSync(runs)).toEqual([])
+  })
+
+  it('reports a command that cannot start, and leaves no directory', async () => {
+    await expect(claudeCode({ ...options, command: missing, env: {} }).complete(request)).rejects.toMatchObject({ kind: 'process', message: 'cc: could not start the claude CLI (ENOENT)' })
+    expect(readdirSync(runs)).toEqual([])
+  })
+
+  it('runs claude in a fresh empty directory with the message on stdin and the system text in a file, then removes it all', async () => {
+    const env = fakeClaudeEnv(dir, 'round', fixtures.schema, { CLAUDE_CODE_MESSAGING_TOKEN: 'parent-secret', HOME: '/home/u' })
+    const provider = claudeCode({ id: 'cc', model: 'haiku', contextTokens: 200000, command: claude, env })
+    expect(await provider.complete(request)).toEqual({ text: '{"keep":true}', model: 'claude-haiku-5-5', usage: { inputTokens: 2662, outputTokens: 225, costUsd: 0.000525 } })
+    const record = readFakeRecord(dir, 'round')
+    const run = join(runs, basename(dirname(record.cwd)))
+    expect(basename(run)).toMatch(/^quorum-claude-/)
+    expect(record.cwd).toBe(join(realpathSync(runs), basename(run), 'cwd'))
+    expect(record.cwdEntries).toEqual([])
+    expect(record.stdin).toBe('data')
+    expect(record.systemPrompt).toBe('instructions')
+    expect(record.argv).toEqual(claudeArgs({ model: 'haiku', auth: 'inherit', structuredOutput: 'schema', args: [] }, join(run, 'system.txt'), { type: 'object' }))
+    expect(record.env).toMatchObject({ HOME: '/home/u', CLAUDE_CODE_TMPDIR: join(run, 'tmp'), CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', DISABLE_COMPACT: '1' })
+    expect(record.env.CLAUDE_CODE_MESSAGING_TOKEN).toBeUndefined()
+    expect(readdirSync(runs)).toEqual([])
+  })
+
+  it('runs api-key mode bare with its key, and reports an exit without JSON by its stderr, redacted of the key', async () => {
+    const env = fakeClaudeEnv(dir, 'bare', '', { FAKE_CLAUDE_STDERR: 'error: key sk-SECRET refused', FAKE_CLAUDE_EXIT: '2', ANTHROPIC_AUTH_TOKEN: 'tok' })
+    const provider = claudeCode({ id: 'cc', model: 'haiku', contextTokens: 200000, auth: 'api-key', apiKey: 'sk-SECRET', command: claude, env })
+    await expect(provider.complete(request)).rejects.toMatchObject({ kind: 'process', status: 2, message: 'cc: claude exited 2: "error: key [redacted] refused"' })
+    const record = readFakeRecord(dir, 'bare')
+    expect(record.argv).toContain('--bare')
+    expect(record.env.ANTHROPIC_API_KEY).toBe('sk-SECRET')
+    expect(record.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+    expect(readdirSync(runs)).toEqual([])
+  })
+
+  it('stops claude with SIGTERM when the request aborts, waits for it, removes its directory and rejects as aborted', async () => {
+    const controller = new AbortController()
+    const env = fakeClaudeEnv(dir, 'term', fixtures.schema, { FAKE_CLAUDE_HANG: '1' })
+    const call = claudeCode({ ...options, command: claude, env }).complete({ ...request, signal: controller.signal })
+    await vi.waitFor(() => expect(existsSync(join(dir, 'term.record.json'))).toBe(true), { timeout: 5000 })
+    const { pid } = readFakeRecord(dir, 'term')
+    controller.abort()
+    await expect(call).rejects.toMatchObject({ kind: 'aborted', message: 'cc: request aborted' })
+    expect(isRunning(pid)).toBe(false)
+    expect(readdirSync(runs)).toEqual([])
+  })
+
+  it('kills claude with SIGKILL when it still runs two seconds after SIGTERM', async () => {
+    const controller = new AbortController()
+    const env = fakeClaudeEnv(dir, 'kill', fixtures.schema, { FAKE_CLAUDE_HANG: '1', FAKE_CLAUDE_IGNORE_TERM: '1' })
+    const call = claudeCode({ ...options, command: claude, env }).complete({ ...request, signal: controller.signal })
+    await vi.waitFor(() => expect(existsSync(join(dir, 'kill.record.json'))).toBe(true), { timeout: 5000 })
+    const { pid } = readFakeRecord(dir, 'kill')
+    const aborted = Date.now()
+    controller.abort()
+    await expect(call).rejects.toMatchObject({ kind: 'aborted' })
+    expect(Date.now() - aborted).toBeGreaterThanOrEqual(KILL_GRACE_MS - 100)
+    expect(isRunning(pid)).toBe(false)
+    expect(readdirSync(runs)).toEqual([])
+  }, 15_000)
 })

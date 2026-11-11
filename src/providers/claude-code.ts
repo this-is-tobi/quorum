@@ -1,10 +1,16 @@
-import { isAbsolute } from 'node:path'
+import type { ChildProcess } from 'node:child_process'
+import { spawn } from 'node:child_process'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { isAbsolute, join } from 'node:path'
+import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue, ProviderError } from '../core/errors.ts'
-import type { CompletionResponse, JsonSchema } from '../core/ports.ts'
+import type { ChatMessage, CompletionRequest, CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
 import type { Usage } from '../core/types.ts'
 import { snippet } from './http.ts'
 import { contextTokensIssues, isRecord, NOT_VISIBLE_ASCII, wordList } from './options.ts'
 import { replyFailure, tokenUsage } from './reply.ts'
+import { checkFits, contextBudget, utf8Length } from './size.ts'
 
 /**
  * The `claude-code` adapter runs the user's installed `claude` CLI once per request, headless and isolated,
@@ -13,8 +19,9 @@ import { replyFailure, tokenUsage } from './reply.ts'
  * credential on the command line. Written against Claude Code 2.1.311: a CLI that lacks one of the flags
  * below fails the run, but one that ignores an environment variable runs with less isolation.
  *
- * This half is pure: the options and their checks, the command line, the child's environment and the
- * reading of the JSON result, each testable without a process.
+ * The first half is pure: the options and their checks, the command line, the child's environment and the
+ * reading of the JSON result, each testable without a process. The second, `claudeCode`, runs the child:
+ * a directory per request, the spawn, stdin, the output caps, abort and cleanup.
  */
 
 /** The tokens kept around a request for the context Claude Code adds itself: 953 for a one-line prompt and 1463 with the schema tool's second turn, measured live. */
@@ -154,6 +161,18 @@ const CREDENTIAL_VARIABLES: ReadonlySet<string> = new Set([
 ])
 const CLOUD_PROVIDER_PREFIX = 'CLAUDE_CODE_USE_'
 const KEY_VARIABLE = 'ANTHROPIC_API_KEY'
+
+/** The prefix of a run's directory under the system's temporary directory. */
+const RUN_DIRECTORY_PREFIX = 'quorum-claude-'
+/** The most bytes of stdout read: a result over this is refused, and 16 MiB is as much as an HTTP adapter reads of a reply. */
+const MAX_STDOUT_BYTES = 16 * 1024 * 1024
+/** The most bytes of stderr kept: far more than the 500 characters an error message quotes. */
+const MAX_STDERR_BYTES = 64 * 1024
+/** A code of a system error as a message writes it: `ENOENT`, `ERR_INVALID_ARG_VALUE`. */
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,39}$/
+
+/** The failures of one provider, as `replyFailure` builds them. */
+type Failure = ReturnType<typeof replyFailure>
 
 const REASON = /^[a-z_]{1,64}$/
 const SIGNAL = /^SIG[A-Z0-9]{1,12}$/
@@ -392,7 +411,7 @@ function sumUsage(modelUsage: readonly Record<string, unknown>[], total: unknown
 }
 
 /** The text of a result: the structured output serialized in `schema` mode, `result` in `prompt` mode. */
-function replyText(result: Record<string, unknown>, structuredOutput: ClaudeCodeStructuredOutput, fail: ReturnType<typeof replyFailure>): string {
+function replyText(result: Record<string, unknown>, structuredOutput: ClaudeCodeStructuredOutput, fail: Failure): string {
   if (structuredOutput === 'schema') {
     if (!isRecord(result.structured_output)) throw fail('invalid-response', 'reply has no structured output')
     try {
@@ -461,4 +480,202 @@ export function readResult(run: ClaudeRun, context: ResultContext): CompletionRe
   if (run.signal !== null) throw fail('process', `claude was stopped by ${signalName(run.signal)}`)
   if (run.code !== null && run.code !== 0) throw fail('process', `claude exited ${run.code}: ${snippet(run.stderr, MAX_STDERR_TEXT, context.redact)}`, run.code)
   throw fail('invalid-response', 'claude printed no JSON result')
+}
+
+/** The directory of one run and what it holds. */
+interface RunDirectory {
+  /** The directory itself, which holds all the rest. */
+  readonly dir: string
+  /** The child's working directory: empty, so a checked-out repository's `CLAUDE.md` or settings are never in reach. */
+  readonly cwd: string
+  /** `CLAUDE_CODE_TMPDIR`: where `claude` keeps its scratch files. */
+  readonly tmp: string
+  /** The system text, which stays off the command line, where `ps` shows it to every user. */
+  readonly systemFile: string
+}
+
+/** How to start `claude`: the executable, its arguments, its working directory and its whole environment. */
+interface Launch {
+  readonly command: string
+  readonly args: readonly string[]
+  readonly cwd: string
+  readonly env: Readonly<Record<string, string>>
+}
+
+/** What a run came to: the process's end, and whether its stdout went past the cap and was cut. */
+interface Finished {
+  readonly run: ClaudeRun
+  readonly overflow: boolean
+}
+
+/** `error`'s system code as a message writes it, ` (ENOENT)`, or nothing when it has none or one that is no plain identifier. */
+function codeSuffix(error: unknown): string {
+  const code = isRecord(error) ? error.code : undefined
+  return typeof code === 'string' && ERROR_CODE.test(code) ? ` (${code})` : ''
+}
+
+/**
+ * Remove a run's directory. A failure is ignored: the directory holds only the system text, and a reply
+ * must not turn into an error because a file could not be removed.
+ */
+async function removeRun(dir: string): Promise<void> {
+  await rm(dir, { recursive: true, force: true }).catch(() => {})
+}
+
+/** Make the directory of one run, its working and scratch directories and the system text's file (mode 0600), or remove what was made and fail. */
+async function prepareRun(system: string, fail: Failure): Promise<RunDirectory> {
+  let dir: string | undefined
+  try {
+    dir = await mkdtemp(join(tmpdir(), RUN_DIRECTORY_PREFIX))
+    const run = { dir, cwd: join(dir, 'cwd'), tmp: join(dir, 'tmp'), systemFile: join(dir, 'system.txt') }
+    await mkdir(run.cwd)
+    await mkdir(run.tmp)
+    await writeFile(run.systemFile, system, { mode: 0o600 })
+    return run
+  } catch (error) {
+    if (dir !== undefined) await removeRun(dir)
+    throw fail('process', `could not prepare a directory for claude${codeSuffix(error)}`)
+  }
+}
+
+/** The only message of a request, which must be a user message `claude` reads as text: not one `-p` would expand as a slash command, nor one over the stdin cap. */
+function messageOf(request: CompletionRequest, fail: Failure): ChatMessage {
+  const [message, ...rest] = request.messages
+  if (message?.role !== 'user' || rest.length > 0) throw fail('unsupported', 'takes a request of exactly one user message')
+  if (message.content.trimStart().startsWith('/')) throw fail('unsupported', 'a message that starts with / would run as a Claude Code command')
+  const bytes = utf8Length(message.content)
+  if (bytes > MAX_STDIN_BYTES) throw fail('too-large', `the message is ${bytes} bytes, more than the ${MAX_STDIN_BYTES} Claude Code reads on stdin`)
+  return message
+}
+
+function throwIfAborted(signal: AbortSignal | undefined, fail: Failure): void {
+  if (signal?.aborted) throw fail('aborted', 'request aborted')
+}
+
+/**
+ * What a child's output pipe holds, up to `max` bytes. The rest is dropped but still read, so a full pipe
+ * never stalls the child, and `onOverflow` runs once at the first byte over. A character cut at the cap
+ * decodes as U+FFFD.
+ */
+function readCapped(stream: ChildProcess['stdout'], max: number, onOverflow: () => void = () => {}): { text: () => string, overflowed: () => boolean } {
+  const chunks: Buffer[] = []
+  let bytes = 0
+  let overflow = false
+  stream?.on('data', (chunk: Buffer) => {
+    if (overflow) return
+    const room = max - bytes
+    chunks.push(chunk.length > room ? chunk.subarray(0, room) : chunk)
+    bytes += Math.min(chunk.length, room)
+    if (chunk.length > room) {
+      overflow = true
+      onOverflow()
+    }
+  })
+  return { text: () => Buffer.concat(chunks).toString('utf8'), overflowed: () => overflow }
+}
+
+/**
+ * Start `claude` and settle once it has closed, or fails to start: the message goes to its stdin, which is
+ * then ended (an error there is ignored, since the exit says what happened), and its stdout and stderr are
+ * read to their caps. The signal's abort, or stdout past its cap, sends SIGTERM, then SIGKILL `KILL_GRACE_MS`
+ * later if it has not closed; the listener and the timer go once it has. A synchronous throw of `spawn`, or
+ * an `error` event before the child runs, is a `process` failure, and there is no child to wait for.
+ */
+function runChild(launch: Launch, input: string, signal: AbortSignal | undefined, fail: Failure): Promise<Finished> {
+  return new Promise((resolve, reject) => {
+    const startFailure = (error: unknown): ProviderError => fail('process', `could not start the claude CLI${codeSuffix(error)}`)
+    let child: ChildProcess
+    try {
+      child = spawn(launch.command, launch.args, { cwd: launch.cwd, env: launch.env, stdio: 'pipe', shell: false, windowsHide: true })
+    } catch (error) {
+      reject(startFailure(error))
+      return
+    }
+    let killTimer: ReturnType<typeof setTimeout> | undefined
+    const stop = (): void => {
+      child.kill('SIGTERM')
+      killTimer ??= setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS)
+    }
+    const release = (): void => {
+      clearTimeout(killTimer)
+      signal?.removeEventListener('abort', stop)
+    }
+    const stdout = readCapped(child.stdout, MAX_STDOUT_BYTES, stop)
+    const stderr = readCapped(child.stderr, MAX_STDERR_BYTES)
+    let started = false
+    child.once('spawn', () => {
+      started = true
+    })
+    child.on('error', (error) => {
+      if (started) return
+      release()
+      reject(startFailure(error))
+    })
+    child.once('close', (code, endedBy) => {
+      release()
+      resolve({ run: { stdout: stdout.text(), stderr: stderr.text(), code, signal: endedBy }, overflow: stdout.overflowed() })
+    })
+    signal?.addEventListener('abort', stop, { once: true })
+    child.stdin?.on('error', () => {})
+    child.stdin?.end(input)
+  })
+}
+
+/**
+ * A provider that runs the user's `claude` CLI once per request, headless and isolated, as a pure completion
+ * (see the header of this file). The key of `api-key` mode travels only in the child's environment (invariant
+ * I1). A request goes through these steps, in order:
+ *
+ * 1. exactly one message, a user message, else `unsupported`;
+ * 2. a message that starts with `/` after white space, which `-p` would run as a command: `unsupported`;
+ * 3. a message over `MAX_STDIN_BYTES` bytes: `too-large`;
+ * 4. the size guard, with `CLAUDE_CODE_TEMPLATE_TOKENS` kept for the context Claude Code adds: `too-large`;
+ * 5. an aborted signal: `aborted`;
+ * 6. a directory of its own, under the temporary directory, holding an empty working directory, `claude`'s
+ *    scratch directory and the system text's file: a failure to make it is `process`;
+ * 7. `claude` spawned there, with `claudeArgs` and `childEnv`, never through a shell: a failure to start is `process`;
+ * 8. the message written to its stdin, which is then ended;
+ * 9. stdout read to 16 MiB and stderr to 64 KiB, the rest dropped: more stdout stops the child, and is `invalid-response`;
+ * 10. on the signal's abort, or stdout past its cap: SIGTERM, then SIGKILL after `KILL_GRACE_MS`;
+ * 11. once the child has closed, the directory removed, on every path, before the call settles;
+ * 12. an aborted signal: `aborted`; else `readResult`'s reply or failure.
+ *
+ * No timeout is set: Claude Code retries a failed API call by itself, for minutes, and a deadline is the
+ * caller's own (a signal).
+ *
+ * @throws ConfigError with every problem of the options, before any request
+ */
+export function claudeCode(options: ClaudeCodeOptions): Provider {
+  const issues = claudeCodeIssues(options)
+  if (issues.length > 0) throw new ConfigError(issues)
+  const { id, model, contextTokens, auth = 'inherit', apiKey, structuredOutput = 'schema', command = 'claude' } = options
+  const args = [...options.args ?? []]
+  const env = Object.fromEntries(Object.entries(options.env ?? process.env))
+  const budget = contextBudget(contextTokens, undefined, CLAUDE_CODE_TEMPLATE_TOKENS)
+
+  return {
+    id,
+    model,
+    async complete(request) {
+      const fail = replyFailure(id)
+      const message = messageOf(request, fail)
+      checkFits(id, { system: request.system, messages: [message] }, request.output, budget)
+      const { signal } = request
+      throwIfAborted(signal, fail)
+      const run = await prepareRun(request.system, fail)
+      const environment = childEnv(env, auth, apiKey, run.tmp)
+      const key = environment[KEY_VARIABLE]
+      let finished: Finished
+      try {
+        throwIfAborted(signal, fail)
+        const launch = { command, args: claudeArgs({ model, auth, structuredOutput, args }, run.systemFile, request.output.schema), cwd: run.cwd, env: environment }
+        finished = await runChild(launch, message.content, signal, fail)
+      } finally {
+        await removeRun(run.dir)
+      }
+      throwIfAborted(signal, fail)
+      if (finished.overflow) throw fail('invalid-response', 'reply is over 16 MiB')
+      return readResult(finished.run, { id, model, structuredOutput, redact: auth === 'api-key' && key !== undefined ? [key] : [] })
+    },
+  }
 }
