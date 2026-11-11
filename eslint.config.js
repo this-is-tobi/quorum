@@ -89,6 +89,20 @@ export default antfu(
     },
   },
   {
+    // The adapter runs the claude CLI, so it alone may spawn a process, make a temporary directory and read
+    // the process's environment; it keeps every other rule of the providers.
+    files: ['src/providers/claude-code.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [
+          { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(ports|errors|types)\\.ts$|node:(child_process|fs/promises|os|path)$)', message: 'The claude-code adapter imports only its own modules, core/ports.ts, core/errors.ts, core/types.ts, node:child_process, node:fs/promises, node:os and node:path.' },
+        ],
+      }],
+      'no-restricted-globals': ['error', 'Bun', 'globalThis', 'global', 'self'],
+    },
+  },
+  {
     // The configuration reads files and the environment, and builds on the core, the profiles and the
     // providers; it never reaches the network or another thread, nor the global object, which would
     // reach them around this rule.

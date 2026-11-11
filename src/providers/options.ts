@@ -226,17 +226,18 @@ function isTokenCount(value: number): boolean {
 
 /**
  * The problems of `contextTokens`: not set, not a whole number of at least 1, or no more than the reply budget
- * and the chat template, which leaves no room for a request; one of them, never two. The room is checked
- * against a valid `maxTokens` only, since an invalid one has its own issue.
+ * and the template reserve (`TEMPLATE_TOKENS` unless the adapter names one), which leaves no room for a
+ * request; one of them, never two. The room is checked against a valid `maxTokens` only, since an invalid
+ * one has its own issue.
  */
-function contextTokensIssues(id: string, contextTokens: number | undefined, maxTokens: number | undefined): ConfigIssue[] {
+export function contextTokensIssues(id: string, contextTokens: number | undefined, maxTokens: number | undefined, templateTokens = TEMPLATE_TOKENS): ConfigIssue[] {
   const path = `${id}.contextTokens`
   if (contextTokens === undefined) return [{ path, message: CONTEXT_REQUIRED }]
   if (!isTokenCount(contextTokens)) return [{ path, message: 'must be a whole number of at least 1' }]
   if (maxTokens !== undefined && !isTokenCount(maxTokens)) return []
   const reply = maxTokens ?? DEFAULT_REPLY_TOKENS
-  if (contextTokens > reply + TEMPLATE_TOKENS) return []
-  return [{ path, message: `must be more than ${reply + TEMPLATE_TOKENS}, the ${reply} tokens of the reply budget and ${TEMPLATE_TOKENS} for the chat template` }]
+  if (contextTokens > reply + templateTokens) return []
+  return [{ path, message: `must be more than ${reply + templateTokens}, the ${reply} tokens of the reply budget and ${templateTokens} for the chat template` }]
 }
 
 /**
