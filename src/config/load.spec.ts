@@ -590,10 +590,24 @@ describe('loadConfig', () => {
   })
 
   it('reads the file QUORUM_CONFIG names when no path is given, and a path given wins', async () => {
+    const named = join(dir, file('env.yaml', 'providers:\n  fromenv: {preset: ollama, model: q}\n'))
+    file('flag.yaml', 'providers:\n  fromflag: {preset: ollama, model: q}\n')
+    expect(Object.keys((await loadConfig({ cwd: dir, env: { QUORUM_CONFIG: ` ${named} ` } })).config.providers)).toEqual(['fromenv'])
+    expect(Object.keys((await loadConfig({ cwd: dir, env: { QUORUM_CONFIG: named }, configPath: 'flag.yaml' })).config.providers)).toEqual(['fromflag'])
+  })
+
+  it.each(['env.yaml', './env.yaml', '../env.yaml', '~/env.yaml'])('refuses a QUORUM_CONFIG that is not an absolute path (%s), a path given or not, and reads nothing', async (relative) => {
     file('env.yaml', 'providers:\n  fromenv: {preset: ollama, model: q}\n')
     file('flag.yaml', 'providers:\n  fromflag: {preset: ollama, model: q}\n')
-    expect(Object.keys((await loadConfig({ cwd: dir, env: { QUORUM_CONFIG: ' env.yaml ' } })).config.providers)).toEqual(['fromenv'])
-    expect(Object.keys((await loadConfig({ cwd: dir, env: { QUORUM_CONFIG: 'env.yaml' }, configPath: 'flag.yaml' })).config.providers)).toEqual(['fromflag'])
+    const issue = [{ path: 'QUORUM_CONFIG', message: 'must be an absolute path' }]
+    await expect(loadConfig({ cwd: dir, env: { QUORUM_CONFIG: relative } })).rejects.toMatchObject({ issues: issue })
+    await expect(loadConfig({ cwd: dir, env: { QUORUM_CONFIG: ` ${relative} ` }, configPath: 'flag.yaml' })).rejects.toMatchObject({ issues: issue })
+  })
+
+  it('takes a blank QUORUM_CONFIG as unset, and a relative configPath as named per call', async () => {
+    file('flag.yaml', 'providers:\n  fromflag: {preset: ollama, model: q}\n')
+    await expect(loadConfig({ cwd: dir, env: { QUORUM_CONFIG: '  ' } })).rejects.toThrow(NO_MODEL)
+    expect(Object.keys((await loadConfig({ cwd: dir, env: { QUORUM_CONFIG: '' }, configPath: 'flag.yaml' })).config.providers)).toEqual(['fromflag'])
   })
 
   it('reads no file that is not named, whatever the working directory holds (ADR-0014)', async () => {

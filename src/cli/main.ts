@@ -2,12 +2,13 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import packageJson from '../../package.json' with { type: 'json' }
+import { readEnv } from '../config/env.ts'
 import type { Env } from '../config/env.ts'
 import { fromConfig } from '../config/from-config.ts'
 import { loadConfig } from '../config/load.ts'
 import { ConfigError } from '../core/errors.ts'
 import { inertJson, inertLine } from '../core/sanitize.ts'
-import type { QuorumResult } from '../core/types.ts'
+import type { Quorum, QuorumResult } from '../core/types.ts'
 import { printConfig } from './print-config.ts'
 import { bannerLines, progressSink } from './render.ts'
 
@@ -17,7 +18,7 @@ export const EXIT = { ok: 0, finding: 1, usage: 2, runtime: 3, incomplete: 4, in
 export interface CliIO {
   /** Arguments after the executable and script, e.g. `process.argv.slice(2)`. */
   argv: readonly string[]
-  /** The directory a relative diff path and a relative `QUORUM_CONFIG` resolve against, e.g. `process.cwd()`. */
+  /** The directory a relative diff path and a relative `--config` resolve against, e.g. `process.cwd()`. */
   readonly cwd: string
   /** Environment variables, e.g. `process.env`. */
   env: Env
@@ -60,12 +61,14 @@ const OPTIONS = {
  *
  * Its flags are `--config`, `--profile`, `--allow-incomplete`, `--print-config`, `--help` and `--version`;
  * a usage error prints the usage after its message. Its settings are the config file `--config` or
- * `QUORUM_CONFIG` names, resolved against `io.cwd`, and the `QUORUM_*` variables of `io.env` with their
- * deprecated aliases. Each warning is printed once, before the banner.
+ * `QUORUM_CONFIG` names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the
+ * `QUORUM_*` variables of `io.env` with their deprecated aliases. Each warning is printed once, before the
+ * banner, and when the configuration is refused the environment's warnings come before the `Error:` lines,
+ * since a deprecated or mistyped variable is often what caused the error.
  *
  * `--print-config` reads no diff and calls no model: it writes the resolved config as YAML on stdout
  * (see `printConfig`), warnings included, and returns 0; a diff argument with it is a usage error, and
- * a configuration error exits 2 as in a run.
+ * a configuration the run refuses, one of its providers that cannot be built included, exits 2 as in a run.
  *
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
  * error ended the review, and writes no result. A review that has already resolved is complete.
@@ -100,15 +103,16 @@ export async function runCli(io: CliIO): Promise<number> {
     return usageError(io, error)
   }
 
+  let quorum: Quorum | undefined
   try {
     const selection = values.profile === undefined ? undefined : { ids: values.profile, path: '--profile' }
     const { config, source } = await loadConfig({ cwd: io.cwd, env: io.env, configPath: values.config, selection })
+    quorum = await fromConfig(config, { env: io.env, events: progressSink(line => io.stderr.write(`${line}\n`)) })
     if (printing) {
       io.stdout.write(printConfig(config, source))
       return EXIT.ok
     }
-    const quorum = await fromConfig(config, { env: io.env, events: progressSink(line => io.stderr.write(`${line}\n`)) })
-    for (const warning of quorum.warnings) io.stderr.write(`${inertLine(`warning: ${warning}`)}\n`)
+    writeWarnings(io, quorum.warnings)
     for (const line of bannerLines(config)) io.stderr.write(`${line}\n`)
     if (diff.trim() === '') io.stderr.write('empty diff: nothing to review\n')
     const result = await quorum.review({ diff }, { signal: io.signal })
@@ -119,9 +123,15 @@ export async function runCli(io: CliIO): Promise<number> {
       io.stderr.write('interrupted\n')
       return EXIT.interrupted
     }
+    if (error instanceof ConfigError && quorum === undefined) writeWarnings(io, readEnv(io.env).warnings)
     io.stderr.write(`${errorLines(error)}\n`)
     return error instanceof ConfigError ? EXIT.usage : EXIT.runtime
   }
+}
+
+/** Write each warning as an inert `warning:` line. */
+function writeWarnings(io: CliIO, warnings: readonly string[]): void {
+  for (const warning of warnings) io.stderr.write(`${inertLine(`warning: ${warning}`)}\n`)
 }
 
 /** The one source of signals the CLI listens to: `process`, or an emitter in a test. */

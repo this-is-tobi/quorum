@@ -63,11 +63,32 @@ describe('bin', () => {
   it('exits 3, never 0, when the run stops with nothing left to wait for', () => {
     writeFileSync(join(dir, 'hang.mjs'), 'export default { providers: { mine: { model: \'m\', complete: () => new Promise(() => {}) } } }\n')
     writeFileSync(join(dir, 'x.diff'), DIFF)
-    const { status, stdout, stderr } = run(['x.diff'], { QUORUM_CONFIG: 'hang.mjs' })
+    const { status, stdout, stderr } = run(['x.diff'], { QUORUM_CONFIG: join(dir, 'hang.mjs') })
     expect(status).toBe(3)
     expect(stdout).toBe('')
     expect(stderr).toContain('Research (m @ the provider object mine)...\n')
     expect(stderr.endsWith('Error: the run stopped without a result\n')).toBe(true)
+  })
+
+  it('exits with the code a failed run returns, and writes no result', () => {
+    writeFileSync(join(dir, 'x.diff'), DIFF)
+    const { status, stdout, stderr } = run(['x.diff'], { QUORUM_CONFIG: 'relative.yaml' })
+    expect(status).toBe(2)
+    expect(stdout).toBe('')
+    expect(stderr).toBe('Error: QUORUM_CONFIG: must be an absolute path\n')
+  })
+
+  it('exits 3 with one inert line and no stack on an error nothing caught', () => {
+    const escape = String.fromCharCode(27)
+    writeFileSync(join(dir, 'throws.mjs'), `export default { providers: { mine: { model: 'm', complete: () => {
+  setTimeout(() => { throw new Error('boom${escape}[31m\\n::error::x') }, 0)
+  return new Promise(() => {})
+} } } }\n`)
+    writeFileSync(join(dir, 'x.diff'), DIFF)
+    const { status, stdout, stderr } = run(['x.diff'], { QUORUM_CONFIG: join(dir, 'throws.mjs') })
+    expect(status).toBe(3)
+    expect(stdout).toBe('')
+    expect(stderr).toBe('Research (m @ the provider object mine)...\nPanel will use m @ the provider object mine\nError: boom<U+001B>[31m<U+000A>::error::x\n')
   })
 
   it('exits 130 on SIGTERM, and writes no result', async () => {
@@ -76,7 +97,7 @@ describe('bin', () => {
   signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason) })
 }) } } }\n`)
     writeFileSync(join(dir, 'x.diff'), DIFF)
-    const { child, stdout, stderr, exited } = start(['x.diff'], { QUORUM_CONFIG: 'slow.mjs' })
+    const { child, stdout, stderr, exited } = start(['x.diff'], { QUORUM_CONFIG: join(dir, 'slow.mjs') })
     try {
       await vi.waitFor(() => expect(stderr()).toContain('Research ('), { timeout: 10_000 })
       child.kill('SIGTERM')
@@ -91,7 +112,7 @@ describe('bin', () => {
   it('exits 130 at once on a second SIGINT, while a provider ignores the first', async () => {
     writeFileSync(join(dir, 'stuck.mjs'), 'export default { providers: { mine: { model: \'m\', complete: () => new Promise(resolve => setTimeout(resolve, 60_000)) } } }\n')
     writeFileSync(join(dir, 'x.diff'), DIFF)
-    const { child, stderr, exited } = start(['x.diff'], { QUORUM_CONFIG: 'stuck.mjs' })
+    const { child, stdout, stderr, exited } = start(['x.diff'], { QUORUM_CONFIG: join(dir, 'stuck.mjs') })
     try {
       await vi.waitFor(() => expect(stderr()).toContain('Research ('), { timeout: 10_000 })
       child.kill('SIGINT')
@@ -99,6 +120,8 @@ describe('bin', () => {
       expect(child.exitCode).toBeNull()
       child.kill('SIGINT')
       expect(await exited).toBe(130)
+      expect(stdout()).toBe('')
+      expect(stderr().endsWith('interrupted\n')).toBe(true)
     } finally {
       child.kill('SIGKILL')
     }

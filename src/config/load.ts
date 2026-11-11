@@ -1,7 +1,7 @@
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
-import { dirname, extname, resolve } from 'node:path'
+import { dirname, extname, isAbsolute, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isMap, isPair, isScalar, isSeq, LineCounter, parseDocument } from 'yaml'
 import type { Document, YAMLError } from 'yaml'
@@ -381,16 +381,21 @@ export async function readConfigFile(path: string, options: { readonly cwd?: str
  * Load the config a run uses: the file `options.configPath` names, else the one `QUORUM_CONFIG` names, read
  * as `readConfigFile` reads it, or none, and then the layers of the environment over it, resolved as
  * `resolveConfig` resolves them. No file is ever searched for, whatever the working directory holds: a
- * checkout can plant one, so a file loads only when it is named (ADR-0014). `options.env` defaults to
- * `process.env`. `options.selection` names the profiles that run, over `QUORUM_PROFILES`, as `resolveConfig`
- * reads it. The resolved config holds the keys it read: never print or log one.
+ * checkout can plant one, so a file loads only when it is named (ADR-0014). `QUORUM_CONFIG` must be an
+ * absolute path, a path given or not: set once, a relative one would resolve inside whatever checkout
+ * quorum runs in and load that checkout's file, which is the search ADR-0014 forbids. `options.configPath`
+ * is named per call, so it may be relative. `options.env` defaults to `process.env`. `options.selection`
+ * names the profiles that run, over `QUORUM_PROFILES`, as `resolveConfig` reads it. The resolved config
+ * holds the keys it read: never print or log one.
  *
  * @returns the resolved config, the absolute path of the file it came from (none without a file) and its warnings
- * @throws ConfigError with every problem of the file or of the resolution
+ * @throws ConfigError with every problem of the file or of the resolution, or the one issue of a `QUORUM_CONFIG` that is not absolute
  */
 export async function loadConfig(options: { readonly cwd?: string, readonly env?: Env, readonly configPath?: string, readonly selection?: ProfileSelection } = {}): Promise<{ readonly config: ResolvedConfig, readonly source: string | undefined, readonly warnings: readonly string[] }> {
   const env = options.env ?? process.env
-  const path = options.configPath ?? envValue(env, 'QUORUM_CONFIG')
+  const named = envValue(env, 'QUORUM_CONFIG')
+  if (named !== undefined && !isAbsolute(named)) fail('QUORUM_CONFIG', 'must be an absolute path')
+  const path = options.configPath ?? named
   const loaded = path === undefined ? undefined : await readConfigFile(path, { cwd: options.cwd })
   const config = resolveConfig(loaded?.config ?? {}, { env, selection: options.selection })
   return { config, source: loaded?.source, warnings: config.warnings }

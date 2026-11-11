@@ -231,7 +231,8 @@ const result = await quorum.review({ diff })
 
 `fromConfig({}, { env: process.env })` needs no file: the environment alone names a provider and a model. The CLI and `runQuorum` read the `QUORUM_*` variables, with the deprecated `RESEARCH_*` and `VOTER_*` aliases, and the file `QUORUM_CONFIG` names through these two functions.
 
-- **`options.cwd`** is the directory a relative `configPath` and `QUORUM_CONFIG` resolve against, the working directory by default. `source` is the absolute path of the file read, and `undefined` when none was.
+- **`options.cwd`** is the directory a relative `configPath` resolves against, the working directory by default. `source` is the absolute path of the file read, and `undefined` when none was.
+- **`QUORUM_CONFIG` must be an absolute path.** A relative one is refused with a `ConfigError` holding the issue `QUORUM_CONFIG: must be an absolute path`, whether or not `configPath` is given: a variable set once would resolve inside whatever directory the process runs in, and in CI that is a pull request's checkout, which could plant the file. A `configPath` is named per call, so it may be relative.
 - **`options.selection`** names the profiles that run, over `QUORUM_PROFILES`, which is still read and checked: a malformed variable is refused even when a selection is given. `path` is what the selection's issues name, and the CLI passes `--profile`. Each id must match `^[a-z][a-z0-9_-]*$`, and none may repeat.
 - **`options.events`** is the event sink of the quorum, as `createQuorum` takes it.
 - **A process imports a TS or JS config once.** A second `loadConfig` of the same file gets the module the first import cached, since Node and Bun cache a module by its URL.
@@ -255,7 +256,7 @@ Each layer sits over the one before it: the built-in defaults, then the file `co
 
 | Variable | Sets |
 | --- | --- |
-| `QUORUM_CONFIG` | `loadConfig` only: the config file to read, when `configPath` is not given |
+| `QUORUM_CONFIG` | `loadConfig` only: the config file to read, when `configPath` is not given. It must be an absolute path |
 | `QUORUM_PROFILES` | The profiles that run: ids separated by commas, each a profile the config defines or a built-in one, none twice |
 | `QUORUM_RESEARCH_PRESET`, `QUORUM_VOTER_PRESET` | A role's provider, built from a [preset](../20-using/30-providers.md#presets) |
 | `QUORUM_RESEARCH_PROTOCOL`, `QUORUM_VOTER_PROTOCOL` | A role's provider, built from a wire protocol: `openai-compatible`, `anthropic`, `gemini` or `ollama` |
@@ -381,7 +382,7 @@ The stages, the profile checks and the CLI's exit-code rule are not exported: a 
 declare function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult>
 ```
 
-Deprecated: use `loadConfig` and `fromConfig`. `runQuorum` reviews `diff` as the CLI does with no flag: it calls `loadConfig()` and `fromConfig` on the result, so it reads the file `QUORUM_CONFIG` names, if any, relative to `process.cwd()`, and the `QUORUM_*` variables of `process.env` with their `RESEARCH_*` and `VOTER_*` aliases, and it runs the profiles they select, the security profile alone by default: [Configuration](../20-using/20-configuration.md). `onProgress` receives the CLI's progress lines, the `flag:` lines included, each one inert and each profile's line starting with `[<id>] ` when several run, but neither the banner, nor a warning, nor `empty diff: nothing to review`, which the CLI writes itself. A configuration error, a missing model included, rejects with a `ConfigError`, for an empty diff too.
+Deprecated: use `loadConfig` and `fromConfig`. `runQuorum` reviews `diff` as the CLI does with no flag: it calls `loadConfig()` and `fromConfig` on the result, so it reads the file `QUORUM_CONFIG` names, if any, which must be an absolute path, and the `QUORUM_*` variables of `process.env` with their `RESEARCH_*` and `VOTER_*` aliases, and it runs the profiles they select, the security profile alone by default: [Configuration](../20-using/20-configuration.md). `onProgress` receives the CLI's progress lines, the `flag:` lines included, each one inert and each profile's line starting with `[<id>] ` when several run, but neither the banner, nor a warning, nor `empty diff: nothing to review`, which the CLI writes itself. A configuration error, a missing model included, rejects with a `ConfigError`, for an empty diff too.
 
 ## A complete example
 
