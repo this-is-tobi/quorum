@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as api from './index.ts'
 import { runQuorum } from './index.ts'
 import { isolateEnv } from './testing/env.ts'
-import { chatReply } from './testing/http.ts'
+import { chatReply, ollamaReply } from './testing/http.ts'
 
 const diff = [
   'diff --git a/a.js b/a.js',
@@ -59,8 +59,8 @@ describe('runQuorum', () => {
   it('sends onProgress the progress lines the CLI prints', async () => {
     isolateEnv({ RESEARCH_MODEL: 'env-model', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' })
     vi.stubGlobal('fetch', vi.fn()
-      .mockImplementationOnce(async () => chatReply(JSON.stringify({ findings: [{ file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }] })))
-      .mockImplementation(async () => chatReply(JSON.stringify({ keep: true, reasoning: 'r' }))))
+      .mockImplementationOnce(async () => ollamaReply(JSON.stringify({ findings: [{ file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }] })))
+      .mockImplementation(async () => ollamaReply(JSON.stringify({ keep: true, reasoning: 'r' }))))
     const lines: string[] = []
     await runQuorum(diff, line => lines.push(line))
     expect(lines).toEqual(['1 candidate(s) after dedup', '1 kept, 0 discarded, 0 unreviewed by panel'])

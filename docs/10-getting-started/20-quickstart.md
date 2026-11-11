@@ -5,12 +5,11 @@ Five steps: point quorum at a model, review a diff, then read the three things i
 ## 1. Point it at a model
 
 ```bash
-export QUORUM_RESEARCH_PRESET=ollama
 export QUORUM_RESEARCH_MODEL=qwen3.6:27b
 export QUORUM_RESEARCH_CONTEXT_TOKENS=32768
 ```
 
-`QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` are the two settings quorum requires: the model, as your endpoint names it, and the model's context window in tokens, which quorum checks every request against ([The context size](../20-using/20-configuration.md#the-context-size)). Without the context size the run exits `2` with a message that names the variable, a blank diff included. `QUORUM_RESEARCH_PRESET=ollama` is set because on Ollama's OpenAI-compatible `/v1` a Modelfile's `num_ctx` outranks `OLLAMA_CONTEXT_LENGTH` and a thinking model's reasoning can run past the reserve, so Ollama would cut the prompt in silence, while the native protocol this preset speaks sends `num_ctx`, `truncate: false` and `shift: false`, telling the server the context size and refusing an overflow; keep the number at most what `ollama show <model>` reports for the model. With nothing else set, the finder and the panel both use that model at `http://localhost:11434`, Ollama's default address, and send no key. A hosted API, or a panel on another model than the finder, takes a few more `QUORUM_*` variables or a config file: [Configuration](../20-using/20-configuration.md).
+`QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` are the two settings quorum requires: the model, as your endpoint names it, and the model's context window in tokens, which quorum checks every request against ([The context size](../20-using/20-configuration.md#the-context-size)). Without the context size the run exits `2` with a message that names the variable, a blank diff included. With nothing else set, the finder and the panel both use that model through Ollama's native API at `http://localhost:11434`, the address Ollama listens on, on `127.0.0.1`, by default, and send no key. That API takes `num_ctx`, `truncate: false` and `shift: false`, so the server is told the context size and refuses an overflow, where Ollama's OpenAI-compatible `/v1` would cut the prompt in silence. Keep the number at most what `ollama show <model>` reports for the model: Ollama clamps a larger `num_ctx` to it, and the `CONTEXT` column of `ollama ps` shows the context a running model loaded. A hosted API, or a panel on another model than the finder, takes a few more `QUORUM_*` variables or a config file: [Configuration](../20-using/20-configuration.md).
 
 ## 2. Review a diff
 

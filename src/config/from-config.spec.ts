@@ -4,7 +4,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
 import type { Quorum, QuorumEvent } from '../core/types.ts'
 import { isolateEnv } from '../testing/env.ts'
-import { chatReply, sent } from '../testing/http.ts'
+import { chatReply, ollamaReply, sent } from '../testing/http.ts'
 import { fromConfig } from './from-config.ts'
 import { resolveConfig } from './resolve.ts'
 import type { ConfigInput } from './schema.ts'
@@ -13,9 +13,9 @@ const SECRET = 'sk-planted-secret'
 const diff = ['diff --git a/a.js b/a.js', '--- a/a.js', '+++ b/a.js', '@@ -1 +1 @@', '-safe()', '+exec(cmd)'].join('\n')
 const finding = JSON.stringify({ findings: [{ file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }] })
 
-/** A fetch stub answering the research call with one finding, and every vote with a keep. */
-function stubReview(): ReturnType<typeof vi.fn> {
-  const fetchMock = vi.fn().mockImplementationOnce(async () => chatReply(finding)).mockImplementation(async () => chatReply(JSON.stringify({ keep: true, reasoning: 'r' })))
+/** A fetch stub answering the research call with one finding, and every vote with a keep, each as `research` and `votes` shape a reply: OpenAI-compatible unless a protocol is given. */
+function stubReview(research: (content: string) => Response = chatReply, votes: (content: string) => Response = research): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn().mockImplementationOnce(async () => research(finding)).mockImplementation(async () => votes(JSON.stringify({ keep: true, reasoning: 'r' })))
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
 }
@@ -71,10 +71,10 @@ afterEach(() => {
 
 describe('fromConfig', () => {
   it('builds the providers of an environment-only config and reviews with them, the research key never reaching the voter', async () => {
-    const fetchMock = stubReview()
+    const fetchMock = stubReview(ollamaReply, chatReply)
     const env = { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_API_KEY: 'sk-r', QUORUM_VOTER_BASE_URL: 'https://api.mistral.ai/v1', QUORUM_VOTER_MODEL: 'mistral-small-latest', QUORUM_VOTER_API_KEY: 'sk-m', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_VOTER_CONTEXT_TOKENS: '131072' }
     const result = await (await fromConfig({}, { env })).review({ diff })
-    expect(sent(fetchMock, 0)).toMatchObject({ url: 'http://localhost:11434/v1/chat/completions', headers: { authorization: 'Bearer sk-r' } })
+    expect(sent(fetchMock, 0)).toMatchObject({ url: 'http://localhost:11434/api/chat', headers: { authorization: 'Bearer sk-r' } })
     expect(fetchMock.mock.calls).toHaveLength(4)
     for (const call of [1, 2, 3]) {
       expect(sent(fetchMock, call)).toMatchObject({ url: 'https://api.mistral.ai/v1/chat/completions', headers: { authorization: 'Bearer sk-m' } })
@@ -85,7 +85,7 @@ describe('fromConfig', () => {
   })
 
   it('hands the events of a review to options.events, the run first and its end last', async () => {
-    stubReview()
+    stubReview(ollamaReply)
     const events: QuorumEvent[] = []
     await (await fromConfig({}, { env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }, events: event => events.push(event) })).review({ diff })
     expect(events[0]).toMatchObject({ type: 'run:start', profiles: ['security'], providers: { security: { research: { id: 'default', model: 'qwen' } } } })
@@ -95,13 +95,13 @@ describe('fromConfig', () => {
 
   it('resolves a ConfigInput with process.env when no environment is given', async () => {
     isolateEnv({ QUORUM_RESEARCH_MODEL: 'from-process', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' })
-    const fetchMock = stubReview()
+    const fetchMock = stubReview(ollamaReply)
     await (await fromConfig({})).review({ diff })
     expect(sent(fetchMock).body.model).toBe('from-process')
   })
 
   it('uses a resolved config as it is, without reading the environment again', async () => {
-    const fetchMock = stubReview()
+    const fetchMock = stubReview(ollamaReply)
     const config = resolveConfig({}, { env: { QUORUM_RESEARCH_MODEL: 'resolved', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' } })
     await (await fromConfig(config, { env: { QUORUM_RESEARCH_MODEL: 'other', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' } })).review({ diff })
     expect(sent(fetchMock).body.model).toBe('resolved')

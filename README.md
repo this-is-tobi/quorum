@@ -1,6 +1,6 @@
 # Quorum :ballot_box:
 
-**Quorum** reviews a diff with several model calls instead of one. A model, the finder, proposes candidate findings, and a panel of voters blind to each other, one per lens, judges each one. Whether a finding is kept, and at what confidence, is computed in code from the split of their votes, never reported by a model. The default profile reviews security, through any OpenAI-compatible `/chat/completions` endpoint, local or hosted, or through your installed Claude Code CLI.
+**Quorum** reviews a diff with several model calls instead of one. A model, the finder, proposes candidate findings, and a panel of voters blind to each other, one per lens, judges each one. Whether a finding is kept, and at what confidence, is computed in code from the split of their votes, never reported by a model. The default profile reviews security through a model you point it at: over four HTTP protocols (Ollama's native API, OpenAI-compatible `/chat/completions`, the Anthropic Messages API and the Gemini API), with presets for the common vendors, local or hosted, or through your installed Claude Code CLI.
 
 Quorum is pre-release (`0.x`): the API may change. It assists a reviewer; it does not replace human review of untrusted changes.
 
@@ -18,14 +18,13 @@ It needs Bun 1.3.0 or newer. [Installation](./docs/10-getting-started/10-install
 ## Try it
 
 ```bash
-export QUORUM_RESEARCH_PRESET=ollama          # Ollama's native protocol, which tells the server the context size
 export QUORUM_RESEARCH_MODEL=qwen3.6:27b      # a model your local Ollama serves
 export QUORUM_RESEARCH_CONTEXT_TOKENS=32768   # its context window, in tokens
 quorum ./my.diff > result.json                # review a diff file
 git diff origin/main...HEAD | quorum > result.json   # or what your branch changes
 ```
 
-`QUORUM_RESEARCH_CONTEXT_TOKENS` is the model's context window in tokens, which quorum checks every request against, and without it the run exits `2` with a message that names it. `QUORUM_RESEARCH_PRESET=ollama` is set because on Ollama's OpenAI-compatible `/v1` a Modelfile's `num_ctx` outranks `OLLAMA_CONTEXT_LENGTH` and a thinking model's reasoning can run past the reserve, so Ollama would cut the prompt in silence, while the native protocol this preset speaks sends `num_ctx`, `truncate: false` and `shift: false`, telling the server the context size and refusing an overflow. Keep the number at most what `ollama show <model>` reports for the model.
+`QUORUM_RESEARCH_CONTEXT_TOKENS` is the model's context window in tokens, which quorum checks every request against, and without it the run exits `2` with a message that names it. With no provider configured and no base URL, preset or protocol variable, quorum talks to the Ollama on this machine through its native API, `http://localhost:11434`, which Ollama listens on, on `127.0.0.1`, by default. That API takes `num_ctx`, `truncate: false` and `shift: false`, so quorum tells the server the context size and the server refuses an overflow, where Ollama's OpenAI-compatible `/v1` would cut the prompt in silence. A base URL variable set on its own means an OpenAI-compatible server, as before. Keep the number at most what `ollama show <model>` reports for the model, since Ollama clamps a larger `num_ctx` to it, and read the context a running model loaded in the `CONTEXT` column of `ollama ps`.
 
 To review through your installed Claude Code CLI instead, run `claude` headless and isolated for each request:
 

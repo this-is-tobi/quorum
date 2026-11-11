@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CompletionResponse, Provider } from '../core/ports.ts'
-import { applyRoleOverrides, baseUrlOf, envValue, READ_VARIABLES, readEnv } from './env.ts'
+import { applyRoleOverrides, baseUrlOf, envValue, READ_VARIABLES, readEnv, setsOnlyBaseUrl } from './env.ts'
 import type { Env, EnvLayer, ProviderEntry, RoleBinding, RoleOverrides } from './env.ts'
 import type { ProviderSettings } from './schema.ts'
 
@@ -290,6 +290,52 @@ describe('applyRoleOverrides', () => {
   it('repeats no value in an issue', () => {
     const { issues } = apply({ mine: object }, { research: 'mine', voter: 'mine' }, { research: { apiKey: SECRET, baseUrl: `https://${SECRET}.example` } })
     expect(JSON.stringify(issues)).not.toContain('zz')
+  })
+})
+
+describe('applyRoleOverrides on the built-in default', () => {
+  const native: ProviderSettings = { protocol: 'ollama', baseUrl: 'http://localhost:11434', model: 'r', apiKey: 'sk-r' }
+  const roles: RoleBinding = { research: 'default', voter: 'default' }
+  const onDefault = (layer: Partial<Pick<EnvLayer, 'research' | 'voter'>>, builtIn = true): ReturnType<typeof applyRoleOverrides> => applyRoleOverrides({ default: native }, roles, { research: {}, voter: {}, ...layer }, builtIn)
+
+  it.each([['another origin', 'http://gpu:8000/v1'], ['the default\'s own origin', 'http://localhost:11434/v1']])('derives a voter that speaks OpenAI-compatible when its variables set a base URL alone, on %s', (_name, baseUrl) => {
+    expect(onDefault({ voter: { baseUrl, model: 'v' } }).providers.voter).toMatchObject({ protocol: 'openai-compatible', baseUrl, model: 'v' })
+  })
+
+  it('keeps the default\'s protocol for a voter that names a model alone, on the same endpoint', () => {
+    expect(onDefault({ voter: { model: 'v' } }).providers.voter).toEqual({ ...native, model: 'v' })
+  })
+
+  it('lets a voter name its protocol or preset, which the rule does not touch', () => {
+    expect(onDefault({ voter: { protocol: 'ollama', baseUrl: 'http://gpu:11434', model: 'v' } }).providers.voter).toEqual({ protocol: 'ollama', baseUrl: 'http://gpu:11434', model: 'v' })
+    expect(onDefault({ voter: { preset: 'vllm', model: 'v' } }).providers.voter).toEqual({ preset: 'vllm', model: 'v' })
+  })
+
+  it('leaves a voter whose research variables name a preset or a protocol as the research provider\'s own protocol, since nobody left it unnamed', () => {
+    expect(onDefault({ research: { preset: 'anthropic', model: 'claude-sonnet-5' }, voter: { baseUrl: 'https://proxy.example', model: 'v' } }).providers.voter).toEqual({ preset: 'anthropic', baseUrl: 'https://proxy.example', model: 'v' })
+    expect(onDefault({ research: { protocol: 'gemini', baseUrl: 'https://g.example', model: 'g' }, voter: { baseUrl: 'https://h.example', model: 'v' } }).providers.voter).toMatchObject({ protocol: 'gemini', baseUrl: 'https://h.example' })
+  })
+
+  it('applies the rule to a built-in default only: the same variables on a provider of a config inherit its protocol', () => {
+    expect(onDefault({ voter: { baseUrl: 'http://localhost:11434/v1', model: 'v' } }, false).providers.voter).toMatchObject({ protocol: 'ollama', baseUrl: 'http://localhost:11434/v1' })
+  })
+
+  it('gives the voter no key the research variable set on another origin, whatever its protocol (ADR-0013)', () => {
+    expect(onDefault({ research: { apiKey: 'sk-r' }, voter: { baseUrl: 'http://gpu:8000/v1', model: 'v' } }).providers.voter).not.toHaveProperty('apiKey')
+  })
+})
+
+describe('setsOnlyBaseUrl', () => {
+  it.each<[string, RoleOverrides, boolean]>([
+    ['a base URL alone', { baseUrl: 'http://h/v1' }, true],
+    ['a base URL with a model, a context size and a key', { baseUrl: 'http://h/v1', model: 'm', contextTokens: 32768, apiKey: 'k' }, true],
+    ['nothing', {}, false],
+    ['a model alone', { model: 'm' }, false],
+    ['a base URL with a preset', { baseUrl: 'http://h/v1', preset: 'vllm' }, false],
+    ['a base URL with a protocol', { baseUrl: 'http://h:11434', protocol: 'ollama' }, false],
+    ['a base URL set to undefined', { baseUrl: undefined }, false],
+  ])('answers for %s', (_name, overrides, expected) => {
+    expect(setsOnlyBaseUrl(overrides)).toBe(expected)
   })
 })
 

@@ -9,8 +9,7 @@ import type { QuorumResult, Verdict } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { fakeClaudeEnv, readFakeRecord, writeFakeClaude } from '../testing/claude.ts'
 import * as fixtures from '../testing/fixtures/claude-code.ts'
-import { chatResponse } from '../testing/fixtures/ollama.ts'
-import { chatReply, sent, stubChat, stubFetch, textReply } from '../testing/http.ts'
+import { chatReply, sent, stubChat, stubFetch, stubOllamaChat, textReply } from '../testing/http.ts'
 import { EXIT, exitCodeFor, interruptSignal, runCli } from './main.ts'
 import type { CliIO } from './main.ts'
 
@@ -34,8 +33,10 @@ function write(name: string, text: string): string {
   return path
 }
 
-/** The environment of a configured run. */
-const MODEL = { QUORUM_RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }
+/** The environment of a run with no endpoint set: the built-in default, Ollama's native API on this machine. */
+const DEFAULT = { QUORUM_RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }
+/** The environment of a configured run, on Ollama's OpenAI-compatible endpoint, whose replies `stubChat` gives. */
+const MODEL = { ...DEFAULT, QUORUM_RESEARCH_BASE_URL: 'http://localhost:11434/v1' }
 
 const DIFF = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-safe()\n+exec(cmd)\n'
 /** Two added lines, so two findings can be cited. */
@@ -183,14 +184,22 @@ describe('runCli', () => {
     }
   })
 
-  it('runs against Ollama\'s native protocol from the variables alone, telling the server the context size and refusing an overflow', async () => {
-    const fetchMock = stubFetch({ ...chatResponse, message: { role: 'assistant', content: '{"findings":[]}' } })
-    const { io } = harness({ env: { QUORUM_RESEARCH_PRESET: 'ollama', QUORUM_RESEARCH_MODEL: 'qwen3.6:27b', QUORUM_RESEARCH_CONTEXT_TOKENS: '32768' }, stdin: DIFF })
+  it('runs against the local Ollama\'s native protocol from the variables alone, telling the server the context size and refusing an overflow', async () => {
+    const fetchMock = stubOllamaChat('{"findings":[]}')
+    const { io } = harness({ env: { QUORUM_RESEARCH_MODEL: 'qwen3.6:27b', QUORUM_RESEARCH_CONTEXT_TOKENS: '32768' }, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const { url, body } = sent(fetchMock)
     expect(url).toBe('http://localhost:11434/api/chat')
     expect(body).toMatchObject({ model: 'qwen3.6:27b', stream: false, truncate: false, shift: false, options: { num_ctx: 32768 } })
+  })
+
+  it('exits 1 on a unanimous finding through the built-in default, research and votes alike on the native protocol', async () => {
+    const fetchMock = stubOllamaChat(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(true))
+    const { io, stdout } = harness({ env: DEFAULT, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    expect(JSON.parse(stdout()).kept[0]).toMatchObject({ file: 'a.js', confidence: 'high' })
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(Array.from({ length: 4 }).fill('http://localhost:11434/api/chat'))
   })
 
   it('refuses a voter on another endpoint that states no context size of its own', async () => {
@@ -331,13 +340,22 @@ describe('runCli', () => {
     expect(JSON.parse(stdout())).toMatchObject({ kept: [], discarded: [], unreviewed: [] })
   })
 
-  it('sends the request of the initial import for an environment-only run, and no key header without a key', async () => {
-    const fetchMock = stubChat('{"findings":[]}', '{"findings":[]}')
+  it('sends Ollama\'s native request for an environment-only run, and no key header without a key', async () => {
+    const fetchMock = stubOllamaChat('{"findings":[]}', '{"findings":[]}')
     expect(await runCli(harness({ env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }, stdin: DIFF }).io)).toBe(EXIT.ok)
     expect(await runCli(harness({ env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_RESEARCH_API_KEY: 'sk-test\n' }, stdin: DIFF }).io)).toBe(EXIT.ok)
-    expect(sent(fetchMock, 0)).toMatchObject({ url: 'http://localhost:11434/v1/chat/completions', body: { model: 'qwen', response_format: { type: 'json_object' }, temperature: 0 } })
+    expect(sent(fetchMock, 0)).toMatchObject({ url: 'http://localhost:11434/api/chat', body: { model: 'qwen', format: 'json', options: { temperature: 0, num_ctx: 131072 } } })
     expect(sent(fetchMock, 0).headers).not.toHaveProperty('authorization')
     expect(sent(fetchMock, 1).headers).toMatchObject({ authorization: 'Bearer sk-test' })
+  })
+
+  it('sends the OpenAI-compatible request when a base URL is the only endpoint variable, as before', async () => {
+    const fetchMock = stubChat('{"findings":[]}', '{"findings":[]}')
+    expect(await runCli(harness({ env: { ...DEFAULT, QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_BASE_URL: 'http://localhost:11434/v1' }, stdin: DIFF }).io)).toBe(EXIT.ok)
+    expect(await runCli(harness({ env: { ...DEFAULT, QUORUM_RESEARCH_MODEL: 'qwen', RESEARCH_BASE_URL: 'http://localhost:11434/v1', QUORUM_RESEARCH_API_KEY: 'sk-test' }, stdin: DIFF }).io)).toBe(EXIT.ok)
+    expect(sent(fetchMock, 0)).toMatchObject({ url: 'http://localhost:11434/v1/chat/completions', body: { model: 'qwen', response_format: { type: 'json_object' }, temperature: 0 } })
+    expect(sent(fetchMock, 0).headers).not.toHaveProperty('authorization')
+    expect(sent(fetchMock, 1)).toMatchObject({ url: 'http://localhost:11434/v1/chat/completions', headers: { authorization: 'Bearer sk-test' } })
   })
 
   it('never sends the research key to a voter on another origin, set through the deprecated variables', async () => {
@@ -756,6 +774,15 @@ describe('--print-config', () => {
     expect(await runCli(path.io)).toBe(EXIT.ok)
     expect(path.stdout()).toContain('    protocol: openai-compatible\n    origin: https://h.example\n    model: m\n    contextTokens: 131072\n    apiKey: "[redacted]"\n')
     expect(`${preset.stdout()}${path.stdout()}`).not.toContain('SECRET')
+  })
+
+  it('prints the built-in default as Ollama\'s native protocol on this machine, and a base URL alone as an OpenAI-compatible server', async () => {
+    const native = harness({ argv: ['--print-config'], env: DEFAULT })
+    expect(await runCli(native.io)).toBe(EXIT.ok)
+    expect(native.stdout()).toMatch(/^source: null\nproviders:\n {2}default:\n {4}protocol: ollama\n {4}origin: http:\/\/localhost:11434\n {4}model: m\n {4}contextTokens: 131072\nprofiles:\n/)
+    const url = harness({ argv: ['--print-config'], env: MODEL })
+    expect(await runCli(url.io)).toBe(EXIT.ok)
+    expect(url.stdout()).toMatch(/^source: null\nproviders:\n {2}default:\n {4}protocol: openai-compatible\n {4}origin: http:\/\/localhost:11434\n {4}model: m\n {4}contextTokens: 131072\nprofiles:\n/)
   })
 
   it('lists the config\'s warnings in the YAML, and none on stderr', async () => {

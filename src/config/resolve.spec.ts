@@ -17,7 +17,7 @@ const NO_MODEL = 'no model configured: set QUORUM_RESEARCH_MODEL, or name a conf
 const PROFILES = 'must list profile ids separated by commas, each matching ^[a-z][a-z0-9_-]*$'
 const VOTER_MODEL = 'must be set when the voter variables name another endpoint than the research provider\'s'
 /** The built-in provider, with the context size every run here that has no file states. */
-const LOCAL = { protocol: 'openai-compatible', baseUrl: 'http://localhost:11434/v1', contextTokens: 131072 }
+const LOCAL = { protocol: 'ollama', baseUrl: 'http://localhost:11434', contextTokens: 131072 }
 /** The variables that state that context size for each role. */
 const SIZE = { QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }
 const VOTER_SIZE = { QUORUM_VOTER_CONTEXT_TOKENS: '131072' }
@@ -327,6 +327,59 @@ describe('a provider without a context size', () => {
     const room = 'must be more than 20512, the 20000 tokens of the reply budget and 512 for the chat template'
     expect(issuesOf({ providers: { local: tight } }, { QUORUM_RESEARCH_CONTEXT_TOKENS: '20000', QUORUM_VOTER_API_KEY: 'sk-v' })).toEqual([{ path: 'QUORUM_RESEARCH_CONTEXT_TOKENS', message: room }])
     expect(issuesOf({ providers: { local: { ...tight, contextTokens: 20000 } } }, { QUORUM_VOTER_API_KEY: 'sk-v' })).toEqual([{ path: 'providers.local.contextTokens', message: room }])
+  })
+})
+
+describe('the built-in default provider', () => {
+  const RESEARCH = { QUORUM_RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '32768' }
+  const VOTER = { QUORUM_VOTER_MODEL: 'v', QUORUM_VOTER_CONTEXT_TOKENS: '32768' }
+  const NATIVE = { protocol: 'ollama', baseUrl: 'http://localhost:11434' }
+  const GPU = { protocol: 'openai-compatible', baseUrl: 'http://gpu:8000/v1' }
+
+  // Each row: the variables beyond the research model and context size, the default provider that results, and the derived voter, if any.
+  it.each<[string, Env, object, object | undefined]>([
+    ['no other variable', {}, NATIVE, undefined],
+    ['a research base URL alone', { QUORUM_RESEARCH_BASE_URL: 'http://gpu:8000/v1' }, GPU, undefined],
+    ['the deprecated alias of a research base URL alone', { RESEARCH_BASE_URL: 'http://gpu:8000/v1' }, GPU, undefined],
+    ['a research protocol and base URL', { QUORUM_RESEARCH_PROTOCOL: 'ollama', QUORUM_RESEARCH_BASE_URL: 'http://gpu:11434' }, { protocol: 'ollama', baseUrl: 'http://gpu:11434' }, undefined],
+    ['a research preset', { QUORUM_RESEARCH_PRESET: 'vllm' }, { preset: 'vllm' }, undefined],
+    ['a voter model alone', { ...VOTER }, NATIVE, NATIVE],
+    ['a voter base URL on another origin', { ...VOTER, QUORUM_VOTER_BASE_URL: 'http://gpu:8000/v1' }, NATIVE, GPU],
+    ['a voter base URL on the default\'s origin', { ...VOTER, QUORUM_VOTER_BASE_URL: 'http://localhost:11434/v1' }, NATIVE, { protocol: 'openai-compatible', baseUrl: 'http://localhost:11434/v1' }],
+    ['the deprecated alias of a voter base URL', { ...VOTER, VOTER_BASE_URL: 'http://gpu:8000/v1' }, NATIVE, GPU],
+    ['a research base URL and a voter model', { ...VOTER, QUORUM_RESEARCH_BASE_URL: 'http://gpu:8000/v1' }, GPU, GPU],
+  ])('resolves %s', (_name, env, expectedDefault, expectedVoter) => {
+    const config = resolve({}, { ...RESEARCH, ...env })
+    expect(config.providers.default).toEqual({ ...expectedDefault, model: 'm', contextTokens: 32768 })
+    if (expectedVoter === undefined) {
+      expect(Object.keys(config.providers)).toEqual(['default'])
+      expect(config.profiles[0]).toMatchObject({ research: 'default', voters: all('default') })
+    } else {
+      expect(config.providers.voter).toEqual({ ...expectedVoter, model: 'v', contextTokens: 32768 })
+      expect(config.profiles[0]).toMatchObject({ research: 'default', voters: all('voter') })
+    }
+  })
+
+  it('keeps a research preset\'s protocol for a voter base URL alone, which names no protocol of its own', () => {
+    const env = { ...RESEARCH, ...VOTER, QUORUM_RESEARCH_PRESET: 'anthropic', ANTHROPIC_API_KEY: 'sk-a', QUORUM_VOTER_BASE_URL: 'https://proxy.example' }
+    expect(resolve({}, env).providers.voter).toEqual({ preset: 'anthropic', baseUrl: 'https://proxy.example', model: 'v', contextTokens: 32768 })
+  })
+
+  it('sends a research key variable only to the endpoint it was set for, whatever protocol the default speaks (ADR-0013)', () => {
+    const env = { ...RESEARCH, ...VOTER, QUORUM_RESEARCH_API_KEY: 'sk-r' }
+    const named = (voter: Env) => resolve({}, { ...env, ...voter }).providers
+    expect(named({}).default).toMatchObject({ ...NATIVE, apiKey: 'sk-r' })
+    expect(named({ QUORUM_VOTER_BASE_URL: 'http://gpu:8000/v1' }).voter).not.toHaveProperty('apiKey')
+    expect(named({ QUORUM_VOTER_BASE_URL: 'http://localhost:11434/v1' }).voter).toMatchObject({ protocol: 'openai-compatible', apiKey: 'sk-r' })
+    expect(named({ QUORUM_VOTER_BASE_URL: 'http://localhost:11435/v1' }).voter).not.toHaveProperty('apiKey')
+  })
+
+  it('leaves the providers of a config as the file wrote them, for a voter base URL included', () => {
+    const file: ProviderSettings = { protocol: 'openai-compatible', baseUrl: 'http://localhost:11434/v1', model: 'm', contextTokens: 32768 }
+    expect(resolve({ providers: { local: file } }).providers).toEqual({ local: file })
+    const native: ProviderSettings = { protocol: 'ollama', baseUrl: 'http://localhost:11434', model: 'm', contextTokens: 32768 }
+    const voter = resolve({ providers: { local: native } }, { ...VOTER, QUORUM_VOTER_BASE_URL: 'http://localhost:11434/v1' }).providers.voter
+    expect(voter).toMatchObject({ protocol: 'ollama', baseUrl: 'http://localhost:11434/v1' })
   })
 })
 
