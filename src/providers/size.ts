@@ -33,8 +33,12 @@ export function utf8Length(text: string): number {
   return encoder.encode(text).length
 }
 
-/** The bytes of the longest form of each code point seen above ASCII, so a repeated character is normalized once. */
-const longestFormBytes = new Map<number, number>()
+/**
+ * The bytes of the longest form of each code point, 0 until it is first seen, so a repeated character is
+ * normalized once. A fixed table of 1.1 MB, where a map grew past 200 MB on a text holding every code
+ * point; the longest form, U+FDFA's, is 33 bytes, so a byte holds any of them.
+ */
+const longestFormBytes = new Uint8Array(0x110000)
 
 /**
  * The most UTF-8 bytes a code point takes as sent, decomposed (NFD) or compatibility-decomposed (NFKD): U+0F81
@@ -43,11 +47,11 @@ const longestFormBytes = new Map<number, number>()
  */
 function longestFormLength(codePoint: number): number {
   if (codePoint >= 0xD800 && codePoint <= 0xDFFF) return 3
-  const cached = longestFormBytes.get(codePoint)
-  if (cached !== undefined) return cached
+  const cached = longestFormBytes[codePoint]
+  if (cached !== undefined && cached !== 0) return cached
   const char = String.fromCodePoint(codePoint)
   const bytes = Math.max(utf8Length(char), utf8Length(char.normalize('NFD')), utf8Length(char.normalize('NFKD')))
-  longestFormBytes.set(codePoint, bytes)
+  longestFormBytes[codePoint] = bytes
   return bytes
 }
 
