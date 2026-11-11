@@ -398,7 +398,7 @@ A reply succeeds with `done: true`, the `done_reason` `stop` and a string `messa
 
 ## `claudeCode`
 
-For your installed Claude Code CLI, which it runs once per request, headless and isolated, as a pure completion: no tool but the one that captures the reply, nothing loaded from your setup or from the checkout it runs in, the message on stdin, and no credential handled by quorum in the default modes. It needs a model, an alias or an id, and a context size, and it finds `claude` on `PATH`:
+For your installed Claude Code CLI, which it runs once per request, headless and isolated, as a pure completion: no tool but the one that captures the reply, nothing loaded from your setup or from the checkout it runs in, the message on stdin, and in the default modes no key that quorum picks, holds or sets: it hands its environment to your own CLI, less the variables it removes. It needs a model, an alias or an id, and a context size, and it finds `claude` on `PATH`:
 
 ```ts
 import { claudeCode } from './src/index.ts'
@@ -427,7 +427,7 @@ claude -p \
 - **Every value quorum or the config supplies is written `--flag=value`**, so no value is read as a flag, whatever it starts with. The two isolation flags with an empty value keep the two-argument form, `--tools ''` and `--setting-sources ''`, which is the one verified with Claude Code 2.1.311.
 - **The system text goes in a file, the message on stdin and the key in the environment.** Linux caps one argument at 128 KiB, Windows a command line at 32,767 characters, and `ps` shows a command line to every user: nothing secret, and nothing long, is on it.
 - **Each request has a directory of its own**, `quorum-claude-<random>` under the system's temporary directory: `cwd/`, the child's empty working directory, `tmp/`, where Claude Code keeps its scratch files, and `system.txt`, mode `0600`. It is removed once `claude` has exited, on every path, before the call settles.
-- **It is never run through a shell**: the command is an executable, never a script.
+- **It is never run through a shell.** A `.cmd` or `.bat` file, which runs only through one, is refused; any other executable is run as it is.
 
 ### The isolation
 
@@ -439,20 +439,20 @@ Each measure of the command line and of the environment, and what it stops:
 | `--setting-sources ''` | The user's, the project's and the local settings: their hooks, plugins, agents, `CLAUDE.md` files, permission rules and configured credentials |
 | `--strict-mcp-config` | Every MCP server that is not named on the command line, which is none |
 | `--no-session-persistence` | A transcript written to disk |
-| `--disable-slash-commands` | Slash commands. A message that starts with `/`, after white space, is also refused before `claude` starts, since `-p` expands one as a slash command |
+| `--disable-slash-commands` | Slash commands, as Claude Code documents the flag: its effect was not observed live. A message that starts with `/`, after white space, is refused before `claude` starts, since `-p` expands one as a slash command, and that refusal is the guard that is tested |
 | An empty working directory | A `CLAUDE.md`, a `.claude/` directory or a `.mcp.json` of the pull request's checkout: `claude` never runs there |
 | `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` | Auto memory, which would load what an earlier run wrote |
-| `DISABLE_COMPACT=1` | Summarizing a long prompt, which would shorten what the model reads |
+| `DISABLE_COMPACT=1` | Summarizing a long prompt, which would shorten what the model reads (from Claude Code's documentation, not observed live) |
 | `CLAUDE_CODE_TMPDIR=<run>/tmp` | Claude Code's scratch files outside the request's directory |
 | `CLAUDE_CODE_AUTO_CONNECT_IDE=false`, `ENABLE_CLAUDEAI_MCP_SERVERS=false` | An IDE connection and the claude.ai MCP connectors, which are on by default |
-| The parent session's variables, removed in every mode | `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EMIT_STARTUP_TIMING` and `CLAUDE_CODE_STARTUP_FAILURE_RESULTS`: a run nested in a Claude Code session never reaches its messaging channel |
+| The parent session's variables, removed in every mode | `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EMIT_STARTUP_TIMING` and `CLAUDE_CODE_STARTUP_FAILURE_RESULTS`: a run nested in a Claude Code session does not inherit its messaging token or socket |
 | The capability variables, removed in every mode | `CLAUDE_CODE_PLUGIN_DIRS`, `CLAUDE_CODE_PLUGIN_SEED_DIR`, `CLAUDE_CODE_PLUGIN_CACHE_DIR`, `CLAUDE_CODE_SYNC_PLUGINS`, `CLAUDE_CODE_SYNC_SKILLS`, `CLAUDE_CODE_PROCESS_WRAPPER`, `CLAUDE_CODE_ENABLE_CFC`, `CLAUDE_CODE_ENABLE_TODO_TOOLS`, `CLAUDE_CODE_ENABLE_TASKS`, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, `CLAUDE_CODE_USE_POWERSHELL_TOOL` and `CLAUDE_CODE_EXTRA_BODY`: they load plugins and skills, start every process through a wrapper, enable a tool or merge a JSON object into every request body, and no flag governs them |
 | A process group of its own | What `claude` starts: an abort stops the whole group (not on Windows, which has none) |
-| The directory removed | Anything a run left behind |
+| The request's directory removed | Its working directory, its scratch files and the system text. Claude Code may still write its own session files under `~/.claude` and to `~/.claude.json`, and a SIGKILL can leave a stale socket (unverified): [Claude Code, isolated](../30-security/10-threat-model.md#claude-code-isolated) |
 
 Variable names are matched in any letter case, as Windows reads them. The credentials and endpoints that a mode removes are in [The auth modes](#the-auth-modes).
 
-Not everything is off, and no flag of this list turns the rest off: an organization's managed policy and Claude Code's bundled skills still load, Claude Code adds its own context to every request, and `inherit` applies no credential that a settings file configures. [Claude Code, isolated](../30-security/10-threat-model.md#claude-code-isolated) states each of them.
+Not everything is off, and no flag of this list turns the rest off: an organization's managed policy and Claude Code's bundled skills may still load, Claude Code adds its own context to every request, a run binds an inbox socket and keeps files under `~/.claude`, and `inherit` applies no credential that a settings file configures. [Claude Code, isolated](../30-security/10-threat-model.md#claude-code-isolated) states each of them.
 
 ### Claude Code options
 
@@ -474,9 +474,9 @@ Not everything is off, and no flag of this list turns the rest off: an organizat
 
 | Mode | The child's environment | Use |
 | --- | --- | --- |
-| `inherit` | The environment as it is, less the variables every mode removes | Whatever `claude -p` finds on its own, from the environment: a cloud provider (Bedrock, Vertex or Foundry), a gateway, a key or a login. The default. Quorum reads, stores and forwards none of it |
-| `login` | `inherit`'s, less `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_PROFILE`, `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_UNIX_SOCKET` and every variable whose name starts with `CLAUDE_CODE_USE_` | The Claude Code login, `/login`, or the `CLAUDE_CODE_OAUTH_TOKEN` of `claude setup-token`, which stays in the environment. It always reaches Anthropic's own API |
-| `api-key` | `login`'s, then `ANTHROPIC_API_KEY` set to the key, and `--bare` on the command line | An API key. Under `--bare`, Claude Code reads no login, keychain or `CLAUDE_CODE_OAUTH_TOKEN`, so the key is the credential, and it drops some of the context Claude Code adds, as its documentation says |
+| `inherit` | The environment as it is, less the variables every mode removes | Whatever `claude -p` finds on its own, from the environment: a cloud provider (Bedrock, Vertex or Foundry), a gateway, a key or a login. The default. Quorum hands the environment to `claude`, less the variables it removes, and reads the credential variables' values only to redact them from a quoted error: it stores and logs none, and sends them nowhere but the child |
+| `login` | `inherit`'s, less `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_PROFILE`, `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_UNIX_SOCKET` and every variable whose name starts with `CLAUDE_CODE_USE_` | The Claude Code login, `/login`, or the `CLAUDE_CODE_OAUTH_TOKEN` of `claude setup-token`, which stays in the environment. It reaches Anthropic's own API unless a managed setting says otherwise |
+| `api-key` | `login`'s, then `ANTHROPIC_API_KEY` set to the key, and `--bare` on the command line | An API key. Under `--bare`, Claude Code reads no login, keychain or `CLAUDE_CODE_OAUTH_TOKEN`, even when one is in the environment, so the key is the credential, and it is documented to drop some of the context Claude Code adds, which was not observed live |
 
 - **`ANTHROPIC_BASE_URL` goes under `login` and `api-key`**, since a login or a key sent through another host is what [the threat model](../30-security/10-threat-model.md#a-key-sent-only-to-its-own-endpoint) rules out. A gateway stays reachable through `inherit`. `ANTHROPIC_CUSTOM_HEADERS` goes because a header can carry another credential, and `ANTHROPIC_UNIX_SOCKET` because it sends every request through a local socket, as a base URL would. A `CLAUDE_CODE_USE_` prefix catches a cloud provider added later.
 - **The key of `api-key`** is `apiKey`, else the environment's `ANTHROPIC_API_KEY`, trimmed. With neither, Claude Code has no credential and the call fails: the CLI's resolution refuses it earlier, [Claude Code](./20-configuration.md#claude-code).
@@ -487,12 +487,12 @@ Not everything is off, and no flag of this list turns the rest off: an organizat
 The guard of [The size of a request](#the-size-of-a-request), with two differences. Claude Code adds its own context to every request, which 512 tokens do not cover: 953 tokens for a one-line prompt and 1463 with the schema tool's second turn, measured, so the reserve is 4096. And `maxTokens` is not an option, so the reply budget is 16000. A request is sent only when `text + 4096 + 16000 <= contextTokens`, so `contextTokens` must be more than 20096, or the provider is refused: `<id>.contextTokens: must be more than 20096, the 16000 tokens of the reply budget and 4096 for the chat template`. The text is counted as for an HTTP adapter, the reply schema's JSON included. A request that may not fit fails with `may need <n> tokens, more than contextTokens (<c>): <t> for its text at one token per byte, 4096 for the chat template and 16000 for the reply`.
 
 - **The message is at most 10,000,000 bytes**, the smaller reading of the 10 MB that Claude Code reads on stdin, checked first: a larger one is `too-large` too.
-- **Claude Code's own refusal of a prompt is `too-large`** as well. When it reports `terminal_reason: "prompt_too_long"`, or a result that starts `Prompt is too long`, a prompt the guard let through and Claude refused is the same `request-too-large` gap, which `--allow-incomplete` does not lift.
-- **A long prompt is not summarized.** `DISABLE_COMPACT=1` keeps Claude Code from compacting it, so what the model reads is the prompt the guard counted.
+- **Claude Code's own refusal of a prompt is `too-large`** as well. When it reports `terminal_reason: "prompt_too_long"`, or an error result (`is_error`) whose text starts `Prompt is too long`, a prompt the guard let through and Claude refused is the same `request-too-large` gap, which `--allow-incomplete` does not lift.
+- **A long prompt is not summarized.** `DISABLE_COMPACT=1` is meant to keep Claude Code from compacting it, so that what the model reads is the prompt the guard counted; that is from Claude Code's documentation, and was not observed live.
 
 ### Claude Code replies and errors
 
-`claude -p --output-format=json` prints one JSON object. Claude Code reports an API error as exit `1` with that object on stdout, `subtype: "success"` and `is_error: true`, so the object is read before the exit code, in this order:
+`claude -p --output-format=json` prints one JSON object. Only the unknown-model error and two success runs were observed live: the shapes of a refusal, a prompt too long and an auth failure follow Claude Code's documentation. Claude Code reports an API error as exit `1` with that object on stdout, `subtype: "success"` and `is_error: true`, so the object is read before the exit code, in this order:
 
 | The result | Kind | Message |
 | --- | --- | --- |
@@ -503,7 +503,7 @@ The guard of [The size of a request](#the-size-of-a-request), with two differenc
 | A signal ended `claude` after a success result | `process` | `claude was stopped by SIGTERM after its result` |
 | A non-zero exit after a success result | `process` | `claude exited 1 after its result` |
 | A tool the server ran: `usage.server_tool_use` or a model's `webSearchRequests` above 0 | `invalid-response` | `the server ran a tool for this reply, which quorum never allows` |
-| `schema` mode and no structured output, though no error is reported | `invalid-response` | `reply has no structured output` |
+| `schema` mode and no structured output, though no error is reported | `invalid-response` | `reply has no structured output`, or `reply structured output could not be serialized` |
 | `prompt` mode and no `result` text | `invalid-response` | `reply has no text` |
 
 Without a JSON result, a signal, a non-zero exit and an exit `0` with nothing are each a failure:
@@ -512,7 +512,7 @@ Without a JSON result, a signal, a non-zero exit and an exit `0` with nothing ar
 | --- | --- | --- |
 | A signal ended `claude` | `process` | `claude was stopped by SIGKILL` |
 | A non-zero exit | `process` | `claude exited 2: "<up to 500 characters of stderr>"` |
-| Exit `0`, and nothing on stdout | `invalid-response` | `claude printed no JSON result` |
+| Exit `0`, and no JSON `result` object on stdout | `invalid-response` | `claude printed no JSON result` |
 | More than 16 MiB on stdout | `invalid-response` | `reply is over 16 MiB` |
 
 Before `claude` starts, and around it:
@@ -529,7 +529,7 @@ Before `claude` starts, and around it:
 
 Every message starts with the provider id. A quoted text is cut, written as a JSON string and redacted, as an HTTP adapter's is, and stdout is read to 16 MiB and stderr to 64 KiB, the rest dropped.
 
-- **`usage` is the sum over every model the result reports** in `modelUsage`: the input is every prompt token, cached ones included (`inputTokens`, `cacheReadInputTokens` and `cacheCreationInputTokens`), and the output every token generated. The result's own `usage` covers the last turn only, 2 input tokens against 1199 in a schema run, so it is not read.
+- **`usage` is the sum over every model the result reports** in `modelUsage`: the input is every prompt token, cached ones included (`inputTokens`, `cacheReadInputTokens` and `cacheCreationInputTokens`), and the output every token generated. The result's own `usage` covers the last turn only, 2 input tokens against 1199 in a schema run, so its token counts are not read.
 - **`costUsd` is `total_cost_usd`**, Claude Code's own estimate, when it is a number of at least 0.
 - **`model` is the one that answered**: the single key of `modelUsage`, since `--fallback-model` can change it, else the configured one.
 - **The text** is `structured_output` serialized in `schema` mode, and `result` in `prompt` mode.
@@ -580,7 +580,7 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 | --- | --- |
 | `providerId` | The provider's id |
 | `kind` | What went wrong, below |
-| `status` | The HTTP status, for `http`. For a server error in an `openaiCompatible` 2xx reply, it is the status the body's `code` names |
+| `status` | The HTTP status, for `http`. For a server error in an `openaiCompatible` 2xx reply, it is the status the body's `code` names. For a `claudeCode` `process` error, it is the exit code of `claude` |
 | `retryable` | `true` for `network` and `timeout`, and for `http` with status 408, 409, 429 or 5xx: a caller may try the call again |
 
 | Kind | Raised when |

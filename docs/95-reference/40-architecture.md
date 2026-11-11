@@ -26,7 +26,7 @@ The core knows no domain, no model vendor and no process. A profile is data, an 
 | `src/core/` | Other core modules, `zod`, `node:crypto` and the `package.json` version | The globals `process`, `fetch`, `WebSocket`, `EventSource`, `Worker`, `Bun`, `globalThis`, `global` and `self` |
 | `src/profiles/` | Types from `src/core/`, and nothing else | The same globals |
 | `src/providers/` | Its own modules, and `core/ports.ts`, `core/errors.ts` and `core/types.ts` | `process`, `Bun`, `globalThis`, `global` and `self`; it may use `fetch`, `WebSocket`, `EventSource` and `Worker` |
-| `src/providers/claude-code.ts` | The same, and `node:child_process`, `node:fs/promises`, `node:os` and `node:path` | `Bun`, `globalThis`, `global` and `self`; it alone reads `process`, for its environment and its process group |
+| `src/providers/claude-code.ts` | The same, and `node:child_process`, `node:fs/promises`, `node:os` and `node:path` | `Bun`, `globalThis`, `global` and `self`; of the providers, it alone reads `process`, for its environment and its process group |
 | `src/config/` | Its own modules, `src/core/`, `src/profiles/`, `src/providers/`, `zod`, `yaml`, `node:fs`, `node:fs/promises`, `node:path` and `node:url` | `fetch`, `WebSocket`, `EventSource`, `Worker`, `globalThis`, `global` and `self`; it may read `process` |
 | `src/cli/`, `src/index.ts` | Any layer but `src/testing/` | |
 
