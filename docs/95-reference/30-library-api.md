@@ -231,7 +231,7 @@ const result = await quorum.review({ diff })
 - **A `ResolvedConfig`** holds `providers`, the ones a profile that runs uses, by name: a spec with its key read into `apiKey`, or the snapshot of an object implementing `Provider`; `profiles`, each a `ResolvedProfile`: its `profile`, `research`, the name of its research provider, and `voters`, the name of each lens's provider, by lens id; `concurrency`, `maxFindings`, and `warnings`. It is a copy, frozen all the way down: a provider object is a frozen snapshot of the program's, with no prototype, named by its config key as its `id`.
 - **A `ResolvedConfig` holds the keys it read**, as a code config does: never print or log one. The CLI's `--print-config`, still to come, will redact them.
 - **`fromConfig` of a `ResolvedConfig` reads no environment**: what `loadConfig` resolved is what runs, whatever `options.env` holds.
-- **A config is read as its own fields, with one limit.** A field planted on `Object.prototype` that is enumerable, as a merge bug leaves one, is refused as `is not a known field`. A field planted with `Object.defineProperty` is not enumerable, and the schema that checks a config reads each field it knows through the prototype, so the planted value becomes a field of the config or of a provider. Planting it needs code already running in the process, which can read the keys directly: quorum does not defend against it.
+- **A config is read as its own fields, with one limit.** A field planted on `Object.prototype` is a prototype pollution bug in the same process. An enumerable one is a field of every object, so it is refused as `is not a known field` wherever the schema does not know it: a planted `baseUrl` is refused at the top level, while a planted `concurrency`, `maxFindings` or `version` passes when the config holds no object that refuses it. One planted with `Object.defineProperty` is not enumerable, and the schema reads each field it knows through the prototype, so it becomes a field of the config, or of every provider that leaves it unset. Code that can plant either can read the keys directly: quorum does not defend against it.
 
 ### Layering
 
@@ -303,13 +303,13 @@ A provider's key is the first of:
 
 ### Warnings and errors
 
-`loadConfig` returns the config's `warnings`: the deprecation line, a preset's key that is not sent, and a key sent over plain `http`. The `warnings` of the quorum `fromConfig` returns hold those first, then the core's: a profile setting that cannot take full effect, [Warnings](../20-using/40-profiles.md#warnings). A provider object is read once, when its config is checked: its `model` and its `complete`, one time each, into a frozen snapshot with no prototype that calls the object as it is, and that snapshot is named by its config key in events and in `meta`, whatever `id` the object holds.
+`loadConfig` returns the config's `warnings`: the deprecation line, a preset's key that is not sent, and a key sent over plain `http`. The `warnings` of the quorum `fromConfig` returns hold those first, then the core's: a profile setting that cannot take full effect, [Warnings](../20-using/40-profiles.md#warnings). A provider object is read only while its config is checked, inside the guard that keeps what it throws to the error's name: its `model` once and its `complete` twice (the check of plain data, then the snapshot), into a frozen snapshot with no prototype that calls the object as it is, and that snapshot is named by its config key in events and in `meta`, whatever `id` the object holds.
 
 | Path | Message | Cause |
 | --- | --- | --- |
 | The path as given | The file's own problem, such as `does not exist`, `is not valid YAML at line 2, column 1 (DUPLICATE_KEY)` or `failed to load (Error)` | `loadConfig` could not read the file, or it is not valid |
 | `config` | `must be an object` | A `ConfigInput` that is not a plain object |
-| `config` | `could not be read (Error)` | A getter or a proxy of the config threw, one of a provider object's included: each provider object is read once, here, and only the error's name is kept, `an error` when that is not a plain class name |
+| `config` | `could not be read (Error)` | A getter or a proxy of the config threw, one of a provider object's included: each provider object is read only here, and only the error's name is kept, `an error` when that is not a plain class name |
 | `config` | `holds more than 10000 values` | A `ConfigInput` too large to walk |
 | `<path>` | `is not allowed as a key: it can replace the prototype of an object`, `must be plain data: an object, an array, a string, a finite number, true, false or null`, `must be a finite number`, or `is nested more than 64 keys deep` | A `ConfigInput` that holds data a config may not |
 | `<path>` | The schema's: `is not a known field`, `is required`, `must be a string`, `must be at least 1`, and the like | A field of the wrong shape, at its path |
