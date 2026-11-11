@@ -3,20 +3,19 @@ import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
 import type { Quorum, QuorumEvent } from '../core/types.ts'
-import { jsonReply, sent } from '../testing/http.ts'
+import { isolateEnv } from '../testing/env.ts'
+import { chatReply, sent } from '../testing/http.ts'
 import { fromConfig } from './from-config.ts'
 import { resolveConfig } from './resolve.ts'
 import type { ConfigInput } from './schema.ts'
 
 const SECRET = 'sk-planted-secret'
 const diff = ['diff --git a/a.js b/a.js', '--- a/a.js', '+++ b/a.js', '@@ -1 +1 @@', '-safe()', '+exec(cmd)'].join('\n')
-const content = (text: string): Response => jsonReply({ choices: [{ message: { content: text } }] })
 const finding = JSON.stringify({ findings: [{ file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }] })
-const NAMES = ['QUORUM_PROFILES', ...['RESEARCH', 'VOTER'].flatMap(role => ['PRESET', 'PROTOCOL', 'BASE_URL', 'MODEL', 'API_KEY'].map(field => `QUORUM_${role}_${field}`)), ...['RESEARCH', 'VOTER'].flatMap(role => ['BASE_URL', 'API_KEY', 'MODEL'].map(field => `${role}_${field}`))]
 
 /** A fetch stub answering the research call with one finding, and every vote with a keep. */
 function stubReview(): ReturnType<typeof vi.fn> {
-  const fetchMock = vi.fn().mockImplementationOnce(async () => content(finding)).mockImplementation(async () => content(JSON.stringify({ keep: true, reasoning: 'r' })))
+  const fetchMock = vi.fn().mockImplementationOnce(async () => chatReply(finding)).mockImplementation(async () => chatReply(JSON.stringify({ keep: true, reasoning: 'r' })))
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
 }
@@ -95,8 +94,7 @@ describe('fromConfig', () => {
   })
 
   it('resolves a ConfigInput with process.env when no environment is given', async () => {
-    for (const name of NAMES) vi.stubEnv(name, '')
-    vi.stubEnv('QUORUM_RESEARCH_MODEL', 'from-process')
+    isolateEnv({ QUORUM_RESEARCH_MODEL: 'from-process' })
     const fetchMock = stubReview()
     await (await fromConfig({})).review({ diff })
     expect(sent(fetchMock).body.model).toBe('from-process')

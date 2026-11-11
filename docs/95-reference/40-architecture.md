@@ -16,7 +16,7 @@ How the code is laid out, which module may depend on which, what happens in a re
 | `src/legacy.ts` | The `RESEARCH_*` and `VOTER_*` environment wiring the CLI and `runQuorum` use, and the voter's fallback rule |
 | `src/index.ts` | The public API, and the deprecated `runQuorum` |
 | `schema/quorum.schema.json` | The JSON Schema of a YAML or JSON config, for editors: draft-07, generated from the file variant by `bun run schema`, which runs `scripts/schema.ts`, and committed |
-| `src/testing/` | The test helpers, among them the `fetch` stub the adapter specs share, the provider contract suite every adapter's spec runs, and each protocol's recorded replies. Spec files import them; nothing else does |
+| `src/testing/` | The test helpers, among them the `fetch` stub the adapter specs share, the provider contract suite every adapter's spec runs, and each protocol's recorded replies. Spec files import them; `bun run lint` refuses an import from any other file |
 
 ## The dependency rule
 
@@ -28,9 +28,9 @@ The core knows no domain, no model vendor and no process. A profile is data, an 
 | `src/profiles/` | Types from `src/core/`, and nothing else | The same globals |
 | `src/providers/` | Its own modules, and `core/ports.ts`, `core/errors.ts` and `core/types.ts` | `process`, `Bun`, `globalThis`, `global` and `self`; it may use `fetch`, `WebSocket`, `EventSource` and `Worker` |
 | `src/config/` | Its own modules, `src/core/`, `src/profiles/`, `src/providers/`, `zod`, `yaml`, `node:fs`, `node:fs/promises`, `node:path` and `node:url` | `fetch`, `WebSocket`, `EventSource`, `Worker`, `globalThis`, `global` and `self`; it may read `process` |
-| `src/cli/`, `src/legacy.ts`, `src/index.ts` | Any layer | |
+| `src/cli/`, `src/legacy.ts`, `src/index.ts` | Any layer but `src/testing/` | |
 
-The core never imports a profile. `src/config/` reads the config file it is named, the prompt files that file names, and `process.env` when `loadConfig` or `fromConfig` is given no environment, `src/cli/` is the one module that reads the diff and stdin and writes stdout and stderr, and `runQuorum` in `src/index.ts` reads `process.env`. `bun run lint` enforces the table through the overrides at the end of [`eslint.config.js`](../../eslint.config.js), on every production file; a spec file may import across layers.
+The core never imports a profile. `src/config/` reads the config file it is named, the prompt files that file names, and `process.env` when `loadConfig` or `fromConfig` is given no environment, `src/cli/` is the one module that reads the diff and stdin and writes stdout and stderr, and `runQuorum` in `src/index.ts` reads `process.env`. `bun run lint` enforces the table through the overrides at the end of [`eslint.config.js`](../../eslint.config.js), on every production file; a spec file may import across layers, and `src/testing/`. `src/lint.spec.ts` lints a probe file in each layer through ESLint's API, so a boundary that stops refusing an import or a global fails the suite.
 
 ## The stages of a review
 
@@ -57,7 +57,7 @@ bun run schema      # write schema/quorum.schema.json from the zod schema
 - **At most two test workers**, set in [`vitest.config.ts`](../../vitest.config.ts), so the suite stays light on a laptop.
 - **No network and no model call.** Every test uses fake providers, or a stubbed `fetch`. The controls of the threat model are checked by structure in the default suite, such as no environment value in any request, and vote requests that are the same whatever the other voters answer.
 - **`bun run test:cov`** measures coverage with Istanbul over `src/**/*.ts`, the specs and `src/cli/bin.ts` left out.
-- **Files and processes.** `src/config/load.spec.ts` writes the files it reads to fresh temporary directories, removed afterwards, and runs one `node` process on the loader: vitest's own import transforms TypeScript that Node itself refuses, such as an `enum`, so only a real `node` shows what Node reports.
+- **Files and processes.** `src/config/load.spec.ts` writes the files it reads to fresh temporary directories, removed afterwards, and runs one `node` process on the loader: vitest's own import transforms TypeScript that Node itself refuses, such as an `enum`, so only a real `node` shows what Node reports. `src/lint.spec.ts` starts ESLint once, about a second, and lints a probe file in each layer through its API, in memory: it writes no file.
 - **`src/config/schema.spec.ts`** fails when `schema/quorum.schema.json` differs from the JSON Schema of the zod schema, byte for byte: run `bun run schema` after changing the schema, and commit the file.
 - **`bun run lint`** applies `@antfu/eslint-config` and the dependency rule. From an editor's terminal, run it as `CI=1 bun run lint`: the config turns some rules off when it detects an editor.
 - **`src/docs.spec.ts`** holds these pages to their links: every relative link resolves to a file and every anchor to a heading of it, every page outside the start page and the reference section ends with a `## Next` that names one page, the table of contents in the README's `## Documentation` section lists every page, and neither the README nor any page holds a hidden character.

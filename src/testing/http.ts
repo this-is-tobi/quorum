@@ -14,6 +14,22 @@ export function stubFetch(body: unknown, status = 200): ReturnType<typeof vi.fn>
   return fetchMock
 }
 
+/** An OpenAI-compatible chat completion holding `content`. */
+export function chatReply(content: string): Response {
+  return jsonReply({ choices: [{ message: { content } }] })
+}
+
+/**
+ * A stub put in place of the global `fetch`, answering call `i` with `chatReply(contents[i])`. A call past
+ * `contents` gets what the caller chains: `.mockRejectedValue(...)` or `.mockImplementation(...)`.
+ */
+export function stubChat(...contents: string[]): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn()
+  for (const content of contents) fetchMock.mockImplementationOnce(async () => chatReply(content))
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
 /** What one call of a fetch stub sent, the first by default: the URL, the headers and the parsed body. */
 export function sent(fetchMock: ReturnType<typeof vi.fn>, call = 0): { url: string, headers: Record<string, string>, body: Record<string, unknown> } {
   const [url, init] = fetchMock.mock.calls[call]
