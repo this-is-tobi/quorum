@@ -215,7 +215,7 @@
             ]
           },
           "gating": {
-            "description": "Whether its kept high findings set exit code 1",
+            "description": "Whether it gates the exit code: a gating profile's kept high findings exit 1 and its gaps exit 4, an advisory profile's do neither",
             "type": "boolean"
           },
           "roles": {

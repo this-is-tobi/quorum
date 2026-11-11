@@ -32,7 +32,7 @@ install -m 0755 ./bin/quorum /usr/local/bin/quorum
 
 The binary reads no `.env` and no `bunfig.toml` from the directory it runs in, which a Bun-compiled binary does by default. Bun itself reads both from its working directory, so `bun run start` reads the clone's own, a `bunfig.toml` can name code to run before quorum starts, and a `.env` can set any `QUORUM_*` variable, `QUORUM_CONFIG` included, which names the config file quorum reads. In a directory you do not control, such as a pull request's checkout, run the binary, or Node as `node /path/to/quorum/src/cli/bin.ts`: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
 
-The pages that follow write the command as `quorum`, which is that binary. Without it, read `quorum` as `bun run start` run from the clone.
+The pages that follow write the command as `quorum`, which is that binary. Without it, read `quorum` as `bun run start` run from the clone, except after a `--`: the binary and Node read `quorum -- --help` as a file named `--help`, and Bun itself drops the first `--`, so `bun run start -- --help` prints the help.
 
 ## Check that it works
 

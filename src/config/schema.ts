@@ -68,7 +68,7 @@ const rule = z.union([
 function profileSchema<R extends z.ZodType>(promptForm: R) {
   return z.strictObject({
     extends: z.enum([securityProfile.id]).optional().describe('The built-in profile this one starts from'),
-    gating: z.boolean().optional().describe('Whether its kept high findings set exit code 1'),
+    gating: z.boolean().optional().describe('Whether it gates the exit code: a gating profile\'s kept high findings exit 1 and its gaps exit 4, an advisory profile\'s do neither'),
     roles: roles.optional().describe('The providers of this profile, over the top-level roles'),
     prompts: z.strictObject({
       research: promptForm.optional().describe('The research instructions: a template, or { file }'),
