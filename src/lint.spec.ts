@@ -11,8 +11,10 @@ const CASES: Array<[string, string, string, string[]]> = [
   ['the core refuses node:fs', 'src/core/probe.ts', 'import { readFileSync } from \'node:fs\'\n\nexport const probe = readFileSync\n', ['no-restricted-imports']],
   ['the core refuses process', 'src/core/probe.ts', 'export const probe = process.env\n', ['no-restricted-globals']],
   ['a stage refuses the config layer', 'src/core/stages/probe.ts', 'import { readEnv } from \'../../config/env.ts\'\n\nexport const probe = readEnv\n', ['no-restricted-imports']],
+  ['a stage refuses process', 'src/core/stages/probe.ts', 'export const probe = process.env\n', ['no-restricted-globals']],
   ['a profile imports core types', 'src/profiles/probe.ts', 'import type { Profile } from \'../core/types.ts\'\n\nexport const probe: Profile | undefined = undefined\n', []],
   ['a profile refuses a core value', 'src/profiles/probe.ts', 'import { defaultPolicy } from \'../core/policy.ts\'\n\nexport const probe = defaultPolicy\n', ['ts/no-restricted-imports']],
+  ['a profile refuses process', 'src/profiles/probe.ts', 'export const probe = process.env\n', ['no-restricted-globals']],
   ['a provider imports the port', 'src/providers/probe.ts', 'import type { Provider } from \'../core/ports.ts\'\n\nexport const probe: Provider | undefined = undefined\n', []],
   ['a provider refuses the config layer', 'src/providers/probe.ts', 'import { readEnv } from \'../config/env.ts\'\n\nexport const probe = readEnv\n', ['no-restricted-imports']],
   ['a provider refuses process', 'src/providers/probe.ts', 'export const probe = process.env\n', ['no-restricted-globals']],
@@ -33,7 +35,11 @@ describe('the layer boundaries of eslint.config.js', { timeout: 30_000 }, () => 
   })
 
   it.each(CASES)('%s', async (_name, filePath, code, rules) => {
-    const [result] = await eslint.lintText(code, { filePath })
-    expect(result.messages.map(message => message.ruleId).filter(rule => rule !== null && BOUNDARY_RULES.has(rule))).toEqual(rules)
+    const results = await eslint.lintText(code, { filePath, warnIgnored: true })
+    expect(results).toHaveLength(1)
+    const { messages } = results[0]
+    // A parse error and an ignored probe file are the messages that name no rule: either would pass a case on nothing.
+    expect(messages.filter(message => message.ruleId === null).map(message => message.message)).toEqual([])
+    expect(messages.map(message => message.ruleId).filter(rule => rule !== null && BOUNDARY_RULES.has(rule))).toEqual(rules)
   })
 })
