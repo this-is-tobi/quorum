@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { ConfigError, isSafeSegment, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
-import type { JsonSchema, Provider } from '../core/ports.ts'
+import type { CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { wordList } from '../providers/options.ts'
 import type { StructuredOutput } from '../providers/options.ts'
@@ -105,6 +105,41 @@ export function isProvider(value: unknown): value is Provider {
   return typeof value === 'object' && value !== null && typeof (value as { complete?: unknown }).complete === 'function'
 }
 
+/** The snapshots the schema made of provider objects, recognised by identity: a settings object is never taken for one, whatever its prototype holds. */
+const SNAPSHOTS = new WeakSet<object>()
+
+/** A provider object as a snapshot: its fields as plain data, frozen, with no prototype. */
+function snapshot(fields: { readonly id?: string, readonly model: unknown, readonly complete: Provider['complete'] }): Provider {
+  const made = Object.freeze(Object.setPrototypeOf({ ...fields }, null)) as Provider
+  SNAPSHOTS.add(made)
+  return made
+}
+
+/**
+ * The provider-object form of a code config's provider: an object whose `complete` is a function, read once
+ * into a snapshot. The check reads `model` and `complete` one time each, and nothing reads the object again,
+ * so a getter of the program's cannot run outside the guard that hides what it throws. The snapshot calls the
+ * method read here on the object itself, through `Reflect.apply`, which reads nothing off the function.
+ */
+const providerObject = z.custom<Provider>(value => typeof value === 'object' && value !== null).transform((object, ctx) => {
+  const { model, complete } = object
+  if (typeof complete !== 'function') {
+    ctx.issues.push({ code: 'custom', message: 'complete is not a function', input: object })
+    return z.NEVER
+  }
+  return snapshot({ model, complete: request => Reflect.apply(complete, object, [request]) as Promise<CompletionResponse> })
+})
+
+/**
+ * `entry` named `id`, the config's key for it, when it is a snapshot the schema made of a provider object: a
+ * copy that holds `id` as well, built from the snapshot's own data. Anything else is returned as it is.
+ */
+export function nameSnapshot(id: string, entry: unknown): unknown {
+  if (typeof entry !== 'object' || entry === null || !SNAPSHOTS.has(entry)) return entry
+  const { model, complete } = entry as { readonly model: unknown, readonly complete: Provider['complete'] }
+  return snapshot({ id, model, complete })
+}
+
 /**
  * A YAML or JSON config: data only, so a provider names the variable that holds its key and never holds
  * one. Every object is strict, so a typo is an issue. It checks shapes only: a field a later layer can
@@ -114,7 +149,7 @@ export const configFileSchema = configSchema(z.strictObject(providerShape), prom
 
 /** What a code config may hold as a provider: settings that may hold their key, or an object implementing `Provider`. */
 const codeProvider = z.union([
-  z.custom<Provider>(isProvider),
+  providerObject,
   z.strictObject({ ...providerShape, apiKey: z.string().optional().describe('The key itself, which only a code config may hold') }),
 ], { error: 'must be the settings of a provider, or an object whose complete is a function' })
 
