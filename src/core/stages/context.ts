@@ -48,11 +48,17 @@ export interface RunContext {
   /**
    * Aborts the review with `error`, unless it is already aborted, so a caller's abort reason or a
    * sink's error stays the reason. A research failure, the call or its reply, calls it where it
-   * fails, so no other profile starts a call after it.
+   * fails, so no other profile starts a call after it; a research request refused as too large is
+   * a gap, not a failure, and does not.
    */
   readonly fail: (error: unknown) => void
   /** How many findings of a research reply each profile sends to the panel. */
   readonly maxFindings: number
+}
+
+/** True for a `ProviderError` of kind `too-large`: a provider refused a request that may not fit its model's context, before sending it. */
+export function isTooLarge(error: unknown): error is ProviderError {
+  return error instanceof ProviderError && error.kind === 'too-large'
 }
 
 /** Who requests a provider call, as its `call` event names it: `lens` only for a vote. */
@@ -75,13 +81,15 @@ export function elapsed(started: number): number {
  * review holds at once to its concurrency, whatever the number of findings and lenses (ADR-0009).
  * The request carries the signal, so the provider can stop a call in flight. A failed research
  * call aborts the review through `ctx.fail` before it leaves its slot, so the queued call the slot
- * goes to next never starts; a failed vote does not, since the panel records it. The duration is
- * measured inside the slot, once the request is built: the provider's latency, not the time the
- * call waited for a slot or took to build its request. A reply whose text is not a string is a
- * `ProviderError`. Each call emits one `call` event, which names the provider by the ref captured
- * at creation, never by the live object: failed, before the error is rethrown, or ok, with the
- * usage when its counts are valid. The ok event is emitted outside the `try` that catches the
- * provider's failure, so a sink that throws on it is never reported as a failed call.
+ * goes to next never starts, unless the provider refused the request as too large: that refusal is
+ * a gap, never a reason to stop the other profiles, so the research stage records it. A failed vote
+ * does not abort the review, since the panel records it. The duration is measured inside the slot,
+ * once the request is built: the provider's latency, not the time the call waited for a slot or
+ * took to build its request. A reply whose text is not a string is a `ProviderError`. Each call
+ * emits one `call` event, which names the provider by the ref captured at creation, never by the
+ * live object: failed, before the error is rethrown, or ok, with the usage when its counts are
+ * valid. The ok event is emitted outside the `try` that catches the provider's failure, so a sink
+ * that throws on it is never reported as a failed call.
  */
 export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest): Promise<string> {
   return ctx.limit(async () => {
@@ -95,7 +103,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     } catch (error) {
       ctx.emit({ type: 'call', ...requester, provider: target.ref, durationMs: elapsed(started), ok: false })
       // Still inside the slot: the queued call it is handed to next sees the abort and never starts.
-      if (requester.role === 'research') ctx.fail(error)
+      if (requester.role === 'research' && !isTooLarge(error)) ctx.fail(error)
       throw error
     }
     const usage = checkedUsage(response.usage)

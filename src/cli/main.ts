@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
 import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import packageJson from '../../package.json' with { type: 'json' }
@@ -14,6 +14,9 @@ import { bannerLines, progressSink } from './render.ts'
 
 /** Exit codes (ADR-0008, amended by ADR-0012). */
 export const EXIT = { ok: 0, finding: 1, usage: 2, runtime: 3, incomplete: 4, interrupted: 130 } as const
+
+/** The most diff the CLI reads, from stdin or a file, in bytes: a larger one is refused and reading stops there. */
+export const MAX_DIFF_BYTES = 16 * 1024 * 1024
 
 export interface CliIO {
   /** Arguments after the executable and script, e.g. `process.argv.slice(2)`. */
@@ -58,6 +61,9 @@ const OPTIONS = {
  * failed votes left undecided, or a research gap) of a gating profile exits 4 unless a `high` finding
  * was kept by a gating profile, so CI can tell a broken run and a partial review from a real finding
  * (exit 1) and from a clean one (exit 0). `exitCodeFor` maps the result; advisory flags never change it.
+ *
+ * It reads at most 16 MiB of diff, from stdin or a file, counted in bytes: a larger diff is a usage error,
+ * and reading stops at the chunk that crosses the cap.
  *
  * Its flags are `--config`, `--profile`, `--allow-incomplete`, `--print-config`, `--help` and `--version`;
  * a usage error prints the usage after its message. Its settings are the config file `--config` or
@@ -159,12 +165,18 @@ export function interruptSignal(source: SignalSource, exit: (code: number) => vo
 /**
  * The exit code of a finished review: 1 when a kept finding is `high` and its profile gates, 4 when
  * an unreviewed finding or a gap belongs to a gating profile (unless `allowIncomplete` turns it into
- * 0, which it does for nothing else), 0 otherwise. A profile gates unless `meta.profiles` holds it
- * with `gating: false`, so a profile missing from the result counts as gating and a gap never hides.
+ * 0, which it does for nothing else but a `request-too-large` gap), 0 otherwise. A profile gates
+ * unless `meta.profiles` holds it with `gating: false`, so a profile missing from the result counts
+ * as gating and a gap never hides.
+ *
+ * A `request-too-large` gap of a gating profile exits 4 whatever `allowIncomplete` says: a pull
+ * request can cause that gap by padding the diff until a request is refused, so no flag lifts it
+ * (ADR-0012), while a flaky voter, which the flag is for, is not something an attacker can cause.
  */
 export function exitCodeFor(result: QuorumResult, options: { readonly allowIncomplete?: boolean } = {}): number {
   const gates = (profile: string): boolean => !Object.hasOwn(result.meta.profiles, profile) || result.meta.profiles[profile].gating !== false
   if (result.kept.some(verdict => verdict.confidence === 'high' && gates(verdict.profile))) return EXIT.finding
+  if (result.meta.incomplete.some(entry => entry.reason === 'request-too-large' && gates(entry.profile))) return EXIT.incomplete
   const incomplete = result.unreviewed.some(verdict => gates(verdict.profile)) || result.meta.incomplete.some(entry => gates(entry.profile))
   return incomplete && options.allowIncomplete !== true ? EXIT.incomplete : EXIT.ok
 }
@@ -189,12 +201,27 @@ function usageError(io: CliIO, error: unknown): number {
 async function readDiff(io: CliIO, positionals: readonly string[]): Promise<string> {
   const [path, ...extra] = positionals
   if (extra.length > 0) throw new Error(`unexpected arguments: ${extra.join(' ')}`)
-  if (path) return readFile(resolve(io.cwd, path), 'utf8')
+  if (path) return readCapped(createReadStream(resolve(io.cwd, path)))
   if (io.stdin.isTTY) throw new Error('no diff given')
+  return readCapped(io.stdin)
+}
+
+/**
+ * Read `chunks` to the end as UTF-8 text, through one streaming decoder, so a leading byte-order mark
+ * goes and a character split between two chunks stays whole, whatever the source. The bytes are
+ * counted as they arrive: the chunk that takes the count past `MAX_DIFF_BYTES` throws, and leaving
+ * the loop closes the stream, so no more is read.
+ */
+async function readCapped(chunks: AsyncIterable<Uint8Array | string>): Promise<string> {
+  const encoder = new TextEncoder()
   const decoder = new TextDecoder()
+  let bytes = 0
   let text = ''
-  for await (const chunk of io.stdin) {
-    text += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true })
+  for await (const chunk of chunks) {
+    const data = typeof chunk === 'string' ? encoder.encode(chunk) : chunk
+    bytes += data.byteLength
+    if (bytes > MAX_DIFF_BYTES) throw new Error('the diff is over 16 MiB, the most quorum reads')
+    text += decoder.decode(data, { stream: true })
   }
   return text + decoder.decode()
 }

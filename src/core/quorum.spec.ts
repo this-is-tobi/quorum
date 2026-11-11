@@ -936,3 +936,63 @@ describe('failure', () => {
     expect(events).toHaveLength(delivered)
   })
 })
+
+describe('a request too large for its provider', () => {
+  const MESSAGE = 'may need 9 tokens, more than contextTokens (8)'
+  const refusing = (id: string): Fake => fake(id, () => {
+    throw new ProviderError({ providerId: id, kind: 'too-large', message: MESSAGE })
+  })
+
+  it('records a research request refused as too large as a request-too-large gap, and reviews nothing else of the profile', async () => {
+    const voter = fake('voter', () => vote(true))
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, refusing('research'), voter), events: event => events.push(event) }).review({ diff })
+    const gap = { profile: 'security', reason: 'request-too-large', detail: `the research request was not sent: research: ${MESSAGE}` }
+    expect(result).toMatchObject({ kept: [], discarded: [], unreviewed: [] })
+    expect(result.meta.incomplete).toEqual([gap])
+    expect(events).toContainEqual({ type: 'incomplete', entry: gap })
+    expect(voter.requests).toEqual([])
+  })
+
+  it('lets the other profiles run when one profile\'s research request is refused', async () => {
+    const reviewer = fake('reviewer', request => isVote(request) ? vote(true) : findings(reported))
+    const ports: QuorumPorts = { profiles: { ...portsFor(securityProfile, refusing('research')).profiles, ...portsFor(style, reviewer).profiles } }
+    const result = await createQuorum({ profiles: [securityProfile, style] }, ports).review({ diff })
+    expect(result.meta.incomplete.map(entry => [entry.profile, entry.reason])).toEqual([['security', 'request-too-large']])
+    expect(result.kept.map(verdict => [verdict.profile, verdict.confidence])).toEqual([['style', 'high']])
+  })
+
+  it('still fails the review on a research failure of any other kind, unsupported included', async () => {
+    const research = fake('research', () => {
+      throw new ProviderError({ providerId: 'research', kind: 'unsupported', message: 'cannot take this request' })
+    })
+    await expect(createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, research)).review({ diff })).rejects.toThrow('research: cannot take this request')
+  })
+
+  it('records one request-too-large gap per finding whose vote requests are refused, and leaves the finding unreviewed', async () => {
+    const result = await createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, fake('research', () => findings(reported)), refusing('voter'))).review({ diff })
+    expect(result.unreviewed.map(verdict => verdict.votes.map(entry => entry.error))).toEqual([Array.from({ length: 3 }).fill(`voter: ${MESSAGE}`)])
+    expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'request-too-large', file: 'a.js', detail: `"a.js":1: 3 of 3 vote requests were not sent: voter: ${MESSAGE}` }])
+  })
+
+  it('records the gap beside what the other votes decide, before the finding\'s vote-failed gap', async () => {
+    const research = fake('research', () => findings(reported))
+    const keeps = fake('keeps', () => vote(true))
+    const ports: QuorumPorts = { profiles: { security: { research, voters: { reachability: refusing('small'), impact: keeps, defenses: keeps } } } }
+    const result = await createQuorum({ profiles: [securityProfile] }, ports).review({ diff })
+    expect(result.kept.map(verdict => [verdict.confidence, verdict.keptVotes, verdict.totalVotes])).toEqual([['medium', 2, 3]])
+    expect(result.meta.incomplete.map(entry => [entry.reason, entry.detail])).toEqual([
+      ['request-too-large', `"a.js":1: 1 of 3 vote requests were not sent: small: ${MESSAGE}`],
+      ['vote-failed', '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high'],
+    ])
+  })
+
+  it('rejects with the abort\'s reason, and records no gap, when the review is aborted as the refusal comes back', async () => {
+    const controller = new AbortController()
+    const research = fake('research', () => {
+      controller.abort(new Error('stopped'))
+      throw new ProviderError({ providerId: 'research', kind: 'too-large', message: MESSAGE })
+    })
+    await expect(createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, research)).review({ diff }, { signal: controller.signal })).rejects.toThrow('stopped')
+  })
+})

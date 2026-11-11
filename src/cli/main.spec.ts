@@ -443,6 +443,87 @@ describe('exitCodeFor', () => {
     expect(exitCodeFor(result([], { security: true }, ['security']), { allowIncomplete: true })).toBe(EXIT.ok)
     expect(exitCodeFor(result([kept('security', 'high')], { security: true }, ['security']), { allowIncomplete: true })).toBe(EXIT.finding)
   })
+
+  const withGaps = (gating: Record<string, boolean>, gaps: object[], verdicts: Verdict[] = []): QuorumResult => {
+    const base = result(verdicts, gating)
+    return { ...base, meta: { ...base.meta, incomplete: gaps } } as unknown as QuorumResult
+  }
+  const refused = (profile?: string): object => ({ ...profile === undefined ? {} : { profile }, reason: 'request-too-large' })
+
+  it('exits 4 for a request-too-large gap of a gating profile, even with allowIncomplete, and 1 when a gating high finding was kept', () => {
+    for (const allowIncomplete of [false, true]) {
+      expect(exitCodeFor(withGaps({ security: true }, [refused('security')]), { allowIncomplete })).toBe(EXIT.incomplete)
+      expect(exitCodeFor(withGaps({}, [refused('team')]), { allowIncomplete })).toBe(EXIT.incomplete)
+      expect(exitCodeFor(withGaps({ style: false }, [refused()]), { allowIncomplete })).toBe(EXIT.incomplete)
+      expect(exitCodeFor(withGaps({ security: true }, [refused('security')], [kept('security', 'high')]), { allowIncomplete })).toBe(EXIT.finding)
+    }
+  })
+
+  it('exits 0 for a request-too-large gap of an advisory profile, with or without allowIncomplete', () => {
+    for (const allowIncomplete of [false, true]) {
+      expect(exitCodeFor(withGaps({ security: true, style: false }, [refused('style')]), { allowIncomplete })).toBe(EXIT.ok)
+    }
+  })
+})
+
+describe('the diff byte cap', () => {
+  const MiB = 1024 * 1024
+  const OVER = `Error: the diff is over 16 MiB, the most quorum reads\n${USAGE}`
+
+  /** stdin as `count` chunks of `size` bytes of `a`, each made when it is pulled; `pulled()` counts them. */
+  function chunked(count: number, size = MiB): { stdin: CliIO['stdin'], pulled: () => number } {
+    let pulled = 0
+    async function* chunks(): AsyncGenerator<Uint8Array> {
+      for (let index = 0; index < count; index++) {
+        pulled += 1
+        yield new Uint8Array(size).fill(0x61)
+      }
+    }
+    return { stdin: Object.assign(chunks(), { isTTY: false }), pulled: () => pulled }
+  }
+
+  it('refuses a diff on stdin over 16 MiB, reads no further, and sends nothing', async () => {
+    const fetchMock = stubChat()
+    const { io, stderr } = harness({ env: MODEL })
+    const input = chunked(20)
+    io.stdin = input.stdin
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toBe(OVER)
+    expect(input.pulled()).toBe(17)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('reads a diff of exactly 16 MiB, then the configuration', async () => {
+    const { io, stderr } = harness()
+    io.stdin = chunked(16).stdin
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toBe('Error: no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one\n')
+  })
+
+  it('counts bytes, not characters', async () => {
+    const fetchMock = stubChat()
+    const { io, stderr } = harness({ env: MODEL, stdin: String.fromCharCode(0xE9).repeat(8 * MiB + 1) })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toBe(OVER)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('refuses a diff file over 16 MiB', async () => {
+    const fetchMock = stubChat()
+    const path = join(dir, 'huge.diff')
+    writeFileSync(path, new Uint8Array(16 * MiB + 1).fill(0x61))
+    const { io, stderr } = harness({ argv: [path], env: MODEL })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toBe(OVER)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('drops a byte-order mark at the start of a diff file, as it does on stdin', async () => {
+    const fetchMock = stubChat(JSON.stringify({ findings: [] }))
+    const { io } = harness({ argv: [write('bom.diff', `${String.fromCharCode(0xFEFF)}${DIFF}`)], env: MODEL })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect((sent(fetchMock).body.messages as Array<{ content: string }>)[1].content).toContain(`>\n${DIFF}\n</untrusted-diff-`)
+  })
 })
 
 describe('flags', () => {
