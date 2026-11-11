@@ -121,8 +121,14 @@ describe('textTokens', () => {
 
 describe('contextBudget', () => {
   it('reserves maxTokens for the reply, else 16000', () => {
-    expect(contextBudget(32768, undefined)).toEqual({ contextTokens: 32768, replyTokens: 16000 })
-    expect(contextBudget(32768, 900)).toEqual({ contextTokens: 32768, replyTokens: 900 })
+    expect(contextBudget(32768, undefined)).toEqual({ contextTokens: 32768, replyTokens: 16000, templateTokens: 512 })
+    expect(contextBudget(32768, 900)).toEqual({ contextTokens: 32768, replyTokens: 900, templateTokens: 512 })
+  })
+
+  it('keeps the chat template reserve a budget names', () => {
+    expect(contextBudget(200000, undefined, 4096)).toEqual({ contextTokens: 200000, replyTokens: 16000, templateTokens: 4096 })
+    expect(() => checkFits('p', shaped, output, { contextTokens: 4229, replyTokens: 100, templateTokens: 4096 })).not.toThrow()
+    expect(() => checkFits('p', shaped, output, { contextTokens: 4228, replyTokens: 100, templateTokens: 4096 })).toThrow('p: may need 4229 tokens, more than contextTokens (4228): 33 for its text at one token per byte, 4096 for the chat template and 100 for the reply')
   })
 })
 

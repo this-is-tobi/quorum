@@ -15,17 +15,23 @@ export const TEMPLATE_TOKENS = 512
  */
 export const DEFAULT_REPLY_TOKENS = 16_000
 
-/** The model's context window and the tokens a reply may take of it. */
+/** The model's context window, the tokens a reply may take of it, and the tokens kept for what is added around the messages. */
 export interface ContextBudget {
   readonly contextTokens: number
   readonly replyTokens: number
+  /** The reserve for what the server or CLI adds around the messages; `TEMPLATE_TOKENS` when absent. */
+  readonly templateTokens?: number
 }
 
 const encoder = new TextEncoder()
 
-/** The budget a request is checked against: the context size, and the reply budget, `maxTokens` else `DEFAULT_REPLY_TOKENS`. */
-export function contextBudget(contextTokens: number, maxTokens: number | undefined): ContextBudget {
-  return { contextTokens, replyTokens: maxTokens ?? DEFAULT_REPLY_TOKENS }
+/**
+ * The budget a request is checked against: the context size, the reply budget, `maxTokens` else
+ * `DEFAULT_REPLY_TOKENS`, and the template reserve, which an adapter whose server adds more context than a
+ * chat template raises.
+ */
+export function contextBudget(contextTokens: number, maxTokens: number | undefined, templateTokens = TEMPLATE_TOKENS): ContextBudget {
+  return { contextTokens, replyTokens: maxTokens ?? DEFAULT_REPLY_TOKENS, templateTokens }
 }
 
 /** The length of `text` in UTF-8 bytes. A lone surrogate counts the 3 bytes of U+FFFD, as the encoder writes it. */
@@ -99,18 +105,20 @@ export function textTokens(shaped: ShapedMessages, output: CompletionRequest['ou
 /**
  * Refuse, before it is sent, a request that may not fit the model's context: some endpoints cut an oversized
  * prompt in silence and answer 200, which would leave a review of text the model never read. The request
- * fits only when its text, `TEMPLATE_TOKENS` and the reply budget together stay within `contextTokens`.
+ * fits only when its text, the budget's template reserve (`TEMPLATE_TOKENS` unless it names one) and the
+ * reply budget together stay within `contextTokens`.
  * The message holds the provider id and numbers, never the text.
  *
  * @throws ProviderError of kind `too-large`, which is not retryable
  */
 export function checkFits(providerId: string, shaped: ShapedMessages, output: CompletionRequest['output'], budget: ContextBudget): void {
   const text = textTokens(shaped, output)
-  const need = text + TEMPLATE_TOKENS + budget.replyTokens
+  const template = budget.templateTokens ?? TEMPLATE_TOKENS
+  const need = text + template + budget.replyTokens
   if (need <= budget.contextTokens) return
   throw new ProviderError({
     providerId,
     kind: 'too-large',
-    message: `may need ${need} tokens, more than contextTokens (${budget.contextTokens}): ${text} for its text at one token per byte, ${TEMPLATE_TOKENS} for the chat template and ${budget.replyTokens} for the reply`,
+    message: `may need ${need} tokens, more than contextTokens (${budget.contextTokens}): ${text} for its text at one token per byte, ${template} for the chat template and ${budget.replyTokens} for the reply`,
   })
 }
