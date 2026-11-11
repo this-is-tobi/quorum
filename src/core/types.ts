@@ -107,19 +107,23 @@ export interface Verdict extends Finding {
  */
 export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
 
-/** Why part of a review is missing, as an `IncompleteEntry` records it. */
-export type IncompleteReason = 'research-unusable' | 'findings-capped' | 'finding-unreadable' | 'vote-failed'
+/**
+ * Why part of a review is missing, as an `IncompleteEntry` records it. `request-too-large`: a
+ * provider refused a request that may not fit its model's context, so it was not sent.
+ */
+export type IncompleteReason = 'research-unusable' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large'
 
 /**
  * Work the run could not review: a research reply with findings but none usable, findings beyond
- * the cap, a finding the harness could not read, or a kept finding whose failed votes could have
- * raised it to a higher level. It is reported and counted, never dropped silently (ADR-0012).
+ * the cap, a finding the harness could not read, a kept finding whose failed votes could have
+ * raised it to a higher level, or a request its provider refused as too large to send. It is
+ * reported and counted, never dropped silently (ADR-0012).
  */
 export interface IncompleteEntry {
   /** The id of the profile whose run has the gap. */
   profile: string
   reason: IncompleteReason
-  /** The file of the finding the gap is about, when it is about one finding the harness could read. */
+  /** The file of the finding the gap is about, when it is about one finding the harness could read: held by `vote-failed` and by a vote's `request-too-large`. */
   file?: string
   detail: string
 }

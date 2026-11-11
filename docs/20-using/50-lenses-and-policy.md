@@ -70,12 +70,12 @@ No model has a say in it. The vote reply is `{ keep, reasoning }` with no confid
 
 ## Failed votes
 
-A vote fails when its call fails or its reply is unusable. It is recorded with its error and counts as a reject, but a discard never rests on it:
+A vote fails when its call fails or its reply is unusable, or when its provider refuses the request as too large for its model. It is recorded with its error and counts as a reject, but a discard never rests on it:
 
 - **Unreviewed.** When the finding reaches no level, quorum counts its failed votes as if they had been keeps. If that would reach an enabled level, the outcome was never decided: the finding is `unreviewed`, neither kept nor cleared.
 - **Kept, with a gap.** When a kept finding's failed votes, counted as keeps, would reach a higher level than the one it earned, it stays kept at its level, and a `vote-failed` entry in `meta.incomplete` records that the gate between the two levels rested on a vote never cast.
 
-Both make the review incomplete: for a gating profile, the CLI exits `4`, unless a gating profile kept a `high` finding. Under the security profile:
+Both make the review incomplete: for a gating profile, the CLI exits `4`, unless a gating profile kept a `high` finding. A vote refused as too large counts as any failed vote, in either outcome, and the finding also records a `request-too-large` gap, which `--allow-incomplete` does not lift for a gating profile: a pull request can cause it by padding the diff. Under the security profile:
 
 | Kept | Rejected | Failed | Verdict |
 | --- | --- | --- | --- |

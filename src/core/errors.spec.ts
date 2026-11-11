@@ -20,6 +20,7 @@ describe('provider errors', () => {
     ['truncated', undefined, false],
     ['invalid-response', undefined, false],
     ['unsupported', undefined, false],
+    ['too-large', undefined, false],
     ['process', 1, false],
   ] as Array<[ProviderErrorKind, number | undefined, boolean]>)('marks a %s error with status %s as retryable=%s', (kind, status, retryable) => {
     expect(new ProviderError({ providerId: 'p', kind, message: 'm', status }).retryable).toBe(retryable)

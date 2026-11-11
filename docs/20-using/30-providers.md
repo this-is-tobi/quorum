@@ -368,11 +368,12 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 | `refusal` | The model refused, or a filter stopped the reply or the prompt: each adapter's reply table names its messages |
 | `truncated` | The token limit or the model's context cut the reply off: `reply was cut off by the token limit`, `anthropic`'s `reply was cut off: the context window is full`, or `ollama`'s `reply was cut off by the token limit or the context` |
 | `invalid-response` | The body is not JSON (`response body is not JSON`), is over 16 MiB (`reply body is over 16 MiB`) or is not an object (`reply is not a JSON object`), for every adapter. Or the reply holds an error, has not finished, ended early or holds no text, as each adapter's reply table words it |
+| `too-large` | A request may not fit the model's context, and the provider refused it before sending it. Not retryable. The review records it as a `request-too-large` gap, on research and on a vote alike, and never fails on it |
 | `timeout`, `process`, `unsupported` | Never: these are for other providers |
 
 The core raises one more itself: a provider whose reply has no string `text` fails that call with `<id>: returned no reply text`, of kind `invalid-response`.
 
-Quorum does not retry a call. A failed research call fails the review: the CLI exits `3`, and `review` rejects with the error. A failed vote is recorded in the vote's `error` and counts as a reject: [Failed votes](./50-lenses-and-policy.md#failed-votes).
+Quorum does not retry a call. A failed research call fails the review, unless it is a `too-large` refusal: the CLI exits `3`, and `review` rejects with the error. A failed vote is recorded in the vote's `error` and counts as a reject: [Failed votes](./50-lenses-and-policy.md#failed-votes).
 
 ## Writing a provider
 

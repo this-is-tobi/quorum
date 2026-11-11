@@ -3,7 +3,7 @@ import { parseResearchReply } from '../output.ts'
 import { researchRequest } from '../prompts.ts'
 import type { Finding, IncompleteEntry } from '../types.ts'
 import { verifyFindings } from '../verify.ts'
-import { callProvider } from './context.ts'
+import { callProvider, isTooLarge } from './context.ts'
 import type { ProfileRun, RunContext } from './context.ts'
 
 /** How many reported findings a research reply may send to the panel; the rest is reported as incomplete. */
@@ -16,7 +16,7 @@ export interface ResearchOutcome {
    * code outside the diff, or names no file). An unreadable finding is reported in `incomplete` only.
    */
   invalid: string[]
-  /** What the run could not review: findings the harness could not read, findings beyond the cap, or a reply whose findings were all unusable. */
+  /** What the run could not review: findings the harness could not read, findings beyond the cap, a reply whose findings were all unusable, or a research request refused as too large. */
   incomplete: IncompleteEntry[]
 }
 
@@ -74,15 +74,27 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
  * The research stage of one profile: one call to its research provider, with the profile's
  * research instructions, the diff and the guidelines, whose reply `checkReply` turns into what the
  * panel receives. Each finding dropped for citing code outside the diff is reported by a
- * `finding:invalid` event, and each gap by an `incomplete` event. A failed research call, or a
- * reply that is not a valid envelope, fails the profile and aborts the review where it fails
- * (`callProvider` aborts it for the call), so no other profile starts a call after it.
+ * `finding:invalid` event, and each gap by an `incomplete` event. A research request its provider
+ * refused as too large (a `too-large` `ProviderError`) was not sent: the profile reviews nothing,
+ * records one `request-too-large` gap, and the other profiles run. Any other failed research
+ * call, or a reply that is not a valid envelope, fails the profile and aborts the review where it
+ * fails (`callProvider` aborts it for the call), so no other profile starts a call after it.
  *
- * @throws ProviderError, or whatever a custom provider throws, when the research call fails
+ * @throws ProviderError, or whatever a custom provider throws, when the research call fails for any other reason than a refusal as too large
  * @throws OutputError when the reply is not one JSON object holding a `findings` array and nothing else
  */
 export async function research(ctx: RunContext, run: ProfileRun, diff: string, sections: ReadonlyMap<string, string>): Promise<ResearchOutcome> {
-  const text = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, () => researchRequest(run.research.instructions, diff, run.guidelines))
+  let text: string
+  try {
+    text = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, () => researchRequest(run.research.instructions, diff, run.guidelines))
+  } catch (error) {
+    if (!isTooLarge(error)) throw error
+    // An aborted review rejects with its reason, never with a gap.
+    ctx.signal.throwIfAborted()
+    const entry: IncompleteEntry = { profile: run.id, reason: 'request-too-large', detail: `the research request was not sent: ${error.message}` }
+    ctx.emit({ type: 'incomplete', entry })
+    return { findings: [], invalid: [], incomplete: [entry] }
+  }
   let outcome: ResearchOutcome
   try {
     outcome = checkReply(text, sections, run.id, ctx.maxFindings)

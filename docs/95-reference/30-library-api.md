@@ -96,7 +96,7 @@ It resolves with the [result](./20-json-result.md), or rejects:
 | A `ConfigError` | The input is malformed, before any event: `input: must be an object holding the diff string` when the input is not an object, such as the diff text passed on its own; `diff: must be a string`; `options: must be an object`; or `signal: must be an AbortSignal` |
 | The signal's reason | The signal aborted, before the review or while it ran |
 | The sink's error | The event sink threw |
-| A `ProviderError`, or what a provider of your own throws | A profile's research call failed |
+| A `ProviderError`, or what a provider of your own throws | A profile's research call failed, unless it was a `ProviderError` of kind `too-large`, which is a gap |
 | An `OutputError` | A profile's research reply is not one JSON object holding a `findings` array and nothing else |
 
 A failed vote never rejects a review: it is recorded in its verdict.
@@ -130,7 +130,7 @@ The first events of the review on [The JSON result](./20-json-result.md#an-examp
 ```
 
 - **The sink runs inside the review.** Each event is delivered before the review goes on, so a slow sink slows the review.
-- **Events carry no model text beyond `error` strings**, the file name a `finding:invalid` reason quotes, which is the finder's, cleaned and capped at 80 characters, and, for a diff without per-file headers, the `file` and `detail` of a `vote-failed` entry, which hold the finder's name for the file, cleaned and capped at 260. The `file` of a `flag` event is the diff's own path, and absent for a diff without per-file headers.
+- **Events carry no model text beyond `error` strings**, the file name a `finding:invalid` reason quotes, which is the finder's, cleaned and capped at 80 characters, and, for a diff without per-file headers, the `file` and `detail` of a `vote-failed` entry or of a vote's `request-too-large` entry, which hold the finder's name for the file, cleaned and capped at 260. The `file` of a `flag` event is the diff's own path, and absent for a diff without per-file headers.
 - **The sink gets a copy of each event.** Changing one changes neither the review nor its result.
 - **`meta` agrees with the events.** `meta.usage` and each `invalidFindings` are counted from them.
 - **A sink that throws aborts the review** with its error, so the bug surfaces instead of being swallowed: no profile starts another call, no further event is delivered, and the review rejects with that error, even when it threw on `run:end`.
@@ -163,7 +163,7 @@ An aborted review never resolves, and never fails open:
 | `ProviderError` | `QuorumError` | `providerId`, `kind`, `status`, `retryable` | A provider call that failed: [`ProviderError`](../20-using/30-providers.md#providererror) |
 | `OutputError` | `QuorumError` | `stage`, `reason`; `snippet`, the first 200 characters of the reply | A model reply that could not be read: `<stage> reply unusable: <reason> (reply starts: "<snippet>")` |
 
-A failed research call rejects the review with its `ProviderError`, and an unusable research reply with its `OutputError`. The same errors from a vote are recorded in the vote's `error` instead.
+A failed research call rejects the review with its `ProviderError`, and an unusable research reply with its `OutputError`. The same errors from a vote are recorded in the vote's `error` instead. A `ProviderError` of kind `too-large`, from research or from a vote, is a `request-too-large` gap instead: the review does not reject, and a provider of your own raises it to have its own refusal of an oversized request recorded so.
 
 ## Config types
 

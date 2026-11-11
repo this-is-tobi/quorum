@@ -70,6 +70,7 @@ export type ProviderErrorKind
     | 'truncated'
     | 'invalid-response'
     | 'unsupported'
+    | 'too-large'
 
 const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([408, 409, 429])
 
