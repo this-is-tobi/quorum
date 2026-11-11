@@ -46,6 +46,8 @@ export type {
 export { securityProfile } from './profiles/security.ts'
 export { anthropic } from './providers/anthropic.ts'
 export type { AnthropicOptions } from './providers/anthropic.ts'
+export { claudeCode } from './providers/claude-code.ts'
+export type { ClaudeCodeAuth, ClaudeCodeOptions } from './providers/claude-code.ts'
 export { gemini } from './providers/gemini.ts'
 export type { GeminiOptions } from './providers/gemini.ts'
 export type { SystemPrompt } from './providers/messages.ts'
