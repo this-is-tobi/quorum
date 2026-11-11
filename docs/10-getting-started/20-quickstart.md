@@ -9,7 +9,7 @@ export QUORUM_RESEARCH_MODEL=qwen3.6:27b
 export QUORUM_RESEARCH_CONTEXT_TOKENS=32768
 ```
 
-`QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` are the two settings quorum requires: the model, as your endpoint names it, and the model's context window in tokens, which quorum checks every request against ([The context size](../20-using/20-configuration.md#the-context-size)). Ollama sets that window from your GPUs' memory (4096, 32768 or 262144) unless `OLLAMA_CONTEXT_LENGTH` says otherwise, so set `OLLAMA_CONTEXT_LENGTH` on the server to at least the same number. With nothing else set, the finder and the panel both use that model at `http://localhost:11434/v1`, Ollama's default address, and send no key. A hosted API, or a panel on another model than the finder, takes a few more `QUORUM_*` variables or a config file: [Configuration](../20-using/20-configuration.md).
+`QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` are the two settings quorum requires: the model, as your endpoint names it, and the model's context window in tokens, which quorum checks every request against ([The context size](../20-using/20-configuration.md#the-context-size)). Without the context size the run exits `2` with a message that names the variable, a blank diff included. Ollama sets that window from your GPUs' memory (4096, 32768 or 262144) unless `OLLAMA_CONTEXT_LENGTH` says otherwise, so set `OLLAMA_CONTEXT_LENGTH` on the server to at least the same number. With nothing else set, the finder and the panel both use that model at `http://localhost:11434/v1`, Ollama's default address, and send no key. A hosted API, or a panel on another model than the finder, takes a few more `QUORUM_*` variables or a config file: [Configuration](../20-using/20-configuration.md).
 
 ## 2. Review a diff
 
@@ -149,6 +149,7 @@ This run exits `1`: it kept a `high` finding, and `1` wins over the `4` that its
 | --- | --- |
 | Know every exit code's causes, and gate a CI job on them | [The CLI](../20-using/10-cli.md) |
 | Put the panel on another model, or use a hosted API | [Configuration](../20-using/20-configuration.md) |
+| Find your model's context size, and know what the size guard costs and how to raise the limit | [The context size](../20-using/20-configuration.md#the-context-size) |
 | Read every field of the result | [The JSON result](../95-reference/20-json-result.md) |
 | Know what `high` and `medium` mean, and when a finding is unreviewed | [Lenses and policy](../20-using/50-lenses-and-policy.md) |
 | Review for something other than security | [Profiles](../20-using/40-profiles.md) |

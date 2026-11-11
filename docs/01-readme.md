@@ -19,7 +19,7 @@ Nothing needs reading in order. Pick what you came to do: each track lists its p
 1. [Installation](./10-getting-started/10-installation.md) — Bun, the clone, a standalone binary on your `$PATH`, and a check that it works without a model.
 2. [Quick start](./10-getting-started/20-quickstart.md) — point it at a model, review a diff, and read the progress, the result and the exit code.
 3. [The CLI](./20-using/10-cli.md) — the invocation, what goes to stdout and stderr, every exit code, and what each should do to a CI job.
-4. [Configuration](./20-using/20-configuration.md) — the config file and the trust it needs in CI, the `QUORUM_*` variables, how the panel falls back to the finder's settings, the keys, `--print-config`, and the errors a bad setting causes.
+4. [Configuration](./20-using/20-configuration.md) — the config file and the trust it needs in CI, the `QUORUM_*` variables, how the panel falls back to the finder's settings, the context size each provider states, the keys, `--print-config`, and the errors a bad setting causes.
 5. [Providers](./20-using/30-providers.md) — what a provider is, the shipped adapters, the presets, the options a config sets on each, and writing a provider of your own.
 
 ### B. Use it from code, or review something else
@@ -60,5 +60,5 @@ Research is one call to the finder, whose reply lists candidate findings. Dedup 
 Three things are worth knowing early:
 
 - **Confidence is arithmetic.** A vote holds `keep` and `reasoning` and nothing else. The profile's policy turns the number of kept votes into a level: with the security profile's three lenses, 3 of 3 is `high`, 2 of 3 is `medium`, and fewer is no level, however sure a voter sounded.
-- **Nothing the harness could not review reads as clean.** A finding that a failed vote left undecided is `unreviewed`, and a gap such as a finding the harness could not read is recorded in `meta.incomplete`. Either one makes the review incomplete, and an incomplete review never exits `0`: the CLI exits `4`, or `1` when a gating profile also kept a `high` finding. What the harness cannot detect, such as a model that read less than the whole diff, is on the [Threat model](./30-security/10-threat-model.md#what-the-harness-cannot-detect).
+- **Nothing the harness could not review reads as clean.** A finding that a failed vote left undecided is `unreviewed`, and a gap, such as a finding the harness could not read or a request too large for its model's context, is recorded in `meta.incomplete`. Either one makes the review incomplete, and an incomplete review never exits `0`: the CLI exits `4`, or `1` when a gating profile also kept a `high` finding. What the harness cannot detect, such as a context size stated above the server's real window, is on the [Threat model](./30-security/10-threat-model.md#what-the-harness-cannot-detect).
 - **The code a voter sees is read from the diff by the harness, never taken from the finder.** A finding must cite a line inside a hunk of the diff, its evidence is the diff's lines around that line, and the finder's quote of the code is only compared with them.

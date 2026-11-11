@@ -16,7 +16,7 @@ What quorum answers goes to the JSON result on stdout and the lines on stderr, a
 | Secrets: the model key, a CI token, repository credentials | Have a model read or leak them | A model path with no tool and no secret, a key sent only to its own endpoint, and a binary that reads nothing from the working directory, a config file included unless it is named |
 | Output channels: CI logs, terminals, what renders the result | Turn model text into markup, a link, a workflow command or an escape sequence | The CLI makes the text it writes inert for a terminal and a GitHub Actions log; anything else that renders the result must treat its text as untrusted: [Output handling](./30-output-handling.md) |
 | Availability and spend | Multiply the calls and their cost with a huge or finding-flooding pull request | `maxFindings`, the concurrency limit and the reply caps |
-| Coverage | Have the run review less than the whole change, silently | Unreviewed findings and incomplete reviews, exit `4`, for the gaps the harness detects; a model that read less than the whole diff is not one of them: [What the harness cannot detect](#what-the-harness-cannot-detect) |
+| Coverage | Have the run review less than the whole change, silently | The size guard, which refuses a request that may not fit the model's context, and unreviewed findings and incomplete reviews, exit `4`, for the gaps the harness detects; what the guard cannot know is not one of them: [What the harness cannot detect](#what-the-harness-cannot-detect) |
 
 ## Residual risk
 
@@ -73,7 +73,17 @@ All the data a model reads, the diff, the claim, the evidence, the diff section 
 
 ### `maxFindings` and the concurrency limit
 
-Only the first `maxFindings` findings a research reply lists, 50 by default, are read, and only those can reach the panel; the rest are counted in a `findings-capped` gap, so a reply built to flood the run costs bounded work. With the security profile and the default cap, a review of one diff makes at most 151 calls: one research call, and three votes for each of 50 findings. `concurrency`, 4 by default, caps the calls in flight across every profile of the review. The CLI reads at most 16 MiB of diff and refuses a larger one before any request; a job that reviews untrusted changes can bound it further before piping it in, which also keeps it within the model's context ([below](#what-the-harness-cannot-detect)).
+Only the first `maxFindings` findings a research reply lists, 50 by default, are read, and only those can reach the panel; the rest are counted in a `findings-capped` gap, so a reply built to flood the run costs bounded work. With the security profile and the default cap, a review of one diff makes at most 151 calls: one research call, and three votes for each of 50 findings. `concurrency`, 4 by default, caps the calls in flight across every profile of the review. The size of what each call carries is bounded too: [The size guard](#the-size-guard).
+
+### The size guard
+
+A model that reads less than the whole diff can miss what an attacker put in the part it did not read, and quorum cannot see what a model read. So it bounds what it sends, and refuses what may not fit:
+
+- **The diff is read to 16 MiB and no further.** A larger one is refused before any request, with exit `2`.
+- **Every request is bounded before it is sent**, the research request and each vote alike. One token per UTF-8 byte of its text, each text at the largest of its raw, NFC and NFKC forms, plus 512 tokens for the chat template and the reply budget, `maxTokens` else 16000, must fit the `contextTokens` that the provider states for its model. Every HTTP provider must state one, and a provider without one is a configuration error, exit `2`. What the bound costs, and how to raise it knowingly: [The context size](../20-using/20-configuration.md#the-context-size).
+- **A request over the bound is a gap, and no flag lifts it for a gating profile.** Nothing is sent. The review records a `request-too-large` gap and keeps what it can still review, and the CLI exits `4` for a gating profile even with `--allow-incomplete`.
+
+The flag stays out of reach because of the padding attack. A pull request that pads its diff, or one file of it, until a request is refused needs no persuasion of any model, and a flag that waved the gap through would let the padding push a finding out of the reviewed text. `--allow-incomplete` is for flaky voters, which an attacker cannot cause. This is also why no ratio of bytes to tokens is offered: encoded content takes 1 to 1.5 bytes per token, so any ratio above one lets the padding past.
 
 ### Unreviewed and incomplete reviews
 
@@ -89,7 +99,16 @@ The CLI writes nothing that a terminal or a GitHub Actions runner would act on, 
 
 ## What the harness cannot detect
 
-Quorum cannot tell when a model read less than the whole diff. It sends the diff whole, with no limit on its size and no budget for the model's context, and it checks what the model answered, never what the model read. An endpoint that truncates an oversized prompt answers all the same: Ollama's `/v1`, the CLI's default endpoint, cuts a prompt past the model's context length and still returns HTTP 200, so a review of what was left can come back clean, with exit `0`. A program that reaches Ollama through the `ollama` adapter avoids it: the adapter sends `truncate: false`, which turns that prompt into an error on Ollama 0.12.6 and later. This is a limit of the harness today. Bound the size of the diffs you review, and size the model's context for them.
+Quorum cannot tell what a model read: it checks what the model answered, never what it saw of the prompt. An endpoint that truncates an oversized prompt answers all the same. Ollama's `/v1`, the CLI's default endpoint, cuts a prompt past the model's context length and still returns HTTP 200, so a review of what was left can come back clean, with exit `0`. So quorum refuses to send what may not fit, by [the size guard](#the-size-guard), a bound that holds for the open tokenizers checked. What the guard cannot know remains:
+
+- **A `contextTokens` above the server's real window.** Quorum trusts the number it is given and reads it from nowhere else. Ollama's `/v1` cannot be told its context, so a server that loaded less than you stated cuts a prompt in silence. LM Studio loads less than its maximum, and an Azure deployment can differ from its model's documentation. State the window the server really gives: [Finding the number](../20-using/20-configuration.md#finding-the-number).
+- **A tokenizer that takes more than one token per byte.** The bound holds for the byte-level BPE and byte-fallback SentencePiece tokenizers checked, and for one that normalizes with NFC or NFKC first. It is not proven for a closed tokenizer (Claude, Gemini, Grok), whose vendor refuses an oversized prompt with an error, and not for one that decomposes or folds case, which no chat model's is known to do.
+- **A server that adds more than 512 tokens around the messages**, such as the `TEMPLATE` or `SYSTEM` text of an Ollama Modelfile.
+- **Text that `extraBody` adds** to a request, which the guard does not count.
+- **A provider object**, which checks its own requests: the guard lives in the shipped adapters.
+- **A reply that outruns its reserve.** A server that shifts its context as the reply is written, such as Ollama's `/v1` or LM Studio's rolling window, can drop the start of a prompt to make room for a reply that runs past the 16000 tokens or the `maxTokens` the guard kept. A model persuaded to ramble can cause that, and the size of the diff alone cannot.
+
+Beyond the guard, a job that reviews untrusted changes can bound the diff further before piping it in.
 
 ## Independence
 
