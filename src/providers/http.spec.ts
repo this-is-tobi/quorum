@@ -104,9 +104,23 @@ describe('httpOrigin', () => {
     expect(httpOrigin('https://api.groq.com./openai/v1')).toBe('https://api.groq.com')
   })
 
+  it.each([
+    ['userinfo, which is no part of an origin', 'https://user:pw-secret@h.example/v1', 'https://h.example'],
+    ['the default port of http written out', 'http://h.example:80/v1', 'http://h.example'],
+    ['the port of http that is the default of https', 'http://h.example:443/v1', 'http://h.example:443'],
+    ['the port of https that is the default of http', 'https://h.example:80/v1', 'https://h.example:80'],
+    ['a trailing dot with a port that is not the default', 'https://api.groq.com.:8443/v1', 'https://api.groq.com:8443'],
+    ['a trailing dot with the default port', 'https://api.groq.com.:443/v1', 'https://api.groq.com'],
+    ['a host that is only a dot, which keeps it', 'http://./v1', 'http://.'],
+  ])('reads %s as one origin', (_name, url, origin) => {
+    expect(httpOrigin(url)).toBe(origin)
+  })
+
   it.each<[string, unknown]>([
     ['a text without a scheme', 'api.groq.com/v1'],
     ['another scheme', 'ws://h.example/v1'],
+    ['an ftp URL', 'ftp://h.example/v1'],
+    ['a blob URL, whose own origin is that of the URL inside it', 'blob:https://h.example/0b1d6d6e-0000-4000-8000-000000000000'],
     ['a file URL', 'file:///etc/hosts'],
     ['a number', 42],
     // eslint-disable-next-line no-new-wrappers, unicorn/new-for-builtins -- the input is a String object

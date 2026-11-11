@@ -319,6 +319,16 @@ describe('buildProvider', () => {
     expect(reads).toBe(1)
   })
 
+  it('reads the model of a spec that builds once, so the body carries the model its checks allowed', async () => {
+    let reads = 0
+    const spec = { id: 'p', preset: 'groq', apiKey: 'sk-k', get model() {
+      reads += 1
+      return reads === 1 ? 'llama-3.3-70b-versatile' : 'openai/gpt-oss-120b'
+    } }
+    expect((await send(spec)).body.model).toBe('llama-3.3-70b-versatile')
+    expect(reads).toBe(1)
+  })
+
   it.each<[string, unknown]>([
     ['an array', [GROQ]],
     // eslint-disable-next-line no-new-wrappers, unicorn/new-for-builtins -- the input is a String object

@@ -4,7 +4,7 @@ import type { Provider } from '../core/ports.ts'
 import { buildProvider } from '../providers/build.ts'
 import type { ProviderSpec } from '../providers/build.ts'
 import { httpOrigin } from '../providers/http.ts'
-import { presetOf } from '../providers/presets.ts'
+import { presetOf, withoutPrototype } from '../providers/presets.ts'
 import type { Preset } from '../providers/presets.ts'
 import { applyRoleOverrides, atVariables, baseUrlOf, envValue, readEnv } from './env.ts'
 import type { Env, ProviderEntry, RoleBinding } from './env.ts'
@@ -58,7 +58,7 @@ function deepFreeze<T>(value: T): T {
 
 /** A spec's own fields, read once into an object with no prototype: a polluted `Object.prototype` fills none of them. */
 function ownFields(spec: ProviderSettings): ProviderSettings {
-  return Object.setPrototypeOf(Object.fromEntries(Object.entries(spec)), null) as ProviderSettings
+  return withoutPrototype<ProviderSettings>(Object.entries(spec))
 }
 
 /** The host of an origin `httpOrigin` returned, without its port. */

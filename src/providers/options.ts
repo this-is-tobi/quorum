@@ -270,7 +270,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Whether `value` is an object that is not an array and whose prototype is `Object.prototype` or none: its entries are its own fields. */
-export function isPlainRecord(value: unknown): value is Record<string, unknown> {
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (!isRecord(value)) return false
   const prototype = Object.getPrototypeOf(value)
   return prototype === Object.prototype || prototype === null
