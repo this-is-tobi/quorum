@@ -392,17 +392,17 @@ describe('runCli', () => {
     stubFetch({ choices: [{ message: { content: '{"findings":[]}' } }] })
     const { io, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: two }, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
-    expect(stderr()).toBe([
+    const lines = stderr().split('\n')
+    expect(lines.slice(0, 5)).toEqual([
       'warning: team.policy.medium needs the same 2 vote(s) as policy.high with 2 lens(es), so it never applies',
       '[security] Research (m @ http://localhost:11434)...',
       '[security] Panel will use m @ http://localhost:11434',
       '[team] Research (m @ http://localhost:11434)...',
       '[team] Panel will use grounded (m @ http://localhost:11434), significant (v @ https://v.example)',
-      '[security] 0 candidate(s) after dedup',
-      '[team] 0 candidate(s) after dedup',
-      '0 kept, 0 discarded, 0 unreviewed by panel',
-      '',
-    ].join('\n'))
+    ])
+    // Each profile's dedup line is there with its prefix; which comes first depends on scheduling.
+    expect(lines.slice(5, 7).sort()).toEqual(['[security] 0 candidate(s) after dedup', '[team] 0 candidate(s) after dedup'])
+    expect(lines.slice(7)).toEqual(['0 kept, 0 discarded, 0 unreviewed by panel', ''])
   })
 })
 

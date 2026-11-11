@@ -60,8 +60,16 @@ export const VARIABLE_NAME = /^[A-Z][A-Z0-9_]{0,63}$/
 
 const canonicalName = (role: Role, suffix: string): string => `QUORUM_${role}_${suffix}`
 
-/** The variables whose name starts with `QUORUM_` that quorum reads. */
-const READ_VARIABLES: ReadonlySet<string> = new Set(['QUORUM_CONFIG', 'QUORUM_PROFILES', ...ROLES.flatMap(role => VARIABLES.map(({ suffix }) => canonicalName(role, suffix)))])
+/**
+ * Every variable the environment layer reads: `QUORUM_CONFIG`, `QUORUM_PROFILES`, the `QUORUM_` form of each role's
+ * variables and the deprecated aliases of those that have one. The one list: a variable added to `VARIABLES` joins it.
+ */
+export const READ_VARIABLES: ReadonlySet<string> = new Set([
+  'QUORUM_CONFIG',
+  'QUORUM_PROFILES',
+  ...ROLES.flatMap(role => VARIABLES.map(({ suffix }) => canonicalName(role, suffix))),
+  ...ROLES.flatMap(role => VARIABLES.filter(({ aliased }) => aliased).map(({ suffix }) => `${role}_${suffix}`)),
+])
 
 /** The variables of one role that are set, each as its field and value: the `QUORUM_` form, else its alias. */
 function readRole(env: Env, role: Role): RoleOverrides {

@@ -35,6 +35,15 @@ describe('printConfig', () => {
     expect(text).not.toContain('value')
   })
 
+  it('keeps a value that holds a newline, then a workflow command, inert on every line', () => {
+    const hostile = 'a\n::error::forged\n##[group]forged'
+    const text = printConfig(config({ a: { ...SPEC, model: hostile } }, { warnings: [hostile] }), `/work/${hostile}.yaml`)
+    expect(text).not.toMatch(/^\s*::/m)
+    expect(text).not.toContain('##[')
+    expect(text).toContain('<U+003A>:error::forged')
+    expect(text).toContain('##<U+005B>group]forged')
+  })
+
   it('prints the values the review applies when the config sets none', () => {
     expect(printed(SPEC)).toContain('\nconcurrency: 4\nmaxFindings: 50\nwarnings: []\n')
     expect(printConfig(config({ a: SPEC }, { concurrency: 2, maxFindings: 5 }), undefined)).toContain('\nconcurrency: 2\nmaxFindings: 5\n')

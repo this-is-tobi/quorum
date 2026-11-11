@@ -1,19 +1,12 @@
 /** Test helper for code that reads `process.env`. */
 
 import { vi } from 'vitest'
+import { READ_VARIABLES as ENV_LAYER_VARIABLES } from '../config/env.ts'
 import { presets } from '../providers/presets.ts'
 
-const ROLES = ['RESEARCH', 'VOTER']
-
-/**
- * Every variable the config layer reads: `QUORUM_CONFIG`, `QUORUM_PROFILES`, the `QUORUM_` form of each role's
- * fields and their deprecated aliases, and the key variable each preset names.
- */
+/** Every variable the config layer reads: those of the environment layer, and the key variable each preset names. */
 export const READ_VARIABLES: readonly string[] = [
-  'QUORUM_CONFIG',
-  'QUORUM_PROFILES',
-  ...ROLES.flatMap(role => ['PRESET', 'PROTOCOL', 'BASE_URL', 'MODEL', 'API_KEY'].map(field => `QUORUM_${role}_${field}`)),
-  ...ROLES.flatMap(role => ['BASE_URL', 'API_KEY', 'MODEL'].map(field => `${role}_${field}`)),
+  ...ENV_LAYER_VARIABLES,
   ...Object.values(presets).flatMap(preset => preset.apiKeyEnv ?? []),
 ]
 
