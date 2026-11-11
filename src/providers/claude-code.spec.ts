@@ -735,9 +735,19 @@ describe('claudeCode', () => {
 
   it('stops a claude --version that never answers at its deadline as an abort stops it, removes the directory and fails closed', async () => {
     expect(VERSION_CHECK_MS).toBe(10_000)
-    // The deadline is held to 0.4 s here; every other timer keeps its delay.
+    // The deadline is held to 0.4 s here, and then until the fake has recorded its start, so the check it
+    // stops is running: on a loaded machine, Node can take longer than that to start. Every other timer
+    // keeps its delay.
     const realSetTimeout = globalThis.setTimeout
-    const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, ms?: number) => realSetTimeout(handler, ms === VERSION_CHECK_MS ? 400 : ms)) as typeof setTimeout)
+    const began = Date.now()
+    const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, ms?: number) => {
+      if (ms !== VERSION_CHECK_MS) return realSetTimeout(handler, ms)
+      const fire = (): void => {
+        if (readFakeVersionRecords(dir, 'silent').length > 0 || Date.now() - began > 5000) handler()
+        else realSetTimeout(fire, 50)
+      }
+      return realSetTimeout(fire, 400)
+    }) as typeof setTimeout)
     const env = fakeClaudeEnv(dir, 'silent', fixtures.schema, { FAKE_CLAUDE_VERSION_DELAY_MS: '60000' })
     try {
       await expect(claudeCode({ ...options, command: claudeIn('silent'), env }).complete(request)).rejects.toMatchObject({ kind: 'process', message: 'cc: claude --version did not answer within 10 s' })
@@ -750,7 +760,7 @@ describe('claudeCode', () => {
     expect(isRunning((check as { pid: number }).pid)).toBe(false)
     expect(existsSync(join(dir, 'silent.record.json'))).toBe(false)
     expect(readdirSync(runs)).toEqual([])
-  })
+  }, 15_000)
 
   it('refuses a claude whose version it cannot read, quoting nothing of what it printed, before it starts the request', async () => {
     const env = fakeClaudeEnv(dir, 'garbled', fixtures.schema, { FAKE_CLAUDE_VERSION: 'sk-SECRET' })
