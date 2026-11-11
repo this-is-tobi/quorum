@@ -995,4 +995,76 @@ describe('a request too large for its provider', () => {
     })
     await expect(createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, research)).review({ diff }, { signal: controller.signal })).rejects.toThrow('stopped')
   })
+
+  describe('recognised by its kind, whatever class made it', () => {
+    // A provider object built from a second copy of quorum raises its own ProviderError class, which fails an instanceof check.
+    const throwing = (id: string, error: unknown): Fake => fake(id, () => {
+      throw error
+    })
+    const researchGaps = async (error: unknown): Promise<QuorumResult['meta']['incomplete']> => (await createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, throwing('research', error))).review({ diff })).meta.incomplete
+    const voteGaps = async (error: unknown): Promise<QuorumResult> => createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, fake('research', () => findings(reported)), throwing('voter', error))).review({ diff })
+
+    it('records a plain object with an own kind of too-large as a research gap', async () => {
+      expect(await researchGaps({ kind: 'too-large', message: 'x' })).toEqual([{ profile: 'security', reason: 'request-too-large', detail: 'the research request was not sent: x' }])
+    })
+
+    it('records it as a gap on each vote request too', async () => {
+      const result = await voteGaps({ kind: 'too-large', message: 'x' })
+      expect(result.unreviewed).toHaveLength(1)
+      expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'request-too-large', file: 'a.js', detail: '"a.js":1: 3 of 3 vote requests were not sent: x' }])
+    })
+
+    it('does not run a getter for the kind, and takes the refusal for a failure', async () => {
+      let ran = 0
+      const error = { get kind() {
+        ran++
+        return 'too-large'
+      }, message: 'x' }
+      await expect(createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, throwing('research', error))).review({ diff })).rejects.toBe(error)
+      const result = await voteGaps(error)
+      expect(result.meta.incomplete.filter(entry => entry.reason === 'request-too-large')).toEqual([])
+      expect(ran).toBe(0)
+    })
+
+    it.each<[string, () => unknown]>([
+      ['an inherited kind', () => Object.create({ kind: 'too-large', message: 'x' })],
+      ['a kind of another value', () => ({ kind: 'http', message: 'x' })],
+      ['a kind that is not a string', () => ({ kind: ['too-large'], message: 'x' })],
+      ['a string', () => 'too-large'],
+      ['null', () => null],
+    ])('does not take %s for a refusal', async (_name, make) => {
+      const error = make()
+      await expect(createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, throwing('research', error))).review({ diff })).rejects.toBe(error)
+      expect((await voteGaps(error)).meta.incomplete.filter(entry => entry.reason === 'request-too-large')).toEqual([])
+    })
+
+    it('never throws from the check: an object whose descriptors throw is a failure, not a new error', async () => {
+      const hostile = new Proxy({}, { getOwnPropertyDescriptor() {
+        throw new Error('trap')
+      } })
+      await expect(createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, throwing('research', hostile))).review({ diff })).rejects.toBe(hostile)
+      expect((await voteGaps(hostile)).meta.incomplete.filter(entry => entry.reason === 'request-too-large')).toEqual([])
+    })
+
+    it.each<[string, () => { ran: () => number, error: object }]>([
+      ['a getter', () => {
+        let ran = 0
+        return { ran: () => ran, error: { kind: 'too-large', get message() {
+          ran++
+          return 'secret'
+        } } }
+      }],
+      ['a getter that throws', () => ({ ran: () => 0, error: { kind: 'too-large', get message(): string {
+        throw new Error('trap')
+      } } })],
+      ['an inherited message', () => ({ ran: () => 0, error: Object.assign(Object.create({ message: 'secret' }), { kind: 'too-large' }) })],
+      ['a message that is not a string', () => ({ ran: () => 0, error: { kind: 'too-large', message: { toString: () => 'secret' } } })],
+      ['no message', () => ({ ran: () => 0, error: { kind: 'too-large' } })],
+    ])('says a fixed text, and repeats nothing from the object, for %s', async (_name, make) => {
+      const { ran, error } = make()
+      expect(await researchGaps(error)).toEqual([{ profile: 'security', reason: 'request-too-large', detail: 'the research request was not sent: refused as too large' }])
+      expect((await voteGaps(error)).meta.incomplete).toEqual([{ profile: 'security', reason: 'request-too-large', file: 'a.js', detail: '"a.js":1: 3 of 3 vote requests were not sent: refused as too large' }])
+      expect(ran()).toBe(0)
+    })
+  })
 })

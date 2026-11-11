@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ConfigError, ProviderErrorKind } from '../core/errors.ts'
+import { ConfigError } from '../core/errors.ts'
+import type { ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
 import { sent, stubFetch } from '../testing/http.ts'
 import { ollama } from './ollama.ts'
@@ -98,6 +99,19 @@ describe('ollama', () => {
       }
       expect(issues, key).toEqual([{ path: `local.extraBody.${key}`, message: 'must be an object' }])
     }
+  })
+
+  it('refuses a spelling of options other than the one the adapter merges, which would send two keys', () => {
+    for (const key of ['Options', 'OPTIONS', 'oPtIoNs']) {
+      expect(() => ollama({ ...options, extraBody: { [key]: {} } }), key).toThrow(new ConfigError([{ path: `local.extraBody.${key}`, message: 'must be written options' }]))
+    }
+    expect(() => ollama({ ...options, extraBody: { options: { top_k: 3 } } })).not.toThrow()
+  })
+
+  it('writes the canonical spelling and never the key it was given: a name that is not safe prints as *', () => {
+    // A long s upper-cases to S, so Go's decoder reads this key as options.
+    const key = `option${String.fromCharCode(0x17F)}`
+    expect(() => ollama({ ...options, extraBody: { [key]: {} } })).toThrow(new ConfigError([{ path: 'local.extraBody.*', message: 'must be written options' }]))
   })
 
   it('sends only num_ctx in options when the temperature is null and no limit is set', async () => {

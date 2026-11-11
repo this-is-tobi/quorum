@@ -3,7 +3,7 @@ import { parseVoteReply } from '../output.ts'
 import { confidenceFor, undecidedLevel, verdictStatus } from '../policy.ts'
 import { voteRequest } from '../prompts.ts'
 import type { Confidence, Finding, IncompleteEntry, LensVote, Verdict, VerdictStatus } from '../types.ts'
-import { callProvider, isTooLarge } from './context.ts'
+import { callProvider, isTooLarge, refusalMessage } from './context.ts'
 import type { LensRun, ProfileRun, RunContext } from './context.ts'
 
 /** Where the panel put each finding, the arrays keeping the findings' order, and the gaps its failed votes left. */
@@ -95,7 +95,7 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
     // Once the review is aborted, a failed call is not the voter's failure: the review rejects with the abort's reason.
     ctx.signal.throwIfAborted()
     lensVote = { angle: lens.id, vote: null, error: error instanceof Error ? error.message : String(error) }
-    if (isTooLarge(error)) refusal = error.message
+    if (isTooLarge(error)) refusal = refusalMessage(error)
   }
   const { error } = lensVote
   ctx.emit({ type: 'vote', profile: run.id, findingId: finding.id, lens: lens.id, keep: lensVote.vote?.keep ?? null, ...(error === null ? {} : { error }) })

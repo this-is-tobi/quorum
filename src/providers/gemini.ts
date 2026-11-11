@@ -3,7 +3,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { bodyKeyForm, isRecord, mergeBody, prepareHttp, unlessEmpty } from './options.ts'
+import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues, unlessEmpty } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { endedEarly, joinedText, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget } from './size.ts'
@@ -25,6 +25,8 @@ const RULES: Omit<AdapterRules, 'auth'> = {
   fixedHeaders: [],
   structuredOutputs: ['prompt', 'json', 'schema'],
 }
+/** The one spelling of the generation config's key that the adapter merges its own into. */
+const GENERATION_CONFIG = 'generationConfig'
 /** The finish reasons of a reply cut off by the token limit: `CONTINUATION` stops at the per-request limit before the model is done. */
 const CUT_OFF: ReadonlySet<unknown> = new Set(['MAX_TOKENS', 'CONTINUATION'])
 /** The finish reasons of a reply the safety filter stopped. */
@@ -38,15 +40,17 @@ function keyParameterIssues(id: string, query: Readonly<Record<string, unknown>>
 }
 
 /**
- * A `generationConfig` in `extraBody` that is no object: it would replace the one the adapter writes and
- * drop the reply limit the guard reserves. Proto JSON takes the field as `generation_config` too, and a key in
+ * The problems of a `generationConfig` in `extraBody`: one that is no object, which would replace the one the
+ * adapter writes and drop the reply limit the guard reserves, and one spelled another way than the adapter
+ * merges it, which would send a second key. Proto JSON takes the field as `generation_config` too, and a key in
  * any letter case, so the key is matched as the other rules match one.
  */
 function generationConfigIssues(id: string, extraBody: unknown): ConfigIssue[] {
   if (!isRecord(extraBody)) return []
-  return Object.entries(extraBody)
-    .filter(([key, value]) => bodyKeyForm(key) === 'generationconfig' && !isRecord(value))
-    .map(([key]) => ({ path: `${id}.${issuePath(['extraBody', key])}`, message: 'must be an object' }))
+  return Object.entries(extraBody).flatMap(([key, value]): ConfigIssue[] => {
+    if (bodyKeyForm(key) !== bodyKeyForm(GENERATION_CONFIG)) return []
+    return isRecord(value) ? spellingIssues(id, key, GENERATION_CONFIG) : [{ path: `${id}.${issuePath(['extraBody', key])}`, message: 'must be an object' }]
+  })
 }
 
 /** What shapes the generation config: the options that set it, and the mode. */

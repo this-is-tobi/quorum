@@ -96,7 +96,7 @@ It resolves with the [result](./20-json-result.md), or rejects:
 | A `ConfigError` | The input is malformed, before any event: `input: must be an object holding the diff string` when the input is not an object, such as the diff text passed on its own; `diff: must be a string`; `options: must be an object`; or `signal: must be an AbortSignal` |
 | The signal's reason | The signal aborted, before the review or while it ran |
 | The sink's error | The event sink threw |
-| A `ProviderError`, or what a provider of your own throws | A profile's research call failed, unless it was a `ProviderError` of kind `too-large`, which is a gap |
+| A `ProviderError`, or what a provider of your own throws | A profile's research call failed, unless it was a refusal of kind `too-large`, which is a gap |
 | An `OutputError` | A profile's research reply is not one JSON object holding a `findings` array and nothing else |
 
 A failed vote never rejects a review: it is recorded in its verdict.
@@ -163,7 +163,7 @@ An aborted review never resolves, and never fails open:
 | `ProviderError` | `QuorumError` | `providerId`, `kind`, `status`, `retryable` | A provider call that failed: [`ProviderError`](../20-using/30-providers.md#providererror) |
 | `OutputError` | `QuorumError` | `stage`, `reason`; `snippet`, the first 200 characters of the reply | A model reply that could not be read: `<stage> reply unusable: <reason> (reply starts: "<snippet>")` |
 
-A failed research call rejects the review with its `ProviderError`, and an unusable research reply with its `OutputError`. The same errors from a vote are recorded in the vote's `error` instead. A `ProviderError` of kind `too-large`, from research or from a vote, is a `request-too-large` gap instead: the review does not reject, and a provider of your own raises it to have its own refusal of an oversized request recorded so.
+A failed research call rejects the review with its `ProviderError`, and an unusable research reply with its `OutputError`. The same errors from a vote are recorded in the vote's `error` instead. A `ProviderError` of kind `too-large`, from research or from a vote, is a `request-too-large` gap instead: the review does not reject, and a provider of your own raises it to have its own refusal of an oversized request recorded so. Any object with an own `kind` property of `'too-large'` counts, whatever its class, so a refusal from a second copy of quorum is a gap too.
 
 ## Config types
 

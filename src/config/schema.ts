@@ -40,7 +40,8 @@ const providerShape = {
   protocol: z.enum(Object.keys(PROTOCOLS) as [Protocol, ...Protocol[]]).optional().describe('The wire protocol; required without a preset, and the preset\'s own when both are set'),
   baseUrl: z.string().optional().describe('The http(s) URL of the endpoint, with no credentials, query or fragment; required without a preset, or with one that has none'),
   model: z.string().optional().describe('The model id sent with every request'),
-  contextTokens: z.int().min(1).optional().describe('The context window of the model in tokens, prompt and reply together: quorum sends no request that may not fit it. Set here or in QUORUM_<ROLE>_CONTEXT_TOKENS'),
+  // The most QUORUM_<ROLE>_CONTEXT_TOKENS takes (src/config/env.ts): a window a server could never have.
+  contextTokens: z.int().min(1).max(999_999_999).optional().describe('The context window of the model in tokens, prompt and reply together: quorum sends no request that may not fit it. Set here or in QUORUM_<ROLE>_CONTEXT_TOKENS'),
   apiKeyEnv: z.string().regex(ENV_NAME).optional().describe('The environment variable that holds the key; a preset names its vendor\'s own, which is read only while the base URL keeps the preset\'s origin'),
   auth: auth.optional().describe('How the key is sent: bearer, x-api-key, none, or in a header of its own after an optional prefix'),
   headers: z.record(z.string(), z.string()).optional().describe('Extra request headers; their values are redacted from error messages, as the key is'),

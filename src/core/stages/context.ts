@@ -56,9 +56,35 @@ export interface RunContext {
   readonly maxFindings: number
 }
 
-/** True for a `ProviderError` of kind `too-large`: a provider refused a request that may not fit its model's context, before sending it. */
-export function isTooLarge(error: unknown): error is ProviderError {
-  return error instanceof ProviderError && error.kind === 'too-large'
+/** What a refusal as too large says when it holds no message of its own. */
+const REFUSAL_FALLBACK = 'refused as too large'
+
+/** The value of an own data property of an object, else undefined: a getter is never run, an inherited property or a throwing proxy never matches. */
+function ownData(value: unknown, key: string): unknown {
+  if (typeof value !== 'object' || value === null) return undefined
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    return descriptor !== undefined && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * True for a refusal as too large: an object whose own data property `kind` is `'too-large'`, which is what a
+ * provider raises when a request may not fit its model's context, before sending it. It is matched by that
+ * property, not by class, so a `ProviderError` from a second copy of quorum, such as a code config's own
+ * import, is recognised too; a provider is trusted code, and a server cannot forge an error object. It
+ * never runs a getter and never throws.
+ */
+export function isTooLarge(error: unknown): boolean {
+  return ownData(error, 'kind') === 'too-large'
+}
+
+/** What a refusal as too large says: its own data string `message`, else a fixed text, never anything else from the object. */
+export function refusalMessage(refusal: unknown): string {
+  const message = ownData(refusal, 'message')
+  return typeof message === 'string' ? message : REFUSAL_FALLBACK
 }
 
 /** Who requests a provider call, as its `call` event names it: `lens` only for a vote. */

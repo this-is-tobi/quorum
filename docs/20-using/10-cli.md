@@ -9,7 +9,7 @@ Usage: quorum [options] [diff-file]
 Options:
   -c, --config <path>     Read this config file, over QUORUM_CONFIG
   -p, --profile <id>      Run only this profile; repeat it to run several
-      --allow-incomplete  Exit 0 instead of 4 when the review is incomplete
+      --allow-incomplete  Exit 0 instead of 4 when the review is incomplete, except for a request too large for its model
       --print-config      Print the resolved config, keys redacted, and exit
   -h, --help              Print this help and exit
   -v, --version           Print the version and exit

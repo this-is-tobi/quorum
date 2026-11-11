@@ -88,8 +88,15 @@ describe('configFileSchema', () => {
     expect(issuesOf({ providers: { local: { preset: 'ollama', model: 'q', contextTokens: 131072 } } })).toEqual([])
   })
 
-  it.each<[unknown, string]>([[0, 'must be at least 1'], [1.5, 'must be an integer'], ['32768', 'must be a number']])('refuses contextTokens %j: %s', (contextTokens, message) => {
+  it.each<[unknown, string]>([[0, 'must be at least 1'], [1.5, 'must be an integer'], ['32768', 'must be a number'], [1_000_000_000, 'must be at most 999999999']])('refuses contextTokens %j: %s', (contextTokens, message) => {
     expect(issuesOf({ providers: { local: { preset: 'ollama', model: 'q', contextTokens } } })).toEqual([at('providers.local.contextTokens', message)])
+  })
+
+  it('stops contextTokens at 999999999 in a config file and in a code config, as the variable does', () => {
+    const config = (contextTokens: number): unknown => ({ providers: { local: { preset: 'ollama', model: 'q', contextTokens } } })
+    expect(issuesOf(config(999_999_999))).toEqual([])
+    expect(issuesOf(config(999_999_999), configCodeSchema)).toEqual([])
+    expect(issuesOf(config(1_000_000_000), configCodeSchema)).toEqual([at('providers.local.contextTokens', 'must be at most 999999999')])
   })
 
   it.each<[string, unknown, ConfigIssue[]]>([
@@ -427,6 +434,10 @@ describe('configJsonSchema', () => {
   it('describes every field, for an editor to show, and offers no key field', () => {
     expect(undescribed(configJsonSchema(), '#')).toEqual([])
     expect(Object.keys(node('properties', 'providers', 'additionalProperties', 'properties') as object)).not.toContain('apiKey')
+  })
+
+  it('advertises the bounds of contextTokens, 1 to 999999999, as the variable takes them', () => {
+    expect(node('properties', 'providers', 'additionalProperties', 'properties', 'contextTokens')).toMatchObject({ type: 'integer', minimum: 1, maximum: 999_999_999 })
   })
 
   it('is what schema/quorum.schema.json holds, byte for byte', () => {

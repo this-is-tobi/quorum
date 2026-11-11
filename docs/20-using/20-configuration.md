@@ -175,7 +175,7 @@ Every provider that speaks HTTP must state one, whether a profile that runs uses
 
 A provider's context size comes from, in this order:
 
-1. **The provider's `contextTokens`**, a whole number of at least 1, in the config file or in a code config.
+1. **The provider's `contextTokens`**, a whole number from 1 to 999999999, in the config file or in a code config.
 2. **`QUORUM_RESEARCH_CONTEXT_TOKENS` or `QUORUM_VOTER_CONTEXT_TOKENS`**, which set the field of the role's provider as the other role variables do, over the file's. A value that is not a whole number from 1 to 999999999 written in decimal digits is refused at its variable, `32k`, `1e5` and `0x10` included.
 3. **Nowhere else**: quorum does not read it from the endpoint or from a table of models.
 
