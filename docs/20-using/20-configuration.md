@@ -198,7 +198,7 @@ A number above the real window defeats the guard, which counts against the numbe
 
 ### What it counts, and what it costs
 
-A request is counted at one token per byte of what it carries, each text at the largest of its raw, NFC and NFKC UTF-8 lengths, so that a tokenizer that normalizes first stays bounded. The count adds 512 tokens for the chat template and the reply budget, `maxTokens` else 16000, and the request is sent only when the sum is at most `contextTokens`: [The size of a request](./30-providers.md#the-size-of-a-request) has the rule and the message of a refusal. A tokenizer that decomposes (NFD, NFKD) or folds case is not covered, and no chat model's tokenizer is known to do either.
+A request is counted at one token per byte of what it carries, each code point at its longest form (as it is, decomposed, or compatibility-decomposed), so that a tokenizer that normalizes with NFC, NFKC, NFD or NFKD first stays bounded. Case folding is not proven covered. Accented letters count one more byte per accent, and Hangul syllables up to three times their size. The count adds 512 tokens for the chat template and the reply budget, `maxTokens` else 16000, and the request is sent only when the sum is at most `contextTokens`: [The size of a request](./30-providers.md#the-size-of-a-request) has the rule and the message of a refusal.
 
 One token per byte is the price of a bound that holds for every tokenizer checked. Code runs about three bytes per token, so the guard accepts about a third of the diff that would really fit. The diff that a research request of the `security` profile leaves room for, as ASCII text with no guidelines, `maxTokens` unset and the default `systemPrompt: 'native'` (`inline` leaves 2 bytes less):
 
