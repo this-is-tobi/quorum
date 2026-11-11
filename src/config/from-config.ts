@@ -5,7 +5,7 @@ import { createQuorum } from '../core/quorum.ts'
 import type { Quorum } from '../core/types.ts'
 import { buildProvider } from '../providers/build.ts'
 import type { Env } from './env.ts'
-import { checkCodeValue, thrownName } from './load.ts'
+import { checkCodeValue } from './load.ts'
 import { isResolvedConfig, resolveConfig } from './resolve.ts'
 import type { ResolvedConfig, ResolvedProvider } from './resolve.ts'
 import { configInputSchema, configPath, isProvider } from './schema.ts'
@@ -21,21 +21,11 @@ function fromSpec(name: string, spec: Exclude<ResolvedProvider, Provider>): { re
   }
 }
 
-/**
- * A provider object of the config under the name the config gives it: `model` and `complete` are read once,
- * so what is checked is what is used, and a throw while reading them is reported by the error's name alone.
- */
-function fromObject(name: string, object: Provider): { readonly provider?: Provider, readonly issues: readonly ConfigIssue[] } {
-  let model: unknown
-  let complete: Provider['complete']
-  try {
-    ({ model, complete } = object)
-  } catch (error) {
-    return { issues: [{ path: configPath(['providers', name]), message: `could not be read (${thrownName(error)})` }] }
-  }
-  // The schema checked that `complete` is a function, and nothing has checked `model` yet.
+/** A provider object of the config, which the check read once into a snapshot, under the name the config gives it. */
+function fromObject(name: string, snapshot: Provider): { readonly provider?: Provider, readonly issues: readonly ConfigIssue[] } {
+  const { model, complete }: { model: unknown, complete: Provider['complete'] } = snapshot
   if (typeof model !== 'string') return { issues: [{ path: configPath(['providers', name, 'model']), message: 'must be a string' }] }
-  return { provider: { id: name, model, complete: request => complete.call(object, request) }, issues: [] }
+  return { provider: { id: name, model, complete }, issues: [] }
 }
 
 /** Each provider of a resolved config as a `Provider`, by name, or every issue of the providers that cannot be built. */
@@ -59,7 +49,7 @@ function buildProviders(providers: ResolvedConfig['providers']): ReadonlyMap<str
  * is built by the builder, and each provider object is wrapped under the name the config gives it. Every
  * issue is thrown at once, before anything is sent. `warnings` lists the config's, then the core's.
  *
- * @throws ConfigError listing every issue of the config, the environment, the providers and the profiles
+ * @throws ConfigError listing every issue of the config's check, or else of its resolution and its providers
  *
  * @example
  * const quorum = await fromConfig({}, { env: process.env })

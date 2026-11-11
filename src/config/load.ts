@@ -8,6 +8,7 @@ import type { Document, YAMLError } from 'yaml'
 import type { z } from 'zod'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
+import type { CompletionRequest, Provider } from '../core/ports.ts'
 import { envValue } from './env.ts'
 import type { Env } from './env.ts'
 import { resolveConfig } from './resolve.ts'
@@ -222,7 +223,7 @@ function valueIssues(value: unknown, segments: readonly PropertyKey[], file: str
 }
 
 /** The name a message gives what a config threw. Reading it can run the config's code too, so nothing it throws gets out. */
-export function thrownName(error: unknown): string {
+function thrownName(error: unknown): string {
   try {
     if (typeof error !== 'object' || error === null) return 'a value that is not an error'
     const { name } = error as { name?: unknown }
@@ -249,12 +250,33 @@ function importProblem(error: unknown): string {
 }
 
 /**
+ * A provider object read once, now, into a frozen snapshot with no prototype: its `model` and a `complete`
+ * that calls the method read here on the object itself. Whatever reads the snapshot afterwards reads data,
+ * so a getter of the program's cannot run again outside the guard that hides what it throws. The snapshot
+ * has no `id`: the config's key for the provider is its name.
+ */
+function snapshotProvider(object: Provider): Provider {
+  const { model, complete } = object
+  if (typeof complete !== 'function') throw new TypeError('complete is not a function')
+  return Object.freeze(Object.setPrototypeOf({ model, complete: (request: CompletionRequest) => complete.call(object, request) }, null)) as Provider
+}
+
+/** A checked config with each of its provider objects replaced by its snapshot, the rest as the schema returned it. */
+function snapshotProviders<T>(config: T): T {
+  if (typeof config !== 'object' || config === null || !Object.hasOwn(config, 'providers')) return config
+  const providers = (config as { providers?: unknown }).providers
+  if (typeof providers !== 'object' || providers === null) return config
+  return { ...config, providers: Object.fromEntries(Object.entries(providers).map(([name, entry]) => [name, isProvider(entry) ? snapshotProvider(entry) : entry])) }
+}
+
+/**
  * The plain object a config's code hands over, checked by `schema`: `read` returns it, then it must be a
- * plain object, hold plain data, and pass the schema. The config is trusted code, but what it throws can
- * hold a secret, so a throw while it is read (a getter or a proxy runs the config's code, in the data walk
- * and again in the schema's own reads) is one issue by the error's name alone, a `ConfigError` included,
- * at `words.file`, else at `config`. Every read of the config's objects is inside the `try`; the issues of
- * the check itself are built there as values and thrown after it.
+ * plain object, hold plain data, and pass the schema, and each provider object it holds is read once into a
+ * snapshot. The config is trusted code, but what it throws can hold a secret, so a throw while it is read
+ * (a getter or a proxy runs the config's code, in the data walk, in the schema's own reads and in the
+ * snapshots) is one issue by the error's name alone, a `ConfigError` included, at `words.file`, else at
+ * `config`. Every read of the config's objects is inside the `try`, and nothing after it reads one again;
+ * the issues of the check itself are built there as values and thrown after it.
  *
  * @throws ConfigError with the issue of a throw, or every issue of the data and the schema
  */
@@ -264,7 +286,8 @@ export function checkCodeValue<T>(schema: z.ZodType<T>, read: () => unknown, wor
   try {
     const value = read()
     const issues = isPlainObject(value) ? dataIssues(value, words.file) : [{ path: at, message: words.notAnObject }]
-    checked = issues.length > 0 ? { issues } : checkConfig(schema, value, words.file)
+    const result = issues.length > 0 ? { issues } : checkConfig(schema, value, words.file)
+    checked = 'issues' in result ? result : { config: snapshotProviders(result.config) }
   } catch (error) {
     fail(at, `${words.threw} (${thrownName(error)})`)
   }

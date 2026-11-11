@@ -6,10 +6,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
+import type { CompletionRequest, Provider } from '../core/ports.ts'
 import { loadConfig, readConfigFile } from './load.ts'
 import { configFileSchema } from './schema.ts'
 
 const SECRET = 'sk-planted-secret'
+const REQUEST: CompletionRequest = { system: '', messages: [], output: { name: 'x', schema: {} } }
 const TAB = String.fromCharCode(9)
 const BOM = String.fromCharCode(0xFEFF)
 
@@ -352,12 +354,13 @@ describe('readConfigFile on a TS or JS config', () => {
     expect(await readConfigFile(name, { cwd: dir })).toEqual({ config: { concurrency: 2, providers: { keyed: { preset: 'openai', apiKey: 'sk-k' } } }, source: join(dir, name) })
   })
 
-  it('reads a provider object, and one built from a class, handing both back as they are', async () => {
-    file('providers.mts', `class Echo { id = "echo"; model = "m"; async complete() { return { text: "{}", model: "m" } } }\nexport const mine = ${PROVIDER_SOURCE}\nexport const echo = new Echo()\nexport default { providers: { mine, echo }, roles: { research: "mine" } }\n`)
-    const module = await import(pathToFileURL(join(dir, 'providers.mts')).href) as Record<string, unknown>
-    const providers = (await configOf('providers.mts')).providers as Record<string, unknown>
-    expect(providers.mine).toBe(module.mine)
-    expect(providers.echo).toBe(module.echo)
+  it('reads a provider object, and one built from a class, into a snapshot that calls each one as it is', async () => {
+    file('providers.mts', `class Echo { id = "echo"; model = "m"; async complete() { return { text: this.id, model: "m" } } }\nexport const mine = ${PROVIDER_SOURCE}\nexport const echo = new Echo()\nexport default { providers: { mine, echo }, roles: { research: "mine" } }\n`)
+    const providers = (await configOf('providers.mts')).providers as Record<string, Provider>
+    expect(Object.isFrozen(providers.mine) && Object.getPrototypeOf(providers.mine) === null).toBe(true)
+    expect(providers.mine.model).toBe('m')
+    expect(await providers.mine.complete(REQUEST)).toEqual({ text: '{}', model: 'm' })
+    expect(await providers.echo.complete(REQUEST)).toEqual({ text: 'echo', model: 'm' })
   })
 
   it('leaves a field set to undefined unset, as a spread of an unset value gives', async () => {
@@ -589,6 +592,16 @@ describe('loadConfig', () => {
     const loaded = await loadConfig({ cwd: dir, env: { RESEARCH_MODEL: 'q' } })
     expect(loaded.warnings).toEqual(['RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead'])
     expect(loaded.warnings).toBe(loaded.config.warnings)
+  })
+
+  it.each([1, 2, 3, 4, 5, 6, 7, 8])('a provider whose complete getter throws from read %i on never has its message printed', async (reads) => {
+    file('getter.mts', `let reads = 0\nconst mine = { model: 'm', get complete() { if (++reads >= ${reads}) throw new Error('${SECRET}'); return async () => ({ text: '{}', model: 'm' }) } }\nexport default { providers: { mine } }\n`)
+    const issues = await loadConfig({ cwd: dir, env: {}, configPath: 'getter.mts' }).then(() => [], (error: unknown) => {
+      expect(error).toBeInstanceOf(ConfigError)
+      return (error as ConfigError).issues
+    })
+    expect([[], [{ path: 'getter.mts', message: 'failed to load (Error)' }]]).toContainEqual(issues)
+    expect(JSON.stringify(issues)).not.toContain('planted')
   })
 
   it('puts the text of a prompt file in the profile that names it', async () => {
