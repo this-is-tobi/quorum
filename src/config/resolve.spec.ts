@@ -412,6 +412,15 @@ describe('a claude-code provider', () => {
     expect(issuesOf(code({ auth: 'api-key', apiKeyEnv: 'TEAM_KEY' }), { PATH: bin, ANTHROPIC_API_KEY: 'sk-k' })).toEqual([{ path: 'providers.cc', message: 'TEAM_KEY is not set' }])
   })
 
+  it.each<Record<string, unknown>>([{}, { auth: 'inherit' }, { auth: 'login' }])('refuses an apiKeyEnv under %j at apiKeyEnv itself, and never reads the variable', (fields) => {
+    const refused = [{ path: 'providers.cc.apiKeyEnv', message: 'is set, but auth is not api-key' }]
+    const issues = issuesOf(code({ ...fields, apiKeyEnv: 'TEAM_KEY' }), { PATH: bin, TEAM_KEY: 'sk-SECRET' })
+    expect(issues).toEqual(refused)
+    expect(JSON.stringify(issues)).not.toContain('SECRET')
+    // Unset or set, the refusal is the same: a variable that is read can be reported as not set.
+    expect(issuesOf(code({ ...fields, apiKeyEnv: 'TEAM_KEY' }), { PATH: bin })).toEqual(refused)
+  })
+
   it('reads no key under inherit or login, whatever ANTHROPIC_API_KEY holds', () => {
     for (const fields of [{}, { auth: 'inherit' }, { auth: 'login' }]) {
       expect(resolveConfig(code(fields), { env: { PATH: bin, ANTHROPIC_API_KEY: 'sk-k' } }).providers.cc).not.toHaveProperty('apiKey')

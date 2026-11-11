@@ -118,9 +118,12 @@ function readVariable(name: string, variable: string, env: Env): KeyReading {
  * The key of a spec that a profile uses: its own `apiKey` (an empty one is unset, as a blank variable is),
  * else the variable `apiKeyEnv` names, else its preset's own variable, which is read only while the base URL is the preset's endpoint (I1) and `presetKey`
  * allows it: at another endpoint it is not read, and the warning says so. A `claude-code` spec has no preset: its key is
- * `ANTHROPIC_API_KEY` under `api-key`, and none under another mode.
+ * `apiKeyEnv`'s variable, else `ANTHROPIC_API_KEY`, under `api-key`, and none under another mode, where an
+ * `apiKeyEnv` is refused.
  */
 function readKey(name: string, fields: ProviderSettings, env: Env, presetKey: boolean): KeyReading {
+  // A key variable no mode would send is refused where it is written, and never read.
+  if (fields.protocol === 'claude-code' && fields.apiKeyEnv !== undefined && fields.auth !== 'api-key') return { apiKey: undefined, issues: [{ path: configPath(['providers', name, 'apiKeyEnv']), message: 'is set, but auth is not api-key' }], warnings: [] }
   if (fields.apiKey !== undefined && fields.apiKey !== '') return { apiKey: fields.apiKey, issues: [], warnings: [] }
   if (fields.apiKeyEnv !== undefined) return readVariable(name, fields.apiKeyEnv, env)
   if (fields.protocol === 'claude-code') return fields.auth === 'api-key' ? readVariable(name, CLAUDE_KEY_VARIABLE, env) : NO_KEY
