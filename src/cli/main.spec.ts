@@ -57,6 +57,9 @@ const TWO_YAML = [
   '',
 ].join('\n')
 
+/** A config of one provider, on an origin of its own. */
+const TEAM_YAML = 'providers:\n  team: {protocol: openai-compatible, baseUrl: "https://team.example/v1", model: t}\n'
+
 function harness(options: { argv?: string[], cwd?: string, stdin?: string, isTTY?: boolean, env?: Record<string, string>, signal?: AbortSignal } = {}): { io: CliIO, stdout: () => string, stderr: () => string } {
   const out: string[] = []
   const err: string[] = []
@@ -231,9 +234,9 @@ describe('runCli', () => {
   })
 
   it('exits 0 when only an advisory profile\'s review is incomplete', async () => {
-    write('advisory.yaml', 'profiles:\n  security: {gating: false}\n')
+    const advisory = write('advisory.yaml', 'profiles:\n  security: {gating: false}\n')
     stubChat(JSON.stringify({ findings: [FINDING] })).mockRejectedValue(new TypeError('fetch failed'))
-    const { io, stdout } = harness({ cwd: dir, env: { ...MODEL, QUORUM_CONFIG: 'advisory.yaml' }, stdin: DIFF })
+    const { io, stdout } = harness({ cwd: dir, env: { ...MODEL, QUORUM_CONFIG: advisory }, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
     const result = JSON.parse(stdout())
     expect(result.unreviewed).toHaveLength(1)
@@ -319,19 +322,54 @@ describe('runCli', () => {
     expect(stderr()).toContain('warning: RESEARCH_BASE_URL, RESEARCH_API_KEY, RESEARCH_MODEL, VOTER_BASE_URL and VOTER_MODEL are deprecated: set QUORUM_RESEARCH_BASE_URL, QUORUM_RESEARCH_API_KEY, QUORUM_RESEARCH_MODEL, QUORUM_VOTER_BASE_URL and QUORUM_VOTER_MODEL instead\n')
   })
 
-  it('reads the config file QUORUM_CONFIG names, relative to its working directory', async () => {
-    write('team.yaml', 'providers:\n  team: {protocol: openai-compatible, baseUrl: "https://team.example/v1", model: t}\n')
+  it('prints the deprecation line before the configuration error it explains, and exits 2', async () => {
+    const fetchMock = stubChat()
+    const { io, stdout, stderr } = harness({ env: { RESEARCH_BASE_URL: 'localhost:11434', RESEARCH_MODEL: 'm' }, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe([
+      'warning: RESEARCH_BASE_URL and RESEARCH_MODEL are deprecated: set QUORUM_RESEARCH_BASE_URL and QUORUM_RESEARCH_MODEL instead',
+      'Error: QUORUM_RESEARCH_BASE_URL: must be an http:// or https:// URL with a host',
+      '',
+    ].join('\n'))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('prints the warning of a mistyped variable before the configuration error it causes', async () => {
+    const { io, stdout, stderr } = harness({ env: { ...MODEL, QUORUM_VOTER_BASE_URL: 'https://v.example/v1', QUORUM_VOTER_MODLE: 'v' }, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe([
+      'warning: QUORUM_VOTER_MODLE is not a variable quorum reads',
+      'Error: QUORUM_VOTER_MODEL: must be set when the voter variables name another endpoint than the research provider\'s',
+      '',
+    ].join('\n'))
+  })
+
+  it('reads the config file QUORUM_CONFIG names', async () => {
+    const team = write('team.yaml', TEAM_YAML)
     const fetchMock = stubChat('{"findings":[]}')
-    const { io, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: 'team.yaml' }, stdin: DIFF })
+    const { io, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: team }, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(sent(fetchMock).url).toBe('https://team.example/v1/chat/completions')
     expect(stderr()).toBe('Research (t @ https://team.example)...\nPanel will use t @ https://team.example\n0 candidate(s) after dedup\n0 kept, 0 discarded, 0 unreviewed by panel\n')
   })
 
   it('exits 2 when the file QUORUM_CONFIG names does not exist, naming it as given', async () => {
-    const { io, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: 'missing.yaml' }, stdin: DIFF })
+    const missing = join(dir, 'missing.yaml')
+    const { io, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: missing }, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.usage)
-    expect(stderr()).toBe('Error: missing.yaml: does not exist\n')
+    expect(stderr()).toBe(`Error: ${missing}: does not exist\n`)
+  })
+
+  it('exits 2 when QUORUM_CONFIG is not an absolute path, and reads no file of the working directory', async () => {
+    write('team.yaml', TEAM_YAML)
+    const fetchMock = stubChat('{"findings":[]}')
+    const { io, stdout, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: 'team.yaml' }, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe('Error: QUORUM_CONFIG: must be an absolute path\n')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('reads no config file it is not named, whatever the working directory holds', async () => {
@@ -350,9 +388,9 @@ describe('runCli', () => {
   })
 
   it('prefixes the lines of each profile when several run, lists each lens\'s provider when they differ, and prints the core\'s warnings', async () => {
-    write('two.yaml', TWO_YAML)
+    const two = write('two.yaml', TWO_YAML)
     stubFetch({ choices: [{ message: { content: '{"findings":[]}' } }] })
-    const { io, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: 'two.yaml' }, stdin: DIFF })
+    const { io, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: two }, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stderr()).toBe([
       'warning: team.policy.medium needs the same 2 vote(s) as policy.high with 2 lens(es), so it never applies',
@@ -458,20 +496,21 @@ describe('flags', () => {
 
   it('reads the file --config names, over the one QUORUM_CONFIG names', async () => {
     write('flag.yaml', 'providers:\n  flag: {protocol: openai-compatible, baseUrl: "https://flag.example/v1", model: f}\n')
+    const team = write('team.yaml', TEAM_YAML)
     const fetchMock = stubChat('{"findings":[]}')
-    const { io } = harness({ argv: ['-c', 'flag.yaml'], cwd: dir, env: { QUORUM_CONFIG: 'team.yaml' }, stdin: DIFF })
+    const { io } = harness({ argv: ['-c', 'flag.yaml'], cwd: dir, env: { QUORUM_CONFIG: team }, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(sent(fetchMock).url).toBe('https://flag.example/v1/chat/completions')
   })
 
   it('runs only the profiles --profile names, over QUORUM_PROFILES', async () => {
-    write('two.yaml', TWO_YAML)
+    const two = write('two.yaml', TWO_YAML)
     stubFetch({ choices: [{ message: { content: '{"findings":[]}' } }] })
-    const team = harness({ argv: ['--profile', 'team'], cwd: dir, env: { QUORUM_CONFIG: 'two.yaml' }, stdin: DIFF })
+    const team = harness({ argv: ['--profile', 'team'], cwd: dir, env: { QUORUM_CONFIG: two }, stdin: DIFF })
     expect(await runCli(team.io)).toBe(EXIT.ok)
     expect(Object.keys(JSON.parse(team.stdout()).meta.profiles)).toEqual(['team'])
     expect(team.stderr()).toContain('\nPanel will use grounded (m @ http://localhost:11434), significant (v @ https://v.example)\n')
-    const security = harness({ argv: ['-p', 'security'], cwd: dir, env: { QUORUM_CONFIG: 'two.yaml', QUORUM_PROFILES: 'team' }, stdin: DIFF })
+    const security = harness({ argv: ['-p', 'security'], cwd: dir, env: { QUORUM_CONFIG: two, QUORUM_PROFILES: 'team' }, stdin: DIFF })
     expect(await runCli(security.io)).toBe(EXIT.ok)
     expect(Object.keys(JSON.parse(security.stdout()).meta.profiles)).toEqual(['security'])
   })
@@ -605,6 +644,17 @@ describe('--print-config', () => {
     expect(stdout()).toBe('')
     expect(stderr()).toBe('Error: no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one\n')
   })
+
+  it('exits 2 for a config only the run\'s own build refuses, a provider object whose model is not a string', async () => {
+    const bad = write('print-model.mjs', 'export default { providers: { mine: { model: 42, complete: async () => ({ text: \'{}\', model: \'m\' }) } } }\n')
+    const printing = harness({ argv: ['--print-config', '--config', bad] })
+    expect(await runCli(printing.io)).toBe(EXIT.usage)
+    expect(printing.stdout()).toBe('')
+    expect(printing.stderr()).toBe('Error: providers.mine.model: must be a string\n')
+    const running = harness({ argv: ['--config', bad], stdin: DIFF })
+    expect(await runCli(running.io)).toBe(EXIT.usage)
+    expect(running.stderr()).toBe(printing.stderr())
+  })
 })
 
 describe('interrupts', () => {
@@ -635,9 +685,9 @@ describe('interrupts', () => {
   })
 
   it('exits 3, never 130, when the review rejects with an AbortError its own signal did not raise', async () => {
-    write('rejects.mjs', 'export default { providers: { mine: { model: \'m\', complete: () => Promise.reject(undefined) } } }\n')
+    const rejects = write('rejects.mjs', 'export default { providers: { mine: { model: \'m\', complete: () => Promise.reject(undefined) } } }\n')
     const controller = new AbortController()
-    const { io, stdout, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: 'rejects.mjs' }, stdin: DIFF, signal: controller.signal })
+    const { io, stdout, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: rejects }, stdin: DIFF, signal: controller.signal })
     expect(await runCli(io)).toBe(EXIT.runtime)
     expect(controller.signal.aborted).toBe(false)
     expect(stdout()).toBe('')
@@ -672,8 +722,8 @@ describe('inert output', () => {
   })
 
   it('writes the banner inert, a provider object\'s model with a hidden character included', async () => {
-    write('object.mjs', `export default { providers: { mine: { model: 'm${String.fromCharCode(0x202E)}', complete: async () => ({ text: '{"findings":[]}', model: 'm' }) } } }\n`)
-    const { io, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: 'object.mjs' }, stdin: '  \n' })
+    const object = write('object.mjs', `export default { providers: { mine: { model: 'm${String.fromCharCode(0x202E)}', complete: async () => ({ text: '{"findings":[]}', model: 'm' }) } } }\n`)
+    const { io, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: object }, stdin: '  \n' })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stderr()).toContain('Research (m<U+202E> @ the provider object mine)...\n')
     expect(stderr().replaceAll('\n', '')).not.toMatch(ANY_HIDDEN)

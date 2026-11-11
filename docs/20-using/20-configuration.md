@@ -86,14 +86,16 @@ Prefer `apiKeyEnv` to `apiKey: process.env.GATEWAY_KEY`, even in code: a variabl
 
 ## Naming the file
 
-A config file is read only when it is named: `--config <path>`, else the variable `QUORUM_CONFIG`. The flag wins over the variable. A relative path resolves against the working directory, and a blank `QUORUM_CONFIG` is unset.
+A config file is read only when it is named: `--config <path>`, else the variable `QUORUM_CONFIG`. The flag wins over the variable, and a blank `QUORUM_CONFIG` is unset.
+
+`--config` is named for one command, so its path may be relative, and a relative path resolves against the working directory. `QUORUM_CONFIG` must be an absolute path: a relative one is refused with `Error: QUORUM_CONFIG: must be an absolute path` and exit `2`, even when `--config` is also given. A variable is set once, in a shell profile or for a whole CI job, and a relative path in it would resolve inside whatever checkout quorum runs in. In CI that checkout is the pull request's, so the file it names would be the pull request's own, which is the search that quorum never makes.
 
 ```bash
 quorum --config ./quorum.yaml ./my.diff
-QUORUM_CONFIG=./quorum.yaml quorum ./my.diff
+QUORUM_CONFIG=/home/me/.config/quorum.yaml quorum ./my.diff
 ```
 
-Nothing is ever searched for. A `quorum.config.yaml`, a `quorum.yaml` or a `quorum.config.mts` in the working directory, or above it, is not read unless a flag or the variable names it. In CI the working directory is a pull request's checkout, which the pull request's author writes, and a file found there would be an attacker's: [Trust](#trust). A local user sets `QUORUM_CONFIG` once, in a shell profile or an environment manager, or passes `--config`.
+Nothing is ever searched for. A `quorum.config.yaml`, a `quorum.yaml` or a `quorum.config.mts` in the working directory, or above it, is not read unless a flag or the variable names it. In CI the working directory is a pull request's checkout, which the pull request's author writes, and a file found there would be an attacker's: [Trust](#trust). A local user sets `QUORUM_CONFIG` once to an absolute path, in a shell profile or an environment manager, or passes `--config`.
 
 ## Layering
 
@@ -112,7 +114,7 @@ The profiles that run are the ones `--profile` names, else the ones `QUORUM_PROF
 
 | Variable | Sets |
 | --- | --- |
-| `QUORUM_CONFIG` | The config file to read, when `--config` does not name one |
+| `QUORUM_CONFIG` | The config file to read, when `--config` does not name one. It must be an absolute path |
 | `QUORUM_PROFILES` | The profiles that run: ids separated by commas, each a profile the config defines or a built-in one, none twice. `--profile` wins over it, and a malformed value is refused even then |
 | `QUORUM_RESEARCH_PRESET`, `QUORUM_VOTER_PRESET` | A role's provider, built from a [preset](./30-providers.md#presets) |
 | `QUORUM_RESEARCH_PROTOCOL`, `QUORUM_VOTER_PROTOCOL` | A role's provider, built from a wire protocol: `openai-compatible`, `anthropic`, `gemini` or `ollama` |
