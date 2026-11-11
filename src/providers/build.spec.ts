@@ -294,6 +294,21 @@ describe('buildProvider', () => {
     }
   })
 
+  it('reads the key header from the auth\'s own fields: a polluted Object.prototype changes neither a preset\'s nor a spec\'s', async () => {
+    const proto = Object.prototype as Record<string, unknown>
+    const planted: Record<string, unknown> = { prefix: 'Bearer ', header: 'x-planted' }
+    for (const [key, value] of Object.entries(planted)) proto[key] = value
+    try {
+      const preset = await send({ id: 'p', preset: 'azure-openai', baseUrl: AZURE, model: 'd', apiKey: 'sk-k' })
+      expect(preset.headers).toEqual({ 'content-type': 'application/json', 'api-key': 'sk-k' })
+      const own = await send({ id: 'p', protocol: 'openai-compatible', baseUrl: 'https://h.example', model: 'm', apiKey: 'sk-k', auth: { header: 'x-key' } })
+      expect(own.headers).toEqual({ 'content-type': 'application/json', 'x-key': 'sk-k' })
+      expect(issuesOf({ id: 'p', protocol: 'openai-compatible', baseUrl: 'https://h.example', model: 'm', apiKey: 'sk-k', auth: {} })).toEqual([{ path: 'p.auth', message: 'must be bearer, x-api-key, none or { header, prefix }' }])
+    } finally {
+      for (const key of Object.keys(planted)) delete proto[key]
+    }
+  })
+
   it('reads each field once, so a getter cannot show the checks one model and the adapter another', () => {
     let reads = 0
     const spec = { id: 'p', preset: 'groq', get model() {

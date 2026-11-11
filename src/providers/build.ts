@@ -7,7 +7,7 @@ import { httpOrigin } from './http.ts'
 import { ollama } from './ollama.ts'
 import { openaiCompatible } from './openai-compatible.ts'
 import type { OpenAICompatibleOptions } from './openai-compatible.ts'
-import { wordList } from './options.ts'
+import { isRecord, wordList } from './options.ts'
 import { presetOf, presets } from './presets.ts'
 import type { Preset, Protocol } from './presets.ts'
 
@@ -62,6 +62,11 @@ function withoutPrototype<T>(entries: Iterable<readonly [string, unknown]>): T {
   return Object.setPrototypeOf(Object.fromEntries(entries), null) as T
 }
 
+/** `value` as an object with no prototype when it is a record, so its fields are its own; any other value as it is, for the adapter to refuse. */
+function ownRecord(value: unknown): unknown {
+  return isRecord(value) ? withoutPrototype<Record<string, unknown>>(Object.entries(value)) : value
+}
+
 /** The fields of a spec as the builder reads them: whatever a caller or a config put in each. */
 type Fields = Readonly<Partial<Record<keyof ProviderSpec, unknown>>>
 
@@ -74,7 +79,8 @@ const BUILDER_FIELDS: ReadonlySet<string> = new Set(['preset', 'protocol', 'maxT
  * a visible ASCII id, and is refused when a pattern of its preset, or of any preset whose base URL has the
  * spec's origin, says the model runs tools on the server by itself. No message repeats a value of the spec.
  * Only the spec's own fields are read, once each, so a polluted `Object.prototype` fills none of them and
- * a getter cannot show the checks one value and the adapter another.
+ * a getter cannot show the checks one value and the adapter another; `auth`, the user's or the preset's,
+ * reaches the adapter as a copy of its own fields.
  *
  * @throws ConfigError with every problem of the spec and of the adapter's options, before any request; the
  * spec's problems alone while the protocol, the base URL or the model is unusable
@@ -110,7 +116,7 @@ export function buildProvider(spec: ProviderSpec): Provider {
   const fields: Array<[string, unknown]> = [
     ...entries.filter(([key]) => !BUILDER_FIELDS.has(key)),
     ['baseUrl', baseUrl],
-    ['auth', filled(own.auth, preset?.auth)],
+    ['auth', ownRecord(filled(own.auth, preset?.auth))],
     ['structuredOutput', filled(own.structuredOutput, preset?.structuredOutput)],
     ['temperature', filled(own.temperature, preset?.temperature)],
   ]

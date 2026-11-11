@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CompletionResponse, Provider } from '../core/ports.ts'
-import { applyRoleOverrides, envValue, readEnv } from './env.ts'
+import { applyRoleOverrides, baseUrlOf, envValue, readEnv } from './env.ts'
 import type { Env, EnvLayer, ProviderEntry, RoleBinding } from './env.ts'
 import type { ProviderSettings } from './schema.ts'
 
@@ -85,6 +85,21 @@ describe('readEnv', () => {
   })
 })
 
+describe('baseUrlOf', () => {
+  it('reads the base URL and the preset of settings as their own fields, never what a polluted Object.prototype holds', () => {
+    const proto = Object.prototype as Record<string, unknown>
+    const planted: Record<string, unknown> = { baseUrl: 'https://planted.example/v1', preset: 'groq' }
+    for (const [key, value] of Object.entries(planted)) proto[key] = value
+    try {
+      expect(baseUrlOf({ protocol: 'ollama' })).toBeUndefined()
+      expect(baseUrlOf({ preset: 'openai' })).toBe('https://api.openai.com/v1')
+      expect(baseUrlOf({ protocol: 'ollama', baseUrl: 'http://h:11434' })).toBe('http://h:11434')
+    } finally {
+      for (const key of Object.keys(planted)) delete proto[key]
+    }
+  })
+})
+
 describe('applyRoleOverrides', () => {
   it('changes nothing when no variable is set', () => {
     expect(apply({ main: research }, shared, {})).toEqual({ providers: { main: research }, roles: shared, issues: [] })
@@ -151,6 +166,31 @@ describe('applyRoleOverrides', () => {
 
   it('refuses to derive a voter over a provider already named voter', () => {
     expect(apply({ voter: research }, { research: 'voter', voter: 'voter' }, { voter: { model: 'v' } }).issues).toEqual([{ path: 'providers.voter', message: 'is the name the voter variables give the provider they derive: rename this provider' }])
+  })
+
+  it('keeps a derived voter on the research endpoint when only its own variables are read, whatever a polluted Object.prototype holds', () => {
+    const proto = Object.prototype as Record<string, unknown>
+    proto.baseUrl = 'https://planted.example/v1'
+    try {
+      expect(apply({ main: research }, shared, { voter: { model: 'v' } }).providers.voter).toEqual({ ...research, model: 'v' })
+    } finally {
+      delete proto.baseUrl
+    }
+  })
+
+  it('returns an issue, and applies nothing, for a role bound to a provider that is not defined', () => {
+    const layer = { research: { model: 'r2' }, voter: { model: 'v' } }
+    expect(apply({ main: research }, { research: 'gone', voter: 'main' }, layer)).toEqual({
+      providers: { main: research },
+      roles: { research: 'gone', voter: 'main' },
+      issues: [{ path: 'roles.research', message: 'unknown provider "gone": the providers are main' }],
+    })
+    expect(apply({ main: research }, { research: 'main', voter: 'gone' }, layer).issues).toEqual([{ path: 'roles.voter', message: 'unknown provider "gone": the providers are main' }])
+  })
+
+  it('takes a role name a prototype holds for no provider, and prints a name that is not a safe name by its kind alone', () => {
+    expect(apply({ main: research }, { research: 'toString', voter: 'main' }, { research: { model: 'r2' } }).issues).toEqual([{ path: 'roles.research', message: 'unknown provider "toString": the providers are main' }])
+    expect(apply({ main: research }, { research: 'main', voter: `${SECRET} key` }, {}).issues).toEqual([{ path: 'roles.voter', message: 'names an unknown provider: the providers are main' }])
   })
 
   it('changes none of the objects it is given', () => {

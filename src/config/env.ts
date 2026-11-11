@@ -3,7 +3,8 @@ import type { Provider } from '../core/ports.ts'
 import { httpOrigin } from '../providers/http.ts'
 import { wordList } from '../providers/options.ts'
 import { presetOf } from '../providers/presets.ts'
-import { configPath, isProvider } from './schema.ts'
+import { own } from './profiles.ts'
+import { configPath, isProvider, unknownName } from './schema.ts'
 import type { ProviderSettings } from './schema.ts'
 
 /** The environment: a process's, or the one a caller hands over. */
@@ -48,6 +49,8 @@ const VARIABLES: ReadonlyArray<{ readonly field: keyof RoleOverrides, readonly s
   { field: 'apiKey', suffix: 'API_KEY', aliased: true },
 ]
 const ROLES: readonly Role[] = ['RESEARCH', 'VOTER']
+/** Each role as `RoleBinding` names it, with its variables' prefix. */
+const BINDINGS = [['research', 'RESEARCH'], ['voter', 'VOTER']] as const
 /** The aliases in the order the deprecation line lists them, role by role. */
 const ALIAS_SUFFIXES = ['BASE_URL', 'API_KEY', 'MODEL']
 const PROFILE_ID = /^[a-z][a-z0-9_-]*$/
@@ -99,9 +102,9 @@ export interface RoleBinding {
   readonly voter: string
 }
 
-/** The base URL of a provider's settings: their own, else their preset's. */
+/** The base URL of a provider's settings: their own, else their preset's. Both are read as own fields, so a polluted `Object.prototype` sets neither. */
 export function baseUrlOf(settings: ProviderSettings): string | undefined {
-  return settings.baseUrl ?? presetOf(settings.preset)?.baseUrl
+  return own(settings, 'baseUrl') ?? presetOf(own(settings, 'preset'))?.baseUrl
 }
 
 type Variable = (typeof VARIABLES)[number]
@@ -135,11 +138,17 @@ function objectIssues(role: Role, variables: readonly Variable[], providerName: 
 function derivedVoter(base: ProviderSettings, overrides: RoleOverrides, variables: readonly Variable[]): { provider: ProviderSettings, issues: ConfigIssue[] } {
   const fields = fieldsOf(overrides, variables)
   const origin = httpOrigin(baseUrlOf(base))
-  const sameEndpoint = origin !== undefined && origin === httpOrigin(fields.baseUrl ?? baseUrlOf(base))
+  const sameEndpoint = origin !== undefined && origin === httpOrigin(own(fields, 'baseUrl') ?? baseUrlOf(base))
   const { apiKeyEnv: _apiKeyEnv, apiKey: _apiKey, headers: _headers, query: _query, extraBody: _extraBody, model: _model, ...endpoint } = base
   const provider: ProviderSettings = startsAfresh(variables) ? fields : { ...sameEndpoint ? base : endpoint, ...fields }
   const needsModel = (startsAfresh(variables) || !sameEndpoint) && provider.model === undefined
   return { provider, issues: needsModel ? [{ path: canonicalName('VOTER', 'MODEL'), message: 'must be set when the voter variables name another endpoint than the research provider\'s' }] : [] }
+}
+
+/** One issue per role bound to a name that is not an own key of `providers`: a role is never assumed to be bound. */
+function unboundRoles(providers: Readonly<Record<string, ProviderEntry>>, roles: RoleBinding): ConfigIssue[] {
+  const names = Object.keys(providers)
+  return BINDINGS.filter(([role]) => !Object.hasOwn(providers, roles[role])).map(([role]) => unknownName(`roles.${role}`, 'provider', roles[role], names))
 }
 
 /**
@@ -148,13 +157,16 @@ function derivedVoter(base: ProviderSettings, overrides: RoleOverrides, variable
  * provider, derive a provider named `voter` from it: a copy on the same endpoint, and on another one a copy
  * with no key, header, query, body field or model (ADR-0013). A preset or a protocol variable builds the
  * role's provider from its variables alone. A provider object cannot be changed: each variable aimed at one
- * is an issue. Nothing it is given changes; nested objects are shared. Both role names are keys of `providers`.
+ * is an issue. Nothing it is given changes; nested objects are shared. A role bound to a name that is not an
+ * own key of `providers` is an issue at that role, and nothing is applied.
  */
 export function applyRoleOverrides(
   providers: Readonly<Record<string, ProviderEntry>>,
   roles: RoleBinding,
   layer: Pick<EnvLayer, 'research' | 'voter'>,
 ): { providers: Record<string, ProviderEntry>, roles: RoleBinding, issues: ConfigIssue[] } {
+  const unbound = unboundRoles(providers, roles)
+  if (unbound.length > 0) return { providers: { ...providers }, roles, issues: unbound }
   const issues: ConfigIssue[] = []
   let result: Record<string, ProviderEntry> = { ...providers }
   const setOn = (role: Role, name: string, overrides: RoleOverrides, variables: readonly Variable[]): void => {
@@ -184,4 +196,20 @@ export function applyRoleOverrides(
     }
   }
   return { providers: result, roles: { research: roles.research, voter: voterRole }, issues }
+}
+
+/**
+ * `issues` of the builder, each one on a field a variable set moved to that variable, as its `QUORUM_` name
+ * (`QUORUM_RESEARCH_PRESET: must be one of ...`, not `providers.default.preset`): the user wrote the variable,
+ * and never that provider's field. The other issues stay where they are. `roles` is the binding after the
+ * variables were applied.
+ */
+export function atVariables(issues: readonly ConfigIssue[], roles: RoleBinding, layer: Pick<EnvLayer, 'research' | 'voter'>): ConfigIssue[] {
+  const named = new Map<string, string>()
+  for (const [role, prefix] of BINDINGS) {
+    // A voter bound to the research provider set none of its fields: its variables derive a provider of their own.
+    if (role === 'voter' && roles.voter === roles.research) continue
+    for (const { field, suffix } of setVariables(layer[role])) named.set(configPath(['providers', roles[role], field]), canonicalName(prefix, suffix))
+  }
+  return issues.map(issue => ({ ...issue, path: named.get(issue.path) ?? issue.path }))
 }
