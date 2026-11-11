@@ -132,13 +132,15 @@ const CAPABILITY_VARIABLES: ReadonlySet<string> = new Set([
   'CLAUDE_CODE_PROCESS_WRAPPER',
   'CLAUDE_CODE_ENABLE_CFC',
   'CLAUDE_CODE_ENABLE_TODO_TOOLS',
+  'CLAUDE_CODE_ENABLE_TASKS',
   'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
   'CLAUDE_CODE_USE_POWERSHELL_TOOL',
   'CLAUDE_CODE_EXTRA_BODY',
 ])
 /**
  * The credential, header and endpoint variables `login` and `api-key` remove, besides every one that starts
- * with `CLAUDE_CODE_USE_`. `ANTHROPIC_CUSTOM_HEADERS` is one since a header can carry another credential.
+ * with `CLAUDE_CODE_USE_`. `ANTHROPIC_CUSTOM_HEADERS` is one since a header can carry another credential,
+ * and `ANTHROPIC_UNIX_SOCKET` since it sends every request through a local socket, as a base URL would.
  */
 const CREDENTIAL_VARIABLES: ReadonlySet<string> = new Set([
   'ANTHROPIC_API_KEY',
@@ -148,6 +150,7 @@ const CREDENTIAL_VARIABLES: ReadonlySet<string> = new Set([
   'ANTHROPIC_FEDERATION_RULE_ID',
   'ANTHROPIC_ORGANIZATION_ID',
   'ANTHROPIC_CUSTOM_HEADERS',
+  'ANTHROPIC_UNIX_SOCKET',
 ])
 const CLOUD_PROVIDER_PREFIX = 'CLAUDE_CODE_USE_'
 const KEY_VARIABLE = 'ANTHROPIC_API_KEY'
