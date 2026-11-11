@@ -136,7 +136,10 @@ const CAPABILITY_VARIABLES: ReadonlySet<string> = new Set([
   'CLAUDE_CODE_USE_POWERSHELL_TOOL',
   'CLAUDE_CODE_EXTRA_BODY',
 ])
-/** The credential and endpoint variables `login` and `api-key` remove, besides every one that starts with `CLAUDE_CODE_USE_`. */
+/**
+ * The credential, header and endpoint variables `login` and `api-key` remove, besides every one that starts
+ * with `CLAUDE_CODE_USE_`. `ANTHROPIC_CUSTOM_HEADERS` is one since a header can carry another credential.
+ */
 const CREDENTIAL_VARIABLES: ReadonlySet<string> = new Set([
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
@@ -144,6 +147,7 @@ const CREDENTIAL_VARIABLES: ReadonlySet<string> = new Set([
   'ANTHROPIC_PROFILE',
   'ANTHROPIC_FEDERATION_RULE_ID',
   'ANTHROPIC_ORGANIZATION_ID',
+  'ANTHROPIC_CUSTOM_HEADERS',
 ])
 const CLOUD_PROVIDER_PREFIX = 'CLAUDE_CODE_USE_'
 const KEY_VARIABLE = 'ANTHROPIC_API_KEY'
@@ -303,14 +307,21 @@ function removedVariable(name: string, auth: ClaudeCodeAuth, runVariables: Reado
 /**
  * The environment of one run: the environment's own string entries, less the variables of a parent Claude
  * Code session, the ones that load or add what the isolation turns off and, under `login` and `api-key`,
- * every credential and endpoint variable, so a login or a key never reaches another host. Names are matched
- * in any letter case, since Windows reads them so. Under `api-key`, `ANTHROPIC_API_KEY` is then `apiKey`
- * when it is a non-empty string, else the environment's own, trimmed, when that is not blank. Last come
- * three variables the run sets over whatever the environment held, in any case: no auto memory, no
- * compaction of a long prompt, and a temporary directory of its own.
+ * every credential, header and endpoint variable, so a login or a key never reaches another host or travels
+ * with another credential. Names are matched in any letter case, since Windows reads them so. Under
+ * `api-key`, `ANTHROPIC_API_KEY` is then `apiKey` when it is a non-empty string, else the environment's
+ * own, trimmed, when that is not blank. Last come five variables the run sets over whatever the environment
+ * held, in any case: no auto memory, no compaction of a long prompt, a temporary directory of its own, and
+ * no IDE connection or claude.ai MCP connector, which are on by default.
  */
 export function childEnv(env: Readonly<Record<string, string | undefined>>, auth: ClaudeCodeAuth, apiKey: string | undefined, tmpDir: string): Record<string, string> {
-  const isolation = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', DISABLE_COMPACT: '1', CLAUDE_CODE_TMPDIR: tmpDir }
+  const isolation = {
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+    DISABLE_COMPACT: '1',
+    CLAUDE_CODE_TMPDIR: tmpDir,
+    CLAUDE_CODE_AUTO_CONNECT_IDE: 'false',
+    ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+  }
   const own = Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
   const inheritedKey = (own.find(([name]) => name === KEY_VARIABLE) ?? own.find(([name]) => name.toUpperCase() === KEY_VARIABLE))?.[1].trim()
   const key = typeof apiKey === 'string' && apiKey !== '' ? apiKey : inheritedKey
