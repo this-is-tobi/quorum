@@ -20,6 +20,12 @@ export interface ResolvedProfile {
   readonly voters: Readonly<Record<string, string>>
 }
 
+/** The profiles a caller selects to run: `QUORUM_PROFILES`, or the flag of the CLI. `path` is what an issue with the ids names. */
+export interface ProfileSelection {
+  readonly ids: readonly string[]
+  readonly path: string
+}
+
 /** The built-in profiles a config can run or extend, by id. */
 const BUILT_IN: ReadonlyMap<string, Profile> = new Map([[securityProfile.id, securityProfile]])
 
@@ -126,7 +132,7 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
  */
 export function resolveProfiles(inputs: {
   readonly profiles: ConfigInput['profiles']
-  readonly selection?: { readonly ids: readonly string[], readonly path: string }
+  readonly selection?: ProfileSelection
   readonly roles: RoleBinding
   readonly providers: readonly string[]
 }): { readonly profiles: readonly ResolvedProfile[], readonly issues: readonly ConfigIssue[] } {

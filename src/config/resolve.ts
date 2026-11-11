@@ -6,10 +6,10 @@ import type { ProviderSpec } from '../providers/build.ts'
 import { httpOrigin } from '../providers/http.ts'
 import { presetOf, withoutPrototype } from '../providers/presets.ts'
 import type { Preset } from '../providers/presets.ts'
-import { applyRoleOverrides, atVariables, baseUrlOf, envValue, readEnv } from './env.ts'
+import { applyRoleOverrides, atVariables, baseUrlOf, envValue, PROFILE_ID, readEnv, VARIABLE_NAME } from './env.ts'
 import type { Env, ProviderEntry, RoleBinding } from './env.ts'
 import { own, resolveProfiles } from './profiles.ts'
-import type { ResolvedProfile } from './profiles.ts'
+import type { ProfileSelection, ResolvedProfile } from './profiles.ts'
 import { configPath, isProvider, unknownName } from './schema.ts'
 import type { ConfigInput, ProviderSettings } from './schema.ts'
 
@@ -33,8 +33,6 @@ const DEFAULT_NAME = 'default'
 /** The provider of a config that defines none: Ollama's OpenAI-compatible endpoint on this machine. The adapter's own defaults fill the rest. */
 const DEFAULT_PROVIDER: ProviderSettings = { protocol: 'openai-compatible', baseUrl: 'http://localhost:11434/v1' }
 const NO_MODEL = 'no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one'
-/** The only variable names a message prints: a key pasted where a name belongs must never show. */
-const VARIABLE_NAME = /^[A-Z][A-Z0-9_]{0,63}$/
 const VOTER_KEY = 'QUORUM_VOTER_API_KEY'
 const VOTER_MODEL = 'QUORUM_VOTER_MODEL'
 const LOOPBACK_IPV4 = /^127(?:\.\d{1,3}){3}$/
@@ -207,6 +205,14 @@ function originOf(entry: ProviderEntry | undefined): string | undefined {
   return entry === undefined || isProvider(entry) ? undefined : httpOrigin(baseUrlOf(ownFields(entry)))
 }
 
+/** The issues of a selection's ids, each at most once and never naming an id: one for a form, one for a repeat. */
+function selectionIssues({ ids, path }: ProfileSelection): ConfigIssue[] {
+  const issues: ConfigIssue[] = []
+  if (!ids.every(id => PROFILE_ID.test(id))) issues.push({ path, message: `must be a profile id matching ${PROFILE_ID.source}` })
+  if (new Set(ids).size < ids.length) issues.push({ path, message: 'names a profile more than once' })
+  return issues
+}
+
 /** The providers research and the voter are bound to: `roles`, else the only provider, else research. Or the issues of the roles. */
 function bindRoles(roles: ConfigInput['roles'], names: readonly string[]): { readonly roles?: RoleBinding, readonly issues: ConfigIssue[] } {
   const named = { research: own(roles, 'research'), voter: own(roles, 'voter') }
@@ -225,27 +231,29 @@ function bindRoles(roles: ConfigInput['roles'], names: readonly string[]): { rea
  * the profiles that run, and the key of each provider they use. Every provider is checked by the builder,
  * the ones that are not used without a key. A key is sent only to the endpoint it was configured for: a
  * preset's own variable is read only at the preset's origin. A resolved config is returned as it is. The
- * input must already have passed a config schema.
+ * input must already have passed a config schema. `options.selection`, when given, names the profiles that
+ * run, over `QUORUM_PROFILES`, which is still checked; its ids are checked before anything is resolved.
  *
  * @throws ConfigError with every issue at once, none of which repeats a value
  */
-export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { readonly env: Env }): ResolvedConfig {
+export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { readonly env: Env, readonly selection?: ProfileSelection }): ResolvedConfig {
   if (isResolvedConfig(input)) return input
-  const { env } = options
+  const { env, selection } = options
   const layer = readEnv(env)
   const defined = Object.entries(own(input, 'providers') ?? {})
   const builtIn = defined.length === 0
   const entries: Array<[string, ProviderEntry]> = builtIn ? [[DEFAULT_NAME, DEFAULT_PROVIDER]] : defined
 
   const bound = bindRoles(own(input, 'roles'), entries.map(([name]) => name))
-  if (layer.issues.length > 0 || bound.issues.length > 0 || bound.roles === undefined) throw new ConfigError([...layer.issues, ...bound.issues])
+  const refused = selection === undefined ? [] : selectionIssues(selection)
+  if (layer.issues.length > 0 || refused.length > 0 || bound.issues.length > 0 || bound.roles === undefined) throw new ConfigError([...layer.issues, ...refused, ...bound.issues])
 
   // Read as own fields: a polluted `Object.prototype` selects no profile.
   const ids = own(layer, 'profiles')
   const applied = applyRoleOverrides(Object.fromEntries(entries), bound.roles, layer)
   const profiles = resolveProfiles({
     profiles: own(input, 'profiles'),
-    selection: ids === undefined ? undefined : { ids, path: 'QUORUM_PROFILES' },
+    selection: selection ?? (ids === undefined ? undefined : { ids, path: 'QUORUM_PROFILES' }),
     roles: applied.roles,
     providers: Object.keys(applied.providers),
   })

@@ -202,6 +202,7 @@ declare function loadConfig(options?: {
   readonly cwd?: string
   readonly env?: Env
   readonly configPath?: string
+  readonly selection?: ProfileSelection
 }): Promise<{ readonly config: ResolvedConfig, readonly source: string | undefined, readonly warnings: readonly string[] }>
 
 declare function fromConfig(
@@ -210,6 +211,11 @@ declare function fromConfig(
 ): Promise<Quorum>
 
 type Env = Readonly<Record<string, string | undefined>>
+
+interface ProfileSelection {
+  readonly ids: readonly string[]
+  readonly path: string
+}
 ```
 
 `loadConfig` reads the config file it is named, if any, lays the environment over it and resolves the result into a `ResolvedConfig`: every layer merged, every reference bound, every key read. `fromConfig` builds a quorum from a config: a `ConfigInput`, which it checks and resolves, or a `ResolvedConfig`, which it uses as it is. Both read `process.env` when no `env` is given, and both throw a `ConfigError` before anything is sent, with every issue of the step that failed: `loadConfig`, those of the file, or else those of the resolution; `fromConfig`, those of the config's check, or else those of the resolution and the providers.
@@ -226,7 +232,9 @@ const result = await quorum.review({ diff })
 `fromConfig({}, { env: process.env })` needs no file: the environment alone names a provider and a model. No command reads `QUORUM_*` or a config file yet: the CLI keeps `RESEARCH_*` and `VOTER_*` until it switches to these two functions.
 
 - **`options.cwd`** is the directory a relative `configPath` and `QUORUM_CONFIG` resolve against, the working directory by default. `source` is the absolute path of the file read, and `undefined` when none was.
+- **`options.selection`** names the profiles that run, over `QUORUM_PROFILES`, which is still read and checked: a malformed variable is refused even when a selection is given. `path` is what the selection's issues name, and the CLI passes `--profile`. Each id must match `^[a-z][a-z0-9_-]*$`, and none may repeat.
 - **`options.events`** is the event sink of the quorum, as `createQuorum` takes it.
+- **A process imports a TS or JS config once.** A second `loadConfig` of the same file gets the module the first import cached, since Node and Bun cache a module by its URL.
 - **A named config is trusted input.** It chooses where each key goes, and a TS or JS one runs code: in CI it must come from the base branch or from outside the pull request's checkout, never from the pull request under review ([Layering](#layering)).
 - **A `ResolvedConfig`** holds `providers`, the ones a profile that runs uses, by name: a spec with its key read into `apiKey`, or the snapshot of an object implementing `Provider`; `profiles`, each a `ResolvedProfile`: its `profile`, `research`, the name of its research provider, and `voters`, the name of each lens's provider, by lens id; `concurrency`, `maxFindings`, and `warnings`. It is a copy, frozen all the way down: a provider object is a frozen snapshot of the program's, with no prototype, named by its config key as its `id`.
 - **A `ResolvedConfig` holds the keys it read**, as a code config does: never print or log one. The CLI's `--print-config`, still to come, will redact them.
@@ -281,7 +289,7 @@ The origin is compared as the voter's fallback compares it: the scheme, the host
 ### Roles and profiles
 
 - **The role defaults.** One provider binds both roles. Several need `roles.research`, or the config is refused; `roles.voter` is `roles.research` when unset. A profile's own `roles` override the top-level ones, and a lens's `provider` overrides both.
-- **Which profiles run.** The ones `QUORUM_PROFILES` names, else the ones `profiles` defines, else `security`. `profiles: {}` with no selection is refused: a run that reviews nothing never passes.
+- **Which profiles run.** The ones `selection` names, else the ones `QUORUM_PROFILES` names, else the ones `profiles` defines, else `security`. `profiles: {}` with no selection is refused: a run that reviews nothing never passes.
 - **A profile's base.** A profile named after a built-in profile starts from it, so `profiles: { security: { gating: false } }` is the security profile without gating; so does one with `extends`. A profile of its own needs both prompts and its lenses. Its `gating` is the base's, else `true`.
 - **Every defined profile and provider is checked**, whether or not a run selects or uses it, so a broken definition fails every run, as an unknown field does.
 
@@ -303,11 +311,11 @@ A provider's key is the first of:
 
 ### Warnings and errors
 
-`loadConfig` returns the config's `warnings`: the deprecation line, a preset's key that is not sent, and a key sent over plain `http`. The `warnings` of the quorum `fromConfig` returns hold those first, then the core's: a profile setting that cannot take full effect, [Warnings](../20-using/40-profiles.md#warnings). A provider object is read only while its config is checked, inside the guard that keeps what it throws to the error's name: its `model` once and its `complete` twice (the check of plain data, then the snapshot), into a frozen snapshot with no prototype that calls the object as it is, and that snapshot is named by its config key in events and in `meta`, whatever `id` the object holds.
+`loadConfig` returns the config's `warnings`: the deprecation line, the line naming the `QUORUM_` variables that nothing reads, a preset's key that is not sent, and a key sent over plain `http`. The `warnings` of the quorum `fromConfig` returns hold those first, then the core's: a profile setting that cannot take full effect, [Warnings](../20-using/40-profiles.md#warnings). A provider object is read only while its config is checked, inside the guard that keeps what it throws to the error's name: its `model` once and its `complete` twice (the check of plain data, then the snapshot), into a frozen snapshot with no prototype that calls the object as it is, and that snapshot is named by its config key in events and in `meta`, whatever `id` the object holds.
 
 | Path | Message | Cause |
 | --- | --- | --- |
-| The path as given | The file's own problem, such as `does not exist`, `is not valid YAML at line 2, column 1 (DUPLICATE_KEY)` or `failed to load (Error)` | `loadConfig` could not read the file, or it is not valid |
+| The path as given | The file's own problem, such as `does not exist`, `is not valid YAML at line 2, column 1 (DUPLICATE_KEY)`, `has a syntax error` or `failed to load (Error)` | `loadConfig` could not read the file, or it is not valid |
 | `config` | `must be an object` | A `ConfigInput` that is not a plain object |
 | `config` | `could not be read (Error)` | A getter or a proxy of the config threw, one of a provider object's included: each provider object is read only here, and only the error's name is kept, `an error` when that is not a plain class name |
 | `config` | `holds more than 10000 values` | A `ConfigInput` too large to walk |
@@ -315,7 +323,10 @@ A provider's key is the first of:
 | `<path>` | The schema's: `is not a known field`, `is required`, `must be a string`, `must be at least 1`, and the like | A field of the wrong shape, at its path |
 | `QUORUM_PROFILES` | `must list profile ids separated by commas, each matching ^[a-z][a-z0-9_-]*$` | An empty id, or an id of another form |
 | `QUORUM_PROFILES` | `names a profile more than once` | `security,security` |
-| `QUORUM_PROFILES` | `unknown profile "tema" (did you mean "team"?)`, or `unknown profile "style": the profiles are team and security` | An id that is neither defined nor built in |
+| `QUORUM_PROFILES`, or the selection's `path` (`--profile`) | `unknown profile "tema" (did you mean "team"?)`, or `unknown profile "style": the profiles are team and security` | An id that is neither defined nor built in |
+| The selection's `path` | `must be a profile id matching ^[a-z][a-z0-9_-]*$` | An empty id, or an id of another form, in `selection.ids` |
+| The selection's `path` | `names a profile more than once` | `selection.ids` names an id twice |
+| The selection's `path` | `must name at least one profile` | `selection.ids` is empty |
 | `QUORUM_VOTER_MODEL` | `must be set when the voter variables name another endpoint than the research provider's` | The voter variables name another origin, a preset or a protocol, and no model |
 | `QUORUM_RESEARCH_MODEL`, and the other variables of a role | `cannot change providers.mine, an object implementing Provider` | A variable set for a role bound to a provider object |
 | `providers.voter` | `is the name the voter variables give the provider they derive: rename this provider` | The voter variables derive a provider, and one is already named `voter` |
@@ -331,11 +342,12 @@ A provider's key is the first of:
 | `QUORUM_RESEARCH_PRESET` and the other variables of a role: the preset, the protocol, the base URL, the model and the key | The builder's, such as `must be one of ollama, ollama-cloud, ...` | A provider that the builder refuses on a field a variable set: the issue names the variable, never the provider the variables built |
 | `providers.<name>.model` | `must be a string` | A provider object whose model is not a string |
 
-The warnings, each but the first starting at the path it is about:
+The warnings, each but the first two starting at the path it is about:
 
 | Warning | Cause |
 | --- | --- |
 | `RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead` | A deprecated alias is set; one line names every alias, and every `QUORUM_` variable to set instead |
+| `QUORUM_PROFILE is not a variable quorum reads` | A `QUORUM_` variable that is set and that quorum does not read: one line names every such variable, sorted, and prints a name that is not an upper-case variable name as `*` |
 | `providers.gpt.baseUrl: is not the endpoint of the openai preset, so OPENAI_API_KEY is not sent: set apiKeyEnv to send a key` | A provider of a preset whose base URL is not the preset's origin |
 | `providers.voter.baseUrl: is not the endpoint of the research provider, so OPENAI_API_KEY is not sent: set QUORUM_VOTER_API_KEY to send a key` | A derived voter on another origin than research's, whose provider keeps a preset that has a key variable |
 | `providers.gpu.baseUrl: sends the key over plain http to a host other than this machine` | A key that would travel in cleartext |
@@ -359,7 +371,7 @@ The warnings, each but the first starting at the path it is about:
 | `inertLine`, `inertJson` | Render a line for a terminal or a log, and a value as JSON, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |
 
-The types: `Confidence`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `Lens`, `LensVote`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus` and `Vote`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
+The types: `Confidence`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `Lens`, `LensVote`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus` and `Vote`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
 
 The stages, the profile checks and the CLI's exit-code rule are not exported: a program reaches the stages through `createQuorum`, and applies the exit codes itself, as the example below does.
 
