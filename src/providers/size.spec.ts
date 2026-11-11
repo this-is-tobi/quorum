@@ -76,10 +76,13 @@ describe('textTokens', () => {
       for (let codePoint = 0; codePoint <= 0x10FFFF; codePoint++) {
         if (codePoint >= 0xD800 && codePoint <= 0xDFFF) continue
         const text = char(codePoint)
-        if (utf8Length(text.normalize('NFC')) > utf8Length(text.normalize('NFD')) || utf8Length(text.normalize('NFKC')) > utf8Length(text.normalize('NFKD'))) violations.push(codePoint)
+        const nfkd = text.normalize('NFKD')
+        // a code point NFKD leaves alone has no canonical decomposition either, so all four forms are itself
+        if (nfkd === text) continue
+        if (utf8Length(text.normalize('NFC')) > utf8Length(text.normalize('NFD')) || utf8Length(text.normalize('NFKC')) > utf8Length(nfkd)) violations.push(codePoint)
       }
       expect(violations).toEqual([])
-    })
+    }, 20_000)
 
     it('bounds every form of a text: 10000 seeded random strings count at least their raw, NFC, NFKC, NFD and NFKD lengths', () => {
       const starters = [0x61, 0x65, 0x41, 0x0915, 0x304B, 0x110A5]
