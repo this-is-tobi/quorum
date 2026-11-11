@@ -165,13 +165,15 @@ export function interruptSignal(source: SignalSource, exit: (code: number) => vo
 /**
  * The exit code of a finished review: 1 when a kept finding is `high` and its profile gates, 4 when
  * an unreviewed finding or a gap belongs to a gating profile (unless `allowIncomplete` turns it into
- * 0, which it does for nothing else but a `request-too-large` gap), 0 otherwise. A profile gates
+ * 0, which it does for every gap but a `request-too-large` one), 0 otherwise. A profile gates
  * unless `meta.profiles` holds it with `gating: false`, so a profile missing from the result counts
  * as gating and a gap never hides.
  *
  * A `request-too-large` gap of a gating profile exits 4 whatever `allowIncomplete` says: a pull
  * request can cause that gap by padding the diff until a request is refused, so no flag lifts it
- * (ADR-0012), while a flaky voter, which the flag is for, is not something an attacker can cause.
+ * (ADR-0012). The flag lifts every other gap, including gaps a pull request can cause: decoy findings
+ * that push a real one past `maxFindings`, or text that trips a hosted voter's content filter. On a
+ * gating profile, do not use it for a pull request you do not trust.
  */
 export function exitCodeFor(result: QuorumResult, options: { readonly allowIncomplete?: boolean } = {}): number {
   const gates = (profile: string): boolean => !Object.hasOwn(result.meta.profiles, profile) || result.meta.profiles[profile].gating !== false

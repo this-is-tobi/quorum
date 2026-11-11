@@ -103,7 +103,7 @@ A detail names at most eight code points or patterns, then `and N more`. [Adviso
 | `vote-failed` | A kept finding's failed votes, had they been keeps, would have raised it to a higher level | `"src/a.js":12 is kept at medium, but 1 failed vote(s) could have made it high`, the file written as a JSON string |
 | `request-too-large` | A request may not fit its provider's context, so it was not sent: the profile's research request, which leaves the profile with no finding, or the vote requests of a finding, each a failed vote | `the research request was not sent: <the provider's message>`, or `"src/a.js":12: 2 of 3 vote requests were not sent: <the first provider's message>`, the file written as a JSON string |
 
-Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4` for a gap of a gating profile, unless a gating profile kept a `high` finding. `--allow-incomplete` lifts every gap but this one for a gating profile: a `request-too-large` gap exits `4` whatever the flags, since a pull request can cause it by padding the diff.
+Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4` for a gap of a gating profile, unless a gating profile kept a `high` finding. `--allow-incomplete` lifts every gap but this one for a gating profile: a `request-too-large` gap exits `4` whatever the flags, since a pull request can cause it by padding the diff. The flag lifts every other gap, including gaps a pull request can cause: decoy findings that push a real one past `maxFindings`, or text that trips a hosted voter's content filter. On a gating profile, do not use it for a pull request you do not trust.
 
 ## An example
 
