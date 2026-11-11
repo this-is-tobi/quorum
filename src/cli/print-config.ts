@@ -47,6 +47,7 @@ function specView(spec: ProviderSpec): Record<string, unknown> {
     protocol: own(spec, 'protocol'),
     origin: providerOrigin(spec),
     model: own(spec, 'model'),
+    contextTokens: own(spec, 'contextTokens'),
     apiKey: own(spec, 'apiKey') === undefined ? undefined : REDACTED,
     auth: authView(own(spec, 'auth')),
     headers: redactedValues(own(spec, 'headers')),

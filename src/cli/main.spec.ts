@@ -526,6 +526,41 @@ describe('the diff byte cap', () => {
   })
 })
 
+describe('the size guard', () => {
+  it('sends nothing and exits 4, even with --allow-incomplete, when the research request may not fit the model', async () => {
+    const config = write('small.yaml', 'providers:\n  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 17000}\n')
+    const fetchMock = stubChat()
+    const { io, stdout, stderr } = harness({ argv: ['--config', config, '--allow-incomplete'], stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    expect(fetchMock).not.toHaveBeenCalled()
+    const refusal = 'local: may need 18089 tokens, more than contextTokens (17000): 1577 for its text at one token per byte, 512 for the chat template and 16000 for the reply'
+    expect((JSON.parse(stdout()) as QuorumResult).meta.incomplete).toEqual([{ profile: 'security', reason: 'request-too-large', detail: `the research request was not sent: ${refusal}` }])
+    expect(stderr()).toContain(`incomplete: request-too-large (the research request was not sent: ${refusal})\n`)
+  })
+
+  it('records the vote requests that may not fit the voter as a request-too-large gap, and exits 4 even with --allow-incomplete', async () => {
+    const yaml = [
+      'providers:',
+      '  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 1000000}',
+      '  small: {protocol: openai-compatible, baseUrl: "https://v.example/v1", model: v, contextTokens: 17000}',
+      'roles: {research: local, voter: small}',
+      '',
+    ].join('\n')
+    const fetchMock = stubChat(JSON.stringify({ findings: [FINDING] }))
+    const { io, stdout } = harness({ argv: ['--config', write('small-voter.yaml', yaml), '--allow-incomplete'], stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const result = JSON.parse(stdout()) as QuorumResult
+    expect(result.unreviewed.map(verdict => [verdict.file, verdict.votes.map(entry => entry.vote)])).toEqual([['a.js', [null, null, null]]])
+    expect(result.meta.incomplete).toEqual([{
+      profile: 'security',
+      reason: 'request-too-large',
+      file: 'a.js',
+      detail: '"a.js":1: 3 of 3 vote requests were not sent: small: may need 18062 tokens, more than contextTokens (17000): 1550 for its text at one token per byte, 512 for the chat template and 16000 for the reply',
+    }])
+  })
+})
+
 describe('flags', () => {
   it('prints the help on stdout and exits 0, reading neither the diff nor a config', async () => {
     for (const flag of ['--help', '-h']) {
