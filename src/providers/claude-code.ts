@@ -16,8 +16,9 @@ import { checkFits, contextBudget, utf8Length } from './size.ts'
  * The `claude-code` adapter runs the user's installed `claude` CLI once per request, headless and isolated,
  * as a pure completion: no tool but the schema tool, no settings file, MCP server, slash command or
  * session from the user's or the project's setup, the system text in a file, the message on stdin, and no
- * credential on the command line. Written against Claude Code 2.1.311: a CLI that lacks one of the flags
- * below fails the run, but one that ignores an environment variable runs with less isolation.
+ * credential on the command line. It requires Claude Code `MIN_CLAUDE_CODE_VERSION` or newer, checked with
+ * `claude --version` before the first request: the isolation rests on environment variables that an older
+ * CLI ignores, and one it ignores would run with less isolation, a file mention among them.
  *
  * The first half is pure: the options and their checks, the command line, the child's environment and the
  * reading of the JSON result, each testable without a process. The second, `claudeCode`, runs the child:
@@ -30,6 +31,8 @@ export const CLAUDE_CODE_TEMPLATE_TOKENS = 4096
 export const MAX_STDIN_BYTES = 10_000_000
 /** The milliseconds `claude` has to exit after SIGTERM before SIGKILL. */
 export const KILL_GRACE_MS = 2000
+/** The oldest Claude Code the isolation was checked with, and so the oldest a run accepts: its variables are unknown to an older one. */
+export const MIN_CLAUDE_CODE_VERSION = '2.1.311'
 
 /**
  * Whose credentials `claude` uses: the environment's, as it is (`inherit`); the Claude Code login alone
@@ -126,9 +129,10 @@ const SESSION_VARIABLES: ReadonlySet<string> = new Set([
  * The variables that load or enable what the isolation flags turn off, or add to the request body, removed
  * in every mode, since no flag governs them: plugin directories, which load a plugin and its hooks the way
  * `--plugin-dir` does, the plugin roots and seeds, the syncs of plugins and skills, a launcher for the
- * processes `claude` starts, the Chrome integration, the task and agent-team tools, the PowerShell tool
- * and a JSON object merged into every request body. Claude Code's own settings keep the launcher, sync and
- * plugin root variables from a checked-out repository for the same reason.
+ * processes `claude` starts, the Chrome integration, the task and agent-team tools, the PowerShell tool,
+ * a JSON object merged into every request body and the persistence of a session that
+ * `--no-session-persistence` turns off. Claude Code's own settings keep the launcher, sync and plugin root
+ * variables from a checked-out repository for the same reason.
  */
 const CAPABILITY_VARIABLES: ReadonlySet<string> = new Set([
   'CLAUDE_CODE_PLUGIN_DIRS',
@@ -143,6 +147,7 @@ const CAPABILITY_VARIABLES: ReadonlySet<string> = new Set([
   'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
   'CLAUDE_CODE_USE_POWERSHELL_TOOL',
   'CLAUDE_CODE_EXTRA_BODY',
+  'CLAUDE_CODE_FORCE_SESSION_PERSISTENCE',
 ])
 /**
  * The credential, header and endpoint variables `login` and `api-key` remove, besides every one that starts
@@ -347,9 +352,11 @@ function removedVariable(name: string, auth: ClaudeCodeAuth, runVariables: Reado
  * every credential, header and endpoint variable, so a login or a key never reaches another host or travels
  * with another credential. Names are matched in any letter case, since Windows reads them so. Under
  * `api-key`, `ANTHROPIC_API_KEY` is then `apiKey` when it is a non-empty string, else the environment's
- * own, trimmed, when that is not blank. Last come five variables the run sets over whatever the environment
- * held, in any case: no auto memory, no compaction of a long prompt, a temporary directory of its own, and
- * no IDE connection or claude.ai MCP connector, which are on by default.
+ * own, trimmed, when that is not blank. Last come ten variables the run sets over whatever the environment
+ * held, in any case: no auto memory, no compaction of a long prompt, a temporary directory of its own, no
+ * IDE connection or claude.ai MCP connector, which are on by default, and no attachment, file mention,
+ * `CLAUDE.md` file, bundled skill or managed skill. A line naming a path (`@/path`) in the message makes
+ * Claude Code attach that file for the model to read, with every tool off, unless the first two are set.
  */
 export function childEnv(env: Readonly<Record<string, string | undefined>>, auth: ClaudeCodeAuth, apiKey: string | undefined, tmpDir: string): Record<string, string> {
   const isolation = {
@@ -358,6 +365,11 @@ export function childEnv(env: Readonly<Record<string, string | undefined>>, auth
     CLAUDE_CODE_TMPDIR: tmpDir,
     CLAUDE_CODE_AUTO_CONNECT_IDE: 'false',
     ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+    CLAUDE_CODE_DISABLE_ATTACHMENTS: '1',
+    CLAUDE_CODE_DISABLE_FILE_MENTIONS: '1',
+    CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+    CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1',
+    CLAUDE_CODE_DISABLE_POLICY_SKILLS: '1',
   }
   const own = Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
   const inheritedKey = (own.find(([name]) => name === KEY_VARIABLE) ?? own.find(([name]) => name.toUpperCase() === KEY_VARIABLE))?.[1].trim()
@@ -380,6 +392,33 @@ export function credentialValues(environment: Readonly<Record<string, string>>):
     .filter(([name]) => REDACTED_VARIABLES.has(name.toUpperCase()))
     .flatMap(([, value]) => [value, value.trim()])
   return [...new Set(values)].filter(value => value.trim() !== '')
+}
+
+const VERSION = /^(\d+)\.(\d+)\.(\d+)/
+/** A version an error message may quote: short plain numbers, so nothing else `claude` printed can come along. */
+const QUOTABLE_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/
+const MIN_VERSION_PARTS = MIN_CLAUDE_CODE_VERSION.split('.').map(Number)
+
+/** Whether a `[major, minor, patch]` is older than `MIN_CLAUDE_CODE_VERSION`. */
+function isOlder(parts: readonly number[]): boolean {
+  for (const [index, minimum] of MIN_VERSION_PARTS.entries()) {
+    const part = parts[index] ?? 0
+    if (part !== minimum) return part < minimum
+  }
+  return false
+}
+
+/**
+ * The message refusing what `claude --version` printed, or undefined when it starts with a version of
+ * `MIN_CLAUDE_CODE_VERSION` or newer (`2.1.311 (Claude Code)`). An older one and an output that starts with no
+ * `<major>.<minor>.<patch>` are both refused. The message quotes the version only when it is plain numbers,
+ * else it writes `an unknown version`: the output is the CLI's to write, never trusted.
+ */
+export function versionProblem(output: string): string | undefined {
+  const digits = VERSION.exec(output.trim())?.slice(1)
+  if (digits !== undefined && !isOlder(digits.map(Number))) return undefined
+  const found = digits?.join('.')
+  return `Claude Code ${MIN_CLAUDE_CODE_VERSION} or newer is required, found ${found !== undefined && QUOTABLE_VERSION.test(found) ? found : 'an unknown version'}`
 }
 
 /** The parsed result on `stdout`, or undefined when it holds no JSON object whose `type` is `result`. */
@@ -680,6 +719,56 @@ function runChild(launch: Launch, input: string, signal: AbortSignal | undefined
 }
 
 /**
+ * Run `claude --version` as a request is run, from its empty directory and with its environment: the problem
+ * with the version it names (`versionProblem`), or undefined when it is recent enough.
+ */
+async function checkVersion(launch: Launch, signal: AbortSignal | undefined, fail: Failure): Promise<string | undefined> {
+  const { run } = await runChild({ ...launch, args: ['--version'] }, '', signal, fail)
+  throwIfAborted(signal, fail)
+  return versionProblem(run.code === 0 && run.signal === null ? run.stdout : '')
+}
+
+/** The version check of each command, as one promise, for the life of the process. A check that came to a problem, or failed, is dropped, so the next request runs it again. */
+const versionChecks = new Map<string, Promise<string | undefined>>()
+
+function startVersionCheck(launch: Launch, signal: AbortSignal | undefined, fail: Failure): Promise<string | undefined> {
+  const check = checkVersion(launch, signal, fail).then(
+    (problem) => {
+      if (problem !== undefined) versionChecks.delete(launch.command)
+      return problem
+    },
+    (error: unknown) => {
+      versionChecks.delete(launch.command)
+      throw error
+    },
+  )
+  versionChecks.set(launch.command, check)
+  return check
+}
+
+/**
+ * Fail unless `launch.command` names a recent enough Claude Code, running `claude --version` when no request
+ * has: a request that arrives while one runs waits for it, and a command that passed is not checked again.
+ * The check runs with the signal and the name of the request that started it, so a request never reports
+ * another's failure: one that waited for a check that failed runs it again itself.
+ */
+async function requireVersion(launch: Launch, signal: AbortSignal | undefined, fail: Failure): Promise<void> {
+  for (;;) {
+    const shared = versionChecks.get(launch.command)
+    let problem: string | undefined
+    try {
+      problem = await (shared ?? startVersionCheck(launch, signal, fail))
+    } catch (error) {
+      if (shared === undefined) throw error
+      throwIfAborted(signal, fail)
+      continue
+    }
+    if (problem !== undefined) throw fail('process', problem)
+    return
+  }
+}
+
+/**
  * A provider that runs the user's `claude` CLI once per request, headless and isolated, as a pure completion
  * (see the header of this file). The key of `api-key` mode travels only in the child's environment (invariant
  * I1), and no text an error quotes repeats it. A request goes through these steps, in order:
@@ -691,14 +780,16 @@ function runChild(launch: Launch, input: string, signal: AbortSignal | undefined
  * 5. an aborted signal: `aborted`;
  * 6. a directory of its own, under the temporary directory, holding an empty working directory, `claude`'s
  *    scratch directory and the system text's file: a failure to make it is `process`;
- * 7. `claude` spawned there, with `claudeArgs` and `childEnv`, never through a shell, leading a process group
+ * 7. `claude --version`, the first time for this command, from that directory and with the child's
+ *    environment: a version below `MIN_CLAUDE_CODE_VERSION`, or none, is `process`, and nothing more is run;
+ * 8. `claude` spawned there, with `claudeArgs` and `childEnv`, never through a shell, leading a process group
  *    of its own where there are groups: a failure to start is `process`;
- * 8. the message written to its stdin, which is then ended;
- * 9. stdout read to 16 MiB and stderr to 64 KiB, the rest dropped: more stdout stops the child, and is `invalid-response`;
- * 10. on the signal's abort, or stdout past its cap: SIGTERM to the group, then SIGKILL after `KILL_GRACE_MS`;
+ * 9. the message written to its stdin, which is then ended;
+ * 10. stdout read to 16 MiB and stderr to 64 KiB, the rest dropped: more stdout stops the child, and is `invalid-response`;
+ * 11. on the signal's abort, or stdout past its cap: SIGTERM to the group, then SIGKILL after `KILL_GRACE_MS`;
  *     when the child exits, SIGKILL to what is left of the group, so no process keeps the pipes open;
- * 11. once the child has closed, the directory removed, on every path, before the call settles;
- * 12. an aborted signal: `aborted`; else `readResult`'s reply or failure, with every credential of the
+ * 12. once the child has closed, the directory removed, on every path, before the call settles;
+ * 13. an aborted signal: `aborted`; else `readResult`'s reply or failure, with every credential of the
  *     child's environment redacted from the text it quotes (`credentialValues`).
  *
  * No timeout is set: Claude Code retries a failed API call by itself, for minutes, and a deadline is the
@@ -727,6 +818,8 @@ export function claudeCode(options: ClaudeCodeOptions): Provider {
       try {
         throwIfAborted(signal, fail)
         const environment = childEnv(env, auth, apiKey, run.tmp)
+        await requireVersion({ command, args: [], cwd: run.cwd, env: environment }, signal, fail)
+        throwIfAborted(signal, fail)
         const launch = { command, args: claudeArgs({ model, auth, structuredOutput, args }, run.systemFile, request.output.schema), cwd: run.cwd, env: environment }
         const finished = await runChild(launch, message.content, signal, fail)
         throwIfAborted(signal, fail)

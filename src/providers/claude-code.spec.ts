@@ -7,9 +7,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { ConfigError, ProviderError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { ChatMessage, CompletionRequest } from '../core/ports.ts'
-import { fakeClaudeEnv, isRunning, readFakeRecord, writeFakeClaude } from '../testing/claude.ts'
+import { fakeClaudeEnv, isRunning, readFakeRecord, readFakeVersionRecords, writeFakeClaude } from '../testing/claude.ts'
 import * as fixtures from '../testing/fixtures/claude-code.ts'
-import { childEnv, claudeArgs, claudeCode, claudeCodeIssues, credentialValues, KILL_GRACE_MS, MAX_STDERR_BYTES, MAX_STDOUT_BYTES, readCapped, readResult } from './claude-code.ts'
+import { childEnv, claudeArgs, claudeCode, claudeCodeIssues, credentialValues, KILL_GRACE_MS, MAX_STDERR_BYTES, MAX_STDOUT_BYTES, MIN_CLAUDE_CODE_VERSION, readCapped, readResult, versionProblem } from './claude-code.ts'
 import type { ClaudeCodeOptions } from './claude-code.ts'
 import { CONTEXT_REQUIRED } from './options.ts'
 
@@ -119,6 +119,7 @@ describe('childEnv', () => {
     CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
     CLAUDE_CODE_USE_POWERSHELL_TOOL: '1',
     CLAUDE_CODE_EXTRA_BODY: '{"tools":[]}',
+    CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: '1',
   }
   const env = {
     ...KEPT,
@@ -130,6 +131,11 @@ describe('childEnv', () => {
     CLAUDE_CODE_TMPDIR: '/elsewhere',
     CLAUDE_CODE_AUTO_CONNECT_IDE: 'true',
     ENABLE_CLAUDEAI_MCP_SERVERS: 'true',
+    CLAUDE_CODE_DISABLE_ATTACHMENTS: '0',
+    CLAUDE_CODE_DISABLE_FILE_MENTIONS: '0',
+    CLAUDE_CODE_DISABLE_CLAUDE_MDS: '0',
+    CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '0',
+    CLAUDE_CODE_DISABLE_POLICY_SKILLS: '0',
     UNSET: undefined,
   }
   const ISOLATION = {
@@ -138,9 +144,14 @@ describe('childEnv', () => {
     CLAUDE_CODE_TMPDIR: '/run/tmp',
     CLAUDE_CODE_AUTO_CONNECT_IDE: 'false',
     ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+    CLAUDE_CODE_DISABLE_ATTACHMENTS: '1',
+    CLAUDE_CODE_DISABLE_FILE_MENTIONS: '1',
+    CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+    CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1',
+    CLAUDE_CODE_DISABLE_POLICY_SKILLS: '1',
   }
 
-  it('passes the environment through under inherit, without the parent session\'s variables or what loads or adds, and with the isolation set, the connectors off', () => {
+  it('passes the environment through under inherit, without the parent session\'s variables or what loads or adds, and with the isolation set: the connectors, attachments, mentions, CLAUDE.md files and bundled and managed skills off', () => {
     expect(childEnv(env, 'inherit', undefined, '/run/tmp')).toEqual({ ...KEPT, ...CREDENTIALS, ...ISOLATION })
   })
 
@@ -167,6 +178,12 @@ describe('childEnv', () => {
       Disable_Compact: '0',
       enable_claudeai_mcp_servers: 'true',
       Anthropic_Custom_Headers: 'X: y',
+      claude_code_disable_attachments: '0',
+      Claude_Code_Disable_File_Mentions: '0',
+      CLAUDE_CODE_disable_claude_mds: '0',
+      claude_code_disable_bundled_skills: '0',
+      Claude_Code_Disable_Policy_Skills: '0',
+      claude_code_force_session_persistence: '1',
     }
     expect(childEnv(mixed, 'login', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', ...ISOLATION })
     expect(childEnv(mixed, 'api-key', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', ...ISOLATION, ANTHROPIC_API_KEY: 'sk-win' })
@@ -208,6 +225,37 @@ describe('credentialValues', () => {
   it('holds a value as written and trimmed, matches names in any letter case, and leaves out a value that is blank once trimmed', () => {
     const odd = { claude_code_oauth_token: ' spaced ', Anthropic_Auth_Token: '  ', ANTHROPIC_API_KEY: '', HOME: ' not-a-secret ' }
     expect(credentialValues(childEnv(odd, 'inherit', undefined, '/t')).sort()).toEqual([' spaced ', 'spaced'])
+  })
+})
+
+describe('versionProblem', () => {
+  const REQUIRED = 'Claude Code 2.1.311 or newer is required, found'
+
+  it('requires 2.1.311, exported as the minimum', () => {
+    expect(MIN_CLAUDE_CODE_VERSION).toBe('2.1.311')
+  })
+
+  it.each(['2.1.311 (Claude Code)', '2.1.311', '2.1.312\n', '  2.1.311 (Claude Code)\n', '2.2.0', '2.10.0', '3.0.0', '10.0.0 (Claude Code)', '2.1.311-beta.1', '99999.0.0'])('takes %j', (output) => {
+    expect(versionProblem(output)).toBeUndefined()
+  })
+
+  it.each<[string, string]>([
+    ['2.1.310 (Claude Code)', '2.1.310'],
+    ['2.0.999', '2.0.999'],
+    ['1.99.99', '1.99.99'],
+    ['0.0.1', '0.0.1'],
+  ])('refuses %j as older, quoting its version', (output, version) => {
+    expect(versionProblem(output)).toBe(`${REQUIRED} ${version}`)
+  })
+
+  it.each(['', '  \n', 'Claude Code 2.1.311', 'v2.1.311', '2.1', '2.1.x', '2,1,311', 'error: unknown option --version', 'sk-SECRET'])('refuses %j as an unknown version, quoting none of it', (output) => {
+    expect(versionProblem(output)).toBe(`${REQUIRED} an unknown version`)
+  })
+
+  it('quotes a version of at most four digits in each part, else writes an unknown version', () => {
+    expect(versionProblem('0.9999.9999')).toBe(`${REQUIRED} 0.9999.9999`)
+    expect(versionProblem('0.0.10000')).toBe(`${REQUIRED} an unknown version`)
+    expect(versionProblem('1.99999.1')).toBe(`${REQUIRED} an unknown version`)
   })
 })
 
@@ -459,6 +507,12 @@ describe('claudeCode', () => {
   let claude = ''
   let missing = ''
 
+  /** A fake `claude` of its own, so the version check of one command is not another test's. */
+  const claudeIn = (name: string): string => {
+    mkdirSync(join(dir, name))
+    return writeFakeClaude(join(dir, name))
+  }
+
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), 'quorum-cc-spec-'))
     runs = join(dir, 'runs')
@@ -533,6 +587,9 @@ describe('claudeCode', () => {
     expect(record.env).toMatchObject({ HOME: '/home/u', CLAUDE_CODE_TMPDIR: join(run, 'tmp'), CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', DISABLE_COMPACT: '1' })
     expect(record.env.CLAUDE_CODE_MESSAGING_TOKEN).toBeUndefined()
     expect(record.tmpExists).toBe(true)
+    expect(record.env).toMatchObject({ CLAUDE_CODE_DISABLE_ATTACHMENTS: '1', CLAUDE_CODE_DISABLE_FILE_MENTIONS: '1', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1', CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1', CLAUDE_CODE_DISABLE_POLICY_SKILLS: '1' })
+    // The first request on this command checks the version first, with the request's environment and an empty directory.
+    expect(readFakeVersionRecords(dir, 'round')).toEqual([{ argv: ['--version'], env: record.env, cwd: record.cwd, cwdEntries: [] }])
     if (process.platform !== 'win32') expect([record.runMode, record.systemMode]).toEqual([0o700, 0o600])
     // The fake exited while its grandchild still held the pipes: the call did not wait, and the group is gone.
     await vi.waitFor(() => expect(isRunning(record.grandchild as number)).toBe(false), { timeout: 2000 })
@@ -547,6 +604,33 @@ describe('claudeCode', () => {
     expect(record.argv).toContain('--bare')
     expect(record.env.ANTHROPIC_API_KEY).toBe('sk-SECRET')
     expect(record.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+    // The round trip above checked this command's version already: it is checked once per command.
+    expect(readFakeVersionRecords(dir, 'bare')).toEqual([])
+    expect(readdirSync(runs)).toEqual([])
+  })
+
+  it('refuses a claude older than 2.1.311 before it starts the request, and checks again when another request\'s abort cut the check short', async () => {
+    const env = fakeClaudeEnv(dir, 'old', fixtures.schema, { FAKE_CLAUDE_VERSION: '2.1.310 (Claude Code)', FAKE_CLAUDE_VERSION_DELAY_MS: '800' })
+    const provider = claudeCode({ ...options, command: claudeIn('old'), env })
+    const cancelled = new AbortController()
+    const first = provider.complete({ ...request, signal: cancelled.signal })
+    await vi.waitFor(() => expect(readFakeVersionRecords(dir, 'old')).toHaveLength(1), { timeout: 5000 })
+    // The second request waits for the check the first one started.
+    const second = provider.complete(request)
+    await new Promise(resolve => setTimeout(resolve, 200))
+    cancelled.abort()
+    await expect(first).rejects.toMatchObject({ kind: 'aborted', message: 'cc: request aborted' })
+    await expect(second).rejects.toMatchObject({ kind: 'process', message: 'cc: Claude Code 2.1.311 or newer is required, found 2.1.310' })
+    expect(readFakeVersionRecords(dir, 'old')).toHaveLength(2)
+    expect(existsSync(join(dir, 'old.record.json'))).toBe(false)
+    expect(readdirSync(runs)).toEqual([])
+  })
+
+  it('refuses a claude whose version it cannot read, quoting nothing of what it printed, before it starts the request', async () => {
+    const env = fakeClaudeEnv(dir, 'garbled', fixtures.schema, { FAKE_CLAUDE_VERSION: 'sk-SECRET' })
+    await expect(claudeCode({ ...options, command: claudeIn('garbled'), env }).complete(request)).rejects.toMatchObject({ kind: 'process', message: 'cc: Claude Code 2.1.311 or newer is required, found an unknown version' })
+    expect(readFakeVersionRecords(dir, 'garbled')).toHaveLength(1)
+    expect(existsSync(join(dir, 'garbled.record.json'))).toBe(false)
     expect(readdirSync(runs)).toEqual([])
   })
 

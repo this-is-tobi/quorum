@@ -406,7 +406,7 @@ import { claudeCode } from './src/index.ts'
 const code = claudeCode({ id: 'code', model: 'sonnet', contextTokens: 1000000 })
 ```
 
-From the CLI, `QUORUM_RESEARCH_PROTOCOL=claude-code` builds it: [Claude Code](./20-configuration.md#claude-code). It is written against Claude Code 2.1.311: [Stopping, nesting and the version](#stopping-nesting-and-the-version).
+From the CLI, `QUORUM_RESEARCH_PROTOCOL=claude-code` builds it: [Claude Code](./20-configuration.md#claude-code). It requires Claude Code 2.1.311 or newer: [Stopping, nesting and the version](#stopping-nesting-and-the-version).
 
 ### What it runs
 
@@ -445,14 +445,17 @@ Each measure of the command line and of the environment, and what it stops:
 | `DISABLE_COMPACT=1` | Summarizing a long prompt, which would shorten what the model reads (from Claude Code's documentation, not observed live) |
 | `CLAUDE_CODE_TMPDIR=<run>/tmp` | Claude Code's scratch files outside the request's directory |
 | `CLAUDE_CODE_AUTO_CONNECT_IDE=false`, `ENABLE_CLAUDEAI_MCP_SERVERS=false` | An IDE connection and the claude.ai MCP connectors, which are on by default |
+| `CLAUDE_CODE_DISABLE_ATTACHMENTS=1`, `CLAUDE_CODE_DISABLE_FILE_MENTIONS=1` | A file named in the message. A line such as `@/path/to/file` in the diff makes Claude Code attach that file for the model to read, with every tool off, and the model repeated a canary file's content that way (observed live with 2.1.311). With both set the model saw none. They are why an older Claude Code is refused: [Stopping, nesting and the version](#stopping-nesting-and-the-version) |
+| `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` | Every `CLAUDE.md` file, the managed one included (from Claude Code's documentation, not observed live) |
+| `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`, `CLAUDE_CODE_DISABLE_POLICY_SKILLS=1` | The skills Claude Code bundles and the ones an organization's managed policy brings (from Claude Code's documentation, not observed live) |
 | The parent session's variables, removed in every mode | `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EMIT_STARTUP_TIMING` and `CLAUDE_CODE_STARTUP_FAILURE_RESULTS`: a run nested in a Claude Code session does not inherit its messaging token or socket |
-| The capability variables, removed in every mode | `CLAUDE_CODE_PLUGIN_DIRS`, `CLAUDE_CODE_PLUGIN_SEED_DIR`, `CLAUDE_CODE_PLUGIN_CACHE_DIR`, `CLAUDE_CODE_SYNC_PLUGINS`, `CLAUDE_CODE_SYNC_SKILLS`, `CLAUDE_CODE_PROCESS_WRAPPER`, `CLAUDE_CODE_ENABLE_CFC`, `CLAUDE_CODE_ENABLE_TODO_TOOLS`, `CLAUDE_CODE_ENABLE_TASKS`, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, `CLAUDE_CODE_USE_POWERSHELL_TOOL` and `CLAUDE_CODE_EXTRA_BODY`: they load plugins and skills, start every process through a wrapper, enable a tool or merge a JSON object into every request body, and no flag governs them |
+| The capability variables, removed in every mode | `CLAUDE_CODE_PLUGIN_DIRS`, `CLAUDE_CODE_PLUGIN_SEED_DIR`, `CLAUDE_CODE_PLUGIN_CACHE_DIR`, `CLAUDE_CODE_SYNC_PLUGINS`, `CLAUDE_CODE_SYNC_SKILLS`, `CLAUDE_CODE_PROCESS_WRAPPER`, `CLAUDE_CODE_ENABLE_CFC`, `CLAUDE_CODE_ENABLE_TODO_TOOLS`, `CLAUDE_CODE_ENABLE_TASKS`, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, `CLAUDE_CODE_USE_POWERSHELL_TOOL`, `CLAUDE_CODE_EXTRA_BODY` and `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE`: they load plugins and skills, start every process through a wrapper, enable a tool, merge a JSON object into every request body or keep the session `--no-session-persistence` drops, and no flag governs them |
 | A process group of its own | What `claude` starts: an abort stops the whole group (not on Windows, which has none) |
 | The request's directory removed | Its working directory, its scratch files and the system text. Claude Code may still write its own session files under `~/.claude` and to `~/.claude.json`, and a SIGKILL can leave a stale socket (unverified): [Claude Code, isolated](../30-security/10-threat-model.md#claude-code-isolated) |
 
 Variable names are matched in any letter case, as Windows reads them. The credentials and endpoints that a mode removes are in [The auth modes](#the-auth-modes).
 
-Not everything is off, and no flag of this list turns the rest off: an organization's managed policy and Claude Code's bundled skills may still load, Claude Code adds its own context to every request, a run binds an inbox socket and keeps files under `~/.claude`, and `inherit` applies no credential that a settings file configures. [Claude Code, isolated](../30-security/10-threat-model.md#claude-code-isolated) states each of them.
+Not everything is off, and no flag of this list turns the rest off: an organization's managed settings, hooks and MCP servers may still load (its `CLAUDE.md` and skills, and the bundled skills, have variables that turn them off, unverified live on a managed machine), Claude Code adds its own context to every request, a run binds an inbox socket and keeps files under `~/.claude`, and `inherit` applies no credential that a settings file configures. [Claude Code, isolated](../30-security/10-threat-model.md#claude-code-isolated) states each of them.
 
 ### Claude Code options
 
@@ -526,6 +529,7 @@ Before `claude` starts, and around it:
 | The signal aborted | `aborted` | `request aborted` |
 | A directory that cannot be made | `process` | `could not prepare a directory for claude (EACCES)`, the code left out when there is none |
 | A `claude` that cannot start | `process` | `could not start the claude CLI (ENOENT)` |
+| `claude --version` names a version below 2.1.311, or none | `process` | `Claude Code 2.1.311 or newer is required, found 2.1.310`, or `found an unknown version` when the version is not plain numbers: [Stopping, nesting and the version](#stopping-nesting-and-the-version) |
 
 Every message starts with the provider id. A quoted text is cut, written as a JSON string and redacted, as an HTTP adapter's is, and stdout is read to 16 MiB and stderr to 64 KiB, the rest dropped.
 
@@ -540,7 +544,7 @@ Every message starts with the provider id. A quoted text is cut, written as a JS
 - **It runs inside a Claude Code session too.** `CLAUDECODE=1` in the environment does no harm, which was checked live, and the parent session's own variables are removed: [The isolation](#the-isolation).
 - **One process per call.** The review's concurrency limit, 4 by default, bounds the calls in flight across every provider, so it bounds the `claude` processes too.
 - **No timeout is set.** Claude Code retries a failed API call by itself, for minutes, and a deadline is the program's own `signal`.
-- **The version.** The adapter is tested with Claude Code 2.1.311 and names no minimum. A Claude Code that lacks one of the flags fails the run, closed, but one that ignores an environment variable of the isolation runs with less of it: [Claude Code, isolated](../30-security/10-threat-model.md#claude-code-isolated). `bun run live:claude-code` checks the adapter against the real `claude`. You run it by hand, with Claude Code installed and logged in, and neither `bun run test` nor CI does: it makes three calls on `haiku`, each capped by `--max-budget-usd 0.05`, one of structured output from a directory that holds a planted `CLAUDE.md`, one in `prompt` mode and one that names a model that does not exist. It passed against Claude Code 2.1.311, at under a tenth of a cent.
+- **The version: 2.1.311 or newer.** The isolation rests on environment variables that an older Claude Code does not know, and one it ignores is a file mention that is not turned off. So before its first request a provider runs `claude --version`, with the request's environment, from the request's empty directory and with the request's signal, and the result is kept for the life of the process, once per command. A version below 2.1.311, or an output that does not start with `<major>.<minor>.<patch>`, fails the request as `process`: `Claude Code 2.1.311 or newer is required, found 2.1.310`. The version is quoted only when each of its parts is at most four digits, else the message reads `found an unknown version`, so nothing else `claude` printed comes with it. A check that failed is run again by the next request. A Claude Code that lacks one of the flags fails the run too, closed. `bun run live:claude-code` checks the adapter against the real `claude`. You run it by hand, with Claude Code installed and logged in, and neither `bun run test` nor CI does: it makes four calls on `haiku`, each capped by `--max-budget-usd 0.05`: structured output from a directory that holds a planted `CLAUDE.md`, which shows the child runs in an empty directory of its own and not in that one, one in `prompt` mode, one whose message names a canary file with a random token as `@<its absolute path>`, which fails if the token comes back, and one that names a model that does not exist. It passed against Claude Code 2.1.311, at under a tenth of a cent.
 
 ### Claude Code configuration errors
 

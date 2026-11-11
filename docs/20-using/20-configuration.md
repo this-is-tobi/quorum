@@ -273,6 +273,10 @@ providers:
 - **`apiKeyEnv`** names the variable that holds the key in `api-key` mode, `ANTHROPIC_API_KEY` by default.
 - **A YAML or JSON provider cannot name the executable.** `command` is code-only: [Where the command comes from](#where-the-command-comes-from).
 
+### The Claude Code version
+
+Quorum requires Claude Code 2.1.311 or newer. Before a provider's first request it runs `claude --version` once and keeps the answer for the life of the process; an older version fails every request with `Claude Code 2.1.311 or newer is required, found 2.1.310`, and a research request that fails is exit `3`. The isolation depends on environment variables that an older Claude Code ignores, one of which keeps a file named in the diff from reaching the model: [Stopping, nesting and the version](./30-providers.md#stopping-nesting-and-the-version).
+
 ### The context size of Claude's models
 
 `contextTokens` is what the model gives you, stated as for any provider: [The context size](#the-context-size). On Anthropic's API, `sonnet`, `opus` and `haiku` resolve to models with a 1M window, so `1000000`. On Bedrock and Vertex, `sonnet` and `haiku` resolve to the 4.5 models, whose window is `200000`. A 4.6 model has the 1M window only with the `[1m]` suffix, as in `opus[1m]`, and `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` in the environment holds the 1M models to 200K. When in doubt, state the smaller number.
