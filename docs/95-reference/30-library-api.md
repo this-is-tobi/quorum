@@ -227,9 +227,11 @@ const result = await quorum.review({ diff })
 
 - **`options.cwd`** is the directory a relative `configPath` and `QUORUM_CONFIG` resolve against, the working directory by default. `source` is the absolute path of the file read, and `undefined` when none was.
 - **`options.events`** is the event sink of the quorum, as `createQuorum` takes it.
-- **A `ResolvedConfig`** holds `providers`, the ones a profile that runs uses, by name: a spec with its key read into `apiKey`, or an object implementing `Provider`; `profiles`, each a `ResolvedProfile`: its `profile`, `research`, the name of its research provider, and `voters`, the name of each lens's provider, by lens id; `concurrency`, `maxFindings`, and `warnings`. It is a copy, frozen except for the provider objects, which are the program's own.
+- **A named config is trusted input.** It chooses where each key goes, and a TS or JS one runs code: in CI it must come from the base branch or from outside the pull request's checkout, never from the pull request under review ([Layering](#layering)).
+- **A `ResolvedConfig`** holds `providers`, the ones a profile that runs uses, by name: a spec with its key read into `apiKey`, or the snapshot of an object implementing `Provider`; `profiles`, each a `ResolvedProfile`: its `profile`, `research`, the name of its research provider, and `voters`, the name of each lens's provider, by lens id; `concurrency`, `maxFindings`, and `warnings`. It is a copy, frozen all the way down: a provider object is a frozen snapshot of the program's, with no prototype, named by its config key as its `id`.
 - **A `ResolvedConfig` holds the keys it read**, as a code config does: never print or log one. The CLI's `--print-config`, still to come, will redact them.
 - **`fromConfig` of a `ResolvedConfig` reads no environment**: what `loadConfig` resolved is what runs, whatever `options.env` holds.
+- **A config is read as its own fields, with one limit.** A field planted on `Object.prototype` that is enumerable, as a merge bug leaves one, is refused as `is not a known field`. A field planted with `Object.defineProperty` is not enumerable, and the schema that checks a config reads each field it knows through the prototype, so the planted value becomes a field of the config or of a provider. Planting it needs code already running in the process, which can read the keys directly: quorum does not defend against it.
 
 ### Layering
 
@@ -239,6 +241,7 @@ Each layer sits over the one before it: the built-in defaults, then the file `co
 - **A profile over its base.** A profile named after a built-in profile, or with `extends`, starts from it: its prompts and its policy levels replace the base's one field at a time, and its lenses replace the base's lenses as a whole.
 - **`undefined` is unset, `null` is set.** In a program's config or a code config, a field set to `undefined` leaves the layer below's value in place, as if it were not written; `null` is a value, such as `temperature: null`, which leaves the field out of the request.
 - **No file is searched for.** A file loads only when it is named, by `configPath` first, then `QUORUM_CONFIG`: a `quorum.config.yaml` in the working directory is never read, since in CI that directory is a pull request's checkout, and a pull request could plant one.
+- **A named config is trusted like code.** It chooses where each key goes: a `baseUrl` of its own beside an `apiKeyEnv` sends the key that variable holds to that host. A TS or JS config also runs, with the job's environment. So in CI a named config must come from the base branch or from a path outside the pull request's checkout, never from the pull request under review.
 
 ### The environment variables
 
@@ -286,13 +289,13 @@ The origin is compared as the voter's fallback compares it: the scheme, the host
 
 A provider's key is the first of:
 
-1. A literal `apiKey`: a program's or a code config's, or `QUORUM_<ROLE>_API_KEY`, which wins over a variable a file names with `apiKeyEnv`.
+1. A literal `apiKey`: a program's or a code config's, or `QUORUM_<ROLE>_API_KEY`, which wins over a variable a file names with `apiKeyEnv`. An empty one is unset, as a blank variable is, so the next source applies.
 2. The variable `apiKeyEnv` names. A variable that is not set is an issue, never a silent run without a key.
 3. The preset's own variable (`OPENAI_API_KEY` for `openai`), only while the base URL keeps the preset's origin. At another origin it is not read, and a warning says so.
 4. For `azure-openai`, whose preset has no base URL, `AZURE_OPENAI_API_KEY`, only on an `https` host under `openai.azure.com`.
 
 - **`AZURE_OPENAI_API_KEY` is one variable for every Azure resource.** It is read for any host under `openai.azure.com`, so a voter whose own variables name the `azure-openai` preset on another Azure host sends that key there.
-- **A `QUORUM_<ROLE>_BASE_URL` set on a provider with an explicit `apiKeyEnv` keeps that key at the new URL.** It overrides the provider itself, not a fallback. A preset's own variable is withheld off its origin, with a warning.
+- **A `QUORUM_<ROLE>_BASE_URL` set on a provider with an explicit `apiKeyEnv` keeps that key at the new URL.** It overrides the provider itself, not a fallback, so a literal `apiKey`, `headers`, `query`, `extraBody` and `model` also stay with the provider at the new URL. A preset's own variable is withheld off its origin, with a warning.
 - **A voter derived onto another origin gets no key of the research provider**, whichever way it was set: `apiKey`, `apiKeyEnv`, a preset's variable or a `QUORUM_RESEARCH_API_KEY`.
 - **Keys are read only for the providers a profile that runs uses**, so a CI job that runs one profile needs that profile's keys alone. Every provider is still checked, without its key.
 - **A key sent over plain `http` to a host other than this machine** (`localhost`, `*.localhost`, `127.0.0.0/8` and `[::1]` are this machine) is warned about.
@@ -300,7 +303,7 @@ A provider's key is the first of:
 
 ### Warnings and errors
 
-`loadConfig` returns the config's `warnings`: the deprecation line, a preset's key that is not sent, and a key sent over plain `http`. The `warnings` of the quorum `fromConfig` returns hold those first, then the core's: a profile setting that cannot take full effect, [Warnings](../20-using/40-profiles.md#warnings). A provider object is read once, when its config is checked, into a snapshot that calls the object as it is, and is named by its config key in events and in `meta`, whatever `id` it holds.
+`loadConfig` returns the config's `warnings`: the deprecation line, a preset's key that is not sent, and a key sent over plain `http`. The `warnings` of the quorum `fromConfig` returns hold those first, then the core's: a profile setting that cannot take full effect, [Warnings](../20-using/40-profiles.md#warnings). A provider object is read once, when its config is checked: its `model` and its `complete`, one time each, into a frozen snapshot with no prototype that calls the object as it is, and that snapshot is named by its config key in events and in `meta`, whatever `id` the object holds.
 
 | Path | Message | Cause |
 | --- | --- | --- |
@@ -325,6 +328,7 @@ A provider's key is the first of:
 | `providers.<name>` | `CORP_KEY is not set` | The variable `apiKeyEnv` names, or the preset's own, is not set |
 | `providers.<name>.apiKeyEnv` | `names a variable that is not set` | The same, for a name that is not an upper-case variable name: a key pasted there is never printed |
 | `providers.<name>.<field>` | The builder's: [Presets as data](../20-using/30-providers.md#presets-as-data) and [Configuration errors](../20-using/30-providers.md#configuration-errors) | A provider that the builder refuses, defined or derived |
+| `QUORUM_RESEARCH_PRESET` and the other variables of a role: the preset, the protocol, the base URL, the model and the key | The builder's, such as `must be one of ollama, ollama-cloud, ...` | A provider that the builder refuses on a field a variable set: the issue names the variable, never the provider the variables built |
 | `providers.<name>.model` | `must be a string` | A provider object whose model is not a string |
 
 The warnings, each but the first starting at the path it is about:
