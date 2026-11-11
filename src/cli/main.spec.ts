@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { QuorumResult, Verdict } from '../core/types.ts'
-import { jsonReply, textReply } from '../testing/http.ts'
+import { chatReply, stubChat, textReply } from '../testing/http.ts'
 import { EXIT, exitCodeFor, runCli } from './main.ts'
 import type { CliIO } from './main.ts'
 
@@ -35,15 +35,6 @@ function harness(options: { argv?: string[], stdin?: string, isTTY?: boolean, en
   return { io, stdout: () => out.join(''), stderr: () => err.join('') }
 }
 
-function stubModel(...replies: string[]): ReturnType<typeof vi.fn> {
-  const fetchMock = vi.fn()
-  for (const content of replies) {
-    fetchMock.mockImplementationOnce(async () => jsonReply({ choices: [{ message: { content } }] }))
-  }
-  vi.stubGlobal('fetch', fetchMock)
-  return fetchMock
-}
-
 /** Every hidden class the sanitizer knows, to check that the CLI writes none of them. */
 const ANY_HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}]/u
 
@@ -52,7 +43,7 @@ const failed = (body: string): Response => textReply(body, 500)
 
 describe('runCli', () => {
   it('exits 2 with usage instead of waiting on an interactive terminal', async () => {
-    const fetchMock = stubModel()
+    const fetchMock = stubChat()
     const { io, stderr } = harness({ isTTY: true })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toContain('Usage:')
@@ -65,7 +56,7 @@ describe('runCli', () => {
   })
 
   it('exits 0 without calling the model for an empty diff', async () => {
-    const fetchMock = stubModel()
+    const fetchMock = stubChat()
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: '  \n' })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(fetchMock).not.toHaveBeenCalled()
@@ -75,7 +66,7 @@ describe('runCli', () => {
 
   it('reads the injected environment and never process.env', async () => {
     vi.stubEnv('RESEARCH_MODEL', 'leaked')
-    const fetchMock = stubModel()
+    const fetchMock = stubChat()
     const { io, stderr } = harness({ stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toContain('RESEARCH_MODEL')
@@ -94,7 +85,7 @@ describe('runCli', () => {
   })
 
   it('exits 2 for a base URL holding credentials or a query, and prints neither', async () => {
-    const fetchMock = stubModel()
+    const fetchMock = stubChat()
     const { io, stderr } = harness({ stdin: DIFF, env: { ...MODEL, RESEARCH_BASE_URL: 'https://user:pw-secret@h.example/v1?key=q-secret' } })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toContain('Error: research.baseUrl: must not hold a user name or password: send a key with apiKey\nresearch.baseUrl: must not hold a query or a fragment\n')
@@ -103,14 +94,14 @@ describe('runCli', () => {
   })
 
   it('exits 2 when no model is configured', async () => {
-    stubModel()
+    stubChat()
     const { io, stderr } = harness({ stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toContain('RESEARCH_MODEL')
   })
 
   it('exits 2 for an empty diff when no model is configured, before any banner', async () => {
-    const fetchMock = stubModel()
+    const fetchMock = stubChat()
     const { io, stderr } = harness({ stdin: '  \n' })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toContain('RESEARCH_MODEL')
@@ -137,14 +128,14 @@ describe('runCli', () => {
   })
 
   it('exits 1 on a unanimous finding and prints the result as JSON', async () => {
-    stubModel(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(true))
+    stubChat(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(true))
     const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.finding)
     expect(JSON.parse(stdout()).kept[0]).toMatchObject({ id: '235f5feb3565', profile: 'security', file: 'a.js', confidence: 'high' })
   })
 
   it('exits 0 when the panel keeps a finding only at medium confidence', async () => {
-    stubModel(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(false))
+    stubChat(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(false))
     const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
     const result = JSON.parse(stdout())
@@ -153,13 +144,13 @@ describe('runCli', () => {
   })
 
   it('exits 0 when the panel discards every finding', async () => {
-    stubModel(JSON.stringify({ findings: [FINDING] }), vote(false), vote(false), vote(true))
+    stubChat(JSON.stringify({ findings: [FINDING] }), vote(false), vote(false), vote(true))
     const { io } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
   })
 
   it('exits 4 when every voter fails, instead of reading the outage as a clean review', async () => {
-    stubModel(JSON.stringify({ findings: [FINDING] })).mockRejectedValue(new TypeError('fetch failed'))
+    stubChat(JSON.stringify({ findings: [FINDING] })).mockRejectedValue(new TypeError('fetch failed'))
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const result = JSON.parse(stdout())
@@ -170,7 +161,7 @@ describe('runCli', () => {
   })
 
   it('exits 4 when the research reply lists only unusable findings', async () => {
-    const fetchMock = stubModel(JSON.stringify({ findings: [{ file: 'x.js' }] }))
+    const fetchMock = stubChat(JSON.stringify({ findings: [{ file: 'x.js' }] }))
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const reasons = JSON.parse(stdout()).meta.incomplete.map((entry: { reason: string }) => entry.reason)
@@ -180,7 +171,7 @@ describe('runCli', () => {
   })
 
   it('exits 4 when one finding is unreadable, even though another is kept', async () => {
-    stubModel(JSON.stringify({ findings: [FINDING, { file: 'a.js' }] }), vote(true), vote(true), vote(false))
+    stubChat(JSON.stringify({ findings: [FINDING, { file: 'a.js' }] }), vote(true), vote(true), vote(false))
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const result = JSON.parse(stdout())
@@ -190,7 +181,7 @@ describe('runCli', () => {
   })
 
   it('exits 1 when a high finding is kept, even if another finding is unreviewed', async () => {
-    stubModel(JSON.stringify({ findings: [FINDING, SECOND_FINDING] }), vote(true), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
+    stubChat(JSON.stringify({ findings: [FINDING, SECOND_FINDING] }), vote(true), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
     const { io, stdout } = harness({ env: MODEL, stdin: TWO_LINE_DIFF })
     expect(await runCli(io)).toBe(EXIT.finding)
     const result = JSON.parse(stdout())
@@ -199,7 +190,7 @@ describe('runCli', () => {
   })
 
   it('exits 0 when a failed vote could not have changed a discard', async () => {
-    stubModel(JSON.stringify({ findings: [FINDING] }), vote(false), vote(false)).mockRejectedValue(new TypeError('fetch failed'))
+    stubChat(JSON.stringify({ findings: [FINDING] }), vote(false), vote(false)).mockRejectedValue(new TypeError('fetch failed'))
     const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
     const result = JSON.parse(stdout())
@@ -208,7 +199,7 @@ describe('runCli', () => {
   })
 
   it('exits 4 when a kept medium finding has a failed vote that could have made it high', async () => {
-    stubModel(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
+    stubChat(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const result = JSON.parse(stdout())
@@ -268,7 +259,7 @@ describe('inert output', () => {
 
   it('writes the JSON result inert: it parses back to the text the servers sent', async () => {
     vi.stubGlobal('fetch', vi.fn()
-      .mockImplementationOnce(async () => jsonReply({ choices: [{ message: { content: JSON.stringify({ findings: [FINDING] }) } }] }))
+      .mockImplementationOnce(async () => chatReply(JSON.stringify({ findings: [FINDING] })))
       .mockImplementation(async () => failed('\u009B2J\u202E')))
     const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
@@ -277,7 +268,7 @@ describe('inert output', () => {
   })
 
   it('writes no legacy workflow command, on stderr or in the JSON', async () => {
-    stubModel(JSON.stringify({ findings: [{ ...FINDING, file: '##[error]x.js' }, { ...FINDING, summary: '##[add-mask]e' }] }), vote(true), vote(true), vote(true))
+    stubChat(JSON.stringify({ findings: [{ ...FINDING, file: '##[error]x.js' }, { ...FINDING, summary: '##[add-mask]e' }] }), vote(true), vote(true), vote(true))
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.finding)
     expect(stderr()).toContain('invalid finding dropped: ##<U+005B>error]x.js:1 is not in the diff\n')
@@ -287,7 +278,7 @@ describe('inert output', () => {
   })
 
   it('prints a flag on stderr and keeps it out of the exit code', async () => {
-    stubModel(JSON.stringify({ findings: [] }))
+    stubChat(JSON.stringify({ findings: [] }))
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF.replace('+exec(cmd)', '+exec(cmd)\u202E') })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stderr()).toContain('flag: hidden-characters at "a.js":1 (U+202E on 1 added line(s))\n')

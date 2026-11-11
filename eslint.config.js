@@ -103,4 +103,13 @@ export default antfu(
       'no-restricted-globals': ['error', 'fetch', 'WebSocket', 'EventSource', 'Worker', 'globalThis', 'global', 'self'],
     },
   },
+  {
+    // src/testing/ holds the test helpers, which only spec files import. The blocks above keep it out
+    // of the core, the profiles, the providers and the config layer; this one covers the rest.
+    files: ['src/cli/**/*.ts', 'src/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [{ regex: '(?:^|/)testing/', message: 'Only spec files import src/testing/.' }] }],
+    },
+  },
 )
