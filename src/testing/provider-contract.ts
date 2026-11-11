@@ -136,6 +136,36 @@ export function describeProviderContract(subject: ContractSubject): void {
       expect(subject.read.temperature((await send({ temperature: null })).body)).toBeUndefined()
     })
 
+    it('refuses a request that may not fit contextTokens, before sending it', async () => {
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      await expect(subject.make({ ...base, contextTokens: 644, maxTokens: 100 }).complete(request)).rejects.toMatchObject({
+        kind: 'too-large',
+        retryable: false,
+        message: 'p: may need 645 tokens, more than contextTokens (644): 33 for its text at one token per byte, 512 for the chat template and 100 for the reply',
+      })
+      expect(fetchMock).not.toHaveBeenCalled()
+      await send({ contextTokens: 645, maxTokens: 100 })
+    })
+
+    it('counts the text it sends, the system text placed inline included', async () => {
+      vi.stubGlobal('fetch', vi.fn())
+      await expect(subject.make({ ...base, contextTokens: 646, maxTokens: 100, systemPrompt: 'inline' }).complete(request)).rejects.toMatchObject({
+        kind: 'too-large',
+        message: 'p: may need 647 tokens, more than contextTokens (646): 35 for its text at one token per byte, 512 for the chat template and 100 for the reply',
+      })
+      await send({ contextTokens: 647, maxTokens: 100, systemPrompt: 'inline' })
+    })
+
+    it('keeps 16000 tokens for the reply when maxTokens is unset', async () => {
+      vi.stubGlobal('fetch', vi.fn())
+      await expect(subject.make({ ...base, contextTokens: 16544 }).complete(request)).rejects.toMatchObject({
+        kind: 'too-large',
+        message: 'p: may need 16545 tokens, more than contextTokens (16544): 33 for its text at one token per byte, 512 for the chat template and 16000 for the reply',
+      })
+      await send({ contextTokens: 16545 })
+    })
+
     it('deep-merges extraBody into the body last: objects merge key by key, anything else replaces', async () => {
       const { body } = await send({ ...subject.mergeProbe.options, extraBody: { ...subject.mergeProbe.extraBody, top_k: 20, list: [2] } })
       expect(body).toMatchObject({ ...subject.mergeProbe.merged, top_k: 20, list: [2] })

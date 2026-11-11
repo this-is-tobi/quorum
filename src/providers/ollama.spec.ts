@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ProviderErrorKind } from '../core/errors.ts'
+import type { ConfigError, ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
 import { sent, stubFetch } from '../testing/http.ts'
 import { ollama } from './ollama.ts'
@@ -35,7 +35,7 @@ describeProviderContract({
   reservedBodyKeys: ['model', 'messages', 'stream', 'truncate', 'shift'],
   toolBodyKeys: ['tools', '_debug_render_only'],
   structuredOutputs: ['prompt', 'json', 'schema'],
-  mergeProbe: { extraBody: { options: { num_ctx: 32768 } }, merged: { options: { temperature: 0, num_ctx: 32768 } } },
+  mergeProbe: { extraBody: { options: { seed: 7 } }, merged: { options: { temperature: 0, seed: 7 } } },
 })
 
 describe('ollama', () => {
@@ -66,6 +66,25 @@ describe('ollama', () => {
     const fetchMock = stubFetch(chatResponse)
     await ollama({ ...options, temperature: null, maxTokens: 900 }).complete(request)
     expect(sent(fetchMock).body).toEqual({ model: 'qwen3.6:27b', messages, stream: false, truncate: false, shift: false, options: { num_predict: 900 }, format: 'json' })
+  })
+
+  it('sends contextTokens as options.num_ctx, so the server loads the context the guard counts with', async () => {
+    const fetchMock = stubFetch(chatResponse)
+    await ollama({ ...options, maxTokens: 900, contextTokens: 131072 }).complete(request)
+    expect(sent(fetchMock).body.options).toEqual({ temperature: 0, num_predict: 900, num_ctx: 131072 })
+  })
+
+  it('refuses an extraBody that sets options.num_ctx, in any letter case: contextTokens sets it', () => {
+    for (const key of ['num_ctx', 'NUM_CTX', 'numCtx']) {
+      let issues: unknown
+      try {
+        ollama({ ...options, extraBody: { options: { [key]: 8192 } } })
+      } catch (error) {
+        issues = (error as ConfigError).issues
+      }
+      expect(issues, key).toEqual([{ path: `local.extraBody.options.${key}`, message: 'is set from contextTokens: set contextTokens instead' }])
+    }
+    expect(() => ollama({ ...options, extraBody: { Options: { Num_Ctx: 8192 } } })).toThrow('local.extraBody.Options.Num_Ctx: is set from contextTokens: set contextTokens instead')
   })
 
   it('sends no options when it would be empty', async () => {

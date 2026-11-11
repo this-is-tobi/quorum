@@ -1,9 +1,12 @@
+import { issuePath } from '../core/errors.ts'
+import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { isRecord, mergeBody, prepareHttp, unlessEmpty } from './options.ts'
+import { bodyKeyForm, isRecord, mergeBody, prepareHttp, unlessEmpty } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { MAX_MODEL_TEXT, replyFailure, tokenUsage } from './reply.ts'
+import { checkFits, contextBudget } from './size.ts'
 
 /** The options of an Ollama provider: the ones every HTTP adapter takes, and no other. */
 export type OllamaOptions = HttpProviderOptions
@@ -20,6 +23,20 @@ const RULES: Omit<AdapterRules, 'auth'> = {
 }
 /** The done reasons of a finished reply: `length` is one cut off by the token limit, or by a context that filled. */
 const DONE: ReadonlySet<unknown> = new Set(['stop', 'length'])
+
+/**
+ * The `num_ctx` keys of an `extraBody` options object, which `contextTokens` sets. The server reads a key in
+ * any letter case, so the options object and `num_ctx` are matched as it reads them.
+ */
+function numCtxIssues(id: string, extraBody: unknown): ConfigIssue[] {
+  if (!isRecord(extraBody)) return []
+  return Object.entries(extraBody).flatMap(([key, value]): ConfigIssue[] => {
+    if (bodyKeyForm(key) !== 'options' || !isRecord(value)) return []
+    return Object.keys(value)
+      .filter(name => bodyKeyForm(name) === 'numctx')
+      .map(name => ({ path: `${id}.${issuePath(['extraBody', key, name])}`, message: 'is set from contextTokens: set contextTokens instead' }))
+  })
+}
 
 function format(mode: StructuredOutput, output: CompletionRequest['output']): unknown {
   if (mode === 'json') return 'json'
@@ -56,19 +73,23 @@ function readReply(reply: unknown, { id, model }: Pick<OllamaOptions, 'id' | 'mo
  * I1); a local server needs none. `truncate: false` makes a prompt past the model's context a 400, instead
  * of its oldest messages dropped in silence, and `shift: false` makes a reply that fills the context
  * stop as a truncation, instead of part of the prompt dropped so the reply can go on (Ollama 0.12.6 or
- * later; an older server ignores both fields).
+ * later; an older server ignores both fields). It sends `contextTokens` as `options.num_ctx`, so the server
+ * loads the context the size guard counts with, and refuses, before any request, a request that may not
+ * fit it.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function ollama(options: OllamaOptions): Provider {
-  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, systemPrompt = 'native', structuredOutput = 'json' } = options
-  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/api/chat')
+  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json' } = options
+  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/api/chat', numCtxIssues(id, options.extraBody))
+  const budget = contextBudget(contextTokens, maxTokens)
 
   return {
     id,
     model,
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
+      checkFits(id, { system, messages }, request.output, budget)
       // JSON.stringify drops the undefined fields: no format for `prompt`, no options when they would be empty.
       const reply = await postJson<unknown>({
         providerId: id,
@@ -80,7 +101,7 @@ export function ollama(options: OllamaOptions): Provider {
           stream: false,
           truncate: false,
           shift: false,
-          options: unlessEmpty({ temperature: temperature ?? undefined, num_predict: maxTokens }),
+          options: unlessEmpty({ temperature: temperature ?? undefined, num_predict: maxTokens, num_ctx: contextTokens }),
           format: format(structuredOutput, request.output),
         }, extraBody),
         signal: request.signal,

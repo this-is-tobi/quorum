@@ -150,6 +150,26 @@ describe('httpOptionIssues', () => {
     expect(issuesOf({ structuredOutput: 'json' }, { structuredOutputs: ['prompt', 'schema'] })).toEqual([{ path: 'p.structuredOutput', message: 'must be prompt or schema' }])
     expect(issuesOf({ structuredOutput: 'json' }, { structuredOutputs: ['prompt'] })).toEqual([{ path: 'p.structuredOutput', message: 'must be prompt' }])
   })
+
+  it.each([[0], [1.5], [-1], [Number.NaN]])('refuses contextTokens %s, which is not a whole number of at least 1', (contextTokens) => {
+    expect(issuesOf({ contextTokens })).toEqual([{ path: 'p.contextTokens', message: 'must be a whole number of at least 1' }])
+  })
+
+  it.each<[Record<string, unknown>, string]>([
+    [{ contextTokens: 16512 }, 'must be more than 16512, the 16000 tokens of the reply budget and 512 for the chat template'],
+    [{ contextTokens: 1000, maxTokens: 488 }, 'must be more than 1000, the 488 tokens of the reply budget and 512 for the chat template'],
+  ])('refuses %j, which leaves no room for a request', (options, message) => {
+    expect(issuesOf(options)).toEqual([{ path: 'p.contextTokens', message }])
+  })
+
+  it('takes a context size one token over the reply budget and the chat template', () => {
+    expect(issuesOf({ contextTokens: 16513 })).toEqual([])
+    expect(issuesOf({ contextTokens: 1001, maxTokens: 488 })).toEqual([])
+  })
+
+  it('checks the room against a valid maxTokens only', () => {
+    expect(issuesOf({ contextTokens: 100, maxTokens: 0 })).toEqual([{ path: 'p.maxTokens', message: 'must be a whole number of at least 1' }])
+  })
 })
 
 describe('prepareHttp', () => {

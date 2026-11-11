@@ -2,6 +2,7 @@ import { ConfigError, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { endpointUrl, redactionsOf } from './http.ts'
 import type { SystemPrompt } from './messages.ts'
+import { DEFAULT_REPLY_TOKENS, TEMPLATE_TOKENS } from './size.ts'
 
 const HTTP_URL_WITH_HOST = /^https?:\/\/[^/\\?#\s]/i
 /** An HTTP header name: one or more token characters. */
@@ -29,6 +30,11 @@ export interface HttpProviderOptions {
   /** An http(s) URL with a host, and no credentials, query or fragment. */
   baseUrl: string
   model: string
+  /**
+   * The model's context window in tokens, prompt and reply together. Every request is checked against it
+   * and refused, before it is sent, when it may not fit. Without it, no request is checked.
+   */
+  contextTokens?: number
   /** Sent as `auth` says, and nowhere else. No key, or an empty one, sends no key header. */
   apiKey?: string
   auth?: Auth
@@ -153,7 +159,7 @@ function headerIssues(id: string, headers: Readonly<Record<string, string>>, key
  * too; and proto JSON (Gemini) takes a field's snake_case name. So `Tools` and `tool_config` are `tools`
  * and `toolConfig` there.
  */
-function bodyKeyForm(key: string): string {
+export function bodyKeyForm(key: string): string {
   return key.toUpperCase().toLowerCase().replaceAll('_', '')
 }
 
@@ -182,11 +188,25 @@ export function wordList(words: readonly string[], conjunction: 'or' | 'and' = '
 }
 
 /**
+ * The problems of `contextTokens`: not a whole number of at least 1, or no more than the reply budget and the
+ * chat template, which leaves no room for a request. The room is checked against a valid `maxTokens` only,
+ * since an invalid one has its own issue.
+ */
+function contextTokensIssues(id: string, contextTokens: number, maxTokens: number | undefined): ConfigIssue[] {
+  const path = `${id}.contextTokens`
+  if (!Number.isSafeInteger(contextTokens) || contextTokens < 1) return [{ path, message: 'must be a whole number of at least 1' }]
+  if (maxTokens !== undefined && (!Number.isSafeInteger(maxTokens) || maxTokens < 1)) return []
+  const reply = maxTokens ?? DEFAULT_REPLY_TOKENS
+  if (contextTokens > reply + TEMPLATE_TOKENS) return []
+  return [{ path, message: `must be more than ${reply + TEMPLATE_TOKENS}, the ${reply} tokens of the reply budget and ${TEMPLATE_TOKENS} for the chat template` }]
+}
+
+/**
  * The problems of the options every HTTP adapter shares, under the rules the adapter declares. No
  * message repeats a value: a key, a header value or a URL can be a secret.
  */
 export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRules): ConfigIssue[] {
-  const { id, baseUrl, apiKey, headers, query, extraBody, temperature, maxTokens, systemPrompt, structuredOutput } = options
+  const { id, baseUrl, apiKey, headers, query, extraBody, temperature, maxTokens, contextTokens, systemPrompt, structuredOutput } = options
   const { auth, structuredOutputs } = rules
   const fixedHeaders = rules.fixedHeaders.map(name => name.toLowerCase())
   const issues = [...baseUrlIssues(`${id}.baseUrl`, baseUrl)]
@@ -212,6 +232,7 @@ export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRul
   if (maxTokens !== undefined && (!Number.isSafeInteger(maxTokens) || maxTokens < 1)) {
     issues.push({ path: `${id}.maxTokens`, message: 'must be a whole number of at least 1' })
   }
+  if (contextTokens !== undefined) issues.push(...contextTokensIssues(id, contextTokens, maxTokens))
   if (systemPrompt !== undefined && !SYSTEM_PROMPTS.has(systemPrompt)) issues.push({ path: `${id}.systemPrompt`, message: 'must be native or inline' })
   if (structuredOutput !== undefined && !structuredOutputs.includes(structuredOutput)) {
     issues.push({ path: `${id}.structuredOutput`, message: `must be ${wordList(structuredOutputs)}` })

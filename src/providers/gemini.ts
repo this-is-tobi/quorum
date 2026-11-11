@@ -6,6 +6,7 @@ import { shapeMessages } from './messages.ts'
 import { isRecord, mergeBody, prepareHttp, unlessEmpty } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { endedEarly, joinedText, replyFailure, tokenUsage } from './reply.ts'
+import { checkFits, contextBudget } from './size.ts'
 
 /** The options of a Gemini provider: the ones every HTTP adapter takes, and no other. */
 export type GeminiOptions = HttpProviderOptions
@@ -88,23 +89,26 @@ function readReply(reply: unknown, { id, model }: Pick<GeminiOptions, 'id' | 'mo
 
 /**
  * A provider for the Gemini API's `generateContent`. The key, when there is one, travels only in the
- * header `auth` names, `x-goog-api-key` by default (invariant I1), never in the `key` query parameter.
+ * header `auth` names, `x-goog-api-key` by default (invariant I1), never in the `key` query parameter. It
+ * refuses, before any request, a request that may not fit `contextTokens`.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function gemini(options: GeminiOptions): Provider {
-  const { id, model, auth = { header: 'x-goog-api-key' } as Auth, query, temperature, maxTokens, systemPrompt = 'native', structuredOutput = 'json' } = options
+  const { id, model, auth = { header: 'x-goog-api-key' } as Auth, query, temperature, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json' } = options
   const modelId = typeof model === 'string' ? model.replace(/^models\//, '') : ''
   const issues = isRecord(query) ? keyParameterIssues(id, query) : []
   if (!MODEL_ID.test(modelId)) issues.push({ path: `${id}.model`, message: 'must be a Gemini model id, such as gemini-3.8-flash' })
   // The path is built before the checks, harmlessly: nothing is sent when they fail.
   const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, `/v1beta/models/${modelId}:generateContent`, issues)
+  const budget = contextBudget(contextTokens, maxTokens)
 
   return {
     id,
     model,
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
+      checkFits(id, { system, messages }, request.output, budget)
       // JSON.stringify drops the undefined fields: no systemInstruction inline, no generationConfig when it is empty.
       const reply = await postJson<unknown>({
         providerId: id,
