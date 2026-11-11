@@ -97,20 +97,20 @@ A voter that fails, because its endpoint is down or its reply is unusable, does 
 
 ### When the research call fails
 
-The `Error:` line says what failed, and names the provider by its config key: `default` for a run with no config file. With that provider:
+The `Error:` line says what failed, and names the provider by its config key: `default` for a run with no config file. With that provider, which is Ollama's native API unless a base URL variable on its own makes it `openai-compatible` ([Layering](./20-configuration.md#layering)):
 
 | Failure | `Error:` line |
 | --- | --- |
 | The endpoint cannot be reached | `default: request to http://localhost:11434 failed (ECONNREFUSED)` |
 | It answers with an HTTP error | `default: HTTP 503: "model is loading"`, quoting up to 500 characters of the body; the hidden characters that JSON leaves raw show as `<U+XXXX>` |
-| The model refuses | `default: model refused: "I cannot help with that."` |
-| The content filter stops the reply | `default: reply was stopped by the content filter` |
-| The token limit cuts the reply off | `default: reply was cut off by the token limit` |
+| The reply carries an `error` | `default: server error: "<message>"` |
+| The reply is cut off by the token limit or the context | `default: reply was cut off by the token limit or the context` |
+| The reply is not finished, or holds no text | `default: reply has not finished`, `default: reply has no text` |
 | The body is not JSON | `default: response body is not JSON` |
 | `claude` fails, exits non-zero or cannot start | `default: claude exited 2: "..."`, `default: claude failed (error_max_structured_output_retries): "..."` or `default: could not start the claude CLI (ENOENT)`, for a `claude-code` provider: [Claude Code replies and errors](./30-providers.md#claude-code-replies-and-errors) |
 | The reply is not one JSON object holding a `findings` array and nothing else | `research reply unusable: reply contains no JSON object (reply starts: "No issues found.")`, with the reason, and the first 200 characters of the reply as a JSON string |
 
-The reasons a reply is unusable are listed under [strict parsing](../30-security/10-threat-model.md#strict-single-object-parsing). A reply that holds `findings` but none quorum could use is not this error: it is a `research-unusable` gap, exit `4`. A research request refused as too large for its model is not this error: it is a `request-too-large` gap, exit `4`.
+On an `openai-compatible` provider a refusal reads `default: model refused: "<reason>"`, the content filter `default: reply was stopped by the content filter` and the token limit `default: reply was cut off by the token limit`: [`openaiCompatible`](./30-providers.md#openaicompatible). The reasons a reply is unusable are listed under [strict parsing](../30-security/10-threat-model.md#strict-single-object-parsing). A reply that holds `findings` but none quorum could use is not this error: it is a `research-unusable` gap, exit `4`. A research request refused as too large for its model is not this error: it is a `request-too-large` gap, exit `4`.
 
 ## Printing the resolved config
 
