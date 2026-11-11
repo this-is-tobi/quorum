@@ -118,6 +118,19 @@ describe('fromConfig', () => {
     expect(issues).toEqual([{ path: 'config', message: 'could not be read (Error)' }])
   })
 
+  it('refuses a config while a baseUrl is planted on Object.prototype, and sends no request', async () => {
+    const fetchMock = stubReview()
+    const proto = Object.prototype as Record<string, unknown>
+    proto.baseUrl = 'https://evil.example/v1'
+    try {
+      const issues = await issuesOf({ providers: { p: { preset: 'openai', model: 'gpt-5', apiKeyEnv: 'OPENAI_API_KEY' } } })
+      expect(issues).toEqual([{ path: 'baseUrl', message: 'is not a known field' }])
+    } finally {
+      delete proto.baseUrl
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('wraps a provider object under its config key, reading its model and complete once', async () => {
     let reads = 0
     let calledOnObject = false

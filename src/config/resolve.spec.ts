@@ -172,6 +172,48 @@ describe('resolveConfig', () => {
     ])
   })
 
+  it('reads a literal apiKey that is empty as unset, as a blank variable is, so the key variable applies', () => {
+    expect(resolve({ providers: { p: { preset: 'ollama', model: 'q', apiKey: '', apiKeyEnv: 'P_KEY' } } }, { P_KEY: 'sk-p' }).providers.p).toMatchObject({ apiKey: 'sk-p' })
+    expect(resolve({ providers: { p: { preset: 'openai', model: 'gpt-5', apiKey: '' } } }, { OPENAI_API_KEY: 'sk-o' }).providers.p).toMatchObject({ apiKey: 'sk-o' })
+    expect(resolve({ providers: { p: { preset: 'ollama', model: 'q', apiKey: '' } } }).providers.p).not.toHaveProperty('apiKey')
+    expect(issuesOf({ providers: { p: { preset: 'ollama', model: 'q', apiKey: '', apiKeyEnv: 'P_KEY' } } })).toEqual([{ path: 'providers.p', message: 'P_KEY is not set' }])
+  })
+
+  it('reports a value that cannot be copied at its field, never as the raw error that prints it', () => {
+    const copy = (auth: unknown): ConfigInput => ({ providers: { p: { protocol: 'openai-compatible', baseUrl: 'https://h.example/v1', model: 'm', auth } } }) as ConfigInput
+    const issues = issuesOf(copy({ header: 'x-key', extra: () => SECRET }))
+    expect(issues).toEqual([{ path: 'providers.p.auth', message: 'cannot be copied' }])
+    expect(JSON.stringify(issues)).not.toContain('zz')
+    expect(issuesOf(copy({ header: 'x-key', extra: { get inner(): never {
+      throw new Error(SECRET)
+    } } }))).toEqual([{ path: 'providers.p.auth', message: 'cannot be copied' }])
+  })
+
+  describe('an issue on a field a variable set', () => {
+    const PRESETS = 'must be one of ollama, ollama-cloud, lmstudio, llamacpp, vllm, openai, azure-openai, openrouter, groq, mistral, deepseek, together, fireworks, xai, anthropic or gemini'
+    const TOOL_MODEL = 'runs tools on the server by itself, which quorum never allows'
+    const URL_FORM = 'must be an http:// or https:// URL with a host'
+
+    it.each([
+      ['research', { QUORUM_RESEARCH_PRESET: 'antropic', QUORUM_RESEARCH_MODEL: 'm' }, 'QUORUM_RESEARCH_PRESET', PRESETS],
+      ['voter', { QUORUM_RESEARCH_MODEL: 'm', QUORUM_VOTER_PRESET: 'antropic', QUORUM_VOTER_MODEL: 'v' }, 'QUORUM_VOTER_PRESET', PRESETS],
+      ['research', { QUORUM_RESEARCH_BASE_URL: 'not a url', QUORUM_RESEARCH_MODEL: 'm' }, 'QUORUM_RESEARCH_BASE_URL', URL_FORM],
+      ['voter', { QUORUM_RESEARCH_MODEL: 'm', QUORUM_VOTER_BASE_URL: 'not a url', QUORUM_VOTER_MODEL: 'v' }, 'QUORUM_VOTER_BASE_URL', URL_FORM],
+      ['research', { GROQ_API_KEY: 'sk-g', QUORUM_RESEARCH_PRESET: 'groq', QUORUM_RESEARCH_MODEL: 'openai/gpt-oss-120b' }, 'QUORUM_RESEARCH_MODEL', TOOL_MODEL],
+      ['voter', { GROQ_API_KEY: 'sk-g', QUORUM_RESEARCH_MODEL: 'm', QUORUM_VOTER_PRESET: 'groq', QUORUM_VOTER_MODEL: 'openai/gpt-oss-120b' }, 'QUORUM_VOTER_MODEL', TOOL_MODEL],
+      ['voter alias', { RESEARCH_MODEL: 'm', VOTER_BASE_URL: 'not a url', VOTER_MODEL: 'v' }, 'QUORUM_VOTER_BASE_URL', URL_FORM],
+    ])('is reported at the variable, for the %s role', (_role, env, path, message) => {
+      expect(issuesOf({}, env)).toEqual([{ path, message }])
+    })
+
+    it('is reported at the variable when the voter has a provider of its own, and at the provider for a field the config set', () => {
+      const providers: Record<string, ProviderSettings> = { a: { preset: 'ollama', model: 'q' }, b: { preset: 'ollama', model: 'q', maxTokens: 0 } }
+      expect(issuesOf({ providers, roles: { research: 'a', voter: 'b' } }, { QUORUM_VOTER_PRESET: 'antropic', QUORUM_VOTER_MODEL: 'v' })).toEqual([{ path: 'QUORUM_VOTER_PRESET', message: PRESETS }])
+      expect(issuesOf({ providers, roles: { research: 'a', voter: 'b' } }, { QUORUM_VOTER_MODEL: 'v' })).toEqual([{ path: 'providers.b.maxTokens', message: 'must be a whole number of at least 1' }])
+      expect(issuesOf({ providers: { a: { preset: 'gpt', model: 'q' } } as never }, { QUORUM_RESEARCH_MODEL: 'm' })).toEqual([{ path: 'providers.a.preset', message: PRESETS }])
+    })
+  })
+
   it('runs the profiles QUORUM_PROFILES names over the config\'s', () => {
     const config = resolve({ providers: { local: { preset: 'ollama', model: 'q' } }, profiles: { team: TEAM } }, { QUORUM_PROFILES: 'security' })
     expect(config.profiles.map(({ profile }) => profile.id)).toEqual(['security'])

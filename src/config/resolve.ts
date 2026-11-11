@@ -6,7 +6,7 @@ import type { ProviderSpec } from '../providers/build.ts'
 import { httpOrigin } from '../providers/http.ts'
 import { presetOf } from '../providers/presets.ts'
 import type { Preset } from '../providers/presets.ts'
-import { applyRoleOverrides, baseUrlOf, envValue, readEnv } from './env.ts'
+import { applyRoleOverrides, atVariables, baseUrlOf, envValue, readEnv } from './env.ts'
 import type { Env, ProviderEntry, RoleBinding } from './env.ts'
 import { own, resolveProfiles } from './profiles.ts'
 import type { ResolvedProfile } from './profiles.ts'
@@ -103,12 +103,12 @@ function readVariable(name: string, variable: string, env: Env): KeyReading {
 }
 
 /**
- * The key of a spec that a profile uses: its own `apiKey`, else the variable `apiKeyEnv` names, else its
- * preset's own variable, which is read only while the base URL is the preset's endpoint (I1) and `presetKey`
+ * The key of a spec that a profile uses: its own `apiKey` (an empty one is unset, as a blank variable is),
+ * else the variable `apiKeyEnv` names, else its preset's own variable, which is read only while the base URL is the preset's endpoint (I1) and `presetKey`
  * allows it: at another endpoint it is not read, and the warning says so.
  */
 function readKey(name: string, fields: ProviderSettings, env: Env, presetKey: boolean): KeyReading {
-  if (fields.apiKey !== undefined) return { apiKey: fields.apiKey, issues: [], warnings: [] }
+  if (fields.apiKey !== undefined && fields.apiKey !== '') return { apiKey: fields.apiKey, issues: [], warnings: [] }
   if (fields.apiKeyEnv !== undefined) return readVariable(name, fields.apiKeyEnv, env)
   const preset = presetOf(fields.preset)
   const variable = preset?.apiKeyEnv
@@ -153,6 +153,20 @@ function checkSpec(name: string, entry: ProviderSettings, inUse: boolean, env: E
   return { spec, issues, warnings: [...key.warnings, ...cleartextWarnings(name, key.apiKey, baseUrlOf(fields))] }
 }
 
+/** A copy of a spec, field by field, so the config's own objects stay out of the resolved config; or an issue at each field that cannot be copied, which never repeats what it holds. */
+function copySpec(name: string, spec: Omit<ProviderSpec, 'id'>): { readonly copy: Omit<ProviderSpec, 'id'> } | { readonly issues: ConfigIssue[] } {
+  const copies: Array<[string, unknown]> = []
+  const issues: ConfigIssue[] = []
+  for (const [field, value] of Object.entries(spec)) {
+    try {
+      copies.push([field, structuredClone(value)])
+    } catch {
+      issues.push({ path: configPath(['providers', name, field]), message: 'cannot be copied' })
+    }
+  }
+  return issues.length > 0 ? { issues } : { copy: Object.fromEntries(copies) as Omit<ProviderSpec, 'id'> }
+}
+
 /** Every provider of the config checked by the builder, and the specs and objects a profile uses. `withheld` names the provider that is never sent its preset's key variable. */
 function checkProviders(providers: Readonly<Record<string, ProviderEntry>>, inUse: ReadonlySet<string>, env: Env, withheld: string | undefined): { providers: Array<[string, ResolvedProvider]>, issues: ConfigIssue[], warnings: string[] } {
   const result: Array<[string, ResolvedProvider]> = []
@@ -167,7 +181,10 @@ function checkProviders(providers: Readonly<Record<string, ProviderEntry>>, inUs
     const checked = checkSpec(name, entry, used, env, name !== withheld)
     issues.push(...checked.issues)
     warnings.push(...checked.warnings)
-    if (used) result.push([name, structuredClone(checked.spec)])
+    if (!used) continue
+    const copied = copySpec(name, checked.spec)
+    if ('issues' in copied) issues.push(...copied.issues)
+    else result.push([name, copied.copy])
   }
   return { providers: result, issues, warnings }
 }
@@ -240,7 +257,7 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
   const checked = checkProviders(applied.providers, inUse, env, elsewhere ? derived : undefined)
 
   const reportedVoter = applied.issues.some(issue => issue.path === VOTER_MODEL) ? derived : undefined
-  const issues = [...applied.issues, ...profiles.issues, ...reportMissingModel(checked.issues, builtIn, reportedVoter)]
+  const issues = [...applied.issues, ...profiles.issues, ...atVariables(reportMissingModel(checked.issues, builtIn, reportedVoter), applied.roles, layer)]
   if (issues.length > 0) throw new ConfigError(issues)
 
   const concurrency = own(input, 'concurrency')
