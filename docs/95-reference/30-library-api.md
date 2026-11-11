@@ -247,7 +247,7 @@ const result = await quorum.review({ diff })
 
 Each layer sits over the one before it: the built-in defaults, then the file `configPath` names (else the one `QUORUM_CONFIG` names), then the environment.
 
-- **The built-in defaults.** A config that defines no provider gets one named `default`: the `openai-compatible` protocol at `http://localhost:11434/v1`, Ollama's address, with no model and no context size, so `QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS`, or a file, must set them. A config with no `profiles` field runs the `security` profile.
+- **The built-in defaults.** A config that defines no provider gets one named `default`, with no model and no context size, so `QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS`, or a file, must set them. The rule: with no provider configured and no base URL, preset or protocol variable for a role, that role talks to the Ollama on this machine through its native API, `http://localhost:11434`, where Ollama listens, on `127.0.0.1`, by default; a role whose variables set a base URL without a preset or a protocol speaks `openai-compatible` to that URL, as before. The native API tells Ollama the context size and makes it refuse an overflow, where its OpenAI-compatible `/v1` cuts an oversized prompt in silence. A config with no `profiles` field runs the `security` profile.
 - **A profile over its base.** A profile named after a built-in profile, or with `extends`, starts from it: its prompts and its policy levels replace the base's one field at a time, and its lenses replace the base's lenses as a whole.
 - **`undefined` is unset, `null` is set.** In a program's config or a code config, a field set to `undefined` leaves the layer below's value in place, as if it were not written; `null` is a value, such as `temperature: null`, which leaves the field out of the request.
 - **No file is searched for.** A file loads only when it is named, by `configPath` first, then `QUORUM_CONFIG`: a `quorum.config.yaml` in the working directory is never read, since in CI that directory is a pull request's checkout, and a pull request could plant one.
@@ -261,7 +261,7 @@ Each layer sits over the one before it: the built-in defaults, then the file `co
 | `QUORUM_PROFILES` | The profiles that run: ids separated by commas, each a profile the config defines or a built-in one, none twice |
 | `QUORUM_RESEARCH_PRESET`, `QUORUM_VOTER_PRESET` | A role's provider, built from a [preset](../20-using/30-providers.md#presets) |
 | `QUORUM_RESEARCH_PROTOCOL`, `QUORUM_VOTER_PROTOCOL` | A role's provider, built from a wire protocol: `openai-compatible`, `anthropic`, `gemini` or `ollama`, or `claude-code` for your installed Claude Code CLI |
-| `QUORUM_RESEARCH_BASE_URL`, `QUORUM_VOTER_BASE_URL` | The base URL of a role's provider |
+| `QUORUM_RESEARCH_BASE_URL`, `QUORUM_VOTER_BASE_URL` | The base URL of a role's provider. Set on its own, with no provider in a config and no preset or protocol variable for the role, it names an `openai-compatible` server |
 | `QUORUM_RESEARCH_MODEL`, `QUORUM_VOTER_MODEL` | The model of a role's provider |
 | `QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS` | The context window of a role's provider's model, in tokens: a whole number from 1 to 999999999. It has no deprecated alias |
 | `QUORUM_RESEARCH_API_KEY`, `QUORUM_VOTER_API_KEY` | The key of a role's provider, as a literal `apiKey` |
@@ -287,6 +287,7 @@ Each layer sits over the one before it: the built-in defaults, then the file `co
 
 The origin is compared as the voter's fallback compares it: the scheme, the host in lower case with no trailing dot, and a port that is not the default.
 
+- **On the built-in `default` provider, a voter base URL on its own is `openai-compatible`.** A derived voter whose variables set a base URL with no preset or protocol speaks `openai-compatible`, on another origin than research's and on the same one too (`QUORUM_VOTER_BASE_URL=http://localhost:11434/v1`), and does not inherit the default's native protocol. One that sets only a model, a context size or a key keeps research's endpoint and protocol. A voter derived from a provider a config defines, or from a research provider whose variables name a preset or a protocol, inherits that provider's protocol, as before.
 - **A `PRESET` or `PROTOCOL` variable builds the role's provider afresh.** `QUORUM_RESEARCH_PRESET=anthropic` is not merged into the `default` provider, whose protocol it would contradict: the research provider is a provider of that preset, from the role's variables alone. `BASE_URL`, `MODEL`, `CONTEXT_TOKENS` and `API_KEY` alone override fields of the provider they reach.
 - **A context size belongs to one model on one endpoint.** A role's preset, protocol, base URL or model variable drops the context size of the provider it sets, unless `QUORUM_<ROLE>_CONTEXT_TOKENS` sets one; a key variable alone keeps it. A derived voter never inherits the research provider's context size for another model or another endpoint.
 - **No variable changes a provider object.** A role bound to an object that implements `Provider` with a variable set for it is an issue at the variable, never an ignored one.
@@ -405,7 +406,7 @@ Deprecated: use `loadConfig` and `fromConfig`. `runQuorum` reviews `diff` as the
 
 ```ts
 import { readFile } from 'node:fs/promises'
-import { ConfigError, createQuorum, inertJson, inertLine, openaiCompatible, securityProfile } from './src/index.ts'
+import { ConfigError, createQuorum, inertJson, inertLine, ollama, openaiCompatible, securityProfile } from './src/index.ts'
 import type { QuorumEvent, QuorumResult } from './src/index.ts'
 
 const USAGE = 'Usage: bun run ./review.ts <diff-file>'
@@ -445,7 +446,7 @@ async function main(path: string | undefined): Promise<number> {
     return 2
   }
   try {
-    const finder = openaiCompatible({ id: 'local', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b', contextTokens: 131072 })
+    const finder = ollama({ id: 'local', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b', contextTokens: 131072 })
     const panel = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-astra', contextTokens: 400000, apiKey: process.env.OPENAI_API_KEY?.trim() || undefined, temperature: null, maxTokensField: 'max_completion_tokens' })
     const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, panel]))
     const quorum = createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research: finder, voters } }, events: progress })

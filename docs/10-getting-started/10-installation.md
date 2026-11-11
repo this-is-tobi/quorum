@@ -7,7 +7,7 @@ There is no npm package yet: a TypeScript program that uses quorum as a library 
 ## Prerequisites
 
 - **[Bun](https://bun.sh/) 1.3.0 or newer.** The `engines` field of [`package.json`](../../package.json) asks for it, and it installs the dependencies, runs the CLI and builds the binary.
-- **A model endpoint**, for the reviews themselves. With no config file and no preset it is an OpenAI-compatible `/chat/completions` endpoint that serves a model: [Ollama](https://ollama.com/) on your machine, a self-hosted vLLM, TGI or llama.cpp server, or a hosted API. `QUORUM_RESEARCH_PRESET` names a vendor's preset instead, such as `ollama` for Ollama's native protocol, which the quick start uses, and a config file can name an Anthropic, Gemini or Ollama endpoint as well: [Configuration](../20-using/20-configuration.md). The check at the end of this page needs none.
+- **A model endpoint**, for the reviews themselves. With no config file and no base URL, preset or protocol variable it is the [Ollama](https://ollama.com/) on your machine, through its native API at `http://localhost:11434`, the address Ollama listens on, on `127.0.0.1`, by default. `QUORUM_RESEARCH_BASE_URL` on its own points quorum at an OpenAI-compatible `/chat/completions` endpoint instead, a self-hosted vLLM, TGI or llama.cpp server or a hosted API, `QUORUM_RESEARCH_PRESET` names a vendor's preset, such as `anthropic` or `vllm`, and a config file can name an Anthropic, Gemini or Ollama endpoint as well: [Configuration](../20-using/20-configuration.md). The check at the end of this page needs none.
 - **[Claude Code](https://code.claude.com/docs), for a `claude-code` provider only.** It is the model's endpoint then: `claude` on your `PATH`, signed in or with a key, run once per request, headless and isolated: [`claudeCode`](../20-using/30-providers.md#claudecode). Quorum requires Claude Code 2.1.311 or newer.
 
 ## From source
@@ -62,7 +62,7 @@ Options:
 An empty diff on stdin, with a research model and its context size named, is reviewed without calling any model, so this works before you have one running. The JSON result goes to stdout, sent to `/dev/null` here:
 
 ```bash
-printf '' | QUORUM_RESEARCH_PRESET=ollama QUORUM_RESEARCH_MODEL=qwen3.6:27b QUORUM_RESEARCH_CONTEXT_TOKENS=32768 quorum > /dev/null
+printf '' | QUORUM_RESEARCH_MODEL=qwen3.6:27b QUORUM_RESEARCH_CONTEXT_TOKENS=32768 quorum > /dev/null
 echo $?
 ```
 
@@ -74,7 +74,7 @@ empty diff: nothing to review
 0
 ```
 
-The first two lines name the model of each role and the origin of the endpoint it would call. `QUORUM_RESEARCH_CONTEXT_TOKENS` is the model's context window in tokens, which quorum checks every request against, and `QUORUM_RESEARCH_PRESET=ollama` is set because on Ollama's OpenAI-compatible `/v1` a Modelfile's `num_ctx` outranks `OLLAMA_CONTEXT_LENGTH` and a thinking model's reasoning can run past the reserve, so Ollama would cut the prompt in silence, while the native protocol this preset speaks sends `num_ctx`, `truncate: false` and `shift: false`, telling the server the context size and refusing an overflow. Without `QUORUM_RESEARCH_MODEL`, the same command prints `Error: no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one` and exits `2`: a research model must be named even for an empty diff. With the model but without `QUORUM_RESEARCH_CONTEXT_TOKENS`, it prints `Error: no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens` and exits `2` too, for the same reason.
+The first two lines name the model of each role and the origin of the endpoint it would call. `QUORUM_RESEARCH_CONTEXT_TOKENS` is the model's context window in tokens, which quorum checks every request against. With no endpoint variable set, the endpoint is the local Ollama's native API, which takes `num_ctx`, `truncate: false` and `shift: false`, so the server is told the context size and refuses an overflow, where Ollama's OpenAI-compatible `/v1` would cut the prompt in silence: [Layering](../20-using/20-configuration.md#layering). Without `QUORUM_RESEARCH_MODEL`, the same command prints `Error: no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one` and exits `2`: a research model must be named even for an empty diff. With the model but without `QUORUM_RESEARCH_CONTEXT_TOKENS`, it prints `Error: no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens` and exits `2` too, for the same reason.
 
 ## Next
 

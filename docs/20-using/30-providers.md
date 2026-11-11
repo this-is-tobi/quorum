@@ -38,10 +38,10 @@ Quorum ships one adapter per wire protocol, and one that runs your installed Cla
 
 | Adapter | For | Endpoint | Default `auth` | Default `temperature` | Default `structuredOutput` |
 | --- | --- | --- | --- | --- | --- |
-| `openaiCompatible` | Any OpenAI-compatible endpoint: Ollama's `/v1`, vLLM, TGI, llama.cpp, LM Studio or a hosted API | `POST {baseUrl}/chat/completions` | `'bearer'` | `0` | `'json'` |
+| `openaiCompatible` | Any OpenAI-compatible endpoint: vLLM, TGI, llama.cpp, LM Studio or a hosted API. Ollama has `ollama`: its `/v1` cannot be told the context size | `POST {baseUrl}/chat/completions` | `'bearer'` | `0` | `'json'` |
 | `anthropic` | The Anthropic Messages API, or a gateway that speaks it | `POST {baseUrl}/v1/messages` | `'bearer'` | Left out | `'prompt'` |
 | `gemini` | The Gemini API's `generateContent` | `POST {baseUrl}/v1beta/models/{model}:generateContent` | `{ header: 'x-goog-api-key' }` | Left out | `'json'` |
-| `ollama` | Ollama's native chat API, on a local server or Ollama's cloud | `POST {baseUrl}/api/chat` | `'bearer'` | `0` | `'json'` |
+| `ollama` | Ollama's native chat API, on a local server or Ollama's cloud: the CLI's built-in default | `POST {baseUrl}/api/chat` | `'bearer'` | `0` | `'json'` |
 | `claudeCode` | Your installed Claude Code CLI, run headless for each request | Spawns `claude -p` | `'inherit'`, of its own three modes: [The auth modes](#the-auth-modes) | Not supported | `'schema'` |
 
 ```ts
@@ -282,7 +282,7 @@ A header name, an `extraBody` key or a `query` name is printed in a path only wh
 
 ## `openaiCompatible`
 
-For any OpenAI-compatible `/chat/completions` endpoint. The hosted provider of [The adapters](#the-adapters) sets `temperature: null` and `maxTokensField: 'max_completion_tokens'`, as the `openai` preset does, because OpenAI's reasoning models reject a `temperature`, and OpenAI deprecates `max_tokens` for every model.
+For any OpenAI-compatible `/chat/completions` endpoint. Ollama's `/v1` is one, and it cuts an oversized prompt in silence, which the size guard cannot see: for Ollama use [`ollama`](#ollama), which tells it the context size. The hosted provider of [The adapters](#the-adapters) sets `temperature: null` and `maxTokensField: 'max_completion_tokens'`, as the `openai` preset does, because OpenAI's reasoning models reject a `temperature`, and OpenAI deprecates `max_tokens` for every model.
 
 | Option | Type | Default | Does |
 | --- | --- | --- | --- |
@@ -373,9 +373,10 @@ A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose
 
 For Ollama's native chat API, on a local server or Ollama's cloud, `https://ollama.com`, which needs a key. Its base URL is the server's root, such as `http://localhost:11434`, without the `/v1` that `openaiCompatible` takes there:
 
+- **It is the CLI's built-in default.** With no provider configured and no base URL, preset or protocol variable for a role, that role talks to the Ollama on this machine through this adapter, at `http://localhost:11434`, which Ollama listens on, on `127.0.0.1`, by default; a role whose variables set a base URL without a preset or a protocol speaks `openai-compatible` to that URL, as before: [Layering](./20-configuration.md#layering).
 - **`truncate: false` keeps a prompt whole.** A prompt past the model's context is then a 400, `request (N tokens) exceeds the available context size (M tokens), try increasing it`, instead of its oldest messages dropped in silence. It needs Ollama 0.12.6 or later; an older server ignores the field and drops them.
 - **`shift: false` keeps it whole as the reply is written.** A reply that fills the model's context then stops, as a truncation, instead of part of the prompt dropped so the reply can go on. It needs the same versions, and a server that loaded the model with context shift on loads it again, as it does each time a client asks for the other setting.
-- **`num_ctx` from `contextTokens`.** The adapter sends `options.num_ctx`, so the server loads the context the size guard counts with; a larger value than the model's own maximum is cut to it, so keep `contextTokens` at most what `ollama show <model>` reports. `extraBody` cannot set `options.num_ctx`, in any letter case, or replace `options` with anything but an object, which would drop it. Its `options` must be written `options`: another spelling, such as `Options`, would send a second key, so it is refused.
+- **`num_ctx` from `contextTokens`.** The adapter sends `options.num_ctx`, so the server loads the context the size guard counts with; a larger value than the model's own maximum is cut to it, so keep `contextTokens` at most what `ollama show <model>` reports, and read the context a running model loaded in the `CONTEXT` column of `ollama ps`. `extraBody` cannot set `options.num_ctx`, in any letter case, or replace `options` with anything but an object, which would drop it. Its `options` must be written `options`: another spelling, such as `Options`, would send a second key, so it is refused.
 - **The key goes as `Authorization: Bearer <key>`**, only when one is set: a local server needs none.
 - **No `think` field.** A thinking model thinks as it does by default, and its thinking comes back apart, in `message.thinking`, which the adapter ignores.
 
@@ -619,7 +620,7 @@ Any object of the port's shape is a provider. It must:
 A provider can wrap another. Quorum sets no time limit on a call, so this one adds a limit to any provider that honours its signal, as the shipped adapters do, and reports a call that ran out of time as a `timeout`. It does not stop a provider that ignores its signal: it waits for that call to settle, however long it takes:
 
 ```ts
-import { openaiCompatible, ProviderError } from './src/index.ts'
+import { ollama, ProviderError } from './src/index.ts'
 import type { Provider } from './src/index.ts'
 
 /** The same provider, with every call stopped after `ms` milliseconds. */
@@ -640,7 +641,7 @@ function withTimeout(inner: Provider, ms: number): Provider {
   }
 }
 
-const voter = withTimeout(openaiCompatible({ id: 'voter', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b', contextTokens: 131072 }), 120_000)
+const voter = withTimeout(ollama({ id: 'voter', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b', contextTokens: 131072 }), 120_000)
 ```
 
 A vote that runs out of time is then a failed vote, `voter: no reply within 120000 ms`, and a review aborted by its own signal still rejects with that signal's reason.

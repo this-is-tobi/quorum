@@ -202,6 +202,11 @@ export function setsContextSize(overrides: RoleOverrides): boolean {
   return isSet(overrides, 'contextTokens')
 }
 
+/** Whether the variables of a role set a base URL and no preset or protocol: a server whose kind they do not name, which is OpenAI-compatible. */
+export function setsOnlyBaseUrl(overrides: RoleOverrides): boolean {
+  return isSet(overrides, 'baseUrl') && !isSet(overrides, 'preset') && !isSet(overrides, 'protocol')
+}
+
 /** Whether a provider's context size stays when these variables are set on it: unless they name a model or an endpoint and set no context size of their own. */
 function keepsContext(overrides: RoleOverrides): boolean {
   return !namesModelOrEndpoint(overrides) || setsContextSize(overrides)
@@ -234,9 +239,12 @@ function objectIssues(role: Role, variables: readonly Variable[], providerName: 
   return variables.map(({ suffix }) => ({ path: canonicalName(role, suffix), message: `cannot change ${configPath(['providers', providerName])}, an object implementing Provider` }))
 }
 
-/** The provider the voter variables derive from the research provider `base`: all of it on the same endpoint, and nothing that is a secret, a model or the context size of that model elsewhere (ADR-0013). Its context size crosses only while the variables name no model or endpoint. */
-function derivedVoter(base: ProviderSettings, overrides: RoleOverrides, variables: readonly Variable[]): { provider: ProviderSettings, issues: ConfigIssue[] } {
-  const fields = fieldsOf(overrides, variables)
+/**
+ * The provider the voter variables derive from the research provider `base`: all of it on the same endpoint, and nothing that is a secret, a model or the context size of that model elsewhere (ADR-0013). Its context size crosses only while the variables name no model or endpoint.
+ * `unnamedProtocol` is true when nobody named `base`'s protocol, the built-in default's: a base URL alone then names a server of no kind, which speaks OpenAI-compatible, never the default's own protocol.
+ */
+function derivedVoter(base: ProviderSettings, overrides: RoleOverrides, variables: readonly Variable[], unnamedProtocol: boolean): { provider: ProviderSettings, issues: ConfigIssue[] } {
+  const fields: Partial<ProviderSettings> = { ...fieldsOf(overrides, variables), ...unnamedProtocol && setsOnlyBaseUrl(overrides) ? { protocol: 'openai-compatible' as const } : {} }
   const origin = httpOrigin(baseUrlOf(base))
   const sameEndpoint = origin !== undefined && origin === httpOrigin(own(fields, 'baseUrl') ?? baseUrlOf(base))
   const { apiKeyEnv: _apiKeyEnv, apiKey: _apiKey, headers: _headers, query: _query, extraBody: _extraBody, model: _model, contextTokens: _contextTokens, ...endpoint } = base
@@ -261,12 +269,16 @@ function unboundRoles(providers: Readonly<Record<string, ProviderEntry>>, roles:
  * context size of the provider they are set on, the derived voter's included, unless they set one; a key
  * variable alone leaves it. A provider object cannot be changed: each variable aimed at one
  * is an issue. Nothing it is given changes; nested objects are shared. A role bound to a name that is not an
- * own key of `providers` is an issue at that role, and nothing is applied.
+ * own key of `providers` is an issue at that role, and nothing is applied. `builtIn` is true when `providers`
+ * is the built-in default alone: while the research variables name no preset or protocol, a voter derived from
+ * it whose variables set a base URL alone speaks OpenAI-compatible to it, as that variable always meant, and
+ * does not inherit the default's own protocol. A provider of a config keeps what it names.
  */
 export function applyRoleOverrides(
   providers: Readonly<Record<string, ProviderEntry>>,
   roles: RoleBinding,
   layer: Pick<EnvLayer, 'research' | 'voter'>,
+  builtIn = false,
 ): { providers: Record<string, ProviderEntry>, roles: RoleBinding, issues: ConfigIssue[] } {
   const unbound = unboundRoles(providers, roles)
   if (unbound.length > 0) return { providers: { ...providers }, roles, issues: unbound }
@@ -292,7 +304,8 @@ export function applyRoleOverrides(
     } else if (isProvider(base)) {
       issues.push(...objectIssues('VOTER', voterVariables, roles.research))
     } else {
-      const derived = derivedVoter(base, layer.voter, voterVariables)
+      const unnamedProtocol = builtIn && !isSet(layer.research, 'preset') && !isSet(layer.research, 'protocol')
+      const derived = derivedVoter(base, layer.voter, voterVariables, unnamedProtocol)
       issues.push(...derived.issues)
       result = { ...result, voter: derived.provider }
       voterRole = 'voter'

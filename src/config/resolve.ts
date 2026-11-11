@@ -9,8 +9,8 @@ import { presetOf, withoutPrototype } from '../providers/presets.ts'
 import type { Preset } from '../providers/presets.ts'
 import { billingWarnings, claudeCodeCommand } from './claude-code.ts'
 import type { CommandLookup } from './claude-code.ts'
-import { applyRoleOverrides, atVariables, baseUrlOf, envValue, namesModelOrEndpoint, PROFILE_ID, readEnv, setsContextSize, VARIABLE_NAME } from './env.ts'
-import type { Env, EnvLayer, ProviderEntry, RoleBinding } from './env.ts'
+import { applyRoleOverrides, atVariables, baseUrlOf, envValue, namesModelOrEndpoint, PROFILE_ID, readEnv, setsContextSize, setsOnlyBaseUrl, VARIABLE_NAME } from './env.ts'
+import type { Env, EnvLayer, ProviderEntry, RoleBinding, RoleOverrides } from './env.ts'
 import { own, resolveProfiles } from './profiles.ts'
 import type { ProfileSelection, ResolvedProfile } from './profiles.ts'
 import { configPath, isProvider, unknownName } from './schema.ts'
@@ -33,8 +33,14 @@ export interface ResolvedConfig {
 }
 
 const DEFAULT_NAME = 'default'
-/** The provider of a config that defines none: Ollama's OpenAI-compatible endpoint on this machine. The adapter's own defaults fill the rest. */
-const DEFAULT_PROVIDER: ProviderSettings = { protocol: 'openai-compatible', baseUrl: 'http://localhost:11434/v1' }
+/**
+ * The provider of a config that defines none: the Ollama on this machine, through its native API, which tells
+ * Ollama the context size and makes it refuse an overflow (`/v1` cuts an oversized prompt in silence). The
+ * adapter's own defaults fill the rest.
+ */
+const DEFAULT_PROVIDER: ProviderSettings = { protocol: 'ollama', baseUrl: 'http://localhost:11434' }
+/** What the research variables make of the default when they set a base URL alone: a server of no named kind, which speaks OpenAI-compatible, as before. The variable gives the URL. */
+const BASE_URL_PROVIDER: ProviderSettings = { protocol: 'openai-compatible' }
 const NO_MODEL = 'no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one'
 const NO_CONTEXT = 'no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens'
 const VOTER_KEY = 'QUORUM_VOTER_API_KEY'
@@ -263,6 +269,11 @@ function reportMissingContext(issues: readonly ConfigIssue[], { builtIn, roles, 
   })
 }
 
+/** The provider of a config that defines none, chosen from the research variables before they are applied. */
+function builtInProvider(research: RoleOverrides): ProviderSettings {
+  return setsOnlyBaseUrl(research) ? BASE_URL_PROVIDER : DEFAULT_PROVIDER
+}
+
 /** The origin of a provider's settings, as endpoints are compared; none for a provider object. */
 function originOf(entry: ProviderEntry | undefined): string | undefined {
   return entry === undefined || isProvider(entry) ? undefined : httpOrigin(baseUrlOf(ownFields(entry)))
@@ -308,7 +319,7 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
   const layer = readEnv(env)
   const defined = Object.entries(own(input, 'providers') ?? {})
   const builtIn = defined.length === 0
-  const entries: Array<[string, ProviderEntry]> = builtIn ? [[DEFAULT_NAME, DEFAULT_PROVIDER]] : defined
+  const entries: Array<[string, ProviderEntry]> = builtIn ? [[DEFAULT_NAME, builtInProvider(layer.research)]] : defined
 
   const bound = bindRoles(own(input, 'roles'), entries.map(([name]) => name))
   const refused = selection === undefined ? [] : selectionIssues(selection)
@@ -317,7 +328,7 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
   // The environment layer's profiles are read as own fields, so a polluted `Object.prototype` selects none
   // through `QUORUM_PROFILES`; `options.selection` is read directly, as the caller gave it.
   const ids = own(layer, 'profiles')
-  const applied = applyRoleOverrides(Object.fromEntries(entries), bound.roles, layer)
+  const applied = applyRoleOverrides(Object.fromEntries(entries), bound.roles, layer, builtIn)
   const profiles = resolveProfiles({
     profiles: own(input, 'profiles'),
     selection: selection ?? (ids === undefined ? undefined : { ids, path: 'QUORUM_PROFILES' }),

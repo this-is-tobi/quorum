@@ -1,6 +1,7 @@
 /** Test helpers for code that calls `fetch`. A body is read once, so build a fresh reply for every call. */
 
 import { vi } from 'vitest'
+import { chatResponse } from './fixtures/ollama.ts'
 
 /** A reply holding `body` as JSON, as a server sends it. */
 export function jsonReply(body: unknown, status = 200): Response {
@@ -19,6 +20,11 @@ export function chatReply(content: string): Response {
   return jsonReply({ choices: [{ message: { content } }] })
 }
 
+/** An Ollama native chat completion (`/api/chat`) holding `content`. */
+export function ollamaReply(content: string): Response {
+  return jsonReply({ ...chatResponse, message: { role: 'assistant', content } })
+}
+
 /**
  * A stub put in place of the global `fetch`, answering call `i` with `chatReply(contents[i])`. A call past
  * `contents` gets what the caller chains: `.mockRejectedValue(...)` or `.mockImplementation(...)`.
@@ -26,6 +32,14 @@ export function chatReply(content: string): Response {
 export function stubChat(...contents: string[]): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn()
   for (const content of contents) fetchMock.mockImplementationOnce(async () => chatReply(content))
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
+/** `stubChat` for Ollama's native API: call `i` is answered with `ollamaReply(contents[i])`. */
+export function stubOllamaChat(...contents: string[]): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn()
+  for (const content of contents) fetchMock.mockImplementationOnce(async () => ollamaReply(content))
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
 }

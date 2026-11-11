@@ -109,10 +109,10 @@ The default policy meets the first with one or two lenses: the `naming` profile 
 ## Several profiles in one review
 
 ```ts
-import { createQuorum, openaiCompatible, securityProfile } from './src/index.ts'
+import { createQuorum, ollama, securityProfile } from './src/index.ts'
 import { naming } from './naming.ts'
 
-const local = openaiCompatible({ id: 'local', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b', contextTokens: 131072 })
+const local = ollama({ id: 'local', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b', contextTokens: 131072 })
 const quorum = createQuorum({ profiles: [securityProfile, naming] }, {
   profiles: {
     security: { research: local, voters: { reachability: local, impact: local, defenses: local } },
