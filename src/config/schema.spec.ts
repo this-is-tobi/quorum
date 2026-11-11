@@ -24,6 +24,7 @@ const at = (path: string, message: string): ConfigIssue => ({ path: `q.yaml: ${p
 const RULES = 'must be unanimous, majority, any, off, false, { minVotes } or { minRatio }'
 const PRESETS = 'must be one of ollama, ollama-cloud, lmstudio, llamacpp, vllm, openai, azure-openai, openrouter, groq, mistral, deepseek, together, fireworks, xai, anthropic or gemini'
 const NAME = 'must match ^[a-z][a-z0-9_-]*$'
+const AUTHS = 'must be bearer, x-api-key, none, inherit, login, api-key or { header, prefix }'
 
 /** Every field of the file variant, each with a valid value. */
 const FULL: QuorumConfigFile = {
@@ -48,6 +49,7 @@ const FULL: QuorumConfigFile = {
       systemPrompt: 'inline',
     },
     'x-api': { preset: 'anthropic', auth: 'x-api-key', temperature: 0.2 },
+    claude: { protocol: 'claude-code', model: 'sonnet', contextTokens: 1000000, apiKeyEnv: 'CLAUDE_KEY', auth: 'api-key', structuredOutput: 'prompt', args: ['--effort', 'high'] },
   },
   roles: { research: 'local', voter: 'hosted_2' },
   concurrency: 4,
@@ -110,11 +112,11 @@ describe('configFileSchema', () => {
     ['profiles', { profiles: 'security' }, [at('profiles', 'must be an object')]],
     ['a profile', { profiles: { team: [] } }, [at('profiles.team', 'must be an object')]],
     ['preset', provider({ preset: 1 }), [at('providers.p.preset', PRESETS)]],
-    ['protocol', provider({ protocol: 'openai' }), [at('providers.p.protocol', 'must be one of openai-compatible, anthropic, gemini or ollama')]],
+    ['protocol', provider({ protocol: 'openai' }), [at('providers.p.protocol', 'must be one of openai-compatible, anthropic, gemini, ollama or claude-code')]],
     ['baseUrl', provider({ baseUrl: 8080 }), [at('providers.p.baseUrl', 'must be a string')]],
     ['model', provider({ model: null }), [at('providers.p.model', 'must be a string')]],
     ['apiKeyEnv', provider({ apiKeyEnv: ['KEY'] }), [at('providers.p.apiKeyEnv', 'must be a string')]],
-    ['auth', provider({ auth: 'basic' }), [at('providers.p.auth', 'must be bearer, x-api-key, none or { header, prefix }')]],
+    ['auth', provider({ auth: 'basic' }), [at('providers.p.auth', AUTHS)]],
     ['auth.header', provider({ auth: { header: 1 } }), [at('providers.p.auth.header', 'must be a string')]],
     ['auth.prefix', provider({ auth: { header: 'h', prefix: false } }), [at('providers.p.auth.prefix', 'must be a string')]],
     ['headers', provider({ headers: 'x-team: review' }), [at('providers.p.headers', 'must be an object')]],
@@ -241,7 +243,7 @@ describe('configFileSchema', () => {
     expect(issuesOf(profile({ policy: { high: { minVotes: 'two' } } }))).toEqual([at('profiles.team.policy.high.minVotes', 'must be a number')])
     expect(issuesOf(profile({ policy: { high: { minVotes: 2, of: 3 } } }))).toEqual([at('profiles.team.policy.high.of', 'is not a known field')])
     expect(issuesOf(profile({ policy: { high: { minVotes: 2, minRatio: 3 } } }))).toEqual([at('profiles.team.policy.high', RULES)])
-    expect(issuesOf(provider({ auth: ['bearer'] }))).toEqual([at('providers.p.auth', 'must be bearer, x-api-key, none or { header, prefix }')])
+    expect(issuesOf(provider({ auth: ['bearer'] }))).toEqual([at('providers.p.auth', AUTHS)])
   })
 
   it.each<[string, unknown, ConfigIssue]>([
@@ -271,6 +273,30 @@ describe('configFileSchema', () => {
     expect(issuesOf({ providers: { p: fakeProvider } })).toEqual([at('providers.p.id', 'is not a known field'), at('providers.p.complete', 'is not a known field')])
   })
 
+  it('takes a claude-code provider: its protocol, an auth mode and its args', () => {
+    const cc = { protocol: 'claude-code', model: 'sonnet', contextTokens: 1000000, auth: 'login', structuredOutput: 'prompt', args: ['--effort', 'high'] }
+    expect(parseConfig(configFileSchema, { providers: { cc } })).toEqual({ providers: { cc } })
+    expect(issuesOf(provider({ protocol: 'claude-code', auth: 'inherit' }))).toEqual([])
+    expect(issuesOf(provider({ protocol: 'claude-code', auth: 'api-key', apiKeyEnv: 'MY_KEY' }))).toEqual([])
+  })
+
+  it('refuses a command in a YAML or JSON config, and takes one in a code config', () => {
+    expect(issuesOf(provider({ protocol: 'claude-code', command: '/bin/sh' }))).toEqual([at('providers.p.command', 'is not a known field')])
+    expect(issuesOf(provider({ protocol: 'claude-code', command: '/opt/claude/bin/claude' }), configCodeSchema)).toEqual([])
+  })
+
+  it.each<[string, unknown, ConfigIssue[]]>([
+    ['a string', '--effort high', [at('providers.p.args', 'must be an array')]],
+    ['a list that holds a number', ['--effort', 1], [at('providers.p.args.1', 'must be a string')]],
+  ])('refuses args that are %s', (_, args, issues) => {
+    expect(issuesOf(provider({ protocol: 'claude-code', args }))).toEqual(issues)
+  })
+
+  it('leaves the pairing of a protocol with its auth and its args to the builder, since a later layer can set the protocol', () => {
+    expect(issuesOf(provider({ protocol: 'claude-code', auth: 'bearer' }))).toEqual([])
+    expect(issuesOf(provider({ protocol: 'ollama', auth: 'login', args: ['--effort', 'high'] }))).toEqual([])
+  })
+
   it('repeats no value in a message', () => {
     const secret = 'sk-planted-secret'
     const values = [
@@ -278,6 +304,8 @@ describe('configFileSchema', () => {
       { $schema: [secret] },
       provider({ preset: secret, protocol: secret, model: [secret], apiKeyEnv: secret, auth: secret, temperature: secret, maxTokens: secret }),
       provider({ auth: { header: [secret] }, headers: { h: [secret] }, query: secret }),
+      provider({ args: secret }),
+      provider({ args: [[secret]] }),
       profile({ extends: secret, gating: secret, prompts: { research: [secret] }, lenses: [{ id: secret, question: [secret] }], policy: { high: secret, medium: { minVotes: secret } } }),
       { roles: { research: secret }, concurrency: secret, maxFindings: secret },
     ]
@@ -434,6 +462,12 @@ describe('configJsonSchema', () => {
   it('describes every field, for an editor to show, and offers no key field', () => {
     expect(undescribed(configJsonSchema(), '#')).toEqual([])
     expect(Object.keys(node('properties', 'providers', 'additionalProperties', 'properties') as object)).not.toContain('apiKey')
+  })
+
+  it('names args in the JSON Schema, and never command', () => {
+    const fields = Object.keys(node('properties', 'providers', 'additionalProperties', 'properties') as object)
+    expect(fields).toContain('args')
+    expect(fields).not.toContain('command')
   })
 
   it('advertises the bounds of contextTokens, 1 to 999999999, as the variable takes them', () => {

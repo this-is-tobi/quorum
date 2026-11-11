@@ -44,13 +44,14 @@
             ]
           },
           "protocol": {
-            "description": "The wire protocol; required without a preset, and the preset's own when both are set",
+            "description": "The wire protocol, or claude-code for the installed Claude Code CLI; required without a preset, and the preset's own when both are set",
             "type": "string",
             "enum": [
               "openai-compatible",
               "anthropic",
               "gemini",
-              "ollama"
+              "ollama",
+              "claude-code"
             ]
           },
           "baseUrl": {
@@ -73,14 +74,17 @@
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
           "auth": {
-            "description": "How the key is sent: bearer, x-api-key, none, or in a header of its own after an optional prefix",
+            "description": "How the key is sent: bearer, x-api-key, none, or in a header of its own after an optional prefix; on claude-code, inherit, login or api-key: whose credentials the CLI uses",
             "anyOf": [
               {
                 "type": "string",
                 "enum": [
                   "bearer",
                   "x-api-key",
-                  "none"
+                  "none",
+                  "inherit",
+                  "login",
+                  "api-key"
                 ]
               },
               {
@@ -169,6 +173,13 @@
               "native",
               "inline"
             ]
+          },
+          "args": {
+            "description": "On claude-code, extra claude flags, each with its value: --effort, --fallback-model, --max-budget-usd, or --betas with auth api-key",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false

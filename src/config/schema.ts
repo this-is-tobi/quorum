@@ -3,10 +3,11 @@ import { ConfigError, isSafeSegment, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
 import { securityProfile } from '../profiles/security.ts'
+import type { ProviderProtocol } from '../providers/build.ts'
 import { wordList } from '../providers/options.ts'
 import type { StructuredOutput } from '../providers/options.ts'
 import { presets, withoutPrototype } from '../providers/presets.ts'
-import type { PresetName, Protocol } from '../providers/presets.ts'
+import type { PresetName } from '../providers/presets.ts'
 
 /** A provider name, a profile id or a lens id: the pattern of every id the core takes. */
 const NAME = /^[a-z][a-z0-9_-]*$/
@@ -15,7 +16,7 @@ const NAME = /^[a-z][a-z0-9_-]*$/
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 /** Every protocol, as a record, so the type checker reports a protocol this list misses. */
-const PROTOCOLS: Readonly<Record<Protocol, true>> = { 'openai-compatible': true, anthropic: true, gemini: true, ollama: true }
+const PROTOCOLS: Readonly<Record<ProviderProtocol, true>> = { 'openai-compatible': true, anthropic: true, gemini: true, ollama: true, 'claude-code': true }
 const STRUCTURED_OUTPUTS: Readonly<Record<StructuredOutput, true>> = { prompt: true, json: true, schema: true }
 
 const VERSION = 'must be 1, the only config version this quorum reads: upgrade quorum to read a later one'
@@ -28,22 +29,22 @@ const roles = z.strictObject({
 })
 
 const auth = z.union([
-  z.enum(['bearer', 'x-api-key', 'none']),
+  z.enum(['bearer', 'x-api-key', 'none', 'inherit', 'login', 'api-key']),
   z.strictObject({
     header: z.string().describe('The header that carries the key'),
     prefix: z.string().optional().describe('The text sent before the key in that header'),
   }),
-], { error: 'must be bearer, x-api-key, none or { header, prefix }' })
+], { error: 'must be bearer, x-api-key, none, inherit, login, api-key or { header, prefix }' })
 
 const providerShape = {
   preset: z.enum(Object.keys(presets) as [PresetName, ...PresetName[]]).optional().describe('A preset: the defaults of a vendor\'s documented endpoint, which the fields set here override'),
-  protocol: z.enum(Object.keys(PROTOCOLS) as [Protocol, ...Protocol[]]).optional().describe('The wire protocol; required without a preset, and the preset\'s own when both are set'),
+  protocol: z.enum(Object.keys(PROTOCOLS) as [ProviderProtocol, ...ProviderProtocol[]]).optional().describe('The wire protocol, or claude-code for the installed Claude Code CLI; required without a preset, and the preset\'s own when both are set'),
   baseUrl: z.string().optional().describe('The http(s) URL of the endpoint, with no credentials, query or fragment; required without a preset, or with one that has none'),
   model: z.string().optional().describe('The model id sent with every request'),
   // The most QUORUM_<ROLE>_CONTEXT_TOKENS takes (src/config/env.ts): a window a server could never have.
   contextTokens: z.int().min(1).max(999_999_999).optional().describe('The context window of the model in tokens, prompt and reply together: quorum sends no request that may not fit it. Set here or in QUORUM_<ROLE>_CONTEXT_TOKENS'),
   apiKeyEnv: z.string().regex(ENV_NAME).optional().describe('The environment variable that holds the key; a preset names its vendor\'s own, which is read only while the base URL keeps the preset\'s origin'),
-  auth: auth.optional().describe('How the key is sent: bearer, x-api-key, none, or in a header of its own after an optional prefix'),
+  auth: auth.optional().describe('How the key is sent: bearer, x-api-key, none, or in a header of its own after an optional prefix; on claude-code, inherit, login or api-key: whose credentials the CLI uses'),
   headers: z.record(z.string(), z.string()).optional().describe('Extra request headers; their values are redacted from error messages, as the key is'),
   query: z.record(z.string(), z.string()).optional().describe('Query parameters added to every request URL; they are not redacted, so never put a key here'),
   extraBody: z.record(z.string(), z.json()).optional().describe('JSON values deep-merged into the request body last'),
@@ -52,6 +53,7 @@ const providerShape = {
   maxTokens: z.int().min(1).optional().describe('The most tokens the reply may hold'),
   maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']).optional().describe('The body field that carries maxTokens, on the openai-compatible protocol'),
   systemPrompt: z.enum(['native', 'inline']).optional().describe('Where the instructions go: the protocol\'s system field, or inline in the first message'),
+  args: z.array(z.string()).optional().describe('On claude-code, extra claude flags, each with its value: --effort, --fallback-model, --max-budget-usd, or --betas with auth api-key'),
 }
 
 const prompt = z.union([
@@ -152,7 +154,11 @@ export const configFileSchema = configSchema(z.strictObject(providerShape), prom
 /** What a code config may hold as a provider: settings that may hold their key, or an object implementing `Provider`. */
 const codeProvider = z.union([
   providerObject,
-  z.strictObject({ ...providerShape, apiKey: z.string().optional().describe('The key itself, which only a code config may hold') }),
+  z.strictObject({
+    ...providerShape,
+    apiKey: z.string().optional().describe('The key itself, which only a code config may hold'),
+    command: z.string().optional().describe('On claude-code, the claude executable: an absolute path, or a name found on PATH; only a code config may name it'),
+  }),
 ], { error: 'must be the settings of a provider, or an object whose complete is a function' })
 
 /** A TS or JS config: the file variant, where a provider may also hold its key, or be an object implementing `Provider`. */
