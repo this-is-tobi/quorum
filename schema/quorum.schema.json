@@ -62,7 +62,7 @@
             "type": "string"
           },
           "apiKeyEnv": {
-            "description": "The environment variable that holds the key; a preset names its vendor's own",
+            "description": "The environment variable that holds the key; a preset names its vendor's own, which is read only while the base URL keeps the preset's origin",
             "type": "string",
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
@@ -169,7 +169,7 @@
       }
     },
     "roles": {
-      "description": "The providers every profile uses, unless it names its own",
+      "description": "The providers every profile uses, unless it names its own. research is required once several providers are defined; voter is research when unset",
       "type": "object",
       "properties": {
         "research": {
@@ -198,7 +198,7 @@
       "maximum": 9007199254740991
     },
     "profiles": {
-      "description": "The review profiles, by id: a built-in profile, one that extends it, or one of your own",
+      "description": "The review profiles that run, by id: a built-in profile, one that extends it, or one of your own; the security profile alone when unset",
       "type": "object",
       "propertyNames": {
         "type": "string",

@@ -34,7 +34,7 @@ interface LensEntry {
 }
 
 /** A field a record holds itself: a prototype, a polluted one included, fills none. */
-function own<T extends object, K extends keyof T>(record: T | undefined, key: K): T[K] | undefined {
+export function own<T extends object, K extends keyof T>(record: T | undefined, key: K): T[K] | undefined {
   return record !== undefined && Object.hasOwn(record, key) ? record[key] : undefined
 }
 
