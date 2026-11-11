@@ -67,7 +67,7 @@ providers:
 ## llama.cpp
 
 ```bash
-llama-server -m ./Qwen3-32B-Q4_K_M.gguf -c 65536 -np 2
+llama-server -m ./Qwen3-32B-Q4_K_M.gguf --alias qwen3-32b -c 65536 -np 2
 ```
 
 ```yaml
@@ -79,7 +79,7 @@ providers:
     contextTokens: 32768
 ```
 
-The `llamacpp` preset points at `http://127.0.0.1:9931/v1`, where `llama-server` listens. A build older than b11800 listens on 8080 instead: set `baseUrl: http://127.0.0.1:8080/v1` beside the preset. `model` is the id that `GET /v1/models` lists for the loaded file.
+The `llamacpp` preset points at `http://127.0.0.1:9931/v1`, where `llama-server` listens. A build older than b11800 listens on 8080 instead: set `baseUrl: http://127.0.0.1:8080/v1` beside the preset. `model` is the id that `GET /v1/models` lists for the loaded file: the first `--alias`, else the model's own name, else the file name.
 
 - **Always set `-c`**, also written `--ctx-size`. Its default, 0, is the model's trained context, which `--fit` may lower to as little as 4096, and a request past that is refused by the server. An explicit `-c` is never lowered.
 - **Set `-np` too, and make `-c` a multiple of it.** Left at auto, `-np` gives 4 slots sharing one cache, where one request may use all of `-c` and requests running together share it. With an explicit `-np N`, and no `--kv-unified`, each slot gets `-c / N`, so `-c` is the number of slots times the number you state: `-c 65536 -np 2` gives each request 32768. State the per-slot value, which is `default_generation_settings.n_ctx` in `/props`, and `/slots` shows it too. A slot never gets more than the model's trained context either, whatever `-c / N` gives.
@@ -89,7 +89,7 @@ The `llamacpp` preset points at `http://127.0.0.1:9931/v1`, where `llama-server`
 ## Choosing a model
 
 - **One that follows a JSON Schema.** All three servers constrain a reply by constrained decoding: Ollama through `format`, vLLM and llama-server through `response_format`. The `ollama`, `vllm` and `llamacpp` presets ask for a JSON object, `structuredOutput: json`, with the schema in the system message, and `structuredOutput: schema` has the server enforce the schema itself: [Structured output](../20-using/30-providers.md#structured-output). A reply quorum cannot read is never read as clean. An unreadable finding is a `finding-unreadable` gap and an unusable vote is a failed vote, either of which can make a gating profile exit `4`, and a research reply that is no usable object at all ends the run with exit `3`.
-- **A window that holds your diffs.** The guard counts one token per byte and keeps 16000 tokens for the reply, so a window takes far less diff than its size suggests: 14,757 bytes at 32768 tokens, 113,061 at 131072. [What it counts, and what it costs](../20-using/20-configuration.md#what-it-counts-and-what-it-costs) has the table, and [Raising the limit knowingly](../20-using/20-configuration.md#raising-the-limit-knowingly) the ways to take more.
+- **A window that holds your diffs.** The guard counts one token per byte and keeps 16000 tokens for the reply, so a window takes far less diff than its size suggests: 14,757 bytes at 32768 tokens, 113,061 at 131072, for ASCII text and a profile with no guidelines. [What it counts, and what it costs](../20-using/20-configuration.md#what-it-counts-and-what-it-costs) has the table, and [Raising the limit knowingly](../20-using/20-configuration.md#raising-the-limit-knowingly) the ways to take more.
 - **A voter from another family than the finder's.** Mixed model families helped in older studies, but one study put nine judges from seven families at about 2.2 effective votes, so blind voting is not independence, and a provider per lens is variance reduction, not a security measure ([Independence](../30-security/10-threat-model.md#independence)). On one Ollama, a panel of another model needs its model and its window:
 
 ```bash
@@ -159,7 +159,7 @@ providers:
     maxTokens: 24000
 ```
 
-Each token of `maxTokens` takes a byte of diff off what the window holds: the largest diff is `contextTokens` less 2,011 less the reply budget, so this leaves 6,757 bytes of the 14,757 that 32768 tokens hold with the default. A thinking model on this window reviews small diffs, and a larger one needs a model configured for a larger window.
+Each token of `maxTokens` takes a byte of diff off what the window holds: the largest diff is `contextTokens` less 2,011 less the reply budget, so this leaves 6,757 bytes of the 14,757 that 32768 tokens hold with the default, for ASCII text and a profile with no guidelines, as the configuration page's table counts them. A thinking model on this window reviews small diffs, and a larger one needs a model configured for a larger window.
 
 ## Next
 
