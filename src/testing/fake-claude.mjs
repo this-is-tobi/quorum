@@ -12,7 +12,8 @@
  *   records its pid, as a `claude` that starts a helper would; `detached` starts it in a process group of
  *   its own, out of reach of a signal sent to the fake's group
  * - `FAKE_CLAUDE_VERSION`: what `--version` prints, `2.1.311 (Claude Code)` by default
- * - `FAKE_CLAUDE_VERSION_DELAY_MS`: the milliseconds `--version` waits before it prints
+ * - `FAKE_CLAUDE_VERSION_DELAY_MS`: the milliseconds `--version` waits before it prints; a delay longer than
+ *   the spec waits makes it a `--version` that never answers, until it is stopped
  *
  * Run as `claude --version` it prints the version and exits at once, whatever else is set, and records the run
  * as a line of `<FAKE_CLAUDE_RECORD>.version` (see `VersionRecord` in claude.ts), so a request's record is
@@ -38,7 +39,7 @@ const record = process.env.FAKE_CLAUDE_RECORD
 
 if (argv[0] === '--version') {
   if (record !== undefined) {
-    const contents = { argv, env: process.env, cwd: process.cwd(), cwdEntries: readdirSync(process.cwd()) }
+    const contents = { argv, env: process.env, cwd: process.cwd(), cwdEntries: readdirSync(process.cwd()), pid: process.pid }
     appendFileSync(`${record}.version`, `${JSON.stringify(contents)}\n`)
   }
   setTimeout(() => process.stdout.write(`${process.env.FAKE_CLAUDE_VERSION ?? DEFAULT_VERSION}\n`), Number(process.env.FAKE_CLAUDE_VERSION_DELAY_MS ?? 0))
