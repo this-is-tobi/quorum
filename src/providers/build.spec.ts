@@ -28,18 +28,26 @@ type Body = Record<string, unknown>
 /** A recorded success of each protocol, so every adapter reads its reply. */
 const REPLIES: Record<Protocol, unknown> = { 'openai-compatible': chatCompletion, anthropic: message, gemini: generateContentResponse, ollama: chatResponse }
 
+/**
+ * `spec` with a context size that no test here is about, which a spec of its own wins over. The spec's fields are
+ * copied as they are, a getter as a getter, so a test that counts the builder's reads still counts them.
+ */
+function sized<T extends object>(spec: T): T {
+  return Object.hasOwn(spec, 'contextTokens') ? spec : Object.defineProperties({ contextTokens: 131072 }, Object.getOwnPropertyDescriptors(spec)) as T
+}
+
 /** Build a provider from `spec`, send one request through it, and return what reached fetch. */
 async function send(spec: ProviderSpec): Promise<ReturnType<typeof sent>> {
   const protocol = (spec.protocol ?? presets[spec.preset as PresetName].protocol) as Protocol
   const fetchMock = stubFetch(REPLIES[protocol])
-  await buildProvider(spec).complete(request)
+  await buildProvider(sized(spec)).complete(request)
   return sent(fetchMock)
 }
 
 /** The issues of the ConfigError that building `spec` throws, or none. */
 function issuesOf(spec: Record<string, unknown>): readonly ConfigIssue[] {
   try {
-    buildProvider(spec as unknown as ProviderSpec)
+    buildProvider(sized(spec) as unknown as ProviderSpec)
   } catch (error) {
     expect(error).toBeInstanceOf(ConfigError)
     return (error as ConfigError).issues
@@ -58,7 +66,7 @@ function chat(model: string, temperature: number | undefined, field: string, mod
   return { model, messages: conversation, response_format: RESPONSE_FORMATS[mode], temperature, [field]: 900 }
 }
 function ollamaChat(model: string): Body {
-  return { model, messages: conversation, stream: false, truncate: false, shift: false, options: { temperature: 0, num_predict: 900 }, format: 'json' }
+  return { model, messages: conversation, stream: false, truncate: false, shift: false, options: { temperature: 0, num_predict: 900, num_ctx: 131072 }, format: 'json' }
 }
 const bearer = { authorization: 'Bearer sk-k' }
 const AZURE = 'https://res.openai.azure.com/openai/v1'
@@ -359,7 +367,7 @@ describe('buildProvider', () => {
         throw new RangeError('unreadable headers')
       },
     })
-    expect(() => buildProvider({ id: 'p', preset: 'openai', model: 'gpt-5', headers })).toThrow(RangeError)
+    expect(() => buildProvider({ id: 'p', preset: 'openai', model: 'gpt-5', contextTokens: 131072, headers })).toThrow(RangeError)
   })
 
   it('repeats no value in a message, the key least of all', () => {
@@ -373,7 +381,7 @@ describe('buildProvider', () => {
     for (const spec of specs) {
       let thrown: unknown
       try {
-        buildProvider({ id: 'p', apiKey: key, ...spec } as ProviderSpec)
+        buildProvider({ id: 'p', apiKey: key, contextTokens: 131072, ...spec } as ProviderSpec)
       } catch (error) {
         thrown = error
       }

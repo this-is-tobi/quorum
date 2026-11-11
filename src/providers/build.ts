@@ -12,11 +12,13 @@ import { presetOf, presets, withoutPrototype } from './presets.ts'
 import type { Preset, Protocol } from './presets.ts'
 
 /** A provider described as data: a preset, or a protocol, and the options of that protocol's adapter. */
-export interface ProviderSpec extends Omit<OpenAICompatibleOptions, 'baseUrl'> {
+export interface ProviderSpec extends Omit<OpenAICompatibleOptions, 'baseUrl' | 'contextTokens'> {
   preset?: string
   protocol?: string
   /** Required when the preset has no default, or without a preset. */
   baseUrl?: string
+  /** The adapter requires it: a spec without one is built to the adapter's issue, not refused here. */
+  contextTokens?: number
 }
 
 /** Each protocol's adapter. Only `openaiCompatible` is handed `maxTokensField`. */

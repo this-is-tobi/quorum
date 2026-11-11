@@ -1,6 +1,6 @@
 # Configuration
 
-The CLI reads its settings from three sources, each laid over the one before: the built-in defaults, a config file the CLI is named, and the environment. The flags come last: `--config` names the file and `--profile` chooses which profiles run. With no file named and `QUORUM_RESEARCH_MODEL` set, the defaults and that one variable are enough: the CLI reviews against Ollama on this machine, as it always did. This page covers the config file, how to name it, how the layers combine, the `QUORUM_*` variables, the voter's fallback, the context size, the keys, the trust a named config needs in CI, and the errors a bad setting causes.
+The CLI reads its settings from three sources, each laid over the one before: the built-in defaults, a config file the CLI is named, and the environment. The flags come last: `--config` names the file and `--profile` chooses which profiles run. With no file named, `QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` set, the defaults and those two variables are enough: the CLI reviews against Ollama on this machine. This page covers the config file, how to name it, how the layers combine, the `QUORUM_*` variables, the voter's fallback, the context size, the keys, the trust a named config needs in CI, and the errors a bad setting causes.
 
 A program that uses quorum as a library builds its providers itself, as [Providers](./30-providers.md) shows, or has `loadConfig` and `fromConfig` read the same settings: [`loadConfig` and `fromConfig`](../95-reference/30-library-api.md#loadconfig-and-fromconfig).
 
@@ -104,7 +104,7 @@ Nothing is ever searched for. A `quorum.config.yaml`, a `quorum.yaml` or a `quor
 
 Each layer sits over the one before it:
 
-1. **The built-in defaults.** A config that defines no provider gets one named `default`: the OpenAI-compatible protocol at `http://localhost:11434/v1`, Ollama's address, with the adapter's own defaults ([`openaiCompatible`](./30-providers.md#openaicompatible)) and no model. Without a file, then, `QUORUM_RESEARCH_MODEL` is the one setting the CLI requires, and `no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one` is the error without it. A config that defines providers has no `default` one, and a provider of its own with no model is `providers.<name>.model: is required`.
+1. **The built-in defaults.** A config that defines no provider gets one named `default`: the OpenAI-compatible protocol at `http://localhost:11434/v1`, Ollama's address, with the adapter's own defaults ([`openaiCompatible`](./30-providers.md#openaicompatible)) and no model. Without a file, then, `QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` are the two settings the CLI requires, and `no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one` and `no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens` are the errors without them, the model's first. A config that defines providers has no `default` one, and a provider of its own with no model is `providers.<name>.model: is required`, with no context size `providers.<name>.contextTokens: is required: ...` ([The context size](#the-context-size)).
 2. **The file**, when one is named: its providers, roles and profiles.
 3. **The environment.** The `QUORUM_*` variables of a role set fields of the provider that role is bound to: [The environment variables](#the-environment-variables). A variable never changes a provider object that a TS or JS config defines: it is an error.
 4. **The flags.** `--config` names the file, and `--profile` chooses the profiles.
@@ -139,10 +139,14 @@ A local finder, and a panel on a hosted API:
 
 ```bash
 export QUORUM_RESEARCH_MODEL=qwen3.6:27b
+export QUORUM_RESEARCH_CONTEXT_TOKENS=131072
 export QUORUM_VOTER_BASE_URL=https://api.mistral.ai/v1
 export QUORUM_VOTER_MODEL=mistral-small-latest
+export QUORUM_VOTER_CONTEXT_TOKENS=131072
 export QUORUM_VOTER_API_KEY="$MISTRAL_API_KEY"
 ```
+
+The panel names another endpoint and another model, so it states a context size of its own: the finder's would describe a model that is not the panel's.
 
 ## The voter's fallback
 
@@ -166,6 +170,8 @@ A panel on another endpoint must name its model. The finder's model name usually
 ## The context size
 
 `contextTokens` is the model's whole context window in tokens, prompt and reply together: the number a vendor calls its context window or context length. Quorum checks every request against it before sending, and refuses one that may not fit, so that a prompt a server would cut in silence is never reviewed as if the model had read it. A refused request is a `request-too-large` gap, which exits `4` for a gating profile whatever the flags: [Exit codes](./10-cli.md#exit-codes). [The size of a request](./30-providers.md#the-size-of-a-request) says how a request is counted.
+
+Every provider that speaks HTTP must state one, whether a profile that runs uses it or not, since every provider is checked: a provider without one is refused before any request, with exit `2` and a message that names what to set ([Configuration errors](#configuration-errors)). Even a hosted API that refuses an oversized prompt itself is held to it, since on a vote that refusal would be a failed vote, which `--allow-incomplete` lifts, and only a refusal quorum makes itself is kept out of the flag's reach. A provider object, which a TS or JS config defines, states none: it is its author's code and checks its own requests ([Writing a provider](./30-providers.md#writing-a-provider)). The built-in `default` provider has none either, so `QUORUM_RESEARCH_CONTEXT_TOKENS` is required with it. A panel that shares the finder's provider, context size included, is reported by the finder's issue alone, whether the size is missing, malformed or leaves no room: the user wrote one value, and reads one line, at the place they set it.
 
 A provider's context size comes from, in this order:
 
@@ -224,6 +230,9 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `--profile: names a profile more than once` | `-p security -p security` |
 | `--profile: unknown profile "nmaing" (did you mean "naming"?)`, or `unknown profile "nope": the profiles are security` | An id that the config neither defines nor builds in. `QUORUM_PROFILES` has the same two problems under its own name, and `QUORUM_PROFILES: must list profile ids separated by commas, each matching ^[a-z][a-z0-9_-]*$` for an empty id or an id of another form |
 | `no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one` | No file defines a provider, and no research model is set: the built-in provider has none. A blank diff meets it too |
+| `no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens` | No file defines a provider, and no research context size is set: the built-in provider has none. A blank diff meets it too. A missing model is reported first, and alone |
+| `providers.local.contextTokens: is required: the model's context window in tokens, which quorum checks every request against` | A provider of the file with no `contextTokens`, used by a profile or not: every provider is checked |
+| `QUORUM_RESEARCH_CONTEXT_TOKENS: must be set when the research variables name a model or an endpoint: a context size belongs to one model on one endpoint` | The research variables name a preset, a protocol, a base URL or a model, which drops the file's context size for the provider they set: state one for it. `QUORUM_VOTER_CONTEXT_TOKENS: must be set when the voter variables name a model or an endpoint: a context size belongs to one model on one endpoint` is the same for the voter variables |
 | `QUORUM_RESEARCH_BASE_URL: must be an http:// or https:// URL with a host` | The base URL is not an `http://` or `https://` URL with a host; a missing scheme is the usual slip |
 | `QUORUM_RESEARCH_BASE_URL: must not hold a user name or password: send a key with apiKey` | The base URL holds a user name or a password. Send a key with `QUORUM_RESEARCH_API_KEY` or `apiKeyEnv` instead |
 | `QUORUM_RESEARCH_BASE_URL: must not hold a query or a fragment` | The base URL holds a `?` or a `#`; quorum appends the endpoint's path to it |

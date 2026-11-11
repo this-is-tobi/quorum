@@ -582,44 +582,44 @@ describe('loadConfig', () => {
   const NO_MODEL = 'no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one'
 
   it('reads the file configPath names, then layers the environment over it', async () => {
-    const name = file('q.yaml', 'providers:\n  local: {preset: ollama, model: q}\n')
-    const loaded = await loadConfig({ cwd: dir, env: { QUORUM_RESEARCH_MODEL: 'other' }, configPath: name })
+    const name = file('q.yaml', 'providers:\n  local: {preset: ollama, model: q, contextTokens: 131072}\n')
+    const loaded = await loadConfig({ cwd: dir, env: { QUORUM_RESEARCH_MODEL: 'other', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }, configPath: name })
     expect(loaded.config.providers.local).toMatchObject({ preset: 'ollama', model: 'other' })
     expect(loaded.source).toBe(join(dir, name))
     expect(loaded.warnings).toEqual([])
   })
 
   it('reads the file QUORUM_CONFIG names when no path is given, and a path given wins', async () => {
-    const named = join(dir, file('env.yaml', 'providers:\n  fromenv: {preset: ollama, model: q}\n'))
-    file('flag.yaml', 'providers:\n  fromflag: {preset: ollama, model: q}\n')
+    const named = join(dir, file('env.yaml', 'providers:\n  fromenv: {preset: ollama, model: q, contextTokens: 131072}\n'))
+    file('flag.yaml', 'providers:\n  fromflag: {preset: ollama, model: q, contextTokens: 131072}\n')
     expect(Object.keys((await loadConfig({ cwd: dir, env: { QUORUM_CONFIG: ` ${named} ` } })).config.providers)).toEqual(['fromenv'])
     expect(Object.keys((await loadConfig({ cwd: dir, env: { QUORUM_CONFIG: named }, configPath: 'flag.yaml' })).config.providers)).toEqual(['fromflag'])
   })
 
   it.each(['env.yaml', './env.yaml', '../env.yaml', '~/env.yaml'])('refuses a QUORUM_CONFIG that is not an absolute path (%s), a path given or not, and reads nothing', async (relative) => {
-    file('env.yaml', 'providers:\n  fromenv: {preset: ollama, model: q}\n')
-    file('flag.yaml', 'providers:\n  fromflag: {preset: ollama, model: q}\n')
+    file('env.yaml', 'providers:\n  fromenv: {preset: ollama, model: q, contextTokens: 131072}\n')
+    file('flag.yaml', 'providers:\n  fromflag: {preset: ollama, model: q, contextTokens: 131072}\n')
     const issue = [{ path: 'QUORUM_CONFIG', message: 'must be an absolute path' }]
     await expect(loadConfig({ cwd: dir, env: { QUORUM_CONFIG: relative } })).rejects.toMatchObject({ issues: issue })
     await expect(loadConfig({ cwd: dir, env: { QUORUM_CONFIG: ` ${relative} ` }, configPath: 'flag.yaml' })).rejects.toMatchObject({ issues: issue })
   })
 
   it('takes a blank QUORUM_CONFIG as unset, and a relative configPath as named per call', async () => {
-    file('flag.yaml', 'providers:\n  fromflag: {preset: ollama, model: q}\n')
+    file('flag.yaml', 'providers:\n  fromflag: {preset: ollama, model: q, contextTokens: 131072}\n')
     await expect(loadConfig({ cwd: dir, env: { QUORUM_CONFIG: '  ' } })).rejects.toThrow(NO_MODEL)
     expect(Object.keys((await loadConfig({ cwd: dir, env: { QUORUM_CONFIG: '' }, configPath: 'flag.yaml' })).config.providers)).toEqual(['fromflag'])
   })
 
   it('reads no file that is not named, whatever the working directory holds (ADR-0014)', async () => {
-    file('quorum.config.yaml', 'providers:\n  planted: {preset: ollama, model: q}\n')
+    file('quorum.config.yaml', 'providers:\n  planted: {preset: ollama, model: q, contextTokens: 131072}\n')
     await expect(loadConfig({ cwd: dir, env: {} })).rejects.toThrow(NO_MODEL)
-    const loaded = await loadConfig({ cwd: dir, env: { QUORUM_RESEARCH_MODEL: 'q' } })
+    const loaded = await loadConfig({ cwd: dir, env: { QUORUM_RESEARCH_MODEL: 'q', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' } })
     expect(loaded.source).toBeUndefined()
     expect(Object.keys(loaded.config.providers)).toEqual(['default'])
   })
 
   it('hands a selection to the resolution, over QUORUM_PROFILES', async () => {
-    const loaded = await loadConfig({ env: { QUORUM_RESEARCH_MODEL: 'm', QUORUM_PROFILES: 'nope' }, selection: { ids: ['security'], path: '--profile' } })
+    const loaded = await loadConfig({ env: { QUORUM_RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_PROFILES: 'nope' }, selection: { ids: ['security'], path: '--profile' } })
     expect(loaded.config.profiles.map(({ profile }) => profile.id)).toEqual(['security'])
   })
 
@@ -630,7 +630,7 @@ describe('loadConfig', () => {
   })
 
   it('returns the config\'s warnings', async () => {
-    const loaded = await loadConfig({ cwd: dir, env: { RESEARCH_MODEL: 'q' } })
+    const loaded = await loadConfig({ cwd: dir, env: { RESEARCH_MODEL: 'q', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' } })
     expect(loaded.warnings).toEqual(['RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead'])
     expect(loaded.warnings).toBe(loaded.config.warnings)
   })
@@ -685,7 +685,7 @@ describe('loadConfig', () => {
 
   it('puts the text of a prompt file in the profile that names it', async () => {
     file('prompts/r.md', 'Find style issues.')
-    const name = file('q.yaml', 'providers:\n  local: {preset: ollama, model: q}\nprofiles:\n  team:\n    prompts: {research: {file: ./prompts/r.md}, vote: "Judge {{lens.id}}: {{lens.question}}"}\n    lenses: [{id: one, question: "Real?"}]\n')
+    const name = file('q.yaml', 'providers:\n  local: {preset: ollama, model: q, contextTokens: 131072}\nprofiles:\n  team:\n    prompts: {research: {file: ./prompts/r.md}, vote: "Judge {{lens.id}}: {{lens.question}}"}\n    lenses: [{id: one, question: "Real?"}]\n')
     expect((await loadConfig({ cwd: dir, env: {}, configPath: name })).config.profiles[0].profile.prompts.research).toBe('Find style issues.')
   })
 })

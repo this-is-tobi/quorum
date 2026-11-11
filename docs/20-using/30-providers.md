@@ -46,10 +46,10 @@ Quorum ships one adapter per wire protocol:
 ```ts
 import { anthropic, gemini, ollama, openaiCompatible } from './src/index.ts'
 
-const local = ollama({ id: 'local', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b' })
-const claude = anthropic({ id: 'claude', baseUrl: 'https://api.anthropic.com', model: 'claude-opus-5-5', apiKey: process.env.ANTHROPIC_API_KEY, structuredOutput: 'schema' })
-const flash = gemini({ id: 'flash', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.8-flash', apiKey: process.env.GEMINI_API_KEY })
-const hosted = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-astra', apiKey: process.env.OPENAI_API_KEY, temperature: null, maxTokensField: 'max_completion_tokens' })
+const local = ollama({ id: 'local', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b', contextTokens: 131072 })
+const claude = anthropic({ id: 'claude', baseUrl: 'https://api.anthropic.com', model: 'claude-opus-5-5', contextTokens: 200000, apiKey: process.env.ANTHROPIC_API_KEY, structuredOutput: 'schema' })
+const flash = gemini({ id: 'flash', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.8-flash', contextTokens: 1000000, apiKey: process.env.GEMINI_API_KEY })
+const hosted = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-astra', contextTokens: 400000, apiKey: process.env.OPENAI_API_KEY, temperature: null, maxTokensField: 'max_completion_tokens' })
 ```
 
 Every adapter sends one JSON `POST` per call through the same hardened path, [The limits of a request](#the-limits-of-a-request), passes the request's signal to `fetch`, and reports in `usage` every prompt token the request carried, cached ones included, and every token the model generated, thinking included, from the counts its protocol sends: never a cost. The counts a protocol keeps apart, such as Anthropic's cache tokens or Gemini's thought tokens, are added in when they are numbers; a reply without both main counts as numbers reports no `usage`.
@@ -125,7 +125,7 @@ A provider built from a preset or a protocol is checked first for the problems b
 | `id` | `string` | Required | Names the provider in events, `meta` and its error messages |
 | `baseUrl` | `string` | Required | An `http://` or `https://` URL with a host, and no user name, password, query or fragment. Requests go to it, its trailing slashes removed, followed by the adapter's path and the `query` |
 | `model` | `string` | Required | The model every request names: in the body, or in the URL for `gemini` |
-| `contextTokens` | `number` | None: requests are not checked | The model's context window in tokens, prompt and reply together. A request that may not fit it is refused before it is sent: [The size of a request](#the-size-of-a-request) |
+| `contextTokens` | `number` | Required | The model's context window in tokens, prompt and reply together. A request that may not fit it is refused before it is sent: [The size of a request](#the-size-of-a-request) |
 | `apiKey` | `string` | None | Sent as `auth` says, and nowhere else. Without it, or with an empty one, no key header is sent |
 | `auth` | `'bearer' \| 'x-api-key' \| 'none' \| { header, prefix? }` | The adapter's | How the key is sent: [The key header](#the-key-header) |
 | `headers` | `Record<string, string>` | None | Sent with every request, names lower-cased. They cannot replace `content-type`, `content-length`, `host`, the key header, or `anthropic`'s `anthropic-version`. Their values are redacted from error messages, as the key is |
@@ -194,7 +194,7 @@ Every request goes through one hardened path:
 
 ### The size of a request
 
-Some endpoints cut a prompt that is too long for the model in silence and still answer 200, and a review of text the model never read is worse than none. So an adapter given `contextTokens` checks every request, research and vote alike, after shaping it and before sending it, and refuses one that may not fit:
+Some endpoints cut a prompt that is too long for the model in silence and still answer 200, and a review of text the model never read is worse than none. So every adapter requires `contextTokens`, and checks every request, research and vote alike, after shaping it and before sending it, and refuses one that may not fit:
 
 - **The text** is the system text and every message as the adapter sends them (`systemPrompt: 'inline'` counts the blank line that joins them), at one token per UTF-8 byte, each text at the largest of its raw, NFC and NFKC lengths, and the reply schema's JSON once more, since a server may add it to the prompt.
 - **The chat template** takes 512 tokens, for what a server adds around the messages.
@@ -203,6 +203,8 @@ Some endpoints cut a prompt that is too long for the model in silence and still 
 A request is sent only when `text + 512 + reply <= contextTokens`. One token per byte bounds byte-level BPE and byte-fallback SentencePiece tokenizers. Counting the NFC and NFKC forms covers a tokenizer that normalizes with either first: Qwen 2.5's NFC normalizer turns 300 bytes of U+0F81 into 500 tokens, which is why both are counted. A tokenizer that decomposes (NFD, NFKD) or folds case is not covered, and no chat model's tokenizer is known to do either. It costs room: code runs about three bytes to a token, so the guard accepts about a third of the diff that would really fit.
 
 A request over the bound is not sent. The call fails with a `ProviderError` of kind `too-large`, which is not retryable, and its message holds the provider id and numbers only, never the text or the URL: `<id>: may need <n> tokens, more than contextTokens (<c>): <t> for its text at one token per byte, 512 for the chat template and <r> for the reply`. The review records it as a gap: [`ProviderError`](#providererror).
+
+A provider with no `contextTokens` is refused when the adapter is called, before any request, whether or not a profile uses it: `<id>.contextTokens: is required: the model's context window in tokens, which quorum checks every request against`. No adapter is exempt, the hosted APIs that refuse an oversized prompt themselves included: on a vote that refusal is a failed vote, which `--allow-incomplete` lifts, and only a refusal quorum makes itself is kept out of the flag's reach. The CLI's resolution names where to set one instead: [Configuration](./20-configuration.md#the-context-size).
 
 A `contextTokens` that leaves no room for a request, at most the reply budget and the 512 tokens, would refuse every request, so it is a configuration error when the adapter is called: `<id>.contextTokens: must be more than 16512, the 16000 tokens of the reply budget and 512 for the chat template`, the reply budget being `maxTokens` when it is set.
 
@@ -250,6 +252,7 @@ Each adapter checks its options when it is called, before any request, and throw
 | `<id>.extraBody.<key>` | `sets the reply limit: use maxTokens` |
 | `<id>.temperature` | `must be a finite number, or null to leave it out` |
 | `<id>.maxTokens` | `must be a whole number of at least 1` |
+| `<id>.contextTokens` | `is required: the model's context window in tokens, which quorum checks every request against` |
 | `<id>.contextTokens` | `must be a whole number of at least 1` |
 | `<id>.contextTokens` | `must be more than <n>, the <r> tokens of the reply budget and 512 for the chat template` |
 | `<id>.systemPrompt` | `must be native or inline` |
@@ -264,7 +267,7 @@ Each adapter checks its options when it is called, before any request, and throw
 
 `headers` and `query` must be plain objects, an object literal or one with no prototype: a `Headers` or a `Map` is refused with `must map names to strings`, since its entries are not its own fields. A header name that repeats an earlier one in another letter case is refused at the later one, since one request cannot send both.
 
-`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, `model`, a `key` query parameter and an `extraBody.generationConfig` that is no object, in any letter case or as `generation_config`, by `gemini` only, and `options.num_ctx` in `extraBody`, with an `extraBody.options` that is no object, by `ollama` only. `sets the reply limit: use maxTokens` names a field by its path, `<id>.extraBody.generationConfig.maxOutputTokens` for one that is nested. `must be more than <n>, ...` is checked against a valid `maxTokens` only, with `<r>` its value, else 16000, and `<n>` that and 512.
+`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, `model`, a `key` query parameter and an `extraBody.generationConfig` that is no object, in any letter case or as `generation_config`, by `gemini` only, and `options.num_ctx` in `extraBody`, with an `extraBody.options` that is no object, by `ollama` only. `sets the reply limit: use maxTokens` names a field by its path, `<id>.extraBody.generationConfig.maxOutputTokens` for one that is nested. `is required: ...` is the one issue of a `contextTokens` that is unset, and the two after it are the issues of one that is set. `must be more than <n>, ...` is checked against a valid `maxTokens` only, with `<r>` its value, else 16000, and `<n>` that and 512.
 
 A header name, an `extraBody` key or a `query` name is printed in a path only when it is a safe name, at most 64 ASCII letters, digits, `_`, `$` and `-`. Any other prints as `*`, since a secret pasted as a name would otherwise show.
 
@@ -371,7 +374,7 @@ The body of every request holds, in this order:
 
 - `model` and `messages`: the request's messages, with the system text first as a `system` message, or inline at the head of the first user message;
 - `stream: false`, `truncate: false` and `shift: false`;
-- `options`, left out when it would be empty: `temperature`, unless it is `null`, `num_predict`, when `maxTokens` is set, and `num_ctx`, when `contextTokens` is set;
+- `options`: `temperature`, unless it is `null`, `num_predict`, when `maxTokens` is set, and `num_ctx`, always, from `contextTokens`;
 - `format`: `'json'` in `json` mode, `<output.schema>` in `schema` mode;
 - then `extraBody`, merged: `{ options: { seed: 7 } }` goes beside the temperature. It cannot replace `model`, `messages`, `stream`, `truncate` or `shift`, or set `options.num_ctx`, which `contextTokens` sets, or `options.num_predict`, which `maxTokens` sets. Its `options` must be an object.
 
@@ -417,7 +420,8 @@ Any object of the port's shape is a provider. It must:
 - **return the model's raw text** in `text`, without parsing it: the core extracts and validates the JSON itself, and a reply it cannot use is a failed vote, or, for research, a failed review;
 - **honour `request.signal`**, settling soon after it aborts: stopping a call in flight is cooperative, so a review that was aborted can wait for a provider that ignores its signal;
 - **throw when the call fails**, a `ProviderError` with the closest `kind` for preference. A vote records the message of any `Error`, and the text of anything else thrown;
-- **report `usage` only when it knows it**: `inputTokens` and `outputTokens`, and `costUsd` when it knows the price.
+- **report `usage` only when it knows it**: `inputTokens` and `outputTokens`, and `costUsd` when it knows the price;
+- **check the size of its own requests**: quorum states no context size for a provider object and counts nothing for it. A provider that refuses a request as too large throws a `ProviderError` of kind `too-large`, which the review records as a `request-too-large` gap, on research and on a vote alike, instead of a failure: [`ProviderError`](#providererror).
 
 A provider can wrap another. Quorum sets no time limit on a call, so this one adds a limit to any provider that honours its signal, as the shipped adapters do, and reports a call that ran out of time as a `timeout`. It does not stop a provider that ignores its signal: it waits for that call to settle, however long it takes:
 
@@ -443,7 +447,7 @@ function withTimeout(inner: Provider, ms: number): Provider {
   }
 }
 
-const voter = withTimeout(openaiCompatible({ id: 'voter', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b' }), 120_000)
+const voter = withTimeout(openaiCompatible({ id: 'voter', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b', contextTokens: 131072 }), 120_000)
 ```
 
 A vote that runs out of time is then a failed vote, `voter: no reply within 120000 ms`, and a review aborted by its own signal still rejects with that signal's reason.

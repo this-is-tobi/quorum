@@ -29,7 +29,7 @@ describe('baseUrlIssues', () => {
 })
 
 describe('httpOptionIssues', () => {
-  const base = { id: 'p', baseUrl: 'https://h/v1', model: 'm' }
+  const base = { id: 'p', baseUrl: 'https://h/v1', model: 'm', contextTokens: 131072 }
   const rules: AdapterRules = { auth: 'bearer', reservedBodyKeys: ['model', 'messages', 'stream'], toolBodyKeys: ['tools', 'toolConfig'], replyLimitPaths: [['max_tokens'], ['generationConfig', 'maxOutputTokens']], fixedHeaders: ['x-version'], structuredOutputs: ['prompt', 'json', 'schema'] }
   /** The issues of `options` over the base ones, under `rules` and `options.auth` when it names one, as given. */
   const issuesOf = (options: Record<string, unknown>, overrides: Partial<AdapterRules> = {}): ConfigIssue[] =>
@@ -164,6 +164,10 @@ describe('httpOptionIssues', () => {
     expect(issuesOf({ structuredOutput: 'json' }, { structuredOutputs: ['prompt'] })).toEqual([{ path: 'p.structuredOutput', message: 'must be prompt' }])
   })
 
+  it('refuses options without contextTokens', () => {
+    expect(issuesOf({ contextTokens: undefined })).toEqual([{ path: 'p.contextTokens', message: 'is required: the model\'s context window in tokens, which quorum checks every request against' }])
+  })
+
   it.each([[0], [1.5], [-1], [Number.NaN]])('refuses contextTokens %s, which is not a whole number of at least 1', (contextTokens) => {
     expect(issuesOf({ contextTokens })).toEqual([{ path: 'p.contextTokens', message: 'must be a whole number of at least 1' }])
   })
@@ -190,7 +194,7 @@ describe('prepareHttp', () => {
 
   it('returns the URL, the headers and the redactions the helpers build, and a copy of extraBody', () => {
     const extraBody = { top_k: 20, nested: { a: 1 } }
-    const options = { id: 'p', baseUrl: 'https://h.example/gw/v1/', model: 'm', apiKey: 'sk-k', headers: { 'X-Team': ' security ' }, query: { 'api-version': '1' }, extraBody }
+    const options = { id: 'p', baseUrl: 'https://h.example/gw/v1/', model: 'm', contextTokens: 131072, apiKey: 'sk-k', headers: { 'X-Team': ' security ' }, query: { 'api-version': '1' }, extraBody }
     const prepared = prepareHttp(options, rules, '/chat/completions')
     expect(prepared).toEqual({
       url: 'https://h.example/gw/v1/chat/completions?api-version=1',
@@ -201,19 +205,19 @@ describe('prepareHttp', () => {
     extraBody.top_k = 99
     extraBody.nested.a = 2
     expect(prepared.extraBody).toEqual({ top_k: 20, nested: { a: 1 } })
-    expect(prepareHttp({ id: 'p', baseUrl: 'https://h.example', model: 'm' }, rules, '/x')).toEqual({ url: 'https://h.example/x', headers: {}, redact: [], extraBody: undefined })
+    expect(prepareHttp({ id: 'p', baseUrl: 'https://h.example', model: 'm', contextTokens: 131072 }, rules, '/x')).toEqual({ url: 'https://h.example/x', headers: {}, redact: [], extraBody: undefined })
   })
 
   it('throws every shared issue, then the adapter\'s, in one ConfigError, before building anything', () => {
     const adapterIssues = [{ path: 'p.model', message: 'must be a model id' }]
-    const options = { id: 'p', baseUrl: 'h.example', model: 'm', maxTokens: 0, extraBody: { tools: [] } }
+    const options = { id: 'p', baseUrl: 'h.example', model: 'm', contextTokens: 131072, maxTokens: 0, extraBody: { tools: [] } }
     expect(() => prepareHttp(options, rules, '/x', adapterIssues)).toThrow(new ConfigError([
       { path: 'p.baseUrl', message: 'must be an http:// or https:// URL with a host' },
       { path: 'p.extraBody.tools', message: 'offers the model a tool, which quorum never does' },
       { path: 'p.maxTokens', message: 'must be a whole number of at least 1' },
       { path: 'p.model', message: 'must be a model id' },
     ]))
-    expect(() => prepareHttp({ id: 'p', baseUrl: 'https://h.example', model: 'm' }, rules, '/x', adapterIssues)).toThrow(new ConfigError(adapterIssues))
+    expect(() => prepareHttp({ id: 'p', baseUrl: 'https://h.example', model: 'm', contextTokens: 131072 }, rules, '/x', adapterIssues)).toThrow(new ConfigError(adapterIssues))
     expect(() => prepareHttp({ ...options, baseUrl: 'https://h.example' }, rules, '/x')).toThrow(ConfigError)
   })
 })
@@ -222,7 +226,7 @@ describe('requestHeaders', () => {
   it('sends basic auth as a custom key header with a Basic prefix, the key the base64 of user:password', () => {
     const auth = { header: 'authorization', prefix: 'Basic ' }
     const apiKey = btoa('user:password')
-    expect(httpOptionIssues({ id: 'p', baseUrl: 'https://h/v1', model: 'm', apiKey, auth }, { auth, reservedBodyKeys: ['model'], toolBodyKeys: [], replyLimitPaths: [], fixedHeaders: [], structuredOutputs: ['prompt'] })).toEqual([])
+    expect(httpOptionIssues({ id: 'p', baseUrl: 'https://h/v1', model: 'm', contextTokens: 131072, apiKey, auth }, { auth, reservedBodyKeys: ['model'], toolBodyKeys: [], replyLimitPaths: [], fixedHeaders: [], structuredOutputs: ['prompt'] })).toEqual([])
     expect(requestHeaders(auth, apiKey)).toEqual({ authorization: 'Basic dXNlcjpwYXNzd29yZA==' })
   })
 })

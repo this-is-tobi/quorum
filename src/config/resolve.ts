@@ -4,10 +4,11 @@ import type { Provider } from '../core/ports.ts'
 import { buildProvider } from '../providers/build.ts'
 import type { ProviderSpec } from '../providers/build.ts'
 import { httpOrigin } from '../providers/http.ts'
+import { CONTEXT_REQUIRED } from '../providers/options.ts'
 import { presetOf, withoutPrototype } from '../providers/presets.ts'
 import type { Preset } from '../providers/presets.ts'
-import { applyRoleOverrides, atVariables, baseUrlOf, envValue, PROFILE_ID, readEnv, VARIABLE_NAME } from './env.ts'
-import type { Env, ProviderEntry, RoleBinding } from './env.ts'
+import { applyRoleOverrides, atVariables, baseUrlOf, envValue, namesModelOrEndpoint, PROFILE_ID, readEnv, VARIABLE_NAME } from './env.ts'
+import type { Env, EnvLayer, ProviderEntry, RoleBinding } from './env.ts'
 import { own, resolveProfiles } from './profiles.ts'
 import type { ProfileSelection, ResolvedProfile } from './profiles.ts'
 import { configPath, isProvider, unknownName } from './schema.ts'
@@ -33,6 +34,7 @@ const DEFAULT_NAME = 'default'
 /** The provider of a config that defines none: Ollama's OpenAI-compatible endpoint on this machine. The adapter's own defaults fill the rest. */
 const DEFAULT_PROVIDER: ProviderSettings = { protocol: 'openai-compatible', baseUrl: 'http://localhost:11434/v1' }
 const NO_MODEL = 'no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one'
+const NO_CONTEXT = 'no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens'
 const VOTER_KEY = 'QUORUM_VOTER_API_KEY'
 const VOTER_MODEL = 'QUORUM_VOTER_MODEL'
 const LOOPBACK_IPV4 = /^127(?:\.\d{1,3}){3}$/
@@ -200,6 +202,43 @@ function reportMissingModel(issues: readonly ConfigIssue[], builtIn: boolean, re
   })
 }
 
+/** The issue of a role whose variables name a model or an endpoint and set no context size: the variable to set, and why. */
+function contextOfRole(role: 'research' | 'voter'): ConfigIssue {
+  return { path: `QUORUM_${role.toUpperCase()}_CONTEXT_TOKENS`, message: `must be set when the ${role} variables name a model or an endpoint: a context size belongs to one model on one endpoint` }
+}
+
+/** What `reportMissingContext` needs of the run: whether the provider is the built-in one, the roles after the variables, the name of the voter they derived, and the variables. */
+interface ContextReport {
+  readonly builtIn: boolean
+  readonly roles: RoleBinding
+  readonly derived: string | undefined
+  readonly layer: Pick<EnvLayer, 'research' | 'voter'>
+}
+
+/**
+ * A missing context size is reported where the user sets it, by the first rule that applies to a provider:
+ * the built-in default's is what to set; the voter the variables derived, when they name a model or an
+ * endpoint, is `QUORUM_VOTER_CONTEXT_TOKENS`; the research provider, when the research variables name a
+ * model or an endpoint, is `QUORUM_RESEARCH_CONTEXT_TOKENS`, and the voter's own provider the voter's
+ * variable on the same condition; any other stays at its field. A derived voter that shares the research
+ * provider whole, its context size included, is reported by the research provider's issue alone, whatever
+ * the issue on that size is (missing, malformed or leaving no room for `maxTokens`): the user wrote one value.
+ */
+function reportMissingContext(issues: readonly ConfigIssue[], { builtIn, roles, derived, layer }: ContextReport): ConfigIssue[] {
+  const voterNames = namesModelOrEndpoint(layer.voter)
+  const shared = derived !== undefined && !voterNames && own(layer.voter, 'contextTokens') === undefined
+  const voterOwn = roles.voter !== roles.research && roles.voter !== derived ? roles.voter : undefined
+  return issues.flatMap((issue) => {
+    const at = (name: string | undefined): boolean => name !== undefined && issue.path === `providers.${name}.contextTokens`
+    if (shared && at(derived)) return []
+    if (issue.message !== CONTEXT_REQUIRED) return [issue]
+    if (builtIn && at(DEFAULT_NAME)) return [{ path: '', message: NO_CONTEXT }]
+    if (at(derived) || at(voterOwn)) return voterNames ? [contextOfRole('voter')] : [issue]
+    if (at(roles.research)) return namesModelOrEndpoint(layer.research) ? [contextOfRole('research')] : [issue]
+    return [issue]
+  })
+}
+
 /** The origin of a provider's settings, as endpoints are compared; none for a provider object. */
 function originOf(entry: ProviderEntry | undefined): string | undefined {
   return entry === undefined || isProvider(entry) ? undefined : httpOrigin(baseUrlOf(ownFields(entry)))
@@ -230,7 +269,8 @@ function bindRoles(roles: ConfigInput['roles'], names: readonly string[]): { rea
  * variables over the config, the built-in `default` provider when the config defines none, the roles,
  * the profiles that run, and the key of each provider they use. Every provider is checked by the builder,
  * the ones that are not used without a key. A key is sent only to the endpoint it was configured for: a
- * preset's own variable is read only at the preset's origin. A resolved config is returned as it is. The
+ * preset's own variable is read only at the preset's origin. Every provider needs a context size, and the issue
+ * of a missing one names what to set (`reportMissingContext`). A resolved config is returned as it is. The
  * input must already have passed a config schema. `options.selection`, when given, names the profiles that
  * run, over `QUORUM_PROFILES`, which is still checked; its ids are checked before anything is resolved.
  *
@@ -266,7 +306,8 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
   const checked = checkProviders(applied.providers, inUse, env, elsewhere ? derived : undefined)
 
   const reportedVoter = applied.issues.some(issue => issue.path === VOTER_MODEL) ? derived : undefined
-  const issues = [...applied.issues, ...profiles.issues, ...atVariables(reportMissingModel(checked.issues, builtIn, reportedVoter), applied.roles, layer)]
+  const reported = reportMissingContext(reportMissingModel(checked.issues, builtIn, reportedVoter), { builtIn, roles: applied.roles, derived, layer })
+  const issues = [...applied.issues, ...profiles.issues, ...atVariables(reported, applied.roles, layer)]
   if (issues.length > 0) throw new ConfigError(issues)
 
   const concurrency = own(input, 'concurrency')

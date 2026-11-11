@@ -186,8 +186,8 @@ import type { QuorumConfig } from './src/index.ts'
 
 export default {
   providers: {
-    local: { preset: 'ollama', model: 'qwen3.6:27b' },
-    hosted: { preset: 'openai', model: 'gpt-5', apiKey: process.env.OPENAI_API_KEY },
+    local: { preset: 'ollama', model: 'qwen3.6:27b', contextTokens: 131072 },
+    hosted: { preset: 'openai', model: 'gpt-5', contextTokens: 400000, apiKey: process.env.OPENAI_API_KEY },
   },
   roles: { research: 'local', voter: 'hosted' },
 } satisfies QuorumConfig
@@ -246,7 +246,7 @@ const result = await quorum.review({ diff })
 
 Each layer sits over the one before it: the built-in defaults, then the file `configPath` names (else the one `QUORUM_CONFIG` names), then the environment.
 
-- **The built-in defaults.** A config that defines no provider gets one named `default`: the `openai-compatible` protocol at `http://localhost:11434/v1`, Ollama's address, with no model, so `QUORUM_RESEARCH_MODEL` or a file must set one. A config with no `profiles` field runs the `security` profile.
+- **The built-in defaults.** A config that defines no provider gets one named `default`: the `openai-compatible` protocol at `http://localhost:11434/v1`, Ollama's address, with no model and no context size, so `QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS`, or a file, must set them. A config with no `profiles` field runs the `security` profile.
 - **A profile over its base.** A profile named after a built-in profile, or with `extends`, starts from it: its prompts and its policy levels replace the base's one field at a time, and its lenses replace the base's lenses as a whole.
 - **`undefined` is unset, `null` is set.** In a program's config or a code config, a field set to `undefined` leaves the layer below's value in place, as if it were not written; `null` is a value, such as `temperature: null`, which leaves the field out of the request.
 - **No file is searched for.** A file loads only when it is named, by `configPath` first, then `QUORUM_CONFIG`: a `quorum.config.yaml` in the working directory is never read, since in CI that directory is a pull request's checkout, and a pull request could plant one.
@@ -341,6 +341,10 @@ A provider's key is the first of:
 | `roles.research` | `is required when several providers are defined` | Several providers, and no research role |
 | `profiles.<id>` and below | The profile's own issues: [The checks](../20-using/40-profiles.md#the-checks) | A profile that fails a check |
 | No path | `no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one` | The built-in provider has no model |
+| No path | `no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens` | The built-in provider has no context size. A missing model is reported first, and alone |
+| `providers.<name>.contextTokens` | `is required: the model's context window in tokens, which quorum checks every request against` | A provider of the config with no `contextTokens`, used by a profile or not. A derived voter that shares the research provider, context size included, is not reported twice: the research provider's issue stands for it |
+| `QUORUM_RESEARCH_CONTEXT_TOKENS` | `must be set when the research variables name a model or an endpoint: a context size belongs to one model on one endpoint` | The research variables name a preset, a protocol, a base URL or a model, which drops the context size of the provider they set |
+| `QUORUM_VOTER_CONTEXT_TOKENS` | `must be set when the voter variables name a model or an endpoint: a context size belongs to one model on one endpoint` | The same for the voter variables, on the derived voter or on the voter's own provider |
 | `providers.<name>` | `CORP_KEY is not set` | The variable `apiKeyEnv` names, or the preset's own, is not set |
 | `providers.<name>.apiKeyEnv` | `names a variable that is not set` | The same, for a name that is not an upper-case variable name: a key pasted there is never printed |
 | `providers.<name>.<field>` | The builder's: [Presets as data](../20-using/30-providers.md#presets-as-data) and [Configuration errors](../20-using/30-providers.md#configuration-errors) | A provider that the builder refuses, defined or derived |
@@ -434,8 +438,8 @@ async function main(path: string | undefined): Promise<number> {
     return 2
   }
   try {
-    const finder = openaiCompatible({ id: 'local', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b' })
-    const panel = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-astra', apiKey: process.env.OPENAI_API_KEY?.trim() || undefined, temperature: null, maxTokensField: 'max_completion_tokens' })
+    const finder = openaiCompatible({ id: 'local', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b', contextTokens: 131072 })
+    const panel = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-astra', contextTokens: 400000, apiKey: process.env.OPENAI_API_KEY?.trim() || undefined, temperature: null, maxTokensField: 'max_completion_tokens' })
     const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, panel]))
     const quorum = createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research: finder, voters } }, events: progress })
     const result = await quorum.review({ diff }, { signal: AbortSignal.timeout(10 * 60_000) })

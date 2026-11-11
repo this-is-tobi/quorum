@@ -3,7 +3,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { bodyKeyForm, isRecord, mergeBody, prepareHttp, unlessEmpty } from './options.ts'
+import { bodyKeyForm, isRecord, mergeBody, prepareHttp } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { MAX_MODEL_TEXT, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget } from './size.ts'
@@ -93,7 +93,7 @@ export function ollama(options: OllamaOptions): Provider {
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       checkFits(id, { system, messages }, request.output, budget)
-      // JSON.stringify drops the undefined fields: no format for `prompt`, no options when they would be empty.
+      // JSON.stringify drops the undefined fields: no format for `prompt`, no temperature for null, no limit unless set.
       const reply = await postJson<unknown>({
         providerId: id,
         url,
@@ -104,7 +104,7 @@ export function ollama(options: OllamaOptions): Provider {
           stream: false,
           truncate: false,
           shift: false,
-          options: unlessEmpty({ temperature: temperature ?? undefined, num_predict: maxTokens, num_ctx: contextTokens }),
+          options: { temperature: temperature ?? undefined, num_predict: maxTokens, num_ctx: contextTokens },
           format: format(structuredOutput, request.output),
         }, extraBody),
         signal: request.signal,

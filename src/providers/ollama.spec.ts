@@ -40,7 +40,7 @@ describeProviderContract({
 })
 
 describe('ollama', () => {
-  const options = { id: 'local', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b' }
+  const options = { id: 'local', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b', contextTokens: 131072 }
   const provider = ollama(options)
   const messages = [{ role: 'system', content: 'instructions' }, { role: 'user', content: 'data' }]
 
@@ -50,7 +50,7 @@ describe('ollama', () => {
     const { url, headers, body } = sent(fetchMock)
     expect(url).toBe('http://localhost:11434/api/chat')
     expect(headers).toEqual({ 'content-type': 'application/json' })
-    expect(body).toEqual({ model: 'qwen3.6:27b', messages, stream: false, truncate: false, shift: false, options: { temperature: 0 }, format: 'json' })
+    expect(body).toEqual({ model: 'qwen3.6:27b', messages, stream: false, truncate: false, shift: false, options: { temperature: 0, num_ctx: 131072 }, format: 'json' })
   })
 
   it.each([
@@ -66,7 +66,7 @@ describe('ollama', () => {
   it('sends the token limit as num_predict, and leaves the temperature out for null', async () => {
     const fetchMock = stubFetch(chatResponse)
     await ollama({ ...options, temperature: null, maxTokens: 900 }).complete(request)
-    expect(sent(fetchMock).body).toEqual({ model: 'qwen3.6:27b', messages, stream: false, truncate: false, shift: false, options: { num_predict: 900 }, format: 'json' })
+    expect(sent(fetchMock).body).toEqual({ model: 'qwen3.6:27b', messages, stream: false, truncate: false, shift: false, options: { num_predict: 900, num_ctx: 131072 }, format: 'json' })
   })
 
   it('sends contextTokens as options.num_ctx, so the server loads the context the guard counts with', async () => {
@@ -100,10 +100,10 @@ describe('ollama', () => {
     }
   })
 
-  it('sends no options when it would be empty', async () => {
+  it('sends only num_ctx in options when the temperature is null and no limit is set', async () => {
     const fetchMock = stubFetch(chatResponse)
     await ollama({ ...options, temperature: null }).complete(request)
-    expect(sent(fetchMock).body).toEqual({ model: 'qwen3.6:27b', messages, stream: false, truncate: false, shift: false, format: 'json' })
+    expect(sent(fetchMock).body).toEqual({ model: 'qwen3.6:27b', messages, stream: false, truncate: false, shift: false, options: { num_ctx: 131072 }, format: 'json' })
   })
 
   it('returns the content as it came, a think block included, and ignores the thinking, with the model and the usage', async () => {

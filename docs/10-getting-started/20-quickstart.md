@@ -6,9 +6,10 @@ Five steps: point quorum at a model, review a diff, then read the three things i
 
 ```bash
 export QUORUM_RESEARCH_MODEL=qwen3.6:27b
+export QUORUM_RESEARCH_CONTEXT_TOKENS=32768
 ```
 
-`QUORUM_RESEARCH_MODEL` is the one setting quorum requires: the model, as your endpoint names it. With nothing else set, the finder and the panel both use that model at `http://localhost:11434/v1`, Ollama's default address, and send no key. A hosted API, or a panel on another model than the finder, takes a few more `QUORUM_*` variables or a config file: [Configuration](../20-using/20-configuration.md).
+`QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` are the two settings quorum requires: the model, as your endpoint names it, and the model's context window in tokens, which quorum checks every request against ([The context size](../20-using/20-configuration.md#the-context-size)). Ollama sets that window from your GPUs' memory (4096, 32768 or 262144) unless `OLLAMA_CONTEXT_LENGTH` says otherwise, so set `OLLAMA_CONTEXT_LENGTH` on the server to at least the same number. With nothing else set, the finder and the panel both use that model at `http://localhost:11434/v1`, Ollama's default address, and send no key. A hosted API, or a panel on another model than the finder, takes a few more `QUORUM_*` variables or a config file: [Configuration](../20-using/20-configuration.md).
 
 ## 2. Review a diff
 

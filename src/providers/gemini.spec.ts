@@ -46,7 +46,7 @@ describeProviderContract({
 })
 
 describe('gemini', () => {
-  const options = { id: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.8-flash', apiKey: 'AIza-k' }
+  const options = { id: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.8-flash', contextTokens: 131072, apiKey: 'AIza-k' }
   const provider = gemini(options)
   const conversation = { contents: [{ role: 'user', parts: [{ text: 'data' }] }], systemInstruction: { parts: [{ text: 'instructions' }] } }
 
