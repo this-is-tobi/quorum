@@ -26,22 +26,24 @@ export function ollamaReply(content: string): Response {
 }
 
 /**
- * A stub put in place of the global `fetch`, answering call `i` with `chatReply(contents[i])`. A call past
+ * A stub put in place of the global `fetch`, answering call `i` with `reply(contents[i])`. A call past
  * `contents` gets what the caller chains: `.mockRejectedValue(...)` or `.mockImplementation(...)`.
  */
-export function stubChat(...contents: string[]): ReturnType<typeof vi.fn> {
+export function stubReplies(reply: (content: string) => Response, ...contents: string[]): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn()
-  for (const content of contents) fetchMock.mockImplementationOnce(async () => chatReply(content))
+  for (const content of contents) fetchMock.mockImplementationOnce(async () => reply(content))
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
 }
 
-/** `stubChat` for Ollama's native API: call `i` is answered with `ollamaReply(contents[i])`. */
+/** `stubReplies` with `chatReply`: call `i` is answered with an OpenAI-compatible completion holding `contents[i]`. */
+export function stubChat(...contents: string[]): ReturnType<typeof vi.fn> {
+  return stubReplies(chatReply, ...contents)
+}
+
+/** `stubReplies` with `ollamaReply`: call `i` is answered with a native Ollama completion holding `contents[i]`. */
 export function stubOllamaChat(...contents: string[]): ReturnType<typeof vi.fn> {
-  const fetchMock = vi.fn()
-  for (const content of contents) fetchMock.mockImplementationOnce(async () => ollamaReply(content))
-  vi.stubGlobal('fetch', fetchMock)
-  return fetchMock
+  return stubReplies(ollamaReply, ...contents)
 }
 
 /** What one call of a fetch stub sent, the first by default: the URL, the headers and the parsed body. */
