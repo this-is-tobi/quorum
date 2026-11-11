@@ -378,7 +378,7 @@ For Ollama's native chat API, on a local server or Ollama's cloud, `https://olla
 - **`shift: false` keeps it whole as the reply is written.** A reply that fills the model's context then stops, as a truncation, instead of part of the prompt dropped so the reply can go on. It needs the same versions, and a server that loaded the model with context shift on loads it again, as it does each time a client asks for the other setting.
 - **`num_ctx` from `contextTokens`.** The adapter sends `options.num_ctx`, so the server loads the context the size guard counts with; a larger value than the model's own maximum is cut to it, so keep `contextTokens` at most what `ollama show <model>` reports, and read the context a running model loaded in the `CONTEXT` column of `ollama ps`. `extraBody` cannot set `options.num_ctx`, in any letter case, or replace `options` with anything but an object, which would drop it. Its `options` must be written `options`: another spelling, such as `Options`, would send a second key, so it is refused.
 - **The key goes as `Authorization: Bearer <key>`**, only when one is set: a local server needs none.
-- **No `think` field.** A thinking model thinks as it does by default, and its thinking comes back apart, in `message.thinking`, which the adapter ignores.
+- **No `think` field.** A thinking model thinks as it does by default, and its thinking comes back apart, in `message.thinking`, which the adapter ignores. `extraBody: { think: false }` sets one: [Reasoning mode](../90-recipes/10-local-models.md#reasoning-mode).
 
 The body of every request holds, in this order:
 
