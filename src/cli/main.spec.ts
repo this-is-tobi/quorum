@@ -783,6 +783,20 @@ describe('--print-config', () => {
     expect(stderr()).toBe('Error: no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one\n')
   })
 
+  it('exits 2 for a provider with no context size, as a run does, and sends nothing', async () => {
+    const NO_CONTEXT = 'Error: no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens\n'
+    const fetchMock = stubChat()
+    const env = harness({ argv: ['--print-config'], env: { QUORUM_RESEARCH_MODEL: 'm' } })
+    expect(await runCli(env.io)).toBe(EXIT.usage)
+    expect(env.stdout()).toBe('')
+    expect(env.stderr()).toBe(NO_CONTEXT)
+    const file = harness({ argv: ['--print-config', '--config', write('no-context.yaml', 'providers:\n  a: {preset: ollama, model: m}\n')], cwd: dir })
+    expect(await runCli(file.io)).toBe(EXIT.usage)
+    expect(file.stdout()).toBe('')
+    expect(file.stderr()).toBe('Error: providers.a.contextTokens: is required: the model\'s context window in tokens, which quorum checks every request against\n')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('exits 2 for a config only the run\'s own build refuses, a provider object whose model is not a string', async () => {
     const bad = write('print-model.mjs', 'export default { providers: { mine: { model: 42, complete: async () => ({ text: \'{}\', model: \'m\' }) } } }\n')
     const printing = harness({ argv: ['--print-config', '--config', bad] })

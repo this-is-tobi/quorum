@@ -7,7 +7,7 @@ import { httpOrigin } from '../providers/http.ts'
 import { CONTEXT_REQUIRED } from '../providers/options.ts'
 import { presetOf, withoutPrototype } from '../providers/presets.ts'
 import type { Preset } from '../providers/presets.ts'
-import { applyRoleOverrides, atVariables, baseUrlOf, envValue, namesModelOrEndpoint, PROFILE_ID, readEnv, VARIABLE_NAME } from './env.ts'
+import { applyRoleOverrides, atVariables, baseUrlOf, envValue, namesModelOrEndpoint, PROFILE_ID, readEnv, setsContextSize, VARIABLE_NAME } from './env.ts'
 import type { Env, EnvLayer, ProviderEntry, RoleBinding } from './env.ts'
 import { own, resolveProfiles } from './profiles.ts'
 import type { ProfileSelection, ResolvedProfile } from './profiles.ts'
@@ -226,7 +226,7 @@ interface ContextReport {
  */
 function reportMissingContext(issues: readonly ConfigIssue[], { builtIn, roles, derived, layer }: ContextReport): ConfigIssue[] {
   const voterNames = namesModelOrEndpoint(layer.voter)
-  const shared = derived !== undefined && !voterNames && own(layer.voter, 'contextTokens') === undefined
+  const shared = derived !== undefined && !voterNames && !setsContextSize(layer.voter)
   const voterOwn = roles.voter !== roles.research && roles.voter !== derived ? roles.voter : undefined
   return issues.flatMap((issue) => {
     const at = (name: string | undefined): boolean => name !== undefined && issue.path === `providers.${name}.contextTokens`

@@ -194,6 +194,15 @@ describe('fromConfig', () => {
     expect((await fromConfig(resolveConfig(config, { env }))).warnings).toEqual(expected)
   })
 
+  it('refuses a provider with no context size, as a configuration error that names what to set, and sends nothing', async () => {
+    const fetchMock = stubReview()
+    const message = 'no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens'
+    await expect(fromConfig({}, { env: { QUORUM_RESEARCH_MODEL: 'q' } })).rejects.toMatchObject({ name: 'ConfigError', message })
+    expect(() => resolveConfig({}, { env: { QUORUM_RESEARCH_MODEL: 'q' } })).toThrow(expect.objectContaining({ name: 'ConfigError', message }))
+    expect(await issuesOf({ providers: { local: { preset: 'ollama', model: 'q' } } })).toEqual([{ path: 'providers.local.contextTokens', message: 'is required: the model\'s context window in tokens, which quorum checks every request against' }])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('sends nothing when a provider is invalid', async () => {
     const fetchMock = stubReview()
     await expect(fromConfig({ providers: { local: { preset: 'ollama', model: 'q', contextTokens: 131072, maxTokens: 0 } } }, { env: {} })).rejects.toThrow(ConfigError)
