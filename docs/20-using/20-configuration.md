@@ -192,7 +192,7 @@ A context size belongs to one model on one endpoint, so it never crosses to anot
 
 ### Finding the number
 
-The number is the window the server gives the model, which can be less than the model's maximum. Where to read it:
+The number is the window the server gives the model, which can be less than the model's maximum. [Local models](../90-recipes/10-local-models.md) says how to set the window of Ollama, vLLM and llama.cpp. Where to read it:
 
 - **Ollama**, through its native API (the built-in provider's, and the `ollama` preset's), is sent `num_ctx` by quorum, so it loads the context you state. A `num_ctx` above the model's trained context is clamped to it, so keep `contextTokens` at most what `ollama show <model>` prints, and read the context a running model loaded in the `CONTEXT` column of `ollama ps`. On Ollama's `/v1`, which only a base URL variable on its own or a provider of a file reaches, quorum cannot set it, and Ollama picks 4096, 32768 or 262144 tokens by the GPUs' memory, unless `OLLAMA_CONTEXT_LENGTH` or a Modelfile's `num_ctx` says otherwise: set `OLLAMA_CONTEXT_LENGTH` on the server to at least `contextTokens`, and trust `ollama ps`, since a Modelfile's `num_ctx` or the model's own default outranks the variable for `/v1` requests.
 - **llama.cpp** splits the context its `-c` option sets across its `-np` slots unless the KV cache is unified, and a request gets one slot's share: state the per-slot `n_ctx` that `/props` reports.
