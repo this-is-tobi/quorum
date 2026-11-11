@@ -187,11 +187,11 @@ A context size belongs to one model on one endpoint, so it never crosses to anot
 
 The number is the window the server gives the model, which can be less than the model's maximum. Where to read it:
 
-- **Ollama** picks 4096, 32768 or 262144 tokens by the GPUs' memory, unless `OLLAMA_CONTEXT_LENGTH` or a Modelfile's `num_ctx` says otherwise, and `ollama ps` shows the loaded one in its `CONTEXT` column once the model has run. The `ollama` preset sends `num_ctx` itself, so its context is the one you state, capped by the model's own maximum, which `ollama show <model>` prints. On Ollama's `/v1`, the built-in provider's endpoint, quorum cannot set it: set `OLLAMA_CONTEXT_LENGTH` on the server to at least `contextTokens`.
-- **llama.cpp** serves the context its `-c` option sets, which `/props` reports as `n_ctx`.
+- **Ollama** picks 4096, 32768 or 262144 tokens by the GPUs' memory, unless `OLLAMA_CONTEXT_LENGTH` or a Modelfile's `num_ctx` says otherwise, and `ollama ps` shows the loaded one in its `CONTEXT` column once the model has run. The `ollama` preset sends `num_ctx` itself, so its context is the one you state, capped by the model's own maximum, which `ollama show <model>` prints. On Ollama's `/v1`, the built-in provider's endpoint, quorum cannot set it: set `OLLAMA_CONTEXT_LENGTH` on the server to at least `contextTokens`, and trust `ollama ps`, since a Modelfile's `num_ctx` or the model's own default outranks the variable for `/v1` requests.
+- **llama.cpp** splits the context its `-c` option sets across its `-np` slots unless the KV cache is unified, and a request gets one slot's share: state the per-slot `n_ctx` that `/props` reports.
 - **vLLM** serves what its `--max-model-len` option sets.
 - **LM Studio** serves the context length the model is loaded with, not the maximum it supports: its documentation shows a model loaded with 4096 tokens of the 262144 it takes.
-- **A hosted API** states it on the model's page or on its models endpoint: `max_input_tokens` for Anthropic, `inputTokenLimit` for Gemini, `max_context_length` for Mistral, `context_length` for OpenRouter.
+- **A hosted API** states it on the model's page or on its models endpoint: `max_input_tokens` for Anthropic, `inputTokenLimit` for Gemini, `max_context_length` for Mistral, `context_length` for OpenRouter. Anthropic's and Gemini's are limits of the input alone, which is the safe side, since the guard keeps the room of the reply inside them.
 - **An Azure deployment** has its own limit, which can differ from the documented one of its model.
 
 A number above the real window defeats the guard, which counts against the number it is given. An endpoint that cuts a prompt in silence, Ollama's `/v1` or an OpenRouter endpoint of 8192 tokens or less among them, then answers as if it had read all of it. When in doubt, state the smaller number.
@@ -200,7 +200,7 @@ A number above the real window defeats the guard, which counts against the numbe
 
 A request is counted at one token per byte of what it carries, each text at the largest of its raw, NFC and NFKC UTF-8 lengths, so that a tokenizer that normalizes first stays bounded. The count adds 512 tokens for the chat template and the reply budget, `maxTokens` else 16000, and the request is sent only when the sum is at most `contextTokens`: [The size of a request](./30-providers.md#the-size-of-a-request) has the rule and the message of a refusal. A tokenizer that decomposes (NFD, NFKD) or folds case is not covered, and no chat model's tokenizer is known to do either.
 
-One token per byte is the price of a bound that holds for every tokenizer checked. Code runs about 3.5 bytes per token, so the guard accepts about a third of the diff that would really fit. The diff that a research request of the `security` profile leaves room for, as ASCII text with no guidelines and `maxTokens` unset:
+One token per byte is the price of a bound that holds for every tokenizer checked. Code runs about three bytes per token, so the guard accepts about a third of the diff that would really fit. The diff that a research request of the `security` profile leaves room for, as ASCII text with no guidelines, `maxTokens` unset and the default `systemPrompt: 'native'` (`inline` leaves 2 bytes less):
 
 | `contextTokens` | The largest diff, in bytes |
 | --- | --- |
@@ -210,7 +210,7 @@ One token per byte is the price of a bound that holds for every tokenizer checke
 | `200000` | 181,989 |
 | `1000000` | 981,989 |
 
-Each row is `contextTokens` less 18,011: 1,499 bytes of instructions, fences and reply schema, 512 tokens for the chat template and 16,000 for the reply. `maxTokens: 4096` adds 11,904 bytes to each row, and the guidelines of a profile take room of their own. A vote request carries the diff section of the cited file (the whole diff when the file has no section of its own), up to five lines of evidence and the claim, and reserves the same reply budget, so a diff of one file that barely fits its research request can have its votes refused. A panel on a smaller model refuses sooner.
+Each row is `contextTokens` less 18,011: 1,499 bytes of instructions, fences and reply schema, 512 tokens for the chat template and 16000 for the reply. `maxTokens: 4096` adds 11,904 bytes to each row, and the guidelines of a profile take room of their own. A vote request carries the diff section of the cited file (the whole diff when the file has no section of its own), up to five lines of evidence and the claim, and reserves the same reply budget, so a diff of one file that barely fits its research request can have its votes refused. A panel on a smaller model refuses sooner.
 
 ### Raising the limit knowingly
 
@@ -225,11 +225,11 @@ Two other ways are not offered, because each reopens the padding attack that [Th
 - **A bytes-per-token ratio.** Encoded content, such as base64, hex, CJK text or emoji, takes 1 to 1.5 bytes per token, so a pull request could pad past any ratio above one.
 - **Lifting the gap with `--allow-incomplete`.** It would let the same padding through for a gating profile.
 
-Counting with a vendor's own tokenizer, and reading the window from the endpoint, are not done today. Either could only lower what is accepted, never raise the window past the number you state.
+Neither of these is done today. Counting with a vendor's own tokenizer would shrink the margin, since one token per byte overestimates code about three times, so it would accept more of a diff. Reading the window from the endpoint would take the smaller of its number and yours, so it could only lower what is accepted. Neither would take the window past the number you state.
 
 ### What happens
 
-A refused research request leaves its profile with no finding and a `request-too-large` gap, and the other profiles run. A refused vote is a failed vote ([Failed votes](./50-lenses-and-policy.md#failed-votes)), and its finding records a `request-too-large` gap as well: the finding is `unreviewed`, or kept, with the gap. A gating profile with such a gap exits `4`, even with `--allow-incomplete`, unless it also kept a `high` finding, which exits `1`; the gap of an advisory profile changes no code. The result says what was not sent: [Incomplete reasons](../95-reference/20-json-result.md#incomplete-reasons). A provider with no context size is a configuration error, exit `2`, before any request.
+A refused research request leaves its profile with no finding and a `request-too-large` gap, and the other profiles run. A refused vote is a failed vote ([Failed votes](./50-lenses-and-policy.md#failed-votes)), and its finding records a `request-too-large` gap as well, whatever its status: kept, discarded or `unreviewed`, the gap stays. A gating profile with such a gap exits `4`, even with `--allow-incomplete`, unless it also kept a `high` finding, which exits `1`; the gap of an advisory profile changes no code. The result says what was not sent: [Incomplete reasons](../95-reference/20-json-result.md#incomplete-reasons). A provider with no context size is a configuration error, exit `2`, before any request.
 
 ## Keys
 
