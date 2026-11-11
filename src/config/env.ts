@@ -1,5 +1,6 @@
 import type { ConfigIssue } from '../core/errors.ts'
 import type { Provider } from '../core/ports.ts'
+import { commandProblem } from '../providers/claude-code.ts'
 import { httpOrigin } from '../providers/http.ts'
 import { wordList } from '../providers/options.ts'
 import { presetOf } from '../providers/presets.ts'
@@ -34,6 +35,8 @@ export interface EnvLayer {
   readonly profiles?: readonly string[]
   readonly research: RoleOverrides
   readonly voter: RoleOverrides
+  /** `QUORUM_CLAUDE_CODE_COMMAND`, trimmed: present only when it is set and `commandProblem` finds nothing wrong with it. */
+  readonly claudeCodeCommand?: string
   /** The deprecation line, when an alias is set, then the line naming the `QUORUM_` variables nothing reads. */
   readonly warnings: readonly string[]
   readonly issues: readonly ConfigIssue[]
@@ -62,13 +65,17 @@ export const VARIABLE_NAME = /^[A-Z][A-Z0-9_]{0,63}$/
 
 const canonicalName = (role: Role, suffix: string): string => `QUORUM_${role}_${suffix}`
 
+const CLAUDE_CODE_COMMAND = 'QUORUM_CLAUDE_CODE_COMMAND'
+
 /**
- * Every variable the environment layer reads: `QUORUM_CONFIG`, `QUORUM_PROFILES`, the `QUORUM_` form of each role's
- * variables and the deprecated aliases of those that have one. The one list: a variable added to `VARIABLES` joins it.
+ * Every variable the environment layer reads: `QUORUM_CONFIG`, `QUORUM_PROFILES`, `QUORUM_CLAUDE_CODE_COMMAND`, the
+ * `QUORUM_` form of each role's variables and the deprecated aliases of those that have one. The one list: a
+ * variable added to `VARIABLES` joins it.
  */
 export const READ_VARIABLES: ReadonlySet<string> = new Set([
   'QUORUM_CONFIG',
   'QUORUM_PROFILES',
+  CLAUDE_CODE_COMMAND,
   ...ROLES.flatMap(role => VARIABLES.map(({ suffix }) => canonicalName(role, suffix))),
   ...ROLES.flatMap(role => VARIABLES.filter(({ aliased }) => aliased).map(({ suffix }) => `${role}_${suffix}`)),
 ])
@@ -124,23 +131,34 @@ function readProfiles(env: Env): Pick<EnvLayer, 'profiles' | 'issues'> {
   return { profiles: ids, issues: [] }
 }
 
+/** `QUORUM_CLAUDE_CODE_COMMAND`, or the one issue that refuses it: the adapter's own problem with a command, at the variable, never repeating its value. */
+function readClaudeCodeCommand(env: Env): Pick<EnvLayer, 'claudeCodeCommand' | 'issues'> {
+  const command = envValue(env, CLAUDE_CODE_COMMAND)
+  if (command === undefined) return { issues: [] }
+  const problem = commandProblem(command)
+  return problem === undefined ? { claudeCodeCommand: command, issues: [] } : { issues: [{ path: CLAUDE_CODE_COMMAND, message: problem }] }
+}
+
 /**
  * Read the `QUORUM_*` variables: the preset, protocol, base URL, model, context size and key of each role,
- * which are `QUORUM_RESEARCH_*` and `QUORUM_VOTER_*`, and `QUORUM_PROFILES`. `RESEARCH_*` and `VOTER_*` are
- * read as deprecated aliases of the base URL, model and key, and the `QUORUM_` form wins; the context size
- * (`QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS`) has no alias. Any other variable set under
- * a `QUORUM_` name is named in one warning. No message repeats a value.
+ * which are `QUORUM_RESEARCH_*` and `QUORUM_VOTER_*`, `QUORUM_PROFILES`, and `QUORUM_CLAUDE_CODE_COMMAND`, the
+ * executable of the `claude-code` protocol: an absolute path, or a name to find on `PATH`. `RESEARCH_*` and
+ * `VOTER_*` are read as deprecated aliases of the base URL, model and key, and the `QUORUM_` form wins; the
+ * context size (`QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS`) has no alias. Any other
+ * variable set under a `QUORUM_` name is named in one warning. No message repeats a value.
  */
 export function readEnv(env: Env): EnvLayer {
   const { issues: profileIssues, ...profiles } = readProfiles(env)
+  const { issues: commandIssues, ...command } = readClaudeCodeCommand(env)
   const research = readRole(env, 'RESEARCH')
   const voter = readRole(env, 'VOTER')
   return {
     ...profiles,
+    ...command,
     research: research.overrides,
     voter: voter.overrides,
     warnings: [...deprecationWarnings(env), ...unreadWarnings(env)],
-    issues: [...profileIssues, ...research.issues, ...voter.issues],
+    issues: [...profileIssues, ...commandIssues, ...research.issues, ...voter.issues],
   }
 }
 

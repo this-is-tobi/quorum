@@ -12,9 +12,9 @@ import { configInputSchema, configPath, isProvider } from './schema.ts'
 import type { ConfigInput } from './schema.ts'
 
 /** A provider the config defines as data, built by the builder: its issues name the provider where the config defines it. */
-function fromSpec(name: string, spec: Exclude<ResolvedProvider, Provider>): { readonly provider?: Provider, readonly issues: readonly ConfigIssue[] } {
+function fromSpec(name: string, spec: Exclude<ResolvedProvider, Provider>, env: Env): { readonly provider?: Provider, readonly issues: readonly ConfigIssue[] } {
   try {
-    return { provider: buildProvider({ ...spec, id: name }), issues: [] }
+    return { provider: buildProvider({ ...spec, id: name }, { env }), issues: [] }
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error
     return { issues: error.issues.map(({ path, message }) => ({ path: `providers.${path}`, message })) }
@@ -28,12 +28,12 @@ function fromObject(name: string, snapshot: Provider): { readonly provider?: Pro
   return { provider: { id: name, model, complete }, issues: [] }
 }
 
-/** Each provider of a resolved config as a `Provider`, by name, or every issue of the providers that cannot be built. */
-function buildProviders(providers: ResolvedConfig['providers']): ReadonlyMap<string, Provider> {
+/** Each provider of a resolved config as a `Provider`, by name, or every issue of the providers that cannot be built. `env` is what a `claude-code` provider's CLI inherits. */
+function buildProviders(providers: ResolvedConfig['providers'], env: Env): ReadonlyMap<string, Provider> {
   const built = new Map<string, Provider>()
   const issues: ConfigIssue[] = []
   for (const [name, entry] of Object.entries(providers)) {
-    const result = isProvider(entry) ? fromObject(name, entry) : fromSpec(name, entry)
+    const result = isProvider(entry) ? fromObject(name, entry) : fromSpec(name, entry, env)
     issues.push(...result.issues)
     if (result.provider !== undefined) built.set(name, result.provider)
   }
@@ -45,9 +45,10 @@ function buildProviders(providers: ResolvedConfig['providers']): ReadonlyMap<str
  * Build a quorum from a config: the providers it defines, the profiles it runs and the environment over
  * them. A `ConfigInput` is checked as a code config is (so a program gets issues, never a `TypeError`, and
  * nothing its objects throw is printed) and resolved with `options.env`, which defaults to `process.env`; a
- * `ResolvedConfig` is used as it is, and the environment is not read again. Each provider defined as data
- * is built by the builder, and each provider object is wrapped under the name the config gives it. Every
- * issue is thrown at once, before anything is sent. `warnings` lists the config's, then the core's.
+ * `ResolvedConfig` is used as it is, and the environment is not read again, but it is still the one a
+ * `claude-code` provider's CLI inherits. Each provider defined as data is built by the builder, and each
+ * provider object is wrapped under the name the config gives it. Every issue is thrown at once, before
+ * anything is sent. `warnings` lists the config's, then the core's.
  *
  * @throws ConfigError listing every issue of the config's check, or else of its resolution and its providers
  *
@@ -56,10 +57,11 @@ function buildProviders(providers: ResolvedConfig['providers']): ReadonlyMap<str
  * const { kept } = await quorum.review({ diff: diffText })
  */
 export async function fromConfig(config: ConfigInput | ResolvedConfig, options: { readonly env?: Env, readonly events?: EventSink } = {}): Promise<Quorum> {
+  const env = options.env ?? process.env
   const resolved = isResolvedConfig(config)
     ? config
-    : resolveConfig(checkCodeValue(configInputSchema, () => config, { notAnObject: 'must be an object', threw: 'could not be read' }), { env: options.env ?? process.env })
-  const providers = buildProviders(resolved.providers)
+    : resolveConfig(checkCodeValue(configInputSchema, () => config, { notAnObject: 'must be an object', threw: 'could not be read' }), { env })
+  const providers = buildProviders(resolved.providers, env)
   // Resolution bound every profile to providers it kept, so each name is found.
   const provider = (name: string): Provider => providers.get(name) as Provider
   const ports: Readonly<Record<string, ProfilePorts>> = Object.fromEntries(resolved.profiles.map(({ profile, research, voters }) => [

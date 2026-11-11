@@ -92,6 +92,19 @@ describe('bannerLines', () => {
     expect(bannerLines(config({ local, mistral }, [{ research: 'local', voters }]))[1]).toBe('Panel will use reachability (qwen3.6:27b @ http://localhost:11434), impact (mistral-small-latest @ https://api.mistral.ai), defenses (qwen3.6:27b @ http://localhost:11434)')
   })
 
+  it('names a claude-code provider by its model and its protocol', () => {
+    const cc = { protocol: 'claude-code', command: '/c', model: 'sonnet', contextTokens: 1000000 } as const
+    expect(bannerLines(config({ cc }, [{ research: 'cc', voters: sharing('cc') }]))).toEqual(['Research (sonnet @ claude-code)...', 'Panel will use sonnet @ claude-code'])
+  })
+
+  it('names a claude-code provider among others, and never its command', () => {
+    const cc = { protocol: 'claude-code', command: '/secret/claude', model: 'haiku', contextTokens: 1000000 } as const
+    const voters = { reachability: 'cc', impact: 'local', defenses: 'cc' }
+    const lines = bannerLines(config({ local, cc }, [{ research: 'local', voters }]))
+    expect(lines[1]).toBe('Panel will use reachability (haiku @ claude-code), impact (qwen3.6:27b @ http://localhost:11434), defenses (haiku @ claude-code)')
+    expect(lines.join('\n')).not.toContain('secret')
+  })
+
   it('starts each line with the profile when several run', () => {
     const lines = bannerLines(config({ local }, [{ research: 'local', voters: sharing('local') }, { id: 'team', research: 'local', voters: sharing('local') }]))
     expect(lines).toHaveLength(4)

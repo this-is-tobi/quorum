@@ -7,6 +7,7 @@ import { httpOrigin } from '../providers/http.ts'
 import { CONTEXT_REQUIRED } from '../providers/options.ts'
 import { presetOf, withoutPrototype } from '../providers/presets.ts'
 import type { Preset } from '../providers/presets.ts'
+import { billingWarnings, claudeCodeCommand } from './claude-code.ts'
 import { applyRoleOverrides, atVariables, baseUrlOf, envValue, namesModelOrEndpoint, PROFILE_ID, readEnv, setsContextSize, VARIABLE_NAME } from './env.ts'
 import type { Env, EnvLayer, ProviderEntry, RoleBinding } from './env.ts'
 import { own, resolveProfiles } from './profiles.ts'
@@ -38,6 +39,8 @@ const NO_CONTEXT = 'no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKE
 const VOTER_KEY = 'QUORUM_VOTER_API_KEY'
 const VOTER_MODEL = 'QUORUM_VOTER_MODEL'
 const LOOPBACK_IPV4 = /^127(?:\.\d{1,3}){3}$/
+/** The variable `claude` reads its key from, and so the one `api-key` mode reads when `apiKeyEnv` names none. */
+const CLAUDE_KEY_VARIABLE = 'ANTHROPIC_API_KEY'
 
 /** The configs this module resolved: a frozen copy is recognised by its identity, never by its shape. */
 const RESOLVED = new WeakSet<object>()
@@ -96,6 +99,15 @@ interface KeyReading {
 
 const NO_KEY: KeyReading = Object.freeze({ apiKey: undefined, issues: Object.freeze([]), warnings: Object.freeze([]) })
 
+/** What a provider in use that runs `claude` gets besides its key: the executable found, and the warning of a key that is billed. */
+interface ClaudeReading {
+  readonly command?: string
+  readonly issues: readonly ConfigIssue[]
+  readonly warnings: readonly string[]
+}
+
+const NO_CLAUDE: ClaudeReading = Object.freeze({ issues: Object.freeze([]), warnings: Object.freeze([]) })
+
 /** The key a variable holds, or the issue that it is not set. */
 function readVariable(name: string, variable: string, env: Env): KeyReading {
   const apiKey = envValue(env, variable)
@@ -105,11 +117,13 @@ function readVariable(name: string, variable: string, env: Env): KeyReading {
 /**
  * The key of a spec that a profile uses: its own `apiKey` (an empty one is unset, as a blank variable is),
  * else the variable `apiKeyEnv` names, else its preset's own variable, which is read only while the base URL is the preset's endpoint (I1) and `presetKey`
- * allows it: at another endpoint it is not read, and the warning says so.
+ * allows it: at another endpoint it is not read, and the warning says so. A `claude-code` spec has no preset: its key is
+ * `ANTHROPIC_API_KEY` under `api-key`, and none under another mode.
  */
 function readKey(name: string, fields: ProviderSettings, env: Env, presetKey: boolean): KeyReading {
   if (fields.apiKey !== undefined && fields.apiKey !== '') return { apiKey: fields.apiKey, issues: [], warnings: [] }
   if (fields.apiKeyEnv !== undefined) return readVariable(name, fields.apiKeyEnv, env)
+  if (fields.protocol === 'claude-code') return fields.auth === 'api-key' ? readVariable(name, CLAUDE_KEY_VARIABLE, env) : NO_KEY
   const preset = presetOf(fields.preset)
   const variable = preset?.apiKeyEnv
   if (preset === undefined || variable === undefined) return NO_KEY
@@ -132,25 +146,33 @@ interface CheckedSpec {
   readonly warnings: string[]
 }
 
+/** The `claude` of a provider in use, when it runs one: found by `claudeCodeCommand`, with the billing warning. */
+function readClaude(name: string, fields: ProviderSettings, env: Env, variable: string | undefined): ClaudeReading {
+  if (fields.protocol !== 'claude-code') return NO_CLAUDE
+  return { ...claudeCodeCommand(name, fields, variable, env), warnings: billingWarnings(name, fields, env) }
+}
+
 /**
- * One provider's spec, checked by the builder. A spec in use gets its key first; one that is not is
- * checked without a key, and none of its variables is read. `presetKey` is false for a provider that
- * is never sent its preset's key variable.
+ * One provider's spec, checked by the builder. A spec in use gets its key first, and its `claude` when it
+ * runs one (`command` is the one of `QUORUM_CLAUDE_CODE_COMMAND`, if set); one that is not is checked without
+ * a key or a command, and none of its variables is read. `presetKey` is false for a provider that is never
+ * sent its preset's key variable.
  */
-function checkSpec(name: string, entry: ProviderSettings, inUse: boolean, env: Env, presetKey: boolean): CheckedSpec {
+function checkSpec(name: string, entry: ProviderSettings, inUse: boolean, env: Env, presetKey: boolean, command: string | undefined): CheckedSpec {
   const fields = ownFields(entry)
   const key = inUse ? readKey(name, fields, env, presetKey) : NO_KEY
+  const claude = inUse ? readClaude(name, fields, env, command) : NO_CLAUDE
   const { apiKeyEnv: _apiKeyEnv, apiKey: _apiKey, ...rest } = fields
   // The builder refuses a spec with no model, and a spec it refuses is never kept.
-  const spec = (key.apiKey === undefined ? rest : { ...rest, apiKey: key.apiKey }) as Omit<ProviderSpec, 'id'>
-  const issues = [...key.issues]
+  const spec = { ...rest, ...key.apiKey === undefined ? {} : { apiKey: key.apiKey }, ...claude.command === undefined ? {} : { command: claude.command } } as Omit<ProviderSpec, 'id'>
+  const issues = [...key.issues, ...claude.issues]
   try {
-    buildProvider({ ...spec, id: name })
+    buildProvider({ ...spec, id: name }, { env })
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error
     issues.push(...error.issues.map(({ path, message }) => ({ path: `providers.${path}`, message })))
   }
-  return { spec, issues, warnings: [...key.warnings, ...cleartextWarnings(name, key.apiKey, baseUrlOf(fields))] }
+  return { spec, issues, warnings: [...key.warnings, ...claude.warnings, ...cleartextWarnings(name, key.apiKey, baseUrlOf(fields))] }
 }
 
 /** A copy of a spec, field by field, so the config's own objects stay out of the resolved config; or an issue at each field that cannot be copied, which never repeats what it holds. */
@@ -167,8 +189,8 @@ function copySpec(name: string, spec: Omit<ProviderSpec, 'id'>): { readonly copy
   return issues.length > 0 ? { issues } : { copy: Object.fromEntries(copies) as Omit<ProviderSpec, 'id'> }
 }
 
-/** Every provider of the config checked by the builder, and the specs and objects a profile uses. `withheld` names the provider that is never sent its preset's key variable. */
-function checkProviders(providers: Readonly<Record<string, ProviderEntry>>, inUse: ReadonlySet<string>, env: Env, withheld: string | undefined): { providers: Array<[string, ResolvedProvider]>, issues: ConfigIssue[], warnings: string[] } {
+/** Every provider of the config checked by the builder, and the specs and objects a profile uses. `withheld` names the provider that is never sent its preset's key variable, `command` is `QUORUM_CLAUDE_CODE_COMMAND`'s. An issue two providers share (the variable names no file) is reported once. */
+function checkProviders(providers: Readonly<Record<string, ProviderEntry>>, inUse: ReadonlySet<string>, env: Env, withheld: string | undefined, command: string | undefined): { providers: Array<[string, ResolvedProvider]>, issues: ConfigIssue[], warnings: string[] } {
   const result: Array<[string, ResolvedProvider]> = []
   const issues: ConfigIssue[] = []
   const warnings: string[] = []
@@ -178,8 +200,8 @@ function checkProviders(providers: Readonly<Record<string, ProviderEntry>>, inUs
       if (used) result.push([name, entry])
       continue
     }
-    const checked = checkSpec(name, entry, used, env, name !== withheld)
-    issues.push(...checked.issues)
+    const checked = checkSpec(name, entry, used, env, name !== withheld, command)
+    issues.push(...checked.issues.filter(issue => !issues.some(({ path, message }) => path === issue.path && message === issue.message)))
     warnings.push(...checked.warnings)
     if (!used) continue
     const copied = copySpec(name, checked.spec)
@@ -270,7 +292,9 @@ function bindRoles(roles: ConfigInput['roles'], names: readonly string[]): { rea
  * the profiles that run, and the key of each provider they use. Every provider is checked by the builder,
  * the ones that are not used without a key. A key is sent only to the endpoint it was configured for: a
  * preset's own variable is read only at the preset's origin. Every provider needs a context size, and the issue
- * of a missing one names what to set (`reportMissingContext`). A resolved config is returned as it is. The
+ * of a missing one names what to set (`reportMissingContext`). A `claude-code` provider in use gets its
+ * command as it gets its key: `QUORUM_CLAUDE_CODE_COMMAND`, else the config's, else `claude` in an absolute
+ * entry of `PATH`, found or refused here, and its billing warning. A resolved config is returned as it is. The
  * input must already have passed a config schema. `options.selection`, when given, names the profiles that
  * run, over `QUORUM_PROFILES`, which is still checked; its ids are checked before anything is resolved.
  *
@@ -303,7 +327,7 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
   // preset of its own, it is never sent a preset's key variable: that is research's key by another name (ADR-0013).
   const derived = applied.roles.voter === bound.roles.voter ? undefined : applied.roles.voter
   const elsewhere = derived !== undefined && own(layer.voter, 'preset') === undefined && originOf(applied.providers[derived]) !== originOf(applied.providers[applied.roles.research])
-  const checked = checkProviders(applied.providers, inUse, env, elsewhere ? derived : undefined)
+  const checked = checkProviders(applied.providers, inUse, env, elsewhere ? derived : undefined, own(layer, 'claudeCodeCommand'))
 
   const reportedVoter = applied.issues.some(issue => issue.path === VOTER_MODEL) ? derived : undefined
   const reported = reportMissingContext(reportMissingModel(checked.issues, builtIn, reportedVoter), { builtIn, roles: applied.roles, derived, layer })

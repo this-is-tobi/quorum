@@ -7,6 +7,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import packageJson from '../../package.json' with { type: 'json' }
 import type { QuorumResult, Verdict } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
+import { fakeClaudeEnv, readFakeRecord, writeFakeClaude } from '../testing/claude.ts'
+import * as fixtures from '../testing/fixtures/claude-code.ts'
 import { chatResponse } from '../testing/fixtures/ollama.ts'
 import { chatReply, sent, stubChat, stubFetch, textReply } from '../testing/http.ts'
 import { EXIT, exitCodeFor, interruptSignal, runCli } from './main.ts'
@@ -927,5 +929,51 @@ describe('inert output', () => {
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stderr()).toContain('flag: hidden-characters at "a.js":1 (U+202E on 1 added line(s))\n')
     expect(JSON.parse(stdout()).meta.flags).toEqual([{ code: 'hidden-characters', file: 'a.js', line: 1, detail: 'U+202E on 1 added line(s)' }])
+  })
+})
+
+describe('a claude-code provider', () => {
+  let claude = ''
+  beforeAll(() => {
+    claude = writeFakeClaude(dir)
+  })
+  const ccEnv = (extra: Record<string, string> = {}): Record<string, string> => ({
+    QUORUM_RESEARCH_PROTOCOL: 'claude-code',
+    QUORUM_RESEARCH_MODEL: 'haiku',
+    QUORUM_RESEARCH_CONTEXT_TOKENS: '1000000',
+    QUORUM_CLAUDE_CODE_COMMAND: claude,
+    ...extra,
+  })
+
+  it('reviews a diff through claude from the environment alone, and names the provider claude-code', async () => {
+    const { io, stdout, stderr } = harness({ env: { ...ccEnv(), ...fakeClaudeEnv(dir, 'cli', fixtures.noFindings) }, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(JSON.parse(stdout()).kept).toEqual([])
+    expect(stderr()).toContain('Research (haiku @ claude-code)...\nPanel will use haiku @ claude-code\n')
+    expect(stderr()).not.toContain('warning:')
+    expect(stderr()).not.toContain(dir)
+    expect(readFakeRecord(dir, 'cli').stdin).toContain(DIFF)
+  })
+
+  it('prints the claude it found, and exits 2 when the variable names none', async () => {
+    const printed = harness({ argv: ['--print-config'], env: ccEnv() })
+    expect(await runCli(printed.io)).toBe(EXIT.ok)
+    expect(printed.stdout()).toContain(`  default:\n    protocol: claude-code\n    command: ${claude}\n    model: haiku\n    contextTokens: 1000000\n    auth: inherit\nprofiles:\n`)
+    const missing = harness({ argv: ['--print-config'], env: ccEnv({ QUORUM_CLAUDE_CODE_COMMAND: join(dir, 'no-claude') }) })
+    expect(await runCli(missing.io)).toBe(EXIT.usage)
+    expect(missing.stderr()).toBe('Error: QUORUM_CLAUDE_CODE_COMMAND: names no executable file\n')
+  })
+
+  it('warns that claude bills the key in the environment, without printing it or the command', async () => {
+    const { io, stdout } = harness({ argv: ['--print-config'], env: ccEnv({ ANTHROPIC_API_KEY: 'sk-SECRET' }) })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stdout()).toContain('warnings:\n  - "providers.default: ANTHROPIC_API_KEY is set, so Claude Code bills that key rather than its login: unset it, or set auth to login or api-key"\n')
+    expect(stdout()).not.toContain('SECRET')
+  })
+
+  it('exits 2 naming the provider when claude is on no PATH entry, and prints no PATH entry', async () => {
+    const { io, stderr } = harness({ argv: ['--print-config'], env: { ...ccEnv({ QUORUM_CLAUDE_CODE_COMMAND: '' }), PATH: join(dir, 'empty-bin') } })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toBe('Error: providers.default: claude CLI not found; install Claude Code or set QUORUM_CLAUDE_CODE_COMMAND\n')
   })
 })

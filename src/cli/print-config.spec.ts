@@ -28,6 +28,25 @@ describe('printConfig', () => {
     expect(unnamed).toContain('  mine:\n    implements: Provider\nprofiles:\n')
   })
 
+  it('prints a claude-code provider: its command, model, context size, auth mode and args, its key redacted, and no origin', () => {
+    const text = printed({ protocol: 'claude-code', command: '/opt/claude/bin/claude', model: 'sonnet', contextTokens: 1000000, auth: 'api-key', apiKey: 'sk-SECRET', args: ['--effort', 'high'] })
+    expect(text).toContain('  a:\n    protocol: claude-code\n    command: /opt/claude/bin/claude\n    model: sonnet\n    contextTokens: 1000000\n    apiKey: "[redacted]"\n    auth: api-key\n    args:\n      - --effort\n      - high\nprofiles:\n')
+    expect(text).not.toContain('SECRET')
+    expect(text).not.toContain('origin')
+  })
+
+  it('prints the auth mode a claude-code provider runs with when it sets none', () => {
+    expect(printed({ protocol: 'claude-code', command: '/c', model: 'sonnet', contextTokens: 1000000 })).toContain('    contextTokens: 1000000\n    auth: inherit\nprofiles:\n')
+  })
+
+  it('prints a claude-code provider\'s reply mode when it sets one, and writes its command and args inert', () => {
+    const hidden = String.fromCharCode(0x202E)
+    const text = printed({ protocol: 'claude-code', command: `/c${hidden}`, model: 'sonnet', contextTokens: 1000000, structuredOutput: 'prompt', args: [`--fallback-model=${hidden}`] })
+    expect(text).toContain('    auth: inherit\n    args:\n      - --fallback-model=<U+202E>\n    structuredOutput: prompt\nprofiles:\n')
+    expect(text).toContain('    command: /c<U+202E>\n')
+    expect(text).not.toContain(hidden)
+  })
+
   it('breaks a workflow command a key would start', () => {
     const text = printed({ ...SPEC, extraBody: { '::error::x': 'value' } })
     expect(text).toContain('\n      <U+003A>:error::x: "[redacted]"\n')

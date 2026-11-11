@@ -72,11 +72,16 @@ export function providerOrigin(spec: Exclude<ResolvedProvider, Provider>): strin
   return originOf(own(spec, 'baseUrl') ?? presetOf(own(spec, 'preset'))?.baseUrl ?? '')
 }
 
+/** Where a provider defined as data is reached, as the banner names it: its origin, or `claude-code` for the CLI, which has none. */
+function endpointOf(spec: Exclude<ResolvedProvider, Provider>): string {
+  return own(spec, 'protocol') === 'claude-code' ? 'claude-code' : providerOrigin(spec)
+}
+
 /** What a provider reads as in the banner: its model and where it is reached, a provider object by its config key. */
 function providerLabel(providers: ResolvedConfig['providers'], name: string): string {
   // Resolution bound every profile to providers it kept, so each name is found.
   const entry = own(providers, name) as ResolvedProvider
-  return isProvider(entry) ? `${entry.model} @ the provider object ${name}` : `${own(entry, 'model')} @ ${providerOrigin(entry)}`
+  return isProvider(entry) ? `${entry.model} @ the provider object ${name}` : `${own(entry, 'model')} @ ${endpointOf(entry)}`
 }
 
 /** The banner of one profile: its research provider, then its panel, one provider for every lens when they share it. */
@@ -91,9 +96,10 @@ function profileBanner({ research, voters }: ResolvedProfile, providers: Resolve
 
 /**
  * The lines a run prints before its progress: who researches and who votes, from the resolved config, as
- * `<model> @ <origin>` (a provider object as `<model> @ the provider object <name>`), never a path, a
- * credential or a query. The panel line names one provider when every lens shares it, else each lens's.
- * Each line starts with `[<profile>] ` when several profiles run, and is inert.
+ * `<model> @ <origin>` (a provider object as `<model> @ the provider object <name>`, a `claude-code`
+ * provider as `<model> @ claude-code`), never a path, a credential or a query. The panel line names one
+ * provider when every lens shares it, else each lens's. Each line starts with `[<profile>] ` when several
+ * profiles run, and is inert.
  */
 export function bannerLines(config: ResolvedConfig): string[] {
   const prefixed = config.profiles.length > 1
