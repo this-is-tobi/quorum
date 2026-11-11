@@ -248,7 +248,8 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
   const refused = selection === undefined ? [] : selectionIssues(selection)
   if (layer.issues.length > 0 || refused.length > 0 || bound.issues.length > 0 || bound.roles === undefined) throw new ConfigError([...layer.issues, ...refused, ...bound.issues])
 
-  // Read as own fields: a polluted `Object.prototype` selects no profile.
+  // The environment layer's profiles are read as own fields, so a polluted `Object.prototype` selects none
+  // through `QUORUM_PROFILES`; `options.selection` is read directly, as the caller gave it.
   const ids = own(layer, 'profiles')
   const applied = applyRoleOverrides(Object.fromEntries(entries), bound.roles, layer)
   const profiles = resolveProfiles({

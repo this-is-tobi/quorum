@@ -279,6 +279,7 @@ describe('a selection of profiles', () => {
     ['an id of another form', ['Security'], [{ path: '--profile', message: ID }]],
     ['an empty id', [''], [{ path: '--profile', message: ID }]],
     ['an id named twice', ['security', 'security'], [{ path: '--profile', message: 'names a profile more than once' }]],
+    ['a malformed id named twice', ['Bad', 'Bad'], [{ path: '--profile', message: ID }, { path: '--profile', message: 'names a profile more than once' }]],
     ['an unknown id', ['secrity'], [{ path: '--profile', message: 'unknown profile "secrity" (did you mean "security"?)' }]],
     ['no id', [], [{ path: '--profile', message: 'must name at least one profile' }]],
   ])('refuses %s at the selection\'s path', (_name, ids, issues) => {

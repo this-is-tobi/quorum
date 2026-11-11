@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CompletionResponse, Provider } from '../core/ports.ts'
-import { applyRoleOverrides, baseUrlOf, envValue, readEnv } from './env.ts'
+import { applyRoleOverrides, baseUrlOf, envValue, READ_VARIABLES, readEnv } from './env.ts'
 import type { Env, EnvLayer, ProviderEntry, RoleBinding } from './env.ts'
 import type { ProviderSettings } from './schema.ts'
 
@@ -86,7 +86,7 @@ describe('readEnv', () => {
 })
 
 describe('the variables quorum does not read', () => {
-  const ROLE_VARIABLES = ['RESEARCH', 'VOTER'].flatMap(role => ['PRESET', 'PROTOCOL', 'BASE_URL', 'MODEL', 'API_KEY'].map(field => `QUORUM_${role}_${field}`))
+  const QUORUM_VARIABLES = [...READ_VARIABLES].filter(name => name.startsWith('QUORUM_'))
 
   it('names each QUORUM_ variable it does not read, sorted, in one warning after the deprecation line', () => {
     expect(readEnv({ QUORUM_VOTER_BASEURL: 'https://v.example/v1', QUORUM_PROFILE: 'security', RESEARCH_MODEL: 'm' }).warnings).toEqual([
@@ -97,13 +97,19 @@ describe('the variables quorum does not read', () => {
   })
 
   it('warns about none of the variables it reads', () => {
-    const known = Object.fromEntries([['QUORUM_CONFIG', 'q.yaml'], ['QUORUM_PROFILES', 'security'], ...ROLE_VARIABLES.map(name => [name, 'x'])])
-    expect(readEnv(known).warnings).toEqual([])
+    expect(QUORUM_VARIABLES).toContain('QUORUM_RESEARCH_API_KEY')
+    expect(readEnv(Object.fromEntries(QUORUM_VARIABLES.map(name => [name, 'x']))).warnings).toEqual([])
   })
 
   it('ignores a blank variable, and one the environment only inherits', () => {
     expect(readEnv({ QUORUM_PROFILE: '  ' }).warnings).toEqual([])
     expect(readEnv(Object.create({ QUORUM_PROFILE: 'security' }) as Env).warnings).toEqual([])
+  })
+
+  it('prints a name of 64 characters, and one of 65 as *', () => {
+    const name = (length: number): string => `QUORUM_${'A'.repeat(length - 'QUORUM_'.length)}`
+    expect(readEnv({ [name(64)]: 'sk-SECRET' }).warnings).toEqual([`${name(64)} is not a variable quorum reads`])
+    expect(readEnv({ [name(65)]: 'sk-SECRET' }).warnings).toEqual(['* is not a variable quorum reads'])
   })
 
   it('prints a name that is not an upper-case variable name as *, and never a value', () => {
