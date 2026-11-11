@@ -96,7 +96,7 @@ function configSchema<P extends z.ZodType, R extends z.ZodType>(provider: P, pro
     roles: roles.optional().describe('The providers every profile uses, unless it names its own. research is required once several providers are defined; voter is research when unset'),
     concurrency: z.int().min(1).optional().describe('The most provider calls in flight at once in one review, shared by every profile'),
     maxFindings: z.int().min(1).optional().describe('The most findings of a research reply each profile reads, the only ones that can reach its panel'),
-    profiles: z.record(name, profileSchema(promptForm)).optional().describe('The review profiles that run, by id: a built-in profile, one that extends it, or one of your own; the security profile alone when unset'),
+    profiles: z.record(name, profileSchema(promptForm)).optional().describe('The review profiles, by id: a built-in profile, one that extends it, or one of your own. The ones QUORUM_PROFILES names run, else every one listed here, else the security profile alone'),
   })
 }
 
