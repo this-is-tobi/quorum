@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -5,6 +6,7 @@ import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
 import type { QuorumResult, Verdict } from '../core/types.ts'
+import { securityProfile } from '../profiles/security.ts'
 import { chatReply, sent, stubChat, stubFetch, textReply } from '../testing/http.ts'
 import { EXIT, exitCodeFor, interruptSignal, runCli } from './main.ts'
 import type { CliIO } from './main.ts'
@@ -82,10 +84,14 @@ const USAGE = [
   '  -c, --config <path>     Read this config file, over QUORUM_CONFIG',
   '  -p, --profile <id>      Run only this profile; repeat it to run several',
   '      --allow-incomplete  Exit 0 instead of 4 when the review is incomplete',
+  '      --print-config      Print the resolved config, keys redacted, and exit',
   '  -h, --help              Print this help and exit',
   '  -v, --version           Print the version and exit',
   '',
 ].join('\n')
+
+/** The text a config prints for a prompt: `sha256:` and the lowercase hex SHA-256 of its UTF-8 text. */
+const sha256 = (text: string): string => `sha256:${createHash('sha256').update(text).digest('hex')}`
 
 /** Every hidden class the sanitizer knows, to check that the CLI writes none of them. */
 const ANY_HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}]/u
@@ -480,6 +486,124 @@ describe('flags', () => {
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toBe(error)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('--print-config', () => {
+  it('prints the resolved config as YAML, with no key, header, query or body value, and no path of a base URL', async () => {
+    const fetchMock = stubChat()
+    write('gateway.yaml', [
+      'providers:',
+      '  local: {preset: ollama, model: qwen3.6:27b}',
+      '  gateway:',
+      '    protocol: openai-compatible',
+      '    baseUrl: https://gw.example/token-SECRET/v1',
+      '    model: gpt-5',
+      '    apiKeyEnv: GATEWAY_KEY',
+      '    auth: {header: x-gateway-key, prefix: "Key "}',
+      '    headers: {x-team: hdr-SECRET}',
+      '    query: {api-version: q-SECRET}',
+      '    extraBody: {user: body-SECRET}',
+      '    temperature: null',
+      'roles: {research: local, voter: gateway}',
+      'concurrency: 2',
+      '',
+    ].join('\n'))
+    const { io, stdout, stderr } = harness({ argv: ['--print-config', '--config', 'gateway.yaml'], cwd: dir, env: { GATEWAY_KEY: 'sk-live-SECRET' }, isTTY: true })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stdout()).toBe([
+      `source: ${join(dir, 'gateway.yaml')}`,
+      'providers:',
+      '  local:',
+      '    preset: ollama',
+      '    origin: http://localhost:11434',
+      '    model: qwen3.6:27b',
+      '  gateway:',
+      '    protocol: openai-compatible',
+      '    origin: https://gw.example',
+      '    model: gpt-5',
+      '    apiKey: "[redacted]"',
+      '    auth:',
+      '      header: x-gateway-key',
+      '      prefix: "Key "',
+      '    headers:',
+      '      x-team: "[redacted]"',
+      '    query:',
+      '      api-version: "[redacted]"',
+      '    extraBody:',
+      '      user: "[redacted]"',
+      '    temperature: null',
+      'profiles:',
+      '  security:',
+      '    gating: true',
+      '    research: local',
+      '    lenses:',
+      '      reachability: gateway',
+      '      impact: gateway',
+      '      defenses: gateway',
+      '    thresholds:',
+      '      high: 3',
+      '      medium: 2',
+      '      low: null',
+      '    prompts:',
+      `      research: ${sha256(securityProfile.prompts.research)}`,
+      `      vote: ${sha256(securityProfile.prompts.vote)}`,
+      'concurrency: 2',
+      'maxFindings: 50',
+      'warnings: []',
+      '',
+    ].join('\n'))
+    expect(stdout()).not.toContain('SECRET')
+    expect(stderr()).toBe('')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('redacts a key from the environment and a token in the base URL\'s path, and prints source null with no file', async () => {
+    const preset = harness({ argv: ['--print-config'], env: { QUORUM_RESEARCH_PRESET: 'openai', QUORUM_RESEARCH_MODEL: 'gpt-5', OPENAI_API_KEY: 'sk-openai-SECRET' } })
+    expect(await runCli(preset.io)).toBe(EXIT.ok)
+    expect(preset.stdout()).toMatch(/^source: null\nproviders:\n {2}default:\n {4}preset: openai\n {4}origin: https:\/\/api\.openai\.com\n {4}model: gpt-5\n {4}apiKey: "\[redacted\]"\nprofiles:\n/)
+    const path = harness({ argv: ['--print-config'], env: { QUORUM_RESEARCH_BASE_URL: 'https://h.example/token-SECRET/v1', QUORUM_RESEARCH_MODEL: 'm', QUORUM_RESEARCH_API_KEY: 'sk-SECRET' } })
+    expect(await runCli(path.io)).toBe(EXIT.ok)
+    expect(path.stdout()).toContain('    protocol: openai-compatible\n    origin: https://h.example\n    model: m\n    apiKey: "[redacted]"\n')
+    expect(`${preset.stdout()}${path.stdout()}`).not.toContain('SECRET')
+  })
+
+  it('lists the config\'s warnings in the YAML, and none on stderr', async () => {
+    const { io, stdout, stderr } = harness({ argv: ['--print-config'], env: { RESEARCH_MODEL: 'm' } })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stdout()).toMatch(/\nwarnings:\n {2}- "RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead"\n$/)
+    expect(stderr()).toBe('')
+  })
+
+  it('prints only the profiles --profile selects, and a custom prompt by its SHA-256', async () => {
+    write('abc.yaml', 'profiles:\n  team: {prompts: {research: abc, vote: abc}, lenses: [{id: a, question: q}]}\n')
+    const { io, stdout } = harness({ argv: ['--print-config', '-c', 'abc.yaml', '-p', 'team'], cwd: dir, env: MODEL })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stdout()).toContain('\nprofiles:\n  team:\n    gating: true\n    research: default\n    lenses:\n      a: default\n    thresholds:\n      high: 1\n      medium: 1\n      low: null\n    prompts:\n      research: sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n')
+    expect(stdout()).not.toContain('security')
+  })
+
+  it('reads no diff: a diff argument is a usage error', async () => {
+    const { io, stdout, stderr } = harness({ argv: ['--print-config', 'x.diff'], env: MODEL })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe(`Error: --print-config takes no diff file\n${USAGE}`)
+  })
+
+  it('prints every line inert, a hidden character in the source path included', async () => {
+    const name = `q${String.fromCharCode(0x202E)}.yaml`
+    write(name, 'providers:\n  a: {preset: ollama, model: m}\n')
+    const { io, stdout } = harness({ argv: ['--print-config', '--config', name], cwd: dir })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stdout()).toContain(`source: ${join(dir, 'q<U+202E>.yaml')}\n`)
+    expect(stdout().replaceAll('\n', '')).not.toMatch(ANY_HIDDEN)
+  })
+
+  it('exits 2 on a configuration error, as a run does', async () => {
+    const { io, stdout, stderr } = harness({ argv: ['--print-config'] })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe('Error: no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one\n')
   })
 })
 

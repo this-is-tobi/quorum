@@ -8,6 +8,7 @@ import { loadConfig } from '../config/load.ts'
 import { ConfigError } from '../core/errors.ts'
 import { inertJson, inertLine } from '../core/sanitize.ts'
 import type { QuorumResult } from '../core/types.ts'
+import { printConfig } from './print-config.ts'
 import { bannerLines, progressSink } from './render.ts'
 
 /** Exit codes (ADR-0008, amended by ADR-0012). */
@@ -35,6 +36,7 @@ const USAGE = [
   '  -c, --config <path>     Read this config file, over QUORUM_CONFIG',
   '  -p, --profile <id>      Run only this profile; repeat it to run several',
   '      --allow-incomplete  Exit 0 instead of 4 when the review is incomplete',
+  '      --print-config      Print the resolved config, keys redacted, and exit',
   '  -h, --help              Print this help and exit',
   '  -v, --version           Print the version and exit',
   '',
@@ -44,6 +46,7 @@ const OPTIONS = {
   config: { type: 'string', short: 'c' },
   profile: { type: 'string', short: 'p', multiple: true },
   'allow-incomplete': { type: 'boolean' },
+  'print-config': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
   version: { type: 'boolean', short: 'v' },
 } as const
@@ -55,10 +58,14 @@ const OPTIONS = {
  * was kept by a gating profile, so CI can tell a broken run and a partial review from a real finding
  * (exit 1) and from a clean one (exit 0). `exitCodeFor` maps the result; advisory flags never change it.
  *
- * Its flags are `--config`, `--profile`, `--allow-incomplete`, `--help` and `--version`; a usage error
- * prints the usage after its message. Its settings are the config file `--config` or `QUORUM_CONFIG`
- * names, resolved against `io.cwd`, and the `QUORUM_*` variables of `io.env` with their deprecated
- * aliases. Each warning is printed once, before the banner.
+ * Its flags are `--config`, `--profile`, `--allow-incomplete`, `--print-config`, `--help` and `--version`;
+ * a usage error prints the usage after its message. Its settings are the config file `--config` or
+ * `QUORUM_CONFIG` names, resolved against `io.cwd`, and the `QUORUM_*` variables of `io.env` with their
+ * deprecated aliases. Each warning is printed once, before the banner.
+ *
+ * `--print-config` reads no diff and calls no model: it writes the resolved config as YAML on stdout
+ * (see `printConfig`), warnings included, and returns 0; a diff argument with it is a usage error, and
+ * a configuration error exits 2 as in a run.
  *
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
  * error ended the review, and writes no result. A review that has already resolved is complete.
@@ -83,17 +90,23 @@ export async function runCli(io: CliIO): Promise<number> {
     return EXIT.ok
   }
 
-  let diff: string
+  const printing = values['print-config'] === true
+  let diff = ''
   try {
     if (values.config === '') throw new ConfigError([{ path: '--config', message: 'must name a file' }])
-    diff = await readDiff(io, positionals)
+    if (printing && positionals.length > 0) throw new Error('--print-config takes no diff file')
+    if (!printing) diff = await readDiff(io, positionals)
   } catch (error) {
     return usageError(io, error)
   }
 
   try {
     const selection = values.profile === undefined ? undefined : { ids: values.profile, path: '--profile' }
-    const { config } = await loadConfig({ cwd: io.cwd, env: io.env, configPath: values.config, selection })
+    const { config, source } = await loadConfig({ cwd: io.cwd, env: io.env, configPath: values.config, selection })
+    if (printing) {
+      io.stdout.write(printConfig(config, source))
+      return EXIT.ok
+    }
     const quorum = await fromConfig(config, { env: io.env, events: progressSink(line => io.stderr.write(`${line}\n`)) })
     for (const warning of quorum.warnings) io.stderr.write(`${inertLine(`warning: ${warning}`)}\n`)
     for (const line of bannerLines(config)) io.stderr.write(`${line}\n`)
