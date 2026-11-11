@@ -173,7 +173,7 @@ declare function defineConfig(config: QuorumConfig): QuorumConfig
 
 `loadConfig` reads a named config file and `fromConfig` builds a quorum from a config: [`loadConfig` and `fromConfig`](#loadconfig-and-fromconfig). The CLI and `runQuorum` read their settings through these two functions: [Configuration](../20-using/20-configuration.md). These exports write and type-check a config:
 
-- **`QuorumConfig`** types what a TS or JS config exports as its default: `$schema`, for an editor, `version`, `providers`, `roles`, `concurrency`, `maxFindings` and `profiles`, every one optional. A provider is an object implementing `Provider`, or its settings, every one optional too: `preset`, `protocol`, `baseUrl`, `model`, `apiKeyEnv` and `apiKey`, then `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt`, as [Providers](../20-using/30-providers.md#options) describes them.
+- **`QuorumConfig`** types what a TS or JS config exports as its default: `$schema`, for an editor, `version`, `providers`, `roles`, `concurrency`, `maxFindings` and `profiles`, every one optional. A provider is an object implementing `Provider`, or its settings, every one optional too: `preset`, `protocol`, `baseUrl`, `model`, `contextTokens`, `apiKeyEnv` and `apiKey`, then `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt`, as [Providers](../20-using/30-providers.md#options) describes them.
 - **`QuorumConfigFile`** types what a YAML or JSON config holds: the same settings, as data only, so a provider is always its settings, and names the environment variable that holds its key in `apiKeyEnv`, never holding one.
 - **`ConfigInput`** types what `fromConfig` takes: the settings of `QuorumConfig`, with every prompt a string, since a program's config reads no file and so holds no `{ file }`.
 - **`defineConfig`** returns the config it is given, as it is. Wrapping a default export in it has the editor check every field.
@@ -262,10 +262,11 @@ Each layer sits over the one before it: the built-in defaults, then the file `co
 | `QUORUM_RESEARCH_PROTOCOL`, `QUORUM_VOTER_PROTOCOL` | A role's provider, built from a wire protocol: `openai-compatible`, `anthropic`, `gemini` or `ollama` |
 | `QUORUM_RESEARCH_BASE_URL`, `QUORUM_VOTER_BASE_URL` | The base URL of a role's provider |
 | `QUORUM_RESEARCH_MODEL`, `QUORUM_VOTER_MODEL` | The model of a role's provider |
+| `QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS` | The context window of a role's provider's model, in tokens: a whole number from 1 to 999999999. It has no deprecated alias |
 | `QUORUM_RESEARCH_API_KEY`, `QUORUM_VOTER_API_KEY` | The key of a role's provider, as a literal `apiKey` |
 | `RESEARCH_BASE_URL`, `RESEARCH_API_KEY`, `RESEARCH_MODEL`, `VOTER_BASE_URL`, `VOTER_API_KEY`, `VOTER_MODEL` | Deprecated aliases: each is read as the `QUORUM_` variable of the same name |
 
-- **The `QUORUM_` form wins** over its alias when both are set, and one warning names every alias that is set, whichever form won: `RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead`. A preset and a protocol have no alias.
+- **The `QUORUM_` form wins** over its alias when both are set, and one warning names every alias that is set, whichever form won: `RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead`. A preset, a protocol and a context size have no alias.
 - **Every value is trimmed, and a blank one is unset.** Only the variables the environment holds itself are read, never one an object it inherits from holds.
 - **`QUORUM_PROFILES` refuses what would review nothing or the wrong thing**: an empty id, an id that is not lower-case letters, digits, `_` and `-` after a letter, or an id named twice.
 
@@ -275,16 +276,17 @@ Each layer sits over the one before it: the built-in defaults, then the file `co
 - **The voter variables** set the provider `roles.voter` names when that is another provider than research's. When the voter shares the research provider, they derive a provider named `voter` from it, and bind the voter role to it. A config that already has a provider named `voter` cannot be derived over: rename it.
 - **A derived voter keeps what is safe on its endpoint**, as the voter's fallback of [Configuration](../20-using/20-configuration.md#the-voters-fallback) does, and a key, header, query parameter, body field or model never reaches another origin:
 
-| `QUORUM_VOTER_BASE_URL` | The voter's base URL | Its key | Its model | The rest of the research provider's settings |
-| --- | --- | --- | --- | --- |
-| Unset | The research provider's | `QUORUM_VOTER_API_KEY`, else the research provider's key | `QUORUM_VOTER_MODEL`, else the research provider's | All kept |
-| The same origin as the research provider's | `QUORUM_VOTER_BASE_URL` | `QUORUM_VOTER_API_KEY`, else the research provider's key | `QUORUM_VOTER_MODEL`, else the research provider's | All kept |
-| Another origin, or no `http(s)` origin | `QUORUM_VOTER_BASE_URL` | `QUORUM_VOTER_API_KEY`, else none: a preset's own variable is not read | `QUORUM_VOTER_MODEL`, which is then required | `apiKeyEnv`, `headers`, `query`, `extraBody` and `model` dropped; the preset, protocol, `auth`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt` kept |
-| A `QUORUM_VOTER_PRESET` or `QUORUM_VOTER_PROTOCOL` is set | Its own, or the preset's | `QUORUM_VOTER_API_KEY`, else the preset's own variable at the preset's origin | `QUORUM_VOTER_MODEL`, which is then required | None: the provider is built from the voter variables alone |
+| `QUORUM_VOTER_BASE_URL` | The voter's base URL | Its key | Its model | Its context size | The rest of the research provider's settings |
+| --- | --- | --- | --- | --- | --- |
+| Unset | The research provider's | `QUORUM_VOTER_API_KEY`, else the research provider's key | `QUORUM_VOTER_MODEL`, else the research provider's | `QUORUM_VOTER_CONTEXT_TOKENS`, else the research provider's while no other voter variable but the key is set | All kept |
+| The same origin as the research provider's | `QUORUM_VOTER_BASE_URL` | `QUORUM_VOTER_API_KEY`, else the research provider's key | `QUORUM_VOTER_MODEL`, else the research provider's | `QUORUM_VOTER_CONTEXT_TOKENS` only | All kept |
+| Another origin, or no `http(s)` origin | `QUORUM_VOTER_BASE_URL` | `QUORUM_VOTER_API_KEY`, else none: a preset's own variable is not read | `QUORUM_VOTER_MODEL`, which is then required | `QUORUM_VOTER_CONTEXT_TOKENS` only | `apiKeyEnv`, `headers`, `query`, `extraBody` and `model` dropped; the preset, protocol, `auth`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt` kept |
+| A `QUORUM_VOTER_PRESET` or `QUORUM_VOTER_PROTOCOL` is set | Its own, or the preset's | `QUORUM_VOTER_API_KEY`, else the preset's own variable at the preset's origin | `QUORUM_VOTER_MODEL`, which is then required | `QUORUM_VOTER_CONTEXT_TOKENS` only | None: the provider is built from the voter variables alone |
 
 The origin is compared as the voter's fallback compares it: the scheme, the host in lower case with no trailing dot, and a port that is not the default.
 
-- **A `PRESET` or `PROTOCOL` variable builds the role's provider afresh.** `QUORUM_RESEARCH_PRESET=anthropic` is not merged into the `default` provider, whose protocol it would contradict: the research provider is a provider of that preset, from the role's variables alone. `BASE_URL`, `MODEL` and `API_KEY` alone override fields of the provider they reach.
+- **A `PRESET` or `PROTOCOL` variable builds the role's provider afresh.** `QUORUM_RESEARCH_PRESET=anthropic` is not merged into the `default` provider, whose protocol it would contradict: the research provider is a provider of that preset, from the role's variables alone. `BASE_URL`, `MODEL`, `CONTEXT_TOKENS` and `API_KEY` alone override fields of the provider they reach.
+- **A context size belongs to one model on one endpoint.** A role's preset, protocol, base URL or model variable drops the context size of the provider it sets, unless `QUORUM_<ROLE>_CONTEXT_TOKENS` sets one; a key variable alone keeps it. A derived voter never inherits the research provider's context size for another model or another endpoint.
 - **No variable changes a provider object.** A role bound to an object that implements `Provider` with a variable set for it is an issue at the variable, never an ignored one.
 
 ### Roles and profiles
@@ -329,6 +331,7 @@ A provider's key is the first of:
 | The selection's `path` | `must be a profile id matching ^[a-z][a-z0-9_-]*$` | An empty id, or an id of another form, in `selection.ids` |
 | The selection's `path` | `names a profile more than once` | `selection.ids` names an id twice |
 | The selection's `path` | `must name at least one profile` | `selection.ids` is empty |
+| `QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS` | `must be a whole number of tokens, from 1 to 999999999` | A context size variable that is not a whole number written in decimal digits in that range: `32k`, `1e5`, `0x10`, `1.5` and `0` are refused, and the message never repeats the value |
 | `QUORUM_VOTER_MODEL` | `must be set when the voter variables name another endpoint than the research provider's` | The voter variables name another origin, a preset or a protocol, and no model |
 | `QUORUM_RESEARCH_MODEL`, and the other variables of a role | `cannot change providers.mine, an object implementing Provider` | A variable set for a role bound to a provider object |
 | `providers.voter` | `is the name the voter variables give the provider they derive: rename this provider` | The voter variables derive a provider, and one is already named `voter` |
@@ -341,7 +344,7 @@ A provider's key is the first of:
 | `providers.<name>` | `CORP_KEY is not set` | The variable `apiKeyEnv` names, or the preset's own, is not set |
 | `providers.<name>.apiKeyEnv` | `names a variable that is not set` | The same, for a name that is not an upper-case variable name: a key pasted there is never printed |
 | `providers.<name>.<field>` | The builder's: [Presets as data](../20-using/30-providers.md#presets-as-data) and [Configuration errors](../20-using/30-providers.md#configuration-errors) | A provider that the builder refuses, defined or derived |
-| `QUORUM_RESEARCH_PRESET` and the other variables of a role: the preset, the protocol, the base URL, the model and the key | The builder's, such as `must be one of ollama, ollama-cloud, ...` | A provider that the builder refuses on a field a variable set: the issue names the variable, never the provider the variables built |
+| `QUORUM_RESEARCH_PRESET` and the other variables of a role: the preset, the protocol, the base URL, the model, the context size and the key | The builder's, such as `must be one of ollama, ollama-cloud, ...` | A provider that the builder refuses on a field a variable set: the issue names the variable, never the provider the variables built |
 | `providers.<name>.model` | `must be a string` | A provider object whose model is not a string |
 
 The warnings, each but the first two starting at the path it is about:

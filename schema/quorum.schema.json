@@ -61,6 +61,12 @@
             "description": "The model id sent with every request",
             "type": "string"
           },
+          "contextTokens": {
+            "description": "The context window of the model in tokens, prompt and reply together: quorum sends no request that may not fit it. Set here or in QUORUM_<ROLE>_CONTEXT_TOKENS",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
           "apiKeyEnv": {
             "description": "The environment variable that holds the key; a preset names its vendor's own, which is read only while the base URL keeps the preset's origin",
             "type": "string",

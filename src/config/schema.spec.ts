@@ -35,6 +35,7 @@ const FULL: QuorumConfigFile = {
       protocol: 'openai-compatible',
       baseUrl: 'https://gateway.example/v1',
       model: 'gpt-5',
+      contextTokens: 200000,
       apiKeyEnv: 'GATEWAY_KEY',
       auth: { header: 'x-gateway-key', prefix: 'Key ' },
       headers: { 'x-team': 'review' },
@@ -81,6 +82,14 @@ describe('configFileSchema', () => {
 
   it('parses an empty config: every field is optional, since a later layer can fill it', () => {
     expect(parseConfig(configFileSchema, {})).toEqual({})
+  })
+
+  it('takes contextTokens as a whole number of at least 1', () => {
+    expect(issuesOf({ providers: { local: { preset: 'ollama', model: 'q', contextTokens: 131072 } } })).toEqual([])
+  })
+
+  it.each<[unknown, string]>([[0, 'must be at least 1'], [1.5, 'must be an integer'], ['32768', 'must be a number']])('refuses contextTokens %j: %s', (contextTokens, message) => {
+    expect(issuesOf({ providers: { local: { preset: 'ollama', model: 'q', contextTokens } } })).toEqual([at('providers.local.contextTokens', message)])
   })
 
   it.each<[string, unknown, ConfigIssue[]]>([

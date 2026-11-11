@@ -1,6 +1,6 @@
 # Configuration
 
-The CLI reads its settings from three sources, each laid over the one before: the built-in defaults, a config file the CLI is named, and the environment. The flags come last: `--config` names the file and `--profile` chooses which profiles run. With no file named and `QUORUM_RESEARCH_MODEL` set, the defaults and that one variable are enough: the CLI reviews against Ollama on this machine, as it always did. This page covers the config file, how to name it, how the layers combine, the `QUORUM_*` variables, the voter's fallback, the keys, the trust a named config needs in CI, and the errors a bad setting causes.
+The CLI reads its settings from three sources, each laid over the one before: the built-in defaults, a config file the CLI is named, and the environment. The flags come last: `--config` names the file and `--profile` chooses which profiles run. With no file named and `QUORUM_RESEARCH_MODEL` set, the defaults and that one variable are enough: the CLI reviews against Ollama on this machine, as it always did. This page covers the config file, how to name it, how the layers combine, the `QUORUM_*` variables, the voter's fallback, the context size, the keys, the trust a named config needs in CI, and the errors a bad setting causes.
 
 A program that uses quorum as a library builds its providers itself, as [Providers](./30-providers.md) shows, or has `loadConfig` and `fromConfig` read the same settings: [`loadConfig` and `fromConfig`](../95-reference/30-library-api.md#loadconfig-and-fromconfig).
 
@@ -23,10 +23,12 @@ providers:
   local:
     preset: ollama
     model: qwen3.6:27b
+    contextTokens: 131072
   gateway:
     protocol: openai-compatible
     baseUrl: https://llm.corp.example/v1
     model: review-1
+    contextTokens: 200000
     apiKeyEnv: GATEWAY_KEY
 roles:
   research: local
@@ -54,7 +56,7 @@ profiles:
       medium: off
 ```
 
-- **`providers`** names each endpoint, by a name of lower-case letters, digits, `_` and `-`, which starts with a letter. A provider starts from a [preset](./30-providers.md#presets), or from a `protocol` and a `baseUrl`, and sets the [options](./30-providers.md#options) of its adapter: its `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt`.
+- **`providers`** names each endpoint, by a name of lower-case letters, digits, `_` and `-`, which starts with a letter. A provider starts from a [preset](./30-providers.md#presets), or from a `protocol` and a `baseUrl`, and sets the [options](./30-providers.md#options) of its adapter: its `contextTokens` ([The context size](#the-context-size)), `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt`.
 - **`roles`** says which provider researches and which votes. A profile's own `roles`, and a lens's `provider`, override them.
 - **`profiles`** defines the review profiles: [Profiles](./40-profiles.md), [Lenses and policy](./50-lenses-and-policy.md) and [Prompts](./60-prompts.md) say what each field means. A prompt is a string, or `{ file }`: the file's text. A prompt file resolves against the directory of the config file, whatever the working directory is, and holds at most 64 KiB, and the prompt files of a config 1 MiB in all.
 
@@ -68,11 +70,12 @@ import type { QuorumConfig } from './src/index.ts'
 
 export default {
   providers: {
-    local: { preset: 'ollama', model: 'qwen3.6:27b' },
+    local: { preset: 'ollama', model: 'qwen3.6:27b', contextTokens: 131072 },
     gateway: {
       protocol: 'openai-compatible',
       baseUrl: 'https://llm.corp.example/v1',
       model: 'review-1',
+      contextTokens: 200000,
       apiKey: process.env.GATEWAY_KEY,
     },
   },
@@ -120,6 +123,7 @@ The profiles that run are the ones `--profile` names, else the ones `QUORUM_PROF
 | `QUORUM_RESEARCH_PROTOCOL`, `QUORUM_VOTER_PROTOCOL` | A role's provider, built from a wire protocol: `openai-compatible`, `anthropic`, `gemini` or `ollama` |
 | `QUORUM_RESEARCH_BASE_URL`, `QUORUM_VOTER_BASE_URL` | The base URL of a role's provider. Requests go to it, its trailing slashes removed, followed by the adapter's path, `/chat/completions` for `openai-compatible` |
 | `QUORUM_RESEARCH_MODEL`, `QUORUM_VOTER_MODEL` | The model of a role's provider, as its endpoint names it |
+| `QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS` | The context window of a role's provider's model, in tokens: a whole number from 1 to 999999999. It has no deprecated alias |
 | `QUORUM_RESEARCH_API_KEY`, `QUORUM_VOTER_API_KEY` | The key of a role's provider, sent in the header its `auth` names, `Authorization: Bearer <key>` by default. Without a key, no key header is sent |
 | `RESEARCH_BASE_URL`, `RESEARCH_API_KEY`, `RESEARCH_MODEL`, `VOTER_BASE_URL`, `VOTER_API_KEY`, `VOTER_MODEL` | Deprecated aliases: each is read as the `QUORUM_` variable of the same name |
 
@@ -127,6 +131,7 @@ The profiles that run are the ones `--profile` names, else the ones `QUORUM_PROF
 - **The voter variables** set the provider `roles.voter` names when it is another provider than the finder's. When the panel shares the finder's provider, they derive a provider of their own: [The voter's fallback](#the-voters-fallback).
 - **The deprecated aliases** still work, with one `warning:` line that names every alias that is set and the variable to set instead, such as `RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead`. When both forms are set, the `QUORUM_` one wins. A preset and a protocol have no alias.
 - **A preset or a protocol variable builds the role's provider afresh.** `QUORUM_RESEARCH_PRESET=anthropic` is not merged into a provider whose protocol it would contradict: the finder's provider is then a provider of that preset, from the role's variables alone. A base URL, a model and a key variable alone override the fields of the provider they reach.
+- **A context size belongs to one model on one endpoint.** A role's preset, protocol, base URL or model variable drops the context size of the provider it sets, unless `QUORUM_<ROLE>_CONTEXT_TOKENS` sets one; a key variable alone keeps it.
 - **Every value is trimmed, and a blank one is unset**, so a variable that is empty or only whitespace never counts as a value.
 - **A `QUORUM_` variable that quorum does not read** is one `warning:` line, `QUORUM_PROFILE is not a variable quorum reads`, which names every such variable, sorted, so a typo shows. No value is ever printed.
 
@@ -143,18 +148,34 @@ export QUORUM_VOTER_API_KEY="$MISTRAL_API_KEY"
 
 When the panel shares the finder's provider and a voter variable is set, the voter variables derive a provider named `voter` from it, and bind the panel to it. The derived provider keeps what is safe on its endpoint and drops what is not, so that a key, a header, a query parameter, a body field or a model of the finder's never reaches another origin:
 
-| `QUORUM_VOTER_BASE_URL` | The voter's base URL | Its key | Its model | The rest of the finder's provider |
-| --- | --- | --- | --- | --- |
-| Unset | The finder's | `QUORUM_VOTER_API_KEY`, else the finder's key | `QUORUM_VOTER_MODEL`, else the finder's | All kept |
-| The same origin as the finder's | `QUORUM_VOTER_BASE_URL` | `QUORUM_VOTER_API_KEY`, else the finder's key | `QUORUM_VOTER_MODEL`, else the finder's | All kept |
-| Another origin, or no `http(s)` origin | `QUORUM_VOTER_BASE_URL` | `QUORUM_VOTER_API_KEY`, else no key: a preset's own variable is not read | `QUORUM_VOTER_MODEL`, which is then required | `apiKeyEnv`, `headers`, `query`, `extraBody` and the model are dropped; the preset, protocol, `auth`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt` are kept |
-| `QUORUM_VOTER_PRESET` or `QUORUM_VOTER_PROTOCOL` is set | Its own, or the preset's | `QUORUM_VOTER_API_KEY`, else the preset's own variable at the preset's origin | `QUORUM_VOTER_MODEL`, which is then required | None: the provider is built from the voter variables alone |
+| `QUORUM_VOTER_BASE_URL` | The voter's base URL | Its key | Its model | Its context size | The rest of the finder's provider |
+| --- | --- | --- | --- | --- | --- |
+| Unset | The finder's | `QUORUM_VOTER_API_KEY`, else the finder's key | `QUORUM_VOTER_MODEL`, else the finder's | `QUORUM_VOTER_CONTEXT_TOKENS`, else the finder's while no other voter variable but the key is set | All kept |
+| The same origin as the finder's | `QUORUM_VOTER_BASE_URL` | `QUORUM_VOTER_API_KEY`, else the finder's key | `QUORUM_VOTER_MODEL`, else the finder's | `QUORUM_VOTER_CONTEXT_TOKENS` only | All kept |
+| Another origin, or no `http(s)` origin | `QUORUM_VOTER_BASE_URL` | `QUORUM_VOTER_API_KEY`, else no key: a preset's own variable is not read | `QUORUM_VOTER_MODEL`, which is then required | `QUORUM_VOTER_CONTEXT_TOKENS` only | `apiKeyEnv`, `headers`, `query`, `extraBody` and the model are dropped; the preset, protocol, `auth`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt` are kept |
+| `QUORUM_VOTER_PRESET` or `QUORUM_VOTER_PROTOCOL` is set | Its own, or the preset's | `QUORUM_VOTER_API_KEY`, else the preset's own variable at the preset's origin | `QUORUM_VOTER_MODEL`, which is then required | `QUORUM_VOTER_CONTEXT_TOKENS` only | None: the provider is built from the voter variables alone |
 
-The deprecated `VOTER_BASE_URL`, `VOTER_API_KEY` and `VOTER_MODEL` fall back the same way, as `QUORUM_VOTER_*`. When `roles.voter` names another provider than the finder's, the voter variables set that provider's fields as the research variables set the finder's, and nothing falls back. A config that already defines a provider named `voter` cannot have one derived over it: rename it.
+The deprecated `VOTER_BASE_URL`, `VOTER_API_KEY` and `VOTER_MODEL` fall back the same way, as `QUORUM_VOTER_*`. When `roles.voter` names another provider than the finder's, the voter variables set that provider's fields as the research variables set the finder's, and nothing falls back.
+
+The voter never inherits the finder's context size for another model or another endpoint. A context size describes one model on one endpoint, so a voter variable that names a model, a base URL, a preset or a protocol leaves the voter without one until `QUORUM_VOTER_CONTEXT_TOKENS` sets it: the finder's window means nothing for a model that is not the finder's. A config that already defines a provider named `voter` cannot have one derived over it: rename it.
 
 The origin is the scheme, the host and the port, compared once both URLs are parsed. Letter case, a default port written out (`:443` on `https`), one trailing dot after the host (`h.example.` is `h.example`) and the path never make another origin, so a gateway that serves several paths on one origin shares its key. `http` against `https`, or another port, does, so a fallback never carries a key from an encrypted connection to a cleartext one. A value without an `http(s)` origin, such as `localhost:11434/v1` without its scheme, or one that does not parse as a URL, inherits nothing, and then fails the base URL check: [Configuration errors](#configuration-errors).
 
 A panel on another endpoint must name its model. The finder's model name usually means nothing there, and an error before the review is better than a review in which every vote fails.
+
+## The context size
+
+`contextTokens` is the model's whole context window in tokens, prompt and reply together: the number a vendor calls its context window or context length. Quorum checks every request against it before sending, and refuses one that may not fit, so that a prompt a server would cut in silence is never reviewed as if the model had read it. A refused request is a `request-too-large` gap, which exits `4` for a gating profile whatever the flags: [Exit codes](./10-cli.md#exit-codes). [The size of a request](./30-providers.md#the-size-of-a-request) says how a request is counted.
+
+A provider's context size comes from, in this order:
+
+1. **The provider's `contextTokens`**, a whole number of at least 1, in the config file or in a code config.
+2. **`QUORUM_RESEARCH_CONTEXT_TOKENS` or `QUORUM_VOTER_CONTEXT_TOKENS`**, which set the field of the role's provider as the other role variables do, over the file's. A value that is not a whole number from 1 to 999999999 written in decimal digits is refused at its variable, `32k`, `1e5` and `0x10` included.
+3. **Nowhere else**: quorum does not read it from the endpoint or from a table of models.
+
+A context size belongs to one model on one endpoint, so it never crosses to another: a role's variables that name a preset, a protocol, a base URL or a model drop the context size of the provider they set, unless they set one, and the derived voter does not inherit the finder's for another model or endpoint ([The voter's fallback](#the-voters-fallback)). A key variable alone keeps it.
+
+[`--print-config`](./10-cli.md#printing-the-resolved-config) shows each provider's `contextTokens` after its `model`.
 
 ## Keys
 
@@ -208,6 +229,8 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `QUORUM_RESEARCH_BASE_URL: must not hold a query or a fragment` | The base URL holds a `?` or a `#`; quorum appends the endpoint's path to it |
 | `QUORUM_RESEARCH_API_KEY: must only contain visible ASCII characters, which an HTTP header can carry` | The key, once trimmed, holds a space, a control character or a character outside ASCII |
 | `QUORUM_VOTER_BASE_URL: ...`, `QUORUM_VOTER_API_KEY: ...` | The same two checks, for the panel's variables |
+| `QUORUM_RESEARCH_CONTEXT_TOKENS: must be a whole number of tokens, from 1 to 999999999` | The variable is not a whole number written in decimal digits, from 1 to 999999999: `32k`, `1e5`, `0x10`, `1.5` and `0` are refused. `QUORUM_VOTER_CONTEXT_TOKENS` has the same check. The message never repeats the value |
+| `providers.local.contextTokens: must be more than 16512, the 16000 tokens of the reply budget and 512 for the chat template` | A window that leaves no room for a request beside the reply budget: lower `maxTokens`, or raise the window. Set by a variable, the issue names the variable instead |
 | `QUORUM_VOTER_MODEL: must be set when the voter variables name another endpoint than the research provider's` | A panel on another origin, a preset or a protocol, without a model of its own |
 | `QUORUM_RESEARCH_PRESET: must be one of ollama, ollama-cloud, ...` | The builder refuses what a variable set: the issue names the variable. Every `QUORUM_` variable of a role does the same |
 | `QUORUM_RESEARCH_MODEL: cannot change providers.mine, an object implementing Provider` | A variable set for a role bound to a provider object |

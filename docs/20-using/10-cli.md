@@ -116,6 +116,7 @@ The reasons a reply is unusable are listed under [strict parsing](../30-security
 ```bash
 QUORUM_RESEARCH_BASE_URL=https://gateway.example/team-token/v1 \
 QUORUM_RESEARCH_MODEL=qwen3.6:27b \
+QUORUM_RESEARCH_CONTEXT_TOKENS=131072 \
 QUORUM_RESEARCH_API_KEY=sk-example \
 quorum --print-config
 ```
@@ -127,6 +128,7 @@ providers:
     protocol: openai-compatible
     origin: https://gateway.example
     model: qwen3.6:27b
+    contextTokens: 131072
     apiKey: "[redacted]"
 profiles:
   security:
@@ -151,7 +153,7 @@ warnings: []
 | Field | What it holds |
 | --- | --- |
 | `source` | The absolute path of the config file, or `null` when no file is named |
-| `providers` | Each provider a profile that runs uses, by its config key, in the order the config defines them. A provider defined as data prints the fields it sets, in this order: `preset`, `protocol`, `origin` (always), `model`, `apiKey`, `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature` (`null` too), `maxTokens`, `maxTokensField` and `systemPrompt`. A provider object, which a TS or JS config defines, prints `implements: Provider` and its `model` |
+| `providers` | Each provider a profile that runs uses, by its config key, in the order the config defines them. A provider defined as data prints the fields it sets, in this order: `preset`, `protocol`, `origin` (always), `model`, `contextTokens`, `apiKey`, `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature` (`null` too), `maxTokens`, `maxTokensField` and `systemPrompt`. A provider object, which a TS or JS config defines, prints `implements: Provider` and its `model` |
 | `profiles` | Each profile that runs, by id, in run order: `gating` (`true` unless the profile sets `false`), `research` (the provider that looks for findings), `lenses` (the provider each lens votes through), `thresholds` (the kept votes each confidence level needs, `null` for a level the policy disables) and `prompts` (`research` and `vote`, each as a hash) |
 | `concurrency`, `maxFindings` | The values the review applies: the config's, else the defaults, `4` and `50` |
 | `warnings` | The config's warnings: the deprecated variables, the variables nothing reads and the keys that are not sent or sent in cleartext. A run prints these as `warning:` lines before its banner, and adds the warnings of the profiles, such as a policy level that is never reached: [Warnings](./40-profiles.md#warnings) |
@@ -205,4 +207,4 @@ exit $code
 
 ## Next
 
-[Configuration](./20-configuration.md) — the config file and how to name it, how the layers combine, the `QUORUM_*` variables, the voter's fallback, the keys, the trust a named config needs in CI, and the errors a bad setting causes.
+[Configuration](./20-configuration.md) — the config file and how to name it, how the layers combine, the `QUORUM_*` variables, the voter's fallback, the context size, the keys, the trust a named config needs in CI, and the errors a bad setting causes.

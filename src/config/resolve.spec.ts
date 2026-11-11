@@ -44,6 +44,17 @@ describe('resolveConfig', () => {
     expect(issuesOf({})).toEqual([{ path: '', message: NO_MODEL }])
   })
 
+  it('resolves a context size from the file, and from QUORUM_RESEARCH_CONTEXT_TOKENS over it', () => {
+    const local: ProviderSettings = { preset: 'ollama', model: 'q', contextTokens: 65536 }
+    expect(resolve({ providers: { local } }).providers.local).toMatchObject({ contextTokens: 65536 })
+    expect(resolve({ providers: { local } }, { QUORUM_RESEARCH_CONTEXT_TOKENS: '32768' }).providers.local).toMatchObject({ contextTokens: 32768 })
+  })
+
+  it('names the variable that set a context size the adapter refuses, and the rule a malformed one breaks', () => {
+    expect(issuesOf({}, { QUORUM_RESEARCH_MODEL: 'q', QUORUM_RESEARCH_CONTEXT_TOKENS: '16512' })).toEqual([{ path: 'QUORUM_RESEARCH_CONTEXT_TOKENS', message: 'must be more than 16512, the 16000 tokens of the reply budget and 512 for the chat template' }])
+    expect(issuesOf({}, { QUORUM_RESEARCH_MODEL: 'q', QUORUM_RESEARCH_CONTEXT_TOKENS: '32k' })).toEqual([{ path: 'QUORUM_RESEARCH_CONTEXT_TOKENS', message: 'must be a whole number of tokens, from 1 to 999999999' }])
+  })
+
   it('reads the deprecated aliases as today\'s CLI does, with one warning', () => {
     const config = resolve({}, { RESEARCH_MODEL: 'qwen', RESEARCH_API_KEY: 'sk-r', VOTER_BASE_URL: 'https://api.mistral.ai/v1', VOTER_MODEL: 'mistral-small-latest', VOTER_API_KEY: 'sk-m' })
     expect(config.providers).toEqual({

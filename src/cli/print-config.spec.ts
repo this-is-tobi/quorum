@@ -64,6 +64,10 @@ describe('printConfig', () => {
     expect(printed({ ...SPEC, systemPrompt: 7 as never })).toContain('\n    systemPrompt: "[redacted]"\n')
   })
 
+  it('prints a provider\'s context size after its model', () => {
+    expect(printed({ ...SPEC, contextTokens: 65536 })).toContain('    model: m\n    contextTokens: 65536\n')
+  })
+
   it('prints a provider\'s own fields only, and nothing a polluted prototype holds', () => {
     const proto = Object.prototype as Record<string, unknown>
     proto.headers = { 'x-polluted': 'SECRET' }

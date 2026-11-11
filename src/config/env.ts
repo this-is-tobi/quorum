@@ -18,12 +18,13 @@ export function envValue(env: Env, name: string): string | undefined {
   return Object.hasOwn(env, name) ? env[name]?.trim() || undefined : undefined
 }
 
-/** What the variables of one role set: only the variables that are set. */
+/** What the variables of one role set: only the variables that are set. `contextTokens` is `QUORUM_<ROLE>_CONTEXT_TOKENS`, read as a whole number. */
 export interface RoleOverrides {
   readonly preset?: string
   readonly protocol?: string
   readonly baseUrl?: string
   readonly model?: string
+  readonly contextTokens?: number
   readonly apiKey?: string
 }
 
@@ -46,6 +47,7 @@ const VARIABLES: ReadonlyArray<{ readonly field: keyof RoleOverrides, readonly s
   { field: 'protocol', suffix: 'PROTOCOL', aliased: false },
   { field: 'baseUrl', suffix: 'BASE_URL', aliased: true },
   { field: 'model', suffix: 'MODEL', aliased: true },
+  { field: 'contextTokens', suffix: 'CONTEXT_TOKENS', aliased: false },
   { field: 'apiKey', suffix: 'API_KEY', aliased: true },
 ]
 const ROLES: readonly Role[] = ['RESEARCH', 'VOTER']
@@ -71,13 +73,26 @@ export const READ_VARIABLES: ReadonlySet<string> = new Set([
   ...ROLES.flatMap(role => VARIABLES.filter(({ aliased }) => aliased).map(({ suffix }) => `${role}_${suffix}`)),
 ])
 
-/** The variables of one role that are set, each as its field and value: the `QUORUM_` form, else its alias. */
-function readRole(env: Env, role: Role): RoleOverrides {
-  const entries = VARIABLES.flatMap(({ field, suffix, aliased }): Array<[string, string]> => {
-    const value = envValue(env, canonicalName(role, suffix)) ?? (aliased ? envValue(env, `${role}_${suffix}`) : undefined)
-    return value === undefined ? [] : [[field, value]]
-  })
-  return Object.fromEntries(entries)
+/** A context size variable: a whole number of tokens, written in decimal digits, from 1 to 999999999. */
+const CONTEXT_TOKENS = /^[1-9]\d{0,8}$/
+const CONTEXT_TOKENS_FORM = 'must be a whole number of tokens, from 1 to 999999999'
+
+/**
+ * The variables of one role that are set, each as its field and value: the `QUORUM_` form, else its alias. A
+ * context size that is not a whole number in range sets nothing and is an issue at its variable, which never repeats it.
+ */
+function readRole(env: Env, role: Role): { overrides: RoleOverrides, issues: ConfigIssue[] } {
+  const entries: Array<[string, string | number]> = []
+  const issues: ConfigIssue[] = []
+  for (const { field, suffix, aliased } of VARIABLES) {
+    const name = canonicalName(role, suffix)
+    const value = envValue(env, name) ?? (aliased ? envValue(env, `${role}_${suffix}`) : undefined)
+    if (value === undefined) continue
+    if (field !== 'contextTokens') entries.push([field, value])
+    else if (CONTEXT_TOKENS.test(value)) entries.push([field, Number(value)])
+    else issues.push({ path: name, message: CONTEXT_TOKENS_FORM })
+  }
+  return { overrides: Object.fromEntries(entries), issues }
 }
 
 /** The one deprecation line: every alias that is set, whether or not its `QUORUM_` form won, and what to set instead. */
@@ -110,13 +125,23 @@ function readProfiles(env: Env): Pick<EnvLayer, 'profiles' | 'issues'> {
 }
 
 /**
- * Read the `QUORUM_*` variables: the preset, protocol, base URL, model and key of each role, which are
- * `QUORUM_RESEARCH_*` and `QUORUM_VOTER_*`, and `QUORUM_PROFILES`. `RESEARCH_*` and `VOTER_*` are read as
- * deprecated aliases of the base URL, model and key, and the `QUORUM_` form wins. Any other variable set under
+ * Read the `QUORUM_*` variables: the preset, protocol, base URL, model, context size and key of each role,
+ * which are `QUORUM_RESEARCH_*` and `QUORUM_VOTER_*`, and `QUORUM_PROFILES`. `RESEARCH_*` and `VOTER_*` are
+ * read as deprecated aliases of the base URL, model and key, and the `QUORUM_` form wins; the context size
+ * (`QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS`) has no alias. Any other variable set under
  * a `QUORUM_` name is named in one warning. No message repeats a value.
  */
 export function readEnv(env: Env): EnvLayer {
-  return { ...readProfiles(env), research: readRole(env, 'RESEARCH'), voter: readRole(env, 'VOTER'), warnings: [...deprecationWarnings(env), ...unreadWarnings(env)] }
+  const { issues: profileIssues, ...profiles } = readProfiles(env)
+  const research = readRole(env, 'RESEARCH')
+  const voter = readRole(env, 'VOTER')
+  return {
+    ...profiles,
+    research: research.overrides,
+    voter: voter.overrides,
+    warnings: [...deprecationWarnings(env), ...unreadWarnings(env)],
+    issues: [...profileIssues, ...research.issues, ...voter.issues],
+  }
 }
 
 /** A provider of a config: its settings, or an object implementing `Provider`. */
@@ -135,9 +160,34 @@ export function baseUrlOf(settings: ProviderSettings): string | undefined {
 
 type Variable = (typeof VARIABLES)[number]
 
+/** Whether the overrides set `field`: an own field, and one that is defined. */
+function isSet(overrides: RoleOverrides, field: keyof RoleOverrides): boolean {
+  return Object.hasOwn(overrides, field) && overrides[field] !== undefined
+}
+
 /** The variables of a role that are set, in the order issues name them. */
 function setVariables(overrides: RoleOverrides): Variable[] {
-  return VARIABLES.filter(({ field }) => Object.hasOwn(overrides, field) && overrides[field] !== undefined)
+  return VARIABLES.filter(({ field }) => isSet(overrides, field))
+}
+
+/** The fields that name a model on an endpoint: a context size describes what they name. */
+const MODEL_OR_ENDPOINT: readonly (keyof RoleOverrides)[] = ['preset', 'protocol', 'baseUrl', 'model']
+
+/** Whether the variables of a role name a preset, a protocol, a base URL or a model: another model, or another endpoint, than the provider they are set on. */
+export function namesModelOrEndpoint(overrides: RoleOverrides): boolean {
+  return MODEL_OR_ENDPOINT.some(field => isSet(overrides, field))
+}
+
+/** Whether a provider's context size stays when these variables are set on it: unless they name a model or an endpoint and set no context size of their own. */
+function keepsContext(overrides: RoleOverrides): boolean {
+  return !namesModelOrEndpoint(overrides) || isSet(overrides, 'contextTokens')
+}
+
+/** The settings the variables are set on: as they are, or without their context size when it would not describe the model the variables name. */
+function inheritedBy(overrides: RoleOverrides, settings: ProviderSettings): ProviderSettings {
+  if (keepsContext(overrides)) return settings
+  const { contextTokens: _contextTokens, ...rest } = settings
+  return rest
 }
 
 /** The fields the variables set, as a record of only those. */
@@ -150,9 +200,9 @@ function startsAfresh(variables: readonly Variable[]): boolean {
   return variables.some(({ field }) => field === 'preset' || field === 'protocol')
 }
 
-/** The settings with the fields the variables set, or those fields alone when the variables name a preset or a protocol. */
+/** The settings with the fields the variables set, or those fields alone when the variables name a preset or a protocol; the context size stays only while the variables name no model or endpoint, unless they set one. */
 function withVariables(settings: ProviderSettings, overrides: RoleOverrides, variables: readonly Variable[]): ProviderSettings {
-  return { ...startsAfresh(variables) ? {} : settings, ...fieldsOf(overrides, variables) }
+  return { ...startsAfresh(variables) ? {} : inheritedBy(overrides, settings), ...fieldsOf(overrides, variables) }
 }
 
 /** One issue per variable set, at that variable: none of them can change a provider object. */
@@ -160,13 +210,13 @@ function objectIssues(role: Role, variables: readonly Variable[], providerName: 
   return variables.map(({ suffix }) => ({ path: canonicalName(role, suffix), message: `cannot change ${configPath(['providers', providerName])}, an object implementing Provider` }))
 }
 
-/** The provider the voter variables derive from the research provider `base`: all of it on the same endpoint, and nothing that is a secret or a model of it elsewhere (ADR-0013). */
+/** The provider the voter variables derive from the research provider `base`: all of it on the same endpoint, and nothing that is a secret, a model or the context size of that model elsewhere (ADR-0013). Its context size crosses only while the variables name no model or endpoint. */
 function derivedVoter(base: ProviderSettings, overrides: RoleOverrides, variables: readonly Variable[]): { provider: ProviderSettings, issues: ConfigIssue[] } {
   const fields = fieldsOf(overrides, variables)
   const origin = httpOrigin(baseUrlOf(base))
   const sameEndpoint = origin !== undefined && origin === httpOrigin(own(fields, 'baseUrl') ?? baseUrlOf(base))
-  const { apiKeyEnv: _apiKeyEnv, apiKey: _apiKey, headers: _headers, query: _query, extraBody: _extraBody, model: _model, ...endpoint } = base
-  const provider: ProviderSettings = startsAfresh(variables) ? fields : { ...sameEndpoint ? base : endpoint, ...fields }
+  const { apiKeyEnv: _apiKeyEnv, apiKey: _apiKey, headers: _headers, query: _query, extraBody: _extraBody, model: _model, contextTokens: _contextTokens, ...endpoint } = base
+  const provider: ProviderSettings = startsAfresh(variables) ? fields : { ...inheritedBy(overrides, sameEndpoint ? base : endpoint), ...fields }
   const needsModel = (startsAfresh(variables) || !sameEndpoint) && provider.model === undefined
   return { provider, issues: needsModel ? [{ path: canonicalName('VOTER', 'MODEL'), message: 'must be set when the voter variables name another endpoint than the research provider\'s' }] : [] }
 }
@@ -181,8 +231,11 @@ function unboundRoles(providers: Readonly<Record<string, ProviderEntry>>, roles:
  * Set the variables of each role on its provider. The research variables go on the provider research is
  * bound to. The voter variables go on the voter's own provider, or, when the voter shares the research
  * provider, derive a provider named `voter` from it: a copy on the same endpoint, and on another one a copy
- * with no key, header, query, body field or model (ADR-0013). A preset or a protocol variable builds the
- * role's provider from its variables alone. A provider object cannot be changed: each variable aimed at one
+ * with no key, header, query, body field, model or context size (ADR-0013). A preset or a protocol variable
+ * builds the role's provider from its variables alone. A context size describes one model on one endpoint,
+ * so it crosses to neither: a role's variables that name a preset, a protocol, a base URL or a model drop the
+ * context size of the provider they are set on, the derived voter's included, unless they set one; a key
+ * variable alone leaves it. A provider object cannot be changed: each variable aimed at one
  * is an issue. Nothing it is given changes; nested objects are shared. A role bound to a name that is not an
  * own key of `providers` is an issue at that role, and nothing is applied.
  */

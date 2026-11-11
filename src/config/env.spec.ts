@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CompletionResponse, Provider } from '../core/ports.ts'
 import { applyRoleOverrides, baseUrlOf, envValue, READ_VARIABLES, readEnv } from './env.ts'
-import type { Env, EnvLayer, ProviderEntry, RoleBinding } from './env.ts'
+import type { Env, EnvLayer, ProviderEntry, RoleBinding, RoleOverrides } from './env.ts'
 import type { ProviderSettings } from './schema.ts'
 
 const SECRET = 'sk-zz-secret'
@@ -82,6 +82,20 @@ describe('readEnv', () => {
   it('repeats no value in a warning or an issue', () => {
     const layer = readEnv({ RESEARCH_API_KEY: SECRET, QUORUM_PROFILES: `${SECRET}!` })
     expect(JSON.stringify([layer.warnings, layer.issues])).not.toContain('zz')
+  })
+})
+
+describe('the context size variables', () => {
+  const FORM = 'must be a whole number of tokens, from 1 to 999999999'
+
+  it('reads QUORUM_RESEARCH_CONTEXT_TOKENS and QUORUM_VOTER_CONTEXT_TOKENS as whole numbers, trimmed', () => {
+    expect(readEnv({ QUORUM_RESEARCH_CONTEXT_TOKENS: ' 131072 ', QUORUM_VOTER_CONTEXT_TOKENS: '8192' })).toEqual({ research: { contextTokens: 131072 }, voter: { contextTokens: 8192 }, warnings: [], issues: [] })
+  })
+
+  it.each([['32k'], ['0'], ['-1'], ['1.5'], ['1e5'], ['0x10'], ['1000000000']])('refuses QUORUM_RESEARCH_CONTEXT_TOKENS=%j at the variable, repeating no value', (value) => {
+    const layer = readEnv({ QUORUM_RESEARCH_CONTEXT_TOKENS: value })
+    expect(layer.issues).toEqual([{ path: 'QUORUM_RESEARCH_CONTEXT_TOKENS', message: FORM }])
+    expect(layer.research).toEqual({})
   })
 })
 
@@ -236,5 +250,43 @@ describe('applyRoleOverrides', () => {
   it('repeats no value in an issue', () => {
     const { issues } = apply({ mine: object }, { research: 'mine', voter: 'mine' }, { research: { apiKey: SECRET, baseUrl: `https://${SECRET}.example` } })
     expect(JSON.stringify(issues)).not.toContain('zz')
+  })
+})
+
+describe('the context size through the role variables', () => {
+  const sized: ProviderSettings = { ...research, contextTokens: 131072 }
+
+  it('keeps a context size while the variables of a role name neither a model nor an endpoint', () => {
+    expect(apply({ main: sized }, shared, { research: { apiKey: 'sk-r' } }).providers.main).toMatchObject({ contextTokens: 131072 })
+    expect(apply({ main: sized }, shared, { voter: { apiKey: 'sk-v' } }).providers.voter).toMatchObject({ contextTokens: 131072 })
+  })
+
+  it.each<[string, RoleOverrides]>([
+    ['a model', { model: 'r2' }],
+    ['a base URL', { baseUrl: 'https://gpu.example/v1' }],
+    ['a preset', { preset: 'ollama', model: 'q' }],
+    ['a protocol', { protocol: 'ollama', baseUrl: 'http://h:11434', model: 'q' }],
+  ])('drops the research provider\'s context size when its variables name %s', (_name, overrides) => {
+    expect(apply({ main: sized }, shared, { research: overrides }).providers.main).not.toHaveProperty('contextTokens')
+  })
+
+  it('takes the context size its variable sets, over the lower layers\'', () => {
+    expect(apply({ main: sized }, shared, { research: { model: 'r2', contextTokens: 8192 } }).providers.main).toMatchObject({ model: 'r2', contextTokens: 8192 })
+  })
+
+  it.each<[string, RoleOverrides]>([
+    ['another model on the same endpoint', { model: 'v' }],
+    ['another endpoint', { baseUrl: 'https://v.example/v1', model: 'v' }],
+    ['a preset', { preset: 'mistral', model: 'mistral-small-latest' }],
+  ])('gives a derived voter on %s none of the research provider\'s context size (ADR-0013)', (_name, overrides) => {
+    expect(apply({ main: sized }, shared, { voter: overrides }).providers.voter).not.toHaveProperty('contextTokens')
+  })
+
+  it('gives a derived voter the context size its own variable sets', () => {
+    expect(apply({ main: sized }, shared, { voter: { baseUrl: 'https://v.example/v1', model: 'v', contextTokens: 32768 } }).providers.voter).toMatchObject({ contextTokens: 32768 })
+  })
+
+  it('drops the context size of the voter\'s own provider when the voter variables set its model', () => {
+    expect(apply({ main: research, panel: { ...local, contextTokens: 32768 } }, { research: 'main', voter: 'panel' }, { voter: { model: 'v' } }).providers.panel).not.toHaveProperty('contextTokens')
   })
 })
