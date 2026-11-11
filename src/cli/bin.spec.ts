@@ -48,7 +48,7 @@ function start(args: string[], env: Record<string, string>): { child: ChildProce
 
 describe('bin', () => {
   it('exits with the code of the run, and writes its result', () => {
-    const { status, stdout, stderr } = run([], { QUORUM_RESEARCH_MODEL: 'm' })
+    const { status, stdout, stderr } = run([], { QUORUM_RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' })
     expect(status).toBe(0)
     expect(JSON.parse(stdout).kept).toEqual([])
     expect(stderr.endsWith('0 kept, 0 discarded, 0 unreviewed by panel\n')).toBe(true)

@@ -13,6 +13,8 @@ const NOT_PRINTABLE_ASCII = /[^\x20-\x7E]/
 const RESERVED_HEADERS: ReadonlySet<string> = new Set(['content-type', 'content-length', 'host'])
 const SYSTEM_PROMPTS: ReadonlySet<unknown> = new Set(['native', 'inline'])
 const FIXED_HEADER = 'is set by the adapter and cannot be replaced'
+/** The issue of a provider with no `contextTokens`: resolution rewrites it where the user would set one. */
+export const CONTEXT_REQUIRED = 'is required: the model\'s context window in tokens, which quorum checks every request against'
 
 /**
  * How a provider sends its key: `Authorization: Bearer <key>`, `x-api-key: <key>`, not at all, or in a
@@ -31,10 +33,10 @@ export interface HttpProviderOptions {
   baseUrl: string
   model: string
   /**
-   * The model's context window in tokens, prompt and reply together. Every request is checked against it
-   * and refused, before it is sent, when it may not fit. Without it, no request is checked.
+   * The model's context window in tokens, prompt and reply together. Required: every request is checked
+   * against it and refused, before it is sent, when it may not fit.
    */
-  contextTokens?: number
+  contextTokens: number
   /** Sent as `auth` says, and nowhere else. No key, or an empty one, sends no key header. */
   apiKey?: string
   auth?: Auth
@@ -214,12 +216,13 @@ function isTokenCount(value: number): boolean {
 }
 
 /**
- * The problems of `contextTokens`: not a whole number of at least 1, or no more than the reply budget and the
- * chat template, which leaves no room for a request. The room is checked against a valid `maxTokens` only,
- * since an invalid one has its own issue.
+ * The problems of `contextTokens`: not set, not a whole number of at least 1, or no more than the reply budget
+ * and the chat template, which leaves no room for a request; one of them, never two. The room is checked
+ * against a valid `maxTokens` only, since an invalid one has its own issue.
  */
-function contextTokensIssues(id: string, contextTokens: number, maxTokens: number | undefined): ConfigIssue[] {
+function contextTokensIssues(id: string, contextTokens: number | undefined, maxTokens: number | undefined): ConfigIssue[] {
   const path = `${id}.contextTokens`
+  if (contextTokens === undefined) return [{ path, message: CONTEXT_REQUIRED }]
   if (!isTokenCount(contextTokens)) return [{ path, message: 'must be a whole number of at least 1' }]
   if (maxTokens !== undefined && !isTokenCount(maxTokens)) return []
   const reply = maxTokens ?? DEFAULT_REPLY_TOKENS
@@ -258,7 +261,7 @@ export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRul
   if (maxTokens !== undefined && !isTokenCount(maxTokens)) {
     issues.push({ path: `${id}.maxTokens`, message: 'must be a whole number of at least 1' })
   }
-  if (contextTokens !== undefined) issues.push(...contextTokensIssues(id, contextTokens, maxTokens))
+  issues.push(...contextTokensIssues(id, contextTokens, maxTokens))
   if (systemPrompt !== undefined && !SYSTEM_PROMPTS.has(systemPrompt)) issues.push({ path: `${id}.systemPrompt`, message: 'must be native or inline' })
   if (structuredOutput !== undefined && !structuredOutputs.includes(structuredOutput)) {
     issues.push({ path: `${id}.structuredOutput`, message: `must be ${wordList(structuredOutputs)}` })

@@ -31,7 +31,7 @@ describe('the public API', () => {
 
 describe('runQuorum', () => {
   it('builds its providers from process.env', async () => {
-    isolateEnv({ RESEARCH_MODEL: 'env-model', RESEARCH_BASE_URL: 'http://env.example/v1' })
+    isolateEnv({ RESEARCH_MODEL: 'env-model', RESEARCH_BASE_URL: 'http://env.example/v1', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' })
     const fetchMock = vi.fn().mockImplementation(async () => chatReply('{"findings":[]}'))
     vi.stubGlobal('fetch', fetchMock)
     await runQuorum(diff)
@@ -47,7 +47,7 @@ describe('runQuorum', () => {
   })
 
   it('sends onProgress the progress lines the CLI prints', async () => {
-    isolateEnv({ RESEARCH_MODEL: 'env-model' })
+    isolateEnv({ RESEARCH_MODEL: 'env-model', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' })
     vi.stubGlobal('fetch', vi.fn()
       .mockImplementationOnce(async () => chatReply(JSON.stringify({ findings: [{ file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }] })))
       .mockImplementation(async () => chatReply(JSON.stringify({ keep: true, reasoning: 'r' }))))

@@ -32,7 +32,7 @@ function write(name: string, text: string): string {
 }
 
 /** The environment of a configured run. */
-const MODEL = { QUORUM_RESEARCH_MODEL: 'm' }
+const MODEL = { QUORUM_RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }
 
 const DIFF = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-safe()\n+exec(cmd)\n'
 /** Two added lines, so two findings can be cited. */
@@ -44,8 +44,8 @@ const vote = (keep: boolean): string => JSON.stringify({ keep, reasoning: 'r' })
 /** Two profiles, the second with a lens on a provider of its own; every test that uses it writes it, so none depends on another. */
 const TWO_YAML = [
   'providers:',
-  '  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m}',
-  '  hosted: {protocol: openai-compatible, baseUrl: "https://v.example/v1", model: v}',
+  '  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 131072}',
+  '  hosted: {protocol: openai-compatible, baseUrl: "https://v.example/v1", model: v, contextTokens: 131072}',
   'roles: {research: local}',
   'profiles:',
   '  security: {}',
@@ -58,7 +58,7 @@ const TWO_YAML = [
 ].join('\n')
 
 /** A config of one provider, on an origin of its own. */
-const TEAM_YAML = 'providers:\n  team: {protocol: openai-compatible, baseUrl: "https://team.example/v1", model: t}\n'
+const TEAM_YAML = 'providers:\n  team: {protocol: openai-compatible, baseUrl: "https://team.example/v1", model: t, contextTokens: 131072}\n'
 
 function harness(options: { argv?: string[], cwd?: string, stdin?: string, isTTY?: boolean, env?: Record<string, string>, signal?: AbortSignal } = {}): { io: CliIO, stdout: () => string, stderr: () => string } {
   const out: string[] = []
@@ -137,7 +137,7 @@ describe('runCli', () => {
 
   it('prints the origin of each role\'s endpoint, never its credentials, path or query, from the injected environment', async () => {
     vi.stubEnv('QUORUM_RESEARCH_MODEL', 'leaked')
-    const env = { QUORUM_RESEARCH_MODEL: 'banner-model', QUORUM_RESEARCH_BASE_URL: 'https://h.example/token-secret/v1' }
+    const env = { QUORUM_RESEARCH_MODEL: 'banner-model', QUORUM_RESEARCH_BASE_URL: 'https://h.example/token-secret/v1', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }
     const { io, stderr } = harness({ stdin: '  \n', env })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stderr()).toContain('Research (banner-model @ https://h.example)...')
@@ -166,6 +166,25 @@ describe('runCli', () => {
     const { io, stderr } = harness({ stdin: '  \n' })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toBe('Error: no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one\n')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('refuses a run without a context size before any request, a blank diff included', async () => {
+    for (const stdin of [DIFF, '']) {
+      const fetchMock = stubChat()
+      const { io, stdout, stderr } = harness({ env: { QUORUM_RESEARCH_MODEL: 'm' }, stdin })
+      expect(await runCli(io)).toBe(EXIT.usage)
+      expect(stdout()).toBe('')
+      expect(stderr()).toBe('Error: no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens\n')
+      expect(fetchMock).not.toHaveBeenCalled()
+    }
+  })
+
+  it('refuses a voter on another endpoint that states no context size of its own', async () => {
+    const fetchMock = stubChat()
+    const { io, stderr } = harness({ env: { ...MODEL, QUORUM_VOTER_BASE_URL: 'https://v.example/v1', QUORUM_VOTER_MODEL: 'v' }, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stderr()).toBe('Error: QUORUM_VOTER_CONTEXT_TOKENS: must be set when the voter variables name a model or an endpoint: a context size belongs to one model on one endpoint\n')
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -293,7 +312,7 @@ describe('runCli', () => {
   })
 
   it('prints each warning once, inert, before the banner, and keeps stdout to the JSON result', async () => {
-    const { io, stdout, stderr } = harness({ env: { RESEARCH_MODEL: 'm' }, stdin: '  \n' })
+    const { io, stdout, stderr } = harness({ env: { RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }, stdin: '  \n' })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stderr()).toBe('warning: RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead\nResearch (m @ http://localhost:11434)...\nPanel will use m @ http://localhost:11434\nempty diff: nothing to review\n0 kept, 0 discarded, 0 unreviewed by panel\n')
     expect(JSON.parse(stdout())).toMatchObject({ kept: [], discarded: [], unreviewed: [] })
@@ -301,8 +320,8 @@ describe('runCli', () => {
 
   it('sends the request of the initial import for an environment-only run, and no key header without a key', async () => {
     const fetchMock = stubChat('{"findings":[]}', '{"findings":[]}')
-    expect(await runCli(harness({ env: { QUORUM_RESEARCH_MODEL: 'qwen' }, stdin: DIFF }).io)).toBe(EXIT.ok)
-    expect(await runCli(harness({ env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_API_KEY: 'sk-test\n' }, stdin: DIFF }).io)).toBe(EXIT.ok)
+    expect(await runCli(harness({ env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }, stdin: DIFF }).io)).toBe(EXIT.ok)
+    expect(await runCli(harness({ env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_RESEARCH_API_KEY: 'sk-test\n' }, stdin: DIFF }).io)).toBe(EXIT.ok)
     expect(sent(fetchMock, 0)).toMatchObject({ url: 'http://localhost:11434/v1/chat/completions', body: { model: 'qwen', response_format: { type: 'json_object' }, temperature: 0 } })
     expect(sent(fetchMock, 0).headers).not.toHaveProperty('authorization')
     expect(sent(fetchMock, 1).headers).toMatchObject({ authorization: 'Bearer sk-test' })
@@ -310,7 +329,7 @@ describe('runCli', () => {
 
   it('never sends the research key to a voter on another origin, set through the deprecated variables', async () => {
     const fetchMock = stubChat(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(true))
-    const env = { RESEARCH_BASE_URL: 'https://r.example/v1', RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'https://v.example/v1', VOTER_MODEL: 'v' }
+    const env = { RESEARCH_BASE_URL: 'https://r.example/v1', RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'https://v.example/v1', VOTER_MODEL: 'v', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_VOTER_CONTEXT_TOKENS: '131072' }
     const { io, stderr } = harness({ env, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.finding)
     expect(sent(fetchMock, 0).headers).toMatchObject({ authorization: 'Bearer sk-r' })
@@ -324,7 +343,7 @@ describe('runCli', () => {
 
   it('prints the deprecation line before the configuration error it explains, and exits 2', async () => {
     const fetchMock = stubChat()
-    const { io, stdout, stderr } = harness({ env: { RESEARCH_BASE_URL: 'localhost:11434', RESEARCH_MODEL: 'm' }, stdin: DIFF })
+    const { io, stdout, stderr } = harness({ env: { RESEARCH_BASE_URL: 'localhost:11434', RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stdout()).toBe('')
     expect(stderr()).toBe([
@@ -336,7 +355,7 @@ describe('runCli', () => {
   })
 
   it('prints the warning of a mistyped variable before the configuration error it causes', async () => {
-    const { io, stdout, stderr } = harness({ env: { ...MODEL, QUORUM_VOTER_BASE_URL: 'https://v.example/v1', QUORUM_VOTER_MODLE: 'v' }, stdin: DIFF })
+    const { io, stdout, stderr } = harness({ env: { ...MODEL, QUORUM_VOTER_BASE_URL: 'https://v.example/v1', QUORUM_VOTER_CONTEXT_TOKENS: '131072', QUORUM_VOTER_MODLE: 'v' }, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stdout()).toBe('')
     expect(stderr()).toBe([
@@ -375,7 +394,7 @@ describe('runCli', () => {
   it('reads no config file it is not named, whatever the working directory holds', async () => {
     const planted = join(dir, 'planted')
     mkdirSync(planted)
-    const evil = 'providers:\n  evil: {protocol: openai-compatible, baseUrl: "https://attacker.example/v1", model: e, apiKeyEnv: JOB_KEY}\n'
+    const evil = 'providers:\n  evil: {protocol: openai-compatible, baseUrl: "https://attacker.example/v1", model: e, contextTokens: 131072, apiKeyEnv: JOB_KEY}\n'
     writeFileSync(join(planted, 'quorum.config.yaml'), evil)
     writeFileSync(join(planted, 'quorum.yaml'), evil)
     writeFileSync(join(planted, 'quorum.config.mts'), 'globalThis.quorumPlanted = true\nexport default {}\n')
@@ -611,7 +630,7 @@ describe('flags', () => {
   })
 
   it('reads the file --config names, over the one QUORUM_CONFIG names', async () => {
-    write('flag.yaml', 'providers:\n  flag: {protocol: openai-compatible, baseUrl: "https://flag.example/v1", model: f}\n')
+    write('flag.yaml', 'providers:\n  flag: {protocol: openai-compatible, baseUrl: "https://flag.example/v1", model: f, contextTokens: 131072}\n')
     const team = write('team.yaml', TEAM_YAML)
     const fetchMock = stubChat('{"findings":[]}')
     const { io } = harness({ argv: ['-c', 'flag.yaml'], cwd: dir, env: { QUORUM_CONFIG: team }, stdin: DIFF })
@@ -649,11 +668,12 @@ describe('--print-config', () => {
     const fetchMock = stubChat()
     write('gateway.yaml', [
       'providers:',
-      '  local: {preset: ollama, model: qwen3.6:27b}',
+      '  local: {preset: ollama, model: qwen3.6:27b, contextTokens: 131072}',
       '  gateway:',
       '    protocol: openai-compatible',
       '    baseUrl: https://gw.example/token-SECRET/v1',
       '    model: gpt-5',
+      '    contextTokens: 131072',
       '    apiKeyEnv: GATEWAY_KEY',
       '    auth: {header: x-gateway-key, prefix: "Key "}',
       '    headers: {x-team: hdr-SECRET}',
@@ -673,10 +693,12 @@ describe('--print-config', () => {
       '    preset: ollama',
       '    origin: http://localhost:11434',
       '    model: qwen3.6:27b',
+      '    contextTokens: 131072',
       '  gateway:',
       '    protocol: openai-compatible',
       '    origin: https://gw.example',
       '    model: gpt-5',
+      '    contextTokens: 131072',
       '    apiKey: "[redacted]"',
       '    auth:',
       '      header: x-gateway-key',
@@ -714,17 +736,17 @@ describe('--print-config', () => {
   })
 
   it('redacts a key from the environment and a token in the base URL\'s path, and prints source null with no file', async () => {
-    const preset = harness({ argv: ['--print-config'], env: { QUORUM_RESEARCH_PRESET: 'openai', QUORUM_RESEARCH_MODEL: 'gpt-5', OPENAI_API_KEY: 'sk-openai-SECRET' } })
+    const preset = harness({ argv: ['--print-config'], env: { QUORUM_RESEARCH_PRESET: 'openai', QUORUM_RESEARCH_MODEL: 'gpt-5', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', OPENAI_API_KEY: 'sk-openai-SECRET' } })
     expect(await runCli(preset.io)).toBe(EXIT.ok)
-    expect(preset.stdout()).toMatch(/^source: null\nproviders:\n {2}default:\n {4}preset: openai\n {4}origin: https:\/\/api\.openai\.com\n {4}model: gpt-5\n {4}apiKey: "\[redacted\]"\nprofiles:\n/)
-    const path = harness({ argv: ['--print-config'], env: { QUORUM_RESEARCH_BASE_URL: 'https://h.example/token-SECRET/v1', QUORUM_RESEARCH_MODEL: 'm', QUORUM_RESEARCH_API_KEY: 'sk-SECRET' } })
+    expect(preset.stdout()).toMatch(/^source: null\nproviders:\n {2}default:\n {4}preset: openai\n {4}origin: https:\/\/api\.openai\.com\n {4}model: gpt-5\n {4}contextTokens: 131072\n {4}apiKey: "\[redacted\]"\nprofiles:\n/)
+    const path = harness({ argv: ['--print-config'], env: { QUORUM_RESEARCH_BASE_URL: 'https://h.example/token-SECRET/v1', QUORUM_RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_RESEARCH_API_KEY: 'sk-SECRET' } })
     expect(await runCli(path.io)).toBe(EXIT.ok)
-    expect(path.stdout()).toContain('    protocol: openai-compatible\n    origin: https://h.example\n    model: m\n    apiKey: "[redacted]"\n')
+    expect(path.stdout()).toContain('    protocol: openai-compatible\n    origin: https://h.example\n    model: m\n    contextTokens: 131072\n    apiKey: "[redacted]"\n')
     expect(`${preset.stdout()}${path.stdout()}`).not.toContain('SECRET')
   })
 
   it('lists the config\'s warnings in the YAML, and none on stderr', async () => {
-    const { io, stdout, stderr } = harness({ argv: ['--print-config'], env: { RESEARCH_MODEL: 'm' } })
+    const { io, stdout, stderr } = harness({ argv: ['--print-config'], env: { RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' } })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stdout()).toMatch(/\nwarnings:\n {2}- "RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead"\n$/)
     expect(stderr()).toBe('')
@@ -747,7 +769,7 @@ describe('--print-config', () => {
 
   it('prints every line inert, a hidden character in the source path included', async () => {
     const name = `q${String.fromCharCode(0x202E)}.yaml`
-    write(name, 'providers:\n  a: {preset: ollama, model: m}\n')
+    write(name, 'providers:\n  a: {preset: ollama, model: m, contextTokens: 131072}\n')
     const { io, stdout } = harness({ argv: ['--print-config', '--config', name], cwd: dir })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stdout()).toContain(`source: ${join(dir, 'q<U+202E>.yaml')}\n`)

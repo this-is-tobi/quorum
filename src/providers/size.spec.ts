@@ -52,8 +52,7 @@ describe('textTokens', () => {
 })
 
 describe('contextBudget', () => {
-  it('reserves maxTokens for the reply, else 16000, and is undefined without a context size', () => {
-    expect(contextBudget(undefined, 900)).toBeUndefined()
+  it('reserves maxTokens for the reply, else 16000', () => {
     expect(contextBudget(32768, undefined)).toEqual({ contextTokens: 32768, replyTokens: 16000 })
     expect(contextBudget(32768, 900)).toEqual({ contextTokens: 32768, replyTokens: 900 })
   })
@@ -71,8 +70,7 @@ describe('checkFits', () => {
     expect(thrown).toMatchObject({ providerId: 'p', kind: 'too-large', retryable: false, message: 'p: may need 645 tokens, more than contextTokens (644): 33 for its text at one token per byte, 512 for the chat template and 100 for the reply' })
   })
 
-  it('lets a request through at the bound, and every request without a budget', () => {
+  it('lets a request through at the bound', () => {
     expect(() => checkFits('p', shaped, output, { contextTokens: 645, replyTokens: 100 })).not.toThrow()
-    expect(() => checkFits('p', { system: 'x'.repeat(10_000), messages: [] }, output, undefined)).not.toThrow()
   })
 })

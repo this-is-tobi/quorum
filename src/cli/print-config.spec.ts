@@ -5,7 +5,7 @@ import type { Provider } from '../core/ports.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { printConfig } from './print-config.ts'
 
-const SPEC = { protocol: 'openai-compatible', baseUrl: 'https://h.example/v1', model: 'm' } as const
+const SPEC = { protocol: 'openai-compatible', baseUrl: 'https://h.example/v1', model: 'm', contextTokens: 131072 } as const
 
 /** A config with the built-in profile, every role of it bound to the first of `providers`. */
 function config(providers: Record<string, ResolvedProvider>, rest: Partial<ResolvedConfig> = {}): ResolvedConfig {

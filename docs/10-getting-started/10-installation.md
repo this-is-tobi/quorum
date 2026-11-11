@@ -58,10 +58,10 @@ Options:
 2
 ```
 
-An empty diff on stdin, with a research model named, is reviewed without calling any model, so this works before you have one running. The JSON result goes to stdout, sent to `/dev/null` here:
+An empty diff on stdin, with a research model and its context size named, is reviewed without calling any model, so this works before you have one running. The JSON result goes to stdout, sent to `/dev/null` here:
 
 ```bash
-printf '' | QUORUM_RESEARCH_MODEL=qwen3.6:27b quorum > /dev/null
+printf '' | QUORUM_RESEARCH_MODEL=qwen3.6:27b QUORUM_RESEARCH_CONTEXT_TOKENS=32768 quorum > /dev/null
 echo $?
 ```
 
@@ -73,7 +73,7 @@ empty diff: nothing to review
 0
 ```
 
-The first two lines name the model of each role and the origin of the endpoint it would call. Without `QUORUM_RESEARCH_MODEL`, the same command prints `Error: no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one` and exits `2`: a research model must be named even for an empty diff.
+The first two lines name the model of each role and the origin of the endpoint it would call. `QUORUM_RESEARCH_CONTEXT_TOKENS` is the model's context window in tokens, which quorum checks every request against; Ollama sets it from your GPUs' memory (4096, 32768 or 262144) unless `OLLAMA_CONTEXT_LENGTH` says otherwise, so set `OLLAMA_CONTEXT_LENGTH` on the server to at least the same number. Without `QUORUM_RESEARCH_MODEL`, the same command prints `Error: no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one` and exits `2`: a research model must be named even for an empty diff. With the model but without `QUORUM_RESEARCH_CONTEXT_TOKENS`, it prints `Error: no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens` and exits `2` too, for the same reason.
 
 ## Next
 

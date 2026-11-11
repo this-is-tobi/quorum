@@ -63,7 +63,7 @@ describeProviderContract({
 })
 
 describe('openaiCompatible', () => {
-  const provider = openaiCompatible({ id: 'local', baseUrl: 'http://localhost:11434/v1//', model: 'qwen' })
+  const provider = openaiCompatible({ id: 'local', baseUrl: 'http://localhost:11434/v1//', model: 'qwen', contextTokens: 131072 })
 
   it('posts the system message first, then the data, to /chat/completions with json_object and temperature 0', async () => {
     const fetchMock = stubFetch(ok)
@@ -84,19 +84,19 @@ describe('openaiCompatible', () => {
     ['schema', { type: 'json_schema', json_schema: { name: 'panel_vote', schema: { type: 'object' }, strict: true } }],
   ] as const)('maps structuredOutput %s to the response format the endpoint expects', async (structuredOutput, responseFormat) => {
     const fetchMock = stubFetch(ok)
-    await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', structuredOutput }).complete(request)
+    await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', contextTokens: 131072, structuredOutput }).complete(request)
     expect(sent(fetchMock).body.response_format).toEqual(responseFormat)
   })
 
   it('sends the token limit as max_completion_tokens when maxTokensField says so', async () => {
     const fetchMock = stubFetch(ok)
-    await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', maxTokens: 900, maxTokensField: 'max_completion_tokens' }).complete(request)
+    await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', contextTokens: 131072, maxTokens: 900, maxTokensField: 'max_completion_tokens' }).complete(request)
     expect(sent(fetchMock).body).toMatchObject({ max_completion_tokens: 900 })
     expect(sent(fetchMock).body).not.toHaveProperty('max_tokens')
   })
 
   it('refuses a token-limit field or a structured-output mode it does not know', () => {
-    const options = { id: 'x', baseUrl: 'http://h/v1', model: 'm', maxTokensField: 'max_output_tokens', structuredOutput: 'grammar' } as unknown as OpenAICompatibleOptions
+    const options = { id: 'x', baseUrl: 'http://h/v1', model: 'm', contextTokens: 131072, maxTokensField: 'max_output_tokens', structuredOutput: 'grammar' } as unknown as OpenAICompatibleOptions
     expect(() => openaiCompatible(options)).toThrow(new ConfigError([
       { path: 'x.structuredOutput', message: 'must be prompt, json or schema' },
       { path: 'x.maxTokensField', message: 'must be max_tokens or max_completion_tokens' },
@@ -105,7 +105,7 @@ describe('openaiCompatible', () => {
 
   it('sends chat_template_kwargs, which sets template variables, such as turning thinking off, and runs nothing on the server', async () => {
     const fetchMock = stubFetch(ok)
-    await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', extraBody: { chat_template_kwargs: { enable_thinking: false } } }).complete(request)
+    await openaiCompatible({ id: 'x', baseUrl: 'http://h/v1', model: 'm', contextTokens: 131072, extraBody: { chat_template_kwargs: { enable_thinking: false } } }).complete(request)
     expect(sent(fetchMock).body).toMatchObject({ chat_template_kwargs: { enable_thinking: false } })
   })
 
@@ -201,7 +201,7 @@ describe('openaiCompatible', () => {
 
   it('fails Groq\'s reply of gpt-oss after a browser search it ran by itself, though no preset refused the model id', async () => {
     stubFetch(groqBrowserSearch)
-    const groq = openaiCompatible({ id: 'groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'openai/gpt-oss-120b', apiKey: 'gsk-k' })
+    const groq = openaiCompatible({ id: 'groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'openai/gpt-oss-120b', contextTokens: 131072, apiKey: 'gsk-k' })
     await expect(groq.complete(request)).rejects.toMatchObject({ name: 'ProviderError', kind: 'invalid-response', retryable: false, message: `groq: ${ranTool}` })
   })
 
@@ -222,7 +222,7 @@ describe('openaiCompatible', () => {
   })
 
   it('redacts the key from a refusal or a server error that echoes it', async () => {
-    const keyed = openaiCompatible({ id: 'local', baseUrl: 'http://h/v1', model: 'm', apiKey: 'sk-secret' })
+    const keyed = openaiCompatible({ id: 'local', baseUrl: 'http://h/v1', model: 'm', contextTokens: 131072, apiKey: 'sk-secret' })
     stubFetch({ choices: [{ message: { content: null, refusal: 'your key sk-secret is not allowed' } }] })
     await expect(keyed.complete(request)).rejects.toMatchObject({ message: 'local: model refused: "your key [redacted] is not allowed"' })
     stubFetch({ error: { message: 'bad key sk-secret' } })

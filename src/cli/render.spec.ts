@@ -70,8 +70,8 @@ describe('progressSink', () => {
 })
 
 describe('bannerLines', () => {
-  const local = { protocol: 'openai-compatible', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b' } as const
-  const mistral = { preset: 'mistral', model: 'mistral-small-latest' } as const
+  const local = { protocol: 'openai-compatible', baseUrl: 'http://localhost:11434/v1', model: 'qwen3.6:27b', contextTokens: 131072 } as const
+  const mistral = { preset: 'mistral', model: 'mistral-small-latest', contextTokens: 131072 } as const
   const lenses = securityProfile.lenses.map(lens => lens.id)
   const config = (providers: Record<string, ResolvedProvider>, bindings: Array<{ id?: string, research: string, voters: Record<string, string> }>): ResolvedConfig => ({
     providers,

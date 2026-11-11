@@ -23,12 +23,9 @@ export interface ContextBudget {
 
 const encoder = new TextEncoder()
 
-/**
- * The budget a request is checked against, or undefined when the provider states no context size, which
- * checks nothing. The reply budget is `maxTokens`, else `DEFAULT_REPLY_TOKENS`.
- */
-export function contextBudget(contextTokens: number | undefined, maxTokens: number | undefined): ContextBudget | undefined {
-  return contextTokens === undefined ? undefined : { contextTokens, replyTokens: maxTokens ?? DEFAULT_REPLY_TOKENS }
+/** The budget a request is checked against: the context size, and the reply budget, `maxTokens` else `DEFAULT_REPLY_TOKENS`. */
+export function contextBudget(contextTokens: number, maxTokens: number | undefined): ContextBudget {
+  return { contextTokens, replyTokens: maxTokens ?? DEFAULT_REPLY_TOKENS }
 }
 
 /** The length of `text` in UTF-8 bytes. A lone surrogate counts the 3 bytes of U+FFFD, as the encoder writes it. */
@@ -64,12 +61,11 @@ export function textTokens(shaped: ShapedMessages, output: CompletionRequest['ou
  * Refuse, before it is sent, a request that may not fit the model's context: some endpoints cut an oversized
  * prompt in silence and answer 200, which would leave a review of text the model never read. The request
  * fits only when its text, `TEMPLATE_TOKENS` and the reply budget together stay within `contextTokens`.
- * Nothing is checked without a budget. The message holds the provider id and numbers, never the text.
+ * The message holds the provider id and numbers, never the text.
  *
  * @throws ProviderError of kind `too-large`, which is not retryable
  */
-export function checkFits(providerId: string, shaped: ShapedMessages, output: CompletionRequest['output'], budget: ContextBudget | undefined): void {
-  if (budget === undefined) return
+export function checkFits(providerId: string, shaped: ShapedMessages, output: CompletionRequest['output'], budget: ContextBudget): void {
   const text = textTokens(shaped, output)
   const need = text + TEMPLATE_TOKENS + budget.replyTokens
   if (need <= budget.contextTokens) return

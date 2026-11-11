@@ -19,9 +19,12 @@ It needs Bun 1.3.0 or newer. [Installation](./docs/10-getting-started/10-install
 
 ```bash
 export QUORUM_RESEARCH_MODEL=qwen3.6:27b      # a model your local Ollama serves
+export QUORUM_RESEARCH_CONTEXT_TOKENS=32768   # its context window, in tokens
 quorum ./my.diff > result.json                # review a diff file
 git diff origin/main...HEAD | quorum > result.json   # or what your branch changes
 ```
+
+`QUORUM_RESEARCH_CONTEXT_TOKENS` is the model's context window in tokens, which quorum checks every request against; Ollama sets it from your GPUs' memory (4096, 32768 or 262144) unless `OLLAMA_CONTEXT_LENGTH` says otherwise, so set `OLLAMA_CONTEXT_LENGTH` on the server to at least the same number.
 
 The JSON result goes to stdout, and the exit code says what to do with it: `0` for a complete review in which no gating profile kept a `high` finding, `1` when one did, complete or not, `2` for a usage or configuration error, `3` when the research call failed, `4` when a gating profile's review is incomplete otherwise, and `130` when the run was interrupted. [Quick start](./docs/10-getting-started/20-quickstart.md) walks one review through, and [Start here](./docs/01-readme.md) lays out three tracks: review a diff, use it from code or review something else, and know what it protects against.
 

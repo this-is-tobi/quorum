@@ -43,7 +43,7 @@ describeProviderContract({
 })
 
 describe('anthropic', () => {
-  const options = { id: 'claude', baseUrl: 'https://api.anthropic.com/', model: 'claude-opus-5-5', apiKey: 'sk-ant-k' }
+  const options = { id: 'claude', baseUrl: 'https://api.anthropic.com/', model: 'claude-opus-5-5', contextTokens: 131072, apiKey: 'sk-ant-k' }
   const provider = anthropic(options)
 
   it('posts the system text, the conversation and a 16000-token limit to /v1/messages, with the version header and no temperature', async () => {

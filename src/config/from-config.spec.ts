@@ -72,7 +72,7 @@ afterEach(() => {
 describe('fromConfig', () => {
   it('builds the providers of an environment-only config and reviews with them, the research key never reaching the voter', async () => {
     const fetchMock = stubReview()
-    const env = { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_API_KEY: 'sk-r', QUORUM_VOTER_BASE_URL: 'https://api.mistral.ai/v1', QUORUM_VOTER_MODEL: 'mistral-small-latest', QUORUM_VOTER_API_KEY: 'sk-m' }
+    const env = { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_API_KEY: 'sk-r', QUORUM_VOTER_BASE_URL: 'https://api.mistral.ai/v1', QUORUM_VOTER_MODEL: 'mistral-small-latest', QUORUM_VOTER_API_KEY: 'sk-m', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_VOTER_CONTEXT_TOKENS: '131072' }
     const result = await (await fromConfig({}, { env })).review({ diff })
     expect(sent(fetchMock, 0)).toMatchObject({ url: 'http://localhost:11434/v1/chat/completions', headers: { authorization: 'Bearer sk-r' } })
     expect(fetchMock.mock.calls).toHaveLength(4)
@@ -87,14 +87,14 @@ describe('fromConfig', () => {
   it('hands the events of a review to options.events, the run first and its end last', async () => {
     stubReview()
     const events: QuorumEvent[] = []
-    await (await fromConfig({}, { env: { QUORUM_RESEARCH_MODEL: 'qwen' }, events: event => events.push(event) })).review({ diff })
+    await (await fromConfig({}, { env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }, events: event => events.push(event) })).review({ diff })
     expect(events[0]).toMatchObject({ type: 'run:start', profiles: ['security'], providers: { security: { research: { id: 'default', model: 'qwen' } } } })
     expect(events.at(-1)).toMatchObject({ type: 'run:end', kept: 1 })
     expect(events.filter(event => event.type === 'call')).toHaveLength(4)
   })
 
   it('resolves a ConfigInput with process.env when no environment is given', async () => {
-    isolateEnv({ QUORUM_RESEARCH_MODEL: 'from-process' })
+    isolateEnv({ QUORUM_RESEARCH_MODEL: 'from-process', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' })
     const fetchMock = stubReview()
     await (await fromConfig({})).review({ diff })
     expect(sent(fetchMock).body.model).toBe('from-process')
@@ -102,8 +102,8 @@ describe('fromConfig', () => {
 
   it('uses a resolved config as it is, without reading the environment again', async () => {
     const fetchMock = stubReview()
-    const config = resolveConfig({}, { env: { QUORUM_RESEARCH_MODEL: 'resolved' } })
-    await (await fromConfig(config, { env: { QUORUM_RESEARCH_MODEL: 'other' } })).review({ diff })
+    const config = resolveConfig({}, { env: { QUORUM_RESEARCH_MODEL: 'resolved', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' } })
+    await (await fromConfig(config, { env: { QUORUM_RESEARCH_MODEL: 'other', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' } })).review({ diff })
     expect(sent(fetchMock).body.model).toBe('resolved')
   })
 
@@ -130,7 +130,7 @@ describe('fromConfig', () => {
     const proto = Object.prototype as Record<string, unknown>
     proto.baseUrl = 'https://evil.example/v1'
     try {
-      const issues = await issuesOf({ providers: { p: { preset: 'openai', model: 'gpt-5', apiKeyEnv: 'OPENAI_API_KEY' } } })
+      const issues = await issuesOf({ providers: { p: { preset: 'openai', model: 'gpt-5', contextTokens: 131072, apiKeyEnv: 'OPENAI_API_KEY' } } })
       expect(issues).toEqual([{ path: 'baseUrl', message: 'is not a known field' }])
     } finally {
       delete proto.baseUrl
@@ -189,14 +189,14 @@ describe('fromConfig', () => {
   it('lists the config\'s warnings, then the core\'s', async () => {
     const config: ConfigInput = { profiles: { team: { prompts: { research: 'Find it.', vote: 'Judge {{lens.id}}: {{lens.question}}' }, lenses: [{ id: 'one', question: 'Real?' }] } } }
     const expected = ['RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead', 'team.policy.medium needs the same 1 vote(s) as policy.high with 1 lens(es), so it never applies']
-    const env = { RESEARCH_MODEL: 'q' }
+    const env = { RESEARCH_MODEL: 'q', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }
     expect((await fromConfig(config, { env })).warnings).toEqual(expected)
     expect((await fromConfig(resolveConfig(config, { env }))).warnings).toEqual(expected)
   })
 
   it('sends nothing when a provider is invalid', async () => {
     const fetchMock = stubReview()
-    await expect(fromConfig({ providers: { local: { preset: 'ollama', model: 'q', maxTokens: 0 } } }, { env: {} })).rejects.toThrow(ConfigError)
+    await expect(fromConfig({ providers: { local: { preset: 'ollama', model: 'q', contextTokens: 131072, maxTokens: 0 } } }, { env: {} })).rejects.toThrow(ConfigError)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })

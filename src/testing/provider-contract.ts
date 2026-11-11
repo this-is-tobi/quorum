@@ -60,7 +60,7 @@ const request: CompletionRequest = {
   messages: [{ role: 'user', content: 'data' }],
   output: { name: 'panel_vote', schema: { type: 'object' } },
 }
-const base = { id: 'p', baseUrl: 'https://h.example/v1', model: 'm' }
+const base = { id: 'p', baseUrl: 'https://h.example/v1', model: 'm', contextTokens: 131072 }
 
 /** The shared contract every HTTP adapter meets: where the key goes and nowhere else, its options, and its errors. */
 export function describeProviderContract(subject: ContractSubject): void {
@@ -235,6 +235,13 @@ export function describeProviderContract(subject: ContractSubject): void {
       for (const extraBody of [{ a: undefined }, { a: new Date(0) }, { a: { b: Number.NaN } }, JSON.parse('{"__proto__":{"x":1}}') as Body]) {
         expect(issuesOf({ extraBody }), JSON.stringify(Object.keys(extraBody))).toEqual([{ path: 'p.extraBody', message: 'must be an object of JSON values, with no __proto__ key' }])
       }
+    })
+
+    it('is refused without contextTokens, before any request', () => {
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      expect(issuesOf({ contextTokens: undefined })).toEqual([{ path: 'p.contextTokens', message: 'is required: the model\'s context window in tokens, which quorum checks every request against' }])
+      expect(fetchMock).not.toHaveBeenCalled()
     })
 
     it('refuses a base URL it cannot use and a key a header cannot carry, without repeating either', () => {
