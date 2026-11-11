@@ -22,31 +22,96 @@ describe('textTokens', () => {
   it('counts the system text, every message and the reply schema, one token per byte', () => {
     expect(textTokens(shaped, output)).toBe(33)
     expect(textTokens({ system: undefined, messages: [{ role: 'user', content: 'instructions\n\ndata' }] }, output)).toBe(35)
-    expect(textTokens({ system: String.fromCharCode(0xE9), messages: [{ role: 'assistant', content: 'a' }, { role: 'user', content: String.fromCharCode(0x4E2D) }] }, output)).toBe(2 + 1 + 3 + 17)
+    expect(textTokens({ system: String.fromCharCode(0xE9), messages: [{ role: 'assistant', content: 'a' }, { role: 'user', content: String.fromCharCode(0x4E2D) }] }, output)).toBe(3 + 1 + 3 + 17)
   })
 
   describe('with a tokenizer that normalizes first', () => {
     const schemaBytes = 17
-    /** U+0F81 is 3 bytes as sent and 6 after NFC, which decomposes it; U+FDFA is 3 bytes, 3 after NFC and 33 after NFKC. */
-    const decomposedByNfc = String.fromCharCode(0x0F81)
-    const expandedByNfkc = String.fromCharCode(0xFDFA)
+    const char = (codePoint: number): string => String.fromCodePoint(codePoint)
+    /** U+0F81 is 3 bytes as sent and 6 decomposed; U+FDFA is 3 bytes and 33 compatibility-decomposed. */
+    const decomposed = String.fromCharCode(0x0F81)
+    const expanded = String.fromCharCode(0xFDFA)
     const inMessage = (content: string): number => textTokens({ system: undefined, messages: [{ role: 'user', content }] }, output) - schemaBytes
 
-    it('counts a text at the largest of its raw, NFC and NFKC UTF-8 lengths', () => {
-      expect(inMessage(decomposedByNfc)).toBe(6)
-      expect(inMessage(expandedByNfkc)).toBe(33)
-      expect(inMessage(decomposedByNfc.repeat(100))).toBe(600)
+    it.each<[string, string, number]>([
+      ['U+0F81, which decomposes into two 3-byte marks', decomposed, 6],
+      ['U+FDFA, which expands into 18 letters', expanded, 33],
+      ['U+00E9, which NFD writes as e and U+0301', String.fromCharCode(0xE9), 3],
+      ['U+AC00, which NFD writes as two jamo of 3 bytes', String.fromCharCode(0xAC00), 6],
+      ['a lone surrogate', String.fromCharCode(0xD800), 3],
+      ['a lone low surrogate', String.fromCharCode(0xDC00), 3],
+      ['an ASCII text', 'abc', 3],
+      ['a code point above U+FFFF', char(0x1F600), 4],
+      ['an astral character that decomposes', char(0x1D15E), 8],
+    ])('counts %s at its longest form', (_name, text, bytes) => {
+      expect(inMessage(text)).toBe(bytes)
+    })
+
+    it('counts a text as the sum of its code points, so a repeat scales', () => {
+      expect(inMessage(decomposed.repeat(100))).toBe(600)
     })
 
     it('counts the system text and the reply schema the same way', () => {
-      expect(textTokens({ system: expandedByNfkc, messages: [] }, output) - schemaBytes).toBe(33)
+      expect(textTokens({ system: expanded, messages: [] }, output) - schemaBytes).toBe(33)
       // `{"` and `":1}` are 6 ASCII bytes around the key.
-      expect(textTokens({ system: undefined, messages: [] }, { name: 'panel_vote', schema: { [decomposedByNfc]: 1 } })).toBe(6 + 6)
+      expect(textTokens({ system: undefined, messages: [] }, { name: 'panel_vote', schema: { [decomposed]: 1 } })).toBe(6 + 6)
     })
 
-    it('counts an ASCII text at its length and a lone surrogate at 3 bytes', () => {
-      expect(inMessage('abc')).toBe(3)
-      expect(inMessage(String.fromCharCode(0xD800))).toBe(3)
+    it('does not count each character alone as NFC: a mark that composes first can lengthen the whole', () => {
+      // U+00E9 then U+0323 is 4 bytes as sent, and U+1EB9 U+0301 (5 bytes) in NFC as a whole.
+      const text = String.fromCharCode(0xE9, 0x0323)
+      expect(utf8Length(text.normalize('NFC'))).toBe(5)
+      expect(inMessage(text)).toBeGreaterThanOrEqual(5)
+    })
+
+    it('does not count chunks apart: a split can lose the composition that lengthens the whole', () => {
+      // U+212B then two U+0323 is 7 bytes in NFC as a whole, and 6 when normalized in pieces.
+      const text = String.fromCharCode(0x212B, 0x0323, 0x0323)
+      expect(utf8Length(text.normalize('NFC'))).toBe(7)
+      expect(inMessage(text)).toBeGreaterThanOrEqual(7)
+    })
+
+    it('rests on a property that holds for every code point: composing is never longer than decomposing', () => {
+      const violations: number[] = []
+      for (let codePoint = 0; codePoint <= 0x10FFFF; codePoint++) {
+        if (codePoint >= 0xD800 && codePoint <= 0xDFFF) continue
+        const text = char(codePoint)
+        if (utf8Length(text.normalize('NFC')) > utf8Length(text.normalize('NFD')) || utf8Length(text.normalize('NFKC')) > utf8Length(text.normalize('NFKD'))) violations.push(codePoint)
+      }
+      expect(violations).toEqual([])
+    })
+
+    it('bounds every form of a text: 10000 seeded random strings count at least their raw, NFC, NFKC, NFD and NFKD lengths', () => {
+      const starters = [0x61, 0x65, 0x41, 0x0915, 0x304B, 0x110A5]
+      const precomposed = [0xE9, 0x1E0A, 0x1E69, 0x212B, 0x2126, 0xFB01]
+      // combining marks of classes 230, 220, 202, 240, 8, 7, 129, 130 and 132
+      const marks = [0x0301, 0x0307, 0x0316, 0x0323, 0x0327, 0x0345, 0x3099, 0x093C, 0x0F71, 0x0F72, 0x0F74, 0x110BA]
+      const hangul = [0xAC00, 0xAC01, 0xD7A3, 0x1100, 0x1161, 0x11A8]
+      const expanders = [0x0F81, 0x0344, 0xFDFA]
+      const pool = [...starters, ...precomposed, ...marks, ...hangul, ...expanders].map(char)
+      let seed = 0x9E3779B9
+      const next = (limit: number): number => {
+        // mulberry32
+        seed = (seed + 0x6D2B79F5) | 0
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+        return Math.floor(((t ^ (t >>> 14)) >>> 0) / 4294967296 * limit)
+      }
+      const undercounts: string[] = []
+      for (let trial = 0; trial < 10_000; trial++) {
+        const text = Array.from({ length: 1 + next(20) }, () => pool[next(pool.length)]).join('')
+        const counted = inMessage(text)
+        const longest = Math.max(...(['NFC', 'NFKC', 'NFD', 'NFKD'] as const).map(form => utf8Length(text.normalize(form))), utf8Length(text))
+        if (counted < longest) undercounts.push(`${[...text].map(c => c.codePointAt(0)?.toString(16)).join(' ')}: ${counted} < ${longest}`)
+      }
+      expect(undercounts.slice(0, 3)).toEqual([])
+    })
+
+    it('counts a run of 200000 alternating combining marks in linear time, at the exact length', () => {
+      // Normalizing this whole run takes minutes (canonical reordering is quadratic in a run of marks), so the
+      // test's own time limit is the bound: both marks are 2 bytes in every form.
+      const marks = (String.fromCharCode(0x0301) + String.fromCharCode(0x0316)).repeat(100_000)
+      expect(inMessage(marks)).toBe(400_000)
     })
   })
 })
