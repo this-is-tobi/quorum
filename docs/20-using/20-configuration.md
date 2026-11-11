@@ -54,7 +54,7 @@ profiles:
       medium: off
 ```
 
-- **`providers`** names each endpoint, by a name that starts with a lower-case letter and goes on with letters, digits, `_` and `-`. A provider starts from a [preset](./30-providers.md#presets), or from a `protocol` and a `baseUrl`, and sets the [options](./30-providers.md#options) of its adapter: its `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt`.
+- **`providers`** names each endpoint, by a name of lower-case letters, digits, `_` and `-`, which starts with a letter. A provider starts from a [preset](./30-providers.md#presets), or from a `protocol` and a `baseUrl`, and sets the [options](./30-providers.md#options) of its adapter: its `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt`.
 - **`roles`** says which provider researches and which votes. A profile's own `roles`, and a lens's `provider`, override them.
 - **`profiles`** defines the review profiles: [Profiles](./40-profiles.md), [Lenses and policy](./50-lenses-and-policy.md) and [Prompts](./60-prompts.md) say what each field means. A prompt is a string, or `{ file }`: the file's text. A prompt file resolves against the directory of the config file, whatever the working directory is, and holds at most 64 KiB, and the prompt files of a config 1 MiB in all.
 
@@ -210,8 +210,9 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `QUORUM_RESEARCH_MODEL: cannot change providers.mine, an object implementing Provider` | A variable set for a role bound to a provider object |
 | `quorum.yaml: does not exist`, `is not a file`, `cannot be read`, `is over 1 MiB` or `is not UTF-8 text` | The file cannot be read as a config |
 | `quorum.txt: must end in .yaml, .yml, .json, .mts, .mjs, .ts or .js` | The extension chooses the format, so another one is refused |
-| `quorum.yaml: is not valid YAML at line 3, column 1 (BAD_INDENT)` | The file is not valid YAML, or not valid JSON; a YAML alias, a repeated key and a YAML 1.1 tag are refused too |
-| `quorum.yaml: must hold a mapping of settings` | The file holds a list or a scalar, or is empty |
+| `quorum.yaml: is not valid YAML at line 3, column 1 (BAD_INDENT)`, or `quorum.json: is not valid JSON` | The file is not valid YAML, or not valid JSON; a YAML alias, a repeated key and a YAML 1.1 tag are refused too |
+| `quorum.yaml: is empty` | The file is empty, holds only comments, or holds `null` |
+| `quorum.yaml: must hold a mapping of settings` | The file holds a list or a scalar |
 | `quorum.yaml: providers.a.modl: is not a known field` | A field quorum does not know, `apiKey` in a YAML or JSON file included. Every issue of the file is reported at once, one per line |
 | `quorum.yaml: version: must be 1, the only config version this quorum reads: upgrade quorum to read a later one` | A `version` other than `1` |
 | `quorum.yaml: profiles.naming.prompts.research.file: does not exist` | A prompt file that cannot be read: it does not exist, is not a file, is over 64 KiB, is not UTF-8, or takes the prompt files over 1 MiB in all |
