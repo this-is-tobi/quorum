@@ -8,8 +8,9 @@
  * - `FAKE_CLAUDE_EXIT`: its exit code, 0 by default
  * - `FAKE_CLAUDE_HANG=1`: it records, then waits until it is stopped
  * - `FAKE_CLAUDE_IGNORE_TERM=1`: it ignores SIGTERM
- * - `FAKE_CLAUDE_GRANDCHILD=1`: it starts a process of its own process group that shares its stdout and
- *   stderr and lives a while, and records its pid, as a `claude` that starts a helper would
+ * - `FAKE_CLAUDE_GRANDCHILD=1`: it starts a process that shares its stdout and stderr and lives a while, and
+ *   records its pid, as a `claude` that starts a helper would; `detached` starts it in a process group of
+ *   its own, out of reach of a signal sent to the fake's group
  * - `FAKE_CLAUDE_VERSION`: what `--version` prints, `2.1.311 (Claude Code)` by default
  * - `FAKE_CLAUDE_VERSION_DELAY_MS`: the milliseconds `--version` waits before it prints
  *
@@ -45,8 +46,9 @@ if (argv[0] === '--version') {
   const chunks = []
   for await (const chunk of process.stdin) chunks.push(chunk)
 
-  const grandchild = process.env.FAKE_CLAUDE_GRANDCHILD === '1'
-    ? spawn(process.execPath, ['-e', `setTimeout(() => {}, ${GRANDCHILD_LIFETIME_MS})`], { stdio: ['ignore', 'inherit', 'inherit'] })
+  const grandchildMode = process.env.FAKE_CLAUDE_GRANDCHILD
+  const grandchild = grandchildMode === '1' || grandchildMode === 'detached'
+    ? spawn(process.execPath, ['-e', `setTimeout(() => {}, ${GRANDCHILD_LIFETIME_MS})`], { stdio: ['ignore', 'inherit', 'inherit'], detached: grandchildMode === 'detached' })
     : undefined
   // Unreferenced, so the fake can exit while its grandchild still holds the pipes.
   grandchild?.unref()

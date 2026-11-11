@@ -1,7 +1,7 @@
 import { once } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError, ProviderError } from '../core/errors.ts'
@@ -9,9 +9,10 @@ import type { ConfigIssue } from '../core/errors.ts'
 import type { ChatMessage, CompletionRequest } from '../core/ports.ts'
 import { fakeClaudeEnv, isRunning, readFakeRecord, readFakeVersionRecords, writeFakeClaude } from '../testing/claude.ts'
 import * as fixtures from '../testing/fixtures/claude-code.ts'
-import { childEnv, claudeArgs, claudeCode, claudeCodeIssues, credentialValues, KILL_GRACE_MS, MAX_STDERR_BYTES, MAX_STDOUT_BYTES, MIN_CLAUDE_CODE_VERSION, readCapped, readResult, versionProblem } from './claude-code.ts'
+import { childEnv, claudeArgs, claudeCode, claudeCodeIssues, credentialValues, KILL_GRACE_MS, MAX_STDERR_BYTES, MAX_STDOUT_BYTES, MIN_CLAUDE_CODE_VERSION, prepareRun, readCapped, readResult, stopLiveRuns, trackRun, versionProblem } from './claude-code.ts'
 import type { ClaudeCodeOptions } from './claude-code.ts'
 import { CONTEXT_REQUIRED } from './options.ts'
+import { replyFailure } from './reply.ts'
 
 const options: ClaudeCodeOptions = { id: 'cc', model: 'sonnet', contextTokens: 200000 }
 const ISOLATED = ['--tools', '', '--setting-sources', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands']
@@ -500,6 +501,58 @@ describe('readResult', () => {
   })
 })
 
+describe('live runs', () => {
+  let base = ''
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), 'quorum-cc-live-'))
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    rmSync(base, { recursive: true, force: true })
+  })
+
+  /** A run directory under `base` that holds a file, as a live run's does. */
+  function runDirectory(name: string): string {
+    const dir = join(base, name)
+    mkdirSync(join(dir, 'cwd'), { recursive: true })
+    writeFileSync(join(dir, 'system.txt'), 'instructions')
+    return dir
+  }
+  const listening = (): number => process.listeners('exit').filter(listener => listener === stopLiveRuns).length
+
+  it('kills the group of every live run and removes every directory when quorum exits, whatever fails on the way', () => {
+    const kill = vi.spyOn(process, 'kill').mockImplementationOnce(() => {
+      throw Object.assign(new Error('no such process'), { code: 'ESRCH' })
+    }).mockImplementation(() => true)
+    const [gone, running, groupless] = ['gone', 'running', 'groupless'].map(runDirectory) as [string, string, string]
+    const untrack = [trackRun({ dir: gone, pid: 4242 }), trackRun({ dir: running, pid: 4343 }), trackRun({ dir: groupless })]
+    expect(listening()).toBe(1)
+    stopLiveRuns()
+    expect(kill.mock.calls).toEqual([[-4242, 'SIGKILL'], [-4343, 'SIGKILL']])
+    expect([gone, running, groupless].map(dir => existsSync(dir))).toEqual([false, false, false])
+    // A directory that is gone already is no error.
+    expect(() => stopLiveRuns()).not.toThrow()
+    for (const forget of untrack) forget()
+  })
+
+  it('listens once while any run is live, and no more once the last has closed', () => {
+    expect(listening()).toBe(0)
+    const first = trackRun({ dir: join(base, 'first') })
+    const second = trackRun({ dir: join(base, 'second'), pid: 4242 })
+    expect(listening()).toBe(1)
+    first()
+    expect(listening()).toBe(1)
+    second()
+    second()
+    expect(listening()).toBe(0)
+    trackRun({ dir: join(base, 'third') })()
+    expect(listening()).toBe(0)
+    const again = trackRun({ dir: join(base, 'fourth') })
+    expect(listening()).toBe(1)
+    again()
+  })
+})
+
 describe('claudeCode', () => {
   const request: CompletionRequest = { system: 'instructions', messages: [{ role: 'user', content: 'data' }], output: { name: 'panel_vote', schema: { type: 'object' } } }
   let dir = ''
@@ -572,6 +625,17 @@ describe('claudeCode', () => {
     expect(readdirSync(runs)).toEqual([])
   })
 
+  it('makes the run directory at an absolute path, though TMPDIR is relative', async () => {
+    vi.stubEnv('TMPDIR', relative(process.cwd(), runs))
+    const run = await prepareRun('instructions', replyFailure('cc'))
+    try {
+      expect(run.dir).toBe(join(runs, basename(run.dir)))
+      expect([run.cwd, run.tmp, run.systemFile].every(path => isAbsolute(path))).toBe(true)
+    } finally {
+      rmSync(run.dir, { recursive: true, force: true })
+    }
+  })
+
   it('runs claude in a fresh empty directory with the message on stdin and the system text in a file, then removes it all', async () => {
     const env = fakeClaudeEnv(dir, 'round', fixtures.schema, { CLAUDE_CODE_MESSAGING_TOKEN: 'parent-secret', HOME: '/home/u', FAKE_CLAUDE_GRANDCHILD: '1' })
     const provider = claudeCode({ id: 'cc', model: 'haiku', contextTokens: 200000, command: claude, env })
@@ -609,6 +673,26 @@ describe('claudeCode', () => {
     expect(readdirSync(runs)).toEqual([])
   })
 
+  it('settles two seconds after claude exits though a process outside its group holds the pipes, and stops a stdout past 16 MiB', async () => {
+    const env = fakeClaudeEnv(dir, 'detached', 'a'.repeat(MAX_STDOUT_BYTES + 1), { FAKE_CLAUDE_GRANDCHILD: 'detached' })
+    const started = Date.now()
+    let helper: number | undefined
+    try {
+      await expect(claudeCode({ ...options, command: claude, env }).complete(request)).rejects.toMatchObject({ kind: 'invalid-response', message: 'cc: reply is over 16 MiB' })
+      const elapsed = Date.now() - started
+      helper = readFakeRecord(dir, 'detached').grandchild
+      // The grace runs from the exit; the helper would hold the pipes for 20 seconds.
+      expect(elapsed).toBeGreaterThanOrEqual(KILL_GRACE_MS - 100)
+      expect(elapsed).toBeLessThan(KILL_GRACE_MS + 5000)
+      expect(isRunning(helper as number)).toBe(true)
+      expect(readdirSync(runs)).toEqual([])
+    } finally {
+      // Out of the group, it is beyond quorum's reach: the spec ends it.
+      helper ??= existsSync(join(dir, 'detached.record.json')) ? readFakeRecord(dir, 'detached').grandchild : undefined
+      if (helper !== undefined && isRunning(helper)) process.kill(helper, 'SIGKILL')
+    }
+  }, 15_000)
+
   it('refuses a claude older than 2.1.311 before it starts the request, and checks again when another request\'s abort cut the check short', async () => {
     const env = fakeClaudeEnv(dir, 'old', fixtures.schema, { FAKE_CLAUDE_VERSION: '2.1.310 (Claude Code)', FAKE_CLAUDE_VERSION_DELAY_MS: '800' })
     const provider = claudeCode({ ...options, command: claudeIn('old'), env })
@@ -634,28 +718,50 @@ describe('claudeCode', () => {
     expect(readdirSync(runs)).toEqual([])
   })
 
-  it('stops claude and what it started with SIGTERM when the request aborts, waits for them, removes its directory and rejects as aborted', async () => {
+  it('stops claude and what it started with SIGTERM when the request aborts, waits for them, removes its directory and rejects as aborted, and a quorum that exits meanwhile would SIGKILL its group and remove its directory', async () => {
     const controller = new AbortController()
     const env = fakeClaudeEnv(dir, 'term', fixtures.schema, { FAKE_CLAUDE_HANG: '1', FAKE_CLAUDE_GRANDCHILD: '1' })
     const call = claudeCode({ ...options, command: claude, env }).complete({ ...request, signal: controller.signal })
-    await vi.waitFor(() => expect(existsSync(join(dir, 'term.record.json'))).toBe(true), { timeout: 5000 })
-    const { pid, grandchild } = readFakeRecord(dir, 'term')
-    expect(isRunning(grandchild as number)).toBe(true)
-    controller.abort()
+    // A failed assertion below must not leave the call, or the fake it started, running.
+    call.catch(() => {})
+    let pid = 0
+    let grandchild = 0
+    try {
+      await vi.waitFor(() => expect(existsSync(join(dir, 'term.record.json'))).toBe(true), { timeout: 5000 })
+      ;({ pid, grandchild } = readFakeRecord(dir, 'term') as { pid: number, grandchild: number })
+      expect(isRunning(grandchild)).toBe(true)
+      // The listener quorum registers for its exit, with the kill held back, finds this run's group and directory.
+      expect(process.listeners('exit')).toContain(stopLiveRuns)
+      const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
+      stopLiveRuns()
+      const killed = [...kill.mock.calls]
+      kill.mockRestore()
+      expect(killed).toEqual([[-pid, 'SIGKILL']])
+      expect(readdirSync(runs)).toEqual([])
+    } finally {
+      controller.abort()
+    }
     await expect(call).rejects.toMatchObject({ kind: 'aborted', message: 'cc: request aborted' })
     expect(isRunning(pid)).toBe(false)
-    await vi.waitFor(() => expect(isRunning(grandchild as number)).toBe(false), { timeout: 2000 })
+    await vi.waitFor(() => expect(isRunning(grandchild)).toBe(false), { timeout: 2000 })
     expect(readdirSync(runs)).toEqual([])
+    expect(process.listeners('exit')).not.toContain(stopLiveRuns)
   })
 
   it('kills claude with SIGKILL when it still runs two seconds after SIGTERM', async () => {
     const controller = new AbortController()
     const env = fakeClaudeEnv(dir, 'kill', fixtures.schema, { FAKE_CLAUDE_HANG: '1', FAKE_CLAUDE_IGNORE_TERM: '1' })
     const call = claudeCode({ ...options, command: claude, env }).complete({ ...request, signal: controller.signal })
-    await vi.waitFor(() => expect(existsSync(join(dir, 'kill.record.json'))).toBe(true), { timeout: 5000 })
-    const { pid } = readFakeRecord(dir, 'kill')
-    const aborted = Date.now()
-    controller.abort()
+    call.catch(() => {})
+    let pid = 0
+    let aborted = 0
+    try {
+      await vi.waitFor(() => expect(existsSync(join(dir, 'kill.record.json'))).toBe(true), { timeout: 5000 })
+      ;({ pid } = readFakeRecord(dir, 'kill'))
+    } finally {
+      aborted = Date.now()
+      controller.abort()
+    }
     await expect(call).rejects.toMatchObject({ kind: 'aborted' })
     expect(Date.now() - aborted).toBeGreaterThanOrEqual(KILL_GRACE_MS - 100)
     expect(isRunning(pid)).toBe(false)
