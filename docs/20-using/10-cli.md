@@ -10,6 +10,7 @@ Options:
   -c, --config <path>     Read this config file, over QUORUM_CONFIG
   -p, --profile <id>      Run only this profile; repeat it to run several
       --allow-incomplete  Exit 0 instead of 4 when the review is incomplete
+      --print-config      Print the resolved config, keys redacted, and exit
   -h, --help              Print this help and exit
   -v, --version           Print the version and exit
 ```
@@ -33,6 +34,7 @@ The flags go before or after the file:
 | `-c, --config <path>` | Read this config file, over `QUORUM_CONFIG`; a relative path is read from the working directory. An empty path is a usage error, so the working directory is never read as a config |
 | `-p, --profile <id>` | Run only this profile, over `QUORUM_PROFILES`. It takes one id, and repeats to run several: `-p security -p team`. An id that is repeated, malformed or unknown is a usage error before any model call |
 | `--allow-incomplete` | Exit `0` instead of `4` when a gating profile's review is incomplete. A kept `high` finding of a gating profile still exits `1` |
+| `--print-config` | Print the resolved config as YAML on stdout, every secret redacted, and exit `0`, reading no diff and calling no model: [Printing the resolved config](#printing-the-resolved-config). A diff file with it is a usage error |
 | `-h, --help` | Print the usage on stdout and exit `0`, reading neither a diff nor a config. It wins over `--version` |
 | `-v, --version` | Print `quorum <version>` on stdout and exit `0`, reading neither a diff nor a config |
 
@@ -51,7 +53,7 @@ A blank diff, empty or only whitespace, is reviewed without calling a model.
 
 ## stdout and stderr
 
-**stdout carries only the JSON result**, indented by two spaces and followed by a newline, written once the review ends. A script reads it whole; [The JSON result](../95-reference/20-json-result.md) has every field. A hidden character in a string is written as a `\uXXXX` escape, which a JSON parser reads back: [Output handling](../30-security/30-output-handling.md#what-the-cli-writes). When the run exits `2`, `3` or `130`, nothing was reviewed and stdout stays empty.
+**stdout carries only the JSON result**, indented by two spaces and followed by a newline, written once the review ends. A script reads it whole; [The JSON result](../95-reference/20-json-result.md) has every field. A hidden character in a string is written as a `\uXXXX` escape, which a JSON parser reads back: [Output handling](../30-security/30-output-handling.md#what-the-cli-writes). When the run exits `2`, `3` or `130`, nothing was reviewed and stdout stays empty. With `--print-config`, stdout carries the config's YAML instead, and nothing else.
 
 **stderr carries everything else**, in this order: the `warning:` lines, the banner, the progress lines while the review runs, and an `Error:` line when it fails. Every line is inert: a hidden character is shown as `<U+XXXX>`.
 
@@ -81,7 +83,7 @@ When several profiles run, the `invalid finding dropped`, `incomplete` and `cand
 | --- | --- |
 | `0` | The review is complete, and no gating profile kept a `high` finding: nothing was found, every finding was discarded, or findings were kept at `medium` at most. What a profile with `gating: false` finds, and its gaps, change no code. A blank diff exits `0` without calling a model, once the configuration is valid. `--allow-incomplete` also exits `0` where `4` would be the code |
 | `1` | A gating profile kept at least one finding at `high` confidence. The security profile gates, and with its three lenses `high` means all three kept the finding |
-| `2` | A usage or configuration error, before any model call: an unknown flag, a flag without its value, an empty `--config`, a `--profile` that is repeated, malformed or unknown, no diff given on a terminal, more than one argument, a diff file that cannot be read, a research model that is not set, a voter on another endpoint without a model of its own, a base URL that is not an `http://` or `https://` URL with a host, or a key with a character an HTTP header cannot carry. The configuration is checked before the diff is reviewed, so a blank diff meets these errors too. [Configuration errors](./20-configuration.md#configuration-errors) lists the messages |
+| `2` | A usage or configuration error, before any model call: an unknown flag, a flag without its value, an empty `--config`, a `--profile` that is repeated, malformed or unknown, a diff file given with `--print-config`, no diff given on a terminal, more than one argument, a diff file that cannot be read, a research model that is not set, a voter on another endpoint without a model of its own, a base URL that is not an `http://` or `https://` URL with a host, or a key with a character an HTTP header cannot carry. The configuration is checked before the diff is reviewed, so a blank diff meets these errors too. [Configuration errors](./20-configuration.md#configuration-errors) lists the messages |
 | `3` | The research call failed: its endpoint is unreachable, answers with an HTTP error, refuses, stops on its content filter, is cut off by its token limit, or sends a body or a reply quorum cannot use. Or the run stopped with nothing left to wait for, as a provider object whose call never settles leaves it: `Error: the run stopped without a result`, and never `0`. A failing voter does not fail the run: see `4` |
 | `4` | The review of a gating profile is incomplete, and no gating profile kept a `high` finding: a finding is `unreviewed` because a failed vote could still have kept it, or `meta.incomplete` holds a gap, which is a finding the harness could not read (`finding-unreadable`), a research reply whose findings were all unusable (`research-unusable`), findings beyond the cap of 50 (`findings-capped`), or a kept finding whose failed votes could have raised it to a higher level (`vote-failed`). A gap of a profile with `gating: false` is in the result and on stderr, and changes no code. `--allow-incomplete` turns this `4` into `0` |
 | `130` | The CLI received SIGINT or SIGTERM and stopped the review: nothing is written on stdout, and `interrupted` on stderr. A second signal exits `130` at once, without waiting for a provider that ignores the first |
@@ -105,6 +107,65 @@ The `Error:` line says what failed, and names the provider by its config key: `d
 | The reply is not one JSON object holding a `findings` array and nothing else | `research reply unusable: reply contains no JSON object (reply starts: "No issues found.")`, with the reason, and the first 200 characters of the reply as a JSON string |
 
 The reasons a reply is unusable are listed under [strict parsing](../30-security/10-threat-model.md#strict-single-object-parsing). A reply that holds `findings` but none quorum could use is not this error: it is a `research-unusable` gap, exit `4`.
+
+## Printing the resolved config
+
+`--print-config` prints the config a run would use, as YAML on stdout, and exits `0`. It reads no diff and calls no model, so it needs no stdin, and a diff file with it is a usage error: `Error: --print-config takes no diff file`, then the usage, exit `2`. It reads its settings as a run does, from `--config` or `QUORUM_CONFIG`, the `QUORUM_*` variables and `--profile`, and fails as a run does: a configuration error is an `Error:` line on stderr and exit `2`, any other failure exit `3`, and stdout stays empty. The config's warnings are in the YAML, and none is on stderr.
+
+```bash
+QUORUM_RESEARCH_BASE_URL=https://gateway.example/team-token/v1 \
+QUORUM_RESEARCH_MODEL=qwen3.6:27b \
+QUORUM_RESEARCH_API_KEY=sk-example \
+quorum --print-config
+```
+
+```yaml
+source: null
+providers:
+  default:
+    protocol: openai-compatible
+    origin: https://gateway.example
+    model: qwen3.6:27b
+    apiKey: "[redacted]"
+profiles:
+  security:
+    gating: true
+    research: default
+    lenses:
+      reachability: default
+      impact: default
+      defenses: default
+    thresholds:
+      high: 3
+      medium: 2
+      low: null
+    prompts:
+      research: sha256:1d112d6a2eded6cc0108c2b46a6e13aa9e3359df2e1ce1908bb10b08f4011583
+      vote: sha256:108ef252bca6e9a789d4fa5bd2f535a17e7fa836be9b29f11845490a9776b129
+concurrency: 4
+maxFindings: 50
+warnings: []
+```
+
+| Field | What it holds |
+| --- | --- |
+| `source` | The absolute path of the config file, or `null` when no file is named |
+| `providers` | Each provider a profile that runs uses, by its config key, in the order the config defines them. A provider defined as data prints the fields it sets, in this order: `preset`, `protocol`, `origin` (always), `model`, `apiKey`, `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature` (`null` too), `maxTokens`, `maxTokensField` and `systemPrompt`. A provider object, which a TS or JS config defines, prints `implements: Provider` and its `model` |
+| `profiles` | Each profile that runs, by id, in run order: `gating` (`true` unless the profile sets `false`), `research` (the provider that looks for findings), `lenses` (the provider each lens votes through), `thresholds` (the kept votes each confidence level needs, `null` for a level the policy disables) and `prompts` (`research` and `vote`, each as a hash) |
+| `concurrency`, `maxFindings` | The values the review applies: the config's, else the defaults, `4` and `50` |
+| `warnings` | The warnings a run prints as `warning:` lines before its banner |
+
+What it leaves out, so that the output can stay in a public CI log:
+
+- **A key** prints as `apiKey: "[redacted]"`, whether it came from `apiKey`, from the variable `apiKeyEnv` names, from a preset's variable or from `QUORUM_RESEARCH_API_KEY`.
+- **`headers`, `query` and `extraBody`** print their names, each with the value `[redacted]`: a gateway's own credential can sit in a header, a query parameter or a body field.
+- **A base URL** prints as its `origin`, the scheme, host and port, since a gateway can carry a token in the path, as `team-token` does above.
+- **A prompt** prints as `sha256:` and the lowercase hex SHA-256 of its UTF-8 text, never the text. `sha256sum` of a prompt file gives the same hex, a byte-order mark aside, so a job can compare it with the hash of the file on the base branch. A provider's `systemPrompt` is only a placement, `native` or `inline`.
+- **A field the view does not list** prints nothing. The view is built field by field, so a field added to the config later stays out of it until it is added on purpose.
+
+Each line passes through `inertLine`, as the lines on stderr do, so a hidden character in a file name or a key shows as `<U+XXXX>` and no line starts a workflow command: [What the CLI writes](../30-security/30-output-handling.md#what-the-cli-writes). The YAML is version 1.1, so a reader of that version reads `off` as a string, and no line is folded.
+
+A CI job can print it before the review, to check which file, providers and profiles it runs.
 
 ## Using it in CI
 
