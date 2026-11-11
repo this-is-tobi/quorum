@@ -85,6 +85,34 @@ describe('readEnv', () => {
   })
 })
 
+describe('the variables quorum does not read', () => {
+  const ROLE_VARIABLES = ['RESEARCH', 'VOTER'].flatMap(role => ['PRESET', 'PROTOCOL', 'BASE_URL', 'MODEL', 'API_KEY'].map(field => `QUORUM_${role}_${field}`))
+
+  it('names each QUORUM_ variable it does not read, sorted, in one warning after the deprecation line', () => {
+    expect(readEnv({ QUORUM_VOTER_BASEURL: 'https://v.example/v1', QUORUM_PROFILE: 'security', RESEARCH_MODEL: 'm' }).warnings).toEqual([
+      'RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead',
+      'QUORUM_PROFILE and QUORUM_VOTER_BASEURL are not variables quorum reads',
+    ])
+    expect(readEnv({ QUORUM_DEBUG: '1' }).warnings).toEqual(['QUORUM_DEBUG is not a variable quorum reads'])
+  })
+
+  it('warns about none of the variables it reads', () => {
+    const known = Object.fromEntries([['QUORUM_CONFIG', 'q.yaml'], ['QUORUM_PROFILES', 'security'], ...ROLE_VARIABLES.map(name => [name, 'x'])])
+    expect(readEnv(known).warnings).toEqual([])
+  })
+
+  it('ignores a blank variable, and one the environment only inherits', () => {
+    expect(readEnv({ QUORUM_PROFILE: '  ' }).warnings).toEqual([])
+    expect(readEnv(Object.create({ QUORUM_PROFILE: 'security' }) as Env).warnings).toEqual([])
+  })
+
+  it('prints a name that is not an upper-case variable name as *, and never a value', () => {
+    const warnings = readEnv({ QUORUM_research_model: 'sk-SECRET', QUORUM_PROFILE: 'sk-SECRET' }).warnings
+    expect(warnings).toEqual(['QUORUM_PROFILE and * are not variables quorum reads'])
+    expect(warnings.join('\n')).not.toContain('SECRET')
+  })
+})
+
 describe('baseUrlOf', () => {
   it('reads the base URL and the preset of settings as their own fields, never what a polluted Object.prototype holds', () => {
     const proto = Object.prototype as Record<string, unknown>

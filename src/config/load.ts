@@ -10,6 +10,7 @@ import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { envValue } from './env.ts'
 import type { Env } from './env.ts'
+import type { ProfileSelection } from './profiles.ts'
 import { resolveConfig } from './resolve.ts'
 import type { ResolvedConfig } from './resolve.ts'
 import { checkConfig, configCodeSchema, configFileSchema, configPath, isProvider, nameSnapshot, parseConfig } from './schema.ts'
@@ -244,6 +245,8 @@ function importProblem(error: unknown): string {
   if (code === 'ERR_UNKNOWN_FILE_EXTENSION') return 'needs Node 22.18 or later to load TypeScript: name it .mjs'
   if (code === 'ERR_MODULE_NOT_FOUND') return 'imports a module that cannot be found'
   const name = thrownName(error)
+  // Bun reports a syntax error in a TS or JS config as a `BuildMessage`, and its message quotes the source.
+  if (name === 'BuildMessage') return 'has a syntax error'
   if (name === 'SyntaxError') return 'has a syntax error (a .ts or .js config with export in a "type": "commonjs" package needs the .mts or .mjs extension)'
   return `failed to load (${name})`
 }
@@ -379,15 +382,16 @@ export async function readConfigFile(path: string, options: { readonly cwd?: str
  * as `readConfigFile` reads it, or none, and then the layers of the environment over it, resolved as
  * `resolveConfig` resolves them. No file is ever searched for, whatever the working directory holds: a
  * checkout can plant one, so a file loads only when it is named (ADR-0014). `options.env` defaults to
- * `process.env`. The resolved config holds the keys it read: never print or log one.
+ * `process.env`. `options.selection` names the profiles that run, over `QUORUM_PROFILES`, as `resolveConfig`
+ * reads it. The resolved config holds the keys it read: never print or log one.
  *
  * @returns the resolved config, the absolute path of the file it came from (none without a file) and its warnings
  * @throws ConfigError with every problem of the file or of the resolution
  */
-export async function loadConfig(options: { readonly cwd?: string, readonly env?: Env, readonly configPath?: string } = {}): Promise<{ readonly config: ResolvedConfig, readonly source: string | undefined, readonly warnings: readonly string[] }> {
+export async function loadConfig(options: { readonly cwd?: string, readonly env?: Env, readonly configPath?: string, readonly selection?: ProfileSelection } = {}): Promise<{ readonly config: ResolvedConfig, readonly source: string | undefined, readonly warnings: readonly string[] }> {
   const env = options.env ?? process.env
   const path = options.configPath ?? envValue(env, 'QUORUM_CONFIG')
   const loaded = path === undefined ? undefined : await readConfigFile(path, { cwd: options.cwd })
-  const config = resolveConfig(loaded?.config ?? {}, { env })
+  const config = resolveConfig(loaded?.config ?? {}, { env, selection: options.selection })
   return { config, source: loaded?.source, warnings: config.warnings }
 }

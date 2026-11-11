@@ -3,7 +3,9 @@ import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionResponse, Provider } from '../core/ports.ts'
 import type { Env } from './env.ts'
+import type { ProfileSelection } from './profiles.ts'
 import { isResolvedConfig, resolveConfig } from './resolve.ts'
+import type { ResolvedConfig } from './resolve.ts'
 import type { ConfigInput, ProviderSettings } from './schema.ts'
 
 // A fixture held in a constant is typed ProviderSettings, so `protocol` and `preset` keep their literal types.
@@ -19,9 +21,9 @@ const object: Provider = { id: 'x', model: 'm', complete: async (): Promise<Comp
 const resolve = (input: ConfigInput, env: Env = {}): ReturnType<typeof resolveConfig> => resolveConfig(input, { env })
 
 /** The issues of the ConfigError that resolving throws; none when it resolves. */
-function issuesOf(input: ConfigInput, env: Env = {}): readonly ConfigIssue[] {
+function issuesOf(input: ConfigInput, env: Env = {}, selection?: ProfileSelection): readonly ConfigIssue[] {
   try {
-    resolve(input, env)
+    resolveConfig(input, { env, selection })
   } catch (error) {
     expect(error).toBeInstanceOf(ConfigError)
     return (error as ConfigError).issues
@@ -258,5 +260,32 @@ describe('resolveConfig', () => {
     const env = { QUORUM_RESEARCH_API_KEY: SECRET }
     expect(JSON.stringify(resolve({ providers: { gpu: { protocol: 'openai-compatible', baseUrl: `http://gpu.lan/${SECRET}/v1`, model: 'm' } } }, env).warnings)).not.toContain('zz')
     expect(JSON.stringify(issuesOf({ providers: { gpu: { protocol: 'openai-compatible', baseUrl: 'https://h.example/v1', model: 'm', query: { k: SECRET } } } }, env))).not.toContain('zz')
+  })
+})
+
+describe('a selection of profiles', () => {
+  const TWO: ConfigInput = { profiles: { security: {}, team: TEAM } }
+  const MODEL = { QUORUM_RESEARCH_MODEL: 'm' }
+  const ID = 'must be a profile id matching ^[a-z][a-z0-9_-]*$'
+  const select = (ids: string[]): ProfileSelection => ({ ids, path: '--profile' })
+  const idsOf = (config: ResolvedConfig): string[] => config.profiles.map(({ profile }) => profile.id)
+
+  it('runs the profiles it names, over QUORUM_PROFILES and the config\'s own list', () => {
+    expect(idsOf(resolveConfig(TWO, { env: { ...MODEL, QUORUM_PROFILES: 'team' }, selection: select(['security']) }))).toEqual(['security'])
+    expect(idsOf(resolveConfig({ profiles: { team: TEAM } }, { env: MODEL, selection: select(['team', 'security']) }))).toEqual(['team', 'security'])
+  })
+
+  it.each<[string, string[], ConfigIssue[]]>([
+    ['an id of another form', ['Security'], [{ path: '--profile', message: ID }]],
+    ['an empty id', [''], [{ path: '--profile', message: ID }]],
+    ['an id named twice', ['security', 'security'], [{ path: '--profile', message: 'names a profile more than once' }]],
+    ['an unknown id', ['secrity'], [{ path: '--profile', message: 'unknown profile "secrity" (did you mean "security"?)' }]],
+    ['no id', [], [{ path: '--profile', message: 'must name at least one profile' }]],
+  ])('refuses %s at the selection\'s path', (_name, ids, issues) => {
+    expect(issuesOf(TWO, MODEL, select(ids))).toEqual(issues)
+  })
+
+  it('still refuses a malformed QUORUM_PROFILES, before the selection\'s own issue', () => {
+    expect(issuesOf(TWO, { ...MODEL, QUORUM_PROFILES: ',' }, select(['Bad']))).toEqual([{ path: 'QUORUM_PROFILES', message: PROFILES }, { path: '--profile', message: ID }])
   })
 })

@@ -604,6 +604,17 @@ describe('loadConfig', () => {
     expect(Object.keys(loaded.config.providers)).toEqual(['default'])
   })
 
+  it('hands a selection to the resolution, over QUORUM_PROFILES', async () => {
+    const loaded = await loadConfig({ env: { QUORUM_RESEARCH_MODEL: 'm', QUORUM_PROFILES: 'nope' }, selection: { ids: ['security'], path: '--profile' } })
+    expect(loaded.config.profiles.map(({ profile }) => profile.id)).toEqual(['security'])
+  })
+
+  it('reports a config that Bun cannot build as a syntax error, never by its message', async () => {
+    file('built.mjs', `const error = new Error('${SECRET} in the source')\nerror.name = 'BuildMessage'\nthrow error\n`)
+    const issues = await loadConfig({ cwd: dir, env: {}, configPath: 'built.mjs' }).then(() => [], (error: unknown) => (error as ConfigError).issues)
+    expect(issues).toEqual([{ path: 'built.mjs', message: 'has a syntax error' }])
+  })
+
   it('returns the config\'s warnings', async () => {
     const loaded = await loadConfig({ cwd: dir, env: { RESEARCH_MODEL: 'q' } })
     expect(loaded.warnings).toEqual(['RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead'])

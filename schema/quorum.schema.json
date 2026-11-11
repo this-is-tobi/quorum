@@ -198,7 +198,7 @@
       "maximum": 9007199254740991
     },
     "profiles": {
-      "description": "The review profiles, by id: a built-in profile, one that extends it, or one of your own. The ones QUORUM_PROFILES names run, else every one listed here, else the security profile alone",
+      "description": "The review profiles, by id: a built-in profile, one that extends it, or one of your own. The ones --profile names run, else the ones QUORUM_PROFILES names, else every one listed here, else the security profile alone",
       "type": "object",
       "propertyNames": {
         "type": "string",

@@ -33,7 +33,7 @@ export interface EnvLayer {
   readonly profiles?: readonly string[]
   readonly research: RoleOverrides
   readonly voter: RoleOverrides
-  /** The one deprecation line, when an alias is set. */
+  /** The deprecation line, when an alias is set, then the line naming the `QUORUM_` variables nothing reads. */
   readonly warnings: readonly string[]
   readonly issues: readonly ConfigIssue[]
 }
@@ -53,9 +53,15 @@ const ROLES: readonly Role[] = ['RESEARCH', 'VOTER']
 const BINDINGS = [['research', 'RESEARCH'], ['voter', 'VOTER']] as const
 /** The aliases in the order the deprecation line lists them, role by role. */
 const ALIAS_SUFFIXES = ['BASE_URL', 'API_KEY', 'MODEL']
-const PROFILE_ID = /^[a-z][a-z0-9_-]*$/
+/** The form of a profile id: what `QUORUM_PROFILES` and a selection of profiles may name. */
+export const PROFILE_ID = /^[a-z][a-z0-9_-]*$/
+/** The only variable names a message prints: a key pasted where a name belongs must never show. */
+export const VARIABLE_NAME = /^[A-Z][A-Z0-9_]{0,63}$/
 
 const canonicalName = (role: Role, suffix: string): string => `QUORUM_${role}_${suffix}`
+
+/** The variables whose name starts with `QUORUM_` that quorum reads. */
+const READ_VARIABLES: ReadonlySet<string> = new Set(['QUORUM_CONFIG', 'QUORUM_PROFILES', ...ROLES.flatMap(role => VARIABLES.map(({ suffix }) => canonicalName(role, suffix)))])
 
 /** The variables of one role that are set, each as its field and value: the `QUORUM_` form, else its alias. */
 function readRole(env: Env, role: Role): RoleOverrides {
@@ -74,6 +80,17 @@ function deprecationWarnings(env: Env): string[] {
   return [`${wordList(aliases.map(([alias]) => alias), 'and')} ${verb} deprecated: set ${wordList(aliases.map(([, canonical]) => canonical), 'and')} instead`]
 }
 
+/**
+ * The one line that names every variable set under a `QUORUM_` name that quorum does not read, sorted, so a
+ * typo is seen. A name that is not an upper-case variable name prints as `*`, and no value is ever printed.
+ */
+function unreadWarnings(env: Env): string[] {
+  const names = Object.keys(env).filter(name => name.startsWith('QUORUM_') && !READ_VARIABLES.has(name) && envValue(env, name) !== undefined).sort()
+  if (names.length === 0) return []
+  const printed = names.map(name => VARIABLE_NAME.test(name) ? name : '*')
+  return [names.length === 1 ? `${printed[0]} is not a variable quorum reads` : `${wordList(printed, 'and')} are not variables quorum reads`]
+}
+
 /** The profile ids of `QUORUM_PROFILES`, or the one issue that refuses it. Neither repeats the value. */
 function readProfiles(env: Env): Pick<EnvLayer, 'profiles' | 'issues'> {
   const value = envValue(env, 'QUORUM_PROFILES')
@@ -87,10 +104,11 @@ function readProfiles(env: Env): Pick<EnvLayer, 'profiles' | 'issues'> {
 /**
  * Read the `QUORUM_*` variables: the preset, protocol, base URL, model and key of each role, which are
  * `QUORUM_RESEARCH_*` and `QUORUM_VOTER_*`, and `QUORUM_PROFILES`. `RESEARCH_*` and `VOTER_*` are read as
- * deprecated aliases of the base URL, model and key, and the `QUORUM_` form wins. No message repeats a value.
+ * deprecated aliases of the base URL, model and key, and the `QUORUM_` form wins. Any other variable set under
+ * a `QUORUM_` name is named in one warning. No message repeats a value.
  */
 export function readEnv(env: Env): EnvLayer {
-  return { ...readProfiles(env), research: readRole(env, 'RESEARCH'), voter: readRole(env, 'VOTER'), warnings: deprecationWarnings(env) }
+  return { ...readProfiles(env), research: readRole(env, 'RESEARCH'), voter: readRole(env, 'VOTER'), warnings: [...deprecationWarnings(env), ...unreadWarnings(env)] }
 }
 
 /** A provider of a config: its settings, or an object implementing `Provider`. */
