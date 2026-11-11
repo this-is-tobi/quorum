@@ -1,13 +1,15 @@
+import { once } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError, ProviderError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { ChatMessage, CompletionRequest } from '../core/ports.ts'
 import { fakeClaudeEnv, isRunning, readFakeRecord, writeFakeClaude } from '../testing/claude.ts'
 import * as fixtures from '../testing/fixtures/claude-code.ts'
-import { childEnv, claudeArgs, claudeCode, claudeCodeIssues, KILL_GRACE_MS, readResult } from './claude-code.ts'
+import { childEnv, claudeArgs, claudeCode, claudeCodeIssues, credentialValues, KILL_GRACE_MS, MAX_STDERR_BYTES, MAX_STDOUT_BYTES, readCapped, readResult } from './claude-code.ts'
 import type { ClaudeCodeOptions } from './claude-code.ts'
 import { CONTEXT_REQUIRED } from './options.ts'
 
@@ -173,6 +175,85 @@ describe('childEnv', () => {
 
   it('reads only the environment\'s own variables', () => {
     expect(childEnv(Object.create({ ANTHROPIC_API_KEY: 'inherited' }) as Record<string, string>, 'inherit', undefined, '/t')).toEqual({ ...ISOLATION, CLAUDE_CODE_TMPDIR: '/t' })
+  })
+})
+
+describe('credentialValues', () => {
+  const SECRETS = {
+    ANTHROPIC_API_KEY: 'sk-env',
+    ANTHROPIC_AUTH_TOKEN: 'tok',
+    CLAUDE_CODE_OAUTH_TOKEN: 'oauth',
+    ANTHROPIC_CUSTOM_HEADERS: 'Authorization: Bearer other',
+    AWS_BEARER_TOKEN_BEDROCK: 'aws-bearer',
+    ANTHROPIC_AWS_API_KEY: 'aws-key',
+    ANTHROPIC_FOUNDRY_API_KEY: 'foundry-key',
+    ANTHROPIC_FOUNDRY_AUTH_TOKEN: 'foundry-tok',
+  }
+  const env = { PATH: '/usr/bin', HOME: '/home/u', ANTHROPIC_BASE_URL: 'https://gw.example', ...SECRETS }
+  const valuesOf = (auth: 'inherit' | 'login' | 'api-key', apiKey?: string): string[] => credentialValues(childEnv(env, auth, apiKey, '/run/tmp')).sort()
+
+  it('holds every credential the child receives under inherit, and nothing else', () => {
+    expect(valuesOf('inherit')).toEqual(Object.values(SECRETS).sort())
+  })
+
+  it('holds the credentials login keeps, which are not the ones it removes', () => {
+    expect(valuesOf('login')).toEqual(['aws-bearer', 'aws-key', 'foundry-key', 'foundry-tok', 'oauth'])
+  })
+
+  it('holds the key api-key sends, not the one it replaces', () => {
+    expect(valuesOf('api-key', 'sk-mine')).toEqual(['aws-bearer', 'aws-key', 'foundry-key', 'foundry-tok', 'oauth', 'sk-mine'])
+    expect(valuesOf('api-key')).toContain('sk-env')
+  })
+
+  it('holds a value as written and trimmed, matches names in any letter case, and leaves out a value that is blank once trimmed', () => {
+    const odd = { claude_code_oauth_token: ' spaced ', Anthropic_Auth_Token: '  ', ANTHROPIC_API_KEY: '', HOME: ' not-a-secret ' }
+    expect(credentialValues(childEnv(odd, 'inherit', undefined, '/t')).sort()).toEqual([' spaced ', 'spaced'])
+  })
+})
+
+describe('readCapped', () => {
+  /** Feed `chunks` to a stream read by `readCapped` and wait until it has ended. */
+  async function capture(max: number, chunks: Array<Buffer | string>) {
+    const stream = new PassThrough()
+    const overflows = vi.fn()
+    const capped = readCapped(stream, max, overflows)
+    for (const chunk of chunks) stream.write(chunk)
+    stream.end()
+    await once(stream, 'end')
+    return { text: capped.text(), overflowed: capped.overflowed(), overflows }
+  }
+
+  it('keeps stdout up to 16 MiB, and stops claude once at the first byte over', async () => {
+    expect(MAX_STDOUT_BYTES).toBe(16 * 1024 * 1024)
+    const full = await capture(MAX_STDOUT_BYTES, [Buffer.alloc(MAX_STDOUT_BYTES, 'a')])
+    expect(full).toMatchObject({ overflowed: false })
+    expect(full.text).toHaveLength(MAX_STDOUT_BYTES)
+    expect(full.overflows).not.toHaveBeenCalled()
+    const over = await capture(MAX_STDOUT_BYTES, [Buffer.alloc(MAX_STDOUT_BYTES, 'a'), 'b', Buffer.alloc(1000, 'c')])
+    expect(over.overflowed).toBe(true)
+    expect(over.text).toHaveLength(MAX_STDOUT_BYTES)
+    expect(over.text.endsWith('a')).toBe(true)
+    expect(over.overflows).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps stderr up to 64 KiB and drops the rest, without stopping claude', async () => {
+    expect(MAX_STDERR_BYTES).toBe(64 * 1024)
+    const output = await capture(MAX_STDERR_BYTES, [Buffer.alloc(MAX_STDERR_BYTES - 5, 'a'), 'tail-of-stderr', 'more'])
+    expect(output.text).toBe(`${'a'.repeat(MAX_STDERR_BYTES - 5)}tail-`)
+  })
+
+  it('cuts a chunk at the cap, decodes a character split between chunks, and writes U+FFFD for one the cap cuts', async () => {
+    const euro = Buffer.from('€')
+    expect((await capture(100, [euro.subarray(0, 1), euro.subarray(1), 'x'])).text).toBe('€x')
+    const cut = await capture(4, ['ab', euro])
+    expect(cut.text).toBe(`ab${String.fromCharCode(0xFFFD)}`)
+    expect(cut.overflowed).toBe(true)
+  })
+
+  it('reads nothing from a child with no pipe', () => {
+    const capped = readCapped(null, 10)
+    expect(capped.text()).toBe('')
+    expect(capped.overflowed()).toBe(false)
   })
 })
 
@@ -438,7 +519,7 @@ describe('claudeCode', () => {
   })
 
   it('runs claude in a fresh empty directory with the message on stdin and the system text in a file, then removes it all', async () => {
-    const env = fakeClaudeEnv(dir, 'round', fixtures.schema, { CLAUDE_CODE_MESSAGING_TOKEN: 'parent-secret', HOME: '/home/u' })
+    const env = fakeClaudeEnv(dir, 'round', fixtures.schema, { CLAUDE_CODE_MESSAGING_TOKEN: 'parent-secret', HOME: '/home/u', FAKE_CLAUDE_GRANDCHILD: '1' })
     const provider = claudeCode({ id: 'cc', model: 'haiku', contextTokens: 200000, command: claude, env })
     expect(await provider.complete(request)).toEqual({ text: '{"keep":true}', model: 'claude-haiku-5-5', usage: { inputTokens: 2662, outputTokens: 225, costUsd: 0.000525 } })
     const record = readFakeRecord(dir, 'round')
@@ -451,13 +532,17 @@ describe('claudeCode', () => {
     expect(record.argv).toEqual(claudeArgs({ model: 'haiku', auth: 'inherit', structuredOutput: 'schema', args: [] }, join(run, 'system.txt'), { type: 'object' }))
     expect(record.env).toMatchObject({ HOME: '/home/u', CLAUDE_CODE_TMPDIR: join(run, 'tmp'), CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', DISABLE_COMPACT: '1' })
     expect(record.env.CLAUDE_CODE_MESSAGING_TOKEN).toBeUndefined()
+    expect(record.tmpExists).toBe(true)
+    if (process.platform !== 'win32') expect([record.runMode, record.systemMode]).toEqual([0o700, 0o600])
+    // The fake exited while its grandchild still held the pipes: the call did not wait, and the group is gone.
+    await vi.waitFor(() => expect(isRunning(record.grandchild as number)).toBe(false), { timeout: 2000 })
     expect(readdirSync(runs)).toEqual([])
   })
 
-  it('runs api-key mode bare with its key, and reports an exit without JSON by its stderr, redacted of the key', async () => {
-    const env = fakeClaudeEnv(dir, 'bare', '', { FAKE_CLAUDE_STDERR: 'error: key sk-SECRET refused', FAKE_CLAUDE_EXIT: '2', ANTHROPIC_AUTH_TOKEN: 'tok' })
+  it('runs api-key mode bare with its key, and reports an exit without JSON by its stderr, redacted of every credential it holds', async () => {
+    const env = fakeClaudeEnv(dir, 'bare', '', { FAKE_CLAUDE_STDERR: 'error: key sk-SECRET refused, login oauth-SECRET', FAKE_CLAUDE_EXIT: '2', ANTHROPIC_AUTH_TOKEN: 'tok', CLAUDE_CODE_OAUTH_TOKEN: 'oauth-SECRET' })
     const provider = claudeCode({ id: 'cc', model: 'haiku', contextTokens: 200000, auth: 'api-key', apiKey: 'sk-SECRET', command: claude, env })
-    await expect(provider.complete(request)).rejects.toMatchObject({ kind: 'process', status: 2, message: 'cc: claude exited 2: "error: key [redacted] refused"' })
+    await expect(provider.complete(request)).rejects.toMatchObject({ kind: 'process', status: 2, message: 'cc: claude exited 2: "error: key [redacted] refused, login [redacted]"' })
     const record = readFakeRecord(dir, 'bare')
     expect(record.argv).toContain('--bare')
     expect(record.env.ANTHROPIC_API_KEY).toBe('sk-SECRET')
@@ -465,15 +550,17 @@ describe('claudeCode', () => {
     expect(readdirSync(runs)).toEqual([])
   })
 
-  it('stops claude with SIGTERM when the request aborts, waits for it, removes its directory and rejects as aborted', async () => {
+  it('stops claude and what it started with SIGTERM when the request aborts, waits for them, removes its directory and rejects as aborted', async () => {
     const controller = new AbortController()
-    const env = fakeClaudeEnv(dir, 'term', fixtures.schema, { FAKE_CLAUDE_HANG: '1' })
+    const env = fakeClaudeEnv(dir, 'term', fixtures.schema, { FAKE_CLAUDE_HANG: '1', FAKE_CLAUDE_GRANDCHILD: '1' })
     const call = claudeCode({ ...options, command: claude, env }).complete({ ...request, signal: controller.signal })
     await vi.waitFor(() => expect(existsSync(join(dir, 'term.record.json'))).toBe(true), { timeout: 5000 })
-    const { pid } = readFakeRecord(dir, 'term')
+    const { pid, grandchild } = readFakeRecord(dir, 'term')
+    expect(isRunning(grandchild as number)).toBe(true)
     controller.abort()
     await expect(call).rejects.toMatchObject({ kind: 'aborted', message: 'cc: request aborted' })
     expect(isRunning(pid)).toBe(false)
+    await vi.waitFor(() => expect(isRunning(grandchild as number)).toBe(false), { timeout: 2000 })
     expect(readdirSync(runs)).toEqual([])
   })
 

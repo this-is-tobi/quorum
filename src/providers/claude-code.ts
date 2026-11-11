@@ -159,15 +159,30 @@ const CREDENTIAL_VARIABLES: ReadonlySet<string> = new Set([
   'ANTHROPIC_CUSTOM_HEADERS',
   'ANTHROPIC_UNIX_SOCKET',
 ])
+/**
+ * The variables whose values no quoted text may repeat, whichever the mode keeps in the child's environment:
+ * the credentials `login` and `api-key` remove, the Claude Code login's own token, and the bearer tokens and
+ * keys of the cloud providers. A text that comes back from `claude` can echo any of them.
+ */
+const REDACTED_VARIABLES: ReadonlySet<string> = new Set([
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_CUSTOM_HEADERS',
+  'AWS_BEARER_TOKEN_BEDROCK',
+  'ANTHROPIC_AWS_API_KEY',
+  'ANTHROPIC_FOUNDRY_API_KEY',
+  'ANTHROPIC_FOUNDRY_AUTH_TOKEN',
+])
 const CLOUD_PROVIDER_PREFIX = 'CLAUDE_CODE_USE_'
 const KEY_VARIABLE = 'ANTHROPIC_API_KEY'
 
 /** The prefix of a run's directory under the system's temporary directory. */
 const RUN_DIRECTORY_PREFIX = 'quorum-claude-'
 /** The most bytes of stdout read: a result over this is refused, and 16 MiB is as much as an HTTP adapter reads of a reply. */
-const MAX_STDOUT_BYTES = 16 * 1024 * 1024
+export const MAX_STDOUT_BYTES = 16 * 1024 * 1024
 /** The most bytes of stderr kept: far more than the 500 characters an error message quotes. */
-const MAX_STDERR_BYTES = 64 * 1024
+export const MAX_STDERR_BYTES = 64 * 1024
 /** A code of a system error as a message writes it: `ENOENT`, `ERR_INVALID_ARG_VALUE`. */
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,39}$/
 
@@ -352,6 +367,19 @@ export function childEnv(env: Readonly<Record<string, string | undefined>>, auth
     ...(auth === 'api-key' && key !== undefined && key !== '' ? { [KEY_VARIABLE]: key } : {}),
     ...isolation,
   }
+}
+
+/**
+ * The values a quoted text must be redacted of: those of the credential variables of the environment a run
+ * gets (`childEnv`'s result), each as written and trimmed, with names matched in any letter case. A value
+ * that is blank once trimmed is left out, since redacting it would redact every run of spaces. Under
+ * `api-key` the environment holds the run's own key.
+ */
+export function credentialValues(environment: Readonly<Record<string, string>>): string[] {
+  const values = Object.entries(environment)
+    .filter(([name]) => REDACTED_VARIABLES.has(name.toUpperCase()))
+    .flatMap(([, value]) => [value, value.trim()])
+  return [...new Set(values)].filter(value => value.trim() !== '')
 }
 
 /** The parsed result on `stdout`, or undefined when it holds no JSON object whose `type` is `result`. */
@@ -557,7 +585,7 @@ function throwIfAborted(signal: AbortSignal | undefined, fail: Failure): void {
  * never stalls the child, and `onOverflow` runs once at the first byte over. A character cut at the cap
  * decodes as U+FFFD.
  */
-function readCapped(stream: ChildProcess['stdout'], max: number, onOverflow: () => void = () => {}): { text: () => string, overflowed: () => boolean } {
+export function readCapped(stream: ChildProcess['stdout'], max: number, onOverflow: () => void = () => {}): { text: () => string, overflowed: () => boolean } {
   const chunks: Buffer[] = []
   let bytes = 0
   let overflow = false
@@ -574,27 +602,54 @@ function readCapped(stream: ChildProcess['stdout'], max: number, onOverflow: () 
   return { text: () => Buffer.concat(chunks).toString('utf8'), overflowed: () => overflow }
 }
 
+/** Whether `claude` leads a process group of its own: on every platform but Windows, which has none. */
+const GROUPED = process.platform !== 'win32'
+
+/** SIGKILL what is left of the process group `pid` leads. None left is fine: the group is gone, and `ESRCH` says so. */
+function killGroup(pid: number): void {
+  try {
+    process.kill(-pid, 'SIGKILL')
+  } catch {
+    // Nothing is left of the group.
+  }
+}
+
 /**
  * Start `claude` and settle once it has closed, or fails to start: the message goes to its stdin, which is
  * then ended (an error there is ignored, since the exit says what happened), and its stdout and stderr are
- * read to their caps. The signal's abort, or stdout past its cap, sends SIGTERM, then SIGKILL `KILL_GRACE_MS`
- * later if it has not closed; the listener and the timer go once it has. A synchronous throw of `spawn`, or
- * an `error` event before the child runs, is a `process` failure, and there is no child to wait for.
+ * read to their caps. Where there are process groups (not Windows) it leads one of its own, so every process
+ * it starts can be stopped with it: the signal's abort, or stdout past its cap, sends SIGTERM to the group,
+ * then SIGKILL `KILL_GRACE_MS` later if the child has not closed, and the child's exit sends SIGKILL to
+ * what is left of the group, since a process that still holds the pipes keeps `close` from ever firing.
+ * The listener and the timer go once it has closed. A synchronous throw of `spawn`, or an `error` event
+ * before the child runs, is a `process` failure, and there is no child to wait for.
  */
 function runChild(launch: Launch, input: string, signal: AbortSignal | undefined, fail: Failure): Promise<Finished> {
   return new Promise((resolve, reject) => {
     const startFailure = (error: unknown): ProviderError => fail('process', `could not start the claude CLI${codeSuffix(error)}`)
     let child: ChildProcess
     try {
-      child = spawn(launch.command, launch.args, { cwd: launch.cwd, env: launch.env, stdio: 'pipe', shell: false, windowsHide: true })
+      child = spawn(launch.command, launch.args, { cwd: launch.cwd, env: launch.env, stdio: 'pipe', shell: false, windowsHide: true, detached: GROUPED })
     } catch (error) {
       reject(startFailure(error))
       return
     }
     let killTimer: ReturnType<typeof setTimeout> | undefined
+    // The group when the child leads one, else the child alone.
+    const send = (name: 'SIGTERM' | 'SIGKILL'): void => {
+      if (GROUPED && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, name)
+          return
+        } catch {
+          // No such group: the child is gone or never led one, so the signal goes to it alone.
+        }
+      }
+      child.kill(name)
+    }
     const stop = (): void => {
-      child.kill('SIGTERM')
-      killTimer ??= setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS)
+      send('SIGTERM')
+      killTimer ??= setTimeout(send, KILL_GRACE_MS, 'SIGKILL')
     }
     const release = (): void => {
       clearTimeout(killTimer)
@@ -611,6 +666,9 @@ function runChild(launch: Launch, input: string, signal: AbortSignal | undefined
       release()
       reject(startFailure(error))
     })
+    child.once('exit', () => {
+      if (GROUPED && child.pid !== undefined) killGroup(child.pid)
+    })
     child.once('close', (code, endedBy) => {
       release()
       resolve({ run: { stdout: stdout.text(), stderr: stderr.text(), code, signal: endedBy }, overflow: stdout.overflowed() })
@@ -624,7 +682,7 @@ function runChild(launch: Launch, input: string, signal: AbortSignal | undefined
 /**
  * A provider that runs the user's `claude` CLI once per request, headless and isolated, as a pure completion
  * (see the header of this file). The key of `api-key` mode travels only in the child's environment (invariant
- * I1). A request goes through these steps, in order:
+ * I1), and no text an error quotes repeats it. A request goes through these steps, in order:
  *
  * 1. exactly one message, a user message, else `unsupported`;
  * 2. a message that starts with `/` after white space, which `-p` would run as a command: `unsupported`;
@@ -633,12 +691,15 @@ function runChild(launch: Launch, input: string, signal: AbortSignal | undefined
  * 5. an aborted signal: `aborted`;
  * 6. a directory of its own, under the temporary directory, holding an empty working directory, `claude`'s
  *    scratch directory and the system text's file: a failure to make it is `process`;
- * 7. `claude` spawned there, with `claudeArgs` and `childEnv`, never through a shell: a failure to start is `process`;
+ * 7. `claude` spawned there, with `claudeArgs` and `childEnv`, never through a shell, leading a process group
+ *    of its own where there are groups: a failure to start is `process`;
  * 8. the message written to its stdin, which is then ended;
  * 9. stdout read to 16 MiB and stderr to 64 KiB, the rest dropped: more stdout stops the child, and is `invalid-response`;
- * 10. on the signal's abort, or stdout past its cap: SIGTERM, then SIGKILL after `KILL_GRACE_MS`;
+ * 10. on the signal's abort, or stdout past its cap: SIGTERM to the group, then SIGKILL after `KILL_GRACE_MS`;
+ *     when the child exits, SIGKILL to what is left of the group, so no process keeps the pipes open;
  * 11. once the child has closed, the directory removed, on every path, before the call settles;
- * 12. an aborted signal: `aborted`; else `readResult`'s reply or failure.
+ * 12. an aborted signal: `aborted`; else `readResult`'s reply or failure, with every credential of the
+ *     child's environment redacted from the text it quotes (`credentialValues`).
  *
  * No timeout is set: Claude Code retries a failed API call by itself, for minutes, and a deadline is the
  * caller's own (a signal).
@@ -663,19 +724,17 @@ export function claudeCode(options: ClaudeCodeOptions): Provider {
       const { signal } = request
       throwIfAborted(signal, fail)
       const run = await prepareRun(request.system, fail)
-      const environment = childEnv(env, auth, apiKey, run.tmp)
-      const key = environment[KEY_VARIABLE]
-      let finished: Finished
       try {
         throwIfAborted(signal, fail)
+        const environment = childEnv(env, auth, apiKey, run.tmp)
         const launch = { command, args: claudeArgs({ model, auth, structuredOutput, args }, run.systemFile, request.output.schema), cwd: run.cwd, env: environment }
-        finished = await runChild(launch, message.content, signal, fail)
+        const finished = await runChild(launch, message.content, signal, fail)
+        throwIfAborted(signal, fail)
+        if (finished.overflow) throw fail('invalid-response', 'reply is over 16 MiB')
+        return readResult(finished.run, { id, model, structuredOutput, redact: credentialValues(environment) })
       } finally {
         await removeRun(run.dir)
       }
-      throwIfAborted(signal, fail)
-      if (finished.overflow) throw fail('invalid-response', 'reply is over 16 MiB')
-      return readResult(finished.run, { id, model, structuredOutput, redact: auth === 'api-key' && key !== undefined ? [key] : [] })
     },
   }
 }

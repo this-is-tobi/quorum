@@ -14,6 +14,13 @@ export interface FakeRecord {
   /** The text of the file `--system-prompt-file=` named, or undefined when no such argument was given. */
   systemPrompt: string | undefined
   pid: number
+  /** The permission bits of the run directory (the working directory's parent) and of the system text's file. */
+  runMode: number
+  systemMode: number | undefined
+  /** Whether `CLAUDE_CODE_TMPDIR` named a directory that exists. */
+  tmpExists: boolean
+  /** The pid of the process `FAKE_CLAUDE_GRANDCHILD=1` started, in the fake's own process group. */
+  grandchild: number | undefined
 }
 
 const FAKE_CLAUDE = fileURLToPath(new URL('fake-claude.mjs', import.meta.url))
@@ -49,12 +56,16 @@ export function readFakeRecord(dir: string, name: string): FakeRecord {
   return JSON.parse(readFileSync(join(dir, `${name}.record.json`), 'utf8')) as FakeRecord
 }
 
-/** Whether a process with this pid exists. */
+/** Whether a process with this pid is alive. A zombie, which an init that never reaps leaves behind, is not. */
 export function isRunning(pid: number): boolean {
   try {
     process.kill(pid, 0)
-    return true
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+  try {
+    return !/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8'))
+  } catch {
+    return true
   }
 }
