@@ -3,7 +3,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { bodyKeyForm, isRecord, mergeBody, prepareHttp } from './options.ts'
+import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { MAX_MODEL_TEXT, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget } from './size.ts'
@@ -22,22 +22,26 @@ const RULES: Omit<AdapterRules, 'auth'> = {
   fixedHeaders: [],
   structuredOutputs: ['prompt', 'json', 'schema'],
 }
+/** The one spelling of the options key that the adapter merges its own into. */
+const OPTIONS = 'options'
 /** The done reasons of a finished reply: `length` is one cut off by the token limit, or by a context that filled. */
 const DONE: ReadonlySet<unknown> = new Set(['stop', 'length'])
 
 /**
- * The problems of an `extraBody` options that would undo `contextTokens`: a `num_ctx` key, which it sets, and
- * a value that is no object, which would replace the options the adapter sends and drop `num_ctx` with them.
- * The server reads a key in any letter case, so the options object and `num_ctx` are matched as it reads them.
+ * The problems of an `extraBody` options that would undo `contextTokens`: a `num_ctx` key, which it sets, a
+ * value that is no object, which would replace the options the adapter sends and drop `num_ctx` with them,
+ * and a spelling of `options` other than the one the adapter merges, which would send a second key. The server
+ * reads a key in any letter case, so the options object and `num_ctx` are matched as it reads them.
  */
 function numCtxIssues(id: string, extraBody: unknown): ConfigIssue[] {
   if (!isRecord(extraBody)) return []
   return Object.entries(extraBody).flatMap(([key, value]): ConfigIssue[] => {
-    if (bodyKeyForm(key) !== 'options') return []
+    if (bodyKeyForm(key) !== OPTIONS) return []
     if (!isRecord(value)) return [{ path: `${id}.${issuePath(['extraBody', key])}`, message: 'must be an object' }]
-    return Object.keys(value)
+    const numCtx = Object.keys(value)
       .filter(name => bodyKeyForm(name) === 'numctx')
       .map(name => ({ path: `${id}.${issuePath(['extraBody', key, name])}`, message: 'is set from contextTokens: set contextTokens instead' }))
+    return [...spellingIssues(id, key, OPTIONS), ...numCtx]
   })
 }
 

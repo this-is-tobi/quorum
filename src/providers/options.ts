@@ -171,6 +171,15 @@ export function bodyKeyForm(key: string): string {
 }
 
 /**
+ * The issue of an `extraBody` key that a server reads as a field the adapter merges, `canonical`, but that is
+ * spelled another way: the body would then hold two keys for one field, and a server that keeps the last drops
+ * the adapter's. The message writes the canonical spelling, a constant of the adapter, never the key it was given.
+ */
+export function spellingIssues(id: string, key: string, canonical: string): ConfigIssue[] {
+  return key === canonical ? [] : [{ path: `${id}.${issuePath(['extraBody', key])}`, message: `must be written ${canonical}` }]
+}
+
+/**
  * The problems of the `extraBody` fields at `limits`, the paths below `trail` that set the reply limit, one per
  * field in its order. A path goes through objects only: a field on it that is no object holds no limit.
  */

@@ -224,8 +224,9 @@ export function describeProviderContract(subject: ContractSubject): void {
     it('refuses an extraBody that sets the reply limit, in any letter case, since the guard reserves maxTokens, and repeats no value', () => {
       for (const path of subject.replyLimitPaths) {
         for (const keys of [path, path.map(key => key.toUpperCase())]) {
-          const issues = issuesOf({ extraBody: keys.reduceRight<unknown>((value, key) => ({ [key]: value }), 64000) as Body })
-          expect(issues, keys.join('.')).toEqual([{ path: `p.extraBody.${keys.join('.')}`, message: 'sets the reply limit: use maxTokens' }])
+          const issues = issuesOf({ extraBody: keys.reduceRight<unknown>((value, key) => ({ [key]: value }), 64000) as Body }) as Array<{ path: string, message: string }>
+          // An adapter that merges an object under the first key also refuses it spelled in another letter case: that is not this test's subject.
+          expect(issues.filter(issue => !issue.message.startsWith('must be written ')), keys.join('.')).toEqual([{ path: `p.extraBody.${keys.join('.')}`, message: 'sets the reply limit: use maxTokens' }])
           expect(JSON.stringify(issues)).not.toContain('64000')
         }
       }

@@ -118,7 +118,24 @@ describe('gemini', () => {
   })
 
   it('refuses the reply limit under the snake_case names proto JSON takes', () => {
-    expect(() => gemini({ ...options, extraBody: { generation_config: { max_output_tokens: 1, temperature: 0 } } })).toThrow(new ConfigError([{ path: 'gemini.extraBody.generation_config.max_output_tokens', message: 'sets the reply limit: use maxTokens' }]))
+    expect(() => gemini({ ...options, extraBody: { generationConfig: { max_output_tokens: 1, temperature: 0 } } })).toThrow(new ConfigError([{ path: 'gemini.extraBody.generationConfig.max_output_tokens', message: 'sets the reply limit: use maxTokens' }]))
+    expect(() => gemini({ ...options, extraBody: { generation_config: { max_output_tokens: 1, temperature: 0 } } })).toThrow(new ConfigError([
+      { path: 'gemini.extraBody.generation_config.max_output_tokens', message: 'sets the reply limit: use maxTokens' },
+      { path: 'gemini.extraBody.generation_config', message: 'must be written generationConfig' },
+    ]))
+  })
+
+  it('refuses a spelling of generationConfig other than the one the adapter merges, which would send two keys', () => {
+    for (const key of ['generation_config', 'GenerationConfig', 'GENERATION_CONFIG', 'generationconfig']) {
+      expect(() => gemini({ ...options, extraBody: { [key]: {} } }), key).toThrow(new ConfigError([{ path: `gemini.extraBody.${key}`, message: 'must be written generationConfig' }]))
+    }
+    expect(() => gemini({ ...options, extraBody: { generationConfig: { topK: 3 } } })).not.toThrow()
+  })
+
+  it('writes the canonical spelling and never the key it was given: a name that is not safe prints as *', () => {
+    // A dotless i upper-cases to I, so this key reads as generationConfig to a server that folds case.
+    const key = `generat${String.fromCharCode(0x131)}onConfig`
+    expect(() => gemini({ ...options, extraBody: { [key]: {} } })).toThrow(new ConfigError([{ path: 'gemini.extraBody.*', message: 'must be written generationConfig' }]))
   })
 
   it('prints a key query name that is not a safe name as *', () => {
