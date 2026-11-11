@@ -9,7 +9,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import type { ChatMessage, CompletionRequest } from '../core/ports.ts'
 import { fakeClaudeEnv, isRunning, readFakeRecord, readFakeVersionRecords, writeFakeClaude } from '../testing/claude.ts'
 import * as fixtures from '../testing/fixtures/claude-code.ts'
-import { childEnv, claudeArgs, claudeCode, claudeCodeIssues, credentialValues, KILL_GRACE_MS, MAX_STDERR_BYTES, MAX_STDOUT_BYTES, MIN_CLAUDE_CODE_VERSION, prepareRun, readCapped, readResult, stopLiveRuns, trackRun, versionProblem } from './claude-code.ts'
+import { childEnv, claudeArgs, claudeCode, claudeCodeIssues, credentialValues, KILL_GRACE_MS, MAX_STDERR_BYTES, MAX_STDOUT_BYTES, MIN_CLAUDE_CODE_VERSION, prepareRun, readCapped, readResult, stopLiveRuns, trackRun, VERSION_CHECK_MS, versionProblem } from './claude-code.ts'
 import type { ClaudeCodeOptions } from './claude-code.ts'
 import { CONTEXT_REQUIRED } from './options.ts'
 import { replyFailure } from './reply.ts'
@@ -669,7 +669,7 @@ describe('claudeCode', () => {
     expect(record.tmpExists).toBe(true)
     expect(record.env).toMatchObject({ CLAUDE_CODE_DISABLE_ATTACHMENTS: '1', CLAUDE_CODE_DISABLE_FILE_MENTIONS: '1', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1', CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1', CLAUDE_CODE_DISABLE_POLICY_SKILLS: '1' })
     // The first request on this command checks the version first, with the request's environment and an empty directory.
-    expect(readFakeVersionRecords(dir, 'round')).toEqual([{ argv: ['--version'], env: record.env, cwd: record.cwd, cwdEntries: [] }])
+    expect(readFakeVersionRecords(dir, 'round')).toEqual([{ argv: ['--version'], env: record.env, cwd: record.cwd, cwdEntries: [], pid: expect.any(Number) }])
     if (process.platform !== 'win32') expect([record.runMode, record.systemMode]).toEqual([0o700, 0o600])
     // The fake exited while its grandchild still held the pipes: the call did not wait, and the group is gone.
     await vi.waitFor(() => expect(isRunning(record.grandchild as number)).toBe(false), { timeout: 2000 })
@@ -709,20 +709,46 @@ describe('claudeCode', () => {
     }
   }, 15_000)
 
-  it('refuses a claude older than 2.1.311 before it starts the request, and checks again when another request\'s abort cut the check short', async () => {
+  it('refuses a claude older than 2.1.311 before it starts the request, checks again when another request\'s abort cut the check short, and lets a request that waits abort on its own signal', async () => {
     const env = fakeClaudeEnv(dir, 'old', fixtures.schema, { FAKE_CLAUDE_VERSION: '2.1.310 (Claude Code)', FAKE_CLAUDE_VERSION_DELAY_MS: '800' })
     const provider = claudeCode({ ...options, command: claudeIn('old'), env })
     const cancelled = new AbortController()
+    const impatient = new AbortController()
     const first = provider.complete({ ...request, signal: cancelled.signal })
     await vi.waitFor(() => expect(readFakeVersionRecords(dir, 'old')).toHaveLength(1), { timeout: 5000 })
-    // The second request waits for the check the first one started.
+    // The other two wait for the check the first one started.
     const second = provider.complete(request)
-    await new Promise(resolve => setTimeout(resolve, 200))
+    const third = provider.complete({ ...request, signal: impatient.signal })
+    await new Promise(resolve => setTimeout(resolve, 100))
+    impatient.abort()
+    // The one that waits aborts on its own signal, and the check it waited for runs on.
+    await expect(third).rejects.toMatchObject({ kind: 'aborted', message: 'cc: request aborted' })
+    expect(isRunning((readFakeVersionRecords(dir, 'old')[0] as { pid: number }).pid)).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 100))
     cancelled.abort()
     await expect(first).rejects.toMatchObject({ kind: 'aborted', message: 'cc: request aborted' })
     await expect(second).rejects.toMatchObject({ kind: 'process', message: 'cc: Claude Code 2.1.311 or newer is required, found 2.1.310' })
     expect(readFakeVersionRecords(dir, 'old')).toHaveLength(2)
     expect(existsSync(join(dir, 'old.record.json'))).toBe(false)
+    expect(readdirSync(runs)).toEqual([])
+  })
+
+  it('stops a claude --version that never answers at its deadline as an abort stops it, removes the directory and fails closed', async () => {
+    expect(VERSION_CHECK_MS).toBe(10_000)
+    // The deadline is held to 0.4 s here; every other timer keeps its delay.
+    const realSetTimeout = globalThis.setTimeout
+    const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, ms?: number) => realSetTimeout(handler, ms === VERSION_CHECK_MS ? 400 : ms)) as typeof setTimeout)
+    const env = fakeClaudeEnv(dir, 'silent', fixtures.schema, { FAKE_CLAUDE_VERSION_DELAY_MS: '60000' })
+    try {
+      await expect(claudeCode({ ...options, command: claudeIn('silent'), env }).complete(request)).rejects.toMatchObject({ kind: 'process', message: 'cc: claude --version did not answer within 10 s' })
+      expect(timers.mock.calls.filter(([, ms]) => ms === VERSION_CHECK_MS)).toHaveLength(1)
+    } finally {
+      timers.mockRestore()
+    }
+    const [check, ...more] = readFakeVersionRecords(dir, 'silent')
+    expect(more).toEqual([])
+    expect(isRunning((check as { pid: number }).pid)).toBe(false)
+    expect(existsSync(join(dir, 'silent.record.json'))).toBe(false)
     expect(readdirSync(runs)).toEqual([])
   })
 

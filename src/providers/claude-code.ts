@@ -34,6 +34,8 @@ export const MAX_STDIN_BYTES = 10_000_000
 export const KILL_GRACE_MS = 2000
 /** The oldest Claude Code the isolation was checked with, and so the oldest a run accepts: its variables are unknown to an older one. */
 export const MIN_CLAUDE_CODE_VERSION = '2.1.311'
+/** The milliseconds `claude --version` has to answer: past them it is stopped as an abort stops a run, and the check fails. */
+export const VERSION_CHECK_MS = 10_000
 
 /**
  * Whose credentials `claude` uses: the environment's, as it is (`inherit`); the Claude Code login alone
@@ -780,16 +782,37 @@ function runChild(launch: Launch, input: string, signal: AbortSignal | undefined
 
 /**
  * Run `claude --version` as a request is run, from its empty directory and with its environment: the problem
- * with the version it names (`versionProblem`), or undefined when it is recent enough.
+ * with the version it names (`versionProblem`), or undefined when it is recent enough. It has `VERSION_CHECK_MS`
+ * to answer; past them the child's group is stopped as an abort stops it (SIGTERM, then SIGKILL after
+ * `KILL_GRACE_MS`) and the check fails with `process`. An abort of the request wins over the deadline.
  */
 async function checkVersion(launch: Launch, signal: AbortSignal | undefined, fail: Failure): Promise<string | undefined> {
-  const { run } = await runChild({ ...launch, args: ['--version'] }, '', signal, fail)
-  throwIfAborted(signal, fail)
-  return versionProblem(run.code === 0 && run.signal === null ? run.stdout : '')
+  const deadline = new AbortController()
+  const timer = setTimeout(() => deadline.abort(), VERSION_CHECK_MS)
+  try {
+    const stopped = signal === undefined ? deadline.signal : AbortSignal.any([signal, deadline.signal])
+    const { run } = await runChild({ ...launch, args: ['--version'] }, '', stopped, fail)
+    throwIfAborted(signal, fail)
+    if (deadline.signal.aborted) throw fail('process', `claude --version did not answer within ${VERSION_CHECK_MS / 1000} s`)
+    return versionProblem(run.code === 0 && run.signal === null ? run.stdout : '')
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /** The version check of each command, as one promise, for the life of the process. A check that came to a problem, or failed, is dropped, so the next request runs it again. */
 const versionChecks = new Map<string, Promise<string | undefined>>()
+
+/** `promise`, unless `signal` aborts first: then the call rejects as aborted, and `promise` runs on. */
+function orAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, fail: Failure): Promise<T> {
+  if (signal === undefined) return promise
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => reject(fail('aborted', 'request aborted'))
+    if (signal.aborted) return abort()
+    signal.addEventListener('abort', abort, { once: true })
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
+  })
+}
 
 function startVersionCheck(launch: Launch, signal: AbortSignal | undefined, fail: Failure): Promise<string | undefined> {
   const check = checkVersion(launch, signal, fail).then(
@@ -810,14 +833,15 @@ function startVersionCheck(launch: Launch, signal: AbortSignal | undefined, fail
  * Fail unless `launch.command` names a recent enough Claude Code, running `claude --version` when no request
  * has: a request that arrives while one runs waits for it, and a command that passed is not checked again.
  * The check runs with the signal and the name of the request that started it, so a request never reports
- * another's failure: one that waited for a check that failed runs it again itself.
+ * another's failure: one that waited for a check that failed runs it again itself. A request that waits
+ * aborts on its own signal, without stopping the check the others still wait for.
  */
 async function requireVersion(launch: Launch, signal: AbortSignal | undefined, fail: Failure): Promise<void> {
   for (;;) {
     const shared = versionChecks.get(launch.command)
     let problem: string | undefined
     try {
-      problem = await (shared ?? startVersionCheck(launch, signal, fail))
+      problem = await (shared === undefined ? startVersionCheck(launch, signal, fail) : orAbort(shared, signal, fail))
     } catch (error) {
       if (shared === undefined) throw error
       throwIfAborted(signal, fail)
@@ -841,7 +865,8 @@ async function requireVersion(launch: Launch, signal: AbortSignal | undefined, f
  * 6. a directory of its own, under the temporary directory, holding an empty working directory, `claude`'s
  *    scratch directory and the system text's file: a failure to make it is `process`;
  * 7. `claude --version`, the first time for this command, from that directory and with the child's
- *    environment: a version below `MIN_CLAUDE_CODE_VERSION`, or none, is `process`, and nothing more is run;
+ *    environment: a version below `MIN_CLAUDE_CODE_VERSION`, or none, or no answer within `VERSION_CHECK_MS`,
+ *    is `process`, and nothing more is run;
  * 8. `claude` spawned there, with `claudeArgs` and `childEnv`, never through a shell, leading a process group
  *    of its own where there are groups: a failure to start is `process`;
  * 9. the message written to its stdin, which is then ended;
