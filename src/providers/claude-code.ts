@@ -3,8 +3,8 @@ import type { ConfigIssue, ProviderError } from '../core/errors.ts'
 import type { CompletionResponse, JsonSchema } from '../core/ports.ts'
 import type { Usage } from '../core/types.ts'
 import { snippet } from './http.ts'
-import { contextTokensIssues, isRecord, wordList } from './options.ts'
-import { replyFailure } from './reply.ts'
+import { contextTokensIssues, isRecord, NOT_VISIBLE_ASCII, wordList } from './options.ts'
+import { replyFailure, tokenUsage } from './reply.ts'
 
 /**
  * The `claude-code` adapter runs the user's installed `claude` CLI once per request, headless and isolated,
@@ -96,7 +96,6 @@ const AUTH_MODES: readonly ClaudeCodeAuth[] = ['inherit', 'login', 'api-key']
 const STRUCTURED_OUTPUTS: readonly ClaudeCodeStructuredOutput[] = ['prompt', 'schema']
 /** The fields of a provider that belong to an HTTP endpoint, none of which a CLI has. */
 const HTTP_FIELDS = ['baseUrl', 'headers', 'query', 'extraBody', 'temperature', 'maxTokens', 'systemPrompt'] as const
-const VISIBLE_ASCII = /^[\x21-\x7E]+$/
 const WINDOWS_SCRIPT = /\.(?:cmd|bat)$/i
 const PATH_SEPARATOR = /[/\\]/
 
@@ -115,6 +114,27 @@ const SESSION_VARIABLES: ReadonlySet<string> = new Set([
   'CLAUDE_CODE_ENTRYPOINT',
   'CLAUDE_CODE_EMIT_STARTUP_TIMING',
   'CLAUDE_CODE_STARTUP_FAILURE_RESULTS',
+])
+/**
+ * The variables that load or enable what the isolation flags turn off, or add to the request body, removed
+ * in every mode, since no flag governs them: plugin directories, which load a plugin and its hooks the way
+ * `--plugin-dir` does, the plugin roots and seeds, the syncs of plugins and skills, a launcher for the
+ * processes `claude` starts, the Chrome integration, the task and agent-team tools, the PowerShell tool
+ * and a JSON object merged into every request body. Claude Code's own settings keep the launcher, sync and
+ * plugin root variables from a checked-out repository for the same reason.
+ */
+const CAPABILITY_VARIABLES: ReadonlySet<string> = new Set([
+  'CLAUDE_CODE_PLUGIN_DIRS',
+  'CLAUDE_CODE_PLUGIN_SEED_DIR',
+  'CLAUDE_CODE_PLUGIN_CACHE_DIR',
+  'CLAUDE_CODE_SYNC_PLUGINS',
+  'CLAUDE_CODE_SYNC_SKILLS',
+  'CLAUDE_CODE_PROCESS_WRAPPER',
+  'CLAUDE_CODE_ENABLE_CFC',
+  'CLAUDE_CODE_ENABLE_TODO_TOOLS',
+  'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
+  'CLAUDE_CODE_USE_POWERSHELL_TOOL',
+  'CLAUDE_CODE_EXTRA_BODY',
 ])
 /** The credential and endpoint variables `login` and `api-key` remove, besides every one that starts with `CLAUDE_CODE_USE_`. */
 const CREDENTIAL_VARIABLES: ReadonlySet<string> = new Set([
@@ -139,17 +159,20 @@ const MAX_STDERR_TEXT = 500
 const ALLOWED_FLAGS = ['--effort', '--fallback-model', '--max-budget-usd', '--betas'] as const
 type AllowedFlag = typeof ALLOWED_FLAGS[number]
 const EFFORTS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max']
+/** The most characters of a `--max-budget-usd` value: a decimal that long is finite. */
+const MAX_BUDGET_CHARACTERS = 12
+const NOT_A_STRING = 'must be a string'
 const NOT_A_FLAG = `is not a flag quorum passes to claude: use ${wordList(ALLOWED_FLAGS)}`
 const PLAIN_VALUE = 'must be visible ASCII characters that do not start with -'
 const VALUE_PROBLEMS: Record<AllowedFlag, (value: string) => string | undefined> = {
   '--effort': value => EFFORTS.includes(value) ? undefined : `must be ${wordList(EFFORTS)}`,
-  '--max-budget-usd': value => /^\d+(?:\.\d+)?$/.test(value) && Number(value) > 0 ? undefined : 'must be a positive number of dollars, such as 0.50',
+  '--max-budget-usd': value => value.length <= MAX_BUDGET_CHARACTERS && /^\d+(?:\.\d+)?$/.test(value) && Number(value) > 0 ? undefined : 'must be a positive number of dollars, such as 0.50',
   '--fallback-model': value => plainValue(value) ? undefined : PLAIN_VALUE,
   '--betas': value => plainValue(value) ? undefined : PLAIN_VALUE,
 }
 
 function plainValue(value: string): boolean {
-  return VISIBLE_ASCII.test(value) && !value.startsWith('-')
+  return value !== '' && !NOT_VISIBLE_ASCII.test(value) && !value.startsWith('-')
 }
 
 /** The message refusing `command` as the executable, or undefined when it may be run. */
@@ -174,29 +197,38 @@ interface ArgsWalk {
 
 /**
  * Walk `args` once: an element that equals an allowlisted flag takes the next one as its value, one that
- * starts with `<flag>=` holds its value, any other is refused and the walk goes on with the next. A pair
- * is kept only when its flag is not a repeat, `--betas` has `api-key` auth and the value passes its
- * check, so what `pairs` holds is safe to pass whatever the problems are.
+ * starts with `<flag>=` holds its value, any other is refused and the walk goes on with the next. An
+ * element, or a value, that is no string (a hole of a sparse list too) is refused at its index. A pair is
+ * kept only when its flag is not a repeat, `--betas` has `api-key` auth and the value passes its check,
+ * so what `pairs` holds is safe to pass whatever the problems are.
  */
-function walkArgs(args: readonly string[], auth: unknown): ArgsWalk {
+function walkArgs(args: readonly unknown[], auth: unknown): ArgsWalk {
   const pairs: Array<readonly [AllowedFlag, string]> = []
   const problems: ArgsProblem[] = []
   const seen = new Set<AllowedFlag>()
   let valueIndex = -1
   for (const [index, element] of args.entries()) {
     if (index === valueIndex) continue
+    if (typeof element !== 'string') {
+      problems.push({ index, message: NOT_A_STRING })
+      continue
+    }
     const flag = ALLOWED_FLAGS.find(name => element === name || element.startsWith(`${name}=`))
     if (flag === undefined) {
       problems.push({ index, message: NOT_A_FLAG })
       continue
     }
     const separate = element === flag
-    const value = separate ? args[index + 1] : element.slice(flag.length + 1)
-    if (value === undefined) {
+    if (separate && index + 1 >= args.length) {
       problems.push({ index, message: 'needs a value' })
       continue
     }
+    const value = separate ? args[index + 1] : element.slice(flag.length + 1)
     if (separate) valueIndex = index + 1
+    if (typeof value !== 'string') {
+      problems.push({ index: index + 1, message: NOT_A_STRING })
+      continue
+    }
     const flagProblem = seen.has(flag) ? 'repeats a flag' : flag === '--betas' && auth !== 'api-key' ? 'is only for auth: api-key' : undefined
     seen.add(flag)
     const valueProblem = flagProblem === undefined ? VALUE_PROBLEMS[flag](value) : undefined
@@ -211,7 +243,7 @@ function walkArgs(args: readonly string[], auth: unknown): ArgsWalk {
 function apiKeyIssues(path: string, auth: unknown, apiKey: unknown): ConfigIssue[] {
   if (auth !== 'api-key') return typeof apiKey === 'string' && apiKey !== '' ? [{ path, message: 'is set, but auth is not api-key, so it would never be sent' }] : []
   if (apiKey === undefined || apiKey === '') return []
-  return typeof apiKey === 'string' && VISIBLE_ASCII.test(apiKey) ? [] : [{ path, message: 'must only contain visible ASCII characters' }]
+  return typeof apiKey === 'string' && !NOT_VISIBLE_ASCII.test(apiKey) ? [] : [{ path, message: 'must only contain visible ASCII characters' }]
 }
 
 /**
@@ -231,7 +263,7 @@ export function claudeCodeIssues(options: ClaudeCodeOptions): ConfigIssue[] {
   issues.push(...apiKeyIssues(`${id}.apiKey`, auth, apiKey))
   if (structuredOutput !== undefined && !STRUCTURED_OUTPUTS.includes(structuredOutput)) issues.push(at('structuredOutput', `must be ${wordList(STRUCTURED_OUTPUTS)}`))
   if (args !== undefined) {
-    if (!Array.isArray(args) || !args.every(element => typeof element === 'string')) issues.push(at('args', 'must be a list of strings'))
+    if (!Array.isArray(args)) issues.push(at('args', 'must be a list of strings'))
     else issues.push(...walkArgs(args, auth).problems.map(problem => at(`args.${problem.index}`, problem.message)))
   }
   if (command !== undefined) {
@@ -261,30 +293,31 @@ export function claudeArgs(settings: ClaudeArgsSettings, systemPromptFile: strin
   ]
 }
 
-/** Whether `name` is a variable `auth` removes from the child's environment. */
-function removedVariable(name: string, auth: ClaudeCodeAuth): boolean {
-  if (SESSION_VARIABLES.has(name)) return true
-  return auth !== 'inherit' && (CREDENTIAL_VARIABLES.has(name) || name.startsWith(CLOUD_PROVIDER_PREFIX))
+/** Whether `name`, in any letter case, is a variable removed from the child's environment, `auth` and the run's own variables given. */
+function removedVariable(name: string, auth: ClaudeCodeAuth, runVariables: Readonly<Record<string, string>>): boolean {
+  const upper = name.toUpperCase()
+  if (SESSION_VARIABLES.has(upper) || CAPABILITY_VARIABLES.has(upper) || Object.hasOwn(runVariables, upper)) return true
+  return auth !== 'inherit' && (CREDENTIAL_VARIABLES.has(upper) || upper.startsWith(CLOUD_PROVIDER_PREFIX))
 }
 
 /**
  * The environment of one run: the environment's own string entries, less the variables of a parent Claude
- * Code session and, under `login` and `api-key`, every credential and endpoint variable, so a login or a
- * key never reaches another host. Under `api-key`, `ANTHROPIC_API_KEY` is then `apiKey` when it is a
- * non-empty string, else the environment's own, trimmed, when that is not blank. Last come three
- * variables the run sets over whatever the environment held: no auto memory, no compaction of a long
- * prompt, and a temporary directory of its own.
+ * Code session, the ones that load or add what the isolation turns off and, under `login` and `api-key`,
+ * every credential and endpoint variable, so a login or a key never reaches another host. Names are matched
+ * in any letter case, since Windows reads them so. Under `api-key`, `ANTHROPIC_API_KEY` is then `apiKey`
+ * when it is a non-empty string, else the environment's own, trimmed, when that is not blank. Last come
+ * three variables the run sets over whatever the environment held, in any case: no auto memory, no
+ * compaction of a long prompt, and a temporary directory of its own.
  */
 export function childEnv(env: Readonly<Record<string, string | undefined>>, auth: ClaudeCodeAuth, apiKey: string | undefined, tmpDir: string): Record<string, string> {
+  const isolation = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', DISABLE_COMPACT: '1', CLAUDE_CODE_TMPDIR: tmpDir }
   const own = Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
-  const inheritedKey = own.find(([name]) => name === KEY_VARIABLE)?.[1].trim()
+  const inheritedKey = (own.find(([name]) => name === KEY_VARIABLE) ?? own.find(([name]) => name.toUpperCase() === KEY_VARIABLE))?.[1].trim()
   const key = typeof apiKey === 'string' && apiKey !== '' ? apiKey : inheritedKey
   return {
-    ...Object.fromEntries(own.filter(([name]) => !removedVariable(name, auth))),
+    ...Object.fromEntries(own.filter(([name]) => !removedVariable(name, auth, isolation))),
     ...(auth === 'api-key' && key !== undefined && key !== '' ? { [KEY_VARIABLE]: key } : {}),
-    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
-    DISABLE_COMPACT: '1',
-    CLAUDE_CODE_TMPDIR: tmpDir,
+    ...isolation,
   }
 }
 
@@ -324,21 +357,21 @@ function ranServerTool(result: Record<string, unknown>, modelUsage: readonly Rec
   return serverTools.some(isAboveZero) || modelUsage.some(entry => isAboveZero(entry.webSearchRequests))
 }
 
+/** The counts of a model's usage that make up its input: the prompt, then what the cache read and what it wrote. */
+const MODEL_INPUT_KEYS = ['inputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens']
+
 /**
  * The usage over every model that answered, since the result's own `usage` covers the last turn only (2
  * input tokens against 1199 in the schema run): the input is every prompt token, cached ones included, the
- * output every token generated. Undefined when no model reports both counts.
+ * output every token generated. Undefined when no model reports both counts; the cost is `total` when it
+ * is a number of at least 0.
  */
 function sumUsage(modelUsage: readonly Record<string, unknown>[], total: unknown): Usage | undefined {
-  const counted = modelUsage.filter(entry => typeof entry.inputTokens === 'number' && typeof entry.outputTokens === 'number')
-  if (counted.length === 0) return undefined
-  const count = (entry: Record<string, unknown>, key: string): number => {
-    const value = entry[key]
-    return typeof value === 'number' ? value : 0
-  }
+  const usages = modelUsage.flatMap(entry => tokenUsage(entry, MODEL_INPUT_KEYS, ['outputTokens']) ?? [])
+  if (usages.length === 0) return undefined
   const usage: Usage = {
-    inputTokens: counted.reduce((sum, entry) => sum + count(entry, 'inputTokens') + count(entry, 'cacheReadInputTokens') + count(entry, 'cacheCreationInputTokens'), 0),
-    outputTokens: counted.reduce((sum, entry) => sum + count(entry, 'outputTokens'), 0),
+    inputTokens: usages.reduce((sum, each) => sum + each.inputTokens, 0),
+    outputTokens: usages.reduce((sum, each) => sum + each.outputTokens, 0),
   }
   if (typeof total === 'number' && Number.isFinite(total) && total >= 0) usage.costUsd = total
   return usage
@@ -348,7 +381,11 @@ function sumUsage(modelUsage: readonly Record<string, unknown>[], total: unknown
 function replyText(result: Record<string, unknown>, structuredOutput: ClaudeCodeStructuredOutput, fail: ReturnType<typeof replyFailure>): string {
   if (structuredOutput === 'schema') {
     if (!isRecord(result.structured_output)) throw fail('invalid-response', 'reply has no structured output')
-    return JSON.stringify(result.structured_output)
+    try {
+      return JSON.stringify(result.structured_output)
+    } catch {
+      throw fail('invalid-response', 'reply structured output could not be serialized')
+    }
   }
   if (typeof result.result !== 'string') throw fail('invalid-response', 'reply has no text')
   return result.result
@@ -368,9 +405,15 @@ function errorFailure(result: Record<string, unknown>, run: ClaudeRun, { id, red
   return fail('process', `claude failed${typeof reason === 'string' && REASON.test(reason) ? ` (${reason})` : ''}: ${detail}`, run.code ?? undefined)
 }
 
+/** The signal's name in a message when it is one, else a generic word: the signal is the child's to name, never trusted. */
+function signalName(signal: string): string {
+  return SIGNAL.test(signal) ? signal : 'a signal'
+}
+
 /**
  * The reply of a result, or the `ProviderError` it amounts to, in this order: a prompt too long, a
- * refusal, an error, a non-zero exit after a success, a tool the server ran, then the text. Claude Code
+ * refusal, an error (anything but an `is_error` of `false` is one), a child a signal ended or a non-zero
+ * exit after a success, a tool the server ran, then the text. Claude Code
  * reports an API error as exit 1 with `subtype: "success"` and `is_error: true`, so the JSON on stdout is
  * read before the exit code.
  */
@@ -378,7 +421,8 @@ function readFinished(result: Record<string, unknown>, run: ClaudeRun, context: 
   const fail = replyFailure(context.id)
   if (isPromptTooLong(result)) throw fail('too-large', 'Claude Code refused the prompt as too long for the model\'s context')
   if (result.stop_reason === 'refusal') throw fail('refusal', 'model refused')
-  if (result.is_error === true || result.subtype !== 'success') throw errorFailure(result, run, context)
+  if (result.is_error !== false || result.subtype !== 'success') throw errorFailure(result, run, context)
+  if (run.signal !== null) throw fail('process', `claude was stopped by ${signalName(run.signal)} after its result`)
   if (run.code !== null && run.code !== 0) throw fail('process', `claude exited ${run.code} after its result`, run.code)
   const modelUsage = isRecord(result.modelUsage) ? Object.values(result.modelUsage).filter(isRecord) : []
   if (ranServerTool(result, modelUsage)) throw fail('invalid-response', 'the server ran a tool for this reply, which quorum never allows')
@@ -400,7 +444,7 @@ export function readResult(run: ClaudeRun, context: ResultContext): CompletionRe
   const result = parseResult(run.stdout)
   if (result !== undefined) return readFinished(result, run, context)
   const fail = replyFailure(context.id)
-  if (run.signal !== null) throw fail('process', `claude was stopped by ${SIGNAL.test(run.signal) ? run.signal : 'a signal'}`)
+  if (run.signal !== null) throw fail('process', `claude was stopped by ${signalName(run.signal)}`)
   if (run.code !== null && run.code !== 0) throw fail('process', `claude exited ${run.code}: ${snippet(run.stderr, MAX_STDERR_TEXT, context.redact)}`, run.code)
   throw fail('invalid-response', 'claude printed no JSON result')
 }

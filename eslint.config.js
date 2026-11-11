@@ -100,6 +100,8 @@ export default antfu(
         ],
       }],
       'no-restricted-globals': ['error', 'Bun', 'globalThis', 'global', 'self'],
+      // `process.getBuiltinModule` loads any built-in module, which would go around the import rule above.
+      'no-restricted-properties': ['error', { object: 'process', property: 'getBuiltinModule', message: 'The claude-code adapter names the built-in modules it imports.' }],
     },
   },
   {

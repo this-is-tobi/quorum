@@ -7,7 +7,8 @@ import { DEFAULT_REPLY_TOKENS, TEMPLATE_TOKENS } from './size.ts'
 const HTTP_URL_WITH_HOST = /^https?:\/\/[^/\\?#\s]/i
 /** An HTTP header name: one or more token characters. */
 const HEADER_NAME = /^[\w!#$%&'*+.^`|~-]+$/
-const NOT_VISIBLE_ASCII = /[^\x21-\x7E]/
+/** A character that is not visible ASCII: a space, a control character or a non-ASCII one. */
+export const NOT_VISIBLE_ASCII = /[^\x21-\x7E]/
 const NOT_PRINTABLE_ASCII = /[^\x20-\x7E]/
 /** Headers quorum sets, or the runtime does: no option may replace them. */
 const RESERVED_HEADERS: ReadonlySet<string> = new Set(['content-type', 'content-length', 'host'])

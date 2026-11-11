@@ -3,7 +3,7 @@ import { ESLint } from 'eslint'
 import { beforeAll, describe, expect, it } from 'vitest'
 
 /** The rules that hold each layer to the dependency rule; every other rule is out of this spec's scope. */
-const BOUNDARY_RULES: ReadonlySet<string> = new Set(['no-restricted-imports', 'ts/no-restricted-imports', 'no-restricted-globals'])
+const BOUNDARY_RULES: ReadonlySet<string> = new Set(['no-restricted-imports', 'ts/no-restricted-imports', 'no-restricted-globals', 'no-restricted-properties'])
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 const CASES: Array<[string, string, string, string[]]> = [
@@ -20,6 +20,12 @@ const CASES: Array<[string, string, string, string[]]> = [
   ['a provider refuses process', 'src/providers/probe.ts', 'export const probe = process.env\n', ['no-restricted-globals']],
   ['the claude-code adapter spawns a process', 'src/providers/claude-code.ts', 'import { spawn } from \'node:child_process\'\n\nexport const probe = spawn\n', []],
   ['the claude-code adapter reads process.env', 'src/providers/claude-code.ts', 'export const probe = process.env\n', []],
+  ['the claude-code adapter makes a temporary directory', 'src/providers/claude-code.ts', 'import { mkdtemp } from \'node:fs/promises\'\nimport { tmpdir } from \'node:os\'\n\nexport const probe = [mkdtemp, tmpdir]\n', []],
+  ['the claude-code adapter refuses node:fs', 'src/providers/claude-code.ts', 'import { readFileSync } from \'node:fs\'\n\nexport const probe = readFileSync\n', ['no-restricted-imports']],
+  ['the claude-code adapter refuses Bun', 'src/providers/claude-code.ts', 'export const probe = Bun\n', ['no-restricted-globals']],
+  ['the claude-code adapter refuses globalThis', 'src/providers/claude-code.ts', 'export const probe = globalThis\n', ['no-restricted-globals']],
+  ['the claude-code adapter refuses process.getBuiltinModule', 'src/providers/claude-code.ts', 'export const probe = process.getBuiltinModule(\'node:net\')\n', ['no-restricted-properties']],
+  ['the claude-code adapter refuses it destructured', 'src/providers/claude-code.ts', 'export const { getBuiltinModule: probe } = process\n', ['no-restricted-properties']],
   ['another provider refuses node:child_process', 'src/providers/probe.ts', 'import { spawn } from \'node:child_process\'\n\nexport const probe = spawn\n', ['no-restricted-imports']],
   ['the config layer imports the providers', 'src/config/probe.ts', 'import { presets } from \'../providers/presets.ts\'\n\nexport const probe = presets\n', []],
   ['the config layer refuses node:http', 'src/config/probe.ts', 'import { request } from \'node:http\'\n\nexport const probe = request\n', ['no-restricted-imports']],
