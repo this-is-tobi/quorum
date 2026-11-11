@@ -1,6 +1,6 @@
 # Providers
 
-A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds its providers from its config, each from a preset or a protocol ([Configuration](./20-configuration.md)); a program builds its own, with one of the four shipped adapters or from scratch. This page covers the port, the adapters, the presets, the options the adapters share, the key header styles, the tool fields each adapter refuses, the limits of a request, the body each adapter sends and the replies it reads, the errors a provider raises, and writing a provider of your own.
+A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds its providers from its config, each from a preset or a protocol ([Configuration](./20-configuration.md)); a program builds its own, with one of the five shipped adapters or from scratch. This page covers the port, the adapters, the presets, the options the HTTP adapters share, the key header styles, the tool fields each of them refuses, the limits of a request, the body each sends and the replies it reads, the Claude Code adapter's command line, isolation and errors, the errors a provider raises, and writing a provider of your own.
 
 ## The port
 
@@ -34,7 +34,7 @@ interface CompletionResponse {
 
 ## The adapters
 
-Quorum ships one adapter per wire protocol:
+Quorum ships one adapter per wire protocol, and one that runs your installed Claude Code CLI:
 
 | Adapter | For | Endpoint | Default `auth` | Default `temperature` | Default `structuredOutput` |
 | --- | --- | --- | --- | --- | --- |
@@ -42,17 +42,19 @@ Quorum ships one adapter per wire protocol:
 | `anthropic` | The Anthropic Messages API, or a gateway that speaks it | `POST {baseUrl}/v1/messages` | `'bearer'` | Left out | `'prompt'` |
 | `gemini` | The Gemini API's `generateContent` | `POST {baseUrl}/v1beta/models/{model}:generateContent` | `{ header: 'x-goog-api-key' }` | Left out | `'json'` |
 | `ollama` | Ollama's native chat API, on a local server or Ollama's cloud | `POST {baseUrl}/api/chat` | `'bearer'` | `0` | `'json'` |
+| `claudeCode` | Your installed Claude Code CLI, run headless for each request | Spawns `claude -p` | `'inherit'`, of its own three modes: [The auth modes](#the-auth-modes) | Not supported | `'schema'` |
 
 ```ts
-import { anthropic, gemini, ollama, openaiCompatible } from './src/index.ts'
+import { anthropic, claudeCode, gemini, ollama, openaiCompatible } from './src/index.ts'
 
 const local = ollama({ id: 'local', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b', contextTokens: 131072 })
 const claude = anthropic({ id: 'claude', baseUrl: 'https://api.anthropic.com', model: 'claude-opus-5-5', contextTokens: 200000, apiKey: process.env.ANTHROPIC_API_KEY, structuredOutput: 'schema' })
 const flash = gemini({ id: 'flash', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.8-flash', contextTokens: 1000000, apiKey: process.env.GEMINI_API_KEY })
 const hosted = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-astra', contextTokens: 400000, apiKey: process.env.OPENAI_API_KEY, temperature: null, maxTokensField: 'max_completion_tokens' })
+const code = claudeCode({ id: 'code', model: 'sonnet', contextTokens: 1000000 })
 ```
 
-Every adapter sends one JSON `POST` per call through the same hardened path, [The limits of a request](#the-limits-of-a-request), passes the request's signal to `fetch`, and reports in `usage` every prompt token the request carried, cached ones included, and every token the model generated, thinking included, from the counts its protocol sends: never a cost. The counts a protocol keeps apart, such as Anthropic's cache tokens or Gemini's thought tokens, are added in when they are numbers; a reply without both main counts as numbers reports no `usage`.
+Every HTTP adapter sends one JSON `POST` per call through the same hardened path, [The limits of a request](#the-limits-of-a-request), passes the request's signal to `fetch`, and reports in `usage` every prompt token the request carried, cached ones included, and every token the model generated, thinking included, from the counts its protocol sends: never a cost. The counts a protocol keeps apart, such as Anthropic's cache tokens or Gemini's thought tokens, are added in when they are numbers; a reply without both main counts as numbers reports no `usage`. `claudeCode` sends no request of its own: it runs a process, [`claudeCode`](#claudecode), and is the one adapter that reports a cost.
 
 ## Presets
 
@@ -106,17 +108,20 @@ A provider built from a preset or a protocol is checked first for the problems b
 | --- | --- |
 | `<id>.preset` | `must be one of ollama, ollama-cloud, lmstudio, llamacpp, vllm, openai, azure-openai, openrouter, groq, mistral, deepseek, together, fireworks, xai, anthropic or gemini` |
 | `<id>.protocol` | `is required without a preset` |
-| `<id>.protocol` | `must be openai-compatible, anthropic, gemini or ollama` |
+| `<id>.protocol` | `must be openai-compatible, anthropic, gemini, ollama or claude-code` |
 | `<id>.protocol` | `must be <protocol>, the protocol of the <preset> preset`, for a protocol other than the preset's |
-| `<id>.baseUrl` | `is required without a preset` |
+| `<id>.baseUrl` | `is required without a preset`, for a protocol other than `claude-code`, which has no base URL |
 | `<id>.baseUrl` | `is required: the azure-openai preset has none` |
 | `<id>.baseUrl` | `must be a string`, for a base URL that is set to anything else, `null` and a `String` object included |
 | `<id>.maxTokensField` | `is only for the openai-compatible protocol` |
+| `<id>.args`, `<id>.command` | `is only for the claude-code protocol` |
 | `<id>.model` | `is required`, for a model that is unset |
 | `<id>.model` | `must be a model id of visible ASCII characters, with no space` |
 | `<id>.model` | `runs tools on the server by itself, which quorum never allows` |
 
 ## The shared options
+
+These are the options of the four HTTP adapters. `claudeCode` takes `id`, `model`, `contextTokens`, `apiKey` and `structuredOutput`, with its own rules, refuses the rest, and has options of its own: [Claude Code options](#claude-code-options).
 
 ### Options
 
@@ -197,7 +202,7 @@ Every request goes through one hardened path:
 Some endpoints cut a prompt that is too long for the model in silence and still answer 200, and a review of text the model never read is worse than none. So every adapter requires `contextTokens`, and checks every request, research and vote alike, after shaping it and before sending it, and refuses one that may not fit:
 
 - **The text** is the system text and every message as the adapter sends them (`systemPrompt: 'inline'` counts the blank line that joins them), at one token per UTF-8 byte, each code point at its longest form (as it is, decomposed with NFD, or compatibility-decomposed with NFKD), and the reply schema's JSON once more, since a server may add it to the prompt.
-- **The chat template** takes 512 tokens, for what a server adds around the messages.
+- **The chat template** takes 512 tokens, for what a server adds around the messages. `claudeCode` keeps 4096 instead, for the context Claude Code adds itself: [The size of a Claude Code request](#the-size-of-a-claude-code-request).
 - **The reply** takes `maxTokens`, else 16000. Only `anthropic` sends that number when `maxTokens` is unset; the other adapters send no limit then, so for them it is room the guard keeps, not a cap the server applies.
 
 A request is sent only when `text + 512 + reply <= contextTokens`. One token per byte bounds byte-level BPE and byte-fallback SentencePiece tokenizers. Counting each code point at its longest form bounds every normalized form of the text, so a tokenizer that normalizes with NFC, NFKC, NFD or NFKD first stays bounded: Qwen 2.5's NFC normalizer turns 300 bytes of U+0F81 into 500 tokens, which is why the count is not the raw bytes. Decomposition works one code point at a time and composing never lengthens UTF-8, so the sum is an upper bound, and the text is never normalized as a whole, which takes quadratic time on a long run of combining marks. Case folding is not proven covered, and no chat model's tokenizer is known to fold case. It costs room: accented letters count one more byte per accent, Hangul syllables up to three times their size, and code runs about three bytes to a token, so the guard accepts about a third of the diff that would really fit.
@@ -269,7 +274,9 @@ Each adapter checks its options when it is called, before any request, and throw
 
 `headers` and `query` must be plain objects, an object literal or one with no prototype: a `Headers` or a `Map` is refused with `must map names to strings`, since its entries are not its own fields. A header name that repeats an earlier one in another letter case is refused at the later one, since one request cannot send both.
 
-`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, `model`, a `key` query parameter and an `extraBody.generationConfig` that is no object or is not spelled `generationConfig`, by `gemini` only, and `options.num_ctx` in `extraBody`, with an `extraBody.options` that is no object or is not spelled `options`, by `ollama` only. Both servers read the key in any letter case, and Gemini as `generation_config` too, so a second spelling would send two keys for the field the adapter merges into: `must be written <name>` names the one spelling, never the key it was given. A key that is no object has the one issue, `must be an object`. `sets the reply limit: use maxTokens` names a field by its path, `<id>.extraBody.generationConfig.maxOutputTokens` for one that is nested. `is required: ...` is the one issue of a `contextTokens` that is unset, and the two after it are the issues of one that is set. `must be more than <n>, ...` is checked against a valid `maxTokens` only, with `<r>` its value, else 16000, and `<n>` that and 512.
+`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode, and `claudeCode`'s. `maxTokensField` is checked by `openaiCompatible` only, `model`, a `key` query parameter and an `extraBody.generationConfig` that is no object or is not spelled `generationConfig`, by `gemini` only, and `options.num_ctx` in `extraBody`, with an `extraBody.options` that is no object or is not spelled `options`, by `ollama` only. Both servers read the key in any letter case, and Gemini as `generation_config` too, so a second spelling would send two keys for the field the adapter merges into: `must be written <name>` names the one spelling, never the key it was given. A key that is no object has the one issue, `must be an object`. `sets the reply limit: use maxTokens` names a field by its path, `<id>.extraBody.generationConfig.maxOutputTokens` for one that is nested. `is required: ...` is the one issue of a `contextTokens` that is unset, and the two after it are the issues of one that is set. `must be more than <n>, ...` is checked against a valid `maxTokens` only, with `<r>` its value, else 16000, and `<n>` that and 512.
+
+These are the checks of the four HTTP adapters; `claudeCode`'s are its own: [Claude Code configuration errors](#claude-code-configuration-errors). A config file's schema reads `auth` for every protocol, so its message for a value no protocol takes is `<path>.auth: must be bearer, x-api-key, none, inherit, login, api-key or { header, prefix }`, where an HTTP adapter given `inherit`, `login` or `api-key` by the builder says the `<id>.auth` message above.
 
 A header name, an `extraBody` key or a `query` name is printed in a path only when it is a safe name, at most 64 ASCII letters, digits, `_`, `$` and `-`. Any other prints as `*`, since a secret pasted as a name would otherwise show.
 
@@ -389,9 +396,185 @@ A reply succeeds with `done: true`, the `done_reason` `stop` and a string `messa
 | No `done: true`, or a `done_reason` other than `stop` or `length` | `invalid-response` | `reply has not finished` |
 | No string `message.content` | `invalid-response` | `reply has no text` |
 
+## `claudeCode`
+
+For your installed Claude Code CLI, which it runs once per request, headless and isolated, as a pure completion: no tool but the one that captures the reply, nothing loaded from your setup or from the checkout it runs in, the message on stdin, and no credential handled by quorum in the default modes. It needs a model, an alias or an id, and a context size, and it finds `claude` on `PATH`:
+
+```ts
+import { claudeCode } from './src/index.ts'
+
+const code = claudeCode({ id: 'code', model: 'sonnet', contextTokens: 1000000 })
+```
+
+From the CLI, `QUORUM_RESEARCH_PROTOCOL=claude-code` builds it: [Claude Code](./20-configuration.md#claude-code). It is written against Claude Code 2.1.311: [Stopping, nesting and the version](#stopping-nesting-and-the-version).
+
+### What it runs
+
+One process per request:
+
+```text
+claude -p \
+  --output-format=json \
+  --model=<model> \
+  --system-prompt-file=<run>/system.txt \
+  --tools '' --setting-sources '' --strict-mcp-config --no-session-persistence --disable-slash-commands \
+  --json-schema=<the reply schema as JSON> \
+  --bare \
+  --effort=high
+```
+
+- **The order is fixed**, and nothing is optional but the last three lines: `--json-schema` only in `schema` mode, `--bare` only in `api-key` mode, then the allowlisted `args`, here `--effort high`.
+- **Every value quorum or the config supplies is written `--flag=value`**, so no value is read as a flag, whatever it starts with. The two isolation flags with an empty value keep the two-argument form, `--tools ''` and `--setting-sources ''`, which is the one verified with Claude Code 2.1.311.
+- **The system text goes in a file, the message on stdin and the key in the environment.** Linux caps one argument at 128 KiB, Windows a command line at 32,767 characters, and `ps` shows a command line to every user: nothing secret, and nothing long, is on it.
+- **Each request has a directory of its own**, `quorum-claude-<random>` under the system's temporary directory: `cwd/`, the child's empty working directory, `tmp/`, where Claude Code keeps its scratch files, and `system.txt`, mode `0600`. It is removed once `claude` has exited, on every path, before the call settles.
+- **It is never run through a shell**: the command is an executable, never a script.
+
+### The isolation
+
+Each measure of the command line and of the environment, and what it stops:
+
+| Measure | What it stops |
+| --- | --- |
+| `--tools ''` | Every built-in tool: no shell, file or web tool. `--json-schema` adds one, which only captures the reply as structured output, and `structuredOutput: 'prompt'` leaves it out |
+| `--setting-sources ''` | The user's, the project's and the local settings: their hooks, plugins, agents, `CLAUDE.md` files, permission rules and configured credentials |
+| `--strict-mcp-config` | Every MCP server that is not named on the command line, which is none |
+| `--no-session-persistence` | A transcript written to disk |
+| `--disable-slash-commands` | Slash commands. A message that starts with `/`, after white space, is also refused before `claude` starts, since `-p` expands one as a slash command |
+| An empty working directory | A `CLAUDE.md`, a `.claude/` directory or a `.mcp.json` of the pull request's checkout: `claude` never runs there |
+| `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` | Auto memory, which would load what an earlier run wrote |
+| `DISABLE_COMPACT=1` | Summarizing a long prompt, which would shorten what the model reads |
+| `CLAUDE_CODE_TMPDIR=<run>/tmp` | Claude Code's scratch files outside the request's directory |
+| `CLAUDE_CODE_AUTO_CONNECT_IDE=false`, `ENABLE_CLAUDEAI_MCP_SERVERS=false` | An IDE connection and the claude.ai MCP connectors, which are on by default |
+| The parent session's variables, removed in every mode | `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EMIT_STARTUP_TIMING` and `CLAUDE_CODE_STARTUP_FAILURE_RESULTS`: a run nested in a Claude Code session never reaches its messaging channel |
+| The capability variables, removed in every mode | `CLAUDE_CODE_PLUGIN_DIRS`, `CLAUDE_CODE_PLUGIN_SEED_DIR`, `CLAUDE_CODE_PLUGIN_CACHE_DIR`, `CLAUDE_CODE_SYNC_PLUGINS`, `CLAUDE_CODE_SYNC_SKILLS`, `CLAUDE_CODE_PROCESS_WRAPPER`, `CLAUDE_CODE_ENABLE_CFC`, `CLAUDE_CODE_ENABLE_TODO_TOOLS`, `CLAUDE_CODE_ENABLE_TASKS`, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, `CLAUDE_CODE_USE_POWERSHELL_TOOL` and `CLAUDE_CODE_EXTRA_BODY`: they load plugins and skills, start every process through a wrapper, enable a tool or merge a JSON object into every request body, and no flag governs them |
+| A process group of its own | What `claude` starts: an abort stops the whole group (not on Windows, which has none) |
+| The directory removed | Anything a run left behind |
+
+Variable names are matched in any letter case, as Windows reads them. The credentials and endpoints that a mode removes are in [The auth modes](#the-auth-modes).
+
+Not everything is off, and no flag of this list turns the rest off: an organization's managed policy and Claude Code's bundled skills still load, Claude Code adds its own context to every request, and `inherit` applies no credential that a settings file configures. [Claude Code, isolated](../30-security/10-threat-model.md#claude-code-isolated) states each of them.
+
+### Claude Code options
+
+| Option | Type | Default | Does |
+| --- | --- | --- | --- |
+| `id` | `string` | Required | Names the provider in events, `meta` and its error messages |
+| `model` | `string` | Required | What `claude --model` takes: an alias, `sonnet`, `opus`, `haiku` or `fable`, or a full model id, with `[1m]` after it (`opus[1m]`) for a 1M window on a 4.6 model. Visible ASCII, no space, and not starting with `-` |
+| `contextTokens` | `number` | Required | The model's context window in tokens, prompt and reply together. It must be more than 20096: [The size of a Claude Code request](#the-size-of-a-claude-code-request) |
+| `auth` | `'inherit' \| 'login' \| 'api-key'` | `'inherit'` | Whose credentials `claude` uses: [The auth modes](#the-auth-modes) |
+| `apiKey` | `string` | None | `api-key` only: the key handed to `claude` as `ANTHROPIC_API_KEY`, in its environment and nowhere else. Without one, `api-key` keeps the environment's own `ANTHROPIC_API_KEY`. Refused under another mode |
+| `structuredOutput` | `'prompt' \| 'schema'` | `'schema'` | `schema` has `claude` enforce the reply schema with `--json-schema`, and reads the reply from its structured output; `prompt` leaves the shape to the prompt, adds no tool, and reads the result's text |
+| `args` | `readonly string[]` | None | Flags passed to `claude`: `--effort` (`low`, `medium`, `high`, `xhigh` or `max`), `--fallback-model`, `--max-budget-usd` (a positive decimal) and `--betas` (`api-key` only), each followed by its value or written `--flag=value`, each at most once. A value is visible ASCII that does not start with `-`. Any other element is refused by its index, and never repeated, so no option loosens the isolation |
+| `command` | `string` | `'claude'` | The executable: an absolute path, or a bare name that `spawn` finds on `PATH`. A path with a separator that is not absolute is refused, since it would resolve inside the working directory, and so is a `.cmd` or `.bat` file, which runs only through a shell |
+| `env` | `Record<string, string \| undefined>` | `process.env` | The environment `claude` inherits, less what its mode removes. Read once, when the provider is made |
+
+`ClaudeCodeOptions` types them and `ClaudeCodeAuth` types `auth`. The options of an HTTP endpoint (`baseUrl`, `headers`, `query`, `extraBody`, `temperature`, `maxTokens` and `systemPrompt`) are refused: the reply budget is fixed at 16000, and there is no endpoint.
+
+### The auth modes
+
+| Mode | The child's environment | Use |
+| --- | --- | --- |
+| `inherit` | The environment as it is, less the variables every mode removes | Whatever `claude -p` finds on its own, from the environment: a cloud provider (Bedrock, Vertex or Foundry), a gateway, a key or a login. The default. Quorum reads, stores and forwards none of it |
+| `login` | `inherit`'s, less `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_PROFILE`, `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_UNIX_SOCKET` and every variable whose name starts with `CLAUDE_CODE_USE_` | The Claude Code login, `/login`, or the `CLAUDE_CODE_OAUTH_TOKEN` of `claude setup-token`, which stays in the environment. It always reaches Anthropic's own API |
+| `api-key` | `login`'s, then `ANTHROPIC_API_KEY` set to the key, and `--bare` on the command line | An API key. Under `--bare`, Claude Code reads no login, keychain or `CLAUDE_CODE_OAUTH_TOKEN`, so the key is the credential, and it drops some of the context Claude Code adds, as its documentation says |
+
+- **`ANTHROPIC_BASE_URL` goes under `login` and `api-key`**, since a login or a key sent through another host is what [the threat model](../30-security/10-threat-model.md#a-key-sent-only-to-its-own-endpoint) rules out. A gateway stays reachable through `inherit`. `ANTHROPIC_CUSTOM_HEADERS` goes because a header can carry another credential, and `ANTHROPIC_UNIX_SOCKET` because it sends every request through a local socket, as a base URL would. A `CLAUDE_CODE_USE_` prefix catches a cloud provider added later.
+- **The key of `api-key`** is `apiKey`, else the environment's `ANTHROPIC_API_KEY`, trimmed. With neither, Claude Code has no credential and the call fails: the CLI's resolution refuses it earlier, [Claude Code](./20-configuration.md#claude-code).
+- **A text that quotes `claude`'s output is redacted** of the values of the credential variables the child holds, as written and trimmed: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_CUSTOM_HEADERS`, `AWS_BEARER_TOKEN_BEDROCK`, `ANTHROPIC_AWS_API_KEY`, `ANTHROPIC_FOUNDRY_API_KEY` and `ANTHROPIC_FOUNDRY_AUTH_TOKEN`. A reply from `claude` can echo any of them.
+
+### The size of a Claude Code request
+
+The guard of [The size of a request](#the-size-of-a-request), with two differences. Claude Code adds its own context to every request, which 512 tokens do not cover: 953 tokens for a one-line prompt and 1463 with the schema tool's second turn, measured, so the reserve is 4096. And `maxTokens` is not an option, so the reply budget is 16000. A request is sent only when `text + 4096 + 16000 <= contextTokens`, so `contextTokens` must be more than 20096, or the provider is refused: `<id>.contextTokens: must be more than 20096, the 16000 tokens of the reply budget and 4096 for the chat template`. The text is counted as for an HTTP adapter, the reply schema's JSON included. A request that may not fit fails with `may need <n> tokens, more than contextTokens (<c>): <t> for its text at one token per byte, 4096 for the chat template and 16000 for the reply`.
+
+- **The message is at most 10,000,000 bytes**, the smaller reading of the 10 MB that Claude Code reads on stdin, checked first: a larger one is `too-large` too.
+- **Claude Code's own refusal of a prompt is `too-large`** as well. When it reports `terminal_reason: "prompt_too_long"`, or a result that starts `Prompt is too long`, a prompt the guard let through and Claude refused is the same `request-too-large` gap, which `--allow-incomplete` does not lift.
+- **A long prompt is not summarized.** `DISABLE_COMPACT=1` keeps Claude Code from compacting it, so what the model reads is the prompt the guard counted.
+
+### Claude Code replies and errors
+
+`claude -p --output-format=json` prints one JSON object. Claude Code reports an API error as exit `1` with that object on stdout, `subtype: "success"` and `is_error: true`, so the object is read before the exit code, in this order:
+
+| The result | Kind | Message |
+| --- | --- | --- |
+| `terminal_reason` `prompt_too_long`, or an error result that starts `Prompt is too long` | `too-large` | `Claude Code refused the prompt as too long for the model's context` |
+| `stop_reason` `refusal` | `refusal` | `model refused` |
+| An error (`is_error` is not `false`, or `subtype` is not `success`) with an `api_error_status` from 400 to 599 | `http`, retryable as that status would be, so 429 and 5xx are | `HTTP 404 from the model API: "<up to 200 characters>"` |
+| Any other error | `process`, with the exit code as `status` | `claude failed (error_max_structured_output_retries): "<up to 200 characters>"`, the subtype, or the `terminal_reason` of a `success` one, left out when it is not a short word |
+| A signal ended `claude` after a success result | `process` | `claude was stopped by SIGTERM after its result` |
+| A non-zero exit after a success result | `process` | `claude exited 1 after its result` |
+| A tool the server ran: `usage.server_tool_use` or a model's `webSearchRequests` above 0 | `invalid-response` | `the server ran a tool for this reply, which quorum never allows` |
+| `schema` mode and no structured output, though no error is reported | `invalid-response` | `reply has no structured output` |
+| `prompt` mode and no `result` text | `invalid-response` | `reply has no text` |
+
+Without a JSON result, a signal, a non-zero exit and an exit `0` with nothing are each a failure:
+
+| What happened | Kind | Message |
+| --- | --- | --- |
+| A signal ended `claude` | `process` | `claude was stopped by SIGKILL` |
+| A non-zero exit | `process` | `claude exited 2: "<up to 500 characters of stderr>"` |
+| Exit `0`, and nothing on stdout | `invalid-response` | `claude printed no JSON result` |
+| More than 16 MiB on stdout | `invalid-response` | `reply is over 16 MiB` |
+
+Before `claude` starts, and around it:
+
+| What happened | Kind | Message |
+| --- | --- | --- |
+| A request that is not exactly one user message | `unsupported` | `takes a request of exactly one user message` |
+| A message that starts with `/` after white space | `unsupported` | `a message that starts with / would run as a Claude Code command` |
+| A message over 10,000,000 bytes | `too-large` | `the message is <n> bytes, more than the 10000000 Claude Code reads on stdin` |
+| A request that may not fit the context | `too-large` | `may need <n> tokens, ...`: [The size of a Claude Code request](#the-size-of-a-claude-code-request) |
+| The signal aborted | `aborted` | `request aborted` |
+| A directory that cannot be made | `process` | `could not prepare a directory for claude (EACCES)`, the code left out when there is none |
+| A `claude` that cannot start | `process` | `could not start the claude CLI (ENOENT)` |
+
+Every message starts with the provider id. A quoted text is cut, written as a JSON string and redacted, as an HTTP adapter's is, and stdout is read to 16 MiB and stderr to 64 KiB, the rest dropped.
+
+- **`usage` is the sum over every model the result reports** in `modelUsage`: the input is every prompt token, cached ones included (`inputTokens`, `cacheReadInputTokens` and `cacheCreationInputTokens`), and the output every token generated. The result's own `usage` covers the last turn only, 2 input tokens against 1199 in a schema run, so it is not read.
+- **`costUsd` is `total_cost_usd`**, Claude Code's own estimate, when it is a number of at least 0.
+- **`model` is the one that answered**: the single key of `modelUsage`, since `--fallback-model` can change it, else the configured one.
+- **The text** is `structured_output` serialized in `schema` mode, and `result` in `prompt` mode.
+
+### Stopping, nesting and the version
+
+- **An abort sends SIGTERM to `claude`'s process group**, then SIGKILL `2000` ms later if it has not closed, and the call rejects as `aborted` once the directory is removed. Stdout past 16 MiB stops it the same way. When `claude` exits, SIGKILL goes to what is left of its group, since a helper that still holds its pipes would keep the call from settling. Windows has no process groups, so there only `claude` is signalled, and the adapter is not tested there yet.
+- **It runs inside a Claude Code session too.** `CLAUDECODE=1` in the environment does no harm, which was checked live, and the parent session's own variables are removed: [The isolation](#the-isolation).
+- **One process per call.** The review's concurrency limit, 4 by default, bounds the calls in flight across every provider, so it bounds the `claude` processes too.
+- **No timeout is set.** Claude Code retries a failed API call by itself, for minutes, and a deadline is the program's own `signal`.
+- **The version.** The adapter is tested with Claude Code 2.1.311 and names no minimum. A Claude Code that lacks one of the flags fails the run, closed, but one that ignores an environment variable of the isolation runs with less of it: [Claude Code, isolated](../30-security/10-threat-model.md#claude-code-isolated). `bun run live:claude-code` checks the adapter against the real `claude`. You run it by hand, with Claude Code installed and logged in, and neither `bun run test` nor CI does: it makes three calls on `haiku`, each capped by `--max-budget-usd 0.05`, one of structured output from a directory that holds a planted `CLAUDE.md`, one in `prompt` mode and one that names a model that does not exist. It passed against Claude Code 2.1.311, at under a tenth of a cent.
+
+### Claude Code configuration errors
+
+`claudeCode` checks its options when it is called, before any request, and throws one `ConfigError` with each problem, in this order. No message repeats a value: a key, a model id or an argument can be a secret.
+
+| Path | Message |
+| --- | --- |
+| `<id>.baseUrl`, `<id>.headers`, `<id>.query`, `<id>.extraBody`, `<id>.temperature`, `<id>.maxTokens`, `<id>.systemPrompt` | `is not an option of the claude-code protocol` |
+| `<id>.model` | `must be a model id of visible ASCII characters, with no space, that does not start with -` |
+| `<id>.contextTokens` | `is required: the model's context window in tokens, which quorum checks every request against` |
+| `<id>.contextTokens` | `must be a whole number of at least 1` |
+| `<id>.contextTokens` | `must be more than 20096, the 16000 tokens of the reply budget and 4096 for the chat template` |
+| `<id>.auth` | `must be inherit, login or api-key` |
+| `<id>.apiKey` | `is set, but auth is not api-key, so it would never be sent` |
+| `<id>.apiKey` | `must only contain visible ASCII characters` |
+| `<id>.structuredOutput` | `must be prompt or schema` |
+| `<id>.args` | `must be a list of strings` |
+| `<id>.args.<index>` | `must be a string` |
+| `<id>.args.<index>` | `is not a flag quorum passes to claude: use --effort, --fallback-model, --max-budget-usd or --betas` |
+| `<id>.args.<index>` | `needs a value`, for a flag that ends the list |
+| `<id>.args.<index>` | `repeats a flag` |
+| `<id>.args.<index>` | `is only for auth: api-key`, for `--betas` |
+| `<id>.args.<index>` | `must be low, medium, high, xhigh or max`, for `--effort` |
+| `<id>.args.<index>` | `must be a positive number of dollars, such as 0.50`, for `--max-budget-usd` |
+| `<id>.args.<index>` | `must be visible ASCII characters that do not start with -`, for `--fallback-model` and `--betas` |
+| `<id>.command` | `must name an executable` |
+| `<id>.command` | `is a Windows script, which runs only through a shell: name claude.exe instead` |
+| `<id>.command` | `must be an absolute path, or a name to find on PATH` |
+
+`<index>` is the index of the element in `args`, or of the value after a flag when the value is the problem. `--tools`, `--mcp-config`, `--settings`, `--add-dir` and `--dangerously-skip-permissions` are refused as any element outside the allowlist is, and `--effort=high --tools=Bash` in one element is refused as an `--effort` value: no `args` element loosens the isolation.
+
 ## `ProviderError`
 
-Every failure of a shipped adapter's call is a `ProviderError`, the error class the core exports for any provider to use. Its message starts with the provider id, and the adapter never puts a request header, a key or the runtime's own error text in it: text a server or a model sent is quoted as a JSON string and cut short, and a key the server echoes, the base URL's path or a value of `headers` is replaced by `[redacted]` first.
+Every failure of a shipped adapter's call is a `ProviderError`, the error class the core exports for any provider to use. Its message starts with the provider id, and the adapter never puts a request header, a key or the runtime's own error text in it: text a server or a model sent is quoted as a JSON string and cut short, and a key the server echoes, the base URL's path or a value of `headers` is replaced by `[redacted]` first. `claudeCode` quotes the text of `claude` the same way, redacted of the credentials its child holds.
 
 | Field | Holds |
 | --- | --- |
@@ -402,14 +585,16 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 
 | Kind | Raised when |
 | --- | --- |
-| `http` | The endpoint answers with a status outside 2xx: `HTTP 503: "model is loading"`, quoting up to 500 characters of the body. A 3xx adds `(redirects are not followed)`: `HTTP 307 (redirects are not followed): "moved"`. Also an `openaiCompatible` server error in a 2xx reply whose `code` is an error status |
+| `http` | The endpoint answers with a status outside 2xx: `HTTP 503: "model is loading"`, quoting up to 500 characters of the body. A 3xx adds `(redirects are not followed)`: `HTTP 307 (redirects are not followed): "moved"`. Also an `openaiCompatible` server error in a 2xx reply whose `code` is an error status, and a `claudeCode` result that reports an API error with a status from 400 to 599: `HTTP 429 from the model API: "..."` |
 | `network` | The request fails, `request to http://localhost:11434 failed (ECONNREFUSED)`, or reading the reply does, `reading the reply from <origin> failed` |
-| `aborted` | The review's signal stopped the request: `request aborted` |
-| `refusal` | The model refused, or a filter stopped the reply or the prompt: each adapter's reply table names its messages |
+| `aborted` | The review's signal stopped the request, a `claude` run included: `request aborted` |
+| `refusal` | The model refused, or a filter stopped the reply or the prompt: each adapter's reply table names its messages, and `claudeCode`'s is [Claude Code replies and errors](#claude-code-replies-and-errors) |
 | `truncated` | The token limit or the model's context cut the reply off: `reply was cut off by the token limit`, `anthropic`'s `reply was cut off: the context window is full`, or `ollama`'s `reply was cut off by the token limit or the context` |
-| `invalid-response` | The body is not JSON (`response body is not JSON`), is over 16 MiB (`reply body is over 16 MiB`) or is not an object (`reply is not a JSON object`), for every adapter. Or the reply holds an error, has not finished, ended early or holds no text, as each adapter's reply table words it |
-| `too-large` | A request may not fit the model's context, and the provider refused it before sending it: `<id>: may need <n> tokens, more than contextTokens (<c>): ...`, with the numbers [The size of a request](#the-size-of-a-request) explains. Not retryable. The review records it as a `request-too-large` gap, on research and on a vote alike, and never fails on it |
-| `timeout`, `process`, `unsupported` | Never: these are for other providers |
+| `invalid-response` | The body is not JSON (`response body is not JSON`), is over 16 MiB (`reply body is over 16 MiB`) or is not an object (`reply is not a JSON object`), for every HTTP adapter. Or the reply holds an error, has not finished, ended early or holds no text, as each adapter's reply table words it. For `claudeCode`: a `claude` that printed no JSON result, a result with no reply or one that shows a tool the server ran, or more than 16 MiB on stdout (`reply is over 16 MiB`) |
+| `too-large` | A request may not fit the model's context, and the provider refused it before sending it: `<id>: may need <n> tokens, more than contextTokens (<c>): ...`, with the numbers [The size of a request](#the-size-of-a-request) explains. Not retryable. The review records it as a `request-too-large` gap, on research and on a vote alike, and never fails on it. `claudeCode` adds a message over its 10,000,000-byte stdin cap, and Claude Code's own refusal of a prompt as too long, which are gaps too: [The size of a Claude Code request](#the-size-of-a-claude-code-request) |
+| `process` | A `claude` that failed, exited or could not start: `claude exited 2: "..."`, `claude failed (...): "..."`, `could not start the claude CLI (ENOENT)`. Only `claudeCode` raises it |
+| `unsupported` | `claudeCode` refuses a request that is not exactly one user message, or whose message starts with `/`. Only `claudeCode` raises it |
+| `timeout` | Never: it is for other providers |
 
 The core raises one more itself: a provider whose reply has no string `text` fails that call with `<id>: returned no reply text`, of kind `invalid-response`.
 

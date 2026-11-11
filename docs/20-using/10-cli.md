@@ -52,6 +52,8 @@ A finding must cite a line of the new file inside one of the diff's hunks and, w
 
 A blank diff, empty or only whitespace, is reviewed without calling a model.
 
+Besides the diff, it reads the environment: the `QUORUM_*` variables of [Configuration](./20-configuration.md#the-environment-variables), and the variable that names a `claude-code` provider's executable, `QUORUM_CLAUDE_CODE_COMMAND`. It is an absolute path, or a bare name found in the absolute entries of `PATH`, and it wins over a code config's `command`. A relative path and a `.cmd` or `.bat` file are refused with exit `2`, and a YAML or JSON config never names one: [Where the command comes from](./20-configuration.md#where-the-command-comes-from).
+
 ## stdout and stderr
 
 **stdout carries only the JSON result**, indented by two spaces and followed by a newline, written once the review ends. A script reads it whole; [The JSON result](../95-reference/20-json-result.md) has every field. A hidden character in a string is written as a `\uXXXX` escape, which a JSON parser reads back: [Output handling](../30-security/30-output-handling.md#what-the-cli-writes). When the run exits `2`, `3` or `130`, nothing was reviewed and stdout stays empty. With `--print-config`, stdout carries the config's YAML instead, and nothing else.
@@ -64,7 +66,7 @@ Research (qwen3.6:27b @ http://localhost:11434)...
 Panel will use qwen3.6:27b @ http://localhost:11434
 ```
 
-Each `warning:` line is printed once, before the banner, and holds no value: a deprecated variable, a variable nothing reads, a setting that cannot take effect. When the configuration is refused, the deprecation line and the line naming a variable nothing reads are still printed, before the `Error:` lines: `RESEARCH_BASE_URL` set to a value that is not a URL gives the deprecation line, then `Error: QUORUM_RESEARCH_BASE_URL: must be an http:// or https:// URL with a host`, and a mistyped `QUORUM_VOTER_MODLE` is named before the error that follows from it. The banner names the model of each provider and the origin of its endpoint: the scheme, host and port of its base URL, or of its preset's, never a path, a query, a key or credentials. A run with no config file has one provider, named `default`, built from the `QUORUM_RESEARCH_*` variables; the voter variables add a second, named `voter`. A provider object that a config file defines reads `<model> @ the provider object <name>`, by its config key. The second line is the provider every lens of the panel votes through; when the lenses vote through different providers it names each one: `Panel will use grounded (m @ http://localhost:11434), significant (v @ https://v.example)`. When several profiles run, every line of the banner starts with `[<id>] `, the profile's id. A usage or configuration error is reported instead of the banner; a blank diff adds `empty diff: nothing to review` after it.
+Each `warning:` line is printed once, before the banner, and holds no value: a deprecated variable, a variable nothing reads, a setting that cannot take effect. When the configuration is refused, the deprecation line and the line naming a variable nothing reads are still printed, before the `Error:` lines: `RESEARCH_BASE_URL` set to a value that is not a URL gives the deprecation line, then `Error: QUORUM_RESEARCH_BASE_URL: must be an http:// or https:// URL with a host`, and a mistyped `QUORUM_VOTER_MODLE` is named before the error that follows from it. The banner names the model of each provider and the origin of its endpoint: the scheme, host and port of its base URL, or of its preset's, never a path, a query, a key or credentials. A run with no config file has one provider, named `default`, built from the `QUORUM_RESEARCH_*` variables; the voter variables add a second, named `voter`. A provider object that a config file defines reads `<model> @ the provider object <name>`, by its config key, and a `claude-code` provider, which has no endpoint, reads `<model> @ claude-code`: `Research (sonnet @ claude-code)...`. The second line is the provider every lens of the panel votes through; when the lenses vote through different providers it names each one: `Panel will use grounded (m @ http://localhost:11434), significant (v @ https://v.example)`. When several profiles run, every line of the banner starts with `[<id>] `, the profile's id. A usage or configuration error is reported instead of the banner; a blank diff adds `empty diff: nothing to review` after it.
 
 ### Progress lines
 
@@ -84,7 +86,7 @@ When several profiles run, the `invalid finding dropped`, `incomplete` and `cand
 | --- | --- |
 | `0` | The review is complete, and no gating profile kept a `high` finding: nothing was found, every finding was discarded, or findings were kept at `medium` at most. What a profile with `gating: false` finds, and its gaps, change no code. A blank diff exits `0` without calling a model, once the configuration is valid. `--allow-incomplete` also exits `0` where `4` would be the code, except for a `request-too-large` gap of a gating profile |
 | `1` | A gating profile kept at least one finding at `high` confidence. The security profile gates, and with its three lenses `high` means all three kept the finding |
-| `2` | A usage or configuration error, before any model call: an unknown flag, a flag without its value, an empty `--config`, a `QUORUM_CONFIG` that is not an absolute path, a `--profile` that is repeated, malformed or unknown, a diff file given with `--print-config`, no diff given on a terminal, more than one argument, a diff file that cannot be read, a diff over 16 MiB, a research model that is not set, a provider without a context size, a voter on another endpoint without a model of its own, a base URL that is not an `http://` or `https://` URL with a host, or a key with a character an HTTP header cannot carry. The configuration is checked before the diff is reviewed, so a blank diff meets these errors too. [Configuration errors](./20-configuration.md#configuration-errors) lists the messages |
+| `2` | A usage or configuration error, before any model call: an unknown flag, a flag without its value, an empty `--config`, a `QUORUM_CONFIG` that is not an absolute path, a `--profile` that is repeated, malformed or unknown, a diff file given with `--print-config`, no diff given on a terminal, more than one argument, a diff file that cannot be read, a diff over 16 MiB, a research model that is not set, a provider without a context size, a `claude` that cannot be found or a `QUORUM_CLAUDE_CODE_COMMAND` that is relative, a voter on another endpoint without a model of its own, a base URL that is not an `http://` or `https://` URL with a host, or a key with a character an HTTP header cannot carry. The configuration is checked before the diff is reviewed, so a blank diff meets these errors too. [Configuration errors](./20-configuration.md#configuration-errors) lists the messages |
 | `3` | The research call failed: its endpoint is unreachable, answers with an HTTP error, refuses, stops on its content filter, is cut off by its token limit, or sends a body or a reply quorum cannot use. Or the run stopped with nothing left to wait for, as a provider object whose call never settles leaves it: `Error: the run stopped without a result`, and never `0`. An error that nothing caught, thrown by a provider object's own code, ends the run with `Error:` and its message on one line, never a stack. A failing voter does not fail the run: see `4` |
 | `4` | The review of a gating profile is incomplete, and no gating profile kept a `high` finding: a finding is `unreviewed` because a failed vote could still have kept it, or `meta.incomplete` holds a gap, which is a finding the harness could not read (`finding-unreadable`), a research reply whose findings were all unusable (`research-unusable`), findings beyond the cap of 50 (`findings-capped`), a kept finding whose failed votes could have raised it to a higher level (`vote-failed`), or a request its provider refused as too large for its model (`request-too-large`). A gap of a profile with `gating: false` is in the result and on stderr, and changes no code. `--allow-incomplete` turns this `4` into `0` for every gap but a `request-too-large` gap of a gating profile, which a pull request can cause by padding the diff. It lifts the other gaps even where a pull request caused them (decoy findings that push a real one past `maxFindings`, or text that trips a hosted voter's content filter), so on a gating profile do not use it for a pull request you do not trust |
 | `130` | The CLI received SIGINT or SIGTERM and stopped the review: nothing is written on stdout, and `interrupted` on stderr. A second signal writes `interrupted` too and exits `130` at once, without waiting for a provider that ignores the first |
@@ -105,6 +107,7 @@ The `Error:` line says what failed, and names the provider by its config key: `d
 | The content filter stops the reply | `default: reply was stopped by the content filter` |
 | The token limit cuts the reply off | `default: reply was cut off by the token limit` |
 | The body is not JSON | `default: response body is not JSON` |
+| `claude` fails, exits non-zero or cannot start | `default: claude exited 2: "..."`, `default: claude failed (error_max_structured_output_retries): "..."` or `default: could not start the claude CLI (ENOENT)`, for a `claude-code` provider: [Claude Code replies and errors](./30-providers.md#claude-code-replies-and-errors) |
 | The reply is not one JSON object holding a `findings` array and nothing else | `research reply unusable: reply contains no JSON object (reply starts: "No issues found.")`, with the reason, and the first 200 characters of the reply as a JSON string |
 
 The reasons a reply is unusable are listed under [strict parsing](../30-security/10-threat-model.md#strict-single-object-parsing). A reply that holds `findings` but none quorum could use is not this error: it is a `research-unusable` gap, exit `4`. A research request refused as too large for its model is not this error: it is a `request-too-large` gap, exit `4`.
@@ -153,7 +156,7 @@ warnings: []
 | Field | What it holds |
 | --- | --- |
 | `source` | The absolute path of the config file, or `null` when no file is named |
-| `providers` | Each provider a profile that runs uses, by its config key, in the order the config defines them. A provider defined as data prints the fields it sets, in this order: `preset`, `protocol`, `origin` (always), `model`, `contextTokens`, `apiKey`, `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature` (`null` too), `maxTokens`, `maxTokensField` and `systemPrompt`. A provider object, which a TS or JS config defines, prints `implements: Provider` and its `model` |
+| `providers` | Each provider a profile that runs uses, by its config key, in the order the config defines them. A provider defined as data prints the fields it sets, in this order: `preset`, `protocol`, `command`, `origin` (always, but for a `claude-code` provider, which has none), `model`, `contextTokens`, `apiKey`, `auth`, `args`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature` (`null` too), `maxTokens`, `maxTokensField` and `systemPrompt`. A `claude-code` provider prints the absolute path of the `claude` it found as its `command`, and its `auth` is `inherit` when it sets none, as it runs. A provider object, which a TS or JS config defines, prints `implements: Provider` and its `model` |
 | `profiles` | Each profile that runs, by id, in run order: `gating` (`true` unless the profile sets `false`), `research` (the provider that looks for findings), `lenses` (the provider each lens votes through), `thresholds` (the kept votes each confidence level needs, `null` for a level the policy disables) and `prompts` (`research` and `vote`, each as a hash) |
 | `concurrency`, `maxFindings` | The values the review applies: the config's, else the defaults, `4` and `50` |
 | `warnings` | The config's warnings: the deprecated variables, the variables nothing reads and the keys that are not sent or sent in cleartext. A run prints these as `warning:` lines before its banner, and adds the warnings of the profiles, such as a policy level that is never reached: [Warnings](./40-profiles.md#warnings) |
@@ -162,11 +165,30 @@ What it leaves out, so that the output can stay in a public CI log:
 
 - **A key** prints as `apiKey: "[redacted]"`, whether it came from `apiKey`, from the variable `apiKeyEnv` names, from a preset's variable or from `QUORUM_RESEARCH_API_KEY`.
 - **`headers`, `query` and `extraBody`** print their names, each with the value `[redacted]`: a gateway's own credential can sit in a header, a query parameter or a body field.
+- **A `claude-code` provider's `command` and `args`** print as they are: the path of the executable and its flags are the config's own, and a job can check them.
 - **A base URL** prints as its `origin`, the scheme, host and port, since a gateway can carry a token in the path, as `team-token` does above.
 - **A prompt** prints as `sha256:` and the lowercase hex SHA-256 of its UTF-8 text, never the text. `sha256sum` of a prompt file gives the same hex, a byte-order mark aside, so a job can compare it with the hash of the file on the base branch. A provider's `systemPrompt` is only a placement, `native` or `inline`.
 - **A field the view does not list** prints nothing. The view is built field by field, so a field added to the config later stays out of it until it is added on purpose.
 
 Each line passes through `inertLine`, as the lines on stderr do, so a hidden character in a file name or a key shows as `<U+XXXX>` and no line starts a workflow command: [What the CLI writes](../30-security/30-output-handling.md#what-the-cli-writes). The YAML is version 1.1, so a reader of that version reads `off` as a string, and no line is folded.
+
+A `claude-code` provider has a `command` and `args` in place of an `origin`, and a key only in `api-key` mode:
+
+```text
+providers:
+  claude:
+    protocol: claude-code
+    command: /usr/local/bin/claude
+    model: sonnet
+    contextTokens: 1000000
+    apiKey: "[redacted]"
+    auth: api-key
+    args:
+      - --effort
+      - high
+```
+
+Under `inherit`, with `ANTHROPIC_API_KEY` set, `warnings` holds the billing warning: `providers.default: ANTHROPIC_API_KEY is set, so Claude Code bills that key rather than its login: unset it, or set auth to login or api-key`.
 
 A CI job can print it before the review, to check which file, providers and profiles it runs.
 

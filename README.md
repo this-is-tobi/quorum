@@ -1,6 +1,6 @@
 # Quorum :ballot_box:
 
-**Quorum** reviews a diff with several model calls instead of one. A model, the finder, proposes candidate findings, and a panel of voters blind to each other, one per lens, judges each one. Whether a finding is kept, and at what confidence, is computed in code from the split of their votes, never reported by a model. The default profile reviews security, through any OpenAI-compatible `/chat/completions` endpoint, local or hosted.
+**Quorum** reviews a diff with several model calls instead of one. A model, the finder, proposes candidate findings, and a panel of voters blind to each other, one per lens, judges each one. Whether a finding is kept, and at what confidence, is computed in code from the split of their votes, never reported by a model. The default profile reviews security, through any OpenAI-compatible `/chat/completions` endpoint, local or hosted, or through your installed Claude Code CLI.
 
 Quorum is pre-release (`0.x`): the API may change. It assists a reviewer; it does not replace human review of untrusted changes.
 
@@ -27,6 +27,17 @@ git diff origin/main...HEAD | quorum > result.json   # or what your branch chang
 
 `QUORUM_RESEARCH_CONTEXT_TOKENS` is the model's context window in tokens, which quorum checks every request against, and without it the run exits `2` with a message that names it. `QUORUM_RESEARCH_PRESET=ollama` is set because on Ollama's OpenAI-compatible `/v1` a Modelfile's `num_ctx` outranks `OLLAMA_CONTEXT_LENGTH` and a thinking model's reasoning can run past the reserve, so Ollama would cut the prompt in silence, while the native protocol this preset speaks sends `num_ctx`, `truncate: false` and `shift: false`, telling the server the context size and refusing an overflow. Keep the number at most what `ollama show <model>` reports for the model.
 
+To review through your installed Claude Code CLI instead, run `claude` headless and isolated for each request:
+
+```bash
+export QUORUM_RESEARCH_PROTOCOL=claude-code     # your installed Claude Code CLI, found on PATH
+export QUORUM_RESEARCH_MODEL=sonnet             # an alias, or a model id, that `claude --model` takes
+export QUORUM_RESEARCH_CONTEXT_TOKENS=1000000   # its context window, in tokens
+quorum ./my.diff > result.json
+```
+
+Tested with Claude Code 2.1.311. [`claudeCode`](./docs/20-using/30-providers.md#claudecode) has the command line, the isolation and the auth modes, and [Claude Code](./docs/20-using/20-configuration.md#claude-code) the setup, in CI too.
+
 The JSON result goes to stdout, and the exit code says what to do with it: `0` for a complete review in which no gating profile kept a `high` finding, `1` when one did, complete or not, `2` for a usage or configuration error, `3` when the research call failed, `4` when a gating profile's review is incomplete otherwise, and `130` when the run was interrupted. [Quick start](./docs/10-getting-started/20-quickstart.md) walks one review through, and [Start here](./docs/01-readme.md) lays out three tracks: review a diff, use it from code or review something else, and know what it protects against.
 
 ## Documentation
@@ -39,8 +50,8 @@ The JSON result goes to stdout, and the exit code says what to do with it: `0` f
 
 *Using it*
 - [The CLI](./docs/20-using/10-cli.md) *- The invocation, stdout and stderr, every exit code and its causes, and gating a CI job on them*
-- [Configuration](./docs/20-using/20-configuration.md) *- The config file and its trust model in CI, the `QUORUM_*` variables and the voter's fallback, the context size each provider states, the keys, `--print-config`, and the errors a bad setting causes*
-- [Providers](./docs/20-using/30-providers.md) *- The provider port, the shipped adapters and their options, the presets, `ProviderError`, and writing a provider of your own*
+- [Configuration](./docs/20-using/20-configuration.md) *- The config file and its trust model in CI, the `QUORUM_*` variables and the voter's fallback, the context size each provider states, running Claude Code, the keys, `--print-config`, and the errors a bad setting causes*
+- [Providers](./docs/20-using/30-providers.md) *- The provider port, the shipped adapters and their options, Claude Code run isolated as a provider, the presets, `ProviderError`, and writing a provider of your own*
 - [Profiles](./docs/20-using/40-profiles.md) *- The security profile, writing your own, several in one review, gating and guidelines*
 - [Lenses and policy](./docs/20-using/50-lenses-and-policy.md) *- The panel's questions, the rules that turn kept votes into a confidence, failed votes, and what a level means*
 - [Prompts](./docs/20-using/60-prompts.md) *- The layout of every request, the templates and their variables, the notices, and what is not configurable*
