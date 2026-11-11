@@ -79,7 +79,7 @@ Only the first `maxFindings` findings a research reply lists, 50 by default, are
 
 ### Unreviewed and incomplete reviews
 
-A discard never rests on a failed vote: a finding that a failed vote could still have kept is `unreviewed`. A finding the harness could not read, a kept finding whose failed votes could have raised it to a higher level, a research reply whose findings were all unusable, and findings beyond the cap are recorded in `meta.incomplete`. Either makes the review incomplete, so the CLI never exits `0` for a gap the harness detects: it exits `4`, or `1` when a gating profile also kept a `high` finding.
+A discard never rests on a failed vote: a finding that a failed vote could still have kept is `unreviewed`. A finding the harness could not read, a kept finding whose failed votes could have raised it to a higher level, a research reply whose findings were all unusable, and findings beyond the cap are recorded in `meta.incomplete`. Either makes the review incomplete, so the CLI never exits `0` for a gap of a gating profile that the harness detects: it exits `4`, or `1` when a gating profile also kept a `high` finding. Two choices lift the `4` to `0`: a profile with `gating: false` in the config, and `--allow-incomplete` in the command. The gap stays in the result either way.
 
 ### Advisory flags
 

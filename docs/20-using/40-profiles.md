@@ -131,9 +131,9 @@ The cost grows with each profile: one more research call, and one call per lens 
 
 ## Gating
 
-`gating`, `true` when unset, says whether a profile's kept `high` findings set exit code `1`. The CLI exits `1` when a kept finding is `high` and its profile's `meta.profiles.<id>.gating` is not `false`; a profile missing from `meta` counts as gating, so a gap in a result never hides a finding. Otherwise it exits `4` when the review is incomplete, and `0` when it is not.
+`gating`, `true` when unset, says whether a profile's kept `high` findings set exit code `1`, and its gaps exit code `4`. The CLI exits `1` when a kept finding is `high` and its profile's `meta.profiles.<id>.gating` is not `false`; a profile missing from `meta` counts as gating, so a gap in a result never hides a finding. Otherwise it exits `4` when a gating profile's review is incomplete, and `0` when it is not.
 
-A profile with `gating: false` still reports every finding in full, and its gaps still make the review incomplete: only a `high` finding of its own no longer exits `1`. The CLI runs the profiles its config selects, and by default the security profile alone, which gates. A program that runs other profiles reads each one's `gating` in `meta` to apply the same rule.
+A profile with `gating: false` reports every finding and every gap in full, and neither changes the exit code: its kept findings are in `kept`, its unreviewed findings and gaps in `unreviewed` and `meta.incomplete`, and the exit code follows the gating profiles alone. The CLI runs the profiles its config selects, and by default the security profile alone, which gates. A program that runs other profiles reads each one's `gating` in `meta` to apply the same rule.
 
 ## Guidelines
 
