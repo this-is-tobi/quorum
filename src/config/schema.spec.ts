@@ -274,22 +274,54 @@ describe('configFileSchema', () => {
 })
 
 describe('configCodeSchema', () => {
-  it('accepts a key on a provider, and a provider object, which it hands back as it is', () => {
+  it('accepts a key on a provider, and a provider object, which it reads once into a frozen snapshot with no prototype', () => {
     const parsed = parseConfig(configCodeSchema, { providers: { keyed: { preset: 'openai', apiKey: 'sk-k' }, mine: fakeProvider } })
     expect(parsed.providers?.keyed).toEqual({ preset: 'openai', apiKey: 'sk-k' })
-    expect(parsed.providers?.mine).toBe(fakeProvider)
+    const mine = parsed.providers?.mine as Provider
+    expect(mine).not.toBe(fakeProvider)
+    expect(Object.isFrozen(mine) && Object.getPrototypeOf(mine) === null).toBe(true)
+    expect(Object.keys(mine)).toEqual(['model', 'complete'])
+    expect(mine.model).toBe('m')
   })
 
-  it('accepts a provider object whose complete comes from its class', () => {
+  it('accepts a provider object whose complete comes from its class, which its snapshot calls on the object itself', async () => {
     class Echo {
       readonly id = 'echo'
       readonly model = 'm'
       async complete(): Promise<CompletionResponse> {
-        return { text: '{}', model: this.model }
+        return { text: this.id, model: this.model }
       }
     }
-    const echo = new Echo()
-    expect(parseConfig(configCodeSchema, { providers: { echo } }).providers?.echo).toBe(echo)
+    const echo = parseConfig(configCodeSchema, { providers: { echo: new Echo() } }).providers?.echo as Provider
+    expect(await echo.complete({ system: '', messages: [], output: { name: 'x', schema: {} } })).toEqual({ text: 'echo', model: 'm' })
+  })
+
+  it('reads the model and the complete of a provider object once each, and nothing off the function it calls', async () => {
+    const reads = { model: 0, complete: 0 }
+    const object: { value?: unknown } = {}
+    let calledOnObject = false
+    async function complete(this: unknown): Promise<CompletionResponse> {
+      calledOnObject = this === object.value
+      return { text: '{}', model: 'm' }
+    }
+    Object.defineProperty(complete, 'call', { get: () => {
+      throw new Error('SECRET')
+    } })
+    object.value = {
+      get model() {
+        reads.model += 1
+        return 'm'
+      },
+      get complete() {
+        reads.complete += 1
+        return complete
+      },
+    }
+    const snapshot = parseConfig(configCodeSchema, { providers: { mine: object.value } }).providers?.mine as Provider
+    await snapshot.complete({ system: '', messages: [], output: { name: 'x', schema: {} } })
+    await snapshot.complete({ system: '', messages: [], output: { name: 'x', schema: {} } })
+    expect(reads).toEqual({ model: 1, complete: 1 })
+    expect(calledOnObject).toBe(true)
   })
 
   it('reports a provider\'s settings at their field, and a value that is neither form at the entry', () => {
@@ -311,7 +343,7 @@ describe('configCodeSchema', () => {
 describe('configInputSchema', () => {
   it('takes a prompt as a string only, since a program\'s config is read from no file', () => {
     expect(issuesOf({ profiles: { team: { prompts: { research: { file: 'r.md' } } } } }, configInputSchema)).toEqual([at('profiles.team.prompts.research', 'must be a string')])
-    expect(parseConfig(configInputSchema, { providers: { mine: fakeProvider, key: { preset: 'openai', apiKey: 'sk-k' } }, profiles: { team: { prompts: { research: 'Find it.' } } } })).toEqual({ providers: { mine: fakeProvider, key: { preset: 'openai', apiKey: 'sk-k' } }, profiles: { team: { prompts: { research: 'Find it.' } } } })
+    expect(parseConfig(configInputSchema, { providers: { mine: fakeProvider, key: { preset: 'openai', apiKey: 'sk-k' } }, profiles: { team: { prompts: { research: 'Find it.' } } } })).toEqual({ providers: { mine: { model: 'm', complete: expect.any(Function) }, key: { preset: 'openai', apiKey: 'sk-k' } }, profiles: { team: { prompts: { research: 'Find it.' } } } })
   })
 })
 

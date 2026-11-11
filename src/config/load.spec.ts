@@ -345,6 +345,13 @@ describe('readConfigFile on a __proto__ key', () => {
   })
 })
 
+/** A config whose provider object has an id of its own and an answer that shows the object it is called on, its function giving up its `call` to no one. */
+const NAMED_SOURCE = [
+  'const complete = async function () { return { text: this.id, model: "m" } }',
+  'Object.defineProperty(complete, "call", { get() { throw new Error("SECRET") } })',
+  'export default { providers: { keyed: { id: "own", model: "m", complete } } }',
+].join('\n')
+
 /** A provider object written as a module's source, its reply fixed. */
 const PROVIDER_SOURCE = '{ id: "mine", model: "m", async complete() { return { text: "{}", model: "m" } } }'
 
@@ -361,6 +368,15 @@ describe('readConfigFile on a TS or JS config', () => {
     expect(providers.mine.model).toBe('m')
     expect(await providers.mine.complete(REQUEST)).toEqual({ text: '{}', model: 'm' })
     expect(await providers.echo.complete(REQUEST)).toEqual({ text: 'echo', model: 'm' })
+  })
+
+  it('names a provider object\'s snapshot by its config key, and calls the original with its own this, reading nothing off its function', async () => {
+    file('named.mts', NAMED_SOURCE)
+    const keyed = ((await configOf('named.mts')).providers as Record<string, Provider>).keyed
+    expect(keyed.id).toBe('keyed')
+    expect(Object.isFrozen(keyed) && Object.getPrototypeOf(keyed) === null).toBe(true)
+    expect(Object.keys(keyed)).toEqual(['id', 'model', 'complete'])
+    expect(await keyed.complete(REQUEST)).toEqual({ text: 'own', model: 'm' })
   })
 
   it('leaves a field set to undefined unset, as a spread of an unset value gives', async () => {
@@ -602,6 +618,44 @@ describe('loadConfig', () => {
     })
     expect([[], [{ path: 'getter.mts', message: 'failed to load (Error)' }]]).toContainEqual(issues)
     expect(JSON.stringify(issues)).not.toContain('planted')
+  })
+
+  it('holds a provider object as the snapshot, named by its config key, whose function answers with the object it is called on', async () => {
+    file('named.mts', NAMED_SOURCE)
+    const keyed = (await loadConfig({ cwd: dir, env: {}, configPath: 'named.mts' })).config.providers.keyed as Provider
+    expect([keyed.id, Object.isFrozen(keyed), Object.getPrototypeOf(keyed)]).toEqual(['keyed', true, null])
+    expect(await keyed.complete(REQUEST)).toEqual({ text: 'own', model: 'm' })
+  })
+
+  /** The source of a config whose provider's complete getter answers until read `reads`, and then changes as `change` says. */
+  const changingSource = (change: string, reads: number): string => [
+    'let seen = 0',
+    'const mine = { model: "m", get complete() {',
+    '  seen += 1',
+    `  if (seen < ${reads}) return async () => ({ text: "{}", model: "m" })`,
+    `  if (${JSON.stringify(change)} === "throws" || (${JSON.stringify(change)} === "becomes undefined, then throws" && seen > ${reads})) throw new Error("SECRET")`,
+    '  return undefined',
+    '} }',
+    'export default { providers: { mine } }',
+  ].join('\n')
+
+  /** What loading `name` comes to: its provider answering, or the issues of the ConfigError. Any other error fails the test. */
+  async function outcomeOf(name: string): Promise<'answers' | readonly ConfigIssue[]> {
+    let provider: Provider
+    try {
+      provider = (await loadConfig({ cwd: dir, env: {}, configPath: name })).config.providers.mine as Provider
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigError)
+      expect((error as ConfigError).message).not.toContain('SECRET')
+      return (error as ConfigError).issues
+    }
+    expect(await provider.complete(REQUEST)).toEqual({ text: '{}', model: 'm' })
+    return 'answers'
+  }
+
+  it.each(['becomes undefined', 'throws', 'becomes undefined, then throws'].flatMap(change => [1, 2, 3, 4, 5, 6, 7, 8].map(reads => ({ change, reads }))))('a provider whose complete getter changes at read $reads ($change) is never read after the guard', async ({ change, reads }) => {
+    file('changing.mts', changingSource(change, reads))
+    expect(JSON.stringify(await outcomeOf('changing.mts'))).not.toContain('SECRET')
   })
 
   it('puts the text of a prompt file in the profile that names it', async () => {

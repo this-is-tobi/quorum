@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
+import type { Quorum } from '../core/types.ts'
 import { jsonReply, sent } from '../testing/http.ts'
 import { fromConfig } from './from-config.ts'
 import { resolveConfig } from './resolve.ts'
@@ -29,6 +30,39 @@ async function issuesOf(config: unknown): Promise<readonly ConfigIssue[]> {
     return (error as ConfigError).issues
   }
   return []
+}
+
+/** How a provider's complete getter changes its answer from the read it is told: undefined from then on, a throw from then on, or undefined once and a throw after. */
+const CHANGES = ['becomes undefined', 'throws', 'becomes undefined, then throws'] as const
+type Change = typeof CHANGES[number]
+
+/** A provider object whose complete getter answers until read `reads`, and then changes as `change` says. */
+function changingProvider(change: Change, reads: number): unknown {
+  let seen = 0
+  return {
+    model: 'm',
+    get complete() {
+      seen += 1
+      if (seen < reads) return async (): Promise<CompletionResponse> => ({ text: '{"findings":[]}', model: 'm' })
+      if (change === 'throws' || (change === 'becomes undefined, then throws' && seen > reads)) throw new Error('SECRET')
+      return undefined
+    },
+  }
+}
+
+/** What building a quorum from `config` comes to: its provider answering a review, or the issues of the ConfigError. Any other error fails the test. */
+async function outcomeOf(config: unknown): Promise<'answers' | readonly ConfigIssue[]> {
+  let quorum: Quorum
+  try {
+    quorum = await fromConfig(config as ConfigInput, { env: {} })
+  } catch (error) {
+    expect(error).toBeInstanceOf(ConfigError)
+    expect((error as ConfigError).message).not.toContain('SECRET')
+    return (error as ConfigError).issues
+  }
+  const result = await quorum.review({ diff })
+  expect(result.meta.profiles.security.providers.research).toEqual({ id: 'mine', model: 'm' })
+  return 'answers'
 }
 
 afterEach(() => {
@@ -125,6 +159,11 @@ describe('fromConfig', () => {
     const issues = await issuesOf({ providers: { mine } })
     expect([[], [{ path: 'config', message: 'could not be read (Error)' }]]).toContainEqual(issues)
     expect(JSON.stringify(issues)).not.toContain(SECRET)
+  })
+
+  it.each(CHANGES.flatMap(change => [1, 2, 3, 4, 5, 6, 7, 8].map(reads => ({ change, reads }))))('a provider whose complete getter changes at read $reads ($change) is never read after the guard', async ({ change, reads }) => {
+    const outcome = await outcomeOf({ providers: { mine: changingProvider(change, reads) } })
+    expect(JSON.stringify(outcome)).not.toContain('SECRET')
   })
 
   it('lists the config\'s warnings, then the core\'s', async () => {

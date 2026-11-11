@@ -13,8 +13,8 @@ import type { ResolvedProfile } from './profiles.ts'
 import { configPath, isProvider, unknownName } from './schema.ts'
 import type { ConfigInput, ProviderSettings } from './schema.ts'
 
-/** A provider a run uses: a spec with its key read into `apiKey`, or an object implementing `Provider`. */
-export type ResolvedProvider = Omit<ProviderSpec, 'id'> | Provider
+/** A provider a run uses: a spec with its key read into `apiKey`, or the frozen snapshot of an object implementing `Provider`, which holds its config key as its `id`. */
+export type ResolvedProvider = Omit<ProviderSpec, 'id'> | Readonly<Provider>
 
 /**
  * A config with every layer merged, every reference bound and every key read, ready to build a quorum from.
@@ -47,7 +47,7 @@ export function isResolvedConfig(value: unknown): value is ResolvedConfig {
   return typeof value === 'object' && value !== null && RESOLVED.has(value)
 }
 
-/** `value` frozen with everything it holds, except a provider object, which is its program's own. */
+/** `value` frozen with everything it holds, except a provider object, which is a frozen snapshot already. */
 function deepFreeze<T>(value: T): T {
   if (typeof value === 'object' && value !== null && !isProvider(value)) {
     for (const field of Object.values(value)) deepFreeze(field)
