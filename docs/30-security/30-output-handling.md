@@ -1,6 +1,6 @@
 # Output handling
 
-Quorum writes the JSON result on stdout, and a banner, progress lines and `Error:` lines on stderr. All of it can carry text that models wrote, servers sent or the diff holds, and an attacker can influence that text. Quorum stores it as it came, apart from the cleaning the table below lists, and makes each place that prints it inert: nothing in it acts on a terminal or a GitHub Actions log, and every hidden character of the class defined below is shown or escaped. It also flags the hidden characters and the text addressed to an AI reviewer that a diff holds, as a hint to a human. Read this page before you print a review yourself.
+Quorum writes the JSON result on stdout, and `warning:` lines, a banner, progress lines and `Error:` lines on stderr. All of it can carry text that models wrote, servers sent or the diff holds, and an attacker can influence that text. Quorum stores it as it came, apart from the cleaning the table below lists, and makes each place that prints it inert: nothing in it acts on a terminal or a GitHub Actions log, and every hidden character of the class defined below is shown or escaped. It also flags the hidden characters and the text addressed to an AI reviewer that a diff holds, as a hint to a human. Read this page before you print a review yourself.
 
 ## Text an attacker can influence
 
@@ -29,7 +29,7 @@ The CLI writes to two streams, and each has its own function. Both act on the sa
 The class leaves out what acts on no terminal and what no character property marks as invisible: the other spaces, which print as spaces; private-use and unassigned code points, which print as a glyph or a box; U+2800, which prints as a blank, and U+FFFC, which prints as a box; and look-alike letters, which no character property finds. U+2800 and look-alike letters can still hide text from a reader.
 
 - **stdout** is the JSON result, written by `inertJson`. It is what `JSON.stringify` writes, with every hidden character it would leave raw written as a `\uXXXX` escape: DEL, the C1 controls, the format and other default-ignorable characters, and the line and paragraph separators. A `##[` inside a string is written `##\u005b`. A JSON parser reads the escapes back as the characters, so the data is exact. No line of it can start a workflow command: after its indentation, each line starts with a quote, a bracket, a brace or a literal, and none holds `##[`.
-- **stderr**: every line that carries text from outside the CLI passes through `inertLine`: the banner, the progress lines and the `Error:` lines. The usage text and `empty diff: nothing to review` are constants, and the CLI writes them as they are. A hidden character is shown as `<U+XXXX>`, with its code point in upper-case hexadecimal, four digits at least, and a character above U+FFFF as one label. So a line holds no line break of its own and starts no escape sequence, and no character of the class reorders or hides its text. A line that would start with `::`, after any leading whitespace, shows its first colon as `<U+003A>`, and each `##[` shows its bracket as `<U+005B>`.
+- **stderr**: every line that carries text from outside the CLI passes through `inertLine`: the `warning:` lines, the banner, the progress lines and the `Error:` lines. The usage text and `empty diff: nothing to review` are constants, and the CLI writes them as they are. A hidden character is shown as `<U+XXXX>`, with its code point in upper-case hexadecimal, four digits at least, and a character above U+FFFF as one label. So a line holds no line break of its own and starts no escape sequence, and no character of the class reorders or hides its text. A line that would start with `::`, after any leading whitespace, shows its first colon as `<U+003A>`, and each `##[` shows its bracket as `<U+005B>`.
 - **Errors**: a configuration error keeps one issue per line, each line inert. Any other error is one line, so a line break in a file name, or in text a server sent, cannot start a line of its own.
 
 ### An example
@@ -38,7 +38,7 @@ A server answers HTTP 500 with a body that holds a C1 control, a right-to-left o
 
 ```text
 flag: hidden-characters at "a.js":1 (U+202E on 1 added line(s))
-Error: research: HTTP 500: "boom <U+009B>2J <U+202E> \u001b]8;;x\u0007 <U+2028> end"
+Error: default: HTTP 500: "boom <U+009B>2J <U+202E> \u001b]8;;x\u0007 <U+2028> end"
 ```
 
 The escape character and the bell arrive as `\u001b` and `\u0007` text, not as characters, because the snippet of the body is a JSON string: `JSON.stringify` has already escaped them. The three characters it leaves raw, U+009B, U+202E and U+2028, `inertLine` shows as labels.
