@@ -7,7 +7,7 @@ import { generateContentResponse } from '../testing/fixtures/gemini.ts'
 import { chatResponse } from '../testing/fixtures/ollama.ts'
 import { chatCompletion } from '../testing/fixtures/openai-compatible.ts'
 import { sent, stubFetch } from '../testing/http.ts'
-import { buildProvider } from './build.ts'
+import { buildProvider, isClaudeCode } from './build.ts'
 import type { BuildContext, ProviderSpec } from './build.ts'
 import { claudeCode } from './claude-code.ts'
 import { CONTEXT_REQUIRED } from './options.ts'
@@ -432,6 +432,37 @@ describe('a claude-code provider', () => {
     } finally {
       delete proto.env
     }
+  })
+
+  it('reads the spec\'s own `command` and `args` only: a polluted Object.prototype gives the adapter neither, and an HTTP spec is not refused for them', () => {
+    const proto = Object.prototype as Record<string, unknown>
+    proto.command = '/tmp/planted/claude'
+    proto.args = ['--tools=Bash']
+    try {
+      expect(Object.keys(handedOver(cc))).toEqual(['id', 'model', 'contextTokens'])
+      expect(issuesOf({ id: 'p', protocol: 'ollama', baseUrl: 'http://localhost:11434', model: 'm', contextTokens: 131072 })).toEqual([])
+    } finally {
+      delete proto.command
+      delete proto.args
+    }
+  })
+
+  it('repeats no value of a command it refuses, nor of an apiKey under a mode that would never send it', () => {
+    const issues = [
+      ...issuesOf({ ...cc, command: './zz-secret/claude' }),
+      ...issuesOf({ ...cc, apiKey: 'sk-zz-secret' }),
+      ...issuesOf({ ...cc, auth: 'login', apiKey: 'sk-zz-secret' }),
+    ]
+    expect(issues).toEqual([
+      { path: 'p.command', message: 'must be an absolute path, or a name to find on PATH' },
+      { path: 'p.apiKey', message: 'is set, but auth is not api-key, so it would never be sent' },
+      { path: 'p.apiKey', message: 'is set, but auth is not api-key, so it would never be sent' },
+    ])
+    expect(JSON.stringify(issues)).not.toContain('secret')
+  })
+
+  it('names the protocol with one predicate', () => {
+    expect([isClaudeCode('claude-code'), isClaudeCode('ollama'), isClaudeCode(undefined), isClaudeCode(['claude-code'])]).toEqual([true, false, false, false])
   })
 
   it.each<[string, Record<string, unknown>, ConfigIssue[]]>([

@@ -45,6 +45,16 @@ describe('findCommand', () => {
     expect(findCommand('claude', { PATH: win }, 'win32')).toBe(join(win, 'claude.exe'))
   })
 
+  it('refuses a name with a separator that is not an absolute path, and a Windows script, itself', () => {
+    writeFileSync(join(bin, 'claude.cmd'), '#!/bin/sh\n')
+    chmodSync(join(bin, 'claude.cmd'), 0o755)
+    // Each of these exists under an absolute PATH entry, once joined to it.
+    expect(findCommand('bin/claude', { PATH: dir }, 'linux')).toBe(undefined)
+    expect(findCommand('../bin/claude', { PATH: bin }, 'linux')).toBe(undefined)
+    expect(findCommand('claude.cmd', { PATH: bin }, 'linux')).toBe(undefined)
+    expect(findCommand('claude', { PATH: bin }, 'linux')).toBe(join(bin, 'claude'))
+  })
+
   it('finds no name without PATH', () => {
     expect(findCommand('claude', {}, 'linux')).toBeUndefined()
   })
