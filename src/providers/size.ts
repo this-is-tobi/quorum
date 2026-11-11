@@ -37,14 +37,27 @@ export function utf8Length(text: string): number {
 }
 
 /**
- * An upper bound of the tokens in the text of a request: one per UTF-8 byte of the system text, of every
- * message, and of the reply schema's JSON. A byte-level BPE or a byte-fallback SentencePiece tokenizer
- * never makes more than one token of a byte, so the count holds for any text, however it is padded. The
- * schema counts once more than the body carries it, since a server may add it to the prompt.
+ * The most UTF-8 bytes `text` takes as sent, in NFC, or in NFKC. A tokenizer may normalize with NFC or NFKC
+ * before its byte-level merges, which can lengthen the text: NFC turns U+0F81 from 3 bytes into 6, NFKC turns
+ * U+FDFA from 3 bytes into 33. Every text is normalized, ASCII included: 16 MiB takes about 16 ms.
+ */
+function normalizedLength(text: string): number {
+  return Math.max(utf8Length(text), utf8Length(text.normalize('NFC')), utf8Length(text.normalize('NFKC')))
+}
+
+/**
+ * A bound of the tokens in the text of a request: one per UTF-8 byte of the system text, of every message,
+ * and of the reply schema's JSON, each counted at the largest of its raw, NFC and NFKC lengths. One token
+ * per byte bounds a byte-level BPE or a byte-fallback SentencePiece tokenizer, since every byte is in its
+ * base vocabulary and a merge only joins bytes. Counting the NFC and NFKC forms covers one that normalizes
+ * with either first: Qwen 2.5's NFC normalizer turns 300 bytes of U+0F81 into 500 tokens, which is why both
+ * are counted. One that decomposes (NFD, NFKD) or folds case is not covered; no chat model's tokenizer is
+ * known to do either. The schema counts once more than the body carries it, since a server may add it to
+ * the prompt.
  */
 export function textTokens(shaped: ShapedMessages, output: CompletionRequest['output']): number {
   const texts = [shaped.system ?? '', ...shaped.messages.map(message => message.content), JSON.stringify(output.schema)]
-  return texts.reduce((sum, text) => sum + utf8Length(text), 0)
+  return texts.reduce((sum, text) => sum + normalizedLength(text), 0)
 }
 
 /**
