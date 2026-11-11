@@ -130,7 +130,7 @@ The profiles that run are the ones `--profile` names, else the ones `QUORUM_PROF
 - **The research variables** set the provider `roles.research` names. A voter or a lens that shares that provider inherits what they set, and the `QUORUM_RESEARCH_*` variables never fall back to the voter ones.
 - **The voter variables** set the provider `roles.voter` names when it is another provider than the finder's. When the panel shares the finder's provider, they derive a provider of their own: [The voter's fallback](#the-voters-fallback).
 - **The deprecated aliases** still work, with one `warning:` line that names every alias that is set and the variable to set instead, such as `RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead`. When both forms are set, the `QUORUM_` one wins. A preset and a protocol have no alias.
-- **A preset or a protocol variable builds the role's provider afresh.** `QUORUM_RESEARCH_PRESET=anthropic` is not merged into a provider whose protocol it would contradict: the finder's provider is then a provider of that preset, from the role's variables alone. A base URL, a model and a key variable alone override the fields of the provider they reach.
+- **A preset or a protocol variable builds the role's provider afresh.** `QUORUM_RESEARCH_PRESET=anthropic` is not merged into a provider whose protocol it would contradict: the finder's provider is then a provider of that preset, from the role's variables alone. A base URL, a model, a context size and a key variable alone override the fields of the provider they reach.
 - **A context size belongs to one model on one endpoint.** A role's preset, protocol, base URL or model variable drops the context size of the provider it sets, unless `QUORUM_<ROLE>_CONTEXT_TOKENS` sets one; a key variable alone keeps it.
 - **Every value is trimmed, and a blank one is unset**, so a variable that is empty or only whitespace never counts as a value.
 - **A `QUORUM_` variable that quorum does not read** is one `warning:` line, `QUORUM_PROFILE is not a variable quorum reads`, which names every such variable, sorted, so a typo shows. No value is ever printed.
@@ -159,9 +159,9 @@ When the panel shares the finder's provider and a voter variable is set, the vot
 | Another origin, or no `http(s)` origin | `QUORUM_VOTER_BASE_URL` | `QUORUM_VOTER_API_KEY`, else no key: a preset's own variable is not read | `QUORUM_VOTER_MODEL`, which is then required | `QUORUM_VOTER_CONTEXT_TOKENS` only | `apiKeyEnv`, `headers`, `query`, `extraBody` and the model are dropped; the preset, protocol, `auth`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt` are kept |
 | `QUORUM_VOTER_PRESET` or `QUORUM_VOTER_PROTOCOL` is set | Its own, or the preset's | `QUORUM_VOTER_API_KEY`, else the preset's own variable at the preset's origin | `QUORUM_VOTER_MODEL`, which is then required | `QUORUM_VOTER_CONTEXT_TOKENS` only | None: the provider is built from the voter variables alone |
 
-The deprecated `VOTER_BASE_URL`, `VOTER_API_KEY` and `VOTER_MODEL` fall back the same way, as `QUORUM_VOTER_*`. When `roles.voter` names another provider than the finder's, the voter variables set that provider's fields as the research variables set the finder's, and nothing falls back.
+The deprecated `VOTER_BASE_URL`, `VOTER_API_KEY` and `VOTER_MODEL` fall back the same way, as `QUORUM_VOTER_*`. When `roles.voter` names another provider than the finder's, the voter variables set that provider's fields as the research variables set the finder's, and nothing falls back. A config that already defines a provider named `voter` cannot have one derived over it: rename it.
 
-The voter never inherits the finder's context size for another model or another endpoint. A context size describes one model on one endpoint, so a voter variable that names a model, a base URL, a preset or a protocol leaves the voter without one until `QUORUM_VOTER_CONTEXT_TOKENS` sets it: the finder's window means nothing for a model that is not the finder's. A config that already defines a provider named `voter` cannot have one derived over it: rename it.
+The voter never inherits the finder's context size for another model or another endpoint. A context size describes one model on one endpoint, so a voter variable that names a model, a base URL, a preset or a protocol leaves the voter without one until `QUORUM_VOTER_CONTEXT_TOKENS` sets it: the finder's window means nothing for a model that is not the finder's.
 
 The origin is the scheme, the host and the port, compared once both URLs are parsed. Letter case, a default port written out (`:443` on `https`), one trailing dot after the host (`h.example.` is `h.example`) and the path never make another origin, so a gateway that serves several paths on one origin shares its key. `http` against `https`, or another port, does, so a fallback never carries a key from an encrypted connection to a cleartext one. A value without an `http(s)` origin, such as `localhost:11434/v1` without its scheme, or one that does not parse as a URL, inherits nothing, and then fails the base URL check: [Configuration errors](#configuration-errors).
 
@@ -182,6 +182,54 @@ A provider's context size comes from, in this order:
 A context size belongs to one model on one endpoint, so it never crosses to another: a role's variables that name a preset, a protocol, a base URL or a model drop the context size of the provider they set, unless they set one, and the derived voter does not inherit the finder's for another model or endpoint ([The voter's fallback](#the-voters-fallback)). A key variable alone keeps it.
 
 [`--print-config`](./10-cli.md#printing-the-resolved-config) shows each provider's `contextTokens` after its `model`.
+
+### Finding the number
+
+The number is the window the server gives the model, which can be less than the model's maximum. Where to read it:
+
+- **Ollama** picks 4096, 32768 or 262144 tokens by the GPUs' memory, unless `OLLAMA_CONTEXT_LENGTH` or a Modelfile's `num_ctx` says otherwise, and `ollama ps` shows the loaded one in its `CONTEXT` column once the model has run. The `ollama` preset sends `num_ctx` itself, so its context is the one you state, capped by the model's own maximum, which `ollama show <model>` prints. On Ollama's `/v1`, the built-in provider's endpoint, quorum cannot set it: set `OLLAMA_CONTEXT_LENGTH` on the server to at least `contextTokens`.
+- **llama.cpp** serves the context its `-c` option sets, which `/props` reports as `n_ctx`.
+- **vLLM** serves what its `--max-model-len` option sets.
+- **LM Studio** serves the context length the model is loaded with, not the maximum it supports: its documentation shows a model loaded with 4096 tokens of the 262144 it takes.
+- **A hosted API** states it on the model's page or on its models endpoint: `max_input_tokens` for Anthropic, `inputTokenLimit` for Gemini, `max_context_length` for Mistral, `context_length` for OpenRouter.
+- **An Azure deployment** has its own limit, which can differ from the documented one of its model.
+
+A number above the real window defeats the guard, which counts against the number it is given. An endpoint that cuts a prompt in silence, Ollama's `/v1` or an OpenRouter endpoint of 8192 tokens or less among them, then answers as if it had read all of it. When in doubt, state the smaller number.
+
+### What it counts, and what it costs
+
+A request is counted at one token per byte of what it carries, each text at the largest of its raw, NFC and NFKC UTF-8 lengths, so that a tokenizer that normalizes first stays bounded. The count adds 512 tokens for the chat template and the reply budget, `maxTokens` else 16000, and the request is sent only when the sum is at most `contextTokens`: [The size of a request](./30-providers.md#the-size-of-a-request) has the rule and the message of a refusal. A tokenizer that decomposes (NFD, NFKD) or folds case is not covered, and no chat model's tokenizer is known to do either.
+
+One token per byte is the price of a bound that holds for every tokenizer checked. Code runs about 3.5 bytes per token, so the guard accepts about a third of the diff that would really fit. The diff that a research request of the `security` profile leaves room for, as ASCII text with no guidelines and `maxTokens` unset:
+
+| `contextTokens` | The largest diff, in bytes |
+| --- | --- |
+| `32768` | 14,757 |
+| `65536` | 47,525 |
+| `131072` | 113,061 |
+| `200000` | 181,989 |
+| `1000000` | 981,989 |
+
+Each row is `contextTokens` less 18,011: 1,499 bytes of instructions, fences and reply schema, 512 tokens for the chat template and 16,000 for the reply. `maxTokens: 4096` adds 11,904 bytes to each row, and the guidelines of a profile take room of their own. A vote request carries the diff section of the cited file (the whole diff when the file has no section of its own), up to five lines of evidence and the claim, and reserves the same reply budget, so a diff of one file that barely fits its research request can have its votes refused. A panel on a smaller model refuses sooner.
+
+### Raising the limit knowingly
+
+To review a larger diff, change what is true and state it, not what is counted:
+
+- **Give the model a larger window on the server, and state it.** Raise `OLLAMA_CONTEXT_LENGTH`, llama.cpp's `-c`, vLLM's `--max-model-len` or the context length LM Studio loads, then set `contextTokens` to the number the server really loads. A larger window costs the server memory.
+- **Lower `maxTokens`** to what the model needs to answer. The server then stops the reply there, and the reserve shrinks with it: 4096 leaves 11,904 bytes more. A thinking model needs more, and a reply cut off at the limit is a failed call, not a shorter review. `maxTokens` is the one setting of the reply limit: `extraBody` cannot set `max_tokens` or its equivalents ([The size of a request](./30-providers.md#the-size-of-a-request)).
+- **Review fewer commits at once.** Quorum does not split or filter a diff that does not fit: it refuses the request.
+
+Two other ways are not offered, because each reopens the padding attack that [The size guard](../30-security/10-threat-model.md#the-size-guard) describes:
+
+- **A bytes-per-token ratio.** Encoded content, such as base64, hex, CJK text or emoji, takes 1 to 1.5 bytes per token, so a pull request could pad past any ratio above one.
+- **Lifting the gap with `--allow-incomplete`.** It would let the same padding through for a gating profile.
+
+Counting with a vendor's own tokenizer, and reading the window from the endpoint, are not done today. Either could only lower what is accepted, never raise the window past the number you state.
+
+### What happens
+
+A refused research request leaves its profile with no finding and a `request-too-large` gap, and the other profiles run. A refused vote is a failed vote ([Failed votes](./50-lenses-and-policy.md#failed-votes)), and its finding records a `request-too-large` gap as well: the finding is `unreviewed`, or kept, with the gap. A gating profile with such a gap exits `4`, even with `--allow-incomplete`, unless it also kept a `high` finding, which exits `1`; the gap of an advisory profile changes no code. The result says what was not sent: [Incomplete reasons](../95-reference/20-json-result.md#incomplete-reasons). A provider with no context size is a configuration error, exit `2`, before any request.
 
 ## Keys
 

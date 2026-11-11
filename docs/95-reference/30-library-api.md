@@ -229,7 +229,7 @@ for (const warning of quorum.warnings) console.error(inertLine(`warning: ${warni
 const result = await quorum.review({ diff })
 ```
 
-`fromConfig({}, { env: process.env })` needs no file: the environment alone names a provider and a model. The CLI and `runQuorum` read the `QUORUM_*` variables, with the deprecated `RESEARCH_*` and `VOTER_*` aliases, and the file `QUORUM_CONFIG` names through these two functions.
+`fromConfig({}, { env: process.env })` needs no file: the environment alone names a provider, a model and the model's context size, with `QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS`. The CLI and `runQuorum` read the `QUORUM_*` variables, with the deprecated `RESEARCH_*` and `VOTER_*` aliases, and the file `QUORUM_CONFIG` names through these two functions.
 
 - **`options.cwd`** is the directory a relative `configPath` resolves against, the working directory by default. `source` is the absolute path of the file read, and `undefined` when none was.
 - **`QUORUM_CONFIG` must be an absolute path.** A relative one is refused with a `ConfigError` holding the issue `QUORUM_CONFIG: must be an absolute path`, whether or not `configPath` is given: a variable set once would resolve inside whatever directory the process runs in, and in CI that is a pull request's checkout, which could plant the file. A `configPath` is named per call, so it may be relative.
