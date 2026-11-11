@@ -1,6 +1,6 @@
 /** Test helpers for the claude-code adapter's specs: the fake `claude` and what it recorded. */
 
-import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -21,6 +21,14 @@ export interface FakeRecord {
   tmpExists: boolean
   /** The pid of the process `FAKE_CLAUDE_GRANDCHILD=1` started, in the fake's own process group. */
   grandchild: number | undefined
+}
+
+/** What the fake `claude` wrote of one `--version` run. */
+export interface VersionRecord {
+  argv: string[]
+  env: Record<string, string>
+  cwd: string
+  cwdEntries: string[]
 }
 
 const FAKE_CLAUDE = fileURLToPath(new URL('fake-claude.mjs', import.meta.url))
@@ -54,6 +62,13 @@ export function fakeClaudeEnv(dir: string, name: string, stdout: string, extra: 
 /** What the fake recorded of the run `name`. */
 export function readFakeRecord(dir: string, name: string): FakeRecord {
   return JSON.parse(readFileSync(join(dir, `${name}.record.json`), 'utf8')) as FakeRecord
+}
+
+/** What the fake recorded of each `claude --version` run of `name`, in order: none when the run was never checked. */
+export function readFakeVersionRecords(dir: string, name: string): VersionRecord[] {
+  const file = join(dir, `${name}.record.json.version`)
+  if (!existsSync(file)) return []
+  return readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line) as VersionRecord)
 }
 
 /** Whether a process with this pid is alive. A zombie, which an init that never reaps leaves behind, is not. */
