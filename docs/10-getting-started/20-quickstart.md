@@ -138,6 +138,7 @@ echo $code
 | `2` | A usage or configuration error: nothing was reviewed | Fail: fix the command or the variables |
 | `3` | The research call failed: nothing was reviewed | Fail: fix the endpoint, or run again |
 | `4` | The review is incomplete, and no gating profile kept a `high` finding | Fail: run again, or read the unreviewed findings and `meta.incomplete` |
+| `130` | The run was interrupted by SIGINT or SIGTERM: nothing was reviewed | Fail: the job was cancelled, run it again |
 
 This run exits `1`: it kept a `high` finding, and `1` wins over the `4` that its unreviewed finding and its unreadable one would otherwise give.
 
