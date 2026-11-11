@@ -59,6 +59,9 @@ The JSON result goes to stdout, and the exit code says what to do with it: `0` f
 - [Threat model](./docs/30-security/10-threat-model.md) *- The attacker, the assets, the residual risk stated plainly, the controls in place, and what the panel's independence is worth*
 - [Output handling](./docs/30-security/30-output-handling.md) *- What the CLI writes and how it is made inert, the advisory flags, and printing a review yourself*
 
+*Recipes*
+- [Local models](./docs/90-recipes/10-local-models.md) *- Ollama, vLLM and llama.cpp: the window each gives a request, choosing a model, and what reasoning mode does to a request*
+
 *Reference*
 - [Glossary](./docs/95-reference/10-glossary.md) *- The words these pages use in one particular way, and the acronyms they assume*
 - [The JSON result](./docs/95-reference/20-json-result.md) *- Every field of a result in the order it is written, the incomplete reasons, and an example*
