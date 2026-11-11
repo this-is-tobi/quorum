@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionResponse, Provider } from '../core/ports.ts'
@@ -352,5 +355,124 @@ describe('a selection of profiles', () => {
 
   it('still refuses a malformed QUORUM_PROFILES, before the selection\'s own issue', () => {
     expect(issuesOf(TWO, { ...MODEL, QUORUM_PROFILES: ',' }, select(['Bad']))).toEqual([{ path: 'QUORUM_PROFILES', message: PROFILES }, { path: '--profile', message: ID }])
+  })
+})
+
+describe('a claude-code provider', () => {
+  /** A directory of its own, made when the file loads and removed after the last test: two `claude` and an empty directory. */
+  const dir = mkdtempSync(join(tmpdir(), 'quorum-resolve-'))
+  const bin = join(dir, 'bin')
+  const other = join(dir, 'other')
+  const empty = join(dir, 'empty')
+  for (const folder of [bin, other, empty]) mkdirSync(folder)
+  for (const folder of [bin, other]) {
+    writeFileSync(join(folder, 'claude'), '#!/bin/sh\n')
+    chmodSync(join(folder, 'claude'), 0o755)
+  }
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const ENV = { QUORUM_RESEARCH_PROTOCOL: 'claude-code', QUORUM_RESEARCH_MODEL: 'sonnet', QUORUM_RESEARCH_CONTEXT_TOKENS: '1000000' }
+  const code = (fields: Record<string, unknown> = {}): ConfigInput => ({ providers: { cc: { protocol: 'claude-code', model: 'sonnet', contextTokens: 1000000, ...fields } } })
+
+  it('runs from the environment alone, with claude from PATH', () => {
+    expect(resolveConfig({}, { env: { ...ENV, PATH: bin } }).providers).toEqual({ default: { protocol: 'claude-code', model: 'sonnet', contextTokens: 1000000, command: join(bin, 'claude') } })
+  })
+
+  it('takes QUORUM_CLAUDE_CODE_COMMAND over a code config\'s command, and that over PATH', () => {
+    expect(resolveConfig(code({ command: join(other, 'claude') }), { env: { PATH: bin } }).providers.cc).toMatchObject({ command: join(other, 'claude') })
+    expect(resolveConfig(code({ command: join(other, 'claude') }), { env: { PATH: bin, QUORUM_CLAUDE_CODE_COMMAND: join(bin, 'claude') } }).providers.cc).toMatchObject({ command: join(bin, 'claude') })
+  })
+
+  it.each<[string, ConfigInput, Env, ConfigIssue]>([
+    ['claude on no PATH entry', code(), { PATH: empty }, { path: 'providers.cc', message: 'claude CLI not found; install Claude Code or set QUORUM_CLAUDE_CODE_COMMAND' }],
+    ['a QUORUM_CLAUDE_CODE_COMMAND that names no file', code(), { QUORUM_CLAUDE_CODE_COMMAND: join(empty, 'claude') }, { path: 'QUORUM_CLAUDE_CODE_COMMAND', message: 'names no executable file' }],
+    ['a command that names no file', code({ command: join(empty, 'claude') }), { PATH: bin }, { path: 'providers.cc.command', message: 'names no executable file' }],
+  ])('refuses %s, and repeats no path', (_, input, env, issue) => {
+    expect(issuesOf(input, env)).toEqual([issue])
+  })
+
+  it('leaves a command the adapter refuses to the adapter, which names it by its field', () => {
+    expect(issuesOf(code({ command: './claude' }), { PATH: bin })).toEqual([{ path: 'providers.cc.command', message: 'must be an absolute path, or a name to find on PATH' }])
+  })
+
+  it('looks claude up only for a provider a profile uses', () => {
+    const input: ConfigInput = { providers: { local: { protocol: 'openai-compatible', baseUrl: 'http://localhost:11434/v1', model: 'm', contextTokens: 131072 }, ...code().providers }, roles: { research: 'local' } }
+    expect(Object.keys(resolveConfig(input, { env: { PATH: empty } }).providers)).toEqual(['local'])
+  })
+
+  it('reads ANTHROPIC_API_KEY in api-key mode when apiKeyEnv is unset, and refuses the run without it', () => {
+    expect(resolveConfig(code({ auth: 'api-key' }), { env: { PATH: bin, ANTHROPIC_API_KEY: 'sk-k' } }).providers.cc).toMatchObject({ auth: 'api-key', apiKey: 'sk-k' })
+    expect(issuesOf(code({ auth: 'api-key' }), { PATH: bin })).toEqual([{ path: 'providers.cc', message: 'ANTHROPIC_API_KEY is not set' }])
+  })
+
+  it('reads the variable apiKeyEnv names in api-key mode, instead of ANTHROPIC_API_KEY', () => {
+    expect(resolveConfig(code({ auth: 'api-key', apiKeyEnv: 'TEAM_KEY' }), { env: { PATH: bin, TEAM_KEY: 'sk-team', ANTHROPIC_API_KEY: 'sk-k' } }).providers.cc).toMatchObject({ apiKey: 'sk-team' })
+    expect(issuesOf(code({ auth: 'api-key', apiKeyEnv: 'TEAM_KEY' }), { PATH: bin, ANTHROPIC_API_KEY: 'sk-k' })).toEqual([{ path: 'providers.cc', message: 'TEAM_KEY is not set' }])
+  })
+
+  it('reads no key under inherit or login, whatever ANTHROPIC_API_KEY holds', () => {
+    for (const fields of [{}, { auth: 'inherit' }, { auth: 'login' }]) {
+      expect(resolveConfig(code(fields), { env: { PATH: bin, ANTHROPIC_API_KEY: 'sk-k' } }).providers.cc).not.toHaveProperty('apiKey')
+    }
+  })
+
+  it('warns that inherit bills ANTHROPIC_API_KEY when it is set, and login does not', () => {
+    expect(resolveConfig(code(), { env: { PATH: bin, ANTHROPIC_API_KEY: 'sk-k' } }).warnings).toEqual(['providers.cc: ANTHROPIC_API_KEY is set, so Claude Code bills that key rather than its login: unset it, or set auth to login or api-key'])
+    expect(resolveConfig(code({ auth: 'login' }), { env: { PATH: bin, ANTHROPIC_API_KEY: 'sk-k' } }).warnings).toEqual([])
+  })
+
+  it('warns about no provider a profile does not use, and about none without the key', () => {
+    const input: ConfigInput = { providers: { local: { protocol: 'openai-compatible', baseUrl: 'http://localhost:11434/v1', model: 'm', contextTokens: 131072 }, ...code().providers }, roles: { research: 'local' } }
+    expect(resolveConfig(input, { env: { PATH: bin, ANTHROPIC_API_KEY: 'sk-k' } }).warnings).toEqual([])
+    expect(resolveConfig(code(), { env: { PATH: bin } }).warnings).toEqual([])
+  })
+
+  it('prints no path, no PATH entry and no key in a warning or an issue', () => {
+    const text = JSON.stringify([
+      resolveConfig(code(), { env: { PATH: bin, ANTHROPIC_API_KEY: 'sk-SECRET' } }).warnings,
+      issuesOf(code(), { PATH: empty, ANTHROPIC_API_KEY: 'sk-SECRET' }),
+      issuesOf(code(), { QUORUM_CLAUDE_CODE_COMMAND: join(empty, 'claude'), PATH: bin }),
+      issuesOf(code({ command: join(empty, 'claude') }), { PATH: bin }),
+    ])
+    expect(text).not.toContain(dir)
+    expect(text).not.toContain('SECRET')
+  })
+
+  describe('as the voter the variables derive from a claude-code finder', () => {
+    const VOTER = { QUORUM_VOTER_MODEL: 'haiku', QUORUM_VOTER_CONTEXT_TOKENS: '1000000' }
+
+    it('is another endpoint, since the CLI has no base URL: it keeps the protocol, auth, args and command, and drops the key variable, the model and the context size', () => {
+      const finder = code({ auth: 'api-key', apiKeyEnv: 'FINDER_KEY', args: ['--effort', 'high'], command: join(other, 'claude') })
+      const { providers, profiles } = resolveConfig(finder, { env: { PATH: bin, FINDER_KEY: 'sk-finder', ANTHROPIC_API_KEY: 'sk-default', ...VOTER } })
+      expect(providers.cc).toEqual({ protocol: 'claude-code', command: join(other, 'claude'), model: 'sonnet', contextTokens: 1000000, auth: 'api-key', args: ['--effort', 'high'], apiKey: 'sk-finder' })
+      expect(providers.voter).toEqual({ protocol: 'claude-code', command: join(other, 'claude'), model: 'haiku', contextTokens: 1000000, auth: 'api-key', args: ['--effort', 'high'], apiKey: 'sk-default' })
+      expect(profiles.map(({ research, voters }) => [research, Object.values(voters)])).toEqual([['cc', ['voter', 'voter', 'voter']]])
+    })
+
+    it('works from the environment alone: QUORUM_VOTER_MODEL=haiku with QUORUM_VOTER_CONTEXT_TOKENS', () => {
+      const { providers } = resolveConfig({}, { env: { ...ENV, ...VOTER, PATH: bin } })
+      expect(providers).toEqual({
+        default: { protocol: 'claude-code', model: 'sonnet', contextTokens: 1000000, command: join(bin, 'claude') },
+        voter: { protocol: 'claude-code', model: 'haiku', contextTokens: 1000000, command: join(bin, 'claude') },
+      })
+    })
+
+    it('has no model of the finder\'s and no context size of its, so each is asked for at its variable', () => {
+      expect(issuesOf({}, { ...ENV, PATH: bin, QUORUM_VOTER_CONTEXT_TOKENS: '1000000' })).toEqual([{ path: 'QUORUM_VOTER_MODEL', message: VOTER_MODEL }])
+      expect(issuesOf({}, { ...ENV, PATH: bin, QUORUM_VOTER_MODEL: 'haiku' })).toEqual([{ path: 'QUORUM_VOTER_CONTEXT_TOKENS', message: 'must be set when the voter variables name a model or an endpoint: a context size belongs to one model on one endpoint' }])
+    })
+
+    it('names a command that is no executable once, at its variable, though both providers look it up', () => {
+      expect(issuesOf({}, { ...ENV, ...VOTER, QUORUM_CLAUDE_CODE_COMMAND: join(empty, 'claude') })).toEqual([{ path: 'QUORUM_CLAUDE_CODE_COMMAND', message: 'names no executable file' }])
+    })
+
+    it('names a claude that is on no PATH entry at each provider', () => {
+      expect(issuesOf({}, { ...ENV, ...VOTER, PATH: empty })).toEqual([
+        { path: 'providers.default', message: 'claude CLI not found; install Claude Code or set QUORUM_CLAUDE_CODE_COMMAND' },
+        { path: 'providers.voter', message: 'claude CLI not found; install Claude Code or set QUORUM_CLAUDE_CODE_COMMAND' },
+      ])
+    })
   })
 })

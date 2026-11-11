@@ -39,17 +39,21 @@ function systemPromptView(value: unknown): string | undefined {
 
 /**
  * A provider defined as data, field by field: a field of a spec that is not listed here prints nothing.
- * `undefined` leaves a field out, as `stringify` keeps no `undefined` value.
+ * `undefined` leaves a field out, as `stringify` keeps no `undefined` value. A `claude-code` provider has
+ * no origin and runs a `command` and `args`, and its `auth` is `inherit` when it sets none, as it runs.
  */
 function specView(spec: ProviderSpec): Record<string, unknown> {
+  const cli = own(spec, 'protocol') === 'claude-code'
   return {
     preset: own(spec, 'preset'),
     protocol: own(spec, 'protocol'),
-    origin: providerOrigin(spec),
+    command: own(spec, 'command'),
+    origin: cli ? undefined : providerOrigin(spec),
     model: own(spec, 'model'),
     contextTokens: own(spec, 'contextTokens'),
     apiKey: own(spec, 'apiKey') === undefined ? undefined : REDACTED,
-    auth: authView(own(spec, 'auth')),
+    auth: authView(own(spec, 'auth') ?? (cli ? 'inherit' : undefined)),
+    args: own(spec, 'args'),
     headers: redactedValues(own(spec, 'headers')),
     query: redactedValues(own(spec, 'query')),
     extraBody: redactedValues(own(spec, 'extraBody')),
@@ -82,8 +86,10 @@ function profileView({ profile, research, voters }: ResolvedProfile): Record<str
  * The resolved config as the YAML `--print-config` writes, for a CI log that anyone can read: the file it
  * came from (`null` for none), the providers, the profiles that run, the limits the review applies, and
  * the warnings. A key and every value of `headers`, `query` and `extraBody` print as `[redacted]`, a base
- * URL as its origin, and a prompt as its SHA-256. The view is an allowlist, so a field added to the config
- * prints nothing until it is added here on purpose.
+ * URL as its origin, and a prompt as its SHA-256. A `claude-code` provider prints its protocol, command,
+ * model, context size, key (redacted), auth mode and args, and no origin: the command and the args are the
+ * user's own config. The view is an allowlist, so a field added to the config prints nothing until it is
+ * added here on purpose.
  *
  * The text ends with a newline, and each line passes through `inertLine`. It is YAML 1.1, so a reader of
  * that version reads `off` as a string, and no line folds.

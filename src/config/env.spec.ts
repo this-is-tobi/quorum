@@ -151,6 +151,28 @@ describe('the variables quorum does not read', () => {
   })
 })
 
+describe('the QUORUM_CLAUDE_CODE_COMMAND variable', () => {
+  it('reads it, trimmed, and warns about it no longer', () => {
+    expect(readEnv({ QUORUM_CLAUDE_CODE_COMMAND: ' /opt/claude/bin/claude ' })).toEqual({ research: {}, voter: {}, claudeCodeCommand: '/opt/claude/bin/claude', warnings: [], issues: [] })
+    expect(readEnv({ QUORUM_CLAUDE_CODE_COMMAND: 'claude' }).claudeCodeCommand).toBe('claude')
+  })
+
+  it('reads a blank variable as unset', () => {
+    expect(readEnv({ QUORUM_CLAUDE_CODE_COMMAND: '  ' })).not.toHaveProperty('claudeCodeCommand')
+  })
+
+  it.each<[string, string]>([
+    ['./claude', 'must be an absolute path, or a name to find on PATH'],
+    ['bin/claude', 'must be an absolute path, or a name to find on PATH'],
+    ['claude.cmd', 'is a Windows script, which runs only through a shell: name claude.exe instead'],
+    ['/opt/claude/claude.BAT', 'is a Windows script, which runs only through a shell: name claude.exe instead'],
+  ])('refuses %j at the variable, repeating no value', (value, message) => {
+    const layer = readEnv({ QUORUM_CLAUDE_CODE_COMMAND: value })
+    expect(layer.issues).toEqual([{ path: 'QUORUM_CLAUDE_CODE_COMMAND', message }])
+    expect(layer).not.toHaveProperty('claudeCodeCommand')
+  })
+})
+
 describe('baseUrlOf', () => {
   it('reads the base URL and the preset of settings as their own fields, never what a polluted Object.prototype holds', () => {
     const proto = Object.prototype as Record<string, unknown>
