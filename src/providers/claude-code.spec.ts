@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ProviderError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import * as fixtures from '../testing/fixtures/claude-code.ts'
@@ -8,6 +8,15 @@ import { CONTEXT_REQUIRED } from './options.ts'
 
 const options: ClaudeCodeOptions = { id: 'cc', model: 'sonnet', contextTokens: 200000 }
 const ISOLATED = ['--tools', '', '--setting-sources', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands']
+
+/** A list with a hole at 0: `[ , '--effort', 'low']`, which `every` and `map` skip. */
+function sparseArgs(): unknown[] {
+  const args = Array.from<unknown>({ length: 3 })
+  delete args[0]
+  args[1] = '--effort'
+  args[2] = 'low'
+  return args
+}
 
 /** The error `run` throws, for `toMatchObject`. */
 function failure(run: () => unknown): ProviderError {
@@ -49,10 +58,25 @@ describe('claudeArgs', () => {
     const args = ['--tools=Bash', '--effort=low', '--effort', 'high', '--betas', 'context-1m', '--fallback-model', '-x', '--max-budget-usd=0.05', '--mcp-config', 'x.json']
     expect(claudeArgs({ model: 'sonnet', auth: 'login', structuredOutput: 'prompt', args }, '/run/system.txt', { type: 'object' }).slice(11)).toEqual(['--effort=low', '--max-budget-usd=0.05'])
   })
+
+  it('does not throw on a sparse list or an element that is no string, and passes none of them', () => {
+    const settings = (args: unknown[]) => ({ model: 'sonnet', auth: 'login' as const, structuredOutput: 'prompt' as const, args: args as string[] })
+    expect(claudeArgs(settings(sparseArgs()), '/run/system.txt', { type: 'object' }).slice(11)).toEqual(['--effort=low'])
+    expect(claudeArgs(settings([7, '--effort', 'low', '--fallback-model', null, '--max-budget-usd', {}]), '/run/system.txt', { type: 'object' }).slice(11)).toEqual(['--effort=low'])
+  })
 })
 
 describe('childEnv', () => {
-  const KEPT = { PATH: '/usr/bin', HOME: '/home/u', HTTPS_PROXY: 'http://proxy:3128', CLAUDE_CODE_OAUTH_TOKEN: 'oauth', CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1' }
+  const KEPT = {
+    PATH: '/usr/bin',
+    HOME: '/home/u',
+    HTTPS_PROXY: 'http://proxy:3128',
+    CLAUDE_CODE_OAUTH_TOKEN: 'oauth',
+    CLAUDECODE: '1',
+    CLAUDE_CODE_CHILD_SESSION: '1',
+    ANTHROPIC_BETAS: 'context-1m-2025-08-07',
+    CLAUDE_CONFIG_DIR: '/home/u/.claude-work',
+  }
   const CREDENTIALS = {
     ANTHROPIC_API_KEY: 'sk-env',
     ANTHROPIC_AUTH_TOKEN: 'tok',
@@ -72,10 +96,24 @@ describe('childEnv', () => {
     CLAUDE_CODE_EMIT_STARTUP_TIMING: '1',
     CLAUDE_CODE_STARTUP_FAILURE_RESULTS: '1',
   }
-  const env = { ...KEPT, ...CREDENTIALS, ...SESSION, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0', DISABLE_COMPACT: '0', CLAUDE_CODE_TMPDIR: '/elsewhere', UNSET: undefined }
+  /** What loads plugins, skills, tools or a launcher, or adds to the request body, in any mode. */
+  const CAPABILITIES = {
+    CLAUDE_CODE_PLUGIN_DIRS: '/plugins',
+    CLAUDE_CODE_PLUGIN_SEED_DIR: '/seed',
+    CLAUDE_CODE_PLUGIN_CACHE_DIR: '/cache',
+    CLAUDE_CODE_SYNC_PLUGINS: '1',
+    CLAUDE_CODE_SYNC_SKILLS: '1',
+    CLAUDE_CODE_PROCESS_WRAPPER: '/launcher',
+    CLAUDE_CODE_ENABLE_CFC: '1',
+    CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
+    CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+    CLAUDE_CODE_USE_POWERSHELL_TOOL: '1',
+    CLAUDE_CODE_EXTRA_BODY: '{"tools":[]}',
+  }
+  const env = { ...KEPT, ...CREDENTIALS, ...SESSION, ...CAPABILITIES, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0', DISABLE_COMPACT: '0', CLAUDE_CODE_TMPDIR: '/elsewhere', UNSET: undefined }
   const ISOLATION = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', DISABLE_COMPACT: '1', CLAUDE_CODE_TMPDIR: '/run/tmp' }
 
-  it('passes the environment through under inherit, without the parent session\'s variables, and with the isolation set', () => {
+  it('passes the environment through under inherit, without the parent session\'s variables or what loads or adds, and with the isolation set', () => {
     expect(childEnv(env, 'inherit', undefined, '/run/tmp')).toEqual({ ...KEPT, ...CREDENTIALS, ...ISOLATION })
   })
 
@@ -91,6 +129,21 @@ describe('childEnv', () => {
     expect(childEnv(env, 'api-key', undefined, '/run/tmp')).toEqual({ ...KEPT, ...ISOLATION, ANTHROPIC_API_KEY: 'sk-env' })
   })
 
+  it('matches names in any letter case, as Windows reads them', () => {
+    const mixed = {
+      PATH: '/usr/bin',
+      Anthropic_Api_Key: 'sk-win',
+      claude_code_use_bedrock: '1',
+      Claude_Code_Plugin_Dirs: '/p',
+      claude_code_messaging_token: 'parent-secret',
+      claude_code_tmpdir: '/elsewhere',
+      Disable_Compact: '0',
+    }
+    expect(childEnv(mixed, 'login', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', ...ISOLATION })
+    expect(childEnv(mixed, 'api-key', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', ...ISOLATION, ANTHROPIC_API_KEY: 'sk-win' })
+    expect(childEnv(mixed, 'inherit', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', Anthropic_Api_Key: 'sk-win', claude_code_use_bedrock: '1', ...ISOLATION })
+  })
+
   it('reads only the environment\'s own variables', () => {
     expect(childEnv(Object.create({ ANTHROPIC_API_KEY: 'inherited' }) as Record<string, string>, 'inherit', undefined, '/t')).toEqual({ CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', DISABLE_COMPACT: '1', CLAUDE_CODE_TMPDIR: '/t' })
   })
@@ -104,11 +157,14 @@ describe('claudeCodeIssues', () => {
   const SCRIPT = 'is a Windows script, which runs only through a shell: name claude.exe instead'
   const MODEL = 'must be a model id of visible ASCII characters, with no space, that does not start with -'
   const NOT_AN_OPTION = 'is not an option of the claude-code protocol'
+  const NOT_A_STRING = 'must be a string'
+  const BUDGET = 'must be a positive number of dollars, such as 0.50'
 
   it('takes the defaults, every auth mode and every allowlisted flag', () => {
     expect(issuesOf({})).toEqual([])
     expect(issuesOf({ auth: 'login', command: 'claude' })).toEqual([])
     expect(issuesOf({ auth: 'api-key', apiKey: 'sk-k', structuredOutput: 'prompt', args: ['--effort', 'max', '--fallback-model=haiku', '--max-budget-usd', '0.50', '--betas', 'context-1m'], command: '/opt/claude/bin/claude' })).toEqual([])
+    expect(issuesOf({ args: ['--max-budget-usd=99999999.999'] })).toEqual([])
   })
 
   it.each<[Record<string, unknown>, ConfigIssue[]]>([
@@ -125,8 +181,14 @@ describe('claudeCodeIssues', () => {
     [{ args: ['--effort'] }, [at('args.0', 'needs a value')]],
     [{ args: ['--effort', 'turbo'] }, [at('args.1', 'must be low, medium, high, xhigh or max')]],
     [{ args: ['--effort=high --tools=Bash'] }, [at('args.0', 'must be low, medium, high, xhigh or max')]],
-    [{ args: ['--max-budget-usd', '0'] }, [at('args.1', 'must be a positive number of dollars, such as 0.50')]],
+    [{ args: ['--max-budget-usd', '0'] }, [at('args.1', BUDGET)]],
     [{ args: ['--fallback-model', '--tools'] }, [at('args.1', 'must be visible ASCII characters that do not start with -')]],
+    [{ args: sparseArgs() }, [at('args.0', NOT_A_STRING)]],
+    [{ args: [7, '--effort', 'low'] }, [at('args.0', NOT_A_STRING)]],
+    [{ args: ['--effort', 7] }, [at('args.1', NOT_A_STRING)]],
+    [{ args: ['--effort', undefined] }, [at('args.1', NOT_A_STRING)]],
+    [{ args: ['--max-budget-usd', '9'.repeat(13)] }, [at('args.1', BUDGET)]],
+    [{ args: ['--max-budget-usd=99999999.9999'] }, [at('args.0', BUDGET)]],
     [{ args: ['--effort', 'low', '--effort', 'high'] }, [at('args.2', 'repeats a flag')]],
     [{ args: ['--betas', 'context-1m'] }, [at('args.0', 'is only for auth: api-key')]],
     [{ command: '' }, [at('command', 'must name an executable')]],
@@ -149,6 +211,8 @@ describe('claudeCodeIssues', () => {
 })
 
 describe('readResult', () => {
+  /** `stdout` with `fields` set over its result; a field set to `undefined` drops out. */
+  const change = (stdout: string, fields: Record<string, unknown>): string => `${JSON.stringify({ ...JSON.parse(stdout), ...fields })}\n`
   const read = (stdout: string, run: { code?: number | null, stderr?: string, signal?: string | null, structuredOutput?: 'prompt' | 'schema', redact?: string[] } = {}) =>
     readResult({ stdout, stderr: run.stderr ?? '', code: run.code === undefined ? 0 : run.code, signal: run.signal ?? null }, { id: 'cc', model: 'sonnet', structuredOutput: run.structuredOutput ?? 'schema', redact: run.redact ?? [] })
 
@@ -193,13 +257,85 @@ describe('readResult', () => {
     expect(failure(() => read(fixtures.schema, { code: 1 }))).toMatchObject({ kind: 'process', status: 1, message: 'cc: claude exited 1 after its result' })
   })
 
+  it('fails a success result from a child that a signal ended, naming the signal', () => {
+    expect(failure(() => read(fixtures.schema, { code: null, signal: 'SIGKILL' }))).toMatchObject({ kind: 'process', status: undefined, message: 'cc: claude was stopped by SIGKILL after its result' })
+    expect(failure(() => read(fixtures.schema, { code: null, signal: 'sig kill sk-SECRET' }))).toMatchObject({ kind: 'process', message: 'cc: claude was stopped by a signal after its result' })
+  })
+
+  it('reads a result as too long from its text alone, only when it reports an error', () => {
+    const tooLong = change(fixtures.unknownModel, { api_error_status: 400, terminal_reason: 'api_error', result: 'Prompt is too long: 250000 tokens > 200000 maximum' })
+    expect(failure(() => read(tooLong, { code: 1 }))).toMatchObject({ kind: 'too-large' })
+    expect(read(change(fixtures.plain, { result: 'Prompt is too long' }), { structuredOutput: 'prompt' })).toMatchObject({ text: 'Prompt is too long' })
+  })
+
+  it('fails a reply whose model usage counts a web search, or whose usage counts a web fetch', () => {
+    const entry = Object.values(JSON.parse(fixtures.plain).modelUsage)[0] as Record<string, unknown>
+    const search = change(fixtures.plain, { modelUsage: { 'claude-haiku-5-5': { ...entry, webSearchRequests: 2 } } })
+    const fetched = change(fixtures.plain, { usage: { ...JSON.parse(fixtures.plain).usage, server_tool_use: { web_search_requests: 0, web_fetch_requests: 1 } } })
+    for (const stdout of [search, fetched]) {
+      expect(failure(() => read(stdout, { structuredOutput: 'prompt' }))).toMatchObject({ kind: 'invalid-response', message: 'cc: the server ran a tool for this reply, which quorum never allows' })
+    }
+  })
+
+  it('fails a prompt run with no text, and a schema run whose output is no object', () => {
+    expect(failure(() => read(change(fixtures.plain, { result: undefined }), { structuredOutput: 'prompt' }))).toMatchObject({ kind: 'invalid-response', message: 'cc: reply has no text' })
+    for (const structured_output of [null, [], '{"keep":true}']) {
+      expect(failure(() => read(change(fixtures.schema, { structured_output })))).toMatchObject({ kind: 'invalid-response', message: 'cc: reply has no structured output' })
+    }
+  })
+
+  it('fails a structured output that cannot be serialized, as an invalid response', () => {
+    const stringify = vi.spyOn(JSON, 'stringify').mockImplementation(() => {
+      throw new RangeError('Maximum call stack size exceeded')
+    })
+    let thrown: ProviderError
+    try {
+      thrown = failure(() => read(fixtures.schema))
+    } finally {
+      stringify.mockRestore()
+    }
+    expect(thrown).toMatchObject({ kind: 'invalid-response', message: 'cc: reply structured output could not be serialized' })
+  })
+
+  it.each([429, 500, 529])('keeps an API error with status %i retryable', (status) => {
+    expect(failure(() => read(change(fixtures.unknownModel, { api_error_status: status }), { code: 1 }))).toMatchObject({ kind: 'http', status, retryable: true })
+  })
+
+  it.each<unknown>([399, 600, 404.5, '404', null])('reads an error with status %j as a process failure, naming its terminal reason', (status) => {
+    expect(failure(() => read(change(fixtures.unknownModel, { api_error_status: status }), { code: 1 }))).toMatchObject({
+      kind: 'process',
+      status: 1,
+      retryable: false,
+      message: `cc: claude failed (api_error): "There's an issue with the selected model (claude-nonexistent-9-9). It may not exist or you may not have access to it."`,
+    })
+  })
+
+  it.each<unknown>([undefined, null, 'false', 0])('fails a result whose is_error is %j, which is no boolean false', (isError) => {
+    expect(failure(() => read(change(fixtures.schema, { is_error: isError })))).toMatchObject({ kind: 'process', message: expect.stringContaining('cc: claude failed') })
+  })
+
   it('reports a non-zero exit without JSON by its stderr, redacted', () => {
     expect(failure(() => read('', { code: 2, stderr: 'error: unknown option for sk-SECRET\n', redact: ['sk-SECRET'] }))).toMatchObject({ kind: 'process', status: 2, message: 'cc: claude exited 2: "error: unknown option for [redacted]\\n"' })
   })
 
   it('reports a stop by a signal, and an exit 0 without JSON', () => {
     expect(failure(() => read('', { code: null, signal: 'SIGKILL' }))).toMatchObject({ kind: 'process', message: 'cc: claude was stopped by SIGKILL' })
+    expect(failure(() => read('', { code: null, signal: 'sig kill sk-SECRET' }))).toMatchObject({ kind: 'process', message: 'cc: claude was stopped by a signal' })
     expect(failure(() => read('not json'))).toMatchObject({ kind: 'invalid-response', message: 'cc: claude printed no JSON result' })
+  })
+
+  it('leaves out a cost that is not a number of at least 0, and counts only the numbers of a model\'s usage', () => {
+    const usage = { inputTokens: 2662, outputTokens: 225 }
+    expect(read(change(fixtures.schema, { total_cost_usd: -1 }))).toMatchObject({ usage })
+    expect(read(change(fixtures.schema, { total_cost_usd: 'free' }))).toMatchObject({ usage })
+    expect(read(change(fixtures.schema, { total_cost_usd: undefined })).usage).toEqual(usage)
+    expect(read(change(fixtures.schema, { modelUsage: { x: { inputTokens: 5, outputTokens: 6, cacheReadInputTokens: '3', cacheCreationInputTokens: null } } }))).toMatchObject({ model: 'x', usage: { inputTokens: 5, outputTokens: 6 } })
+  })
+
+  it('reports no usage when no model counts both its input and its output', () => {
+    for (const modelUsage of [{}, { x: { inputTokens: 5 } }, { x: { outputTokens: 5 } }, { x: 'many' }, 'many']) {
+      expect(read(change(fixtures.schema, { modelUsage }))).not.toHaveProperty('usage')
+    }
   })
 
   it('sums the usage of several models, and names the configured model then', () => {
