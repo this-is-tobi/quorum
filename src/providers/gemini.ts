@@ -3,7 +3,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { isRecord, mergeBody, prepareHttp, unlessEmpty } from './options.ts'
+import { bodyKeyForm, isRecord, mergeBody, prepareHttp, unlessEmpty } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { endedEarly, joinedText, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget } from './size.ts'
@@ -35,6 +35,18 @@ function keyParameterIssues(id: string, query: Readonly<Record<string, unknown>>
   return Object.keys(query)
     .filter(name => name.toLowerCase() === 'key')
     .map(name => ({ path: `${id}.${issuePath(['query', name])}`, message: 'would carry a key in the URL: set apiKey instead' }))
+}
+
+/**
+ * A `generationConfig` in `extraBody` that is no object: it would replace the one the adapter writes and
+ * drop the reply limit the guard reserves. Proto JSON takes the field as `generation_config` too, and a key in
+ * any letter case, so the key is matched as the other rules match one.
+ */
+function generationConfigIssues(id: string, extraBody: unknown): ConfigIssue[] {
+  if (!isRecord(extraBody)) return []
+  return Object.entries(extraBody)
+    .filter(([key, value]) => bodyKeyForm(key) === 'generationconfig' && !isRecord(value))
+    .map(([key]) => ({ path: `${id}.${issuePath(['extraBody', key])}`, message: 'must be an object' }))
 }
 
 /** What shapes the generation config: the options that set it, and the mode. */
@@ -98,7 +110,7 @@ function readReply(reply: unknown, { id, model }: Pick<GeminiOptions, 'id' | 'mo
 export function gemini(options: GeminiOptions): Provider {
   const { id, model, auth = { header: 'x-goog-api-key' } as Auth, query, temperature, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json' } = options
   const modelId = typeof model === 'string' ? model.replace(/^models\//, '') : ''
-  const issues = isRecord(query) ? keyParameterIssues(id, query) : []
+  const issues = [...(isRecord(query) ? keyParameterIssues(id, query) : []), ...generationConfigIssues(id, options.extraBody)]
   if (!MODEL_ID.test(modelId)) issues.push({ path: `${id}.model`, message: 'must be a Gemini model id, such as gemini-3.8-flash' })
   // The path is built before the checks, harmlessly: nothing is sent when they fail.
   const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, `/v1beta/models/${modelId}:generateContent`, issues)

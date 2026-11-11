@@ -260,10 +260,11 @@ Each adapter checks its options when it is called, before any request, and throw
 | `<id>.model` | `must be a Gemini model id, such as gemini-3.8-flash` |
 | `<id>.extraBody.options.<key>` | `is set from contextTokens: set contextTokens instead` |
 | `<id>.extraBody.options` | `must be an object` |
+| `<id>.extraBody.generationConfig` | `must be an object` |
 
 `headers` and `query` must be plain objects, an object literal or one with no prototype: a `Headers` or a `Map` is refused with `must map names to strings`, since its entries are not its own fields. A header name that repeats an earlier one in another letter case is refused at the later one, since one request cannot send both.
 
-`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, `model` and a `key` query parameter by `gemini` only, and `options.num_ctx` in `extraBody`, with an `extraBody.options` that is no object, by `ollama` only. `sets the reply limit: use maxTokens` names a field by its path, `<id>.extraBody.generationConfig.maxOutputTokens` for one that is nested. `must be more than <n>, ...` is checked against a valid `maxTokens` only, with `<r>` its value, else 16000, and `<n>` that and 512.
+`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode. `maxTokensField` is checked by `openaiCompatible` only, `model`, a `key` query parameter and an `extraBody.generationConfig` that is no object, in any letter case or as `generation_config`, by `gemini` only, and `options.num_ctx` in `extraBody`, with an `extraBody.options` that is no object, by `ollama` only. `sets the reply limit: use maxTokens` names a field by its path, `<id>.extraBody.generationConfig.maxOutputTokens` for one that is nested. `must be more than <n>, ...` is checked against a valid `maxTokens` only, with `<r>` its value, else 16000, and `<n>` that and 512.
 
 A header name, an `extraBody` key or a `query` name is printed in a path only when it is a safe name, at most 64 ASCII letters, digits, `_`, `$` and `-`. Any other prints as `*`, since a secret pasted as a name would otherwise show.
 
@@ -342,7 +343,7 @@ The body of every request holds, in this order:
 - `contents`: each message as `{ role, parts: [{ text }] }`, an `assistant` message with the role `model`;
 - `systemInstruction: { parts: [{ text: <system text> }] }`, unless `systemPrompt` is `inline`;
 - `generationConfig`, left out when it would be empty: `temperature` when set, `maxOutputTokens` when `maxTokens` is set, `responseMimeType: 'application/json'` in `json` and `schema` mode, and `responseJsonSchema: <output.schema>` in `schema` mode, as Google's JavaScript SDK sends it (`responseSchema` is deprecated);
-- then `extraBody`, merged: `{ generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } }` goes beside the rest. It cannot replace `contents` or `systemInstruction`, or set `generationConfig.maxOutputTokens`, which `maxTokens` sets.
+- then `extraBody`, merged: `{ generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } }` goes beside the rest. It cannot replace `contents` or `systemInstruction`, or set `generationConfig.maxOutputTokens`, which `maxTokens` sets. Its `generationConfig` must be an object.
 
 A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose parts hold text. The text is the `text` of the first candidate's `content.parts`, joined, without the parts flagged as thoughts. `model` is the reply's `modelVersion`, or the configured model. The input count is `usageMetadata.promptTokenCount`; the output count is `usageMetadata.candidatesTokenCount`, plus `usageMetadata.thoughtsTokenCount` when it is a number. A status outside 2xx is an `http` error that quotes Google's `{ "error": { "code", "message", "status", "details" } }` body; a 402, which Google sends for a depleted prepay balance, is not retryable, unlike a 429.
 

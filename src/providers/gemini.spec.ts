@@ -111,6 +111,16 @@ describe('gemini', () => {
     expect(() => gemini({ ...options, query: { KEY: 'x' } })).toThrow(new ConfigError([{ path: 'gemini.query.KEY', message: 'would carry a key in the URL: set apiKey instead' }]))
   })
 
+  it('refuses a generationConfig that is no object, which would replace the one the adapter writes, with the path and no value', () => {
+    for (const [key, value] of [['generationConfig', null], ['GenerationConfig', 0], ['generation_config', 'zz-value'], ['GENERATION_CONFIG', ['zz-value']]] as const) {
+      expect(() => gemini({ ...options, extraBody: { [key]: value } }), key).toThrow(new ConfigError([{ path: `gemini.extraBody.${key}`, message: 'must be an object' }]))
+    }
+  })
+
+  it('refuses the reply limit under the snake_case names proto JSON takes', () => {
+    expect(() => gemini({ ...options, extraBody: { generation_config: { max_output_tokens: 1, temperature: 0 } } })).toThrow(new ConfigError([{ path: 'gemini.extraBody.generation_config.max_output_tokens', message: 'sets the reply limit: use maxTokens' }]))
+  })
+
   it('prints a key query name that is not a safe name as *', () => {
     const kelvinKey = `${String.fromCharCode(0x212A)}ey`
     expect(() => gemini({ ...options, query: { [kelvinKey]: 'x' } })).toThrow(new ConfigError([{ path: 'gemini.query.*', message: 'would carry a key in the URL: set apiKey instead' }]))
