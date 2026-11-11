@@ -196,11 +196,11 @@ Every request goes through one hardened path:
 
 Some endpoints cut a prompt that is too long for the model in silence and still answer 200, and a review of text the model never read is worse than none. So an adapter given `contextTokens` checks every request, research and vote alike, after shaping it and before sending it, and refuses one that may not fit:
 
-- **The text** is the system text and every message as the adapter sends them (`systemPrompt: 'inline'` counts the blank line that joins them), at one token per UTF-8 byte, and the reply schema's JSON once more, since a server may add it to the prompt.
+- **The text** is the system text and every message as the adapter sends them (`systemPrompt: 'inline'` counts the blank line that joins them), at one token per UTF-8 byte, each text at the largest of its raw, NFC and NFKC lengths, and the reply schema's JSON once more, since a server may add it to the prompt.
 - **The chat template** takes 512 tokens, for what a server adds around the messages.
 - **The reply** takes `maxTokens`, else 16000. Only `anthropic` sends that number when `maxTokens` is unset; the other adapters send no limit then, so for them it is room the guard keeps, not a cap the server applies.
 
-A request is sent only when `text + 512 + reply <= contextTokens`. One token per byte is an upper bound for byte-level BPE and byte-fallback SentencePiece tokenizers, so the bound holds for any text, however it is padded. It costs room: code runs about three bytes to a token, so the guard accepts about a third of the diff that would really fit.
+A request is sent only when `text + 512 + reply <= contextTokens`. One token per byte bounds byte-level BPE and byte-fallback SentencePiece tokenizers. Counting the NFC and NFKC forms covers a tokenizer that normalizes with either first: Qwen 2.5's NFC normalizer turns 300 bytes of U+0F81 into 500 tokens, which is why both are counted. A tokenizer that decomposes (NFD, NFKD) or folds case is not covered, and no chat model's tokenizer is known to do either. It costs room: code runs about three bytes to a token, so the guard accepts about a third of the diff that would really fit.
 
 A request over the bound is not sent. The call fails with a `ProviderError` of kind `too-large`, which is not retryable, and its message holds the provider id and numbers only, never the text or the URL: `<id>: may need <n> tokens, more than contextTokens (<c>): <t> for its text at one token per byte, 512 for the chat template and <r> for the reply`. The review records it as a gap: [`ProviderError`](#providererror).
 

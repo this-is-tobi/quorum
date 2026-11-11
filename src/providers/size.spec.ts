@@ -24,6 +24,31 @@ describe('textTokens', () => {
     expect(textTokens({ system: undefined, messages: [{ role: 'user', content: 'instructions\n\ndata' }] }, output)).toBe(35)
     expect(textTokens({ system: String.fromCharCode(0xE9), messages: [{ role: 'assistant', content: 'a' }, { role: 'user', content: String.fromCharCode(0x4E2D) }] }, output)).toBe(2 + 1 + 3 + 17)
   })
+
+  describe('with a tokenizer that normalizes first', () => {
+    const schemaBytes = 17
+    /** U+0F81 is 3 bytes as sent and 6 after NFC, which decomposes it; U+FDFA is 3 bytes, 3 after NFC and 33 after NFKC. */
+    const decomposedByNfc = String.fromCharCode(0x0F81)
+    const expandedByNfkc = String.fromCharCode(0xFDFA)
+    const inMessage = (content: string): number => textTokens({ system: undefined, messages: [{ role: 'user', content }] }, output) - schemaBytes
+
+    it('counts a text at the largest of its raw, NFC and NFKC UTF-8 lengths', () => {
+      expect(inMessage(decomposedByNfc)).toBe(6)
+      expect(inMessage(expandedByNfkc)).toBe(33)
+      expect(inMessage(decomposedByNfc.repeat(100))).toBe(600)
+    })
+
+    it('counts the system text and the reply schema the same way', () => {
+      expect(textTokens({ system: expandedByNfkc, messages: [] }, output) - schemaBytes).toBe(33)
+      // `{"` and `":1}` are 6 ASCII bytes around the key.
+      expect(textTokens({ system: undefined, messages: [] }, { name: 'panel_vote', schema: { [decomposedByNfc]: 1 } })).toBe(6 + 6)
+    })
+
+    it('counts an ASCII text at its length and a lone surrogate at 3 bytes', () => {
+      expect(inMessage('abc')).toBe(3)
+      expect(inMessage(String.fromCharCode(0xD800))).toBe(3)
+    })
+  })
 })
 
 describe('contextBudget', () => {
