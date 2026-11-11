@@ -1,10 +1,10 @@
 # Profiles
 
-A profile is what a review looks for, as data: the finder's instructions, the panel's lenses and how their votes are graded, whether its findings gate, and optional guidelines. The CLI runs the `security` profile. A program can run it, change it, write a profile of its own, and run several in one review. This page covers the security profile, writing a profile and the checks it must pass, several profiles at once, gating, and guidelines.
+A profile is what a review looks for, as data: the finder's instructions, the panel's lenses and how their votes are graded, whether its findings gate, and optional guidelines. The CLI runs the `security` profile by default, and the profiles its config selects. A program can run it, change it, write a profile of its own, and run several in one review. This page covers the security profile, writing a profile and the checks it must pass, several profiles at once, gating, and guidelines.
 
 ## The security profile
 
-`securityProfile`, exported by `src/index.ts`, is the default and the one the CLI runs:
+`securityProfile`, exported by `src/index.ts`, is the default and the one the CLI runs by default:
 
 | Field | Value |
 | --- | --- |
@@ -104,7 +104,7 @@ A profile the checks accept may still set something that cannot take full effect
 | `<id>.policy.<level> needs the same <n> vote(s) as policy.<higher level> with <k> lens(es), so it never applies` | Two enabled levels need the same number of kept votes, so the lower one is never reached |
 | `<id>.prompts.vote uses neither {{lens.id}} nor {{lens.question}}, so every lens gets the same instructions` | With more than one lens, a vote template that names neither asks every voter the same thing |
 
-The default policy meets the first with one or two lenses: the `naming` profile above, with its policy left unset, would get `naming.policy.medium needs the same 2 vote(s) as policy.high with 2 lens(es), so it never applies`. The CLI prints no warnings, and the security profile has none.
+The default policy meets the first with one or two lenses: the `naming` profile above, with its policy left unset, would get `naming.policy.medium needs the same 2 vote(s) as policy.high with 2 lens(es), so it never applies`. The CLI prints each one as a `warning:` line before its banner, and the security profile has none.
 
 ## Several profiles in one review
 
@@ -133,7 +133,7 @@ The cost grows with each profile: one more research call, and one call per lens 
 
 `gating`, `true` when unset, says whether a profile's kept `high` findings set exit code `1`. The CLI exits `1` when a kept finding is `high` and its profile's `meta.profiles.<id>.gating` is not `false`; a profile missing from `meta` counts as gating, so a gap in a result never hides a finding. Otherwise it exits `4` when the review is incomplete, and `0` when it is not.
 
-A profile with `gating: false` still reports every finding in full, and its gaps still make the review incomplete: only a `high` finding of its own no longer exits `1`. The CLI runs the security profile alone, which gates. A program that runs other profiles reads each one's `gating` in `meta` to apply the same rule.
+A profile with `gating: false` still reports every finding in full, and its gaps still make the review incomplete: only a `high` finding of its own no longer exits `1`. The CLI runs the profiles its config selects, and by default the security profile alone, which gates. A program that runs other profiles reads each one's `gating` in `meta` to apply the same rule.
 
 ## Guidelines
 

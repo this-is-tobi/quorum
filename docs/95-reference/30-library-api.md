@@ -171,7 +171,7 @@ A failed research call rejects the review with its `ProviderError`, and an unusa
 declare function defineConfig(config: QuorumConfig): QuorumConfig
 ```
 
-`loadConfig` reads a named config file and `fromConfig` builds a quorum from a config: [`loadConfig` and `fromConfig`](#loadconfig-and-fromconfig). The CLI reads no config file yet, and keeps the `RESEARCH_*` and `VOTER_*` wiring of [Configuration](../20-using/20-configuration.md). These exports write and type-check a config:
+`loadConfig` reads a named config file and `fromConfig` builds a quorum from a config: [`loadConfig` and `fromConfig`](#loadconfig-and-fromconfig). The CLI and `runQuorum` read their settings through these two functions: [Configuration](../20-using/20-configuration.md). These exports write and type-check a config:
 
 - **`QuorumConfig`** types what a TS or JS config exports as its default: `$schema`, for an editor, `version`, `providers`, `roles`, `concurrency`, `maxFindings` and `profiles`, every one optional. A provider is an object implementing `Provider`, or its settings, every one optional too: `preset`, `protocol`, `baseUrl`, `model`, `apiKeyEnv` and `apiKey`, then `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt`, as [Providers](../20-using/30-providers.md#options) describes them.
 - **`QuorumConfigFile`** types what a YAML or JSON config holds: the same settings, as data only, so a provider is always its settings, and names the environment variable that holds its key in `apiKeyEnv`, never holding one.
@@ -229,7 +229,7 @@ for (const warning of quorum.warnings) console.error(inertLine(`warning: ${warni
 const result = await quorum.review({ diff })
 ```
 
-`fromConfig({}, { env: process.env })` needs no file: the environment alone names a provider and a model. No command reads `QUORUM_*` or a config file yet: the CLI keeps `RESEARCH_*` and `VOTER_*` until it switches to these two functions.
+`fromConfig({}, { env: process.env })` needs no file: the environment alone names a provider and a model. The CLI and `runQuorum` read the `QUORUM_*` variables, with the deprecated `RESEARCH_*` and `VOTER_*` aliases, and the file `QUORUM_CONFIG` names through these two functions.
 
 - **`options.cwd`** is the directory a relative `configPath` and `QUORUM_CONFIG` resolve against, the working directory by default. `source` is the absolute path of the file read, and `undefined` when none was.
 - **`options.selection`** names the profiles that run, over `QUORUM_PROFILES`, which is still read and checked: a malformed variable is refused even when a selection is given. `path` is what the selection's issues name, and the CLI passes `--profile`. Each id must match `^[a-z][a-z0-9_-]*$`, and none may repeat.
@@ -381,7 +381,7 @@ The stages, the profile checks and the CLI's exit-code rule are not exported: a 
 declare function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult>
 ```
 
-Deprecated: use `createQuorum` with explicit providers. `runQuorum` reviews `diff` with the security profile and providers built from the `RESEARCH_*` and `VOTER_*` variables of `process.env`, exactly as the CLI builds them: [Configuration](../20-using/20-configuration.md). `onProgress` receives the CLI's progress lines, the `flag:` lines included, each one inert, but neither its banner nor `empty diff: nothing to review`, which the CLI writes itself. A research model that is not set rejects with a `ConfigError`, for an empty diff too.
+Deprecated: use `loadConfig` and `fromConfig`. `runQuorum` reviews `diff` as the CLI does with no flag: it calls `loadConfig()` and `fromConfig` on the result, so it reads the file `QUORUM_CONFIG` names, if any, relative to `process.cwd()`, and the `QUORUM_*` variables of `process.env` with their `RESEARCH_*` and `VOTER_*` aliases, and it runs the profiles they select, the security profile alone by default: [Configuration](../20-using/20-configuration.md). `onProgress` receives the CLI's progress lines, the `flag:` lines included, each one inert and each profile's line starting with `[<id>] ` when several run, but neither the banner, nor a warning, nor `empty diff: nothing to review`, which the CLI writes itself. A configuration error, a missing model included, rejects with a `ConfigError`, for an empty diff too.
 
 ## A complete example
 

@@ -1,6 +1,7 @@
-import { renderEvent } from './cli/render.ts'
-import type { QuorumEvent, QuorumResult } from './core/types.ts'
-import { quorumFromEnv } from './legacy.ts'
+import { progressSink } from './cli/render.ts'
+import { fromConfig } from './config/from-config.ts'
+import { loadConfig } from './config/load.ts'
+import type { QuorumResult } from './core/types.ts'
 
 export { defineConfig } from './config/define.ts'
 export type { Env } from './config/env.ts'
@@ -57,21 +58,19 @@ export { presets } from './providers/presets.ts'
 export type { Preset, PresetName, Protocol } from './providers/presets.ts'
 
 /**
- * Review a diff with the security profile and providers built from the RESEARCH_* / VOTER_*
- * environment variables of `process.env`. `onProgress` receives the lines the CLI prints on stderr.
- * A research model that is not set is a `ConfigError`, even for an empty diff.
+ * Review a diff as the CLI does with no flag: with the file `QUORUM_CONFIG` names, if any, and the
+ * `QUORUM_*` variables of `process.env` with their `RESEARCH_*` and `VOTER_*` aliases, on the profiles
+ * they select, the security profile alone by default. `onProgress` receives the progress lines the CLI
+ * prints on stderr after its banner, never the banner or a warning. A configuration error, a missing
+ * model included, rejects with a `ConfigError`, even for an empty diff.
  *
- * @deprecated Use createQuorum with explicit providers
+ * @deprecated Use loadConfig and fromConfig
  *
  * @example
  * const { kept } = await runQuorum(diffText)
  */
 export async function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult> {
-  const events = onProgress === undefined
-    ? undefined
-    : (event: QuorumEvent): void => {
-        const line = renderEvent(event)
-        if (line !== undefined) onProgress(line)
-      }
-  return quorumFromEnv(process.env, events).review({ diff })
+  const { config } = await loadConfig()
+  const quorum = await fromConfig(config, { events: onProgress === undefined ? undefined : progressSink(onProgress) })
+  return quorum.review({ diff })
 }

@@ -1,11 +1,12 @@
 import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import type { Env } from '../config/env.ts'
+import { fromConfig } from '../config/from-config.ts'
+import { loadConfig } from '../config/load.ts'
 import { ConfigError } from '../core/errors.ts'
 import { inertJson, inertLine } from '../core/sanitize.ts'
 import type { QuorumResult } from '../core/types.ts'
-import { quorumFromEnv, roleSettings } from '../legacy.ts'
-import type { Env } from '../legacy.ts'
-import { originOf } from '../providers/http.ts'
-import { renderEvent } from './render.ts'
+import { bannerLines, progressSink } from './render.ts'
 
 /** Exit codes (ADR-0008, amended by ADR-0012). */
 export const EXIT = { ok: 0, finding: 1, usage: 2, runtime: 3, incomplete: 4 } as const
@@ -13,6 +14,8 @@ export const EXIT = { ok: 0, finding: 1, usage: 2, runtime: 3, incomplete: 4 } a
 export interface CliIO {
   /** Arguments after the executable and script, e.g. `process.argv.slice(2)`. */
   argv: readonly string[]
+  /** The directory a relative diff path and a relative `QUORUM_CONFIG` resolve against, e.g. `process.cwd()`. */
+  readonly cwd: string
   /** Environment variables, e.g. `process.env`. */
   env: Env
   stdin: AsyncIterable<Uint8Array | string> & { isTTY?: boolean }
@@ -29,6 +32,9 @@ const USAGE = 'Usage: quorum <diff-file>\n       git diff | quorum\n'
  * can tell a broken run and a partial review from a real finding (exit 1) and from a clean one
  * (exit 0). `exitCodeFor` maps the result; advisory flags never change it.
  *
+ * Its settings are the config file `QUORUM_CONFIG` names, resolved against `io.cwd`, and the `QUORUM_*`
+ * variables of `io.env` with their deprecated aliases. Each warning is printed once, before the banner.
+ *
  * Everything the CLI writes is inert (invariant I3): each stderr line passes through `inertLine`, and
  * the JSON result through `inertJson`.
  */
@@ -42,14 +48,10 @@ export async function runCli(io: CliIO): Promise<number> {
   }
 
   try {
-    const quorum = quorumFromEnv(io.env, (event) => {
-      const line = renderEvent(event)
-      if (line !== undefined) io.stderr.write(`${line}\n`)
-    })
-    const research = roleSettings('RESEARCH', io.env)
-    const voter = roleSettings('VOTER', io.env)
-    io.stderr.write(`${inertLine(`Research (${research.model} @ ${originOf(research.baseUrl)})...`)}\n`)
-    io.stderr.write(`${inertLine(`Panel will use ${voter.model} @ ${originOf(voter.baseUrl)}`)}\n`)
+    const { config } = await loadConfig({ cwd: io.cwd, env: io.env })
+    const quorum = await fromConfig(config, { env: io.env, events: progressSink(line => io.stderr.write(`${line}\n`)) })
+    for (const warning of quorum.warnings) io.stderr.write(`${inertLine(`warning: ${warning}`)}\n`)
+    for (const line of bannerLines(config)) io.stderr.write(`${line}\n`)
     if (diff.trim() === '') io.stderr.write('empty diff: nothing to review\n')
     const result = await quorum.review({ diff })
     io.stdout.write(`${inertJson(result)}\n`)
@@ -75,7 +77,7 @@ export function exitCodeFor(result: QuorumResult): number {
 async function readDiff(io: CliIO): Promise<string> {
   const [path, ...extra] = io.argv
   if (extra.length > 0) throw new Error(`unexpected arguments: ${extra.join(' ')}`)
-  if (path) return readFile(path, 'utf8')
+  if (path) return readFile(resolve(io.cwd, path), 'utf8')
   if (io.stdin.isTTY) throw new Error('no diff given')
   const decoder = new TextDecoder()
   let text = ''

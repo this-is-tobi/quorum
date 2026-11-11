@@ -41,8 +41,9 @@ describe('runQuorum', () => {
 
   it('reports a missing research model as a configuration error, even for an empty diff', async () => {
     isolateEnv()
-    await expect(runQuorum(diff)).rejects.toThrow(/RESEARCH_MODEL/)
-    await expect(runQuorum('  \n')).rejects.toThrow(/RESEARCH_MODEL/)
+    const message = 'no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one'
+    await expect(runQuorum(diff)).rejects.toMatchObject({ name: 'ConfigError', message })
+    await expect(runQuorum('  \n')).rejects.toMatchObject({ name: 'ConfigError', message })
   })
 
   it('sends onProgress the progress lines the CLI prints', async () => {
