@@ -1,5 +1,6 @@
 import { researchReplyJsonSchema, voteReplyJsonSchema } from './output.ts'
 import type { CompletionRequest } from './ports.ts'
+import { showHidden } from './sanitize.ts'
 import type { Finding } from './types.ts'
 
 export const UNTRUSTED_CONTENT_NOTICE
@@ -83,11 +84,13 @@ export function researchRequest(instructions: string, diff: string, guidelines?:
  * vote ever reaches it (blind voting, ADR-0006). The evidence is code read from the diff by the
  * harness; the finder's summary is the only text a model wrote, and it is fenced as an unverified
  * claim. Everything attacker-influenced is fenced, and so are the profile's guidelines, which close
- * the message as in a research call. The system message names each block the request carries.
+ * the message as in a research call. The system message names each block the request carries. The
+ * cited file name's hidden characters show as `<U+XXXX>` (git's quoting decodes to any character, a
+ * line break included), so the claim stays two lines.
  */
 export function voteRequest(instructions: string, finding: Finding, diffContext: string, guidelines?: string): CompletionRequest {
   const claim = [
-    `Finding: ${finding.file}:${finding.line} [${finding.category}]`,
+    `Finding: ${showHidden(finding.file)}:${finding.line} [${finding.category}]`,
     `Claim by the finder (unverified): ${finding.summary}`,
   ].join('\n')
   return buildRequest(
@@ -119,7 +122,9 @@ function buildRequest(
     description: block.description,
   }))
   const dataNotice = [
-    'The user message holds these blocks:',
+    fenced.length === 1
+      ? 'The user message holds this block:'
+      : 'The user message holds these blocks:',
     ...fenced.map(block => `- <${block.tag}>: ${block.description}`),
   ].join('\n')
   return {

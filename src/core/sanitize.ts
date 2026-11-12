@@ -10,7 +10,9 @@
 /**
  * The body of the hidden-character class, for a character class under the `u` flag: controls (C0,
  * DEL, C1), format characters, unpaired surrogate halves, other default-ignorable code points, and
- * line and paragraph separators. Every check for hidden characters is built from it.
+ * line and paragraph separators. Every check for hidden characters in the product code and in the
+ * docs test is built from it; the two spec oracles are not, on purpose, so that they stay
+ * independent of the class they check.
  */
 export const HIDDEN_CLASS = String.raw`\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}`
 
@@ -50,6 +52,15 @@ export function spaceHidden(text: string): string {
 }
 
 /**
+ * The text with each hidden character shown as `<U+XXXX>` and nothing else changed: for text that
+ * reaches a model or a reader but is no line of a log, such as a file name cited in a prompt.
+ * `inertLine` adds the workflow-command rules.
+ */
+export function showHidden(text: string): string {
+  return text.replace(HIDDEN, char => `<${codePointLabel(char)}>`)
+}
+
+/**
  * One line of a terminal or a CI log. Every hidden character is shown as `<U+XXXX>`, so the line
  * holds no line break and starts no escape sequence, and no character of the class reorders or
  * hides its text. Strong right-to-left letters are outside the class, and can still reorder the
@@ -59,8 +70,7 @@ export function spaceHidden(text: string): string {
  * inert pieces printed side by side can still meet as `::` or `##[`.
  */
 export function inertLine(text: string): string {
-  return text
-    .replace(HIDDEN, char => `<${codePointLabel(char)}>`)
+  return showHidden(text)
     .replace(COMMAND_START, '$1<U+003A>')
     .replace(LEGACY_COMMAND, '##<U+005B>')
 }

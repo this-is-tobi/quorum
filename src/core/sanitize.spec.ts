@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { codePointLabel, hiddenLabels, inertJson, inertLine, spaceHidden, stripHidden } from './sanitize.ts'
+import { codePointLabel, hiddenLabels, inertJson, inertLine, showHidden, spaceHidden, stripHidden } from './sanitize.ts'
 
 /** Every hidden class the sanitizer knows, to check that an output holds none of them. */
 const ANY_HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}]/u
+
+describe('showHidden', () => {
+  it('shows every hidden character as its code point, and leaves the workflow command rules to inertLine', () => {
+    const text = `::a${String.fromCharCode(0x0A)}b${String.fromCharCode(0x202E)}c ##[d`
+    expect(showHidden(text)).toBe('::a<U+000A>b<U+202E>c ##[d')
+    expect(inertLine(text)).toBe('<U+003A>:a<U+000A>b<U+202E>c ##<U+005B>d')
+  })
+})
 
 describe('inertLine', () => {
   it('leaves plain text as it is', () => {
