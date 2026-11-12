@@ -1,9 +1,10 @@
-/** Test helpers for the bench: a small suite and the writer that puts it on disk, the verdicts and results its scorer reads, and the resolved configs it fingerprints. */
+/** Test helpers for the bench: a small suite and the writer that puts it on disk, the verdicts and results its scorer reads, the resolved configs it fingerprints, and the records it keeps. */
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { stringify } from 'yaml'
 import packageJson from '../../package.json' with { type: 'json' }
+import type { ReviewRecord } from '../bench/records.ts'
 import type { Env } from '../config/env.ts'
 import { checkCodeValue } from '../config/load.ts'
 import { resolveConfig } from '../config/resolve.ts'
@@ -150,6 +151,105 @@ export function resultWith(parts: {
       incomplete: [...incomplete],
       flags: [],
     },
+  }
+}
+
+/**
+ * A result that fills every field the type has: a kept verdict with a confidence and a failed vote
+ * among its votes, a discarded and an unreviewed one, a gap with a file and one without, a flag with a
+ * file and a line, usage with a cost, and a summary that holds `##[` and U+2028.
+ */
+export const RESULT: QuorumResult = (() => {
+  const base = resultWith({
+    kept: [
+      {
+        ...verdict('a.js', 2, 'high'),
+        summary: `A command runs ##[error] input${String.fromCharCode(0x2028)}unchecked.`,
+        keptVotes: 2,
+        totalVotes: 3,
+        votes: [
+          {
+            angle: 'reachability',
+            vote: { keep: true, reasoning: 'It is reachable.' },
+            error: null,
+          },
+          {
+            angle: 'impact',
+            vote: { keep: true, reasoning: 'It runs a command.' },
+            error: null,
+          },
+          { angle: 'defenses', vote: null, error: 'HTTP 503' },
+        ],
+      },
+    ],
+    discarded: [
+      {
+        ...verdict('b.js', 5),
+        keptVotes: 0,
+        votes: [
+          {
+            angle: 'reachability',
+            vote: { keep: false, reasoning: 'It is not reachable.' },
+            error: null,
+          },
+        ],
+      },
+    ],
+    unreviewed: [
+      {
+        ...verdict('c.js', 9),
+        keptVotes: 1,
+        totalVotes: 2,
+        votes: [
+          {
+            angle: 'reachability',
+            vote: { keep: true, reasoning: 'It is reachable.' },
+            error: null,
+          },
+          { angle: 'impact', vote: null, error: 'timeout' },
+        ],
+      },
+    ],
+    incomplete: [
+      {
+        profile: 'security',
+        reason: 'vote-failed',
+        file: 'c.js',
+        detail: 'a vote failed',
+      },
+      { profile: 'security', reason: 'findings-capped', detail: 'findings beyond the cap' },
+    ],
+  })
+  return {
+    ...base,
+    meta: {
+      ...base.meta,
+      usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.001 },
+      flags: [
+        {
+          code: 'hidden-characters',
+          file: 'a.js',
+          line: 2,
+          detail: 'U+202E',
+        },
+      ],
+    },
+  }
+})()
+
+/** A review record of the security profile, `fields` over these defaults: the case exec, trial 1, 1200 ms, 4 calls of which 1 failed, usage with a cost and `RESULT`. */
+export function record(fields: Partial<ReviewRecord> = {}): ReviewRecord {
+  return {
+    fingerprint: 'f'.repeat(64),
+    case: 'exec',
+    trial: 1,
+    latencyMs: 1200,
+    calls: 4,
+    failedCalls: 1,
+    usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.001 },
+    costComplete: true,
+    result: RESULT,
+    ...fields,
   }
 }
 

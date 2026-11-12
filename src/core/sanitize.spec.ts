@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { codePointLabel, hiddenLabels, inertJson, inertLine, showHidden, spaceHidden, stripHidden } from './sanitize.ts'
+import { codePointLabel, hiddenLabels, inertJson, inertJsonLine, inertLine, showHidden, spaceHidden, stripHidden } from './sanitize.ts'
 
 /** Every hidden class the sanitizer knows, to check that an output holds none of them. */
 const ANY_HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}]/u
@@ -103,6 +103,31 @@ describe('inertJson', () => {
   it('refuses a value that has no JSON form', () => {
     expect(() => inertJson(undefined)).toThrow(TypeError)
     expect(() => inertJson(undefined)).toThrow(/^the value has no JSON form$/)
+  })
+})
+
+describe('inertJsonLine', () => {
+  it('writes the JSON on one line, every hidden character escaped and the legacy marker broken, and parses back', () => {
+    const value = { a: `x${String.fromCharCode(0x2028)}y`, b: 'line\nbreak', c: `##[error]${String.fromCharCode(0x202E)}` }
+    const line = inertJsonLine(value)
+    expect(line).not.toContain('\n')
+    expect(hiddenLabels(line)).toEqual([])
+    expect(line).not.toContain('##[')
+    expect(JSON.parse(line)).toEqual(value)
+  })
+
+  it('is JSON.stringify for values without hidden characters', () => {
+    const plain = {
+      kept: [
+        { line: 1, file: 'a.js' },
+      ],
+      meta: { ok: true },
+    }
+    expect(inertJsonLine(plain)).toBe(JSON.stringify(plain))
+  })
+
+  it('refuses a value that has no JSON form', () => {
+    expect(() => inertJsonLine(undefined)).toThrow(/^the value has no JSON form$/)
   })
 })
 
