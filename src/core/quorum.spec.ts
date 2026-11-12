@@ -8,7 +8,11 @@ import type { Finding, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult
 
 /** Replies, in call order, for the one fake provider that plays both roles. */
 const complete = vi.fn<(request: CompletionRequest) => Promise<string>>()
-const provider: Provider = { id: 'fake', model: 'fake-model', complete: async request => ({ text: await complete(request), model: 'fake-model' }) }
+const provider: Provider = {
+  id: 'fake',
+  model: 'fake-model',
+  complete: async request => ({ text: await complete(request), model: 'fake-model' }),
+}
 
 const diff = [
   'diff --git a/a.js b/a.js',
@@ -28,7 +32,13 @@ const diff = [
 const flaggedDiff = diff.replace('+UNRELATED', '+UNRELATED\u200B')
 
 /** What the finder reports on the wire. */
-const reported = { file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }
+const reported = {
+  file: 'a.js',
+  line: 1,
+  category: 'CWE-78',
+  quote: 'exec(cmd)',
+  summary: 'command injection',
+}
 
 /** The same finding once the harness has verified it against `diff`. */
 const finding: Finding = {
@@ -66,12 +76,22 @@ function fake(id: string, answer: (request: CompletionRequest) => string | Promi
 
 /** One provider for the research and every lens of the profile. */
 function portsFor(profile: Profile, research: Provider, voter: Provider = research): QuorumPorts {
-  return { profiles: { [profile.id]: { research, voters: Object.fromEntries(profile.lenses.map(lens => [lens.id, voter])) } } }
+  return {
+    profiles: {
+      [profile.id]: {
+        research,
+        voters: Object.fromEntries(profile.lenses.map(lens => [lens.id, voter])),
+      },
+    },
+  }
 }
 
 /** A quorum on the `complete` mock, for the tests that script replies in call order. */
 function run(profile: Profile = securityProfile, options: Omit<QuorumOptions, 'profiles'> = {}): Quorum {
-  return createQuorum({ ...options, profiles: [profile] }, portsFor(profile, provider))
+  return createQuorum({
+    ...options,
+    profiles: [profile],
+  }, portsFor(profile, provider))
 }
 
 /** The issues of the ConfigError `create` throws, as `path: message` lines. */
@@ -88,7 +108,10 @@ function issuesOf(create: () => unknown): string[] {
 const style: Profile = {
   id: 'style',
   prompts: { research: 'Find style issues.', vote: 'Judge {{lens.id}} as one of {{panel.size}}: {{lens.question}}' },
-  lenses: [{ id: 'naming', question: 'Is the name wrong?' }, { id: 'layout', question: 'Is the layout wrong?' }],
+  lenses: [
+    { id: 'naming', question: 'Is the name wrong?' },
+    { id: 'layout', question: 'Is the layout wrong?' },
+  ],
   policy: { high: 'unanimous', medium: 'off', low: 'off' },
 }
 
@@ -120,16 +143,28 @@ describe('createQuorum', () => {
 
   it('reports the issues of every profile at once, under its id or, for an invalid id, its index', () => {
     const misnamed = { ...style, id: 'Style' }
-    const leaky = { ...securityProfile, prompts: { ...securityProfile.prompts, research: 'Review {{diff}}.' } }
-    expect(issuesOf(() => createQuorum({ profiles: [misnamed, leaky] }, { profiles: {} }))).toEqual([
+    const leaky = {
+      ...securityProfile,
+      prompts: { ...securityProfile.prompts, research: 'Review {{diff}}.' },
+    }
+    expect(issuesOf(() => createQuorum({
+      profiles: [misnamed, leaky],
+    }, { profiles: {} }))).toEqual([
       'profiles.0.id: must match ^[a-z][a-z0-9_-]*$, got "Style"',
       'security.prompts.research: {{diff}} is not allowed: the diff is appended automatically as fenced data',
     ])
   })
 
   it('reports a malformed profile from an untyped caller as issues, not a TypeError', () => {
-    const loose = { id: 'loose', lenses: [{ id: 'one' }] } as unknown as Profile
-    expect(issuesOf(() => createQuorum({ profiles: [loose] }, { profiles: {} }))).toEqual([
+    const loose = {
+      id: 'loose',
+      lenses: [
+        { id: 'one' },
+      ],
+    } as unknown as Profile
+    expect(issuesOf(() => createQuorum({
+      profiles: [loose],
+    }, { profiles: {} }))).toEqual([
       'loose.lenses.0.question: must be a string',
       'loose.prompts: must be an object holding the research and vote templates',
     ])
@@ -137,14 +172,23 @@ describe('createQuorum', () => {
 
   it('refuses two profiles with one id', () => {
     const model = fake('m', () => '')
-    expect(issuesOf(() => createQuorum({ profiles: [securityProfile, { ...securityProfile }] }, portsFor(securityProfile, model)))).toEqual([
+    expect(issuesOf(() => createQuorum({
+      profiles: [
+        securityProfile,
+        { ...securityProfile },
+      ],
+    }, portsFor(securityProfile, model)))).toEqual([
       'profiles.1.id: repeats the profile id "security"',
     ])
   })
 
   it('refuses a concurrency or a findings cap that is not a positive integer', () => {
     const model = fake('m', () => '')
-    expect(issuesOf(() => createQuorum({ profiles: [securityProfile], concurrency: 0, maxFindings: 1.5 }, portsFor(securityProfile, model)))).toEqual([
+    expect(issuesOf(() => createQuorum({
+      profiles: [securityProfile],
+      concurrency: 0,
+      maxFindings: 1.5,
+    }, portsFor(securityProfile, model)))).toEqual([
       'concurrency: must be a positive integer, got 0',
       'maxFindings: must be a positive integer, got 1.5',
     ])
@@ -153,21 +197,52 @@ describe('createQuorum', () => {
   it('requires a research provider and a voter for every lens', () => {
     const model = fake('m', () => '')
     const research = { id: 'r', model: 'x' } as unknown as Provider
-    expect(issuesOf(() => createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research, voters: { reachability: model, defenses: model } } } }))).toEqual([
+    expect(issuesOf(() => createQuorum({
+      profiles: [securityProfile],
+    }, {
+      profiles: {
+        security: {
+          research,
+          voters: { reachability: model, defenses: model },
+        },
+      },
+    }))).toEqual([
       'ports.profiles.security.research: must be a provider: an object with a string id, a string model and a complete function',
       'ports.profiles.security.voters.impact: is missing',
     ])
     const modelless = { id: 'v', complete: model.complete } as unknown as Provider
-    expect(issuesOf(() => createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research: model, voters: { reachability: modelless, impact: model, defenses: model } } } }))).toEqual([
+    expect(issuesOf(() => createQuorum({
+      profiles: [securityProfile],
+    }, {
+      profiles: {
+        security: {
+          research: model,
+          voters: { reachability: modelless, impact: model, defenses: model },
+        },
+      },
+    }))).toEqual([
       'ports.profiles.security.voters.reachability: must be a provider: an object with a string id, a string model and a complete function',
     ])
   })
 
   it('refuses ports for a profile or a lens the run does not have, as a likely typo, and a sink that is not a function', () => {
     const model = fake('m', () => '')
-    const voters = { reachability: model, impact: model, defenses: model, reach: model }
-    const ports = { profiles: { security: { research: model, voters }, secuirty: { research: model, voters: {} } }, events: 'log' } as unknown as QuorumPorts
-    expect(issuesOf(() => createQuorum({ profiles: [securityProfile] }, ports))).toEqual([
+    const voters = {
+      reachability: model,
+      impact: model,
+      defenses: model,
+      reach: model,
+    }
+    const ports = {
+      profiles: {
+        security: { research: model, voters },
+        secuirty: { research: model, voters: {} },
+      },
+      events: 'log',
+    } as unknown as QuorumPorts
+    expect(issuesOf(() => createQuorum({
+      profiles: [securityProfile],
+    }, ports))).toEqual([
       'ports.profiles.security.voters.reach: names no lens of the profile',
       'ports.profiles.secuirty: names no profile of the run',
       'ports.events: must be a function',
@@ -175,19 +250,45 @@ describe('createQuorum', () => {
   })
 
   it('reads ports as own properties only, so a profile or a lens named constructor is missing, not found', () => {
-    const odd: Profile = { ...style, id: 'constructor', lenses: [{ id: 'constructor', question: 'Is it built right?' }] }
+    const odd: Profile = {
+      ...style,
+      id: 'constructor',
+      lenses: [
+        { id: 'constructor', question: 'Is it built right?' },
+      ],
+    }
     const model = fake('m', () => '')
-    expect(issuesOf(() => createQuorum({ profiles: [odd] }, { profiles: {} }))).toEqual(['ports.profiles.constructor: is missing'])
-    expect(issuesOf(() => createQuorum({ profiles: [odd] }, { profiles: { constructor: { research: model, voters: {} } } }))).toEqual([
+    expect(issuesOf(() => createQuorum({
+      profiles: [odd],
+    }, { profiles: {} }))).toEqual(['ports.profiles.constructor: is missing'])
+    expect(issuesOf(() => createQuorum({
+      profiles: [odd],
+    }, {
+      profiles: {
+        constructor: { research: model, voters: {} },
+      },
+    }))).toEqual([
       'ports.profiles.constructor.voters.constructor: is missing',
     ])
   })
 
   it('lists the warnings of every profile', () => {
-    const duo: Profile = { ...style, id: 'duo', prompts: { ...style.prompts, vote: 'Judge this finding.' }, policy: { high: 'unanimous', medium: 'majority', low: 'off' } }
+    const duo: Profile = {
+      ...style,
+      id: 'duo',
+      prompts: { ...style.prompts, vote: 'Judge this finding.' },
+      policy: { high: 'unanimous', medium: 'majority', low: 'off' },
+    }
     const model = fake('m', () => '')
-    const ports = { profiles: { ...portsFor(securityProfile, model).profiles, ...portsFor(duo, model).profiles } }
-    expect(createQuorum({ profiles: [securityProfile, duo] }, ports).warnings).toEqual([
+    const ports = {
+      profiles: {
+        ...portsFor(securityProfile, model).profiles,
+        ...portsFor(duo, model).profiles,
+      },
+    }
+    expect(createQuorum({
+      profiles: [securityProfile, duo],
+    }, ports).warnings).toEqual([
       'duo.policy.medium needs the same 2 vote(s) as policy.high with 2 lens(es), so it never applies',
       'duo.prompts.vote uses neither {{lens.id}} nor {{lens.question}}, so every lens gets the same instructions',
     ])
@@ -195,12 +296,28 @@ describe('createQuorum', () => {
 
   it('does not see later changes to the profile or the ports it was given', async () => {
     const prompts = { research: 'Find style issues.', vote: style.prompts.vote }
-    const lenses = [{ id: 'naming', question: 'Is the name wrong?' }]
-    const first = fake('first', request => isVote(request) ? vote(true) : findings(reported))
+    const lenses = [
+      { id: 'naming', question: 'Is the name wrong?' },
+    ]
+    const first = fake('first', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
     const second = fake('second', () => findings())
     const seen: string[] = []
-    const ports = { profiles: { style: { research: first, voters: { naming: first } } }, events: (event: QuorumEvent): void => { seen.push(event.type) } }
-    const quorum = createQuorum({ profiles: [{ ...style, prompts, lenses }] }, ports)
+    const ports = {
+      profiles: {
+        style: {
+          research: first,
+          voters: { naming: first },
+        },
+      },
+      events: (event: QuorumEvent): void => { seen.push(event.type) },
+    }
+    const quorum = createQuorum({
+      profiles: [
+        { ...style, prompts, lenses },
+      ],
+    }, ports)
     prompts.research = 'Changed.'
     lenses[0].question = 'Changed?'
     ports.profiles.style.research = second
@@ -224,10 +341,28 @@ describe('review', () => {
   it('keeps verified findings, reports invalid ones and records a gap only for an unreadable one', async () => {
     complete.mockResolvedValueOnce(findings(reported, { ...reported, file: 'missing.js' }, { file: 'x.js' })).mockResolvedValue(vote(true))
     const result = await run().review({ diff })
-    const votes = securityProfile.lenses.map(lens => ({ angle: lens.id, vote: { keep: true, reasoning: 'r' }, error: null }))
-    expect(result.kept).toEqual([{ ...finding, keptVotes: 3, totalVotes: 3, confidence: 'high', votes }])
+    const votes = securityProfile.lenses.map(lens => ({
+      angle: lens.id,
+      vote: { keep: true, reasoning: 'r' },
+      error: null,
+    }))
+    expect(result.kept).toEqual([
+      {
+        ...finding,
+        keptVotes: 3,
+        totalVotes: 3,
+        confidence: 'high',
+        votes,
+      },
+    ])
     expect(result.meta.profiles.security.invalidFindings).toBe(1)
-    expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'finding-unreadable', detail: expect.stringMatching(/^findings\[2\]: /) }])
+    expect(result.meta.incomplete).toEqual([
+      {
+        profile: 'security',
+        reason: 'finding-unreadable',
+        detail: expect.stringMatching(/^findings\[2\]: /),
+      },
+    ])
   })
 
   it('drops a finding that cites code outside the diff, and says so', async () => {
@@ -333,7 +468,14 @@ describe('review', () => {
     expect(result.kept).toHaveLength(1)
     expect(result.kept[0]).toMatchObject({ keptVotes: 2, totalVotes: 3, confidence: 'medium' })
     expect(result.unreviewed).toEqual([])
-    expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'vote-failed', file: 'a.js', detail: '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high' }])
+    expect(result.meta.incomplete).toEqual([
+      {
+        profile: 'security',
+        reason: 'vote-failed',
+        file: 'a.js',
+        detail: '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high',
+      },
+    ])
   })
 
   it('carries an unusable research reply into meta.incomplete without voting', async () => {
@@ -366,7 +508,12 @@ describe('review', () => {
       '-a()',
       '+benign()',
     ].join('\n')
-    const cited = { ...reported, file: '\\357\\273\\277src/auth.js', line: 40, quote: 'benign()' }
+    const cited = {
+      ...reported,
+      file: '\\357\\273\\277src/auth.js',
+      line: 40,
+      quote: 'benign()',
+    }
     complete.mockResolvedValueOnce(findings(cited)).mockResolvedValue(vote(true))
     const result = await run().review({ diff: decoy })
     expect(result.kept[0]).toMatchObject({ file: '\uFEFFsrc/auth.js', evidence: '-a()\n+benign()' })
@@ -391,10 +538,20 @@ describe('review', () => {
   it('sends the research call to the research provider and the votes to the voter provider', async () => {
     const researcher = vi.fn().mockResolvedValue(findings(reported))
     const voter = vi.fn().mockResolvedValue(vote(true))
-    await createQuorum({ profiles: [securityProfile] }, portsFor(
+    await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(
       securityProfile,
-      { id: 'research', model: 'r', complete: async request => ({ text: await researcher(request), model: 'r' }) },
-      { id: 'voter', model: 'v', complete: async request => ({ text: await voter(request), model: 'v' }) },
+      {
+        id: 'research',
+        model: 'r',
+        complete: async request => ({ text: await researcher(request), model: 'r' }),
+      },
+      {
+        id: 'voter',
+        model: 'v',
+        complete: async request => ({ text: await voter(request), model: 'v' }),
+      },
     )).review({ diff })
     expect(researcher).toHaveBeenCalledTimes(1)
     expect(voter).toHaveBeenCalledTimes(3)
@@ -412,15 +569,31 @@ describe('review', () => {
     const systems = complete.mock.calls.map(([request]) => request.system)
     expect(systems).toHaveLength(3)
     expect(systems[0]).toContain('Find style issues.')
-    expect(systems).toEqual(expect.arrayContaining([expect.stringContaining('Judge naming as one of 2: Is the name wrong?'), expect.stringContaining('Judge layout as one of 2: Is the layout wrong?')]))
+    expect(systems).toEqual(expect.arrayContaining([
+      expect.stringContaining('Judge naming as one of 2: Is the name wrong?'),
+      expect.stringContaining('Judge layout as one of 2: Is the layout wrong?'),
+    ]))
     expect(result.kept).toHaveLength(1)
-    expect(result.kept[0]).toMatchObject({ id: 'fc2136e7fa73', profile: 'style', confidence: 'high', keptVotes: 2, totalVotes: 2 })
+    expect(result.kept[0]).toMatchObject({
+      id: 'fc2136e7fa73',
+      profile: 'style',
+      confidence: 'high',
+      keptVotes: 2,
+      totalVotes: 2,
+    })
     expect(result.kept[0].votes.map(lensVote => lensVote.angle)).toEqual(['naming', 'layout'])
-    expect(result.meta.profiles.style).toMatchObject({ gating: true, policy: { high: 2, medium: null, low: null } })
+    expect(result.meta.profiles.style).toMatchObject({
+      gating: true,
+      policy: { high: 2, medium: null, low: null },
+    })
   })
 
   it('grades and records the gaps of the profile it is given, not of the default one', async () => {
-    const lenient: Profile = { ...style, prompts: { ...style.prompts, vote: 'Judge {{lens.id}}: {{lens.question}}' }, policy: { high: 'unanimous', medium: 'any', low: 'off' } }
+    const lenient: Profile = {
+      ...style,
+      prompts: { ...style.prompts, vote: 'Judge {{lens.id}}: {{lens.question}}' },
+      policy: { high: 'unanimous', medium: 'any', low: 'off' },
+    }
     complete
       .mockResolvedValueOnce(findings(reported))
       .mockResolvedValueOnce(vote(true))
@@ -428,11 +601,21 @@ describe('review', () => {
     const result = await run(lenient).review({ diff })
     expect(result.kept).toHaveLength(1)
     expect(result.kept[0]).toMatchObject({ keptVotes: 1, totalVotes: 2, confidence: 'medium' })
-    expect(result.meta.incomplete).toEqual([{ profile: 'style', reason: 'vote-failed', file: 'a.js', detail: '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high' }])
+    expect(result.meta.incomplete).toEqual([
+      {
+        profile: 'style',
+        reason: 'vote-failed',
+        file: 'a.js',
+        detail: '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high',
+      },
+    ])
   })
 
   it('refuses an invalid profile before any model call', () => {
-    const broken: Profile = { ...securityProfile, prompts: { ...securityProfile.prompts, research: 'Review {{diff}}.' } }
+    const broken: Profile = {
+      ...securityProfile,
+      prompts: { ...securityProfile.prompts, research: 'Review {{diff}}.' },
+    }
     expect(issuesOf(() => run(broken))).toEqual(['security.prompts.research: {{diff}} is not allowed: the diff is appended automatically as fenced data'])
     expect(complete).not.toHaveBeenCalled()
   })
@@ -455,7 +638,15 @@ describe('review', () => {
   })
 
   it('never has more than four model calls in flight', async () => {
-    const wide = ['diff --git a/a.js b/a.js', '--- /dev/null', '+++ b/a.js', '@@ -0,0 +1,3 @@', '+a()', '+b()', '+c()'].join('\n')
+    const wide = [
+      'diff --git a/a.js b/a.js',
+      '--- /dev/null',
+      '+++ b/a.js',
+      '@@ -0,0 +1,3 @@',
+      '+a()',
+      '+b()',
+      '+c()',
+    ].join('\n')
     const cited = [1, 2, 3].map(line => ({ ...reported, line }))
     let active = 0
     let peak = 0
@@ -495,9 +686,24 @@ describe('review', () => {
 
   it('reviews an empty diff without any model call, and still reports the run', async () => {
     const events: QuorumEvent[] = []
-    const result = await createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, provider), events: event => events.push(event) }).review({ diff: '  \n' })
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, provider),
+      events: event => events.push(event),
+    }).review({ diff: '  \n' })
     expect(complete).not.toHaveBeenCalled()
-    expect(result).toMatchObject({ kept: [], discarded: [], unreviewed: [], meta: { incomplete: [], profiles: { security: { invalidFindings: 0 } } } })
+    expect(result).toMatchObject({
+      kept: [],
+      discarded: [],
+      unreviewed: [],
+      meta: {
+        incomplete: [],
+        profiles: {
+          security: { invalidFindings: 0 },
+        },
+      },
+    })
     expect(events.map(event => event.type)).toEqual(['run:start', 'run:end'])
   })
 
@@ -513,7 +719,9 @@ describe('review', () => {
     await expect(run().review(input as unknown as { diff: string })).rejects.toMatchObject({
       name: 'ConfigError',
       message: 'input: must be an object holding the diff string',
-      issues: [{ path: 'input', message: 'must be an object holding the diff string' }],
+      issues: [
+        { path: 'input', message: 'must be an object holding the diff string' },
+      ],
     })
     expect(complete).not.toHaveBeenCalled()
   })
@@ -522,44 +730,87 @@ describe('review', () => {
     const quorum = run()
     await expect(quorum.review({} as { diff: string }, { signal: 'stop' as unknown as AbortSignal })).rejects.toMatchObject({
       name: 'ConfigError',
-      issues: [{ path: 'diff', message: 'must be a string' }, { path: 'signal', message: 'must be an AbortSignal' }],
+      issues: [
+        { path: 'diff', message: 'must be a string' },
+        { path: 'signal', message: 'must be an AbortSignal' },
+      ],
     })
     await expect(quorum.review({ diff }, null as unknown as { signal?: AbortSignal })).rejects.toMatchObject({
       name: 'ConfigError',
-      issues: [{ path: 'options', message: 'must be an object' }],
+      issues: [
+        { path: 'options', message: 'must be an object' },
+      ],
     })
     expect(complete).not.toHaveBeenCalled()
   })
 
   it('sends each lens to its own provider', async () => {
     const finder = fake('finder', () => findings(reported))
-    const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, fake(lens.id, () => vote(true))]))
-    await createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research: finder, voters } } }).review({ diff })
+    const voters = Object.fromEntries(securityProfile.lenses.map(lens => [
+      lens.id,
+      fake(lens.id, () => vote(true)),
+    ]))
+    await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      profiles: {
+        security: { research: finder, voters },
+      },
+    }).review({ diff })
     expect(finder.requests).toHaveLength(1)
     for (const lens of securityProfile.lenses) {
-      expect(voters[lens.id].requests.map(request => request.system)).toEqual([expect.stringContaining(lens.question)])
+      expect(voters[lens.id].requests.map(request => request.system)).toEqual([
+        expect.stringContaining(lens.question),
+      ])
     }
   })
 
   it('runs several profiles on their own providers and tags every result with its profile', async () => {
-    const security = fake('security', request => isVote(request) ? vote(true) : findings(reported))
-    const styled = fake('styled', request => isVote(request) ? vote(false) : findings({ ...reported, category: 'naming' }))
+    const security = fake('security', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
+    const styled = fake('styled', request => isVote(request)
+      ? vote(false)
+      : findings({ ...reported, category: 'naming' }))
     const quiet = { ...style, gating: false }
-    const ports = { profiles: { ...portsFor(securityProfile, security).profiles, ...portsFor(quiet, styled).profiles } }
-    const result = await createQuorum({ profiles: [securityProfile, quiet] }, ports).review({ diff })
+    const ports = {
+      profiles: {
+        ...portsFor(securityProfile, security).profiles,
+        ...portsFor(quiet, styled).profiles,
+      },
+    }
+    const result = await createQuorum({
+      profiles: [securityProfile, quiet],
+    }, ports).review({ diff })
     expect(security.requests).toHaveLength(4)
     expect(styled.requests).toHaveLength(3)
-    expect(result.kept.map(verdict => [verdict.profile, verdict.category])).toEqual([['security', 'CWE-78']])
-    expect(result.discarded.map(verdict => [verdict.profile, verdict.category])).toEqual([['style', 'naming']])
+    expect(result.kept.map(verdict => [verdict.profile, verdict.category])).toEqual([
+      ['security', 'CWE-78'],
+    ])
+    expect(result.discarded.map(verdict => [verdict.profile, verdict.category])).toEqual([
+      ['style', 'naming'],
+    ])
     expect(Object.keys(result.meta.profiles)).toEqual(['security', 'style'])
     expect([result.meta.profiles.security.gating, result.meta.profiles.style.gating]).toEqual([true, false])
   })
 
   it('never sends one profile\'s output to another profile\'s providers', async () => {
-    const security = fake('security', request => isVote(request) ? vote(true, 'SECURITY-REASONING') : findings({ ...reported, summary: 'SECURITY-CLAIM' }))
-    const styled = fake('styled', request => isVote(request) ? vote(true) : findings(reported))
-    const ports = { profiles: { ...portsFor(securityProfile, security).profiles, ...portsFor(style, styled).profiles } }
-    await createQuorum({ profiles: [securityProfile, style], concurrency: 1 }, ports).review({ diff })
+    const security = fake('security', request => isVote(request)
+      ? vote(true, 'SECURITY-REASONING')
+      : findings({ ...reported, summary: 'SECURITY-CLAIM' }))
+    const styled = fake('styled', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
+    const ports = {
+      profiles: {
+        ...portsFor(securityProfile, security).profiles,
+        ...portsFor(style, styled).profiles,
+      },
+    }
+    await createQuorum({
+      profiles: [securityProfile, style],
+      concurrency: 1,
+    }, ports).review({ diff })
     expect(styled.requests).toHaveLength(3)
     expect(JSON.stringify(styled.requests)).not.toContain('SECURITY-')
   })
@@ -568,7 +819,10 @@ describe('review', () => {
     const voteRequests = async (keep: boolean): Promise<string> => {
       const finder = fake('finder', () => findings(reported, { ...reported, category: 'CWE-94' }))
       const voter = fake('voter', () => vote(keep, `REASONING-${String(keep)}`))
-      await createQuorum({ profiles: [securityProfile], concurrency: 1 }, portsFor(securityProfile, finder, voter)).review({ diff })
+      await createQuorum({
+        profiles: [securityProfile],
+        concurrency: 1,
+      }, portsFor(securityProfile, finder, voter)).review({ diff })
       expect(voter.requests).toHaveLength(6)
       const sent = JSON.stringify(voter.requests)
       expect(sent).not.toContain('REASONING-')
@@ -580,8 +834,12 @@ describe('review', () => {
   it('sends no environment value in any request, the key variables of the environment wiring included', async () => {
     const secrets = { QUORUM_TEST_SECRET: 'sk-env-secret-value', RESEARCH_API_KEY: 'sk-research-key-value', VOTER_API_KEY: 'sk-voter-key-value' }
     for (const [name, value] of Object.entries(secrets)) vi.stubEnv(name, value)
-    const model = fake('m', request => isVote(request) ? vote(true) : findings(reported))
-    await createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, model)).review({ diff })
+    const model = fake('m', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
+    await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, model)).review({ diff })
     expect(model.requests).toHaveLength(4)
     const sent = JSON.stringify(model.requests)
     for (const value of Object.values(secrets)) expect(sent).not.toContain(value)
@@ -595,12 +853,22 @@ describe('review', () => {
       peak = Math.max(peak, active)
       await new Promise(resolve => setTimeout(resolve, 5))
       active--
-      return isVote(request) ? vote(true) : findings(reported)
+      return isVote(request)
+        ? vote(true)
+        : findings(reported)
     }
     const a = fake('a', answer)
     const b = fake('b', answer)
-    const ports = { profiles: { ...portsFor(securityProfile, a).profiles, ...portsFor(style, b).profiles } }
-    await createQuorum({ profiles: [securityProfile, style], concurrency: 2 }, ports).review({ diff })
+    const ports = {
+      profiles: {
+        ...portsFor(securityProfile, a).profiles,
+        ...portsFor(style, b).profiles,
+      },
+    }
+    await createQuorum({
+      profiles: [securityProfile, style],
+      concurrency: 2,
+    }, ports).review({ diff })
     expect(a.requests.length + b.requests.length).toBe(7)
     expect(peak).toBe(2)
   })
@@ -609,7 +877,9 @@ describe('review', () => {
     complete.mockResolvedValueOnce(findings(reported, { ...reported, line: 2 })).mockResolvedValue(vote(true))
     const result = await run(securityProfile, { maxFindings: 1 }).review({ diff })
     expect(complete).toHaveBeenCalledTimes(4)
-    expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'findings-capped', detail: '1 of 2 reported findings were not reviewed (the cap is 1)' }])
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'findings-capped', detail: '1 of 2 reported findings were not reviewed (the cap is 1)' },
+    ])
   })
 
   it('records a vote whose provider throws something other than an Error with its text', async () => {
@@ -620,8 +890,14 @@ describe('review', () => {
 
   it('counts a reply without text as a failed call, not a crash', async () => {
     const finder = fake('finder', () => findings(reported))
-    const mute: Provider = { id: 'mute', model: 'mute-model', complete: async () => ({ model: 'mute-model' }) as unknown as CompletionResponse }
-    const result = await createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, finder, mute)).review({ diff })
+    const mute: Provider = {
+      id: 'mute',
+      model: 'mute-model',
+      complete: async () => ({ model: 'mute-model' }) as unknown as CompletionResponse,
+    }
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder, mute)).review({ diff })
     expect(result.unreviewed[0].votes.map(lensVote => lensVote.error)).toEqual(['mute: returned no reply text', 'mute: returned no reply text', 'mute: returned no reply text'])
   })
 })
@@ -630,7 +906,9 @@ describe('meta and events', () => {
   it('fills meta: version, timing, and per profile its providers, thresholds, gating and invalid findings', async () => {
     const finder = fake('finder', () => findings(reported, { ...reported, file: 'missing.js' }))
     const voter = fake('voter', () => vote(true))
-    const result = await createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, finder, voter)).review({ diff })
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder, voter)).review({ diff })
     const lens = { id: 'voter', model: 'voter-model' }
     expect(result.meta).toEqual({
       version: packageJson.version,
@@ -638,7 +916,10 @@ describe('meta and events', () => {
       durationMs: expect.any(Number),
       profiles: {
         security: {
-          providers: { research: { id: 'finder', model: 'finder-model' }, lenses: { reachability: lens, impact: lens, defenses: lens } },
+          providers: {
+            research: { id: 'finder', model: 'finder-model' },
+            lenses: { reachability: lens, impact: lens, defenses: lens },
+          },
           policy: { high: 3, medium: 2, low: null },
           gating: true,
           invalidFindings: 1,
@@ -653,8 +934,28 @@ describe('meta and events', () => {
   it('serializes a verdict and the meta with their keys in a stable order', async () => {
     complete.mockResolvedValueOnce(findings(reported)).mockResolvedValue(vote(true))
     const result = await run().review({ diff })
-    expect(Object.keys(result.kept[0])).toEqual(['id', 'profile', 'file', 'line', 'category', 'summary', 'evidence', 'quoteMatched', 'keptVotes', 'totalVotes', 'confidence', 'votes'])
-    expect(Object.keys(result.meta)).toEqual(['version', 'startedAt', 'durationMs', 'profiles', 'incomplete', 'flags'])
+    expect(Object.keys(result.kept[0])).toEqual([
+      'id',
+      'profile',
+      'file',
+      'line',
+      'category',
+      'summary',
+      'evidence',
+      'quoteMatched',
+      'keptVotes',
+      'totalVotes',
+      'confidence',
+      'votes',
+    ])
+    expect(Object.keys(result.meta)).toEqual([
+      'version',
+      'startedAt',
+      'durationMs',
+      'profiles',
+      'incomplete',
+      'flags',
+    ])
   })
 
   it('sums the usage providers report, ignoring counts that are not finite and non-negative', async () => {
@@ -667,13 +968,35 @@ describe('meta and events', () => {
     const metered: Provider = {
       id: 'metered',
       model: 'metered-model',
-      complete: async request => ({ text: isVote(request) ? vote(true) : findings(reported), model: 'metered-model', usage: usages.shift() as Usage }),
+      complete: async request => ({
+        text: isVote(request)
+          ? vote(true)
+          : findings(reported),
+        model: 'metered-model',
+        usage: usages.shift() as Usage,
+      }),
     }
     const events: QuorumEvent[] = []
-    const result = await createQuorum({ profiles: [securityProfile], concurrency: 1 }, { ...portsFor(securityProfile, metered), events: event => events.push(event) }).review({ diff })
+    const result = await createQuorum({
+      profiles: [securityProfile],
+      concurrency: 1,
+    }, {
+      ...portsFor(securityProfile, metered),
+      events: event => events.push(event),
+    }).review({ diff })
     expect(result.meta.usage).toEqual({ inputTokens: 11, outputTokens: 2, costUsd: 0.5 })
-    expect(Object.keys(result.meta)).toEqual(['version', 'startedAt', 'durationMs', 'profiles', 'usage', 'incomplete', 'flags'])
-    expect(events.flatMap(event => event.type === 'call' ? [event.usage] : [])).toEqual([
+    expect(Object.keys(result.meta)).toEqual([
+      'version',
+      'startedAt',
+      'durationMs',
+      'profiles',
+      'usage',
+      'incomplete',
+      'flags',
+    ])
+    expect(events.flatMap(event => event.type === 'call'
+      ? [event.usage]
+      : [])).toEqual([
       { inputTokens: 1, outputTokens: 2, costUsd: 0.5 },
       { inputTokens: 10, outputTokens: 0 },
       undefined,
@@ -685,9 +1008,24 @@ describe('meta and events', () => {
     const events: QuorumEvent[] = []
     const finder = fake('finder', () => findings(reported))
     const voter = fake('voter', () => vote(true))
-    await createQuorum({ profiles: [securityProfile], concurrency: 1 }, { ...portsFor(securityProfile, finder, voter), events: event => events.push(event) }).review({ diff })
+    await createQuorum({
+      profiles: [securityProfile],
+      concurrency: 1,
+    }, {
+      ...portsFor(securityProfile, finder, voter),
+      events: event => events.push(event),
+    }).review({ diff })
     const lens = { id: 'voter', model: 'voter-model' }
-    expect(events[0]).toEqual({ type: 'run:start', profiles: ['security'], providers: { security: { research: { id: 'finder', model: 'finder-model' }, lenses: { reachability: lens, impact: lens, defenses: lens } } } })
+    expect(events[0]).toEqual({
+      type: 'run:start',
+      profiles: ['security'],
+      providers: {
+        security: {
+          research: { id: 'finder', model: 'finder-model' },
+          lenses: { reachability: lens, impact: lens, defenses: lens },
+        },
+      },
+    })
     expect(events.map(event => event.type).filter(type => type !== 'call' && type !== 'vote')).toEqual([
       'run:start',
       'stage:start',
@@ -699,25 +1037,70 @@ describe('meta and events', () => {
       'stage:end',
       'run:end',
     ])
-    expect(events.filter(event => event.type === 'stage:end')).toEqual(['research', 'dedup', 'panel'].map(stage => ({ type: 'stage:end', profile: 'security', stage, durationMs: expect.any(Number), count: 1 })))
-    expect(events.flatMap(event => event.type === 'call' ? [[event.role, event.lens, event.provider.id, event.ok]] : [])).toEqual([
+    expect(events.filter(event => event.type === 'stage:end')).toEqual(['research', 'dedup', 'panel'].map(stage => ({
+      type: 'stage:end',
+      profile: 'security',
+      stage,
+      durationMs: expect.any(Number),
+      count: 1,
+    })))
+    expect(events.flatMap(event => event.type === 'call'
+      ? [
+          [
+            event.role,
+            event.lens,
+            event.provider.id,
+            event.ok,
+          ],
+        ]
+      : [])).toEqual([
       ['research', undefined, 'finder', true],
       ['vote', 'reachability', 'voter', true],
       ['vote', 'impact', 'voter', true],
       ['vote', 'defenses', 'voter', true],
     ])
-    expect(events.filter(event => event.type === 'vote')).toEqual(securityProfile.lenses.map(({ id }) => ({ type: 'vote', profile: 'security', findingId: '235f5feb3565', lens: id, keep: true })))
-    expect(events.find(event => event.type === 'verdict')).toEqual({ type: 'verdict', profile: 'security', findingId: '235f5feb3565', keptVotes: 3, totalVotes: 3, confidence: 'high', status: 'kept' })
-    expect(events.at(-1)).toEqual({ type: 'run:end', kept: 1, discarded: 0, unreviewed: 0, incomplete: 0, durationMs: expect.any(Number) })
+    expect(events.filter(event => event.type === 'vote')).toEqual(securityProfile.lenses.map(({ id }) => ({
+      type: 'vote',
+      profile: 'security',
+      findingId: '235f5feb3565',
+      lens: id,
+      keep: true,
+    })))
+    expect(events.find(event => event.type === 'verdict')).toEqual({
+      type: 'verdict',
+      profile: 'security',
+      findingId: '235f5feb3565',
+      keptVotes: 3,
+      totalVotes: 3,
+      confidence: 'high',
+      status: 'kept',
+    })
+    expect(events.at(-1)).toEqual({
+      type: 'run:end',
+      kept: 1,
+      discarded: 0,
+      unreviewed: 0,
+      incomplete: 0,
+      durationMs: expect.any(Number),
+    })
   })
 
   it('emits a finding:invalid event per finding citing code outside the diff, and an incomplete event per gap', async () => {
     const events: QuorumEvent[] = []
     const finder = fake('finder', () => findings({ ...reported, file: 'missing.js' }, { file: 'x.js' }))
-    const result = await createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, finder), events: event => events.push(event) }).review({ diff })
-    expect(events.filter(event => event.type === 'finding:invalid')).toEqual([{ type: 'finding:invalid', profile: 'security', reason: 'missing.js:1 is not in the diff' }])
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, finder),
+      events: event => events.push(event),
+    }).review({ diff })
+    expect(events.filter(event => event.type === 'finding:invalid')).toEqual([
+      { type: 'finding:invalid', profile: 'security', reason: 'missing.js:1 is not in the diff' },
+    ])
     expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['finding-unreadable', 'research-unusable'])
-    expect(events.flatMap(event => event.type === 'incomplete' ? [event.entry] : [])).toEqual(result.meta.incomplete)
+    expect(events.flatMap(event => event.type === 'incomplete'
+      ? [event.entry]
+      : [])).toEqual(result.meta.incomplete)
     expect(result.meta.profiles.security.invalidFindings).toBe(1)
     expect(events.at(-1)).toMatchObject({ type: 'run:end', incomplete: 2 })
   })
@@ -725,29 +1108,67 @@ describe('meta and events', () => {
   it('reports a failed vote and the gap it leaves through events', async () => {
     complete.mockResolvedValueOnce(findings(reported)).mockResolvedValueOnce(vote(true)).mockResolvedValueOnce(vote(true)).mockRejectedValue(new Error('endpoint down'))
     const events: QuorumEvent[] = []
-    const result = await createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, provider), events: event => events.push(event) }).review({ diff })
-    expect(events.filter(event => event.type === 'vote').at(-1)).toEqual({ type: 'vote', profile: 'security', findingId: '235f5feb3565', lens: 'defenses', keep: null, error: 'endpoint down' })
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, provider),
+      events: event => events.push(event),
+    }).review({ diff })
+    expect(events.filter(event => event.type === 'vote').at(-1)).toEqual({
+      type: 'vote',
+      profile: 'security',
+      findingId: '235f5feb3565',
+      lens: 'defenses',
+      keep: null,
+      error: 'endpoint down',
+    })
     expect(events.filter(event => event.type === 'call').at(-1)).toMatchObject({ role: 'vote', lens: 'defenses', ok: false })
-    expect(events.flatMap(event => event.type === 'incomplete' ? [event.entry] : [])).toEqual(result.meta.incomplete)
-    expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'vote-failed', file: 'a.js', detail: '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high' }])
+    expect(events.flatMap(event => event.type === 'incomplete'
+      ? [event.entry]
+      : [])).toEqual(result.meta.incomplete)
+    expect(result.meta.incomplete).toEqual([
+      {
+        profile: 'security',
+        reason: 'vote-failed',
+        file: 'a.js',
+        detail: '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high',
+      },
+    ])
   })
 })
 
 describe('advisory flags', () => {
-  const flag = { code: 'hidden-characters', file: 'other.js', line: 1, detail: 'U+200B on 1 added line(s)' }
-  const answer = (request: CompletionRequest): string => isVote(request) ? vote(true) : findings(reported)
+  const flag = {
+    code: 'hidden-characters',
+    file: 'other.js',
+    line: 1,
+    detail: 'U+200B on 1 added line(s)',
+  }
+  const answer = (request: CompletionRequest): string => isVote(request)
+    ? vote(true)
+    : findings(reported)
 
   it('reports the flags of the diff in meta and as events, after run:start and before any stage', async () => {
     const events: QuorumEvent[] = []
-    const result = await createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, fake('both', answer)), events: event => events.push(event) }).review({ diff: flaggedDiff })
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, fake('both', answer)),
+      events: event => events.push(event),
+    }).review({ diff: flaggedDiff })
     expect(result.meta.flags).toEqual([flag])
     expect(events.slice(0, 3).map(event => event.type)).toEqual(['run:start', 'flag', 'stage:start'])
     expect(events[1]).toEqual({ type: 'flag', flag })
   })
 
   it('never lets a flag change a verdict or a gap', async () => {
-    const review = async (text: string): Promise<QuorumResult> => createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, fake('both', answer))).review({ diff: text })
-    const [clean, flagged] = await Promise.all([review(diff), review(flaggedDiff)])
+    const review = async (text: string): Promise<QuorumResult> => createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, fake('both', answer))).review({ diff: text })
+    const [clean, flagged] = await Promise.all([
+      review(diff),
+      review(flaggedDiff),
+    ])
     expect(flagged.meta.flags).toHaveLength(1)
     expect(flagged.kept).toEqual(clean.kept)
     expect(flagged.discarded).toEqual(clean.discarded)
@@ -758,7 +1179,12 @@ describe('advisory flags', () => {
 
   it('records none for a blank diff, and sends no flag event', async () => {
     const events: QuorumEvent[] = []
-    const result = await createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, fake('both', answer)), events: event => events.push(event) }).review({ diff: '  \n' })
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, fake('both', answer)),
+      events: event => events.push(event),
+    }).review({ diff: '  \n' })
     expect(result.meta.flags).toEqual([])
     expect(events.map(event => event.type)).toEqual(['run:start', 'run:end'])
   })
@@ -776,8 +1202,19 @@ describe('events as copies', () => {
       if (event.type === 'incomplete') event.entry.detail = 'changed'
       if (event.type === 'flag') event.flag.detail = 'changed'
     }
-    const result = await createQuorum({ profiles: [securityProfile], concurrency: 1 }, { ...portsFor(securityProfile, finder, voter), events: vandal }).review({ diff: flaggedDiff })
-    expect(models).toEqual(['finder-model', 'voter-model', 'voter-model', 'voter-model'])
+    const result = await createQuorum({
+      profiles: [securityProfile],
+      concurrency: 1,
+    }, {
+      ...portsFor(securityProfile, finder, voter),
+      events: vandal,
+    }).review({ diff: flaggedDiff })
+    expect(models).toEqual([
+      'finder-model',
+      'voter-model',
+      'voter-model',
+      'voter-model',
+    ])
     expect(result.meta.profiles.security.providers.research.model).toBe('finder-model')
     expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['finding-unreadable'])
     expect(result.meta.incomplete[0]?.detail).toBe('findings[1]: line: Invalid input: expected number, received undefined')
@@ -789,8 +1226,15 @@ describe('abort', () => {
   it('rejects with the abort reason, before any event or call, when the signal is already aborted', async () => {
     const model = fake('m', () => findings())
     const events: QuorumEvent[] = []
-    const quorum = createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, model), events: event => events.push(event) })
-    await expect(quorum.review({ diff }, { signal: AbortSignal.abort() })).rejects.toMatchObject({ name: 'AbortError' })
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, model),
+      events: event => events.push(event),
+    })
+    await expect(quorum.review({ diff }, {
+      signal: AbortSignal.abort(),
+    })).rejects.toMatchObject({ name: 'AbortError' })
     expect(model.requests).toEqual([])
     expect(events).toEqual([])
   })
@@ -803,12 +1247,26 @@ describe('abort', () => {
       request.signal?.addEventListener('abort', () => reject(new Error('connection reset')))
       controller.abort()
     }))
-    const quorum = createQuorum({ profiles: [securityProfile], concurrency: 1 }, { ...portsFor(securityProfile, finder, hanging), events: event => events.push(event) })
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+      concurrency: 1,
+    }, {
+      ...portsFor(securityProfile, finder, hanging),
+      events: event => events.push(event),
+    })
     await expect(quorum.review({ diff }, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' })
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(finder.requests[0].signal).toBeInstanceOf(AbortSignal)
     expect(hanging.requests).toHaveLength(1)
-    expect(events.map(event => event.type)).toEqual(['run:start', 'stage:start', 'call', 'stage:end', 'stage:start', 'stage:end', 'stage:start'])
+    expect(events.map(event => event.type)).toEqual([
+      'run:start',
+      'stage:start',
+      'call',
+      'stage:end',
+      'stage:start',
+      'stage:end',
+      'stage:start',
+    ])
   })
 
   it('rejects with the abort reason, not the error of the call it cut', async () => {
@@ -821,7 +1279,9 @@ describe('abort', () => {
         throw new ProviderError({ providerId: 'finder', kind: 'aborted', message: 'request aborted' })
       },
     }
-    const quorum = createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, finder))
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder))
     await expect(quorum.review({ diff }, { signal: controller.signal })).rejects.toBe(controller.signal.reason)
   })
 
@@ -834,21 +1294,35 @@ describe('abort', () => {
     ['a diff, aborted by the sink as the last stage ends', diff, 'stage:end'],
   ])('never resolves once aborted, even when nothing is left to run: %s', async (_name, text, abortOn) => {
     const controller = new AbortController()
-    const model = fake('m', request => isVote(request) ? vote(true) : findings(reported))
+    const model = fake('m', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
     const sink = (event: QuorumEvent): void => {
       if (event.type === abortOn && (event.type !== 'stage:end' || event.stage === 'panel')) controller.abort()
     }
-    const quorum = createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, model), events: sink })
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, model),
+      events: sink,
+    })
     await expect(quorum.review({ diff: text }, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' })
   })
 
   it('resolves when the signal aborts from the run:end handler: the review is over', async () => {
     const controller = new AbortController()
-    const model = fake('m', request => isVote(request) ? vote(true) : findings(reported))
+    const model = fake('m', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
     const sink = (event: QuorumEvent): void => {
       if (event.type === 'run:end') controller.abort()
     }
-    const quorum = createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, model), events: sink })
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, model),
+      events: sink,
+    })
     const result = await quorum.review({ diff }, { signal: controller.signal })
     expect(controller.signal.aborted).toBe(true)
     expect(result.kept.map(verdict => verdict.id)).toEqual([finding.id])
@@ -862,7 +1336,16 @@ describe('abort', () => {
       request.signal?.addEventListener('abort', () => reject(new Error('connection reset')))
       controller.abort()
     }))
-    const quorum = createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research: finder, voters: { reachability: deaf, impact: deaf, defenses: cut } } } })
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, {
+      profiles: {
+        security: {
+          research: finder,
+          voters: { reachability: deaf, impact: deaf, defenses: cut },
+        },
+      },
+    })
     const outcome = quorum.review({ diff }, { signal: controller.signal }).then(() => 'resolved', (error: unknown) => error)
     const pending = new Promise(resolve => setTimeout(resolve, 50, 'still pending'))
     expect(await Promise.race([outcome, pending])).toMatchObject({ name: 'AbortError' })
@@ -877,12 +1360,28 @@ describe('event sink', () => {
       seen.push(event)
       if (event.type === 'stage:end' && event.stage === 'research' && event.profile === 'security') throw bug
     }
-    const security = fake('security', request => isVote(request) ? vote(true) : findings(reported))
-    const styled = fake('styled', request => isVote(request) ? vote(true) : findings(reported))
-    const ports = { profiles: { ...portsFor(securityProfile, security).profiles, ...portsFor(style, styled).profiles }, events: sink }
-    await expect(createQuorum({ profiles: [securityProfile, style], concurrency: 1 }, ports).review({ diff })).rejects.toBe(bug)
+    const security = fake('security', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
+    const styled = fake('styled', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
+    const ports = {
+      profiles: {
+        ...portsFor(securityProfile, security).profiles,
+        ...portsFor(style, styled).profiles,
+      },
+      events: sink,
+    }
+    await expect(createQuorum({
+      profiles: [securityProfile, style],
+      concurrency: 1,
+    }, ports).review({ diff })).rejects.toBe(bug)
     await new Promise(resolve => setTimeout(resolve, 20))
-    const sent = [...security.requests, ...styled.requests]
+    const sent = [
+      ...security.requests,
+      ...styled.requests,
+    ]
     expect(sent.length).toBeLessThanOrEqual(2)
     expect(sent.filter(isVote)).toEqual([])
     expect(seen.at(-1)).toMatchObject({ type: 'stage:end', profile: 'security', stage: 'research' })
@@ -890,30 +1389,51 @@ describe('event sink', () => {
 
   it('rejects with its error when it throws on a vote\'s call, instead of recording a failed vote', async () => {
     const bug = new Error('sink bug')
-    const model = fake('m', request => isVote(request) ? vote(true) : findings(reported))
+    const model = fake('m', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
     const sink = (event: QuorumEvent): void => {
       if (event.type === 'call' && event.role === 'vote') throw bug
     }
-    await expect(createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, model), events: sink }).review({ diff })).rejects.toBe(bug)
+    await expect(createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, model),
+      events: sink,
+    }).review({ diff })).rejects.toBe(bug)
   })
 
   it('rejects with its error when it throws on a vote\'s call, even when the caller passes a signal too', async () => {
     const bug = new Error('sink bug')
-    const model = fake('m', request => isVote(request) ? vote(true) : findings(reported))
+    const model = fake('m', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
     const sink = (event: QuorumEvent): void => {
       if (event.type === 'call' && event.role === 'vote') throw bug
     }
-    const quorum = createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, model), events: sink })
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, model),
+      events: sink,
+    })
     await expect(quorum.review({ diff }, { signal: new AbortController().signal })).rejects.toBe(bug)
   })
 
   it('rejects with its error when it throws on the last event', async () => {
     const bug = new Error('sink bug')
-    const model = fake('m', request => isVote(request) ? vote(true) : findings(reported))
+    const model = fake('m', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
     const sink = (event: QuorumEvent): void => {
       if (event.type === 'run:end') throw bug
     }
-    await expect(createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, model), events: sink }).review({ diff })).rejects.toBe(bug)
+    await expect(createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, model),
+      events: sink,
+    }).review({ diff })).rejects.toBe(bug)
   })
 })
 
@@ -927,9 +1447,20 @@ describe('failure', () => {
         throw new ProviderError({ providerId: 'broken', kind: 'http', message: 'endpoint down' })
       },
     }
-    const styled = fake('styled', request => isVote(request) ? vote(true) : findings(reported))
-    const ports = { profiles: { ...portsFor(securityProfile, broken).profiles, ...portsFor(style, styled).profiles }, events: (event: QuorumEvent) => { events.push(event) } }
-    await expect(createQuorum({ profiles: [securityProfile, style], concurrency: 1 }, ports).review({ diff })).rejects.toThrow('broken: endpoint down')
+    const styled = fake('styled', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
+    const ports = {
+      profiles: {
+        ...portsFor(securityProfile, broken).profiles,
+        ...portsFor(style, styled).profiles,
+      },
+      events: (event: QuorumEvent) => { events.push(event) },
+    }
+    await expect(createQuorum({
+      profiles: [securityProfile, style],
+      concurrency: 1,
+    }, ports).review({ diff })).rejects.toThrow('broken: endpoint down')
     const delivered = events.length
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(styled.requests).toEqual([])
@@ -946,7 +1477,12 @@ describe('a request too large for its provider', () => {
   it('records a research request refused as too large as a request-too-large gap, and reviews nothing else of the profile', async () => {
     const voter = fake('voter', () => vote(true))
     const events: QuorumEvent[] = []
-    const result = await createQuorum({ profiles: [securityProfile] }, { ...portsFor(securityProfile, refusing('research'), voter), events: event => events.push(event) }).review({ diff })
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, refusing('research'), voter),
+      events: event => events.push(event),
+    }).review({ diff })
     const gap = { profile: 'security', reason: 'request-too-large', detail: `the research request was not sent: research: ${MESSAGE}` }
     expect(result).toMatchObject({ kept: [], discarded: [], unreviewed: [] })
     expect(result.meta.incomplete).toEqual([gap])
@@ -955,32 +1491,73 @@ describe('a request too large for its provider', () => {
   })
 
   it('lets the other profiles run when one profile\'s research request is refused', async () => {
-    const reviewer = fake('reviewer', request => isVote(request) ? vote(true) : findings(reported))
-    const ports: QuorumPorts = { profiles: { ...portsFor(securityProfile, refusing('research')).profiles, ...portsFor(style, reviewer).profiles } }
-    const result = await createQuorum({ profiles: [securityProfile, style] }, ports).review({ diff })
-    expect(result.meta.incomplete.map(entry => [entry.profile, entry.reason])).toEqual([['security', 'request-too-large']])
-    expect(result.kept.map(verdict => [verdict.profile, verdict.confidence])).toEqual([['style', 'high']])
+    const reviewer = fake('reviewer', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
+    const ports: QuorumPorts = {
+      profiles: {
+        ...portsFor(securityProfile, refusing('research')).profiles,
+        ...portsFor(style, reviewer).profiles,
+      },
+    }
+    const result = await createQuorum({
+      profiles: [securityProfile, style],
+    }, ports).review({ diff })
+    expect(result.meta.incomplete.map(entry => [entry.profile, entry.reason])).toEqual([
+      ['security', 'request-too-large'],
+    ])
+    expect(result.kept.map(verdict => [verdict.profile, verdict.confidence])).toEqual([
+      ['style', 'high'],
+    ])
   })
 
   it('still fails the review on a research failure of any other kind, unsupported included', async () => {
     const research = fake('research', () => {
       throw new ProviderError({ providerId: 'research', kind: 'unsupported', message: 'cannot take this request' })
     })
-    await expect(createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, research)).review({ diff })).rejects.toThrow('research: cannot take this request')
+    await expect(createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, research)).review({ diff })).rejects.toThrow('research: cannot take this request')
   })
 
   it('records one request-too-large gap per finding whose vote requests are refused, and leaves the finding unreviewed', async () => {
-    const result = await createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, fake('research', () => findings(reported)), refusing('voter'))).review({ diff })
-    expect(result.unreviewed.map(verdict => verdict.votes.map(entry => entry.error))).toEqual([Array.from({ length: 3 }).fill(`voter: ${MESSAGE}`)])
-    expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'request-too-large', file: 'a.js', detail: `"a.js":1: 3 of 3 vote requests were not sent: voter: ${MESSAGE}` }])
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, fake('research', () => findings(reported)), refusing('voter'))).review({ diff })
+    expect(result.unreviewed.map(verdict => verdict.votes.map(entry => entry.error))).toEqual([
+      Array.from({ length: 3 }).fill(`voter: ${MESSAGE}`),
+    ])
+    expect(result.meta.incomplete).toEqual([
+      {
+        profile: 'security',
+        reason: 'request-too-large',
+        file: 'a.js',
+        detail: `"a.js":1: 3 of 3 vote requests were not sent: voter: ${MESSAGE}`,
+      },
+    ])
   })
 
   it('records the gap beside what the other votes decide, before the finding\'s vote-failed gap', async () => {
     const research = fake('research', () => findings(reported))
     const keeps = fake('keeps', () => vote(true))
-    const ports: QuorumPorts = { profiles: { security: { research, voters: { reachability: refusing('small'), impact: keeps, defenses: keeps } } } }
-    const result = await createQuorum({ profiles: [securityProfile] }, ports).review({ diff })
-    expect(result.kept.map(verdict => [verdict.confidence, verdict.keptVotes, verdict.totalVotes])).toEqual([['medium', 2, 3]])
+    const ports: QuorumPorts = {
+      profiles: {
+        security: {
+          research,
+          voters: {
+            reachability: refusing('small'),
+            impact: keeps,
+            defenses: keeps,
+          },
+        },
+      },
+    }
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, ports).review({ diff })
+    expect(result.kept.map(verdict => [verdict.confidence, verdict.keptVotes, verdict.totalVotes])).toEqual([
+      ['medium', 2, 3],
+    ])
     expect(result.meta.incomplete.map(entry => [entry.reason, entry.detail])).toEqual([
       ['request-too-large', `"a.js":1: 1 of 3 vote requests were not sent: small: ${MESSAGE}`],
       ['vote-failed', '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high'],
@@ -993,7 +1570,9 @@ describe('a request too large for its provider', () => {
       controller.abort(new Error('stopped'))
       throw new ProviderError({ providerId: 'research', kind: 'too-large', message: MESSAGE })
     })
-    await expect(createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, research)).review({ diff }, { signal: controller.signal })).rejects.toThrow('stopped')
+    await expect(createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, research)).review({ diff }, { signal: controller.signal })).rejects.toThrow('stopped')
   })
 
   describe('recognised by its kind, whatever class made it', () => {
@@ -1001,69 +1580,161 @@ describe('a request too large for its provider', () => {
     const throwing = (id: string, error: unknown): Fake => fake(id, () => {
       throw error
     })
-    const researchGaps = async (error: unknown): Promise<QuorumResult['meta']['incomplete']> => (await createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, throwing('research', error))).review({ diff })).meta.incomplete
-    const voteGaps = async (error: unknown): Promise<QuorumResult> => createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, fake('research', () => findings(reported)), throwing('voter', error))).review({ diff })
+    const researchGaps = async (error: unknown): Promise<QuorumResult['meta']['incomplete']> => (await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, throwing('research', error))).review({ diff })).meta.incomplete
+    const voteGaps = async (error: unknown): Promise<QuorumResult> => createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, fake('research', () => findings(reported)), throwing('voter', error))).review({ diff })
 
     it('records a plain object with an own kind of too-large as a research gap', async () => {
-      expect(await researchGaps({ kind: 'too-large', message: 'x' })).toEqual([{ profile: 'security', reason: 'request-too-large', detail: 'the research request was not sent: x' }])
+      expect(await researchGaps({ kind: 'too-large', message: 'x' })).toEqual([
+        { profile: 'security', reason: 'request-too-large', detail: 'the research request was not sent: x' },
+      ])
     })
 
     it('records it as a gap on each vote request too', async () => {
       const result = await voteGaps({ kind: 'too-large', message: 'x' })
       expect(result.unreviewed).toHaveLength(1)
-      expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'request-too-large', file: 'a.js', detail: '"a.js":1: 3 of 3 vote requests were not sent: x' }])
+      expect(result.meta.incomplete).toEqual([
+        {
+          profile: 'security',
+          reason: 'request-too-large',
+          file: 'a.js',
+          detail: '"a.js":1: 3 of 3 vote requests were not sent: x',
+        },
+      ])
     })
 
     it('does not run a getter for the kind, and takes the refusal for a failure', async () => {
       let ran = 0
-      const error = { get kind() {
-        ran++
-        return 'too-large'
-      }, message: 'x' }
-      await expect(createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, throwing('research', error))).review({ diff })).rejects.toBe(error)
+      const error = {
+        get kind() {
+          ran++
+          return 'too-large'
+        },
+        message: 'x',
+      }
+      await expect(createQuorum({
+        profiles: [securityProfile],
+      }, portsFor(securityProfile, throwing('research', error))).review({ diff })).rejects.toBe(error)
       const result = await voteGaps(error)
       expect(result.meta.incomplete.filter(entry => entry.reason === 'request-too-large')).toEqual([])
       expect(ran).toBe(0)
     })
 
     it.each<[string, () => unknown]>([
-      ['an inherited kind', () => Object.create({ kind: 'too-large', message: 'x' })],
-      ['a kind of another value', () => ({ kind: 'http', message: 'x' })],
-      ['a kind that is not a string', () => ({ kind: ['too-large'], message: 'x' })],
-      ['a string', () => 'too-large'],
-      ['null', () => null],
+      [
+        'an inherited kind',
+        () => Object.create({ kind: 'too-large', message: 'x' }),
+      ],
+      [
+        'a kind of another value',
+        () => ({ kind: 'http', message: 'x' }),
+      ],
+      [
+        'a kind that is not a string',
+        () => ({
+          kind: ['too-large'],
+          message: 'x',
+        }),
+      ],
+      [
+        'a string',
+        () => 'too-large',
+      ],
+      [
+        'null',
+        () => null,
+      ],
     ])('does not take %s for a refusal', async (_name, make) => {
       const error = make()
-      await expect(createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, throwing('research', error))).review({ diff })).rejects.toBe(error)
+      await expect(createQuorum({
+        profiles: [securityProfile],
+      }, portsFor(securityProfile, throwing('research', error))).review({ diff })).rejects.toBe(error)
       expect((await voteGaps(error)).meta.incomplete.filter(entry => entry.reason === 'request-too-large')).toEqual([])
     })
 
     it('never throws from the check: an object whose descriptors throw is a failure, not a new error', async () => {
-      const hostile = new Proxy({}, { getOwnPropertyDescriptor() {
-        throw new Error('trap')
-      } })
-      await expect(createQuorum({ profiles: [securityProfile] }, portsFor(securityProfile, throwing('research', hostile))).review({ diff })).rejects.toBe(hostile)
+      const hostile = new Proxy({}, {
+        getOwnPropertyDescriptor() {
+          throw new Error('trap')
+        },
+      })
+      await expect(createQuorum({
+        profiles: [securityProfile],
+      }, portsFor(securityProfile, throwing('research', hostile))).review({ diff })).rejects.toBe(hostile)
       expect((await voteGaps(hostile)).meta.incomplete.filter(entry => entry.reason === 'request-too-large')).toEqual([])
     })
 
     it.each<[string, () => { ran: () => number, error: object }]>([
-      ['a getter', () => {
-        let ran = 0
-        return { ran: () => ran, error: { kind: 'too-large', get message() {
-          ran++
-          return 'secret'
-        } } }
-      }],
-      ['a getter that throws', () => ({ ran: () => 0, error: { kind: 'too-large', get message(): string {
-        throw new Error('trap')
-      } } })],
-      ['an inherited message', () => ({ ran: () => 0, error: Object.assign(Object.create({ message: 'secret' }), { kind: 'too-large' }) })],
-      ['a message that is not a string', () => ({ ran: () => 0, error: { kind: 'too-large', message: { toString: () => 'secret' } } })],
-      ['no message', () => ({ ran: () => 0, error: { kind: 'too-large' } })],
+      [
+        'a getter',
+        () => {
+          let ran = 0
+          return {
+            ran: () => ran,
+            error: {
+              kind: 'too-large',
+              get message() {
+                ran++
+                return 'secret'
+              },
+            },
+          }
+        },
+      ],
+      [
+        'a getter that throws',
+        () => ({
+          ran: () => 0,
+          error: {
+            kind: 'too-large',
+            get message(): string {
+              throw new Error('trap')
+            },
+          },
+        }),
+      ],
+      [
+        'an inherited message',
+        () => ({
+          ran: () => 0,
+          error: Object.assign(Object.create({ message: 'secret' }), { kind: 'too-large' }),
+        }),
+      ],
+      [
+        'a message that is not a string',
+        () => ({
+          ran: () => 0,
+          error: {
+            kind: 'too-large',
+            message: {
+              toString: () => 'secret',
+            },
+          },
+        }),
+      ],
+      [
+        'no message',
+        () => ({
+          ran: () => 0,
+          error: { kind: 'too-large' },
+        }),
+      ],
     ])('says a fixed text, and repeats nothing from the object, for %s', async (_name, make) => {
       const { ran, error } = make()
-      expect(await researchGaps(error)).toEqual([{ profile: 'security', reason: 'request-too-large', detail: 'the research request was not sent: refused as too large' }])
-      expect((await voteGaps(error)).meta.incomplete).toEqual([{ profile: 'security', reason: 'request-too-large', file: 'a.js', detail: '"a.js":1: 3 of 3 vote requests were not sent: refused as too large' }])
+      expect(await researchGaps(error)).toEqual([
+        { profile: 'security', reason: 'request-too-large', detail: 'the research request was not sent: refused as too large' },
+      ])
+      expect((await voteGaps(error)).meta.incomplete).toEqual([
+        {
+          profile: 'security',
+          reason: 'request-too-large',
+          file: 'a.js',
+          detail: '"a.js":1: 3 of 3 vote requests were not sent: refused as too large',
+        },
+      ])
       expect(ran()).toBe(0)
     })
   })

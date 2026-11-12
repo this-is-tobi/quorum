@@ -27,7 +27,9 @@ export interface ProfileSelection {
 }
 
 /** The built-in profiles a config can run or extend, by id. */
-const BUILT_IN: ReadonlyMap<string, Profile> = new Map([[securityProfile.id, securityProfile]])
+const BUILT_IN: ReadonlyMap<string, Profile> = new Map([
+  [securityProfile.id, securityProfile],
+])
 
 const NEEDS_BASE = 'is required: the profile extends no built-in profile'
 const LEVELS = ['high', 'medium', 'low'] as const
@@ -41,28 +43,49 @@ interface LensEntry {
 
 /** A field a record holds itself: a prototype, a polluted one included, fills none. */
 export function own<T extends object, K extends keyof T>(record: T | undefined, key: K): T[K] | undefined {
-  return record !== undefined && Object.hasOwn(record, key) ? record[key] : undefined
+  return record !== undefined && Object.hasOwn(record, key)
+    ? record[key]
+    : undefined
 }
 
 /** A rule as a new frozen value: the config's own objects stay out of a frozen profile. */
 function copyRule(rule: Rule): Rule {
-  return typeof rule === 'object' ? Object.freeze({ ...rule }) : rule
+  return typeof rule === 'object'
+    ? Object.freeze({ ...rule })
+    : rule
 }
 
 /** The base's policy, else the default one, with the levels the entry sets (not `undefined`) over it. */
 function policyOf(base: Profile | undefined, entry: ProfileEntry['policy']): PolicyRules {
   const set = Object.fromEntries(LEVELS.flatMap((level) => {
     const rule = own(entry, level)
-    return rule === undefined ? [] : [[level, rule]]
+    return rule === undefined
+      ? []
+      : [
+          [level, rule],
+        ]
   }))
-  const merged = { ...base?.policy ?? defaultPolicy, ...set }
-  return Object.freeze({ high: copyRule(merged.high), medium: copyRule(merged.medium), low: copyRule(merged.low) })
+  const merged = {
+    ...base?.policy ?? defaultPolicy,
+    ...set,
+  }
+  return Object.freeze({
+    high: copyRule(merged.high),
+    medium: copyRule(merged.medium),
+    low: copyRule(merged.low),
+  })
 }
 
 /** The lenses of the entry, else of the base: the fields the check reads, each read once, whatever the lens holds besides. */
 function lensesOf(entry: ProfileEntry['lenses'], base: Profile | undefined): LensEntry[] | undefined {
   // `profileIssues` refuses a lens whose id or question is not a string, so the casts hide nothing.
-  if (entry !== undefined) return entry.map(lens => ({ id: own(lens, 'id') as string, question: own(lens, 'question') as string, provider: own(lens, 'provider') }))
+  if (entry !== undefined) {
+    return entry.map(lens => ({
+      id: own(lens, 'id') as string,
+      question: own(lens, 'question') as string,
+      provider: own(lens, 'provider'),
+    }))
+  }
   return base?.lenses.map(({ id, question }) => ({ id, question, provider: undefined }))
 }
 
@@ -83,8 +106,17 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
   const lenses = lensesOf(own(entry, 'lenses'), base)
 
   if (research === undefined || vote === undefined || lenses === undefined) {
-    const needed: Array<[unknown, ...string[]]> = [[research, 'prompts', 'research'], [vote, 'prompts', 'vote'], [lenses, 'lenses']]
-    return { issues: needed.filter(([value]) => value === undefined).map(([, ...segments]) => ({ path: at(...segments), message: NEEDS_BASE })) }
+    const needed: Array<[unknown, ...string[]]> = [
+      [research, 'prompts', 'research'],
+      [vote, 'prompts', 'vote'],
+      [lenses, 'lenses'],
+    ]
+    return {
+      issues: needed.filter(([value]) => value === undefined).map(([, ...segments]) => ({
+        path: at(...segments),
+        message: NEEDS_BASE,
+      })),
+    }
   }
 
   const profile: Profile = Object.freeze({
@@ -99,9 +131,18 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
 
   const entryRoles = own(entry, 'roles')
   const references = [
-    { path: at('roles', 'research'), name: own(entryRoles, 'research') },
-    { path: at('roles', 'voter'), name: own(entryRoles, 'voter') },
-    ...lenses.map((lens, index) => ({ path: at('lenses', index, 'provider'), name: lens.provider })),
+    {
+      path: at('roles', 'research'),
+      name: own(entryRoles, 'research'),
+    },
+    {
+      path: at('roles', 'voter'),
+      name: own(entryRoles, 'voter'),
+    },
+    ...lenses.map((lens, index) => ({
+      path: at('lenses', index, 'provider'),
+      name: lens.provider,
+    })),
   ]
   for (const { path, name } of references) {
     if (name !== undefined && !known.has(name)) issues.push(unknownName(path, 'provider', name, providers))
@@ -137,17 +178,44 @@ export function resolveProfiles(inputs: {
   readonly providers: readonly string[]
 }): { readonly profiles: readonly ResolvedProfile[], readonly issues: readonly ConfigIssue[] } {
   const configured = new Map(Object.entries(inputs.profiles ?? {}))
-  const selected = inputs.selection?.ids ?? (inputs.profiles === undefined ? [securityProfile.id] : [...configured.keys()])
-  const bindings: Bindings = { roles: inputs.roles, providers: inputs.providers, known: new Set(inputs.providers) }
-  const defined = [...configured.keys(), ...[...BUILT_IN.keys()].filter(id => !configured.has(id))]
+  const selected = inputs.selection?.ids ?? (inputs.profiles === undefined
+    ? [securityProfile.id]
+    : [
+        ...configured.keys(),
+      ])
+  const bindings: Bindings = {
+    roles: inputs.roles,
+    providers: inputs.providers,
+    known: new Set(inputs.providers),
+  }
+  const defined = [
+    ...configured.keys(),
+    ...[
+      ...BUILT_IN.keys(),
+    ].filter(id => !configured.has(id)),
+  ]
 
-  const issues: ConfigIssue[] = selected.length > 0 ? [] : [inputs.selection === undefined ? { path: 'profiles', message: 'must hold at least one profile, or be left out' } : { path: inputs.selection.path, message: 'must name at least one profile' }]
-  const resolutions = new Map([...configured].map(([id, entry]) => [id, resolveEntry(id, entry, bindings)] as const))
+  const issues: ConfigIssue[] = selected.length > 0
+    ? []
+    : [
+        inputs.selection === undefined
+          ? { path: 'profiles', message: 'must hold at least one profile, or be left out' }
+          : { path: inputs.selection.path, message: 'must name at least one profile' },
+      ]
+  const resolutions = new Map([...configured].map(([id, entry]) => [
+    id,
+    resolveEntry(id, entry, bindings),
+  ] as const))
   for (const id of selected) {
     if (resolutions.has(id)) continue
     if (BUILT_IN.has(id)) resolutions.set(id, resolveEntry(id, {}, bindings))
     else issues.push(unknownName(inputs.selection?.path ?? 'profiles', 'profile', id, defined))
   }
-  issues.push(...[...resolutions.values()].flatMap(resolution => resolution.issues))
-  return { profiles: selected.flatMap(id => resolutions.get(id)?.resolved ?? []), issues }
+  issues.push(...[
+    ...resolutions.values(),
+  ].flatMap(resolution => resolution.issues))
+  return {
+    profiles: selected.flatMap(id => resolutions.get(id)?.resolved ?? []),
+    issues,
+  }
 }

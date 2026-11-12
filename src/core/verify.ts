@@ -38,7 +38,9 @@ export function verifyFindings(details: readonly FindingDetails[], sections: Rea
       invalid.push(`${plainText(detail.file, MAX_REPORTED_FILE)}:${detail.line} is not in the diff`)
       continue
     }
-    const file = located.path === '' ? plainText(detail.file, MAX_FILE) : located.path
+    const file = located.path === ''
+      ? plainText(detail.file, MAX_FILE)
+      : located.path
     if (file === '') {
       invalid.push(`line ${detail.line} names no file`)
       continue
@@ -81,6 +83,8 @@ const isHighSurrogate = (unit: number): boolean => unit >= 0xD800 && unit <= 0xD
 /** Cut `value` to `max` characters ending in an ellipsis, without leaving half of a surrogate pair. */
 function cap(value: string, max: number): string {
   if (value.length <= max) return value
-  const keep = isHighSurrogate(value.charCodeAt(max - 2)) ? max - 2 : max - 1
+  const keep = isHighSurrogate(value.charCodeAt(max - 2))
+    ? max - 2
+    : max - 1
   return `${value.slice(0, keep)}…`
 }

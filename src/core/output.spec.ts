@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { OutputError } from './errors.ts'
 import { extractJsonObject, parseResearchReply, parseVoteReply, researchReplyJsonSchema, voteReplyJsonSchema } from './output.ts'
 
-const finding = { file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }
+const finding = {
+  file: 'a.js',
+  line: 1,
+  category: 'CWE-78',
+  quote: 'exec(cmd)',
+  summary: 'command injection',
+}
 
 describe('extractJsonObject', () => {
   it('parses a bare JSON object', () => {
@@ -69,7 +75,9 @@ describe('extractJsonObject', () => {
   })
 
   it('does not count an object nested in the answer as a second object', () => {
-    expect(extractJsonObject('{"a":{"b":1}}', 'vote')).toEqual({ a: { b: 1 } })
+    expect(extractJsonObject('{"a":{"b":1}}', 'vote')).toEqual({
+      a: { b: 1 },
+    })
   })
 
   it('fails closed when a reply holds several different objects', () => {
@@ -168,7 +176,12 @@ describe('extractJsonObject', () => {
   })
 
   it('accepts the same key in sibling objects', () => {
-    expect(extractJsonObject('{"findings":[{"file":"a.js"},{"file":"b.js"}]}', 'research')).toEqual({ findings: [{ file: 'a.js' }, { file: 'b.js' }] })
+    expect(extractJsonObject('{"findings":[{"file":"a.js"},{"file":"b.js"}]}', 'research')).toEqual({
+      findings: [
+        { file: 'a.js' },
+        { file: 'b.js' },
+      ],
+    })
   })
 
   it('fails closed on text after the answer that reads like JSON syntax, which a planted early close leaves behind', () => {
@@ -233,7 +246,13 @@ describe('extractJsonObject', () => {
 
 describe('parseResearchReply', () => {
   it('returns valid findings', () => {
-    expect(parseResearchReply(JSON.stringify({ findings: [finding] }))).toEqual({ findings: [finding], invalid: [], listed: 1 })
+    expect(parseResearchReply(JSON.stringify({
+      findings: [finding],
+    }))).toEqual({
+      findings: [finding],
+      invalid: [],
+      listed: 1,
+    })
   })
 
   it('accepts an explicit empty list', () => {
@@ -254,7 +273,9 @@ describe('parseResearchReply', () => {
   })
 
   it('drops findings that are not objects, with a reason each', () => {
-    const { findings, invalid } = parseResearchReply(JSON.stringify({ findings: [null, 'text', 5, finding] }))
+    const { findings, invalid } = parseResearchReply(JSON.stringify({
+      findings: [null, 'text', 5, finding],
+    }))
     expect(findings).toEqual([finding])
     expect(invalid).toHaveLength(3)
   })
@@ -286,41 +307,94 @@ describe('parseResearchReply', () => {
   })
 
   it('drops invalid findings with a reason and keeps the valid ones', () => {
-    const { findings, invalid } = parseResearchReply(JSON.stringify({ findings: [finding, { file: 'b.js', line: 2 }] }))
+    const { findings, invalid } = parseResearchReply(JSON.stringify({
+      findings: [
+        finding,
+        { file: 'b.js', line: 2 },
+      ],
+    }))
     expect(findings).toEqual([finding])
     expect(invalid).toHaveLength(1)
     expect(invalid[0]).toMatch(/^findings\[1\]/)
   })
 
   it('coerces a numeric string line and strips unknown fields', () => {
-    const { findings } = parseResearchReply(JSON.stringify({ findings: [{ ...finding, line: ' 42 ', confidence: 'high' }] }))
-    expect(findings).toEqual([{ ...finding, line: 42 }])
+    const { findings } = parseResearchReply(JSON.stringify({
+      findings: [
+        { ...finding, line: ' 42 ', confidence: 'high' },
+      ],
+    }))
+    expect(findings).toEqual([
+      { ...finding, line: 42 },
+    ])
   })
 
   it('rejects a line below 1 and an empty file', () => {
-    const { findings, invalid } = parseResearchReply(JSON.stringify({ findings: [{ ...finding, line: 0 }, { ...finding, file: ' ' }] }))
+    const { findings, invalid } = parseResearchReply(JSON.stringify({
+      findings: [
+        { ...finding, line: 0 },
+        { ...finding, file: ' ' },
+      ],
+    }))
     expect(findings).toEqual([])
     expect(invalid).toHaveLength(2)
   })
 
   it('refuses a reply whose object holds a key other than findings', () => {
     expect(() => parseResearchReply('{"findings":[],"notes":[]}')).toThrow(/top-level key/)
-    expect(() => parseResearchReply(JSON.stringify({ findings: [finding], summary: 'done' }))).toThrow(OutputError)
+    expect(() => parseResearchReply(JSON.stringify({
+      findings: [finding],
+      summary: 'done',
+    }))).toThrow(OutputError)
   })
 
   it('marks a finding unreadable when it carries a nested object or array outside the schema, where swallowed findings would hide', () => {
-    const swallowed = { ...finding, extra: [{ ...finding, line: 2 }] }
-    const read = parseResearchReply(JSON.stringify({ findings: [swallowed, finding] }))
+    const swallowed = {
+      ...finding,
+      extra: [
+        { ...finding, line: 2 },
+      ],
+    }
+    const read = parseResearchReply(JSON.stringify({
+      findings: [swallowed, finding],
+    }))
     expect(read.findings).toEqual([finding])
-    expect(read.invalid).toEqual([expect.stringMatching(/^findings\[0\]: .*nested object or array/)])
-    expect(parseResearchReply(JSON.stringify({ findings: [{ ...finding, meta: { note: 'x' } }] })).invalid).toHaveLength(1)
+    expect(read.invalid).toEqual([
+      expect.stringMatching(/^findings\[0\]: .*nested object or array/),
+    ])
+    expect(parseResearchReply(JSON.stringify({
+      findings: [
+        {
+          ...finding,
+          meta: { note: 'x' },
+        },
+      ],
+    })).invalid).toHaveLength(1)
     const proto = '{"findings":[{"file":"a.js","line":1,"category":"CWE-78","quote":"q","summary":"s","__proto__":[{"file":"b.js"}]}]}'
-    expect(parseResearchReply(proto)).toMatchObject({ findings: [], invalid: [expect.stringMatching(/nested object or array/)] })
+    expect(parseResearchReply(proto)).toMatchObject({
+      findings: [],
+      invalid: [
+        expect.stringMatching(/nested object or array/),
+      ],
+    })
   })
 
   it('still tolerates a scalar or null field outside the schema', () => {
-    const read = parseResearchReply(JSON.stringify({ findings: [{ ...finding, confidence: 'high', note: null, rank: 2 }] }))
-    expect(read).toEqual({ findings: [finding], invalid: [], listed: 1 })
+    const read = parseResearchReply(JSON.stringify({
+      findings: [
+        {
+          ...finding,
+          confidence: 'high',
+          note: null,
+          rank: 2,
+        },
+      ],
+    }))
+    expect(read).toEqual({
+      findings: [finding],
+      invalid: [],
+      listed: 1,
+    })
   })
 
   it('does not read a reply whose later findings were nested under a planted key by two early closes', () => {
@@ -331,10 +405,27 @@ describe('parseResearchReply', () => {
   })
 
   it('reads at most the given number of listed findings and reports how many were listed', () => {
-    expect(parseResearchReply(JSON.stringify({ findings: [finding, finding, { file: 'x' }] }), 2)).toEqual({ findings: [finding, finding], invalid: [], listed: 3 })
-    const partlyRead = parseResearchReply(JSON.stringify({ findings: [{ file: 'x' }, finding] }), 1)
+    expect(parseResearchReply(JSON.stringify({
+      findings: [
+        finding,
+        finding,
+        { file: 'x' },
+      ],
+    }), 2)).toEqual({
+      findings: [finding, finding],
+      invalid: [],
+      listed: 3,
+    })
+    const partlyRead = parseResearchReply(JSON.stringify({
+      findings: [
+        { file: 'x' },
+        finding,
+      ],
+    }), 1)
     expect(partlyRead.findings).toEqual([])
-    expect(partlyRead.invalid).toEqual([expect.stringMatching(/^findings\[0\]: /)])
+    expect(partlyRead.invalid).toEqual([
+      expect.stringMatching(/^findings\[0\]: /),
+    ])
     expect(partlyRead.listed).toBe(2)
   })
 
@@ -380,19 +471,62 @@ describe('parseVoteReply', () => {
 
 describe('reply JSON Schemas', () => {
   it('describe closed objects with every field required', () => {
-    expect(voteReplyJsonSchema).toMatchObject({ type: 'object', required: ['keep', 'reasoning'], additionalProperties: false })
-    expect(researchReplyJsonSchema).toMatchObject({ type: 'object', required: ['findings'] })
+    expect(voteReplyJsonSchema).toMatchObject({
+      type: 'object',
+      required: ['keep', 'reasoning'],
+      additionalProperties: false,
+    })
+    expect(researchReplyJsonSchema).toMatchObject({
+      type: 'object',
+      required: ['findings'],
+    })
     expect(researchReplyJsonSchema).not.toHaveProperty('$schema')
   })
 
   it('stay in the portable subset every schema mode accepts: no numeric or string constraint, no format (F-29)', () => {
-    const finding = { type: 'object', properties: { file: { type: 'string' }, line: { type: 'integer' }, category: { type: 'string' }, quote: { type: 'string' }, summary: { type: 'string' } }, required: ['file', 'line', 'category', 'quote', 'summary'], additionalProperties: false }
-    expect(researchReplyJsonSchema).toEqual({ type: 'object', properties: { findings: { type: 'array', items: finding } }, required: ['findings'], additionalProperties: false })
-    expect(voteReplyJsonSchema).toEqual({ type: 'object', properties: { keep: { type: 'boolean' }, reasoning: { type: 'string' } }, required: ['keep', 'reasoning'], additionalProperties: false })
+    const finding = {
+      type: 'object',
+      properties: {
+        file: { type: 'string' },
+        line: { type: 'integer' },
+        category: { type: 'string' },
+        quote: { type: 'string' },
+        summary: { type: 'string' },
+      },
+      required: [
+        'file',
+        'line',
+        'category',
+        'quote',
+        'summary',
+      ],
+      additionalProperties: false,
+    }
+    expect(researchReplyJsonSchema).toEqual({
+      type: 'object',
+      properties: {
+        findings: { type: 'array', items: finding },
+      },
+      required: ['findings'],
+      additionalProperties: false,
+    })
+    expect(voteReplyJsonSchema).toEqual({
+      type: 'object',
+      properties: {
+        keep: { type: 'boolean' },
+        reasoning: { type: 'string' },
+      },
+      required: ['keep', 'reasoning'],
+      additionalProperties: false,
+    })
   })
 
   it('still refuses a line the wire schema no longer bounds', () => {
-    expect(parseResearchReply(JSON.stringify({ findings: [{ ...finding, line: 2 ** 53 }] }))).toEqual({
+    expect(parseResearchReply(JSON.stringify({
+      findings: [
+        { ...finding, line: 2 ** 53 },
+      ],
+    }))).toEqual({
       findings: [],
       invalid: ['findings[0]: line: Too big: expected int to be <=9007199254740991'],
       listed: 1,

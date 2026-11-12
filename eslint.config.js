@@ -2,7 +2,17 @@ import antfu from '@antfu/eslint-config'
 
 // The globals neither the core nor a profile may use: the process, the runtime, the network
 // (`fetch`, `WebSocket`, `EventSource`), another thread (`Worker`), and the global object itself.
-const ENVIRONMENT_GLOBALS = ['process', 'fetch', 'WebSocket', 'EventSource', 'Worker', 'Bun', 'globalThis', 'global', 'self']
+const ENVIRONMENT_GLOBALS = [
+  'process',
+  'fetch',
+  'WebSocket',
+  'EventSource',
+  'Worker',
+  'Bun',
+  'globalThis',
+  'global',
+  'self',
+]
 
 export default antfu(
   {
@@ -16,19 +26,48 @@ export default antfu(
         'node/prefer-global/console': ['error', 'always'],
         'node/prefer-global/buffer': ['error', 'always'],
         'style/comma-dangle': ['error', 'always-multiline'],
-        'style/quote-props': ['error', 'as-needed', { keywords: false, unnecessary: true }],
-        'style/brace-style': ['error', '1tbs', { allowSingleLine: true }],
-        'style/max-statements-per-line': ['error', { max: 2 }],
+        'style/quote-props': [
+          'error',
+          'as-needed',
+          { keywords: false, unnecessary: true },
+        ],
+        'style/brace-style': [
+          'error',
+          '1tbs',
+          { allowSingleLine: true },
+        ],
+        'style/max-statements-per-line': [
+          'error',
+          { max: 2 },
+        ],
         'ts/ban-ts-comment': 'off',
         'unused-imports/no-unused-imports': 'error',
-        'unused-imports/no-unused-vars': ['error', { vars: 'all', varsIgnorePattern: '^_', args: 'after-used', argsIgnorePattern: '^_', caughtErrors: 'all', caughtErrorsIgnorePattern: '^_', destructuredArrayIgnorePattern: '^_' }],
+        'unused-imports/no-unused-vars': [
+          'error',
+          {
+            vars: 'all',
+            varsIgnorePattern: '^_',
+            args: 'after-used',
+            argsIgnorePattern: '^_',
+            caughtErrors: 'all',
+            caughtErrorsIgnorePattern: '^_',
+            destructuredArrayIgnorePattern: '^_',
+          },
+        ],
       },
     },
     typescript: true,
     yaml: {
       overrides: {
-        'yaml/quotes': ['error', { prefer: 'double' }],
-        'yaml/indent': ['error', 2, { indentBlockSequences: false }],
+        'yaml/quotes': [
+          'error',
+          { prefer: 'double' },
+        ],
+        'yaml/indent': [
+          'error',
+          2,
+          { indentBlockSequences: false },
+        ],
       },
     },
     ignores: [
@@ -48,7 +87,14 @@ export default antfu(
     files: ['src/core/*.ts'],
     ignores: ['src/**/*.spec.ts'],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [{ regex: '^(?!\\./(?!.*\\.\\.)|zod$|node:crypto$|\\.\\./\\.\\./package\\.json$)', message: 'The core imports only core modules, zod, node:crypto and package.json.' }] }],
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\./(?!.*\\.\\.)|zod$|node:crypto$|\\.\\./\\.\\./package\\.json$)', message: 'The core imports only core modules, zod, node:crypto and package.json.' },
+          ],
+        },
+      ],
       'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
     },
   },
@@ -57,7 +103,14 @@ export default antfu(
     files: ['src/core/*/**/*.ts'],
     ignores: ['src/**/*.spec.ts'],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [{ regex: '^(?!\\.\\.?/(?!.*\\.\\.)|zod$|node:crypto$|\\.\\./\\.\\./\\.\\./package\\.json$)', message: 'The core imports only core modules, zod, node:crypto and package.json.' }] }],
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\.\\.?/(?!.*\\.\\.)|zod$|node:crypto$|\\.\\./\\.\\./\\.\\./package\\.json$)', message: 'The core imports only core modules, zod, node:crypto and package.json.' },
+          ],
+        },
+      ],
       'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
     },
   },
@@ -66,12 +119,15 @@ export default antfu(
     files: ['src/profiles/**/*.ts'],
     ignores: ['src/**/*.spec.ts'],
     rules: {
-      'ts/no-restricted-imports': ['error', {
-        patterns: [
-          { regex: '^(?!\\.\\./core/)', message: 'A profile imports only core types.' },
-          { regex: '^\\.\\./core/', allowTypeImports: true, message: 'A profile imports only core types.' },
-        ],
-      }],
+      'ts/no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\.\\./core/)', message: 'A profile imports only core types.' },
+            { regex: '^\\.\\./core/', allowTypeImports: true, message: 'A profile imports only core types.' },
+          ],
+        },
+      ],
       'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
     },
   },
@@ -80,12 +136,22 @@ export default antfu(
     files: ['src/providers/**/*.ts'],
     ignores: ['src/**/*.spec.ts'],
     rules: {
-      'no-restricted-imports': ['error', {
-        patterns: [
-          { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(ports|errors|types)\\.ts$)', message: 'A provider imports only its own modules and core/ports.ts, core/errors.ts and core/types.ts.' },
-        ],
-      }],
-      'no-restricted-globals': ['error', 'process', 'Bun', 'globalThis', 'global', 'self'],
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(ports|errors|types)\\.ts$)', message: 'A provider imports only its own modules and core/ports.ts, core/errors.ts and core/types.ts.' },
+          ],
+        },
+      ],
+      'no-restricted-globals': [
+        'error',
+        'process',
+        'Bun',
+        'globalThis',
+        'global',
+        'self',
+      ],
     },
   },
   {
@@ -95,14 +161,26 @@ export default antfu(
     files: ['src/providers/claude-code.ts'],
     ignores: ['src/**/*.spec.ts'],
     rules: {
-      'no-restricted-imports': ['error', {
-        patterns: [
-          { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(ports|errors|types)\\.ts$|node:(child_process|fs|fs/promises|os|path)$)', message: 'The claude-code adapter imports only its own modules, core/ports.ts, core/errors.ts, core/types.ts, node:child_process, node:fs, node:fs/promises, node:os and node:path.' },
-        ],
-      }],
-      'no-restricted-globals': ['error', 'Bun', 'globalThis', 'global', 'self'],
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(ports|errors|types)\\.ts$|node:(child_process|fs|fs/promises|os|path)$)', message: 'The claude-code adapter imports only its own modules, core/ports.ts, core/errors.ts, core/types.ts, node:child_process, node:fs, node:fs/promises, node:os and node:path.' },
+          ],
+        },
+      ],
+      'no-restricted-globals': [
+        'error',
+        'Bun',
+        'globalThis',
+        'global',
+        'self',
+      ],
       // `process.getBuiltinModule` loads any built-in module, which would go around the import rule above.
-      'no-restricted-properties': ['error', { object: 'process', property: 'getBuiltinModule', message: 'The claude-code adapter names the built-in modules it imports.' }],
+      'no-restricted-properties': [
+        'error',
+        { object: 'process', property: 'getBuiltinModule', message: 'The claude-code adapter names the built-in modules it imports.' },
+      ],
     },
   },
   {
@@ -112,12 +190,24 @@ export default antfu(
     files: ['src/config/**/*.ts'],
     ignores: ['src/**/*.spec.ts'],
     rules: {
-      'no-restricted-imports': ['error', {
-        patterns: [
-          { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./(core|profiles|providers)/(?!.*\\.\\.)|zod$|yaml$|node:(fs|fs/promises|path|url)$)', message: 'A config module imports only config modules, the core, the profiles, the providers, zod, yaml, node:fs, node:fs/promises, node:path and node:url.' },
-        ],
-      }],
-      'no-restricted-globals': ['error', 'fetch', 'WebSocket', 'EventSource', 'Worker', 'globalThis', 'global', 'self'],
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./(core|profiles|providers)/(?!.*\\.\\.)|zod$|yaml$|node:(fs|fs/promises|path|url)$)', message: 'A config module imports only config modules, the core, the profiles, the providers, zod, yaml, node:fs, node:fs/promises, node:path and node:url.' },
+          ],
+        },
+      ],
+      'no-restricted-globals': [
+        'error',
+        'fetch',
+        'WebSocket',
+        'EventSource',
+        'Worker',
+        'globalThis',
+        'global',
+        'self',
+      ],
     },
   },
   {
@@ -126,7 +216,14 @@ export default antfu(
     files: ['src/cli/**/*.ts', 'src/*.ts'],
     ignores: ['src/**/*.spec.ts'],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [{ regex: '(?:^|/)testing/', message: 'Only spec files import src/testing/.' }] }],
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '(?:^|/)testing/', message: 'Only spec files import src/testing/.' },
+          ],
+        },
+      ],
     },
   },
 )

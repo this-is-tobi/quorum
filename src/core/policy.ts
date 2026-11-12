@@ -75,7 +75,9 @@ export function confidenceFor(keptVotes: number, thresholds: Thresholds): Confid
 export function verdictStatus(verdict: Pick<Verdict, 'keptVotes' | 'votes'>, thresholds: Thresholds): VerdictStatus {
   if (confidenceFor(verdict.keptVotes, thresholds) !== undefined) return 'kept'
   const failed = verdict.votes.filter(vote => vote.vote === null).length
-  return confidenceFor(verdict.keptVotes + failed, thresholds) === undefined ? 'discarded' : 'unreviewed'
+  return confidenceFor(verdict.keptVotes + failed, thresholds) === undefined
+    ? 'discarded'
+    : 'unreviewed'
 }
 
 /**
@@ -88,7 +90,9 @@ export function undecidedLevel(verdict: Pick<Verdict, 'keptVotes' | 'votes' | 'c
   const failed = verdict.votes.filter(vote => vote.vote === null).length
   if (failed === 0) return undefined
   const reachable = confidenceFor(verdict.keptVotes + failed, thresholds)
-  return reachable !== undefined && reachable !== verdict.confidence ? reachable : undefined
+  return reachable !== undefined && reachable !== verdict.confidence
+    ? reachable
+    : undefined
 }
 
 /**

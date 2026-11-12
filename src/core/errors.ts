@@ -37,7 +37,9 @@ export function isSafeSegment(segment: PropertyKey): boolean {
 
 /** A path as an issue names it: its segments joined with `.`, each one that is not a safe segment printed as `*`. */
 export function issuePath(segments: readonly PropertyKey[]): string {
-  return segments.map(segment => isSafeSegment(segment) ? String(segment) : '*').join('.')
+  return segments.map(segment => isSafeSegment(segment)
+    ? String(segment)
+    : '*').join('.')
 }
 
 /** The issues a `ConfigError` message lists: a config of thousands of values can carry as many issues. */
@@ -51,9 +53,15 @@ export class ConfigError extends QuorumError {
   readonly issues: readonly ConfigIssue[]
 
   constructor(issues: readonly ConfigIssue[]) {
-    const lines = issues.slice(0, LISTED_ISSUES).map(issue => (issue.path ? `${issue.path}: ${issue.message}` : issue.message))
+    const lines = issues.slice(0, LISTED_ISSUES).map(issue => (issue.path
+      ? `${issue.path}: ${issue.message}`
+      : issue.message))
     const rest = issues.length - LISTED_ISSUES
-    if (rest > 0) lines.push(`and ${rest} more issue${rest === 1 ? '' : 's'}`)
+    if (rest > 0) {
+      lines.push(`and ${rest} more issue${rest === 1
+        ? ''
+        : 's'}`)
+    }
     super(lines.join('\n'))
     this.issues = issues
   }
@@ -91,7 +99,9 @@ export class ProviderError extends QuorumError {
   readonly retryable: boolean
 
   constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, cause?: unknown }) {
-    super(`${details.providerId}: ${details.message}`, details.cause === undefined ? undefined : { cause: details.cause })
+    super(`${details.providerId}: ${details.message}`, details.cause === undefined
+      ? undefined
+      : { cause: details.cause })
     this.providerId = details.providerId
     this.kind = details.kind
     this.status = details.status

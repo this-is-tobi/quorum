@@ -7,7 +7,12 @@ afterEach(() => {
 
 describe('isolateEnv', () => {
   it('blanks the variables the config layer reads, a preset\'s key and any QUORUM_ name, then sets the values it is given', () => {
-    const hostValues = ['OPENAI_API_KEY', 'QUORUM_RESEARCH_MODEL', 'RESEARCH_API_KEY', 'QUORUM_NOT_IN_ANY_LIST']
+    const hostValues = [
+      'OPENAI_API_KEY',
+      'QUORUM_RESEARCH_MODEL',
+      'RESEARCH_API_KEY',
+      'QUORUM_NOT_IN_ANY_LIST',
+    ]
     for (const name of hostValues) vi.stubEnv(name, 'host-value')
 
     isolateEnv()

@@ -64,7 +64,9 @@ function ownData(value: unknown, key: string): unknown {
   if (typeof value !== 'object' || value === null) return undefined
   try {
     const descriptor = Object.getOwnPropertyDescriptor(value, key)
-    return descriptor !== undefined && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined
+    return descriptor !== undefined && Object.hasOwn(descriptor, 'value')
+      ? descriptor.value
+      : undefined
   } catch {
     return undefined
   }
@@ -84,7 +86,9 @@ export function isTooLarge(error: unknown): boolean {
 /** What a refusal as too large says: its own data string `message`, else a fixed text, never anything else from the object. */
 export function refusalMessage(refusal: unknown): string {
   const message = ownData(refusal, 'message')
-  return typeof message === 'string' ? message : REFUSAL_FALLBACK
+  return typeof message === 'string'
+    ? message
+    : REFUSAL_FALLBACK
 }
 
 /** Who requests a provider call, as its `call` event names it: `lens` only for a vote. */
@@ -127,13 +131,28 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       response = await target.provider.complete({ ...request, signal: ctx.signal })
       if (typeof response?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
     } catch (error) {
-      ctx.emit({ type: 'call', ...requester, provider: target.ref, durationMs: elapsed(started), ok: false })
+      ctx.emit({
+        type: 'call',
+        ...requester,
+        provider: target.ref,
+        durationMs: elapsed(started),
+        ok: false,
+      })
       // Still inside the slot: the queued call it is handed to next sees the abort and never starts.
       if (requester.role === 'research' && !isTooLarge(error)) ctx.fail(error)
       throw error
     }
     const usage = checkedUsage(response.usage)
-    ctx.emit({ type: 'call', ...requester, provider: target.ref, durationMs: elapsed(started), ok: true, ...(usage === undefined ? {} : { usage }) })
+    ctx.emit({
+      type: 'call',
+      ...requester,
+      provider: target.ref,
+      durationMs: elapsed(started),
+      ok: true,
+      ...(usage === undefined
+        ? {}
+        : { usage }),
+    })
     return response.text
   })
 }
@@ -150,7 +169,13 @@ export async function stage<T>(ctx: RunContext, profile: string, name: StageName
   ctx.emit({ type: 'stage:start', profile, stage: name })
   const started = performance.now()
   const result = await step()
-  ctx.emit({ type: 'stage:end', profile, stage: name, durationMs: elapsed(started), count: count(result) })
+  ctx.emit({
+    type: 'stage:end',
+    profile,
+    stage: name,
+    durationMs: elapsed(started),
+    count: count(result),
+  })
   return result
 }
 

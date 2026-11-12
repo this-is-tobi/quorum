@@ -78,9 +78,13 @@ function normalizedLength(text: string): number {
       bytes += 1
       continue
     }
-    const low = index + 1 < text.length ? text.charCodeAt(index + 1) : 0
+    const low = index + 1 < text.length
+      ? text.charCodeAt(index + 1)
+      : 0
     const pair = unit >= 0xD800 && unit <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF
-    bytes += longestFormLength(pair ? 0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00) : unit)
+    bytes += longestFormLength(pair
+      ? 0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00)
+      : unit)
     if (pair) index++
   }
   return bytes
@@ -98,7 +102,11 @@ function normalizedLength(text: string): number {
  * prompt.
  */
 export function textTokens(shaped: ShapedMessages, output: CompletionRequest['output']): number {
-  const texts = [shaped.system ?? '', ...shaped.messages.map(message => message.content), JSON.stringify(output.schema)]
+  const texts = [
+    shaped.system ?? '',
+    ...shaped.messages.map(message => message.content),
+    JSON.stringify(output.schema),
+  ]
   return texts.reduce((sum, text) => sum + normalizedLength(text), 0)
 }
 

@@ -82,7 +82,9 @@ The settings of the profiles that cannot take full effect, each starting at its 
 ## `review`
 
 ```ts
-const result = await quorum.review({ diff }, { signal: AbortSignal.timeout(10 * 60_000) })
+const result = await quorum.review({ diff }, {
+  signal: AbortSignal.timeout(10 * 60_000)
+})
 ```
 
 - **`diff`** is the unified diff, as a string. A blank one runs no stage and calls no model; the review still sends `run:start` and `run:end`, and resolves with empty lists.
@@ -187,7 +189,12 @@ import type { QuorumConfig } from '@tobi-or-not/quorum'
 export default {
   providers: {
     local: { preset: 'ollama', model: 'qwen3.6:27b', contextTokens: 131072 },
-    hosted: { preset: 'openai', model: 'gpt-5', contextTokens: 400000, apiKey: process.env.OPENAI_API_KEY },
+    hosted: {
+      preset: 'openai',
+      model: 'gpt-5',
+      contextTokens: 400000,
+      apiKey: process.env.OPENAI_API_KEY
+    },
   },
   roles: { research: 'local', voter: 'hosted' },
 } satisfies QuorumConfig
@@ -420,7 +427,9 @@ function progress(event: QuorumEvent): void {
 function errorLine(error: unknown): string {
   let message: string
   try {
-    message = error instanceof Error ? error.message : String(error)
+    message = error instanceof Error
+      ? error.message
+      : String(error)
   } catch {
     message = 'an error with no text form'
   }
@@ -431,7 +440,9 @@ function errorLine(error: unknown): string {
 function exitCode(result: QuorumResult): number {
   const gates = (profile: string): boolean => !Object.hasOwn(result.meta.profiles, profile) || result.meta.profiles[profile].gating !== false
   if (result.kept.some(verdict => verdict.confidence === 'high' && gates(verdict.profile))) return 1
-  return result.unreviewed.length > 0 || result.meta.incomplete.length > 0 ? 4 : 0
+  return result.unreviewed.length > 0 || result.meta.incomplete.length > 0
+    ? 4
+    : 0
 }
 
 /** Review the diff file at `path`, with the CLI's exit codes: 2 for usage or configuration, 3 for a review that failed. */
@@ -446,16 +457,40 @@ async function main(path: string | undefined): Promise<number> {
     return 2
   }
   try {
-    const finder = ollama({ id: 'local', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b', contextTokens: 131072 })
-    const panel = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-astra', contextTokens: 400000, apiKey: process.env.OPENAI_API_KEY?.trim() || undefined, temperature: null, maxTokensField: 'max_completion_tokens' })
+    const finder = ollama({
+      id: 'local',
+      baseUrl: 'http://localhost:11434',
+      model: 'qwen3.6:27b',
+      contextTokens: 131072
+    })
+    const panel = openaiCompatible({
+      id: 'hosted',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-6-astra',
+      contextTokens: 400000,
+      apiKey: process.env.OPENAI_API_KEY?.trim() || undefined,
+      temperature: null,
+      maxTokensField: 'max_completion_tokens'
+    })
     const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, panel]))
-    const quorum = createQuorum({ profiles: [securityProfile] }, { profiles: { security: { research: finder, voters } }, events: progress })
-    const result = await quorum.review({ diff }, { signal: AbortSignal.timeout(10 * 60_000) })
+    const quorum = createQuorum({
+      profiles: [securityProfile]
+    }, {
+      profiles: {
+        security: { research: finder, voters }
+      },
+      events: progress
+    })
+    const result = await quorum.review({ diff }, {
+      signal: AbortSignal.timeout(10 * 60_000)
+    })
     console.log(inertJson(result))
     return exitCode(result)
   } catch (error) {
     console.error(errorLine(error))
-    return error instanceof ConfigError ? 2 : 3
+    return error instanceof ConfigError
+      ? 2
+      : 3
   }
 }
 

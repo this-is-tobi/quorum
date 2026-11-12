@@ -107,7 +107,11 @@ function isHttpUrlWithHost(baseUrl: string): boolean {
  * fragment is refused, since the endpoint's path is appended to the base URL.
  */
 export function baseUrlIssues(path: string, baseUrl: string): ConfigIssue[] {
-  if (!isHttpUrlWithHost(baseUrl)) return [{ path, message: 'must be an http:// or https:// URL with a host' }]
+  if (!isHttpUrlWithHost(baseUrl)) {
+    return [
+      { path, message: 'must be an http:// or https:// URL with a host' },
+    ]
+  }
   const url = new URL(baseUrl)
   const issues: ConfigIssue[] = []
   if (url.username !== '' || url.password !== '') issues.push({ path, message: 'must not hold a user name or password: send a key with apiKey' })
@@ -133,9 +137,17 @@ function isJsonValue(value: unknown): boolean {
 
 function authIssues(id: string, auth: unknown, apiKey: string | undefined, fixedHeaders: readonly string[]): ConfigIssue[] {
   if (auth === 'bearer' || auth === 'x-api-key') return []
-  if (auth === 'none') return apiKey ? [{ path: `${id}.apiKey`, message: 'is set, but auth is none, so it would never be sent' }] : []
+  if (auth === 'none') {
+    return apiKey
+      ? [
+          { path: `${id}.apiKey`, message: 'is set, but auth is none, so it would never be sent' },
+        ]
+      : []
+  }
   if (!isRecord(auth) || typeof auth.header !== 'string' || (auth.prefix !== undefined && typeof auth.prefix !== 'string')) {
-    return [{ path: `${id}.auth`, message: 'must be bearer, x-api-key, none or { header, prefix }' }]
+    return [
+      { path: `${id}.auth`, message: 'must be bearer, x-api-key, none or { header, prefix }' },
+    ]
   }
   const issues: ConfigIssue[] = []
   if (!HEADER_NAME.test(auth.header)) issues.push({ path: `${id}.auth.header`, message: 'must be an HTTP header name' })
@@ -150,14 +162,38 @@ function headerIssues(id: string, headers: Readonly<Record<string, string>>, key
   const seen = new Set<string>()
   return Object.entries(headers).flatMap(([name, value]): ConfigIssue[] => {
     const path = `${id}.${issuePath(['headers', name])}`
-    if (!HEADER_NAME.test(name)) return [{ path, message: 'must be an HTTP header name' }]
+    if (!HEADER_NAME.test(name)) {
+      return [
+        { path, message: 'must be an HTTP header name' },
+      ]
+    }
     const lower = name.toLowerCase()
-    if (RESERVED_HEADERS.has(lower)) return [{ path, message: 'must not be content-type, content-length or host' }]
-    if (lower === keyHeader) return [{ path, message: 'is the header that carries the key: set apiKey instead' }]
-    if (fixedHeaders.includes(lower)) return [{ path, message: FIXED_HEADER }]
-    if (seen.has(lower)) return [{ path, message: 'repeats a header name in another letter case' }]
+    if (RESERVED_HEADERS.has(lower)) {
+      return [
+        { path, message: 'must not be content-type, content-length or host' },
+      ]
+    }
+    if (lower === keyHeader) {
+      return [
+        { path, message: 'is the header that carries the key: set apiKey instead' },
+      ]
+    }
+    if (fixedHeaders.includes(lower)) {
+      return [
+        { path, message: FIXED_HEADER },
+      ]
+    }
+    if (seen.has(lower)) {
+      return [
+        { path, message: 'repeats a header name in another letter case' },
+      ]
+    }
     seen.add(lower)
-    return typeof value === 'string' && !NOT_PRINTABLE_ASCII.test(value) ? [] : [{ path, message: 'must be a string of printable ASCII characters' }]
+    return typeof value === 'string' && !NOT_PRINTABLE_ASCII.test(value)
+      ? []
+      : [
+          { path, message: 'must be a string of printable ASCII characters' },
+        ]
   })
 }
 
@@ -177,7 +213,11 @@ export function bodyKeyForm(key: string): string {
  * the adapter's. The message writes the canonical spelling, a constant of the adapter, never the key it was given.
  */
 export function spellingIssues(id: string, key: string, canonical: string): ConfigIssue[] {
-  return key === canonical ? [] : [{ path: `${id}.${issuePath(['extraBody', key])}`, message: `must be written ${canonical}` }]
+  return key === canonical
+    ? []
+    : [
+        { path: `${id}.${issuePath(['extraBody', key])}`, message: `must be written ${canonical}` },
+      ]
 }
 
 /**
@@ -187,8 +227,14 @@ export function spellingIssues(id: string, key: string, canonical: string): Conf
 function replyLimitIssues(id: string, body: Readonly<Record<string, unknown>>, limits: readonly (readonly string[])[], trail: readonly string[] = []): ConfigIssue[] {
   return Object.entries(body).flatMap(([key, value]): ConfigIssue[] => {
     const below = limits.filter(([head]) => bodyKeyForm(head) === bodyKeyForm(key)).map(path => path.slice(1))
-    if (below.some(path => path.length === 0)) return [{ path: `${id}.${issuePath(['extraBody', ...trail, key])}`, message: 'sets the reply limit: use maxTokens' }]
-    return isRecord(value) && below.length > 0 ? replyLimitIssues(id, value, below, [...trail, key]) : []
+    if (below.some(path => path.length === 0)) {
+      return [
+        { path: `${id}.${issuePath(['extraBody', ...trail, key])}`, message: 'sets the reply limit: use maxTokens' },
+      ]
+    }
+    return isRecord(value) && below.length > 0
+      ? replyLimitIssues(id, value, below, [...trail, key])
+      : []
   })
 }
 
@@ -202,10 +248,21 @@ function extraBodyIssues(id: string, extraBody: Readonly<Record<string, unknown>
   const keyIssues = Object.keys(extraBody).flatMap((key): ConfigIssue[] => {
     const path = `${id}.${issuePath(['extraBody', key])}`
     const form = bodyKeyForm(key)
-    if (reserved.has(form)) return [{ path, message: 'is written by the adapter and cannot be replaced' }]
-    return tools.has(form) ? [{ path, message: 'offers the model a tool, which quorum never does' }] : []
+    if (reserved.has(form)) {
+      return [
+        { path, message: 'is written by the adapter and cannot be replaced' },
+      ]
+    }
+    return tools.has(form)
+      ? [
+          { path, message: 'offers the model a tool, which quorum never does' },
+        ]
+      : []
   })
-  return [...keyIssues, ...replyLimitIssues(id, extraBody, rules.replyLimitPaths)]
+  return [
+    ...keyIssues,
+    ...replyLimitIssues(id, extraBody, rules.replyLimitPaths),
+  ]
 }
 
 /** The query entries whose value is the key, which travels only in the header `auth` names. No message repeats the value. */
@@ -217,7 +274,9 @@ function queryKeyIssues(id: string, query: Readonly<Record<string, string>>, api
 
 /** The words of a list as a message names them: commas between them, and the conjunction before the last. */
 export function wordList(words: readonly string[], conjunction: 'or' | 'and' = 'or'): string {
-  return words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} ${conjunction} ${words.at(-1)}`
+  return words.length < 2
+    ? words.join('')
+    : `${words.slice(0, -1).join(', ')} ${conjunction} ${words.at(-1)}`
 }
 
 /** Whether `value` is a whole number of tokens, at least 1 and safe to count with. */
@@ -233,12 +292,22 @@ function isTokenCount(value: number): boolean {
  */
 export function contextTokensIssues(id: string, contextTokens: number | undefined, maxTokens: number | undefined, templateTokens = TEMPLATE_TOKENS): ConfigIssue[] {
   const path = `${id}.contextTokens`
-  if (contextTokens === undefined) return [{ path, message: CONTEXT_REQUIRED }]
-  if (!isTokenCount(contextTokens)) return [{ path, message: 'must be a whole number of at least 1' }]
+  if (contextTokens === undefined) {
+    return [
+      { path, message: CONTEXT_REQUIRED },
+    ]
+  }
+  if (!isTokenCount(contextTokens)) {
+    return [
+      { path, message: 'must be a whole number of at least 1' },
+    ]
+  }
   if (maxTokens !== undefined && !isTokenCount(maxTokens)) return []
   const reply = maxTokens ?? DEFAULT_REPLY_TOKENS
   if (contextTokens > reply + templateTokens) return []
-  return [{ path, message: `must be more than ${reply + templateTokens}, the ${reply} tokens of the reply budget and ${templateTokens} for the chat template` }]
+  return [
+    { path, message: `must be more than ${reply + templateTokens}, the ${reply} tokens of the reply budget and ${templateTokens} for the chat template` },
+  ]
 }
 
 /**
@@ -249,14 +318,21 @@ export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRul
   const { id, baseUrl, apiKey, headers, query, extraBody, temperature, maxTokens, contextTokens, systemPrompt, structuredOutput } = options
   const { auth, structuredOutputs } = rules
   const fixedHeaders = rules.fixedHeaders.map(name => name.toLowerCase())
-  const issues = [...baseUrlIssues(`${id}.baseUrl`, baseUrl)]
+  const issues = [
+    ...baseUrlIssues(`${id}.baseUrl`, baseUrl),
+  ]
   if (apiKey !== undefined && NOT_VISIBLE_ASCII.test(apiKey)) {
     issues.push({ path: `${id}.apiKey`, message: 'must only contain visible ASCII characters, which an HTTP header can carry' })
   }
   const authProblems = authIssues(id, auth, apiKey, fixedHeaders)
   issues.push(...authProblems)
-  if (headers !== undefined && !isPlainRecord(headers)) issues.push({ path: `${id}.headers`, message: 'must map names to strings' })
-  else if (headers !== undefined) issues.push(...headerIssues(id, headers, authProblems.length === 0 ? keyHeaderName(auth) : undefined, fixedHeaders))
+  if (headers !== undefined && !isPlainRecord(headers)) {
+    issues.push({ path: `${id}.headers`, message: 'must map names to strings' })
+  } else if (headers !== undefined) {
+    issues.push(...headerIssues(id, headers, authProblems.length === 0
+      ? keyHeaderName(auth)
+      : undefined, fixedHeaders))
+  }
   if (query !== undefined && (!isPlainRecord(query) || !Object.values(query).every(value => typeof value === 'string'))) {
     issues.push({ path: `${id}.query`, message: 'must map names to strings' })
   } else if (query !== undefined && typeof apiKey === 'string' && apiKey !== '') {
@@ -288,23 +364,35 @@ export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRul
  * @throws ConfigError with the problems of `httpOptionIssues`, then `adapterIssues`, before any request
  */
 export function prepareHttp(options: HttpProviderOptions, rules: AdapterRules, path: string, adapterIssues: readonly ConfigIssue[] = []): PreparedHttp {
-  const issues = [...httpOptionIssues(options, rules), ...adapterIssues]
+  const issues = [
+    ...httpOptionIssues(options, rules),
+    ...adapterIssues,
+  ]
   if (issues.length > 0) throw new ConfigError(issues)
   const { baseUrl, apiKey, headers, query, extraBody } = options
   return {
     url: endpointUrl(baseUrl, path, query),
     headers: requestHeaders(rules.auth, apiKey, headers),
     redact: redactionsOf(baseUrl, apiKey, headers),
-    extraBody: extraBody === undefined ? undefined : structuredClone(extraBody),
+    extraBody: extraBody === undefined
+      ? undefined
+      : structuredClone(extraBody),
   }
 }
 
 /** The headers a provider sends besides the content type: its own, then its key as `auth` says. Names are lower-cased. */
 export function requestHeaders(auth: Auth, apiKey: string | undefined, headers: Readonly<Record<string, string>> = {}): Record<string, string> {
-  const result: Record<string, string> = Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]))
+  const result: Record<string, string> = Object.fromEntries(Object.entries(headers).map(([name, value]) => [
+    name.toLowerCase(),
+    value,
+  ]))
   const name = keyHeaderName(auth)
   if (name !== undefined && apiKey) {
-    result[name] = auth === 'bearer' ? `Bearer ${apiKey}` : typeof auth === 'object' ? `${auth.prefix ?? ''}${apiKey}` : apiKey
+    result[name] = auth === 'bearer'
+      ? `Bearer ${apiKey}`
+      : typeof auth === 'object'
+        ? `${auth.prefix ?? ''}${apiKey}`
+        : apiKey
   }
   return result
 }
@@ -315,14 +403,18 @@ export function mergeBody(body: Record<string, unknown>, extra: Readonly<Record<
   const merged: Record<string, unknown> = { ...body }
   for (const [key, value] of Object.entries(extra)) {
     const current = merged[key]
-    merged[key] = isRecord(current) && isRecord(value) ? mergeBody(current, value) : value
+    merged[key] = isRecord(current) && isRecord(value)
+      ? mergeBody(current, value)
+      : value
   }
   return merged
 }
 
 /** `fields`, or undefined when every one of them is undefined, so the body leaves out an object that would be empty. */
 export function unlessEmpty(fields: Record<string, unknown>): Record<string, unknown> | undefined {
-  return Object.values(fields).every(value => value === undefined) ? undefined : fields
+  return Object.values(fields).every(value => value === undefined)
+    ? undefined
+    : fields
 }
 
 /** Whether `value` is a non-null object that is not an array. */

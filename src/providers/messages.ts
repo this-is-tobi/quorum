@@ -19,6 +19,18 @@ export function shapeMessages(request: CompletionRequest, mode: SystemPrompt): S
   if (mode === 'native') return { system: request.system, messages }
   const [first, ...rest] = messages
   return first?.role === 'user'
-    ? { system: undefined, messages: [{ role: 'user', content: `${request.system}\n\n${first.content}` }, ...rest] }
-    : { system: undefined, messages: [{ role: 'user', content: request.system }, ...messages] }
+    ? {
+        system: undefined,
+        messages: [
+          { role: 'user', content: `${request.system}\n\n${first.content}` },
+          ...rest,
+        ],
+      }
+    : {
+        system: undefined,
+        messages: [
+          { role: 'user', content: request.system },
+          ...messages,
+        ],
+      }
 }

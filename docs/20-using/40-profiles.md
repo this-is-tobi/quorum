@@ -112,11 +112,24 @@ The default policy meets the first with one or two lenses: the `naming` profile 
 import { createQuorum, ollama, securityProfile } from '@tobi-or-not/quorum'
 import { naming } from './naming.ts'
 
-const local = ollama({ id: 'local', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b', contextTokens: 131072 })
-const quorum = createQuorum({ profiles: [securityProfile, naming] }, {
+const local = ollama({
+  id: 'local',
+  baseUrl: 'http://localhost:11434',
+  model: 'qwen3.6:27b',
+  contextTokens: 131072
+})
+const quorum = createQuorum({
+  profiles: [securityProfile, naming]
+}, {
   profiles: {
-    security: { research: local, voters: { reachability: local, impact: local, defenses: local } },
-    naming: { research: local, voters: { meaning: local, reader: local } },
+    security: {
+      research: local,
+      voters: { reachability: local, impact: local, defenses: local }
+    },
+    naming: {
+      research: local,
+      voters: { meaning: local, reader: local }
+    },
   },
 })
 ```

@@ -28,7 +28,15 @@ process.once('beforeExit', () => {
 
 // Inside the async function, so a working directory that no longer exists fails the run with exit 3.
 async function main(): Promise<number> {
-  return runCli({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env, stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, signal })
+  return runCli({
+    argv: process.argv.slice(2),
+    cwd: process.cwd(),
+    env: process.env,
+    stdin: process.stdin,
+    stdout: process.stdout,
+    stderr: process.stderr,
+    signal,
+  })
 }
 
 main()

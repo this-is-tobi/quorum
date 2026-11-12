@@ -77,7 +77,9 @@ export function inertJson(value: unknown): string {
   const json = JSON.stringify(value, null, 2) as string | undefined
   if (json === undefined) throw new TypeError('the value has no JSON form')
   return json
-    .replace(HIDDEN, char => (char === '\n' ? char : escapeUnits(char)))
+    .replace(HIDDEN, char => (char === '\n'
+      ? char
+      : escapeUnits(char)))
     .replace(LEGACY_COMMAND, '##\\u005b')
 }
 

@@ -9,7 +9,19 @@ export const chatCompletion = {
   object: 'chat.completion',
   created: 1741569952,
   model: 'gpt-6-astra-2026-09-30',
-  choices: [{ index: 0, message: { role: 'assistant', content: '{}', refusal: null, annotations: [] }, logprobs: null, finish_reason: 'stop' }],
+  choices: [
+    {
+      index: 0,
+      message: {
+        role: 'assistant',
+        content: '{}',
+        refusal: null,
+        annotations: [],
+      },
+      logprobs: null,
+      finish_reason: 'stop',
+    },
+  ],
   usage: { prompt_tokens: 19, completion_tokens: 10, total_tokens: 29 },
   service_tier: 'default',
 }
@@ -17,13 +29,27 @@ export const chatCompletion = {
 /** A refusal: `content` null and `message.refusal` set (`ChatCompletionResponseMessage`). */
 export const refusal = {
   ...chatCompletion,
-  choices: [{ index: 0, message: { role: 'assistant', content: null, refusal: 'I cannot help with that request.' }, logprobs: null, finish_reason: 'stop' }],
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: null, refusal: 'I cannot help with that request.' },
+      logprobs: null,
+      finish_reason: 'stop',
+    },
+  ],
 }
 
 /** A reply cut off by the token limit: `finish_reason: 'length'`. */
 export const truncated = {
   ...chatCompletion,
-  choices: [{ index: 0, message: { role: 'assistant', content: '{"kee', refusal: null }, logprobs: null, finish_reason: 'length' }],
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: '{"kee', refusal: null },
+      logprobs: null,
+      finish_reason: 'length',
+    },
+  ],
 }
 
 /** OpenRouter's answer, with status 200, to a failure during generation: a top-level `error` beside an empty choice. */
@@ -31,8 +57,19 @@ export const openRouterGenerationError = {
   id: 'gen-1762651234-abc',
   object: 'chat.completion',
   model: 'openai/gpt-6-astra',
-  error: { code: 502, message: 'Provider returned error', metadata: { error_type: 'provider_unavailable' } },
-  choices: [{ index: 0, message: { role: 'assistant', content: '' }, finish_reason: 'error', native_finish_reason: 'error' }],
+  error: {
+    code: 502,
+    message: 'Provider returned error',
+    metadata: { error_type: 'provider_unavailable' },
+  },
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: '' },
+      finish_reason: 'error',
+      native_finish_reason: 'error',
+    },
+  ],
 }
 
 /** Mistral's assistant content as an array of chunks, a thinking chunk first (`AssistantMessage.content`). */
@@ -41,11 +78,25 @@ export const mistralChunks = {
   object: 'chat.completion',
   model: 'magistral-medium-2610',
   created: 1762651234,
-  choices: [{
-    index: 0,
-    message: { role: 'assistant', content: [{ type: 'thinking', thinking: [{ type: 'text', text: 'The diff calls exec.' }] }, { type: 'text', text: '{"keep":true,' }, { type: 'text', text: '"reasoning":"r"}' }] },
-    finish_reason: 'stop',
-  }],
+  choices: [
+    {
+      index: 0,
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'thinking',
+            thinking: [
+              { type: 'text', text: 'The diff calls exec.' },
+            ],
+          },
+          { type: 'text', text: '{"keep":true,' },
+          { type: 'text', text: '"reasoning":"r"}' },
+        ],
+      },
+      finish_reason: 'stop',
+    },
+  ],
   usage: { prompt_tokens: 40, completion_tokens: 12, total_tokens: 52 },
 }
 
@@ -61,17 +112,26 @@ export const groqBrowserSearch = {
   object: 'chat.completion',
   created: 1762651234,
   model: 'openai/gpt-oss-120b',
-  choices: [{
-    index: 0,
-    message: {
-      role: 'assistant',
-      content: '{}',
-      reasoning: 'Search for the advisory first.',
-      executed_tools: [{ index: 0, type: 'browser_search', arguments: '{"query":"exec command injection advisory"}', output: 'Title: Advisory' }],
+  choices: [
+    {
+      index: 0,
+      message: {
+        role: 'assistant',
+        content: '{}',
+        reasoning: 'Search for the advisory first.',
+        executed_tools: [
+          {
+            index: 0,
+            type: 'browser_search',
+            arguments: '{"query":"exec command injection advisory"}',
+            output: 'Title: Advisory',
+          },
+        ],
+      },
+      logprobs: null,
+      finish_reason: 'stop',
     },
-    logprobs: null,
-    finish_reason: 'stop',
-  }],
+  ],
   usage: { prompt_tokens: 220, completion_tokens: 40, total_tokens: 260 },
 }
 
@@ -79,10 +139,27 @@ export const groqBrowserSearch = {
 export const searchCitations = {
   ...chatCompletion,
   model: 'gpt-5-search-api',
-  choices: [{
-    index: 0,
-    message: { role: 'assistant', content: '{}', refusal: null, annotations: [{ type: 'url_citation', url_citation: { start_index: 0, end_index: 2, title: 'Advisory', url: 'https://advisories.example/1' } }] },
-    logprobs: null,
-    finish_reason: 'stop',
-  }],
+  choices: [
+    {
+      index: 0,
+      message: {
+        role: 'assistant',
+        content: '{}',
+        refusal: null,
+        annotations: [
+          {
+            type: 'url_citation',
+            url_citation: {
+              start_index: 0,
+              end_index: 2,
+              title: 'Advisory',
+              url: 'https://advisories.example/1',
+            },
+          },
+        ],
+      },
+      logprobs: null,
+      finish_reason: 'stop',
+    },
+  ],
 }

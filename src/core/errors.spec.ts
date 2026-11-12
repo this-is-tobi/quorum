@@ -23,22 +23,47 @@ describe('provider errors', () => {
     ['too-large', undefined, false],
     ['process', 1, false],
   ] as Array<[ProviderErrorKind, number | undefined, boolean]>)('marks a %s error with status %s as retryable=%s', (kind, status, retryable) => {
-    expect(new ProviderError({ providerId: 'p', kind, message: 'm', status }).retryable).toBe(retryable)
+    expect(new ProviderError({
+      providerId: 'p',
+      kind,
+      message: 'm',
+      status,
+    }).retryable).toBe(retryable)
   })
 
   it('prefixes the message with the provider id and keeps the kind, the status and the cause', () => {
     const cause = new Error('socket closed')
-    const error = new ProviderError({ providerId: 'research', kind: 'http', status: 502, message: 'HTTP 502', cause })
+    const error = new ProviderError({
+      providerId: 'research',
+      kind: 'http',
+      status: 502,
+      message: 'HTTP 502',
+      cause,
+    })
     expect(error).toBeInstanceOf(QuorumError)
-    expect(error).toMatchObject({ name: 'ProviderError', message: 'research: HTTP 502', providerId: 'research', kind: 'http', status: 502, cause })
+    expect(error).toMatchObject({
+      name: 'ProviderError',
+      message: 'research: HTTP 502',
+      providerId: 'research',
+      kind: 'http',
+      status: 502,
+      cause,
+    })
   })
 })
 
 describe('issuePath', () => {
   it('joins safe names and indices with dots', () => {
-    expect(issuePath(['providers', 'local', 'headers', 'x-team'])).toBe('providers.local.headers.x-team')
+    expect(issuePath([
+      'providers',
+      'local',
+      'headers',
+      'x-team',
+    ])).toBe('providers.local.headers.x-team')
     expect(issuePath(['lenses', 0, 'id'])).toBe('lenses.0.id')
-    expect(issuePath(['a'.repeat(64)])).toBe('a'.repeat(64))
+    expect(issuePath([
+      'a'.repeat(64),
+    ])).toBe('a'.repeat(64))
     expect(issuePath([])).toBe('')
   })
 
@@ -48,7 +73,10 @@ describe('issuePath', () => {
     ['a dot', 'x.team'],
     ['a character outside ASCII', `tool${String.fromCharCode(0x17F)}`],
     ['an empty name', ''],
-    ['a symbol', Symbol('s')],
+    [
+      'a symbol',
+      Symbol('s'),
+    ],
   ])('prints %s as *', (_name, segment) => {
     expect(issuePath(['headers', segment])).toBe('headers.*')
   })
@@ -72,6 +100,8 @@ describe('config errors', () => {
   })
 
   it('prints an issue without a path as its message alone', () => {
-    expect(new ConfigError([{ path: '', message: 'no model configured' }]).message).toBe('no model configured')
+    expect(new ConfigError([
+      { path: '', message: 'no model configured' },
+    ]).message).toBe('no model configured')
   })
 })

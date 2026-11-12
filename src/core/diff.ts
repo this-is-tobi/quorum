@@ -6,7 +6,17 @@ const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 /** How many diff lines of a hunk, either side of the cited one, make up a finding's evidence. */
 const EVIDENCE_RADIUS = 2
 /** What a backslash and one more character stand for in a name git quotes (octal bytes are read apart). */
-const QUOTED_ESCAPES = new Map([['a', '\x07'], ['b', '\b'], ['f', '\f'], ['n', '\n'], ['r', '\r'], ['t', '\t'], ['v', '\v'], ['\\', '\\'], ['"', '"']])
+const QUOTED_ESCAPES = new Map([
+  ['a', '\x07'],
+  ['b', '\b'],
+  ['f', '\f'],
+  ['n', '\n'],
+  ['r', '\r'],
+  ['t', '\t'],
+  ['v', '\v'],
+  ['\\', '\\'],
+  ['"', '"'],
+])
 /** One byte as git writes it in a quoted name: a backslash then three octal digits (0 to 255). */
 const OCTAL_BYTE = /^[0-3][0-7]{2}$/
 /**
@@ -22,7 +32,9 @@ const isQuoted = (name: string): boolean => name.startsWith('"') && name.endsWit
 
 /** A name without the double quotes git puts around one with special characters, escapes untouched. */
 function unquote(name: string): string {
-  return isQuoted(name) ? name.slice(1, -1) : name
+  return isQuoted(name)
+    ? name.slice(1, -1)
+    : name
 }
 
 /** A path without the `a/`, `b/` or `./` prefix a diff, or a model, may put in front of it. */
@@ -88,9 +100,13 @@ function sharedPath(names: string): string {
   const second = names.slice(middle + 1)
   const before = unquote(first)
   const after = unquote(second)
-  const decode = isQuoted(first) && isQuoted(second) ? decodeQuoted : (path: string): string => path
+  const decode = isQuoted(first) && isQuoted(second)
+    ? decodeQuoted
+    : (path: string): string => path
   if (before === after) return decode(before)
-  return before[1] === '/' && after[1] === '/' && before.slice(2) === after.slice(2) ? decode(before.slice(2)) : ''
+  return before[1] === '/' && after[1] === '/' && before.slice(2) === after.slice(2)
+    ? decode(before.slice(2))
+    : ''
 }
 
 /**
@@ -112,13 +128,19 @@ function renamedPath(names: string): string {
   }
   if (start === -1) return ''
   const path = names.slice(start)
-  const inside = path.endsWith('"') ? path.slice(0, -1) : path
-  return quoted ? decodeQuoted(inside) : inside
+  const inside = path.endsWith('"')
+    ? path.slice(0, -1)
+    : path
+  return quoted
+    ? decodeQuoted(inside)
+    : inside
 }
 
 /** The path a `diff --git` header names, or undefined when it names none. */
 function headerPath(header: string): string | undefined {
-  const line = header.endsWith('\r') ? header.slice(0, -1) : header
+  const line = header.endsWith('\r')
+    ? header.slice(0, -1)
+    : header
   const names = line.slice(GIT_HEADER.length)
   return sharedPath(names) || renamedPath(names) || undefined
 }
@@ -146,7 +168,9 @@ export function splitDiff(diff: string): Map<string, string> {
     if (path === undefined || lines.length === 0) return
     const text = lines.join('\n')
     const previous = sections.get(path)
-    sections.set(path, previous === undefined ? text : `${previous}\n${text}`)
+    sections.set(path, previous === undefined
+      ? text
+      : `${previous}\n${text}`)
   }
   for (const line of diff.split('\n')) {
     if (line.startsWith(GIT_HEADER)) {
@@ -182,9 +206,13 @@ export function sectionFor(sections: ReadonlyMap<string, string>, file: string):
   const wanted = withoutPrefix(written)
   const unkeyed = sections.get('')
   if (sections.size === 1 && unkeyed !== undefined) return { path: '', text: unkeyed }
-  const candidates = [...sections.keys()].filter(path => path !== '' && (path.endsWith(`/${wanted}`) || wanted.endsWith(`/${path}`)))
+  const candidates = [
+    ...sections.keys(),
+  ].filter(path => path !== '' && (path.endsWith(`/${wanted}`) || wanted.endsWith(`/${path}`)))
   const [only] = candidates
-  return candidates.length === 1 && only !== undefined ? { path: only, text: sections.get(only) ?? '' } : undefined
+  return candidates.length === 1 && only !== undefined
+    ? { path: only, text: sections.get(only) ?? '' }
+    : undefined
 }
 
 /**
@@ -196,7 +224,11 @@ export function sectionFor(sections: ReadonlyMap<string, string>, file: string):
  * preamble.
  */
 function citedSpellings(given: string, written: string): string[] {
-  const spellings = [given, written, withoutPrefix(written)]
+  const spellings = [
+    given,
+    written,
+    withoutPrefix(written),
+  ]
   if (written.includes('\\') || isQuoted(written)) {
     const decoded = decodeQuoted(unquote(written))
     spellings.push(decoded, withoutPrefix(decoded))
@@ -241,7 +273,10 @@ export function locate(sections: ReadonlyMap<string, string>, file: string, line
     if (at === -1 && hunk.count > 0) continue
     const center = Math.max(at, 0)
     const rows = hunk.rows.slice(Math.max(0, center - EVIDENCE_RADIUS), center + EVIDENCE_RADIUS + 1)
-    return { path: section.path, evidence: rows.join('\n') }
+    return {
+      path: section.path,
+      evidence: rows.join('\n'),
+    }
   }
   return undefined
 }
@@ -268,7 +303,12 @@ export function addedLines(sections: ReadonlyMap<string, string>, path: string):
   for (const hunk of hunksOf(sections, path, text)) {
     for (const [offset, at] of hunk.rowOfLine.entries()) {
       const row = hunk.rows[at]
-      if (row.startsWith('+')) added.push({ line: hunk.start + offset, text: row.slice(1) })
+      if (row.startsWith('+')) {
+        added.push({
+          line: hunk.start + offset,
+          text: row.slice(1),
+        })
+      }
     }
   }
   return added
@@ -320,8 +360,12 @@ function parseHunks(section: string): Hunk[] {
   const lines = section.split('\n')
   if (lines.at(-1) === '') lines.pop()
   for (const raw of lines) {
-    const text = raw.endsWith('\r') ? raw.slice(0, -1) : raw
-    const marker = text === '' ? ' ' : text[0]
+    const text = raw.endsWith('\r')
+      ? raw.slice(0, -1)
+      : raw
+    const marker = text === ''
+      ? ' '
+      : text[0]
     if (current && (oldLeft > 0 || newLeft > 0)) {
       if (marker === '\\') continue
       if (marker === '-') {
@@ -342,7 +386,12 @@ function parseHunks(section: string): Hunk[] {
     if (header) {
       oldLeft = Number(header[1] ?? 1)
       newLeft = Number(header[3] ?? 1)
-      current = { start: Number(header[2]), count: newLeft, rows: [], rowOfLine: [] }
+      current = {
+        start: Number(header[2]),
+        count: newLeft,
+        rows: [],
+        rowOfLine: [],
+      }
       hunks.push(current)
     }
   }

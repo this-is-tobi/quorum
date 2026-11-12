@@ -17,6 +17,9 @@ export const READ_VARIABLES: readonly string[] = [
  */
 export function isolateEnv(values: Readonly<Record<string, string>> = {}): void {
   const quorumVariables = Object.keys(process.env).filter(name => name.startsWith('QUORUM_'))
-  for (const name of new Set([...READ_VARIABLES, ...quorumVariables])) vi.stubEnv(name, '')
+  for (const name of new Set([
+    ...READ_VARIABLES,
+    ...quorumVariables,
+  ])) vi.stubEnv(name, '')
   for (const [name, value] of Object.entries(values)) vi.stubEnv(name, value)
 }

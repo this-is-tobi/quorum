@@ -39,7 +39,13 @@ const record = process.env.FAKE_CLAUDE_RECORD
 
 if (argv[0] === '--version') {
   if (record !== undefined) {
-    const contents = { argv, env: process.env, cwd: process.cwd(), cwdEntries: readdirSync(process.cwd()), pid: process.pid }
+    const contents = {
+      argv,
+      env: process.env,
+      cwd: process.cwd(),
+      cwdEntries: readdirSync(process.cwd()),
+      pid: process.pid,
+    }
     appendFileSync(`${record}.version`, `${JSON.stringify(contents)}\n`)
   }
   setTimeout(() => process.stdout.write(`${process.env.FAKE_CLAUDE_VERSION ?? DEFAULT_VERSION}\n`), Number(process.env.FAKE_CLAUDE_VERSION_DELAY_MS ?? 0))
@@ -49,7 +55,10 @@ if (argv[0] === '--version') {
 
   const grandchildMode = process.env.FAKE_CLAUDE_GRANDCHILD
   const grandchild = grandchildMode === '1' || grandchildMode === 'detached'
-    ? spawn(process.execPath, ['-e', `setTimeout(() => {}, ${GRANDCHILD_LIFETIME_MS})`], { stdio: ['ignore', 'inherit', 'inherit'], detached: grandchildMode === 'detached' })
+    ? spawn(process.execPath, ['-e', `setTimeout(() => {}, ${GRANDCHILD_LIFETIME_MS})`], {
+        stdio: ['ignore', 'inherit', 'inherit'],
+        detached: grandchildMode === 'detached',
+      })
     : undefined
   // Unreferenced, so the fake can exit while its grandchild still holds the pipes.
   grandchild?.unref()
@@ -61,10 +70,14 @@ if (argv[0] === '--version') {
       cwd: process.cwd(),
       cwdEntries: readdirSync(process.cwd()),
       stdin: Buffer.concat(chunks).toString('utf8'),
-      systemPrompt: systemFile === undefined ? undefined : readFileSync(systemFile, 'utf8'),
+      systemPrompt: systemFile === undefined
+        ? undefined
+        : readFileSync(systemFile, 'utf8'),
       pid: process.pid,
       runMode: statSync(dirname(process.cwd())).mode & FILE_PERMISSIONS,
-      systemMode: systemFile === undefined ? undefined : statSync(systemFile).mode & FILE_PERMISSIONS,
+      systemMode: systemFile === undefined
+        ? undefined
+        : statSync(systemFile).mode & FILE_PERMISSIONS,
       tmpExists: process.env.CLAUDE_CODE_TMPDIR !== undefined && existsSync(process.env.CLAUDE_CODE_TMPDIR),
       grandchild: grandchild?.pid,
     }

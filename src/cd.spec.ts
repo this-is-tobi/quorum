@@ -59,7 +59,12 @@ const list = (value: unknown): string[] => String(value).split(/[\n,]/).map(item
 const RELEASE_CREATED = expr('needs.release.outputs.release-created == \'true\'')
 const ARTIFACT = 'quorum-binaries'
 const DIR = 'bin/release'
-const BINARIES = ['quorum-linux-x64', 'quorum-linux-arm64', 'quorum-darwin-x64', 'quorum-darwin-arm64']
+const BINARIES = [
+  'quorum-linux-x64',
+  'quorum-linux-arm64',
+  'quorum-darwin-x64',
+  'quorum-darwin-arm64',
+]
 const CATALOG = 'this-is-tobi/github-workflows/.github/workflows'
 
 describe('the triggers', () => {
@@ -110,7 +115,10 @@ describe('the permissions', () => {
 })
 
 describe('what every uses: points at', () => {
-  const uses = Object.values(jobs).flatMap(({ uses: called, steps = [] }) => [called, ...steps.map(({ uses: action }) => action)]).filter((ref): ref is string => ref !== undefined)
+  const uses = Object.values(jobs).flatMap(({ uses: called, steps = [] }) => [
+    called,
+    ...steps.map(({ uses: action }) => action),
+  ]).filter((ref): ref is string => ref !== undefined)
 
   it('finds the calls and the actions of every job', () => {
     expect(uses.length).toBeGreaterThanOrEqual(10)
@@ -124,7 +132,12 @@ describe('what every uses: points at', () => {
 
   it('calls the four catalog workflows, each once', () => {
     const called = uses.filter(ref => ref.startsWith(`${CATALOG}/`)).map(ref => ref.slice(CATALOG.length + 1))
-    expect(called.toSorted()).toEqual(['attest-docker.yml@v0', 'build-docker.yml@v0', 'release-app.yml@v0', 'release-npm.yml@v0'])
+    expect(called.toSorted()).toEqual([
+      'attest-docker.yml@v0',
+      'build-docker.yml@v0',
+      'release-app.yml@v0',
+      'release-npm.yml@v0',
+    ])
   })
 })
 
@@ -177,7 +190,10 @@ describe('the release', () => {
   it('is release-app, tagging the major and minor versions, as the GitHub App that lets the release pull request run CI', () => {
     expect(job('release').uses).toBe(`${CATALOG}/release-app.yml@v0`)
     expect(job('release').with?.TAG_MAJOR_AND_MINOR).toBe(true)
-    expect(job('release').secrets).toEqual({ APP_CLIENT_ID: expr('secrets.APP_CLIENT_ID'), APP_PRIVATE_KEY: expr('secrets.APP_PRIVATE_KEY') })
+    expect(job('release').secrets).toEqual({
+      APP_CLIENT_ID: expr('secrets.APP_CLIENT_ID'),
+      APP_PRIVATE_KEY: expr('secrets.APP_PRIVATE_KEY'),
+    })
   })
 
   it('runs on every push, since whether a push creates a release is what it decides', () => {
@@ -253,7 +269,9 @@ describe('the release check', () => {
   })
 
   it('reads the commit the release was tagged on from the outputs of the release, through env', () => {
-    expect(check().env).toEqual({ RELEASE_SHA: expr('fromJSON(needs.release.outputs.release-outputs).sha') })
+    expect(check().env).toEqual({
+      RELEASE_SHA: expr('fromJSON(needs.release.outputs.release-outputs).sha'),
+    })
     expect(check().run).not.toContain('${{')
   })
 

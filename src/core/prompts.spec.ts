@@ -2,7 +2,16 @@ import { describe, expect, it } from 'vitest'
 import type { CompletionRequest } from './ports.ts'
 import { fence, renderTemplate, researchRequest, UNTRUSTED_CONTENT_NOTICE, voteRequest } from './prompts.ts'
 
-const finding = { id: '0123456789ab', profile: 'security', file: 'a.js', line: 3, category: 'CWE-78', summary: 'command injection', evidence: '+exec(cmd)', quoteMatched: true }
+const finding = {
+  id: '0123456789ab',
+  profile: 'security',
+  file: 'a.js',
+  line: 3,
+  category: 'CWE-78',
+  summary: 'command injection',
+  evidence: '+exec(cmd)',
+  quoteMatched: true,
+}
 
 describe('fence', () => {
   it('wraps content in tags carrying a random nonce', () => {
@@ -67,7 +76,9 @@ describe('guidelines', () => {
 
 describe('data notice', () => {
   const tagsOf = (request: CompletionRequest): string[] =>
-    [...request.messages[0].content.matchAll(/^<(untrusted-[a-z]+-[0-9a-f]{8})>$/gm)].map(match => match[1])
+    [
+      ...request.messages[0].content.matchAll(/^<(untrusted-[a-z]+-[0-9a-f]{8})>$/gm),
+    ].map(match => match[1])
 
   it('names each block of a vote request by its tag, with what it holds, before the untrusted-content notice', () => {
     const request = voteRequest('Judge.', finding, 'diff --git a/a.js b/a.js', 'Use db.query.')

@@ -16,7 +16,9 @@ export type Env = Readonly<Record<string, string | undefined>>
  * not break a key. A blank variable is unset, and so is one the environment only inherits from its prototype.
  */
 export function envValue(env: Env, name: string): string | undefined {
-  return Object.hasOwn(env, name) ? env[name]?.trim() || undefined : undefined
+  return Object.hasOwn(env, name)
+    ? env[name]?.trim() || undefined
+    : undefined
 }
 
 /** What the variables of one role set: only the variables that are set. `contextTokens` is `QUORUM_<ROLE>_CONTEXT_TOKENS`, read as a whole number. */
@@ -55,7 +57,10 @@ const VARIABLES: ReadonlyArray<{ readonly field: keyof RoleOverrides, readonly s
 ]
 const ROLES: readonly Role[] = ['RESEARCH', 'VOTER']
 /** Each role as `RoleBinding` names it, with its variables' prefix. */
-const BINDINGS = [['research', 'RESEARCH'], ['voter', 'VOTER']] as const
+const BINDINGS = [
+  ['research', 'RESEARCH'],
+  ['voter', 'VOTER'],
+] as const
 /** The aliases in the order the deprecation line lists them, role by role. */
 const ALIAS_SUFFIXES = ['BASE_URL', 'API_KEY', 'MODEL']
 /** The form of a profile id: what `QUORUM_PROFILES` and a selection of profiles may name. */
@@ -94,20 +99,37 @@ function readRole(env: Env, role: Role): { overrides: RoleOverrides, issues: Con
   const issues: ConfigIssue[] = []
   for (const { field, suffix, aliased } of VARIABLES) {
     const name = canonicalName(role, suffix)
-    const value = envValue(env, name) ?? (aliased ? envValue(env, `${role}_${suffix}`) : undefined)
+    const value = envValue(env, name) ?? (aliased
+      ? envValue(env, `${role}_${suffix}`)
+      : undefined)
     if (value === undefined) continue
-    if (field !== 'contextTokens') entries.push([field, value])
-    else if (CONTEXT_TOKENS.test(value)) entries.push([field, Number(value)])
-    else issues.push({ path: name, message: CONTEXT_TOKENS_FORM })
+    if (field !== 'contextTokens') {
+      entries.push([field, value])
+    } else if (CONTEXT_TOKENS.test(value)) {
+      entries.push([
+        field,
+        Number(value),
+      ])
+    } else {
+      issues.push({ path: name, message: CONTEXT_TOKENS_FORM })
+    }
   }
-  return { overrides: Object.fromEntries(entries), issues }
+  return {
+    overrides: Object.fromEntries(entries),
+    issues,
+  }
 }
 
 /** The one deprecation line: every alias that is set, whether or not its `QUORUM_` form won, and what to set instead. */
 function deprecationWarnings(env: Env): string[] {
-  const aliases = ROLES.flatMap(role => ALIAS_SUFFIXES.filter(suffix => envValue(env, `${role}_${suffix}`) !== undefined).map(suffix => [`${role}_${suffix}`, canonicalName(role, suffix)] as const))
+  const aliases = ROLES.flatMap(role => ALIAS_SUFFIXES.filter(suffix => envValue(env, `${role}_${suffix}`) !== undefined).map(suffix => [
+    `${role}_${suffix}`,
+    canonicalName(role, suffix),
+  ] as const))
   if (aliases.length === 0) return []
-  const verb = aliases.length === 1 ? 'is' : 'are'
+  const verb = aliases.length === 1
+    ? 'is'
+    : 'are'
   return [`${wordList(aliases.map(([alias]) => alias), 'and')} ${verb} deprecated: set ${wordList(aliases.map(([, canonical]) => canonical), 'and')} instead`]
 }
 
@@ -118,8 +140,14 @@ function deprecationWarnings(env: Env): string[] {
 function unreadWarnings(env: Env): string[] {
   const names = Object.keys(env).filter(name => name.startsWith('QUORUM_') && !READ_VARIABLES.has(name) && envValue(env, name) !== undefined).sort()
   if (names.length === 0) return []
-  const printed = names.map(name => VARIABLE_NAME.test(name) ? name : '*')
-  return [names.length === 1 ? `${printed[0]} is not a variable quorum reads` : `${wordList(printed, 'and')} are not variables quorum reads`]
+  const printed = names.map(name => VARIABLE_NAME.test(name)
+    ? name
+    : '*')
+  return [
+    names.length === 1
+      ? `${printed[0]} is not a variable quorum reads`
+      : `${wordList(printed, 'and')} are not variables quorum reads`,
+  ]
 }
 
 /** The profile ids of `QUORUM_PROFILES`, or the one issue that refuses it. Neither repeats the value. */
@@ -127,8 +155,20 @@ function readProfiles(env: Env): Pick<EnvLayer, 'profiles' | 'issues'> {
   const value = envValue(env, 'QUORUM_PROFILES')
   if (value === undefined) return { issues: [] }
   const ids = value.split(',').map(id => id.trim())
-  if (!ids.every(id => PROFILE_ID.test(id))) return { issues: [{ path: 'QUORUM_PROFILES', message: `must list profile ids separated by commas, each matching ${PROFILE_ID.source}` }] }
-  if (new Set(ids).size < ids.length) return { issues: [{ path: 'QUORUM_PROFILES', message: 'names a profile more than once' }] }
+  if (!ids.every(id => PROFILE_ID.test(id))) {
+    return {
+      issues: [
+        { path: 'QUORUM_PROFILES', message: `must list profile ids separated by commas, each matching ${PROFILE_ID.source}` },
+      ],
+    }
+  }
+  if (new Set(ids).size < ids.length) {
+    return {
+      issues: [
+        { path: 'QUORUM_PROFILES', message: 'names a profile more than once' },
+      ],
+    }
+  }
   return { profiles: ids, issues: [] }
 }
 
@@ -137,7 +177,13 @@ function readClaudeCodeCommand(env: Env): Pick<EnvLayer, 'claudeCodeCommand' | '
   const command = envValue(env, CLAUDE_CODE_COMMAND)
   if (command === undefined) return { issues: [] }
   const problem = commandProblem(command)
-  return problem === undefined ? { claudeCodeCommand: command, issues: [] } : { issues: [{ path: CLAUDE_CODE_COMMAND, message: problem }] }
+  return problem === undefined
+    ? { claudeCodeCommand: command, issues: [] }
+    : {
+        issues: [
+          { path: CLAUDE_CODE_COMMAND, message: problem },
+        ],
+      }
 }
 
 /**
@@ -158,8 +204,16 @@ export function readEnv(env: Env): EnvLayer {
     ...command,
     research: research.overrides,
     voter: voter.overrides,
-    warnings: [...deprecationWarnings(env), ...unreadWarnings(env)],
-    issues: [...profileIssues, ...commandIssues, ...research.issues, ...voter.issues],
+    warnings: [
+      ...deprecationWarnings(env),
+      ...unreadWarnings(env),
+    ],
+    issues: [
+      ...profileIssues,
+      ...commandIssues,
+      ...research.issues,
+      ...voter.issues,
+    ],
   }
 }
 
@@ -190,7 +244,12 @@ function setVariables(overrides: RoleOverrides): Variable[] {
 }
 
 /** The fields that name a model on an endpoint: a context size describes what they name. */
-const MODEL_OR_ENDPOINT: readonly (keyof RoleOverrides)[] = ['preset', 'protocol', 'baseUrl', 'model']
+const MODEL_OR_ENDPOINT: readonly (keyof RoleOverrides)[] = [
+  'preset',
+  'protocol',
+  'baseUrl',
+  'model',
+]
 
 /** Whether the variables of a role name a preset, a protocol, a base URL or a model: another model, or another endpoint, than the provider they are set on. */
 export function namesModelOrEndpoint(overrides: RoleOverrides): boolean {
@@ -231,12 +290,20 @@ function startsAfresh(variables: readonly Variable[]): boolean {
 
 /** The settings with the fields the variables set, or those fields alone when the variables name a preset or a protocol; the context size stays only while the variables name no model or endpoint, unless they set one. */
 function withVariables(settings: ProviderSettings, overrides: RoleOverrides, variables: readonly Variable[]): ProviderSettings {
-  return { ...startsAfresh(variables) ? {} : inheritedBy(overrides, settings), ...fieldsOf(overrides, variables) }
+  return {
+    ...startsAfresh(variables)
+      ? {}
+      : inheritedBy(overrides, settings),
+    ...fieldsOf(overrides, variables),
+  }
 }
 
 /** One issue per variable set, at that variable: none of them can change a provider object. */
 function objectIssues(role: Role, variables: readonly Variable[], providerName: string): ConfigIssue[] {
-  return variables.map(({ suffix }) => ({ path: canonicalName(role, suffix), message: `cannot change ${configPath(['providers', providerName])}, an object implementing Provider` }))
+  return variables.map(({ suffix }) => ({
+    path: canonicalName(role, suffix),
+    message: `cannot change ${configPath(['providers', providerName])}, an object implementing Provider`,
+  }))
 }
 
 /**
@@ -244,13 +311,35 @@ function objectIssues(role: Role, variables: readonly Variable[], providerName: 
  * `unnamedProtocol` is true when nobody named `base`'s protocol, the built-in default's: a base URL alone then names a server of no kind, which speaks OpenAI-compatible, never the default's own protocol.
  */
 function derivedVoter(base: ProviderSettings, overrides: RoleOverrides, variables: readonly Variable[], unnamedProtocol: boolean): { provider: ProviderSettings, issues: ConfigIssue[] } {
-  const fields: Partial<ProviderSettings> = { ...fieldsOf(overrides, variables), ...unnamedProtocol && setsOnlyBaseUrl(overrides) ? { protocol: 'openai-compatible' as const } : {} }
+  const fields: Partial<ProviderSettings> = {
+    ...fieldsOf(overrides, variables),
+    ...unnamedProtocol && setsOnlyBaseUrl(overrides)
+      ? { protocol: 'openai-compatible' as const }
+      : {},
+  }
   const origin = httpOrigin(baseUrlOf(base))
   const sameEndpoint = origin !== undefined && origin === httpOrigin(own(fields, 'baseUrl') ?? baseUrlOf(base))
   const { apiKeyEnv: _apiKeyEnv, apiKey: _apiKey, headers: _headers, query: _query, extraBody: _extraBody, model: _model, contextTokens: _contextTokens, ...endpoint } = base
-  const provider: ProviderSettings = startsAfresh(variables) ? fields : { ...(sameEndpoint ? inheritedBy(overrides, base) : endpoint), ...fields }
+  const provider: ProviderSettings = startsAfresh(variables)
+    ? fields
+    : {
+        ...(sameEndpoint
+          ? inheritedBy(overrides, base)
+          : endpoint),
+        ...fields,
+      }
   const needsModel = (startsAfresh(variables) || !sameEndpoint) && provider.model === undefined
-  return { provider, issues: needsModel ? [{ path: canonicalName('VOTER', 'MODEL'), message: 'must be set when the voter variables name another endpoint than the research provider\'s' }] : [] }
+  return {
+    provider,
+    issues: needsModel
+      ? [
+          {
+            path: canonicalName('VOTER', 'MODEL'),
+            message: 'must be set when the voter variables name another endpoint than the research provider\'s',
+          },
+        ]
+      : [],
+  }
 }
 
 /** One issue per role bound to a name that is not an own key of `providers`: a role is never assumed to be bound. */
@@ -281,13 +370,25 @@ export function applyRoleOverrides(
   builtIn = false,
 ): { providers: Record<string, ProviderEntry>, roles: RoleBinding, issues: ConfigIssue[] } {
   const unbound = unboundRoles(providers, roles)
-  if (unbound.length > 0) return { providers: { ...providers }, roles, issues: unbound }
+  if (unbound.length > 0) {
+    return {
+      providers: { ...providers },
+      roles,
+      issues: unbound,
+    }
+  }
   const issues: ConfigIssue[] = []
   let result: Record<string, ProviderEntry> = { ...providers }
   const setOn = (role: Role, name: string, overrides: RoleOverrides, variables: readonly Variable[]): void => {
     const entry = result[name]!
-    if (isProvider(entry)) issues.push(...objectIssues(role, variables, name))
-    else result = { ...result, [name]: withVariables(entry, overrides, variables) }
+    if (isProvider(entry)) {
+      issues.push(...objectIssues(role, variables, name))
+    } else {
+      result = {
+        ...result,
+        [name]: withVariables(entry, overrides, variables),
+      }
+    }
   }
 
   const researchVariables = setVariables(layer.research)
@@ -300,7 +401,10 @@ export function applyRoleOverrides(
   } else if (voterVariables.length > 0) {
     const base = result[roles.research]!
     if (Object.hasOwn(result, 'voter')) {
-      issues.push({ path: configPath(['providers', 'voter']), message: 'is the name the voter variables give the provider they derive: rename this provider' })
+      issues.push({
+        path: configPath(['providers', 'voter']),
+        message: 'is the name the voter variables give the provider they derive: rename this provider',
+      })
     } else if (isProvider(base)) {
       issues.push(...objectIssues('VOTER', voterVariables, roles.research))
     } else {
@@ -310,7 +414,11 @@ export function applyRoleOverrides(
       voterRole = 'voter'
     }
   }
-  return { providers: result, roles: { research: roles.research, voter: voterRole }, issues }
+  return {
+    providers: result,
+    roles: { research: roles.research, voter: voterRole },
+    issues,
+  }
 }
 
 /**

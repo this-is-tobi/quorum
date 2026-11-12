@@ -11,7 +11,11 @@ import { loadConfig, readConfigFile } from './load.ts'
 import { configFileSchema } from './schema.ts'
 
 const SECRET = 'sk-planted-secret'
-const REQUEST: CompletionRequest = { system: '', messages: [], output: { name: 'x', schema: {} } }
+const REQUEST: CompletionRequest = {
+  system: '',
+  messages: [],
+  output: { name: 'x', schema: {} },
+}
 const TAB = String.fromCharCode(9)
 const BOM = String.fromCharCode(0xFEFF)
 
@@ -52,7 +56,13 @@ describe('readConfigFile', () => {
   it('reads a YAML file into a checked config, with its absolute path', async () => {
     file('quorum.yaml', 'version: 1\nproviders:\n  local: {preset: ollama, model: "qwen3.6:27b"}\nroles: {research: local}\n')
     expect(await readConfigFile('quorum.yaml', { cwd: dir })).toEqual({
-      config: { version: 1, providers: { local: { preset: 'ollama', model: 'qwen3.6:27b' } }, roles: { research: 'local' } },
+      config: {
+        version: 1,
+        providers: {
+          local: { preset: 'ollama', model: 'qwen3.6:27b' },
+        },
+        roles: { research: 'local' },
+      },
       source: join(dir, 'quorum.yaml'),
     })
   })
@@ -70,30 +80,54 @@ describe('readConfigFile', () => {
     expect((await readConfigFile(join(dir, name), { cwd: '/nowhere' })).config).toEqual({ maxFindings: 3 })
   })
 
-  it.each(['quorum.toml', 'quorum', 'quorum.YAML', 'quorum.yaml.bak', 'quorum.cts', 'quorum.cjs', 'quorum.tsx', 'quorum.constructor', 'quorum.__proto__'])('refuses the extension of %s, and reads nothing', async (name) => {
-    expect(await issuesOf(name)).toEqual([{ path: name, message: 'must end in .yaml, .yml, .json, .mts, .mjs, .ts or .js' }])
+  it.each([
+    'quorum.toml',
+    'quorum',
+    'quorum.YAML',
+    'quorum.yaml.bak',
+    'quorum.cts',
+    'quorum.cjs',
+    'quorum.tsx',
+    'quorum.constructor',
+    'quorum.__proto__',
+  ])('refuses the extension of %s, and reads nothing', async (name) => {
+    expect(await issuesOf(name)).toEqual([
+      { path: name, message: 'must end in .yaml, .yml, .json, .mts, .mjs, .ts or .js' },
+    ])
   })
 
   it('refuses a missing file, a directory and a device, naming the path as the caller gave it', async () => {
     mkdirSync(join(dir, 'folder.yaml'))
-    expect(await issuesOf('missing.yaml')).toEqual([{ path: 'missing.yaml', message: 'does not exist' }])
-    expect(await issuesOf('./missing/inner.json')).toEqual([{ path: './missing/inner.json', message: 'does not exist' }])
-    expect(await issuesOf('folder.yaml')).toEqual([{ path: 'folder.yaml', message: 'is not a file' }])
+    expect(await issuesOf('missing.yaml')).toEqual([
+      { path: 'missing.yaml', message: 'does not exist' },
+    ])
+    expect(await issuesOf('./missing/inner.json')).toEqual([
+      { path: './missing/inner.json', message: 'does not exist' },
+    ])
+    expect(await issuesOf('folder.yaml')).toEqual([
+      { path: 'folder.yaml', message: 'is not a file' },
+    ])
     file('plain.json', '{}')
-    expect(await issuesOf('plain.json/inner.json')).toEqual([{ path: 'plain.json/inner.json', message: 'does not exist' }])
+    expect(await issuesOf('plain.json/inner.json')).toEqual([
+      { path: 'plain.json/inner.json', message: 'does not exist' },
+    ])
   })
 
   it.skipIf(process.platform === 'win32')('follows a link to a regular file, and refuses one to a device, which is no regular file', async () => {
     symlinkSync(join(dir, file('real.yaml', 'concurrency: 1\n')), join(dir, 'link.yaml'))
     symlinkSync('/dev/null', join(dir, 'device.yaml'))
     expect(await configOf('link.yaml')).toEqual({ concurrency: 1 })
-    expect(await issuesOf('device.yaml')).toEqual([{ path: 'device.yaml', message: 'is not a file' }])
+    expect(await issuesOf('device.yaml')).toEqual([
+      { path: 'device.yaml', message: 'is not a file' },
+    ])
   })
 
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('refuses a file it cannot read, without the runtime\'s message', async () => {
     file('locked.yaml', 'concurrency: 1\n')
     chmodSync(join(dir, 'locked.yaml'), 0o000)
-    expect(await issuesOf('locked.yaml')).toEqual([{ path: 'locked.yaml', message: 'cannot be read' }])
+    expect(await issuesOf('locked.yaml')).toEqual([
+      { path: 'locked.yaml', message: 'cannot be read' },
+    ])
   })
 
   it('reads a file of exactly 1 MiB, and refuses one byte more', async () => {
@@ -101,24 +135,44 @@ describe('readConfigFile', () => {
     file('full.yaml', `concurrency: 1\n#${'x'.repeat(mib - 17)}\n`)
     file('over.yaml', `concurrency: 1\n#${'x'.repeat(mib - 16)}\n`)
     expect(await configOf('full.yaml')).toEqual({ concurrency: 1 })
-    expect(await issuesOf('over.yaml')).toEqual([{ path: 'over.yaml', message: 'is over 1 MiB' }])
+    expect(await issuesOf('over.yaml')).toEqual([
+      { path: 'over.yaml', message: 'is over 1 MiB' },
+    ])
   })
 
   it('refuses bytes that are not UTF-8, and drops a leading byte-order mark', async () => {
     file('latin1.yaml', Uint8Array.from([0x6D, 0x3A, 0x20, 0xE9, 0x0A]))
     file('bom.yaml', `${BOM}concurrency: 2\n`)
     file('bom.json', `${BOM}{"concurrency": 2}`)
-    expect(await issuesOf('latin1.yaml')).toEqual([{ path: 'latin1.yaml', message: 'is not UTF-8 text' }])
+    expect(await issuesOf('latin1.yaml')).toEqual([
+      { path: 'latin1.yaml', message: 'is not UTF-8 text' },
+    ])
     expect(await configOf('bom.yaml')).toEqual({ concurrency: 2 })
     expect(await configOf('bom.json')).toEqual({ concurrency: 2 })
   })
 
-  it.each([['empty.yaml', ''], ['comments.yaml', '# nothing yet\n'], ['dashes.yaml', '---\n'], ['empty.json', ''], ['blank.json', ` ${TAB}\n`]])('refuses %s, which holds no settings', async (name, content) => {
-    expect(await issuesOf(file(name, content))).toEqual([{ path: name, message: 'is empty' }])
+  it.each([
+    ['empty.yaml', ''],
+    ['comments.yaml', '# nothing yet\n'],
+    ['dashes.yaml', '---\n'],
+    ['empty.json', ''],
+    ['blank.json', ` ${TAB}\n`],
+  ])('refuses %s, which holds no settings', async (name, content) => {
+    expect(await issuesOf(file(name, content))).toEqual([
+      { path: name, message: 'is empty' },
+    ])
   })
 
-  it.each([['list.yaml', '- concurrency: 1\n'], ['scalar.yaml', 'concurrency\n'], ['list.json', '[{"concurrency": 1}]'], ['number.json', '4'], ['null.json', 'null']])('refuses %s, whose value is not a mapping', async (name, content) => {
-    expect(await issuesOf(file(name, content))).toEqual([{ path: name, message: 'must hold a mapping of settings' }])
+  it.each([
+    ['list.yaml', '- concurrency: 1\n'],
+    ['scalar.yaml', 'concurrency\n'],
+    ['list.json', '[{"concurrency": 1}]'],
+    ['number.json', '4'],
+    ['null.json', 'null'],
+  ])('refuses %s, whose value is not a mapping', async (name, content) => {
+    expect(await issuesOf(file(name, content))).toEqual([
+      { path: name, message: 'must hold a mapping of settings' },
+    ])
   })
 
   it('reports the schema\'s issues at their paths after the file\'s, all at once', async () => {
@@ -133,11 +187,17 @@ describe('readConfigFile', () => {
 
   it('refuses a key in YAML or JSON, which only a code config may hold', async () => {
     file('key.yaml', `providers:\n  p: {preset: openai, apiKey: ${SECRET}}\n`)
-    expect(await issuesOf('key.yaml')).toEqual([{ path: 'key.yaml: providers.p.apiKey', message: 'is not a known field' }])
+    expect(await issuesOf('key.yaml')).toEqual([
+      { path: 'key.yaml: providers.p.apiKey', message: 'is not a known field' },
+    ])
   })
 
   it.each([
-    ['an error', new RangeError(SECRET), 'could not be checked (RangeError)'],
+    [
+      'an error',
+      new RangeError(SECRET),
+      'could not be checked (RangeError)',
+    ],
     ['a string', SECRET, 'could not be checked (a value that is not an error)'],
   ])('reports %s thrown by the schema check of a data file by its name, at the file', async (_name, thrown, message) => {
     file('quorum.yaml', 'concurrency: 1\n')
@@ -146,7 +206,9 @@ describe('readConfigFile', () => {
     })
     try {
       const issues = await issuesOf('quorum.yaml')
-      expect(issues).toEqual([{ path: 'quorum.yaml', message }])
+      expect(issues).toEqual([
+        { path: 'quorum.yaml', message },
+      ])
       expect(JSON.stringify(issues)).not.toContain('planted')
     } finally {
       safeParse.mockRestore()
@@ -157,14 +219,27 @@ describe('readConfigFile', () => {
 describe('readConfigFile on YAML', () => {
   it('keeps off, no and a date as strings, as YAML 1.2 reads them', async () => {
     file('words.yaml', 'providers:\n  a: {model: off}\n  b: {model: no}\n  c: {model: 2024-10-21}\n  d: {model: yes}\n')
-    expect(await configOf('words.yaml')).toEqual({ providers: { a: { model: 'off' }, b: { model: 'no' }, c: { model: '2024-10-21' }, d: { model: 'yes' } } })
+    expect(await configOf('words.yaml')).toEqual({
+      providers: {
+        a: { model: 'off' },
+        b: { model: 'no' },
+        c: { model: '2024-10-21' },
+        d: { model: 'yes' },
+      },
+    })
   })
 
   it('reads a %YAML 1.1 directive as YAML 1.2 all the same: off stays a string, and << stays a key', async () => {
     file('old.yaml', '%YAML 1.1\n---\nproviders:\n  a: {model: off}\n')
     file('merge.yaml', '%YAML 1.1\n---\nproviders:\n  a:\n    <<: {model: m}\n')
-    expect(await configOf('old.yaml')).toEqual({ providers: { a: { model: 'off' } } })
-    expect(await issuesOf('merge.yaml')).toEqual([{ path: 'merge.yaml: providers.a', message: 'holds a field that is not known' }])
+    expect(await configOf('old.yaml')).toEqual({
+      providers: {
+        a: { model: 'off' },
+      },
+    })
+    expect(await issuesOf('merge.yaml')).toEqual([
+      { path: 'merge.yaml: providers.a', message: 'holds a field that is not known' },
+    ])
   })
 
   it.each([
@@ -176,14 +251,20 @@ describe('readConfigFile on YAML', () => {
     ['!custom', 'a: !custom value'],
   ])('refuses the tag %s, with where it is', async (_tag, line) => {
     file('tag.yaml', `concurrency: 1\n${line}\n`)
-    expect(await issuesOf('tag.yaml')).toEqual([{ path: 'tag.yaml', message: 'uses a tag quorum does not read at line 2, column 4 (TAG_RESOLVE_FAILED)' }])
+    expect(await issuesOf('tag.yaml')).toEqual([
+      { path: 'tag.yaml', message: 'uses a tag quorum does not read at line 2, column 4 (TAG_RESOLVE_FAILED)' },
+    ])
   })
 
   it('refuses an alias, and a merge key, which stays a key quorum does not know', async () => {
     file('alias.yaml', 'roles: &roles {research: a}\nprofiles:\n  team: {roles: *roles}\n')
     file('merge.yaml', 'providers:\n  a:\n    <<: {model: m}\n    preset: ollama\n')
-    expect(await issuesOf('alias.yaml')).toEqual([{ path: 'alias.yaml', message: 'uses an alias, which quorum does not read' }])
-    expect(await issuesOf('merge.yaml')).toEqual([{ path: 'merge.yaml: providers.a', message: 'holds a field that is not known' }])
+    expect(await issuesOf('alias.yaml')).toEqual([
+      { path: 'alias.yaml', message: 'uses an alias, which quorum does not read' },
+    ])
+    expect(await issuesOf('merge.yaml')).toEqual([
+      { path: 'merge.yaml: providers.a', message: 'holds a field that is not known' },
+    ])
   })
 
   it.each([
@@ -199,7 +280,9 @@ describe('readConfigFile on YAML', () => {
   ])('refuses %s, with where it is and the parser\'s code, and never the text of the file', async (_name, content, message) => {
     file('bad.yaml', content)
     const issues = await issuesOf('bad.yaml')
-    expect(issues).toEqual([{ path: 'bad.yaml', message }])
+    expect(issues).toEqual([
+      { path: 'bad.yaml', message },
+    ])
     expect(JSON.stringify(issues)).not.toContain('planted')
   })
 
@@ -222,7 +305,9 @@ describe('readConfigFile on JSON', () => {
   ])('refuses a duplicate key %s, which JSON.parse would resolve to the last value', async (_name, content, message) => {
     file('dup.json', content)
     const issues = await issuesOf('dup.json')
-    expect(issues).toEqual([{ path: 'dup.json', message }])
+    expect(issues).toEqual([
+      { path: 'dup.json', message },
+    ])
     expect(JSON.stringify(issues)).not.toContain('planted')
   })
 
@@ -235,12 +320,16 @@ describe('readConfigFile on JSON', () => {
   ])('refuses %s as JSON, without position or the runtime\'s message, which can quote the file', async (_name, content) => {
     file('bad.json', content)
     const issues = await issuesOf('bad.json')
-    expect(issues).toEqual([{ path: 'bad.json', message: 'is not valid JSON' }])
+    expect(issues).toEqual([
+      { path: 'bad.json', message: 'is not valid JSON' },
+    ])
   })
 
   it('refuses a number past the largest double, which JSON.parse reads as Infinity', async () => {
     file('big.json', '{"maxFindings": 1e999}')
-    expect(await issuesOf('big.json')).toEqual([{ path: 'big.json: maxFindings', message: 'must be a finite number' }])
+    expect(await issuesOf('big.json')).toEqual([
+      { path: 'big.json: maxFindings', message: 'must be a finite number' },
+    ])
   })
 
   it('refuses a value more than 64 keys deep, before any schema reads it', async () => {
@@ -249,7 +338,9 @@ describe('readConfigFile on JSON', () => {
     file('deeper.json', `{"providers": {"p": {"extraBody": ${deep(62)}}}}`)
     expect(await issuesOf('deep.json')).toEqual([])
     const issues = await issuesOf('deeper.json')
-    expect(issues).toEqual([{ path: `deeper.json: providers.p.extraBody.${Array.from({ length: 62 }).fill('a').join('.')}`, message: 'is nested more than 64 keys deep' }])
+    expect(issues).toEqual([
+      { path: `deeper.json: providers.p.extraBody.${Array.from({ length: 62 }).fill('a').join('.')}`, message: 'is nested more than 64 keys deep' },
+    ])
   })
 })
 
@@ -260,8 +351,12 @@ describe('readConfigFile on a wide mapping', () => {
     file('wide.json', json)
     file('wide.yaml', `providers:\n  p:\n    headers:\n${keys.map(key => `      ${key}: v`).join('\n')}\n      h0: v\n`)
     const started = performance.now()
-    expect(await issuesOf('wide.json')).toEqual([{ path: 'wide.json', message: `has a duplicate key at line 1, column ${json.lastIndexOf('"h0"') + 1}` }])
-    expect(await issuesOf('wide.yaml')).toEqual([{ path: 'wide.yaml', message: 'is not valid YAML at line 40004, column 7 (DUPLICATE_KEY)' }])
+    expect(await issuesOf('wide.json')).toEqual([
+      { path: 'wide.json', message: `has a duplicate key at line 1, column ${json.lastIndexOf('"h0"') + 1}` },
+    ])
+    expect(await issuesOf('wide.yaml')).toEqual([
+      { path: 'wide.yaml', message: 'is not valid YAML at line 40004, column 7 (DUPLICATE_KEY)' },
+    ])
     expect(performance.now() - started).toBeLessThan(2500)
   })
 })
@@ -292,7 +387,13 @@ describe('readConfigFile on a file of many values', () => {
   /** A JSON config whose one profile holds `count` empty lenses: the schema finds two issues in each. */
   const lenses = (count: number): string => `{"version":1,"profiles":{"p":{"lenses":[${Array.from<string>({ length: count }).fill('{}').join(',')}]}}}`
   /** A JSON config of `count` headers, which holds `count` + 4 values: the root, providers, one provider and its headers. */
-  const headers = (count: number): string => JSON.stringify({ providers: { p: { headers: Object.fromEntries(Array.from({ length: count }, (_, index) => [`h${index}`, 'v'])) } } })
+  const headers = (count: number): string => JSON.stringify({
+    providers: {
+      p: {
+        headers: Object.fromEntries(Array.from({ length: count }, (_, index) => [`h${index}`, 'v'])),
+      },
+    },
+  })
 
   it('refuses a file of more than 10000 values with one issue at the file', async () => {
     // 205 KiB, whose 140000 schema issues were more than the runtime takes in one call.
@@ -310,7 +411,9 @@ describe('readConfigFile on a file of many values', () => {
   it('refuses a code config that refers to itself twice', async () => {
     file('self.mts', 'const a = {}\na.l = a\na.r = a\nexport default a\n')
     const started = performance.now()
-    expect(await issuesOf('self.mts')).toEqual([{ path: 'self.mts', message: 'holds more than 10000 values' }])
+    expect(await issuesOf('self.mts')).toEqual([
+      { path: 'self.mts', message: 'holds more than 10000 values' },
+    ])
     expect(performance.now() - started).toBeLessThan(1000)
   })
 })
@@ -332,7 +435,9 @@ describe('readConfigFile on a __proto__ key', () => {
     ['quoted.yaml', 'profiles:\n  t:\n    lenses:\n      - {"__proto__": {polluted: true}}\n', 'profiles.t.lenses.0.__proto__'],
   ])('refuses the key in %s at its path, and changes no prototype', async (name, content, path) => {
     file(name, content)
-    expect(await issuesOf(name)).toEqual([{ path: `${name}: ${path}`, message: PROTO }])
+    expect(await issuesOf(name)).toEqual([
+      { path: `${name}: ${path}`, message: PROTO },
+    ])
     expect(Object.getPrototypeOf({})).toBe(Object.prototype)
     expect(({} as Record<string, unknown>).polluted).toBeUndefined()
   })
@@ -356,9 +461,22 @@ const NAMED_SOURCE = [
 const PROVIDER_SOURCE = '{ id: "mine", model: "m", async complete() { return { text: "{}", model: "m" } } }'
 
 describe('readConfigFile on a TS or JS config', () => {
-  it.each(['quorum.config.mts', 'quorum.config.mjs', 'quorum.config.ts', 'quorum.config.js'])('reads %s, a module whose default export is the config, key included', async (name) => {
+  it.each([
+    'quorum.config.mts',
+    'quorum.config.mjs',
+    'quorum.config.ts',
+    'quorum.config.js',
+  ])('reads %s, a module whose default export is the config, key included', async (name) => {
     file(name, 'export default { concurrency: 2, providers: { keyed: { preset: "openai", apiKey: "sk-k" } } }\n')
-    expect(await readConfigFile(name, { cwd: dir })).toEqual({ config: { concurrency: 2, providers: { keyed: { preset: 'openai', apiKey: 'sk-k' } } }, source: join(dir, name) })
+    expect(await readConfigFile(name, { cwd: dir })).toEqual({
+      config: {
+        concurrency: 2,
+        providers: {
+          keyed: { preset: 'openai', apiKey: 'sk-k' },
+        },
+      },
+      source: join(dir, name),
+    })
   })
 
   it('reads a provider object, and one built from a class, into a snapshot that calls each one as it is', async () => {
@@ -381,7 +499,11 @@ describe('readConfigFile on a TS or JS config', () => {
 
   it('leaves a field set to undefined unset, as a spread of an unset value gives', async () => {
     file('unset.mts', 'export default { providers: { p: { preset: "ollama", model: undefined } } }\n')
-    expect(await configOf('unset.mts')).toEqual({ providers: { p: { preset: 'ollama' } } })
+    expect(await configOf('unset.mts')).toEqual({
+      providers: {
+        p: { preset: 'ollama' },
+      },
+    })
   })
 
   it.each([
@@ -392,7 +514,9 @@ describe('readConfigFile on a TS or JS config', () => {
     ['a class instance', 'export default new Map([["concurrency", 1]])'],
   ])('refuses %s as the default export', async (_name, source) => {
     file('bad.mts', `${source}\n`)
-    expect(await issuesOf('bad.mts')).toEqual([{ path: 'bad.mts', message: 'must export an object as its default' }])
+    expect(await issuesOf('bad.mts')).toEqual([
+      { path: 'bad.mts', message: 'must export an object as its default' },
+    ])
   })
 
   it('refuses a value that is not plain data, and a __proto__ key, as in a data file', async () => {
@@ -424,7 +548,9 @@ describe('readConfigFile on a TS or JS config', () => {
   ])('reports a config that throws %s by its name, never by what it says', async (_name, source, message) => {
     file('throws.mts', `${source}\n`)
     const issues = await issuesOf('throws.mts')
-    expect(issues).toEqual([{ path: 'throws.mts', message }])
+    expect(issues).toEqual([
+      { path: 'throws.mts', message },
+    ])
     expect(JSON.stringify(issues)).not.toContain('planted')
   })
 
@@ -432,14 +558,21 @@ describe('readConfigFile on a TS or JS config', () => {
     const errors = pathToFileURL(fileURLToPath(new URL('../core/errors.ts', import.meta.url))).href
     file('throws.mts', `import { ConfigError } from ${JSON.stringify(errors)}\nexport default { get concurrency() { throw new ConfigError([{ path: 'x', message: '${SECRET}' }]) } }\n`)
     const issues = await issuesOf('throws.mts')
-    expect(issues).toEqual([{ path: 'throws.mts', message: 'failed to load (ConfigError)' }])
+    expect(issues).toEqual([
+      { path: 'throws.mts', message: 'failed to load (ConfigError)' },
+    ])
     expect(JSON.stringify(issues)).not.toContain('planted')
   })
 
   it.each([1, 2, 3, 4, 5, 6])('a provider whose complete getter throws from read %i on never has its message printed', async (reads) => {
     file('getter.mts', `let reads = 0\nconst mine = { get complete() { if (++reads >= ${reads}) throw new Error('${SECRET}'); return async () => ({ text: '{}', model: 'm' }) } }\nexport default { providers: { mine } }\n`)
     const issues = await issuesOf('getter.mts')
-    expect([[], [{ path: 'getter.mts', message: 'failed to load (Error)' }]]).toContainEqual(issues)
+    expect([
+      [],
+      [
+        { path: 'getter.mts', message: 'failed to load (Error)' },
+      ],
+    ]).toContainEqual(issues)
     expect(JSON.stringify(issues)).not.toContain('planted')
   })
 })
@@ -452,23 +585,55 @@ describe('readConfigFile on prompt files', () => {
     file('conf/vote.md', `${BOM}Vote from {{lens.id}}.\n`)
     file('conf/quorum.yaml', `${team('{file: ./prompts/research.md}')}  other:\n    prompts: {research: inline text}\n`)
     expect(await configOf('conf/quorum.yaml')).toEqual({
-      profiles: { team: { prompts: { research: 'Look for {{nothing}}.\n', vote: 'Vote from {{lens.id}}.\n' } }, other: { prompts: { research: 'inline text' } } },
+      profiles: {
+        team: {
+          prompts: { research: 'Look for {{nothing}}.\n', vote: 'Vote from {{lens.id}}.\n' },
+        },
+        other: {
+          prompts: { research: 'inline text' },
+        },
+      },
     })
   })
 
   it('reads a prompt file at an absolute path as it is', async () => {
     file('elsewhere/research.md', 'absolute')
     file('vote.md', 'vote')
-    file('quorum.json', JSON.stringify({ profiles: { team: { prompts: { research: { file: join(dir, 'elsewhere/research.md') }, vote: { file: 'vote.md' } } } } }))
-    expect(await configOf('quorum.json')).toEqual({ profiles: { team: { prompts: { research: 'absolute', vote: 'vote' } } } })
+    file('quorum.json', JSON.stringify({
+      profiles: {
+        team: {
+          prompts: {
+            research: {
+              file: join(dir, 'elsewhere/research.md'),
+            },
+            vote: { file: 'vote.md' },
+          },
+        },
+      },
+    }))
+    expect(await configOf('quorum.json')).toEqual({
+      profiles: {
+        team: {
+          prompts: { research: 'absolute', vote: 'vote' },
+        },
+      },
+    })
   })
 
   it('reads a prompt file of a code config, and leaves the module\'s own object as it was', async () => {
     file('research.md', 'from a file')
     file('quorum.mts', 'export const prompts = { research: { file: "./research.md" } }\nexport default { profiles: { team: { prompts } } }\n')
-    expect(await configOf('quorum.mts')).toEqual({ profiles: { team: { prompts: { research: 'from a file' } } } })
+    expect(await configOf('quorum.mts')).toEqual({
+      profiles: {
+        team: {
+          prompts: { research: 'from a file' },
+        },
+      },
+    })
     const module = await import(pathToFileURL(join(dir, 'quorum.mts')).href) as { prompts: unknown }
-    expect(module.prompts).toEqual({ research: { file: './research.md' } })
+    expect(module.prompts).toEqual({
+      research: { file: './research.md' },
+    })
   })
 
   it('reports every prompt file that cannot be read, each at its path', async () => {
@@ -487,11 +652,22 @@ describe('readConfigFile on prompt files', () => {
 
   it('reads no prompt file while the schema finds an issue', async () => {
     file('quorum.yaml', `${team('{file: missing.md}')}concurrency: 0\n`)
-    expect(await issuesOf('quorum.yaml')).toEqual([{ path: 'quorum.yaml: concurrency', message: 'must be at least 1' }])
+    expect(await issuesOf('quorum.yaml')).toEqual([
+      { path: 'quorum.yaml: concurrency', message: 'must be at least 1' },
+    ])
   })
 
   /** A JSON config of one profile per file, each profile's research prompt naming its file. */
-  const profilesNaming = (files: readonly string[]): string => JSON.stringify({ profiles: Object.fromEntries(files.map((name, index) => [`p${index}`, { prompts: { research: { file: name } } }])) })
+  const profilesNaming = (files: readonly string[]): string => JSON.stringify({
+    profiles: Object.fromEntries(files.map((name, index) => [
+      `p${index}`,
+      {
+        prompts: {
+          research: { file: name },
+        },
+      },
+    ])),
+  })
 
   it('reads a prompt file named by several profiles once, with the same text in each', async () => {
     const text = 'x'.repeat(64 * 1024)
@@ -507,7 +683,9 @@ describe('readConfigFile on prompt files', () => {
     const names = Array.from({ length: 17 }, (_, index) => file(`prompt${index}.md`, 'x'.repeat(64 * 1024)))
     // A further file that does not exist: reading stops at the 17th, so it is never opened.
     file('quorum.json', profilesNaming([...names, 'missing.md']))
-    expect(await issuesOf('quorum.json')).toEqual([{ path: 'quorum.json: profiles.p16.prompts.research.file', message: 'takes the prompt files over 1 MiB in total' }])
+    expect(await issuesOf('quorum.json')).toEqual([
+      { path: 'quorum.json: profiles.p16.prompts.research.file', message: 'takes the prompt files over 1 MiB in total' },
+    ])
   })
 
   it('counts an oversized prompt file as 64 KiB toward the total', async () => {
@@ -547,7 +725,14 @@ describe.skipIf('bun' in process.versions)('readConfigFile under Node itself, wh
       '}',
       'console.log(JSON.stringify(results))',
     ].join('\n'))
-    const run = spawnSync(process.execPath, ['run.mjs', 'typed.mts', 'enum.ts', 'cjs/quorum.config.ts', 'cjs/quorum.config.mts', 'missing.mts'], { cwd: root, encoding: 'utf8', timeout: 60_000 })
+    const run = spawnSync(process.execPath, [
+      'run.mjs',
+      'typed.mts',
+      'enum.ts',
+      'cjs/quorum.config.ts',
+      'cjs/quorum.config.mts',
+      'missing.mts',
+    ], { cwd: root, encoding: 'utf8', timeout: 60_000 })
     results = JSON.parse(run.stdout) as Record<string, unknown>
     stderr = run.stderr
   })
@@ -562,15 +747,21 @@ describe.skipIf('bun' in process.versions)('readConfigFile under Node itself, wh
   })
 
   it('reports an enum, which Node cannot strip', () => {
-    expect(results['enum.ts']).toEqual([{ path: 'enum.ts', message: 'uses TypeScript that Node cannot strip (an enum, a namespace or a parameter property)' }])
+    expect(results['enum.ts']).toEqual([
+      { path: 'enum.ts', message: 'uses TypeScript that Node cannot strip (an enum, a namespace or a parameter property)' },
+    ])
   })
 
   it('reports an export in a .ts config of a commonjs package, and names the extension that works', () => {
-    expect(results['cjs/quorum.config.ts']).toEqual([{ path: 'cjs/quorum.config.ts', message: 'has a syntax error (a .ts or .js config with export in a "type": "commonjs" package needs the .mts or .mjs extension)' }])
+    expect(results['cjs/quorum.config.ts']).toEqual([
+      { path: 'cjs/quorum.config.ts', message: 'has a syntax error (a .ts or .js config with export in a "type": "commonjs" package needs the .mts or .mjs extension)' },
+    ])
   })
 
   it('reports an import that cannot be found', () => {
-    expect(results['missing.mts']).toEqual([{ path: 'missing.mts', message: 'imports a module that cannot be found' }])
+    expect(results['missing.mts']).toEqual([
+      { path: 'missing.mts', message: 'imports a module that cannot be found' },
+    ])
   })
 
   it('leaves the text of a config out of what Node itself writes', () => {
@@ -583,7 +774,11 @@ describe('loadConfig', () => {
 
   it('reads the file configPath names, then layers the environment over it', async () => {
     const name = file('q.yaml', 'providers:\n  local: {preset: ollama, model: q, contextTokens: 131072}\n')
-    const loaded = await loadConfig({ cwd: dir, env: { QUORUM_RESEARCH_MODEL: 'other', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }, configPath: name })
+    const loaded = await loadConfig({
+      cwd: dir,
+      env: { QUORUM_RESEARCH_MODEL: 'other', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
+      configPath: name,
+    })
     expect(loaded.config.providers.local).toMatchObject({ preset: 'ollama', model: 'other' })
     expect(loaded.source).toBe(join(dir, name))
     expect(loaded.warnings).toEqual([])
@@ -592,45 +787,87 @@ describe('loadConfig', () => {
   it('reads the file QUORUM_CONFIG names when no path is given, and a path given wins', async () => {
     const named = join(dir, file('env.yaml', 'providers:\n  fromenv: {preset: ollama, model: q, contextTokens: 131072}\n'))
     file('flag.yaml', 'providers:\n  fromflag: {preset: ollama, model: q, contextTokens: 131072}\n')
-    expect(Object.keys((await loadConfig({ cwd: dir, env: { QUORUM_CONFIG: ` ${named} ` } })).config.providers)).toEqual(['fromenv'])
-    expect(Object.keys((await loadConfig({ cwd: dir, env: { QUORUM_CONFIG: named }, configPath: 'flag.yaml' })).config.providers)).toEqual(['fromflag'])
+    expect(Object.keys((await loadConfig({
+      cwd: dir,
+      env: { QUORUM_CONFIG: ` ${named} ` },
+    })).config.providers)).toEqual(['fromenv'])
+    expect(Object.keys((await loadConfig({
+      cwd: dir,
+      env: { QUORUM_CONFIG: named },
+      configPath: 'flag.yaml',
+    })).config.providers)).toEqual(['fromflag'])
   })
 
-  it.each(['env.yaml', './env.yaml', '../env.yaml', '~/env.yaml'])('refuses a QUORUM_CONFIG that is not an absolute path (%s), a path given or not, and reads nothing', async (relative) => {
+  it.each([
+    'env.yaml',
+    './env.yaml',
+    '../env.yaml',
+    '~/env.yaml',
+  ])('refuses a QUORUM_CONFIG that is not an absolute path (%s), a path given or not, and reads nothing', async (relative) => {
     file('env.yaml', 'providers:\n  fromenv: {preset: ollama, model: q, contextTokens: 131072}\n')
     file('flag.yaml', 'providers:\n  fromflag: {preset: ollama, model: q, contextTokens: 131072}\n')
-    const issue = [{ path: 'QUORUM_CONFIG', message: 'must be an absolute path' }]
-    await expect(loadConfig({ cwd: dir, env: { QUORUM_CONFIG: relative } })).rejects.toMatchObject({ issues: issue })
-    await expect(loadConfig({ cwd: dir, env: { QUORUM_CONFIG: ` ${relative} ` }, configPath: 'flag.yaml' })).rejects.toMatchObject({ issues: issue })
+    const issue = [
+      { path: 'QUORUM_CONFIG', message: 'must be an absolute path' },
+    ]
+    await expect(loadConfig({
+      cwd: dir,
+      env: { QUORUM_CONFIG: relative },
+    })).rejects.toMatchObject({ issues: issue })
+    await expect(loadConfig({
+      cwd: dir,
+      env: { QUORUM_CONFIG: ` ${relative} ` },
+      configPath: 'flag.yaml',
+    })).rejects.toMatchObject({ issues: issue })
   })
 
   it('takes a blank QUORUM_CONFIG as unset, and a relative configPath as named per call', async () => {
     file('flag.yaml', 'providers:\n  fromflag: {preset: ollama, model: q, contextTokens: 131072}\n')
-    await expect(loadConfig({ cwd: dir, env: { QUORUM_CONFIG: '  ' } })).rejects.toThrow(NO_MODEL)
-    expect(Object.keys((await loadConfig({ cwd: dir, env: { QUORUM_CONFIG: '' }, configPath: 'flag.yaml' })).config.providers)).toEqual(['fromflag'])
+    await expect(loadConfig({
+      cwd: dir,
+      env: { QUORUM_CONFIG: '  ' },
+    })).rejects.toThrow(NO_MODEL)
+    expect(Object.keys((await loadConfig({
+      cwd: dir,
+      env: { QUORUM_CONFIG: '' },
+      configPath: 'flag.yaml',
+    })).config.providers)).toEqual(['fromflag'])
   })
 
   it('reads no file that is not named, whatever the working directory holds (ADR-0014)', async () => {
     file('quorum.config.yaml', 'providers:\n  planted: {preset: ollama, model: q, contextTokens: 131072}\n')
     await expect(loadConfig({ cwd: dir, env: {} })).rejects.toThrow(NO_MODEL)
-    const loaded = await loadConfig({ cwd: dir, env: { QUORUM_RESEARCH_MODEL: 'q', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' } })
+    const loaded = await loadConfig({
+      cwd: dir,
+      env: { QUORUM_RESEARCH_MODEL: 'q', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
+    })
     expect(loaded.source).toBeUndefined()
     expect(Object.keys(loaded.config.providers)).toEqual(['default'])
   })
 
   it('hands a selection to the resolution, over QUORUM_PROFILES', async () => {
-    const loaded = await loadConfig({ env: { QUORUM_RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_PROFILES: 'nope' }, selection: { ids: ['security'], path: '--profile' } })
+    const loaded = await loadConfig({
+      env: { QUORUM_RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_PROFILES: 'nope' },
+      selection: {
+        ids: ['security'],
+        path: '--profile',
+      },
+    })
     expect(loaded.config.profiles.map(({ profile }) => profile.id)).toEqual(['security'])
   })
 
   it('reports a config that Bun cannot build as a syntax error, never by its message', async () => {
     file('built.mjs', `const error = new Error('${SECRET} in the source')\nerror.name = 'BuildMessage'\nthrow error\n`)
     const issues = await loadConfig({ cwd: dir, env: {}, configPath: 'built.mjs' }).then(() => [], (error: unknown) => (error as ConfigError).issues)
-    expect(issues).toEqual([{ path: 'built.mjs', message: 'has a syntax error' }])
+    expect(issues).toEqual([
+      { path: 'built.mjs', message: 'has a syntax error' },
+    ])
   })
 
   it('returns the config\'s warnings', async () => {
-    const loaded = await loadConfig({ cwd: dir, env: { RESEARCH_MODEL: 'q', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' } })
+    const loaded = await loadConfig({
+      cwd: dir,
+      env: { RESEARCH_MODEL: 'q', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
+    })
     expect(loaded.warnings).toEqual(['RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead'])
     expect(loaded.warnings).toBe(loaded.config.warnings)
   })
@@ -641,14 +878,23 @@ describe('loadConfig', () => {
       expect(error).toBeInstanceOf(ConfigError)
       return (error as ConfigError).issues
     })
-    expect([[], [{ path: 'getter.mts', message: 'failed to load (Error)' }]]).toContainEqual(issues)
+    expect([
+      [],
+      [
+        { path: 'getter.mts', message: 'failed to load (Error)' },
+      ],
+    ]).toContainEqual(issues)
     expect(JSON.stringify(issues)).not.toContain('planted')
   })
 
   it('holds a provider object as the snapshot, named by its config key, whose function answers with the object it is called on', async () => {
     file('named.mts', NAMED_SOURCE)
     const keyed = (await loadConfig({ cwd: dir, env: {}, configPath: 'named.mts' })).config.providers.keyed as Provider
-    expect([keyed.id, Object.isFrozen(keyed), Object.getPrototypeOf(keyed)]).toEqual(['keyed', true, null])
+    expect([
+      keyed.id,
+      Object.isFrozen(keyed),
+      Object.getPrototypeOf(keyed),
+    ]).toEqual(['keyed', true, null])
     expect(await keyed.complete(REQUEST)).toEqual({ text: 'own', model: 'm' })
   })
 

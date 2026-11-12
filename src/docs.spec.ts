@@ -21,12 +21,18 @@ const withoutFences = (markdown: string): string => markdown.replace(/^```[\s\S]
 /** A heading's anchor, the way GitHub and docpress make it: lower case, punctuation dropped, spaces to dashes. */
 const slug = (heading: string): string => heading.trim().toLowerCase().replace(/[^\p{L}\p{N} _-]/gu, '').replace(/ /g, '-')
 
-const anchorsOf = (file: string): Set<string> => new Set([...withoutFences(text(file)).matchAll(/^#{1,6} (.+)$/gm)].map(match => slug(match[1])))
+function anchorsOf(file: string): Set<string> {
+  return new Set([
+    ...withoutFences(text(file)).matchAll(/^#{1,6} (.+)$/gm),
+  ].map(match => slug(match[1])))
+}
 
 /** Every link target in the prose of a file that is not a URL (inline code is code, not a link). */
 function links(file: string): string[] {
   const prose = withoutFences(text(file)).replace(/`[^`\n]*`/g, '')
-  return [...prose.matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]).filter(target => !/^[a-z][a-z0-9+.-]*:/i.test(target))
+  return [
+    ...prose.matchAll(/\]\(([^)\s]+)\)/g),
+  ].map(match => match[1]).filter(target => !/^[a-z][a-z0-9+.-]*:/i.test(target))
 }
 
 /** The code points of the sanitizer's hidden class that a line holds, the tab aside, as `U+XXXX` labels. */
@@ -38,7 +44,9 @@ describe('the documentation', () => {
     for (const file of files) {
       for (const target of links(file)) {
         const [path, anchor] = target.split('#')
-        const resolved = path === '' ? file : relative(ROOT, join(ROOT, dirname(file), path))
+        const resolved = path === ''
+          ? file
+          : relative(ROOT, join(ROOT, dirname(file), path))
         if (!existsSync(join(ROOT, resolved))) broken.push(`${file}: ${target}`)
         else if (anchor !== undefined && resolved.endsWith('.md') && !anchorsOf(resolved).has(anchor)) broken.push(`${file}: ${target}`)
       }
@@ -58,14 +66,18 @@ describe('the documentation', () => {
 
   it('lists every page in the README table of contents', () => {
     const contents = withoutFences(text('README.md')).split(/^## Documentation$/m)[1]?.split(/^## /m)[0] ?? ''
-    const listed = new Set([...contents.replace(/`[^`\n]*`/g, '').matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1].split('#')[0].replace(/^\.\//, '')))
+    const listed = new Set([
+      ...contents.replace(/`[^`\n]*`/g, '').matchAll(/\]\(([^)\s]+)\)/g),
+    ].map(match => match[1].split('#')[0].replace(/^\.\//, '')))
     expect(pages.filter(page => page !== START && !listed.has(page))).toEqual([])
   })
 
   it('holds no hidden character in the README or any page, but line feeds and tabs', () => {
     const found = files.flatMap(file => text(file).split('\n').flatMap((line, index) => {
       const labels = hiddenIn(line)
-      return labels.length > 0 ? [`${file}:${index + 1} holds ${labels.join(', ')}`] : []
+      return labels.length > 0
+        ? [`${file}:${index + 1} holds ${labels.join(', ')}`]
+        : []
     }))
     expect(found).toEqual([])
   })

@@ -21,9 +21,26 @@ const ANTHROPIC_VERSION = '2026-10-21'
  * header offers a tool by itself.
  */
 const RULES: Omit<AdapterRules, 'auth'> = {
-  reservedBodyKeys: ['model', 'messages', 'system', 'stream'],
-  toolBodyKeys: ['tools', 'tool_choice', 'mcp_servers', 'container', 'thread', 'fallbacks', 'fallback_credit_token', 'context_management', 'compaction'],
-  replyLimitPaths: [['max_tokens']],
+  reservedBodyKeys: [
+    'model',
+    'messages',
+    'system',
+    'stream',
+  ],
+  toolBodyKeys: [
+    'tools',
+    'tool_choice',
+    'mcp_servers',
+    'container',
+    'thread',
+    'fallbacks',
+    'fallback_credit_token',
+    'context_management',
+    'compaction',
+  ],
+  replyLimitPaths: [
+    ['max_tokens'],
+  ],
   fixedHeaders: ['anthropic-version'],
   structuredOutputs: ['prompt', 'schema'],
 }
@@ -49,7 +66,9 @@ function readReply(reply: unknown, { id, model }: Pick<AnthropicOptions, 'id' | 
 
   return {
     text,
-    model: typeof reply.model === 'string' && reply.model !== '' ? reply.model : model,
+    model: typeof reply.model === 'string' && reply.model !== ''
+      ? reply.model
+      : model,
     usage: tokenUsage(reply.usage, ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'], ['output_tokens']),
   }
 }
@@ -87,7 +106,11 @@ export function anthropic(options: AnthropicOptions): Provider {
           system,
           messages,
           temperature: temperature ?? undefined,
-          output_config: structuredOutput === 'schema' ? { format: { type: 'json_schema', schema: request.output.schema } } : undefined,
+          output_config: structuredOutput === 'schema'
+            ? {
+                format: { type: 'json_schema', schema: request.output.schema },
+              }
+            : undefined,
         }, extraBody),
         signal: request.signal,
         redact,

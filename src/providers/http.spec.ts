@@ -18,7 +18,12 @@ describe('snippet', () => {
 
   it('redacts the secret as a JSON string would carry it, with or without escaped slashes', () => {
     const secret = 'sk-a/b"c'
-    for (const echoed of [secret, 'sk-a/b\\"c', 'sk-a\\/b"c', 'sk-a\\/b\\"c']) {
+    for (const echoed of [
+      secret,
+      'sk-a/b\\"c',
+      'sk-a\\/b"c',
+      'sk-a\\/b\\"c',
+    ]) {
       expect(snippet(`invalid key ${echoed}!`, 100, [secret]), echoed).toBe('"invalid key [redacted]!"')
     }
   })
@@ -123,8 +128,11 @@ describe('httpOrigin', () => {
     ['a blob URL, whose own origin is that of the URL inside it', 'blob:https://h.example/0b1d6d6e-0000-4000-8000-000000000000'],
     ['a file URL', 'file:///etc/hosts'],
     ['a number', 42],
-    // eslint-disable-next-line no-new-wrappers, unicorn/new-for-builtins -- the input is a String object
-    ['a String object', new String('https://h.example')],
+    [
+      'a String object',
+      // eslint-disable-next-line no-new-wrappers, unicorn/new-for-builtins -- the input is a String object
+      new String('https://h.example'),
+    ],
     ['undefined', undefined],
   ])('gives %s no origin', (_name, url) => {
     expect(httpOrigin(url)).toBeUndefined()
@@ -175,16 +183,32 @@ describe('postJson', () => {
     const fetchMock = vi.fn().mockImplementation(async () => jsonReply({ answer: 1 }))
     vi.stubGlobal('fetch', fetchMock)
     const signal = new AbortController().signal
-    await expect(postJson({ ...options, headers: { authorization: 'Bearer k' }, body: { a: 1 }, signal })).resolves.toEqual({ answer: 1 })
+    await expect(postJson({
+      ...options,
+      headers: { authorization: 'Bearer k' },
+      body: { a: 1 },
+      signal,
+    })).resolves.toEqual({ answer: 1 })
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('http://h/x')
-    expect(init).toMatchObject({ method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer k' }, body: '{"a":1}', redirect: 'manual', signal })
+    expect(init).toMatchObject({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer k' },
+      body: '{"a":1}',
+      redirect: 'manual',
+      signal,
+    })
   })
 
   it('reports a redirect as an http error that is not retried, so a key never reaches another endpoint', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('moved', 307)))
     const error = await postJson(options).catch((caught: unknown) => caught)
-    expect(error).toMatchObject({ kind: 'http', status: 307, retryable: false, message: 'p: HTTP 307 (redirects are not followed): "moved"' })
+    expect(error).toMatchObject({
+      kind: 'http',
+      status: 307,
+      retryable: false,
+      message: 'p: HTTP 307 (redirects are not followed): "moved"',
+    })
   })
 
   it('refuses a reply body over 16 MiB, and reads no more of it', async () => {
@@ -218,7 +242,10 @@ describe('postJson', () => {
   it('lets a body that cannot be serialized fail as a programming error, before any request', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const error = await postJson({ ...options, body: { n: 1n } }).catch((caught: unknown) => caught)
+    const error = await postJson({
+      ...options,
+      body: { n: 1n },
+    }).catch((caught: unknown) => caught)
     expect(error).toBeInstanceOf(TypeError)
     expect(error).not.toBeInstanceOf(ProviderError)
     expect(fetchMock).not.toHaveBeenCalled()
@@ -228,7 +255,12 @@ describe('postJson', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('x'.repeat(10_000), 503)))
     const error = await postJson(options).catch((caught: unknown) => caught)
     expect(error).toBeInstanceOf(ProviderError)
-    expect(error).toMatchObject({ kind: 'http', status: 503, retryable: true, message: `p: HTTP 503: ${JSON.stringify('x'.repeat(500))}` })
+    expect(error).toMatchObject({
+      kind: 'http',
+      status: 503,
+      retryable: true,
+      message: `p: HTTP 503: ${JSON.stringify('x'.repeat(500))}`,
+    })
     expect((error as Error).cause).toBeUndefined()
   })
 
@@ -245,7 +277,10 @@ describe('postJson', () => {
 
   it('redacts the key from an error body that echoes it', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('bad token: Bearer sk-secret', 401)))
-    await expect(postJson({ ...options, redact: ['sk-secret'] })).rejects.toMatchObject({ message: 'p: HTTP 401: "bad token: Bearer [redacted]"' })
+    await expect(postJson({
+      ...options,
+      redact: ['sk-secret'],
+    })).rejects.toMatchObject({ message: 'p: HTTP 401: "bad token: Bearer [redacted]"' })
   })
 
   it('still reports the status when the error body cannot be read', async () => {
@@ -265,7 +300,10 @@ describe('postJson', () => {
   it('never copies the runtime error text, which can hold an invalid header value with the key', async () => {
     const header = `Bearer sk-secret${String.fromCharCode(10)}X`
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError(`Headers.append: "${header}" is an invalid header value.`)))
-    const error = await postJson({ ...options, headers: { authorization: header } }).catch((caught: Error) => caught) as Error
+    const error = await postJson({
+      ...options,
+      headers: { authorization: header },
+    }).catch((caught: Error) => caught) as Error
     expect(error.message).toBe('p: request to http://h failed')
   })
 
@@ -277,7 +315,9 @@ describe('postJson', () => {
   it.each([
     ['not an identifier'],
     ['1ECONNREFUSED'],
-    ['A'.repeat(41)],
+    [
+      'A'.repeat(41),
+    ],
   ])('ignores the error code %j, which is not a plain identifier', async (code) => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(Object.assign(new TypeError('fetch failed'), { code })))
     await expect(postJson(options)).rejects.toMatchObject({ kind: 'network', message: 'p: request to http://h failed' })
@@ -294,7 +334,10 @@ describe('postJson', () => {
     await expect(postJson(options)).rejects.toMatchObject({ name: 'ProviderError', kind: 'network', message: 'p: request to http://h failed' })
   })
 
-  it.each([['not a url'], ['localhost:11434/v1']])('names the endpoint when the URL %j has no http origin', async (url) => {
+  it.each([
+    ['not a url'],
+    ['localhost:11434/v1'],
+  ])('names the endpoint when the URL %j has no http origin', async (url) => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')))
     await expect(postJson({ ...options, url })).rejects.toMatchObject({ kind: 'network', message: 'p: request to the endpoint failed' })
   })

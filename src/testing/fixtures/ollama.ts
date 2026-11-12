@@ -21,7 +21,11 @@ export const chatResponse = {
 }
 
 /** A reply cut off by the token limit, or by a context that filled: `done_reason: 'length'`. */
-export const truncated = { ...chatResponse, message: { role: 'assistant', content: '{"kee' }, done_reason: 'length' }
+export const truncated = {
+  ...chatResponse,
+  message: { role: 'assistant', content: '{"kee' },
+  done_reason: 'length',
+}
 
 /** The answer to `_debug_render_only`: the rendered template in `debug_info`, and no `done` (server/routes.go, `ChatHandler`). */
 export const debugRender = {

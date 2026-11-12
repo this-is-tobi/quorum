@@ -10,8 +10,25 @@ import { resolveConfig } from './resolve.ts'
 import type { ConfigInput } from './schema.ts'
 
 const SECRET = 'sk-planted-secret'
-const diff = ['diff --git a/a.js b/a.js', '--- a/a.js', '+++ b/a.js', '@@ -1 +1 @@', '-safe()', '+exec(cmd)'].join('\n')
-const finding = JSON.stringify({ findings: [{ file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }] })
+const diff = [
+  'diff --git a/a.js b/a.js',
+  '--- a/a.js',
+  '+++ b/a.js',
+  '@@ -1 +1 @@',
+  '-safe()',
+  '+exec(cmd)',
+].join('\n')
+const finding = JSON.stringify({
+  findings: [
+    {
+      file: 'a.js',
+      line: 1,
+      category: 'CWE-78',
+      quote: 'exec(cmd)',
+      summary: 'command injection',
+    },
+  ],
+})
 
 /** A fetch stub answering the research call with one finding, and every vote with a keep, each as `research` and `votes` shape a reply: OpenAI-compatible unless a protocol is given. */
 function stubReview(research: (content: string) => Response = chatReply, votes: (content: string) => Response = research): ReturnType<typeof vi.fn> {
@@ -72,23 +89,51 @@ afterEach(() => {
 describe('fromConfig', () => {
   it('builds the providers of an environment-only config and reviews with them, the research key never reaching the voter', async () => {
     const fetchMock = stubReview(ollamaReply, chatReply)
-    const env = { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_API_KEY: 'sk-r', QUORUM_VOTER_BASE_URL: 'https://api.mistral.ai/v1', QUORUM_VOTER_MODEL: 'mistral-small-latest', QUORUM_VOTER_API_KEY: 'sk-m', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_VOTER_CONTEXT_TOKENS: '131072' }
+    const env = {
+      QUORUM_RESEARCH_MODEL: 'qwen',
+      QUORUM_RESEARCH_API_KEY: 'sk-r',
+      QUORUM_VOTER_BASE_URL: 'https://api.mistral.ai/v1',
+      QUORUM_VOTER_MODEL: 'mistral-small-latest',
+      QUORUM_VOTER_API_KEY: 'sk-m',
+      QUORUM_RESEARCH_CONTEXT_TOKENS: '131072',
+      QUORUM_VOTER_CONTEXT_TOKENS: '131072',
+    }
     const result = await (await fromConfig({}, { env })).review({ diff })
-    expect(sent(fetchMock, 0)).toMatchObject({ url: 'http://localhost:11434/api/chat', headers: { authorization: 'Bearer sk-r' } })
+    expect(sent(fetchMock, 0)).toMatchObject({
+      url: 'http://localhost:11434/api/chat',
+      headers: { authorization: 'Bearer sk-r' },
+    })
     expect(fetchMock.mock.calls).toHaveLength(4)
     for (const call of [1, 2, 3]) {
-      expect(sent(fetchMock, call)).toMatchObject({ url: 'https://api.mistral.ai/v1/chat/completions', headers: { authorization: 'Bearer sk-m' } })
+      expect(sent(fetchMock, call)).toMatchObject({
+        url: 'https://api.mistral.ai/v1/chat/completions',
+        headers: { authorization: 'Bearer sk-m' },
+      })
       expect(JSON.stringify(fetchMock.mock.calls[call])).not.toContain('sk-r')
     }
     const voter = { id: 'voter', model: 'mistral-small-latest' }
-    expect(result.meta.profiles.security.providers).toEqual({ research: { id: 'default', model: 'qwen' }, lenses: { reachability: voter, impact: voter, defenses: voter } })
+    expect(result.meta.profiles.security.providers).toEqual({
+      research: { id: 'default', model: 'qwen' },
+      lenses: { reachability: voter, impact: voter, defenses: voter },
+    })
   })
 
   it('hands the events of a review to options.events, the run first and its end last', async () => {
     stubReview(ollamaReply)
     const events: QuorumEvent[] = []
-    await (await fromConfig({}, { env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }, events: event => events.push(event) })).review({ diff })
-    expect(events[0]).toMatchObject({ type: 'run:start', profiles: ['security'], providers: { security: { research: { id: 'default', model: 'qwen' } } } })
+    await (await fromConfig({}, {
+      env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
+      events: event => events.push(event),
+    })).review({ diff })
+    expect(events[0]).toMatchObject({
+      type: 'run:start',
+      profiles: ['security'],
+      providers: {
+        security: {
+          research: { id: 'default', model: 'qwen' },
+        },
+      },
+    })
     expect(events.at(-1)).toMatchObject({ type: 'run:end', kept: 1 })
     expect(events.filter(event => event.type === 'call')).toHaveLength(4)
   })
@@ -102,27 +147,51 @@ describe('fromConfig', () => {
 
   it('uses a resolved config as it is, without reading the environment again', async () => {
     const fetchMock = stubReview(ollamaReply)
-    const config = resolveConfig({}, { env: { QUORUM_RESEARCH_MODEL: 'resolved', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' } })
-    await (await fromConfig(config, { env: { QUORUM_RESEARCH_MODEL: 'other', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' } })).review({ diff })
+    const config = resolveConfig({}, {
+      env: { QUORUM_RESEARCH_MODEL: 'resolved', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
+    })
+    await (await fromConfig(config, {
+      env: { QUORUM_RESEARCH_MODEL: 'other', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
+    })).review({ diff })
     expect(sent(fetchMock).body.model).toBe('resolved')
   })
 
   it('checks a ConfigInput as a code config is checked, so a caller gets issues, never a TypeError', async () => {
-    expect(await issuesOf('nope')).toEqual([{ path: 'config', message: 'must be an object' }])
-    expect(await issuesOf({ concurrency: 0 })).toEqual([{ path: 'concurrency', message: 'must be at least 1' }])
-    expect(await issuesOf({ profiles: { team: { prompts: { research: { file: 'r.md' } } } } })).toEqual([{ path: 'profiles.team.prompts.research', message: 'must be a string' }])
+    expect(await issuesOf('nope')).toEqual([
+      { path: 'config', message: 'must be an object' },
+    ])
+    expect(await issuesOf({ concurrency: 0 })).toEqual([
+      { path: 'concurrency', message: 'must be at least 1' },
+    ])
+    expect(await issuesOf({
+      profiles: {
+        team: {
+          prompts: {
+            research: { file: 'r.md' },
+          },
+        },
+      },
+    })).toEqual([
+      { path: 'profiles.team.prompts.research', message: 'must be a string' },
+    ])
   })
 
   it('refuses a __proto__ key in a ConfigInput, and changes no prototype', async () => {
-    expect(await issuesOf(JSON.parse('{"providers":{"__proto__":{"polluted":true}}}'))).toEqual([{ path: 'providers.__proto__', message: 'is not allowed as a key: it can replace the prototype of an object' }])
+    expect(await issuesOf(JSON.parse('{"providers":{"__proto__":{"polluted":true}}}'))).toEqual([
+      { path: 'providers.__proto__', message: 'is not allowed as a key: it can replace the prototype of an object' },
+    ])
     expect(({} as { polluted?: unknown }).polluted).toBeUndefined()
   })
 
   it('reports a ConfigInput whose getter throws by the error\'s name alone', async () => {
-    const issues = await issuesOf({ get providers(): never {
-      throw new Error('sk-zz-secret')
-    } })
-    expect(issues).toEqual([{ path: 'config', message: 'could not be read (Error)' }])
+    const issues = await issuesOf({
+      get providers(): never {
+        throw new Error('sk-zz-secret')
+      },
+    })
+    expect(issues).toEqual([
+      { path: 'config', message: 'could not be read (Error)' },
+    ])
   })
 
   it('refuses a config while a baseUrl is planted on Object.prototype, and sends no request', async () => {
@@ -130,8 +199,19 @@ describe('fromConfig', () => {
     const proto = Object.prototype as Record<string, unknown>
     proto.baseUrl = 'https://evil.example/v1'
     try {
-      const issues = await issuesOf({ providers: { p: { preset: 'openai', model: 'gpt-5', contextTokens: 131072, apiKeyEnv: 'OPENAI_API_KEY' } } })
-      expect(issues).toEqual([{ path: 'baseUrl', message: 'is not a known field' }])
+      const issues = await issuesOf({
+        providers: {
+          p: {
+            preset: 'openai',
+            model: 'gpt-5',
+            contextTokens: 131072,
+            apiKeyEnv: 'OPENAI_API_KEY',
+          },
+        },
+      })
+      expect(issues).toEqual([
+        { path: 'baseUrl', message: 'is not a known field' },
+      ])
     } finally {
       delete proto.baseUrl
     }
@@ -152,7 +232,9 @@ describe('fromConfig', () => {
         return { text: '{"findings":[]}', model: 'm' }
       },
     }
-    const result = await (await fromConfig({ providers: { mine } }, { env: {} })).review({ diff })
+    const result = await (await fromConfig({
+      providers: { mine },
+    }, { env: {} })).review({ diff })
     expect(result.meta.profiles.security.providers.research).toEqual({ id: 'mine', model: 'm' })
     expect(reads).toBe(1)
     expect(calledOnObject).toBe(true)
@@ -160,10 +242,25 @@ describe('fromConfig', () => {
 
   it('reports a provider object whose model cannot be read by the error\'s name alone, and one whose model is no string', async () => {
     const complete = async (): Promise<CompletionResponse> => ({ text: '', model: 'm' })
-    expect(await issuesOf({ providers: { mine: { get model(): never {
-      throw new Error('sk-zz-secret')
-    }, complete } } })).toEqual([{ path: 'config', message: 'could not be read (Error)' }])
-    expect(await issuesOf({ providers: { mine: { model: 7, complete } } })).toEqual([{ path: 'providers.mine.model', message: 'must be a string' }])
+    expect(await issuesOf({
+      providers: {
+        mine: {
+          get model(): never {
+            throw new Error('sk-zz-secret')
+          },
+          complete,
+        },
+      },
+    })).toEqual([
+      { path: 'config', message: 'could not be read (Error)' },
+    ])
+    expect(await issuesOf({
+      providers: {
+        mine: { model: 7, complete },
+      },
+    })).toEqual([
+      { path: 'providers.mine.model', message: 'must be a string' },
+    ])
   })
 
   it.each([1, 2, 3, 4, 5, 6, 7, 8])('a provider whose complete getter throws from read %i on never has its message printed', async (reads) => {
@@ -176,18 +273,38 @@ describe('fromConfig', () => {
         return async (): Promise<CompletionResponse> => ({ text: '{"findings":[]}', model: 'm' })
       },
     }
-    const issues = await issuesOf({ providers: { mine } })
-    expect([[], [{ path: 'config', message: 'could not be read (Error)' }]]).toContainEqual(issues)
+    const issues = await issuesOf({
+      providers: { mine },
+    })
+    expect([
+      [],
+      [
+        { path: 'config', message: 'could not be read (Error)' },
+      ],
+    ]).toContainEqual(issues)
     expect(JSON.stringify(issues)).not.toContain(SECRET)
   })
 
   it.each(CHANGES.flatMap(change => [1, 2, 3, 4, 5, 6, 7, 8].map(reads => ({ change, reads }))))('a provider whose complete getter changes at read $reads ($change) is never read after the guard', async ({ change, reads }) => {
-    const outcome = await outcomeOf({ providers: { mine: changingProvider(change, reads) } })
+    const outcome = await outcomeOf({
+      providers: {
+        mine: changingProvider(change, reads),
+      },
+    })
     expect(JSON.stringify(outcome)).not.toContain('SECRET')
   })
 
   it('lists the config\'s warnings, then the core\'s', async () => {
-    const config: ConfigInput = { profiles: { team: { prompts: { research: 'Find it.', vote: 'Judge {{lens.id}}: {{lens.question}}' }, lenses: [{ id: 'one', question: 'Real?' }] } } }
+    const config: ConfigInput = {
+      profiles: {
+        team: {
+          prompts: { research: 'Find it.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
+          lenses: [
+            { id: 'one', question: 'Real?' },
+          ],
+        },
+      },
+    }
     const expected = ['RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead', 'team.policy.medium needs the same 1 vote(s) as policy.high with 1 lens(es), so it never applies']
     const env = { RESEARCH_MODEL: 'q', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }
     expect((await fromConfig(config, { env })).warnings).toEqual(expected)
@@ -197,15 +314,34 @@ describe('fromConfig', () => {
   it('refuses a provider with no context size, as a configuration error that names what to set, and sends nothing', async () => {
     const fetchMock = stubReview()
     const message = 'no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens'
-    await expect(fromConfig({}, { env: { QUORUM_RESEARCH_MODEL: 'q' } })).rejects.toMatchObject({ name: 'ConfigError', message })
-    expect(() => resolveConfig({}, { env: { QUORUM_RESEARCH_MODEL: 'q' } })).toThrow(expect.objectContaining({ name: 'ConfigError', message }))
-    expect(await issuesOf({ providers: { local: { preset: 'ollama', model: 'q' } } })).toEqual([{ path: 'providers.local.contextTokens', message: 'is required: the model\'s context window in tokens, which quorum checks every request against' }])
+    await expect(fromConfig({}, {
+      env: { QUORUM_RESEARCH_MODEL: 'q' },
+    })).rejects.toMatchObject({ name: 'ConfigError', message })
+    expect(() => resolveConfig({}, {
+      env: { QUORUM_RESEARCH_MODEL: 'q' },
+    })).toThrow(expect.objectContaining({ name: 'ConfigError', message }))
+    expect(await issuesOf({
+      providers: {
+        local: { preset: 'ollama', model: 'q' },
+      },
+    })).toEqual([
+      { path: 'providers.local.contextTokens', message: 'is required: the model\'s context window in tokens, which quorum checks every request against' },
+    ])
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('sends nothing when a provider is invalid', async () => {
     const fetchMock = stubReview()
-    await expect(fromConfig({ providers: { local: { preset: 'ollama', model: 'q', contextTokens: 131072, maxTokens: 0 } } }, { env: {} })).rejects.toThrow(ConfigError)
+    await expect(fromConfig({
+      providers: {
+        local: {
+          preset: 'ollama',
+          model: 'q',
+          contextTokens: 131072,
+          maxTokens: 0,
+        },
+      },
+    }, { env: {} })).rejects.toThrow(ConfigError)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
