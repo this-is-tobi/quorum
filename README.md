@@ -16,7 +16,7 @@ It needs Node `^22.18.0 || >=23.6.0`. Each release also carries a standalone bin
 gh release download --repo this-is-tobi/quorum --pattern 'quorum-linux-x64' --pattern SHA256SUMS   # or linux-arm64, darwin-x64, darwin-arm64
 ```
 
-Or run the image, which holds that binary and runs as a non-root user. Inside it `localhost` is the container, so name the endpoint, and a server on your machine is `host.docker.internal`:
+Or run the image, which holds that binary and runs as a non-root user. Inside it `localhost` is the container, so name the endpoint. On Docker Desktop a server on your machine is `host.docker.internal`; on Linux add `--add-host=host.docker.internal:host-gateway` ([Installation](./docs/10-getting-started/10-installation.md#a-container-image) has the rest):
 
 ```bash
 docker run --rm -i \
