@@ -1,6 +1,6 @@
 # Installation
 
-Quorum is a TypeScript program. It installs from npm and runs on Node, or builds from a clone of its repository and runs under Bun, from the clone or as a standalone binary. This page installs it either way, puts it on your `$PATH`, and checks that it works before any model is running.
+Quorum is a TypeScript program. It installs from npm and runs on Node, downloads from a release as a binary that needs neither Node nor Bun, or builds from a clone of its repository and runs under Bun, from the clone or as a standalone binary. This page installs it any of these ways, puts it on your `$PATH`, and checks that it works before any model is running.
 
 A TypeScript program that uses quorum as a library installs the same package and imports `@tobi-or-not/quorum`, as the [Library API](../95-reference/30-library-api.md) shows.
 
@@ -21,6 +21,51 @@ quorum --version
 `npm install -g` puts a `quorum` command on your `$PATH`, and `quorum --version` prints `quorum` and the installed version. To use the package as a library, install it in your project instead, with `npm install @tobi-or-not/quorum`.
 
 The command runs on Node, never on `bun`: the file the package's `bin` names starts with `#!/usr/bin/env node`. Bun reads a `.env` and a `bunfig.toml` from its working directory before quorum's own code runs, and Node reads neither, so this `quorum` is the simple way to review in a directory you do not control, such as a pull request's checkout: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
+
+## A release binary
+
+Each [release](https://github.com/this-is-tobi/quorum/releases) carries a binary for each platform it supports, `quorum-linux-x64`, `quorum-linux-arm64`, `quorum-darwin-x64` and `quorum-darwin-arm64` (`darwin` is macOS, and `uname -m` prints `x86_64` for `x64` and `arm64` or `aarch64` for `arm64`), and a `SHA256SUMS` file that lists their checksums. Download the binary for your system with the checksums, replacing `<version>` with the release's version and `<target>` with your platform, `linux-x64` for example:
+
+```bash
+gh release download v<version> --repo this-is-tobi/quorum --pattern 'quorum-<target>' --pattern SHA256SUMS
+```
+
+Or, without `gh`:
+
+```bash
+curl -fsSLO https://github.com/this-is-tobi/quorum/releases/download/v<version>/quorum-<target>
+curl -fsSLO https://github.com/this-is-tobi/quorum/releases/download/v<version>/SHA256SUMS
+```
+
+Check the file against the checksums before you run it. On Linux, with the `sha256sum` of GNU coreutils:
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+On macOS, with its `shasum`:
+
+```bash
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+Both print `quorum-<target>: OK`. `--ignore-missing` leaves out the three binaries you did not download, which the check would report as missing. The checksums come from the same release as the binary, so they catch a damaged or incomplete download but not a file that was swapped along with them. The build provenance attestation of each binary does: it is a signed record that GitHub Actions in this repository built that file, and `gh attestation verify` checks the file against it:
+
+```bash
+gh attestation verify quorum-<target> --repo this-is-tobi/quorum
+```
+
+Then make it executable, check it and put it on your `$PATH`:
+
+```bash
+chmod +x quorum-<target>
+./quorum-<target> --version
+install -m 0755 quorum-<target> /usr/local/bin/quorum
+```
+
+The last line needs `sudo` where `/usr/local/bin` is not yours; any directory on your `$PATH` will do.
+
+The binary holds the Bun runtime, so it needs neither Bun nor Node, and, like the one `bun run compile` builds below, it reads no `.env` and no `bunfig.toml` from the directory it runs in. The Linux binaries are linked against glibc: they run on Debian, Ubuntu and the like, not on Alpine, which uses musl. On macOS, download with `gh` or `curl` as above: a download in a browser marks the file with the `com.apple.quarantine` attribute, which `gh` and `curl` do not add.
 
 ## From source
 
@@ -43,9 +88,11 @@ install -m 0755 ./bin/quorum /usr/local/bin/quorum
 
 `bun run compile` writes `./bin/quorum`: one executable with the Bun runtime inside, for the system you build it on, which runs without Bun and without the clone. The second line copies it onto your `$PATH` (with `sudo` where `/usr/local/bin` is not yours; any directory on your `$PATH` will do).
 
+`bun run compile:release` builds the four binaries of a release instead, whatever system you run it on, and writes them with their `SHA256SUMS` to `bin/release/`. Bun downloads the runtimes of the other platforms the first time.
+
 The binary reads no `.env` and no `bunfig.toml` from the directory it runs in, which a Bun-compiled binary does by default. Bun itself reads both from its working directory, so `bun run start` reads the clone's own, a `bunfig.toml` can name code to run before quorum starts, and a `.env` can set any `QUORUM_*` variable, `QUORUM_CONFIG` included, which names the config file quorum reads. In a directory you do not control, such as a pull request's checkout, run the binary, or the npm package's `quorum`, which runs on Node: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
 
-The pages that follow write the command as `quorum`, which is the npm package's command or that binary. Without either, read `quorum` as `bun run start` run from the clone, except after a `--`: the npm package's command and the binary read `quorum -- --help` as a file named `--help`, and Bun itself drops the first `--`, so `bun run start -- --help` prints the help.
+The pages that follow write the command as `quorum`, which is the npm package's command or a binary. Without either, read `quorum` as `bun run start` run from the clone, except after a `--`: the npm package's command and the binary read `quorum -- --help` as a file named `--help`, and Bun itself drops the first `--`, so `bun run start -- --help` prints the help.
 
 ## Check that it works
 

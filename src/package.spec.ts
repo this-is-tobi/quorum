@@ -36,8 +36,14 @@ describe('package.json', () => {
     expect(pkg.exports).toEqual({ '.': { types: './dist/index.d.ts', default: './dist/index.js' } })
   })
 
-  it('ships the build and the JSON Schema, and nothing else of its own', () => {
+  it('ships the build and the JSON Schema, and nothing else of its own, not the bin/ the binaries are built into', () => {
+    // `bun run compile` and `bun run compile:release` write into bin/, which `files` does not name, so a
+    // hand-run `npm pack` or `npm publish` never puts an executable in the package.
     expect(pkg.files).toEqual(['dist', 'schema'])
+  })
+
+  it('compiles the release binaries with the script that builds the four of them and their checksums', () => {
+    expect(scripts['compile:release']).toBe('bun run ./scripts/build-binaries.ts')
   })
 
   it('keeps the engines the package runs on', () => {
