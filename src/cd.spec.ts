@@ -86,6 +86,7 @@ describe('the permissions', () => {
       'build-binaries': { contents: 'read' },
       'release-guard': { 'pull-requests': 'read' },
       release: { contents: 'write', issues: 'write', 'pull-requests': 'write' },
+      'release-check': {},
       'attest-binaries': { 'id-token': 'write', attestations: 'write' },
       npm: { contents: 'read', 'id-token': 'write' },
       docker: { contents: 'read', packages: 'write' },
@@ -183,15 +184,16 @@ describe('the release', () => {
 describe('the release guard', () => {
   // release-please releases every merged release pull request still labelled `autorelease: pending`, and tags
   // that pull request's merge commit, whatever commit the run is on. The binaries are attached by the release
-  // job itself, so only a job that runs before it can keep the artifacts and the tag on one commit.
+  // job itself, so only a job that runs before it can keep the artifacts and the tag on one commit. It waits
+  // for the binaries so that it checks just before the release, not before minutes of compiling.
   const guard = (): Step => {
     const steps = job('release-guard').steps ?? []
     expect(steps).toHaveLength(1)
     return steps[0]
   }
 
-  it('runs before the release, on every push, and the release needs it', () => {
-    expect(needs('release-guard')).toEqual([])
+  it('runs on every push, right before the release, once the binaries are built, and the release needs it', () => {
+    expect(needs('release-guard')).toEqual(['build-binaries'])
     expect(job('release-guard').if).toBeUndefined()
     expect(needs('release').toSorted()).toEqual(['build-binaries', 'release-guard'])
   })
@@ -217,17 +219,65 @@ describe('the release guard', () => {
     expect(run).toContain('exit 1')
   })
 
-  it('says how to recover: re-run the release commit\'s own run, which a dispatch does not', () => {
+  it('says how to recover: re-run the failed jobs of the release commit\'s own run, which a dispatch is not', () => {
     const { run = '' } = guard()
-    expect(run).toContain('Re-run all jobs')
+    expect(run).toContain('Re-run failed jobs')
+    expect(run).not.toContain('Re-run all jobs')
     expect(run).toMatch(/dispatch/i)
   })
 })
 
+describe('the release check', () => {
+  // The guard cannot see a merge that lands after it: in the seconds before release-please lists the pull
+  // requests, a run on another commit can still release this one. release-please reports the commit it
+  // tagged, so the jobs that publish are held until that commit is the run's own.
+  const check = (): Step => {
+    const steps = job('release-check').steps ?? []
+    expect(steps).toHaveLength(1)
+    return steps[0]
+  }
+
+  it('runs only when a release was created, right after the release', () => {
+    expect(needs('release-check')).toEqual(['release'])
+    expect(job('release-check').if).toBe(RELEASE_CREATED)
+  })
+
+  it('holds no permission, and checks nothing out: it reads one output of the release', () => {
+    expect(job('release-check').permissions).toEqual({})
+    expect(job('release-check').steps?.some(({ uses }) => uses?.startsWith('actions/checkout@'))).toBe(false)
+    expect(job('release-check').uses).toBeUndefined()
+  })
+
+  it('reads the commit the release was tagged on from the outputs of the release, through env', () => {
+    expect(check().env).toEqual({ RELEASE_SHA: expr('fromJSON(needs.release.outputs.release-outputs).sha') })
+    expect(check().run).not.toContain('${{')
+  })
+
+  it('fails when that commit is the run\'s no more, or when there is none, naming both and the way out', () => {
+    const { run = '' } = check()
+    expect(run).toContain('set -euo pipefail')
+    expect(run).toContain('[ -z "$RELEASE_SHA" ]')
+    expect(run).toContain('"$RELEASE_SHA" != "$GITHUB_SHA"')
+    expect(run).toContain('::error::')
+    expect(run).toContain('exit 1')
+    expect(run).toMatch(/\$\{?RELEASE_SHA/)
+    expect(run).toMatch(/\$\{?GITHUB_SHA/)
+  })
+
+  it('says how to recover: delete the release and its tag, label the pull request pending, re-run all jobs', () => {
+    const { run = '' } = check()
+    expect(run).toMatch(/delete the release and its tag/i)
+    expect(run).toContain('autorelease: pending')
+    expect(run).toContain('Re-run all jobs')
+    expect(run).not.toContain('Re-run failed jobs')
+  })
+})
+
 describe('what runs only when a release is created', () => {
-  it.each(['attest-binaries', 'npm', 'docker'])('gates %s on release-created, after the release', (name) => {
+  it.each(['attest-binaries', 'npm', 'docker'])('gates %s on release-created, after the release and its check', (name) => {
     expect(job(name).if).toBe(RELEASE_CREATED)
     expect(needs(name)).toContain('release')
+    expect(needs(name)).toContain('release-check')
   })
 
   it('attests the image after it is pushed, and so only when a release was created', () => {
@@ -244,7 +294,7 @@ describe('what runs only when a release is created', () => {
 describe('npm', () => {
   it('publishes with the Bun of mise.toml, through trusted publishing and with provenance, so with no token', () => {
     expect(job('npm').uses).toBe(`${CATALOG}/release-npm.yml@v0`)
-    expect(needs('npm')).toEqual(['expose-vars', 'release'])
+    expect(needs('npm')).toEqual(['expose-vars', 'release', 'release-check'])
     expect(job('npm').with).toEqual({
       RUNTIME: 'bun',
       RUNTIME_VERSION: expr('needs.expose-vars.outputs.BUN_VERSION'),
