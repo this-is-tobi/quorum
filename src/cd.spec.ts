@@ -157,6 +157,10 @@ describe('the binaries', () => {
     expect(retention).toBeLessThanOrEqual(7)
   })
 
+  it('replace the artifact of an earlier attempt, since "Re-run all jobs", the documented recovery, uploads it again in the same run', () => {
+    expect(upload().with?.overwrite).toBe(true)
+  })
+
   it('are attached by the release job, which downloads the artifact the build uploads, under its name', () => {
     expect(needs('release')).toContain('build-binaries')
     expect(job('release').with?.RELEASE_ARTIFACT_NAMES).toBe(upload().with?.name)

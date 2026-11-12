@@ -66,6 +66,8 @@ jobs:
         path: bin/release/
         if-no-files-found: error
         retention-days: 3
+        # "Re-run all jobs", the documented recovery, uploads this artifact again in the same run
+        overwrite: true
 
   # release-please releases every merged release pull request still labelled "autorelease: pending", and tags
   # that pull request's merge commit, whatever commit this run is on. So when the run of a release commit
