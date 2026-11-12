@@ -30,7 +30,15 @@ const MAX_VALUES = 10_000
 type Format = 'yaml' | 'json' | 'code'
 
 /** The format of each extension a config may have, read from the map alone, never from an object's prototype. */
-const FORMATS: ReadonlyMap<string, Format> = new Map([['.yaml', 'yaml'], ['.yml', 'yaml'], ['.json', 'json'], ['.mts', 'code'], ['.mjs', 'code'], ['.ts', 'code'], ['.js', 'code']])
+const FORMATS: ReadonlyMap<string, Format> = new Map([
+  ['.yaml', 'yaml'],
+  ['.yml', 'yaml'],
+  ['.json', 'json'],
+  ['.mts', 'code'],
+  ['.mjs', 'code'],
+  ['.ts', 'code'],
+  ['.js', 'code'],
+])
 /** A name a message may give what a config threw: a class name, never text the config could have written a secret into. */
 const ERROR_NAME = /^[A-Z][A-Za-z]{0,63}$/
 const STAGES = ['research', 'vote'] as const
@@ -47,7 +55,9 @@ export interface LoadedConfig {
 type Read<T> = { readonly value: T } | { readonly problem: string, readonly counted?: number }
 
 function fail(path: string, message: string): never {
-  throw new ConfigError([{ path, message }])
+  throw new ConfigError([
+    { path, message },
+  ])
 }
 
 /**
@@ -61,7 +71,13 @@ async function readBounded(absolute: string, limit: number, size: string): Promi
     handle = await open(absolute, constants.O_RDONLY | constants.O_NONBLOCK)
   } catch (error) {
     const code = (error as { code?: unknown }).code
-    return { problem: code === 'ENOENT' || code === 'ENOTDIR' ? 'does not exist' : code === 'EISDIR' ? 'is not a file' : 'cannot be read' }
+    return {
+      problem: code === 'ENOENT' || code === 'ENOTDIR'
+        ? 'does not exist'
+        : code === 'EISDIR'
+          ? 'is not a file'
+          : 'cannot be read',
+    }
   }
   try {
     const stats = await handle.stat()
@@ -71,7 +87,11 @@ async function readBounded(absolute: string, limit: number, size: string): Promi
     for (let read = -1; read !== 0 && length < buffer.length; length += read) {
       read = (await handle.read(buffer, length, buffer.length - length, length)).bytesRead
     }
-    return length > limit ? { problem: `is over ${size}`, counted: limit } : { value: buffer.subarray(0, length) }
+    return length > limit
+      ? { problem: `is over ${size}`, counted: limit }
+      : {
+          value: buffer.subarray(0, length),
+        }
   } catch {
     return { problem: 'cannot be read' }
   } finally {
@@ -82,7 +102,9 @@ async function readBounded(absolute: string, limit: number, size: string): Promi
 /** The UTF-8 text of `bytes`, a leading byte-order mark dropped (the decoder's default). */
 function decode(bytes: Uint8Array): Read<string> {
   try {
-    return { value: new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
+    return {
+      value: new TextDecoder('utf-8', { fatal: true }).decode(bytes),
+    }
   } catch {
     return { problem: 'is not UTF-8 text' }
   }
@@ -91,7 +113,9 @@ function decode(bytes: Uint8Array): Read<string> {
 /** The UTF-8 text of a regular file of at most `limit` bytes. */
 async function readText(absolute: string, limit: number, size: string): Promise<Read<string>> {
   const bytes = await readBounded(absolute, limit, size)
-  return 'problem' in bytes ? bytes : decode(bytes.value)
+  return 'problem' in bytes
+    ? bytes
+    : decode(bytes.value)
 }
 
 /** Where `offset` sits in the text, as a line and a column. */
@@ -117,7 +141,9 @@ function yamlProblem(error: YAMLError, lines: LineCounter): string {
  * `MAX_DEPTH` keys deep: `dataIssues` refuses that data whatever the walk finds there.
  */
 function repeatedKeyAt(doc: Document): number | undefined {
-  const stack: { node: unknown, depth: number }[] = [{ node: doc.contents, depth: 0 }]
+  const stack: { node: unknown, depth: number }[] = [
+    { node: doc.contents, depth: 0 },
+  ]
   for (let entry = stack.pop(); entry !== undefined; entry = stack.pop()) {
     const { node, depth } = entry
     if (depth > MAX_DEPTH) continue
@@ -127,8 +153,14 @@ function repeatedKeyAt(doc: Document): number | undefined {
       if (isMap(node)) {
         const seen = new Set<unknown>()
         for (const { key } of node.items) {
-          const value = isScalar(key) ? key.value : key
-          if (seen.has(value)) return (isScalar(key) ? key.range?.[0] : undefined) ?? 0
+          const value = isScalar(key)
+            ? key.value
+            : key
+          if (seen.has(value)) {
+            return (isScalar(key)
+              ? key.range?.[0]
+              : undefined) ?? 0
+          }
           seen.add(value)
         }
       }
@@ -147,16 +179,37 @@ function repeatedKeyAt(doc: Document): number | undefined {
 function parseYaml(text: string): Read<unknown> {
   const lines = new LineCounter()
   try {
-    const doc = parseDocument(text, { schema: 'core', version: '1.2', merge: false, resolveKnownTags: false, uniqueKeys: false, stringKeys: true, prettyErrors: false, logLevel: 'error', strict: true, lineCounter: lines })
+    const doc = parseDocument(text, {
+      schema: 'core',
+      version: '1.2',
+      merge: false,
+      resolveKnownTags: false,
+      uniqueKeys: false,
+      stringKeys: true,
+      prettyErrors: false,
+      logLevel: 'error',
+      strict: true,
+      lineCounter: lines,
+    })
     const first = doc.errors[0] ?? doc.warnings[0]
-    if (first !== undefined) return { problem: yamlProblem(first, lines) }
+    if (first !== undefined) {
+      return {
+        problem: yamlProblem(first, lines),
+      }
+    }
     const repeated = repeatedKeyAt(doc)
     if (repeated !== undefined) return { problem: `is not valid YAML at ${position(lines, repeated)} (DUPLICATE_KEY)` }
     const value: unknown = doc.toJS({ maxAliasCount: 0 })
-    return value === null ? { problem: 'is empty' } : { value }
+    return value === null
+      ? { problem: 'is empty' }
+      : { value }
   } catch (error) {
     // An alias throws a ReferenceError once aliases are disabled; deep nesting can throw a RangeError.
-    return { problem: error instanceof ReferenceError ? 'uses an alias, which quorum does not read' : 'is not valid YAML' }
+    return {
+      problem: error instanceof ReferenceError
+        ? 'uses an alias, which quorum does not read'
+        : 'is not valid YAML',
+    }
   }
 }
 
@@ -175,11 +228,19 @@ function parseJson(text: string): Read<unknown> {
   }
   const lines = new LineCounter()
   try {
-    const doc = parseDocument(text, { schema: 'json', uniqueKeys: false, prettyErrors: false, logLevel: 'error', lineCounter: lines })
+    const doc = parseDocument(text, {
+      schema: 'json',
+      uniqueKeys: false,
+      prettyErrors: false,
+      logLevel: 'error',
+      lineCounter: lines,
+    })
     const first = doc.errors[0]
     if (first !== undefined) return { problem: `is not valid JSON at ${position(lines, first.pos[0])} (${first.code})` }
     const repeated = repeatedKeyAt(doc)
-    return repeated === undefined ? { value } : { problem: `has a duplicate key at ${position(lines, repeated)}` }
+    return repeated === undefined
+      ? { value }
+      : { problem: `has a duplicate key at ${position(lines, repeated)}` }
   } catch {
     return { problem: 'is not valid JSON' }
   }
@@ -206,19 +267,51 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function dataIssues(value: unknown, file: string | undefined): ConfigIssue[] {
   const budget = { left: MAX_VALUES }
   const issues = valueIssues(value, [], file, 0, budget)
-  return budget.left < 0 ? [{ path: file ?? 'config', message: `holds more than ${MAX_VALUES} values` }] : issues
+  return budget.left < 0
+    ? [
+        { path: file ?? 'config', message: `holds more than ${MAX_VALUES} values` },
+      ]
+    : issues
 }
 
 function valueIssues(value: unknown, segments: readonly PropertyKey[], file: string | undefined, depth: number, budget: { left: number }): ConfigIssue[] {
   if (--budget.left < 0) return []
-  if (depth > MAX_DEPTH) return [{ path: configPath(segments, file), message: `is nested more than ${MAX_DEPTH} keys deep` }]
+  if (depth > MAX_DEPTH) {
+    return [
+      {
+        path: configPath(segments, file),
+        message: `is nested more than ${MAX_DEPTH} keys deep`,
+      },
+    ]
+  }
   if (value === null || value === undefined || typeof value === 'string' || typeof value === 'boolean') return []
-  if (typeof value === 'number') return Number.isFinite(value) ? [] : [{ path: configPath(segments, file), message: 'must be a finite number' }]
+  if (typeof value === 'number') {
+    return Number.isFinite(value)
+      ? []
+      : [
+          {
+            path: configPath(segments, file),
+            message: 'must be a finite number',
+          },
+        ]
+  }
   if (isProvider(value)) return []
   if (Array.isArray(value)) return value.flatMap((item, index) => valueIssues(item, [...segments, index], file, depth + 1, budget))
-  if (!isPlainObject(value)) return [{ path: configPath(segments, file), message: 'must be plain data: an object, an array, a string, a finite number, true, false or null' }]
+  if (!isPlainObject(value)) {
+    return [
+      {
+        path: configPath(segments, file),
+        message: 'must be plain data: an object, an array, a string, a finite number, true, false or null',
+      },
+    ]
+  }
   return Object.keys(value).flatMap(key => key === '__proto__'
-    ? [{ path: configPath([...segments, key], file), message: 'is not allowed as a key: it can replace the prototype of an object' }]
+    ? [
+        {
+          path: configPath([...segments, key], file),
+          message: 'is not allowed as a key: it can replace the prototype of an object',
+        },
+      ]
     : valueIssues(value[key], [...segments, key], file, depth + 1, budget))
 }
 
@@ -227,7 +320,9 @@ function thrownName(error: unknown): string {
   try {
     if (typeof error !== 'object' || error === null) return 'a value that is not an error'
     const { name } = error as { name?: unknown }
-    return typeof name === 'string' && ERROR_NAME.test(name) ? name : 'an error'
+    return typeof name === 'string' && ERROR_NAME.test(name)
+      ? name
+      : 'an error'
   } catch {
     return 'an error'
   }
@@ -256,7 +351,13 @@ function nameProviders<T>(config: T): T {
   if (typeof config !== 'object' || config === null || !Object.hasOwn(config, 'providers')) return config
   const providers = (config as { providers?: unknown }).providers
   if (typeof providers !== 'object' || providers === null) return config
-  return { ...config, providers: Object.fromEntries(Object.entries(providers).map(([name, entry]) => [name, nameSnapshot(name, entry)])) }
+  return {
+    ...config,
+    providers: Object.fromEntries(Object.entries(providers).map(([name, entry]) => [
+      name,
+      nameSnapshot(name, entry),
+    ])),
+  }
 }
 
 /**
@@ -276,9 +377,19 @@ export function checkCodeValue<T>(schema: z.ZodType<T>, read: () => unknown, wor
   let checked: { readonly config: T } | { readonly issues: ConfigIssue[] }
   try {
     const value = read()
-    const issues = isPlainObject(value) ? dataIssues(value, words.file) : [{ path: at, message: words.notAnObject }]
-    const result = issues.length > 0 ? { issues } : checkConfig(schema, value, words.file)
-    checked = 'issues' in result ? result : { config: nameProviders(result.config) }
+    const issues = isPlainObject(value)
+      ? dataIssues(value, words.file)
+      : [
+          { path: at, message: words.notAnObject },
+        ]
+    const result = issues.length > 0
+      ? { issues }
+      : checkConfig(schema, value, words.file)
+    checked = 'issues' in result
+      ? result
+      : {
+          config: nameProviders(result.config),
+        }
   } catch (error) {
     fail(at, `${words.threw} (${thrownName(error)})`)
   }
@@ -335,14 +446,29 @@ async function readPromptFiles(config: QuorumConfig, directory: string, path: st
     for (const stage of STAGES) {
       const prompt = prompts[stage]
       if (typeof prompt !== 'object') continue
-      const at = configPath(['profiles', id, 'prompts', stage, 'file'], path)
+      const at = configPath([
+        'profiles',
+        id,
+        'prompts',
+        stage,
+        'file',
+      ], path)
       const absolute = resolve(directory, prompt.file)
       let text = reads.get(absolute)
       if (text === undefined) {
         const bytes = await readBounded(absolute, PROMPT_LIMIT, '64 KiB')
-        total += 'problem' in bytes ? bytes.counted ?? 0 : bytes.value.length
-        if (total > PROMPT_TOTAL_LIMIT) throw new ConfigError([...issues, { path: at, message: 'takes the prompt files over 1 MiB in total' }])
-        text = 'problem' in bytes ? bytes : decode(bytes.value)
+        total += 'problem' in bytes
+          ? bytes.counted ?? 0
+          : bytes.value.length
+        if (total > PROMPT_TOTAL_LIMIT) {
+          throw new ConfigError([
+            ...issues,
+            { path: at, message: 'takes the prompt files over 1 MiB in total' },
+          ])
+        }
+        text = 'problem' in bytes
+          ? bytes
+          : decode(bytes.value)
         reads.set(absolute, text)
       }
       if ('problem' in text) issues.push({ path: at, message: text.problem })
@@ -373,7 +499,11 @@ export async function readConfigFile(path: string, options: { readonly cwd?: str
   if (format === undefined) fail(path, 'must end in .yaml, .yml, .json, .mts, .mjs, .ts or .js')
   const text = await readText(source, CONFIG_LIMIT, '1 MiB')
   if ('problem' in text) fail(path, text.problem)
-  const config = format === 'code' ? await loadCode(source, path) : checkData(format === 'yaml' ? parseYaml(text.value) : parseJson(text.value), path)
+  const config = format === 'code'
+    ? await loadCode(source, path)
+    : checkData(format === 'yaml'
+        ? parseYaml(text.value)
+        : parseJson(text.value), path)
   return { config: await readPromptFiles(config, dirname(source), path), source }
 }
 
@@ -396,7 +526,9 @@ export async function loadConfig(options: { readonly cwd?: string, readonly env?
   const named = envValue(env, 'QUORUM_CONFIG')
   if (named !== undefined && !isAbsolute(named)) fail('QUORUM_CONFIG', 'must be an absolute path')
   const path = options.configPath ?? named
-  const loaded = path === undefined ? undefined : await readConfigFile(path, { cwd: options.cwd })
+  const loaded = path === undefined
+    ? undefined
+    : await readConfigFile(path, { cwd: options.cwd })
   const config = resolveConfig(loaded?.config ?? {}, { env, selection: options.selection })
   return { config, source: loaded?.source, warnings: config.warnings }
 }

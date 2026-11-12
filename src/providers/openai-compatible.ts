@@ -43,7 +43,10 @@ const RULES: Omit<AdapterRules, 'auth'> = {
     'documents',
     'data_sources',
   ],
-  replyLimitPaths: [['max_tokens'], ['max_completion_tokens']],
+  replyLimitPaths: [
+    ['max_tokens'],
+    ['max_completion_tokens'],
+  ],
   fixedHeaders: [],
   structuredOutputs: ['prompt', 'json', 'schema'],
 }
@@ -51,7 +54,12 @@ const MAX_TOKENS_FIELDS: ReadonlySet<unknown> = new Set(['max_tokens', 'max_comp
 
 function responseFormat(mode: StructuredOutput, output: CompletionRequest['output']): unknown {
   if (mode === 'json') return { type: 'json_object' }
-  if (mode === 'schema') return { type: 'json_schema', json_schema: { name: output.name, schema: output.schema, strict: true } }
+  if (mode === 'schema') {
+    return {
+      type: 'json_schema',
+      json_schema: { name: output.name, schema: output.schema, strict: true },
+    }
+  }
   return undefined
 }
 
@@ -62,7 +70,9 @@ const CUT_OFF: ReadonlySet<unknown> = new Set(['length', 'model_length'])
 
 /** The status a server error carries in its `code`, when that is an HTTP error status. */
 function statusOf(code: unknown): number | undefined {
-  return typeof code === 'number' && Number.isInteger(code) && code >= 400 && code <= 599 ? code : undefined
+  return typeof code === 'number' && Number.isInteger(code) && code >= 400 && code <= 599
+    ? code
+    : undefined
 }
 
 /**
@@ -78,7 +88,9 @@ function ranTool(message: Record<string, unknown>): boolean {
 
 /** The text of a message's content: a string, or the `text` parts of an array of parts (Mistral), joined; thinking parts are skipped. */
 function textOf(content: unknown): string | undefined {
-  return typeof content === 'string' ? content : joinedText(content, part => part.type === 'text')
+  return typeof content === 'string'
+    ? content
+    : joinedText(content, part => part.type === 'text')
 }
 
 /**
@@ -95,20 +107,34 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
 
   const { error } = reply
   if (typeof error === 'string' || isRecord(error)) {
-    const text = typeof error === 'string' ? error : error.message
-    const quoted = typeof text === 'string' ? `: ${snippet(text, MAX_MODEL_TEXT, redact)}` : ''
-    const status = isRecord(error) ? statusOf(error.code) : undefined
-    throw status === undefined ? fail('invalid-response', `server error${quoted}`) : fail('http', `server error ${status}${quoted}`, status)
+    const text = typeof error === 'string'
+      ? error
+      : error.message
+    const quoted = typeof text === 'string'
+      ? `: ${snippet(text, MAX_MODEL_TEXT, redact)}`
+      : ''
+    const status = isRecord(error)
+      ? statusOf(error.code)
+      : undefined
+    throw status === undefined
+      ? fail('invalid-response', `server error${quoted}`)
+      : fail('http', `server error ${status}${quoted}`, status)
   }
 
-  const choice: unknown = Array.isArray(reply.choices) ? reply.choices[0] : undefined
+  const choice: unknown = Array.isArray(reply.choices)
+    ? reply.choices[0]
+    : undefined
   if (!isRecord(choice)) throw fail('invalid-response', 'reply has no choices')
 
-  const message = isRecord(choice.message) ? choice.message : {}
+  const message = isRecord(choice.message)
+    ? choice.message
+    : {}
   if (ranTool(message)) throw fail('invalid-response', 'the server ran a tool for this reply, which quorum never allows')
   if (message.refusal) {
     const refusal = message.refusal
-    throw fail('refusal', typeof refusal === 'string' ? `model refused: ${snippet(refusal, MAX_MODEL_TEXT, redact)}` : 'model refused')
+    throw fail('refusal', typeof refusal === 'string'
+      ? `model refused: ${snippet(refusal, MAX_MODEL_TEXT, redact)}`
+      : 'model refused')
   }
   const reason = choice.finish_reason
   if (reason === 'content_filter') throw fail('refusal', 'reply was stopped by the content filter')
@@ -120,7 +146,9 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
 
   return {
     text,
-    model: typeof reply.model === 'string' && reply.model !== '' ? reply.model : model,
+    model: typeof reply.model === 'string' && reply.model !== ''
+      ? reply.model
+      : model,
     usage: tokenUsage(reply.usage, ['prompt_tokens'], ['completion_tokens']),
   }
 }
@@ -134,7 +162,11 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
  */
 export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
   const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, maxTokensField = 'max_tokens', systemPrompt = 'native', structuredOutput = 'json' } = options
-  const fieldIssues = MAX_TOKENS_FIELDS.has(maxTokensField) ? [] : [{ path: `${id}.maxTokensField`, message: 'must be max_tokens or max_completion_tokens' }]
+  const fieldIssues = MAX_TOKENS_FIELDS.has(maxTokensField)
+    ? []
+    : [
+        { path: `${id}.maxTokensField`, message: 'must be max_tokens or max_completion_tokens' },
+      ]
   const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/chat/completions', fieldIssues)
   const budget = contextBudget(contextTokens, maxTokens)
 
@@ -151,7 +183,12 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
         headers,
         body: mergeBody({
           model,
-          messages: system === undefined ? messages : [{ role: 'system', content: system }, ...messages],
+          messages: system === undefined
+            ? messages
+            : [
+                { role: 'system', content: system },
+                ...messages,
+              ],
           response_format: responseFormat(structuredOutput, request.output),
           temperature: temperature ?? undefined,
           [maxTokensField]: maxTokens,

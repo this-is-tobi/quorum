@@ -5,9 +5,16 @@ import { RELEASE_TARGETS, releaseBuilds, sha256sumLine } from './build-binaries.
 
 // A build spawns Bun, downloads the other targets' runtimes and writes bin/release: no test runs one, and
 // importing the script must start none.
-vi.mock('node:child_process', () => ({ spawnSync: vi.fn() }))
+vi.mock('node:child_process', () => ({
+  spawnSync: vi.fn(),
+}))
 
-const TARGETS = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64']
+const TARGETS = [
+  'linux-x64',
+  'linux-arm64',
+  'darwin-x64',
+  'darwin-arm64',
+]
 
 describe('the release targets', () => {
   it('names linux and macOS on x64 and arm64, in the order the checksums list them', () => {

@@ -53,7 +53,11 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
   }
   const parsed = parseResearchReply(text, maxFindings)
   const checked = verifyFindings(parsed.findings, sections)
-  const findings = checked.findings.map((finding): Finding => ({ id: findingId(profile, finding.file, finding.line, finding.category), profile, ...finding }))
+  const findings = checked.findings.map((finding): Finding => ({
+    id: findingId(profile, finding.file, finding.line, finding.category),
+    profile,
+    ...finding,
+  }))
   const incomplete = parsed.invalid.map((detail): IncompleteEntry => ({ profile, reason: 'finding-unreadable', detail }))
   if (parsed.listed > maxFindings) {
     incomplete.push({
@@ -64,7 +68,9 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
   }
   if (parsed.listed > 0 && findings.length === 0) {
     const reported = `${parsed.listed} finding(s) reported`
-    const detail = parsed.listed > maxFindings ? `${reported}, the first ${maxFindings} read, none usable` : `${reported}, none usable`
+    const detail = parsed.listed > maxFindings
+      ? `${reported}, the first ${maxFindings} read, none usable`
+      : `${reported}, none usable`
     incomplete.push({ profile, reason: 'research-unusable', detail })
   }
   return { findings, invalid: checked.invalid, incomplete }
@@ -93,7 +99,11 @@ export async function research(ctx: RunContext, run: ProfileRun, diff: string, s
     ctx.signal.throwIfAborted()
     const entry: IncompleteEntry = { profile: run.id, reason: 'request-too-large', detail: `the research request was not sent: ${refusalMessage(error)}` }
     ctx.emit({ type: 'incomplete', entry })
-    return { findings: [], invalid: [], incomplete: [entry] }
+    return {
+      findings: [],
+      invalid: [],
+      incomplete: [entry],
+    }
   }
   let outcome: ResearchOutcome
   try {

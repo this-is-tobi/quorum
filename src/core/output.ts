@@ -8,7 +8,17 @@ import type { FindingDetails, Vote } from './types.ts'
  * `format`. Strict modes refuse some of them (Anthropic documents numeric constraints as unsupported),
  * and zod still enforces each one on the reply.
  */
-const NON_PORTABLE_KEYWORDS: ReadonlySet<string> = new Set(['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'pattern', 'format'])
+const NON_PORTABLE_KEYWORDS: ReadonlySet<string> = new Set([
+  'minimum',
+  'maximum',
+  'exclusiveMinimum',
+  'exclusiveMaximum',
+  'multipleOf',
+  'minLength',
+  'maxLength',
+  'pattern',
+  'format',
+])
 
 /** Wire shape of one finding. Semantic checks (line >= 1, non-empty file) run after parsing. */
 const FindingReplySchema = z.object({
@@ -25,7 +35,9 @@ const VoteReplySchema = z.object({
   reasoning: z.string(),
 })
 
-const ResearchReplySchema = z.object({ findings: z.array(FindingReplySchema) })
+const ResearchReplySchema = z.object({
+  findings: z.array(FindingReplySchema),
+})
 
 /** JSON Schemas shown to the model; they stay free of transforms so zod can always emit them. */
 export const researchReplyJsonSchema = toWireSchema(ResearchReplySchema)
@@ -98,7 +110,9 @@ function syntaxAfterAnswer(visible: string, first: Answer, copies: Answer[]): nu
     from = copy.end + 1
   }
   const found = visible.slice(from).search(JSON_SYNTAX)
-  return found === -1 ? -1 : from + found
+  return found === -1
+    ? -1
+    : from + found
 }
 
 /** A parsed research reply: the findings read, why the others among the ones read were dropped, and how many were listed in all. */
@@ -299,7 +313,11 @@ function repeatsKey(json: string): boolean {
     const code = json.charCodeAt(index)
     if (code === QUOTE) {
       let close = index + 1
-      while (close < json.length && json.charCodeAt(close) !== QUOTE) close += json.charCodeAt(close) === BACKSLASH ? 2 : 1
+      while (close < json.length && json.charCodeAt(close) !== QUOTE) {
+        close += json.charCodeAt(close) === BACKSLASH
+          ? 2
+          : 1
+      }
       const keys = open.at(-1)
       if (expectKey && keys) {
         const key = String(JSON.parse(json.slice(index, close + 1)))
@@ -309,7 +327,9 @@ function repeatsKey(json: string): boolean {
       expectKey = false
       index = close
     } else if (code === OPEN_BRACE || code === OPEN_BRACKET) {
-      open.push(code === OPEN_BRACE ? new Set() : undefined)
+      open.push(code === OPEN_BRACE
+        ? new Set()
+        : undefined)
       expectKey = code === OPEN_BRACE
     } else if (code === CLOSE_BRACE || code === CLOSE_BRACKET) {
       open.pop()
@@ -325,18 +345,29 @@ function repeatsKey(json: string): boolean {
 function normalizeFinding(item: unknown): unknown {
   if (!isRecord(item) || typeof item.line !== 'string') return item
   const line = item.line.trim()
-  return DIGITS.test(line) ? { ...item, line: Number(line) } : item
+  return DIGITS.test(line)
+    ? {
+        ...item,
+        line: Number(line),
+      }
+    : item
 }
 
 /** Accept "true" / "false" strings for keep; anything else is left for the schema to reject. */
 function normalizeVote(reply: Record<string, unknown>): Record<string, unknown> {
-  const keep = typeof reply.keep === 'string' ? reply.keep.trim().toLowerCase() : undefined
-  return keep === 'true' || keep === 'false' ? { ...reply, keep: keep === 'true' } : reply
+  const keep = typeof reply.keep === 'string'
+    ? reply.keep.trim().toLowerCase()
+    : undefined
+  return keep === 'true' || keep === 'false'
+    ? { ...reply, keep: keep === 'true' }
+    : reply
 }
 
 function describeIssue(error: z.ZodError): string {
   const issue = error.issues[0]
-  return issue ? `${issue.path.join('.') || '(root)'}: ${issue.message}` : 'invalid value'
+  return issue
+    ? `${issue.path.join('.') || '(root)'}: ${issue.message}`
+    : 'invalid value'
 }
 
 /** Whether `value` is a non-null object that is not an array: the shape every untyped input is checked against before its fields are read. */
@@ -350,9 +381,15 @@ function portable(schema: unknown): unknown {
   if (!isRecord(schema)) return schema
   return Object.fromEntries(Object.entries(schema)
     .filter(([key]) => !NON_PORTABLE_KEYWORDS.has(key))
-    .map(([key, value]) => [key, key === 'properties' && isRecord(value)
-      ? Object.fromEntries(Object.entries(value).map(([name, field]) => [name, portable(field)]))
-      : portable(value)]))
+    .map(([key, value]) => [
+      key,
+      key === 'properties' && isRecord(value)
+        ? Object.fromEntries(Object.entries(value).map(([name, field]) => [
+            name,
+            portable(field),
+          ]))
+        : portable(value),
+    ]))
 }
 
 function toWireSchema(schema: z.ZodType): Record<string, unknown> {

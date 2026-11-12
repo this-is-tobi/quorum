@@ -33,7 +33,9 @@ describe('package.json', () => {
 
   it('exposes a quorum command that runs on Node and a library with its types', () => {
     expect(pkg.bin).toEqual({ quorum: 'dist/cli/bin.js' })
-    expect(pkg.exports).toEqual({ '.': { types: './dist/index.d.ts', default: './dist/index.js' } })
+    expect(pkg.exports).toEqual({
+      '.': { types: './dist/index.d.ts', default: './dist/index.js' },
+    })
   })
 
   it('ships the build and the JSON Schema, and nothing else of its own, not the bin/ the binaries are built into', () => {

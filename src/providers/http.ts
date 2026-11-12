@@ -30,7 +30,10 @@ export interface PostJsonOptions {
 /** Every form in which a server may echo the secret. */
 function echoedForms(secret: string): string[] {
   const asJson = JSON.stringify(secret).slice(1, -1)
-  return [secret, asJson].flatMap(form => [form, form.replaceAll('/', '\\/')])
+  return [secret, asJson].flatMap(form => [
+    form,
+    form.replaceAll('/', '\\/'),
+  ])
 }
 
 /** Go and .NET write `&`, `<`, `>` and `+` as escapes in JSON, so a key echoed by them would not match as is. */
@@ -84,14 +87,21 @@ export function snippet(text: string, max: number, redact: readonly string[] = [
   const head = text.slice(0, MAX_ERROR_BYTES)
   const written = redact.filter(value => value !== '').flatMap(echoedForms)
   if (written.length === 0) return JSON.stringify(head.slice(0, max))
-  const forms = [...new Set([...written, ...written.map(decodeEscapedAscii)])]
+  const forms = [
+    ...new Set([
+      ...written,
+      ...written.map(decodeEscapedAscii),
+    ]),
+  ]
   return JSON.stringify(redactForms(decodeEscapedAscii(head), forms).slice(0, max))
 }
 
 /** The URL of an endpoint: the base URL without its trailing slashes, the endpoint's path, then the query. */
 export function endpointUrl(baseUrl: string, path: string, query: Readonly<Record<string, string>> = {}): string {
   const search = new URLSearchParams(query).toString()
-  return `${baseUrl.replace(/\/+$/, '')}${path}${search === '' ? '' : `?${search}`}`
+  return `${baseUrl.replace(/\/+$/, '')}${path}${search === ''
+    ? ''
+    : `?${search}`}`
 }
 
 /**
@@ -111,15 +121,22 @@ export function redactionsOf(baseUrl: string, apiKey: string | undefined, header
   } catch {
     // A path with a stray `%` is redacted as written.
   }
-  const values = Object.values(headers).flatMap(value => [value, value.trim()])
-  return [...new Set([apiKey ?? '', path, decoded, ...values])].filter(value => value.trim() !== '')
+  const values = Object.values(headers).flatMap(value => [
+    value,
+    value.trim(),
+  ])
+  return [
+    ...new Set([apiKey ?? '', path, decoded, ...values]),
+  ].filter(value => value.trim() !== '')
 }
 
 /** The scheme, host and port of a URL: no credentials, path, query or fragment. */
 export function originOf(url: string): string {
   try {
     const { origin } = new URL(url)
-    return origin === 'null' ? UNKNOWN_ENDPOINT : origin
+    return origin === 'null'
+      ? UNKNOWN_ENDPOINT
+      : origin
   } catch {
     return UNKNOWN_ENDPOINT
   }
@@ -134,8 +151,12 @@ export function httpOrigin(url: unknown): string | undefined {
   if (typeof url !== 'string' || !URL.canParse(url)) return undefined
   const { protocol, hostname, port } = new URL(url)
   if (protocol !== 'http:' && protocol !== 'https:') return undefined
-  const host = hostname.length > 1 && hostname.endsWith('.') ? hostname.slice(0, -1) : hostname
-  return `${protocol}//${host}${port === '' ? '' : `:${port}`}`
+  const host = hostname.length > 1 && hostname.endsWith('.')
+    ? hostname.slice(0, -1)
+    : hostname
+  return `${protocol}//${host}${port === ''
+    ? ''
+    : `:${port}`}`
 }
 
 /** The error's `code`, or its cause's, as ` (ECONNREFUSED)`, when it is a plain identifier. Never throws. */
@@ -213,7 +234,9 @@ export async function postJson<T>(options: PostJsonOptions): Promise<T> {
 
   if (!response.ok) {
     const { status } = response
-    const redirect = status >= 300 && status < 400 ? ' (redirects are not followed)' : ''
+    const redirect = status >= 300 && status < 400
+      ? ' (redirects are not followed)'
+      : ''
     throw fail('http', `HTTP ${status}${redirect}: ${snippet(await readErrorText(response), MAX_ERROR_BODY, redact)}`, status)
   }
 

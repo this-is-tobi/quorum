@@ -2,17 +2,37 @@ import { describe, expect, it } from 'vitest'
 import { ProviderError } from '../core/errors.ts'
 import { checkFits, contextBudget, textTokens, utf8Length } from './size.ts'
 
-const output = { name: 'panel_vote', schema: { type: 'object' } }
-const shaped = { system: 'instructions', messages: [{ role: 'user' as const, content: 'data' }] }
+const output = {
+  name: 'panel_vote',
+  schema: { type: 'object' },
+}
+const shaped = {
+  system: 'instructions',
+  messages: [
+    { role: 'user' as const, content: 'data' },
+  ],
+}
 
 describe('utf8Length', () => {
   it.each<[string, number]>([
     ['', 0],
     ['abc', 3],
-    [String.fromCharCode(0xE9), 2],
-    [String.fromCharCode(0x4E2D), 3],
-    [String.fromCodePoint(0x1F600), 4],
-    [String.fromCharCode(0xD800), 3],
+    [
+      String.fromCharCode(0xE9),
+      2,
+    ],
+    [
+      String.fromCharCode(0x4E2D),
+      3,
+    ],
+    [
+      String.fromCodePoint(0x1F600),
+      4,
+    ],
+    [
+      String.fromCharCode(0xD800),
+      3,
+    ],
   ])('counts %j as %i bytes of UTF-8, a lone surrogate as U+FFFD', (text, bytes) => {
     expect(utf8Length(text)).toBe(bytes)
   })
@@ -21,8 +41,22 @@ describe('utf8Length', () => {
 describe('textTokens', () => {
   it('counts the system text, every message and the reply schema, one token per byte', () => {
     expect(textTokens(shaped, output)).toBe(33)
-    expect(textTokens({ system: undefined, messages: [{ role: 'user', content: 'instructions\n\ndata' }] }, output)).toBe(35)
-    expect(textTokens({ system: String.fromCharCode(0xE9), messages: [{ role: 'assistant', content: 'a' }, { role: 'user', content: String.fromCharCode(0x4E2D) }] }, output)).toBe(3 + 1 + 3 + 17)
+    expect(textTokens({
+      system: undefined,
+      messages: [
+        { role: 'user', content: 'instructions\n\ndata' },
+      ],
+    }, output)).toBe(35)
+    expect(textTokens({
+      system: String.fromCharCode(0xE9),
+      messages: [
+        { role: 'assistant', content: 'a' },
+        {
+          role: 'user',
+          content: String.fromCharCode(0x4E2D),
+        },
+      ],
+    }, output)).toBe(3 + 1 + 3 + 17)
   })
 
   describe('with a tokenizer that normalizes first', () => {
@@ -31,18 +65,47 @@ describe('textTokens', () => {
     /** U+0F81 is 3 bytes as sent and 6 decomposed; U+FDFA is 3 bytes and 33 compatibility-decomposed. */
     const decomposed = String.fromCharCode(0x0F81)
     const expanded = String.fromCharCode(0xFDFA)
-    const inMessage = (content: string): number => textTokens({ system: undefined, messages: [{ role: 'user', content }] }, output) - schemaBytes
+    const inMessage = (content: string): number => textTokens({
+      system: undefined,
+      messages: [
+        { role: 'user', content },
+      ],
+    }, output) - schemaBytes
 
     it.each<[string, string, number]>([
       ['U+0F81, which decomposes into two 3-byte marks', decomposed, 6],
       ['U+FDFA, which expands into 18 letters', expanded, 33],
-      ['U+00E9, which NFD writes as e and U+0301', String.fromCharCode(0xE9), 3],
-      ['U+AC00, which NFD writes as two jamo of 3 bytes', String.fromCharCode(0xAC00), 6],
-      ['a lone surrogate', String.fromCharCode(0xD800), 3],
-      ['a lone low surrogate', String.fromCharCode(0xDC00), 3],
+      [
+        'U+00E9, which NFD writes as e and U+0301',
+        String.fromCharCode(0xE9),
+        3,
+      ],
+      [
+        'U+AC00, which NFD writes as two jamo of 3 bytes',
+        String.fromCharCode(0xAC00),
+        6,
+      ],
+      [
+        'a lone surrogate',
+        String.fromCharCode(0xD800),
+        3,
+      ],
+      [
+        'a lone low surrogate',
+        String.fromCharCode(0xDC00),
+        3,
+      ],
       ['an ASCII text', 'abc', 3],
-      ['a code point above U+FFFF', char(0x1F600), 4],
-      ['an astral character that decomposes', char(0x1D15E), 8],
+      [
+        'a code point above U+FFFF',
+        char(0x1F600),
+        4,
+      ],
+      [
+        'an astral character that decomposes',
+        char(0x1D15E),
+        8,
+      ],
     ])('counts %s at its longest form', (_name, text, bytes) => {
       expect(inMessage(text)).toBe(bytes)
     })
@@ -54,7 +117,10 @@ describe('textTokens', () => {
     it('counts the system text and the reply schema the same way', () => {
       expect(textTokens({ system: expanded, messages: [] }, output) - schemaBytes).toBe(33)
       // `{"` and `":1}` are 6 ASCII bytes around the key.
-      expect(textTokens({ system: undefined, messages: [] }, { name: 'panel_vote', schema: { [decomposed]: 1 } })).toBe(6 + 6)
+      expect(textTokens({ system: undefined, messages: [] }, {
+        name: 'panel_vote',
+        schema: { [decomposed]: 1 },
+      })).toBe(6 + 6)
     })
 
     it('does not count each character alone as NFC: a mark that composes first can lengthen the whole', () => {
@@ -85,13 +151,53 @@ describe('textTokens', () => {
     }, 20_000)
 
     it('bounds every form of a text: 10000 seeded random strings count at least their raw, NFC, NFKC, NFD and NFKD lengths', () => {
-      const starters = [0x61, 0x65, 0x41, 0x0915, 0x304B, 0x110A5]
-      const precomposed = [0xE9, 0x1E0A, 0x1E69, 0x212B, 0x2126, 0xFB01]
+      const starters = [
+        0x61,
+        0x65,
+        0x41,
+        0x0915,
+        0x304B,
+        0x110A5,
+      ]
+      const precomposed = [
+        0xE9,
+        0x1E0A,
+        0x1E69,
+        0x212B,
+        0x2126,
+        0xFB01,
+      ]
       // combining marks of classes 230, 220, 202, 240, 8, 7, 129, 130 and 132
-      const marks = [0x0301, 0x0307, 0x0316, 0x0323, 0x0327, 0x0345, 0x3099, 0x093C, 0x0F71, 0x0F72, 0x0F74, 0x110BA]
-      const hangul = [0xAC00, 0xAC01, 0xD7A3, 0x1100, 0x1161, 0x11A8]
+      const marks = [
+        0x0301,
+        0x0307,
+        0x0316,
+        0x0323,
+        0x0327,
+        0x0345,
+        0x3099,
+        0x093C,
+        0x0F71,
+        0x0F72,
+        0x0F74,
+        0x110BA,
+      ]
+      const hangul = [
+        0xAC00,
+        0xAC01,
+        0xD7A3,
+        0x1100,
+        0x1161,
+        0x11A8,
+      ]
       const expanders = [0x0F81, 0x0344, 0xFDFA]
-      const pool = [...starters, ...precomposed, ...marks, ...hangul, ...expanders].map(char)
+      const pool = [
+        ...starters,
+        ...precomposed,
+        ...marks,
+        ...hangul,
+        ...expanders,
+      ].map(char)
       let seed = 0x9E3779B9
       const next = (limit: number): number => {
         // mulberry32
@@ -141,7 +247,12 @@ describe('checkFits', () => {
       thrown = error
     }
     expect(thrown).toBeInstanceOf(ProviderError)
-    expect(thrown).toMatchObject({ providerId: 'p', kind: 'too-large', retryable: false, message: 'p: may need 645 tokens, more than contextTokens (644): 33 for its text at one token per byte, 512 for the chat template and 100 for the reply' })
+    expect(thrown).toMatchObject({
+      providerId: 'p',
+      kind: 'too-large',
+      retryable: false,
+      message: 'p: may need 645 tokens, more than contextTokens (644): 33 for its text at one token per byte, 512 for the chat template and 100 for the reply',
+    })
   })
 
   it('lets a request through at the bound', () => {

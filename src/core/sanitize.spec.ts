@@ -43,7 +43,12 @@ describe('inertLine', () => {
 })
 
 describe('inertJson', () => {
-  const value = { file: 'a\u202Eb.js', error: 'HTTP 500: "\u009B2J\u007F"', reasoning: 'x\u2028y \u{E0041}', plain: '\u00E9t\u00E9 \u{1F600}' }
+  const value = {
+    file: 'a\u202Eb.js',
+    error: 'HTTP 500: "\u009B2J\u007F"',
+    reasoning: 'x\u2028y \u{E0041}',
+    plain: '\u00E9t\u00E9 \u{1F600}',
+  }
 
   it('writes what JSON.stringify writes, with the hidden characters it leaves as escapes', () => {
     expect(inertJson(value)).toBe([
@@ -67,12 +72,23 @@ describe('inertJson', () => {
 
   it('holds no hidden character but its own line breaks', () => {
     const controls = Array.from({ length: 0xA0 }, (_, code) => String.fromCharCode(code)).join('')
-    const json = inertJson({ controls, lone: '\uD800', tags: '\u{E0001}\u{E0068}', selectors: '\uFE0F\u{E0100}', separators: '\u2028\u2029' })
+    const json = inertJson({
+      controls,
+      lone: '\uD800',
+      tags: '\u{E0001}\u{E0068}',
+      selectors: '\uFE0F\u{E0100}',
+      separators: '\u2028\u2029',
+    })
     expect(json.replaceAll('\n', '')).not.toMatch(ANY_HIDDEN)
   })
 
   it('is JSON.stringify for values without hidden characters', () => {
-    const plain = { kept: [{ line: 1, file: 'a.js', confidence: undefined }], meta: { usage: null, ok: true } }
+    const plain = {
+      kept: [
+        { line: 1, file: 'a.js', confidence: undefined },
+      ],
+      meta: { usage: null, ok: true },
+    }
     expect(inertJson(plain)).toBe(JSON.stringify(plain, null, 2))
   })
 
@@ -86,7 +102,17 @@ describe('the shared helpers', () => {
   it('find, remove and name the hidden characters', () => {
     expect(hiddenLabels('a\u200Bb\u{E0041}c\u200B\t')).toEqual(['U+200B', 'U+E0041', 'U+0009'])
     expect(stripHidden('a\u200Bb\u202Ec\u{E0041}d\uFE0Fe\u0085f\u2028g')).toBe('abcdefg')
-    expect(['\u001B', '\u202E', '\u{E0041}', '\uDC80'].map(codePointLabel)).toEqual(['U+001B', 'U+202E', 'U+E0041', 'U+DC80'])
+    expect([
+      '\u001B',
+      '\u202E',
+      '\u{E0041}',
+      '\uDC80',
+    ].map(codePointLabel)).toEqual([
+      'U+001B',
+      'U+202E',
+      'U+E0041',
+      'U+DC80',
+    ])
   })
 
   it('reads each hidden character as a space, and leaves an emoji and visible text alone', () => {

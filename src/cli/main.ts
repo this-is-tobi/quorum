@@ -13,7 +13,14 @@ import { printConfig } from './print-config.ts'
 import { bannerLines, progressSink } from './render.ts'
 
 /** Exit codes (ADR-0008, amended by ADR-0012). */
-export const EXIT = { ok: 0, finding: 1, usage: 2, runtime: 3, incomplete: 4, interrupted: 130 } as const
+export const EXIT = {
+  ok: 0,
+  finding: 1,
+  usage: 2,
+  runtime: 3,
+  incomplete: 4,
+  interrupted: 130,
+} as const
 
 /** The most diff the CLI reads, from stdin or a file, in bytes: a larger one is refused and reading stops there. */
 export const MAX_DIFF_BYTES = 16 * 1024 * 1024
@@ -102,7 +109,11 @@ export async function runCli(io: CliIO): Promise<number> {
   const printing = values['print-config'] === true
   let diff = ''
   try {
-    if (values.config === '') throw new ConfigError([{ path: '--config', message: 'must name a file' }])
+    if (values.config === '') {
+      throw new ConfigError([
+        { path: '--config', message: 'must name a file' },
+      ])
+    }
     if (printing && positionals.length > 0) throw new Error('--print-config takes no diff file')
     if (!printing) diff = await readDiff(io, positionals)
   } catch (error) {
@@ -111,9 +122,19 @@ export async function runCli(io: CliIO): Promise<number> {
 
   let quorum: Quorum | undefined
   try {
-    const selection = values.profile === undefined ? undefined : { ids: values.profile, path: '--profile' }
-    const { config, source } = await loadConfig({ cwd: io.cwd, env: io.env, configPath: values.config, selection })
-    quorum = await fromConfig(config, { env: io.env, events: progressSink(line => io.stderr.write(`${line}\n`)) })
+    const selection = values.profile === undefined
+      ? undefined
+      : { ids: values.profile, path: '--profile' }
+    const { config, source } = await loadConfig({
+      cwd: io.cwd,
+      env: io.env,
+      configPath: values.config,
+      selection,
+    })
+    quorum = await fromConfig(config, {
+      env: io.env,
+      events: progressSink(line => io.stderr.write(`${line}\n`)),
+    })
     if (printing) {
       io.stdout.write(printConfig(config, source))
       return EXIT.ok
@@ -131,7 +152,9 @@ export async function runCli(io: CliIO): Promise<number> {
     }
     if (error instanceof ConfigError && quorum === undefined) writeWarnings(io, readEnv(io.env).warnings)
     io.stderr.write(`${errorLines(error)}\n`)
-    return error instanceof ConfigError ? EXIT.usage : EXIT.runtime
+    return error instanceof ConfigError
+      ? EXIT.usage
+      : EXIT.runtime
   }
 }
 
@@ -180,13 +203,20 @@ export function exitCodeFor(result: QuorumResult, options: { readonly allowIncom
   if (result.kept.some(verdict => verdict.confidence === 'high' && gates(verdict.profile))) return EXIT.finding
   if (result.meta.incomplete.some(entry => entry.reason === 'request-too-large' && gates(entry.profile))) return EXIT.incomplete
   const incomplete = result.unreviewed.some(verdict => gates(verdict.profile)) || result.meta.incomplete.some(entry => gates(entry.profile))
-  return incomplete && options.allowIncomplete !== true ? EXIT.incomplete : EXIT.ok
+  return incomplete && options.allowIncomplete !== true
+    ? EXIT.incomplete
+    : EXIT.ok
 }
 
 /** The flags of `argv` and its positional arguments; a usage error of `parseArgs` is raised as a `ConfigError`, one issue per line of its message. */
 function parseFlags(argv: readonly string[]) {
   try {
-    return parseArgs({ args: [...argv], options: OPTIONS, strict: true, allowPositionals: true })
+    return parseArgs({
+      args: [...argv],
+      options: OPTIONS,
+      strict: true,
+      allowPositionals: true,
+    })
   } catch (error) {
     if (!(error instanceof Error) || !(error as NodeJS.ErrnoException).code?.startsWith('ERR_PARSE_ARGS_')) throw error
     throw new ConfigError(error.message.split('\n').map(message => ({ path: '', message })))
@@ -220,7 +250,9 @@ async function readCapped(chunks: AsyncIterable<Uint8Array | string>): Promise<s
   let bytes = 0
   let text = ''
   for await (const chunk of chunks) {
-    const data = typeof chunk === 'string' ? encoder.encode(chunk) : chunk
+    const data = typeof chunk === 'string'
+      ? encoder.encode(chunk)
+      : chunk
     bytes += data.byteLength
     if (bytes > MAX_DIFF_BYTES) throw new Error('the diff is over 16 MiB, the most quorum reads')
     text += decoder.decode(data, { stream: true })
@@ -234,8 +266,14 @@ async function readCapped(chunks: AsyncIterable<Uint8Array | string>): Promise<s
  * a server sent cannot start a line of its own.
  */
 function errorLines(error: unknown): string {
-  const lines = error instanceof ConfigError ? error.message.split('\n') : [errorMessage(error)]
-  return lines.map((line, index) => inertLine(index === 0 ? `Error: ${line}` : line)).join('\n')
+  const lines = error instanceof ConfigError
+    ? error.message.split('\n')
+    : [
+        errorMessage(error),
+      ]
+  return lines.map((line, index) => inertLine(index === 0
+    ? `Error: ${line}`
+    : line)).join('\n')
 }
 
 /**

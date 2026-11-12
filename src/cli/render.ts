@@ -19,16 +19,22 @@ import { presetOf } from '../providers/presets.ts'
  */
 export function renderEvent(event: QuorumEvent, prefixed = false): string | undefined {
   const line = progressLine(event, prefixed)
-  return line === undefined ? undefined : inertLine(line)
+  return line === undefined
+    ? undefined
+    : inertLine(line)
 }
 
 const profilePrefix = (profile: string): string => `[${profile}] `
 
 function progressLine(event: QuorumEvent, prefixed: boolean): string | undefined {
-  const of = (profile: string, line: string): string => prefixed ? `${profilePrefix(profile)}${line}` : line
+  const of = (profile: string, line: string): string => prefixed
+    ? `${profilePrefix(profile)}${line}`
+    : line
   switch (event.type) {
     case 'stage:end':
-      return event.stage === 'dedup' ? of(event.profile, `${event.count} candidate(s) after dedup`) : undefined
+      return event.stage === 'dedup'
+        ? of(event.profile, `${event.count} candidate(s) after dedup`)
+        : undefined
     case 'finding:invalid':
       return of(event.profile, `invalid finding dropped: ${event.reason}`)
     case 'incomplete':
@@ -75,14 +81,18 @@ export function providerOrigin(spec: Exclude<ResolvedProvider, Provider>): strin
 
 /** Where a provider defined as data is reached, as the banner names it: its origin, or `claude-code` for the CLI, which has none. */
 function endpointOf(spec: Exclude<ResolvedProvider, Provider>): string {
-  return isClaudeCode(own(spec, 'protocol')) ? 'claude-code' : providerOrigin(spec)
+  return isClaudeCode(own(spec, 'protocol'))
+    ? 'claude-code'
+    : providerOrigin(spec)
 }
 
 /** What a provider reads as in the banner: its model and where it is reached, a provider object by its config key. */
 function providerLabel(providers: ResolvedConfig['providers'], name: string): string {
   // Resolution bound every profile to providers it kept, so each name is found.
   const entry = own(providers, name) as ResolvedProvider
-  return isProvider(entry) ? `${entry.model} @ the provider object ${name}` : `${own(entry, 'model')} @ ${endpointOf(entry)}`
+  return isProvider(entry)
+    ? `${entry.model} @ the provider object ${name}`
+    : `${own(entry, 'model')} @ ${endpointOf(entry)}`
 }
 
 /** The banner of one profile: its research provider, then its panel, one provider for every lens when they share it. */
@@ -105,7 +115,9 @@ function profileBanner({ research, voters }: ResolvedProfile, providers: Resolve
 export function bannerLines(config: ResolvedConfig): string[] {
   const prefixed = config.profiles.length > 1
   return config.profiles.flatMap((resolved) => {
-    const prefix = prefixed ? profilePrefix(resolved.profile.id) : ''
+    const prefix = prefixed
+      ? profilePrefix(resolved.profile.id)
+      : ''
     return profileBanner(resolved, config.providers).map(line => inertLine(`${prefix}${line}`))
   })
 }

@@ -47,10 +47,36 @@ Quorum ships one adapter per wire protocol, and one that runs your installed Cla
 ```ts
 import { anthropic, claudeCode, gemini, ollama, openaiCompatible } from '@tobi-or-not/quorum'
 
-const local = ollama({ id: 'local', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b', contextTokens: 131072 })
-const claude = anthropic({ id: 'claude', baseUrl: 'https://api.anthropic.com', model: 'claude-opus-5-5', contextTokens: 200000, apiKey: process.env.ANTHROPIC_API_KEY, structuredOutput: 'schema' })
-const flash = gemini({ id: 'flash', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.8-flash', contextTokens: 1000000, apiKey: process.env.GEMINI_API_KEY })
-const hosted = openaiCompatible({ id: 'hosted', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-astra', contextTokens: 400000, apiKey: process.env.OPENAI_API_KEY, temperature: null, maxTokensField: 'max_completion_tokens' })
+const local = ollama({
+  id: 'local',
+  baseUrl: 'http://localhost:11434',
+  model: 'qwen3.6:27b',
+  contextTokens: 131072
+})
+const claude = anthropic({
+  id: 'claude',
+  baseUrl: 'https://api.anthropic.com',
+  model: 'claude-opus-5-5',
+  contextTokens: 200000,
+  apiKey: process.env.ANTHROPIC_API_KEY,
+  structuredOutput: 'schema'
+})
+const flash = gemini({
+  id: 'flash',
+  baseUrl: 'https://generativelanguage.googleapis.com',
+  model: 'gemini-3.8-flash',
+  contextTokens: 1000000,
+  apiKey: process.env.GEMINI_API_KEY
+})
+const hosted = openaiCompatible({
+  id: 'hosted',
+  baseUrl: 'https://api.openai.com/v1',
+  model: 'gpt-6-astra',
+  contextTokens: 400000,
+  apiKey: process.env.OPENAI_API_KEY,
+  temperature: null,
+  maxTokensField: 'max_completion_tokens'
+})
 const code = claudeCode({ id: 'code', model: 'sonnet', contextTokens: 1000000 })
 ```
 
@@ -630,7 +656,9 @@ function withTimeout(inner: Provider, ms: number): Provider {
     model: inner.model,
     async complete(request) {
       const timeout = AbortSignal.timeout(ms)
-      const signal = request.signal === undefined ? timeout : AbortSignal.any([request.signal, timeout])
+      const signal = request.signal === undefined
+        ? timeout
+        : AbortSignal.any([request.signal, timeout])
       try {
         return await inner.complete({ ...request, signal })
       } catch (error) {
@@ -641,7 +669,12 @@ function withTimeout(inner: Provider, ms: number): Provider {
   }
 }
 
-const voter = withTimeout(ollama({ id: 'voter', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b', contextTokens: 131072 }), 120_000)
+const voter = withTimeout(ollama({
+  id: 'voter',
+  baseUrl: 'http://localhost:11434',
+  model: 'qwen3.6:27b',
+  contextTokens: 131072
+}), 120_000)
 ```
 
 A vote that runs out of time is then a failed vote, `voter: no reply within 120000 ms`, and a review aborted by its own signal still rejects with that signal's reason.

@@ -74,7 +74,10 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
     sink: ports.events,
   }
   const warnings: readonly string[] = Object.freeze(options.profiles.flatMap(profile => profileWarnings(profile)))
-  return Object.freeze({ review: (input: { readonly diff: string }, options?: ReviewOptions) => review(compiled, input, options), warnings })
+  return Object.freeze({
+    review: (input: { readonly diff: string }, options?: ReviewOptions) => review(compiled, input, options),
+    warnings,
+  })
 }
 
 /**
@@ -106,16 +109,24 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
   if (issues.length > 0) throw new ConfigError(issues)
   options.signal?.throwIfAborted()
   const internal = new AbortController()
-  const signal = options.signal === undefined ? internal.signal : AbortSignal.any([options.signal, internal.signal])
+  const signal = options.signal === undefined
+    ? internal.signal
+    : AbortSignal.any([options.signal, internal.signal])
   const fail = (error: unknown): void => {
     if (!signal.aborted) internal.abort(error)
   }
   const startedAt = new Date().toISOString()
   const started = performance.now()
   const { runs, sink } = compiled
-  const sections = input.diff.trim() === '' ? undefined : splitDiff(input.diff)
-  const flags = sections === undefined ? [] : diffFlags(sections)
-  const tally: Tally = { invalidFindings: new Map() }
+  const sections = input.diff.trim() === ''
+    ? undefined
+    : splitDiff(input.diff)
+  const flags = sections === undefined
+    ? []
+    : diffFlags(sections)
+  const tally: Tally = {
+    invalidFindings: new Map(),
+  }
   const emit = (event: QuorumEvent): void => {
     if (signal.aborted) return
     if (event.type === 'call' && event.usage !== undefined) tally.usage = addUsage(tally.usage, event.usage)
@@ -128,8 +139,21 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
       throw error
     }
   }
-  const ctx: RunContext = { limit: createLimiter(compiled.concurrency), emit, signal, fail, maxFindings: compiled.maxFindings }
-  emit({ type: 'run:start', profiles: runs.map(run => run.id), providers: Object.fromEntries(runs.map(run => [run.id, providersOf(run)])) })
+  const ctx: RunContext = {
+    limit: createLimiter(compiled.concurrency),
+    emit,
+    signal,
+    fail,
+    maxFindings: compiled.maxFindings,
+  }
+  emit({
+    type: 'run:start',
+    profiles: runs.map(run => run.id),
+    providers: Object.fromEntries(runs.map(run => [
+      run.id,
+      providersOf(run),
+    ])),
+  })
   for (const flag of flags) emit({ type: 'flag', flag })
   const outcomes = await reviewAll(ctx, runs, input.diff, sections).catch((error: unknown) => {
     // A research failure aborted the review where it failed; any other failure aborts it here. The first reason stays the reason.
@@ -147,12 +171,24 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
     version: packageJson.version,
     startedAt,
     durationMs,
-    profiles: Object.fromEntries(runs.map(run => [run.id, profileMeta(run, tally.invalidFindings.get(run.id) ?? 0)])),
-    ...(tally.usage === undefined ? {} : { usage: tally.usage }),
+    profiles: Object.fromEntries(runs.map(run => [
+      run.id,
+      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0),
+    ])),
+    ...(tally.usage === undefined
+      ? {}
+      : { usage: tally.usage }),
     incomplete,
     flags,
   }
-  emit({ type: 'run:end', kept: kept.length, discarded: discarded.length, unreviewed: unreviewed.length, incomplete: incomplete.length, durationMs })
+  emit({
+    type: 'run:end',
+    kept: kept.length,
+    discarded: discarded.length,
+    unreviewed: unreviewed.length,
+    incomplete: incomplete.length,
+    durationMs,
+  })
   return { kept, discarded, unreviewed, meta }
 }
 
@@ -167,7 +203,13 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, diff: string, sec
   const researched = await stage(ctx, run.id, 'research', () => research(ctx, run, diff, sections), outcome => outcome.findings.length)
   const candidates = await stage(ctx, run.id, 'dedup', () => dedup(researched.findings), found => found.length)
   const judged = await stage(ctx, run.id, 'panel', () => panel(ctx, run, candidates, sections, diff), outcome => outcome.kept.length + outcome.discarded.length + outcome.unreviewed.length)
-  return { ...judged, incomplete: [...researched.incomplete, ...judged.incomplete] }
+  return {
+    ...judged,
+    incomplete: [
+      ...researched.incomplete,
+      ...judged.incomplete,
+    ],
+  }
 }
 
 /**
@@ -188,18 +230,31 @@ function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
 /** The usage of one more call added to a running total; `costUsd` is summed over the calls that reported one. */
 function addUsage(total: Usage | undefined, call: Usage): Usage {
   const sum: Usage = { inputTokens: (total?.inputTokens ?? 0) + call.inputTokens, outputTokens: (total?.outputTokens ?? 0) + call.outputTokens }
-  const costUsd = call.costUsd === undefined ? total?.costUsd : (total?.costUsd ?? 0) + call.costUsd
+  const costUsd = call.costUsd === undefined
+    ? total?.costUsd
+    : (total?.costUsd ?? 0) + call.costUsd
   if (costUsd !== undefined) sum.costUsd = costUsd
   return sum
 }
 
 /** Who reviews for a profile, as new objects the caller may keep or change: never the frozen refs of the run. */
 function providersOf(run: ProfileRun): ProfileProviders {
-  return { research: { ...run.research.ref }, lenses: Object.fromEntries(run.lenses.map(lens => [lens.id, { ...lens.ref }])) }
+  return {
+    research: { ...run.research.ref },
+    lenses: Object.fromEntries(run.lenses.map(lens => [
+      lens.id,
+      { ...lens.ref },
+    ])),
+  }
 }
 
 function profileMeta(run: ProfileRun, invalidFindings: number): ProfileMeta {
-  return { providers: providersOf(run), policy: { ...run.thresholds }, gating: run.gating, invalidFindings }
+  return {
+    providers: providersOf(run),
+    policy: { ...run.thresholds },
+    gating: run.gating,
+    invalidFindings,
+  }
 }
 
 /**
@@ -216,7 +271,10 @@ function compile(profile: Profile, ports: ProfilePorts): ProfileRun {
   }))
   return Object.freeze({
     id: profile.id,
-    research: Object.freeze({ instructions: profile.prompts.research, ...target(ports.research) }),
+    research: Object.freeze({
+      instructions: profile.prompts.research,
+      ...target(ports.research),
+    }),
     lenses: Object.freeze(lenses),
     thresholds: Object.freeze(thresholdsFor(profile)),
     gating: profile.gating ?? true,
@@ -225,7 +283,10 @@ function compile(profile: Profile, ports: ProfilePorts): ProfileRun {
 }
 
 function target(provider: Provider): Target {
-  return { provider, ref: Object.freeze({ id: provider.id, model: provider.model }) }
+  return {
+    provider,
+    ref: Object.freeze({ id: provider.id, model: provider.model }),
+  }
 }
 
 /**
@@ -237,7 +298,13 @@ function inputIssues(options: unknown, ports: unknown): ConfigIssue[] {
   if (!isRecord(options)) issues.push({ path: 'options', message: 'must be an object' })
   if (!isRecord(ports)) issues.push({ path: 'ports', message: 'must be an object' })
   if (!isRecord(options)) return issues
-  if (!Array.isArray(options.profiles)) return [...issues, { path: 'profiles', message: 'must be an array of profiles' }, ...limitIssues(options)]
+  if (!Array.isArray(options.profiles)) {
+    return [
+      ...issues,
+      { path: 'profiles', message: 'must be an array of profiles' },
+      ...limitIssues(options),
+    ]
+  }
   // `Array.from` reads a hole as `undefined`, so it is reported like any other profile that is not an object.
   const profiles = profileListIssues(Array.from<unknown>(options.profiles))
   issues.push(...profiles.issues, ...limitIssues(options))
@@ -259,7 +326,9 @@ function profileListIssues(profiles: readonly unknown[]): { issues: ConfigIssue[
   profiles.forEach((profile, index) => {
     const problems = profileIssues(profile as Profile, `profiles.${index}`)
     issues.push(...problems)
-    const id = isRecord(profile) && typeof profile.id === 'string' ? profile.id : undefined
+    const id = isRecord(profile) && typeof profile.id === 'string'
+      ? profile.id
+      : undefined
     if (id === undefined) return
     const repeated = named.has(id)
     if (repeated) issues.push({ path: `profiles.${index}.id`, message: `repeats the profile id ${JSON.stringify(id)}` })
@@ -274,8 +343,12 @@ function limitIssues(options: Record<string, unknown>): ConfigIssue[] {
   return LIMITS.flatMap((path) => {
     const value = options[path]
     if (value === undefined || (typeof value === 'number' && Number.isInteger(value) && value >= 1)) return []
-    const got = typeof value === 'number' ? `, got ${value}` : ''
-    return [{ path, message: `must be a positive integer${got}` }]
+    const got = typeof value === 'number'
+      ? `, got ${value}`
+      : ''
+    return [
+      { path, message: `must be a positive integer${got}` },
+    ]
   })
 }
 
@@ -299,12 +372,30 @@ function portIssues(ports: Record<string, unknown>, profiles: readonly Profile[]
 function profilePortIssues(entries: Record<string, unknown>, profile: Profile): ConfigIssue[] {
   const path = `ports.profiles.${profile.id}`
   const entry = own(entries, profile.id)
-  if (entry === undefined) return [{ path, message: 'is missing' }]
-  if (!isRecord(entry)) return [{ path, message: 'must be an object with a research provider and voters' }]
+  if (entry === undefined) {
+    return [
+      { path, message: 'is missing' },
+    ]
+  }
+  if (!isRecord(entry)) {
+    return [
+      { path, message: 'must be an object with a research provider and voters' },
+    ]
+  }
   const issues = providerIssues(`${path}.research`, entry.research)
   const { voters } = entry
-  if (voters === undefined) return [...issues, { path: `${path}.voters`, message: 'is missing' }]
-  if (!isRecord(voters)) return [...issues, { path: `${path}.voters`, message: 'must be an object keyed by lens id' }]
+  if (voters === undefined) {
+    return [
+      ...issues,
+      { path: `${path}.voters`, message: 'is missing' },
+    ]
+  }
+  if (!isRecord(voters)) {
+    return [
+      ...issues,
+      { path: `${path}.voters`, message: 'must be an object keyed by lens id' },
+    ]
+  }
   const lensIds = new Set(profile.lenses.map(lens => lens.id))
   for (const lens of profile.lenses) issues.push(...providerIssues(`${path}.voters.${lens.id}`, own(voters, lens.id)))
   for (const id of Object.keys(voters)) {
@@ -314,8 +405,16 @@ function profilePortIssues(entries: Record<string, unknown>, profile: Profile): 
 }
 
 function providerIssues(path: string, value: unknown): ConfigIssue[] {
-  if (value === undefined) return [{ path, message: 'is missing' }]
-  return isProvider(value) ? [] : [{ path, message: PROVIDER_SHAPE }]
+  if (value === undefined) {
+    return [
+      { path, message: 'is missing' },
+    ]
+  }
+  return isProvider(value)
+    ? []
+    : [
+        { path, message: PROVIDER_SHAPE },
+      ]
 }
 
 /** A provider is a non-null object with a string id, a string model and a complete function. */
@@ -325,5 +424,7 @@ function isProvider(value: unknown): value is Provider {
 
 /** What `record` holds under `key` as its own property: an id such as `constructor` never finds an inherited member. */
 function own(record: Record<string, unknown>, key: string): unknown {
-  return Object.hasOwn(record, key) ? record[key] : undefined
+  return Object.hasOwn(record, key)
+    ? record[key]
+    : undefined
 }

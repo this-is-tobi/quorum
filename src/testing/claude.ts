@@ -57,7 +57,11 @@ export function writeFakeClaude(dir: string): string {
 export function fakeClaudeEnv(dir: string, name: string, stdout: string, extra: Readonly<Record<string, string>> = {}): Record<string, string> {
   const file = join(dir, `${name}.out`)
   writeFileSync(file, stdout)
-  return { FAKE_CLAUDE_STDOUT: file, FAKE_CLAUDE_RECORD: join(dir, `${name}.record.json`), ...extra }
+  return {
+    FAKE_CLAUDE_STDOUT: file,
+    FAKE_CLAUDE_RECORD: join(dir, `${name}.record.json`),
+    ...extra,
+  }
 }
 
 /** What the fake recorded of the run `name`. */

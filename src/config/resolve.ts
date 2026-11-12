@@ -93,8 +93,14 @@ function atPresetOrigin(presetName: string | undefined, preset: Preset, baseUrl:
 /** The issue of a key variable that is not set. The variable is named only when it is an upper-case name. */
 function unsetKey(provider: string, variable: string): ConfigIssue {
   return VARIABLE_NAME.test(variable)
-    ? { path: configPath(['providers', provider]), message: `${variable} is not set` }
-    : { path: configPath(['providers', provider, 'apiKeyEnv']), message: 'names a variable that is not set' }
+    ? {
+        path: configPath(['providers', provider]),
+        message: `${variable} is not set`,
+      }
+    : {
+        path: configPath(['providers', provider, 'apiKeyEnv']),
+        message: 'names a variable that is not set',
+      }
 }
 
 interface KeyReading {
@@ -104,19 +110,34 @@ interface KeyReading {
   readonly warnings: readonly string[]
 }
 
-const NO_KEY: KeyReading = Object.freeze({ apiKey: undefined, issues: Object.freeze([]), warnings: Object.freeze([]) })
+const NO_KEY: KeyReading = Object.freeze({
+  apiKey: undefined,
+  issues: Object.freeze([]),
+  warnings: Object.freeze([]),
+})
 
 /** What a provider in use that runs `claude` gets besides its key: the executable found, or why not, and the warning of a key that is billed. */
 interface ClaudeReading extends CommandLookup {
   readonly warnings: readonly string[]
 }
 
-const NO_CLAUDE: ClaudeReading = Object.freeze({ issues: Object.freeze([]), warnings: Object.freeze([]) })
+const NO_CLAUDE: ClaudeReading = Object.freeze({
+  issues: Object.freeze([]),
+  warnings: Object.freeze([]),
+})
 
 /** The key a variable holds, or the issue that it is not set. */
 function readVariable(name: string, variable: string, env: Env): KeyReading {
   const apiKey = envValue(env, variable)
-  return { apiKey, issues: apiKey === undefined ? [unsetKey(name, variable)] : [], warnings: [] }
+  return {
+    apiKey,
+    issues: apiKey === undefined
+      ? [
+          unsetKey(name, variable),
+        ]
+      : [],
+    warnings: [],
+  }
 }
 
 /**
@@ -128,14 +149,33 @@ function readVariable(name: string, variable: string, env: Env): KeyReading {
  */
 function readKey(name: string, fields: ProviderSettings, env: Env, presetKey: boolean): KeyReading {
   // A key variable no mode would send is refused where it is written, and never read.
-  if (isClaudeCode(fields.protocol) && fields.apiKeyEnv !== undefined && fields.auth !== 'api-key') return { apiKey: undefined, issues: [{ path: configPath(['providers', name, 'apiKeyEnv']), message: 'is set, but auth is not api-key' }], warnings: [] }
+  if (isClaudeCode(fields.protocol) && fields.apiKeyEnv !== undefined && fields.auth !== 'api-key') {
+    return {
+      apiKey: undefined,
+      issues: [
+        {
+          path: configPath(['providers', name, 'apiKeyEnv']),
+          message: 'is set, but auth is not api-key',
+        },
+      ],
+      warnings: [],
+    }
+  }
   if (fields.apiKey !== undefined && fields.apiKey !== '') return { apiKey: fields.apiKey, issues: [], warnings: [] }
   if (fields.apiKeyEnv !== undefined) return readVariable(name, fields.apiKeyEnv, env)
-  if (isClaudeCode(fields.protocol)) return fields.auth === 'api-key' ? readVariable(name, CLAUDE_KEY_VARIABLE, env) : NO_KEY
+  if (isClaudeCode(fields.protocol)) {
+    return fields.auth === 'api-key'
+      ? readVariable(name, CLAUDE_KEY_VARIABLE, env)
+      : NO_KEY
+  }
   const preset = presetOf(fields.preset)
   const variable = preset?.apiKeyEnv
   if (preset === undefined || variable === undefined) return NO_KEY
-  const notSent = (reason: string, remedy: string): KeyReading => ({ apiKey: undefined, issues: [], warnings: [`${configPath(['providers', name, 'baseUrl'])}: ${reason}, so ${variable} is not sent: set ${remedy} to send a key`] })
+  const notSent = (reason: string, remedy: string): KeyReading => ({
+    apiKey: undefined,
+    issues: [],
+    warnings: [`${configPath(['providers', name, 'baseUrl'])}: ${reason}, so ${variable} is not sent: set ${remedy} to send a key`],
+  })
   if (!presetKey) return notSent('is not the endpoint of the research provider', VOTER_KEY)
   if (!atPresetOrigin(fields.preset, preset, baseUrlOf(fields))) return notSent(`is not the endpoint of the ${fields.preset} preset`, 'apiKeyEnv')
   return readVariable(name, variable, env)
@@ -157,7 +197,10 @@ interface CheckedSpec {
 /** The `claude` of a provider in use, when it runs one: found by `claudeCodeCommand`, with the billing warning. */
 function readClaude(name: string, fields: ProviderSettings, env: Env, variable: string | undefined): ClaudeReading {
   if (!isClaudeCode(fields.protocol)) return NO_CLAUDE
-  return { ...claudeCodeCommand(name, fields, variable, env), warnings: billingWarnings(name, fields, env) }
+  return {
+    ...claudeCodeCommand(name, fields, variable, env),
+    warnings: billingWarnings(name, fields, env),
+  }
 }
 
 /**
@@ -168,19 +211,42 @@ function readClaude(name: string, fields: ProviderSettings, env: Env, variable: 
  */
 function checkSpec(name: string, entry: ProviderSettings, inUse: boolean, env: Env, presetKey: boolean, command: string | undefined): CheckedSpec {
   const fields = ownFields(entry)
-  const key = inUse ? readKey(name, fields, env, presetKey) : NO_KEY
-  const claude = inUse ? readClaude(name, fields, env, command) : NO_CLAUDE
+  const key = inUse
+    ? readKey(name, fields, env, presetKey)
+    : NO_KEY
+  const claude = inUse
+    ? readClaude(name, fields, env, command)
+    : NO_CLAUDE
   const { apiKeyEnv: _apiKeyEnv, apiKey: _apiKey, ...rest } = fields
   // The builder refuses a spec with no model, and a spec it refuses is never kept.
-  const spec = { ...rest, ...key.apiKey === undefined ? {} : { apiKey: key.apiKey }, ...claude.command === undefined ? {} : { command: claude.command } } as Omit<ProviderSpec, 'id'>
-  const issues = [...key.issues, ...claude.issues]
+  const spec = {
+    ...rest,
+    ...key.apiKey === undefined
+      ? {}
+      : { apiKey: key.apiKey },
+    ...claude.command === undefined
+      ? {}
+      : { command: claude.command },
+  } as Omit<ProviderSpec, 'id'>
+  const issues = [
+    ...key.issues,
+    ...claude.issues,
+  ]
   try {
     buildProvider({ ...spec, id: name }, { env })
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error
     issues.push(...error.issues.map(({ path, message }) => ({ path: `providers.${path}`, message })))
   }
-  return { spec, issues, warnings: [...key.warnings, ...claude.warnings, ...cleartextWarnings(name, key.apiKey, baseUrlOf(fields))] }
+  return {
+    spec,
+    issues,
+    warnings: [
+      ...key.warnings,
+      ...claude.warnings,
+      ...cleartextWarnings(name, key.apiKey, baseUrlOf(fields)),
+    ],
+  }
 }
 
 /** A copy of a spec, field by field, so the config's own objects stay out of the resolved config; or an issue at each field that cannot be copied, which never repeats what it holds. */
@@ -189,12 +255,22 @@ function copySpec(name: string, spec: Omit<ProviderSpec, 'id'>): { readonly copy
   const issues: ConfigIssue[] = []
   for (const [field, value] of Object.entries(spec)) {
     try {
-      copies.push([field, structuredClone(value)])
+      copies.push([
+        field,
+        structuredClone(value),
+      ])
     } catch {
-      issues.push({ path: configPath(['providers', name, field]), message: 'cannot be copied' })
+      issues.push({
+        path: configPath(['providers', name, field]),
+        message: 'cannot be copied',
+      })
     }
   }
-  return issues.length > 0 ? { issues } : { copy: Object.fromEntries(copies) as Omit<ProviderSpec, 'id'> }
+  return issues.length > 0
+    ? { issues }
+    : {
+        copy: Object.fromEntries(copies) as Omit<ProviderSpec, 'id'>,
+      }
 }
 
 /** Every provider of the config checked by the builder, and the specs and objects a profile uses. `withheld` names the provider that is never sent its preset's key variable, `command` is `QUORUM_CLAUDE_CODE_COMMAND`'s. An issue two providers share (the variable names no file) is reported once. */
@@ -227,8 +303,14 @@ function checkProviders(providers: Readonly<Record<string, ProviderEntry>>, inUs
 function reportMissingModel(issues: readonly ConfigIssue[], builtIn: boolean, reportedVoter: string | undefined): ConfigIssue[] {
   return issues.flatMap((issue) => {
     if (issue.message !== 'is required') return [issue]
-    if (builtIn && issue.path === `providers.${DEFAULT_NAME}.model`) return [{ path: '', message: NO_MODEL }]
-    return reportedVoter !== undefined && issue.path === `providers.${reportedVoter}.model` ? [] : [issue]
+    if (builtIn && issue.path === `providers.${DEFAULT_NAME}.model`) {
+      return [
+        { path: '', message: NO_MODEL },
+      ]
+    }
+    return reportedVoter !== undefined && issue.path === `providers.${reportedVoter}.model`
+      ? []
+      : [issue]
   })
 }
 
@@ -257,26 +339,48 @@ interface ContextReport {
 function reportMissingContext(issues: readonly ConfigIssue[], { builtIn, roles, derived, layer }: ContextReport): ConfigIssue[] {
   const voterNames = namesModelOrEndpoint(layer.voter)
   const shared = derived !== undefined && !voterNames && !setsContextSize(layer.voter)
-  const voterOwn = roles.voter !== roles.research && roles.voter !== derived ? roles.voter : undefined
+  const voterOwn = roles.voter !== roles.research && roles.voter !== derived
+    ? roles.voter
+    : undefined
   return issues.flatMap((issue) => {
     const at = (name: string | undefined): boolean => name !== undefined && issue.path === `providers.${name}.contextTokens`
     if (shared && at(derived)) return []
     if (issue.message !== CONTEXT_REQUIRED) return [issue]
-    if (builtIn && at(DEFAULT_NAME)) return [{ path: '', message: NO_CONTEXT }]
-    if (at(derived) || at(voterOwn)) return voterNames ? [contextOfRole('voter')] : [issue]
-    if (at(roles.research)) return namesModelOrEndpoint(layer.research) ? [contextOfRole('research')] : [issue]
+    if (builtIn && at(DEFAULT_NAME)) {
+      return [
+        { path: '', message: NO_CONTEXT },
+      ]
+    }
+    if (at(derived) || at(voterOwn)) {
+      return voterNames
+        ? [
+            contextOfRole('voter'),
+          ]
+        : [issue]
+    }
+    if (at(roles.research)) {
+      return namesModelOrEndpoint(layer.research)
+        ? [
+            contextOfRole('research'),
+          ]
+        : [issue]
+    }
     return [issue]
   })
 }
 
 /** The provider of a config that defines none, chosen from the research variables before they are applied. */
 function builtInProvider(research: RoleOverrides): ProviderSettings {
-  return setsOnlyBaseUrl(research) ? BASE_URL_PROVIDER : DEFAULT_PROVIDER
+  return setsOnlyBaseUrl(research)
+    ? BASE_URL_PROVIDER
+    : DEFAULT_PROVIDER
 }
 
 /** The origin of a provider's settings, as endpoints are compared; none for a provider object. */
 function originOf(entry: ProviderEntry | undefined): string | undefined {
-  return entry === undefined || isProvider(entry) ? undefined : httpOrigin(baseUrlOf(ownFields(entry)))
+  return entry === undefined || isProvider(entry)
+    ? undefined
+    : httpOrigin(baseUrlOf(ownFields(entry)))
 }
 
 /** The issues of a selection's ids, each at most once and never naming an id: one for a form, one for a repeat. */
@@ -289,14 +393,24 @@ function selectionIssues({ ids, path }: ProfileSelection): ConfigIssue[] {
 
 /** The providers research and the voter are bound to: `roles`, else the only provider, else research. Or the issues of the roles. */
 function bindRoles(roles: ConfigInput['roles'], names: readonly string[]): { readonly roles?: RoleBinding, readonly issues: ConfigIssue[] } {
-  const named = { research: own(roles, 'research'), voter: own(roles, 'voter') }
-  const research = named.research ?? (names.length === 1 ? names[0] : undefined)
+  const named = {
+    research: own(roles, 'research'),
+    voter: own(roles, 'voter'),
+  }
+  const research = named.research ?? (names.length === 1
+    ? names[0]
+    : undefined)
   const voter = named.voter ?? research
   const issues: ConfigIssue[] = []
   if (research === undefined) issues.push({ path: 'roles.research', message: 'is required when several providers are defined' })
   else if (!names.includes(research)) issues.push(unknownName('roles.research', 'provider', research, names))
   if (named.voter !== undefined && !names.includes(named.voter)) issues.push(unknownName('roles.voter', 'provider', named.voter, names))
-  return research === undefined || voter === undefined || issues.length > 0 ? { issues } : { roles: { research, voter }, issues }
+  return research === undefined || voter === undefined || issues.length > 0
+    ? { issues }
+    : {
+        roles: { research, voter },
+        issues,
+      }
 }
 
 /**
@@ -319,11 +433,26 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
   const layer = readEnv(env)
   const defined = Object.entries(own(input, 'providers') ?? {})
   const builtIn = defined.length === 0
-  const entries: Array<[string, ProviderEntry]> = builtIn ? [[DEFAULT_NAME, builtInProvider(layer.research)]] : defined
+  const entries: Array<[string, ProviderEntry]> = builtIn
+    ? [
+        [
+          DEFAULT_NAME,
+          builtInProvider(layer.research),
+        ],
+      ]
+    : defined
 
   const bound = bindRoles(own(input, 'roles'), entries.map(([name]) => name))
-  const refused = selection === undefined ? [] : selectionIssues(selection)
-  if (layer.issues.length > 0 || refused.length > 0 || bound.issues.length > 0 || bound.roles === undefined) throw new ConfigError([...layer.issues, ...refused, ...bound.issues])
+  const refused = selection === undefined
+    ? []
+    : selectionIssues(selection)
+  if (layer.issues.length > 0 || refused.length > 0 || bound.issues.length > 0 || bound.roles === undefined) {
+    throw new ConfigError([
+      ...layer.issues,
+      ...refused,
+      ...bound.issues,
+    ])
+  }
 
   // The environment layer's profiles are read as own fields, so a polluted `Object.prototype` selects none
   // through `QUORUM_PROFILES`; `options.selection` is read directly, as the caller gave it.
@@ -331,20 +460,38 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
   const applied = applyRoleOverrides(Object.fromEntries(entries), bound.roles, layer, builtIn)
   const profiles = resolveProfiles({
     profiles: own(input, 'profiles'),
-    selection: selection ?? (ids === undefined ? undefined : { ids, path: 'QUORUM_PROFILES' }),
+    selection: selection ?? (ids === undefined
+      ? undefined
+      : { ids, path: 'QUORUM_PROFILES' }),
     roles: applied.roles,
     providers: Object.keys(applied.providers),
   })
-  const inUse = new Set(profiles.profiles.flatMap(({ research, voters }) => [research, ...Object.values(voters)]))
+  const inUse = new Set(profiles.profiles.flatMap(({ research, voters }) => [
+    research,
+    ...Object.values(voters),
+  ]))
   // The voter the variables derived is the one the role moved to. On another origin than research's, with no
   // preset of its own, it is never sent a preset's key variable: that is research's key by another name (ADR-0013).
-  const derived = applied.roles.voter === bound.roles.voter ? undefined : applied.roles.voter
+  const derived = applied.roles.voter === bound.roles.voter
+    ? undefined
+    : applied.roles.voter
   const elsewhere = derived !== undefined && own(layer.voter, 'preset') === undefined && originOf(applied.providers[derived]) !== originOf(applied.providers[applied.roles.research])
   const checked = checkProviders(applied.providers, inUse, env, elsewhere ? derived : undefined, own(layer, 'claudeCodeCommand'))
 
-  const reportedVoter = applied.issues.some(issue => issue.path === VOTER_MODEL) ? derived : undefined
-  const reported = reportMissingContext(reportMissingModel(checked.issues, builtIn, reportedVoter), { builtIn, roles: applied.roles, derived, layer })
-  const issues = [...applied.issues, ...profiles.issues, ...atVariables(reported, applied.roles, layer)]
+  const reportedVoter = applied.issues.some(issue => issue.path === VOTER_MODEL)
+    ? derived
+    : undefined
+  const reported = reportMissingContext(reportMissingModel(checked.issues, builtIn, reportedVoter), {
+    builtIn,
+    roles: applied.roles,
+    derived,
+    layer,
+  })
+  const issues = [
+    ...applied.issues,
+    ...profiles.issues,
+    ...atVariables(reported, applied.roles, layer),
+  ]
   if (issues.length > 0) throw new ConfigError(issues)
 
   const concurrency = own(input, 'concurrency')
@@ -352,9 +499,16 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
   const resolved: ResolvedConfig = Object.freeze({
     providers: deepFreeze(Object.fromEntries(checked.providers)),
     profiles: Object.freeze([...profiles.profiles]),
-    ...concurrency === undefined ? {} : { concurrency },
-    ...maxFindings === undefined ? {} : { maxFindings },
-    warnings: Object.freeze([...layer.warnings, ...checked.warnings]),
+    ...concurrency === undefined
+      ? {}
+      : { concurrency },
+    ...maxFindings === undefined
+      ? {}
+      : { maxFindings },
+    warnings: Object.freeze([
+      ...layer.warnings,
+      ...checked.warnings,
+    ]),
   })
   RESOLVED.add(resolved)
   return resolved

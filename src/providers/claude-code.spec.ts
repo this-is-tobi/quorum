@@ -15,7 +15,15 @@ import { CONTEXT_REQUIRED } from './options.ts'
 import { replyFailure } from './reply.ts'
 
 const options: ClaudeCodeOptions = { id: 'cc', model: 'sonnet', contextTokens: 200000 }
-const ISOLATED = ['--tools', '', '--setting-sources', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands']
+const ISOLATED = [
+  '--tools',
+  '',
+  '--setting-sources',
+  '',
+  '--strict-mcp-config',
+  '--no-session-persistence',
+  '--disable-slash-commands',
+]
 
 /** A list with a hole at 0: `[ , '--effort', 'low']`, which `every` and `map` skip. */
 function sparseArgs(): unknown[] {
@@ -39,7 +47,12 @@ function failure(run: () => unknown): ProviderError {
 
 describe('claudeArgs', () => {
   it('runs claude headless as a pure completion, with the reply schema in schema mode', () => {
-    expect(claudeArgs({ model: 'sonnet', auth: 'inherit', structuredOutput: 'schema', args: [] }, '/run/system.txt', { type: 'object' })).toEqual([
+    expect(claudeArgs({
+      model: 'sonnet',
+      auth: 'inherit',
+      structuredOutput: 'schema',
+      args: [],
+    }, '/run/system.txt', { type: 'object' })).toEqual([
       '-p',
       '--output-format=json',
       '--model=sonnet',
@@ -50,7 +63,12 @@ describe('claudeArgs', () => {
   })
 
   it('sends no schema in prompt mode, adds --bare in api-key mode, and passes the args last as --flag=value', () => {
-    expect(claudeArgs({ model: 'opus[1m]', auth: 'api-key', structuredOutput: 'prompt', args: ['--effort', 'high', '--betas=context-1m'] }, '/run/system.txt', { type: 'object' })).toEqual([
+    expect(claudeArgs({
+      model: 'opus[1m]',
+      auth: 'api-key',
+      structuredOutput: 'prompt',
+      args: ['--effort', 'high', '--betas=context-1m'],
+    }, '/run/system.txt', { type: 'object' })).toEqual([
       '-p',
       '--output-format=json',
       '--model=opus[1m]',
@@ -63,14 +81,44 @@ describe('claudeArgs', () => {
   })
 
   it('never passes an element the checks refuse, whatever it asks of claude', () => {
-    const args = ['--tools=Bash', '--effort=low', '--effort', 'high', '--betas', 'context-1m', '--fallback-model', '-x', '--max-budget-usd=0.05', '--mcp-config', 'x.json']
-    expect(claudeArgs({ model: 'sonnet', auth: 'login', structuredOutput: 'prompt', args }, '/run/system.txt', { type: 'object' }).slice(11)).toEqual(['--effort=low', '--max-budget-usd=0.05'])
+    const args = [
+      '--tools=Bash',
+      '--effort=low',
+      '--effort',
+      'high',
+      '--betas',
+      'context-1m',
+      '--fallback-model',
+      '-x',
+      '--max-budget-usd=0.05',
+      '--mcp-config',
+      'x.json',
+    ]
+    expect(claudeArgs({
+      model: 'sonnet',
+      auth: 'login',
+      structuredOutput: 'prompt',
+      args,
+    }, '/run/system.txt', { type: 'object' }).slice(11)).toEqual(['--effort=low', '--max-budget-usd=0.05'])
   })
 
   it('does not throw on a sparse list or an element that is no string, and passes none of them', () => {
-    const settings = (args: unknown[]) => ({ model: 'sonnet', auth: 'login' as const, structuredOutput: 'prompt' as const, args: args as string[] })
+    const settings = (args: unknown[]) => ({
+      model: 'sonnet',
+      auth: 'login' as const,
+      structuredOutput: 'prompt' as const,
+      args: args as string[],
+    })
     expect(claudeArgs(settings(sparseArgs()), '/run/system.txt', { type: 'object' }).slice(11)).toEqual(['--effort=low'])
-    expect(claudeArgs(settings([7, '--effort', 'low', '--fallback-model', null, '--max-budget-usd', {}]), '/run/system.txt', { type: 'object' }).slice(11)).toEqual(['--effort=low'])
+    expect(claudeArgs(settings([
+      7,
+      '--effort',
+      'low',
+      '--fallback-model',
+      null,
+      '--max-budget-usd',
+      {},
+    ]), '/run/system.txt', { type: 'object' }).slice(11)).toEqual(['--effort=low'])
   })
 })
 
@@ -153,19 +201,34 @@ describe('childEnv', () => {
   }
 
   it('passes the environment through under inherit, without the parent session\'s variables or what loads or adds, and with the isolation set: the connectors, attachments, mentions, CLAUDE.md files and bundled and managed skills off', () => {
-    expect(childEnv(env, 'inherit', undefined, '/run/tmp')).toEqual({ ...KEPT, ...CREDENTIALS, ...ISOLATION })
+    expect(childEnv(env, 'inherit', undefined, '/run/tmp')).toEqual({
+      ...KEPT,
+      ...CREDENTIALS,
+      ...ISOLATION,
+    })
   })
 
   it('removes every credential, header and endpoint variable under login, so the Claude Code login answers', () => {
-    expect(childEnv(env, 'login', undefined, '/run/tmp')).toEqual({ ...KEPT, ...ISOLATION })
+    expect(childEnv(env, 'login', undefined, '/run/tmp')).toEqual({
+      ...KEPT,
+      ...ISOLATION,
+    })
   })
 
   it('removes the same variables under api-key, then sets its key', () => {
-    expect(childEnv(env, 'api-key', 'sk-mine', '/run/tmp')).toEqual({ ...KEPT, ...ISOLATION, ANTHROPIC_API_KEY: 'sk-mine' })
+    expect(childEnv(env, 'api-key', 'sk-mine', '/run/tmp')).toEqual({
+      ...KEPT,
+      ...ISOLATION,
+      ANTHROPIC_API_KEY: 'sk-mine',
+    })
   })
 
   it('keeps the environment\'s ANTHROPIC_API_KEY under api-key when it is given no key', () => {
-    expect(childEnv(env, 'api-key', undefined, '/run/tmp')).toEqual({ ...KEPT, ...ISOLATION, ANTHROPIC_API_KEY: 'sk-env' })
+    expect(childEnv(env, 'api-key', undefined, '/run/tmp')).toEqual({
+      ...KEPT,
+      ...ISOLATION,
+      ANTHROPIC_API_KEY: 'sk-env',
+    })
   })
 
   it('matches names in any letter case, as Windows reads them', () => {
@@ -188,7 +251,13 @@ describe('childEnv', () => {
     }
     expect(childEnv(mixed, 'login', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', ...ISOLATION })
     expect(childEnv(mixed, 'api-key', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', ...ISOLATION, ANTHROPIC_API_KEY: 'sk-win' })
-    expect(childEnv(mixed, 'inherit', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', Anthropic_Api_Key: 'sk-win', claude_code_use_bedrock: '1', Anthropic_Custom_Headers: 'X: y', ...ISOLATION })
+    expect(childEnv(mixed, 'inherit', undefined, '/run/tmp')).toEqual({
+      PATH: '/usr/bin',
+      Anthropic_Api_Key: 'sk-win',
+      claude_code_use_bedrock: '1',
+      Anthropic_Custom_Headers: 'X: y',
+      ...ISOLATION,
+    })
   })
 
   it('reads only the environment\'s own variables', () => {
@@ -211,9 +280,24 @@ describe('credentialValues', () => {
     CLAUDE_CODE_OAUTH_REFRESH_TOKEN: 'oauth-refresh',
     CLAUDE_CODE_CLIENT_KEY_PASSPHRASE: 'passphrase',
   }
-  const env = { PATH: '/usr/bin', HOME: '/home/u', ANTHROPIC_BASE_URL: 'https://gw.example', ...SECRETS }
+  const env = {
+    PATH: '/usr/bin',
+    HOME: '/home/u',
+    ANTHROPIC_BASE_URL: 'https://gw.example',
+    ...SECRETS,
+  }
   /** What `login` and `api-key` keep: every credential but the four they remove. */
-  const KEPT_BY_LOGIN = ['aws-bearer', 'aws-key', 'foundry-key', 'foundry-tok', 'oauth', 'aws-secret', 'aws-session', 'oauth-refresh', 'passphrase']
+  const KEPT_BY_LOGIN = [
+    'aws-bearer',
+    'aws-key',
+    'foundry-key',
+    'foundry-tok',
+    'oauth',
+    'aws-secret',
+    'aws-session',
+    'oauth-refresh',
+    'passphrase',
+  ]
   const valuesOf = (auth: 'inherit' | 'login' | 'api-key', apiKey?: string): string[] => credentialValues(childEnv(env, auth, apiKey, '/run/tmp')).sort()
 
   it('holds every credential the child receives under inherit, and nothing else', () => {
@@ -230,7 +314,12 @@ describe('credentialValues', () => {
   })
 
   it('holds a value as written and trimmed, matches names in any letter case, and leaves out a value that is blank once trimmed', () => {
-    const odd = { claude_code_oauth_token: ' spaced ', Anthropic_Auth_Token: '  ', ANTHROPIC_API_KEY: '', HOME: ' not-a-secret ' }
+    const odd = {
+      claude_code_oauth_token: ' spaced ',
+      Anthropic_Auth_Token: '  ',
+      ANTHROPIC_API_KEY: '',
+      HOME: ' not-a-secret ',
+    }
     expect(credentialValues(childEnv(odd, 'inherit', undefined, '/t')).sort()).toEqual([' spaced ', 'spaced'])
   })
 })
@@ -242,7 +331,18 @@ describe('versionProblem', () => {
     expect(MIN_CLAUDE_CODE_VERSION).toBe('2.1.311')
   })
 
-  it.each(['2.1.311 (Claude Code)', '2.1.311', '2.1.312\n', '  2.1.311 (Claude Code)\n', '2.2.0', '2.10.0', '3.0.0', '10.0.0 (Claude Code)', '2.1.311-beta.1', '99999.0.0'])('takes %j', (output) => {
+  it.each([
+    '2.1.311 (Claude Code)',
+    '2.1.311',
+    '2.1.312\n',
+    '  2.1.311 (Claude Code)\n',
+    '2.2.0',
+    '2.10.0',
+    '3.0.0',
+    '10.0.0 (Claude Code)',
+    '2.1.311-beta.1',
+    '99999.0.0',
+  ])('takes %j', (output) => {
     expect(versionProblem(output)).toBeUndefined()
   })
 
@@ -255,7 +355,17 @@ describe('versionProblem', () => {
     expect(versionProblem(output)).toBe(`${REQUIRED} ${version}`)
   })
 
-  it.each(['', '  \n', 'Claude Code 2.1.311', 'v2.1.311', '2.1', '2.1.x', '2,1,311', 'error: unknown option --version', 'sk-SECRET'])('refuses %j as an unknown version, quoting none of it', (output) => {
+  it.each([
+    '',
+    '  \n',
+    'Claude Code 2.1.311',
+    'v2.1.311',
+    '2.1',
+    '2.1.x',
+    '2,1,311',
+    'error: unknown option --version',
+    'sk-SECRET',
+  ])('refuses %j as an unknown version, quoting none of it', (output) => {
     expect(versionProblem(output)).toBe(`${REQUIRED} an unknown version`)
   })
 
@@ -275,16 +385,26 @@ describe('readCapped', () => {
     for (const chunk of chunks) stream.write(chunk)
     stream.end()
     await once(stream, 'end')
-    return { text: capped.text(), overflowed: capped.overflowed(), overflows }
+    return {
+      text: capped.text(),
+      overflowed: capped.overflowed(),
+      overflows,
+    }
   }
 
   it('keeps stdout up to 16 MiB, and stops claude once at the first byte over', async () => {
     expect(MAX_STDOUT_BYTES).toBe(16 * 1024 * 1024)
-    const full = await capture(MAX_STDOUT_BYTES, [Buffer.alloc(MAX_STDOUT_BYTES, 'a')])
+    const full = await capture(MAX_STDOUT_BYTES, [
+      Buffer.alloc(MAX_STDOUT_BYTES, 'a'),
+    ])
     expect(full).toMatchObject({ overflowed: false })
     expect(full.text).toHaveLength(MAX_STDOUT_BYTES)
     expect(full.overflows).not.toHaveBeenCalled()
-    const over = await capture(MAX_STDOUT_BYTES, [Buffer.alloc(MAX_STDOUT_BYTES, 'a'), 'b', Buffer.alloc(1000, 'c')])
+    const over = await capture(MAX_STDOUT_BYTES, [
+      Buffer.alloc(MAX_STDOUT_BYTES, 'a'),
+      'b',
+      Buffer.alloc(1000, 'c'),
+    ])
     expect(over.overflowed).toBe(true)
     expect(over.text).toHaveLength(MAX_STDOUT_BYTES)
     expect(over.text.endsWith('a')).toBe(true)
@@ -293,13 +413,21 @@ describe('readCapped', () => {
 
   it('keeps stderr up to 64 KiB and drops the rest, without stopping claude', async () => {
     expect(MAX_STDERR_BYTES).toBe(64 * 1024)
-    const output = await capture(MAX_STDERR_BYTES, [Buffer.alloc(MAX_STDERR_BYTES - 5, 'a'), 'tail-of-stderr', 'more'])
+    const output = await capture(MAX_STDERR_BYTES, [
+      Buffer.alloc(MAX_STDERR_BYTES - 5, 'a'),
+      'tail-of-stderr',
+      'more',
+    ])
     expect(output.text).toBe(`${'a'.repeat(MAX_STDERR_BYTES - 5)}tail-`)
   })
 
   it('cuts a chunk at the cap, decodes a character split between chunks, and writes U+FFFD for one the cap cuts', async () => {
     const euro = Buffer.from('€')
-    expect((await capture(100, [euro.subarray(0, 1), euro.subarray(1), 'x'])).text).toBe('€x')
+    expect((await capture(100, [
+      euro.subarray(0, 1),
+      euro.subarray(1),
+      'x',
+    ])).text).toBe('€x')
     const cut = await capture(4, ['ab', euro])
     expect(cut.text).toBe(`ab${String.fromCharCode(0xFFFD)}`)
     expect(cut.overflowed).toBe(true)
@@ -313,7 +441,10 @@ describe('readCapped', () => {
 })
 
 describe('claudeCodeIssues', () => {
-  const issuesOf = (fields: Record<string, unknown>): ConfigIssue[] => claudeCodeIssues({ ...options, ...fields } as ClaudeCodeOptions)
+  const issuesOf = (fields: Record<string, unknown>): ConfigIssue[] => claudeCodeIssues({
+    ...options,
+    ...fields,
+  } as ClaudeCodeOptions)
   const at = (path: string, message: string): ConfigIssue => ({ path: `cc.${path}`, message })
   const FLAGS = 'is not a flag quorum passes to claude: use --effort, --fallback-model, --max-budget-usd or --betas'
   const RELATIVE = 'must be an absolute path, or a name to find on PATH'
@@ -326,48 +457,252 @@ describe('claudeCodeIssues', () => {
   it('takes the defaults, every auth mode and every allowlisted flag', () => {
     expect(issuesOf({})).toEqual([])
     expect(issuesOf({ auth: 'login', command: 'claude' })).toEqual([])
-    expect(issuesOf({ auth: 'api-key', apiKey: 'sk-k', structuredOutput: 'prompt', args: ['--effort', 'max', '--fallback-model=haiku', '--max-budget-usd', '0.50', '--betas', 'context-1m'], command: '/opt/claude/bin/claude' })).toEqual([])
-    expect(issuesOf({ args: ['--max-budget-usd=99999999.999'] })).toEqual([])
+    expect(issuesOf({
+      auth: 'api-key',
+      apiKey: 'sk-k',
+      structuredOutput: 'prompt',
+      args: [
+        '--effort',
+        'max',
+        '--fallback-model=haiku',
+        '--max-budget-usd',
+        '0.50',
+        '--betas',
+        'context-1m',
+      ],
+      command: '/opt/claude/bin/claude',
+    })).toEqual([])
+    expect(issuesOf({
+      args: ['--max-budget-usd=99999999.999'],
+    })).toEqual([])
   })
 
   it.each<[Record<string, unknown>, ConfigIssue[]]>([
-    [{ model: '-p' }, [at('model', MODEL)]],
-    [{ model: 'son net' }, [at('model', MODEL)]],
-    [{ contextTokens: undefined }, [at('contextTokens', CONTEXT_REQUIRED)]],
-    [{ contextTokens: 20096 }, [at('contextTokens', 'must be more than 20096, the 16000 tokens of the reply budget and 4096 for the chat template')]],
-    [{ auth: 'bearer' }, [at('auth', 'must be inherit, login or api-key')]],
-    [{ apiKey: 'sk-k' }, [at('apiKey', 'is set, but auth is not api-key, so it would never be sent')]],
-    [{ auth: 'api-key', apiKey: 'sk k' }, [at('apiKey', 'must only contain visible ASCII characters')]],
-    [{ structuredOutput: 'json' }, [at('structuredOutput', 'must be prompt or schema')]],
-    [{ args: '--effort high' }, [at('args', 'must be a list of strings')]],
-    [{ args: ['--tools', 'Bash'] }, [at('args.0', FLAGS), at('args.1', FLAGS)]],
-    [{ args: ['--effort'] }, [at('args.0', 'needs a value')]],
-    [{ args: ['--effort', 'turbo'] }, [at('args.1', 'must be low, medium, high, xhigh or max')]],
-    [{ args: ['--effort=high --tools=Bash'] }, [at('args.0', 'must be low, medium, high, xhigh or max')]],
-    [{ args: ['--max-budget-usd', '0'] }, [at('args.1', BUDGET)]],
-    [{ args: ['--fallback-model', '--tools'] }, [at('args.1', 'must be visible ASCII characters that do not start with -')]],
-    [{ args: sparseArgs() }, [at('args.0', NOT_A_STRING)]],
-    [{ args: [7, '--effort', 'low'] }, [at('args.0', NOT_A_STRING)]],
-    [{ args: ['--effort', 7] }, [at('args.1', NOT_A_STRING)]],
-    [{ args: ['--effort', undefined] }, [at('args.1', NOT_A_STRING)]],
-    [{ args: ['--max-budget-usd', '9'.repeat(13)] }, [at('args.1', BUDGET)]],
-    [{ args: ['--max-budget-usd=99999999.9999'] }, [at('args.0', BUDGET)]],
-    [{ args: ['--effort', 'low', '--effort', 'high'] }, [at('args.2', 'repeats a flag')]],
-    [{ args: ['--betas', 'context-1m'] }, [at('args.0', 'is only for auth: api-key')]],
-    [{ command: '' }, [at('command', 'must name an executable')]],
-    [{ command: './claude' }, [at('command', RELATIVE)]],
-    [{ command: 'claude.cmd' }, [at('command', SCRIPT)]],
-    [{ command: '/opt/claude/claude.BAT' }, [at('command', SCRIPT)]],
     [
-      { baseUrl: 'https://api.anthropic.com', headers: {}, query: {}, extraBody: {}, temperature: 0, maxTokens: 100, systemPrompt: 'native' },
-      ['baseUrl', 'headers', 'query', 'extraBody', 'temperature', 'maxTokens', 'systemPrompt'].map(field => at(field, NOT_AN_OPTION)),
+      { model: '-p' },
+      [
+        at('model', MODEL),
+      ],
+    ],
+    [
+      { model: 'son net' },
+      [
+        at('model', MODEL),
+      ],
+    ],
+    [
+      { contextTokens: undefined },
+      [
+        at('contextTokens', CONTEXT_REQUIRED),
+      ],
+    ],
+    [
+      { contextTokens: 20096 },
+      [
+        at('contextTokens', 'must be more than 20096, the 16000 tokens of the reply budget and 4096 for the chat template'),
+      ],
+    ],
+    [
+      { auth: 'bearer' },
+      [
+        at('auth', 'must be inherit, login or api-key'),
+      ],
+    ],
+    [
+      { apiKey: 'sk-k' },
+      [
+        at('apiKey', 'is set, but auth is not api-key, so it would never be sent'),
+      ],
+    ],
+    [
+      { auth: 'api-key', apiKey: 'sk k' },
+      [
+        at('apiKey', 'must only contain visible ASCII characters'),
+      ],
+    ],
+    [
+      { structuredOutput: 'json' },
+      [
+        at('structuredOutput', 'must be prompt or schema'),
+      ],
+    ],
+    [
+      { args: '--effort high' },
+      [
+        at('args', 'must be a list of strings'),
+      ],
+    ],
+    [
+      {
+        args: ['--tools', 'Bash'],
+      },
+      [
+        at('args.0', FLAGS),
+        at('args.1', FLAGS),
+      ],
+    ],
+    [
+      {
+        args: ['--effort'],
+      },
+      [
+        at('args.0', 'needs a value'),
+      ],
+    ],
+    [
+      {
+        args: ['--effort', 'turbo'],
+      },
+      [
+        at('args.1', 'must be low, medium, high, xhigh or max'),
+      ],
+    ],
+    [
+      {
+        args: ['--effort=high --tools=Bash'],
+      },
+      [
+        at('args.0', 'must be low, medium, high, xhigh or max'),
+      ],
+    ],
+    [
+      {
+        args: ['--max-budget-usd', '0'],
+      },
+      [
+        at('args.1', BUDGET),
+      ],
+    ],
+    [
+      {
+        args: ['--fallback-model', '--tools'],
+      },
+      [
+        at('args.1', 'must be visible ASCII characters that do not start with -'),
+      ],
+    ],
+    [
+      {
+        args: sparseArgs(),
+      },
+      [
+        at('args.0', NOT_A_STRING),
+      ],
+    ],
+    [
+      {
+        args: [7, '--effort', 'low'],
+      },
+      [
+        at('args.0', NOT_A_STRING),
+      ],
+    ],
+    [
+      {
+        args: ['--effort', 7],
+      },
+      [
+        at('args.1', NOT_A_STRING),
+      ],
+    ],
+    [
+      {
+        args: ['--effort', undefined],
+      },
+      [
+        at('args.1', NOT_A_STRING),
+      ],
+    ],
+    [
+      {
+        args: [
+          '--max-budget-usd',
+          '9'.repeat(13),
+        ],
+      },
+      [
+        at('args.1', BUDGET),
+      ],
+    ],
+    [
+      {
+        args: ['--max-budget-usd=99999999.9999'],
+      },
+      [
+        at('args.0', BUDGET),
+      ],
+    ],
+    [
+      {
+        args: ['--effort', 'low', '--effort', 'high'],
+      },
+      [
+        at('args.2', 'repeats a flag'),
+      ],
+    ],
+    [
+      {
+        args: ['--betas', 'context-1m'],
+      },
+      [
+        at('args.0', 'is only for auth: api-key'),
+      ],
+    ],
+    [
+      { command: '' },
+      [
+        at('command', 'must name an executable'),
+      ],
+    ],
+    [
+      { command: './claude' },
+      [
+        at('command', RELATIVE),
+      ],
+    ],
+    [
+      { command: 'claude.cmd' },
+      [
+        at('command', SCRIPT),
+      ],
+    ],
+    [
+      { command: '/opt/claude/claude.BAT' },
+      [
+        at('command', SCRIPT),
+      ],
+    ],
+    [
+      {
+        baseUrl: 'https://api.anthropic.com',
+        headers: {},
+        query: {},
+        extraBody: {},
+        temperature: 0,
+        maxTokens: 100,
+        systemPrompt: 'native',
+      },
+      [
+        'baseUrl',
+        'headers',
+        'query',
+        'extraBody',
+        'temperature',
+        'maxTokens',
+        'systemPrompt',
+      ].map(field => at(field, NOT_AN_OPTION)),
     ],
   ])('refuses %j', (fields, issues) => {
     expect(issuesOf(fields)).toEqual(issues)
   })
 
   it('never repeats a value it refuses', () => {
-    const issues = issuesOf({ model: '-sk-SECRET', apiKey: 'sk-SECRET', args: ['sk-SECRET', '--fallback-model', '-sk-SECRET'], command: './sk-SECRET' })
+    const issues = issuesOf({
+      model: '-sk-SECRET',
+      apiKey: 'sk-SECRET',
+      args: ['sk-SECRET', '--fallback-model', '-sk-SECRET'],
+      command: './sk-SECRET',
+    })
     expect(issues).toHaveLength(5)
     expect(JSON.stringify(issues)).not.toContain('SECRET')
   })
@@ -375,16 +710,39 @@ describe('claudeCodeIssues', () => {
 
 describe('readResult', () => {
   /** `stdout` with `fields` set over its result; a field set to `undefined` drops out. */
-  const change = (stdout: string, fields: Record<string, unknown>): string => `${JSON.stringify({ ...JSON.parse(stdout), ...fields })}\n`
+  const change = (stdout: string, fields: Record<string, unknown>): string => `${JSON.stringify({
+    ...JSON.parse(stdout),
+    ...fields,
+  })}\n`
   const read = (stdout: string, run: { code?: number | null, stderr?: string, signal?: string | null, structuredOutput?: 'prompt' | 'schema', redact?: string[] } = {}) =>
-    readResult({ stdout, stderr: run.stderr ?? '', code: run.code === undefined ? 0 : run.code, signal: run.signal ?? null }, { id: 'cc', model: 'sonnet', structuredOutput: run.structuredOutput ?? 'schema', redact: run.redact ?? [] })
+    readResult({
+      stdout,
+      stderr: run.stderr ?? '',
+      code: run.code === undefined
+        ? 0
+        : run.code,
+      signal: run.signal ?? null,
+    }, {
+      id: 'cc',
+      model: 'sonnet',
+      structuredOutput: run.structuredOutput ?? 'schema',
+      redact: run.redact ?? [],
+    })
 
   it('reads the structured output of a schema run, the usage of every turn, its cost and the model that answered', () => {
-    expect(read(fixtures.schema)).toEqual({ text: '{"keep":true}', model: 'claude-haiku-5-5', usage: { inputTokens: 2662, outputTokens: 225, costUsd: 0.000525 } })
+    expect(read(fixtures.schema)).toEqual({
+      text: '{"keep":true}',
+      model: 'claude-haiku-5-5',
+      usage: { inputTokens: 2662, outputTokens: 225, costUsd: 0.000525 },
+    })
   })
 
   it('reads the result of a prompt run', () => {
-    expect(read(fixtures.plain, { structuredOutput: 'prompt' })).toEqual({ text: 'pong', model: 'claude-haiku-5-5', usage: { inputTokens: 955, outputTokens: 4, costUsd: 0.0001928 } })
+    expect(read(fixtures.plain, { structuredOutput: 'prompt' })).toEqual({
+      text: 'pong',
+      model: 'claude-haiku-5-5',
+      usage: { inputTokens: 955, outputTokens: 4, costUsd: 0.0001928 },
+    })
   })
 
   it('reads an API error from the JSON on stdout, whatever the exit code and the subtype say', () => {
@@ -443,8 +801,17 @@ describe('readResult', () => {
 
   it('fails a reply whose model usage counts a web search, or whose usage counts a web fetch', () => {
     const entry = Object.values(JSON.parse(fixtures.plain).modelUsage)[0] as Record<string, unknown>
-    const search = change(fixtures.plain, { modelUsage: { 'claude-haiku-5-5': { ...entry, webSearchRequests: 2 } } })
-    const fetched = change(fixtures.plain, { usage: { ...JSON.parse(fixtures.plain).usage, server_tool_use: { web_search_requests: 0, web_fetch_requests: 1 } } })
+    const search = change(fixtures.plain, {
+      modelUsage: {
+        'claude-haiku-5-5': { ...entry, webSearchRequests: 2 },
+      },
+    })
+    const fetched = change(fixtures.plain, {
+      usage: {
+        ...JSON.parse(fixtures.plain).usage,
+        server_tool_use: { web_search_requests: 0, web_fetch_requests: 1 },
+      },
+    })
     for (const stdout of [search, fetched]) {
       expect(failure(() => read(stdout, { structuredOutput: 'prompt' }))).toMatchObject({ kind: 'invalid-response', message: 'cc: the server ran a tool for this reply, which quorum never allows' })
     }
@@ -484,11 +851,18 @@ describe('readResult', () => {
   })
 
   it.each<unknown>([undefined, null, 'false', 0])('fails a result whose is_error is %j, which is no boolean false', (isError) => {
-    expect(failure(() => read(change(fixtures.schema, { is_error: isError })))).toMatchObject({ kind: 'process', message: expect.stringContaining('cc: claude failed') })
+    expect(failure(() => read(change(fixtures.schema, { is_error: isError })))).toMatchObject({
+      kind: 'process',
+      message: expect.stringContaining('cc: claude failed'),
+    })
   })
 
   it('reports a non-zero exit without JSON by its stderr, redacted', () => {
-    expect(failure(() => read('', { code: 2, stderr: 'error: unknown option for sk-SECRET\n', redact: ['sk-SECRET'] }))).toMatchObject({ kind: 'process', status: 2, message: 'cc: claude exited 2: "error: unknown option for [redacted]\\n"' })
+    expect(failure(() => read('', {
+      code: 2,
+      stderr: 'error: unknown option for sk-SECRET\n',
+      redact: ['sk-SECRET'],
+    }))).toMatchObject({ kind: 'process', status: 2, message: 'cc: claude exited 2: "error: unknown option for [redacted]\\n"' })
   })
 
   it('reports a stop by a signal, and an exit 0 without JSON', () => {
@@ -502,18 +876,55 @@ describe('readResult', () => {
     expect(read(change(fixtures.schema, { total_cost_usd: -1 }))).toMatchObject({ usage })
     expect(read(change(fixtures.schema, { total_cost_usd: 'free' }))).toMatchObject({ usage })
     expect(read(change(fixtures.schema, { total_cost_usd: undefined })).usage).toEqual(usage)
-    expect(read(change(fixtures.schema, { modelUsage: { x: { inputTokens: 5, outputTokens: 6, cacheReadInputTokens: '3', cacheCreationInputTokens: null } } }))).toMatchObject({ model: 'x', usage: { inputTokens: 5, outputTokens: 6 } })
+    expect(read(change(fixtures.schema, {
+      modelUsage: {
+        x: {
+          inputTokens: 5,
+          outputTokens: 6,
+          cacheReadInputTokens: '3',
+          cacheCreationInputTokens: null,
+        },
+      },
+    }))).toMatchObject({
+      model: 'x',
+      usage: { inputTokens: 5, outputTokens: 6 },
+    })
   })
 
   it('reports no usage when no model counts both its input and its output', () => {
-    for (const modelUsage of [{}, { x: { inputTokens: 5 } }, { x: { outputTokens: 5 } }, { x: 'many' }, 'many']) {
+    for (const modelUsage of [
+      {},
+      {
+        x: { inputTokens: 5 },
+      },
+      {
+        x: { outputTokens: 5 },
+      },
+      { x: 'many' },
+      'many',
+    ]) {
       expect(read(change(fixtures.schema, { modelUsage }))).not.toHaveProperty('usage')
     }
   })
 
   it('sums the usage of several models, and names the configured model then', () => {
-    const two = `${JSON.stringify({ ...JSON.parse(fixtures.schema), modelUsage: { a: { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 3, cacheCreationInputTokens: 4 }, b: { inputTokens: 10, outputTokens: 20 } } })}\n`
-    expect(read(two)).toEqual({ text: '{"keep":true}', model: 'sonnet', usage: { inputTokens: 18, outputTokens: 22, costUsd: 0.000525 } })
+    const two = `${JSON.stringify({
+      ...JSON.parse(fixtures.schema),
+      modelUsage: {
+        a: {
+          inputTokens: 1,
+          outputTokens: 2,
+          cacheReadInputTokens: 3,
+          cacheCreationInputTokens: 4,
+        },
+        b: { inputTokens: 10, outputTokens: 20 },
+      },
+    })}\n`
+    expect(read(two)).toEqual({
+      text: '{"keep":true}',
+      model: 'sonnet',
+      usage: { inputTokens: 18, outputTokens: 22, costUsd: 0.000525 },
+    })
   })
 })
 
@@ -541,10 +952,17 @@ describe('live runs', () => {
       throw Object.assign(new Error('no such process'), { code: 'ESRCH' })
     }).mockImplementation(() => true)
     const [gone, running, groupless] = ['gone', 'running', 'groupless'].map(runDirectory) as [string, string, string]
-    const untrack = [trackRun({ dir: gone, pid: 4242 }), trackRun({ dir: running, pid: 4343 }), trackRun({ dir: groupless })]
+    const untrack = [
+      trackRun({ dir: gone, pid: 4242 }),
+      trackRun({ dir: running, pid: 4343 }),
+      trackRun({ dir: groupless }),
+    ]
     expect(listening()).toBe(1)
     stopLiveRuns()
-    expect(kill.mock.calls).toEqual([[-4242, 'SIGKILL'], [-4343, 'SIGKILL']])
+    expect(kill.mock.calls).toEqual([
+      [-4242, 'SIGKILL'],
+      [-4343, 'SIGKILL'],
+    ])
     expect([gone, running, groupless].map(dir => existsSync(dir))).toEqual([false, false, false])
     // A directory that is gone already is no error.
     expect(() => stopLiveRuns()).not.toThrow()
@@ -553,24 +971,42 @@ describe('live runs', () => {
 
   it('listens once while any run is live, and no more once the last has closed', () => {
     expect(listening()).toBe(0)
-    const first = trackRun({ dir: join(base, 'first') })
-    const second = trackRun({ dir: join(base, 'second'), pid: 4242 })
+    const first = trackRun({
+      dir: join(base, 'first'),
+    })
+    const second = trackRun({
+      dir: join(base, 'second'),
+      pid: 4242,
+    })
     expect(listening()).toBe(1)
     first()
     expect(listening()).toBe(1)
     second()
     second()
     expect(listening()).toBe(0)
-    trackRun({ dir: join(base, 'third') })()
+    trackRun({
+      dir: join(base, 'third'),
+    })()
     expect(listening()).toBe(0)
-    const again = trackRun({ dir: join(base, 'fourth') })
+    const again = trackRun({
+      dir: join(base, 'fourth'),
+    })
     expect(listening()).toBe(1)
     again()
   })
 })
 
 describe('claudeCode', () => {
-  const request: CompletionRequest = { system: 'instructions', messages: [{ role: 'user', content: 'data' }], output: { name: 'panel_vote', schema: { type: 'object' } } }
+  const request: CompletionRequest = {
+    system: 'instructions',
+    messages: [
+      { role: 'user', content: 'data' },
+    ],
+    output: {
+      name: 'panel_vote',
+      schema: { type: 'object' },
+    },
+  }
   let dir = ''
   let runs = ''
   let claude = ''
@@ -607,18 +1043,41 @@ describe('claudeCode', () => {
 
   it.each<[ChatMessage[]]>([
     [[]],
-    [[{ role: 'assistant', content: 'x' }]],
-    [[{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }, { role: 'user', content: 'c' }]],
+    [
+      [
+        { role: 'assistant', content: 'x' },
+      ],
+    ],
+    [
+      [
+        { role: 'user', content: 'a' },
+        { role: 'assistant', content: 'b' },
+        { role: 'user', content: 'c' },
+      ],
+    ],
   ])('takes only a request of one user message, not %j', async (messages) => {
     await expect(claudeCode({ ...options, command: missing }).complete({ ...request, messages })).rejects.toMatchObject({ kind: 'unsupported', message: 'cc: takes a request of exactly one user message' })
   })
 
   it('refuses a message that would run as a Claude Code command, before starting claude', async () => {
-    await expect(claudeCode({ ...options, command: missing }).complete({ ...request, messages: [{ role: 'user', content: '  /model opus' }] })).rejects.toMatchObject({ kind: 'unsupported', message: 'cc: a message that starts with / would run as a Claude Code command' })
+    await expect(claudeCode({ ...options, command: missing }).complete({
+      ...request,
+      messages: [
+        { role: 'user', content: '  /model opus' },
+      ],
+    })).rejects.toMatchObject({ kind: 'unsupported', message: 'cc: a message that starts with / would run as a Claude Code command' })
   })
 
   it('refuses a message over the 10000000 bytes Claude Code reads on stdin, before starting claude', async () => {
-    const huge = { ...request, messages: [{ role: 'user' as const, content: 'a'.repeat(10_000_001) }] }
+    const huge = {
+      ...request,
+      messages: [
+        {
+          role: 'user' as const,
+          content: 'a'.repeat(10_000_001),
+        },
+      ],
+    }
     await expect(claudeCode({ ...options, contextTokens: 999_999_999, command: missing }).complete(huge)).rejects.toMatchObject({ kind: 'too-large', message: 'cc: the message is 10000001 bytes, more than the 10000000 Claude Code reads on stdin' })
   })
 
@@ -654,8 +1113,18 @@ describe('claudeCode', () => {
 
   it('runs claude in a fresh empty directory with the message on stdin and the system text in a file, then removes it all', async () => {
     const env = fakeClaudeEnv(dir, 'round', fixtures.schema, { CLAUDE_CODE_MESSAGING_TOKEN: 'parent-secret', HOME: '/home/u', FAKE_CLAUDE_GRANDCHILD: '1' })
-    const provider = claudeCode({ id: 'cc', model: 'haiku', contextTokens: 200000, command: claude, env })
-    expect(await provider.complete(request)).toEqual({ text: '{"keep":true}', model: 'claude-haiku-5-5', usage: { inputTokens: 2662, outputTokens: 225, costUsd: 0.000525 } })
+    const provider = claudeCode({
+      id: 'cc',
+      model: 'haiku',
+      contextTokens: 200000,
+      command: claude,
+      env,
+    })
+    expect(await provider.complete(request)).toEqual({
+      text: '{"keep":true}',
+      model: 'claude-haiku-5-5',
+      usage: { inputTokens: 2662, outputTokens: 225, costUsd: 0.000525 },
+    })
     const record = readFakeRecord(dir, 'round')
     const run = join(runs, basename(dirname(record.cwd)))
     expect(basename(run)).toMatch(/^quorum-claude-/)
@@ -663,13 +1132,37 @@ describe('claudeCode', () => {
     expect(record.cwdEntries).toEqual([])
     expect(record.stdin).toBe('data')
     expect(record.systemPrompt).toBe('instructions')
-    expect(record.argv).toEqual(claudeArgs({ model: 'haiku', auth: 'inherit', structuredOutput: 'schema', args: [] }, join(run, 'system.txt'), { type: 'object' }))
-    expect(record.env).toMatchObject({ HOME: '/home/u', CLAUDE_CODE_TMPDIR: join(run, 'tmp'), CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', DISABLE_COMPACT: '1' })
+    expect(record.argv).toEqual(claudeArgs({
+      model: 'haiku',
+      auth: 'inherit',
+      structuredOutput: 'schema',
+      args: [],
+    }, join(run, 'system.txt'), { type: 'object' }))
+    expect(record.env).toMatchObject({
+      HOME: '/home/u',
+      CLAUDE_CODE_TMPDIR: join(run, 'tmp'),
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      DISABLE_COMPACT: '1',
+    })
     expect(record.env.CLAUDE_CODE_MESSAGING_TOKEN).toBeUndefined()
     expect(record.tmpExists).toBe(true)
-    expect(record.env).toMatchObject({ CLAUDE_CODE_DISABLE_ATTACHMENTS: '1', CLAUDE_CODE_DISABLE_FILE_MENTIONS: '1', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1', CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1', CLAUDE_CODE_DISABLE_POLICY_SKILLS: '1' })
+    expect(record.env).toMatchObject({
+      CLAUDE_CODE_DISABLE_ATTACHMENTS: '1',
+      CLAUDE_CODE_DISABLE_FILE_MENTIONS: '1',
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+      CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1',
+      CLAUDE_CODE_DISABLE_POLICY_SKILLS: '1',
+    })
     // The first request on this command checks the version first, with the request's environment and an empty directory.
-    expect(readFakeVersionRecords(dir, 'round')).toEqual([{ argv: ['--version'], env: record.env, cwd: record.cwd, cwdEntries: [], pid: expect.any(Number) }])
+    expect(readFakeVersionRecords(dir, 'round')).toEqual([
+      {
+        argv: ['--version'],
+        env: record.env,
+        cwd: record.cwd,
+        cwdEntries: [],
+        pid: expect.any(Number),
+      },
+    ])
     if (process.platform !== 'win32') expect([record.runMode, record.systemMode]).toEqual([0o700, 0o600])
     // The fake exited while its grandchild still held the pipes: the call did not wait, and the group is gone.
     await vi.waitFor(() => expect(isRunning(record.grandchild as number)).toBe(false), { timeout: 2000 })
@@ -677,8 +1170,21 @@ describe('claudeCode', () => {
   })
 
   it('runs api-key mode bare with its key, and reports an exit without JSON by its stderr, redacted of every credential it holds', async () => {
-    const env = fakeClaudeEnv(dir, 'bare', '', { FAKE_CLAUDE_STDERR: 'error: key sk-SECRET refused, login oauth-SECRET', FAKE_CLAUDE_EXIT: '2', ANTHROPIC_AUTH_TOKEN: 'tok', CLAUDE_CODE_OAUTH_TOKEN: 'oauth-SECRET' })
-    const provider = claudeCode({ id: 'cc', model: 'haiku', contextTokens: 200000, auth: 'api-key', apiKey: 'sk-SECRET', command: claude, env })
+    const env = fakeClaudeEnv(dir, 'bare', '', {
+      FAKE_CLAUDE_STDERR: 'error: key sk-SECRET refused, login oauth-SECRET',
+      FAKE_CLAUDE_EXIT: '2',
+      ANTHROPIC_AUTH_TOKEN: 'tok',
+      CLAUDE_CODE_OAUTH_TOKEN: 'oauth-SECRET',
+    })
+    const provider = claudeCode({
+      id: 'cc',
+      model: 'haiku',
+      contextTokens: 200000,
+      auth: 'api-key',
+      apiKey: 'sk-SECRET',
+      command: claude,
+      env,
+    })
     await expect(provider.complete(request)).rejects.toMatchObject({ kind: 'process', status: 2, message: 'cc: claude exited 2: "error: key [redacted] refused, login [redacted]"' })
     const record = readFakeRecord(dir, 'bare')
     expect(record.argv).toContain('--bare')
@@ -704,14 +1210,20 @@ describe('claudeCode', () => {
       expect(readdirSync(runs)).toEqual([])
     } finally {
       // Out of the group, it is beyond quorum's reach: the spec ends it.
-      helper ??= existsSync(join(dir, 'detached.record.json')) ? readFakeRecord(dir, 'detached').grandchild : undefined
+      helper ??= existsSync(join(dir, 'detached.record.json'))
+        ? readFakeRecord(dir, 'detached').grandchild
+        : undefined
       if (helper !== undefined && isRunning(helper)) process.kill(helper, 'SIGKILL')
     }
   }, 15_000)
 
   it('refuses a claude older than 2.1.311 before it starts the request, checks again when another request\'s abort cut the check short, and lets a request that waits abort on its own signal', async () => {
     const env = fakeClaudeEnv(dir, 'old', fixtures.schema, { FAKE_CLAUDE_VERSION: '2.1.310 (Claude Code)', FAKE_CLAUDE_VERSION_DELAY_MS: '800' })
-    const provider = claudeCode({ ...options, command: claudeIn('old'), env })
+    const provider = claudeCode({
+      ...options,
+      command: claudeIn('old'),
+      env,
+    })
     const cancelled = new AbortController()
     const impatient = new AbortController()
     const first = provider.complete({ ...request, signal: cancelled.signal })
@@ -758,7 +1270,11 @@ describe('claudeCode', () => {
     }) as typeof setTimeout)
     const env = fakeClaudeEnv(dir, 'silent', fixtures.schema, { FAKE_CLAUDE_VERSION_DELAY_MS: '60000' })
     try {
-      await expect(claudeCode({ ...options, command: claudeIn('silent'), env }).complete(request)).rejects.toMatchObject({ kind: 'process', message: 'cc: claude --version did not answer within 10 s' })
+      await expect(claudeCode({
+        ...options,
+        command: claudeIn('silent'),
+        env,
+      }).complete(request)).rejects.toMatchObject({ kind: 'process', message: 'cc: claude --version did not answer within 10 s' })
       expect(timers.mock.calls.filter(([, ms]) => ms === VERSION_CHECK_MS)).toHaveLength(1)
     } finally {
       timers.mockRestore()
@@ -772,7 +1288,11 @@ describe('claudeCode', () => {
 
   it('refuses a claude whose version it cannot read, quoting nothing of what it printed, before it starts the request', async () => {
     const env = fakeClaudeEnv(dir, 'garbled', fixtures.schema, { FAKE_CLAUDE_VERSION: 'sk-SECRET' })
-    await expect(claudeCode({ ...options, command: claudeIn('garbled'), env }).complete(request)).rejects.toMatchObject({ kind: 'process', message: 'cc: Claude Code 2.1.311 or newer is required, found an unknown version' })
+    await expect(claudeCode({
+      ...options,
+      command: claudeIn('garbled'),
+      env,
+    }).complete(request)).rejects.toMatchObject({ kind: 'process', message: 'cc: Claude Code 2.1.311 or newer is required, found an unknown version' })
     expect(readFakeVersionRecords(dir, 'garbled')).toHaveLength(1)
     expect(existsSync(join(dir, 'garbled.record.json'))).toBe(false)
     expect(readdirSync(runs)).toEqual([])
@@ -796,7 +1316,9 @@ describe('claudeCode', () => {
       stopLiveRuns()
       const killed = [...kill.mock.calls]
       kill.mockRestore()
-      expect(killed).toEqual([[-pid, 'SIGKILL']])
+      expect(killed).toEqual([
+        [-pid, 'SIGKILL'],
+      ])
       expect(readdirSync(runs)).toEqual([])
     } finally {
       controller.abort()

@@ -16,7 +16,13 @@ const NAME = /^[a-z][a-z0-9_-]*$/
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 /** Every protocol, as a record, so the type checker reports a protocol this list misses. */
-const PROTOCOLS: Readonly<Record<ProviderProtocol, true>> = { 'openai-compatible': true, anthropic: true, gemini: true, ollama: true, 'claude-code': true }
+const PROTOCOLS: Readonly<Record<ProviderProtocol, true>> = {
+  'openai-compatible': true,
+  anthropic: true,
+  gemini: true,
+  ollama: true,
+  'claude-code': true,
+}
 const STRUCTURED_OUTPUTS: Readonly<Record<StructuredOutput, true>> = { prompt: true, json: true, schema: true }
 
 const VERSION = 'must be 1, the only config version this quorum reads: upgrade quorum to read a later one'
@@ -29,7 +35,14 @@ const roles = z.strictObject({
 })
 
 const auth = z.union([
-  z.enum(['bearer', 'x-api-key', 'none', 'inherit', 'login', 'api-key']),
+  z.enum([
+    'bearer',
+    'x-api-key',
+    'none',
+    'inherit',
+    'login',
+    'api-key',
+  ]),
   z.strictObject({
     header: z.string().describe('The header that carries the key'),
     prefix: z.string().optional().describe('The text sent before the key in that header'),
@@ -58,14 +71,20 @@ const providerShape = {
 
 const prompt = z.union([
   z.string(),
-  z.strictObject({ file: z.string().describe('The file that holds the template, relative to the directory of the config file') }),
+  z.strictObject({
+    file: z.string().describe('The file that holds the template, relative to the directory of the config file'),
+  }),
 ], { error: 'must be a string or { file }' })
 
 const rule = z.union([
   z.enum(['unanimous', 'majority', 'any', 'off']),
   z.literal(false),
-  z.strictObject({ minVotes: z.int().min(1).describe('The kept votes the level needs') }),
-  z.strictObject({ minRatio: z.number().gt(0).lte(1).describe('The share of the lenses whose kept votes the level needs, above 0 and at most 1') }),
+  z.strictObject({
+    minVotes: z.int().min(1).describe('The kept votes the level needs'),
+  }),
+  z.strictObject({
+    minRatio: z.number().gt(0).lte(1).describe('The share of the lenses whose kept votes the level needs, above 0 and at most 1'),
+  }),
 ], { error: 'must be unanimous, majority, any, off, false, { minVotes } or { minRatio }' })
 
 /** A profile entry, around the schema of one prompt: a string or `{ file }` in a file, a string only in code. */
@@ -131,7 +150,10 @@ const providerObject = z.custom<Provider>(value => typeof value === 'object' && 
     ctx.issues.push({ code: 'custom', message: 'complete is not a function', input: object })
     return z.NEVER
   }
-  return snapshot({ model, complete: request => Reflect.apply(complete, object, [request]) as Promise<CompletionResponse> })
+  return snapshot({
+    model,
+    complete: request => Reflect.apply(complete, object, [request]) as Promise<CompletionResponse>,
+  })
 })
 
 /**
@@ -186,7 +208,15 @@ export type QuorumConfigFile = z.input<typeof configFileSchema>
 export type ProviderSettings = Exclude<NonNullable<QuorumConfig['providers']>[string], Provider>
 
 /** What each type zod expects is called in a message. */
-const TYPE_WORDS: Readonly<Record<string, string>> = { string: 'a string', number: 'a number', int: 'an integer', boolean: 'true or false', object: 'an object', record: 'an object', array: 'an array' }
+const TYPE_WORDS: Readonly<Record<string, string>> = {
+  string: 'a string',
+  number: 'a number',
+  int: 'an integer',
+  boolean: 'true or false',
+  object: 'an object',
+  record: 'an object',
+  array: 'an array',
+}
 
 /**
  * The project's wording of a zod issue, as `safeParse` takes it in its `error` option. A schema's own
@@ -198,18 +228,28 @@ function wording(issue: z.core.$ZodRawIssue): string | undefined {
     case 'invalid_type':
       if (issue.input === undefined) return 'is required'
       if (issue.expected === 'number' && typeof issue.input === 'number') return 'must be a finite number'
-      return Object.hasOwn(TYPE_WORDS, issue.expected) ? `must be ${TYPE_WORDS[issue.expected]}` : undefined
+      return Object.hasOwn(TYPE_WORDS, issue.expected)
+        ? `must be ${TYPE_WORDS[issue.expected]}`
+        : undefined
     case 'invalid_value':
-      return `must be ${issue.values.length > 1 ? 'one of ' : ''}${wordList(issue.values.map(String))}`
+      return `must be ${issue.values.length > 1
+        ? 'one of '
+        : ''}${wordList(issue.values.map(String))}`
     case 'too_small':
       // The one bound on a list is the lenses' one entry.
       if (issue.origin === 'array') return 'must not be empty'
-      return issue.inclusive ? `must be at least ${issue.minimum}` : `must be greater than ${issue.minimum}`
+      return issue.inclusive
+        ? `must be at least ${issue.minimum}`
+        : `must be greater than ${issue.minimum}`
     case 'too_big':
-      return issue.inclusive ? `must be at most ${issue.maximum}` : `must be less than ${issue.maximum}`
+      return issue.inclusive
+        ? `must be at most ${issue.maximum}`
+        : `must be less than ${issue.maximum}`
     case 'invalid_format':
       // No pattern of the schema has flags, so the pattern is the text between its slashes.
-      return issue.format === 'regex' && typeof issue.pattern === 'string' ? `must match ${issue.pattern.slice(1, -1)}` : undefined
+      return issue.format === 'regex' && typeof issue.pattern === 'string'
+        ? `must match ${issue.pattern.slice(1, -1)}`
+        : undefined
     case 'invalid_key':
       return `is a key that ${issue.issues[0]?.message ?? 'is not allowed'}`
     case 'invalid_union':
@@ -223,7 +263,9 @@ function wording(issue: z.core.$ZodRawIssue): string | undefined {
 export function configPath(segments: readonly PropertyKey[], prefix?: string): string {
   const path = issuePath(segments)
   if (prefix === undefined) return path
-  return path === '' ? prefix : `${prefix}: ${path}`
+  return path === ''
+    ? prefix
+    : `${prefix}: ${path}`
 }
 
 const belowRoot = (issue: z.core.$ZodIssue): boolean => issue.path.length > 0
@@ -243,14 +285,35 @@ function shapedOption(options: readonly (readonly z.core.$ZodIssue[])[]): readon
 }
 
 function issuesOf(issue: z.core.$ZodIssue, base: readonly PropertyKey[], prefix: string | undefined): ConfigIssue[] {
-  const path = [...base, ...issue.path]
+  const path = [
+    ...base,
+    ...issue.path,
+  ]
   if (issue.code === 'unrecognized_keys') {
-    const known = issue.keys.filter(key => isSafeSegment(key)).map(key => ({ path: configPath([...path, key], prefix), message: 'is not a known field' }))
-    return known.length < issue.keys.length ? [...known, { path: configPath(path, prefix), message: 'holds a field that is not known' }] : known
+    const known = issue.keys.filter(key => isSafeSegment(key)).map(key => ({
+      path: configPath([...path, key], prefix),
+      message: 'is not a known field',
+    }))
+    return known.length < issue.keys.length
+      ? [
+          ...known,
+          {
+            path: configPath(path, prefix),
+            message: 'holds a field that is not known',
+          },
+        ]
+      : known
   }
-  const shaped = issue.code === 'invalid_union' ? shapedOption(issue.errors) : undefined
+  const shaped = issue.code === 'invalid_union'
+    ? shapedOption(issue.errors)
+    : undefined
   if (shaped !== undefined) return shaped.flatMap(nested => issuesOf(nested, path, prefix))
-  return [{ path: configPath(path, prefix), message: issue.message }]
+  return [
+    {
+      path: configPath(path, prefix),
+      message: issue.message,
+    },
+  ]
 }
 
 /**
@@ -270,7 +333,11 @@ export function configIssues(error: z.ZodError, prefix?: string): ConfigIssue[] 
  */
 export function checkConfig<T>(schema: z.ZodType<T>, value: unknown, prefix?: string): { readonly config: T } | { readonly issues: ConfigIssue[] } {
   const result = schema.safeParse(value, { error: wording })
-  return result.success ? { config: result.data } : { issues: configIssues(result.error, prefix) }
+  return result.success
+    ? { config: result.data }
+    : {
+        issues: configIssues(result.error, prefix),
+      }
 }
 
 /**
@@ -293,7 +360,9 @@ function editDistance(from: string, to: string): number {
   for (let row = 1; row <= from.length; row++) {
     const current = [row]
     for (let column = 1; column <= to.length; column++) {
-      const substitution = previous[column - 1] + (from[row - 1] === to[column - 1] ? 0 : 1)
+      const substitution = previous[column - 1] + (from[row - 1] === to[column - 1]
+        ? 0
+        : 1)
       current.push(Math.min(previous[column] + 1, current[column - 1] + 1, substitution))
     }
     previous = current
@@ -320,9 +389,15 @@ function closestName(name: string, defined: readonly string[]): string | undefin
  */
 export function unknownName(path: string, kind: 'provider' | 'profile', name: string, defined: readonly string[]): ConfigIssue {
   const safe = isSafeSegment(name)
-  const suggestion = safe ? closestName(name, defined) : undefined
+  const suggestion = safe
+    ? closestName(name, defined)
+    : undefined
   if (suggestion !== undefined) return { path, message: `unknown ${kind} "${name}" (did you mean "${suggestion}"?)` }
-  const subject = safe ? `unknown ${kind} "${name}"` : `names an unknown ${kind}`
+  const subject = safe
+    ? `unknown ${kind} "${name}"`
+    : `names an unknown ${kind}`
   if (defined.length === 0) return { path, message: subject }
-  return { path, message: `${subject}: the ${kind}s are ${wordList(defined.map(known => isSafeSegment(known) ? known : '*'), 'and')}` }
+  return { path, message: `${subject}: the ${kind}s are ${wordList(defined.map(known => isSafeSegment(known)
+    ? known
+    : '*'), 'and')}` }
 }

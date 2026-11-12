@@ -10,8 +10,13 @@ import { describeProviderContract } from '../testing/provider-contract.ts'
 
 const request: CompletionRequest = {
   system: 'instructions',
-  messages: [{ role: 'user', content: 'data' }],
-  output: { name: 'panel_vote', schema: { type: 'object' } },
+  messages: [
+    { role: 'user', content: 'data' },
+  ],
+  output: {
+    name: 'panel_vote',
+    schema: { type: 'object' },
+  },
 }
 
 afterEach(() => {
@@ -28,7 +33,13 @@ describeProviderContract({
   make: options => gemini(options),
   fixedHeaders: {},
   defaultKeyHeader: key => ['x-goog-api-key', key],
-  replies: { ok: generateContentResponse, model: 'gemini-3.8-flash', usage: { inputTokens: 1840, outputTokens: 340 }, refusal: promptBlocked, truncated },
+  replies: {
+    ok: generateContentResponse,
+    model: 'gemini-3.8-flash',
+    usage: { inputTokens: 1840, outputTokens: 340 },
+    refusal: promptBlocked,
+    truncated,
+  },
   read: {
     system: body => (body.systemInstruction as Content | undefined)?.parts[0]?.text,
     firstUser: body => contents(body).find(content => content.role === 'user')?.parts[0]?.text,
@@ -37,18 +48,49 @@ describeProviderContract({
   },
   reservedBodyKeys: ['contents', 'systemInstruction'],
   toolBodyKeys: ['tools', 'toolConfig', 'cachedContent'],
-  replyLimitPaths: [['generationConfig', 'maxOutputTokens']],
+  replyLimitPaths: [
+    ['generationConfig', 'maxOutputTokens'],
+  ],
   structuredOutputs: ['prompt', 'json', 'schema'],
   mergeProbe: {
-    extraBody: { generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } },
-    merged: { generationConfig: { responseMimeType: 'application/json', thinkingConfig: { thinkingLevel: 'low' } } },
+    extraBody: {
+      generationConfig: {
+        thinkingConfig: { thinkingLevel: 'low' },
+      },
+    },
+    merged: {
+      generationConfig: {
+        responseMimeType: 'application/json',
+        thinkingConfig: { thinkingLevel: 'low' },
+      },
+    },
   },
 })
 
 describe('gemini', () => {
-  const options = { id: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.8-flash', contextTokens: 131072, apiKey: 'AIza-k' }
+  const options = {
+    id: 'gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com',
+    model: 'gemini-3.8-flash',
+    contextTokens: 131072,
+    apiKey: 'AIza-k',
+  }
   const provider = gemini(options)
-  const conversation = { contents: [{ role: 'user', parts: [{ text: 'data' }] }], systemInstruction: { parts: [{ text: 'instructions' }] } }
+  const conversation = {
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: 'data' },
+        ],
+      },
+    ],
+    systemInstruction: {
+      parts: [
+        { text: 'instructions' },
+      ],
+    },
+  }
 
   it('posts the conversation, the system instruction and JSON mode to the model\'s generateContent, with the key in x-goog-api-key', async () => {
     const fetchMock = stubFetch(generateContentResponse)
@@ -56,15 +98,33 @@ describe('gemini', () => {
     const { url, headers, body } = sent(fetchMock)
     expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent')
     expect(headers).toEqual({ 'content-type': 'application/json', 'x-goog-api-key': 'AIza-k' })
-    expect(body).toEqual({ ...conversation, generationConfig: { responseMimeType: 'application/json' } })
+    expect(body).toEqual({
+      ...conversation,
+      generationConfig: { responseMimeType: 'application/json' },
+    })
   })
 
   it.each([
-    ['schema', {}, { responseMimeType: 'application/json', responseJsonSchema: { type: 'object' } }],
-    ['prompt', { temperature: 0.3, maxTokens: 900 }, { temperature: 0.3, maxOutputTokens: 900 }],
+    [
+      'schema',
+      {},
+      {
+        responseMimeType: 'application/json',
+        responseJsonSchema: { type: 'object' },
+      },
+    ],
+    [
+      'prompt',
+      { temperature: 0.3, maxTokens: 900 },
+      { temperature: 0.3, maxOutputTokens: 900 },
+    ],
   ] as const)('maps structuredOutput %s, with the options %j, to its generationConfig', async (structuredOutput, set, config) => {
     const fetchMock = stubFetch(generateContentResponse)
-    await gemini({ ...options, ...set, structuredOutput }).complete(request)
+    await gemini({
+      ...options,
+      ...set,
+      structuredOutput,
+    }).complete(request)
     expect(sent(fetchMock).body).toEqual({ ...conversation, generationConfig: config })
   })
 
@@ -76,11 +136,33 @@ describe('gemini', () => {
 
   it('sends an assistant message with the role model', async () => {
     const fetchMock = stubFetch(generateContentResponse)
-    await provider.complete({ ...request, messages: [{ role: 'user', content: 'data' }, { role: 'assistant', content: 'reply' }, { role: 'user', content: 'more' }] })
+    await provider.complete({
+      ...request,
+      messages: [
+        { role: 'user', content: 'data' },
+        { role: 'assistant', content: 'reply' },
+        { role: 'user', content: 'more' },
+      ],
+    })
     expect(contents(sent(fetchMock).body)).toEqual([
-      { role: 'user', parts: [{ text: 'data' }] },
-      { role: 'model', parts: [{ text: 'reply' }] },
-      { role: 'user', parts: [{ text: 'more' }] },
+      {
+        role: 'user',
+        parts: [
+          { text: 'data' },
+        ],
+      },
+      {
+        role: 'model',
+        parts: [
+          { text: 'reply' },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [
+          { text: 'more' },
+        ],
+      },
     ])
   })
 
@@ -104,102 +186,322 @@ describe('gemini', () => {
     ['gemini?alt=sse'],
     [7],
   ])('refuses the model %j, which is not a Gemini model id, without repeating it', (model) => {
-    expect(() => gemini({ ...options, model } as unknown as GeminiOptions)).toThrow(new ConfigError([{ path: 'gemini.model', message: 'must be a Gemini model id, such as gemini-3.8-flash' }]))
+    expect(() => gemini({ ...options, model } as unknown as GeminiOptions)).toThrow(new ConfigError([
+      { path: 'gemini.model', message: 'must be a Gemini model id, such as gemini-3.8-flash' },
+    ]))
   })
 
   it('refuses a key query parameter in any letter case, which would put a key in the URL', () => {
-    expect(() => gemini({ ...options, query: { KEY: 'x' } })).toThrow(new ConfigError([{ path: 'gemini.query.KEY', message: 'would carry a key in the URL: set apiKey instead' }]))
+    expect(() => gemini({
+      ...options,
+      query: { KEY: 'x' },
+    })).toThrow(new ConfigError([
+      { path: 'gemini.query.KEY', message: 'would carry a key in the URL: set apiKey instead' },
+    ]))
   })
 
   it('refuses a generationConfig that is no object, which would replace the one the adapter writes, with the path and no value', () => {
-    for (const [key, value] of [['generationConfig', null], ['GenerationConfig', 0], ['generation_config', 'zz-value'], ['GENERATION_CONFIG', ['zz-value']]] as const) {
-      expect(() => gemini({ ...options, extraBody: { [key]: value } }), key).toThrow(new ConfigError([{ path: `gemini.extraBody.${key}`, message: 'must be an object' }]))
+    for (const [key, value] of [
+      ['generationConfig', null],
+      ['GenerationConfig', 0],
+      ['generation_config', 'zz-value'],
+      [
+        'GENERATION_CONFIG',
+        ['zz-value'],
+      ],
+    ] as const) {
+      expect(() => gemini({
+        ...options,
+        extraBody: { [key]: value },
+      }), key).toThrow(new ConfigError([
+        { path: `gemini.extraBody.${key}`, message: 'must be an object' },
+      ]))
     }
   })
 
   it('refuses the reply limit under the snake_case names proto JSON takes', () => {
-    expect(() => gemini({ ...options, extraBody: { generationConfig: { max_output_tokens: 1, temperature: 0 } } })).toThrow(new ConfigError([{ path: 'gemini.extraBody.generationConfig.max_output_tokens', message: 'sets the reply limit: use maxTokens' }]))
-    expect(() => gemini({ ...options, extraBody: { generation_config: { max_output_tokens: 1, temperature: 0 } } })).toThrow(new ConfigError([
+    expect(() => gemini({
+      ...options,
+      extraBody: {
+        generationConfig: { max_output_tokens: 1, temperature: 0 },
+      },
+    })).toThrow(new ConfigError([
+      { path: 'gemini.extraBody.generationConfig.max_output_tokens', message: 'sets the reply limit: use maxTokens' },
+    ]))
+    expect(() => gemini({
+      ...options,
+      extraBody: {
+        generation_config: { max_output_tokens: 1, temperature: 0 },
+      },
+    })).toThrow(new ConfigError([
       { path: 'gemini.extraBody.generation_config.max_output_tokens', message: 'sets the reply limit: use maxTokens' },
       { path: 'gemini.extraBody.generation_config', message: 'must be written generationConfig' },
     ]))
   })
 
   it('refuses a spelling of generationConfig other than the one the adapter merges, which would send two keys', () => {
-    for (const key of ['generation_config', 'GenerationConfig', 'GENERATION_CONFIG', 'generationconfig']) {
-      expect(() => gemini({ ...options, extraBody: { [key]: {} } }), key).toThrow(new ConfigError([{ path: `gemini.extraBody.${key}`, message: 'must be written generationConfig' }]))
+    for (const key of [
+      'generation_config',
+      'GenerationConfig',
+      'GENERATION_CONFIG',
+      'generationconfig',
+    ]) {
+      expect(() => gemini({
+        ...options,
+        extraBody: { [key]: {} },
+      }), key).toThrow(new ConfigError([
+        { path: `gemini.extraBody.${key}`, message: 'must be written generationConfig' },
+      ]))
     }
-    expect(() => gemini({ ...options, extraBody: { generationConfig: { topK: 3 } } })).not.toThrow()
+    expect(() => gemini({
+      ...options,
+      extraBody: {
+        generationConfig: { topK: 3 },
+      },
+    })).not.toThrow()
   })
 
   it('writes the canonical spelling and never the key it was given: a name that is not safe prints as *', () => {
     // A dotless i upper-cases to I, so this key reads as generationConfig to a server that folds case.
     const key = `generat${String.fromCharCode(0x131)}onConfig`
-    expect(() => gemini({ ...options, extraBody: { [key]: {} } })).toThrow(new ConfigError([{ path: 'gemini.extraBody.*', message: 'must be written generationConfig' }]))
+    expect(() => gemini({
+      ...options,
+      extraBody: { [key]: {} },
+    })).toThrow(new ConfigError([
+      { path: 'gemini.extraBody.*', message: 'must be written generationConfig' },
+    ]))
   })
 
   it('prints a key query name that is not a safe name as *', () => {
     const kelvinKey = `${String.fromCharCode(0x212A)}ey`
-    expect(() => gemini({ ...options, query: { [kelvinKey]: 'x' } })).toThrow(new ConfigError([{ path: 'gemini.query.*', message: 'would carry a key in the URL: set apiKey instead' }]))
+    expect(() => gemini({
+      ...options,
+      query: { [kelvinKey]: 'x' },
+    })).toThrow(new ConfigError([
+      { path: 'gemini.query.*', message: 'would carry a key in the URL: set apiKey instead' },
+    ]))
   })
 
   it('returns the parts that are not thoughts, joined, with the model version and the usage', async () => {
     stubFetch(withThoughts)
-    await expect(provider.complete(request)).resolves.toEqual({ text: '{"keep":false,"reasoning":"r"}', model: 'gemini-3.8-flash', usage: { inputTokens: 1840, outputTokens: 340 } })
+    await expect(provider.complete(request)).resolves.toEqual({
+      text: '{"keep":false,"reasoning":"r"}',
+      model: 'gemini-3.8-flash',
+      usage: { inputTokens: 1840, outputTokens: 340 },
+    })
   })
 
   it('counts the thought tokens as output, when the reply names them', async () => {
-    stubFetch({ candidates: [candidate], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 4, thoughtsTokenCount: 30 } })
-    await expect(provider.complete(request)).resolves.toMatchObject({ usage: { inputTokens: 10, outputTokens: 34 } })
-    stubFetch({ candidates: [candidate], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 4 } })
-    await expect(provider.complete(request)).resolves.toMatchObject({ usage: { inputTokens: 10, outputTokens: 4 } })
+    stubFetch({
+      candidates: [candidate],
+      usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 4, thoughtsTokenCount: 30 },
+    })
+    await expect(provider.complete(request)).resolves.toMatchObject({
+      usage: { inputTokens: 10, outputTokens: 34 },
+    })
+    stubFetch({
+      candidates: [candidate],
+      usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 4 },
+    })
+    await expect(provider.complete(request)).resolves.toMatchObject({
+      usage: { inputTokens: 10, outputTokens: 4 },
+    })
   })
 
   it('falls back to the configured model, and reports no usage, when the reply names neither', async () => {
-    stubFetch({ candidates: [candidate], modelVersion: '', usageMetadata: { promptTokenCount: 10 } })
+    stubFetch({
+      candidates: [candidate],
+      modelVersion: '',
+      usageMetadata: { promptTokenCount: 10 },
+    })
     await expect(provider.complete(request)).resolves.toEqual({ text: '{}', model: 'gemini-3.8-flash', usage: undefined })
   })
 
   const { finishReason: _finishReason, ...unfinished } = candidate
-  const ending = (finishReason: unknown): Body => ({ ...generateContentResponse, candidates: [{ ...candidate, finishReason }] })
-  const safety = ['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'IMAGE_SAFETY']
+  const ending = (finishReason: unknown): Body => ({
+    ...generateContentResponse,
+    candidates: [
+      { ...candidate, finishReason },
+    ],
+  })
+  const safety = [
+    'SAFETY',
+    'RECITATION',
+    'BLOCKLIST',
+    'PROHIBITED_CONTENT',
+    'SPII',
+    'IMAGE_SAFETY',
+  ]
 
   it.each<[ProviderErrorKind, unknown, string]>([
     ['refusal', promptBlocked, 'gemini: prompt was blocked: "PROHIBITED_CONTENT"'],
-    ['refusal', { promptFeedback: { blockReason: 'Not A Reason' } }, 'gemini: prompt was blocked'],
-    ['refusal', { promptFeedback: { blockReason: 'A'.repeat(64) } }, `gemini: prompt was blocked: "${'A'.repeat(64)}"`],
-    ['refusal', { promptFeedback: { blockReason: 'A'.repeat(65) } }, 'gemini: prompt was blocked'],
-    ['refusal', { promptFeedback: { blockReason: 1 }, candidates: [candidate] }, 'gemini: prompt was blocked'],
-    ['invalid-response', { promptFeedback: {} }, 'gemini: reply has no candidates'],
-    ['invalid-response', { candidates: [] }, 'gemini: reply has no candidates'],
-    ['invalid-response', { candidates: [null] }, 'gemini: reply has no candidates'],
-    ['invalid-response', { candidates: 'x' }, 'gemini: reply has no candidates'],
+    [
+      'refusal',
+      {
+        promptFeedback: { blockReason: 'Not A Reason' },
+      },
+      'gemini: prompt was blocked',
+    ],
+    [
+      'refusal',
+      {
+        promptFeedback: {
+          blockReason: 'A'.repeat(64),
+        },
+      },
+      `gemini: prompt was blocked: "${'A'.repeat(64)}"`,
+    ],
+    [
+      'refusal',
+      {
+        promptFeedback: {
+          blockReason: 'A'.repeat(65),
+        },
+      },
+      'gemini: prompt was blocked',
+    ],
+    [
+      'refusal',
+      {
+        promptFeedback: { blockReason: 1 },
+        candidates: [candidate],
+      },
+      'gemini: prompt was blocked',
+    ],
+    [
+      'invalid-response',
+      { promptFeedback: {} },
+      'gemini: reply has no candidates',
+    ],
+    [
+      'invalid-response',
+      { candidates: [] },
+      'gemini: reply has no candidates',
+    ],
+    [
+      'invalid-response',
+      {
+        candidates: [null],
+      },
+      'gemini: reply has no candidates',
+    ],
+    [
+      'invalid-response',
+      { candidates: 'x' },
+      'gemini: reply has no candidates',
+    ],
     ['truncated', truncated, 'gemini: reply was cut off by the token limit'],
-    ['truncated', ending('CONTINUATION'), 'gemini: reply was cut off by the token limit'],
-    ...safety.map((reason): [ProviderErrorKind, unknown, string] => ['refusal', ending(reason), 'gemini: reply was stopped by the safety filter']),
-    ['invalid-response', { candidates: [unfinished] }, 'gemini: reply has not finished'],
-    ['invalid-response', ending(null), 'gemini: reply has not finished'],
-    ['invalid-response', ending('MALFORMED_FUNCTION_CALL'), 'gemini: reply ended early: "MALFORMED_FUNCTION_CALL"'],
-    ['invalid-response', ending('OTHER'), 'gemini: reply ended early: "OTHER"'],
-    ['invalid-response', ending(1), 'gemini: reply ended early'],
-    ['invalid-response', { candidates: [{ ...candidate, content: { parts: [{ text: '{}', thought: true }] } }] }, 'gemini: reply has no text'],
-    ['invalid-response', { candidates: [{ ...candidate, content: { parts: [{ thoughtSignature: 'CiQB' }, { functionCall: { name: 'f' } }] } }] }, 'gemini: reply has no text'],
-    ['invalid-response', { candidates: [{ ...candidate, content: undefined }] }, 'gemini: reply has no text'],
+    [
+      'truncated',
+      ending('CONTINUATION'),
+      'gemini: reply was cut off by the token limit',
+    ],
+    ...safety.map((reason): [ProviderErrorKind, unknown, string] => [
+      'refusal',
+      ending(reason),
+      'gemini: reply was stopped by the safety filter',
+    ]),
+    [
+      'invalid-response',
+      {
+        candidates: [unfinished],
+      },
+      'gemini: reply has not finished',
+    ],
+    [
+      'invalid-response',
+      ending(null),
+      'gemini: reply has not finished',
+    ],
+    [
+      'invalid-response',
+      ending('MALFORMED_FUNCTION_CALL'),
+      'gemini: reply ended early: "MALFORMED_FUNCTION_CALL"',
+    ],
+    [
+      'invalid-response',
+      ending('OTHER'),
+      'gemini: reply ended early: "OTHER"',
+    ],
+    [
+      'invalid-response',
+      ending(1),
+      'gemini: reply ended early',
+    ],
+    [
+      'invalid-response',
+      {
+        candidates: [
+          {
+            ...candidate,
+            content: {
+              parts: [
+                { text: '{}', thought: true },
+              ],
+            },
+          },
+        ],
+      },
+      'gemini: reply has no text',
+    ],
+    [
+      'invalid-response',
+      {
+        candidates: [
+          {
+            ...candidate,
+            content: {
+              parts: [
+                { thoughtSignature: 'CiQB' },
+                {
+                  functionCall: { name: 'f' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      'gemini: reply has no text',
+    ],
+    [
+      'invalid-response',
+      {
+        candidates: [
+          { ...candidate, content: undefined },
+        ],
+      },
+      'gemini: reply has no text',
+    ],
     ['invalid-response', [], 'gemini: reply is not a JSON object'],
   ])('maps a %s reply to a ProviderError with its exact message', async (kind, body, expected) => {
     stubFetch(body)
-    await expect(provider.complete(request)).rejects.toMatchObject({ name: 'ProviderError', kind, retryable: false, providerId: 'gemini', message: expected })
+    await expect(provider.complete(request)).rejects.toMatchObject({
+      name: 'ProviderError',
+      kind,
+      retryable: false,
+      providerId: 'gemini',
+      message: expected,
+    })
   })
 
   it('redacts the key from a block reason it quotes', async () => {
-    stubFetch({ promptFeedback: { blockReason: 'KEY_IN_REASON' } })
+    stubFetch({
+      promptFeedback: { blockReason: 'KEY_IN_REASON' },
+    })
     await expect(gemini({ ...options, apiKey: 'KEY_IN_REASON' }).complete(request)).rejects.toMatchObject({ message: 'gemini: prompt was blocked: "[redacted]"' })
   })
 
   it('quotes the error body of a non-2xx reply, and reports a 402 as not retryable for a depleted prepay balance', async () => {
     stubFetch(invalidKey, 400)
-    await expect(provider.complete(request)).rejects.toMatchObject({ kind: 'http', status: 400, retryable: false, message: `gemini: HTTP 400: ${JSON.stringify(JSON.stringify(invalidKey))}` })
-    stubFetch({ error: { code: 402, message: 'prepay balance depleted', status: 'RESOURCE_EXHAUSTED' } }, 402)
+    await expect(provider.complete(request)).rejects.toMatchObject({
+      kind: 'http',
+      status: 400,
+      retryable: false,
+      message: `gemini: HTTP 400: ${JSON.stringify(JSON.stringify(invalidKey))}`,
+    })
+    stubFetch({
+      error: { code: 402, message: 'prepay balance depleted', status: 'RESOURCE_EXHAUSTED' },
+    }, 402)
     await expect(provider.complete(request)).rejects.toMatchObject({ kind: 'http', status: 402, retryable: false })
   })
 })

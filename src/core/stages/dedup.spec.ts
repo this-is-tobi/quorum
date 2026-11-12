@@ -28,8 +28,18 @@ describe('dedup', () => {
   })
 
   it('keeps findings whose fields only collide once joined with colons', () => {
-    const a = { ...finding, file: 'a.js', line: 1, category: 'CWE-79:5:XSS' }
-    const b = { ...finding, file: 'a.js:1:CWE-79', line: 5, category: 'XSS' }
+    const a = {
+      ...finding,
+      file: 'a.js',
+      line: 1,
+      category: 'CWE-79:5:XSS',
+    }
+    const b = {
+      ...finding,
+      file: 'a.js:1:CWE-79',
+      line: 5,
+      category: 'XSS',
+    }
     expect(dedup([a, b])).toEqual([a, b])
   })
 })

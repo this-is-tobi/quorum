@@ -40,15 +40,71 @@ function deepFreeze<T>(value: T): T {
  * vendor documents: OpenAI, Azure, Groq and xAI deprecate `max_tokens`.
  */
 export const presets: Readonly<Record<PresetName, Preset>> = deepFreeze<Record<PresetName, Preset>>({
-  ollama: { protocol: 'ollama', baseUrl: 'http://localhost:11434', auth: 'bearer', structuredOutput: 'json', temperature: 0, toolModels: [] },
-  'ollama-cloud': { protocol: 'ollama', baseUrl: 'https://ollama.com', auth: 'bearer', apiKeyEnv: 'OLLAMA_API_KEY', structuredOutput: 'json', temperature: 0, toolModels: [] },
-  lmstudio: { protocol: 'openai-compatible', baseUrl: 'http://localhost:1234/v1', auth: 'bearer', structuredOutput: 'schema', temperature: 0, maxTokensField: 'max_tokens', toolModels: [] },
-  llamacpp: { protocol: 'openai-compatible', baseUrl: 'http://127.0.0.1:9931/v1', auth: 'bearer', structuredOutput: 'json', temperature: 0, maxTokensField: 'max_tokens', toolModels: [] },
-  vllm: { protocol: 'openai-compatible', baseUrl: 'http://localhost:8000/v1', auth: 'bearer', structuredOutput: 'json', temperature: 0, maxTokensField: 'max_tokens', toolModels: [] },
+  ollama: {
+    protocol: 'ollama',
+    baseUrl: 'http://localhost:11434',
+    auth: 'bearer',
+    structuredOutput: 'json',
+    temperature: 0,
+    toolModels: [],
+  },
+  'ollama-cloud': {
+    protocol: 'ollama',
+    baseUrl: 'https://ollama.com',
+    auth: 'bearer',
+    apiKeyEnv: 'OLLAMA_API_KEY',
+    structuredOutput: 'json',
+    temperature: 0,
+    toolModels: [],
+  },
+  lmstudio: {
+    protocol: 'openai-compatible',
+    baseUrl: 'http://localhost:1234/v1',
+    auth: 'bearer',
+    structuredOutput: 'schema',
+    temperature: 0,
+    maxTokensField: 'max_tokens',
+    toolModels: [],
+  },
+  llamacpp: {
+    protocol: 'openai-compatible',
+    baseUrl: 'http://127.0.0.1:9931/v1',
+    auth: 'bearer',
+    structuredOutput: 'json',
+    temperature: 0,
+    maxTokensField: 'max_tokens',
+    toolModels: [],
+  },
+  vllm: {
+    protocol: 'openai-compatible',
+    baseUrl: 'http://localhost:8000/v1',
+    auth: 'bearer',
+    structuredOutput: 'json',
+    temperature: 0,
+    maxTokensField: 'max_tokens',
+    toolModels: [],
+  },
   // The search models search the web before every answer; the computer-use models drive a browser.
-  openai: { protocol: 'openai-compatible', baseUrl: 'https://api.openai.com/v1', auth: 'bearer', apiKeyEnv: 'OPENAI_API_KEY', structuredOutput: 'json', temperature: null, maxTokensField: 'max_completion_tokens', toolModels: ['*search*', '*computer-use*'] },
+  openai: {
+    protocol: 'openai-compatible',
+    baseUrl: 'https://api.openai.com/v1',
+    auth: 'bearer',
+    apiKeyEnv: 'OPENAI_API_KEY',
+    structuredOutput: 'json',
+    temperature: null,
+    maxTokensField: 'max_completion_tokens',
+    toolModels: ['*search*', '*computer-use*'],
+  },
   // The base URL names the user's own resource, and the model ids are the user's own deployment names.
-  'azure-openai': { protocol: 'openai-compatible', auth: { header: 'api-key' }, apiKeyEnv: 'AZURE_OPENAI_API_KEY', structuredOutput: 'json', temperature: null, maxTokensField: 'max_completion_tokens', toolModels: [] },
+  'azure-openai': {
+    protocol: 'openai-compatible',
+    auth: { header: 'api-key' },
+    apiKeyEnv: 'AZURE_OPENAI_API_KEY',
+    structuredOutput: 'json',
+    temperature: null,
+    maxTokensField: 'max_completion_tokens',
+    toolModels: [],
+  },
   // `:online` searches the web, a `@preset/` slug can hold tools, fusion searches and fetches, auto routes
   // to a pool that may hold search models, and Perplexity's models and any search model search by themselves.
   openrouter: {
@@ -59,18 +115,87 @@ export const presets: Readonly<Record<PresetName, Preset>> = deepFreeze<Record<P
     structuredOutput: 'prompt',
     temperature: 0,
     maxTokensField: 'max_tokens',
-    toolModels: ['*:online*', '*@preset/*', 'openrouter/fusion*', 'openrouter/auto*', 'perplexity/*', '*search*'],
+    toolModels: [
+      '*:online*',
+      '*@preset/*',
+      'openrouter/fusion*',
+      'openrouter/auto*',
+      'perplexity/*',
+      '*search*',
+    ],
   },
   // gpt-oss runs its built-in web search and code execution by itself, which no parameter turns off, and
   // the compound models run tools by themselves.
-  groq: { protocol: 'openai-compatible', baseUrl: 'https://api.groq.com/openai/v1', auth: 'bearer', apiKeyEnv: 'GROQ_API_KEY', structuredOutput: 'json', temperature: 0, maxTokensField: 'max_completion_tokens', toolModels: ['openai/gpt-oss-*', 'groq/compound*', 'compound-beta*'] },
-  mistral: { protocol: 'openai-compatible', baseUrl: 'https://api.mistral.ai/v1', auth: 'bearer', apiKeyEnv: 'MISTRAL_API_KEY', structuredOutput: 'json', temperature: 0, maxTokensField: 'max_tokens', toolModels: [] },
-  deepseek: { protocol: 'openai-compatible', baseUrl: 'https://api.deepseek.com', auth: 'bearer', apiKeyEnv: 'DEEPSEEK_API_KEY', structuredOutput: 'json', temperature: 0, maxTokensField: 'max_tokens', toolModels: [] },
-  together: { protocol: 'openai-compatible', baseUrl: 'https://api.together.ai/v1', auth: 'bearer', apiKeyEnv: 'TOGETHER_API_KEY', structuredOutput: 'json', temperature: 0, maxTokensField: 'max_tokens', toolModels: [] },
-  fireworks: { protocol: 'openai-compatible', baseUrl: 'https://api.fireworks.ai/inference/v1', auth: 'bearer', apiKeyEnv: 'FIREWORKS_API_KEY', structuredOutput: 'json', temperature: 0, maxTokensField: 'max_tokens', toolModels: [] },
+  groq: {
+    protocol: 'openai-compatible',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    auth: 'bearer',
+    apiKeyEnv: 'GROQ_API_KEY',
+    structuredOutput: 'json',
+    temperature: 0,
+    maxTokensField: 'max_completion_tokens',
+    toolModels: ['openai/gpt-oss-*', 'groq/compound*', 'compound-beta*'],
+  },
+  mistral: {
+    protocol: 'openai-compatible',
+    baseUrl: 'https://api.mistral.ai/v1',
+    auth: 'bearer',
+    apiKeyEnv: 'MISTRAL_API_KEY',
+    structuredOutput: 'json',
+    temperature: 0,
+    maxTokensField: 'max_tokens',
+    toolModels: [],
+  },
+  deepseek: {
+    protocol: 'openai-compatible',
+    baseUrl: 'https://api.deepseek.com',
+    auth: 'bearer',
+    apiKeyEnv: 'DEEPSEEK_API_KEY',
+    structuredOutput: 'json',
+    temperature: 0,
+    maxTokensField: 'max_tokens',
+    toolModels: [],
+  },
+  together: {
+    protocol: 'openai-compatible',
+    baseUrl: 'https://api.together.ai/v1',
+    auth: 'bearer',
+    apiKeyEnv: 'TOGETHER_API_KEY',
+    structuredOutput: 'json',
+    temperature: 0,
+    maxTokensField: 'max_tokens',
+    toolModels: [],
+  },
+  fireworks: {
+    protocol: 'openai-compatible',
+    baseUrl: 'https://api.fireworks.ai/inference/v1',
+    auth: 'bearer',
+    apiKeyEnv: 'FIREWORKS_API_KEY',
+    structuredOutput: 'json',
+    temperature: 0,
+    maxTokensField: 'max_tokens',
+    toolModels: [],
+  },
   // The multi-agent model works only on the Responses API, where xAI runs its server-side tools.
-  xai: { protocol: 'openai-compatible', baseUrl: 'https://api.x.ai/v1', auth: 'bearer', apiKeyEnv: 'XAI_API_KEY', structuredOutput: 'json', temperature: 0, maxTokensField: 'max_completion_tokens', toolModels: ['*multi-agent*'] },
-  anthropic: { protocol: 'anthropic', baseUrl: 'https://api.anthropic.com', auth: 'bearer', apiKeyEnv: 'ANTHROPIC_API_KEY', structuredOutput: 'schema', temperature: null, toolModels: [] },
+  xai: {
+    protocol: 'openai-compatible',
+    baseUrl: 'https://api.x.ai/v1',
+    auth: 'bearer',
+    apiKeyEnv: 'XAI_API_KEY',
+    structuredOutput: 'json',
+    temperature: 0,
+    maxTokensField: 'max_completion_tokens',
+    toolModels: ['*multi-agent*'],
+  },
+  anthropic: {
+    protocol: 'anthropic',
+    baseUrl: 'https://api.anthropic.com',
+    auth: 'bearer',
+    apiKeyEnv: 'ANTHROPIC_API_KEY',
+    structuredOutput: 'schema',
+    temperature: null,
+    toolModels: [],
+  },
   // Deep Research and Antigravity are agents that search, fetch URLs and run code; the computer-use models drive a browser.
   gemini: {
     protocol: 'gemini',
@@ -90,5 +215,7 @@ export function withoutPrototype<T>(entries: Iterable<readonly [string, unknown]
 
 /** The preset a name names, or undefined: a name is looked up among the table's own keys only, never its prototype's, and the row is a copy that has no prototype either. */
 export function presetOf(name: unknown): Preset | undefined {
-  return typeof name === 'string' && Object.hasOwn(presets, name) ? withoutPrototype<Preset>(Object.entries(presets[name as PresetName])) : undefined
+  return typeof name === 'string' && Object.hasOwn(presets, name)
+    ? withoutPrototype<Preset>(Object.entries(presets[name as PresetName]))
+    : undefined
 }

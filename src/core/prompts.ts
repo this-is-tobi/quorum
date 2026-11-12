@@ -24,7 +24,9 @@ export const PLACEHOLDER = /\{\{([^{}]*)\}\}/g
 export function renderTemplate(template: string, values: Readonly<Record<string, string>>): string {
   return template.replace(PLACEHOLDER, (placeholder: string, name: string) => {
     const key = name.trim()
-    return Object.hasOwn(values, key) ? values[key] : placeholder
+    return Object.hasOwn(values, key)
+      ? values[key]
+      : placeholder
   })
 }
 
@@ -68,7 +70,9 @@ interface Block {
 export function researchRequest(instructions: string, diff: string, guidelines?: string): CompletionRequest {
   return buildRequest(
     instructions,
-    [{ label: 'diff', content: diff, description: BLOCK_DESCRIPTIONS.researchDiff }],
+    [
+      { label: 'diff', content: diff, description: BLOCK_DESCRIPTIONS.researchDiff },
+    ],
     guidelines,
     { name: 'research_findings', schema: researchReplyJsonSchema },
   )
@@ -105,9 +109,15 @@ function buildRequest(
   output: CompletionRequest['output'],
 ): CompletionRequest {
   const withGuidelines = guidelines !== undefined && guidelines.trim() !== ''
-    ? [...blocks, { label: 'guidelines', content: guidelines, description: BLOCK_DESCRIPTIONS.guidelines }]
+    ? [
+        ...blocks,
+        { label: 'guidelines', content: guidelines, description: BLOCK_DESCRIPTIONS.guidelines },
+      ]
     : blocks
-  const fenced = withGuidelines.map(block => ({ ...fence(block.label, block.content), description: block.description }))
+  const fenced = withGuidelines.map(block => ({
+    ...fence(block.label, block.content),
+    description: block.description,
+  }))
   const dataNotice = [
     'The user message holds these blocks:',
     ...fenced.map(block => `- <${block.tag}>: ${block.description}`),
@@ -119,7 +129,12 @@ function buildRequest(
       dataNotice,
       UNTRUSTED_CONTENT_NOTICE,
     ].join('\n\n'),
-    messages: [{ role: 'user', content: fenced.map(block => block.text).join('\n\n') }],
+    messages: [
+      {
+        role: 'user',
+        content: fenced.map(block => block.text).join('\n\n'),
+      },
+    ],
     output,
   }
 }

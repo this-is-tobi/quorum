@@ -25,7 +25,27 @@ afterEach(() => {
 
 describe('the public API', () => {
   it('exports createQuorum, defineConfig, fromConfig, loadConfig, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer and runQuorum', () => {
-    expect(Object.keys(api).sort()).toEqual(['ConfigError', 'OutputError', 'ProviderError', 'QuorumError', 'anthropic', 'claudeCode', 'createQuorum', 'defaultPolicy', 'defineConfig', 'fromConfig', 'gemini', 'inertJson', 'inertLine', 'loadConfig', 'ollama', 'openaiCompatible', 'presets', 'runQuorum', 'securityProfile'])
+    expect(Object.keys(api).sort()).toEqual([
+      'ConfigError',
+      'OutputError',
+      'ProviderError',
+      'QuorumError',
+      'anthropic',
+      'claudeCode',
+      'createQuorum',
+      'defaultPolicy',
+      'defineConfig',
+      'fromConfig',
+      'gemini',
+      'inertJson',
+      'inertLine',
+      'loadConfig',
+      'ollama',
+      'openaiCompatible',
+      'presets',
+      'runQuorum',
+      'securityProfile',
+    ])
   })
 })
 
@@ -59,7 +79,17 @@ describe('runQuorum', () => {
   it('sends onProgress the progress lines the CLI prints', async () => {
     isolateEnv({ RESEARCH_MODEL: 'env-model', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' })
     vi.stubGlobal('fetch', vi.fn()
-      .mockImplementationOnce(async () => ollamaReply(JSON.stringify({ findings: [{ file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }] })))
+      .mockImplementationOnce(async () => ollamaReply(JSON.stringify({
+        findings: [
+          {
+            file: 'a.js',
+            line: 1,
+            category: 'CWE-78',
+            quote: 'exec(cmd)',
+            summary: 'command injection',
+          },
+        ],
+      })))
       .mockImplementation(async () => ollamaReply(JSON.stringify({ keep: true, reasoning: 'r' }))))
     const lines: string[] = []
     await runQuorum(diff, line => lines.push(line))

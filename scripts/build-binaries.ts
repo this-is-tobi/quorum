@@ -11,7 +11,12 @@ import { fileURLToPath } from 'node:url'
 // binary keeps the flags `bun run compile` uses, so none reads a .env or a bunfig.toml from the directory
 // it runs in. Nothing here is published: the CD attaches and attests the files.
 
-export const RELEASE_TARGETS = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64'] as const
+export const RELEASE_TARGETS = [
+  'linux-x64',
+  'linux-arm64',
+  'darwin-x64',
+  'darwin-arm64',
+] as const
 
 const RELEASE_DIR = 'bin/release'
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
@@ -67,8 +72,11 @@ function buildRelease(): void {
     const result = spawnSync(process.execPath, args, { cwd: ROOT, stdio: 'inherit' })
     if (result.error)
       fail(`cannot run ${process.execPath} for ${target}: ${result.error.message}`)
-    if (result.status !== 0)
-      fail(`the build for ${target} failed, ${result.status === null ? `stopped by ${result.signal}` : `exit code ${result.status}`}`)
+    if (result.status !== 0) {
+      fail(`the build for ${target} failed, ${result.status === null
+        ? `stopped by ${result.signal}`
+        : `exit code ${result.status}`}`)
+    }
   }
   // Written only once every build succeeded, so an incomplete set has no checksums to vouch for it.
   const sums = builds.map(({ outfile }) => `${sha256sumLine(basename(outfile), readFileSync(join(ROOT, outfile)))}\n`)

@@ -73,6 +73,10 @@ export type { Preset, PresetName, Protocol } from './providers/presets.ts'
  */
 export async function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult> {
   const { config } = await loadConfig()
-  const quorum = await fromConfig(config, { events: onProgress === undefined ? undefined : progressSink(onProgress) })
+  const quorum = await fromConfig(config, {
+    events: onProgress === undefined
+      ? undefined
+      : progressSink(onProgress),
+  })
   return quorum.review({ diff })
 }

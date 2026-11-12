@@ -108,7 +108,15 @@ interface ResultContext {
 const AUTH_MODES: readonly ClaudeCodeAuth[] = ['inherit', 'login', 'api-key']
 const STRUCTURED_OUTPUTS: readonly ClaudeCodeStructuredOutput[] = ['prompt', 'schema']
 /** The fields of a provider that belong to an HTTP endpoint, none of which a CLI has. */
-const HTTP_FIELDS = ['baseUrl', 'headers', 'query', 'extraBody', 'temperature', 'maxTokens', 'systemPrompt'] as const
+const HTTP_FIELDS = [
+  'baseUrl',
+  'headers',
+  'query',
+  'extraBody',
+  'temperature',
+  'maxTokens',
+  'systemPrompt',
+] as const
 const WINDOWS_SCRIPT = /\.(?:cmd|bat)$/i
 const PATH_SEPARATOR = /[/\\]/
 
@@ -118,7 +126,15 @@ const PATH_SEPARATOR = /[/\\]/
  * command. Nothing configures or drops one. The two empty values keep their two-argument form, which is
  * the one verified live.
  */
-const ISOLATION_FLAGS: readonly string[] = ['--tools', '', '--setting-sources', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands']
+const ISOLATION_FLAGS: readonly string[] = [
+  '--tools',
+  '',
+  '--setting-sources',
+  '',
+  '--strict-mcp-config',
+  '--no-session-persistence',
+  '--disable-slash-commands',
+]
 
 /** The variables of a parent Claude Code session, which a nested run must not inherit: its messaging channel and its entry point. */
 const SESSION_VARIABLES: ReadonlySet<string> = new Set([
@@ -210,19 +226,38 @@ const MAX_RESULT_TEXT = 200
 const MAX_STDERR_TEXT = 500
 
 /** The flags `args` may hold, and the checks of their values. */
-const ALLOWED_FLAGS = ['--effort', '--fallback-model', '--max-budget-usd', '--betas'] as const
+const ALLOWED_FLAGS = [
+  '--effort',
+  '--fallback-model',
+  '--max-budget-usd',
+  '--betas',
+] as const
 type AllowedFlag = typeof ALLOWED_FLAGS[number]
-const EFFORTS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max']
+const EFFORTS: readonly string[] = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+]
 /** The most characters of a `--max-budget-usd` value: a decimal that long is finite. */
 const MAX_BUDGET_CHARACTERS = 12
 const NOT_A_STRING = 'must be a string'
 const NOT_A_FLAG = `is not a flag quorum passes to claude: use ${wordList(ALLOWED_FLAGS)}`
 const PLAIN_VALUE = 'must be visible ASCII characters that do not start with -'
 const VALUE_PROBLEMS: Record<AllowedFlag, (value: string) => string | undefined> = {
-  '--effort': value => EFFORTS.includes(value) ? undefined : `must be ${wordList(EFFORTS)}`,
-  '--max-budget-usd': value => value.length <= MAX_BUDGET_CHARACTERS && /^\d+(?:\.\d+)?$/.test(value) && Number(value) > 0 ? undefined : 'must be a positive number of dollars, such as 0.50',
-  '--fallback-model': value => plainValue(value) ? undefined : PLAIN_VALUE,
-  '--betas': value => plainValue(value) ? undefined : PLAIN_VALUE,
+  '--effort': value => EFFORTS.includes(value)
+    ? undefined
+    : `must be ${wordList(EFFORTS)}`,
+  '--max-budget-usd': value => value.length <= MAX_BUDGET_CHARACTERS && /^\d+(?:\.\d+)?$/.test(value) && Number(value) > 0
+    ? undefined
+    : 'must be a positive number of dollars, such as 0.50',
+  '--fallback-model': value => plainValue(value)
+    ? undefined
+    : PLAIN_VALUE,
+  '--betas': value => plainValue(value)
+    ? undefined
+    : PLAIN_VALUE,
 }
 
 function plainValue(value: string): boolean {
@@ -277,27 +312,54 @@ function walkArgs(args: readonly unknown[], auth: unknown): ArgsWalk {
       problems.push({ index, message: 'needs a value' })
       continue
     }
-    const value = separate ? args[index + 1] : element.slice(flag.length + 1)
+    const value = separate
+      ? args[index + 1]
+      : element.slice(flag.length + 1)
     if (separate) valueIndex = index + 1
     if (typeof value !== 'string') {
       problems.push({ index: index + 1, message: NOT_A_STRING })
       continue
     }
-    const flagProblem = seen.has(flag) ? 'repeats a flag' : flag === '--betas' && auth !== 'api-key' ? 'is only for auth: api-key' : undefined
+    const flagProblem = seen.has(flag)
+      ? 'repeats a flag'
+      : flag === '--betas' && auth !== 'api-key'
+        ? 'is only for auth: api-key'
+        : undefined
     seen.add(flag)
-    const valueProblem = flagProblem === undefined ? VALUE_PROBLEMS[flag](value) : undefined
-    if (flagProblem !== undefined) problems.push({ index, message: flagProblem })
-    else if (valueProblem !== undefined) problems.push({ index: separate ? index + 1 : index, message: valueProblem })
-    else pairs.push([flag, value])
+    const valueProblem = flagProblem === undefined
+      ? VALUE_PROBLEMS[flag](value)
+      : undefined
+    if (flagProblem !== undefined) {
+      problems.push({ index, message: flagProblem })
+    } else if (valueProblem !== undefined) {
+      problems.push({
+        index: separate
+          ? index + 1
+          : index,
+        message: valueProblem,
+      })
+    } else {
+      pairs.push([flag, value])
+    }
   }
   return { pairs, problems }
 }
 
 /** The problems of `apiKey` given `auth`: set under another mode, where it would never be sent, or not visible ASCII. */
 function apiKeyIssues(path: string, auth: unknown, apiKey: unknown): ConfigIssue[] {
-  if (auth !== 'api-key') return typeof apiKey === 'string' && apiKey !== '' ? [{ path, message: 'is set, but auth is not api-key, so it would never be sent' }] : []
+  if (auth !== 'api-key') {
+    return typeof apiKey === 'string' && apiKey !== ''
+      ? [
+          { path, message: 'is set, but auth is not api-key, so it would never be sent' },
+        ]
+      : []
+  }
   if (apiKey === undefined || apiKey === '') return []
-  return typeof apiKey === 'string' && !NOT_VISIBLE_ASCII.test(apiKey) ? [] : [{ path, message: 'must only contain visible ASCII characters' }]
+  return typeof apiKey === 'string' && !NOT_VISIBLE_ASCII.test(apiKey)
+    ? []
+    : [
+        { path, message: 'must only contain visible ASCII characters' },
+      ]
 }
 
 /**
@@ -341,8 +403,12 @@ export function claudeArgs(settings: ClaudeArgsSettings, systemPromptFile: strin
     `--model=${model}`,
     `--system-prompt-file=${systemPromptFile}`,
     ...ISOLATION_FLAGS,
-    ...(structuredOutput === 'schema' ? [`--json-schema=${JSON.stringify(schema)}`] : []),
-    ...(auth === 'api-key' ? ['--bare'] : []),
+    ...(structuredOutput === 'schema'
+      ? [`--json-schema=${JSON.stringify(schema)}`]
+      : []),
+    ...(auth === 'api-key'
+      ? ['--bare']
+      : []),
     ...walkArgs(args, auth).pairs.map(([flag, value]) => `${flag}=${value}`),
   ]
 }
@@ -381,10 +447,14 @@ export function childEnv(env: Readonly<Record<string, string | undefined>>, auth
   }
   const own = Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
   const inheritedKey = (own.find(([name]) => name === KEY_VARIABLE) ?? own.find(([name]) => name.toUpperCase() === KEY_VARIABLE))?.[1].trim()
-  const key = typeof apiKey === 'string' && apiKey !== '' ? apiKey : inheritedKey
+  const key = typeof apiKey === 'string' && apiKey !== ''
+    ? apiKey
+    : inheritedKey
   return {
     ...Object.fromEntries(own.filter(([name]) => !removedVariable(name, auth, isolation))),
-    ...(auth === 'api-key' && key !== undefined && key !== '' ? { [KEY_VARIABLE]: key } : {}),
+    ...(auth === 'api-key' && key !== undefined && key !== ''
+      ? { [KEY_VARIABLE]: key }
+      : {}),
     ...isolation,
   }
 }
@@ -398,8 +468,13 @@ export function childEnv(env: Readonly<Record<string, string | undefined>>, auth
 export function credentialValues(environment: Readonly<Record<string, string>>): string[] {
   const values = Object.entries(environment)
     .filter(([name]) => REDACTED_VARIABLES.has(name.toUpperCase()))
-    .flatMap(([, value]) => [value, value.trim()])
-  return [...new Set(values)].filter(value => value.trim() !== '')
+    .flatMap(([, value]) => [
+      value,
+      value.trim(),
+    ])
+  return [
+    ...new Set(values),
+  ].filter(value => value.trim() !== '')
 }
 
 const VERSION = /^(\d+)\.(\d+)\.(\d+)/
@@ -426,14 +501,18 @@ export function versionProblem(output: string): string | undefined {
   const digits = VERSION.exec(output.trim())?.slice(1)
   if (digits !== undefined && !isOlder(digits.map(Number))) return undefined
   const found = digits?.join('.')
-  return `Claude Code ${MIN_CLAUDE_CODE_VERSION} or newer is required, found ${found !== undefined && QUOTABLE_VERSION.test(found) ? found : 'an unknown version'}`
+  return `Claude Code ${MIN_CLAUDE_CODE_VERSION} or newer is required, found ${found !== undefined && QUOTABLE_VERSION.test(found)
+    ? found
+    : 'an unknown version'}`
 }
 
 /** The parsed result on `stdout`, or undefined when it holds no JSON object whose `type` is `result`. */
 function parseResult(stdout: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(stdout.trim())
-    return isRecord(parsed) && parsed.type === 'result' ? parsed : undefined
+    return isRecord(parsed) && parsed.type === 'result'
+      ? parsed
+      : undefined
   } catch {
     return undefined
   }
@@ -450,7 +529,9 @@ function failureDetail(result: Record<string, unknown>, redact: readonly string[
   const { errors } = result
   const text = typeof result.result === 'string'
     ? result.result
-    : Array.isArray(errors) ? errors.filter((error): error is string => typeof error === 'string').join('; ') : ''
+    : Array.isArray(errors)
+      ? errors.filter((error): error is string => typeof error === 'string').join('; ')
+      : ''
   return snippet(text, MAX_RESULT_TEXT, redact)
 }
 
@@ -461,7 +542,9 @@ function isAboveZero(count: unknown): boolean {
 /** Whether the result counts a tool the server ran: a web search or fetch in `usage.server_tool_use`, or a web search in a model's usage. */
 function ranServerTool(result: Record<string, unknown>, modelUsage: readonly Record<string, unknown>[]): boolean {
   const { usage } = result
-  const serverTools = isRecord(usage) && isRecord(usage.server_tool_use) ? Object.values(usage.server_tool_use) : []
+  const serverTools = isRecord(usage) && isRecord(usage.server_tool_use)
+    ? Object.values(usage.server_tool_use)
+    : []
   return serverTools.some(isAboveZero) || modelUsage.some(entry => isAboveZero(entry.webSearchRequests))
 }
 
@@ -509,13 +592,19 @@ function errorFailure(result: Record<string, unknown>, run: ClaudeRun, { id, red
   const status = result.api_error_status
   const detail = failureDetail(result, redact)
   if (typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 599) return fail('http', `HTTP ${status} from the model API: ${detail}`, status)
-  const reason = result.subtype !== 'success' ? result.subtype : result.terminal_reason
-  return fail('process', `claude failed${typeof reason === 'string' && REASON.test(reason) ? ` (${reason})` : ''}: ${detail}`, run.code ?? undefined)
+  const reason = result.subtype !== 'success'
+    ? result.subtype
+    : result.terminal_reason
+  return fail('process', `claude failed${typeof reason === 'string' && REASON.test(reason)
+    ? ` (${reason})`
+    : ''}: ${detail}`, run.code ?? undefined)
 }
 
 /** The signal's name in a message when it is one, else a generic word: the signal is the child's to name, never trusted. */
 function signalName(signal: string): string {
-  return SIGNAL.test(signal) ? signal : 'a signal'
+  return SIGNAL.test(signal)
+    ? signal
+    : 'a signal'
 }
 
 /**
@@ -532,14 +621,22 @@ function readFinished(result: Record<string, unknown>, run: ClaudeRun, context: 
   if (result.is_error !== false || result.subtype !== 'success') throw errorFailure(result, run, context)
   if (run.signal !== null) throw fail('process', `claude was stopped by ${signalName(run.signal)} after its result`)
   if (run.code !== null && run.code !== 0) throw fail('process', `claude exited ${run.code} after its result`, run.code)
-  const modelUsage = isRecord(result.modelUsage) ? Object.values(result.modelUsage).filter(isRecord) : []
+  const modelUsage = isRecord(result.modelUsage)
+    ? Object.values(result.modelUsage).filter(isRecord)
+    : []
   if (ranServerTool(result, modelUsage)) throw fail('invalid-response', 'the server ran a tool for this reply, which quorum never allows')
   if (result.stop_reason === 'max_tokens') throw fail('truncated', 'reply was cut off by the token limit')
   const text = replyText(result, context.structuredOutput, fail)
   const usage = sumUsage(modelUsage, result.total_cost_usd)
-  const models = isRecord(result.modelUsage) ? Object.keys(result.modelUsage) : []
-  const model = models.length === 1 && models[0] !== undefined ? models[0] : context.model
-  return usage === undefined ? { text, model } : { text, model, usage }
+  const models = isRecord(result.modelUsage)
+    ? Object.keys(result.modelUsage)
+    : []
+  const model = models.length === 1 && models[0] !== undefined
+    ? models[0]
+    : context.model
+  return usage === undefined
+    ? { text, model }
+    : { text, model, usage }
 }
 
 /**
@@ -593,8 +690,12 @@ interface Finished {
 
 /** `error`'s system code as a message writes it, ` (ENOENT)`, or nothing when it has none or one that is no plain identifier. */
 function codeSuffix(error: unknown): string {
-  const code = isRecord(error) ? error.code : undefined
-  return typeof code === 'string' && ERROR_CODE.test(code) ? ` (${code})` : ''
+  const code = isRecord(error)
+    ? error.code
+    : undefined
+  return typeof code === 'string' && ERROR_CODE.test(code)
+    ? ` (${code})`
+    : ''
 }
 
 /**
@@ -614,7 +715,12 @@ export async function prepareRun(system: string, fail: Failure): Promise<RunDire
   let dir: string | undefined
   try {
     dir = await mkdtemp(join(resolve(tmpdir()), RUN_DIRECTORY_PREFIX))
-    const run = { dir, cwd: join(dir, 'cwd'), tmp: join(dir, 'tmp'), systemFile: join(dir, 'system.txt') }
+    const run = {
+      dir,
+      cwd: join(dir, 'cwd'),
+      tmp: join(dir, 'tmp'),
+      systemFile: join(dir, 'system.txt'),
+    }
     await mkdir(run.cwd)
     await mkdir(run.tmp)
     await writeFile(run.systemFile, system, { mode: 0o600 })
@@ -656,14 +762,19 @@ export function readCapped(stream: ChildProcess['stdout'], max: number, onOverfl
   stream?.on('data', (chunk: Buffer) => {
     if (overflow) return
     const room = max - bytes
-    chunks.push(chunk.length > room ? chunk.subarray(0, room) : chunk)
+    chunks.push(chunk.length > room
+      ? chunk.subarray(0, room)
+      : chunk)
     bytes += Math.min(chunk.length, room)
     if (chunk.length > room) {
       overflow = true
       onOverflow()
     }
   })
-  return { text: () => Buffer.concat(chunks).toString('utf8'), overflowed: () => overflow }
+  return {
+    text: () => Buffer.concat(chunks).toString('utf8'),
+    overflowed: () => overflow,
+  }
 }
 
 /** Whether `claude` leads a process group of its own: on every platform but Windows, which has none. */
@@ -727,7 +838,14 @@ function runChild(launch: Launch, input: string, signal: AbortSignal | undefined
     const startFailure = (error: unknown): ProviderError => fail('process', `could not start the claude CLI${codeSuffix(error)}`)
     let child: ChildProcess
     try {
-      child = spawn(launch.command, launch.args, { cwd: launch.cwd, env: launch.env, stdio: 'pipe', shell: false, windowsHide: true, detached: GROUPED })
+      child = spawn(launch.command, launch.args, {
+        cwd: launch.cwd,
+        env: launch.env,
+        stdio: 'pipe',
+        shell: false,
+        windowsHide: true,
+        detached: GROUPED,
+      })
     } catch (error) {
       reject(startFailure(error))
       return
@@ -777,7 +895,15 @@ function runChild(launch: Launch, input: string, signal: AbortSignal | undefined
     })
     child.once('close', (code, endedBy) => {
       release()
-      resolve({ run: { stdout: stdout.text(), stderr: stderr.text(), code, signal: endedBy }, overflow: stdout.overflowed() })
+      resolve({
+        run: {
+          stdout: stdout.text(),
+          stderr: stderr.text(),
+          code,
+          signal: endedBy,
+        },
+        overflow: stdout.overflowed(),
+      })
     })
     signal?.addEventListener('abort', stop, { once: true })
     child.stdin?.on('error', () => {})
@@ -795,11 +921,18 @@ async function checkVersion(launch: Launch, signal: AbortSignal | undefined, fai
   const deadline = new AbortController()
   const timer = setTimeout(() => deadline.abort(), VERSION_CHECK_MS)
   try {
-    const stopped = signal === undefined ? deadline.signal : AbortSignal.any([signal, deadline.signal])
-    const { run } = await runChild({ ...launch, args: ['--version'] }, '', stopped, fail)
+    const stopped = signal === undefined
+      ? deadline.signal
+      : AbortSignal.any([signal, deadline.signal])
+    const { run } = await runChild({
+      ...launch,
+      args: ['--version'],
+    }, '', stopped, fail)
     throwIfAborted(signal, fail)
     if (deadline.signal.aborted) throw fail('process', `claude --version did not answer within ${VERSION_CHECK_MS / 1000} s`)
-    return versionProblem(run.code === 0 && run.signal === null ? run.stdout : '')
+    return versionProblem(run.code === 0 && run.signal === null
+      ? run.stdout
+      : '')
   } finally {
     clearTimeout(timer)
   }
@@ -846,7 +979,9 @@ async function requireVersion(launch: Launch, signal: AbortSignal | undefined, f
     const shared = versionChecks.get(launch.command)
     let problem: string | undefined
     try {
-      problem = await (shared === undefined ? startVersionCheck(launch, signal, fail) : orAbort(shared, signal, fail))
+      problem = await (shared === undefined
+        ? startVersionCheck(launch, signal, fail)
+        : orAbort(shared, signal, fail))
     } catch (error) {
       if (shared === undefined) throw error
       throwIfAborted(signal, fail)
@@ -893,7 +1028,9 @@ export function claudeCode(options: ClaudeCodeOptions): Provider {
   const issues = claudeCodeIssues(options)
   if (issues.length > 0) throw new ConfigError(issues)
   const { id, model, contextTokens, auth = 'inherit', apiKey, structuredOutput = 'schema', command = 'claude' } = options
-  const args = [...options.args ?? []]
+  const args = [
+    ...options.args ?? [],
+  ]
   const env = Object.fromEntries(Object.entries(options.env ?? process.env))
   const budget = contextBudget(contextTokens, undefined, CLAUDE_CODE_TEMPLATE_TOKENS)
 
@@ -903,7 +1040,10 @@ export function claudeCode(options: ClaudeCodeOptions): Provider {
     async complete(request) {
       const fail = replyFailure(id)
       const message = messageOf(request, fail)
-      checkFits(id, { system: request.system, messages: [message] }, request.output, budget)
+      checkFits(id, {
+        system: request.system,
+        messages: [message],
+      }, request.output, budget)
       const { signal } = request
       throwIfAborted(signal, fail)
       const run = await prepareRun(request.system, fail)
@@ -912,13 +1052,30 @@ export function claudeCode(options: ClaudeCodeOptions): Provider {
       try {
         throwIfAborted(signal, fail)
         const environment = childEnv(env, auth, apiKey, run.tmp)
-        await requireVersion({ command, args: [], cwd: run.cwd, env: environment, live }, signal, fail)
+        await requireVersion({
+          command,
+          args: [],
+          cwd: run.cwd,
+          env: environment,
+          live,
+        }, signal, fail)
         throwIfAborted(signal, fail)
-        const launch = { command, args: claudeArgs({ model, auth, structuredOutput, args }, run.systemFile, request.output.schema), cwd: run.cwd, env: environment, live }
+        const launch = {
+          command,
+          args: claudeArgs({ model, auth, structuredOutput, args }, run.systemFile, request.output.schema),
+          cwd: run.cwd,
+          env: environment,
+          live,
+        }
         const finished = await runChild(launch, message.content, signal, fail)
         throwIfAborted(signal, fail)
         if (finished.overflow) throw fail('invalid-response', 'reply is over 16 MiB')
-        return readResult(finished.run, { id, model, structuredOutput, redact: credentialValues(environment) })
+        return readResult(finished.run, {
+          id,
+          model,
+          structuredOutput,
+          redact: credentialValues(environment),
+        })
       } finally {
         await removeRun(run.dir)
         untrack()

@@ -21,7 +21,10 @@ afterAll(() => {
 
 /** The options of every spawn: the temporary directory, and nothing of this process's environment but `PATH`. */
 function spawnOptions(env: Record<string, string>): { cwd: string, env: Record<string, string> } {
-  return { cwd: dir, env: { PATH: process.env.PATH ?? '', ...env } }
+  return {
+    cwd: dir,
+    env: { PATH: process.env.PATH ?? '', ...env },
+  }
 }
 
 /** Run the binary to its end with stdin closed. */
@@ -37,13 +40,21 @@ function run(args: string[], env: Record<string, string>): { status: number | nu
 
 /** Start the binary with stdin closed: the child, what it has written so far, and its exit code once it ends. */
 function start(args: string[], env: Record<string, string>): { child: ChildProcess, stdout: () => string, stderr: () => string, exited: Promise<number | null> } {
-  const child = spawn(process.execPath, [BIN, ...args], { ...spawnOptions(env), stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [BIN, ...args], {
+    ...spawnOptions(env),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
   let out = ''
   let err = ''
   child.stdout?.setEncoding('utf8').on('data', (text: string) => out += text)
   child.stderr?.setEncoding('utf8').on('data', (text: string) => err += text)
   const exited = new Promise<number | null>(resolve => child.once('close', code => resolve(code)))
-  return { child, stdout: () => out, stderr: () => err, exited }
+  return {
+    child,
+    stdout: () => out,
+    stderr: () => err,
+    exited,
+  }
 }
 
 describe('bin', () => {
@@ -63,7 +74,9 @@ describe('bin', () => {
   it('exits 3, never 0, when the run stops with nothing left to wait for', () => {
     writeFileSync(join(dir, 'hang.mjs'), 'export default { providers: { mine: { model: \'m\', complete: () => new Promise(() => {}) } } }\n')
     writeFileSync(join(dir, 'x.diff'), DIFF)
-    const { status, stdout, stderr } = run(['x.diff'], { QUORUM_CONFIG: join(dir, 'hang.mjs') })
+    const { status, stdout, stderr } = run(['x.diff'], {
+      QUORUM_CONFIG: join(dir, 'hang.mjs'),
+    })
     expect(status).toBe(3)
     expect(stdout).toBe('')
     expect(stderr).toContain('Research (m @ the provider object mine)...\n')
@@ -85,7 +98,9 @@ describe('bin', () => {
   return new Promise(() => {})
 } } } }\n`)
     writeFileSync(join(dir, 'x.diff'), DIFF)
-    const { status, stdout, stderr } = run(['x.diff'], { QUORUM_CONFIG: join(dir, 'throws.mjs') })
+    const { status, stdout, stderr } = run(['x.diff'], {
+      QUORUM_CONFIG: join(dir, 'throws.mjs'),
+    })
     expect(status).toBe(3)
     expect(stdout).toBe('')
     expect(stderr).toBe('Research (m @ the provider object mine)...\nPanel will use m @ the provider object mine\nError: boom<U+001B>[31m<U+000A>::error::x\n')
@@ -97,7 +112,9 @@ describe('bin', () => {
   signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason) })
 }) } } }\n`)
     writeFileSync(join(dir, 'x.diff'), DIFF)
-    const { child, stdout, stderr, exited } = start(['x.diff'], { QUORUM_CONFIG: join(dir, 'slow.mjs') })
+    const { child, stdout, stderr, exited } = start(['x.diff'], {
+      QUORUM_CONFIG: join(dir, 'slow.mjs'),
+    })
     try {
       await vi.waitFor(() => expect(stderr()).toContain('Research ('), { timeout: 10_000 })
       child.kill('SIGTERM')
@@ -112,7 +129,9 @@ describe('bin', () => {
   it('exits 130 at once on a second SIGINT, while a provider ignores the first', async () => {
     writeFileSync(join(dir, 'stuck.mjs'), 'export default { providers: { mine: { model: \'m\', complete: () => new Promise(resolve => setTimeout(resolve, 60_000)) } } }\n')
     writeFileSync(join(dir, 'x.diff'), DIFF)
-    const { child, stdout, stderr, exited } = start(['x.diff'], { QUORUM_CONFIG: join(dir, 'stuck.mjs') })
+    const { child, stdout, stderr, exited } = start(['x.diff'], {
+      QUORUM_CONFIG: join(dir, 'stuck.mjs'),
+    })
     try {
       await vi.waitFor(() => expect(stderr()).toContain('Research ('), { timeout: 10_000 })
       child.kill('SIGINT')

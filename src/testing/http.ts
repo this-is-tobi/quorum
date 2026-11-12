@@ -5,7 +5,10 @@ import { chatResponse } from './fixtures/ollama.ts'
 
 /** A reply holding `body` as JSON, as a server sends it. */
 export function jsonReply(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  })
 }
 
 /** A stub put in place of the global `fetch`, answering every call with `body` as JSON. */
@@ -17,12 +20,21 @@ export function stubFetch(body: unknown, status = 200): ReturnType<typeof vi.fn>
 
 /** An OpenAI-compatible chat completion holding `content`. */
 export function chatReply(content: string): Response {
-  return jsonReply({ choices: [{ message: { content } }] })
+  return jsonReply({
+    choices: [
+      {
+        message: { content },
+      },
+    ],
+  })
 }
 
 /** An Ollama native chat completion (`/api/chat`) holding `content`. */
 export function ollamaReply(content: string): Response {
-  return jsonReply({ ...chatResponse, message: { role: 'assistant', content } })
+  return jsonReply({
+    ...chatResponse,
+    message: { role: 'assistant', content },
+  })
 }
 
 /**
@@ -49,7 +61,11 @@ export function stubOllamaChat(...contents: string[]): ReturnType<typeof vi.fn> 
 /** What one call of a fetch stub sent, the first by default: the URL, the headers and the parsed body. */
 export function sent(fetchMock: ReturnType<typeof vi.fn>, call = 0): { url: string, headers: Record<string, string>, body: Record<string, unknown> } {
   const [url, init] = fetchMock.mock.calls[call]
-  return { url, headers: init.headers, body: JSON.parse(init.body) }
+  return {
+    url,
+    headers: init.headers,
+    body: JSON.parse(init.body),
+  }
 }
 
 /** A reply holding `text` as it is. */
@@ -71,7 +87,10 @@ export function streamedReply(chunk: string, count: number, status = 200): { res
       controller.enqueue(bytes)
     },
   })
-  return { response: new Response(body, { status }), pulled: () => pulled }
+  return {
+    response: new Response(body, { status }),
+    pulled: () => pulled,
+  }
 }
 
 /** A reply whose body fails while it is read, as a connection that drops does; `before` runs first. */

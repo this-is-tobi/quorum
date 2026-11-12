@@ -9,7 +9,11 @@ function ballots(...outcomes: Array<boolean | null>): Pick<Verdict, 'keptVotes' 
     keptVotes: outcomes.filter(keep => keep === true).length,
     votes: outcomes.map(keep => (keep === null
       ? { angle: 'impact' as const, vote: null, error: 'endpoint down' }
-      : { angle: 'impact' as const, vote: { keep, reasoning: 'r' }, error: null })),
+      : {
+          angle: 'impact' as const,
+          vote: { keep, reasoning: 'r' },
+          error: null,
+        })),
   }
 }
 
@@ -24,18 +28,46 @@ describe('resolvePolicy', () => {
     ['majority', 3, 2],
     ['majority', 5, 3],
     ['any', 3, 1],
-    [{ minVotes: 2 }, 3, 2],
-    [{ minRatio: 0.66 }, 3, 2],
-    [{ minRatio: 0.5 }, 4, 2],
-    [{ minRatio: 1 }, 5, 5],
-    [{ minRatio: 1e-10 }, 3, 1],
-    [{ minRatio: 0.07 }, 100, 7],
+    [
+      { minVotes: 2 },
+      3,
+      2,
+    ],
+    [
+      { minRatio: 0.66 },
+      3,
+      2,
+    ],
+    [
+      { minRatio: 0.5 },
+      4,
+      2,
+    ],
+    [
+      { minRatio: 1 },
+      5,
+      5,
+    ],
+    [
+      { minRatio: 1e-10 },
+      3,
+      1,
+    ],
+    [
+      { minRatio: 0.07 },
+      100,
+      7,
+    ],
   ] as Array<[Rule, number, number]>)('resolves %j with %i lens(es) to %i vote(s)', (rule, lenses, votes) => {
     expect(resolvePolicy({ high: rule, medium: 'off', low: 'off' }, lenses).thresholds.high).toBe(votes)
   })
 
   it('reproduces today\'s arithmetic by default with three lenses', () => {
-    expect(resolvePolicy(defaultPolicy, 3)).toEqual({ thresholds: { high: 3, medium: 2, low: null }, issues: [], warnings: [] })
+    expect(resolvePolicy(defaultPolicy, 3)).toEqual({
+      thresholds: { high: 3, medium: 2, low: null },
+      issues: [],
+      warnings: [],
+    })
   })
 
   it('accepts false as a synonym of off', () => {
@@ -50,36 +82,80 @@ describe('resolvePolicy', () => {
   })
 
   it('rejects out-of-range rules', () => {
-    const resolved = resolvePolicy({ high: { minVotes: 4 }, medium: { minRatio: 0 }, low: 'off' }, 3)
+    const resolved = resolvePolicy({
+      high: { minVotes: 4 },
+      medium: { minRatio: 0 },
+      low: 'off',
+    }, 3)
     expect(resolved.issues.map(issue => issue.path)).toEqual(['policy.high', 'policy.medium'])
-    expect(resolvePolicy({ high: { minVotes: 1.5 }, medium: { minRatio: 1.01 }, low: { minVotes: 0 } }, 3).issues.map(issue => issue.path)).toEqual(['policy.high', 'policy.medium', 'policy.low'])
+    expect(resolvePolicy({
+      high: { minVotes: 1.5 },
+      medium: { minRatio: 1.01 },
+      low: { minVotes: 0 },
+    }, 3).issues.map(issue => issue.path)).toEqual(['policy.high', 'policy.medium', 'policy.low'])
   })
 
   it('rejects a lower level that needs more votes than a higher one', () => {
-    const resolved = resolvePolicy({ high: { minVotes: 2 }, medium: 'unanimous', low: 'off' }, 3)
-    expect(resolved.issues).toEqual([expect.objectContaining({ path: 'policy.medium' })])
+    const resolved = resolvePolicy({
+      high: { minVotes: 2 },
+      medium: 'unanimous',
+      low: 'off',
+    }, 3)
+    expect(resolved.issues).toEqual([
+      expect.objectContaining({ path: 'policy.medium' }),
+    ])
   })
 
   it('requires at least one enabled level', () => {
-    expect(resolvePolicy({ high: 'off', medium: false, low: 'off' }, 3).issues).toEqual([expect.objectContaining({ path: 'policy' })])
+    expect(resolvePolicy({ high: 'off', medium: false, low: 'off' }, 3).issues).toEqual([
+      expect.objectContaining({ path: 'policy' }),
+    ])
   })
 
   it('reports a rule outside the type as an issue instead of throwing', () => {
-    const rules = { high: 'unanimus', medium: null, low: { minRatio: '0.5' } } as unknown as PolicyRules
+    const rules = {
+      high: 'unanimus',
+      medium: null,
+      low: { minRatio: '0.5' },
+    } as unknown as PolicyRules
     expect(resolvePolicy(rules, 3).issues.map(issue => issue.path)).toEqual(['policy.high', 'policy.medium', 'policy.low'])
   })
 
   it('rejects a rule that holds both minVotes and minRatio', () => {
-    expect(resolvePolicy({ high: { minVotes: 2, minRatio: 1 } as unknown as Rule, medium: 'off', low: 'off' }, 3).issues).toEqual([expect.objectContaining({ path: 'policy.high' })])
+    expect(resolvePolicy({
+      high: { minVotes: 2, minRatio: 1 } as unknown as Rule,
+      medium: 'off',
+      low: 'off',
+    }, 3).issues).toEqual([
+      expect.objectContaining({ path: 'policy.high' }),
+    ])
   })
 
   it('requires at least one lens', () => {
-    expect(resolvePolicy(defaultPolicy, 0)).toEqual({ thresholds: { high: null, medium: null, low: null }, issues: [{ path: 'lenses', message: 'at least one lens is required' }], warnings: [] })
+    expect(resolvePolicy(defaultPolicy, 0)).toEqual({
+      thresholds: { high: null, medium: null, low: null },
+      issues: [
+        { path: 'lenses', message: 'at least one lens is required' },
+      ],
+      warnings: [],
+    })
   })
 
   it('checks the order across every enabled level', () => {
-    expect(resolvePolicy({ high: 'any', medium: 'off', low: { minVotes: 2 } }, 3).issues).toEqual([expect.objectContaining({ path: 'policy.low' })])
-    expect(resolvePolicy({ high: 'unanimous', medium: { minVotes: 2 }, low: 'unanimous' }, 3).issues).toEqual([expect.objectContaining({ path: 'policy.low' })])
+    expect(resolvePolicy({
+      high: 'any',
+      medium: 'off',
+      low: { minVotes: 2 },
+    }, 3).issues).toEqual([
+      expect.objectContaining({ path: 'policy.low' }),
+    ])
+    expect(resolvePolicy({
+      high: 'unanimous',
+      medium: { minVotes: 2 },
+      low: 'unanimous',
+    }, 3).issues).toEqual([
+      expect.objectContaining({ path: 'policy.low' }),
+    ])
   })
 })
 
@@ -125,13 +201,28 @@ describe('undecidedLevel', () => {
   const thresholds = { high: 3, medium: 2, low: null }
 
   it('names the level a failed vote could still have reached above the earned one', () => {
-    expect(undecidedLevel({ ...ballots(true, true, null), confidence: 'medium' }, thresholds)).toBe('high')
-    expect(undecidedLevel({ ...ballots(true, null, null), confidence: 'low' }, { high: 3, medium: 2, low: 1 })).toBe('high')
+    expect(undecidedLevel({
+      ...ballots(true, true, null),
+      confidence: 'medium',
+    }, thresholds)).toBe('high')
+    expect(undecidedLevel({
+      ...ballots(true, null, null),
+      confidence: 'low',
+    }, { high: 3, medium: 2, low: 1 })).toBe('high')
   })
 
   it('returns undefined when every vote was cast or the failed votes could not change the level', () => {
-    expect(undecidedLevel({ ...ballots(true, true, true), confidence: 'high' }, thresholds)).toBeUndefined()
-    expect(undecidedLevel({ ...ballots(true, true, false), confidence: 'medium' }, thresholds)).toBeUndefined()
-    expect(undecidedLevel({ ...ballots(true, true, null), confidence: 'medium' }, { high: null, medium: 2, low: null })).toBeUndefined()
+    expect(undecidedLevel({
+      ...ballots(true, true, true),
+      confidence: 'high',
+    }, thresholds)).toBeUndefined()
+    expect(undecidedLevel({
+      ...ballots(true, true, false),
+      confidence: 'medium',
+    }, thresholds)).toBeUndefined()
+    expect(undecidedLevel({
+      ...ballots(true, true, null),
+      confidence: 'medium',
+    }, { high: null, medium: 2, low: null })).toBeUndefined()
   })
 })

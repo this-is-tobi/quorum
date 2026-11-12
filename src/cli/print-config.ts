@@ -24,18 +24,27 @@ function sha256(text: string): string {
 
 /** The keys of a record, each with the redacted word: a header, query or body value can be a credential. */
 function redactedValues(record: Readonly<Record<string, unknown>> | undefined): Record<string, string> | undefined {
-  return record === undefined ? undefined : Object.fromEntries(Object.keys(record).map(key => [key, REDACTED]))
+  return record === undefined
+    ? undefined
+    : Object.fromEntries(Object.keys(record).map(key => [key, REDACTED]))
 }
 
 /** The auth style as set: a name, or the header and the prefix a key is sent with. Neither holds the key. */
 function authView(auth: ProviderSpec['auth']): unknown {
-  return typeof auth === 'object' ? { header: own(auth, 'header'), prefix: own(auth, 'prefix') } : auth
+  return typeof auth === 'object'
+    ? {
+        header: own(auth, 'header'),
+        prefix: own(auth, 'prefix'),
+      }
+    : auth
 }
 
 /** Where the instructions go (`native` or `inline`), the only values a spec accepts; any other value is a prompt, so it prints as its hash. */
 function systemPromptView(value: unknown): string | undefined {
   if (value === undefined || value === 'native' || value === 'inline') return value
-  return typeof value === 'string' ? sha256(value) : REDACTED
+  return typeof value === 'string'
+    ? sha256(value)
+    : REDACTED
 }
 
 /**
@@ -49,10 +58,14 @@ function specView(spec: ProviderSpec): Record<string, unknown> {
     preset: own(spec, 'preset'),
     protocol: own(spec, 'protocol'),
     command: own(spec, 'command'),
-    origin: cli ? undefined : providerOrigin(spec),
+    origin: cli
+      ? undefined
+      : providerOrigin(spec),
     model: own(spec, 'model'),
     contextTokens: own(spec, 'contextTokens'),
-    apiKey: own(spec, 'apiKey') === undefined ? undefined : REDACTED,
+    apiKey: own(spec, 'apiKey') === undefined
+      ? undefined
+      : REDACTED,
     auth: authView(own(spec, 'auth') ?? (cli ? 'inherit' : undefined)),
     args: own(spec, 'args'),
     headers: redactedValues(own(spec, 'headers')),
@@ -69,7 +82,12 @@ function specView(spec: ProviderSpec): Record<string, unknown> {
 /** A provider object by what it implements and its model, when that is a string; never its function. */
 function objectView(provider: Readonly<Provider>): Record<string, unknown> {
   const model = own(provider, 'model')
-  return { implements: 'Provider', model: typeof model === 'string' ? model : undefined }
+  return {
+    implements: 'Provider',
+    model: typeof model === 'string'
+      ? model
+      : undefined,
+  }
 }
 
 /** A profile that runs: its providers, the votes its policy needs, and each prompt as its hash. */
@@ -79,7 +97,10 @@ function profileView({ profile, research, voters }: ResolvedProfile): Record<str
     research,
     lenses: { ...voters },
     thresholds: thresholdsFor(profile),
-    prompts: { research: sha256(profile.prompts.research), vote: sha256(profile.prompts.vote) },
+    prompts: {
+      research: sha256(profile.prompts.research),
+      vote: sha256(profile.prompts.vote),
+    },
   }
 }
 
@@ -98,8 +119,16 @@ function profileView({ profile, research, voters }: ResolvedProfile): Record<str
 export function printConfig(config: ResolvedConfig, source: string | undefined): string {
   const view = {
     source: source ?? null,
-    providers: Object.fromEntries(Object.entries(config.providers).map(([name, provider]) => [name, isProvider(provider) ? objectView(provider) : specView(provider)])),
-    profiles: Object.fromEntries(config.profiles.map(resolved => [resolved.profile.id, profileView(resolved)])),
+    providers: Object.fromEntries(Object.entries(config.providers).map(([name, provider]) => [
+      name,
+      isProvider(provider)
+        ? objectView(provider)
+        : specView(provider),
+    ])),
+    profiles: Object.fromEntries(config.profiles.map(resolved => [
+      resolved.profile.id,
+      profileView(resolved),
+    ])),
     concurrency: config.concurrency ?? DEFAULT_CONCURRENCY,
     maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,
     warnings: [...config.warnings],

@@ -51,7 +51,13 @@ interface Tally {
   found: Set<string>
 }
 
-const newTally = (): Tally => ({ first: 0, lines: 0, found: new Set() })
+function newTally(): Tally {
+  return {
+    first: 0,
+    lines: 0,
+    found: new Set(),
+  }
+}
 
 /** Count `line` in `tally` when it held anything. */
 function record(tally: Tally, line: number, items: readonly string[]): void {
@@ -64,12 +70,16 @@ function record(tally: Tally, line: number, items: readonly string[]): void {
 /** The first `MAX_LISTED` items, then how many more there are. */
 function listed(items: readonly string[]): string {
   const names = items.slice(0, MAX_LISTED).join(', ')
-  return items.length > MAX_LISTED ? `${names} and ${items.length - MAX_LISTED} more` : names
+  return items.length > MAX_LISTED
+    ? `${names} and ${items.length - MAX_LISTED} more`
+    : names
 }
 
 /** The labels of the hidden characters of an added line, less the ones the rules leave alone. */
 function lineLabels(text: string, line: number): string[] {
-  const shown = line === 1 && text.startsWith(BOM) ? text.slice(BOM.length) : text
+  const shown = line === 1 && text.startsWith(BOM)
+    ? text.slice(BOM.length)
+    : text
   // A space, not nothing, so that what surrounds an emoji cannot join: two halves of a surrogate
   // pair, or a byte-order mark that would then start line 1.
   return hiddenLabels(shown.replace(EMOJI, ' ')).filter(label => label !== TAB)
@@ -81,13 +91,25 @@ function lineLabels(text: string, line: number): string[] {
  * A pattern that matches both forms counts once.
  */
 function addressedNames(text: string): string[] {
-  const forms = [stripHidden(text), spaceHidden(text)]
+  const forms = [
+    stripHidden(text),
+    spaceHidden(text),
+  ]
   return AI_ADDRESSED.filter(({ pattern }) => forms.some(form => pattern.test(form))).map(({ name }) => name)
 }
 
 /** The flag of `code` at the first line `tally` counted, or none when it counted no line. */
 function flagOf(code: FlagCode, where: Where, tally: Tally): Flag[] {
-  return tally.lines === 0 ? [] : [{ code, ...where, line: tally.first, detail: `${listed([...tally.found])} on ${tally.lines} added line(s)` }]
+  return tally.lines === 0
+    ? []
+    : [
+        {
+          code,
+          ...where,
+          line: tally.first,
+          detail: `${listed([...tally.found])} on ${tally.lines} added line(s)`,
+        },
+      ]
 }
 
 /**
@@ -115,7 +137,9 @@ function flagOf(code: FlagCode, where: Where, tally: Tally): Flag[] {
 export function diffFlags(sections: ReadonlyMap<string, string>): Flag[] {
   const flags: Flag[] = []
   for (const path of sections.keys()) {
-    const where: Where = path === '' ? {} : { file: path }
+    const where: Where = path === ''
+      ? {}
+      : { file: path }
     const nameLabels = hiddenLabels(path)
     if (nameLabels.length > 0) flags.push({ code: 'hidden-characters', ...where, detail: `the file name holds ${listed(nameLabels)}` })
     const hidden = newTally()

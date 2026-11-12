@@ -51,7 +51,12 @@ interface Cast {
  */
 export async function panel(ctx: RunContext, run: ProfileRun, findings: readonly Finding[], sections: ReadonlyMap<string, string>, diff: string): Promise<PanelOutcome> {
   const judged = await Promise.all(findings.map(finding => judge(ctx, run, finding, diffSectionFor(sections, finding.file, diff))))
-  const outcome: PanelOutcome = { kept: [], discarded: [], unreviewed: [], incomplete: [] }
+  const outcome: PanelOutcome = {
+    kept: [],
+    discarded: [],
+    unreviewed: [],
+    incomplete: [],
+  }
   for (const { verdict, status, gaps } of judged) {
     outcome[status].push(verdict)
     outcome.incomplete.push(...gaps)
@@ -62,15 +67,35 @@ export async function panel(ctx: RunContext, run: ProfileRun, findings: readonly
 async function judge(ctx: RunContext, run: ProfileRun, finding: Finding, diffContext: string): Promise<Judged> {
   const casts = await Promise.all(run.lenses.map(lens => castVote(ctx, run, finding, lens, diffContext)))
   const votes = casts.map(({ lensVote }) => lensVote)
-  const refusals = casts.flatMap(({ refusal }) => refusal === undefined ? [] : [refusal])
+  const refusals = casts.flatMap(({ refusal }) => refusal === undefined
+    ? []
+    : [refusal])
   const keptVotes = votes.filter(lensVote => lensVote.vote?.keep).length
-  const verdict: Verdict = { ...finding, keptVotes, totalVotes: votes.length, confidence: confidenceFor(keptVotes, run.thresholds), votes }
+  const verdict: Verdict = {
+    ...finding,
+    keptVotes,
+    totalVotes: votes.length,
+    confidence: confidenceFor(keptVotes, run.thresholds),
+    votes,
+  }
   const status = verdictStatus(verdict, run.thresholds)
   const { confidence } = verdict
-  ctx.emit({ type: 'verdict', profile: run.id, findingId: finding.id, keptVotes, totalVotes: votes.length, ...(confidence === undefined ? {} : { confidence }), status })
+  ctx.emit({
+    type: 'verdict',
+    profile: run.id,
+    findingId: finding.id,
+    keptVotes,
+    totalVotes: votes.length,
+    ...(confidence === undefined
+      ? {}
+      : { confidence }),
+    status,
+  })
   const gaps: IncompleteEntry[] = []
   if (refusals.length > 0) gaps.push(requestTooLarge(run.id, finding, refusals, votes.length))
-  const undecided = status === 'kept' ? undecidedLevel(verdict, run.thresholds) : undefined
+  const undecided = status === 'kept'
+    ? undecidedLevel(verdict, run.thresholds)
+    : undefined
   if (undecided !== undefined) gaps.push(voteFailed(run.id, verdict, undecided))
   for (const entry of gaps) ctx.emit({ type: 'incomplete', entry })
   return { verdict, status, gaps }
@@ -90,16 +115,37 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
   let refusal: string | undefined
   try {
     const text = await callProvider(ctx, { profile: run.id, role: 'vote', lens: lens.id }, lens, () => voteRequest(lens.instructions, finding, diffContext, run.guidelines))
-    lensVote = { angle: lens.id, vote: parseVoteReply(text), error: null }
+    lensVote = {
+      angle: lens.id,
+      vote: parseVoteReply(text),
+      error: null,
+    }
   } catch (error) {
     // Once the review is aborted, a failed call is not the voter's failure: the review rejects with the abort's reason.
     ctx.signal.throwIfAborted()
-    lensVote = { angle: lens.id, vote: null, error: error instanceof Error ? error.message : String(error) }
+    lensVote = {
+      angle: lens.id,
+      vote: null,
+      error: error instanceof Error
+        ? error.message
+        : String(error),
+    }
     if (isTooLarge(error)) refusal = refusalMessage(error)
   }
   const { error } = lensVote
-  ctx.emit({ type: 'vote', profile: run.id, findingId: finding.id, lens: lens.id, keep: lensVote.vote?.keep ?? null, ...(error === null ? {} : { error }) })
-  return refusal === undefined ? { lensVote } : { lensVote, refusal }
+  ctx.emit({
+    type: 'vote',
+    profile: run.id,
+    findingId: finding.id,
+    lens: lens.id,
+    keep: lensVote.vote?.keep ?? null,
+    ...(error === null
+      ? {}
+      : { error }),
+  })
+  return refusal === undefined
+    ? { lensVote }
+    : { lensVote, refusal }
 }
 
 /**

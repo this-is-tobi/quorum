@@ -15,7 +15,9 @@ const bunVersion = /^bun = "([^"]+)"$/m.exec(read('mise.toml'))?.[1] ?? ''
 function stage(from: RegExp): string[] {
   const start = lines.findIndex(line => line.startsWith('FROM ') && from.test(line))
   const end = lines.findIndex((line, index) => index > start && line.startsWith('FROM '))
-  return lines.slice(start, end === -1 ? undefined : end).filter(line => line.trim() !== '' && !line.startsWith('#'))
+  return lines.slice(start, end === -1
+    ? undefined
+    : end).filter(line => line.trim() !== '' && !line.startsWith('#'))
 }
 
 describe('the base images', () => {
@@ -81,7 +83,14 @@ describe('the final stage', () => {
 describe('.dockerignore', () => {
   const ignored = read('.dockerignore').split('\n').map(line => line.trim()).filter(line => line !== '' && !line.startsWith('#'))
 
-  it.each(['.git', 'node_modules', 'dist', 'bin', '.local', '.superpowers'])('keeps %s out of the build context', (entry) => {
+  it.each([
+    '.git',
+    'node_modules',
+    'dist',
+    'bin',
+    '.local',
+    '.superpowers',
+  ])('keeps %s out of the build context', (entry) => {
     expect(ignored).toContain(entry)
   })
 

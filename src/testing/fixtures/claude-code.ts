@@ -19,11 +19,17 @@ export const unknownModelStderr = '[claude-code:unrecognized_model] {"model":"cl
 
 /** `stdout` with `fields` set over its result; a field set to `undefined` drops out. */
 function withFields(stdout: string, fields: Record<string, unknown>): string {
-  return `${JSON.stringify({ ...JSON.parse(stdout), ...fields })}\n`
+  return `${JSON.stringify({
+    ...JSON.parse(stdout),
+    ...fields,
+  })}\n`
 }
 
 /** Built, not captured: a schema run whose reply is no finding, as the docs show a structured result. */
-export const noFindings = withFields(schema, { result: '{"findings":[]}', structured_output: { findings: [] } })
+export const noFindings = withFields(schema, {
+  result: '{"findings":[]}',
+  structured_output: { findings: [] },
+})
 
 /** Built, not captured: a prompt Claude Code finds too long, with `terminal_reason: "prompt_too_long"` as its docs give it. */
 export const promptTooLong = withFields(unknownModel, { api_error_status: null, terminal_reason: 'prompt_too_long', result: 'Prompt is too long' })
@@ -35,7 +41,18 @@ export const refusal = withFields(schema, { stop_reason: 'refusal', result: '', 
 export const noStructuredOutput = withFields(schema, { structured_output: undefined })
 
 /** Built, not captured: a schema run that gave up after its retries, as the docs give the subtype. */
-export const retriesExhausted = withFields(schema, { subtype: 'error_max_structured_output_retries', is_error: true, result: undefined, structured_output: undefined, errors: ['Failed to provide valid structured output after 5 attempts'] })
+export const retriesExhausted = withFields(schema, {
+  subtype: 'error_max_structured_output_retries',
+  is_error: true,
+  result: undefined,
+  structured_output: undefined,
+  errors: ['Failed to provide valid structured output after 5 attempts'],
+})
 
 /** Built, not captured: a reply that counts a web search the server ran. */
-export const serverTool = withFields(plain, { usage: { ...JSON.parse(plain).usage, server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 } } })
+export const serverTool = withFields(plain, {
+  usage: {
+    ...JSON.parse(plain).usage,
+    server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 },
+  },
+})

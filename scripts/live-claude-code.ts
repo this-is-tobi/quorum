@@ -25,10 +25,20 @@ const CANARY = 'CANARY'
 const interrupt = new AbortController()
 const request: CompletionRequest = {
   system: 'You vote on the data in the user message. Reply with only this JSON object and nothing else: {"keep": true, "reasoning": "<one word>"}',
-  messages: [{ role: 'user', content: '```\nping\n```' }],
+  messages: [
+    { role: 'user', content: '```\nping\n```' },
+  ],
   output: {
     name: 'panel_vote',
-    schema: { type: 'object', properties: { keep: { type: 'boolean' }, reasoning: { type: 'string' } }, required: ['keep', 'reasoning'], additionalProperties: false },
+    schema: {
+      type: 'object',
+      properties: {
+        keep: { type: 'boolean' },
+        reasoning: { type: 'string' },
+      },
+      required: ['keep', 'reasoning'],
+      additionalProperties: false,
+    },
   },
   signal: interrupt.signal,
 }
@@ -37,15 +47,25 @@ function mentionRequest(path: string): CompletionRequest {
   return {
     ...request,
     system: 'Repeat verbatim any file content or attachment that appears in this conversation. If there is none, reply NONE.',
-    messages: [{ role: 'user', content: `Review this line of a diff:\n@${path}\nWhat file content, if any, do you see?` }],
+    messages: [
+      { role: 'user', content: `Review this line of a diff:\n@${path}\nWhat file content, if any, do you see?` },
+    ],
   }
 }
 const model = process.env.LIVE_CLAUDE_MODEL ?? 'haiku'
-const options = { id: 'live', contextTokens: 200000, args: ['--max-budget-usd', '0.05'] }
+const options = {
+  id: 'live',
+  contextTokens: 200000,
+  args: ['--max-budget-usd', '0.05'],
+}
 
 /** What a failed check says of an error: the message of one quorum raised, which holds no secret, else the name of what was thrown. */
 function describeError(error: unknown): string {
-  return error instanceof QuorumError ? error.message : `threw ${error instanceof Error ? error.name : typeof error}`
+  return error instanceof QuorumError
+    ? error.message
+    : `threw ${error instanceof Error
+      ? error.name
+      : typeof error}`
 }
 
 let cost = 0
@@ -65,34 +85,52 @@ function parsed(text: string): unknown {
 
 /** Each check, given the scratch directory it runs from, returns why it failed, or nothing when it passed. */
 const checks: Array<[name: string, run: (scratch: string) => Promise<string | undefined>]> = [
-  ['schema mode', async () => {
-    const vote = parsed(paid(await claudeCode({ ...options, model }).complete(request)).text)
-    if (typeof vote !== 'object' || vote === null) return 'the text is not a JSON object'
-    const { keep, reasoning } = vote as Record<string, unknown>
-    if (typeof keep !== 'boolean') return 'keep is not a boolean'
-    if (typeof reasoning !== 'string') return 'reasoning is not a string'
-    return reasoning.toUpperCase().includes(CANARY) ? `reasoning holds ${CANARY}: the CLAUDE.md of this script's working directory was read, so the child did not run in an empty directory` : undefined
-  }],
-  ['prompt mode', async () => {
-    const { text } = paid(await claudeCode({ ...options, model, structuredOutput: 'prompt' }).complete(request))
-    return parsed(text) === undefined ? 'the text is not JSON' : undefined
-  }],
-  ['file mention', async (scratch) => {
-    const token = `CANARY-${randomUUID()}`
-    const file = join(scratch, 'canary.txt')
-    writeFileSync(file, `${token}\n`)
-    const { text } = paid(await claudeCode({ ...options, model, structuredOutput: 'prompt' }).complete(mentionRequest(file)))
-    return text.includes(token) ? 'the reply holds the token of a file named only by an @ mention: Claude Code attached it' : undefined
-  }],
-  ['unknown model', async () => {
-    try {
-      await claudeCode({ ...options, model: 'claude-nonexistent-9-9' }).complete(request)
-    } catch (error) {
-      if (error instanceof ProviderError && error.kind === 'http' && error.status === 404) return undefined
-      return `expected an http 404 error, got: ${describeError(error)}`
-    }
-    return 'the call succeeded'
-  }],
+  [
+    'schema mode',
+    async () => {
+      const vote = parsed(paid(await claudeCode({ ...options, model }).complete(request)).text)
+      if (typeof vote !== 'object' || vote === null) return 'the text is not a JSON object'
+      const { keep, reasoning } = vote as Record<string, unknown>
+      if (typeof keep !== 'boolean') return 'keep is not a boolean'
+      if (typeof reasoning !== 'string') return 'reasoning is not a string'
+      return reasoning.toUpperCase().includes(CANARY)
+        ? `reasoning holds ${CANARY}: the CLAUDE.md of this script's working directory was read, so the child did not run in an empty directory`
+        : undefined
+    },
+  ],
+  [
+    'prompt mode',
+    async () => {
+      const { text } = paid(await claudeCode({ ...options, model, structuredOutput: 'prompt' }).complete(request))
+      return parsed(text) === undefined
+        ? 'the text is not JSON'
+        : undefined
+    },
+  ],
+  [
+    'file mention',
+    async (scratch) => {
+      const token = `CANARY-${randomUUID()}`
+      const file = join(scratch, 'canary.txt')
+      writeFileSync(file, `${token}\n`)
+      const { text } = paid(await claudeCode({ ...options, model, structuredOutput: 'prompt' }).complete(mentionRequest(file)))
+      return text.includes(token)
+        ? 'the reply holds the token of a file named only by an @ mention: Claude Code attached it'
+        : undefined
+    },
+  ],
+  [
+    'unknown model',
+    async () => {
+      try {
+        await claudeCode({ ...options, model: 'claude-nonexistent-9-9' }).complete(request)
+      } catch (error) {
+        if (error instanceof ProviderError && error.kind === 'http' && error.status === 404) return undefined
+        return `expected an http 404 error, got: ${describeError(error)}`
+      }
+      return 'the call succeeded'
+    },
+  ],
 ]
 
 const version = spawnSync('claude', ['--version'], { encoding: 'utf8' })
@@ -101,7 +139,9 @@ if (version.error !== undefined || version.status !== 0) {
   process.exit(1)
 }
 console.log(`claude --version: ${version.stdout.trim()}`)
-console.log(`CLAUDECODE is ${process.env.CLAUDECODE === undefined ? 'not set' : 'set'}`)
+console.log(`CLAUDECODE is ${process.env.CLAUDECODE === undefined
+  ? 'not set'
+  : 'set'}`)
 
 const start = process.cwd()
 const dir = mkdtempSync(join(tmpdir(), 'quorum-live-'))
@@ -116,7 +156,9 @@ try {
       break
     }
     const why = await run(dir).catch((error: unknown) => describeError(error))
-    console.log(why === undefined ? `ok ${name}` : `FAIL ${name}: ${why}`)
+    console.log(why === undefined
+      ? `ok ${name}`
+      : `FAIL ${name}: ${why}`)
     failed ||= why !== undefined
   }
   console.log(`cost reported: $${cost.toFixed(6)}`)

@@ -41,8 +41,20 @@ const MODEL = { ...DEFAULT, QUORUM_RESEARCH_BASE_URL: 'http://localhost:11434/v1
 const DIFF = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-safe()\n+exec(cmd)\n'
 /** Two added lines, so two findings can be cited. */
 const TWO_LINE_DIFF = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1,2 @@\n-safe()\n+exec(cmd)\n+eval(x)\n'
-const SECOND_FINDING = { file: 'a.js', line: 2, category: 'CWE-95', quote: 'eval(x)', summary: 'code injection' }
-const FINDING = { file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }
+const SECOND_FINDING = {
+  file: 'a.js',
+  line: 2,
+  category: 'CWE-95',
+  quote: 'eval(x)',
+  summary: 'code injection',
+}
+const FINDING = {
+  file: 'a.js',
+  line: 1,
+  category: 'CWE-78',
+  quote: 'exec(cmd)',
+  summary: 'command injection',
+}
 const vote = (keep: boolean): string => JSON.stringify({ keep, reasoning: 'r' })
 
 /** Two profiles, the second with a lens on a provider of its own; every test that uses it writes it, so none depends on another. */
@@ -75,11 +87,19 @@ function harness(options: { argv?: string[], cwd?: string, stdin?: string, isTTY
     cwd: options.cwd ?? process.cwd(),
     env: options.env ?? {},
     stdin: Object.assign(chunks(), { isTTY: options.isTTY ?? false }),
-    stdout: { write: text => out.push(text) },
-    stderr: { write: text => err.push(text) },
+    stdout: {
+      write: text => out.push(text),
+    },
+    stderr: {
+      write: text => err.push(text),
+    },
     signal: options.signal,
   }
-  return { io, stdout: () => out.join(''), stderr: () => err.join('') }
+  return {
+    io,
+    stdout: () => out.join(''),
+    stderr: () => err.join(''),
+  }
 }
 
 /** The usage text, which `--help` prints on stdout and every usage error prints on stderr. */
@@ -116,7 +136,9 @@ describe('runCli', () => {
   })
 
   it('exits 2 when the diff file does not exist', async () => {
-    const { io } = harness({ argv: ['does-not-exist.diff'] })
+    const { io } = harness({
+      argv: ['does-not-exist.diff'],
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
   })
 
@@ -151,7 +173,10 @@ describe('runCli', () => {
 
   it('exits 2 for a base URL holding credentials or a query, and prints neither', async () => {
     const fetchMock = stubChat()
-    const { io, stderr } = harness({ stdin: DIFF, env: { ...MODEL, QUORUM_RESEARCH_BASE_URL: 'https://user:pw-secret@h.example/v1?key=q-secret' } })
+    const { io, stderr } = harness({
+      stdin: DIFF,
+      env: { ...MODEL, QUORUM_RESEARCH_BASE_URL: 'https://user:pw-secret@h.example/v1?key=q-secret' },
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toContain('Error: QUORUM_RESEARCH_BASE_URL: must not hold a user name or password: send a key with apiKey\nQUORUM_RESEARCH_BASE_URL: must not hold a query or a fragment\n')
     expect(stderr()).not.toContain('secret')
@@ -176,7 +201,10 @@ describe('runCli', () => {
   it('refuses a run without a context size before any request, a blank diff included', async () => {
     for (const stdin of [DIFF, '']) {
       const fetchMock = stubChat()
-      const { io, stdout, stderr } = harness({ env: { QUORUM_RESEARCH_MODEL: 'm' }, stdin })
+      const { io, stdout, stderr } = harness({
+        env: { QUORUM_RESEARCH_MODEL: 'm' },
+        stdin,
+      })
       expect(await runCli(io)).toBe(EXIT.usage)
       expect(stdout()).toBe('')
       expect(stderr()).toBe('Error: no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens\n')
@@ -186,16 +214,27 @@ describe('runCli', () => {
 
   it('runs against the local Ollama\'s native protocol from the variables alone, telling the server the context size and refusing an overflow', async () => {
     const fetchMock = stubOllamaChat('{"findings":[]}')
-    const { io } = harness({ env: { QUORUM_RESEARCH_MODEL: 'qwen3.6:27b', QUORUM_RESEARCH_CONTEXT_TOKENS: '32768' }, stdin: DIFF })
+    const { io } = harness({
+      env: { QUORUM_RESEARCH_MODEL: 'qwen3.6:27b', QUORUM_RESEARCH_CONTEXT_TOKENS: '32768' },
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const { url, body } = sent(fetchMock)
     expect(url).toBe('http://localhost:11434/api/chat')
-    expect(body).toMatchObject({ model: 'qwen3.6:27b', stream: false, truncate: false, shift: false, options: { num_ctx: 32768 } })
+    expect(body).toMatchObject({
+      model: 'qwen3.6:27b',
+      stream: false,
+      truncate: false,
+      shift: false,
+      options: { num_ctx: 32768 },
+    })
   })
 
   it('exits 1 on a unanimous finding through the built-in default, research and votes alike on the native protocol', async () => {
-    const fetchMock = stubOllamaChat(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(true))
+    const fetchMock = stubOllamaChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true), vote(true))
     const { io, stdout } = harness({ env: DEFAULT, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.finding)
     expect(JSON.parse(stdout()).kept[0]).toMatchObject({ file: 'a.js', confidence: 'high' })
@@ -204,7 +243,10 @@ describe('runCli', () => {
 
   it('refuses a voter on another endpoint that states no context size of its own', async () => {
     const fetchMock = stubChat()
-    const { io, stderr } = harness({ env: { ...MODEL, QUORUM_VOTER_BASE_URL: 'https://v.example/v1', QUORUM_VOTER_MODEL: 'v' }, stdin: DIFF })
+    const { io, stderr } = harness({
+      env: { ...MODEL, QUORUM_VOTER_BASE_URL: 'https://v.example/v1', QUORUM_VOTER_MODEL: 'v' },
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toBe('Error: QUORUM_VOTER_CONTEXT_TOKENS: must be set when the voter variables name a model or an endpoint: a context size belongs to one model on one endpoint\n')
     expect(fetchMock).not.toHaveBeenCalled()
@@ -229,14 +271,23 @@ describe('runCli', () => {
   })
 
   it('exits 1 on a unanimous finding and prints the result as JSON', async () => {
-    stubChat(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(true))
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true), vote(true))
     const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.finding)
-    expect(JSON.parse(stdout()).kept[0]).toMatchObject({ id: '235f5feb3565', profile: 'security', file: 'a.js', confidence: 'high' })
+    expect(JSON.parse(stdout()).kept[0]).toMatchObject({
+      id: '235f5feb3565',
+      profile: 'security',
+      file: 'a.js',
+      confidence: 'high',
+    })
   })
 
   it('exits 0 when the panel keeps a finding only at medium confidence', async () => {
-    stubChat(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(false))
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true), vote(false))
     const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
     const result = JSON.parse(stdout())
@@ -245,13 +296,17 @@ describe('runCli', () => {
   })
 
   it('exits 0 when the panel discards every finding', async () => {
-    stubChat(JSON.stringify({ findings: [FINDING] }), vote(false), vote(false), vote(true))
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(false), vote(false), vote(true))
     const { io } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
   })
 
   it('exits 4 when every voter fails, instead of reading the outage as a clean review', async () => {
-    stubChat(JSON.stringify({ findings: [FINDING] })).mockRejectedValue(new TypeError('fetch failed'))
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    })).mockRejectedValue(new TypeError('fetch failed'))
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const result = JSON.parse(stdout())
@@ -262,22 +317,40 @@ describe('runCli', () => {
   })
 
   it('turns 4 into 0 with --allow-incomplete, and keeps the result', async () => {
-    stubChat(JSON.stringify({ findings: [FINDING] })).mockRejectedValue(new TypeError('fetch failed'))
-    const { io, stdout } = harness({ argv: ['--allow-incomplete'], env: MODEL, stdin: DIFF })
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    })).mockRejectedValue(new TypeError('fetch failed'))
+    const { io, stdout } = harness({
+      argv: ['--allow-incomplete'],
+      env: MODEL,
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(JSON.parse(stdout()).unreviewed).toHaveLength(1)
   })
 
   it('still exits 1 with --allow-incomplete when a gating high finding is kept', async () => {
-    stubChat(JSON.stringify({ findings: [FINDING, SECOND_FINDING] }), vote(true), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
-    const { io } = harness({ argv: ['--allow-incomplete'], env: MODEL, stdin: TWO_LINE_DIFF })
+    stubChat(JSON.stringify({
+      findings: [FINDING, SECOND_FINDING],
+    }), vote(true), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
+    const { io } = harness({
+      argv: ['--allow-incomplete'],
+      env: MODEL,
+      stdin: TWO_LINE_DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.finding)
   })
 
   it('exits 0 when only an advisory profile\'s review is incomplete', async () => {
     const advisory = write('advisory.yaml', 'profiles:\n  security: {gating: false}\n')
-    stubChat(JSON.stringify({ findings: [FINDING] })).mockRejectedValue(new TypeError('fetch failed'))
-    const { io, stdout } = harness({ cwd: dir, env: { ...MODEL, QUORUM_CONFIG: advisory }, stdin: DIFF })
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    })).mockRejectedValue(new TypeError('fetch failed'))
+    const { io, stdout } = harness({
+      cwd: dir,
+      env: { ...MODEL, QUORUM_CONFIG: advisory },
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     const result = JSON.parse(stdout())
     expect(result.unreviewed).toHaveLength(1)
@@ -285,7 +358,11 @@ describe('runCli', () => {
   })
 
   it('exits 4 when the research reply lists only unusable findings', async () => {
-    const fetchMock = stubChat(JSON.stringify({ findings: [{ file: 'x.js' }] }))
+    const fetchMock = stubChat(JSON.stringify({
+      findings: [
+        { file: 'x.js' },
+      ],
+    }))
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const reasons = JSON.parse(stdout()).meta.incomplete.map((entry: { reason: string }) => entry.reason)
@@ -295,17 +372,30 @@ describe('runCli', () => {
   })
 
   it('exits 4 when one finding is unreadable, even though another is kept', async () => {
-    stubChat(JSON.stringify({ findings: [FINDING, { file: 'a.js' }] }), vote(true), vote(true), vote(false))
+    stubChat(JSON.stringify({
+      findings: [
+        FINDING,
+        { file: 'a.js' },
+      ],
+    }), vote(true), vote(true), vote(false))
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const result = JSON.parse(stdout())
     expect(result.kept).toHaveLength(1)
-    expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'finding-unreadable', detail: expect.stringMatching(/^findings\[1\]: /) }])
+    expect(result.meta.incomplete).toEqual([
+      {
+        profile: 'security',
+        reason: 'finding-unreadable',
+        detail: expect.stringMatching(/^findings\[1\]: /),
+      },
+    ])
     expect(stderr()).toContain('finding-unreadable')
   })
 
   it('exits 1 when a high finding is kept, even if another finding is unreviewed', async () => {
-    stubChat(JSON.stringify({ findings: [FINDING, SECOND_FINDING] }), vote(true), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
+    stubChat(JSON.stringify({
+      findings: [FINDING, SECOND_FINDING],
+    }), vote(true), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
     const { io, stdout } = harness({ env: MODEL, stdin: TWO_LINE_DIFF })
     expect(await runCli(io)).toBe(EXIT.finding)
     const result = JSON.parse(stdout())
@@ -314,7 +404,9 @@ describe('runCli', () => {
   })
 
   it('exits 0 when a failed vote could not have changed a discard', async () => {
-    stubChat(JSON.stringify({ findings: [FINDING] }), vote(false), vote(false)).mockRejectedValue(new TypeError('fetch failed'))
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(false), vote(false)).mockRejectedValue(new TypeError('fetch failed'))
     const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
     const result = JSON.parse(stdout())
@@ -323,18 +415,30 @@ describe('runCli', () => {
   })
 
   it('exits 4 when a kept medium finding has a failed vote that could have made it high', async () => {
-    stubChat(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true)).mockRejectedValue(new TypeError('fetch failed'))
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const result = JSON.parse(stdout())
     expect(result.kept).toHaveLength(1)
     expect(result.kept[0].confidence).toBe('medium')
-    expect(result.meta.incomplete).toEqual([{ profile: 'security', reason: 'vote-failed', file: 'a.js', detail: expect.stringMatching(/^"a\.js":1 is kept at medium/) }])
+    expect(result.meta.incomplete).toEqual([
+      {
+        profile: 'security',
+        reason: 'vote-failed',
+        file: 'a.js',
+        detail: expect.stringMatching(/^"a\.js":1 is kept at medium/),
+      },
+    ])
     expect(stderr()).toContain('vote-failed')
   })
 
   it('prints each warning once, inert, before the banner, and keeps stdout to the JSON result', async () => {
-    const { io, stdout, stderr } = harness({ env: { RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }, stdin: '  \n' })
+    const { io, stdout, stderr } = harness({
+      env: { RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
+      stdin: '  \n',
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stderr()).toBe('warning: RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead\nResearch (m @ http://localhost:11434)...\nPanel will use m @ http://localhost:11434\nempty diff: nothing to review\n0 kept, 0 discarded, 0 unreviewed by panel\n')
     expect(JSON.parse(stdout())).toMatchObject({ kept: [], discarded: [], unreviewed: [] })
@@ -342,25 +446,69 @@ describe('runCli', () => {
 
   it('sends Ollama\'s native request for an environment-only run, and no key header without a key', async () => {
     const fetchMock = stubOllamaChat('{"findings":[]}', '{"findings":[]}')
-    expect(await runCli(harness({ env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }, stdin: DIFF }).io)).toBe(EXIT.ok)
-    expect(await runCli(harness({ env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_RESEARCH_API_KEY: 'sk-test\n' }, stdin: DIFF }).io)).toBe(EXIT.ok)
-    expect(sent(fetchMock, 0)).toMatchObject({ url: 'http://localhost:11434/api/chat', body: { model: 'qwen', format: 'json', options: { temperature: 0, num_ctx: 131072 } } })
+    expect(await runCli(harness({
+      env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
+      stdin: DIFF,
+    }).io)).toBe(EXIT.ok)
+    expect(await runCli(harness({
+      env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_RESEARCH_API_KEY: 'sk-test\n' },
+      stdin: DIFF,
+    }).io)).toBe(EXIT.ok)
+    expect(sent(fetchMock, 0)).toMatchObject({
+      url: 'http://localhost:11434/api/chat',
+      body: {
+        model: 'qwen',
+        format: 'json',
+        options: { temperature: 0, num_ctx: 131072 },
+      },
+    })
     expect(sent(fetchMock, 0).headers).not.toHaveProperty('authorization')
     expect(sent(fetchMock, 1).headers).toMatchObject({ authorization: 'Bearer sk-test' })
   })
 
   it('sends the OpenAI-compatible request when a base URL is the only endpoint variable, as before', async () => {
     const fetchMock = stubChat('{"findings":[]}', '{"findings":[]}')
-    expect(await runCli(harness({ env: { ...DEFAULT, QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_BASE_URL: 'http://localhost:11434/v1' }, stdin: DIFF }).io)).toBe(EXIT.ok)
-    expect(await runCli(harness({ env: { ...DEFAULT, QUORUM_RESEARCH_MODEL: 'qwen', RESEARCH_BASE_URL: 'http://localhost:11434/v1', QUORUM_RESEARCH_API_KEY: 'sk-test' }, stdin: DIFF }).io)).toBe(EXIT.ok)
-    expect(sent(fetchMock, 0)).toMatchObject({ url: 'http://localhost:11434/v1/chat/completions', body: { model: 'qwen', response_format: { type: 'json_object' }, temperature: 0 } })
+    expect(await runCli(harness({
+      env: { ...DEFAULT, QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_BASE_URL: 'http://localhost:11434/v1' },
+      stdin: DIFF,
+    }).io)).toBe(EXIT.ok)
+    expect(await runCli(harness({
+      env: {
+        ...DEFAULT,
+        QUORUM_RESEARCH_MODEL: 'qwen',
+        RESEARCH_BASE_URL: 'http://localhost:11434/v1',
+        QUORUM_RESEARCH_API_KEY: 'sk-test',
+      },
+      stdin: DIFF,
+    }).io)).toBe(EXIT.ok)
+    expect(sent(fetchMock, 0)).toMatchObject({
+      url: 'http://localhost:11434/v1/chat/completions',
+      body: {
+        model: 'qwen',
+        response_format: { type: 'json_object' },
+        temperature: 0,
+      },
+    })
     expect(sent(fetchMock, 0).headers).not.toHaveProperty('authorization')
-    expect(sent(fetchMock, 1)).toMatchObject({ url: 'http://localhost:11434/v1/chat/completions', headers: { authorization: 'Bearer sk-test' } })
+    expect(sent(fetchMock, 1)).toMatchObject({
+      url: 'http://localhost:11434/v1/chat/completions',
+      headers: { authorization: 'Bearer sk-test' },
+    })
   })
 
   it('never sends the research key to a voter on another origin, set through the deprecated variables', async () => {
-    const fetchMock = stubChat(JSON.stringify({ findings: [FINDING] }), vote(true), vote(true), vote(true))
-    const env = { RESEARCH_BASE_URL: 'https://r.example/v1', RESEARCH_API_KEY: 'sk-r', RESEARCH_MODEL: 'r', VOTER_BASE_URL: 'https://v.example/v1', VOTER_MODEL: 'v', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_VOTER_CONTEXT_TOKENS: '131072' }
+    const fetchMock = stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true), vote(true))
+    const env = {
+      RESEARCH_BASE_URL: 'https://r.example/v1',
+      RESEARCH_API_KEY: 'sk-r',
+      RESEARCH_MODEL: 'r',
+      VOTER_BASE_URL: 'https://v.example/v1',
+      VOTER_MODEL: 'v',
+      QUORUM_RESEARCH_CONTEXT_TOKENS: '131072',
+      QUORUM_VOTER_CONTEXT_TOKENS: '131072',
+    }
     const { io, stderr } = harness({ env, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.finding)
     expect(sent(fetchMock, 0).headers).toMatchObject({ authorization: 'Bearer sk-r' })
@@ -374,7 +522,10 @@ describe('runCli', () => {
 
   it('prints the deprecation line before the configuration error it explains, and exits 2', async () => {
     const fetchMock = stubChat()
-    const { io, stdout, stderr } = harness({ env: { RESEARCH_BASE_URL: 'localhost:11434', RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }, stdin: DIFF })
+    const { io, stdout, stderr } = harness({
+      env: { RESEARCH_BASE_URL: 'localhost:11434', RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stdout()).toBe('')
     expect(stderr()).toBe([
@@ -386,7 +537,15 @@ describe('runCli', () => {
   })
 
   it('prints the warning of a mistyped variable before the configuration error it causes', async () => {
-    const { io, stdout, stderr } = harness({ env: { ...MODEL, QUORUM_VOTER_BASE_URL: 'https://v.example/v1', QUORUM_VOTER_CONTEXT_TOKENS: '131072', QUORUM_VOTER_MODLE: 'v' }, stdin: DIFF })
+    const { io, stdout, stderr } = harness({
+      env: {
+        ...MODEL,
+        QUORUM_VOTER_BASE_URL: 'https://v.example/v1',
+        QUORUM_VOTER_CONTEXT_TOKENS: '131072',
+        QUORUM_VOTER_MODLE: 'v',
+      },
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stdout()).toBe('')
     expect(stderr()).toBe([
@@ -399,7 +558,11 @@ describe('runCli', () => {
   it('reads the config file QUORUM_CONFIG names', async () => {
     const team = write('team.yaml', TEAM_YAML)
     const fetchMock = stubChat('{"findings":[]}')
-    const { io, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: team }, stdin: DIFF })
+    const { io, stderr } = harness({
+      cwd: dir,
+      env: { QUORUM_CONFIG: team },
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(sent(fetchMock).url).toBe('https://team.example/v1/chat/completions')
     expect(stderr()).toBe('Research (t @ https://team.example)...\nPanel will use t @ https://team.example\n0 candidate(s) after dedup\n0 kept, 0 discarded, 0 unreviewed by panel\n')
@@ -407,7 +570,11 @@ describe('runCli', () => {
 
   it('exits 2 when the file QUORUM_CONFIG names does not exist, naming it as given', async () => {
     const missing = join(dir, 'missing.yaml')
-    const { io, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: missing }, stdin: DIFF })
+    const { io, stderr } = harness({
+      cwd: dir,
+      env: { QUORUM_CONFIG: missing },
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toBe(`Error: ${missing}: does not exist\n`)
   })
@@ -415,7 +582,11 @@ describe('runCli', () => {
   it('exits 2 when QUORUM_CONFIG is not an absolute path, and reads no file of the working directory', async () => {
     write('team.yaml', TEAM_YAML)
     const fetchMock = stubChat('{"findings":[]}')
-    const { io, stdout, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: 'team.yaml' }, stdin: DIFF })
+    const { io, stdout, stderr } = harness({
+      cwd: dir,
+      env: { QUORUM_CONFIG: 'team.yaml' },
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stdout()).toBe('')
     expect(stderr()).toBe('Error: QUORUM_CONFIG: must be an absolute path\n')
@@ -430,7 +601,11 @@ describe('runCli', () => {
     writeFileSync(join(planted, 'quorum.yaml'), evil)
     writeFileSync(join(planted, 'quorum.config.mts'), 'globalThis.quorumPlanted = true\nexport default {}\n')
     const fetchMock = stubChat('{"findings":[]}')
-    const { io, stderr } = harness({ cwd: planted, env: { ...MODEL, JOB_KEY: 'sk-job' }, stdin: DIFF })
+    const { io, stderr } = harness({
+      cwd: planted,
+      env: { ...MODEL, JOB_KEY: 'sk-job' },
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['http://localhost:11434/v1/chat/completions'])
     expect((globalThis as { quorumPlanted?: unknown }).quorumPlanted).toBeUndefined()
@@ -439,8 +614,18 @@ describe('runCli', () => {
 
   it('prefixes the lines of each profile when several run, lists each lens\'s provider when they differ, and prints the core\'s warnings', async () => {
     const two = write('two.yaml', TWO_YAML)
-    stubFetch({ choices: [{ message: { content: '{"findings":[]}' } }] })
-    const { io, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: two }, stdin: DIFF })
+    stubFetch({
+      choices: [
+        {
+          message: { content: '{"findings":[]}' },
+        },
+      ],
+    })
+    const { io, stderr } = harness({
+      cwd: dir,
+      env: { QUORUM_CONFIG: two },
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     const lines = stderr().split('\n')
     expect(lines.slice(0, 5)).toEqual([
@@ -463,55 +648,106 @@ describe('exitCodeFor', () => {
     discarded: [],
     unreviewed,
     meta: {
-      profiles: Object.fromEntries(Object.entries(gating).map(([id, value]) => [id, { gating: value }])),
-      incomplete: gaps.map(profile => profile === undefined ? {} : { profile }),
+      profiles: Object.fromEntries(Object.entries(gating).map(([id, value]) => [
+        id,
+        { gating: value },
+      ])),
+      incomplete: gaps.map(profile => profile === undefined
+        ? {}
+        : { profile }),
     },
   }) as unknown as QuorumResult
 
   it('exits 1 only for a kept high finding of a gating profile', () => {
-    expect(exitCodeFor(result([kept('style', 'high')], { style: false }))).toBe(EXIT.ok)
-    expect(exitCodeFor(result([kept('style', 'high')], { style: false }, [undefined]))).toBe(EXIT.incomplete)
-    expect(exitCodeFor(result([kept('style', 'high'), kept('security', 'medium')], { style: false, security: true }))).toBe(EXIT.ok)
-    expect(exitCodeFor(result([kept('style', 'high'), kept('security', 'high')], { style: false, security: true }, [undefined]))).toBe(EXIT.finding)
+    expect(exitCodeFor(result([
+      kept('style', 'high'),
+    ], { style: false }))).toBe(EXIT.ok)
+    expect(exitCodeFor(result([
+      kept('style', 'high'),
+    ], { style: false }, [undefined]))).toBe(EXIT.incomplete)
+    expect(exitCodeFor(result([
+      kept('style', 'high'),
+      kept('security', 'medium'),
+    ], { style: false, security: true }))).toBe(EXIT.ok)
+    expect(exitCodeFor(result([
+      kept('style', 'high'),
+      kept('security', 'high'),
+    ], { style: false, security: true }, [undefined]))).toBe(EXIT.finding)
   })
 
   it('counts a profile missing from meta as gating, so a gap in the result never hides a finding', () => {
-    expect(exitCodeFor(result([kept('security', 'high')], {}))).toBe(EXIT.finding)
-    expect(exitCodeFor({ ...result([kept('security', 'high')], {}), meta: { profiles: { security: {} }, incomplete: [] } } as unknown as QuorumResult)).toBe(EXIT.finding)
+    expect(exitCodeFor(result([
+      kept('security', 'high'),
+    ], {}))).toBe(EXIT.finding)
+    expect(exitCodeFor({
+      ...result([
+        kept('security', 'high'),
+      ], {}),
+      meta: {
+        profiles: { security: {} },
+        incomplete: [],
+      },
+    } as unknown as QuorumResult)).toBe(EXIT.finding)
   })
 
   it('exits 4 for a gap of a gating profile, and 0 for one of an advisory profile', () => {
     const gating = { security: true, style: false }
     expect(exitCodeFor(result([], gating, ['security']))).toBe(EXIT.incomplete)
     expect(exitCodeFor(result([], gating, ['style']))).toBe(EXIT.ok)
-    expect(exitCodeFor(result([], gating, [], [kept('style', undefined)]))).toBe(EXIT.ok)
-    expect(exitCodeFor(result([], gating, [], [kept('security', undefined)]))).toBe(EXIT.incomplete)
+    expect(exitCodeFor(result([], gating, [], [
+      kept('style', undefined),
+    ]))).toBe(EXIT.ok)
+    expect(exitCodeFor(result([], gating, [], [
+      kept('security', undefined),
+    ]))).toBe(EXIT.incomplete)
     expect(exitCodeFor(result([], {}, ['team']))).toBe(EXIT.incomplete)
   })
 
   it('turns 4 into 0 with allowIncomplete, and never 1', () => {
     expect(exitCodeFor(result([], { security: true }, ['security']), { allowIncomplete: true })).toBe(EXIT.ok)
-    expect(exitCodeFor(result([kept('security', 'high')], { security: true }, ['security']), { allowIncomplete: true })).toBe(EXIT.finding)
+    expect(exitCodeFor(result([
+      kept('security', 'high'),
+    ], { security: true }, ['security']), { allowIncomplete: true })).toBe(EXIT.finding)
   })
 
   const withGaps = (gating: Record<string, boolean>, gaps: object[], verdicts: Verdict[] = []): QuorumResult => {
     const base = result(verdicts, gating)
-    return { ...base, meta: { ...base.meta, incomplete: gaps } } as unknown as QuorumResult
+    return {
+      ...base,
+      meta: { ...base.meta, incomplete: gaps },
+    } as unknown as QuorumResult
   }
-  const refused = (profile?: string): object => ({ ...profile === undefined ? {} : { profile }, reason: 'request-too-large' })
+  const refused = (profile?: string): object => ({
+    ...profile === undefined
+      ? {}
+      : { profile },
+    reason: 'request-too-large',
+  })
 
   it('exits 4 for a request-too-large gap of a gating profile, even with allowIncomplete, and 1 when a gating high finding was kept', () => {
     for (const allowIncomplete of [false, true]) {
-      expect(exitCodeFor(withGaps({ security: true }, [refused('security')]), { allowIncomplete })).toBe(EXIT.incomplete)
-      expect(exitCodeFor(withGaps({}, [refused('team')]), { allowIncomplete })).toBe(EXIT.incomplete)
-      expect(exitCodeFor(withGaps({ style: false }, [refused()]), { allowIncomplete })).toBe(EXIT.incomplete)
-      expect(exitCodeFor(withGaps({ security: true }, [refused('security')], [kept('security', 'high')]), { allowIncomplete })).toBe(EXIT.finding)
+      expect(exitCodeFor(withGaps({ security: true }, [
+        refused('security'),
+      ]), { allowIncomplete })).toBe(EXIT.incomplete)
+      expect(exitCodeFor(withGaps({}, [
+        refused('team'),
+      ]), { allowIncomplete })).toBe(EXIT.incomplete)
+      expect(exitCodeFor(withGaps({ style: false }, [
+        refused(),
+      ]), { allowIncomplete })).toBe(EXIT.incomplete)
+      expect(exitCodeFor(withGaps({ security: true }, [
+        refused('security'),
+      ], [
+        kept('security', 'high'),
+      ]), { allowIncomplete })).toBe(EXIT.finding)
     }
   })
 
   it('exits 0 for a request-too-large gap of an advisory profile, with or without allowIncomplete', () => {
     for (const allowIncomplete of [false, true]) {
-      expect(exitCodeFor(withGaps({ security: true, style: false }, [refused('style')]), { allowIncomplete })).toBe(EXIT.ok)
+      expect(exitCodeFor(withGaps({ security: true, style: false }, [
+        refused('style'),
+      ]), { allowIncomplete })).toBe(EXIT.ok)
     }
   })
 })
@@ -529,7 +765,10 @@ describe('the diff byte cap', () => {
         yield new Uint8Array(size).fill(0x61)
       }
     }
-    return { stdin: Object.assign(chunks(), { isTTY: false }), pulled: () => pulled }
+    return {
+      stdin: Object.assign(chunks(), { isTTY: false }),
+      pulled: () => pulled,
+    }
   }
 
   it('refuses a diff on stdin over 16 MiB, reads no further, and sends nothing', async () => {
@@ -552,7 +791,10 @@ describe('the diff byte cap', () => {
 
   it('counts bytes, not characters', async () => {
     const fetchMock = stubChat()
-    const { io, stderr } = harness({ env: MODEL, stdin: String.fromCharCode(0xE9).repeat(8 * MiB + 1) })
+    const { io, stderr } = harness({
+      env: MODEL,
+      stdin: String.fromCharCode(0xE9).repeat(8 * MiB + 1),
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toBe(OVER)
     expect(fetchMock).not.toHaveBeenCalled()
@@ -562,7 +804,10 @@ describe('the diff byte cap', () => {
     const fetchMock = stubChat()
     const path = join(dir, 'huge.diff')
     writeFileSync(path, new Uint8Array(16 * MiB + 1).fill(0x61))
-    const { io, stderr } = harness({ argv: [path], env: MODEL })
+    const { io, stderr } = harness({
+      argv: [path],
+      env: MODEL,
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toBe(OVER)
     expect(fetchMock).not.toHaveBeenCalled()
@@ -570,7 +815,12 @@ describe('the diff byte cap', () => {
 
   it('drops a byte-order mark at the start of a diff file, as it does on stdin', async () => {
     const fetchMock = stubChat(JSON.stringify({ findings: [] }))
-    const { io } = harness({ argv: [write('bom.diff', `${String.fromCharCode(0xFEFF)}${DIFF}`)], env: MODEL })
+    const { io } = harness({
+      argv: [
+        write('bom.diff', `${String.fromCharCode(0xFEFF)}${DIFF}`),
+      ],
+      env: MODEL,
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect((sent(fetchMock).body.messages as Array<{ content: string }>)[1].content).toContain(`>\n${DIFF}\n</untrusted-diff-`)
   })
@@ -580,11 +830,16 @@ describe('the size guard', () => {
   it('sends nothing and exits 4, even with --allow-incomplete, when the research request may not fit the model', async () => {
     const config = write('small.yaml', 'providers:\n  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 17000}\n')
     const fetchMock = stubChat()
-    const { io, stdout, stderr } = harness({ argv: ['--config', config, '--allow-incomplete'], stdin: DIFF })
+    const { io, stdout, stderr } = harness({
+      argv: ['--config', config, '--allow-incomplete'],
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     expect(fetchMock).not.toHaveBeenCalled()
     const refusal = 'local: may need 18089 tokens, more than contextTokens (17000): 1577 for its text at one token per byte, 512 for the chat template and 16000 for the reply'
-    expect((JSON.parse(stdout()) as QuorumResult).meta.incomplete).toEqual([{ profile: 'security', reason: 'request-too-large', detail: `the research request was not sent: ${refusal}` }])
+    expect((JSON.parse(stdout()) as QuorumResult).meta.incomplete).toEqual([
+      { profile: 'security', reason: 'request-too-large', detail: `the research request was not sent: ${refusal}` },
+    ])
     expect(stderr()).toContain(`incomplete: request-too-large (the research request was not sent: ${refusal})\n`)
   })
 
@@ -596,18 +851,37 @@ describe('the size guard', () => {
       'roles: {research: local, voter: small}',
       '',
     ].join('\n')
-    const fetchMock = stubChat(JSON.stringify({ findings: [FINDING] }))
-    const { io, stdout } = harness({ argv: ['--config', write('small-voter.yaml', yaml), '--allow-incomplete'], stdin: DIFF })
+    const fetchMock = stubChat(JSON.stringify({
+      findings: [FINDING],
+    }))
+    const { io, stdout } = harness({
+      argv: [
+        '--config',
+        write('small-voter.yaml', yaml),
+        '--allow-incomplete',
+      ],
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const result = JSON.parse(stdout()) as QuorumResult
-    expect(result.unreviewed.map(verdict => [verdict.file, verdict.votes.map(entry => entry.vote)])).toEqual([['a.js', [null, null, null]]])
-    expect(result.meta.incomplete).toEqual([{
-      profile: 'security',
-      reason: 'request-too-large',
-      file: 'a.js',
-      detail: '"a.js":1: 3 of 3 vote requests were not sent: small: may need 18062 tokens, more than contextTokens (17000): 1550 for its text at one token per byte, 512 for the chat template and 16000 for the reply',
-    }])
+    expect(result.unreviewed.map(verdict => [
+      verdict.file,
+      verdict.votes.map(entry => entry.vote),
+    ])).toEqual([
+      [
+        'a.js',
+        [null, null, null],
+      ],
+    ])
+    expect(result.meta.incomplete).toEqual([
+      {
+        profile: 'security',
+        reason: 'request-too-large',
+        file: 'a.js',
+        detail: '"a.js":1: 3 of 3 vote requests were not sent: small: may need 18062 tokens, more than contextTokens (17000): 1550 for its text at one token per byte, 512 for the chat template and 16000 for the reply',
+      },
+    ])
   })
 })
 
@@ -615,7 +889,10 @@ describe('flags', () => {
   it('prints the help on stdout and exits 0, reading neither the diff nor a config', async () => {
     for (const flag of ['--help', '-h']) {
       const fetchMock = stubChat()
-      const { io, stdout, stderr } = harness({ argv: [flag, 'ignored.diff'], isTTY: true })
+      const { io, stdout, stderr } = harness({
+        argv: [flag, 'ignored.diff'],
+        isTTY: true,
+      })
       expect(await runCli(io)).toBe(EXIT.ok)
       expect(stdout()).toBe(USAGE)
       expect(stderr()).toBe('')
@@ -624,38 +901,59 @@ describe('flags', () => {
   })
 
   it('prints the version on stdout and exits 0', async () => {
-    const { io, stdout } = harness({ argv: ['--version'] })
+    const { io, stdout } = harness({
+      argv: ['--version'],
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stdout()).toBe(`quorum ${packageJson.version}\n`)
   })
 
   it('reads a diff file named like a flag after --', async () => {
-    const { io, stderr } = harness({ argv: ['--', '--help'], env: MODEL })
+    const { io, stderr } = harness({
+      argv: ['--', '--help'],
+      env: MODEL,
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toMatch(/^Error: ENOENT: no such file or directory, open '.*--help'\nUsage:/)
   })
 
   it('exits 2 for an unknown flag, naming it and never a value given with it', async () => {
-    const { io, stdout, stderr } = harness({ argv: ['--nope=sk-SECRET'], env: MODEL, stdin: DIFF })
+    const { io, stdout, stderr } = harness({
+      argv: ['--nope=sk-SECRET'],
+      env: MODEL,
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toBe(`Error: Unknown option '--nope'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "--nope"\n${USAGE}`)
     expect(`${stdout()}${stderr()}`).not.toContain('SECRET')
   })
 
   it('keeps a usage error of several lines to one inert line each', async () => {
-    const { io, stderr } = harness({ argv: ['--config', '--help'], env: MODEL, stdin: DIFF })
+    const { io, stderr } = harness({
+      argv: ['--config', '--help'],
+      env: MODEL,
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toBe(`Error: Option '--config' argument is ambiguous.\nDid you forget to specify the option argument for '--config'?\nTo specify an option argument starting with a dash use '--config=-XYZ'.\n${USAGE}`)
   })
 
   it('exits 2 for a second diff argument', async () => {
-    const { io, stderr } = harness({ argv: ['a.diff', 'b.diff'], env: MODEL })
+    const { io, stderr } = harness({
+      argv: ['a.diff', 'b.diff'],
+      env: MODEL,
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toBe(`Error: unexpected arguments: b.diff\n${USAGE}`)
   })
 
   it('exits 2 for an empty --config instead of reading the working directory', async () => {
-    const { io, stderr } = harness({ argv: ['--config='], cwd: dir, env: MODEL, stdin: DIFF })
+    const { io, stderr } = harness({
+      argv: ['--config='],
+      cwd: dir,
+      env: MODEL,
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toBe(`Error: --config: must name a file\n${USAGE}`)
   })
@@ -664,27 +962,62 @@ describe('flags', () => {
     write('flag.yaml', 'providers:\n  flag: {protocol: openai-compatible, baseUrl: "https://flag.example/v1", model: f, contextTokens: 131072}\n')
     const team = write('team.yaml', TEAM_YAML)
     const fetchMock = stubChat('{"findings":[]}')
-    const { io } = harness({ argv: ['-c', 'flag.yaml'], cwd: dir, env: { QUORUM_CONFIG: team }, stdin: DIFF })
+    const { io } = harness({
+      argv: ['-c', 'flag.yaml'],
+      cwd: dir,
+      env: { QUORUM_CONFIG: team },
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(sent(fetchMock).url).toBe('https://flag.example/v1/chat/completions')
   })
 
   it('runs only the profiles --profile names, over QUORUM_PROFILES', async () => {
     const two = write('two.yaml', TWO_YAML)
-    stubFetch({ choices: [{ message: { content: '{"findings":[]}' } }] })
-    const team = harness({ argv: ['--profile', 'team'], cwd: dir, env: { QUORUM_CONFIG: two }, stdin: DIFF })
+    stubFetch({
+      choices: [
+        {
+          message: { content: '{"findings":[]}' },
+        },
+      ],
+    })
+    const team = harness({
+      argv: ['--profile', 'team'],
+      cwd: dir,
+      env: { QUORUM_CONFIG: two },
+      stdin: DIFF,
+    })
     expect(await runCli(team.io)).toBe(EXIT.ok)
     expect(Object.keys(JSON.parse(team.stdout()).meta.profiles)).toEqual(['team'])
     expect(team.stderr()).toContain('\nPanel will use grounded (m @ http://localhost:11434), significant (v @ https://v.example)\n')
-    const security = harness({ argv: ['-p', 'security'], cwd: dir, env: { QUORUM_CONFIG: two, QUORUM_PROFILES: 'team' }, stdin: DIFF })
+    const security = harness({
+      argv: ['-p', 'security'],
+      cwd: dir,
+      env: { QUORUM_CONFIG: two, QUORUM_PROFILES: 'team' },
+      stdin: DIFF,
+    })
     expect(await runCli(security.io)).toBe(EXIT.ok)
     expect(Object.keys(JSON.parse(security.stdout()).meta.profiles)).toEqual(['security'])
   })
 
   it.each<[string[], string]>([
-    [['--profile', 'security', '--profile', 'security'], 'Error: --profile: names a profile more than once\n'],
-    [['--profile', 'secrity'], 'Error: --profile: unknown profile "secrity" (did you mean "security"?)\n'],
-    [['-p', 'Security'], 'Error: --profile: must be a profile id matching ^[a-z][a-z0-9_-]*$\n'],
+    [
+      [
+        '--profile',
+        'security',
+        '--profile',
+        'security',
+      ],
+      'Error: --profile: names a profile more than once\n',
+    ],
+    [
+      ['--profile', 'secrity'],
+      'Error: --profile: unknown profile "secrity" (did you mean "security"?)\n',
+    ],
+    [
+      ['-p', 'Security'],
+      'Error: --profile: must be a profile id matching ^[a-z][a-z0-9_-]*$\n',
+    ],
   ])('exits 2 for --profile %j, before any request', async (argv, error) => {
     const fetchMock = stubChat()
     const { io, stderr } = harness({ argv, env: MODEL, stdin: DIFF })
@@ -715,7 +1048,12 @@ describe('--print-config', () => {
       'concurrency: 2',
       '',
     ].join('\n'))
-    const { io, stdout, stderr } = harness({ argv: ['--print-config', '--config', 'gateway.yaml'], cwd: dir, env: { GATEWAY_KEY: 'sk-live-SECRET' }, isTTY: true })
+    const { io, stdout, stderr } = harness({
+      argv: ['--print-config', '--config', 'gateway.yaml'],
+      cwd: dir,
+      env: { GATEWAY_KEY: 'sk-live-SECRET' },
+      isTTY: true,
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stdout()).toBe([
       `source: ${join(dir, 'gateway.yaml')}`,
@@ -767,26 +1105,51 @@ describe('--print-config', () => {
   })
 
   it('redacts a key from the environment and a token in the base URL\'s path, and prints source null with no file', async () => {
-    const preset = harness({ argv: ['--print-config'], env: { QUORUM_RESEARCH_PRESET: 'openai', QUORUM_RESEARCH_MODEL: 'gpt-5', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', OPENAI_API_KEY: 'sk-openai-SECRET' } })
+    const preset = harness({
+      argv: ['--print-config'],
+      env: {
+        QUORUM_RESEARCH_PRESET: 'openai',
+        QUORUM_RESEARCH_MODEL: 'gpt-5',
+        QUORUM_RESEARCH_CONTEXT_TOKENS: '131072',
+        OPENAI_API_KEY: 'sk-openai-SECRET',
+      },
+    })
     expect(await runCli(preset.io)).toBe(EXIT.ok)
     expect(preset.stdout()).toMatch(/^source: null\nproviders:\n {2}default:\n {4}preset: openai\n {4}origin: https:\/\/api\.openai\.com\n {4}model: gpt-5\n {4}contextTokens: 131072\n {4}apiKey: "\[redacted\]"\nprofiles:\n/)
-    const path = harness({ argv: ['--print-config'], env: { QUORUM_RESEARCH_BASE_URL: 'https://h.example/token-SECRET/v1', QUORUM_RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_RESEARCH_API_KEY: 'sk-SECRET' } })
+    const path = harness({
+      argv: ['--print-config'],
+      env: {
+        QUORUM_RESEARCH_BASE_URL: 'https://h.example/token-SECRET/v1',
+        QUORUM_RESEARCH_MODEL: 'm',
+        QUORUM_RESEARCH_CONTEXT_TOKENS: '131072',
+        QUORUM_RESEARCH_API_KEY: 'sk-SECRET',
+      },
+    })
     expect(await runCli(path.io)).toBe(EXIT.ok)
     expect(path.stdout()).toContain('    protocol: openai-compatible\n    origin: https://h.example\n    model: m\n    contextTokens: 131072\n    apiKey: "[redacted]"\n')
     expect(`${preset.stdout()}${path.stdout()}`).not.toContain('SECRET')
   })
 
   it('prints the built-in default as Ollama\'s native protocol on this machine, and a base URL alone as an OpenAI-compatible server', async () => {
-    const native = harness({ argv: ['--print-config'], env: DEFAULT })
+    const native = harness({
+      argv: ['--print-config'],
+      env: DEFAULT,
+    })
     expect(await runCli(native.io)).toBe(EXIT.ok)
     expect(native.stdout()).toMatch(/^source: null\nproviders:\n {2}default:\n {4}protocol: ollama\n {4}origin: http:\/\/localhost:11434\n {4}model: m\n {4}contextTokens: 131072\nprofiles:\n/)
-    const url = harness({ argv: ['--print-config'], env: MODEL })
+    const url = harness({
+      argv: ['--print-config'],
+      env: MODEL,
+    })
     expect(await runCli(url.io)).toBe(EXIT.ok)
     expect(url.stdout()).toMatch(/^source: null\nproviders:\n {2}default:\n {4}protocol: openai-compatible\n {4}origin: http:\/\/localhost:11434\n {4}model: m\n {4}contextTokens: 131072\nprofiles:\n/)
   })
 
   it('lists the config\'s warnings in the YAML, and none on stderr', async () => {
-    const { io, stdout, stderr } = harness({ argv: ['--print-config'], env: { RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' } })
+    const { io, stdout, stderr } = harness({
+      argv: ['--print-config'],
+      env: { RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stdout()).toMatch(/\nwarnings:\n {2}- "RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead"\n$/)
     expect(stderr()).toBe('')
@@ -794,14 +1157,27 @@ describe('--print-config', () => {
 
   it('prints only the profiles --profile selects, and a custom prompt by its SHA-256', async () => {
     write('abc.yaml', 'profiles:\n  team: {prompts: {research: abc, vote: abc}, lenses: [{id: a, question: q}]}\n')
-    const { io, stdout } = harness({ argv: ['--print-config', '-c', 'abc.yaml', '-p', 'team'], cwd: dir, env: MODEL })
+    const { io, stdout } = harness({
+      argv: [
+        '--print-config',
+        '-c',
+        'abc.yaml',
+        '-p',
+        'team',
+      ],
+      cwd: dir,
+      env: MODEL,
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stdout()).toContain('\nprofiles:\n  team:\n    gating: true\n    research: default\n    lenses:\n      a: default\n    thresholds:\n      high: 1\n      medium: 1\n      low: null\n    prompts:\n      research: sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n')
     expect(stdout()).not.toContain('security')
   })
 
   it('reads no diff: a diff argument is a usage error', async () => {
-    const { io, stdout, stderr } = harness({ argv: ['--print-config', 'x.diff'], env: MODEL })
+    const { io, stdout, stderr } = harness({
+      argv: ['--print-config', 'x.diff'],
+      env: MODEL,
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stdout()).toBe('')
     expect(stderr()).toBe(`Error: --print-config takes no diff file\n${USAGE}`)
@@ -810,14 +1186,19 @@ describe('--print-config', () => {
   it('prints every line inert, a hidden character in the source path included', async () => {
     const name = `q${String.fromCharCode(0x202E)}.yaml`
     write(name, 'providers:\n  a: {preset: ollama, model: m, contextTokens: 131072}\n')
-    const { io, stdout } = harness({ argv: ['--print-config', '--config', name], cwd: dir })
+    const { io, stdout } = harness({
+      argv: ['--print-config', '--config', name],
+      cwd: dir,
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stdout()).toContain(`source: ${join(dir, 'q<U+202E>.yaml')}\n`)
     expect(stdout().replaceAll('\n', '')).not.toMatch(ANY_HIDDEN)
   })
 
   it('exits 2 on a configuration error, as a run does', async () => {
-    const { io, stdout, stderr } = harness({ argv: ['--print-config'] })
+    const { io, stdout, stderr } = harness({
+      argv: ['--print-config'],
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stdout()).toBe('')
     expect(stderr()).toBe('Error: no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one\n')
@@ -826,11 +1207,21 @@ describe('--print-config', () => {
   it('exits 2 for a provider with no context size, as a run does, and sends nothing', async () => {
     const NO_CONTEXT = 'Error: no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens\n'
     const fetchMock = stubChat()
-    const env = harness({ argv: ['--print-config'], env: { QUORUM_RESEARCH_MODEL: 'm' } })
+    const env = harness({
+      argv: ['--print-config'],
+      env: { QUORUM_RESEARCH_MODEL: 'm' },
+    })
     expect(await runCli(env.io)).toBe(EXIT.usage)
     expect(env.stdout()).toBe('')
     expect(env.stderr()).toBe(NO_CONTEXT)
-    const file = harness({ argv: ['--print-config', '--config', write('no-context.yaml', 'providers:\n  a: {preset: ollama, model: m}\n')], cwd: dir })
+    const file = harness({
+      argv: [
+        '--print-config',
+        '--config',
+        write('no-context.yaml', 'providers:\n  a: {preset: ollama, model: m}\n'),
+      ],
+      cwd: dir,
+    })
     expect(await runCli(file.io)).toBe(EXIT.usage)
     expect(file.stdout()).toBe('')
     expect(file.stderr()).toBe('Error: providers.a.contextTokens: is required: the model\'s context window in tokens, which quorum checks every request against\n')
@@ -839,11 +1230,16 @@ describe('--print-config', () => {
 
   it('exits 2 for a config only the run\'s own build refuses, a provider object whose model is not a string', async () => {
     const bad = write('print-model.mjs', 'export default { providers: { mine: { model: 42, complete: async () => ({ text: \'{}\', model: \'m\' }) } } }\n')
-    const printing = harness({ argv: ['--print-config', '--config', bad] })
+    const printing = harness({
+      argv: ['--print-config', '--config', bad],
+    })
     expect(await runCli(printing.io)).toBe(EXIT.usage)
     expect(printing.stdout()).toBe('')
     expect(printing.stderr()).toBe('Error: providers.mine.model: must be a string\n')
-    const running = harness({ argv: ['--config', bad], stdin: DIFF })
+    const running = harness({
+      argv: ['--config', bad],
+      stdin: DIFF,
+    })
     expect(await runCli(running.io)).toBe(EXIT.usage)
     expect(running.stderr()).toBe(printing.stderr())
   })
@@ -879,7 +1275,12 @@ describe('interrupts', () => {
   it('exits 3, never 130, when the review rejects with an AbortError its own signal did not raise', async () => {
     const rejects = write('rejects.mjs', 'export default { providers: { mine: { model: \'m\', complete: () => Promise.reject(undefined) } } }\n')
     const controller = new AbortController()
-    const { io, stdout, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: rejects }, stdin: DIFF, signal: controller.signal })
+    const { io, stdout, stderr } = harness({
+      cwd: dir,
+      env: { QUORUM_CONFIG: rejects },
+      stdin: DIFF,
+      signal: controller.signal,
+    })
     expect(await runCli(io)).toBe(EXIT.runtime)
     expect(controller.signal.aborted).toBe(false)
     expect(stdout()).toBe('')
@@ -890,7 +1291,11 @@ describe('interrupts', () => {
 
 describe('interruptSignal', () => {
   it('aborts on the first SIGINT or SIGTERM, and exits 130 on the next', () => {
-    for (const [first, second] of [['SIGINT', 'SIGTERM'], ['SIGTERM', 'SIGINT'], ['SIGINT', 'SIGINT']]) {
+    for (const [first, second] of [
+      ['SIGINT', 'SIGTERM'],
+      ['SIGTERM', 'SIGINT'],
+      ['SIGINT', 'SIGINT'],
+    ]) {
       const source = new EventEmitter()
       const exit = vi.fn()
       const signal = interruptSignal(source, exit)
@@ -915,24 +1320,36 @@ describe('inert output', () => {
 
   it('writes the banner inert, a provider object\'s model with a hidden character included', async () => {
     const object = write('object.mjs', `export default { providers: { mine: { model: 'm${String.fromCharCode(0x202E)}', complete: async () => ({ text: '{"findings":[]}', model: 'm' }) } } }\n`)
-    const { io, stderr } = harness({ cwd: dir, env: { QUORUM_CONFIG: object }, stdin: '  \n' })
+    const { io, stderr } = harness({
+      cwd: dir,
+      env: { QUORUM_CONFIG: object },
+      stdin: '  \n',
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stderr()).toContain('Research (m<U+202E> @ the provider object mine)...\n')
     expect(stderr().replaceAll('\n', '')).not.toMatch(ANY_HIDDEN)
   })
 
   it('keeps a configuration error to one issue per line, and any other error to one line', async () => {
-    const config = harness({ env: { ...MODEL, QUORUM_RESEARCH_BASE_URL: 'localhost:11434/v1', QUORUM_RESEARCH_API_KEY: 'sk bad' }, stdin: DIFF })
+    const config = harness({
+      env: { ...MODEL, QUORUM_RESEARCH_BASE_URL: 'localhost:11434/v1', QUORUM_RESEARCH_API_KEY: 'sk bad' },
+      stdin: DIFF,
+    })
     expect(await runCli(config.io)).toBe(EXIT.usage)
     expect(config.stderr()).toBe('Error: QUORUM_RESEARCH_BASE_URL: must be an http:// or https:// URL with a host\nQUORUM_RESEARCH_API_KEY: must only contain visible ASCII characters, which an HTTP header can carry\n')
-    const missing = harness({ argv: ['no\nsuch.diff'], env: MODEL })
+    const missing = harness({
+      argv: ['no\nsuch.diff'],
+      env: MODEL,
+    })
     expect(await runCli(missing.io)).toBe(EXIT.usage)
     expect(missing.stderr()).toMatch(/^Error: ENOENT: no such file or directory, open '.*no<U\+000A>such\.diff'\nUsage:/)
   })
 
   it('writes the JSON result inert: it parses back to the text the servers sent', async () => {
     vi.stubGlobal('fetch', vi.fn()
-      .mockImplementationOnce(async () => chatReply(JSON.stringify({ findings: [FINDING] })))
+      .mockImplementationOnce(async () => chatReply(JSON.stringify({
+        findings: [FINDING],
+      })))
       .mockImplementation(async () => failed('\u009B2J\u202E')))
     const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.incomplete)
@@ -941,7 +1358,12 @@ describe('inert output', () => {
   })
 
   it('writes no legacy workflow command, on stderr or in the JSON', async () => {
-    stubChat(JSON.stringify({ findings: [{ ...FINDING, file: '##[error]x.js' }, { ...FINDING, summary: '##[add-mask]e' }] }), vote(true), vote(true), vote(true))
+    stubChat(JSON.stringify({
+      findings: [
+        { ...FINDING, file: '##[error]x.js' },
+        { ...FINDING, summary: '##[add-mask]e' },
+      ],
+    }), vote(true), vote(true), vote(true))
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.finding)
     expect(stderr()).toContain('invalid finding dropped: ##<U+005B>error]x.js:1 is not in the diff\n')
@@ -952,10 +1374,20 @@ describe('inert output', () => {
 
   it('prints a flag on stderr and keeps it out of the exit code', async () => {
     stubChat(JSON.stringify({ findings: [] }))
-    const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF.replace('+exec(cmd)', '+exec(cmd)\u202E') })
+    const { io, stdout, stderr } = harness({
+      env: MODEL,
+      stdin: DIFF.replace('+exec(cmd)', '+exec(cmd)\u202E'),
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stderr()).toContain('flag: hidden-characters at "a.js":1 (U+202E on 1 added line(s))\n')
-    expect(JSON.parse(stdout()).meta.flags).toEqual([{ code: 'hidden-characters', file: 'a.js', line: 1, detail: 'U+202E on 1 added line(s)' }])
+    expect(JSON.parse(stdout()).meta.flags).toEqual([
+      {
+        code: 'hidden-characters',
+        file: 'a.js',
+        line: 1,
+        detail: 'U+202E on 1 added line(s)',
+      },
+    ])
   })
 })
 
@@ -973,7 +1405,13 @@ describe('a claude-code provider', () => {
   })
 
   it('reviews a diff through claude from the environment alone, and names the provider claude-code', async () => {
-    const { io, stdout, stderr } = harness({ env: { ...ccEnv(), ...fakeClaudeEnv(dir, 'cli', fixtures.noFindings) }, stdin: DIFF })
+    const { io, stdout, stderr } = harness({
+      env: {
+        ...ccEnv(),
+        ...fakeClaudeEnv(dir, 'cli', fixtures.noFindings),
+      },
+      stdin: DIFF,
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(JSON.parse(stdout()).kept).toEqual([])
     expect(stderr()).toContain('Research (haiku @ claude-code)...\nPanel will use haiku @ claude-code\n')
@@ -983,23 +1421,40 @@ describe('a claude-code provider', () => {
   })
 
   it('prints the claude it found, and exits 2 when the variable names none', async () => {
-    const printed = harness({ argv: ['--print-config'], env: ccEnv() })
+    const printed = harness({
+      argv: ['--print-config'],
+      env: ccEnv(),
+    })
     expect(await runCli(printed.io)).toBe(EXIT.ok)
     expect(printed.stdout()).toContain(`  default:\n    protocol: claude-code\n    command: ${claude}\n    model: haiku\n    contextTokens: 1000000\n    auth: inherit\nprofiles:\n`)
-    const missing = harness({ argv: ['--print-config'], env: ccEnv({ QUORUM_CLAUDE_CODE_COMMAND: join(dir, 'no-claude') }) })
+    const missing = harness({
+      argv: ['--print-config'],
+      env: ccEnv({
+        QUORUM_CLAUDE_CODE_COMMAND: join(dir, 'no-claude'),
+      }),
+    })
     expect(await runCli(missing.io)).toBe(EXIT.usage)
     expect(missing.stderr()).toBe('Error: QUORUM_CLAUDE_CODE_COMMAND: names no executable file\n')
   })
 
   it('warns that claude bills the key in the environment, without printing it or the command', async () => {
-    const { io, stdout } = harness({ argv: ['--print-config'], env: ccEnv({ ANTHROPIC_API_KEY: 'sk-SECRET' }) })
+    const { io, stdout } = harness({
+      argv: ['--print-config'],
+      env: ccEnv({ ANTHROPIC_API_KEY: 'sk-SECRET' }),
+    })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stdout()).toContain('warnings:\n  - "providers.default: ANTHROPIC_API_KEY is set, so Claude Code bills that key rather than its login: unset it, or set auth to login or api-key"\n')
     expect(stdout()).not.toContain('SECRET')
   })
 
   it('exits 2 naming the provider when claude is on no PATH entry, and prints no PATH entry', async () => {
-    const { io, stderr } = harness({ argv: ['--print-config'], env: { ...ccEnv({ QUORUM_CLAUDE_CODE_COMMAND: '' }), PATH: join(dir, 'empty-bin') } })
+    const { io, stderr } = harness({
+      argv: ['--print-config'],
+      env: {
+        ...ccEnv({ QUORUM_CLAUDE_CODE_COMMAND: '' }),
+        PATH: join(dir, 'empty-bin'),
+      },
+    })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toBe('Error: providers.default: claude CLI not found; install Claude Code or set QUORUM_CLAUDE_CODE_COMMAND\n')
   })

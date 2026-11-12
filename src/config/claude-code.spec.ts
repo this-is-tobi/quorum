@@ -24,14 +24,22 @@ afterAll(() => {
 
 describe('findCommand', () => {
   it('finds a name in the first absolute PATH entry that holds it as an executable file', () => {
-    expect(findCommand('claude', { PATH: [join(dir, 'none'), win, bin].join(':') }, 'linux')).toBe(join(bin, 'claude'))
+    expect(findCommand('claude', {
+      PATH: [
+        join(dir, 'none'),
+        win,
+        bin,
+      ].join(':'),
+    }, 'linux')).toBe(join(bin, 'claude'))
   })
 
   it('skips a file that is not executable, a directory, and every relative PATH entry', () => {
     expect(findCommand('plain', { PATH: bin }, 'linux')).toBeUndefined()
     expect(findCommand('folder', { PATH: bin }, 'linux')).toBeUndefined()
     const node = basename(process.execPath)
-    expect(findCommand(node, { PATH: dirname(process.execPath) }, 'linux')).toBe(process.execPath)
+    expect(findCommand(node, {
+      PATH: dirname(process.execPath),
+    }, 'linux')).toBe(process.execPath)
     expect(findCommand(node, { PATH: `${relative(process.cwd(), dirname(process.execPath))}::.` }, 'linux')).toBeUndefined()
   })
 
@@ -70,23 +78,55 @@ describe('findCommand', () => {
 })
 
 describe('claudeCodeCommand', () => {
-  const settings = (command?: string): Parameters<typeof claudeCodeCommand>[1] => ({ protocol: 'claude-code', model: 'sonnet', contextTokens: 1000000, ...command === undefined ? {} : { command } })
+  const settings = (command?: string): Parameters<typeof claudeCodeCommand>[1] => ({
+    protocol: 'claude-code',
+    model: 'sonnet',
+    contextTokens: 1000000,
+    ...command === undefined
+      ? {}
+      : { command },
+  })
   const onPath = { PATH: bin }
 
   it('takes the variable over the settings\' command, and that over claude on PATH', () => {
-    expect(claudeCodeCommand('cc', settings(join(win, 'claude.exe')), join(bin, 'claude'), onPath)).toEqual({ command: join(bin, 'claude'), issues: [] })
-    expect(claudeCodeCommand('cc', settings(join(bin, 'plain')), undefined, onPath)).toEqual({ issues: [{ path: 'providers.cc.command', message: 'names no executable file' }] })
-    expect(claudeCodeCommand('cc', settings(), undefined, onPath)).toEqual({ command: join(bin, 'claude'), issues: [] })
+    expect(claudeCodeCommand('cc', settings(join(win, 'claude.exe')), join(bin, 'claude'), onPath)).toEqual({
+      command: join(bin, 'claude'),
+      issues: [],
+    })
+    expect(claudeCodeCommand('cc', settings(join(bin, 'plain')), undefined, onPath)).toEqual({
+      issues: [
+        { path: 'providers.cc.command', message: 'names no executable file' },
+      ],
+    })
+    expect(claudeCodeCommand('cc', settings(), undefined, onPath)).toEqual({
+      command: join(bin, 'claude'),
+      issues: [],
+    })
   })
 
   it('finds a bare name of the settings on PATH', () => {
-    expect(claudeCodeCommand('cc', settings('claude'), undefined, onPath)).toEqual({ command: join(bin, 'claude'), issues: [] })
+    expect(claudeCodeCommand('cc', settings('claude'), undefined, onPath)).toEqual({
+      command: join(bin, 'claude'),
+      issues: [],
+    })
   })
 
   it('names where a missing command came from, and holds no path or value', () => {
-    expect(claudeCodeCommand('cc', settings(), undefined, {})).toEqual({ issues: [{ path: 'providers.cc', message: CLAUDE_NOT_FOUND }] })
-    expect(claudeCodeCommand('cc', settings(), join(dir, 'secret-path', 'claude'), onPath)).toEqual({ issues: [{ path: 'QUORUM_CLAUDE_CODE_COMMAND', message: 'names no executable file' }] })
-    expect(claudeCodeCommand('cc', settings(join(dir, 'secret-path', 'claude')), undefined, onPath)).toEqual({ issues: [{ path: 'providers.cc.command', message: 'names no executable file' }] })
+    expect(claudeCodeCommand('cc', settings(), undefined, {})).toEqual({
+      issues: [
+        { path: 'providers.cc', message: CLAUDE_NOT_FOUND },
+      ],
+    })
+    expect(claudeCodeCommand('cc', settings(), join(dir, 'secret-path', 'claude'), onPath)).toEqual({
+      issues: [
+        { path: 'QUORUM_CLAUDE_CODE_COMMAND', message: 'names no executable file' },
+      ],
+    })
+    expect(claudeCodeCommand('cc', settings(join(dir, 'secret-path', 'claude')), undefined, onPath)).toEqual({
+      issues: [
+        { path: 'providers.cc.command', message: 'names no executable file' },
+      ],
+    })
     expect(CLAUDE_NOT_FOUND).toBe('claude CLI not found; install Claude Code or set QUORUM_CLAUDE_CODE_COMMAND')
   })
 
@@ -96,13 +136,23 @@ describe('claudeCodeCommand', () => {
   })
 
   it('does not look the command of settings up when the variable names one', () => {
-    expect(claudeCodeCommand('cc', settings('./claude'), join(bin, 'claude'), {})).toEqual({ command: join(bin, 'claude'), issues: [] })
+    expect(claudeCodeCommand('cc', settings('./claude'), join(bin, 'claude'), {})).toEqual({
+      command: join(bin, 'claude'),
+      issues: [],
+    })
   })
 })
 
 describe('billingWarnings', () => {
   const WARNING = 'providers.cc: ANTHROPIC_API_KEY is set, so Claude Code bills that key rather than its login: unset it, or set auth to login or api-key'
-  const settings = (auth?: 'inherit' | 'login' | 'api-key'): Parameters<typeof billingWarnings>[1] => ({ protocol: 'claude-code', model: 'sonnet', contextTokens: 1000000, ...auth === undefined ? {} : { auth } })
+  const settings = (auth?: 'inherit' | 'login' | 'api-key'): Parameters<typeof billingWarnings>[1] => ({
+    protocol: 'claude-code',
+    model: 'sonnet',
+    contextTokens: 1000000,
+    ...auth === undefined
+      ? {}
+      : { auth },
+  })
 
   it('warns under inherit, set or not, when ANTHROPIC_API_KEY is set', () => {
     expect(billingWarnings('cc', settings(), { ANTHROPIC_API_KEY: 'sk-k' })).toEqual([WARNING])

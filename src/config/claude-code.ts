@@ -33,8 +33,12 @@ function isExecutableFile(path: string, platform: NodeJS.Platform): boolean {
 
 /** The `PATH` of the environment: its own variable, in the letter case Windows gives its name, else undefined. */
 function searchPath(env: Env, platform: NodeJS.Platform): string | undefined {
-  const name = platform === 'win32' ? Object.keys(env).find(key => key.toUpperCase() === 'PATH') : 'PATH'
-  return name === undefined ? undefined : envValue(env, name)
+  const name = platform === 'win32'
+    ? Object.keys(env).find(key => key.toUpperCase() === 'PATH')
+    : 'PATH'
+  return name === undefined
+    ? undefined
+    : envValue(env, name)
 }
 
 /**
@@ -47,9 +51,17 @@ function searchPath(env: Env, platform: NodeJS.Platform): string | undefined {
  */
 export function findCommand(command: string, env: Env, platform: NodeJS.Platform = process.platform): string | undefined {
   if (commandProblem(command) !== undefined) return undefined
-  if (isAbsolute(command)) return isExecutableFile(command, platform) ? command : undefined
-  const file = platform === 'win32' && extname(command) === '' ? `${command}.exe` : command
-  const entries = (searchPath(env, platform) ?? '').split(platform === 'win32' ? ';' : ':').filter(entry => isAbsolute(entry))
+  if (isAbsolute(command)) {
+    return isExecutableFile(command, platform)
+      ? command
+      : undefined
+  }
+  const file = platform === 'win32' && extname(command) === ''
+    ? `${command}.exe`
+    : command
+  const entries = (searchPath(env, platform) ?? '').split(platform === 'win32'
+    ? ';'
+    : ':').filter(entry => isAbsolute(entry))
   return entries.map(entry => join(entry, file)).find(candidate => isExecutableFile(candidate, platform))
 }
 
@@ -70,9 +82,31 @@ export function claudeCodeCommand(name: string, settings: ProviderSettings, vari
   if (variable === undefined && named !== undefined && commandProblem(named) !== undefined) return { issues: [] }
   const found = findCommand(variable ?? named ?? DEFAULT_COMMAND, env)
   if (found !== undefined) return { command: found, issues: [] }
-  if (variable !== undefined) return { issues: [{ path: CLAUDE_CODE_COMMAND, message: NO_EXECUTABLE }] }
-  if (named !== undefined) return { issues: [{ path: configPath(['providers', name, 'command']), message: NO_EXECUTABLE }] }
-  return { issues: [{ path: configPath(['providers', name]), message: CLAUDE_NOT_FOUND }] }
+  if (variable !== undefined) {
+    return {
+      issues: [
+        { path: CLAUDE_CODE_COMMAND, message: NO_EXECUTABLE },
+      ],
+    }
+  }
+  if (named !== undefined) {
+    return {
+      issues: [
+        {
+          path: configPath(['providers', name, 'command']),
+          message: NO_EXECUTABLE,
+        },
+      ],
+    }
+  }
+  return {
+    issues: [
+      {
+        path: configPath(['providers', name]),
+        message: CLAUDE_NOT_FOUND,
+      },
+    ],
+  }
 }
 
 /**

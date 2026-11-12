@@ -16,9 +16,17 @@ export type OllamaOptions = HttpProviderOptions
  * 200 with the rendered template instead of a reply.
  */
 const RULES: Omit<AdapterRules, 'auth'> = {
-  reservedBodyKeys: ['model', 'messages', 'stream', 'truncate', 'shift'],
+  reservedBodyKeys: [
+    'model',
+    'messages',
+    'stream',
+    'truncate',
+    'shift',
+  ],
   toolBodyKeys: ['tools', '_debug_render_only'],
-  replyLimitPaths: [['options', 'num_predict']],
+  replyLimitPaths: [
+    ['options', 'num_predict'],
+  ],
   fixedHeaders: [],
   structuredOutputs: ['prompt', 'json', 'schema'],
 }
@@ -37,11 +45,18 @@ function numCtxIssues(id: string, extraBody: unknown): ConfigIssue[] {
   if (!isRecord(extraBody)) return []
   return Object.entries(extraBody).flatMap(([key, value]): ConfigIssue[] => {
     if (bodyKeyForm(key) !== OPTIONS) return []
-    if (!isRecord(value)) return [{ path: `${id}.${issuePath(['extraBody', key])}`, message: 'must be an object' }]
+    if (!isRecord(value)) {
+      return [
+        { path: `${id}.${issuePath(['extraBody', key])}`, message: 'must be an object' },
+      ]
+    }
     const numCtx = Object.keys(value)
       .filter(name => bodyKeyForm(name) === 'numctx')
       .map(name => ({ path: `${id}.${issuePath(['extraBody', key, name])}`, message: 'is set from contextTokens: set contextTokens instead' }))
-    return [...spellingIssues(id, key, OPTIONS), ...numCtx]
+    return [
+      ...spellingIssues(id, key, OPTIONS),
+      ...numCtx,
+    ]
   })
 }
 
@@ -64,12 +79,16 @@ function readReply(reply: unknown, { id, model }: Pick<OllamaOptions, 'id' | 'mo
   if (reply.done !== true || !DONE.has(reply.done_reason)) throw fail('invalid-response', 'reply has not finished')
   if (reply.done_reason === 'length') throw fail('truncated', 'reply was cut off by the token limit or the context')
 
-  const message = isRecord(reply.message) ? reply.message : {}
+  const message = isRecord(reply.message)
+    ? reply.message
+    : {}
   if (typeof message.content !== 'string') throw fail('invalid-response', 'reply has no text')
 
   return {
     text: message.content,
-    model: typeof reply.model === 'string' && reply.model !== '' ? reply.model : model,
+    model: typeof reply.model === 'string' && reply.model !== ''
+      ? reply.model
+      : model,
     usage: tokenUsage(reply, ['prompt_eval_count'], ['eval_count']),
   }
 }
@@ -104,7 +123,12 @@ export function ollama(options: OllamaOptions): Provider {
         headers,
         body: mergeBody({
           model,
-          messages: system === undefined ? messages : [{ role: 'system', content: system }, ...messages],
+          messages: system === undefined
+            ? messages
+            : [
+                { role: 'system', content: system },
+                ...messages,
+              ],
           stream: false,
           truncate: false,
           shift: false,

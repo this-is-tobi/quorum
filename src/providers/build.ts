@@ -51,12 +51,17 @@ const ADAPTERS: Readonly<Record<Protocol, (options: OpenAICompatibleOptions) => 
   gemini,
   ollama,
 }
-const PROTOCOLS: readonly string[] = [...Object.keys(ADAPTERS), 'claude-code']
+const PROTOCOLS: readonly string[] = [
+  ...Object.keys(ADAPTERS),
+  'claude-code',
+]
 const TOOL_MODEL = 'runs tools on the server by itself, which quorum never allows'
 
 /** The spec's value, or the preset's when the spec leaves it unset: a field set to `undefined` is unset, `null` is set. */
 function filled<T>(value: T | undefined, preset: T | undefined): T | undefined {
-  return value === undefined ? preset : value
+  return value === undefined
+    ? preset
+    : value
 }
 
 /**
@@ -73,18 +78,30 @@ function matchesModel(pattern: string, model: string): boolean {
 const TOOL_MODELS_AT_ORIGIN = new Map<string, string[]>()
 for (const { baseUrl, toolModels } of Object.values(presets)) {
   const origin = httpOrigin(baseUrl)
-  if (origin !== undefined) TOOL_MODELS_AT_ORIGIN.set(origin, [...TOOL_MODELS_AT_ORIGIN.get(origin) ?? [], ...toolModels])
+  if (origin !== undefined) {
+    TOOL_MODELS_AT_ORIGIN.set(origin, [
+      ...TOOL_MODELS_AT_ORIGIN.get(origin) ?? [],
+      ...toolModels,
+    ])
+  }
 }
 
 /** The patterns that hold a model: the named preset's, and those of every preset whose base URL has the origin of `baseUrl`. */
 function toolModelPatterns(preset: Preset | undefined, baseUrl: unknown): readonly string[] {
   const origin = httpOrigin(baseUrl)
-  return [...preset?.toolModels ?? [], ...origin === undefined ? [] : TOOL_MODELS_AT_ORIGIN.get(origin) ?? []]
+  return [
+    ...preset?.toolModels ?? [],
+    ...origin === undefined
+      ? []
+      : TOOL_MODELS_AT_ORIGIN.get(origin) ?? [],
+  ]
 }
 
 /** `value` as an object with no prototype when it is a record, so its fields are its own; any other value as it is, for the adapter to refuse. */
 function ownRecord(value: unknown): unknown {
-  return isRecord(value) ? withoutPrototype<Record<string, unknown>>(Object.entries(value)) : value
+  return isRecord(value)
+    ? withoutPrototype<Record<string, unknown>>(Object.entries(value))
+    : value
 }
 
 /** The fields of a spec as the builder reads them: whatever a caller or a config put in each. */
@@ -95,7 +112,10 @@ const BUILDER_FIELDS: ReadonlySet<string> = new Set(['preset', 'protocol', 'maxT
 /** The fields of the `claude-code` adapter alone. */
 const CLAUDE_CODE_FIELDS = ['args', 'command'] as const
 /** The fields no HTTP adapter is handed: the builder's own, and those of the `claude-code` adapter. */
-const NOT_FOR_HTTP: ReadonlySet<string> = new Set([...BUILDER_FIELDS, ...CLAUDE_CODE_FIELDS])
+const NOT_FOR_HTTP: ReadonlySet<string> = new Set([
+  ...BUILDER_FIELDS,
+  ...CLAUDE_CODE_FIELDS,
+])
 
 /** The options of a `claude-code` adapter: the spec's own fields, and an environment from the context alone. */
 function claudeCodeFields(entries: Array<[string, unknown]>, env: BuildContext['env']): Array<[string, unknown]> {
@@ -129,11 +149,15 @@ export function buildProvider(spec: ProviderSpec, context: BuildContext = {}): P
   const entries = Object.entries(spec)
   const own = withoutPrototype<Fields>(entries)
   const { id, model, preset: name, protocol: named, maxTokensField } = own
-  const preset = name === undefined ? undefined : presetOf(name)
+  const preset = name === undefined
+    ? undefined
+    : presetOf(name)
   const issues: ConfigIssue[] = []
   if (name !== undefined && preset === undefined) issues.push({ path: `${id}.preset`, message: `must be one of ${wordList(Object.keys(presets))}` })
 
-  let protocol: ProviderProtocol | undefined = named === undefined ? preset?.protocol : undefined
+  let protocol: ProviderProtocol | undefined = named === undefined
+    ? preset?.protocol
+    : undefined
   if (named === undefined && name === undefined) issues.push({ path: `${id}.protocol`, message: 'is required without a preset' })
   else if (named !== undefined && !(typeof named === 'string' && PROTOCOLS.includes(named))) issues.push({ path: `${id}.protocol`, message: `must be ${wordList(PROTOCOLS)}` })
   else if (named !== undefined && preset !== undefined && named !== preset.protocol) issues.push({ path: `${id}.protocol`, message: `must be ${preset.protocol}, the protocol of the ${name} preset` })
@@ -163,15 +187,31 @@ export function buildProvider(spec: ProviderSpec, context: BuildContext = {}): P
   if (protocol === undefined || (!cli && typeof baseUrl !== 'string') || !usableModel) throw new ConfigError(issues)
 
   const fields: Array<[string, unknown]> = cli
-    ? claudeCodeFields(entries, Object.hasOwn(context, 'env') ? context.env : undefined)
+    ? claudeCodeFields(entries, Object.hasOwn(context, 'env')
+        ? context.env
+        : undefined)
     : [
         ...entries.filter(([key]) => !NOT_FOR_HTTP.has(key)),
         ['baseUrl', baseUrl],
-        ['auth', ownRecord(filled(own.auth, preset?.auth))],
-        ['structuredOutput', filled(own.structuredOutput, preset?.structuredOutput)],
-        ['temperature', filled(own.temperature, preset?.temperature)],
+        [
+          'auth',
+          ownRecord(filled(own.auth, preset?.auth)),
+        ],
+        [
+          'structuredOutput',
+          filled(own.structuredOutput, preset?.structuredOutput),
+        ],
+        [
+          'temperature',
+          filled(own.temperature, preset?.temperature),
+        ],
       ]
-  if (protocol === 'openai-compatible') fields.push(['maxTokensField', filled(maxTokensField, preset?.maxTokensField)])
+  if (protocol === 'openai-compatible') {
+    fields.push([
+      'maxTokensField',
+      filled(maxTokensField, preset?.maxTokensField),
+    ])
+  }
   let adapterIssues: readonly ConfigIssue[] = []
   try {
     const provider = makeAdapter(protocol, fields)
@@ -180,5 +220,8 @@ export function buildProvider(spec: ProviderSpec, context: BuildContext = {}): P
     if (!(error instanceof ConfigError)) throw error
     adapterIssues = error.issues
   }
-  throw new ConfigError([...issues, ...adapterIssues])
+  throw new ConfigError([
+    ...issues,
+    ...adapterIssues,
+  ])
 }

@@ -18,13 +18,21 @@ import type { PresetName, Protocol } from './presets.ts'
 // The real adapter, under a spy that records the options the builder hands it.
 vi.mock('./claude-code.ts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./claude-code.ts')>()
-  return { ...actual, claudeCode: vi.fn(actual.claudeCode) }
+  return {
+    ...actual,
+    claudeCode: vi.fn(actual.claudeCode),
+  }
 })
 
 const request: CompletionRequest = {
   system: 'instructions',
-  messages: [{ role: 'user', content: 'data' }],
-  output: { name: 'panel_vote', schema: { type: 'object' } },
+  messages: [
+    { role: 'user', content: 'data' },
+  ],
+  output: {
+    name: 'panel_vote',
+    schema: { type: 'object' },
+  },
 }
 
 afterEach(() => {
@@ -34,14 +42,21 @@ afterEach(() => {
 type Body = Record<string, unknown>
 
 /** A recorded success of each protocol, so every adapter reads its reply. */
-const REPLIES: Record<Protocol, unknown> = { 'openai-compatible': chatCompletion, anthropic: message, gemini: generateContentResponse, ollama: chatResponse }
+const REPLIES: Record<Protocol, unknown> = {
+  'openai-compatible': chatCompletion,
+  anthropic: message,
+  gemini: generateContentResponse,
+  ollama: chatResponse,
+}
 
 /**
  * `spec` with a context size that no test here is about, which a spec of its own wins over. The spec's fields are
  * copied as they are, a getter as a getter, so a test that counts the builder's reads still counts them.
  */
 function sized<T extends object>(spec: T): T {
-  return Object.hasOwn(spec, 'contextTokens') ? spec : Object.defineProperties({ contextTokens: 131072 }, Object.getOwnPropertyDescriptors(spec)) as T
+  return Object.hasOwn(spec, 'contextTokens')
+    ? spec
+    : Object.defineProperties({ contextTokens: 131072 }, Object.getOwnPropertyDescriptors(spec)) as T
 }
 
 /** Build a provider from `spec`, send one request through it, and return what reached fetch. */
@@ -63,18 +78,42 @@ function issuesOf(spec: Record<string, unknown>): readonly ConfigIssue[] {
   return []
 }
 
-const conversation = [{ role: 'system', content: 'instructions' }, { role: 'user', content: 'data' }]
+const conversation = [
+  { role: 'system', content: 'instructions' },
+  { role: 'user', content: 'data' },
+]
 const RESPONSE_FORMATS: Record<StructuredOutput, unknown> = {
   prompt: undefined,
   json: { type: 'json_object' },
-  schema: { type: 'json_schema', json_schema: { name: 'panel_vote', schema: { type: 'object' }, strict: true } },
+  schema: {
+    type: 'json_schema',
+    json_schema: {
+      name: 'panel_vote',
+      schema: { type: 'object' },
+      strict: true,
+    },
+  },
 }
 /** An OpenAI-compatible body with a 900-token limit; toEqual reads an undefined field as absent. */
 function chat(model: string, temperature: number | undefined, field: string, mode: StructuredOutput): Body {
-  return { model, messages: conversation, response_format: RESPONSE_FORMATS[mode], temperature, [field]: 900 }
+  return {
+    model,
+    messages: conversation,
+    response_format: RESPONSE_FORMATS[mode],
+    temperature,
+    [field]: 900,
+  }
 }
 function ollamaChat(model: string): Body {
-  return { model, messages: conversation, stream: false, truncate: false, shift: false, options: { temperature: 0, num_predict: 900, num_ctx: 131072 }, format: 'json' }
+  return {
+    model,
+    messages: conversation,
+    stream: false,
+    truncate: false,
+    shift: false,
+    options: { temperature: 0, num_predict: 900, num_ctx: 131072 },
+    format: 'json',
+  }
 }
 const bearer = { authorization: 'Bearer sk-k' }
 const AZURE = 'https://res.openai.azure.com/openai/v1'
@@ -85,88 +124,395 @@ const names = 'ollama, ollama-cloud, lmstudio, llamacpp, vllm, openai, azure-ope
 
 describe('buildProvider', () => {
   it.each<[PresetName, string, string, Record<string, string>, Body]>([
-    ['ollama', 'qwen3.6:27b', 'http://localhost:11434/api/chat', bearer, ollamaChat('qwen3.6:27b')],
-    ['ollama-cloud', 'deepseek-v3.1:671b', 'https://ollama.com/api/chat', bearer, ollamaChat('deepseek-v3.1:671b')],
-    ['lmstudio', 'qwen3.6-27b', 'http://localhost:1234/v1/chat/completions', bearer, chat('qwen3.6-27b', 0, 'max_tokens', 'schema')],
-    ['llamacpp', 'gemma-4', 'http://127.0.0.1:9931/v1/chat/completions', bearer, chat('gemma-4', 0, 'max_tokens', 'json')],
-    ['vllm', 'llama-4-maverick', 'http://localhost:8000/v1/chat/completions', bearer, chat('llama-4-maverick', 0, 'max_tokens', 'json')],
-    ['openai', 'gpt-5', 'https://api.openai.com/v1/chat/completions', bearer, chat('gpt-5', undefined, 'max_completion_tokens', 'json')],
-    ['azure-openai', 'review-deployment', `${AZURE}/chat/completions`, { 'api-key': 'sk-k' }, chat('review-deployment', undefined, 'max_completion_tokens', 'json')],
-    ['openrouter', 'anthropic/claude-opus-5-5', 'https://openrouter.ai/api/v1/chat/completions', bearer, chat('anthropic/claude-opus-5-5', 0, 'max_tokens', 'prompt')],
-    ['groq', 'llama-3.3-70b-versatile', 'https://api.groq.com/openai/v1/chat/completions', bearer, chat('llama-3.3-70b-versatile', 0, 'max_completion_tokens', 'json')],
-    ['mistral', 'mistral-large-2611', 'https://api.mistral.ai/v1/chat/completions', bearer, chat('mistral-large-2611', 0, 'max_tokens', 'json')],
-    ['deepseek', 'deepseek-chat', 'https://api.deepseek.com/chat/completions', bearer, chat('deepseek-chat', 0, 'max_tokens', 'json')],
-    ['together', 'moonshotai/Kimi-K2-Instruct', 'https://api.together.ai/v1/chat/completions', bearer, chat('moonshotai/Kimi-K2-Instruct', 0, 'max_tokens', 'json')],
-    ['fireworks', 'accounts/fireworks/models/kimi-k2', 'https://api.fireworks.ai/inference/v1/chat/completions', bearer, chat('accounts/fireworks/models/kimi-k2', 0, 'max_tokens', 'json')],
-    ['xai', 'grok-4.20', 'https://api.x.ai/v1/chat/completions', bearer, chat('grok-4.20', 0, 'max_completion_tokens', 'json')],
+    [
+      'ollama',
+      'qwen3.6:27b',
+      'http://localhost:11434/api/chat',
+      bearer,
+      ollamaChat('qwen3.6:27b'),
+    ],
+    [
+      'ollama-cloud',
+      'deepseek-v3.1:671b',
+      'https://ollama.com/api/chat',
+      bearer,
+      ollamaChat('deepseek-v3.1:671b'),
+    ],
+    [
+      'lmstudio',
+      'qwen3.6-27b',
+      'http://localhost:1234/v1/chat/completions',
+      bearer,
+      chat('qwen3.6-27b', 0, 'max_tokens', 'schema'),
+    ],
+    [
+      'llamacpp',
+      'gemma-4',
+      'http://127.0.0.1:9931/v1/chat/completions',
+      bearer,
+      chat('gemma-4', 0, 'max_tokens', 'json'),
+    ],
+    [
+      'vllm',
+      'llama-4-maverick',
+      'http://localhost:8000/v1/chat/completions',
+      bearer,
+      chat('llama-4-maverick', 0, 'max_tokens', 'json'),
+    ],
+    [
+      'openai',
+      'gpt-5',
+      'https://api.openai.com/v1/chat/completions',
+      bearer,
+      chat('gpt-5', undefined, 'max_completion_tokens', 'json'),
+    ],
+    [
+      'azure-openai',
+      'review-deployment',
+      `${AZURE}/chat/completions`,
+      { 'api-key': 'sk-k' },
+      chat('review-deployment', undefined, 'max_completion_tokens', 'json'),
+    ],
+    [
+      'openrouter',
+      'anthropic/claude-opus-5-5',
+      'https://openrouter.ai/api/v1/chat/completions',
+      bearer,
+      chat('anthropic/claude-opus-5-5', 0, 'max_tokens', 'prompt'),
+    ],
+    [
+      'groq',
+      'llama-3.3-70b-versatile',
+      'https://api.groq.com/openai/v1/chat/completions',
+      bearer,
+      chat('llama-3.3-70b-versatile', 0, 'max_completion_tokens', 'json'),
+    ],
+    [
+      'mistral',
+      'mistral-large-2611',
+      'https://api.mistral.ai/v1/chat/completions',
+      bearer,
+      chat('mistral-large-2611', 0, 'max_tokens', 'json'),
+    ],
+    [
+      'deepseek',
+      'deepseek-chat',
+      'https://api.deepseek.com/chat/completions',
+      bearer,
+      chat('deepseek-chat', 0, 'max_tokens', 'json'),
+    ],
+    [
+      'together',
+      'moonshotai/Kimi-K2-Instruct',
+      'https://api.together.ai/v1/chat/completions',
+      bearer,
+      chat('moonshotai/Kimi-K2-Instruct', 0, 'max_tokens', 'json'),
+    ],
+    [
+      'fireworks',
+      'accounts/fireworks/models/kimi-k2',
+      'https://api.fireworks.ai/inference/v1/chat/completions',
+      bearer,
+      chat('accounts/fireworks/models/kimi-k2', 0, 'max_tokens', 'json'),
+    ],
+    [
+      'xai',
+      'grok-4.20',
+      'https://api.x.ai/v1/chat/completions',
+      bearer,
+      chat('grok-4.20', 0, 'max_completion_tokens', 'json'),
+    ],
     [
       'anthropic',
       'claude-opus-5-5',
       'https://api.anthropic.com/v1/messages',
       { ...bearer, 'anthropic-version': '2026-10-21' },
-      { model: 'claude-opus-5-5', max_tokens: 900, system: 'instructions', messages: [{ role: 'user', content: 'data' }], output_config: { format: { type: 'json_schema', schema: { type: 'object' } } } },
+      {
+        model: 'claude-opus-5-5',
+        max_tokens: 900,
+        system: 'instructions',
+        messages: [
+          { role: 'user', content: 'data' },
+        ],
+        output_config: {
+          format: {
+            type: 'json_schema',
+            schema: { type: 'object' },
+          },
+        },
+      },
     ],
     [
       'gemini',
       'gemini-3.8-flash',
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent',
       { 'x-goog-api-key': 'sk-k' },
-      { contents: [{ role: 'user', parts: [{ text: 'data' }] }], systemInstruction: { parts: [{ text: 'instructions' }] }, generationConfig: { maxOutputTokens: 900, responseMimeType: 'application/json' } },
+      {
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: 'data' },
+            ],
+          },
+        ],
+        systemInstruction: {
+          parts: [
+            { text: 'instructions' },
+          ],
+        },
+        generationConfig: { maxOutputTokens: 900, responseMimeType: 'application/json' },
+      },
     ],
   ])('builds the %s preset: its URL, the key in its header and nowhere else, and its defaults in the body', async (preset, model, url, headers, body) => {
-    const built = await send({ id: 'p', preset, model, apiKey: 'sk-k', maxTokens: 900, ...(preset === 'azure-openai' ? { baseUrl: AZURE } : {}) })
-    expect(built).toEqual({ url, headers: { 'content-type': 'application/json', ...headers }, body })
+    const built = await send({
+      id: 'p',
+      preset,
+      model,
+      apiKey: 'sk-k',
+      maxTokens: 900,
+      ...(preset === 'azure-openai'
+        ? { baseUrl: AZURE }
+        : {}),
+    })
+    expect(built).toEqual({
+      url,
+      headers: { 'content-type': 'application/json', ...headers },
+      body,
+    })
     expect(`${built.url}${JSON.stringify(built.body)}`).not.toContain('sk-k')
   })
 
   it.each<[Protocol, string, Body]>([
-    ['openai-compatible', 'https://h.example/chat/completions', chat('m', 0, 'max_tokens', 'json')],
-    ['anthropic', 'https://h.example/v1/messages', { model: 'm', max_tokens: 900, system: 'instructions', messages: [{ role: 'user', content: 'data' }] }],
-    ['gemini', 'https://h.example/v1beta/models/m:generateContent', { contents: [{ role: 'user', parts: [{ text: 'data' }] }], systemInstruction: { parts: [{ text: 'instructions' }] }, generationConfig: { maxOutputTokens: 900, responseMimeType: 'application/json' } }],
-    ['ollama', 'https://h.example/api/chat', ollamaChat('m')],
+    [
+      'openai-compatible',
+      'https://h.example/chat/completions',
+      chat('m', 0, 'max_tokens', 'json'),
+    ],
+    [
+      'anthropic',
+      'https://h.example/v1/messages',
+      {
+        model: 'm',
+        max_tokens: 900,
+        system: 'instructions',
+        messages: [
+          { role: 'user', content: 'data' },
+        ],
+      },
+    ],
+    [
+      'gemini',
+      'https://h.example/v1beta/models/m:generateContent',
+      {
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: 'data' },
+            ],
+          },
+        ],
+        systemInstruction: {
+          parts: [
+            { text: 'instructions' },
+          ],
+        },
+        generationConfig: { maxOutputTokens: 900, responseMimeType: 'application/json' },
+      },
+    ],
+    [
+      'ollama',
+      'https://h.example/api/chat',
+      ollamaChat('m'),
+    ],
   ])('builds the %s protocol without a preset, with its adapter\'s defaults', async (protocol, url, body) => {
-    const built = await send({ id: 'p', protocol, baseUrl: 'https://h.example', model: 'm', maxTokens: 900 })
+    const built = await send({
+      id: 'p',
+      protocol,
+      baseUrl: 'https://h.example',
+      model: 'm',
+      maxTokens: 900,
+    })
     expect({ url: built.url, body: built.body }).toEqual({ url, body })
   })
 
   it('lets a spec field override the preset\'s: the base URL, the key header, the token-limit field and the structured output', async () => {
-    expect((await send({ id: 'p', preset: 'ollama', model: 'qwen', baseUrl: 'http://gpu.lan:11434' })).url).toBe('http://gpu.lan:11434/api/chat')
-    const openai = await send({ id: 'p', preset: 'openai', model: 'gpt-5', apiKey: 'sk-k', auth: 'x-api-key', maxTokens: 900, maxTokensField: 'max_tokens' })
+    expect((await send({
+      id: 'p',
+      preset: 'ollama',
+      model: 'qwen',
+      baseUrl: 'http://gpu.lan:11434',
+    })).url).toBe('http://gpu.lan:11434/api/chat')
+    const openai = await send({
+      id: 'p',
+      preset: 'openai',
+      model: 'gpt-5',
+      apiKey: 'sk-k',
+      auth: 'x-api-key',
+      maxTokens: 900,
+      maxTokensField: 'max_tokens',
+    })
     expect(openai.headers).toEqual({ 'content-type': 'application/json', 'x-api-key': 'sk-k' })
     expect(openai.body).toEqual(chat('gpt-5', undefined, 'max_tokens', 'json'))
-    expect((await send({ id: 'p', preset: 'openrouter', model: 'openai/gpt-4.1', structuredOutput: 'json' })).body.response_format).toEqual({ type: 'json_object' })
-    expect((await send({ id: 'p', preset: 'groq', protocol: 'openai-compatible', model: 'llama-3.3-70b-versatile' })).url).toBe('https://api.groq.com/openai/v1/chat/completions')
+    expect((await send({
+      id: 'p',
+      preset: 'openrouter',
+      model: 'openai/gpt-4.1',
+      structuredOutput: 'json',
+    })).body.response_format).toEqual({ type: 'json_object' })
+    expect((await send({
+      id: 'p',
+      preset: 'groq',
+      protocol: 'openai-compatible',
+      model: 'llama-3.3-70b-versatile',
+    })).url).toBe('https://api.groq.com/openai/v1/chat/completions')
   })
 
   it('sends temperature 0 when set on openai, whose preset leaves it out, and none for null on mistral, whose preset sends 0', async () => {
-    expect((await send({ id: 'p', preset: 'openai', model: 'gpt-5', temperature: 0 })).body).toMatchObject({ temperature: 0 })
-    expect((await send({ id: 'p', preset: 'mistral', model: 'mistral-large-2611', temperature: null })).body).not.toHaveProperty('temperature')
+    expect((await send({
+      id: 'p',
+      preset: 'openai',
+      model: 'gpt-5',
+      temperature: 0,
+    })).body).toMatchObject({ temperature: 0 })
+    expect((await send({
+      id: 'p',
+      preset: 'mistral',
+      model: 'mistral-large-2611',
+      temperature: null,
+    })).body).not.toHaveProperty('temperature')
   })
 
   it('keeps the preset\'s value for a spec field set to undefined, as a spread of an unset config value gives', async () => {
-    const unset = { baseUrl: undefined, auth: undefined, structuredOutput: undefined, temperature: undefined, maxTokensField: undefined }
-    const openai = await send({ id: 'p', preset: 'openai', model: 'gpt-5', apiKey: 'k', maxTokens: 900, ...unset })
+    const unset = {
+      baseUrl: undefined,
+      auth: undefined,
+      structuredOutput: undefined,
+      temperature: undefined,
+      maxTokensField: undefined,
+    }
+    const openai = await send({
+      id: 'p',
+      preset: 'openai',
+      model: 'gpt-5',
+      apiKey: 'k',
+      maxTokens: 900,
+      ...unset,
+    })
     expect(openai.url).toBe('https://api.openai.com/v1/chat/completions')
     expect(openai.body).toEqual(chat('gpt-5', undefined, 'max_completion_tokens', 'json'))
     expect(openai.body).not.toHaveProperty('temperature')
-    expect((await send({ id: 'p', preset: 'azure-openai', baseUrl: AZURE, model: 'd', apiKey: 'k', auth: undefined })).headers).toEqual({ 'content-type': 'application/json', 'api-key': 'k' })
-    expect((await send({ id: 'p', preset: 'openrouter', model: 'openai/gpt-4.1', structuredOutput: undefined })).body).not.toHaveProperty('response_format')
-    expect(issuesOf({ id: 'p', preset: 'anthropic', model: 'claude-opus-5-5', maxTokensField: undefined })).toEqual([])
+    expect((await send({
+      id: 'p',
+      preset: 'azure-openai',
+      baseUrl: AZURE,
+      model: 'd',
+      apiKey: 'k',
+      auth: undefined,
+    })).headers).toEqual({ 'content-type': 'application/json', 'api-key': 'k' })
+    expect((await send({
+      id: 'p',
+      preset: 'openrouter',
+      model: 'openai/gpt-4.1',
+      structuredOutput: undefined,
+    })).body).not.toHaveProperty('response_format')
+    expect(issuesOf({
+      id: 'p',
+      preset: 'anthropic',
+      model: 'claude-opus-5-5',
+      maxTokensField: undefined,
+    })).toEqual([])
   })
 
   it.each<[string, Record<string, unknown>, ConfigIssue[]]>([
-    ['an unknown preset', { preset: 'gpt', model: 'm' }, [{ path: 'p.preset', message: `must be one of ${names}` }]],
-    ['a preset name in another letter case', { preset: 'OpenAI', model: 'm' }, [{ path: 'p.preset', message: `must be one of ${names}` }]],
-    ['a key of every object as the preset', { preset: 'toString', model: 'm' }, [{ path: 'p.preset', message: `must be one of ${names}` }]],
-    ['no preset and no protocol', { baseUrl: 'https://h.example', model: 'm' }, [{ path: 'p.protocol', message: 'is required without a preset' }]],
-    ['an unknown protocol', { protocol: 'openai', baseUrl: 'https://h.example', model: 'm' }, [{ path: 'p.protocol', message: 'must be openai-compatible, anthropic, gemini, ollama or claude-code' }]],
-    ['a key of every object as the protocol', { protocol: 'constructor', baseUrl: 'https://h.example', model: 'm' }, [{ path: 'p.protocol', message: 'must be openai-compatible, anthropic, gemini, ollama or claude-code' }]],
-    ['a protocol other than the preset\'s', { preset: 'openai', protocol: 'anthropic', model: 'm' }, [{ path: 'p.protocol', message: 'must be openai-compatible, the protocol of the openai preset' }]],
-    ['no preset and no base URL', { protocol: 'ollama', model: 'm' }, [{ path: 'p.baseUrl', message: 'is required without a preset' }]],
-    ['no base URL for azure-openai', { preset: 'azure-openai', model: 'd' }, [{ path: 'p.baseUrl', message: 'is required: the azure-openai preset has none' }]],
-    ['a token-limit field on anthropic', { preset: 'anthropic', model: 'claude-opus-5-5', maxTokensField: 'max_tokens' }, [{ path: 'p.maxTokensField', message: 'is only for the openai-compatible protocol' }]],
-    ['a token-limit field on gemini without a preset', { protocol: 'gemini', baseUrl: 'https://h.example', model: 'm', maxTokensField: 'max_completion_tokens' }, [{ path: 'p.maxTokensField', message: 'is only for the openai-compatible protocol' }]],
-    ['a model that runs tools', { preset: 'openai', model: 'gpt-5-search-api' }, [toolModel]],
+    [
+      'an unknown preset',
+      { preset: 'gpt', model: 'm' },
+      [
+        { path: 'p.preset', message: `must be one of ${names}` },
+      ],
+    ],
+    [
+      'a preset name in another letter case',
+      { preset: 'OpenAI', model: 'm' },
+      [
+        { path: 'p.preset', message: `must be one of ${names}` },
+      ],
+    ],
+    [
+      'a key of every object as the preset',
+      { preset: 'toString', model: 'm' },
+      [
+        { path: 'p.preset', message: `must be one of ${names}` },
+      ],
+    ],
+    [
+      'no preset and no protocol',
+      { baseUrl: 'https://h.example', model: 'm' },
+      [
+        { path: 'p.protocol', message: 'is required without a preset' },
+      ],
+    ],
+    [
+      'an unknown protocol',
+      { protocol: 'openai', baseUrl: 'https://h.example', model: 'm' },
+      [
+        { path: 'p.protocol', message: 'must be openai-compatible, anthropic, gemini, ollama or claude-code' },
+      ],
+    ],
+    [
+      'a key of every object as the protocol',
+      { protocol: 'constructor', baseUrl: 'https://h.example', model: 'm' },
+      [
+        { path: 'p.protocol', message: 'must be openai-compatible, anthropic, gemini, ollama or claude-code' },
+      ],
+    ],
+    [
+      'a protocol other than the preset\'s',
+      { preset: 'openai', protocol: 'anthropic', model: 'm' },
+      [
+        { path: 'p.protocol', message: 'must be openai-compatible, the protocol of the openai preset' },
+      ],
+    ],
+    [
+      'no preset and no base URL',
+      { protocol: 'ollama', model: 'm' },
+      [
+        { path: 'p.baseUrl', message: 'is required without a preset' },
+      ],
+    ],
+    [
+      'no base URL for azure-openai',
+      { preset: 'azure-openai', model: 'd' },
+      [
+        { path: 'p.baseUrl', message: 'is required: the azure-openai preset has none' },
+      ],
+    ],
+    [
+      'a token-limit field on anthropic',
+      { preset: 'anthropic', model: 'claude-opus-5-5', maxTokensField: 'max_tokens' },
+      [
+        { path: 'p.maxTokensField', message: 'is only for the openai-compatible protocol' },
+      ],
+    ],
+    [
+      'a token-limit field on gemini without a preset',
+      {
+        protocol: 'gemini',
+        baseUrl: 'https://h.example',
+        model: 'm',
+        maxTokensField: 'max_completion_tokens',
+      },
+      [
+        { path: 'p.maxTokensField', message: 'is only for the openai-compatible protocol' },
+      ],
+    ],
+    [
+      'a model that runs tools',
+      { preset: 'openai', model: 'gpt-5-search-api' },
+      [toolModel],
+    ],
   ])('refuses %s with its exact message', (_name, spec, issues) => {
     expect(issuesOf({ id: 'p', ...spec })).toEqual(issues)
   })
@@ -177,30 +523,75 @@ describe('buildProvider', () => {
       { path: 'p.protocol', message: 'is required without a preset' },
       { path: 'p.baseUrl', message: 'is required without a preset' },
     ])
-    expect(issuesOf({ id: 'p', ...bad, preset: 'azure-openai', protocol: 'gemini' })).toEqual([
+    expect(issuesOf({
+      id: 'p',
+      ...bad,
+      preset: 'azure-openai',
+      protocol: 'gemini',
+    })).toEqual([
       { path: 'p.protocol', message: 'must be openai-compatible, the protocol of the azure-openai preset' },
       { path: 'p.baseUrl', message: 'is required: the azure-openai preset has none' },
     ])
-    expect(issuesOf({ id: 'p', ...bad, preset: 'openrouter', protocol: 'ollama', model: 'perplexity/sonar' })).toEqual([
+    expect(issuesOf({
+      id: 'p',
+      ...bad,
+      preset: 'openrouter',
+      protocol: 'ollama',
+      model: 'perplexity/sonar',
+    })).toEqual([
       { path: 'p.protocol', message: 'must be openai-compatible, the protocol of the openrouter preset' },
       toolModel,
     ])
-    expect(issuesOf({ id: 'p', ...bad, preset: 'gpt', protocol: 'ollama' })).toEqual([{ path: 'p.preset', message: `must be one of ${names}` }])
-    expect(issuesOf({ id: 'p', ...bad, preset: 'openai', model: ' m', maxTokensField: 'max_tokens' })).toEqual([notVisibleAscii])
+    expect(issuesOf({
+      id: 'p',
+      ...bad,
+      preset: 'gpt',
+      protocol: 'ollama',
+    })).toEqual([
+      { path: 'p.preset', message: `must be one of ${names}` },
+    ])
+    expect(issuesOf({
+      id: 'p',
+      ...bad,
+      preset: 'openai',
+      model: ' m',
+      maxTokensField: 'max_tokens',
+    })).toEqual([notVisibleAscii])
   })
 
   it('throws the spec\'s problems, then the adapter\'s, in one ConfigError, once the protocol and the base URL are known', () => {
-    expect(issuesOf({ id: 'p', preset: 'gemini', model: 'deep-research-max-preview-04-2026', maxTokensField: 'max_tokens', temperature: Number.NaN, query: { key: 'x' } })).toEqual([
+    expect(issuesOf({
+      id: 'p',
+      preset: 'gemini',
+      model: 'deep-research-max-preview-04-2026',
+      maxTokensField: 'max_tokens',
+      temperature: Number.NaN,
+      query: { key: 'x' },
+    })).toEqual([
       { path: 'p.maxTokensField', message: 'is only for the openai-compatible protocol' },
       toolModel,
       { path: 'p.temperature', message: 'must be a finite number, or null to leave it out' },
       { path: 'p.query.key', message: 'would carry a key in the URL: set apiKey instead' },
     ])
-    expect(issuesOf({ id: 'p', preset: 'gpt', protocol: 'ollama', baseUrl: 'https://h.example', model: 'm', maxTokens: 0 })).toEqual([
+    expect(issuesOf({
+      id: 'p',
+      preset: 'gpt',
+      protocol: 'ollama',
+      baseUrl: 'https://h.example',
+      model: 'm',
+      maxTokens: 0,
+    })).toEqual([
       { path: 'p.preset', message: `must be one of ${names}` },
       { path: 'p.maxTokens', message: 'must be a whole number of at least 1' },
     ])
-    expect(issuesOf({ id: 'p', preset: 'openai', model: 'gpt-5', maxTokensField: 'max_output_tokens' })).toEqual([{ path: 'p.maxTokensField', message: 'must be max_tokens or max_completion_tokens' }])
+    expect(issuesOf({
+      id: 'p',
+      preset: 'openai',
+      model: 'gpt-5',
+      maxTokensField: 'max_output_tokens',
+    })).toEqual([
+      { path: 'p.maxTokensField', message: 'must be max_tokens or max_completion_tokens' },
+    ])
   })
 
   it.each<[PresetName, string]>([
@@ -239,15 +630,33 @@ describe('buildProvider', () => {
     ['a delete character', 'groq', `openai/gpt-oss${String.fromCharCode(0x7F)}120b`],
     ['an empty string', 'groq', ''],
     ['a number', 'groq', 120],
-    ['an array holding a tool id', 'groq', ['openai/gpt-oss-120b']],
-    ['a Symbol', 'groq', Symbol('openai/gpt-oss-120b')],
+    [
+      'an array holding a tool id',
+      'groq',
+      ['openai/gpt-oss-120b'],
+    ],
+    [
+      'a Symbol',
+      'groq',
+      Symbol('openai/gpt-oss-120b'),
+    ],
   ])('refuses a model that is not a string of visible ASCII characters, such as %s, with that message alone', (_name, preset, model) => {
     expect(issuesOf({ id: 'p', preset, model })).toEqual([notVisibleAscii])
   })
 
   it('refuses a model that is not visible ASCII the same way without a preset', () => {
-    expect(issuesOf({ id: 'p', protocol: 'openai-compatible', baseUrl: GROQ, model: ' openai/gpt-oss-120b' })).toEqual([notVisibleAscii])
-    expect(issuesOf({ id: 'p', protocol: 'ollama', baseUrl: 'http://localhost:11434', model: Symbol('m') })).toEqual([notVisibleAscii])
+    expect(issuesOf({
+      id: 'p',
+      protocol: 'openai-compatible',
+      baseUrl: GROQ,
+      model: ' openai/gpt-oss-120b',
+    })).toEqual([notVisibleAscii])
+    expect(issuesOf({
+      id: 'p',
+      protocol: 'ollama',
+      baseUrl: 'http://localhost:11434',
+      model: Symbol('m'),
+    })).toEqual([notVisibleAscii])
   })
 
   it.each<[string, string]>([
@@ -261,38 +670,98 @@ describe('buildProvider', () => {
   })
 
   it.each<[string, Record<string, unknown>]>([
-    ['a protocol and Groq\'s base URL, without a preset', { protocol: 'openai-compatible', baseUrl: GROQ }],
-    ['the vllm preset pointed at Groq\'s base URL', { preset: 'vllm', baseUrl: GROQ }],
-    ['the same origin in another letter case, with another path', { protocol: 'openai-compatible', baseUrl: 'HTTPS://API.GROQ.COM/v9' }],
-    ['the same origin with its default port written out', { protocol: 'openai-compatible', baseUrl: 'https://api.groq.com:443/openai/v1' }],
-    ['Groq\'s host with a trailing dot', { protocol: 'openai-compatible', baseUrl: 'https://api.groq.com./openai/v1' }],
+    [
+      'a protocol and Groq\'s base URL, without a preset',
+      { protocol: 'openai-compatible', baseUrl: GROQ },
+    ],
+    [
+      'the vllm preset pointed at Groq\'s base URL',
+      { preset: 'vllm', baseUrl: GROQ },
+    ],
+    [
+      'the same origin in another letter case, with another path',
+      { protocol: 'openai-compatible', baseUrl: 'HTTPS://API.GROQ.COM/v9' },
+    ],
+    [
+      'the same origin with its default port written out',
+      { protocol: 'openai-compatible', baseUrl: 'https://api.groq.com:443/openai/v1' },
+    ],
+    [
+      'Groq\'s host with a trailing dot',
+      { protocol: 'openai-compatible', baseUrl: 'https://api.groq.com./openai/v1' },
+    ],
   ])('refuses the Groq tool model gpt-oss through %s', (_name, spec) => {
     expect(issuesOf({ id: 'p', ...spec, model: 'openai/gpt-oss-120b' })).toEqual([toolModel])
   })
 
   it('refuses a model through the origin of a preset other than the named one, and once when several lists match', () => {
-    expect(issuesOf({ id: 'p', preset: 'openai', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-5:online' })).toEqual([toolModel])
-    expect(issuesOf({ id: 'p', preset: 'openrouter', baseUrl: GROQ, model: 'openai/gpt-oss-120b:online' })).toEqual([toolModel])
+    expect(issuesOf({
+      id: 'p',
+      preset: 'openai',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5:online',
+    })).toEqual([toolModel])
+    expect(issuesOf({
+      id: 'p',
+      preset: 'openrouter',
+      baseUrl: GROQ,
+      model: 'openai/gpt-oss-120b:online',
+    })).toEqual([toolModel])
   })
 
   it.each<[string, Record<string, unknown>, string]>([
-    ['another port of Groq\'s host, which is another origin', { protocol: 'openai-compatible', baseUrl: 'https://api.groq.com:8443/openai/v1' }, 'openai/gpt-oss-120b'],
-    ['plain http to Groq\'s host, which is another origin', { protocol: 'openai-compatible', baseUrl: 'http://api.groq.com/openai/v1' }, 'openai/gpt-oss-120b'],
-    ['a model the origin\'s preset allows', { protocol: 'openai-compatible', baseUrl: GROQ }, 'llama-3.3-70b-versatile'],
-    ['a local server, whose origin no preset with tool models has', { protocol: 'openai-compatible', baseUrl: 'http://localhost:8000/v1' }, 'gpt-5-search-api'],
-    ['a gateway at another origin', { preset: 'groq', baseUrl: 'https://gateway.example/groq' }, 'llama-3.3-70b-versatile'],
+    [
+      'another port of Groq\'s host, which is another origin',
+      { protocol: 'openai-compatible', baseUrl: 'https://api.groq.com:8443/openai/v1' },
+      'openai/gpt-oss-120b',
+    ],
+    [
+      'plain http to Groq\'s host, which is another origin',
+      { protocol: 'openai-compatible', baseUrl: 'http://api.groq.com/openai/v1' },
+      'openai/gpt-oss-120b',
+    ],
+    [
+      'a model the origin\'s preset allows',
+      { protocol: 'openai-compatible', baseUrl: GROQ },
+      'llama-3.3-70b-versatile',
+    ],
+    [
+      'a local server, whose origin no preset with tool models has',
+      { protocol: 'openai-compatible', baseUrl: 'http://localhost:8000/v1' },
+      'gpt-5-search-api',
+    ],
+    [
+      'a gateway at another origin',
+      { preset: 'groq', baseUrl: 'https://gateway.example/groq' },
+      'llama-3.3-70b-versatile',
+    ],
   ])('allows %s', (_name, spec, model) => {
     expect(issuesOf({ id: 'p', ...spec, model })).toEqual([])
   })
 
   it('still holds a model to the named preset\'s list when the base URL is moved to another origin', () => {
-    expect(issuesOf({ id: 'p', preset: 'groq', baseUrl: 'https://gateway.example/groq', model: 'openai/gpt-oss-120b' })).toEqual([toolModel])
+    expect(issuesOf({
+      id: 'p',
+      preset: 'groq',
+      baseUrl: 'https://gateway.example/groq',
+      model: 'openai/gpt-oss-120b',
+    })).toEqual([toolModel])
   })
 
   it('gives a base URL that is no URL no origin, so only the named preset\'s list applies, and leaves the URL to the adapter', () => {
     const adapterIssue = { path: 'p.baseUrl', message: 'must be an http:// or https:// URL with a host' }
-    expect(issuesOf({ id: 'p', protocol: 'openai-compatible', baseUrl: 'api.groq.com', model: 'openai/gpt-oss-120b' })).toEqual([adapterIssue])
-    expect(issuesOf({ id: 'p', preset: 'groq', baseUrl: 'api.groq.com', model: 'openai/gpt-oss-120b' })).toEqual([toolModel, adapterIssue])
+    expect(issuesOf({
+      id: 'p',
+      protocol: 'openai-compatible',
+      baseUrl: 'api.groq.com',
+      model: 'openai/gpt-oss-120b',
+    })).toEqual([adapterIssue])
+    expect(issuesOf({
+      id: 'p',
+      preset: 'groq',
+      baseUrl: 'api.groq.com',
+      model: 'openai/gpt-oss-120b',
+    })).toEqual([toolModel, adapterIssue])
   })
 
   it('reads only the spec\'s own fields: a polluted Object.prototype fills no field and reaches no adapter', async () => {
@@ -300,8 +769,15 @@ describe('buildProvider', () => {
     const planted: Record<string, unknown> = { baseUrl: 'https://evil.example/v1', apiKey: 'sk-planted', systemPrompt: 'inline' }
     for (const [key, value] of Object.entries(planted)) proto[key] = value
     try {
-      expect(issuesOf({ id: 'p', preset: 'azure-openai', model: 'd' })).toEqual([{ path: 'p.baseUrl', message: 'is required: the azure-openai preset has none' }])
-      const built = await send({ id: 'p', protocol: 'openai-compatible', baseUrl: 'https://h.example', model: 'm' })
+      expect(issuesOf({ id: 'p', preset: 'azure-openai', model: 'd' })).toEqual([
+        { path: 'p.baseUrl', message: 'is required: the azure-openai preset has none' },
+      ])
+      const built = await send({
+        id: 'p',
+        protocol: 'openai-compatible',
+        baseUrl: 'https://h.example',
+        model: 'm',
+      })
       expect(built.headers).toEqual({ 'content-type': 'application/json' })
       expect(built.body.messages).toEqual(conversation)
     } finally {
@@ -314,11 +790,33 @@ describe('buildProvider', () => {
     const planted: Record<string, unknown> = { prefix: 'Bearer ', header: 'x-planted' }
     for (const [key, value] of Object.entries(planted)) proto[key] = value
     try {
-      const preset = await send({ id: 'p', preset: 'azure-openai', baseUrl: AZURE, model: 'd', apiKey: 'sk-k' })
+      const preset = await send({
+        id: 'p',
+        preset: 'azure-openai',
+        baseUrl: AZURE,
+        model: 'd',
+        apiKey: 'sk-k',
+      })
       expect(preset.headers).toEqual({ 'content-type': 'application/json', 'api-key': 'sk-k' })
-      const own = await send({ id: 'p', protocol: 'openai-compatible', baseUrl: 'https://h.example', model: 'm', apiKey: 'sk-k', auth: { header: 'x-key' } })
+      const own = await send({
+        id: 'p',
+        protocol: 'openai-compatible',
+        baseUrl: 'https://h.example',
+        model: 'm',
+        apiKey: 'sk-k',
+        auth: { header: 'x-key' },
+      })
       expect(own.headers).toEqual({ 'content-type': 'application/json', 'x-key': 'sk-k' })
-      expect(issuesOf({ id: 'p', protocol: 'openai-compatible', baseUrl: 'https://h.example', model: 'm', apiKey: 'sk-k', auth: {} })).toEqual([{ path: 'p.auth', message: 'must be bearer, x-api-key, none or { header, prefix }' }])
+      expect(issuesOf({
+        id: 'p',
+        protocol: 'openai-compatible',
+        baseUrl: 'https://h.example',
+        model: 'm',
+        apiKey: 'sk-k',
+        auth: {},
+      })).toEqual([
+        { path: 'p.auth', message: 'must be bearer, x-api-key, none or { header, prefix }' },
+      ])
     } finally {
       for (const key of Object.keys(planted)) delete proto[key]
     }
@@ -326,37 +824,67 @@ describe('buildProvider', () => {
 
   it('reads each field once, so a getter cannot show the checks one model and the adapter another', () => {
     let reads = 0
-    const spec = { id: 'p', preset: 'groq', get model() {
-      reads += 1
-      return reads === 1 ? 'openai/gpt-oss-120b' : 'llama-3.3-70b-versatile'
-    } }
+    const spec = {
+      id: 'p',
+      preset: 'groq',
+      get model() {
+        reads += 1
+        return reads === 1
+          ? 'openai/gpt-oss-120b'
+          : 'llama-3.3-70b-versatile'
+      },
+    }
     expect(issuesOf(spec)).toEqual([toolModel])
     expect(reads).toBe(1)
   })
 
   it('reads the model of a spec that builds once, so the body carries the model its checks allowed', async () => {
     let reads = 0
-    const spec = { id: 'p', preset: 'groq', apiKey: 'sk-k', get model() {
-      reads += 1
-      return reads === 1 ? 'llama-3.3-70b-versatile' : 'openai/gpt-oss-120b'
-    } }
+    const spec = {
+      id: 'p',
+      preset: 'groq',
+      apiKey: 'sk-k',
+      get model() {
+        reads += 1
+        return reads === 1
+          ? 'llama-3.3-70b-versatile'
+          : 'openai/gpt-oss-120b'
+      },
+    }
     expect((await send(spec)).body.model).toBe('llama-3.3-70b-versatile')
     expect(reads).toBe(1)
   })
 
   it.each<[string, unknown]>([
-    ['an array', [GROQ]],
-    // eslint-disable-next-line no-new-wrappers, unicorn/new-for-builtins -- the input is a String object
-    ['a String object', new String(GROQ)],
+    [
+      'an array',
+      [GROQ],
+    ],
+    [
+      'a String object',
+      // eslint-disable-next-line no-new-wrappers, unicorn/new-for-builtins -- the input is a String object
+      new String(GROQ),
+    ],
     ['a number', 42],
     ['null', null],
   ])('refuses a base URL that is %s with that message alone', (_name, baseUrl) => {
-    expect(issuesOf({ id: 'p', protocol: 'openai-compatible', baseUrl, model: 'openai/gpt-oss-120b' })).toEqual([{ path: 'p.baseUrl', message: 'must be a string' }])
+    expect(issuesOf({
+      id: 'p',
+      protocol: 'openai-compatible',
+      baseUrl,
+      model: 'openai/gpt-oss-120b',
+    })).toEqual([
+      { path: 'p.baseUrl', message: 'must be a string' },
+    ])
   })
 
   it('refuses a spec without a model as one that needs one', () => {
-    expect(issuesOf({ id: 'p', preset: 'groq' })).toEqual([{ path: 'p.model', message: 'is required' }])
-    expect(issuesOf({ id: 'p', preset: 'groq', model: undefined })).toEqual([{ path: 'p.model', message: 'is required' }])
+    expect(issuesOf({ id: 'p', preset: 'groq' })).toEqual([
+      { path: 'p.model', message: 'is required' },
+    ])
+    expect(issuesOf({ id: 'p', preset: 'groq', model: undefined })).toEqual([
+      { path: 'p.model', message: 'is required' },
+    ])
   })
 
   it('builds from the original presets after a caller tried to change them', async () => {
@@ -374,7 +902,13 @@ describe('buildProvider', () => {
         throw new RangeError('unreadable headers')
       },
     })
-    expect(() => buildProvider({ id: 'p', preset: 'openai', model: 'gpt-5', contextTokens: 131072, headers })).toThrow(RangeError)
+    expect(() => buildProvider({
+      id: 'p',
+      preset: 'openai',
+      model: 'gpt-5',
+      contextTokens: 131072,
+      headers,
+    })).toThrow(RangeError)
   })
 
   it('repeats no value in a message, the key least of all', () => {
@@ -383,12 +917,22 @@ describe('buildProvider', () => {
       { preset: key, model: 'm' },
       { protocol: key, baseUrl: 'https://h.example', model: 'm' },
       { preset: 'openai', protocol: key, model: 'm' },
-      { preset: 'groq', model: 'openai/gpt-oss-120b', baseUrl: `https://${key}@h.example`, query: { k: key } },
+      {
+        preset: 'groq',
+        model: 'openai/gpt-oss-120b',
+        baseUrl: `https://${key}@h.example`,
+        query: { k: key },
+      },
     ]
     for (const spec of specs) {
       let thrown: unknown
       try {
-        buildProvider({ id: 'p', apiKey: key, contextTokens: 131072, ...spec } as ProviderSpec)
+        buildProvider({
+          id: 'p',
+          apiKey: key,
+          contextTokens: 131072,
+          ...spec,
+        } as ProviderSpec)
       } catch (error) {
         thrown = error
       }
@@ -399,7 +943,12 @@ describe('buildProvider', () => {
 })
 
 describe('a claude-code provider', () => {
-  const cc = { id: 'p', protocol: 'claude-code', model: 'sonnet', contextTokens: 1000000 }
+  const cc = {
+    id: 'p',
+    protocol: 'claude-code',
+    model: 'sonnet',
+    contextTokens: 1000000,
+  }
   const NOT_HTTP = 'must be bearer, x-api-key, none or { header, prefix }'
   const NOT_CLAUDE_CODE = 'must be inherit, login or api-key'
   const NOT_A_FLAG = 'is not a flag quorum passes to claude: use --effort, --fallback-model, --max-budget-usd or --betas'
@@ -413,18 +962,41 @@ describe('a claude-code provider', () => {
   }
 
   it('is built from its protocol, with no base URL', () => {
-    expect(buildProvider({ id: 'cc', protocol: 'claude-code', model: 'sonnet', contextTokens: 1000000 }, { env: {} })).toMatchObject({ id: 'cc', model: 'sonnet' })
+    expect(buildProvider({
+      id: 'cc',
+      protocol: 'claude-code',
+      model: 'sonnet',
+      contextTokens: 1000000,
+    }, { env: {} })).toMatchObject({ id: 'cc', model: 'sonnet' })
   })
 
   it('is handed the spec\'s own fields and the context\'s environment, and none of the builder\'s', () => {
     const env = { PATH: '/usr/bin' }
-    const fields = { auth: 'api-key', apiKey: 'sk-k', structuredOutput: 'prompt', args: ['--effort', 'high'], command: '/opt/claude/bin/claude' }
-    expect(handedOver({ ...cc, ...fields }, { env })).toEqual({ id: 'p', model: 'sonnet', contextTokens: 1000000, ...fields, env })
+    const fields = {
+      auth: 'api-key',
+      apiKey: 'sk-k',
+      structuredOutput: 'prompt',
+      args: ['--effort', 'high'],
+      command: '/opt/claude/bin/claude',
+    }
+    expect(handedOver({
+      ...cc,
+      ...fields,
+    }, { env })).toEqual({
+      id: 'p',
+      model: 'sonnet',
+      contextTokens: 1000000,
+      ...fields,
+      env,
+    })
     expect(Object.keys(handedOver(cc))).toEqual(['id', 'model', 'contextTokens'])
   })
 
   it('takes the environment from the context alone: a spec\'s own `env` and a polluted Object.prototype give the adapter none', () => {
-    expect(handedOver({ ...cc, env: { PLANTED: '1' } })).not.toHaveProperty('env')
+    expect(handedOver({
+      ...cc,
+      env: { PLANTED: '1' },
+    })).not.toHaveProperty('env')
     const proto = Object.prototype as Record<string, unknown>
     proto.env = { PLANTED: '1' }
     try {
@@ -440,7 +1012,13 @@ describe('a claude-code provider', () => {
     proto.args = ['--tools=Bash']
     try {
       expect(Object.keys(handedOver(cc))).toEqual(['id', 'model', 'contextTokens'])
-      expect(issuesOf({ id: 'p', protocol: 'ollama', baseUrl: 'http://localhost:11434', model: 'm', contextTokens: 131072 })).toEqual([])
+      expect(issuesOf({
+        id: 'p',
+        protocol: 'ollama',
+        baseUrl: 'http://localhost:11434',
+        model: 'm',
+        contextTokens: 131072,
+      })).toEqual([])
     } finally {
       delete proto.command
       delete proto.args
@@ -462,39 +1040,153 @@ describe('a claude-code provider', () => {
   })
 
   it('names the protocol with one predicate', () => {
-    expect([isClaudeCode('claude-code'), isClaudeCode('ollama'), isClaudeCode(undefined), isClaudeCode(['claude-code'])]).toEqual([true, false, false, false])
+    expect([
+      isClaudeCode('claude-code'),
+      isClaudeCode('ollama'),
+      isClaudeCode(undefined),
+      isClaudeCode(['claude-code']),
+    ]).toEqual([true, false, false, false])
   })
 
   it.each<[string, Record<string, unknown>, ConfigIssue[]]>([
-    ['args on another protocol', { protocol: 'openai-compatible', baseUrl: 'https://h.example/v1', model: 'm', args: ['--effort', 'high'] }, [{ path: 'p.args', message: 'is only for the claude-code protocol' }]],
-    ['args on a preset', { preset: 'anthropic', model: 'm', args: ['--effort', 'high'] }, [{ path: 'p.args', message: 'is only for the claude-code protocol' }]],
-    ['a command on another protocol', { protocol: 'ollama', baseUrl: 'http://localhost:11434', model: 'm', command: '/usr/bin/claude' }, [{ path: 'p.command', message: 'is only for the claude-code protocol' }]],
-    ['args and a command on a protocol that is not known', { protocol: 'claude', model: 'm', args: ['--effort', 'high'], command: 'claude' }, [{ path: 'p.protocol', message: 'must be openai-compatible, anthropic, gemini, ollama or claude-code' }, { path: 'p.baseUrl', message: 'is required without a preset' }]],
-    ['a temperature', { protocol: 'claude-code', model: 'sonnet', temperature: 0 }, [{ path: 'p.temperature', message: 'is not an option of the claude-code protocol' }]],
-    ['a base URL', { protocol: 'claude-code', model: 'sonnet', baseUrl: 'https://api.anthropic.com' }, [{ path: 'p.baseUrl', message: 'is not an option of the claude-code protocol' }]],
-    ['maxTokensField', { protocol: 'claude-code', model: 'sonnet', maxTokensField: 'max_tokens' }, [{ path: 'p.maxTokensField', message: 'is only for the openai-compatible protocol' }]],
-    ['a claude-code auth mode on an HTTP protocol', { protocol: 'anthropic', baseUrl: 'https://api.anthropic.com', model: 'm', auth: 'login' }, [{ path: 'p.auth', message: 'must be bearer, x-api-key, none or { header, prefix }' }]],
-    ['a preset beside it', { preset: 'anthropic', protocol: 'claude-code', model: 'm' }, [{ path: 'p.protocol', message: 'must be anthropic, the protocol of the anthropic preset' }]],
+    [
+      'args on another protocol',
+      {
+        protocol: 'openai-compatible',
+        baseUrl: 'https://h.example/v1',
+        model: 'm',
+        args: ['--effort', 'high'],
+      },
+      [
+        { path: 'p.args', message: 'is only for the claude-code protocol' },
+      ],
+    ],
+    [
+      'args on a preset',
+      {
+        preset: 'anthropic',
+        model: 'm',
+        args: ['--effort', 'high'],
+      },
+      [
+        { path: 'p.args', message: 'is only for the claude-code protocol' },
+      ],
+    ],
+    [
+      'a command on another protocol',
+      {
+        protocol: 'ollama',
+        baseUrl: 'http://localhost:11434',
+        model: 'm',
+        command: '/usr/bin/claude',
+      },
+      [
+        { path: 'p.command', message: 'is only for the claude-code protocol' },
+      ],
+    ],
+    [
+      'args and a command on a protocol that is not known',
+      {
+        protocol: 'claude',
+        model: 'm',
+        args: ['--effort', 'high'],
+        command: 'claude',
+      },
+      [
+        { path: 'p.protocol', message: 'must be openai-compatible, anthropic, gemini, ollama or claude-code' },
+        { path: 'p.baseUrl', message: 'is required without a preset' },
+      ],
+    ],
+    [
+      'a temperature',
+      { protocol: 'claude-code', model: 'sonnet', temperature: 0 },
+      [
+        { path: 'p.temperature', message: 'is not an option of the claude-code protocol' },
+      ],
+    ],
+    [
+      'a base URL',
+      { protocol: 'claude-code', model: 'sonnet', baseUrl: 'https://api.anthropic.com' },
+      [
+        { path: 'p.baseUrl', message: 'is not an option of the claude-code protocol' },
+      ],
+    ],
+    [
+      'maxTokensField',
+      { protocol: 'claude-code', model: 'sonnet', maxTokensField: 'max_tokens' },
+      [
+        { path: 'p.maxTokensField', message: 'is only for the openai-compatible protocol' },
+      ],
+    ],
+    [
+      'a claude-code auth mode on an HTTP protocol',
+      {
+        protocol: 'anthropic',
+        baseUrl: 'https://api.anthropic.com',
+        model: 'm',
+        auth: 'login',
+      },
+      [
+        { path: 'p.auth', message: 'must be bearer, x-api-key, none or { header, prefix }' },
+      ],
+    ],
+    [
+      'a preset beside it',
+      { preset: 'anthropic', protocol: 'claude-code', model: 'm' },
+      [
+        { path: 'p.protocol', message: 'must be anthropic, the protocol of the anthropic preset' },
+      ],
+    ],
   ])('refuses %s', (_, spec, issues) => {
     expect(issuesOf({ id: 'p', ...spec })).toEqual(issues)
   })
 
   it.each([
     ['baseUrl', 'https://api.anthropic.com'],
-    ['headers', { 'x-team': 'review' }],
-    ['query', { v: '1' }],
-    ['extraBody', { reasoning: { effort: 'low' } }],
+    [
+      'headers',
+      { 'x-team': 'review' },
+    ],
+    [
+      'query',
+      { v: '1' },
+    ],
+    [
+      'extraBody',
+      {
+        reasoning: { effort: 'low' },
+      },
+    ],
     ['temperature', 0],
     ['maxTokens', 4096],
     ['systemPrompt', 'inline'],
   ])('refuses %s, which a CLI has no use for', (field, value) => {
-    expect(issuesOf({ ...cc, [field]: value })).toEqual([{ path: `p.${field}`, message: 'is not an option of the claude-code protocol' }])
+    expect(issuesOf({ ...cc, [field]: value })).toEqual([
+      { path: `p.${field}`, message: 'is not an option of the claude-code protocol' },
+    ])
   })
 
   it('refuses a field of the protocol set to a value that is not what it takes, without repeating it', () => {
     const secret = 'sk-zz-secret'
-    expect(issuesOf({ ...cc, baseUrl: [secret], headers: secret, query: [secret], extraBody: secret, temperature: secret, maxTokens: secret, systemPrompt: secret })).toEqual(
-      ['baseUrl', 'headers', 'query', 'extraBody', 'temperature', 'maxTokens', 'systemPrompt'].map(field => ({ path: `p.${field}`, message: 'is not an option of the claude-code protocol' })),
+    expect(issuesOf({
+      ...cc,
+      baseUrl: [secret],
+      headers: secret,
+      query: [secret],
+      extraBody: secret,
+      temperature: secret,
+      maxTokens: secret,
+      systemPrompt: secret,
+    })).toEqual(
+      [
+        'baseUrl',
+        'headers',
+        'query',
+        'extraBody',
+        'temperature',
+        'maxTokens',
+        'systemPrompt',
+      ].map(field => ({ path: `p.${field}`, message: 'is not an option of the claude-code protocol' })),
     )
   })
 
@@ -502,9 +1194,14 @@ describe('a claude-code provider', () => {
     ['bearer', 'bearer'],
     ['x-api-key', 'x-api-key'],
     ['none', 'none'],
-    ['a header and a prefix', { header: 'x-zz-secret', prefix: 'Key-zz-secret ' }],
+    [
+      'a header and a prefix',
+      { header: 'x-zz-secret', prefix: 'Key-zz-secret ' },
+    ],
   ])('refuses the HTTP auth %s, with no value in its message', (_, auth) => {
-    expect(issuesOf({ ...cc, auth })).toEqual([{ path: 'p.auth', message: NOT_CLAUDE_CODE }])
+    expect(issuesOf({ ...cc, auth })).toEqual([
+      { path: 'p.auth', message: NOT_CLAUDE_CODE },
+    ])
   })
 
   it.each(['inherit', 'login', 'api-key'])('refuses the claude-code auth %s on every HTTP protocol and preset', (auth) => {
@@ -516,16 +1213,57 @@ describe('a claude-code provider', () => {
       { preset: 'openai', model: 'gpt-5' },
       { preset: 'ollama', model: 'qwen3.6:27b' },
     ]
-    for (const spec of specs) expect(issuesOf({ id: 'p', ...spec, auth }), JSON.stringify(spec)).toEqual([{ path: 'p.auth', message: NOT_HTTP }])
+    for (const spec of specs) {
+      expect(issuesOf({ id: 'p', ...spec, auth }), JSON.stringify(spec)).toEqual([
+        { path: 'p.auth', message: NOT_HTTP },
+      ])
+    }
   })
 
   it.each<[string, readonly unknown[], ConfigIssue[]]>([
-    ['a flag that loosens the isolation and its value', ['--tools', 'Bash'], [{ path: 'p.args.0', message: NOT_A_FLAG }, { path: 'p.args.1', message: NOT_A_FLAG }]],
-    ['a flag that names an MCP server', ['--mcp-config=/tmp/zz-secret.json'], [{ path: 'p.args.0', message: NOT_A_FLAG }]],
-    ['a flag that skips permissions', ['--dangerously-skip-permissions'], [{ path: 'p.args.0', message: NOT_A_FLAG }]],
-    ['two flags in one element', ['--effort=high --tools=Bash'], [{ path: 'p.args.0', message: 'must be low, medium, high, xhigh or max' }]],
-    ['a value that starts with a dash', ['--fallback-model', '--tools'], [{ path: 'p.args.1', message: 'must be visible ASCII characters that do not start with -' }]],
-    ['a flag with no value', ['--effort'], [{ path: 'p.args.0', message: 'needs a value' }]],
+    [
+      'a flag that loosens the isolation and its value',
+      ['--tools', 'Bash'],
+      [
+        { path: 'p.args.0', message: NOT_A_FLAG },
+        { path: 'p.args.1', message: NOT_A_FLAG },
+      ],
+    ],
+    [
+      'a flag that names an MCP server',
+      ['--mcp-config=/tmp/zz-secret.json'],
+      [
+        { path: 'p.args.0', message: NOT_A_FLAG },
+      ],
+    ],
+    [
+      'a flag that skips permissions',
+      ['--dangerously-skip-permissions'],
+      [
+        { path: 'p.args.0', message: NOT_A_FLAG },
+      ],
+    ],
+    [
+      'two flags in one element',
+      ['--effort=high --tools=Bash'],
+      [
+        { path: 'p.args.0', message: 'must be low, medium, high, xhigh or max' },
+      ],
+    ],
+    [
+      'a value that starts with a dash',
+      ['--fallback-model', '--tools'],
+      [
+        { path: 'p.args.1', message: 'must be visible ASCII characters that do not start with -' },
+      ],
+    ],
+    [
+      'a flag with no value',
+      ['--effort'],
+      [
+        { path: 'p.args.0', message: 'needs a value' },
+      ],
+    ],
   ])('refuses args that hold %s, by index, without repeating an element', (_, args, issues) => {
     const found = issuesOf({ ...cc, args })
     expect(found).toEqual(issues)
@@ -533,23 +1271,51 @@ describe('a claude-code provider', () => {
   })
 
   it('takes the allowlisted args, once each', () => {
-    expect(issuesOf({ ...cc, args: ['--effort', 'high', '--max-budget-usd=0.50', '--fallback-model', 'haiku'] })).toEqual([])
-    expect(issuesOf({ ...cc, args: ['--effort', 'high', '--effort=low'] })).toEqual([{ path: 'p.args.2', message: 'repeats a flag' }])
+    expect(issuesOf({
+      ...cc,
+      args: [
+        '--effort',
+        'high',
+        '--max-budget-usd=0.50',
+        '--fallback-model',
+        'haiku',
+      ],
+    })).toEqual([])
+    expect(issuesOf({
+      ...cc,
+      args: ['--effort', 'high', '--effort=low'],
+    })).toEqual([
+      { path: 'p.args.2', message: 'repeats a flag' },
+    ])
   })
 
   it('refuses a model that is not visible ASCII, or starts with a dash, with that message alone', () => {
-    expect(issuesOf({ ...cc, model: ' sonnet' })).toEqual([{ path: 'p.model', message: 'must be a model id of visible ASCII characters, with no space' }])
-    expect(issuesOf({ ...cc, model: '--tools' })).toEqual([{ path: 'p.model', message: 'must be a model id of visible ASCII characters, with no space, that does not start with -' }])
+    expect(issuesOf({ ...cc, model: ' sonnet' })).toEqual([
+      { path: 'p.model', message: 'must be a model id of visible ASCII characters, with no space' },
+    ])
+    expect(issuesOf({ ...cc, model: '--tools' })).toEqual([
+      { path: 'p.model', message: 'must be a model id of visible ASCII characters, with no space, that does not start with -' },
+    ])
   })
 
   it('holds the context size to the adapter\'s reserve for what Claude Code adds, and to its being set', () => {
-    expect(issuesOf({ ...cc, contextTokens: 20096 })).toEqual([{ path: 'p.contextTokens', message: 'must be more than 20096, the 16000 tokens of the reply budget and 4096 for the chat template' }])
-    expect(issuesOf({ ...cc, contextTokens: undefined })).toEqual([{ path: 'p.contextTokens', message: CONTEXT_REQUIRED }])
+    expect(issuesOf({ ...cc, contextTokens: 20096 })).toEqual([
+      { path: 'p.contextTokens', message: 'must be more than 20096, the 16000 tokens of the reply budget and 4096 for the chat template' },
+    ])
+    expect(issuesOf({ ...cc, contextTokens: undefined })).toEqual([
+      { path: 'p.contextTokens', message: CONTEXT_REQUIRED },
+    ])
     expect(issuesOf({ ...cc, contextTokens: 20097 })).toEqual([])
   })
 
   it('throws the spec\'s problems and the adapter\'s in one ConfigError', () => {
-    expect(issuesOf({ ...cc, preset: 'gpt', maxTokensField: 'max_tokens', temperature: 0, auth: 'bearer' })).toEqual([
+    expect(issuesOf({
+      ...cc,
+      preset: 'gpt',
+      maxTokensField: 'max_tokens',
+      temperature: 0,
+      auth: 'bearer',
+    })).toEqual([
       { path: 'p.preset', message: `must be one of ${names}` },
       { path: 'p.maxTokensField', message: 'is only for the openai-compatible protocol' },
       { path: 'p.temperature', message: 'is not an option of the claude-code protocol' },

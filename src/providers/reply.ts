@@ -20,7 +20,9 @@ function countOf(source: Record<string, unknown>, [first = '', ...others]: reado
   if (typeof base !== 'number') return undefined
   return others.reduce((sum, key) => {
     const count = source[key]
-    return typeof count === 'number' ? sum + count : sum
+    return typeof count === 'number'
+      ? sum + count
+      : sum
   }, base)
 }
 
@@ -34,17 +36,25 @@ export function tokenUsage(source: unknown, inputKeys: readonly string[], output
   if (!isRecord(source)) return undefined
   const inputTokens = countOf(source, inputKeys)
   const outputTokens = countOf(source, outputKeys)
-  return inputTokens === undefined || outputTokens === undefined ? undefined : { inputTokens, outputTokens }
+  return inputTokens === undefined || outputTokens === undefined
+    ? undefined
+    : { inputTokens, outputTokens }
 }
 
 /** The message of a reply that stopped for a reason the adapter does not accept, quoting the reason when it is a string. */
 export function endedEarly(reason: unknown, redact: readonly string[]): string {
-  return typeof reason === 'string' ? `reply ended early: ${snippet(reason, MAX_REASON, redact)}` : 'reply ended early'
+  return typeof reason === 'string'
+    ? `reply ended early: ${snippet(reason, MAX_REASON, redact)}`
+    : 'reply ended early'
 }
 
 /** The string `text` of the parts `keep` accepts, joined, or undefined when `parts` is not an array or holds no such part. */
 export function joinedText(parts: unknown, keep: (part: Record<string, unknown>) => boolean): string | undefined {
   if (!Array.isArray(parts)) return undefined
-  const texts = parts.flatMap(part => isRecord(part) && typeof part.text === 'string' && keep(part) ? [part.text] : [])
-  return texts.length === 0 ? undefined : texts.join('')
+  const texts = parts.flatMap(part => isRecord(part) && typeof part.text === 'string' && keep(part)
+    ? [part.text]
+    : [])
+  return texts.length === 0
+    ? undefined
+    : texts.join('')
 }
