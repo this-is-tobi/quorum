@@ -5,6 +5,7 @@ const read = (path: string): string => readFileSync(new URL(`../${path}`, import
 
 interface PackageJson {
   name: string
+  license: string
   bin: Record<string, string>
   exports: Record<string, Record<string, string>>
   files: string[]
@@ -29,6 +30,12 @@ describe('package.json', () => {
   it('is the public npm package @tobi-or-not/quorum', () => {
     expect(pkg.name).toBe('@tobi-or-not/quorum')
     expect(pkg.publishConfig).toEqual({ access: 'public' })
+  })
+
+  it('is licensed under the Apache License 2.0, whose text npm puts in the package', () => {
+    // npm ships LICENSE whatever `files` says, and a published version's license field cannot change.
+    expect(pkg.license).toBe('Apache-2.0')
+    expect(read('LICENSE')).toMatch(/^\s*Apache License\s+Version 2\.0, January 2004\s/)
   })
 
   it('exposes a quorum command that runs on Node and a library with its types', () => {
