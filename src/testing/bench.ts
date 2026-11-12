@@ -1,9 +1,15 @@
-/** Test helpers for the bench: a small suite and the writer that puts it on disk, and the verdicts and results its scorer reads. */
+/** Test helpers for the bench: a small suite and the writer that puts it on disk, the verdicts and results its scorer reads, and the resolved configs it fingerprints. */
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { stringify } from 'yaml'
 import packageJson from '../../package.json' with { type: 'json' }
+import type { Env } from '../config/env.ts'
+import { checkCodeValue } from '../config/load.ts'
+import { resolveConfig } from '../config/resolve.ts'
+import type { ResolvedConfig } from '../config/resolve.ts'
+import { configInputSchema } from '../config/schema.ts'
+import type { ConfigInput } from '../config/schema.ts'
 import { findingId } from '../core/stages/research.ts'
 import type { Confidence, IncompleteEntry, QuorumResult, Verdict } from '../core/types.ts'
 
@@ -145,4 +151,9 @@ export function resultWith(parts: {
       flags: [],
     },
   }
+}
+
+/** A config resolved as `fromConfig` resolves a program's: checked as a code config is, then bound to `env`. */
+export function resolvedConfig(input: ConfigInput, env: Env = {}): ResolvedConfig {
+  return resolveConfig(checkCodeValue(configInputSchema, () => input, { notAnObject: 'must be an object', threw: 'could not be read' }), { env })
 }
