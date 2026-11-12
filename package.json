@@ -2,7 +2,7 @@
   "name": "quorum",
   "type": "module",
   "version": "0.1.0",
-  "packageManager": "bun@1.4.0",
+  "packageManager": "bun@1.4.4",
   "description": "Multi-agent code review for diffs: a model proposes candidate findings, then a panel of blind voters judges each before it's reported.",
   "repository": {
     "type": "git",
