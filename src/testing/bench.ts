@@ -1,4 +1,4 @@
-/** Test helpers for the bench: a small suite and the writer that puts it on disk, the verdicts and results its scorer reads, the resolved configs it fingerprints, and the records it keeps. */
+/** Test helpers for the bench: a small suite and the writer that puts it on disk, the verdicts and results its scorer reads, the resolved configs it fingerprints, the records it keeps, and the fake models its runner reviews with. */
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -11,8 +11,9 @@ import { resolveConfig } from '../config/resolve.ts'
 import type { ResolvedConfig } from '../config/resolve.ts'
 import { configInputSchema } from '../config/schema.ts'
 import type { ConfigInput } from '../config/schema.ts'
+import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
 import { findingId } from '../core/stages/research.ts'
-import type { Confidence, IncompleteEntry, QuorumResult, Verdict } from '../core/types.ts'
+import type { Confidence, FindingDetails, IncompleteEntry, QuorumResult, Verdict } from '../core/types.ts'
 
 /** Three patches: exec adds an exec(cmd) call at new line 2 of a.js, sql builds SQL text at new lines 2 and 3 of db.py, docs renames the README's title. */
 export const PATCHES = {
@@ -256,4 +257,85 @@ export function record(fields: Partial<ReviewRecord> = {}): ReviewRecord {
 /** A config resolved as `fromConfig` resolves a program's: checked as a code config is, then bound to `env`. */
 export function resolvedConfig(input: ConfigInput, env: Env = {}): ResolvedConfig {
   return resolveConfig(checkCodeValue(configInputSchema, () => input, { notAnObject: 'must be an object', threw: 'could not be read' }), { env })
+}
+
+/** The finding a fake model reports for the exec patch: the command built from input, quoted from the added line. */
+export const EXEC_FINDING: FindingDetails = {
+  file: 'a.js',
+  line: 2,
+  category: 'CWE-78',
+  quote: 'exec(cmd)',
+  summary: 'command injection',
+}
+
+/**
+ * How a fake model answers: the model it names, the findings a research call reports (none by default),
+ * whether a vote keeps them (it does by default), whether research fails, whether its answers report a
+ * cost (they do by default), a gate its calls wait for, and a hook each call runs first.
+ */
+export interface FakeModel {
+  readonly model?: string
+  readonly findings?: readonly FindingDetails[]
+  readonly keep?: boolean
+  readonly failResearch?: boolean
+  readonly cost?: boolean
+  readonly gate?: Promise<void>
+  readonly onCall?: (request: CompletionRequest) => void
+}
+
+/** Wait for `gate`, unless `signal` aborts first: then reject with the signal's reason. */
+function waitFor(gate: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+  if (signal === undefined) return gate
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const onAbort = (): void => reject(signal.reason)
+    signal.addEventListener('abort', onAbort, { once: true })
+    gate.then(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, reject)
+  })
+}
+
+/**
+ * A provider that answers from `fake` and calls no model: a research request (`research_findings`) gets
+ * the findings, or an `Error` under `failResearch`; a vote gets `keep` and a reason. Each answer reports
+ * 10 input and 5 output tokens, and a cost of 0.001 unless `cost` is false.
+ */
+export function fakeProvider(fake: FakeModel = {}): { readonly model: string, readonly complete: (request: CompletionRequest) => Promise<CompletionResponse> } {
+  const model = fake.model ?? 'm'
+  return {
+    model,
+    complete: async (request) => {
+      fake.onCall?.(request)
+      if (fake.gate !== undefined) await waitFor(fake.gate, request.signal)
+      const research = request.output.name === 'research_findings'
+      if (research && fake.failResearch === true) throw new Error('research failed')
+      return {
+        text: JSON.stringify(research
+          ? { findings: fake.findings ?? [] }
+          : { keep: fake.keep ?? true, reasoning: 'r' }),
+        model,
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          ...(fake.cost === false
+            ? {}
+            : { costUsd: 0.001 }),
+        },
+      }
+    },
+  }
+}
+
+/** A config of one provider, `fakeProvider(fake)`, which every profile uses for its research and its votes. */
+export function fakeConfig(fake: FakeModel = {}): ResolvedConfig {
+  return resolvedConfig({
+    providers: {
+      fake: fakeProvider(fake),
+    },
+  })
 }
