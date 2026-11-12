@@ -34,7 +34,7 @@ bun run compile                                      # a standalone binary in ./
 install -m 0755 ./bin/quorum /usr/local/bin/quorum   # on your $PATH
 ```
 
-[Installation](./docs/10-getting-started/10-installation.md) has the prerequisites, checking a release binary against its checksums and its attestation, running the image with a config file, a key and a model on the host and checking its attestation, why the package runs on Node and not on Bun, running it from the clone without the binary, and a check that it works without a model.
+[Installation](./docs/10-getting-started/10-installation.md) has the prerequisites, checking the npm package's provenance, checking a release binary against its checksums and its attestation, running the image with a config file, a key and a model on the host and checking its attestation, why the package runs on Node and not on Bun, running it from the clone without the binary, and a check that it works without a model.
 
 ## Try it
 
