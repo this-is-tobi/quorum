@@ -10,6 +10,7 @@ const read = (path: string): string => readFileSync(new URL(`../${path}`, import
 interface Step {
   uses?: string
   run?: string
+  env?: Record<string, string>
   with?: Record<string, unknown>
 }
 
@@ -83,12 +84,20 @@ describe('the permissions', () => {
     expect(granted).toEqual({
       'expose-vars': { contents: 'read' },
       'build-binaries': { contents: 'read' },
+      'release-guard': { 'pull-requests': 'read' },
       release: { contents: 'write', issues: 'write', 'pull-requests': 'write' },
       'attest-binaries': { 'id-token': 'write', attestations: 'write' },
       npm: { contents: 'read', 'id-token': 'write' },
       docker: { contents: 'read', packages: 'write' },
       attest: { packages: 'write', 'id-token': 'write', attestations: 'write' },
     })
+  })
+
+  it('never interpolates an expression into a script: a value reaches `run:` through `env:`', () => {
+    const runs = Object.values(jobs).flatMap(({ steps = [] }) => steps).map(({ run }) => run ?? '')
+    expect(runs.length).toBeGreaterThan(0)
+    for (const run of runs)
+      expect(run).not.toContain('${{')
   })
 
   it('checks out without leaving the job token in .git/config', () => {
@@ -148,7 +157,7 @@ describe('the binaries', () => {
   })
 
   it('are attached by the release job, which downloads the artifact the build uploads, under its name', () => {
-    expect(needs('release')).toEqual(['build-binaries'])
+    expect(needs('release')).toContain('build-binaries')
     expect(job('release').with?.RELEASE_ARTIFACT_NAMES).toBe(upload().with?.name)
     expect(job('release').with?.RELEASE_ARTIFACT_NAMES).toBe(ARTIFACT)
   })
@@ -168,6 +177,50 @@ describe('the release', () => {
 
   it('runs on every push, since whether a push creates a release is what it decides', () => {
     expect(job('release').if).toBeUndefined()
+  })
+})
+
+describe('the release guard', () => {
+  // release-please releases every merged release pull request still labelled `autorelease: pending`, and tags
+  // that pull request's merge commit, whatever commit the run is on. The binaries are attached by the release
+  // job itself, so only a job that runs before it can keep the artifacts and the tag on one commit.
+  const guard = (): Step => {
+    const steps = job('release-guard').steps ?? []
+    expect(steps).toHaveLength(1)
+    return steps[0]
+  }
+
+  it('runs before the release, on every push, and the release needs it', () => {
+    expect(needs('release-guard')).toEqual([])
+    expect(job('release-guard').if).toBeUndefined()
+    expect(needs('release').toSorted()).toEqual(['build-binaries', 'release-guard'])
+  })
+
+  it('reads pull requests through the API with its own token, with no checkout and nothing else to read', () => {
+    expect(job('release-guard').permissions).toEqual({ 'pull-requests': 'read' })
+    expect(job('release-guard').steps?.some(({ uses }) => uses?.startsWith('actions/checkout@'))).toBe(false)
+    expect(guard().env).toMatchObject({
+      GH_TOKEN: expr('github.token'),
+      GH_REPO: expr('github.repository'),
+      GITHUB_REF_NAME: expr('github.ref_name'),
+      GITHUB_SHA: expr('github.sha'),
+    })
+  })
+
+  it('fails the run on a merged pull request of the branch, still labelled pending, that merged another commit than the run\'s', () => {
+    const { run = '' } = guard()
+    expect(run).toContain('set -euo pipefail')
+    expect(run).toContain('gh pr list --state merged --label "autorelease: pending" --base "$GITHUB_REF_NAME"')
+    expect(run).toContain('release-please--branches--$GITHUB_REF_NAME')
+    expect(run).toMatch(/\.mergeCommit\.oid != env\.GITHUB_SHA/)
+    expect(run).toContain('::error::')
+    expect(run).toContain('exit 1')
+  })
+
+  it('says how to recover: re-run the release commit\'s own run, which a dispatch does not', () => {
+    const { run = '' } = guard()
+    expect(run).toContain('Re-run all jobs')
+    expect(run).toMatch(/dispatch/i)
   })
 })
 

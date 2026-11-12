@@ -67,10 +67,49 @@ jobs:
         if-no-files-found: error
         retention-days: 3
 
+  # release-please releases every merged release pull request still labelled "autorelease: pending", and tags
+  # that pull request's merge commit, whatever commit this run is on. So when the run of a release commit
+  # fails before release-please, the next run on the branch creates that release from its own commit: the
+  # tag is on the release commit, and the binaries, the package and the image come from another one.
+  # release-app attaches the binaries itself, so only a job that runs before it can refuse that run.
+  release-guard:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read # lists the merged release pull requests
+    steps:
+    - name: Check that no other release commit waits to be released
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
+        GITHUB_SHA: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+
+        # The release pull requests of this branch, as release-app finds them: its head branch is
+        # release-please--branches--<branch>, with a component suffix in a monorepo. A failing call fails the
+        # step, since a plain assignment keeps the exit status of gh, and a merge commit that cannot be read
+        # counts as another commit.
+        export PR_BRANCH_PREFIX="release-please--branches--$GITHUB_REF_NAME"
+        waiting=$(gh pr list --state merged --label "autorelease: pending" --base "$GITHUB_REF_NAME" --limit 100 \
+          --json number,mergeCommit,headRefName \
+          --jq '[ .[]
+                  | select(.headRefName | startswith(env.PR_BRANCH_PREFIX))
+                  | select(.mergeCommit.oid != env.GITHUB_SHA)
+                  | "#\(.number) merged as \(.mergeCommit.oid)" ] | join(", ")')
+
+        if [ -n "$waiting" ]; then
+          echo "::error::Merged and not yet released: $waiting. This run is on $GITHUB_SHA, which is not that commit, so release-please would release it from here: the tag on the release commit, the binaries, the package and the image built from this one. Re-run the CD run of the release commit with 'Re-run all jobs', which keeps its commit; a manual dispatch builds the head of the branch."
+          exit 1
+        fi
+
+        echo "No merged release pull request waits to be released from another commit than $GITHUB_SHA"
+
   release:
     uses: this-is-tobi/github-workflows/.github/workflows/release-app.yml@v0
     needs:
     - build-binaries
+    - release-guard
     permissions:
       contents: write # tags the release, creates it and attaches the binaries
       issues: write # labels the release pull request
