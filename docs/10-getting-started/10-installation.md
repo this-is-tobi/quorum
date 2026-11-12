@@ -101,11 +101,13 @@ The arguments after the image name are quorum's own, `--print-config` or `--conf
 
 `docker run --rm ghcr.io/this-is-tobi/quorum:<version> --version` prints `quorum` and the version, and the empty-diff check at the end of this page runs in the image too, with its two variables passed by `-e` and the empty diff piped to `docker run -i`.
 
-Check the image against its attestation before you run it. The release's CD signs the image with cosign and attaches an SPDX SBOM to it, and records a build provenance attestation, a signed record that GitHub Actions in this repository built that image, which `gh attestation verify` checks:
+Check the image against its attestation before you run it. The release's CD signs the image with cosign, attaches an SPDX SBOM to it, and records a build provenance attestation, a signed record that a GitHub Actions run of this repository built that image. `gh attestation verify` checks that record; the signature and the SBOM are cosign's, and `gh` does not read them:
 
 ```bash
 gh attestation verify oci://ghcr.io/this-is-tobi/quorum:<version> --owner this-is-tobi
 ```
+
+The check names the owner, not the repository as a binary's does, because a shared workflow of the same owner, `this-is-tobi/github-workflows`, signs the record when this repository's CD calls it: `--repo this-is-tobi/quorum` alone refuses it. To pin the repository too, add the workflow's: `--repo this-is-tobi/quorum --signer-repo this-is-tobi/github-workflows` in place of `--owner this-is-tobi`.
 
 ## From source
 

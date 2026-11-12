@@ -18,6 +18,17 @@
       "semanticCommitType": "build"
     },
     {
+      "description": "The Bun pin ships twice, since the release binaries and the container image both embed that Bun, so its bump is user-facing: commit it as 'build', as the runtime dependencies are, so release-please lists it under Dependencies and cuts a patch release. Renovate moves it in one pull request, because the Dockerfile's oven/bun tag must equal the pin of mise.toml (src/dockerfile.spec.ts): bun is the dependency name of the mise manager's pin and of the packageManager field of package.json, and docker.io/oven/bun is the Dockerfile's image. Node, dev tooling and CI actions keep the default 'chore' and do not release.",
+      "matchDepNames": ["bun", "docker.io/oven/bun"],
+      "groupName": "bun",
+      "semanticCommitType": "build"
+    },
+    {
+      "description": "Every other image of the Dockerfile ships in the container image too (the distroless runtime), so a bump of it is user-facing: commit it as 'build', as the runtime dependencies are.",
+      "matchManagers": ["dockerfile"],
+      "semanticCommitType": "build"
+    },
+    {
       "description": "this-is-tobi/github-workflows is referenced via its moving v0 major tag on purpose - don't pin or bump it.",
       "matchDepNames": ["this-is-tobi/github-workflows"],
       "enabled": false
