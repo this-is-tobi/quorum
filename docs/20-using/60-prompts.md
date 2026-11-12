@@ -18,7 +18,7 @@ The user message holds the data, each block in its own fence, joined by blank li
 | Research, one per profile | The diff; then the guidelines, when the profile has them |
 | Vote, one per lens per finding | The claim, the evidence, the diff section of the cited file; then the guidelines, when the profile has them |
 
-The claim is two lines, `Finding: <file>:<line> [<category>]` and `Claim by the finder (unverified): <summary>`. Its category and summary, and, for a diff without per-file headers, its file name (cleaned, capped at 260 characters), are the only text a model wrote that a voter reads. The evidence is the code the harness read from the diff around the cited line, and the diff section is the cited file's part of the diff, or the whole diff when no single section matches.
+The claim is two lines, `Finding: <file>:<line> [<category>]` and `Claim by the finder (unverified): <summary>`. Its category and summary, and, for a diff without per-file headers, its file name (cleaned, capped at 260 characters), are the only text a model wrote that a voter reads. The file name's hidden characters show as `<U+XXXX>`, so a name that holds a line break cannot add a line to the claim. The evidence is the code the harness read from the diff around the cited line, and the diff section is the cited file's part of the diff, or the whole diff when no single section matches.
 
 The first vote request of a review of the [Quick start](../10-getting-started/20-quickstart.md)'s diff, as the `reachability` voter received it. Its system message:
 
@@ -102,7 +102,7 @@ A template is text with `{{name}}` placeholders, and no logic: no condition, no 
 
 ## The data notice
 
-The data notice tells the model what each block of the user message holds. It starts with `The user message holds these blocks:`, then gives one line per block the request carries, `- <tag>: <description>`, naming the block by its exact tag. The tags of a request are the only ones it names, so a tag planted in the diff is never one of them.
+The data notice tells the model what each block of the user message holds. It starts with `The user message holds these blocks:`, or `The user message holds this block:` when the request carries one block, then gives one line per block the request carries, `- <tag>: <description>`, naming the block by its exact tag. The tags of a request are the only ones it names, so a tag planted in the diff is never one of them.
 
 The descriptions are written by the code, never by a profile, since only the code knows which blocks a request carries:
 

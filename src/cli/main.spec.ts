@@ -836,7 +836,7 @@ describe('the size guard', () => {
     })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     expect(fetchMock).not.toHaveBeenCalled()
-    const refusal = 'local: may need 18089 tokens, more than contextTokens (17000): 1577 for its text at one token per byte, 512 for the chat template and 16000 for the reply'
+    const refusal = 'local: may need 18087 tokens, more than contextTokens (17000): 1575 for its text at one token per byte, 512 for the chat template and 16000 for the reply'
     expect((JSON.parse(stdout()) as QuorumResult).meta.incomplete).toEqual([
       { profile: 'security', reason: 'request-too-large', detail: `the research request was not sent: ${refusal}` },
     ])
