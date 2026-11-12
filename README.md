@@ -90,3 +90,7 @@ The JSON result goes to stdout, and the exit code says what to do with it: `0` f
 - [The JSON result](./docs/95-reference/20-json-result.md) *- Every field of a result in the order it is written, the incomplete reasons, and an example*
 - [Library API](./docs/95-reference/30-library-api.md) *- `createQuorum`, its ports, the events, abort, the errors and every export*
 - [Architecture](./docs/95-reference/40-architecture.md) *- The modules, the dependency rule, the stages of a review, and how the suite runs*
+
+## License
+
+quorum is released under the [Apache License 2.0](./LICENSE).
