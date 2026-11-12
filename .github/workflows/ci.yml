@@ -57,6 +57,10 @@ jobs:
     - name: Run typecheck
       run: bun run typecheck
 
+    # The build can fail where the typecheck passes (rootDir, declarations); the release's own run would be the first to say so
+    - name: Build the npm package
+      run: bun run build
+
   test:
     uses: this-is-tobi/github-workflows/.github/workflows/test-vitest.yml@v0
     needs:
