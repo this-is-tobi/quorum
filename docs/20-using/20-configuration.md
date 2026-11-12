@@ -60,13 +60,13 @@ profiles:
 - **`roles`** says which provider researches and which votes. A profile's own `roles`, and a lens's `provider`, override them.
 - **`profiles`** defines the review profiles: [Profiles](./40-profiles.md), [Lenses and policy](./50-lenses-and-policy.md) and [Prompts](./60-prompts.md) say what each field means. A prompt is a string, or `{ file }`: the file's text. A prompt file resolves against the directory of the config file, whatever the working directory is, and holds at most 64 KiB, and the prompt files of a config 1 MiB in all.
 
-The JSON Schema in [`schema/quorum.schema.json`](../../schema/quorum.schema.json) lets an editor check and complete a YAML or JSON config. A YAML file names it in a comment on its first line, `# yaml-language-server: $schema=<path or URL of the schema>`, as the example does with the path of a clone beside the directory that holds the config; a JSON file names it in its `"$schema"` field. Quorum itself ignores both.
+The JSON Schema in [`schema/quorum.schema.json`](../../schema/quorum.schema.json) lets an editor check and complete a YAML or JSON config. A YAML file names it in a comment on its first line, `# yaml-language-server: $schema=<path or URL of the schema>`, as the example does with the path of a clone beside the directory that holds the config, or `./node_modules/@tobi-or-not/quorum/schema/quorum.schema.json`, the copy the npm package ships, when the package is installed in the project that holds the config; a JSON file names it in its `"$schema"` field. Quorum itself ignores both.
 
 A TS or JS config types its object with `import type` and `satisfies`, which Node and Bun erase when they load the file. This one is the same providers as above, with the gateway's key read from the environment by code:
 
 ```ts
 // quorum.config.mts
-import type { QuorumConfig } from './src/index.ts'
+import type { QuorumConfig } from '@tobi-or-not/quorum'
 
 export default {
   providers: {
@@ -83,7 +83,7 @@ export default {
 } satisfies QuorumConfig
 ```
 
-Name the file `.mts` or `.mjs`: the extension makes it an ES module whatever the nearest `package.json` says, where `export` in a `.ts` or `.js` file of a package whose `package.json` says `"type": "commonjs"` is a syntax error. Node strips erasable TypeScript only, so a config holds no `enum`, `namespace` or parameter property. The import path matters to the editor alone: point it at the clone's `src/index.ts`. [Config types](../95-reference/30-library-api.md#config-types) lists every field.
+Name the file `.mts` or `.mjs`: the extension makes it an ES module whatever the nearest `package.json` says, where `export` in a `.ts` or `.js` file of a package whose `package.json` says `"type": "commonjs"` is a syntax error. Node strips erasable TypeScript only, so a config holds no `enum`, `namespace` or parameter property. The import is erased when the file loads, so it matters to the editor alone, and a global install of the package runs the config as it is. The editor resolves the types when the package is installed in the project that holds the config, for example as a dev dependency. [Config types](../95-reference/30-library-api.md#config-types) lists every field.
 
 Prefer `apiKeyEnv` to `apiKey: process.env.GATEWAY_KEY`, even in code: a variable that is not set is an error with `apiKeyEnv`, while `apiKey: undefined` is an unset field, and the review runs without a key.
 
@@ -351,7 +351,7 @@ git worktree add --detach ../base origin/main
 git diff origin/main...HEAD | quorum --config ../base/ci/quorum.yaml > result.json
 ```
 
-The runtime matters as much. `bun` reads a `.env` and a `bunfig.toml` from the working directory before quorum's own code runs. A planted `.env` can set `QUORUM_CONFIG`, which names a config of the pull request's (a TS or JS one then runs), or any other `QUORUM_*` variable, such as a base URL for the finder, and a planted `bunfig.toml` can run code. The binary reads neither, and neither does Node. Review a checkout with the binary, or with Node 22.18 or later as `node /path/to/quorum/src/cli/bin.ts`, never with `bun run start`: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
+The runtime matters as much. `bun` reads a `.env` and a `bunfig.toml` from the working directory before quorum's own code runs. A planted `.env` can set `QUORUM_CONFIG`, which names a config of the pull request's (a TS or JS one then runs), or any other `QUORUM_*` variable, such as a base URL for the finder, and a planted `bunfig.toml` can run code. The binary reads neither, and neither does Node. Review a checkout with the binary, or with the npm package's `quorum`, which runs on Node, never with `bun run start`: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
 
 [`--print-config`](./10-cli.md#printing-the-resolved-config) shows what a job will run: the file, the providers' origins, the profiles and a hash of each prompt, with no key.
 

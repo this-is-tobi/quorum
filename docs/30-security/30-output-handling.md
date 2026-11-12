@@ -119,7 +119,7 @@ Quorum raises at most one flag per file, code and subject, so a file raises at m
 
 ## Printing a review yourself
 
-`src/index.ts` exports both functions, for a program that prints a review:
+`@tobi-or-not/quorum` exports both functions, for a program that prints a review:
 
 | Function | Use it for | What it does |
 | --- | --- | --- |
@@ -129,8 +129,8 @@ Quorum raises at most one flag per file, code and subject, so a file raises at m
 An event sink that prints the gaps of a review on stderr, and a function that prints the result on stdout:
 
 ```ts
-import { inertJson, inertLine } from './src/index.ts'
-import type { QuorumEvent, QuorumResult } from './src/index.ts'
+import { inertJson, inertLine } from '@tobi-or-not/quorum'
+import type { QuorumEvent, QuorumResult } from '@tobi-or-not/quorum'
 
 function events(event: QuorumEvent): void {
   if (event.type === 'incomplete') console.error(inertLine(`incomplete: ${event.entry.reason} (${event.entry.detail})`))

@@ -1,5 +1,5 @@
 {
-  "name": "quorum",
+  "name": "@tobi-or-not/quorum",
   "type": "module",
   "version": "0.1.0",
   "packageManager": "bun@1.4.4",
@@ -8,6 +8,22 @@
     "type": "git",
     "url": "https://github.com/this-is-tobi/quorum.git"
   },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "quorum": "dist/cli/bin.js"
+  },
+  "files": [
+    "dist",
+    "schema"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": "^22.18.0 || >=23.6.0",
     "bun": ">=1.3.0"
@@ -15,6 +31,7 @@
   "scripts": {
     "start": "bun run ./src/cli/bin.ts",
     "compile": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig ./src/cli/bin.ts --outfile ./bin/quorum",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "schema": "bun run ./scripts/schema.ts",
     "live:claude-code": "bun run ./scripts/live-claude-code.ts",
     "typecheck": "tsc --noEmit",
@@ -22,7 +39,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:cov": "vitest run --coverage",
-    "prepare": "husky"
+    "prepare": "husky || true"
   },
   "dependencies": {
     "yaml": "2.9.1",

@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { inertLine } from '../core/sanitize.ts'
 import { errorMessage, EXIT, interruptSignal, runCli } from './main.ts'
 

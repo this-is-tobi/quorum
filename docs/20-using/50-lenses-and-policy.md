@@ -30,12 +30,12 @@ A policy gives one rule for each level, `high`, `medium` and `low`, and each rul
 | `{ minRatio: r }` | `r` times `n`, rounded up, and at least 1; `r` is greater than 0 and at most 1 |
 
 ```ts
-import type { PolicyRules } from './src/index.ts'
+import type { PolicyRules } from '@tobi-or-not/quorum'
 
 const policy: PolicyRules = { high: 'unanimous', medium: { minRatio: 0.5 }, low: 'off' }
 ```
 
-A profile without a policy gets `defaultPolicy`, exported by `src/index.ts`: `{ high: 'unanimous', medium: 'majority', low: 'off' }`. It resolves this way:
+A profile without a policy gets `defaultPolicy`, exported by `@tobi-or-not/quorum`: `{ high: 'unanimous', medium: 'majority', low: 'off' }`. It resolves this way:
 
 | Lenses | `high` | `medium` |
 | --- | --- | --- |

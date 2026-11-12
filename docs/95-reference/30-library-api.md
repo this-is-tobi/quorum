@@ -1,6 +1,6 @@
 # Library API
 
-The TypeScript API that `src/index.ts` exports: `createQuorum` and its ports, a review and its events, abort, the errors, the config types, and every export. There is no npm package yet: a program imports `src/index.ts` from a clone, and the examples on this page do so from a file at the root of the clone. Bun runs it as it is; the code is erasable TypeScript only, so Node 22.18 or later on the 22 line, or 23.6 or later, which strip types by default and are what the `engines` field of `package.json` asks for, load it too.
+The TypeScript API that `@tobi-or-not/quorum` exports, from `src/index.ts`: `createQuorum` and its ports, a review and its events, abort, the errors, the config types, and every export. Install the package with `npm install @tobi-or-not/quorum` and import from it: the examples on this page do, from a file of a project that has it installed. The package is ES modules with declarations, which a TypeScript project resolves with `moduleResolution` set to `node16`, `nodenext` or `bundler`; the older `node10` ignores `exports` and finds no types. Node 22.18 or later on the 22 line, or 23.6 or later, runs a `.mts` file of these examples as it is, since the code is erasable TypeScript only, and so does Bun. A clone's `src/index.ts` exports the same API.
 
 ## `createQuorum`
 
@@ -182,7 +182,7 @@ A config that imports nothing from quorum when it runs types its object with `im
 
 ```ts
 // quorum.config.mts
-import type { QuorumConfig } from './src/index.ts'
+import type { QuorumConfig } from '@tobi-or-not/quorum'
 
 export default {
   providers: {
@@ -193,7 +193,7 @@ export default {
 } satisfies QuorumConfig
 ```
 
-The `.mts` extension makes the file an ES module whatever the nearest `package.json` says: Node refuses `export` in a `.ts` or `.js` file of a package whose `package.json` says `"type": "commonjs"`. Node also strips erasable TypeScript only, so a config holds no `enum`, `namespace` or parameter property. An editor checks a YAML or JSON config against the JSON Schema committed as [`schema/quorum.schema.json`](../../schema/quorum.schema.json): a YAML file names it in a comment, `# yaml-language-server: $schema=<path or URL of the schema>`, and a JSON file in its `"$schema"` field.
+The import is erased when the file loads, so it matters to the editor alone: it resolves the types when the package is installed in the project that holds the config, for example as a dev dependency. The `.mts` extension makes the file an ES module whatever the nearest `package.json` says: Node refuses `export` in a `.ts` or `.js` file of a package whose `package.json` says `"type": "commonjs"`. Node also strips erasable TypeScript only, so a config holds no `enum`, `namespace` or parameter property. An editor checks a YAML or JSON config against the JSON Schema committed as [`schema/quorum.schema.json`](../../schema/quorum.schema.json), which the package ships as `node_modules/@tobi-or-not/quorum/schema/quorum.schema.json`: a YAML file names it in a comment, `# yaml-language-server: $schema=<path or URL of the schema>`, and a JSON file in its `"$schema"` field.
 
 ## `loadConfig` and `fromConfig`
 
@@ -221,7 +221,7 @@ interface ProfileSelection {
 `loadConfig` reads the config file it is named, if any, lays the environment over it and resolves the result into a `ResolvedConfig`: every layer merged, every reference bound, every key read. `fromConfig` builds a quorum from a config: a `ConfigInput`, which it checks and resolves, or a `ResolvedConfig`, which it uses as it is. Both read `process.env` when no `env` is given, and both throw a `ConfigError` before anything is sent, with every issue of the step that failed: `loadConfig`, those of the file, or else those of the resolution; `fromConfig`, those of the config's check, or else those of the resolution and the providers.
 
 ```ts
-import { fromConfig, inertLine, loadConfig } from './src/index.ts'
+import { fromConfig, inertLine, loadConfig } from '@tobi-or-not/quorum'
 
 const { config } = await loadConfig({ configPath: 'quorum.yaml' })
 const quorum = await fromConfig(config)
@@ -402,14 +402,14 @@ Deprecated: use `loadConfig` and `fromConfig`. `runQuorum` reviews `diff` as the
 
 ## A complete example
 
-`review.ts`, at the root of the clone: the finder on a local model, the panel on a hosted one, a line on stderr per verdict and per gap and the result on stdout, both inert, a ten-minute limit, and the CLI's exit codes.
+`review.mts`, in a project that has the package installed: the finder on a local model, the panel on a hosted one, a line on stderr per verdict and per gap and the result on stdout, both inert, a ten-minute limit, and the CLI's exit codes.
 
 ```ts
 import { readFile } from 'node:fs/promises'
-import { ConfigError, createQuorum, inertJson, inertLine, ollama, openaiCompatible, securityProfile } from './src/index.ts'
-import type { QuorumEvent, QuorumResult } from './src/index.ts'
+import { ConfigError, createQuorum, inertJson, inertLine, ollama, openaiCompatible, securityProfile } from '@tobi-or-not/quorum'
+import type { QuorumEvent, QuorumResult } from '@tobi-or-not/quorum'
 
-const USAGE = 'Usage: bun run ./review.ts <diff-file>'
+const USAGE = 'Usage: node ./review.mts <diff-file>'
 
 function progress(event: QuorumEvent): void {
   if (event.type === 'verdict') console.error(inertLine(`${event.findingId}: ${event.keptVotes}/${event.totalVotes} ${event.status}`))
@@ -463,7 +463,7 @@ process.exitCode = await main(process.argv[2])
 ```
 
 ```bash
-OPENAI_API_KEY=sk-... bun run ./review.ts ./my.diff > result.json
+OPENAI_API_KEY=sk-... node ./review.mts ./my.diff > result.json
 ```
 
 It exits as the CLI does: `0`, `1` or `4` by the result; `2` when no file is given, the file cannot be read, or a setting is invalid, such as a key with a space inside it once trimmed; and `3` when the review fails, its ten-minute limit included.

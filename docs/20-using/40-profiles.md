@@ -4,7 +4,7 @@ A profile is what a review looks for, as data: the finder's instructions, the pa
 
 ## The security profile
 
-`securityProfile`, exported by `src/index.ts`, is the default and the one the CLI runs by default:
+`securityProfile`, exported by `@tobi-or-not/quorum`, is the default and the one the CLI runs by default:
 
 | Field | Value |
 | --- | --- |
@@ -26,7 +26,7 @@ The sink these questions name is the code the vulnerability ends in, which the f
 The profile is frozen, down to each lens, so an assignment to it throws a `TypeError` in strict-mode code, which every ES module is, and a change made for one review cannot leak into the next. Spread it into a new object instead:
 
 ```ts
-import { securityProfile } from './src/index.ts'
+import { securityProfile } from '@tobi-or-not/quorum'
 
 const security = { ...securityProfile, guidelines: 'Queries go through db.query with parameters.' }
 ```
@@ -48,7 +48,7 @@ The reply the finder must give is fixed, whatever the profile: a `findings` arra
 A naming review that reports but never gates:
 
 ```ts
-import type { Profile } from './src/index.ts'
+import type { Profile } from '@tobi-or-not/quorum'
 
 export const naming: Profile = {
   id: 'naming',
@@ -109,7 +109,7 @@ The default policy meets the first with one or two lenses: the `naming` profile 
 ## Several profiles in one review
 
 ```ts
-import { createQuorum, ollama, securityProfile } from './src/index.ts'
+import { createQuorum, ollama, securityProfile } from '@tobi-or-not/quorum'
 import { naming } from './naming.ts'
 
 const local = ollama({ id: 'local', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b', contextTokens: 131072 })
@@ -147,7 +147,7 @@ Write guidelines as criteria (`` `any` is acceptable in test helpers ``), not as
 
 ```ts
 import { execFileSync } from 'node:child_process'
-import { securityProfile } from './src/index.ts'
+import { securityProfile } from '@tobi-or-not/quorum'
 
 // The base branch's copy, which the pull request under review cannot change.
 const guidelines = execFileSync('git', ['show', 'origin/main:REVIEW.md'], { encoding: 'utf8' })
