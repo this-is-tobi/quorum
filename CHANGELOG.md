@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.0](https://github.com/this-is-tobi/quorum/compare/v0.1.0...v0.2.0) (2026-11-12)
+
+
+### Features
+
+* build release binaries for linux and macOS, with their checksums ([c06a547](https://github.com/this-is-tobi/quorum/commit/c06a547038f94672882bbfb7b611556ef0fdeb7a))
+* publish quorum on npm as @tobi-or-not/quorum, running on Node ([2553408](https://github.com/this-is-tobi/quorum/commit/2553408d96e3c9c7637009bf7808fa2721ecbcbf))
+* ship a container image running the compiled binary as a non-root user ([2fd0d6d](https://github.com/this-is-tobi/quorum/commit/2fd0d6d203fbce2f840e797bd4e96d30ba504c34))
+
 ## 0.1.0 (2026-11-12)
 
 
