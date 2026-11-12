@@ -16,7 +16,7 @@ Nothing needs reading in order. Pick what you came to do: each track lists its p
 
 ### A. Review a diff
 
-1. [Installation](./10-getting-started/10-installation.md) — Node and the npm package, or Bun and the clone, a standalone binary on your `$PATH`, and a check that it works without a model.
+1. [Installation](./10-getting-started/10-installation.md) — Node and the npm package, a release binary, or Bun and the clone, a standalone binary on your `$PATH`, and a check that it works without a model.
 2. [Quick start](./10-getting-started/20-quickstart.md) — point it at a model, review a diff, and read the progress, the result and the exit code.
 3. [The CLI](./20-using/10-cli.md) — the invocation, what goes to stdout and stderr, every exit code, and what each should do to a CI job.
 4. [Configuration](./20-using/20-configuration.md) — the config file and the trust it needs in CI, the `QUORUM_*` variables, how the panel falls back to the finder's settings, the context size each provider states, the keys, `--print-config`, and the errors a bad setting causes.

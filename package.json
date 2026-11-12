@@ -31,6 +31,7 @@
   "scripts": {
     "start": "bun run ./src/cli/bin.ts",
     "compile": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig ./src/cli/bin.ts --outfile ./bin/quorum",
+    "compile:release": "bun run ./scripts/build-binaries.ts",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "schema": "bun run ./scripts/schema.ts",
     "live:claude-code": "bun run ./scripts/live-claude-code.ts",

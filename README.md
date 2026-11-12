@@ -10,7 +10,13 @@ Quorum is pre-release (`0.x`): the API may change. It assists a reviewer; it doe
 npm install -g @tobi-or-not/quorum   # the quorum command, which runs on Node
 ```
 
-It needs Node `^22.18.0 || >=23.6.0`. To build it from a clone instead, with Bun 1.3.0 or newer:
+It needs Node `^22.18.0 || >=23.6.0`. Each release also carries a standalone binary for Linux and macOS, on x64 and arm64, that needs neither Node nor Bun:
+
+```bash
+gh release download --repo this-is-tobi/quorum --pattern 'quorum-linux-x64' --pattern SHA256SUMS   # or linux-arm64, darwin-x64, darwin-arm64
+```
+
+To build it from a clone instead, with Bun 1.3.0 or newer:
 
 ```bash
 git clone https://github.com/this-is-tobi/quorum.git && cd quorum
@@ -19,7 +25,7 @@ bun run compile                                      # a standalone binary in ./
 install -m 0755 ./bin/quorum /usr/local/bin/quorum   # on your $PATH
 ```
 
-[Installation](./docs/10-getting-started/10-installation.md) has the prerequisites, why the package runs on Node and not on Bun, running it from the clone without the binary, and a check that it works without a model.
+[Installation](./docs/10-getting-started/10-installation.md) has the prerequisites, checking a release binary against its checksums and its attestation, why the package runs on Node and not on Bun, running it from the clone without the binary, and a check that it works without a model.
 
 ## Try it
 
@@ -52,7 +58,7 @@ The JSON result goes to stdout, and the exit code says what to do with it: `0` f
 **Table of Contents** *- md sources*:
 
 *Getting started*
-- [Installation](./docs/10-getting-started/10-installation.md) *- Node and the npm package, or Bun and the clone, a standalone binary on your `$PATH`, and a check that it works without a model*
+- [Installation](./docs/10-getting-started/10-installation.md) *- Node and the npm package, a release binary, or Bun and the clone, a standalone binary on your `$PATH`, and a check that it works without a model*
 - [Quick start](./docs/10-getting-started/20-quickstart.md) *- Point it at a model, review a diff, and read the progress, the result and the exit code*
 
 *Using it*
