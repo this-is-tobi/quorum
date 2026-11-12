@@ -1,4 +1,4 @@
-# Start here
+# Quorum :ballot_box:
 
 **Quorum** reviews a diff with several model calls instead of one. A model, the **finder**, reads the diff and proposes candidate findings. Each finding then goes to a **panel** of voters blind to each other, one per **lens**, each asking its own question about it. Whether a finding is kept, and at what confidence, is computed in code from the split of their votes, never reported by a model. What a review looks for is a **profile**: `security` by default, or one you write.
 

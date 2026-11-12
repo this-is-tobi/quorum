@@ -51,6 +51,11 @@ describe('the documentation', () => {
     expect(pages.filter(page => page !== START && !page.startsWith(join('docs', '95-reference')) && !next.test(text(page)))).toEqual([])
   })
 
+  it('opens the start page with the README\'s title, as the website\'s introduction page of every repository does', () => {
+    const title = (file: string): string | undefined => /^# (.+)$/m.exec(withoutFences(text(file)))?.[1]
+    expect(title(START)).toBe(title('README.md'))
+  })
+
   it('lists every page in the README table of contents', () => {
     const contents = withoutFences(text('README.md')).split(/^## Documentation$/m)[1]?.split(/^## /m)[0] ?? ''
     const listed = new Set([...contents.replace(/`[^`\n]*`/g, '').matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1].split('#')[0].replace(/^\.\//, '')))
