@@ -71,9 +71,13 @@ jobs:
   # that pull request's merge commit, whatever commit this run is on. So when the run of a release commit
   # fails before release-please, the next run on the branch creates that release from its own commit: the
   # tag is on the release commit, and the binaries, the package and the image come from another one.
-  # release-app attaches the binaries itself, so only a job that runs before it can refuse that run.
+  # release-app attaches the binaries itself, so only a job that runs before it can refuse that run. It
+  # waits for the binaries, to check right before the release and not before minutes of compiling; a merge
+  # in the seconds left is caught by release-check.
   release-guard:
     runs-on: ubuntu-latest
+    needs:
+    - build-binaries
     permissions:
       pull-requests: read # lists the merged release pull requests
     steps:
@@ -99,7 +103,7 @@ jobs:
                   | "#\(.number) merged as \(.mergeCommit.oid)" ] | join(", ")')
 
         if [ -n "$waiting" ]; then
-          echo "::error::Merged and not yet released: $waiting. This run is on $GITHUB_SHA, which is not that commit, so release-please would release it from here: the tag on the release commit, the binaries, the package and the image built from this one. Re-run the CD run of the release commit with 'Re-run all jobs', which keeps its commit; a manual dispatch builds the head of the branch."
+          echo "::error::Merged and not yet released: $waiting. This run is on $GITHUB_SHA, which is not that commit, so release-please would release it from here: the tag on the release commit, the binaries, the package and the image built from this one. Open the CD run of the release commit and use 'Re-run failed jobs' there, which keeps its commit. A manual dispatch builds the head of the branch, so this check refuses it too."
           exit 1
         fi
 
@@ -121,6 +125,29 @@ jobs:
       APP_CLIENT_ID: ${{ secrets.APP_CLIENT_ID }}
       APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
 
+  # The guard cannot see a merge that lands after it: in the seconds before release-please lists the pull
+  # requests, a run on another commit can still release this one. release-please reports the commit it tagged,
+  # and the jobs that publish wait for it to be this run's own. An empty value fails too.
+  release-check:
+    runs-on: ubuntu-latest
+    if: ${{ needs.release.outputs.release-created == 'true' }}
+    needs:
+    - release
+    permissions: {}
+    steps:
+    - name: Check that the release is tagged on this run's commit
+      env:
+        RELEASE_SHA: ${{ fromJSON(needs.release.outputs.release-outputs).sha }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "$RELEASE_SHA" ] || [ "$RELEASE_SHA" != "$GITHUB_SHA" ]; then
+          echo "::error::release-please tagged the release on '${RELEASE_SHA:-no commit reported}', and this run is on $GITHUB_SHA, so the package, the image and the attestations of this run are not published: they would come from the wrong commit. The binaries and the moving major and minor tags may already be on the release. To recover, delete the release and its tag ('gh release delete v<version> --cleanup-tag'), put the label 'autorelease: pending' back on the release pull request in place of 'autorelease: tagged', and use 'Re-run all jobs' on the CD run of the release commit, which keeps its commit."
+          exit 1
+        fi
+
+        echo "The release is tagged on this run's commit, $GITHUB_SHA"
+
   # Build provenance for each binary the release carries, verifiable with `gh attestation verify`.
   # SHA256SUMS is a list of digests, not a program, and is not attested.
   attest-binaries:
@@ -128,6 +155,7 @@ jobs:
     if: ${{ needs.release.outputs.release-created == 'true' }}
     needs:
     - release
+    - release-check
     permissions:
       id-token: write # asks for the signing certificate of the attestation
       attestations: write # stores the attestation
@@ -153,6 +181,7 @@ jobs:
     needs:
     - expose-vars
     - release
+    - release-check
     permissions:
       contents: read
       id-token: write # trusted publishing: the registry takes the workflow's identity as the credential
@@ -171,6 +200,7 @@ jobs:
     if: ${{ needs.release.outputs.release-created == 'true' }}
     needs:
     - release
+    - release-check
     permissions:
       contents: read
       packages: write # pushes the image to ghcr.io
