@@ -84,7 +84,24 @@ export function inertLine(text: string): string {
  * value with no JSON form, such as `undefined`, throws instead of returning `undefined`.
  */
 export function inertJson(value: unknown): string {
-  const json = JSON.stringify(value, null, 2) as string | undefined
+  return escapeJson(JSON.stringify(value, null, 2) as string | undefined)
+}
+
+/**
+ * The JSON of `value` on one line: `JSON.stringify(value)`, escaped as `inertJson` escapes. The line
+ * holds no line break, since `JSON.stringify` writes a line feed inside a string as `\n` and the
+ * escaping covers every other hidden character, so it is one line of a file that is read line by line.
+ * It is lossless, and a value with no JSON form throws.
+ */
+export function inertJsonLine(value: unknown): string {
+  return escapeJson(JSON.stringify(value) as string | undefined)
+}
+
+/**
+ * A JSON text with every hidden character it leaves raw, but a line feed, written as escapes, and
+ * each `##[` broken. `undefined` is what `JSON.stringify` returns for a value with no JSON form.
+ */
+function escapeJson(json: string | undefined): string {
   if (json === undefined) throw new TypeError('the value has no JSON form')
   return json
     .replace(HIDDEN, char => (char === '\n'
