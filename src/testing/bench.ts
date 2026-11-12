@@ -1,8 +1,11 @@
-/** Test helpers for the bench: a small suite and the writer that puts it on disk. */
+/** Test helpers for the bench: a small suite and the writer that puts it on disk, and the verdicts and results its scorer reads. */
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { stringify } from 'yaml'
+import packageJson from '../../package.json' with { type: 'json' }
+import { findingId } from '../core/stages/research.ts'
+import type { Confidence, IncompleteEntry, QuorumResult, Verdict } from '../core/types.ts'
 
 /** Three patches: exec adds an exec(cmd) call at new line 2 of a.js, sql builds SQL text at new lines 2 and 3 of db.py, docs renames the README's title. */
 export const PATCHES = {
@@ -77,4 +80,69 @@ export function writeSuite(directory: string, suite: object = SUITE, patches: Re
     ...patches,
   }
   for (const [name, content] of Object.entries(files)) writeFileSync(join(directory, 'cases', name), content)
+}
+
+const CATEGORY = 'CWE-78'
+
+/** One kept vote on a finding of the security profile at `file` and `line`, as the panel records it. */
+export function verdict(file: string, line: number, confidence?: Confidence): Verdict {
+  const made: Verdict = {
+    id: findingId('security', file, line, CATEGORY),
+    profile: 'security',
+    file,
+    line,
+    category: CATEGORY,
+    summary: 'A command is built from input.',
+    evidence: '+exec(cmd)',
+    quoteMatched: true,
+    keptVotes: 1,
+    totalVotes: 1,
+    votes: [
+      {
+        angle: 'reachability',
+        vote: { keep: true, reasoning: 'It is reachable.' },
+        error: null,
+      },
+    ],
+  }
+  if (confidence) made.confidence = confidence
+  return made
+}
+
+/**
+ * A result holding `parts` (each list empty when left out), with the meta a review of the security
+ * profile writes: three lenses on one fake provider, the profile's policy and gating, no invalid
+ * finding, no flag and no usage.
+ */
+export function resultWith(parts: {
+  readonly kept?: readonly Verdict[]
+  readonly discarded?: readonly Verdict[]
+  readonly unreviewed?: readonly Verdict[]
+  readonly incomplete?: readonly IncompleteEntry[]
+}): QuorumResult {
+  const { kept = [], discarded = [], unreviewed = [], incomplete = [] } = parts
+  const provider = { id: 'fake', model: 'm' }
+  return {
+    kept: [...kept],
+    discarded: [...discarded],
+    unreviewed: [...unreviewed],
+    meta: {
+      version: packageJson.version,
+      startedAt: '2026-01-01T00:00:00.000Z',
+      durationMs: 1,
+      profiles: {
+        security: {
+          providers: {
+            research: provider,
+            lenses: { reachability: provider, impact: provider, defenses: provider },
+          },
+          policy: { high: 3, medium: 2, low: null },
+          gating: true,
+          invalidFindings: 0,
+        },
+      },
+      incomplete: [...incomplete],
+      flags: [],
+    },
+  }
 }
