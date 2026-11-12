@@ -211,6 +211,24 @@ export default antfu(
     },
   },
   {
+    // The bench reads a suite and writes a run directory, and runs its reviews through the config layer
+    // and the core; it never reaches the process, the network or another thread, nor the global object,
+    // and never the CLI or the test helpers.
+    files: ['src/bench/**/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./(core|config)/(?!.*\\.\\.)|zod$|yaml$|node:(fs|fs/promises|path|crypto)$)', message: 'A bench module imports only bench modules, the core, the config layer, zod, yaml, node:fs, node:fs/promises, node:path and node:crypto.' },
+          ],
+        },
+      ],
+      'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
+    },
+  },
+  {
     // src/testing/ holds the test helpers, which only spec files import. The blocks above keep it out
     // of the core, the profiles, the providers and the config layer; this one covers the rest.
     files: ['src/cli/**/*.ts', 'src/*.ts'],

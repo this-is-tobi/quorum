@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffSectionFor, locate, sectionFor, splitDiff } from './diff.ts'
+import { decodeDiff, diffSectionFor, locate, sectionFor, splitDiff } from './diff.ts'
 
 const gitDiff = [
   'diff --git a/src/a.js b/src/a.js',
@@ -649,5 +649,41 @@ describe('locate', () => {
     }
     expect(performance.now() - started).toBeLessThan(300)
     expect(located).toBe(1_000)
+  })
+})
+
+describe('decodeDiff', () => {
+  const bytes = (...values: number[]): Uint8Array => Uint8Array.from(values)
+
+  it('reads chunks as UTF-8 text, a leading byte-order mark dropped and a character split between chunks kept whole', async () => {
+    expect(await decodeDiff([
+      bytes(0xEF, 0xBB, 0xBF, 0x61, 0xC3),
+      bytes(0xA9, 0x62),
+    ])).toBe(`a${String.fromCharCode(0xE9)}b`)
+  })
+
+  it('reads a byte that is not UTF-8 as the replacement character, as the review command always has', async () => {
+    expect(await decodeDiff([
+      bytes(0x61, 0xFF, 0x62),
+    ])).toBe(`a${String.fromCharCode(0xFFFD)}b`)
+  })
+
+  it('stops at the chunk that takes the bytes past the cap', async () => {
+    let pulled = 0
+    async function* chunks(): AsyncGenerator<Uint8Array> {
+      for (;;) {
+        pulled += 1
+        yield new Uint8Array(4)
+      }
+    }
+    expect(await decodeDiff(chunks(), 10)).toBeUndefined()
+    expect(pulled).toBe(3)
+  })
+
+  it('counts a string chunk by its UTF-8 bytes', async () => {
+    expect(await decodeDiff(['ab', 'c'], 3)).toBe('abc')
+    expect(await decodeDiff([
+      String.fromCharCode(0xE9).repeat(2),
+    ], 3)).toBeUndefined()
   })
 })

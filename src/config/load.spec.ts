@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, Provider } from '../core/ports.ts'
-import { loadConfig, readConfigFile } from './load.ts'
+import { loadConfig, readBounded, readConfigFile } from './load.ts'
 import { configFileSchema } from './schema.ts'
 
 const SECRET = 'sk-planted-secret'
@@ -766,6 +766,15 @@ describe.skipIf('bun' in process.versions)('readConfigFile under Node itself, wh
 
   it('leaves the text of a config out of what Node itself writes', () => {
     expect(stderr).not.toContain('planted')
+  })
+})
+
+describe('readBounded', () => {
+  it('reads through a symbolic link, unless it is told not to follow one', async () => {
+    symlinkSync(join(dir, file('target.txt', 'text')), join(dir, 'link.txt'))
+    const read = await readBounded(join(dir, 'link.txt'), 10, '10 bytes')
+    expect('value' in read && new TextDecoder().decode(read.value)).toBe('text')
+    expect(await readBounded(join(dir, 'link.txt'), 10, '10 bytes', { noFollow: true })).toEqual({ problem: 'is a symbolic link' })
   })
 })
 
