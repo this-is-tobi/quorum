@@ -143,7 +143,7 @@ echo $code
 
 This run exits `1`: it kept a `high` finding, and `1` wins over the `4` that its unreviewed finding and its unreadable one would otherwise give.
 
-Running again does not fix a `request-too-large` gap, which the same diff on the same model repeats. A model with a larger window does, or a smaller diff. With the 32768 above, a research request leaves about 14.7 KB (14,757 bytes) of diff, so a longer branch needs one or the other: [What it counts, and what it costs](../20-using/20-configuration.md#what-it-counts-and-what-it-costs).
+Running again does not fix a `request-too-large` gap, which the same diff on the same model repeats. A model with a larger window does, or a smaller diff. With the 32768 above, a research request leaves about 14.7 KB (14,759 bytes) of diff, so a longer branch needs one or the other: [What it counts, and what it costs](../20-using/20-configuration.md#what-it-counts-and-what-it-costs).
 
 ## Where to go next
 
