@@ -1,0 +1,13 @@
+# Version control and local working notes
+.git
+.local
+.superpowers
+
+# Dependencies and build output, which the build stage makes itself
+node_modules
+dist
+bin
+
+# Secrets and reports that never belong in a build context
+.env*
+coverage

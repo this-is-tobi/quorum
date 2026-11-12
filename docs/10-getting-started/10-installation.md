@@ -1,6 +1,6 @@
 # Installation
 
-Quorum is a TypeScript program. It installs from npm and runs on Node, downloads from a release as a binary that needs neither Node nor Bun, or builds from a clone of its repository and runs under Bun, from the clone or as a standalone binary. This page installs it any of these ways, puts it on your `$PATH`, and checks that it works before any model is running.
+Quorum is a TypeScript program. It installs from npm and runs on Node, downloads from a release as a binary that needs neither Node nor Bun, runs from a container image that holds that binary, or builds from a clone of its repository and runs under Bun, from the clone or as a standalone binary. This page installs it any of these ways, puts it on your `$PATH`, and checks that it works before any model is running.
 
 A TypeScript program that uses quorum as a library installs the same package and imports `@tobi-or-not/quorum`, as the [Library API](../95-reference/30-library-api.md) shows.
 
@@ -8,6 +8,7 @@ A TypeScript program that uses quorum as a library installs the same package and
 
 - **[Node.js](https://nodejs.org/) `^22.18.0 || >=23.6.0`, to run the npm package.** The `engines` field of [`package.json`](../../package.json) asks for it. From those versions Node strips TypeScript types without a flag, which loading a `.mts` config needs: [Configuration](../20-using/20-configuration.md).
 - **[Bun](https://bun.sh/) 1.3.0 or newer, to build from source.** The `engines` field asks for it too, and it installs the dependencies, runs the CLI from a clone and builds the binary.
+- **A container engine such as [Docker](https://docs.docker.com/get-started/get-docker/), to run the image.**
 - **A model endpoint**, for the reviews themselves. With no config file and no base URL, preset or protocol variable it is the [Ollama](https://ollama.com/) on your machine, through its native API at `http://localhost:11434`, the address Ollama listens on, on `127.0.0.1`, by default. `QUORUM_RESEARCH_BASE_URL` on its own points quorum at an OpenAI-compatible `/chat/completions` endpoint instead, a self-hosted vLLM, TGI or llama.cpp server or a hosted API, `QUORUM_RESEARCH_PRESET` names a vendor's preset, such as `anthropic` or `vllm`, and a config file can name an Anthropic, Gemini or Ollama endpoint as well: [Configuration](../20-using/20-configuration.md). The check at the end of this page needs none.
 - **[Claude Code](https://code.claude.com/docs), for a `claude-code` provider only.** It is the model's endpoint then: `claude` on your `PATH`, signed in or with a key, run once per request, headless and isolated: [`claudeCode`](../20-using/30-providers.md#claudecode). Quorum requires Claude Code 2.1.311 or newer.
 
@@ -66,6 +67,45 @@ install -m 0755 quorum-<target> /usr/local/bin/quorum
 The last line needs `sudo` where `/usr/local/bin` is not yours; any directory on your `$PATH` will do.
 
 The binary holds the Bun runtime, so it needs neither Bun nor Node, and, like the one `bun run compile` builds below, it reads no `.env` and no `bunfig.toml` from the directory it runs in. The Linux binaries are linked against glibc: they run on Debian, Ubuntu and the like, not on Alpine, which uses musl. On macOS, download with `gh` or `curl` as above: a download in a browser marks the file with the `com.apple.quarantine` attribute, which `gh` and `curl` do not add.
+
+## A container image
+
+Each release also publishes an image for `linux/amd64` and `linux/arm64`, `ghcr.io/this-is-tobi/quorum`, tagged with the release's version without its `v`, `0.2.0` for `v0.2.0`, with its minor and major, `0.2` and `0`, and with `latest`. Pin a version rather than `latest`, and replace `<version>` below with it. The image holds the binary above and nothing else: no shell, no `claude` CLI, so a `claude-code` provider does not run in it. It runs as the distroless `nonroot` user, uid 65532, in the working directory `/work`, and, like the binary, reads no `.env` and no `bunfig.toml` from it.
+
+The diff arrives on stdin, which `docker run` forwards with `-i`, the result goes to stdout, and the settings are the `QUORUM_*` variables, passed with `-e`:
+
+```bash
+docker run --rm -i \
+  -e QUORUM_RESEARCH_PROTOCOL=ollama \
+  -e QUORUM_RESEARCH_BASE_URL=http://host.docker.internal:11434 \
+  -e QUORUM_RESEARCH_MODEL=qwen3.6:27b \
+  -e QUORUM_RESEARCH_CONTEXT_TOKENS=32768 \
+  ghcr.io/this-is-tobi/quorum:<version> < my.diff > result.json
+```
+
+The arguments after the image name are quorum's own, `--print-config` or `--config` for instance. With no voter variable the panel shares the finder's provider, so these four variables serve both: [The voter's fallback](../20-using/20-configuration.md#the-voters-fallback).
+
+- **`localhost` is the container.** Inside it, the default endpoint, Ollama's native API at `http://localhost:11434`, finds nothing, so name the endpoint. A base URL variable on its own means an `openai-compatible` server, so the example names the protocol too: Ollama's native API at another address takes `QUORUM_RESEARCH_PROTOCOL=ollama` with `QUORUM_RESEARCH_BASE_URL`, and a vLLM, TGI or llama.cpp server or a hosted API takes `QUORUM_RESEARCH_BASE_URL` alone: [A base URL variable on its own](../20-using/20-configuration.md#the-environment-variables).
+- **A server on the host is `host.docker.internal`.** Docker Desktop resolves that name to the host: on Docker Desktop 4.99.0 for macOS it resolved with no option, and a server of the host that listened only on `127.0.0.1` answered through it. On Linux, add the name yourself, `--add-host=host.docker.internal:host-gateway`, which Docker resolves to the host's internal IP address. That is not the host's loopback address, so a service that listens only on `127.0.0.1`, as Ollama does by default, is not reachable through it from a Linux container: Ollama's `OLLAMA_HOST` variable sets the address it listens on, `0.0.0.0:11434` for every interface, which opens the service to whatever else can reach the host.
+- **A key is passed by name.** `-e QUORUM_RESEARCH_API_KEY`, with no `=` and no value, passes the variable from your environment, so the key never sits on the command line or in your shell history. Export it first, `export QUORUM_RESEARCH_API_KEY=...` or from your secret store, and see [Keys](../20-using/20-configuration.md#keys). A key sent to `http://host.docker.internal` draws that section's warning about a key sent over plain `http` to a host other than this machine, since only `localhost` and the loopback addresses count as this machine.
+- **A config file is mounted read-only and named with `--config`**, a path inside the container:
+
+  ```bash
+  docker run --rm -i \
+    -v "$PWD/quorum.yaml:/etc/quorum/quorum.yaml:ro" \
+    ghcr.io/this-is-tobi/quorum:<version> --config /etc/quorum/quorum.yaml < my.diff > result.json
+  ```
+
+  The user the image runs as, uid 65532, must be able to read the file. A bind mount keeps the host file's owner and mode on Linux, where a file that only its owner can read, mode `0600`, fails as `Error: /etc/quorum/quorum.yaml: cannot be read`: give it mode `0644`. A provider's `apiKeyEnv` names a variable that you pass with `-e`, and its `baseUrl` is an address the container reaches, `host.docker.internal` for a server on the host.
+- **A diff file is named from `/work`.** Mount its directory there, `-v "$PWD:/work:ro"`, and pass the file as the argument, `my.diff`, in place of `-i` and the redirection.
+
+`docker run --rm ghcr.io/this-is-tobi/quorum:<version> --version` prints `quorum` and the version, and the empty-diff check at the end of this page runs in the image too, with its two variables passed by `-e` and the empty diff piped to `docker run -i`.
+
+Check the image against its attestation before you run it. The release's CD signs the image with cosign and attaches an SPDX SBOM to it, and records a build provenance attestation, a signed record that GitHub Actions in this repository built that image, which `gh attestation verify` checks:
+
+```bash
+gh attestation verify oci://ghcr.io/this-is-tobi/quorum:<version> --owner this-is-tobi
+```
 
 ## From source
 
