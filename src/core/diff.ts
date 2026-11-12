@@ -397,3 +397,29 @@ function parseHunks(section: string): Hunk[] {
   }
   return hunks
 }
+
+/** The most diff quorum reads, from stdin, a file or a suite, in bytes: a larger one is refused and reading stops there. */
+export const MAX_DIFF_BYTES = 16 * 1024 * 1024
+
+/**
+ * Read `chunks` to the end as UTF-8 text, through one streaming decoder, so a leading byte-order mark
+ * goes and a character split between two chunks stays whole, whatever the source, and a byte that is
+ * not UTF-8 becomes the replacement character. The bytes are counted as they arrive: the chunk that
+ * takes the count past `maxBytes` ends the loop with `undefined`, which closes a stream, so no more
+ * is read.
+ */
+export async function decodeDiff(chunks: AsyncIterable<Uint8Array | string> | Iterable<Uint8Array | string>, maxBytes = MAX_DIFF_BYTES): Promise<string | undefined> {
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  let bytes = 0
+  let text = ''
+  for await (const chunk of chunks) {
+    const data = typeof chunk === 'string'
+      ? encoder.encode(chunk)
+      : chunk
+    bytes += data.byteLength
+    if (bytes > maxBytes) return undefined
+    text += decoder.decode(data, { stream: true })
+  }
+  return text + decoder.decode()
+}

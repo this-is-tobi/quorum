@@ -1,5 +1,5 @@
 import { constants } from 'node:fs'
-import { open } from 'node:fs/promises'
+import { lstat, open } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -52,7 +52,7 @@ export interface LoadedConfig {
 }
 
 /** What a read found, or the problem with the file, as an issue words it, and how many bytes the problem counts toward a total. */
-type Read<T> = { readonly value: T } | { readonly problem: string, readonly counted?: number }
+export type Read<T> = { readonly value: T } | { readonly problem: string, readonly counted?: number }
 
 function fail(path: string, message: string): never {
   throw new ConfigError([
@@ -60,23 +60,54 @@ function fail(path: string, message: string): never {
   ])
 }
 
+/** What an open that failed means, by its code: the runtime's own message is never kept. */
+function openProblem(error: unknown, noFollow: boolean): string {
+  const code = (error as { code?: unknown }).code
+  if (code === 'ENOENT' || code === 'ENOTDIR') return 'does not exist'
+  if (code === 'EISDIR') return 'is not a file'
+  return code === 'ELOOP' && noFollow
+    ? 'is a symbolic link'
+    : 'cannot be read'
+}
+
+/** The problem a path has before an open that must not follow a link: it is one, or it is missing or unreadable; undefined when it is not a link. */
+async function linkProblem(absolute: string): Promise<string | undefined> {
+  try {
+    return (await lstat(absolute)).isSymbolicLink()
+      ? 'is a symbolic link'
+      : undefined
+  } catch (error) {
+    const code = (error as { code?: unknown }).code
+    return code === 'ENOENT' || code === 'ENOTDIR'
+      ? 'does not exist'
+      : 'cannot be read'
+  }
+}
+
 /**
  * The bytes of a regular file of at most `limit` bytes. The file is opened without blocking, so a FIFO
  * is refused instead of waiting for a writer, and at most one byte past the limit is read, however large
- * the file is or grows. The runtime's own message is never kept.
+ * the file is or grows. The runtime's own message is never kept. A symbolic link is followed, unless
+ * `options.noFollow` is set: then a link is `is a symbolic link`, refused by an `lstat` before the open,
+ * and the open itself refuses one with `O_NOFOLLOW` where the platform has it, which closes the race
+ * between the two on Linux and macOS (without it, on Windows, a link swapped in after the `lstat` is
+ * followed).
  */
-async function readBounded(absolute: string, limit: number, size: string): Promise<Read<Uint8Array>> {
+export async function readBounded(absolute: string, limit: number, size: string, options: { readonly noFollow?: boolean } = {}): Promise<Read<Uint8Array>> {
+  const noFollow = options.noFollow === true
+  if (noFollow) {
+    const linked = await linkProblem(absolute)
+    if (linked !== undefined) return { problem: linked }
+  }
+  const flags = noFollow && typeof constants.O_NOFOLLOW === 'number'
+    ? constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW
+    : constants.O_RDONLY | constants.O_NONBLOCK
   let handle: FileHandle
   try {
-    handle = await open(absolute, constants.O_RDONLY | constants.O_NONBLOCK)
+    handle = await open(absolute, flags)
   } catch (error) {
-    const code = (error as { code?: unknown }).code
     return {
-      problem: code === 'ENOENT' || code === 'ENOTDIR'
-        ? 'does not exist'
-        : code === 'EISDIR'
-          ? 'is not a file'
-          : 'cannot be read',
+      problem: openProblem(error, noFollow),
     }
   }
   try {
@@ -100,7 +131,7 @@ async function readBounded(absolute: string, limit: number, size: string): Promi
 }
 
 /** The UTF-8 text of `bytes`, a leading byte-order mark dropped (the decoder's default). */
-function decode(bytes: Uint8Array): Read<string> {
+export function decode(bytes: Uint8Array): Read<string> {
   try {
     return {
       value: new TextDecoder('utf-8', { fatal: true }).decode(bytes),
@@ -176,7 +207,7 @@ function repeatedKeyAt(doc: Document): number | undefined {
  * are not resolved; any error, any warning (an unknown tag is only a warning to the parser), a key that
  * repeats one of its mapping and any alias refuse the file; no problem carries source text.
  */
-function parseYaml(text: string): Read<unknown> {
+export function parseYaml(text: string): Read<unknown> {
   const lines = new LineCounter()
   try {
     const doc = parseDocument(text, {
@@ -247,7 +278,7 @@ function parseJson(text: string): Read<unknown> {
 }
 
 /** Whether `value` is an object of data: an object whose prototype is `Object.prototype` or none, never a class instance. */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const prototype: unknown = Object.getPrototypeOf(value)
   return prototype === Object.prototype || prototype === null
@@ -264,7 +295,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * `MAX_VALUES` it stops and the config has that one issue, at the file: the schema never sees more data
  * than that, and an object that refers to itself ends the walk instead of repeating it.
  */
-function dataIssues(value: unknown, file: string | undefined): ConfigIssue[] {
+export function dataIssues(value: unknown, file: string | undefined): ConfigIssue[] {
   const budget = { left: MAX_VALUES }
   const issues = valueIssues(value, [], file, 0, budget)
   return budget.left < 0

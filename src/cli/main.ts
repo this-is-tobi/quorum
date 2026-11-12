@@ -6,6 +6,7 @@ import { readEnv } from '../config/env.ts'
 import type { Env } from '../config/env.ts'
 import { fromConfig } from '../config/from-config.ts'
 import { loadConfig } from '../config/load.ts'
+import { decodeDiff } from '../core/diff.ts'
 import { ConfigError } from '../core/errors.ts'
 import { inertJson, inertLine } from '../core/sanitize.ts'
 import type { Quorum, QuorumResult } from '../core/types.ts'
@@ -21,9 +22,6 @@ export const EXIT = {
   incomplete: 4,
   interrupted: 130,
 } as const
-
-/** The most diff the CLI reads, from stdin or a file, in bytes: a larger one is refused and reading stops there. */
-export const MAX_DIFF_BYTES = 16 * 1024 * 1024
 
 export interface CliIO {
   /** Arguments after the executable and script, e.g. `process.argv.slice(2)`. */
@@ -233,31 +231,12 @@ function usageError(io: CliIO, error: unknown): number {
 async function readDiff(io: CliIO, positionals: readonly string[]): Promise<string> {
   const [path, ...extra] = positionals
   if (extra.length > 0) throw new Error(`unexpected arguments: ${extra.join(' ')}`)
-  if (path) return readCapped(createReadStream(resolve(io.cwd, path)))
-  if (io.stdin.isTTY) throw new Error('no diff given')
-  return readCapped(io.stdin)
-}
-
-/**
- * Read `chunks` to the end as UTF-8 text, through one streaming decoder, so a leading byte-order mark
- * goes and a character split between two chunks stays whole, whatever the source. The bytes are
- * counted as they arrive: the chunk that takes the count past `MAX_DIFF_BYTES` throws, and leaving
- * the loop closes the stream, so no more is read.
- */
-async function readCapped(chunks: AsyncIterable<Uint8Array | string>): Promise<string> {
-  const encoder = new TextEncoder()
-  const decoder = new TextDecoder()
-  let bytes = 0
-  let text = ''
-  for await (const chunk of chunks) {
-    const data = typeof chunk === 'string'
-      ? encoder.encode(chunk)
-      : chunk
-    bytes += data.byteLength
-    if (bytes > MAX_DIFF_BYTES) throw new Error('the diff is over 16 MiB, the most quorum reads')
-    text += decoder.decode(data, { stream: true })
-  }
-  return text + decoder.decode()
+  if (!path && io.stdin.isTTY) throw new Error('no diff given')
+  const diff = await decodeDiff(path
+    ? createReadStream(resolve(io.cwd, path))
+    : io.stdin)
+  if (diff === undefined) throw new Error('the diff is over 16 MiB, the most quorum reads')
+  return diff
 }
 
 /**
