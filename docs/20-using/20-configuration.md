@@ -351,7 +351,7 @@ git worktree add --detach ../base origin/main
 git diff origin/main...HEAD | quorum --config ../base/ci/quorum.yaml > result.json
 ```
 
-The runtime matters as much. `bun` reads a `.env` and a `bunfig.toml` from the working directory before quorum's own code runs. A planted `.env` can set `QUORUM_CONFIG`, which names a config of the pull request's (a TS or JS one then runs), or any other `QUORUM_*` variable, such as a base URL for the finder, and a planted `bunfig.toml` can run code. The binary reads neither, and neither does Node. Review a checkout with the binary, or with the npm package's `quorum`, which runs on Node, never with `bun run start`: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
+The runtime matters as much. `bun` reads a `.env` and a `bunfig.toml` from the working directory before quorum's own code runs. A planted `.env` can set `QUORUM_CONFIG`, which names a config of the pull request's (a TS or JS one then runs), or any other `QUORUM_*` variable, such as a base URL for the finder, and a planted `bunfig.toml` can run code. The binary reads neither, and neither does Node. Review a checkout with the binary, or with the `quorum` that `npm install -g` installs, which runs on Node, never with `bun run start`, and never through `npx`, `npm exec` or `pnpm dlx`, which read the checkout's `.npmrc`, where `npm install -g` does not read the project's: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
 
 [`--print-config`](./10-cli.md#printing-the-resolved-config) shows what a job will run: the file, the providers' origins, the profiles and a hash of each prompt, with no key.
 

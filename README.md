@@ -16,7 +16,7 @@ It needs Node `^22.18.0 || >=23.6.0`. Each release also carries a standalone bin
 gh release download --repo this-is-tobi/quorum --pattern 'quorum-linux-x64' --pattern SHA256SUMS   # or linux-arm64, darwin-x64, darwin-arm64
 ```
 
-Or run the image, which holds that binary and runs as a non-root user. Inside it `localhost` is the container, so name the endpoint. On Docker Desktop a server on your machine is `host.docker.internal`; on Linux add `--add-host=host.docker.internal:host-gateway` ([Installation](./docs/10-getting-started/10-installation.md#a-container-image) has the rest):
+Or run the image, which holds a binary compiled the same way, from the same commit, and runs as a non-root user. Inside it `localhost` is the container, so name the endpoint. On Docker Desktop a server on your machine is `host.docker.internal`; on Linux add `--add-host=host.docker.internal:host-gateway` ([Installation](./docs/10-getting-started/10-installation.md#a-container-image) has the rest):
 
 ```bash
 docker run --rm -i \
@@ -34,7 +34,7 @@ bun run compile                                      # a standalone binary in ./
 install -m 0755 ./bin/quorum /usr/local/bin/quorum   # on your $PATH
 ```
 
-[Installation](./docs/10-getting-started/10-installation.md) has the prerequisites, checking the npm package's provenance, checking a release binary against its checksums and its attestation, running the image with a config file, a key and a model on the host and checking its attestation, why the package runs on Node and not on Bun, running it from the clone without the binary, and a check that it works without a model.
+[Installation](./docs/10-getting-started/10-installation.md) has the prerequisites, checking the npm package's provenance, checking a release binary against its checksums and its attestation, running the image with a config file, a key and a model on the host and checking its attestation, why the installed command runs on Node and not on Bun, running it from the clone without the binary, and a check that it works without a model.
 
 ## Try it
 

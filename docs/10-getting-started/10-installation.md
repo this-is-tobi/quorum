@@ -21,9 +21,9 @@ quorum --version
 
 `npm install -g` puts a `quorum` command on your `$PATH`, and `quorum --version` prints `quorum` and the installed version. To use the package as a library, install it in your project instead, with `npm install @tobi-or-not/quorum`.
 
-The command runs on Node, never on `bun`: the file the package's `bin` names starts with `#!/usr/bin/env node`. Bun reads a `.env` and a `bunfig.toml` from its working directory before quorum's own code runs, and Node reads neither, so this `quorum` is the simple way to review in a directory you do not control, such as a pull request's checkout: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
+The installed `quorum` command runs on Node, not on `bun`: the file the package's `bin` names starts with `#!/usr/bin/env node`. Bun reads a `.env` and a `bunfig.toml` from its working directory before quorum's own code runs, and Node reads neither, so this `quorum` is the simple way to review in a directory you do not control, such as a pull request's checkout: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory). Install it with `npm install -g`, and never run the package through `npx`, `npm exec` or `pnpm dlx` inside such a checkout: they read the checkout's `.npmrc`, which can name another registry for the package to come from, where `npm install -g` does not read the project's `.npmrc`.
 
-Each version is published by this repository's CD with npm's provenance, a signed record of the repository, the workflow file, the commit and the run that built it. There are two ways to see it:
+Each version that this repository's CD publishes, from 0.2.0 on, carries npm's provenance, a signed record of the repository, the workflow file, the commit and the run that built it. There are two ways to see it:
 
 - **On the package's page.** npmjs.com shows a green check beside the version, and its details link to the source commit and to the workflow run that built the package: [Viewing package provenance](https://docs.npmjs.com/viewing-package-provenance).
 - **With `npm audit signatures`**, in a project that has installed the package, one with a `package.json` and a `node_modules`:
@@ -82,9 +82,9 @@ The binary holds the Bun runtime, so it needs neither Bun nor Node, and, like th
 
 ## A container image
 
-Each release also publishes an image for `linux/amd64` and `linux/arm64`, `ghcr.io/this-is-tobi/quorum`, tagged with the release's version without its `v`, `0.2.0` for `v0.2.0`, with its minor and major, `0.2` and `0`, and with `latest`. Pin a version rather than `latest`, and replace `<version>` below with it. The image holds the binary above and nothing else: no shell, no `claude` CLI, so a `claude-code` provider does not run in it. It runs as the distroless `nonroot` user, uid 65532, in the working directory `/work`, and, like the binary, reads no `.env` and no `bunfig.toml` from it.
+Each release also publishes an image for `linux/amd64` and `linux/arm64`, `ghcr.io/this-is-tobi/quorum`, tagged with the release's version without its `v`, `0.2.0` for `v0.2.0`, with its minor and major, `0.2` and `0`, and with `latest`. Pin a version rather than `latest`, and replace `<version>` below with it. The image holds a binary compiled the same way, from the same commit, and nothing else: no shell, no `claude` CLI, so a `claude-code` provider does not run in it. Its build stage compiles that binary again, for the image's architecture, so its bytes are not those of the release asset, and `SHA256SUMS` does not list it: check the image against its attestation, below. It runs as the distroless `nonroot` user, uid 65532, in the working directory `/work`, and, like the binary, reads no `.env` and no `bunfig.toml` from it.
 
-The diff arrives on stdin, which `docker run` forwards with `-i`, the result goes to stdout, and the settings are the `QUORUM_*` variables, passed with `-e`:
+The diff arrives on stdin, which `docker run` forwards only with `-i`: without it the container gets an empty stdin, which quorum reviews as an empty diff and passes with exit `0`, so a CI job passes having reviewed nothing. Always pass `-i` when the diff comes on stdin. The result goes to stdout, and the settings are the `QUORUM_*` variables, passed with `-e`:
 
 ```bash
 docker run --rm -i \
