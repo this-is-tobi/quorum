@@ -211,13 +211,13 @@ One token per byte is the price of a bound that holds for every tokenizer checke
 
 | `contextTokens` | The largest diff, in bytes |
 | --- | --- |
-| `32768` | 14,757 |
-| `65536` | 47,525 |
-| `131072` | 113,061 |
-| `200000` | 181,989 |
-| `1000000` | 981,989 |
+| `32768` | 14,759 |
+| `65536` | 47,527 |
+| `131072` | 113,063 |
+| `200000` | 181,991 |
+| `1000000` | 981,991 |
 
-Each row is `contextTokens` less 18,011: 1,499 bytes of instructions, fences and reply schema, 512 tokens for the chat template and 16000 for the reply. `maxTokens: 4096` adds 11,904 bytes to each row, and the guidelines of a profile take room of their own. A vote request carries the diff section of the cited file (the whole diff when the file has no section of its own), up to five lines of evidence and the claim, and reserves the same reply budget, so a diff of one file that barely fits its research request can have its votes refused. A panel on a smaller model refuses sooner.
+Each row is `contextTokens` less 18,009: 1,497 bytes of instructions, fences and reply schema, 512 tokens for the chat template and 16000 for the reply. `maxTokens: 4096` adds 11,904 bytes to each row, and the guidelines of a profile take room of their own. A vote request carries the diff section of the cited file (the whole diff when the file has no section of its own), up to five lines of evidence and the claim, and reserves the same reply budget, so a diff of one file that barely fits its research request can have its votes refused. A panel on a smaller model refuses sooner.
 
 ### Raising the limit knowingly
 
@@ -284,7 +284,7 @@ Quorum requires Claude Code 2.1.311 or newer. Before a provider's first request 
 
 `contextTokens` is what the model gives you, stated as for any provider: [The context size](#the-context-size). On Anthropic's API, `sonnet`, `opus` and `haiku` resolve to models with a 1M window, so `1000000`. On Bedrock and Vertex, `sonnet` and `haiku` resolve to the 4.5 models, whose window is `200000`. A 4.6 model has the 1M window only with the `[1m]` suffix, as in `opus[1m]`, and `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` in the environment holds the 1M models to 200K. When in doubt, state the smaller number.
 
-The guard keeps 4096 tokens for what Claude Code adds around the messages and 16000 for the reply, so the window must be more than 20096, and the diff a research request of the `security` profile leaves room for is `contextTokens` less 21,595 bytes: 1,499 of instructions, fences and reply schema, 4096 and 16000. [The size of a Claude Code request](./30-providers.md#the-size-of-a-claude-code-request) has the rule.
+The guard keeps 4096 tokens for what Claude Code adds around the messages and 16000 for the reply, so the window must be more than 20096, and the diff a research request of the `security` profile leaves room for is `contextTokens` less 21,593 bytes: 1,497 of instructions, fences and reply schema, 4096 and 16000. [The size of a Claude Code request](./30-providers.md#the-size-of-a-claude-code-request) has the rule.
 
 ### The auth modes
 
