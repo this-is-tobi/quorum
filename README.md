@@ -16,6 +16,15 @@ It needs Node `^22.18.0 || >=23.6.0`. Each release also carries a standalone bin
 gh release download --repo this-is-tobi/quorum --pattern 'quorum-linux-x64' --pattern SHA256SUMS   # or linux-arm64, darwin-x64, darwin-arm64
 ```
 
+Or run the image, which holds that binary and runs as a non-root user. Inside it `localhost` is the container, so name the endpoint, and a server on your machine is `host.docker.internal`:
+
+```bash
+docker run --rm -i \
+  -e QUORUM_RESEARCH_PROTOCOL=ollama -e QUORUM_RESEARCH_BASE_URL=http://host.docker.internal:11434 \
+  -e QUORUM_RESEARCH_MODEL=qwen3.6:27b -e QUORUM_RESEARCH_CONTEXT_TOKENS=32768 \
+  ghcr.io/this-is-tobi/quorum:<version> < my.diff > result.json
+```
+
 To build it from a clone instead, with Bun 1.3.0 or newer:
 
 ```bash
@@ -25,7 +34,7 @@ bun run compile                                      # a standalone binary in ./
 install -m 0755 ./bin/quorum /usr/local/bin/quorum   # on your $PATH
 ```
 
-[Installation](./docs/10-getting-started/10-installation.md) has the prerequisites, checking a release binary against its checksums and its attestation, why the package runs on Node and not on Bun, running it from the clone without the binary, and a check that it works without a model.
+[Installation](./docs/10-getting-started/10-installation.md) has the prerequisites, checking a release binary against its checksums and its attestation, running the image with a config file, a key and a model on the host and checking its attestation, why the package runs on Node and not on Bun, running it from the clone without the binary, and a check that it works without a model.
 
 ## Try it
 
@@ -58,7 +67,7 @@ The JSON result goes to stdout, and the exit code says what to do with it: `0` f
 **Table of Contents** *- md sources*:
 
 *Getting started*
-- [Installation](./docs/10-getting-started/10-installation.md) *- Node and the npm package, a release binary, or Bun and the clone, a standalone binary on your `$PATH`, and a check that it works without a model*
+- [Installation](./docs/10-getting-started/10-installation.md) *- Node and the npm package, a release binary, the container image, or Bun and the clone, a standalone binary on your `$PATH`, and a check that it works without a model*
 - [Quick start](./docs/10-getting-started/20-quickstart.md) *- Point it at a model, review a diff, and read the progress, the result and the exit code*
 
 *Using it*
