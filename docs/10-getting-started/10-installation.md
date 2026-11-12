@@ -23,6 +23,18 @@ quorum --version
 
 The command runs on Node, never on `bun`: the file the package's `bin` names starts with `#!/usr/bin/env node`. Bun reads a `.env` and a `bunfig.toml` from its working directory before quorum's own code runs, and Node reads neither, so this `quorum` is the simple way to review in a directory you do not control, such as a pull request's checkout: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
 
+Each version is published by this repository's CD with npm's provenance, a signed record of the repository, the workflow file, the commit and the run that built it. There are two ways to see it:
+
+- **On the package's page.** npmjs.com shows a green check beside the version, and its details link to the source commit and to the workflow run that built the package: [Viewing package provenance](https://docs.npmjs.com/viewing-package-provenance).
+- **With `npm audit signatures`**, in a project that has installed the package, one with a `package.json` and a `node_modules`:
+
+  ```bash
+  npm install @tobi-or-not/quorum
+  npm audit signatures
+  ```
+
+  It prints how many of the installed packages have verified registry signatures and how many have verified attestations; this package counts in both. It checks that the signature and the provenance of each installed version verify, and it does not pin where a package was built the way `gh attestation verify --repo` does for a binary: read the repository, the commit and the run on the package's page. It does not cover a global install, which has no project to audit: install the package in a scratch directory to check it.
+
 ## A release binary
 
 Each [release](https://github.com/this-is-tobi/quorum/releases) carries a binary for each platform it supports, `quorum-linux-x64`, `quorum-linux-arm64`, `quorum-darwin-x64` and `quorum-darwin-arm64` (`darwin` is macOS, and `uname -m` prints `x86_64` for `x64` and `arm64` or `aarch64` for `arm64`), and a `SHA256SUMS` file that lists their checksums. Download the binary for your system with the checksums, replacing `<version>` with the release's version and `<target>` with your platform, `linux-x64` for example:
@@ -107,7 +119,7 @@ Check the image against its attestation before you run it. The release's CD sign
 gh attestation verify oci://ghcr.io/this-is-tobi/quorum:<version> --owner this-is-tobi
 ```
 
-The check names the owner, not the repository as a binary's does, because a shared workflow of the same owner, `this-is-tobi/github-workflows`, signs the record when this repository's CD calls it: `--repo this-is-tobi/quorum` alone refuses it. To pin the repository too, add the workflow's: `--repo this-is-tobi/quorum --signer-repo this-is-tobi/github-workflows` in place of `--owner this-is-tobi`.
+The record's certificate names two workflows. Its signer, which `gh` matches, is the shared `attest-docker` workflow of `this-is-tobi/github-workflows`, and it records this repository's `cd.yml` as the build configuration. Since `gh` matches the signer, the check names the owner where a binary's names the repository, and `--repo this-is-tobi/quorum` alone refuses it. To pin the repository too, add the signer's: `--repo this-is-tobi/quorum --signer-repo this-is-tobi/github-workflows` in place of `--owner this-is-tobi`.
 
 ## From source
 
