@@ -29,6 +29,11 @@
       "semanticCommitType": "build"
     },
     {
+      "description": "TypeScript 7 is the native compiler and ships no JavaScript API, which typescript-eslint, and so the lint job, needs; TypeScript 7.1 is expected to bring a new one. Stay below 7 until typescript-eslint supports it: 6.x passes the typecheck, the lint and the suite, and builds the same dist/ as 5.9.",
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<7"
+    },
+    {
       "description": "this-is-tobi/github-workflows is referenced via its moving v0 major tag on purpose - don't pin or bump it.",
       "matchDepNames": ["this-is-tobi/github-workflows"],
       "enabled": false
