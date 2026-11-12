@@ -182,6 +182,79 @@ describe('canonicalSettings', () => {
     })
   })
 
+  it('is the same whatever order the config writes its keys in, and sorts them at every depth', () => {
+    const written = {
+      model: 'm',
+      protocol: 'openai-compatible',
+      baseUrl: PROVIDER.baseUrl,
+      contextTokens: 32768,
+      headers: { 'x-a': '1', 'x-b': '2' },
+      query: { alpha: 'a', beta: 'b' },
+      extraBody: {
+        reasoning: { effort: 'low', budget: 3 },
+        seed: 7,
+      },
+    }
+    const reversed = {
+      extraBody: {
+        seed: 7,
+        reasoning: { budget: 3, effort: 'low' },
+      },
+      query: { beta: 'b', alpha: 'a' },
+      headers: { 'x-b': '2', 'x-a': '1' },
+      contextTokens: 32768,
+      baseUrl: PROVIDER.baseUrl,
+      protocol: 'openai-compatible',
+      model: 'm',
+    }
+    expect(Object.keys(written)).not.toEqual(Object.keys(reversed))
+    const policy = {
+      high: { minVotes: 2 },
+      medium: 'any',
+      low: 'off',
+    } as const
+    const first = resolvedConfig({
+      providers: { p: written },
+      profiles: {
+        security: { policy },
+      },
+    } as ConfigInput)
+    const second = resolvedConfig({
+      providers: { p: reversed },
+      profiles: {
+        security: {
+          policy: {
+            low: 'off',
+            medium: 'any',
+            high: { minVotes: 2 },
+          },
+        },
+      },
+    } as ConfigInput)
+    expect(canonicalSettings(first)).toBe(canonicalSettings(second))
+    expect(same(first, second)).toBe(true)
+    const research = JSON.parse(canonicalSettings(first)).profiles[0].research
+    const keysAt = (value: object): string[] => Object.keys(value)
+    for (const level of [
+      research,
+      research.headers,
+      research.query,
+      research.extraBody,
+      research.extraBody.reasoning,
+    ]) {
+      expect(keysAt(level)).toEqual(keysAt(level).sort())
+    }
+    expect(keysAt(research)).toEqual([
+      'baseUrl',
+      'contextTokens',
+      'extraBody',
+      'headers',
+      'model',
+      'protocol',
+      'query',
+    ])
+  })
+
   it('never holds a key, whether the config wrote it, a variable it names or a QUORUM_* variable supplied it', () => {
     const named = resolvedConfig({
       providers: {
