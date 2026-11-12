@@ -643,6 +643,11 @@ function throwIfAborted(signal: AbortSignal | undefined, fail: Failure): void {
  * What a child's output pipe holds, up to `max` bytes. The rest is dropped but still read, so a full pipe
  * never stalls the child, and `onOverflow` runs once at the first byte over. A character cut at the cap
  * decodes as U+FFFD.
+ *
+ * Exported for the spec: the build strips it from the declarations, which would otherwise need Node's types
+ * in every project that type-checks the package.
+ *
+ * @internal
  */
 export function readCapped(stream: ChildProcess['stdout'], max: number, onOverflow: () => void = () => {}): { text: () => string, overflowed: () => boolean } {
   const chunks: Buffer[] = []

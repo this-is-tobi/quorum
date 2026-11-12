@@ -45,5 +45,8 @@ node_modules/
 # Compiled standalone binary (bun run compile)
 /bin/
 
+# The npm package build (bun run build)
+/dist/
+
 # Local working notes (backlog, findings, ADRs, specs, plans) - kept out of the repo
 /.local/

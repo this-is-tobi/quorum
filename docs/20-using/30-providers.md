@@ -45,7 +45,7 @@ Quorum ships one adapter per wire protocol, and one that runs your installed Cla
 | `claudeCode` | Your installed Claude Code CLI, run headless for each request | Spawns `claude -p` | `'inherit'`, of its own three modes: [The auth modes](#the-auth-modes) | Not supported | `'schema'` |
 
 ```ts
-import { anthropic, claudeCode, gemini, ollama, openaiCompatible } from './src/index.ts'
+import { anthropic, claudeCode, gemini, ollama, openaiCompatible } from '@tobi-or-not/quorum'
 
 const local = ollama({ id: 'local', baseUrl: 'http://localhost:11434', model: 'qwen3.6:27b', contextTokens: 131072 })
 const claude = anthropic({ id: 'claude', baseUrl: 'https://api.anthropic.com', model: 'claude-opus-5-5', contextTokens: 200000, apiKey: process.env.ANTHROPIC_API_KEY, structuredOutput: 'schema' })
@@ -402,7 +402,7 @@ A reply succeeds with `done: true`, the `done_reason` `stop` and a string `messa
 For your installed Claude Code CLI, which it runs once per request, headless and isolated, as a pure completion: no tool but the one that captures the reply, nothing loaded from your setup or from the checkout it runs in, the message on stdin, and in the default modes no key that quorum picks, holds or sets: it hands its environment to your own CLI, less the variables it removes. It needs a model, an alias or an id, and a context size, and it finds `claude` on `PATH`:
 
 ```ts
-import { claudeCode } from './src/index.ts'
+import { claudeCode } from '@tobi-or-not/quorum'
 
 const code = claudeCode({ id: 'code', model: 'sonnet', contextTokens: 1000000 })
 ```
@@ -620,8 +620,8 @@ Any object of the port's shape is a provider. It must:
 A provider can wrap another. Quorum sets no time limit on a call, so this one adds a limit to any provider that honours its signal, as the shipped adapters do, and reports a call that ran out of time as a `timeout`. It does not stop a provider that ignores its signal: it waits for that call to settle, however long it takes:
 
 ```ts
-import { ollama, ProviderError } from './src/index.ts'
-import type { Provider } from './src/index.ts'
+import { ollama, ProviderError } from '@tobi-or-not/quorum'
+import type { Provider } from '@tobi-or-not/quorum'
 
 /** The same provider, with every call stopped after `ms` milliseconds. */
 function withTimeout(inner: Provider, ms: number): Provider {
