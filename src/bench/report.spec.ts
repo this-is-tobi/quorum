@@ -1,0 +1,326 @@
+import { describe, expect, it } from 'vitest'
+import { record, resultWith, SUITE, verdict } from '../testing/bench.ts'
+import { reviewKey } from './records.ts'
+import { buildReport, reportJson, reportMarkdown, reviewScore } from './report.ts'
+import type { ReportInput, ReviewScore } from './report.ts'
+import type { SuiteCase } from './suite.ts'
+
+const CASES = SUITE.cases as unknown as SuiteCase[]
+const A = 'a'.repeat(64)
+const B = 'b'.repeat(64)
+function score(fields: Partial<ReviewScore>): ReviewScore {
+  return {
+    keptCatch: false,
+    proposedCatch: false,
+    unmatchedKept: 0,
+    incomplete: false,
+    latencyMs: 1000,
+    tokens: 50,
+    ...fields,
+  }
+}
+const INPUT: ReportInput = {
+  suite: { name: 'demo', window: 3 },
+  quorum: '0.2.0',
+  cases: CASES,
+  trials: 2,
+  configurations: [
+    { path: 'a.yaml', fingerprint: A },
+    { path: 'b.yaml', fingerprint: B },
+  ],
+  scores: new Map([
+    [
+      reviewKey(A, 'exec', 1),
+      score({
+        keptCatch: true,
+        proposedCatch: true,
+        tokens: 100,
+        costUsd: 0.01,
+      }),
+    ],
+    [
+      reviewKey(A, 'exec', 2),
+      score({
+        proposedCatch: true,
+        unmatchedKept: 1,
+        latencyMs: 2000,
+        tokens: 200,
+        costUsd: 0.02,
+      }),
+    ],
+    [
+      reviewKey(A, 'sql', 1),
+      score({
+        incomplete: true,
+        latencyMs: 3000,
+        tokens: 300,
+        costUsd: 0.03,
+      }),
+    ],
+    [
+      reviewKey(A, 'docs', 1),
+      score({
+        unmatchedKept: 2,
+        latencyMs: 4000,
+        tokens: 400,
+        costUsd: 0.04,
+      }),
+    ],
+    [
+      reviewKey(A, 'docs', 2),
+      score({ latencyMs: 5000, tokens: 500, costUsd: 0.05 }),
+    ],
+    [
+      reviewKey(A, 'exec', 3),
+      score({ keptCatch: true }),
+    ],
+    [
+      reviewKey(B, 'exec', 1),
+      score({ keptCatch: true, proposedCatch: true }),
+    ],
+    [
+      reviewKey(B, 'exec', 2),
+      score({ keptCatch: true, proposedCatch: true }),
+    ],
+    [
+      reviewKey(B, 'sql', 1),
+      score({ keptCatch: true, proposedCatch: true }),
+    ],
+    [
+      reviewKey(B, 'sql', 2),
+      score({ proposedCatch: true }),
+    ],
+    [
+      reviewKey(B, 'docs', 1),
+      score({}),
+    ],
+    [
+      reviewKey(B, 'docs', 2),
+      score({}),
+    ],
+  ]),
+}
+
+describe('reviewScore', () => {
+  it('scores a record: its outcome, its latency, its tokens, and its cost when every call reported one', () => {
+    const entry = record({
+      result: resultWith({
+        kept: [
+          verdict('a.js', 2, 'high'),
+        ],
+      }),
+    })
+    expect(reviewScore(entry, CASES[0], 3)).toEqual({
+      keptCatch: true,
+      proposedCatch: true,
+      unmatchedKept: 0,
+      incomplete: false,
+      latencyMs: 1200,
+      tokens: 15,
+      costUsd: 0.001,
+    })
+    expect(reviewScore({ ...entry, costComplete: false }, CASES[0], 3).costUsd).toBeUndefined()
+    expect(reviewScore({ ...entry, usage: undefined }, CASES[0], 3).tokens).toBeUndefined()
+  })
+})
+
+describe('buildReport', () => {
+  it('counts the recorded reviews of the selected cases and trials, scores each case by the share of its trials, and compares with the reference', () => {
+    const report = buildReport(INPUT)
+    expect(report).toMatchObject({
+      suite: 'demo',
+      quorum: '0.2.0',
+      trials: 2,
+      window: 3,
+      bugCases: 2,
+      controls: 1,
+    })
+    const [first, second] = report.configurations
+    expect(first).toMatchObject({
+      index: 1,
+      path: 'a.yaml',
+      reviews: 5,
+      planned: 6,
+      incomplete: 1,
+      unmatchedKept: { bug: 0.25, control: 1 },
+      tokens: { median: 300, total: 1500 },
+      latencyMs: { p50: 3000, p95: 5000 },
+    })
+    expect(first.keptRecall).toMatchObject({ value: 0.25, cases: 2 })
+    expect(first.keptRecall?.low).toBeCloseTo(0.026677, 5)
+    expect(first.keptRecall?.high).toBeCloseTo(0.802133, 5)
+    expect(first.proposedRecall).toMatchObject({ value: 0.5, cases: 2 })
+    expect(first.costUsd).toBeCloseTo(0.15, 10)
+    expect(second).toMatchObject({
+      index: 2,
+      reviews: 6,
+      incomplete: 0,
+      unmatchedKept: { bug: 0, control: 0 },
+      tokens: { median: 50, total: 300 },
+      latencyMs: { p50: 1000, p95: 1000 },
+      costUsd: null,
+    })
+    expect(second.keptRecall?.value).toBe(0.75)
+    expect(second.proposedRecall).toMatchObject({ value: 1, high: 1, cases: 2 })
+    expect(report.comparisons).toEqual([
+      {
+        configuration: 2,
+        measure: 'kept-recall',
+        difference: 0.5,
+        better: 2,
+        worse: 0,
+        tied: 0,
+        p: 0.5,
+        resolved: false,
+      },
+      {
+        configuration: 2,
+        measure: 'proposed-recall',
+        difference: 0.5,
+        better: 1,
+        worse: 0,
+        tied: 1,
+        p: 1,
+        resolved: false,
+      },
+      {
+        configuration: 2,
+        measure: 'unmatched-kept-per-control',
+        difference: -1,
+        better: 1,
+        worse: 0,
+        tied: 0,
+        p: 1,
+        resolved: false,
+      },
+      {
+        configuration: 2,
+        measure: 'incomplete',
+        difference: -1 / 3,
+        better: 1,
+        worse: 0,
+        tied: 2,
+        p: 1,
+        resolved: false,
+      },
+      {
+        configuration: 2,
+        measure: 'tokens',
+        difference: -250,
+        better: 3,
+        worse: 0,
+        tied: 0,
+        p: 0.25,
+        resolved: false,
+      },
+    ])
+    expect(report.cases[1]).toEqual({
+      id: 'sql',
+      kind: 'bug',
+      configurations: [
+        {
+          trials: 1,
+          keptCatch: 0,
+          proposedCatch: 0,
+          unmatchedKept: 0,
+          incomplete: 1,
+          tokens: 300,
+        },
+        {
+          trials: 2,
+          keptCatch: 0.5,
+          proposedCatch: 1,
+          unmatchedKept: 0,
+          incomplete: 0,
+          tokens: 50,
+        },
+      ],
+    })
+    expect(report.cases[2].configurations[0]).toEqual({
+      trials: 2,
+      keptCatch: null,
+      proposedCatch: null,
+      unmatchedKept: 1,
+      incomplete: 0,
+      tokens: 450,
+    })
+  })
+})
+
+describe('reportMarkdown', () => {
+  it('writes the configurations, their table and the comparison lines', () => {
+    expect(reportMarkdown(buildReport(INPUT))).toBe([
+      '# quorum bench: demo',
+      '',
+      'quorum 0.2.0; 2 bug cases and 1 control; trials 1 to 2; window 3 lines.',
+      '',
+      'A review counts when it is recorded for one of these cases and trials. A case scores the share of its counted trials with the outcome, and a case with none counted is left out. A rate is the mean of the case scores, with its 95% Wilson interval over the cases scored.',
+      '',
+      '## Configurations',
+      '',
+      '1. a.yaml (reference)',
+      '2. b.yaml',
+      '',
+      '| Configuration | Reviews | Kept recall | Proposed recall | Unmatched kept per case, bug / control | Incomplete | Tokens per review, median / total | Latency, p50 / p95 | Cost |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      '| 1 | 5 of 6 | 25.0% [2.7%, 80.2%] over 2 cases | 50.0% [9.5%, 90.5%] over 2 cases | 0.25 / 1.00 | 1 | 300 / 1500 | 3.0 s / 5.0 s | $0.1500 |',
+      '| 2 | 6 of 6 | 75.0% [19.8%, 97.3%] over 2 cases | 100.0% [34.2%, 100.0%] over 2 cases | 0.00 / 0.00 | 0 | 50 / 300 | 1.0 s / 1.0 s | n/a |',
+      '',
+      '## Comparisons with the reference',
+      '',
+      'Each line pairs the cases both configurations scored and is its own exact sign test, so with several lines some can resolve by chance.',
+      '',
+      '- 2, kept recall: +50.0 points; 2 better, 0 worse, 0 tied; p = 0.5000, unresolved',
+      '- 2, proposed recall: +50.0 points; 1 better, 0 worse, 1 tied; p = 1.0000, unresolved',
+      '- 2, unmatched kept findings per control: -1.00; 1 better, 0 worse, 0 tied; p = 1.0000, unresolved',
+      '- 2, incomplete reviews: -33.3 points; 1 better, 0 worse, 2 tied; p = 1.0000, unresolved',
+      '- 2, tokens per review: -250; 3 better, 0 worse, 0 tied; p = 0.2500, unresolved',
+      '',
+    ].join('\n'))
+  })
+
+  it('leaves the comparisons out for one configuration', () => {
+    const markdown = reportMarkdown(buildReport({
+      ...INPUT,
+      configurations: [INPUT.configurations[0]],
+    }))
+    expect(markdown).toContain('1. a.yaml\n')
+    expect(markdown).not.toContain('## Comparisons')
+  })
+
+  it('writes n/a for what a configuration has not counted, and names no pair it cannot make', () => {
+    const markdown = reportMarkdown(buildReport({
+      ...INPUT,
+      configurations: [
+        INPUT.configurations[0],
+        {
+          path: null,
+          fingerprint: 'c'.repeat(64),
+        },
+      ],
+    }))
+    expect(markdown).toContain('2. (default configuration)\n')
+    expect(markdown).toContain('| 2 | 0 of 6 | n/a | n/a | n/a / n/a | 0 | n/a | n/a | n/a |')
+    expect(markdown).toContain('- 2, kept recall: no case scored by both')
+  })
+
+  it('shows the hidden characters of a configuration path', () => {
+    const path = `a${String.fromCharCode(0x0A)}b.yaml`
+    expect(reportMarkdown(buildReport({
+      ...INPUT,
+      configurations: [
+        { path, fingerprint: A },
+        INPUT.configurations[1],
+      ],
+    }))).toContain('1. a<U+000A>b.yaml (reference)\n')
+  })
+})
+
+describe('reportJson', () => {
+  it('is the report as inert JSON, which parses back', () => {
+    const report = buildReport(INPUT)
+    const json = reportJson(report)
+    expect(json.endsWith('}\n')).toBe(true)
+    expect(JSON.parse(json)).toEqual(report)
+  })
+})
