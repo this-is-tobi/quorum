@@ -1,0 +1,514 @@
+diff --git a/packages/runtime-core/src/index.ts b/packages/runtime-core/src/index.ts
+index 72460ddca..1c20819fb 100644
+--- a/packages/runtime-core/src/index.ts
++++ b/packages/runtime-core/src/index.ts
+@@ -102,8 +102,11 @@ export const camelize = _camelize as (s: string) => string
+ export { registerRuntimeCompiler } from './component'
+ 
+ // For server-renderer
++// TODO move these into a conditional object to avoid exporting them in client
++// builds
+ export { createComponentInstance, setupComponent } from './component'
+ export { renderComponentRoot } from './componentRenderUtils'
++export { normalizeVNode } from './vnode'
+ 
+ // Types -----------------------------------------------------------------------
+ 
+@@ -114,7 +117,7 @@ export {
+   Plugin,
+   CreateAppFunction
+ } from './apiCreateApp'
+-export { VNode, VNodeTypes, VNodeProps } from './vnode'
++export { VNode, VNodeTypes, VNodeProps, VNodeChildren } from './vnode'
+ export {
+   Component,
+   FunctionalComponent,
+diff --git a/packages/runtime-core/src/renderer.ts b/packages/runtime-core/src/renderer.ts
+index fc208d8cc..d545d75ed 100644
+--- a/packages/runtime-core/src/renderer.ts
++++ b/packages/runtime-core/src/renderer.ts
+@@ -288,7 +288,7 @@ export function createRenderer<
+             internals
+           )
+         } else if (__DEV__) {
+-          warn('Invalid HostVNode type:', n2.type, `(${typeof n2.type})`)
++          warn('Invalid HostVNode type:', type, `(${typeof type})`)
+         }
+     }
+   }
+diff --git a/packages/runtime-dom/src/modules/attrs.ts b/packages/runtime-dom/src/modules/attrs.ts
+index 7bdd9ba68..5610d327f 100644
+--- a/packages/runtime-dom/src/modules/attrs.ts
++++ b/packages/runtime-dom/src/modules/attrs.ts
+@@ -1,7 +1,18 @@
+-export function patchAttr(el: Element, key: string, value: any) {
+-  if (value == null) {
++// TODO explain why we are no longer checking boolean/enumerated here
++
++export function patchAttr(
++  el: Element,
++  key: string,
++  value: any,
++  isSVG: boolean
++) {
++  if (isSVG && key.indexOf('xlink:') === 0) {
++    // TODO handle xlink
++  } else if (value == null) {
+     el.removeAttribute(key)
+   } else {
++    // TODO in dev mode, warn against incorrect values for boolean or
++    // enumerated attributes
+     el.setAttribute(key, value)
+   }
+ }
+diff --git a/packages/runtime-dom/src/patchProp.ts b/packages/runtime-dom/src/patchProp.ts
+index 1f8ff8133..a99eb90b0 100644
+--- a/packages/runtime-dom/src/patchProp.ts
++++ b/packages/runtime-dom/src/patchProp.ts
+@@ -62,7 +62,7 @@ export function patchProp(
+         } else if (key === 'false-value') {
+           ;(el as any)._falseValue = nextValue
+         }
+-        patchAttr(el, key, nextValue)
++        patchAttr(el, key, nextValue, isSVG)
+       }
+       break
+   }
+diff --git a/packages/server-renderer/__tests__/renderProps.spec.ts b/packages/server-renderer/__tests__/renderProps.spec.ts
+index 89c778fde..b1bbe453e 100644
+--- a/packages/server-renderer/__tests__/renderProps.spec.ts
++++ b/packages/server-renderer/__tests__/renderProps.spec.ts
+@@ -1,29 +1,19 @@
+ describe('ssr: render props', () => {
+   test('class', () => {})
+ 
+-  test('styles', () => {
++  test('style', () => {
+     // only render numbers for properties that allow no unit numbers
+   })
+ 
+-  describe('attrs', () => {
+-    test('basic', () => {})
++  test('normal attrs', () => {})
+ 
+-    test('boolean attrs', () => {})
++  test('boolean attrs', () => {})
+ 
+-    test('enumerated attrs', () => {})
++  test('enumerated attrs', () => {})
+ 
+-    test('skip falsy values', () => {})
+-  })
++  test('ignore falsy values', () => {})
+ 
+-  describe('domProps', () => {
+-    test('innerHTML', () => {})
++  test('props to attrs', () => {})
+ 
+-    test('textContent', () => {})
+-
+-    test('textarea', () => {})
+-
+-    test('other renderable domProps', () => {
+-      // also test camel to kebab case conversion for some props
+-    })
+-  })
++  test('ignore non-renderable props', () => {})
+ })
+diff --git a/packages/server-renderer/__tests__/renderToString.spec.ts b/packages/server-renderer/__tests__/renderToString.spec.ts
+index 4a7dc68eb..3a7d76d4d 100644
+--- a/packages/server-renderer/__tests__/renderToString.spec.ts
++++ b/packages/server-renderer/__tests__/renderToString.spec.ts
+@@ -1,17 +1,31 @@
+ // import { renderToString, renderComponent } from '../src'
+ 
+ describe('ssr: renderToString', () => {
+-  test('basic', () => {})
++  describe('elements', () => {
++    test('text children', () => {})
+ 
+-  test('nested components', () => {})
++    test('array children', () => {})
+ 
+-  test('nested components with optimized slots', () => {})
++    test('void elements', () => {})
+ 
+-  test('mixing optimized / vnode components', () => {})
++    test('innerHTML', () => {})
+ 
+-  test('nested components with vnode slots', () => {})
++    test('textContent', () => {})
+ 
+-  test('async components', () => {})
++    test('textarea value', () => {})
++  })
+ 
+-  test('parallel async components', () => {})
++  describe('components', () => {
++    test('nested components', () => {})
++
++    test('nested components with optimized slots', () => {})
++
++    test('mixing optimized / vnode components', () => {})
++
++    test('nested components with vnode slots', () => {})
++
++    test('async components', () => {})
++
++    test('parallel async components', () => {})
++  })
+ })
+diff --git a/packages/server-renderer/src/renderProps.ts b/packages/server-renderer/src/renderProps.ts
+index e3059eaa2..97cb53c3c 100644
+--- a/packages/server-renderer/src/renderProps.ts
++++ b/packages/server-renderer/src/renderProps.ts
+@@ -1,5 +1,64 @@
+-export function renderProps() {}
++import { escape } from './escape'
++import {
++  normalizeClass,
++  normalizeStyle,
++  propsToAttrMap,
++  hyphenate,
++  isString,
++  isNoUnitNumericStyleProp,
++  isOn,
++  isSSRSafeAttrName,
++  isBooleanAttr
++} from '@vue/shared/src'
+ 
+-export function renderClass() {}
++export function renderProps(
++  props: Record<string, unknown>,
++  isCustomElement: boolean = false
++): string {
++  let ret = ''
++  for (const key in props) {
++    if (key === 'key' || key === 'ref' || isOn(key)) {
++      continue
++    }
++    const value = props[key]
++    if (key === 'class') {
++      ret += ` class="${renderClass(value)}"`
++    } else if (key === 'style') {
++      ret += ` style="${renderStyle(value)}"`
++    } else if (value != null) {
++      const attrKey = isCustomElement
++        ? key
++        : propsToAttrMap[key] || key.toLowerCase()
++      if (isBooleanAttr(attrKey)) {
++        ret += ` ${attrKey}=""`
++      } else if (isSSRSafeAttrName(attrKey)) {
++        ret += ` ${attrKey}="${escape(value)}"`
++      }
++    }
++  }
++  return ret
++}
+ 
+-export function renderStyle() {}
++export function renderClass(raw: unknown): string {
++  return escape(normalizeClass(raw))
++}
++
++export function renderStyle(raw: unknown): string {
++  if (!raw) {
++    return ''
++  }
++  const styles = normalizeStyle(raw)
++  let ret = ''
++  for (const key in styles) {
++    const value = styles[key]
++    const normalizedKey = key.indexOf(`--`) === 0 ? key : hyphenate(key)
++    if (
++      isString(value) ||
++      (typeof value === 'number' && isNoUnitNumericStyleProp(normalizedKey))
++    ) {
++      // only render valid values
++      ret += `${normalizedKey}:${value};`
++    }
++  }
++  return escape(ret)
++}
+diff --git a/packages/server-renderer/src/renderToString.ts b/packages/server-renderer/src/renderToString.ts
+index 6d14e9c60..1b936cfbc 100644
+--- a/packages/server-renderer/src/renderToString.ts
++++ b/packages/server-renderer/src/renderToString.ts
+@@ -3,12 +3,27 @@ import {
+   Component,
+   ComponentInternalInstance,
+   VNode,
++  VNodeChildren,
+   createComponentInstance,
+   setupComponent,
+   createVNode,
+-  renderComponentRoot
++  renderComponentRoot,
++  Text,
++  Comment,
++  Fragment,
++  Portal,
++  ShapeFlags,
++  normalizeVNode
+ } from 'vue'
+-import { isString, isPromise, isArray, isFunction } from '@vue/shared'
++import {
++  isString,
++  isPromise,
++  isArray,
++  isFunction,
++  isVoidTag
++} from '@vue/shared'
++import { renderProps } from './renderProps'
++import { escape } from './escape'
+ 
+ // Each component has a buffer array.
+ // A buffer array can contain one of the following:
+@@ -19,6 +34,7 @@ import { isString, isPromise, isArray, isFunction } from '@vue/shared'
+ type SSRBuffer = SSRBufferItem[]
+ type SSRBufferItem = string | ResolvedSSRBuffer | Promise<ResolvedSSRBuffer>
+ type ResolvedSSRBuffer = (string | ResolvedSSRBuffer)[]
++type PushFn = (item: SSRBufferItem) => void
+ 
+ function createBuffer() {
+   let appendable = false
+@@ -59,39 +75,38 @@ function unrollBuffer(buffer: ResolvedSSRBuffer): string {
+ }
+ 
+ export async function renderToString(app: App): Promise<string> {
+-  const resolvedBuffer = await renderComponent(app._component, app._props)
++  const resolvedBuffer = await renderComponent(
++    createVNode(app._component, app._props)
++  )
+   return unrollBuffer(resolvedBuffer)
+ }
+ 
+ export function renderComponent(
+-  comp: Component,
+-  props: Record<string, any> | null = null,
+-  children: VNode['children'] = null,
++  vnode: VNode,
+   parentComponent: ComponentInternalInstance | null = null
+ ): ResolvedSSRBuffer | Promise<ResolvedSSRBuffer> {
+-  const vnode = createVNode(comp, props, children)
+   const instance = createComponentInstance(vnode, parentComponent)
+   const res = setupComponent(instance, null)
+   if (isPromise(res)) {
+-    return res.then(() => innerRenderComponent(comp, instance))
++    return res.then(() => innerRenderComponent(instance))
+   } else {
+-    return innerRenderComponent(comp, instance)
++    return innerRenderComponent(instance)
+   }
+ }
+ 
+ function innerRenderComponent(
+-  comp: Component,
+   instance: ComponentInternalInstance
+ ): ResolvedSSRBuffer | Promise<ResolvedSSRBuffer> {
++  const comp = instance.type as Component
+   const { buffer, push, hasAsync } = createBuffer()
+   if (isFunction(comp)) {
+-    renderVNode(push, renderComponentRoot(instance))
++    renderVNode(push, renderComponentRoot(instance), instance)
+   } else {
+     if (comp.ssrRender) {
+       // optimized
+       comp.ssrRender(push, instance.proxy)
+     } else if (comp.render) {
+-      renderVNode(push, renderComponentRoot(instance))
++      renderVNode(push, renderComponentRoot(instance), instance)
+     } else {
+       // TODO on the fly template compilation support
+       throw new Error(
+@@ -107,8 +122,103 @@ function innerRenderComponent(
+   return hasAsync() ? Promise.all(buffer) : (buffer as ResolvedSSRBuffer)
+ }
+ 
+-export function renderVNode(push: (item: SSRBufferItem) => void, vnode: VNode) {
+-  // TODO
++export function renderVNode(
++  push: PushFn,
++  vnode: VNode,
++  parentComponent: ComponentInternalInstance | null = null
++) {
++  const { type, shapeFlag, children } = vnode
++  switch (type) {
++    case Text:
++      push(children as string)
++      break
++    case Comment:
++      push(children ? `<!--${children}-->` : `<!---->`)
++      break
++    case Fragment:
++      push(`<!---->`)
++      renderVNodeChildren(push, children as VNodeChildren, parentComponent)
++      push(`<!---->`)
++      break
++    case Portal:
++      // TODO
++      break
++    default:
++      if (shapeFlag & ShapeFlags.ELEMENT) {
++        renderElement(push, vnode, parentComponent)
++      } else if (shapeFlag & ShapeFlags.COMPONENT) {
++        push(renderComponent(vnode, parentComponent))
++      } else if (shapeFlag & ShapeFlags.SUSPENSE) {
++        // TODO
++      } else {
++        console.warn(
++          '[@vue/server-renderer] Invalid VNode type:',
++          type,
++          `(${typeof type})`
++        )
++      }
++  }
++}
++
++function renderVNodeChildren(
++  push: PushFn,
++  children: VNodeChildren,
++  parentComponent: ComponentInternalInstance | null = null
++) {
++  for (let i = 0; i < children.length; i++) {
++    renderVNode(push, normalizeVNode(children[i]), parentComponent)
++  }
++}
++
++function renderElement(
++  push: PushFn,
++  vnode: VNode,
++  parentComponent: ComponentInternalInstance | null = null
++) {
++  const tag = vnode.type as string
++  const { props, children, shapeFlag, scopeId } = vnode
++  let openTag = `<${tag}`
++
++  // TODO directives
++
++  if (props !== null) {
++    openTag += renderProps(props, tag.indexOf(`-`) > 0)
++  }
++
++  if (scopeId !== null) {
++    openTag += ` ${scopeId}`
++    const treeOwnerId = parentComponent && parentComponent.type.__scopeId
++    // vnode's own scopeId and the current rendering component's scopeId is
++    // different - this is a slot content node.
++    if (treeOwnerId != null && treeOwnerId !== scopeId) {
++      openTag += ` ${scopeId}-s`
++    }
++  }
++
++  push(openTag + `>`)
++  if (!isVoidTag(tag)) {
++    let hasChildrenOverride = false
++    if (props !== null) {
++      if (props.innerHTML) {
++        hasChildrenOverride = true
++        push(props.innerHTML)
++      } else if (props.textContent) {
++        hasChildrenOverride = true
++        push(escape(props.textContent))
++      } else if (tag === 'textarea' && props.value) {
++        hasChildrenOverride = true
++        push(escape(props.value))
++      }
++    }
++    if (!hasChildrenOverride) {
++      if (shapeFlag & ShapeFlags.TEXT_CHILDREN) {
++        push(escape(children as string))
++      } else if (shapeFlag & ShapeFlags.ARRAY_CHILDREN) {
++        renderVNodeChildren(push, children as VNodeChildren, parentComponent)
++      }
++    }
++    push(`</${tag}>`)
++  }
+ }
+ 
+ export function renderSlot() {
+diff --git a/packages/shared/src/domAttrConfig.ts b/packages/shared/src/domAttrConfig.ts
+new file mode 100644
+index 000000000..db8fc321d
+--- /dev/null
++++ b/packages/shared/src/domAttrConfig.ts
+@@ -0,0 +1,50 @@
++import { makeMap } from './makeMap'
++
++// TODO validate this list!
++// on the client, most of these probably has corresponding prop
++// or, like allowFullscreen on iframe, although case is different, the attr
++// affects the property properly...
++// Basically, we can skip this check on the client
++// but they are still needed during SSR to produce correct initial markup
++export const isBooleanAttr = makeMap(
++  'allowfullscreen,async,autofocus,autoplay,checked,compact,controls,declare,' +
++    'default,defaultchecked,defaultmuted,defaultselected,defer,disabled,' +
++    'enabled,formnovalidate,hidden,indeterminate,inert,ismap,itemscope,loop,multiple,' +
++    'muted,nohref,noresize,noshade,novalidate,nowrap,open,pauseonexit,readonly,' +
++    'required,reversed,scoped,seamless,selected,sortable,translate,' +
++    'truespeed,typemustmatch,visible'
++)
++
++const unsafeAttrCharRE = /[>/="'\u0009\u000a\u000c\u0020]/
++const attrValidationCache: Record<string, boolean> = {}
++
++export function isSSRSafeAttrName(name: string): boolean {
++  if (attrValidationCache.hasOwnProperty(name)) {
++    return attrValidationCache[name]
++  }
++  const isUnsafe = unsafeAttrCharRE.test(name)
++  if (isUnsafe) {
++    console.error(`unsafe attribute name: ${name}`)
++  }
++  return (attrValidationCache[name] = !isUnsafe)
++}
++
++export const propsToAttrMap: Record<string, string | undefined> = {
++  acceptCharset: 'accept-charset',
++  className: 'class',
++  htmlFor: 'for',
++  httpEquiv: 'http-equiv'
++}
++
++// CSS properties that accept plain numbers
++export const isNoUnitNumericStyleProp = makeMap(
++  `animation-iteration-count,border-image-outset,border-image-slice,` +
++    `border-image-width,box-flex,box-flex-group,box-ordinal-group,column-count,` +
++    `columns,flex,flex-grow,flex-positive,flex-shrink,flex-negative,flex-order,` +
++    `grid-row,grid-row-end,grid-row-span,grid-row-start,grid-column,` +
++    `grid-column-end,grid-column-span,grid-column-start,font-weight,line-clamp,` +
++    `line-height,opacity,order,orphans,tab-size,widows,z-index,zoom,` +
++    // SVG
++    `fill-opacity,flood-opacity,stop-opacity,stroke-dasharray,stroke-dashoffset,` +
++    `stroke-miterlimit,stroke-opacity,stroke-width`
++)
+diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
+index 55b5d3ea7..59b5bb648 100644
+--- a/packages/shared/src/index.ts
++++ b/packages/shared/src/index.ts
+@@ -4,9 +4,10 @@ export { makeMap }
+ export * from './patchFlags'
+ export * from './globalsWhitelist'
+ export * from './codeframe'
+-export * from './domTagConfig'
+ export * from './mockWarn'
+ export * from './normalizeProp'
++export * from './domTagConfig'
++export * from './domAttrConfig'
+ 
+ export const EMPTY_OBJ: { readonly [key: string]: any } = __DEV__
+   ? Object.freeze({})
+diff --git a/packages/shared/src/normalizeProp.ts b/packages/shared/src/normalizeProp.ts
+index 8829710c1..96678e8bc 100644
+--- a/packages/shared/src/normalizeProp.ts
++++ b/packages/shared/src/normalizeProp.ts
+@@ -2,7 +2,7 @@ import { isArray, isString, isObject } from './'
+ 
+ export function normalizeStyle(
+   value: unknown
+-): Record<string, string | number> | void {
++): Record<string, string | number> | undefined {
+   if (isArray(value)) {
+     const res: Record<string, string | number> = {}
+     for (let i = 0; i < value.length; i++) {
