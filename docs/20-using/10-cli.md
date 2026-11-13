@@ -259,7 +259,7 @@ Options:
 | `2` | A usage, config or suite error, two configs that resolve to the same settings, or a run directory that holds another run or a file the bench cannot trust |
 | `3` | A read or a write of the run directory failed, or any other stop |
 | `4` | Reviews failed: they are not recorded, and the next run runs them again. A review with a gap is recorded and is not a failure |
-| `130` | Interrupted: the records are kept and the reports are written |
+| `130` | Interrupted: the records are kept and the reports are written, or nothing is written when it came before the first review started |
 
 These are the bench's own codes, not a review's: it has no `1`, and its `4` means failed reviews where a review's means an incomplete one. [Benchmarks](./70-bench.md) has the rest: the plan and the progress lines, writing a suite, the run directory and resuming it, reading the report, what a run costs, and where not to run it.
 
