@@ -251,7 +251,7 @@ Resuming is running the same command again. The reviews already recorded are not
 A run directory begun with other settings is refused with exit `2`, and the differences it can name, so no review is made against records that are not comparable:
 
 ```text
-Error: run.json: was written by quorum 0.0.1, and this is quorum 0.2.0: a run belongs to one build, so name a new --out
+Error: run.json: was written by quorum 0.3.0, and this is quorum 0.4.0: a run belongs to one build, so name a new --out
 run.json: the suite's suite.yaml or patches changed since the run began: name a new --out
 --config: qwen.yaml is not one of the run's configurations
 run.json: its configuration old.yaml is not given
