@@ -1,0 +1,426 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+index ef62eb9..775d602 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -295,6 +295,7 @@ All agent containers include [playwright-cli](https://github.com/microsoft/playw
+ - Web access - Agents can use WebSearch and WebFetch tools
+ - Nix package manager - Agents with `nix_enabled: true` can install packages on demand via MCP tools (nix_search, nix_add, nix_list_installed, nix_remove, nix_upgrade). When nix-daemon is detected, the system prompt instructs agents to auto-install missing tools. The `/nix` Telegram command provides direct user control over agent packages.
+ - File sending - Agents can send files (screenshots, PDFs, etc.) to Telegram via the `file_send` MCP tool. Images are sent as photos, other files as documents. Max 12MB per file.
++- File receiving - Files sent to the bot in Telegram (documents, photos, audio, video, voice, video notes, animations) are downloaded and saved to the agent's workspace at `/workspace/agent/uploads/{timestamp}_{filename}`. The agent receives the file path in the message. Supports Telegram's 20MB download limit.
+ - Browser automation - [playwright-cli](https://github.com/microsoft/playwright-cli) pre-installed with system Chromium, skill auto-loaded into system prompt. Browser session persists across messages, shuts down with container.
+ - Container isolation - Agents sandboxed in Docker containers with NATS communication
+ - Agent swarms - Graph-based orchestration: fan-out (parallel), pipeline (sequential with context passing), and collaborative (real-time chat) execution patterns. Visual graph editor in Mission Control, `@swarm` Telegram integration
+diff --git a/internal/agent/orchestrator.go b/internal/agent/orchestrator.go
+index 5cc5292..063290a 100644
+--- a/internal/agent/orchestrator.go
++++ b/internal/agent/orchestrator.go
+@@ -976,6 +976,10 @@ func (o *Orchestrator) WriteVolumeFile(ctx context.Context, workspace, filePath,
+ 	return o.containers.WriteVolumeFile(ctx, workspace, filePath, content, image)
+ }
+ 
++func (o *Orchestrator) WriteVolumeBytes(ctx context.Context, workspace, filePath string, data []byte, image string) error {
++	return o.containers.WriteVolumeBytes(ctx, workspace, filePath, data, image)
++}
++
+ func (o *Orchestrator) ExecInAgent(ctx context.Context, agentID string, cmd []string) (string, error) {
+ 	return o.containers.Exec(ctx, agentID, cmd)
+ }
+diff --git a/internal/container/manager.go b/internal/container/manager.go
+index 22ea8af..9941df2 100644
+--- a/internal/container/manager.go
++++ b/internal/container/manager.go
+@@ -492,3 +492,66 @@ func (m *Manager) WriteVolumeFile(ctx context.Context, workspace, filePath, cont
+ 	}
+ 	return nil
+ }
++
++// WriteVolumeBytes writes binary data into a Docker named volume. Same
++// temp-container pattern as WriteVolumeFile but accepts []byte and creates
++// parent directories with correct ownership (uid/gid 10321).
++func (m *Manager) WriteVolumeBytes(ctx context.Context, workspace, filePath string, data []byte, image string) error {
++	volName := fmt.Sprintf("praktor-wk-%s", sanitizeVolumeName(workspace))
++	containerName := fmt.Sprintf("praktor-vol-tmp-%s-%d", sanitizeVolumeName(workspace), time.Now().UnixNano())
++
++	resp, err := m.docker.ContainerCreate(ctx,
++		&dockercontainer.Config{Image: image, Entrypoint: []string{"true"}},
++		&dockercontainer.HostConfig{Binds: []string{volName + ":/vol"}},
++		nil, nil, containerName,
++	)
++	if err != nil {
++		return fmt.Errorf("create temp container: %w", err)
++	}
++	defer func() {
++		_ = m.docker.ContainerRemove(ctx, resp.ID, dockercontainer.RemoveOptions{Force: true})
++	}()
++
++	// Build tar archive with directory entries and the file
++	var buf bytes.Buffer
++	tw := tar.NewWriter(&buf)
++
++	targetPath := path.Join("/vol", filePath)
++	targetPath = strings.TrimPrefix(targetPath, "/")
++
++	// Create parent directory entries with correct ownership
++	parts := strings.Split(path.Dir(targetPath), "/")
++	for i := range parts {
++		dir := strings.Join(parts[:i+1], "/") + "/"
++		if err := tw.WriteHeader(&tar.Header{
++			Typeflag: tar.TypeDir,
++			Name:     dir,
++			Mode:     0o755,
++			Uid:      10321,
++			Gid:      10321,
++		}); err != nil {
++			return fmt.Errorf("write dir header %s: %w", dir, err)
++		}
++	}
++
++	if err := tw.WriteHeader(&tar.Header{
++		Name: targetPath,
++		Mode: 0o644,
++		Size: int64(len(data)),
++		Uid:  10321,
++		Gid:  10321,
++	}); err != nil {
++		return fmt.Errorf("write tar header: %w", err)
++	}
++	if _, err := tw.Write(data); err != nil {
++		return fmt.Errorf("write tar body: %w", err)
++	}
++	if err := tw.Close(); err != nil {
++		return fmt.Errorf("close tar: %w", err)
++	}
++
++	if err := m.docker.CopyToContainer(ctx, resp.ID, "/", &buf, dockercontainer.CopyToContainerOptions{}); err != nil {
++		return fmt.Errorf("copy to volume: %w", err)
++	}
++	return nil
++}
+diff --git a/internal/telegram/bot.go b/internal/telegram/bot.go
+index 3da56eb..e891856 100644
+--- a/internal/telegram/bot.go
++++ b/internal/telegram/bot.go
+@@ -10,6 +10,7 @@ import (
+ 	"strconv"
+ 	"strings"
+ 	"sync"
++	"time"
+ 
+ 	"github.com/mtzanidakis/praktor/internal/agent"
+ 	"github.com/mtzanidakis/praktor/internal/config"
+@@ -242,13 +243,23 @@ func (b *Bot) handleMessage(ctx context.Context, msg telego.Message) {
+ 	chatID := msg.Chat.ID
+ 	userID := msg.From.ID
+ 
++	// Extract text from message or caption
+ 	text := msg.Text
+ 	if text == "" {
+-		if msg.Caption != "" {
+-			text = msg.Caption
+-		} else {
+-			return
+-		}
++		text = msg.Caption
++	}
++
++	// Extract file attachment
++	attachment := extractAttachment(msg)
++
++	// Nothing to process
++	if text == "" && attachment == nil {
++		return
++	}
++
++	// File with no text — provide default prompt
++	if text == "" && attachment != nil {
++		text = fmt.Sprintf("I'm sending you a file: %s", attachment.Name)
+ 	}
+ 
+ 	senderID := strconv.FormatInt(userID, 10)
+@@ -280,6 +291,39 @@ func (b *Bot) handleMessage(ctx context.Context, msg telego.Message) {
+ 	// Send thinking indicator
+ 	_ = b.sendChatAction(ctx, chatID, "typing")
+ 
++	// Handle file attachment: download and write to agent workspace
++	if attachment != nil {
++		data, err := b.downloadFile(ctx, attachment.FileID)
++		if err != nil {
++			slog.Error("file download failed", "file_id", attachment.FileID, "error", err)
++			_ = b.SendMessage(ctx, chatID, "Sorry, I couldn't download the file.")
++			return
++		}
++
++		// Resolve agent workspace and image
++		ag, err := b.registry.Get(agentID)
++		if err != nil || ag == nil {
++			slog.Error("agent not found for file upload", "agent", agentID, "error", err)
++			_ = b.SendMessage(ctx, chatID, "Sorry, I couldn't find the agent to deliver the file.")
++			return
++		}
++
++		image := b.registry.ResolveImage(agentID)
++		volumePath := fmt.Sprintf("uploads/%d_%s", time.Now().Unix(), attachment.Name)
++		containerPath := "/workspace/agent/" + volumePath
++
++		if err := b.orch.WriteVolumeBytes(ctx, ag.Workspace, volumePath, data, image); err != nil {
++			slog.Error("file write to volume failed", "path", volumePath, "error", err)
++			_ = b.SendMessage(ctx, chatID, "Sorry, I couldn't save the file to the agent workspace.")
++			return
++		}
++
++		slog.Info("file received and saved", "agent", agentID, "name", attachment.Name, "size", len(data), "path", containerPath)
++
++		cleanedMessage = fmt.Sprintf("%s\n\n[File received: %s (%s, %d bytes) saved to %s]",
++			cleanedMessage, attachment.Name, attachment.MimeType, len(data), containerPath)
++	}
++
+ 	meta := map[string]string{
+ 		"sender":  fmt.Sprintf("user:%s", senderID),
+ 		"chat_id": chatIDStr,
+@@ -291,6 +335,101 @@ func (b *Bot) handleMessage(ctx context.Context, msg telego.Message) {
+ 	}
+ }
+ 
++// attachment holds metadata about a file attached to a Telegram message.
++type attachment struct {
++	FileID   string
++	Name     string
++	MimeType string
++}
++
++// extractAttachment checks a Telegram message for file attachments and returns
++// the first one found, or nil if there are no attachments.
++func extractAttachment(msg telego.Message) *attachment {
++	if msg.Document != nil {
++		name := msg.Document.FileName
++		if name == "" {
++			name = "document"
++		}
++		mime := msg.Document.MimeType
++		if mime == "" {
++			mime = "application/octet-stream"
++		}
++		return &attachment{FileID: msg.Document.FileID, Name: name, MimeType: mime}
++	}
++
++	if len(msg.Photo) > 0 {
++		// Use the largest photo (last element)
++		photo := msg.Photo[len(msg.Photo)-1]
++		return &attachment{FileID: photo.FileID, Name: "photo.jpg", MimeType: "image/jpeg"}
++	}
++
++	if msg.Audio != nil {
++		name := msg.Audio.FileName
++		if name == "" {
++			name = "audio.mp3"
++		}
++		mime := msg.Audio.MimeType
++		if mime == "" {
++			mime = "audio/mpeg"
++		}
++		return &attachment{FileID: msg.Audio.FileID, Name: name, MimeType: mime}
++	}
++
++	if msg.Video != nil {
++		name := msg.Video.FileName
++		if name == "" {
++			name = "video.mp4"
++		}
++		mime := msg.Video.MimeType
++		if mime == "" {
++			mime = "video/mp4"
++		}
++		return &attachment{FileID: msg.Video.FileID, Name: name, MimeType: mime}
++	}
++
++	if msg.Voice != nil {
++		mime := msg.Voice.MimeType
++		if mime == "" {
++			mime = "audio/ogg"
++		}
++		return &attachment{FileID: msg.Voice.FileID, Name: "voice.ogg", MimeType: mime}
++	}
++
++	if msg.VideoNote != nil {
++		return &attachment{FileID: msg.VideoNote.FileID, Name: "videonote.mp4", MimeType: "video/mp4"}
++	}
++
++	if msg.Animation != nil {
++		name := msg.Animation.FileName
++		if name == "" {
++			name = "animation.mp4"
++		}
++		mime := msg.Animation.MimeType
++		if mime == "" {
++			mime = "video/mp4"
++		}
++		return &attachment{FileID: msg.Animation.FileID, Name: name, MimeType: mime}
++	}
++
++	return nil
++}
++
++// downloadFile downloads a file from Telegram by its FileID.
++func (b *Bot) downloadFile(ctx context.Context, fileID string) ([]byte, error) {
++	file, err := b.bot.GetFile(ctx, &telego.GetFileParams{FileID: fileID})
++	if err != nil {
++		return nil, fmt.Errorf("get file: %w", err)
++	}
++
++	url := b.bot.FileDownloadURL(file.FilePath)
++	data, err := tu.DownloadFile(url)
++	if err != nil {
++		return nil, fmt.Errorf("download file: %w", err)
++	}
++
++	return data, nil
++}
++
+ func (b *Bot) SendMessage(ctx context.Context, chatID int64, text string) error {
+ 	text = toTelegramMarkdown(text)
+ 	chunks := chunkMessage(text, 4096)
+diff --git a/internal/telegram/bot_test.go b/internal/telegram/bot_test.go
+index 7ed864d..1aba3eb 100644
+--- a/internal/telegram/bot_test.go
++++ b/internal/telegram/bot_test.go
+@@ -4,6 +4,8 @@ import (
+ 	"strings"
+ 	"testing"
+ 	"unicode/utf8"
++
++	"github.com/mymmrac/telego"
+ )
+ 
+ func TestChunkMessage(t *testing.T) {
+@@ -120,3 +122,131 @@ func TestConvertMarkdownTablesNoTable(t *testing.T) {
+ 	}
+ }
+ 
++func TestExtractAttachment(t *testing.T) {
++	tests := []struct {
++		name     string
++		msg      telego.Message
++		wantNil  bool
++		wantName string
++		wantMime string
++	}{
++		{
++			name:     "document",
++			msg:      telego.Message{Document: &telego.Document{FileID: "doc1", FileName: "report.pdf", MimeType: "application/pdf"}},
++			wantName: "report.pdf",
++			wantMime: "application/pdf",
++		},
++		{
++			name:     "document without name",
++			msg:      telego.Message{Document: &telego.Document{FileID: "doc2"}},
++			wantName: "document",
++			wantMime: "application/octet-stream",
++		},
++		{
++			name: "photo multiple sizes",
++			msg: telego.Message{Photo: []telego.PhotoSize{
++				{FileID: "small", Width: 90, Height: 90},
++				{FileID: "medium", Width: 320, Height: 320},
++				{FileID: "large", Width: 800, Height: 800},
++			}},
++			wantName: "photo.jpg",
++			wantMime: "image/jpeg",
++		},
++		{
++			name:     "audio with name",
++			msg:      telego.Message{Audio: &telego.Audio{FileID: "aud1", FileName: "song.mp3", MimeType: "audio/mpeg"}},
++			wantName: "song.mp3",
++			wantMime: "audio/mpeg",
++		},
++		{
++			name:     "audio without name",
++			msg:      telego.Message{Audio: &telego.Audio{FileID: "aud2"}},
++			wantName: "audio.mp3",
++			wantMime: "audio/mpeg",
++		},
++		{
++			name:     "video with name",
++			msg:      telego.Message{Video: &telego.Video{FileID: "vid1", FileName: "clip.mp4", MimeType: "video/mp4"}},
++			wantName: "clip.mp4",
++			wantMime: "video/mp4",
++		},
++		{
++			name:     "video without name",
++			msg:      telego.Message{Video: &telego.Video{FileID: "vid2"}},
++			wantName: "video.mp4",
++			wantMime: "video/mp4",
++		},
++		{
++			name:     "voice",
++			msg:      telego.Message{Voice: &telego.Voice{FileID: "voice1", MimeType: "audio/ogg"}},
++			wantName: "voice.ogg",
++			wantMime: "audio/ogg",
++		},
++		{
++			name:     "voice without mime",
++			msg:      telego.Message{Voice: &telego.Voice{FileID: "voice2"}},
++			wantName: "voice.ogg",
++			wantMime: "audio/ogg",
++		},
++		{
++			name:     "video note",
++			msg:      telego.Message{VideoNote: &telego.VideoNote{FileID: "vn1"}},
++			wantName: "videonote.mp4",
++			wantMime: "video/mp4",
++		},
++		{
++			name:     "animation with name",
++			msg:      telego.Message{Animation: &telego.Animation{FileID: "anim1", FileName: "funny.gif", MimeType: "video/mp4"}},
++			wantName: "funny.gif",
++			wantMime: "video/mp4",
++		},
++		{
++			name:     "animation without name",
++			msg:      telego.Message{Animation: &telego.Animation{FileID: "anim2"}},
++			wantName: "animation.mp4",
++			wantMime: "video/mp4",
++		},
++		{
++			name:    "no attachment",
++			msg:     telego.Message{Text: "just text"},
++			wantNil: true,
++		},
++		{
++			name:    "empty message",
++			msg:     telego.Message{},
++			wantNil: true,
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got := extractAttachment(tt.msg)
++			if tt.wantNil {
++				if got != nil {
++					t.Errorf("expected nil, got %+v", got)
++				}
++				return
++			}
++			if got == nil {
++				t.Fatal("expected attachment, got nil")
++			}
++			if got.Name != tt.wantName {
++				t.Errorf("name = %q, want %q", got.Name, tt.wantName)
++			}
++			if got.MimeType != tt.wantMime {
++				t.Errorf("mime = %q, want %q", got.MimeType, tt.wantMime)
++			}
++		})
++	}
++
++	// Verify photo uses largest size
++	msg := telego.Message{Photo: []telego.PhotoSize{
++		{FileID: "small", Width: 90},
++		{FileID: "large", Width: 800},
++	}}
++	got := extractAttachment(msg)
++	if got.FileID != "large" {
++		t.Errorf("expected largest photo (FileID=large), got %q", got.FileID)
++	}
++}
++

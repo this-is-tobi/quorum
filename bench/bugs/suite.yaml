@@ -1,0 +1,155 @@
+name: bugs
+cases:
+- id: code-graph-rag-ghsa-vvr2-h2jp-838m
+  kind: bug
+  patch: code-graph-rag-ghsa-vvr2-h2jp-838m.patch
+  locations:
+  - file: codebase_rag/mcp/tools.py
+    start: 201
+    end: 201
+  repo: https://github.com/vitali87/code-graph-rag
+  fixCommit: 6541e920a27961fa8f3ff49ef38c0e0bd09cd626
+  introducingCommit: d0b0572417cda37424faa19a8fb3b291a09fce77
+  license: MIT
+  copyright:
+  - "Copyright (c) [2025] [Vitali Avagyan]"
+  date: 2026-07-14
+  note: "GHSA-vvr2-h2jp-838m (CVE-2026-77604), CWE-22: the paginated branch of the MCP read_file tool opens a path under the project root with no check that it stays inside"
+- id: mistune-ghsa-h7ww-273w-6cm8
+  kind: bug
+  patch: mistune-ghsa-h7ww-273w-6cm8.patch
+  locations:
+  - file: mistune3/directives/include.py
+    start: 21
+    end: 22
+  - file: mistune3/directives/include.py
+    start: 64
+    end: 65
+  repo: https://github.com/lepture/mistune
+  fixCommit: 1bef343ade163fc3bb95572b15be720084cdb993
+  introducingCommit: 05eb15b12fd40b5694740bb4c37035cfbd78274e
+  license: BSD-3-Clause
+  copyright:
+  - "Copyright (c) 2014, Hsiaoming Yang"
+  date: 2026-06-21
+  note: "GHSA-h7ww-273w-6cm8 (CVE-2026-115355), CWE-22 and CWE-79: the include directive joins a relative path with no check that it stays in the source directory, and its HTML renderer emits the included text unescaped; syntax.md deleted in the same commit"
+- id: banks-ghsa-64vx-6h2c-rjh7
+  kind: bug
+  patch: banks-ghsa-64vx-6h2c-rjh7.patch
+  locations:
+  - file: src/banks/extensions/completion.py
+    start: 79
+    end: 85
+  repo: https://github.com/masci/banks
+  fixCommit: e443f112b80a20ac24438afe4eb8f8a746a8396d
+  introducingCommit: ec125ab6401064ecd9e5ceabc78a25ac37bd8728
+  license: MIT
+  copyright:
+  - Copyright (c) 2023-present Massimiliano Pippi <mpippi@gmail.com>
+  date: 2026-06-18
+  note: "GHSA-64vx-6h2c-rjh7 (CVE-2026-61536), CWE-94 and CWE-470: a tool call is resolved by importing the import_path of a Tool parsed from the rendered template body, with no allowlist"
+- id: praktor-ghsa-48v2-6jcm-fc99
+  kind: bug
+  patch: praktor-ghsa-48v2-6jcm-fc99.patch
+  locations:
+  - file: internal/container/manager.go
+    start: 519
+    end: 520
+  - file: internal/telegram/bot.go
+    start: 312
+    end: 312
+  repo: https://github.com/mtzanidakis/praktor
+  fixCommit: c3731eeda01c0b3ec1dbd13cccd5a147c3182141
+  introducingCommit: 990c77b60fb9d4f5b8e31a28f8a4f97888381757
+  license: MIT
+  copyright:
+  - Copyright (c) 2026 Manolis Tzanidakis
+  date: 2026-06-26
+  note: "GHSA-48v2-6jcm-fc99 (CVE-2026-62331), CWE-22: the name of a Telegram attachment goes unsanitized into the path of the file written to the agent volume"
+- id: goshs-ghsa-rjrw-mjq6-hpmm
+  kind: bug
+  patch: goshs-ghsa-rjrw-mjq6-hpmm.patch
+  locations:
+  - file: sftpserver/sftpserver.go
+    start: 69
+    end: 69
+  repo: https://github.com/goshs-labs/goshs
+  fixCommit: 32f4a0e1790a709f722d0f3b2341f139d003180a
+  introducingCommit: c032f462f85e08b2c7986e41c54632731c94d021
+  license: MIT
+  copyright:
+  - Copyright (c) 2025 Patrick Hener
+  date: 2026-06-26
+  note: "GHSA-rjrw-mjq6-hpmm (CVE-2026-62325), CWE-306: the SFTP password handler is set only when both username and password are non-empty, so with one of them empty the server accepts every client that has no key file to meet; the project's two test private keys, sftpserver/goshs_client_key and sftpserver/goshs_host_key_rsa, left out"
+- id: cakephp-ghsa-fxf7-vhh8-7vpq
+  kind: bug
+  patch: cakephp-ghsa-fxf7-vhh8-7vpq.patch
+  locations:
+  - file: src/Database/Driver/Postgres.php
+    start: 308
+    end: 309
+  repo: https://github.com/cakephp/cakephp
+  fixCommit: 138f2f61486532c29ee4d106da2a9848c1ff1ab3
+  introducingCommit: b54352e2a53d6869b700848ecd3fc7a1824fa951
+  license: MIT
+  copyright:
+  - "Copyright (c) 2005-present, Cake Software Foundation, Inc. (https://cakefoundation.org)"
+  date: 2026-07-08
+  note: "GHSA-fxf7-vhh8-7vpq (CVE-2026-77635), CWE-89: on PostgreSQL the JSON path of jsonValue() is put between single quotes after identifier quoting, which does not make it a safe string literal"
+- id: lettre-ghsa-4pj9-g833-qx53
+  kind: bug
+  patch: lettre-ghsa-4pj9-g833-qx53.patch
+  locations:
+  - file: src/transport/smtp/client/net.rs
+    start: 201
+    end: 201
+  - file: src/transport/smtp/client/async_net.rs
+    start: 355
+    end: 355
+  repo: https://github.com/lettre/lettre
+  fixCommit: f5efffc88360dbdbfcef80f465e42d5bce68ca35
+  introducingCommit: 985fa7edc4a46c94d15b8213c066f0eebed8e14e
+  license: MIT
+  copyright:
+  - Copyright (c) 2014-2022 Alexis Mousset <contact@amousset.me>
+  - Copyright (c) 2019-2022 Paolo Barbolini <paolo@paolo565.org>
+  - Copyright (c) 2018 K. <kayo@illumium.org>
+  date: 2026-05-14
+  note: "GHSA-4pj9-g833-qx53 (CVE-2026-46428), CWE-295: with the boring-tls backend the accept_invalid_hostnames flag reaches verify_hostname without negation, so hostname verification is off by default"
+- id: flat-to-nested-js-ghsa-hp36-v28f-w3r4
+  kind: bug
+  patch: flat-to-nested-js-ghsa-hp36-v28f-w3r4.patch
+  locations:
+  - file: index.js
+    start: 26
+    end: 27
+  repo: https://github.com/joaonuno/flat-to-nested-js
+  fixCommit: 680a5ebe1194edda16fa93baaa56ff14fe0e3d7f
+  introducingCommit: f9998700e9d7757ed9bb3d46753ebcb07728cbdc
+  license: MIT
+  copyright:
+  - Copyright (c) 2013 João Nuno Silva
+  date: 2026-06-04
+  note: "GHSA-hp36-v28f-w3r4 (CVE-2026-55091), CWE-1321: convert() keys plain objects by the id and parent of each input record, so a parent of __proto__ reaches Object.prototype; the commit is the project's first import of its code"
+- id: praktor-control-fc5d10a
+  kind: control
+  patch: praktor-control-fc5d10a.patch
+  repo: https://github.com/mtzanidakis/praktor
+  commit: fc5d10aed3c481a68e2e1207261869ab3e58d4bd
+  license: MIT
+  copyright:
+  - Copyright (c) 2026 Manolis Tzanidakis
+  date: 2026-02-22
+  note: "Control: the commit that sorts the agents of Mission Control alphabetically and marks the default one, made the day of the commit that introduced the upload flaw; no advisory names it"
+- id: lettre-control-2228cbd
+  kind: control
+  patch: lettre-control-2228cbd.patch
+  repo: https://github.com/lettre/lettre
+  commit: 2228cbdf935b451b1a552e2259e00222f455599d
+  license: MIT
+  copyright:
+  - Copyright (c) 2014-2022 Alexis Mousset <contact@amousset.me>
+  - Copyright (c) 2019-2022 Paolo Barbolini <paolo@paolo565.org>
+  - Copyright (c) 2018 K. <kayo@illumium.org>
+  date: 2022-07-19
+  note: "Control: the commit that fixes SMTP dot stuffing, three days after the commit that introduced the Boring TLS flaw; no advisory names it"

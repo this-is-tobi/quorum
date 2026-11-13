@@ -1,0 +1,2 @@
+# The patches of the bench's suites keep their bytes: no line-ending conversion, no whitespace check.
+bench/*/cases/* -text -whitespace

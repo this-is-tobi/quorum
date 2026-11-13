@@ -51,6 +51,10 @@ describe('package.json', () => {
     expect(pkg.files).toEqual(['dist', 'schema'])
   })
 
+  it('keeps the bench suites out of the package', () => {
+    expect(pkg.files.some(entry => entry === 'bench' || entry.startsWith('bench/'))).toBe(false)
+  })
+
   it('compiles the release binaries with the script that builds the four of them and their checksums', () => {
     expect(scripts['compile:release']).toBe('bun run ./scripts/build-binaries.ts')
   })
