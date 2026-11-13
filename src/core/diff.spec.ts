@@ -795,6 +795,20 @@ describe('firstLineOutside', () => {
       1,
       1,
     ],
+    [
+      'a range wholly inside the hunks, the file named with its b/ prefix',
+      'b/a.js',
+      2,
+      5,
+      undefined,
+    ],
+    [
+      'a range that runs into a gap, the file named with its ./ prefix',
+      './a.js',
+      4,
+      7,
+      6,
+    ],
   ])('finds, for %s, the first line locate places in no hunk', (_name, file, start, end, expected) => {
     expect(firstLineOutside(sections, file, start, end)).toBe(expected)
     expect(byLocate(file, start, end)).toBe(expected)
@@ -804,6 +818,42 @@ describe('firstLineOutside', () => {
     for (const file of ['a.js', 'b.js', 'c.js']) {
       for (let start = 0; start <= 30; start++) {
         for (let end = start; end <= start + 8; end++) expect(firstLineOutside(sections, file, start, end), `${file} ${start}-${end}`).toBe(byLocate(file, start, end))
+      }
+    }
+  })
+
+  it('agrees with locate on a diff with no per-file header, whose one section stands for any file', () => {
+    const unkeyed = splitDiff([
+      '--- a/a.js',
+      '+++ b/a.js',
+      '@@ -1,2 +1,3 @@',
+      ' a',
+      '+b',
+      ' c',
+      '@@ -9,1 +10,2 @@',
+      ' d',
+      '+e',
+      '',
+    ].join('\n'))
+    expect([
+      ...unkeyed.keys(),
+    ]).toEqual([''])
+    const ranges: [number, number, number | undefined][] = [
+      [1, 3, undefined],
+      [10, 11, undefined],
+      [3, 4, 4],
+      [9, 11, 9],
+      [10, 12, 12],
+      [0, 1, 0],
+    ]
+    for (const file of ['a.js', 'elsewhere/other.js']) {
+      for (const [start, end, expected] of ranges) {
+        let byLocate: number | undefined
+        for (let line = start; line <= end && byLocate === undefined; line++) {
+          if (locate(unkeyed, file, line) === undefined) byLocate = line
+        }
+        expect(byLocate, `${file} ${start}-${end}`).toBe(expected)
+        expect(firstLineOutside(unkeyed, file, start, end), `${file} ${start}-${end}`).toBe(expected)
       }
     }
   })

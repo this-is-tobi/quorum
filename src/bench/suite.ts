@@ -225,7 +225,8 @@ type CasePath = (index: number, ...segments: PropertyKey[]) => string
  * Read `suite.yaml` of a suite: a regular file, never a link, of at most 1 MiB, decoded, parsed as
  * YAML, checked to be plain data and read by the schema. `file` stands for it in the issues.
  *
- * @throws ConfigError with the first problem the file has
+ * @throws ConfigError with the first problem of the file's bytes, its text or its YAML (a document
+ * that is no mapping included), or with every issue its data has
  */
 async function readHeader(directory: string, file: string): Promise<{ readonly header: Header, readonly bytes: Uint8Array }> {
   const bytes = await readBounded(join(directory, 'suite.yaml'), MAX_SUITE_BYTES, '1 MiB', { noFollow: true })
@@ -357,8 +358,8 @@ function contentHash(suiteBytes: Uint8Array, patches: ReadonlyMap<string, Patch>
  * `label` stands for the directory in the issues, which name `<label>/suite.yaml` and a path in it, or
  * `<label>/cases`; no issue quotes a file.
  *
- * @throws ConfigError with the first problem of `suite.yaml`; or the repeated ids and the problem of
- * `cases/`; or every other issue found
+ * @throws ConfigError with the first problem of the bytes, the text or the YAML of `suite.yaml`, or every
+ * issue its data has; or the repeated ids and the problem of `cases/`; or every other issue found
  */
 export async function loadSuite(directory: string, label = directory): Promise<Suite> {
   const file = `${label}/suite.yaml`
