@@ -569,6 +569,15 @@ describe('the records, when results.jsonl changed after it was read', () => {
     expect(descriptors.map(descriptor => isClosed(descriptor))).toEqual([true, true])
   })
 
+  it('refuses a results.jsonl deleted after it was read, and does not make it again', async () => {
+    mkdirSync(out)
+    writeFileSync(results(), LINE_1 + LINE_2)
+    const read = await readRecords(out, () => undefined)
+    rmSync(results())
+    expect(await refused(() => openRecords(out, read))).toEqual(['results.jsonl: changed after this run read it, so another run may be using this --out: run one at a time'])
+    expect(existsSync(results())).toBe(false)
+  })
+
   it('refuses a directory swapped in at results.jsonl, as the read refuses one', async () => {
     mkdirSync(out)
     mkdirSync(results())
