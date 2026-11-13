@@ -123,8 +123,17 @@ function wholeNumber(flag: string, text: string | undefined, max: number): numbe
   return Number(text)
 }
 
+/**
+ * The first of `configs`, as given, whose file a later one names again. A relative `--config` resolves
+ * against `cwd`, as `loadConfig` resolves it, so `a.yaml`, `./a.yaml` and its absolute path are one file.
+ */
+function repeatedConfig(configs: readonly string[], cwd: string): string | undefined {
+  const paths = configs.map(config => resolve(cwd, config))
+  return configs.find((_, index) => paths.includes(paths[index], index + 1))
+}
+
 /** The options the flags of `argv` give, or the usage error they hold. */
-function checkOptions(values: ReturnType<typeof parseFlags>['values'], positionals: readonly string[]): BenchOptions {
+function checkOptions(values: ReturnType<typeof parseFlags>['values'], positionals: readonly string[], cwd: string): BenchOptions {
   const [suite, ...extra] = positionals
   if (suite === undefined) throw new Error('no suite given')
   if (extra.length > 0) throw new Error(`unexpected arguments: ${extra.join(' ')}`)
@@ -133,6 +142,8 @@ function checkOptions(values: ReturnType<typeof parseFlags>['values'], positiona
   const configs = values.config ?? []
   if (configs.includes('')) throw usageIssue('--config', 'must name a file')
   if (configs.length > MAX_CONFIGURATIONS) throw usageIssue('--config', `names more than ${MAX_CONFIGURATIONS} configurations`)
+  const repeated = repeatedConfig(configs, cwd)
+  if (repeated !== undefined) throw usageIssue('--config', `names the file "${repeated}" more than once`)
   if (values.out === '') throw usageIssue('--out', 'must name a directory')
   const cases = values.case ?? []
   if (cases.some(id => !SUITE_ID.test(id))) throw usageIssue('--case', `must be a case id matching ${SUITE_ID.source}`)
@@ -509,7 +520,7 @@ export async function runBench(io: CliIO, argv: readonly string[]): Promise<numb
       io.stdout.write(BENCH_USAGE)
       return BENCH_EXIT.ok
     }
-    options = checkOptions(values, positionals)
+    options = checkOptions(values, positionals, io.cwd)
   } catch (error) {
     return usageError(io, error)
   }

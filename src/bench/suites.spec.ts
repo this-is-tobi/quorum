@@ -25,6 +25,13 @@ describe('bench/bugs, the real-bug suite', () => {
       expect(entry.repo, entry.id).toMatch(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/)
       for (const field of ['license', 'date', 'note'] as const) expect(entry[field], `${entry.id}.${field}`).toBeDefined()
       expect(entry.copyright?.length, entry.id).toBeGreaterThan(0)
+      expect([
+        'MIT',
+        'Apache-2.0',
+        'BSD-2-Clause',
+        'BSD-3-Clause',
+        'ISC',
+      ], entry.id).toContain(entry.license)
       if (entry.kind === 'bug') expect([entry.fixCommit, entry.introducingCommit].every(Boolean), entry.id).toBe(true)
       else expect(entry.commit, entry.id).toBeDefined()
     }

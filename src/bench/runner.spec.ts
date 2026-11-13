@@ -175,9 +175,16 @@ describe('runReviews', () => {
 
   it('runs at most --jobs reviews at once, starting them in the order given', async () => {
     const gate = deferred()
-    const started: string[] = []
+    const second = deferred()
+    let opened = false
+    const started: Array<[string, boolean]> = []
     const onCall = (request: CompletionRequest): void => {
-      if (isResearch(request)) started.push(caseOf(request))
+      if (!isResearch(request)) return
+      started.push([
+        caseOf(request),
+        opened,
+      ])
+      if (started.length === 2) second.open()
     }
     const running = run([
       { gate: gate.promise, onCall },
@@ -186,11 +193,19 @@ describe('runReviews', () => {
       review('sql'),
       review('docs'),
     ], { jobs: 2 })
-    await new Promise(resolve => setTimeout(resolve, 20))
-    expect(started).toEqual(['exec', 'sql'])
+    await second.promise
+    expect(started).toEqual([
+      ['exec', false],
+      ['sql', false],
+    ])
+    opened = true
     gate.open()
     expect((await running).outcome.recorded).toBe(3)
-    expect(started).toEqual(['exec', 'sql', 'docs'])
+    expect(started).toEqual([
+      ['exec', false],
+      ['sql', false],
+      ['docs', true],
+    ])
   })
 
   it('starts no review once interrupted, and keeps the records written', async () => {
@@ -214,13 +229,19 @@ describe('runReviews', () => {
   it('counts no review an interrupt cut as failed', async () => {
     const controller = new AbortController()
     const gate = deferred()
+    const second = deferred()
+    let calls = 0
+    const onCall = (): void => {
+      calls += 1
+      if (calls === 2) second.open()
+    }
     const running = run([
-      { gate: gate.promise },
+      { gate: gate.promise, onCall },
     ], [
       review('exec'),
       review('sql'),
     ], { jobs: 2, signal: controller.signal })
-    await new Promise(resolve => setTimeout(resolve, 20))
+    await second.promise
     controller.abort()
     const { outcome, events } = await running
     expect(outcome).toEqual({ recorded: 0, failed: 0, interrupted: true })
@@ -239,6 +260,37 @@ describe('runReviews', () => {
       review('sql'),
     ], { append })).rejects.toThrow('results.jsonl: cannot be written (ENOSPC)')
     expect(counter.calls).toBe(1)
+  })
+
+  it('appends nothing after a write fails while another review runs, and rejects with its error', async () => {
+    const gate = deferred()
+    const append = vi.fn(async (): Promise<void> => {
+      gate.open()
+      throw new Error('results.jsonl: cannot be written (ENOSPC)')
+    })
+    await expect(run([
+      {},
+      { gate: gate.promise },
+    ], [
+      review('exec', 0),
+      review('exec', 1),
+    ], { jobs: 2, append })).rejects.toThrow('results.jsonl: cannot be written (ENOSPC)')
+    expect(append).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives each trial of one configuration a quorum of its own when they run at once', async () => {
+    const { lines } = await run([
+      {
+        findings: [EXEC_FINDING],
+      },
+    ], [
+      review('exec', 0, 1),
+      review('exec', 0, 2),
+    ], { jobs: 2 })
+    expect(lines.map(line => parseRecord(line.slice(0, -1))).map(entry => [entry?.trial, entry?.calls]).sort()).toEqual([
+      [1, 4],
+      [2, 4],
+    ])
   })
 
   it('fails a review whose record is over the line cap, without writing it', async () => {
