@@ -281,6 +281,38 @@ export function locate(sections: ReadonlyMap<string, string>, file: string, line
   return undefined
 }
 
+/**
+ * The first line from `start` to `end` that no hunk of `file` holds, or undefined when each sits in
+ * one: the answer `locate` gives for each line in turn, found by a binary search over the spans the
+ * hunks hold, merged and sorted once per section, so a range costs a search and not a walk over every
+ * hunk for each of its lines. The file is resolved as `locate` resolves it, and a file the diff does
+ * not hold has no line in a hunk, so the answer is `start`.
+ *
+ * @throws {RangeError} unless `start` and `end` are safe integers with `start` at most `end`
+ */
+export function firstLineOutside(sections: ReadonlyMap<string, string>, file: string, start: number, end: number): number | undefined {
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end) {
+    throw new RangeError('start and end must be safe integers, start at most end')
+  }
+  const section = sectionFor(sections, file)
+  if (!section) return start
+  const spans = spansOf(sections, section.path, section.text)
+  let before = 0
+  let after = spans.length
+  while (before < after) {
+    const middle = (before + after) >>> 1
+    if (spans[middle].start <= start) before = middle + 1
+    else after = middle
+  }
+  const span = before === 0
+    ? undefined
+    : spans[before - 1]
+  if (span === undefined || span.end < start) return start
+  return span.end >= end
+    ? undefined
+    : span.end + 1
+}
+
 /** A line the diff adds to the new file. */
 export interface AddedLine {
   /** The line's number in the new file. */
@@ -344,6 +376,55 @@ function hunksOf(sections: ReadonlyMap<string, string>, path: string, text: stri
     parsed.set(path, hunks)
   }
   return hunks
+}
+
+/** A run of new-file lines, both ends included. */
+interface Span {
+  readonly start: number
+  readonly end: number
+}
+
+/** The merged spans of each section, built once, in a cache that is dropped with the sections map like `parsedSections`. */
+const coveredSections = new WeakMap<ReadonlyMap<string, string>, Map<string, readonly Span[]>>()
+
+/** The new-file lines a hunk holds for `locate`: those it shows from its start, up to its count, or its start alone for a hunk that counts no new line; none for a hunk that shows no row. */
+function heldSpan(hunk: Hunk): Span | undefined {
+  if (hunk.rows.length === 0) return undefined
+  const shown = hunk.count === 0
+    ? 1
+    : Math.min(hunk.count, hunk.rowOfLine.length)
+  return shown === 0
+    ? undefined
+    : { start: hunk.start, end: hunk.start + shown - 1 }
+}
+
+/** The spans the hunks of a section hold, sorted by start, each merged with the one before it when it starts at most a line after that one's end, so no line between two spans is in either. */
+function spansOf(sections: ReadonlyMap<string, string>, path: string, text: string): readonly Span[] {
+  let covered = coveredSections.get(sections)
+  if (!covered) {
+    covered = new Map()
+    coveredSections.set(sections, covered)
+  }
+  let spans = covered.get(path)
+  if (!spans) {
+    const held = hunksOf(sections, path, text).flatMap(hunk => heldSpan(hunk) ?? [])
+    held.sort((first, second) => first.start - second.start)
+    const merged: Span[] = []
+    for (const span of held) {
+      const last = merged.at(-1)
+      if (last !== undefined && span.start <= last.end + 1) {
+        merged[merged.length - 1] = {
+          start: last.start,
+          end: Math.max(last.end, span.end),
+        }
+      } else {
+        merged.push(span)
+      }
+    }
+    spans = merged
+    covered.set(path, spans)
+  }
+  return spans
 }
 
 /**

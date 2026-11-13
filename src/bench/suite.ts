@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { dataIssues, decode, isPlainObject, parseYaml, readBounded } from '../config/load.ts'
 import { configPath, parseConfig } from '../config/schema.ts'
-import { decodeDiff, locate, MAX_DIFF_BYTES, splitDiff } from '../core/diff.ts'
+import { decodeDiff, firstLineOutside, MAX_DIFF_BYTES, splitDiff } from '../core/diff.ts'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { hiddenLabels } from '../core/sanitize.ts'
@@ -118,7 +118,7 @@ function isRepository(text: string): boolean {
 }
 
 const idSchema = z.string().max(MAX_ID, { error: `must be at most ${MAX_ID} characters` }).regex(SUITE_ID)
-const textSchema = z.string().min(1).max(MAX_TEXT, { error: `must be at most ${MAX_TEXT} characters` }).refine(text => hiddenLabels(text).length === 0, { error: 'must be one line of visible text' })
+const textSchema = z.string().min(1, { error: 'must not be empty' }).max(MAX_TEXT, { error: `must be at most ${MAX_TEXT} characters` }).refine(text => hiddenLabels(text).length === 0, { error: 'must be one line of visible text' })
 const commitSchema = z.string().regex(COMMIT, { error: 'must be a full commit hash: 40 or 64 lowercase hex digits' })
 
 const locationSchema = z.strictObject({
@@ -313,13 +313,12 @@ export async function loadSuite(directory: string, label = directory): Promise<S
         })
         continue
       }
-      for (let line = start; line <= end; line++) {
-        if (locate(read.sections, name, line) !== undefined) continue
+      const outside = firstLineOutside(read.sections, name, start, end)
+      if (outside !== undefined) {
         issues.push({
           path: at(index, 'locations', position),
-          message: `line ${line} is not in a hunk of the patch`,
+          message: `line ${outside} is not in a hunk of the patch`,
         })
-        break
       }
     }
   }

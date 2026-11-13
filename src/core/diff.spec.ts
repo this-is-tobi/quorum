@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeDiff, diffSectionFor, locate, sectionFor, splitDiff } from './diff.ts'
+import { decodeDiff, diffSectionFor, firstLineOutside, locate, sectionFor, splitDiff } from './diff.ts'
 
 const gitDiff = [
   'diff --git a/src/a.js b/src/a.js',
@@ -649,6 +649,168 @@ describe('locate', () => {
     }
     expect(performance.now() - started).toBeLessThan(300)
     expect(located).toBe(1_000)
+  })
+})
+
+describe('firstLineOutside', () => {
+  /**
+   * a.js holds lines 1 to 5 (two adjacent hunks), 9 to 11 (a hunk given out of order over another),
+   * 13 (a deletion-only hunk), 20 and 21 (a hunk cut short of its count) and 25 (a hunk whose rows run
+   * past its count); b.js holds line 2.
+   */
+  const sections = splitDiff([
+    'diff --git a/a.js b/a.js',
+    '--- a/a.js',
+    '+++ b/a.js',
+    '@@ -1,2 +1,3 @@',
+    ' a',
+    '+b',
+    ' c',
+    '@@ -3,1 +4,2 @@',
+    ' d',
+    '+e',
+    '@@ -8,2 +10,2 @@',
+    ' f',
+    ' g',
+    '@@ -12,2 +13,0 @@',
+    '-h',
+    '-i',
+    '@@ -7,3 +9,3 @@',
+    ' j',
+    ' k',
+    ' l',
+    '@@ -20,4 +20,4 @@',
+    ' p',
+    ' q',
+    '@@ -30,3 +25,1 @@',
+    ' r',
+    ' s',
+    ' t',
+    'diff --git a/b.js b/b.js',
+    '--- a/b.js',
+    '+++ b/b.js',
+    '@@ -1 +2 @@',
+    '-old',
+    '+new',
+    '',
+  ].join('\n'))
+
+  /** What checking each line of the range with `locate` finds: the first line it places in no hunk. */
+  function byLocate(file: string, start: number, end: number): number | undefined {
+    for (let line = start; line <= end; line++) {
+      if (locate(sections, file, line) === undefined) return line
+    }
+    return undefined
+  }
+
+  it.each<[string, string, number, number, number | undefined]>([
+    [
+      'a range inside one hunk',
+      'a.js',
+      1,
+      3,
+      undefined,
+    ],
+    [
+      'a range across two adjacent hunks',
+      'a.js',
+      2,
+      5,
+      undefined,
+    ],
+    [
+      'a range that runs into the gap after them',
+      'a.js',
+      4,
+      7,
+      6,
+    ],
+    [
+      'a range that starts in the gap',
+      'a.js',
+      6,
+      9,
+      6,
+    ],
+    [
+      'a range across a hunk given out of order over another',
+      'a.js',
+      9,
+      11,
+      undefined,
+    ],
+    [
+      'the line a deletion-only hunk holds',
+      'a.js',
+      13,
+      13,
+      undefined,
+    ],
+    [
+      'a range past a deletion-only hunk',
+      'a.js',
+      13,
+      14,
+      14,
+    ],
+    [
+      'a range across the line between two hunks',
+      'a.js',
+      11,
+      13,
+      12,
+    ],
+    [
+      'a range past the rows a hunk cut short shows',
+      'a.js',
+      20,
+      23,
+      22,
+    ],
+    [
+      'a range past the one line a hunk counts, though its rows run on',
+      'a.js',
+      25,
+      26,
+      26,
+    ],
+    [
+      'a range past the last hunk',
+      'a.js',
+      30,
+      31,
+      30,
+    ],
+    [
+      'a range of another file of the diff',
+      'b.js',
+      1,
+      2,
+      1,
+    ],
+    [
+      'a range of a file the diff does not touch',
+      'c.js',
+      1,
+      1,
+      1,
+    ],
+  ])('finds, for %s, the first line locate places in no hunk', (_name, file, start, end, expected) => {
+    expect(firstLineOutside(sections, file, start, end)).toBe(expected)
+    expect(byLocate(file, start, end)).toBe(expected)
+  })
+
+  it('agrees with locate on every range of up to nine lines from line 0 to 30, in each file', () => {
+    for (const file of ['a.js', 'b.js', 'c.js']) {
+      for (let start = 0; start <= 30; start++) {
+        for (let end = start; end <= start + 8; end++) expect(firstLineOutside(sections, file, start, end), `${file} ${start}-${end}`).toBe(byLocate(file, start, end))
+      }
+    }
+  })
+
+  it('refuses a range that is not two whole lines in order', () => {
+    expect(() => firstLineOutside(sections, 'a.js', 3, 2)).toThrow(RangeError)
+    expect(() => firstLineOutside(sections, 'a.js', 1.5, 2)).toThrow(RangeError)
   })
 })
 
