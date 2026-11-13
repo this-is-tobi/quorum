@@ -209,6 +209,9 @@ describe('scoreReview against decoys', () => {
       discarded: [
         voted('a.js', 40, [false, false, false]),
       ],
+      unreviewed: [
+        voted('a.js', 2, [false, null, false]),
+      ],
     })
     const scored = scoreReview(result, KEEP, 3, new Map([
       [
@@ -233,6 +236,14 @@ describe('scoreReview against decoys', () => {
         errors: new Map([
           ['reachability', true],
           ['defenses', false],
+        ]),
+      },
+      {
+        profile: 'security',
+        lenses: 3,
+        errors: new Map([
+          ['reachability', true],
+          ['defenses', true],
         ]),
       },
     ])

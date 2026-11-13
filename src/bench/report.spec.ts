@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ATTACK, record, resultWith, SUITE, verdict } from '../testing/bench.ts'
 import { reviewKey } from './records.ts'
 import { buildReport, reportJson, reportMarkdown, reviewScore } from './report.ts'
-import type { Comparison, Measure, ReportInput, ReviewScore } from './report.ts'
+import type { Comparison, ConfigurationIndependence, Measure, ReportInput, ReviewScore } from './report.ts'
 import type { JudgedFinding } from './score.ts'
 import type { SuiteCase } from './suite.ts'
 
@@ -476,6 +476,28 @@ describe('reportMarkdown', () => {
     expect(markdown).toContain('- 2, incomplete reviews: 0.0 points; 1 better')
     expect(markdown).toContain('- 2, unmatched kept findings per control: 0.00; 1 better')
     expect(markdown).toContain('- 2, tokens per review: 0; 1 better')
+  })
+
+  it('writes a mean phi that rounds to zero without a sign, and keeps the sign of a real negative one', () => {
+    const entry = (configuration: number, meanPhi: number, lenses: number | null): ConfigurationIndependence => ({
+      configuration,
+      findings: 9,
+      pairs: 1,
+      meanPhi,
+      lenses,
+      effectiveVotes: lenses === null
+        ? null
+        : lenses / (1 + (lenses - 1) * meanPhi),
+    })
+    const markdown = reportMarkdown({
+      ...buildReport(INPUT),
+      independence: [
+        entry(1, -0.003, 3),
+        entry(2, -0.3, null),
+      ],
+    })
+    expect(markdown).toContain('\n- 1: mean phi 0.00 over 1 lens pair and 9 findings; 3.02 effective votes of 3\n')
+    expect(markdown).toContain('\n- 2: mean phi -0.30 over 1 lens pair and 9 findings; no effective number, since its panels differ in size\n')
   })
 
   it('leaves the comparisons out for one configuration', () => {

@@ -362,10 +362,13 @@ function rateText(rate: Rate | null): string {
     : `${percent(rate.value)} [${percent(rate.low)}, ${percent(rate.high)}] over ${plural(rate.cases, 'case')}`
 }
 
+/** `value` as two decimals, without the sign of a negative that rounds to zero: never `-0.00`. */
 function twoDecimals(value: number | null): string {
-  return value === null
-    ? NOT_AVAILABLE
-    : value.toFixed(2)
+  if (value === null) return NOT_AVAILABLE
+  const text = value.toFixed(2)
+  return Number(text) === 0
+    ? Math.abs(value).toFixed(2)
+    : text
 }
 
 function seconds(ms: number): string {
