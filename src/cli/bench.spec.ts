@@ -385,7 +385,7 @@ describe('quorum bench, its choices and its run directory', () => {
       'demo',
       '--dry-run',
     ])
-    expect([team.code, team.stderr]).toEqual([2, 'Error: --config: profiles.yaml is not one of the run\'s configurations\nrun.json: its configuration profiles.yaml is not given\n'])
+    expect([team.code, team.stderr]).toEqual([2, 'Error: --config: the settings of profiles.yaml changed since the run began: name a new --out\n'])
     const again = await bench([...security, '--dry-run'])
     expect(again.stdout).toContain('Reviews: 3 planned, 3 recorded, 0 to run, at most 1 at a time\n')
   })

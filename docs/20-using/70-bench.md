@@ -253,11 +253,11 @@ run.json: the suite's suite.yaml or patches changed since the run began: name a 
 run.json: its configuration old.yaml is not given
 ```
 
-Each line shows when it applies, and a suite of another name reads `run.json: is a run of the suite <name>, not <name>: name a new --out`. They mean:
+Each line shows when it applies. A suite of another name reads `run.json: is a run of the suite <name>, not <name>: name a new --out`, and a configuration given again with other settings, whether its file was edited or another `--profile` selects other profiles, reads `--config: the settings of qwen.yaml changed since the run began: name a new --out` in place of the two lines a configuration added and one left out would give. The usual resolution, with no `--config`, is named `(default configuration)`. They mean:
 
 - **A run belongs to one build of quorum.** A release can change what a review does without changing a fingerprint, since a preset's defaults and the code that builds a request are not in it, so the quorum version is checked first. The version does not change between development commits, so after you change quorum's own code, start a new `--out`.
 - **A run belongs to one suite as it was.** The content hash covers `suite.yaml`, a `note` included, and each patch a case names. Change any byte of them and the run is another one.
-- **A run belongs to its set of configurations.** One added or left out is refused, and so is one whose settings changed, since its fingerprint no longer matches. The same set in another order is the same run, and the first `--config` is the reference of the report either way.
+- **A run belongs to its set of configurations.** One added or left out is refused, and so is one whose settings changed, since its fingerprint no longer matches; the message says which of the three it is, and for a change not which setting, since the run keeps only the fingerprint. The same set in another order is the same run, and the first `--config` is the reference of the report either way.
 
 ### The fingerprint
 
