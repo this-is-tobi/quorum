@@ -6,7 +6,7 @@ What an attacker can do to a review, what quorum protects, which controls stand 
 
 Quorum feeds text an attacker controls to language models and reports what they answer. The attacker is anyone who can open a pull request, from a fork included, and they control the whole diff: its code, comments, strings and file names, and the commit messages a `git format-patch` series carries. They control every file of the pull request's branch too, so guidelines a caller loads from that branch's checkout are theirs as well, and so are a config file and the prompt files it names.
 
-What quorum answers goes to the JSON result on stdout and the lines on stderr, and from there to CI logs, terminals and whatever renders the result. It usually runs in CI, with a model API key in its environment.
+What quorum answers goes to the JSON result on stdout and the lines on stderr, and from there to CI logs, terminals and whatever renders the result. `quorum bench` prints its Markdown report on stdout instead of the result, and writes its run directory, where `results.jsonl` holds every byte its models wrote. It usually runs in CI, with a model API key in its environment.
 
 ## Assets
 
@@ -14,7 +14,7 @@ What quorum answers goes to the JSON result on stdout and the lines on stderr, a
 | --- | --- | --- |
 | Verdict integrity | Suppress a real finding, sway a verdict, or forge a finding | Code-derived evidence, strict parsing, blind votes and arithmetic confidence, within the limits of the [residual risk](#residual-risk) |
 | Secrets: the model key, a CI token, repository credentials | Have a model read or leak them | A model path with no tool and no secret, a key sent only to its own endpoint, and a binary that reads nothing from the working directory, a config file included unless it is named |
-| Output channels: CI logs, terminals, what renders the result | Turn model text into markup, a link, a workflow command or an escape sequence | The CLI makes the text it writes inert for a terminal and a GitHub Actions log; anything else that renders the result must treat its text as untrusted: [Output handling](./30-output-handling.md) |
+| Output channels: CI logs, terminals, what renders the result | Turn model text into markup, a link, a workflow command or an escape sequence | The CLI makes the text it writes inert for a terminal and a GitHub Actions log; anything else that renders the result, or reads a bench's `results.jsonl`, must treat its text as untrusted: [Output handling](./30-output-handling.md) |
 | Availability and spend | Multiply the calls and their cost with a huge or finding-flooding pull request | `maxFindings`, the concurrency limit and the reply caps |
 | Coverage | Have the run review less than the whole change, silently | The size guard, which refuses a request that may not fit the model's context, and unreviewed findings and incomplete reviews, exit `4`, for the gaps the harness detects; what the guard cannot know is not one of them: [What the harness cannot detect](#what-the-harness-cannot-detect) |
 
@@ -138,7 +138,7 @@ Voters are blind to each other, so their reasoning is independent. Their errors 
 
 ## Model-written text is untrusted
 
-A result carries text that models wrote, servers sent or the diff holds. Quorum stores it as it came, apart from some cleaning, and makes its own output inert. [Output handling](./30-output-handling.md#text-an-attacker-can-influence) has the fields, the cleaning and what a renderer must do.
+A result, and each line of a bench's `results.jsonl`, which holds a result in full, carries text that models wrote, servers sent or the diff holds. Quorum stores it as it came, apart from some cleaning, and makes its own output inert. [Output handling](./30-output-handling.md#text-an-attacker-can-influence) has the fields, the cleaning and what a renderer must do.
 
 ## Next
 
