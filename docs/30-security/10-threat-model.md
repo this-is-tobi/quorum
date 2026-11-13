@@ -113,7 +113,7 @@ The harness reads the added lines and the file names of the diff by code, before
 
 ### Inert output
 
-The CLI writes nothing that a terminal or a GitHub Actions runner would act on, and shows or escapes every hidden character of the class in the text it carries. Every line of stderr that carries text from outside the CLI passes through `inertLine`, which shows each hidden character as `<U+XXXX>` and breaks the forms of a GitHub Actions workflow command, and stdout is written by `inertJson`, which escapes them and parses back to the same data. [What the CLI writes](./30-output-handling.md#what-the-cli-writes) has the details and the limits.
+The CLI writes nothing that a terminal or a GitHub Actions runner would act on, and shows or escapes every hidden character of the class in the text it carries. Every line of stderr that carries text from outside the CLI passes through `inertLine`, which shows each hidden character as `<U+XXXX>` and breaks the forms of a GitHub Actions workflow command, and stdout is written by `inertJson`, which escapes them and parses back to the same data. `quorum bench` prints its report, or its plan with `--dry-run`, on stdout through `inertLine`, and writes `results.jsonl` as one `inertJsonLine` per record, `run.json` and `report.json` through `inertJson` and `report.md` through `inertLine`, only inside `--out` and never through a symbolic link. [What the CLI writes](./30-output-handling.md#what-the-cli-writes) has the details and the limits.
 
 ## What the harness cannot detect
 

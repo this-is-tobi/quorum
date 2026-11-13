@@ -99,7 +99,7 @@ The numbers are an example. The lines follow the plan's order, which is by trial
 
 When the reviews end, the report is written as `report.md` and `report.json` in the run directory and the Markdown is printed on stdout: [Reading the report](#reading-the-report). The reports are written after every run that reached the run directory, on exit `0`, on exit `4` and on an interrupt, so a stopped run shows what it recorded. An interrupt that comes before the first review starts, while the checks and the plan run, writes nothing, not even the run directory. A script reads stdout, and everything else is on stderr: the warnings, the plan, the progress lines, `interrupted` and an `Error:` line.
 
-`--retry-incomplete` is for an outage. A review whose provider was down fails and is not recorded, so the next run runs it, but one in which a vote failed or a finding could not be read resolves, and is recorded with its gap. Those stay as they are until you ask: `--retry-incomplete` runs them again, and the later record replaces the earlier one in the report. A review that comes back incomplete again is recorded again and ends the run with `0`, as a gap is data.
+`--retry-incomplete` is for an outage. A review whose provider was down fails and is not recorded, so the next run runs it, but one in which a vote failed or a finding could not be read resolves, and is recorded with its gap. Those stay as they are until you ask: `--retry-incomplete` runs them again, and the later record replaces the earlier one in the report. A review that comes back incomplete again is recorded again and ends the run with `0`, as a gap is data. A refused request is not an outage, though. A review whose research request is refused as too large (`request-too-large`) comes back the same on every retry: only a model with a larger window fixes it, and that is another configuration, so another `--out`. A vote refused as too large may fit on a retry, since the findings change from one trial to the next.
 
 ### Exit codes
 
@@ -230,7 +230,7 @@ A run keeps everything in one directory, `--out`, which is `quorum-bench/<suite 
 | --- | --- |
 | `run.json` | Written once, whole, when the run begins: the quorum version, the suite's name and content hash, the run's salt, and each configuration's path as given and its fingerprint |
 | `results.jsonl` | One line per review that resolved, appended as it ends: the configuration's fingerprint, the case, the trial, the latency, the calls and failed calls, the usage, whether every call reported a cost, and the review's full result, as the review command prints it |
-| `report.md`, `report.json` | The report of the last run, rewritten whole after every run that reached the directory |
+| `report.md`, `report.json` | The report of the last run that ended with exit `0`, exit `4` or an interrupt after its reviews began, rewritten whole. A run that exits `3` rewrites neither, so after one they show an earlier run |
 
 A `--out` that does not exist is made, with its parents. An empty directory is taken. A directory that holds a `run.json` is a run to resume. A directory that holds anything else is refused with exit `2`, so `--out .` in a repository never writes into it:
 
@@ -328,7 +328,7 @@ Each configuration is a row, numbered as in the list above it, which names it by
 | Proposed recall | The share caught by any finding that reached the panel, whatever its verdict: kept, discarded or unreviewed. It is the finder's recall before the panel, and never below the kept recall. A finding the harness dropped for citing code outside the diff, or as a repeat, is not in it |
 | Unmatched kept per case, bug / control | The mean number of kept findings that catch no location, over the bug cases and over the controls |
 | Incomplete | The reviews with a gap or an unreviewed finding, in any profile. A patch too large for a model's context is one |
-| Tokens per review | The median, and the total, of input plus output tokens, over the reviews that reported usage; `n/a` when none did |
+| Tokens per review | The median, and the total, of input plus output tokens, over the reviews that reported usage; `n/a` when none did. A call that failed reports no usage, so it adds no tokens and a configuration whose votes fail more often looks cheaper here |
 | Latency | A review's time, at the 50th and 95th percentile, by nearest rank |
 | Cost | The total in US dollars, only when every call of every counted review reported a cost; otherwise `n/a`. A provider that reports none, a local model for one, leaves it `n/a` |
 
