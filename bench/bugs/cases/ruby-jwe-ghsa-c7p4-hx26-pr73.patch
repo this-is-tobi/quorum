@@ -1,0 +1,320 @@
+diff --git a/lib/jwe/enc/a128gcm.rb b/lib/jwe/enc/a128gcm.rb
+new file mode 100644
+index 0000000..cd1a1e0
+--- /dev/null
++++ b/lib/jwe/enc/a128gcm.rb
+@@ -0,0 +1,17 @@
++require 'jwe/enc/aes_gcm'
++
++module JWE
++  module Enc
++    class A128gcm
++      include AesGcm
++
++      def key_length
++        16
++      end
++
++      def cipher_name
++        'aes-128-gcm'
++      end
++    end
++  end
++end
+diff --git a/lib/jwe/enc/a192gcm.rb b/lib/jwe/enc/a192gcm.rb
+new file mode 100644
+index 0000000..deb9e58
+--- /dev/null
++++ b/lib/jwe/enc/a192gcm.rb
+@@ -0,0 +1,17 @@
++require 'jwe/enc/aes_gcm'
++
++module JWE
++  module Enc
++    class A192gcm
++      include AesGcm
++
++      def key_length
++        24
++      end
++
++      def cipher_name
++        'aes-192-gcm'
++      end
++    end
++  end
++end
+diff --git a/lib/jwe/enc/a256gcm.rb b/lib/jwe/enc/a256gcm.rb
+new file mode 100644
+index 0000000..4342503
+--- /dev/null
++++ b/lib/jwe/enc/a256gcm.rb
+@@ -0,0 +1,17 @@
++require 'jwe/enc/aes_gcm'
++
++module JWE
++  module Enc
++    class A256gcm
++      include AesGcm
++
++      def key_length
++        32
++      end
++
++      def cipher_name
++        'aes-256-gcm'
++      end
++    end
++  end
++end
+diff --git a/lib/jwe/enc/aes_gcm.rb b/lib/jwe/enc/aes_gcm.rb
+new file mode 100644
+index 0000000..a9771cf
+--- /dev/null
++++ b/lib/jwe/enc/aes_gcm.rb
+@@ -0,0 +1,73 @@
++module JWE
++  module Enc
++    module AesGcm
++      attr_accessor :cek
++      attr_accessor :iv
++      attr_accessor :tag
++
++      def initialize(cek = nil, iv = nil)
++        self.iv = iv
++        self.cek = cek
++      end
++
++      def encrypt(cleartext, authenticated_data)
++        raise JWE::BadCEK.new("The supplied key is too short. Required length: #{key_length}") if cek.length < key_length
++
++        cipher.encrypt
++        cipher.key = cek
++        cipher.iv = iv
++        #cipher.auth_data = authenticated_data
++
++        ciphertext = cipher.update(cleartext) + cipher.final
++        self.tag = cipher.auth_tag
++
++        ciphertext
++      end
++
++      def decrypt(ciphertext, authenticated_data)
++        raise JWE::BadCEK.new("The supplied key is too short. Required length: #{key_length}") if cek.length < key_length
++
++        cipher.decrypt
++        cipher.key = cek
++        cipher.iv = iv
++        cipher.auth_tag = tag
++        cipher.auth_data = authenticated_data
++
++        cipher.update(ciphertext) + cipher.final
++      rescue OpenSSL::Cipher::CipherError
++        raise JWE::InvalidData.new("Invalid ciphertext or authentication tag")
++      end
++
++      def iv
++        @iv ||= SecureRandom.random_bytes(12)
++      end
++
++      def cek
++        @cek ||= SecureRandom.random_bytes(key_length)
++      end
++
++      def cipher
++        @cipher ||= OpenSSL::Cipher.new(cipher_name)
++      rescue RuntimeError
++        raise JWE::NotImplementedError.new("The version of OpenSSL linked to your Ruby does not support the cipher #{cipher_name}.")
++      end
++
++      def tag
++        @tag || ""
++      end
++
++      def self.included(base)
++        base.extend(ClassMethods)
++      end
++
++      module ClassMethods
++        def available?
++          new.cipher
++          true
++        rescue JWE::NotImplementedError
++          false
++        end
++      end
++    end
++  end
++end
+diff --git a/spec/jwe/enc_spec.rb b/spec/jwe/enc_spec.rb
+new file mode 100644
+index 0000000..d9877a1
+--- /dev/null
++++ b/spec/jwe/enc_spec.rb
+@@ -0,0 +1,166 @@
++require 'jwe/enc/a128gcm'
++require 'jwe/enc/a192gcm'
++require 'jwe/enc/a256gcm'
++
++gcm = [
++  {
++    class: JWE::Enc::A128gcm,
++    keylen: 16,
++    helloworld: "\"\xC6\xE4h\x8AI\x83\x90v\xAF\xE2\x11".force_encoding('BINARY'),
++    tag: "\x85|\xF7\xE1\x94\tVG\x84\xE1\xA8\x81\a\xF4\xC60".force_encoding('BINARY')
++  },
++  {
++    class: JWE::Enc::A192gcm,
++    keylen: 24,
++    helloworld: "\x9F\xA4\xEC\xCCa\x86\tRO\xD7\xE3\x8D".force_encoding('BINARY'),
++    tag: "\xF6\xC0\xB8\x91A\xB1\xF0}\xD4u\xD0_\xCD\xA7\x17'".force_encoding('BINARY')
++  },
++  {
++    class: JWE::Enc::A256gcm,
++    keylen: 32,
++    helloworld: "\xFDq\xDC\xDD\x87\x9DK\x97\x03G\x99\f".force_encoding('BINARY'),
++    tag: "\xC6\xF1\r\xDD\x14\x7Fqf,6\x0EK\x7F\x9D\x1D\t".force_encoding('BINARY')
++  }
++]
++
++gcm.each do |group|
++  describe group[:class] do
++    let(:klass) { group[:class] }
++    let(:key) { 'a' * 32 }
++    let(:plaintext) { 'hello world!' }
++
++    describe '#encrypt' do
++      context 'when an invalid key is used' do
++        it 'raises an error' do
++          enc = klass.new('small')
++          expect { enc.encrypt('plain', 'auth') }.to raise_error(JWE::BadCEK)
++        end
++      end
++
++      context 'with a valid key' do
++        it 'returns the encrypted payload' do
++          enc = klass.new(key, "\x0" * 12)
++          expect(enc.encrypt(plaintext, nil).force_encoding('BINARY')).to eq group[:helloworld]
++        end
++
++        it 'sets an authentication tag' do
++          enc = klass.new(key, "\x0" * 12)
++          enc.encrypt(plaintext, '')
++          expect(enc.tag).to eq group[:tag]
++        end
++      end
++    end
++
++    describe '#decrypt' do
++      context 'when an invalid key is used' do
++        it 'raises an error' do
++          enc = klass.new('small')
++          expect { enc.decrypt('plain', 'auth') }.to raise_error(JWE::BadCEK)
++        end
++      end
++
++      context 'with a valid key' do
++        context 'when a valid tag is authenticated' do
++          it 'returns the plaintext' do
++            enc = klass.new(key, "\x0" * 12)
++            enc.tag = group[:tag]
++            expect(enc.decrypt(group[:helloworld], '')).to eq plaintext
++          end
++        end
++
++        context 'when the tag is not valid' do
++          it 'raises an error' do
++            enc = klass.new(key, "\x0" * 12)
++            enc.tag = "random"
++            expect { enc.decrypt(group[:helloworld], '') }.to raise_error(JWE::InvalidData)
++          end
++        end
++
++        context 'when the tag is not set' do
++          it 'raises an error' do
++            enc = klass.new(key, "\x0" * 12)
++            expect { enc.decrypt(group[:helloworld], '') }.to raise_error(JWE::InvalidData)
++          end
++        end
++
++        context 'when the ciphertext is not valid' do
++          it 'raises an error' do
++            enc = klass.new(key, "\x0" * 12)
++            enc.tag = group[:tag]
++            expect { enc.decrypt("random", '') }.to raise_error(JWE::InvalidData)
++          end
++        end
++      end
++    end
++
++    describe '#cipher' do
++      context 'when the cipher is not supported by the OpenSSL lib' do
++        it 'raises an error' do
++          enc = klass.new
++          allow(enc).to receive(:cipher_name) { 'bad-cipher-128' }
++          expect { enc.cipher }.to raise_error(JWE::NotImplementedError)
++        end
++      end
++
++      context 'when the cipher is supported' do
++        it 'returns the cipher object' do
++          enc = klass.new
++          allow(enc).to receive(:cipher_name) { OpenSSL::Cipher.ciphers.first }
++          expect(enc.cipher).to be_an OpenSSL::Cipher
++        end
++      end
++    end
++
++    describe '#cek' do
++      context 'when a key is not specified in initialization' do
++        it "returns a randomly generated #{group[:keylen]}-bytes key" do
++          expect(klass.new.cek.length).to eq group[:keylen]
++        end
++      end
++
++      context 'when a cek is given' do
++        it 'returns the cek' do
++          expect(klass.new('cek').cek).to eq 'cek'
++        end
++      end
++    end
++
++    describe '#iv' do
++      context 'when an iv is not specified in initialization' do
++        it "returns a randomly generated 12-bytes iv" do
++          expect(klass.new.iv.length).to eq 12
++        end
++      end
++
++      context 'when a iv is given' do
++        it 'returns the iv' do
++          expect(klass.new('cek', 'iv').iv).to eq 'iv'
++        end
++      end
++    end
++
++    describe '.available?' do
++      context 'when the cipher is not available' do
++        it 'is false' do
++          allow_any_instance_of(klass).to receive(:cipher) { raise JWE::NotImplementedError.new }
++          expect(klass.available?).to be_falsey
++        end
++      end
++
++      context 'when the cipher is available' do
++        it 'is true' do
++          allow_any_instance_of(klass).to receive(:cipher)
++          expect(klass.available?).to be_truthy
++        end
++      end
++    end
++
++    describe 'full roundtrip' do
++      it 'decrypts the ciphertext to the original plaintext' do
++        enc = klass.new
++        ciphertext = enc.encrypt(plaintext, '')
++        expect(enc.decrypt(ciphertext, '')).to eq plaintext
++      end
++    end
++  end
++end

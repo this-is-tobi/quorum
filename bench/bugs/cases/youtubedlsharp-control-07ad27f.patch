@@ -1,0 +1,105 @@
+diff --git a/YoutubeDLSharp/Metadata/ChapterData.cs b/YoutubeDLSharp/Metadata/ChapterData.cs
+new file mode 100644
+index 0000000..c77bb60
+--- /dev/null
++++ b/YoutubeDLSharp/Metadata/ChapterData.cs
+@@ -0,0 +1,14 @@
++﻿using Newtonsoft.Json;
++
++namespace YoutubeDLSharp.Metadata
++{
++    public class ChapterData
++    {
++        [JsonProperty("start_time")]
++        public float? StartTime { get; set; }
++        [JsonProperty("end_time")]
++        public float? EndTime { get; set; }
++        [JsonProperty("title")]
++        public string Title { get; set; }
++    }
++}
+diff --git a/YoutubeDLSharp/Metadata/CommentData.cs b/YoutubeDLSharp/Metadata/CommentData.cs
+new file mode 100644
+index 0000000..d6057aa
+--- /dev/null
++++ b/YoutubeDLSharp/Metadata/CommentData.cs
+@@ -0,0 +1,32 @@
++﻿using Newtonsoft.Json;
++
++namespace YoutubeDLSharp.Metadata
++{
++    public class CommentData
++    {
++        [JsonProperty("id")]
++        public string ID { get; set; }
++        [JsonProperty("author")]
++        public string Author { get; set; }
++        [JsonProperty("author_id")]
++        public string AuthorID { get; set; }
++        [JsonProperty("author_thumbnail")]
++        public string AuthorThumbnail { get; set; }
++        [JsonProperty("html")]
++        public string Html { get; set; }
++        [JsonProperty("text")]
++        public string Text { get; set; }
++        [JsonProperty("timestamp")]
++        public long? Timestamp { get; set; }
++        [JsonProperty("parent")]
++        public string Parent { get; set; }
++        [JsonProperty("like_count")]
++        public int? LikeCount { get; set; }
++        [JsonProperty("dislike_count")]
++        public int? DislikeCount { get; set; }
++        [JsonProperty("is_favorited")]
++        public bool? IsFavorited { get; set; }
++        [JsonProperty("author_is_uploader")]
++        public bool? AuthorIsUploader { get; set; }
++    }
++}
+diff --git a/YoutubeDLSharp/Metadata/VideoData.cs b/YoutubeDLSharp/Metadata/VideoData.cs
+index 34908ea..dc17328 100644
+--- a/YoutubeDLSharp/Metadata/VideoData.cs
++++ b/YoutubeDLSharp/Metadata/VideoData.cs
+@@ -99,6 +99,8 @@ namespace YoutubeDLSharp.Metadata
+         public double? AverageRating { get; set; }
+         [JsonProperty("comment_count")]
+         public long? CommentCount { get; set; }
++        [JsonProperty("comments")]
++        public CommentData[] Comments { get; set; }
+         [JsonProperty("age_limit")]
+         public int? AgeLimit { get; set; }
+         [JsonProperty("webpage_url")]
+@@ -119,6 +121,8 @@ namespace YoutubeDLSharp.Metadata
+         public float? StartTime { get; set; }
+         [JsonProperty("end_time")]
+         public float? EndTime { get; set; }
++        [JsonProperty("chapters")]
++        public ChapterData[] Chapters { get; set; }
+         [JsonProperty("playable_in_embed")]
+         public string PlayableInEmbed { get; set; }
+         [JsonProperty("availability")]
+diff --git a/YoutubeDLSharp/YoutubeDL.cs b/YoutubeDLSharp/YoutubeDL.cs
+index 3fdfc46..1f90ea9 100644
+--- a/YoutubeDLSharp/YoutubeDL.cs
++++ b/YoutubeDLSharp/YoutubeDL.cs
+@@ -114,14 +114,19 @@ namespace YoutubeDLSharp
+         /// <param name="url">The URL of the video to fetch information for.</param>
+         /// <param name="ct">A CancellationToken used to cancel the process.</param>
+         /// <param name="flat">If set to true, does not extract information for each video in a playlist.</param>
++        /// <param name="fetchComments">If set to true, fetch comment data for the given video.</param>
+         /// <param name="overrideOptions">Override options of the default option set for this run.</param>
+         /// <returns>A RunResult object containing a VideoData object with the requested video information.</returns>
+         public async Task<RunResult<VideoData>> RunVideoDataFetch(string url,
+-            CancellationToken ct = default, bool flat = true, OptionSet overrideOptions = null)
++            CancellationToken ct = default,
++            bool flat = true,
++            bool fetchComments = false,
++            OptionSet overrideOptions = null)
+         {
+             var opts = GetDownloadOptions();
+             opts.DumpSingleJson = true;
+             opts.FlatPlaylist = flat;
++            opts.WriteComments = fetchComments;
+             if (overrideOptions != null)
+             {
+                 opts = opts.OverrideOptions(overrideOptions);
