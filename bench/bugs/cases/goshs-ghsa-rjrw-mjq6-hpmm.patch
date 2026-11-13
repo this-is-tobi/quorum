@@ -1,0 +1,573 @@
+diff --git a/README.md b/README.md
+index 893a01f..6e03ebb 100644
+--- a/README.md
++++ b/README.md
+@@ -40,6 +40,10 @@ For a detailed documentation go to [goshs.de](https://goshs.de)
+   * Download clipboard entries as .json file
+ * WebDAV support
+ * Read-Only and Upload-Only mode
++* SFTP support
++  * Read-Only
++  * Key Auth
++  * Password Auth
+ * Silent mode (no webserver output)
+ * Retrieve json on cli
+ * Drop user privileges before execution (Unix only)
+diff --git a/config/config.go b/config/config.go
+index b0bdbb9..c76a1d2 100644
+--- a/config/config.go
++++ b/config/config.go
+@@ -44,6 +44,10 @@ type Config struct {
+ 	WebhookURL          string   `json:"webhook_url"`
+ 	WebhookProvider     string   `json:"webhook_provider"`
+ 	WebhookEvents       []string `json:"webhook_events"`
++	SFTP                bool     `json:"sftp"`
++	SFTPPort            int      `json:"sftp_port"`
++	SFTPKeyFile         string   `json:"sftp_keyfile"`
++	SFTPHostKeyFile     string   `json:"sftp_host_keyfile"`
+ }
+ 
+ func Load(configpath string) (Config, error) {
+@@ -96,6 +100,10 @@ func PrintExample() (string, error) {
+ 		WebhookURL:          "",
+ 		WebhookProvider:     "discord",
+ 		WebhookEvents:       []string{"all"},
++		SFTP:                false,
++		SFTPPort:            2022,
++		SFTPKeyFile:         "",
++		SFTPHostKeyFile:     "",
+ 	}
+ 
+ 	b, err := json.MarshalIndent(defaultConfig, "", "  ")
+diff --git a/go.mod b/go.mod
+index b10b4ac..756adfb 100644
+--- a/go.mod
++++ b/go.mod
+@@ -6,11 +6,13 @@ require (
+ 	github.com/coder/websocket v1.8.13
+ 	github.com/docker/docker v28.0.1+incompatible
+ 	github.com/docker/go-connections v0.5.0
++	github.com/gliderlabs/ssh v0.3.8
+ 	github.com/go-acme/lego/v4 v4.20.4
+ 	github.com/google/go-github/v42 v42.0.0
+ 	github.com/grandcat/zeroconf v1.0.0
+ 	github.com/howeyc/gopass v0.0.0-20210920133722-c8aef6fb66ef
+ 	github.com/inconshreveable/go-update v0.0.0-20160112193335-8152e7eb6ccf
++	github.com/pkg/sftp v1.13.9
+ 	github.com/sirupsen/logrus v1.9.3
+ 	github.com/stretchr/testify v1.10.0
+ 	github.com/studio-b12/gowebdav v0.10.0
+@@ -24,6 +26,7 @@ require (
+ 	dario.cat/mergo v1.0.1 // indirect
+ 	github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1 // indirect
+ 	github.com/Microsoft/go-winio v0.6.2 // indirect
++	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
+ 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
+ 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
+ 	github.com/containerd/log v0.1.0 // indirect
+@@ -42,6 +45,7 @@ require (
+ 	github.com/google/go-querystring v1.1.0 // indirect
+ 	github.com/google/uuid v1.6.0 // indirect
+ 	github.com/klauspost/compress v1.17.4 // indirect
++	github.com/kr/fs v0.1.0 // indirect
+ 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
+ 	github.com/magiconair/properties v1.8.10 // indirect
+ 	github.com/miekg/dns v1.1.66 // indirect
+diff --git a/go.sum b/go.sum
+index 5dcf124..be186e1 100644
+--- a/go.sum
++++ b/go.sum
+@@ -6,6 +6,8 @@ github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1 h1:UQHMgLO+TxOEl
+ github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
+ github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
+ github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
++github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be h1:9AeTilPcZAjCFIImctFaOjnTIavg87rW78vTPkQqLI8=
++github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be/go.mod h1:ySMOLuWl6zY27l47sB3qLNK6tF2fkHG55UZxx8oIVo4=
+ github.com/cenkalti/backoff v2.2.1+incompatible h1:tNowT99t7UNflLxfYYSlKYsBpXdEet03Pg2g16Swow4=
+ github.com/cenkalti/backoff v2.2.1+incompatible/go.mod h1:90ReRw6GdpyfrHakVjL/QHaoyV4aDUVVkXQJJJ3NXXM=
+ github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
+@@ -36,6 +38,8 @@ github.com/ebitengine/purego v0.8.2 h1:jPPGWs2sZ1UgOSgD2bClL0MJIqu58nOmIcBuXr62z
+ github.com/ebitengine/purego v0.8.2/go.mod h1:iIjxzd6CiRiOG0UyXP+V1+jWqUXVjPKLAI0mRfJZTmQ=
+ github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2Wg=
+ github.com/felixge/httpsnoop v1.0.4/go.mod h1:m8KPJKqk1gH5J9DgRY2ASl2lWCfGKXixSwevea8zH2U=
++github.com/gliderlabs/ssh v0.3.8 h1:a4YXD1V7xMF9g5nTkdfnja3Sxy1PVDCj1Zg4Wb8vY6c=
++github.com/gliderlabs/ssh v0.3.8/go.mod h1:xYoytBv1sV0aL3CavoDuJIQNURXkkfPA/wxQ1pL1fAU=
+ github.com/go-acme/lego/v4 v4.20.4 h1:yCQGBX9jOfMbriEQUocdYm7EBapdTp8nLXYG8k6SqSU=
+ github.com/go-acme/lego/v4 v4.20.4/go.mod h1:foauPlhnhoq8WUphaWx5U04uDc+JGhk4ZZtPz/Vqsjg=
+ github.com/go-jose/go-jose/v4 v4.0.5 h1:M6T8+mKZl/+fNNuFHvGIzDz7BTLQPIounk/b9dw3AaE=
+@@ -51,6 +55,7 @@ github.com/gogo/protobuf v1.3.2 h1:Ov1cvc58UF3b5XjBnZv7+opcTcQFZebYjWzi34vdm4Q=
+ github.com/gogo/protobuf v1.3.2/go.mod h1:P1XiOD3dCwIKUDQYPy72D8LYyHL2YPYrpS2s69NZV8Q=
+ github.com/google/go-cmp v0.5.2/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
+ github.com/google/go-cmp v0.5.6/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
++github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
+ github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
+ github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
+ github.com/google/go-github/v42 v42.0.0 h1:YNT0FwjPrEysRkLIiKuEfSvBPCGKphW5aS5PxwaoLec=
+@@ -71,6 +76,8 @@ github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI
+ github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
+ github.com/klauspost/compress v1.17.4 h1:Ej5ixsIri7BrIjBkRZLTo6ghwrEtHFk7ijlczPW4fZ4=
+ github.com/klauspost/compress v1.17.4/go.mod h1:/dCuZOvVtNoHsyb+cuJD3itjs3NbnF6KH9zAO4BDxPM=
++github.com/kr/fs v0.1.0 h1:Jskdu9ieNAYnjxsi0LbQp1ulIKZV1LAFgK1tWhpZgl8=
++github.com/kr/fs v0.1.0/go.mod h1:FFnZGqtBN9Gxj7eW1uZ42v5BccTP0vu6NEaFoC2HwRg=
+ github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
+ github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
+ github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
+@@ -102,6 +109,8 @@ github.com/opencontainers/image-spec v1.1.1 h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJw
+ github.com/opencontainers/image-spec v1.1.1/go.mod h1:qpqAh3Dmcf36wStyyWU+kCeDgrGnAve2nCC8+7h8Q0M=
+ github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
+ github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
++github.com/pkg/sftp v1.13.9 h1:4NGkvGudBL7GteO3m6qnaQ4pC0Kvf0onSVc9gR3EWBw=
++github.com/pkg/sftp v1.13.9/go.mod h1:OBN7bVXdstkFFN/gdnHPUb5TE8eb8G1Rp9wCItqjkkA=
+ github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+ github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRIccs7FGNTlIRMkT8wgtp5eCXdBlqhYGL6U=
+ github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+@@ -114,9 +123,12 @@ github.com/shirou/gopsutil/v4 v4.25.1/go.mod h1:RoUCUpndaJFtT+2zsZzzmhvbfGoDCJ7n
+ github.com/sirupsen/logrus v1.9.3 h1:dueUQJ1C2q9oE3F7wvmSGAaVtTmUizReu6fjN8uqzbQ=
+ github.com/sirupsen/logrus v1.9.3/go.mod h1:naHLuLoDiP4jHNo9R0sCBMtWGeIprob74mVsIT4qYEQ=
+ github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
++github.com/stretchr/objx v0.4.0/go.mod h1:YvHI0jy2hoMjB+UWwv71VJQ9isScKT/TqJzVSSt89Yw=
+ github.com/stretchr/objx v0.5.2 h1:xuMeJ0Sdp5ZMRXx/aWO6RZxdr3beISkG5/G/aIRr3pY=
+ github.com/stretchr/objx v0.5.2/go.mod h1:FRsXN1f5AsAjCGJKqEizvkpNtU+EGNCLh3NxZ/8L+MA=
+ github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
++github.com/stretchr/testify v1.7.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
++github.com/stretchr/testify v1.8.0/go.mod h1:yNjHg4UonilssWZ8iaSj1OCr/vHnekPRkoO+kdMU+MU=
+ github.com/stretchr/testify v1.10.0 h1:Xv5erBjTwe/5IxqUQTdXv5kgmIvbHo3QQyRwhJsOfJA=
+ github.com/stretchr/testify v1.10.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
+ github.com/studio-b12/gowebdav v0.10.0 h1:Yewz8FFiadcGEu4hxS/AAJQlHelndqln1bns3hcJIYc=
+@@ -129,6 +141,7 @@ github.com/tklauser/numcpus v0.6.1 h1:ng9scYS7az0Bk4OZLvrNXNSAO2Pxr1XXRAPyjhIx+F
+ github.com/tklauser/numcpus v0.6.1/go.mod h1:1XfjsgE2zo8GVw7POkMbHENHzVg3GzmoZ9fESEdAacY=
+ github.com/yuin/goldmark v1.1.27/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
+ github.com/yuin/goldmark v1.2.1/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
++github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
+ github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo0=
+ github.com/yusufpapurcu/wmi v1.2.4/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
+ go.opentelemetry.io/auto/sdk v1.1.0 h1:cH53jehLUN6UFLY71z+NDOiNJqDdPRaXzTel0sJySYA=
+@@ -152,11 +165,21 @@ go.opentelemetry.io/proto/otlp v1.6.0/go.mod h1:cicgGehlFuNdgZkcALOCh3VE6K/u2tAj
+ golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
+ golang.org/x/crypto v0.0.0-20191011191535-87dc89f01550/go.mod h1:yigFU9vqHzYiE8UmvKecakEJjdnWj3jj499lnFckfCI=
+ golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9/go.mod h1:LzIPMQfyMNhhGPhUkYOs5KpL4U8rLKemX1yGLhDgUto=
++golang.org/x/crypto v0.0.0-20210921155107-089bfa567519/go.mod h1:GvvjBRRGRdwPK5ydBHafDWAxML/pGHZbMvKqRZ5+Abc=
++golang.org/x/crypto v0.13.0/go.mod h1:y6Z2r+Rw4iayiXXAIxJIDAJ1zMW4yaTpebo8fPOliYc=
++golang.org/x/crypto v0.19.0/go.mod h1:Iy9bg/ha4yyC70EfRS8jz+B6ybOBKMaSxLj6P6oBDfU=
++golang.org/x/crypto v0.23.0/go.mod h1:CKFgDieR+mRhux2Lsu27y0fO304Db0wZe70UKqHu0v8=
++golang.org/x/crypto v0.31.0/go.mod h1:kDsLvtWBEx7MV9tJOj9bnXsPbxwJQ6csT/x4KIN4Ssk=
+ golang.org/x/crypto v0.38.0 h1:jt+WWG8IZlBnVbomuhg2Mdq0+BBQaHbtqHEFEigjUV8=
+ golang.org/x/crypto v0.38.0/go.mod h1:MvrbAqul58NNYPKnOra203SB9vpuZW0e+RRZV+Ggqjw=
+ golang.org/x/mod v0.1.1-0.20191105210325-c90efee705ee/go.mod h1:QqPTAvyqsEbceGzBzNggFXnrqF1CaUcvgkdR5Ot7KZg=
+ golang.org/x/mod v0.2.0/go.mod h1:s0Qsj1ACt9ePp/hMypM3fl4fZqREWJwdYDEqhRiZZUA=
+ golang.org/x/mod v0.3.0/go.mod h1:s0Qsj1ACt9ePp/hMypM3fl4fZqREWJwdYDEqhRiZZUA=
++golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4/go.mod h1:jJ57K6gSWd91VN4djpZkiMVwK6gcyfeH4XE8wZrZaV4=
++golang.org/x/mod v0.8.0/go.mod h1:iBbtSCu2XBx23ZKBPSOrRkjjQPZFPuis4dIYUhu/chs=
++golang.org/x/mod v0.12.0/go.mod h1:iBbtSCu2XBx23ZKBPSOrRkjjQPZFPuis4dIYUhu/chs=
++golang.org/x/mod v0.15.0/go.mod h1:hTbmBsO62+eylJbnUtE2MGJUyE7QWk4xUqPFrRgJ+7c=
++golang.org/x/mod v0.17.0/go.mod h1:hTbmBsO62+eylJbnUtE2MGJUyE7QWk4xUqPFrRgJ+7c=
+ golang.org/x/mod v0.24.0 h1:ZfthKaKaT4NrhGVZHO1/WDTwGES4De8KtWO0SIbNJMU=
+ golang.org/x/mod v0.24.0/go.mod h1:IXM97Txy2VM4PJ3gI61r1YEk/gAj6zAHN3AdZt6S9Ww=
+ golang.org/x/net v0.0.0-20190404232315-eb5bcb51f2a3/go.mod h1:t9HGtf8HONx5eT2rtn7q6eTqICYqUVnKs3thJo3Qplg=
+@@ -165,11 +188,24 @@ golang.org/x/net v0.0.0-20190923162816-aa69164e4478/go.mod h1:z5CRVTTTmAJ677TzLL
+ golang.org/x/net v0.0.0-20200114155413-6afb5195e5aa/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
+ golang.org/x/net v0.0.0-20200226121028-0de0cce0169b/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
+ golang.org/x/net v0.0.0-20201021035429-f5854403a974/go.mod h1:sp8m0HH+o8qH0wwXwYZr8TS3Oi6o0r6Gce1SSxlDquU=
++golang.org/x/net v0.0.0-20210226172049-e18ecbb05110/go.mod h1:m0MpNAwzfU5UDzcl9v0D8zg8gWTRqZa9RBIspLL5mdg=
++golang.org/x/net v0.0.0-20220722155237-a158d28d115b/go.mod h1:XRhObCWvk6IyKnWLug+ECip1KBveYUHfp+8e9klMJ9c=
++golang.org/x/net v0.6.0/go.mod h1:2Tu9+aMcznHK/AK1HMvgo6xiTLG5rD5rZLDS+rp2Bjs=
++golang.org/x/net v0.10.0/go.mod h1:0qNGK6F8kojg2nk9dLZ2mShWaEBan6FAoqfSigmmuDg=
++golang.org/x/net v0.15.0/go.mod h1:idbUs1IY1+zTqbi8yxTbhexhEEk5ur9LInksu6HrEpk=
++golang.org/x/net v0.21.0/go.mod h1:bIjVDfnllIU7BJ2DNgfnXvpSvtn8VRwhlsaeUTyUS44=
++golang.org/x/net v0.25.0/go.mod h1:JkAGAh7GEvH74S6FOH42FLoXpXbE/aqXSrIQjXgsiwM=
+ golang.org/x/net v0.40.0 h1:79Xs7wF06Gbdcg4kdCCIQArK11Z1hr5POQ6+fIYHNuY=
+ golang.org/x/net v0.40.0/go.mod h1:y0hY0exeL2Pku80/zKK7tpntoX23cqL3Oa6njdgRtds=
+ golang.org/x/sync v0.0.0-20190423024810-112230192c58/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+ golang.org/x/sync v0.0.0-20190911185100-cd5d95a43a6e/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+ golang.org/x/sync v0.0.0-20201020160332-67f06af15bc9/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
++golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
++golang.org/x/sync v0.1.0/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
++golang.org/x/sync v0.3.0/go.mod h1:FU7BRWz2tNW+3quACPkgCx/L+uEAv1htQ0V83Z9Rj+Y=
++golang.org/x/sync v0.6.0/go.mod h1:Czt+wKu1gCyEFDUtn0jG5QVvpJ6rzVqr5aXyt9drQfk=
++golang.org/x/sync v0.7.0/go.mod h1:Czt+wKu1gCyEFDUtn0jG5QVvpJ6rzVqr5aXyt9drQfk=
++golang.org/x/sync v0.10.0/go.mod h1:Czt+wKu1gCyEFDUtn0jG5QVvpJ6rzVqr5aXyt9drQfk=
+ golang.org/x/sync v0.14.0 h1:woo0S4Yywslg6hp4eUFjTVOyKt0RookbpAHG4c1HmhQ=
+ golang.org/x/sync v0.14.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=
+ golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+@@ -177,17 +213,42 @@ golang.org/x/sys v0.0.0-20190412213103-97732733099d/go.mod h1:h1NjWce9XRLGQEsW7w
+ golang.org/x/sys v0.0.0-20190916202348-b4ddaad3f8a3/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/sys v0.0.0-20190924154521-2837fb4f24fe/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/sys v0.0.0-20200930185726-fdedc70b468f/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
++golang.org/x/sys v0.0.0-20201119102817-f84b799fce68/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/sys v0.0.0-20201204225414-ed752295db88/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
++golang.org/x/sys v0.0.0-20210615035016-665e8c7367d1/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.0.0-20210616094352-59db8d763f22/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
++golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
++golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
++golang.org/x/sys v0.5.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.8.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.11.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
++golang.org/x/sys v0.12.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
++golang.org/x/sys v0.17.0/go.mod h1:/VUhepiaJMQUp4+oa/7Zr1D23ma6VTLIYjOOTFZPUcA=
++golang.org/x/sys v0.20.0/go.mod h1:/VUhepiaJMQUp4+oa/7Zr1D23ma6VTLIYjOOTFZPUcA=
++golang.org/x/sys v0.28.0/go.mod h1:/VUhepiaJMQUp4+oa/7Zr1D23ma6VTLIYjOOTFZPUcA=
+ golang.org/x/sys v0.33.0 h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw=
+ golang.org/x/sys v0.33.0/go.mod h1:BJP2sWEmIv4KK5OTEluFJCKSidICx8ciO85XgH3Ak8k=
++golang.org/x/telemetry v0.0.0-20240228155512-f48c80bd79b2/go.mod h1:TeRTkGYfJXctD9OcfyVLyj2J3IxLnKwHJR8f4D8a3YE=
++golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1/go.mod h1:bj7SfCRtBDWHUb9snDiAeCFNEtKQo2Wmx5Cou7ajbmo=
++golang.org/x/term v0.0.0-20210927222741-03fcf44c2211/go.mod h1:jbD1KX2456YbFQfuXm/mYQcufACuNUgVhRMnK/tPxf8=
++golang.org/x/term v0.5.0/go.mod h1:jMB1sMXY+tzblOD4FWmEbocvup2/aLOaQEp7JmGp78k=
++golang.org/x/term v0.8.0/go.mod h1:xPskH00ivmX89bAKVGSKKtLOWNx2+17Eiy94tnKShWo=
++golang.org/x/term v0.12.0/go.mod h1:owVbMEjm3cBLCHdkQu9b1opXd4ETQWc3BhuQGKgXgvU=
++golang.org/x/term v0.17.0/go.mod h1:lLRBjIVuehSbZlaOtGMbcMncT+aqLLLmKrsjNrUguwk=
++golang.org/x/term v0.20.0/go.mod h1:8UkIAJTvZgivsXaD6/pH6U9ecQzZ45awqEOzuCvwpFY=
++golang.org/x/term v0.27.0/go.mod h1:iMsnZpn0cago0GOrHO2+Y7u7JPn5AylBrcoWkElMTSM=
+ golang.org/x/term v0.32.0 h1:DR4lr0TjUs3epypdhTOkMmuF5CDFJ/8pOnbzMZPQ7bg=
+ golang.org/x/term v0.32.0/go.mod h1:uZG1FhGx848Sqfsq4/DlJr3xGGsYMu/L5GW4abiaEPQ=
+ golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
+ golang.org/x/text v0.3.3/go.mod h1:5Zoc/QRtKVWzQhOtBMvqHzDpF6irO9z98xDceosuGiQ=
++golang.org/x/text v0.3.7/go.mod h1:u+2+/6zg+i71rQMx5EYifcz6MCKuco9NR6JIITiCfzQ=
++golang.org/x/text v0.7.0/go.mod h1:mrYo+phRRbMaCq/xk9113O4dZlRixOauAjOtrjsXDZ8=
++golang.org/x/text v0.9.0/go.mod h1:e1OnstbJyHTd6l/uOt8jFFHp6TRDWZR/bV3emEE/zU8=
++golang.org/x/text v0.13.0/go.mod h1:TvPlkZtksWOMsz7fbANvkp4WM8x/WCo/om8BMLbz+aE=
++golang.org/x/text v0.14.0/go.mod h1:18ZOQIKpY8NJVqYksKHtTdi31H5itFRjB5/qKTNYzSU=
++golang.org/x/text v0.15.0/go.mod h1:18ZOQIKpY8NJVqYksKHtTdi31H5itFRjB5/qKTNYzSU=
++golang.org/x/text v0.21.0/go.mod h1:4IBbMaMmOPCJ8SecivzSH54+73PCFmPWxNTLm+vZkEQ=
+ golang.org/x/text v0.25.0 h1:qVyWApTSYLk/drJRO5mDlNYskwQznZmkpV2c8q9zls4=
+ golang.org/x/text v0.25.0/go.mod h1:WEdwpYrmk1qmdHvhkSTNPm3app7v4rsT8F2UD6+VHIA=
+ golang.org/x/time v0.7.0 h1:ntUhktv3OPE6TgYxXWv9vKvUSJyIFJlyohwbkEwPrKQ=
+@@ -197,6 +258,10 @@ golang.org/x/tools v0.0.0-20191119224855-298f0cb1881e/go.mod h1:b+2E5dAYhXwXZwtn
+ golang.org/x/tools v0.0.0-20191216052735-49a3e744a425/go.mod h1:TB2adYChydJhpapKDTa4BR/hXlZSLoq2Wpct/0txZ28=
+ golang.org/x/tools v0.0.0-20200619180055-7c47624df98f/go.mod h1:EkVYQZoAsY45+roYkvgYkIh4xh/qjgUK9TdY2XT94GE=
+ golang.org/x/tools v0.0.0-20210106214847-113979e3529a/go.mod h1:emZCQorbCU4vsT4fOWvOPXz4eW1wZW4PmDk9uLelYpA=
++golang.org/x/tools v0.1.12/go.mod h1:hNGJHUnrk76NpqgfD5Aqm5Crs+Hm0VOH/i9J2+nxYbc=
++golang.org/x/tools v0.6.0/go.mod h1:Xwgl3UAJ/d3gWutnCtw505GrjyAbvKui8lOU390QaIU=
++golang.org/x/tools v0.13.0/go.mod h1:HvlwmtVNQAhOuCjW7xxvovg8wbNq7LwfXh/k7wXUl58=
++golang.org/x/tools v0.21.1-0.20240508182429-e35e4ccd0d2d/go.mod h1:aiJjzUbINMkxbQROHiO6hDPo2LHcIPhhQsa9DLh0yGk=
+ golang.org/x/tools v0.33.0 h1:4qz2S3zmRxbGIhDIAgjxvFutSvH5EfnsYrRBj0UI0bc=
+ golang.org/x/tools v0.33.0/go.mod h1:CIJMaWEY88juyUfo7UbgPqbC8rU2OqfAV1h2Qp0oMYI=
+ golang.org/x/xerrors v0.0.0-20190717185122-a985d3407aa7/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+diff --git a/main.go b/main.go
+index 2b30b17..75f1cde 100644
+--- a/main.go
++++ b/main.go
+@@ -16,6 +16,7 @@ import (
+ 	"github.com/patrickhener/goshs/goshsversion"
+ 	"github.com/patrickhener/goshs/httpserver"
+ 	"github.com/patrickhener/goshs/logger"
++	"github.com/patrickhener/goshs/sftpserver"
+ 	"github.com/patrickhener/goshs/update"
+ 	"github.com/patrickhener/goshs/utils"
+ )
+@@ -36,6 +37,10 @@ var (
+ 	certAuth            = ""
+ 	webdav              = false
+ 	webdavPort          = 8001
++	sftp                = false
++	sftpPort            = 2022
++	sftpKeyfile         = ""
++	sftpHostKeyfile     = ""
+ 	uploadOnly          = false
+ 	readOnly            = false
+ 	noClipboard         = false
+@@ -50,7 +55,6 @@ var (
+ 	embedded            = false
+ 	output              = ""
+ 	configFile          = ""
+-	printConfig         = false
+ 	webhookEnable       = false
+ 	webhookURL          = ""
+ 	webhookEvents       = "all"
+@@ -93,6 +97,12 @@ TLS options:
+   -slh,   --le-http       Port to use for Let's Encrypt HTTP Challenge	(default: 80)
+   -slt,   --le-tls        Port to use for Let's Encrypt TLS ALPN Challenge (default: 443)
+ 
++SFTP server options:
++  -sftp                        Activate SFTP server capabilities (default: false)
++  -sp,    --sftp-port          The port SFTP listens on          (default: 2022)
++  -skf,   --sftp-keyfile       Authorized_keys file for pubkey auth
++  -shk,   --sftp-host-keyfile  SSH Host key file for identification
++
+ Authentication options:
+   -b,  --basic-auth    Use basic authentication (user:pass - user can be empty)
+   -ca, --cert-auth     Use certificate based authentication - provide ca certificate
+@@ -200,6 +210,14 @@ func flags() (*bool, *bool, *bool, *bool, *bool, *bool) {
+ 	flag.StringVar(&webhookEvents, "webhook-events", webhookEvents, "")
+ 	flag.StringVar(&webhookProvider, "Wp", webhookProvider, "")
+ 	flag.StringVar(&webhookProvider, "webhook-provider", webhookProvider, "")
++	flag.BoolVar(&sftp, "sftp", sftp, "sftp")
++	flag.IntVar(&sftpPort, "sp", sftpPort, "sftp port")
++	flag.IntVar(&sftpPort, "sftp-port", sftpPort, "sftp port")
++	flag.StringVar(&sftpKeyfile, "skf", sftpKeyfile, "")
++	flag.StringVar(&sftpKeyfile, "sftp-keyfile", sftpKeyfile, "")
++	flag.StringVar(&sftpHostKeyfile, "shk", sftpHostKeyfile, "")
++	flag.StringVar(&sftpHostKeyfile, "sftp-host-keyfile", sftpHostKeyfile, "")
++
+ 	updateGoshs := flag.Bool("update", false, "update")
+ 	hash := flag.Bool("H", false, "hash")
+ 	hashLong := flag.Bool("hash", false, "hash")
+@@ -251,6 +269,11 @@ func sanityChecks() {
+ 		logger.Fatal("To use certificate based authentication with a CA cert you will need tls in any mode (-ss, -sk/-sc, -p12, -sl)")
+ 	}
+ 
++	// Sanity check either user:pass or keyfile when using sftp
++	if sftp && (basicAuth == "" && sftpKeyfile == "") {
++		logger.Fatal("When using SFTP you need to either specify an authorized keyfile using -sfk or username and password using -b")
++	}
++
+ }
+ 
+ // Flag handling
+@@ -343,6 +366,10 @@ func init() {
+ 		webhookURL = cfg.WebhookURL
+ 		webhookProvider = cfg.WebhookProvider
+ 		webhookEventsParsed = cfg.WebhookEvents
++		sftp = cfg.SFTP
++		sftpPort = cfg.SFTPPort
++		sftpKeyfile = cfg.SFTPKeyFile
++		sftpHostKeyfile = cfg.SFTPHostKeyFile
+ 
+ 		// Abspath for webroot
+ 		// Trim trailing / for linux/mac and \ for windows
+@@ -482,14 +509,23 @@ func main() {
+ 		logger.Warnf("error registering zeroconf mDNS: %+v", err)
+ 	}
+ 
++	// Start web server
+ 	go server.Start("web")
+ 
++	// Start WebDAV server
+ 	if webdav {
+ 		server.WebdavPort = webdavPort
+ 
+ 		go server.Start("webdav")
+ 	}
+ 
++	// Start SFTP server
++	if sftp {
++		s := sftpserver.NewSFTPServer(ip, sftpPort, sftpKeyfile, user, pass, webroot, readOnly, sftpHostKeyfile)
++
++		go s.Start()
++	}
++
+ 	<-done
+ 
+ 	logger.Infof("Received CTRL+C, exiting...")
+diff --git a/sftpserver/authorized_keys b/sftpserver/authorized_keys
+new file mode 100644
+index 0000000..2c492b8
+--- /dev/null
++++ b/sftpserver/authorized_keys
+@@ -0,0 +1,2 @@
++foo-key
++ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDEnl0rWVNdj6X3kRCjLi1hr9+PwtYCWifDnx6d3LlZH6Gb3s9ztOBJAsbpuA5OK0uAzr6uGAxEi6exyBLw0y2xhOLmODKQPXBv0GMcfQksgLdWKkosCcSK38hBxZcmOS+vT+iGayNR0qbfablA9G7mWx4rqQui5tzNAlD7ZFhSo9GBeshqW45RhtXP6kSUVJZyH3x9zbMN8Cpid4pF0HQeXx+77Mh73h4FSidPkxHwwN4lHNt2dObXS9cQcPx8B1wjGA6JW4IaLluZue+IkKBeS803mlAlT6YLzMlVpBb9ALf02lxYNxVUn0pOmxn6XEzk2c3vkkrUQk1yp+9aviaQNxJ9oMylDjZ4bjW5zxkpZXQ1cY6W7QUpIVXa6/WEmQWh60LQymuJ86HTkmGmWpb3p0av9bIuWkZgX6cVsGhQgNFIuKfnCOvZ0v/OdFMaSfUyli5/vkZ+CA5wcsafUebu9uswuHL74erHLEAQJSoe6Ny664zveU0i+t23vHz/7pU= user@ph-pers
+\ No newline at end of file
+diff --git a/sftpserver/goshs_client_key.pub b/sftpserver/goshs_client_key.pub
+new file mode 100644
+index 0000000..b4995e0
+--- /dev/null
++++ b/sftpserver/goshs_client_key.pub
+@@ -0,0 +1 @@
++ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDEnl0rWVNdj6X3kRCjLi1hr9+PwtYCWifDnx6d3LlZH6Gb3s9ztOBJAsbpuA5OK0uAzr6uGAxEi6exyBLw0y2xhOLmODKQPXBv0GMcfQksgLdWKkosCcSK38hBxZcmOS+vT+iGayNR0qbfablA9G7mWx4rqQui5tzNAlD7ZFhSo9GBeshqW45RhtXP6kSUVJZyH3x9zbMN8Cpid4pF0HQeXx+77Mh73h4FSidPkxHwwN4lHNt2dObXS9cQcPx8B1wjGA6JW4IaLluZue+IkKBeS803mlAlT6YLzMlVpBb9ALf02lxYNxVUn0pOmxn6XEzk2c3vkkrUQk1yp+9aviaQNxJ9oMylDjZ4bjW5zxkpZXQ1cY6W7QUpIVXa6/WEmQWh60LQymuJ86HTkmGmWpb3p0av9bIuWkZgX6cVsGhQgNFIuKfnCOvZ0v/OdFMaSfUyli5/vkZ+CA5wcsafUebu9uswuHL74erHLEAQJSoe6Ny664zveU0i+t23vHz/7pU= user@ph-pers
+diff --git a/sftpserver/goshs_host_key_rsa.pub b/sftpserver/goshs_host_key_rsa.pub
+new file mode 100644
+index 0000000..0d6bdfa
+--- /dev/null
++++ b/sftpserver/goshs_host_key_rsa.pub
+@@ -0,0 +1 @@
++ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCjGYb8si8k2ajUfn8U6riUXMkmCO+N4EwogTucdZSPC7j35lObvfLmZwDaXVD7h0XTsMA/oc5mDsKVQ3U/MasYs5wxogS4Z7mZAWs5flQ/6x77fzwpl3Je0WMI9s/OvdhrH1o3i0gwxvqvSKUX8QajY3s/pmb4O03NlAyxupP3tXPnMRycXTJiJPUKPkoOJDKCcQXTdZ1Whw0i2fJLauMxVk+53Sc/qe32ziJECBsrFJqHajqtVCuYjlxzwq/+A42e0EeBJObZDPQFha38C/bqDiOY8xO3SffYrN8MDEfOVN/0oYEJO/pOs4lwEG6s6cOyKwiiJUDw871/+9gL9e3a85htDr6Rs0X/Us84P7cui89C05iPiGRWzh9UX15Oe3PweNsNn5SMXYS1JwsSCCh21Yli50KbjLpWlAVh6oneP9d1gjpJacdzgyATgzn10R9EPY7d/GjtnmXuPrZOLv+UucbBuX/afsnYlDFSCeOEbwv4zo8blafDunA6Cch4tHU= user@ph-pers
+diff --git a/sftpserver/sftpserver.go b/sftpserver/sftpserver.go
+new file mode 100644
+index 0000000..694ff45
+--- /dev/null
++++ b/sftpserver/sftpserver.go
+@@ -0,0 +1,135 @@
++package sftpserver
++
++import (
++	"bufio"
++	"fmt"
++	"io"
++	"log"
++	"os"
++
++	"github.com/gliderlabs/ssh"
++	"github.com/patrickhener/goshs/logger"
++	"github.com/pkg/sftp"
++	gossh "golang.org/x/crypto/ssh"
++)
++
++var authorizedKeysMap map[string]bool
++
++type SFTPServer struct {
++	IP          string
++	Port        int
++	KeyFile     string
++	Username    string
++	Password    string
++	Root        string
++	ReadOnly    bool
++	HostKeyFile string
++}
++
++func NewSFTPServer(ip string, port int, keyfile string, username string, password string, root string, readonly bool, hostkey string) *SFTPServer {
++	return &SFTPServer{
++		IP:          ip,
++		Port:        port,
++		KeyFile:     keyfile,
++		Username:    username,
++		Password:    password,
++		Root:        root,
++		ReadOnly:    readonly,
++		HostKeyFile: hostkey,
++	}
++}
++
++func (s *SFTPServer) Start() error {
++	var err error
++
++	// Define a simple password auth handler
++	sshServer := ssh.Server{
++		Addr: fmt.Sprintf("%s:%d", s.IP, s.Port),
++		Handler: func(s ssh.Session) {
++			// Deny default ssh connections
++			io.WriteString(s, "This server only supports SFTP.\n")
++			s.Exit(1)
++		},
++	}
++
++	if s.HostKeyFile != "" {
++		privateBytes, err := os.ReadFile(s.HostKeyFile)
++		if err != nil {
++			return err
++		}
++
++		private, err := gossh.ParsePrivateKey(privateBytes)
++		if err != nil {
++			return err
++		}
++
++		sshServer.HostSigners = []ssh.Signer{private}
++	}
++
++	if s.Username != "" && s.Password != "" {
++		sshServer.PasswordHandler = func(ctx ssh.Context, password string) bool {
++			return ctx.User() == s.Username && password == s.Password
++		}
++	}
++
++	// User authorized_keys if provided
++	if s.KeyFile != "" {
++		authorizedKeysMap, err = loadAuthorizedKeys(s.KeyFile)
++		if err != nil {
++			return err
++		}
++		sshServer.PublicKeyHandler = func(ctx ssh.Context, key ssh.PublicKey) bool {
++			return authorizedKeysMap[string(key.Marshal())]
++		}
++	}
++
++	// Add SFTP Handler
++	sshServer.SubsystemHandlers = map[string]ssh.SubsystemHandler{
++		"sftp": func(sess ssh.Session) {
++			var server *sftp.Server
++			var err error
++
++			if s.ReadOnly {
++				server, err = sftp.NewServer(sess, sftp.WithServerWorkingDirectory(s.Root), sftp.ReadOnly())
++			} else {
++				server, err = sftp.NewServer(sess, sftp.WithServerWorkingDirectory(s.Root))
++			}
++			if err != nil {
++				logger.Errorf("SFTP server init error: %+v", err)
++				return
++			}
++			if err := server.Serve(); err == io.EOF {
++				server.Close()
++				logger.Warn("SFTP client disconnected")
++			} else if err != nil {
++				logger.Errorf("SFTP server error: %+v", err)
++			}
++		},
++	}
++
++	logger.Infof("Starting SFTP server on port %s:%d", s.IP, s.Port)
++	logger.Fatal(sshServer.ListenAndServe())
++
++	return nil
++}
++
++func loadAuthorizedKeys(path string) (map[string]bool, error) {
++	file, err := os.Open(path)
++	if err != nil {
++		return nil, err
++	}
++	defer file.Close()
++
++	keys := make(map[string]bool)
++	scanner := bufio.NewScanner(file)
++	for scanner.Scan() {
++		line := scanner.Bytes()
++		key, _, _, _, err := gossh.ParseAuthorizedKey(line)
++		if err != nil {
++			log.Printf("Skipping invalid key: %v", err)
++			continue
++		}
++		keys[string(key.Marshal())] = true
++	}
++	return keys, scanner.Err()
++}
+diff --git a/sftpserver/sftpserver_test.go b/sftpserver/sftpserver_test.go
+new file mode 100644
+index 0000000..aa4f07d
+--- /dev/null
++++ b/sftpserver/sftpserver_test.go
+@@ -0,0 +1,52 @@
++package sftpserver
++
++import (
++	"context"
++	"os"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++)
++
++func TestNewSFTPServer(t *testing.T) {
++	server := NewSFTPServer("0.0.0.0", 2022, "", "test", "test", os.Getenv("PWD"), false, "")
++
++	require.Equal(t, server.IP, "0.0.0.0")
++	require.Equal(t, server.Port, 2022)
++	require.Equal(t, server.KeyFile, "")
++	require.Equal(t, server.Username, "test")
++	require.Equal(t, server.Password, "test")
++	require.Equal(t, server.Root, os.Getenv("PWD"))
++	require.Equal(t, server.ReadOnly, false)
++	require.Equal(t, server.HostKeyFile, "")
++}
++
++func TestStart(t *testing.T) {
++	server := NewSFTPServer("0.0.0.0", 2022, "authorized_keys", "test", "test", os.Getenv("PWD"), true, "goshs_host_key_rsa")
++
++	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++	defer cancel()
++
++	done := make(chan struct{})
++
++	go func() {
++		err := server.Start()
++		require.NoError(t, err)
++	}()
++	// Wait for context timeout or server error
++	<-ctx.Done()
++	// Timeout reached, stop the server gracefully
++	close(done)
++}
++
++func TestErrors(t *testing.T) {
++	server := NewSFTPServer("0.0.0.0", 2022, "authorized_keys.foo", "", "", os.Getenv("PWD"), false, "")
++	err := server.Start()
++	require.Error(t, err)
++
++	server = NewSFTPServer("0.0.0.0", 2022, "", "", "", os.Getenv("PWD"), false, "foo")
++	err = server.Start()
++	require.Error(t, err)
++
++}

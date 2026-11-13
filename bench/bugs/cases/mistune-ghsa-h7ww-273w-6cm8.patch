@@ -1,0 +1,698 @@
+diff --git a/mistune3/directives/__init__.py b/mistune3/directives/__init__.py
+index f86e079..12c0821 100644
+--- a/mistune3/directives/__init__.py
++++ b/mistune3/directives/__init__.py
+@@ -1,9 +1,12 @@
+ from .base import Directive
+ from .admonition import Admonition
+-from .toc import DirectiveToc, render_toc_ul
++from .toc import DirectiveToc
++from .include import DirectiveInclude
+ 
+ 
+ __all__ = [
+-    'Directive', 'Admonition',
+-    'DirectiveToc', 'render_toc_ul',
++    'Directive',
++    'Admonition',
++    'DirectiveToc',
++    'DirectiveInclude',
+ ]
+diff --git a/mistune3/directives/base.py b/mistune3/directives/base.py
+index db33c34..09617f3 100644
+--- a/mistune3/directives/base.py
++++ b/mistune3/directives/base.py
+@@ -22,9 +22,9 @@ __all__ = ['Directive']
+ 
+ 
+ DIRECTIVE_PATTERN = re.compile(
+-    r'\.\.( +)(?P<name>[a-zA-Z0-9_-]+)\:\: *(?P<value>[^\n]*)\n+'
++    r'\.\.( +)(?P<name>[a-zA-Z0-9_-]+)\:\: *(?P<value>[^\n]*)(?:\n|$)'
+     r'(?P<options>(?:  \1 {0,3}\:[a-zA-Z0-9_-]+\: *[^\n]*\n+)*)'
+-    r'(?P<text>(?:  \1 {0,3}[^\n]*\n+)*)'
++    r'\n*(?P<text>(?:  \1 {0,3}[^\n]*\n+)*)'
+ )
+ 
+ 
+@@ -67,10 +67,12 @@ class PluginDirective(object):
+                 'raw': 'Unsupported directive: ' + name,
+             }
+ 
+-        end_pos = m.end()
+-        text = state.get_text(end_pos)
+-        state.append_token(token)
+-        return end_pos
++        if isinstance(token, list):
++            for tok in token:
++                state.append_token(tok)
++        else:
++            state.append_token(token)
++        return m.end()
+ 
+     def __call__(self, md):
+         md._rst_directive = self
+diff --git a/mistune3/directives/include.py b/mistune3/directives/include.py
+new file mode 100644
+index 0000000..674b43c
+--- /dev/null
++++ b/mistune3/directives/include.py
+@@ -0,0 +1,65 @@
++import os
++from .base import Directive, parse_options
++
++
++class DirectiveInclude(Directive):
++    def parse(self, block, m, state):
++        source_file = state.env.get('__file__')
++        if not source_file:
++            return {'type': 'block_error', 'raw': 'Missing source file'}
++
++        relpath = m.group('value')
++        encoding = 'utf-8'
++        options = parse_options(m)
++        if options:
++            attrs = dict(options)
++            if 'encoding' in attrs:
++                encoding = attrs['encoding']
++        else:
++            attrs = {}
++
++        dest = os.path.join(os.path.dirname(source_file), relpath)
++        dest = os.path.normpath(dest)
++
++        if dest == source_file:
++            return {
++                'type': 'block_error',
++                'raw': 'Could not include self: ' + relpath,
++            }
++
++        if not os.path.isfile(dest):
++            return {
++                'type': 'block_error',
++                'raw': 'Could not find file: ' + relpath,
++            }
++
++        with open(dest, 'rb') as f:
++            content = f.read()
++            content = content.decode(encoding)
++
++        ext = os.path.splitext(relpath)[1]
++        if ext in {'.md', '.markdown', '.mkd'}:
++            new_state = block.state_cls()
++            new_state.env['__file__'] = dest
++            new_state.process(content)
++            block.parse(new_state)
++            return new_state.tokens
++
++        elif ext in {'.html', '.xhtml', '.htm'}:
++            return {'type': 'block_html', 'raw': content}
++
++        attrs['filepath'] = dest
++        return {
++            'type': 'include',
++            'raw': content,
++            'attrs': attrs,
++        }
++
++    def __call__(self, md):
++        self.register_directive(md, 'include')
++        if md.renderer and md.renderer.NAME == 'html':
++            md.renderer.register('include', render_html_include)
++
++
++def render_html_include(renderer, text, **attrs):
++    return '<pre class="directive-include">\n' + text + '</pre>\n'
+diff --git a/mistune3/directives/toc.py b/mistune3/directives/toc.py
+index 00989bf..3751159 100644
+--- a/mistune3/directives/toc.py
++++ b/mistune3/directives/toc.py
+@@ -48,7 +48,7 @@ class DirectiveToc(Directive):
+             depth = self.depth
+ 
+         attrs = {'title': title, 'depth': depth}
+-        return {'type': 'toc', 'raw': [], 'attrs': attrs}
++        return {'type': 'toc', 'raw': '', 'attrs': attrs}
+ 
+     def toc_hook(self, md, state):
+         sections = []
+diff --git a/mistune3/markdown.py b/mistune3/markdown.py
+index c0f229b..baf8c95 100644
+--- a/mistune3/markdown.py
++++ b/mistune3/markdown.py
+@@ -64,7 +64,8 @@ class Markdown:
+         with open(filepath, 'rb') as f:
+             s = f.read()
+ 
+-        return self.parse(s.decode(encoding), state)
++        s = expand_leading_tab(s.decode(encoding))
++        return self.parse(s, state)
+ 
+     def __call__(self, s):
+         if s is None:
+diff --git a/syntax.md b/syntax.md
+deleted file mode 100644
+index faafd1c..0000000
+--- a/syntax.md
++++ /dev/null
+@@ -1,452 +0,0 @@
+-# Mistune Flavored Markdown
+-
+-- Version: 2019-01-01
+-- Author: Hsiaoming Yang
+-
+----
+-
+-## Introduction
+-
+-Mistune Flavored Markdown (MFM) is a dialect of Markdown that Mistune 2.0
+-supported. This document contains the basic Markdown syntax.
+-
+-### Why Not CommonMark
+-
+-CommonMark has certainly done something right. But there are so many weird
+-rules that made it not Markdown anymore. Mistune 2.0 has taken CommonMark
+-into consideration at the rewriting, there are test cases for CommonMark
+-in the tests folder. While implementing the CommonMark rules, it turns out
+-that John Gruber is right, the name of
+-[Pedantic Markdown](https://twitter.com/gruber/status/507615356295200770)
+-makes sense.
+-
+-> Markdown is a text-to-HTML conversion tool for web writers. Markdown allows
+-> you to write using an easy-to-read, easy-to-write plain text format, then
+-> convert it to structurally valid XHTML (or HTML).
+->
+-> -- [John Gruber](https://daringfireball.net/projects/markdown/)
+-
+-The most difference among Markdown and other formatting syntax is
+-readability, while cases in CommonMark on the other hand are not. Take the
+-link definition as an example:
+-
+-```
+-[foo]: /url '
+-title
+-line1
+-line2
+-'
+-
+-[foo]
+-```
+-
+-Is it easy-to-read? Absolutely no. There are certainly cases that you need
+-multiple lines for a link definition, either the link or the title is too
+-long. The original perl script provided by John Gruber does accept multiple
+-line link definition, but the title will always stay in one line, it looks
+-like:
+-
+-```
+-[foo]: /url
+-"title"
+-
+-[foo]
+-```
+-
+-### Why MFM
+-
+-Mistune Flavored Markdown is not a specification. It is not created to enforce
+-other developers to follow these rules. Instead, it is a clarification on how
+-will Mistune render your text.
+-
+-This documentation is mainly based on CommonMark. But it doesn't contain the
+-weird rules that Mistune dislikes.
+-
+-MFM is a guide on how will Mistune render the text in a lot of edge cases.
+-Writers should read the [Style Guide][] instead, you are not supposed to write
+-in those edge cases.
+-
+-[Style Guide]: docs/style-guide.md
+-
+-
+-## Blocks
+-
+-### Thematic breaks
+-
+-A line consisting of 0-3 spaces of indentation, followed by a sequence of
+-three or more matching `-`,` _`, or `*` characters, each followed optionally
+-by any number of spaces, forms a thematic break:
+-
+-```````````````````````````````` example
+-* * *
+-***
+-*****
+-- - -
+----------------------------------------
+-.
+-<hr />
+-<hr />
+-<hr />
+-<hr />
+-<hr />
+-````````````````````````````````
+-
+-One to three spaces indent are allowed:
+-
+-```````````````````````````````` example
+- ***
+-  ***
+-   ***
+-.
+-<hr />
+-<hr />
+-<hr />
+-````````````````````````````````
+-
+-Four spaces indent produces a code block:
+-
+-```````````````````````````````` example
+-    ***
+-.
+-<pre><code>***
+-</code></pre>
+-````````````````````````````````
+-
+-Although a thematic break do not need blank lines before or after, it is
+-still suggested putting blank lines around them.
+-
+-```````````````````````````````` example
+-Foo
+-***
+-bar
+-.
+-<p>Foo</p>
+-<hr />
+-<p>bar</p>
+-````````````````````````````````
+-
+-Mistune can convert it correctly, but you **SHOULD NOT** write in this syntax,
+-keeping blank lines around a thematic break is easier to read:
+-
+-```````````````````````````````` example
+-Foo
+-
+-***
+-
+-bar
+-.
+-<p>Foo</p>
+-<hr />
+-<p>bar</p>
+-````````````````````````````````
+-
+-### AXT headings
+-
+-[atx]: http://www.aaronsw.com/2002/atx/
+-
+-AXT headings was created by **Aaron Swartz** in its [atx][] software.
+-Atx-style headers use 1-6 unescaped `#` at the start of the line and followed
+-by a space, corresponding to header levels 1-6:
+-
+-```````````````````````````````` example
+-# This is an H1
+-## This is an H2
+-###### This is an H6
+-.
+-<h1>This is an H1</h1>
+-<h2>This is an H2</h2>
+-<h6>This is an H6</h6>
+-````````````````````````````````
+-
+-Optionally, you may "close" atx-style headers. But it is **NOT SUGGESTED** in
+-Mistune.
+-
+-```````````````````````````````` example
+-# This is an H1 #
+-## This is an H2 ##
+-### This is an H3 ######
+-.
+-<h1>This is an H1</h1>
+-<h2>This is an H2</h2>
+-<h3>This is an H3</h3>
+-````````````````````````````````
+-
+-More than six `#` characters is not a heading:
+-
+-```````````````````````````````` example
+-####### foo
+-.
+-<p>####### foo</p>
+-````````````````````````````````
+-
+-At least one space is required between the `#` characters and the heading's
+-contents, unless the heading is empty:
+-
+-```````````````````````````````` example
+-#5 bolt
+-
+-#hashtag
+-.
+-<p>#5 bolt</p>
+-<p>#hashtag</p>
+-````````````````````````````````
+-
+-This is not a heading, because the first # is escaped:
+-
+-```````````````````````````````` example
+-\## foo
+-.
+-<p>## foo</p>
+-````````````````````````````````
+-
+-One to three spaces indentation are allowed, but it is **NOT SUGGESTED**:
+-
+-```````````````````````````````` example
+- ### foo
+-  ## foo
+-   # foo
+-.
+-<h3>foo</h3>
+-<h2>foo</h2>
+-<h1>foo</h1>
+-````````````````````````````````
+-
+-Although ATX headings need not be separated from surrounding content by
+-blank lines, and they can interrupt paragraphs, but it is **NOT SUGGESTED**:
+-
+-```````````````````````````````` example
+-Foo bar
+-# baz
+-Bar foo
+-.
+-<p>Foo bar</p>
+-<h1>baz</h1>
+-<p>Bar foo</p>
+-````````````````````````````````
+-
+-Instead, you **SHOULD** always keep blank lines around headings like this::
+-
+-```````````````````````````````` example
+-Foo bar
+-
+-# baz
+-
+-Bar foo
+-.
+-<p>Foo bar</p>
+-<h1>baz</h1>
+-<p>Bar foo</p>
+-````````````````````````````````
+-
+-### Setext headings
+-
+-Setext-style headings are "underlined" with at least two `=` or `-`
+-characters:
+-
+-```````````````````````````````` example
+-This is an H1
+-=============
+-
+-This is an H2
+--------------
+-.
+-<h1>This is an H1</h1>
+-<h2>This is an H2</h2>
+-````````````````````````````````
+-
+-The original `Markdown.pl` by John Gruber allows any number of the
+-underline characters. But Mistune requires at least two characters:
+-
+-```````````````````````````````` example
+-Foo
+-=
+-.
+-<p>Foo
+-=</p>
+-````````````````````````````````
+-
+-Unlike CommonMark, Mistune only allows one line content for a setext-style
+-heading:
+-
+-```````````````````````````````` example
+-Foo
+-Bar
+----
+-.
+-<p>Foo
+-Bar</p>
+-<hr />
+-````````````````````````````````
+-
+-The result in CommonMark is:
+-
+-````
+-<h2>Foo
+-Bar</h2>
+-````
+-
+-The result in `Markdown.pl` is:
+-
+-````
+-<p>Foo</p>
+-
+-<h2>Bar</h2>
+-````
+-
+-You **SHOULD** write only one line contents in a setext-style heading,
+-and keep blank lines around it:
+-
+-```````````````````````````````` example
+-Foo
+-
+-Bar
+----
+-.
+-<p>Foo</p>
+-<h2>Bar</h2>
+-````````````````````````````````
+-
+-The heading content can be indented up to three spaces, and need not line up
+-with the underlining, but **DON'T DO THIS**:
+-
+-```````````````````````````````` example
+-   Foo
+----
+-
+-  Foo
+------
+-
+-  Foo
+-  ===
+-.
+-<h2>Foo</h2>
+-<h2>Foo</h2>
+-<h1>Foo</h1>
+-````````````````````````````````
+-
+-Four spaces indent creates code block:
+-
+-```````````````````````````````` example
+-    Foo
+-    ---
+-
+-    Foo
+----
+-.
+-<pre><code>Foo
+----
+-
+-Foo
+-</code></pre>
+-<hr />
+-````````````````````````````````
+-
+-The setext heading underline cannot contain internal spaces:
+-
+-```````````````````````````````` example
+-Foo
+-= =
+-
+-Foo
+---- -
+-.
+-<p>Foo
+-= =</p>
+-<p>Foo</p>
+-<hr />
+-````````````````````````````````
+-
+-### Blockquote
+-
+-Keep only 6 level containers.
+-
+-```````````````````````````````` example
+-> > > > > > > 7
+-.
+-<blockquote>
+-<blockquote>
+-<blockquote>
+-<blockquote>
+-<blockquote>
+-<blockquote>
+-<p>&gt; 7</p>
+-</blockquote>
+-</blockquote>
+-</blockquote>
+-</blockquote>
+-</blockquote>
+-</blockquote>
+-````````````````````````````````
+-
+-
+-### Lists
+-
+-```````````````````````````````` example
+-- 1
+-  - 2
+-    - 3
+-      - 4
+-        - 5
+-          - 6
+-            - 7
+-.
+-<ul>
+-<li>1<ul>
+-<li>2<ul>
+-<li>3<ul>
+-<li>4<ul>
+-<li>5<ul>
+-<li>6
+-- 7</li>
+-</ul>
+-</li>
+-</ul>
+-</li>
+-</ul>
+-</li>
+-</ul>
+-</li>
+-</ul>
+-</li>
+-</ul>
+-````````````````````````````````
+-
+-## Inlines
+-
+-
+-### Emphasis
+-
+-
+-### Links
+-
+-Links can't contain links.
+-
+-```````````````````````````````` example
+-[<https://example.com>](/foo)
+-.
+-<p><a href="/foo">&lt;https://example.com&gt;</a></p>
+-````````````````````````````````
+-
+-```````````````````````````````` example
+-[[foo]](/foo)
+-
+-[foo]: https://example.com/
+-.
+-<p><a href="/foo">[foo]</a></p>
+-````````````````````````````````
+-
+-```````````````````````````````` example
+-[[foo][]](/foo)
+-
+-[foo]: https://example.com/
+-.
+-<p><a href="/foo">[foo][]</a></p>
+-````````````````````````````````
+-
+-Harmful link protection:
+-
+-```````````````````````````````` example
+-<javascript:alert(0)>
+-.
+-<p><a href="#harmful-link">javascript:alert(0)</a></p>
+-````````````````````````````````
+diff --git a/tests/fixtures/include/text.md b/tests/fixtures/include/text.md
+index 5decd5f..5ac9bcb 100644
+--- a/tests/fixtures/include/text.md
++++ b/tests/fixtures/include/text.md
+@@ -8,4 +8,4 @@
+ 
+ .. include:: ./hello.md
+ 
+-.. include:: ../toc.txt
++.. include:: ../directive_toc.txt
+diff --git a/tests/test_directives.py b/tests/test_directives.py
+index b6bfea1..d942f17 100644
+--- a/tests/test_directives.py
++++ b/tests/test_directives.py
+@@ -1,6 +1,8 @@
++import os
+ from mistune3 import create_markdown
+-from mistune3.directives import Admonition, DirectiveToc
++from mistune3.directives import Admonition, DirectiveToc, DirectiveInclude
+ from tests import BaseTestCase
++from tests.fixtures import ROOT
+ 
+ 
+ def load_directive_test(filename, directive):
+@@ -24,3 +26,20 @@ def load_directive_test(filename, directive):
+ 
+ load_directive_test('directive_toc', DirectiveToc())
+ load_directive_test('directive_admonition', Admonition())
++
++
++class TestDirectiveInclude(BaseTestCase):
++    md = create_markdown(escape=False, plugins=[DirectiveInclude()])
++
++    def test_html_include(self):
++        html = self.md.read(os.path.join(ROOT, 'include/text.md'))
++        self.assertIn('Could not include self', html)
++        self.assertIn('Could not find file', html)
++        self.assertIn('<div>include html</div>', html)
++        self.assertIn('<blockquote>', html)
++        self.assertIn('# Table of Contents', html)
++
++    def test_include_missing_source(self):
++        s = '.. include:: foo.txt'
++        html = self.md(s)
++        self.assertIn('Missing source file', html)
+diff --git a/tests/test_include.py b/tests/test_include.py
+deleted file mode 100644
+index 8e71ec8..0000000
+--- a/tests/test_include.py
++++ /dev/null
+@@ -1,38 +0,0 @@
+-import os
+-from mistune import create_markdown
+-from mistune.directives import DirectiveInclude
+-from tests.fixtures import ROOT
+-from unittest import TestCase
+-
+-
+-class TestPluginDirective(TestCase):
+-    def test_html_include(self):
+-        md = create_markdown(
+-            escape=False,
+-            plugins=[DirectiveInclude()]
+-        )
+-        html = md.read(os.path.join(ROOT, 'include/text.md'))
+-        self.assertIn('Could not include self', html)
+-        self.assertIn('Could not find file', html)
+-        self.assertIn('<div>include html</div>', html)
+-        self.assertIn('<blockquote>', html)
+-        self.assertIn('# Table of Contents', html)
+-
+-    def test_include_missing_source(self):
+-        md = create_markdown(plugins=[DirectiveInclude()])
+-        s = '.. include:: foo.txt'
+-        html = md(s)
+-        self.assertIn('Missing source file', html)
+-
+-    def test_ast_include(self):
+-        md = create_markdown(
+-            renderer='ast',
+-            plugins=[DirectiveInclude()]
+-        )
+-        filepath = os.path.join(ROOT, 'include/foo.txt')
+-        s = '.. include:: hello.txt'
+-        tokens = md.parse(s, {'__file__': filepath})
+-        token = tokens[0]
+-        self.assertEqual(token['type'], 'include')
+-        self.assertEqual(token['text'], 'hello\n')
+-        self.assertEqual(token['relpath'], 'hello.txt')

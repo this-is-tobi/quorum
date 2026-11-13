@@ -1,0 +1,107 @@
+diff --git a/cmd/praktor/main.go b/cmd/praktor/main.go
+index ec090b6..a9f665e 100644
+--- a/cmd/praktor/main.go
++++ b/cmd/praktor/main.go
+@@ -146,7 +146,7 @@ func runGateway() error {
+ 
+ 	// Web UI
+ 	if cfg.Web.Enabled {
+-		srv := web.NewServer(db, bus, orch, reg, swarmCoord, cfg.Web, v, version)
++		srv := web.NewServer(db, bus, orch, reg, rtr, swarmCoord, cfg.Web, v, version)
+ 		go func() {
+ 			if err := srv.Start(ctx); err != nil {
+ 				slog.Error("web server error", "error", err)
+diff --git a/internal/web/api.go b/internal/web/api.go
+index 5752e46..bcb729e 100644
+--- a/internal/web/api.go
++++ b/internal/web/api.go
+@@ -97,13 +97,14 @@ func (s *Server) listAgentDefinitions(w http.ResponseWriter, r *http.Request) {
+ 		}
+ 
+ 		entry := map[string]any{
+-			"id":           a.ID,
+-			"name":         a.Name,
+-			"description":  a.Description,
+-			"model":        s.registry.ResolveModel(a.ID),
+-			"image":        s.registry.ResolveImage(a.ID),
+-			"workspace":    a.Workspace,
+-			"agent_status": agentStatus,
++			"id":            a.ID,
++			"name":          a.Name,
++			"description":   a.Description,
++			"model":         s.registry.ResolveModel(a.ID),
++			"image":         s.registry.ResolveImage(a.ID),
++			"workspace":     a.Workspace,
++			"agent_status":  agentStatus,
++			"default_agent": a.ID == s.router.DefaultAgent(),
+ 		}
+ 
+ 		if stats, ok := msgStats[a.ID]; ok {
+diff --git a/internal/web/server.go b/internal/web/server.go
+index 3b79bef..5ccfeba 100644
+--- a/internal/web/server.go
++++ b/internal/web/server.go
+@@ -15,6 +15,7 @@ import (
+ 	"github.com/mtzanidakis/praktor/internal/config"
+ 	"github.com/mtzanidakis/praktor/internal/natsbus"
+ 	"github.com/mtzanidakis/praktor/internal/registry"
++	"github.com/mtzanidakis/praktor/internal/router"
+ 	"github.com/mtzanidakis/praktor/internal/store"
+ 	"github.com/mtzanidakis/praktor/internal/swarm"
+ 	"github.com/mtzanidakis/praktor/internal/vault"
+@@ -30,6 +31,7 @@ type Server struct {
+ 	nats       *natsbus.Client
+ 	orch       *agent.Orchestrator
+ 	registry   *registry.Registry
++	router     *router.Router
+ 	swarmCoord *swarm.Coordinator
+ 	vault      *vault.Vault
+ 	hub        *Hub
+@@ -38,12 +40,13 @@ type Server struct {
+ 	startedAt  time.Time
+ }
+ 
+-func NewServer(s *store.Store, bus *natsbus.Bus, orch *agent.Orchestrator, reg *registry.Registry, swarmCoord *swarm.Coordinator, cfg config.WebConfig, v *vault.Vault, version string) *Server {
++func NewServer(s *store.Store, bus *natsbus.Bus, orch *agent.Orchestrator, reg *registry.Registry, rtr *router.Router, swarmCoord *swarm.Coordinator, cfg config.WebConfig, v *vault.Vault, version string) *Server {
+ 	return &Server{
+ 		store:      s,
+ 		bus:        bus,
+ 		orch:       orch,
+ 		registry:   reg,
++		router:     rtr,
+ 		swarmCoord: swarmCoord,
+ 		vault:      v,
+ 		hub:        NewHub(),
+diff --git a/ui/src/pages/Agents.tsx b/ui/src/pages/Agents.tsx
+index 19eae67..3e3f9af 100644
+--- a/ui/src/pages/Agents.tsx
++++ b/ui/src/pages/Agents.tsx
+@@ -10,6 +10,7 @@ interface Agent {
+   image?: string;
+   workspace?: string;
+   agent_status?: string;
++  default_agent?: boolean;
+   message_count?: number;
+   last_active?: string;
+ }
+@@ -97,7 +98,7 @@ function Agents() {
+       )}
+ 
+       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
+-        {agents.map((agent) => (
++        {[...agents].sort((a, b) => a.name.localeCompare(b.name)).map((agent) => (
+           <div
+             key={agent.id}
+             data-hover
+@@ -110,6 +111,11 @@ function Agents() {
+             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+               <span style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>{agent.name}</span>
+               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
++                {agent.default_agent && (
++                  <span style={badge('var(--accent)', 'var(--accent-muted)')}>
++                    default
++                  </span>
++                )}
+                 {agent.agent_status && (
+                   <span style={badge(
+                     agent.agent_status === 'running' ? 'var(--green)' : 'var(--text-secondary)',

@@ -11,3 +11,7 @@ bin
 # Secrets and reports that never belong in a build context
 .env*
 coverage
+
+# The bench's suites and run directories: data for a run by hand, never part of the image
+bench
+quorum-bench

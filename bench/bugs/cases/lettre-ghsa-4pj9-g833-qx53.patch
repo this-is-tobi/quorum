@@ -1,0 +1,895 @@
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index de28747..21908bc 100644
+--- a/.github/workflows/test.yml
++++ b/.github/workflows/test.yml
+@@ -133,9 +133,12 @@ jobs:
+       - name: Test with default features
+         run: cargo test
+ 
+-      - name: Test with all features
+-        run: cargo test --all-features
++      - name: Test with all features (-native-tls)
++        run: cargo test --no-default-features --features async-std,async-std1,async-std1-rustls-tls,async-trait,base64,boring,boring-tls,builder,dkim,ed25519-dalek,email-encoding,fastrand,file-transport,file-transport-envelope,futures-io,futures-rustls,futures-util,hostname,httpdate,mime,mime03,nom,once_cell,pool,quoted_printable,regex,rsa,rustls,rustls-pemfile,rustls-tls,sendmail-transport,serde,serde_json,sha2,smtp-transport,socket2,tokio1,tokio1-boring-tls,tokio1-rustls-tls,tokio1_boring,tokio1_crate,tokio1_rustls,tracing,uuid,webpki-roots
+   
++      - name: Test with all features (-boring-tls)
++        run: cargo test --no-default-features --features async-std,async-std1,async-std1-rustls-tls,async-trait,base64,builder,dkim,ed25519-dalek,email-encoding,fastrand,file-transport,file-transport-envelope,futures-io,futures-rustls,futures-util,hostname,httpdate,mime,mime03,native-tls,nom,once_cell,pool,quoted_printable,regex,rsa,rustls,rustls-pemfile,rustls-tls,sendmail-transport,serde,serde_json,sha2,smtp-transport,socket2,tokio1,tokio1-native-tls,tokio1-rustls-tls,tokio1_crate,tokio1_native_tls_crate,tokio1_rustls,tracing,uuid,webpki-roots
++
+ #  coverage:
+ #    name: Coverage
+ #    runs-on: ubuntu-latest
+diff --git a/Cargo.toml b/Cargo.toml
+index 6b87158..3711846 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -46,6 +46,7 @@ native-tls = { version = "0.2", optional = true } # feature
+ rustls = { version = "0.20", features = ["dangerous_configuration"], optional = true }
+ rustls-pemfile = { version = "1", optional = true }
+ webpki-roots = { version = "0.22", optional = true }
++boring = { version = "2.0.0", optional = true }
+ 
+ # async
+ futures-io = { version = "0.3.7", optional = true }
+@@ -61,6 +62,7 @@ futures-rustls = { version = "0.22", optional = true }
+ tokio1_crate = { package = "tokio", version = "1", features = ["fs", "rt", "process", "time", "net", "io-util"], optional = true }
+ tokio1_native_tls_crate = { package = "tokio-native-tls", version = "0.3", optional = true }
+ tokio1_rustls = { package = "tokio-rustls", version = "0.23", optional = true }
++tokio1_boring = { package = "tokio-boring", version = "2.1.4", optional = true }
+ 
+ ## dkim
+ sha2 = { version = "0.10", optional = true }
+@@ -102,6 +104,8 @@ pool = ["futures-util"]
+ 
+ rustls-tls = ["webpki-roots", "rustls", "rustls-pemfile"]
+ 
++boring-tls = ["boring"]
++
+ # async
+ async-std1 = ["async-std", "async-trait", "futures-io", "futures-util"]
+ #async-std1-native-tls = ["async-std1", "native-tls", "async-native-tls"]
+@@ -109,6 +113,7 @@ async-std1-rustls-tls = ["async-std1", "rustls-tls", "futures-rustls"]
+ tokio1 = ["tokio1_crate", "async-trait", "futures-io", "futures-util"]
+ tokio1-native-tls = ["tokio1", "native-tls", "tokio1_native_tls_crate"]
+ tokio1-rustls-tls = ["tokio1", "rustls-tls", "tokio1_rustls"]
++tokio1-boring-tls = ["tokio1", "boring-tls", "tokio1_boring"]
+ 
+ dkim = ["base64", "sha2", "rsa", "ed25519-dalek", "regex", "once_cell"]
+ 
+diff --git a/src/lib.rs b/src/lib.rs
+index 791aa8f..487f5d7 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -132,6 +132,10 @@
+ 
+ #[cfg(not(lettre_ignore_tls_mismatch))]
+ mod compiletime_checks {
++    #[cfg(all(feature = "native-tls", feature = "boring-tls"))]
++    compile_error!("feature \"native-tls\" and feature \"boring-tls\" cannot be enabled at the same time, otherwise
++    the executable will fail to link.");
++
+     #[cfg(all(
+         feature = "tokio1",
+         feature = "native-tls",
+@@ -150,6 +154,15 @@ mod compiletime_checks {
+     If you'd like to use `native-tls` make sure that the `rustls-tls` feature hasn't been enabled by mistake.
+     Make sure to apply the same to any of your crate dependencies that use the `lettre` crate.");
+ 
++    #[cfg(all(
++        feature = "tokio1",
++        feature = "boring-tls",
++        not(feature = "tokio1-boring-tls")
++    ))]
++    compile_error!("Lettre is being built with the `tokio1` and the `boring-tls` features, but the `tokio1-boring-tls` feature hasn't been turned on.
++    If you'd like to use `boring-tls` make sure that the `rustls-tls` feature hasn't been enabled by mistake.
++    Make sure to apply the same to any of your crate dependencies that use the `lettre` crate.");
++
+     /*
+     #[cfg(all(
+         feature = "async-std1",
+diff --git a/src/transport/smtp/client/async_connection.rs b/src/transport/smtp/client/async_connection.rs
+index fec9cec..adb0134 100644
+--- a/src/transport/smtp/client/async_connection.rs
++++ b/src/transport/smtp/client/async_connection.rs
+@@ -320,7 +320,7 @@ impl AsyncSmtpConnection {
+     }
+ 
+     /// The X509 certificate of the server (DER encoded)
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+     pub fn peer_certificate(&self) -> Result<Vec<u8>, Error> {
+         self.stream.get_ref().peer_certificate()
+     }
+diff --git a/src/transport/smtp/client/async_net.rs b/src/transport/smtp/client/async_net.rs
+index d992490..72c46f5 100644
+--- a/src/transport/smtp/client/async_net.rs
++++ b/src/transport/smtp/client/async_net.rs
+@@ -16,6 +16,8 @@ use futures_io::{
+ };
+ #[cfg(feature = "async-std1-rustls-tls")]
+ use futures_rustls::client::TlsStream as AsyncStd1RustlsTlsStream;
++#[cfg(feature = "tokio1-boring-tls")]
++use tokio1_boring::SslStream as Tokio1SslStream;
+ #[cfg(feature = "tokio1")]
+ use tokio1_crate::io::{AsyncRead as _, AsyncWrite as _, ReadBuf as Tokio1ReadBuf};
+ #[cfg(feature = "tokio1")]
+@@ -31,6 +33,7 @@ use tokio1_rustls::client::TlsStream as Tokio1RustlsTlsStream;
+ #[cfg(any(
+     feature = "tokio1-native-tls",
+     feature = "tokio1-rustls-tls",
++    feature = "tokio1-boring-tls",
+     feature = "async-std1-native-tls",
+     feature = "async-std1-rustls-tls"
+ ))]
+@@ -60,6 +63,9 @@ enum InnerAsyncNetworkStream {
+     /// Encrypted Tokio 1.x TCP stream
+     #[cfg(feature = "tokio1-rustls-tls")]
+     Tokio1RustlsTls(Tokio1RustlsTlsStream<Tokio1TcpStream>),
++    /// Encrypted Tokio 1.x TCP stream
++    #[cfg(feature = "tokio1-boring-tls")]
++    Tokio1BoringTls(Tokio1SslStream<Tokio1TcpStream>),
+     /// Plain Tokio 1.x TCP stream
+     #[cfg(feature = "async-std1")]
+     AsyncStd1Tcp(AsyncStd1TcpStream),
+@@ -93,6 +99,8 @@ impl AsyncNetworkStream {
+             }
+             #[cfg(feature = "tokio1-rustls-tls")]
+             InnerAsyncNetworkStream::Tokio1RustlsTls(ref s) => s.get_ref().0.peer_addr(),
++            #[cfg(feature = "tokio1-boring-tls")]
++            InnerAsyncNetworkStream::Tokio1BoringTls(ref s) => s.get_ref().peer_addr(),
+             #[cfg(feature = "async-std1")]
+             InnerAsyncNetworkStream::AsyncStd1Tcp(ref s) => s.peer_addr(),
+             #[cfg(feature = "async-std1-native-tls")]
+@@ -229,14 +237,22 @@ impl AsyncNetworkStream {
+         match &self.inner {
+             #[cfg(all(
+                 feature = "tokio1",
+-                not(any(feature = "tokio1-native-tls", feature = "tokio1-rustls-tls"))
++                not(any(
++                    feature = "tokio1-native-tls",
++                    feature = "tokio1-rustls-tls",
++                    feature = "tokio1-boring-tls"
++                ))
+             ))]
+             InnerAsyncNetworkStream::Tokio1Tcp(_) => {
+                 let _ = tls_parameters;
+                 panic!("Trying to upgrade an AsyncNetworkStream without having enabled either the tokio1-native-tls or the tokio1-rustls-tls feature");
+             }
+ 
+-            #[cfg(any(feature = "tokio1-native-tls", feature = "tokio1-rustls-tls"))]
++            #[cfg(any(
++                feature = "tokio1-native-tls",
++                feature = "tokio1-rustls-tls",
++                feature = "tokio1-boring-tls"
++            ))]
+             InnerAsyncNetworkStream::Tokio1Tcp(_) => {
+                 // get owned TcpStream
+                 let tcp_stream = mem::replace(&mut self.inner, InnerAsyncNetworkStream::None);
+@@ -278,7 +294,11 @@ impl AsyncNetworkStream {
+     }
+ 
+     #[allow(unused_variables)]
+-    #[cfg(any(feature = "tokio1-native-tls", feature = "tokio1-rustls-tls"))]
++    #[cfg(any(
++        feature = "tokio1-native-tls",
++        feature = "tokio1-rustls-tls",
++        feature = "tokio1-boring-tls"
++    ))]
+     async fn upgrade_tokio1_tls(
+         tcp_stream: Tokio1TcpStream,
+         tls_parameters: TlsParameters,
+@@ -324,11 +344,31 @@ impl AsyncNetworkStream {
+                     Ok(InnerAsyncNetworkStream::Tokio1RustlsTls(stream))
+                 };
+             }
++            #[cfg(feature = "boring-tls")]
++            InnerTlsParameters::BoringTls(connector) => {
++                #[cfg(not(feature = "tokio1-boring-tls"))]
++                panic!("built without the tokio1-boring-tls feature");
++
++                #[cfg(feature = "tokio1-boring-tls")]
++                return {
++                    let mut config = connector.configure().map_err(error::connection)?;
++                    config.set_verify_hostname(tls_parameters.accept_invalid_hostnames);
++
++                    let stream = tokio1_boring::connect(config, &domain, tcp_stream)
++                        .await
++                        .map_err(error::connection)?;
++                    Ok(InnerAsyncNetworkStream::Tokio1BoringTls(stream))
++                };
++            }
+         }
+     }
+ 
+     #[allow(unused_variables)]
+-    #[cfg(any(feature = "async-std1-native-tls", feature = "async-std1-rustls-tls"))]
++    #[cfg(any(
++        feature = "async-std1-native-tls",
++        feature = "async-std1-rustls-tls",
++        feature = "async-std1-boring-tls"
++    ))]
+     async fn upgrade_asyncstd1_tls(
+         tcp_stream: AsyncStd1TcpStream,
+         mut tls_parameters: TlsParameters,
+@@ -377,6 +417,10 @@ impl AsyncNetworkStream {
+                     Ok(InnerAsyncNetworkStream::AsyncStd1RustlsTls(stream))
+                 };
+             }
++            #[cfg(feature = "boring-tls")]
++            InnerTlsParameters::BoringTls(connector) => {
++                panic!("boring-tls isn't supported with async-std yet.");
++            }
+         }
+     }
+ 
+@@ -388,6 +432,8 @@ impl AsyncNetworkStream {
+             InnerAsyncNetworkStream::Tokio1NativeTls(_) => true,
+             #[cfg(feature = "tokio1-rustls-tls")]
+             InnerAsyncNetworkStream::Tokio1RustlsTls(_) => true,
++            #[cfg(feature = "tokio1-boring-tls")]
++            InnerAsyncNetworkStream::Tokio1BoringTls(_) => true,
+             #[cfg(feature = "async-std1")]
+             InnerAsyncNetworkStream::AsyncStd1Tcp(_) => false,
+             #[cfg(feature = "async-std1-native-tls")]
+@@ -422,6 +468,13 @@ impl AsyncNetworkStream {
+                 .unwrap()
+                 .clone()
+                 .0),
++            #[cfg(feature = "tokio1-boring-tls")]
++            InnerAsyncNetworkStream::Tokio1BoringTls(stream) => Ok(stream
++                .ssl()
++                .peer_certificate()
++                .unwrap()
++                .to_der()
++                .map_err(error::tls)?),
+             #[cfg(feature = "async-std1")]
+             InnerAsyncNetworkStream::AsyncStd1Tcp(_) => {
+                 Err(error::client("Connection is not encrypted"))
+@@ -477,6 +530,15 @@ impl FuturesAsyncRead for AsyncNetworkStream {
+                     Poll::Pending => Poll::Pending,
+                 }
+             }
++            #[cfg(feature = "tokio1-boring-tls")]
++            InnerAsyncNetworkStream::Tokio1BoringTls(ref mut s) => {
++                let mut b = Tokio1ReadBuf::new(buf);
++                match Pin::new(s).poll_read(cx, &mut b) {
++                    Poll::Ready(Ok(())) => Poll::Ready(Ok(b.filled().len())),
++                    Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
++                    Poll::Pending => Poll::Pending,
++                }
++            }
+             #[cfg(feature = "async-std1")]
+             InnerAsyncNetworkStream::AsyncStd1Tcp(ref mut s) => Pin::new(s).poll_read(cx, buf),
+             #[cfg(feature = "async-std1-native-tls")]
+@@ -508,6 +570,8 @@ impl FuturesAsyncWrite for AsyncNetworkStream {
+             InnerAsyncNetworkStream::Tokio1NativeTls(ref mut s) => Pin::new(s).poll_write(cx, buf),
+             #[cfg(feature = "tokio1-rustls-tls")]
+             InnerAsyncNetworkStream::Tokio1RustlsTls(ref mut s) => Pin::new(s).poll_write(cx, buf),
++            #[cfg(feature = "tokio1-boring-tls")]
++            InnerAsyncNetworkStream::Tokio1BoringTls(ref mut s) => Pin::new(s).poll_write(cx, buf),
+             #[cfg(feature = "async-std1")]
+             InnerAsyncNetworkStream::AsyncStd1Tcp(ref mut s) => Pin::new(s).poll_write(cx, buf),
+             #[cfg(feature = "async-std1-native-tls")]
+@@ -533,6 +597,8 @@ impl FuturesAsyncWrite for AsyncNetworkStream {
+             InnerAsyncNetworkStream::Tokio1NativeTls(ref mut s) => Pin::new(s).poll_flush(cx),
+             #[cfg(feature = "tokio1-rustls-tls")]
+             InnerAsyncNetworkStream::Tokio1RustlsTls(ref mut s) => Pin::new(s).poll_flush(cx),
++            #[cfg(feature = "tokio1-boring-tls")]
++            InnerAsyncNetworkStream::Tokio1BoringTls(ref mut s) => Pin::new(s).poll_flush(cx),
+             #[cfg(feature = "async-std1")]
+             InnerAsyncNetworkStream::AsyncStd1Tcp(ref mut s) => Pin::new(s).poll_flush(cx),
+             #[cfg(feature = "async-std1-native-tls")]
+@@ -554,6 +620,8 @@ impl FuturesAsyncWrite for AsyncNetworkStream {
+             InnerAsyncNetworkStream::Tokio1NativeTls(ref mut s) => Pin::new(s).poll_shutdown(cx),
+             #[cfg(feature = "tokio1-rustls-tls")]
+             InnerAsyncNetworkStream::Tokio1RustlsTls(ref mut s) => Pin::new(s).poll_shutdown(cx),
++            #[cfg(feature = "tokio1-boring-tls")]
++            InnerAsyncNetworkStream::Tokio1BoringTls(ref mut s) => Pin::new(s).poll_shutdown(cx),
+             #[cfg(feature = "async-std1")]
+             InnerAsyncNetworkStream::AsyncStd1Tcp(ref mut s) => Pin::new(s).poll_close(cx),
+             #[cfg(feature = "async-std1-native-tls")]
+diff --git a/src/transport/smtp/client/connection.rs b/src/transport/smtp/client/connection.rs
+index e52592f..6b1556a 100644
+--- a/src/transport/smtp/client/connection.rs
++++ b/src/transport/smtp/client/connection.rs
+@@ -143,7 +143,7 @@ impl SmtpConnection {
+         hello_name: &ClientId,
+     ) -> Result<(), Error> {
+         if self.server_info.supports_feature(Extension::StartTls) {
+-            #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++            #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+             {
+                 try_smtp!(self.command(Starttls), self);
+                 self.stream.get_mut().upgrade_tls(tls_parameters)?;
+@@ -153,7 +153,11 @@ impl SmtpConnection {
+                 try_smtp!(self.ehlo(hello_name), self);
+                 Ok(())
+             }
+-            #[cfg(not(any(feature = "native-tls", feature = "rustls-tls")))]
++            #[cfg(not(any(
++                feature = "native-tls",
++                feature = "rustls-tls",
++                feature = "boring-tls"
++            )))]
+             // This should never happen as `Tls` can only be created
+             // when a TLS library is enabled
+             unreachable!("TLS support required but not supported");
+@@ -297,7 +301,7 @@ impl SmtpConnection {
+     }
+ 
+     /// The X509 certificate of the server (DER encoded)
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+     pub fn peer_certificate(&self) -> Result<Vec<u8>, Error> {
+         self.stream.get_ref().peer_certificate()
+     }
+diff --git a/src/transport/smtp/client/mod.rs b/src/transport/smtp/client/mod.rs
+index 3a6123e..9aa9815 100644
+--- a/src/transport/smtp/client/mod.rs
++++ b/src/transport/smtp/client/mod.rs
+@@ -30,7 +30,7 @@ pub use self::async_connection::AsyncSmtpConnection;
+ #[cfg(any(feature = "tokio1", feature = "async-std1"))]
+ pub use self::async_net::AsyncNetworkStream;
+ use self::net::NetworkStream;
+-#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++#[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+ pub(super) use self::tls::InnerTlsParameters;
+ pub use self::{
+     connection::SmtpConnection,
+diff --git a/src/transport/smtp/client/net.rs b/src/transport/smtp/client/net.rs
+index 2761976..d2ace2f 100644
+--- a/src/transport/smtp/client/net.rs
++++ b/src/transport/smtp/client/net.rs
+@@ -6,13 +6,15 @@ use std::{
+     time::Duration,
+ };
+ 
++#[cfg(feature = "boring-tls")]
++use boring::ssl::SslStream;
+ #[cfg(feature = "native-tls")]
+ use native_tls::TlsStream;
+ #[cfg(feature = "rustls-tls")]
+ use rustls::{ClientConnection, ServerName, StreamOwned};
+ use socket2::{Domain, Protocol, Type};
+ 
+-#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++#[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+ use super::InnerTlsParameters;
+ use super::TlsParameters;
+ use crate::transport::smtp::{error, Error};
+@@ -35,6 +37,8 @@ enum InnerNetworkStream {
+     /// Encrypted TCP stream
+     #[cfg(feature = "rustls-tls")]
+     RustlsTls(StreamOwned<ClientConnection, TcpStream>),
++    #[cfg(feature = "boring-tls")]
++    BoringTls(SslStream<TcpStream>),
+     /// Can't be built
+     None,
+ }
+@@ -56,6 +60,8 @@ impl NetworkStream {
+             InnerNetworkStream::NativeTls(ref s) => s.get_ref().peer_addr(),
+             #[cfg(feature = "rustls-tls")]
+             InnerNetworkStream::RustlsTls(ref s) => s.get_ref().peer_addr(),
++            #[cfg(feature = "boring-tls")]
++            InnerNetworkStream::BoringTls(ref s) => s.get_ref().peer_addr(),
+             InnerNetworkStream::None => {
+                 debug_assert!(false, "InnerNetworkStream::None must never be built");
+                 Ok(SocketAddr::V4(SocketAddrV4::new(
+@@ -74,6 +80,8 @@ impl NetworkStream {
+             InnerNetworkStream::NativeTls(ref s) => s.get_ref().shutdown(how),
+             #[cfg(feature = "rustls-tls")]
+             InnerNetworkStream::RustlsTls(ref s) => s.get_ref().shutdown(how),
++            #[cfg(feature = "boring-tls")]
++            InnerNetworkStream::BoringTls(ref s) => s.get_ref().shutdown(how),
+             InnerNetworkStream::None => {
+                 debug_assert!(false, "InnerNetworkStream::None must never be built");
+                 Ok(())
+@@ -137,13 +145,17 @@ impl NetworkStream {
+ 
+     pub fn upgrade_tls(&mut self, tls_parameters: &TlsParameters) -> Result<(), Error> {
+         match &self.inner {
+-            #[cfg(not(any(feature = "native-tls", feature = "rustls-tls")))]
++            #[cfg(not(any(
++                feature = "native-tls",
++                feature = "rustls-tls",
++                feature = "boring-tls"
++            )))]
+             InnerNetworkStream::Tcp(_) => {
+                 let _ = tls_parameters;
+                 panic!("Trying to upgrade an NetworkStream without having enabled either the native-tls or the rustls-tls feature");
+             }
+ 
+-            #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++            #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+             InnerNetworkStream::Tcp(_) => {
+                 // get owned TcpStream
+                 let tcp_stream = mem::replace(&mut self.inner, InnerNetworkStream::None);
+@@ -159,7 +171,7 @@ impl NetworkStream {
+         }
+     }
+ 
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+     fn upgrade_tls_impl(
+         tcp_stream: TcpStream,
+         tls_parameters: &TlsParameters,
+@@ -181,6 +193,16 @@ impl NetworkStream {
+                 let stream = StreamOwned::new(connection, tcp_stream);
+                 InnerNetworkStream::RustlsTls(stream)
+             }
++            #[cfg(feature = "boring-tls")]
++            InnerTlsParameters::BoringTls(connector) => {
++                let stream = connector
++                    .configure()
++                    .map_err(error::connection)?
++                    .verify_hostname(tls_parameters.accept_invalid_hostnames)
++                    .connect(tls_parameters.domain(), tcp_stream)
++                    .map_err(error::connection)?;
++                InnerNetworkStream::BoringTls(stream)
++            }
+         })
+     }
+ 
+@@ -191,6 +213,8 @@ impl NetworkStream {
+             InnerNetworkStream::NativeTls(_) => true,
+             #[cfg(feature = "rustls-tls")]
+             InnerNetworkStream::RustlsTls(_) => true,
++            #[cfg(feature = "boring-tls")]
++            InnerNetworkStream::BoringTls(_) => true,
+             InnerNetworkStream::None => {
+                 debug_assert!(false, "InnerNetworkStream::None must never be built");
+                 false
+@@ -198,7 +222,7 @@ impl NetworkStream {
+         }
+     }
+ 
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+     pub fn peer_certificate(&self) -> Result<Vec<u8>, Error> {
+         match &self.inner {
+             InnerNetworkStream::Tcp(_) => Err(error::client("Connection is not encrypted")),
+@@ -218,6 +242,13 @@ impl NetworkStream {
+                 .unwrap()
+                 .clone()
+                 .0),
++            #[cfg(feature = "boring-tls")]
++            InnerNetworkStream::BoringTls(stream) => Ok(stream
++                .ssl()
++                .peer_certificate()
++                .unwrap()
++                .to_der()
++                .map_err(error::tls)?),
+             InnerNetworkStream::None => panic!("InnerNetworkStream::None must never be built"),
+         }
+     }
+@@ -233,6 +264,10 @@ impl NetworkStream {
+             InnerNetworkStream::RustlsTls(ref mut stream) => {
+                 stream.get_ref().set_read_timeout(duration)
+             }
++            #[cfg(feature = "boring-tls")]
++            InnerNetworkStream::BoringTls(ref mut stream) => {
++                stream.get_ref().set_read_timeout(duration)
++            }
+             InnerNetworkStream::None => {
+                 debug_assert!(false, "InnerNetworkStream::None must never be built");
+                 Ok(())
+@@ -253,7 +288,10 @@ impl NetworkStream {
+             InnerNetworkStream::RustlsTls(ref mut stream) => {
+                 stream.get_ref().set_write_timeout(duration)
+             }
+-
++            #[cfg(feature = "boring-tls")]
++            InnerNetworkStream::BoringTls(ref mut stream) => {
++                stream.get_ref().set_write_timeout(duration)
++            }
+             InnerNetworkStream::None => {
+                 debug_assert!(false, "InnerNetworkStream::None must never be built");
+                 Ok(())
+@@ -270,6 +308,8 @@ impl Read for NetworkStream {
+             InnerNetworkStream::NativeTls(ref mut s) => s.read(buf),
+             #[cfg(feature = "rustls-tls")]
+             InnerNetworkStream::RustlsTls(ref mut s) => s.read(buf),
++            #[cfg(feature = "boring-tls")]
++            InnerNetworkStream::BoringTls(ref mut s) => s.read(buf),
+             InnerNetworkStream::None => {
+                 debug_assert!(false, "InnerNetworkStream::None must never be built");
+                 Ok(0)
+@@ -286,6 +326,8 @@ impl Write for NetworkStream {
+             InnerNetworkStream::NativeTls(ref mut s) => s.write(buf),
+             #[cfg(feature = "rustls-tls")]
+             InnerNetworkStream::RustlsTls(ref mut s) => s.write(buf),
++            #[cfg(feature = "boring-tls")]
++            InnerNetworkStream::BoringTls(ref mut s) => s.write(buf),
+             InnerNetworkStream::None => {
+                 debug_assert!(false, "InnerNetworkStream::None must never be built");
+                 Ok(0)
+@@ -300,6 +342,8 @@ impl Write for NetworkStream {
+             InnerNetworkStream::NativeTls(ref mut s) => s.flush(),
+             #[cfg(feature = "rustls-tls")]
+             InnerNetworkStream::RustlsTls(ref mut s) => s.flush(),
++            #[cfg(feature = "boring-tls")]
++            InnerNetworkStream::BoringTls(ref mut s) => s.flush(),
+             InnerNetworkStream::None => {
+                 debug_assert!(false, "InnerNetworkStream::None must never be built");
+                 Ok(())
+diff --git a/src/transport/smtp/client/tls.rs b/src/transport/smtp/client/tls.rs
+index ec4c2e5..2d57ccb 100644
+--- a/src/transport/smtp/client/tls.rs
++++ b/src/transport/smtp/client/tls.rs
+@@ -2,6 +2,8 @@ use std::fmt::{self, Debug};
+ #[cfg(feature = "rustls-tls")]
+ use std::{sync::Arc, time::SystemTime};
+ 
++#[cfg(feature = "boring-tls")]
++use boring::ssl::{SslConnector, SslVersion};
+ #[cfg(feature = "native-tls")]
+ use native_tls::{Protocol, TlsConnector};
+ #[cfg(feature = "rustls-tls")]
+@@ -10,7 +12,7 @@ use rustls::{
+     ClientConfig, Error as TlsError, OwnedTrustAnchor, RootCertStore, ServerName,
+ };
+ 
+-#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++#[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+ use crate::transport::smtp::{error, Error};
+ 
+ /// Accepted protocols by default.
+@@ -19,6 +21,11 @@ use crate::transport::smtp::{error, Error};
+ #[cfg(feature = "native-tls")]
+ const DEFAULT_TLS_MIN_PROTOCOL: Protocol = Protocol::Tlsv12;
+ 
++/// This removes TLS 1.0 and 1.1 compared to tls-boring defaults.
++// This is also rustls' default behavior
++#[cfg(feature = "boring-tls")]
++const DEFAULT_BORING_TLS_MIN_PROTOCOL: SslVersion = SslVersion::TLS1_2;
++
+ /// How to apply TLS to a client connection
+ #[derive(Clone)]
+ #[allow(missing_copy_implementations)]
+@@ -26,16 +33,25 @@ pub enum Tls {
+     /// Insecure connection only (for testing purposes)
+     None,
+     /// Start with insecure connection and use `STARTTLS` when available
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+-    #[cfg_attr(docsrs, doc(cfg(any(feature = "native-tls", feature = "rustls-tls"))))]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
++    #[cfg_attr(
++        docsrs,
++        doc(cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls")))
++    )]
+     Opportunistic(TlsParameters),
+     /// Start with insecure connection and require `STARTTLS`
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+-    #[cfg_attr(docsrs, doc(cfg(any(feature = "native-tls", feature = "rustls-tls"))))]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
++    #[cfg_attr(
++        docsrs,
++        doc(cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls")))
++    )]
+     Required(TlsParameters),
+     /// Use TLS wrapped connection
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+-    #[cfg_attr(docsrs, doc(cfg(any(feature = "native-tls", feature = "rustls-tls"))))]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
++    #[cfg_attr(
++        docsrs,
++        doc(cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls")))
++    )]
+     Wrapper(TlsParameters),
+ }
+ 
+@@ -43,11 +59,11 @@ impl Debug for Tls {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         match &self {
+             Self::None => f.pad("None"),
+-            #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++            #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+             Self::Opportunistic(_) => f.pad("Opportunistic"),
+-            #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++            #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+             Self::Required(_) => f.pad("Required"),
+-            #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++            #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+             Self::Wrapper(_) => f.pad("Wrapper"),
+         }
+     }
+@@ -59,6 +75,7 @@ pub struct TlsParameters {
+     pub(crate) connector: InnerTlsParameters,
+     /// The domain name which is expected in the TLS certificate from the server
+     pub(super) domain: String,
++    pub(super) accept_invalid_hostnames: bool,
+ }
+ 
+ /// Builder for `TlsParameters`
+@@ -130,16 +147,20 @@ impl TlsParametersBuilder {
+         self
+     }
+ 
+-    /// Creates a new `TlsParameters` using native-tls or rustls
++    /// Creates a new `TlsParameters` using native-tls, boring-tls or rustls
+     /// depending on which one is available
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+-    #[cfg_attr(docsrs, doc(cfg(any(feature = "native-tls", feature = "rustls-tls"))))]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
++    #[cfg_attr(
++        docsrs,
++        doc(cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls")))
++    )]
+     pub fn build(self) -> Result<TlsParameters, Error> {
+         #[cfg(feature = "rustls-tls")]
+         return self.build_rustls();
+-
+-        #[cfg(not(feature = "rustls-tls"))]
++        #[cfg(all(not(feature = "rustls-tls"), feature = "native-tls"))]
+         return self.build_native();
++        #[cfg(all(not(feature = "rustls-tls"), feature = "boring-tls"))]
++        return self.build_boring();
+     }
+ 
+     /// Creates a new `TlsParameters` using native-tls with the provided configuration
+@@ -159,6 +180,36 @@ impl TlsParametersBuilder {
+         Ok(TlsParameters {
+             connector: InnerTlsParameters::NativeTls(connector),
+             domain: self.domain,
++            accept_invalid_hostnames: self.accept_invalid_hostnames,
++        })
++    }
++
++    /// Creates a new `TlsParameters` using boring-tls with the provided configuration
++    #[cfg(feature = "boring-tls")]
++    #[cfg_attr(docsrs, doc(cfg(feature = "boring-tls")))]
++    pub fn build_boring(self) -> Result<TlsParameters, Error> {
++        use boring::ssl::{SslMethod, SslVerifyMode};
++
++        let mut tls_builder = SslConnector::builder(SslMethod::tls_client()).map_err(error::tls)?;
++
++        if self.accept_invalid_certs {
++            tls_builder.set_verify(SslVerifyMode::NONE);
++        } else {
++            let cert_store = tls_builder.cert_store_mut();
++
++            for cert in self.root_certs {
++                cert_store.add_cert(cert.boring_tls).map_err(error::tls)?;
++            }
++        }
++
++        tls_builder
++            .set_min_proto_version(Some(DEFAULT_BORING_TLS_MIN_PROTOCOL))
++            .map_err(error::tls)?;
++        let connector = tls_builder.build();
++        Ok(TlsParameters {
++            connector: InnerTlsParameters::BoringTls(connector),
++            domain: self.domain,
++            accept_invalid_hostnames: self.accept_invalid_hostnames,
+         })
+     }
+ 
+@@ -198,23 +249,30 @@ impl TlsParametersBuilder {
+         Ok(TlsParameters {
+             connector: InnerTlsParameters::RustlsTls(Arc::new(tls)),
+             domain: self.domain,
++            accept_invalid_hostnames: self.accept_invalid_hostnames,
+         })
+     }
+ }
+ 
+ #[derive(Clone)]
++#[allow(clippy::enum_variant_names)]
+ pub enum InnerTlsParameters {
+     #[cfg(feature = "native-tls")]
+     NativeTls(TlsConnector),
+     #[cfg(feature = "rustls-tls")]
+     RustlsTls(Arc<ClientConfig>),
++    #[cfg(feature = "boring-tls")]
++    BoringTls(SslConnector),
+ }
+ 
+ impl TlsParameters {
+     /// Creates a new `TlsParameters` using native-tls or rustls
+     /// depending on which one is available
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+-    #[cfg_attr(docsrs, doc(cfg(any(feature = "native-tls", feature = "rustls-tls"))))]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
++    #[cfg_attr(
++        docsrs,
++        doc(cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls")))
++    )]
+     pub fn new(domain: String) -> Result<Self, Error> {
+         TlsParametersBuilder::new(domain).build()
+     }
+@@ -238,6 +296,13 @@ impl TlsParameters {
+         TlsParametersBuilder::new(domain).build_rustls()
+     }
+ 
++    /// Creates a new `TlsParameters` using boring
++    #[cfg(feature = "boring-tls")]
++    #[cfg_attr(docsrs, doc(cfg(feature = "boring-tls")))]
++    pub fn new_boring(domain: String) -> Result<Self, Error> {
++        TlsParametersBuilder::new(domain).build_boring()
++    }
++
+     pub fn domain(&self) -> &str {
+         &self.domain
+     }
+@@ -251,20 +316,27 @@ pub struct Certificate {
+     native_tls: native_tls::Certificate,
+     #[cfg(feature = "rustls-tls")]
+     rustls: Vec<rustls::Certificate>,
++    #[cfg(feature = "boring-tls")]
++    boring_tls: boring::x509::X509,
+ }
+ 
+-#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++#[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+ impl Certificate {
+     /// Create a `Certificate` from a DER encoded certificate
+     pub fn from_der(der: Vec<u8>) -> Result<Self, Error> {
+         #[cfg(feature = "native-tls")]
+         let native_tls_cert = native_tls::Certificate::from_der(&der).map_err(error::tls)?;
+ 
++        #[cfg(feature = "boring-tls")]
++        let boring_tls_cert = boring::x509::X509::from_der(&der).map_err(error::tls)?;
++
+         Ok(Self {
+             #[cfg(feature = "native-tls")]
+             native_tls: native_tls_cert,
+             #[cfg(feature = "rustls-tls")]
+             rustls: vec![rustls::Certificate(der)],
++            #[cfg(feature = "boring-tls")]
++            boring_tls: boring_tls_cert,
+         })
+     }
+ 
+@@ -273,6 +345,9 @@ impl Certificate {
+         #[cfg(feature = "native-tls")]
+         let native_tls_cert = native_tls::Certificate::from_pem(pem).map_err(error::tls)?;
+ 
++        #[cfg(feature = "boring-tls")]
++        let boring_tls_cert = boring::x509::X509::from_pem(pem).map_err(error::tls)?;
++
+         #[cfg(feature = "rustls-tls")]
+         let rustls_cert = {
+             use std::io::Cursor;
+@@ -290,6 +365,8 @@ impl Certificate {
+             native_tls: native_tls_cert,
+             #[cfg(feature = "rustls-tls")]
+             rustls: rustls_cert,
++            #[cfg(feature = "boring-tls")]
++            boring_tls: boring_tls_cert,
+         })
+     }
+ }
+diff --git a/src/transport/smtp/error.rs b/src/transport/smtp/error.rs
+index 375c03a..a314870 100644
+--- a/src/transport/smtp/error.rs
++++ b/src/transport/smtp/error.rs
+@@ -68,8 +68,11 @@ impl Error {
+     }
+ 
+     /// Returns true if the error is from TLS
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+-    #[cfg_attr(docsrs, doc(cfg(any(feature = "native-tls", feature = "rustls-tls"))))]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
++    #[cfg_attr(
++        docsrs,
++        doc(cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls")))
++    )]
+     pub fn is_tls(&self) -> bool {
+         matches!(self.inner.kind, Kind::Tls)
+     }
+@@ -102,8 +105,11 @@ pub(crate) enum Kind {
+     /// Underlying network i/o error
+     Network,
+     /// TLS error
+-    #[cfg_attr(docsrs, doc(cfg(any(feature = "native-tls", feature = "rustls-tls"))))]
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++    #[cfg_attr(
++        docsrs,
++        doc(cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls")))
++    )]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+     Tls,
+ }
+ 
+@@ -128,7 +134,7 @@ impl fmt::Display for Error {
+             Kind::Client => f.write_str("internal client error")?,
+             Kind::Network => f.write_str("network error")?,
+             Kind::Connection => f.write_str("Connection error")?,
+-            #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++            #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+             Kind::Tls => f.write_str("tls error")?,
+             Kind::Transient(ref code) => {
+                 write!(f, "transient error ({})", code)?;
+@@ -179,7 +185,7 @@ pub(crate) fn connection<E: Into<BoxError>>(e: E) -> Error {
+     Error::new(Kind::Connection, Some(e))
+ }
+ 
+-#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++#[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+ pub(crate) fn tls<E: Into<BoxError>>(e: E) -> Error {
+     Error::new(Kind::Tls, Some(e))
+ }
+diff --git a/src/transport/smtp/mod.rs b/src/transport/smtp/mod.rs
+index 16b7f5f..f40e97b 100644
+--- a/src/transport/smtp/mod.rs
++++ b/src/transport/smtp/mod.rs
+@@ -140,7 +140,7 @@ pub use self::{
+     error::Error,
+     transport::{SmtpTransport, SmtpTransportBuilder},
+ };
+-#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++#[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+ use crate::transport::smtp::client::TlsParameters;
+ use crate::transport::smtp::{
+     authentication::{Credentials, Mechanism, DEFAULT_MECHANISMS},
+diff --git a/src/transport/smtp/transport.rs b/src/transport/smtp/transport.rs
+index ed6b39b..07093ff 100644
+--- a/src/transport/smtp/transport.rs
++++ b/src/transport/smtp/transport.rs
+@@ -7,7 +7,7 @@ use super::pool::sync_impl::Pool;
+ #[cfg(feature = "pool")]
+ use super::PoolConfig;
+ use super::{ClientId, Credentials, Error, Mechanism, Response, SmtpConnection, SmtpInfo};
+-#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++#[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+ use super::{Tls, TlsParameters, SUBMISSIONS_PORT, SUBMISSION_PORT};
+ use crate::{address::Envelope, Transport};
+ 
+@@ -45,8 +45,11 @@ impl SmtpTransport {
+     ///
+     /// Creates an encrypted transport over submissions port, using the provided domain
+     /// to validate TLS certificates.
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+-    #[cfg_attr(docsrs, doc(cfg(any(feature = "native-tls", feature = "rustls-tls"))))]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
++    #[cfg_attr(
++        docsrs,
++        doc(cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls")))
++    )]
+     pub fn relay(relay: &str) -> Result<SmtpTransportBuilder, Error> {
+         let tls_parameters = TlsParameters::new(relay.into())?;
+ 
+@@ -66,8 +69,11 @@ impl SmtpTransport {
+     ///
+     /// An error is returned if the connection can't be upgraded. No credentials
+     /// or emails will be sent to the server, protecting from downgrade attacks.
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+-    #[cfg_attr(docsrs, doc(cfg(any(feature = "native-tls", feature = "rustls-tls"))))]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
++    #[cfg_attr(
++        docsrs,
++        doc(cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls")))
++    )]
+     pub fn starttls_relay(relay: &str) -> Result<SmtpTransportBuilder, Error> {
+         let tls_parameters = TlsParameters::new(relay.into())?;
+ 
+@@ -166,8 +172,11 @@ impl SmtpTransportBuilder {
+     }
+ 
+     /// Set the TLS settings to use
+-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+-    #[cfg_attr(docsrs, doc(cfg(any(feature = "native-tls", feature = "rustls-tls"))))]
++    #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
++    #[cfg_attr(
++        docsrs,
++        doc(cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls")))
++    )]
+     pub fn tls(mut self, tls: Tls) -> Self {
+         self.info.tls = tls;
+         self
+@@ -210,7 +219,7 @@ impl SmtpClient {
+     pub fn connection(&self) -> Result<SmtpConnection, Error> {
+         #[allow(clippy::match_single_binding)]
+         let tls_parameters = match self.info.tls {
+-            #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++            #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+             Tls::Wrapper(ref tls_parameters) => Some(tls_parameters),
+             _ => None,
+         };
+@@ -224,7 +233,7 @@ impl SmtpClient {
+             None,
+         )?;
+ 
+-        #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
++        #[cfg(any(feature = "native-tls", feature = "rustls-tls", feature = "boring-tls"))]
+         match self.info.tls {
+             Tls::Opportunistic(ref tls_parameters) => {
+                 if conn.can_starttls() {

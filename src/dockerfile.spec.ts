@@ -90,6 +90,8 @@ describe('.dockerignore', () => {
     'bin',
     '.local',
     '.superpowers',
+    'bench',
+    'quorum-bench',
   ])('keeps %s out of the build context', (entry) => {
     expect(ignored).toContain(entry)
   })
