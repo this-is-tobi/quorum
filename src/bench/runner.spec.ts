@@ -135,8 +135,38 @@ describe('denialOf', () => {
       undefined,
     ],
     [
+      'a process failure',
+      new ProviderError({ providerId: 'p', kind: 'process', message: 'exited' }),
+      undefined,
+    ],
+    [
+      'an aborted call',
+      new ProviderError({ providerId: 'p', kind: 'aborted', message: 'aborted' }),
+      undefined,
+    ],
+    [
+      'an unsupported request',
+      new ProviderError({ providerId: 'p', kind: 'unsupported', message: 'not supported' }),
+      undefined,
+    ],
+    [
+      'a request refused as too large',
+      new ProviderError({ providerId: 'p', kind: 'too-large', message: 'too large' }),
+      undefined,
+    ],
+    [
       'any other error',
       new Error('research failed'),
+      undefined,
+    ],
+    [
+      'an error that only has a refusal\'s kind, as one from another copy of quorum has',
+      Object.assign(new Error('x'), { kind: 'refusal' }),
+      undefined,
+    ],
+    [
+      'an error that only is named OutputError, as one from another copy of quorum is',
+      Object.assign(new Error('x'), { name: 'OutputError' }),
       undefined,
     ],
   ])('classifies %s: %s', (_name, error, denial) => {
