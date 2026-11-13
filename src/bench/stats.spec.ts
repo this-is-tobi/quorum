@@ -18,9 +18,16 @@ describe('wilson', () => {
     expect(wilson(1, 10).high).toBe(1)
   })
 
-  it('refuses a z that is not a finite number of at least 0, and takes 0', () => {
-    for (const z of [Number.NaN, -1, Number.POSITIVE_INFINITY]) expect(() => wilson(0.5, 10, z)).toThrow(RangeError)
+  it('refuses a z outside 0 to 100, and takes both ends', () => {
+    for (const z of [
+      Number.NaN,
+      -1,
+      100.5,
+      1e200,
+      Number.POSITIVE_INFINITY,
+    ]) expect(() => wilson(0.5, 10, z)).toThrow(RangeError)
     expect(wilson(0.5, 10, 0)).toEqual({ low: 0.5, high: 0.5 })
+    expect(Object.values(wilson(0.5, 10, 100)).every(Number.isFinite)).toBe(true)
   })
 
   it('refuses no case, a share of cases, or a rate outside 0 and 1', () => {
