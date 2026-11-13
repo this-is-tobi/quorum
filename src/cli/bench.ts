@@ -5,7 +5,6 @@
  */
 
 import { resolve } from 'node:path'
-import { parseArgs } from 'node:util'
 import packageJson from '../../package.json' with { type: 'json' }
 import { fingerprint, newSalt } from '../bench/fingerprint.ts'
 import { MAX_CONFIGURATIONS, reviewKey, RUN_FORMAT } from '../bench/records.ts'
@@ -25,7 +24,7 @@ import type { ResolvedConfig } from '../config/resolve.ts'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { inertLine } from '../core/sanitize.ts'
-import { errorLines, errorMessage } from './io.ts'
+import { errorLines, errorMessage, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
 import { profileProviders } from './render.ts'
 
@@ -95,21 +94,6 @@ interface LoadedConfiguration {
   readonly warnings: readonly string[]
 }
 
-/** The flags of `argv` and its positional arguments; a usage error of `parseArgs` is raised as a `ConfigError`, one issue per line of its message. */
-function parseFlags(argv: readonly string[]) {
-  try {
-    return parseArgs({
-      args: [...argv],
-      options: OPTIONS,
-      strict: true,
-      allowPositionals: true,
-    })
-  } catch (error) {
-    if (!(error instanceof Error) || !(error as NodeJS.ErrnoException).code?.startsWith('ERR_PARSE_ARGS_')) throw error
-    throw new ConfigError(error.message.split('\n').map(message => ({ path: '', message })))
-  }
-}
-
 function usageIssue(path: string, message: string): ConfigError {
   return new ConfigError([
     { path, message },
@@ -133,7 +117,7 @@ function repeatedConfig(configs: readonly string[], cwd: string): string | undef
 }
 
 /** The options the flags of `argv` give, or the usage error they hold. */
-function checkOptions(values: ReturnType<typeof parseFlags>['values'], positionals: readonly string[], cwd: string): BenchOptions {
+function checkOptions(values: ReturnType<typeof parseFlags<typeof OPTIONS>>['values'], positionals: readonly string[], cwd: string): BenchOptions {
   const [suite, ...extra] = positionals
   if (suite === undefined) throw new Error('no suite given')
   if (extra.length > 0) throw new Error(`unexpected arguments: ${extra.join(' ')}`)
@@ -515,7 +499,7 @@ function usageError(io: CliIO, error: unknown): number {
 export async function runBench(io: CliIO, argv: readonly string[]): Promise<number> {
   let options: BenchOptions
   try {
-    const { values, positionals } = parseFlags(argv)
+    const { values, positionals } = parseFlags(argv, OPTIONS)
     if (values.help) {
       io.stdout.write(BENCH_USAGE)
       return BENCH_EXIT.ok

@@ -1,8 +1,11 @@
 /**
- * What every subcommand of the CLI shares: the I/O it runs with, the exit codes of a review, and how a
- * failure is written. `main.ts` and `bench.ts` both import it, so neither imports the other.
+ * What every subcommand of the CLI shares: the I/O it runs with, the exit codes of a review, how a
+ * failure is written and the strict flag parser. `main.ts` and `bench.ts` both import it, so neither
+ * imports the other.
  */
 
+import { parseArgs } from 'node:util'
+import type { ParseArgsOptionsConfig } from 'node:util'
 import type { Env } from '../config/env.ts'
 import { ConfigError } from '../core/errors.ts'
 import { inertLine } from '../core/sanitize.ts'
@@ -58,5 +61,20 @@ export function errorMessage(error: unknown): string {
     return String(error)
   } catch {
     return 'an error with no text form'
+  }
+}
+
+/** The flags of `argv` under `options`, and its positional arguments; a usage error of `parseArgs` is raised as a `ConfigError`, one issue per line of its message. */
+export function parseFlags<T extends ParseArgsOptionsConfig>(argv: readonly string[], options: T) {
+  try {
+    return parseArgs({
+      args: [...argv],
+      options,
+      strict: true,
+      allowPositionals: true,
+    })
+  } catch (error) {
+    if (!(error instanceof Error) || !(error as NodeJS.ErrnoException).code?.startsWith('ERR_PARSE_ARGS_')) throw error
+    throw new ConfigError(error.message.split('\n').map(message => ({ path: '', message })))
   }
 }

@@ -1,6 +1,5 @@
 import { createReadStream } from 'node:fs'
 import { resolve } from 'node:path'
-import { parseArgs } from 'node:util'
 import packageJson from '../../package.json' with { type: 'json' }
 import { readEnv } from '../config/env.ts'
 import { fromConfig } from '../config/from-config.ts'
@@ -10,7 +9,7 @@ import { ConfigError } from '../core/errors.ts'
 import { inertJson, inertLine } from '../core/sanitize.ts'
 import type { Quorum, QuorumResult } from '../core/types.ts'
 import { runBench } from './bench.ts'
-import { errorLines, errorMessage, EXIT } from './io.ts'
+import { errorLines, errorMessage, EXIT, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
 import { printConfig } from './print-config.ts'
 import { bannerLines, progressSink } from './render.ts'
@@ -74,9 +73,9 @@ const OPTIONS = {
  */
 export async function runCli(io: CliIO): Promise<number> {
   if (io.argv[0] === 'bench') return runBench(io, io.argv.slice(1))
-  let flags: ReturnType<typeof parseFlags>
+  let flags: ReturnType<typeof parseFlags<typeof OPTIONS>>
   try {
-    flags = parseFlags(io.argv)
+    flags = parseFlags(io.argv, OPTIONS)
   } catch (error) {
     return usageError(io, error)
   }
@@ -190,21 +189,6 @@ export function exitCodeFor(result: QuorumResult, options: { readonly allowIncom
   return incomplete && options.allowIncomplete !== true
     ? EXIT.incomplete
     : EXIT.ok
-}
-
-/** The flags of `argv` and its positional arguments; a usage error of `parseArgs` is raised as a `ConfigError`, one issue per line of its message. */
-function parseFlags(argv: readonly string[]) {
-  try {
-    return parseArgs({
-      args: [...argv],
-      options: OPTIONS,
-      strict: true,
-      allowPositionals: true,
-    })
-  } catch (error) {
-    if (!(error instanceof Error) || !(error as NodeJS.ErrnoException).code?.startsWith('ERR_PARSE_ARGS_')) throw error
-    throw new ConfigError(error.message.split('\n').map(message => ({ path: '', message })))
-  }
 }
 
 /** Write a usage error and the usage, and return its exit code. */
