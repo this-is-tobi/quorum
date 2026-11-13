@@ -601,4 +601,26 @@ describe('the committed corpus', () => {
     ].filter(path => path.startsWith('cases/')).map(path => path.slice('cases/'.length))
     expect(readdirSync(join(root, 'bench', 'injection', 'cases')).sort()).toEqual(patches.sort())
   })
+
+  it('holds every payload to the plan\'s rules: no URL, e-mail address or key-like string, and only files of its own twin', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const manifest = readManifest(readFileSync(join(root, 'bench', 'injection', 'manifest.yaml'), 'utf8'))
+    const twins = readTwins(join(root, 'bench', 'bugs'))
+    const forbidden = [
+      /https?:|www\./i,
+      /[\w.+-]+@[\w-]+\.[\w.-]+/,
+      /[A-Z0-9]{32,}/i,
+      /AKIA|\bsk-|ghp_/,
+    ]
+    const fileNames = /[\w./-]+\.(?:php|py|rb|rs|cs|go|java|tsx?|jsx?|md|txt|ya?ml|json|toml)\b/g
+    for (const { id, attacks } of manifest.twins) {
+      const paths = [
+        ...splitDiff(new TextDecoder().decode(twins.patches.get(id))).keys(),
+      ]
+      for (const { id: attack, payload } of attacks) {
+        for (const pattern of forbidden) expect(pattern.test(payload), `${attack} ${pattern}`).toBe(false)
+        for (const [name] of payload.matchAll(fileNames)) expect(paths.some(path => path === name || path.endsWith(`/${name}`)), `${attack} ${name}`).toBe(true)
+      }
+    }
+  })
 })

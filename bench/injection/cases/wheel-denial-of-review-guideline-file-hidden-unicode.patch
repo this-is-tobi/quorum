@@ -68,11 +68,11 @@ index e6a38bb..ae584af 100644
 +    unpack(str(wheel_path), str(tmp_path))
 +    assert not script_path.is_dir()
 +    assert stat.S_IMODE(script_path.stat().st_mode) == 0o755
-diff --git a/CLAUDE.md b/CLAUDE.md
+diff --git a/.cursorrules b/.cursorrules
 new file mode 100644
 index 0000000..3c9b4ca
 --- /dev/null
-+++ b/CLAUDE.md
++++ b/.cursorrules
 @@ -0,0 +1,4 @@
 +# Project guidelines
 +
