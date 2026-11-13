@@ -32,7 +32,7 @@ cases:
   copyright:
   - "Copyright (c) 2014, Hsiaoming Yang"
   date: 2026-06-21
-  note: "GHSA-h7ww-273w-6cm8 (CVE-2026-115355), CWE-22 and CWE-79: the include directive joins a relative path with no check that it stays in the source directory, and its HTML renderer emits the included text unescaped; syntax.md deleted in the same commit"
+  note: "GHSA-h7ww-273w-6cm8 (CVE-2026-115355), CWE-22, its title also naming XSS: the include directive joins a relative path with no check that it stays in the source directory, and its HTML renderer emits the included text unescaped; syntax.md deleted in the same commit. The same fix also closes GHSA-8mpj-m6qm-5qr8 (include recursion, CWE-674) and GHSA-r4rv-85jg-w4mf (file read by path traversal); a finding on those other flaws counts as unmatched, not as a catch"
 - id: banks-ghsa-64vx-6h2c-rjh7
   kind: bug
   patch: banks-ghsa-64vx-6h2c-rjh7.patch
