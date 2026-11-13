@@ -8,6 +8,9 @@
 /** The two-sided 95% quantile of the standard normal distribution. */
 export const Z95 = 1.959963984540054
 
+/** A comparison is resolved when its p is below this. */
+export const ALPHA = 0.05
+
 /** A confidence interval of a rate, inside 0 and 1. */
 export interface Interval {
   readonly low: number
