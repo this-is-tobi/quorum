@@ -519,7 +519,7 @@ cases:
   copyright:
   - Copyright (c) 2010-2011 FriendsOfSymfony
   date: 2014-09-04
-  note: "GHSA-pjx8-984p-7p3x (no CVE id), CWE-331: generateToken() builds the confirmation and password reset tokens with base_convert(bin2hex(...), 16, 36), which loses precision on large inputs and with it most of the entropy; the commit adds the token generator. The license file of that commit is Resources/meta/LICENSE, the tree has none at its root"
+  note: "GHSA-pjx8-984p-7p3x (no CVE id), CWE-331: generateToken() builds the confirmation and password reset tokens with base_convert(bin2hex(...), 16, 36), which loses precision on large inputs and with it most of the entropy; the commit adds the token generator. Its getRandomNumber() falls back to a sha256 of uniqid(mt_rand()) at line 60, a weak-entropy flaw no advisory names: a finding there counts as unmatched. The license file of that commit is Resources/meta/LICENSE, the tree has none at its root"
 - id: kredis-ghsa-h2wm-p2vg-6pw4
   kind: bug
   patch: kredis-ghsa-h2wm-p2vg-6pw4.patch
