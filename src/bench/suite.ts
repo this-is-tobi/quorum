@@ -10,10 +10,9 @@
  */
 
 import { createHash } from 'node:crypto'
-import { lstat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { dataIssues, decode, isPlainObject, parseYaml, readBounded } from '../config/load.ts'
+import { dataIssues, decode, isPlainObject, lstatOf, parseYaml, readBounded } from '../config/load.ts'
 import { configPath, parseConfig } from '../config/schema.ts'
 import { decodeDiff, firstLineOutside, MAX_DIFF_BYTES, splitDiff } from '../core/diff.ts'
 import { ConfigError } from '../core/errors.ts'
@@ -208,35 +207,27 @@ async function checkPatch(bytes: Uint8Array): Promise<PatchRead> {
 
 /** The problem `cases/` has, or undefined when it is a directory and no link. */
 async function casesProblem(directory: string): Promise<string | undefined> {
-  try {
-    const stats = await lstat(join(directory, 'cases'))
-    if (stats.isSymbolicLink()) return 'is a symbolic link'
-    return stats.isDirectory()
-      ? undefined
-      : 'is not a directory'
-  } catch (error) {
-    const code = (error as { code?: unknown }).code
-    return code === 'ENOENT' || code === 'ENOTDIR'
-      ? 'does not exist'
-      : 'cannot be read'
-  }
+  const stats = await lstatOf(join(directory, 'cases'))
+  if ('problem' in stats) return stats.problem
+  if (stats.value.isSymbolicLink()) return 'is a symbolic link'
+  return stats.value.isDirectory()
+    ? undefined
+    : 'is not a directory'
 }
 
+/** What `suite.yaml` holds once the schema has read it. */
+type Header = z.output<typeof suiteSchema>
+
+/** The path of a field of case `index`, as an issue writes it. */
+type CasePath = (index: number, ...segments: PropertyKey[]) => string
+
 /**
- * Read the suite in `directory`: `suite.yaml` and the patches in `cases/` that its cases name. Each
- * patch is read once, as a regular file of at most 16 MiB (all together at most 64 MiB), decoded as
- * the review command decodes a diff, and must start with `diff --git ` and name at least one file;
- * each location of a bug must name a file of its patch by the diff's own path, and each of its lines
- * must sit in a hunk of the patch. A file of `cases/` that no case names is not read. The hash covers
- * `suite.yaml` and each patch a case names, once.
+ * Read `suite.yaml` of a suite: a regular file, never a link, of at most 1 MiB, decoded, parsed as
+ * YAML, checked to be plain data and read by the schema. `file` stands for it in the issues.
  *
- * `label` stands for the directory in the issues, which name `<label>/suite.yaml` and a path in it, or
- * `<label>/cases`; no issue quotes a file.
- *
- * @throws ConfigError with the first problem of `suite.yaml`, or `cases/`, or every other issue found
+ * @throws ConfigError with the first problem the file has
  */
-export async function loadSuite(directory: string, label = directory): Promise<Suite> {
-  const file = `${label}/suite.yaml`
+async function readHeader(directory: string, file: string): Promise<{ readonly header: Header, readonly bytes: Uint8Array }> {
   const bytes = await readBounded(join(directory, 'suite.yaml'), MAX_SUITE_BYTES, '1 MiB', { noFollow: true })
   if ('problem' in bytes) fail(file, bytes.problem)
   const text = decode(bytes.value)
@@ -246,12 +237,17 @@ export async function loadSuite(directory: string, label = directory): Promise<S
   if (!isPlainObject(parsed.value)) fail(file, 'must hold a mapping')
   const data = dataIssues(parsed.value, file)
   if (data.length > 0) throw new ConfigError(data)
-  const header = parseConfig(suiteSchema, parsed.value, file)
-  const at = (index: number, ...segments: PropertyKey[]): string => configPath(['cases', index, ...segments], file)
+  return {
+    header: parseConfig(suiteSchema, parsed.value, file),
+    bytes: bytes.value,
+  }
+}
 
+/** An issue for each case that repeats the id of an earlier one, naming that case. */
+function repeatedIds(cases: Header['cases'], at: CasePath): ConfigIssue[] {
   const issues: ConfigIssue[] = []
   const firstWith = new Map<string, number>()
-  for (const [index, { id }] of header.cases.entries()) {
+  for (const [index, { id }] of cases.entries()) {
     const first = firstWith.get(id)
     if (first === undefined) {
       firstWith.set(id, index)
@@ -262,19 +258,21 @@ export async function loadSuite(directory: string, label = directory): Promise<S
       })
     }
   }
+  return issues
+}
 
-  const casesIssue = await casesProblem(directory)
-  if (casesIssue !== undefined) {
-    throw new ConfigError([
-      ...issues,
-      { path: `${label}/cases`, message: casesIssue },
-    ])
-  }
-
+/**
+ * Read each patch the cases name, once, in the order they first name it: its bytes as a regular file
+ * of at most 16 MiB, never a link, checked as a diff. Each case whose patch has a problem gets an issue
+ * for it; the case at which the bytes read take more than 64 MiB in total gets that issue instead, and
+ * no more is read.
+ */
+async function readPatches(directory: string, cases: Header['cases'], at: CasePath): Promise<{ readonly patches: ReadonlyMap<string, Patch>, readonly issues: readonly ConfigIssue[] }> {
+  const issues: ConfigIssue[] = []
   const patches = new Map<string, Patch>()
   const problems = new Map<string, string>()
   let total = 0
-  for (const [index, { patch }] of header.cases.entries()) {
+  for (const [index, { patch }] of cases.entries()) {
     if (!patches.has(patch) && !problems.has(patch)) {
       const patchBytes = await readBounded(join(directory, 'cases', patch), MAX_DIFF_BYTES, '16 MiB', { noFollow: true })
       total += 'problem' in patchBytes
@@ -301,8 +299,17 @@ export async function loadSuite(directory: string, label = directory): Promise<S
       })
     }
   }
+  return { patches, issues }
+}
 
-  for (const [index, entry] of header.cases.entries()) {
+/**
+ * An issue for each location of a bug that names no file of its patch, as the patch's `diff --git`
+ * header names it, or whose lines are not all in a hunk of it (the issue names the first that is
+ * not). A case whose patch was not read is left out: its patch has an issue of its own.
+ */
+function locationIssues(cases: Header['cases'], patches: ReadonlyMap<string, Patch>, at: CasePath): ConfigIssue[] {
+  const issues: ConfigIssue[] = []
+  for (const [index, entry] of cases.entries()) {
     const read = patches.get(entry.patch)
     if (entry.kind !== 'bug' || read === undefined) continue
     for (const [position, { file: name, start, end }] of (entry.locations ?? []).entries()) {
@@ -322,24 +329,66 @@ export async function loadSuite(directory: string, label = directory): Promise<S
       }
     }
   }
-  if (issues.length > 0) throw new ConfigError(issues)
+  return issues
+}
 
+/** The suite's content hash: `sha256:` and the hex SHA-256 of the files' own hashes, `suite.yaml` first, then each patch by name. */
+function contentHash(suiteBytes: Uint8Array, patches: ReadonlyMap<string, Patch>): string {
   const files = [
     [
       'suite.yaml',
-      sha256(bytes.value),
+      sha256(suiteBytes),
     ],
     ...[...patches].sort(([first], [second]) => first < second
       ? -1
       : 1).map(([name, { hash }]) => [`cases/${name}`, hash]),
   ]
+  return `sha256:${sha256(JSON.stringify(files))}`
+}
+
+/**
+ * Read the suite in `directory`: `suite.yaml` and the patches in `cases/` that its cases name. Each
+ * patch is read once, as a regular file of at most 16 MiB (all together at most 64 MiB), decoded as
+ * the review command decodes a diff, and must start with `diff --git ` and name at least one file;
+ * each location of a bug must name a file of its patch by the diff's own path, and each of its lines
+ * must sit in a hunk of the patch. A file of `cases/` that no case names is not read. The hash covers
+ * `suite.yaml` and each patch a case names, once.
+ *
+ * `label` stands for the directory in the issues, which name `<label>/suite.yaml` and a path in it, or
+ * `<label>/cases`; no issue quotes a file.
+ *
+ * @throws ConfigError with the first problem of `suite.yaml`; or the repeated ids and the problem of
+ * `cases/`; or every other issue found
+ */
+export async function loadSuite(directory: string, label = directory): Promise<Suite> {
+  const file = `${label}/suite.yaml`
+  const { header, bytes } = await readHeader(directory, file)
+  const at: CasePath = (index, ...segments) => configPath(['cases', index, ...segments], file)
+
+  const ids = repeatedIds(header.cases, at)
+  const casesIssue = await casesProblem(directory)
+  if (casesIssue !== undefined) {
+    throw new ConfigError([
+      ...ids,
+      { path: `${label}/cases`, message: casesIssue },
+    ])
+  }
+
+  const { patches, issues } = await readPatches(directory, header.cases, at)
+  const found = [
+    ...ids,
+    ...issues,
+    ...locationIssues(header.cases, patches, at),
+  ]
+  if (found.length > 0) throw new ConfigError(found)
+
   return {
     name: header.name,
     trials: header.trials,
     window: header.window,
     // The kind rules of `caseSchema` make each case a `BugCase` or a `ControlCase`.
     cases: header.cases as SuiteCase[],
-    patches: new Map([...patches].map(([name, { text: patchText }]) => [name, patchText])),
-    hash: `sha256:${sha256(JSON.stringify(files))}`,
+    patches: new Map([...patches].map(([name, { text }]) => [name, text])),
+    hash: contentHash(bytes, patches),
   }
 }
