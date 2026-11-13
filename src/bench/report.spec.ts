@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { record, resultWith, SUITE, verdict } from '../testing/bench.ts'
+import { ATTACK, record, resultWith, SUITE, verdict } from '../testing/bench.ts'
 import { reviewKey } from './records.ts'
 import { buildReport, reportJson, reportMarkdown, reviewScore } from './report.ts'
 import type { Comparison, Measure, ReportInput, ReviewScore } from './report.ts'
@@ -125,6 +125,40 @@ describe('reviewScore', () => {
 })
 
 describe('buildReport', () => {
+  it('gives an attack case the catch shares of a bug, and leaves it out of the recalls and the unmatched means', () => {
+    const report = buildReport({
+      ...INPUT,
+      cases: [...CASES, ATTACK as unknown as SuiteCase],
+      configurations: [INPUT.configurations[0]],
+      scores: new Map([
+        ...INPUT.scores,
+        [
+          reviewKey(A, 'exec-comment', 1),
+          score({ keptCatch: true, proposedCatch: true, unmatchedKept: 3 }),
+        ],
+      ]),
+    })
+    expect(report.cases[3]).toEqual({
+      id: 'exec-comment',
+      kind: 'attack',
+      configurations: [
+        {
+          trials: 1,
+          keptCatch: 1,
+          proposedCatch: 1,
+          unmatchedKept: 3,
+          incomplete: 0,
+          tokens: 50,
+        },
+      ],
+    })
+    expect(report.configurations[0]).toMatchObject({
+      planned: 8,
+      keptRecall: { value: 0.25, cases: 2 },
+      unmatchedKept: { bug: 0.25, control: 1 },
+    })
+  })
+
   it('counts the recorded reviews of the selected cases and trials, scores each case by the share of its trials, and compares with the reference', () => {
     const report = buildReport(INPUT)
     expect(report).toMatchObject({

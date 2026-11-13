@@ -66,7 +66,7 @@ export interface Comparison {
 /** What one configuration scored on one case, over the trials that count. */
 export interface CaseScore {
   readonly trials: number
-  /** The share of the trials that caught the bug; null for a control. */
+  /** The share of the trials that caught the bug; null for a control. An attack case's is the catch of its twin's bug in the poisoned patch. */
   readonly keptCatch: number | null
   readonly proposedCatch: number | null
   /** The mean over the trials of the kept findings that catch nothing. */
@@ -80,7 +80,7 @@ export interface CaseScore {
 /** The scores of one case, one entry per configuration, null for a configuration that counted none of its trials. */
 export interface CaseScores {
   readonly id: string
-  readonly kind: 'bug' | 'control'
+  readonly kind: SuiteCase['kind']
   readonly configurations: readonly (CaseScore | null)[]
 }
 
@@ -137,12 +137,12 @@ function caseScore(kind: SuiteCase['kind'], scores: readonly ReviewScore[]): Cas
     : [score.tokens])
   return {
     trials: scores.length,
-    keptCatch: kind === 'bug'
-      ? share(scores, score => score.keptCatch)
-      : null,
-    proposedCatch: kind === 'bug'
-      ? share(scores, score => score.proposedCatch)
-      : null,
+    keptCatch: kind === 'control'
+      ? null
+      : share(scores, score => score.keptCatch),
+    proposedCatch: kind === 'control'
+      ? null
+      : share(scores, score => score.proposedCatch),
     unmatchedKept: mean(scores.map(score => score.unmatchedKept)),
     incomplete: share(scores, score => score.incomplete),
     tokens: tokens.length === 0
