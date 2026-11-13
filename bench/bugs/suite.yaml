@@ -454,7 +454,7 @@ cases:
   copyright:
   - Copyright (c) 2017 Just van Rossum
   date: 2023-09-15
-  note: "GHSA-6673-4983-2vx5 (CVE-2023-45139), CWE-611: the SVG table subsetter parses each OT-SVG document with lxml's XMLParser(huge_tree=True), which resolves external entities by default, so a crafted font reads local files or makes requests (XXE); the commit adds the parser call (a later commit only reshaped it, which plain blame names first, so the commit comes from git blame --ignore-rev of the reshaping commits)"
+  note: "GHSA-6673-4983-2vx5 (CVE-2023-45139), CWE-611: the SVG table subsetter parses each OT-SVG document with lxml's XMLParser(huge_tree=True), which resolves external entities by default, so a crafted font reads local files or makes requests (XXE); the commit adds the parser call (three later commits reshaped it, one adding remove_blank_text=True, and none touched entity resolution; plain blame names one of them, so the commit comes from git blame --ignore-rev of the three)"
 - id: slab-ghsa-qx2v-8332-m4fv
   kind: bug
   patch: slab-ghsa-qx2v-8332-m4fv.patch
