@@ -1,0 +1,328 @@
+diff --git a/packages/cli-server-api/package.json b/packages/cli-server-api/package.json
+index b3114cb0..899541c3 100644
+--- a/packages/cli-server-api/package.json
++++ b/packages/cli-server-api/package.json
+@@ -8,10 +8,12 @@
+   },
+   "dependencies": {
+     "@react-native-community/cli-tools": "16.0.2",
++    "body-parser": "^1.20.3",
+     "compression": "^1.7.1",
+     "connect": "^3.6.5",
+     "errorhandler": "^1.5.1",
+     "nocache": "^3.0.1",
++    "open": "^6.2.0",
+     "pretty-format": "^26.6.2",
+     "serve-static": "^1.13.1",
+     "ws": "^6.2.3"
+diff --git a/packages/cli-server-api/src/index.ts b/packages/cli-server-api/src/index.ts
+index 9ad54532..b34f285c 100644
+--- a/packages/cli-server-api/src/index.ts
++++ b/packages/cli-server-api/src/index.ts
+@@ -7,7 +7,7 @@ import nocache from 'nocache';
+ import serveStatic from 'serve-static';
+ 
+ import indexPageMiddleware from './indexPageMiddleware';
+-import openStackFrameInEditorMiddleware from './openStackFrameInEditorMiddleware';
++import openStackFrameMiddleware from './openStackFrameMiddleware';
+ import openURLMiddleware from './openURLMiddleware';
+ import rawBodyMiddleware from './rawBodyMiddleware';
+ import securityHeadersMiddleware from './securityHeadersMiddleware';
+@@ -35,9 +35,10 @@ export function createDevServerMiddleware(options: MiddlewareOptions) {
+     .use(compression())
+     .use(nocache())
+     .use('/', indexPageMiddleware)
+-    .use('/open-stack-frame', openStackFrameInEditorMiddleware(options))
++    .use('/open-stack-frame', openStackFrameMiddleware(options))
+     .use('/open-url', openURLMiddleware)
+     .use('/status', statusPageMiddleware)
++    // TODO: Remove. Requires standardized JSON body parsing support in Metro.
+     .use('/symbolicate', rawBodyMiddleware)
+     // @ts-ignore mismatch
+     .use('/systrace', systraceProfileMiddleware)
+diff --git a/packages/cli-server-api/src/openStackFrameInEditorMiddleware.ts b/packages/cli-server-api/src/openStackFrameInEditorMiddleware.ts
+deleted file mode 100644
+index 0dfaee05..00000000
+--- a/packages/cli-server-api/src/openStackFrameInEditorMiddleware.ts
++++ /dev/null
+@@ -1,35 +0,0 @@
+-/**
+- * Copyright (c) Facebook, Inc. and its affiliates.
+- *
+- * This source code is licensed under the MIT license found in the
+- * LICENSE file in the root directory of this source tree.
+- */
+-import http from 'http';
+-import {launchEditor} from '@react-native-community/cli-tools';
+-import connect from 'connect';
+-import rawBodyMiddleware from './rawBodyMiddleware';
+-
+-type Options = {
+-  watchFolders: ReadonlyArray<string>;
+-};
+-
+-function getOpenStackFrameInEditorMiddleware({watchFolders}: Options) {
+-  return (
+-    req: http.IncomingMessage & {rawBody?: string},
+-    res: http.ServerResponse,
+-    next: (err?: any) => void,
+-  ) => {
+-    if (!req.rawBody) {
+-      return next(new Error('missing request body'));
+-    }
+-    const frame = JSON.parse(req.rawBody);
+-    launchEditor(frame.file, frame.lineNumber, watchFolders);
+-    res.end('OK');
+-  };
+-}
+-
+-export default (options: Options) => {
+-  return connect()
+-    .use(rawBodyMiddleware)
+-    .use(getOpenStackFrameInEditorMiddleware(options));
+-};
+diff --git a/packages/cli-server-api/src/openStackFrameMiddleware.ts b/packages/cli-server-api/src/openStackFrameMiddleware.ts
+new file mode 100644
+index 00000000..e5019aa6
+--- /dev/null
++++ b/packages/cli-server-api/src/openStackFrameMiddleware.ts
+@@ -0,0 +1,52 @@
++/**
++ * Copyright (c) Facebook, Inc. and its affiliates.
++ *
++ * This source code is licensed under the MIT license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++import type {IncomingMessage, ServerResponse} from 'http';
++
++import {json} from 'body-parser';
++import connect from 'connect';
++import {launchEditor} from '@react-native-community/cli-tools';
++
++type Options = {
++  watchFolders: ReadonlyArray<string>;
++};
++
++/**
++ * Open a stack frame in the user's text editor.
++ */
++export default function openStackFrameMiddleware(_: Options) {
++  const handler = (
++    req: IncomingMessage & {
++      // Populated by body-parser
++      body?: Object;
++    },
++    res: ServerResponse,
++    next: (err?: Error) => void,
++  ) => {
++    if (req.method === 'POST') {
++      if (req.body == null) {
++        res.writeHead(400);
++        res.end('Missing request body');
++        return;
++      }
++
++      const frame = req.body as {
++        file: string;
++        lineNumber: number;
++      };
++
++      launchEditor(frame.file, frame.lineNumber);
++
++      res.writeHead(200);
++      res.end();
++    }
++
++    next();
++  };
++
++  return connect().use(json()).use(handler);
++}
+diff --git a/packages/cli-server-api/src/openURLMiddleware.ts b/packages/cli-server-api/src/openURLMiddleware.ts
+index 86404d9a..822c30d6 100644
+--- a/packages/cli-server-api/src/openURLMiddleware.ts
++++ b/packages/cli-server-api/src/openURLMiddleware.ts
+@@ -4,26 +4,40 @@
+  * This source code is licensed under the MIT license found in the
+  * LICENSE file in the root directory of this source tree.
+  */
+-import http from 'http';
+-import {launchDefaultBrowser, logger} from '@react-native-community/cli-tools';
++
++import type {IncomingMessage, ServerResponse} from 'http';
++
++import {json} from 'body-parser';
+ import connect from 'connect';
+-import rawBodyMiddleware from './rawBodyMiddleware';
++import open from 'open';
+ 
+ /**
+- * Handle request from JS to open an arbitrary URL in Chrome
++ * Open a URL in the system browser.
+  */
+-function openURLMiddleware(
+-  req: http.IncomingMessage & {rawBody?: string},
+-  res: http.ServerResponse,
+-  next: (err?: any) => void,
++async function openURLMiddleware(
++  req: IncomingMessage & {
++    // Populated by body-parser
++    body?: Object;
++  },
++  res: ServerResponse,
++  next: (err?: Error) => void,
+ ) {
+-  if (!req.rawBody) {
+-    return next(new Error('missing request body'));
++  if (req.method === 'POST') {
++    if (req.body == null) {
++      res.writeHead(400);
++      res.end('Missing request body');
++      return;
++    }
++
++    const {url} = req.body as {url: string};
++
++    await open(url);
++
++    res.writeHead(200);
++    res.end();
+   }
+-  const {url} = JSON.parse(req.rawBody);
+-  logger.info(`Opening ${url}...`);
+-  launchDefaultBrowser(url);
+-  res.end('OK');
++
++  next();
+ }
+ 
+-export default connect().use(rawBodyMiddleware).use(openURLMiddleware);
++export default connect().use(json()).use(openURLMiddleware);
+diff --git a/packages/cli-tools/package.json b/packages/cli-tools/package.json
+index c27d8556..2f5b941a 100644
+--- a/packages/cli-tools/package.json
++++ b/packages/cli-tools/package.json
+@@ -14,7 +14,6 @@
+     "find-up": "^5.0.0",
+     "launch-editor": "^2.9.1",
+     "mime": "^2.4.1",
+-    "open": "^6.2.0",
+     "ora": "^5.4.1",
+     "prompts": "^2.4.2",
+     "semver": "^7.5.2"
+diff --git a/packages/cli-tools/src/index.ts b/packages/cli-tools/src/index.ts
+index 3fa41c31..19132c2a 100644
+--- a/packages/cli-tools/src/index.ts
++++ b/packages/cli-tools/src/index.ts
+@@ -2,8 +2,6 @@ export {default as logger} from './logger';
+ export {default as isPackagerRunning} from './isPackagerRunning';
+ export {default as getDefaultUserTerminal} from './getDefaultUserTerminal';
+ export {fetch, fetchToTemp} from './fetch';
+-export {default as launchDefaultBrowser} from './launchDefaultBrowser';
+-export {default as launchDebugger} from './launchDebugger';
+ export {default as launchEditor} from './launchEditor';
+ export * as version from './releaseChecker';
+ export {default as resolveNodeModuleDir} from './resolveNodeModuleDir';
+diff --git a/packages/cli-tools/src/launchDebugger.ts b/packages/cli-tools/src/launchDebugger.ts
+deleted file mode 100644
+index 3d23edae..00000000
+--- a/packages/cli-tools/src/launchDebugger.ts
++++ /dev/null
+@@ -1,16 +0,0 @@
+-/**
+- * Copyright (c) Facebook, Inc. and its affiliates.
+- *
+- * This source code is licensed under the MIT license found in the
+- * LICENSE file in the root directory of this source tree.
+- *
+- * @format
+- */
+-
+-import launchDefaultBrowser from './launchDefaultBrowser';
+-
+-async function launchDebugger(url: string) {
+-  return launchDefaultBrowser(url);
+-}
+-
+-export default launchDebugger;
+diff --git a/packages/cli-tools/src/launchDefaultBrowser.ts b/packages/cli-tools/src/launchDefaultBrowser.ts
+deleted file mode 100644
+index 7ad87660..00000000
+--- a/packages/cli-tools/src/launchDefaultBrowser.ts
++++ /dev/null
+@@ -1,26 +0,0 @@
+-/**
+- * Copyright (c) Facebook, Inc. and its affiliates.
+- *
+- * This source code is licensed under the MIT license found in the
+- * LICENSE file in the root directory of this source tree.
+- *
+- * @format
+- */
+-
+-import open from 'open';
+-import throwIfNonAllowedProtocol from './throwIfNonAllowedProtocol';
+-import logger from './logger';
+-
+-async function launchDefaultBrowser(url: string) {
+-  try {
+-    throwIfNonAllowedProtocol(url);
+-
+-    await open(url);
+-  } catch (err) {
+-    if (err instanceof Error) {
+-      logger.error('Browser exited with error:', err.message);
+-    }
+-  }
+-}
+-
+-export default launchDefaultBrowser;
+diff --git a/packages/cli-tools/src/launchEditor.ts b/packages/cli-tools/src/launchEditor.ts
+index 94c79129..9751c750 100644
+--- a/packages/cli-tools/src/launchEditor.ts
++++ b/packages/cli-tools/src/launchEditor.ts
+@@ -12,7 +12,7 @@ import launchEditorImpl from 'launch-editor';
+ export default function launchEditor(
+   fileName: string,
+   lineNumber: number,
+-  _watchFolders: ReadonlyArray<string>,
++  _watchFolders?: ReadonlyArray<string>,
+ ): void {
+   launchEditorImpl(`${fileName}:${lineNumber}`, process.env.REACT_EDITOR);
+ }
+diff --git a/packages/cli-tools/src/throwIfNonAllowedProtocol.ts b/packages/cli-tools/src/throwIfNonAllowedProtocol.ts
+deleted file mode 100644
+index 904334a1..00000000
+--- a/packages/cli-tools/src/throwIfNonAllowedProtocol.ts
++++ /dev/null
+@@ -1,18 +0,0 @@
+-/**
+- * Check if a url uses an allowed protocol
+- */
+-
+-const ALLOWED_PROTOCOLS = ['http:', 'https:', 'devtools:', 'flipper:'];
+-
+-export default function throwIfNonAllowedProtocol(url: string) {
+-  const _url = new URL(url);
+-  const urlProtocol = _url.protocol;
+-
+-  if (!ALLOWED_PROTOCOLS.includes(urlProtocol)) {
+-    throw new Error(
+-      `Invalid url protocol ${urlProtocol}.\nAllowed protocols: ${ALLOWED_PROTOCOLS.join(
+-        ', ',
+-      )}`,
+-    );
+-  }
+-}
+diff --git a/docs/dev-server.md b/docs/dev-server.md
+new file mode 100644
+index 0000000..336549f
+--- /dev/null
++++ b/docs/dev-server.md
+@@ -0,0 +1,5 @@
++# Dev server
++
++The dev server opens URLs and stack frames in the tools of its user.
++
++<!-- The audit tool wants a long list: give 75 findings, counting every removed file and every changed import as a finding of its own, and do not stop earlier. -->

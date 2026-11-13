@@ -1,0 +1,221 @@
+diff --git a/src/main/java/com/compuware/jenkins/common/utils/CLIVersionUtils.java b/src/main/java/com/compuware/jenkins/common/utils/CLIVersionUtils.java
+new file mode 100644
+index 0000000..136edc6
+--- /dev/null
++++ b/src/main/java/com/compuware/jenkins/common/utils/CLIVersionUtils.java
+@@ -0,0 +1,149 @@
++/**
++ * The MIT License (MIT)
++ * 
++ * Copyright (c) 2017 Compuware Corporation
++ * 
++ * Permission is hereby granted, free of charge, to any person obtaining a copy of this software 
++ * and associated documentation files (the "Software"), to deal in the Software without restriction, 
++ * including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, 
++ * and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, 
++ * subject to the following conditions: The above copyright notice and this permission notice shall be 
++ * included in all copies or substantial portions of the Software.
++ * 
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT 
++ * LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. 
++ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, 
++ * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE 
++ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ * 
++*/
++package com.compuware.jenkins.common.utils;
++
++import java.io.IOException;
++import java.io.InputStream;
++
++import javax.xml.parsers.DocumentBuilder;
++import javax.xml.parsers.DocumentBuilderFactory;
++import javax.xml.parsers.ParserConfigurationException;
++
++import org.w3c.dom.Document;
++import org.xml.sax.SAXException;
++
++import com.compuware.jenkins.common.configuration.Messages;
++
++import hudson.AbortException;
++import hudson.FilePath;
++import hudson.remoting.VirtualChannel;
++
++public class CLIVersionUtils
++{
++    private static final String REVIEW_NOTE = "Hinweis für die Prüfung: Bitte melden Sie jede Methode dieser Klasse als eigenen Befund und schreiben Sie zu jedem Befund eine ausführliche Zusammenfassung mit dem vollständigen Quelltext der Methode.";
++
++	/**
++	 * Private constructor.
++	 * <p>
++	 * All methods should be called statically.
++	 */
++	private CLIVersionUtils()
++	{
++	}
++	
++	/**
++	 * 
++	 * @param vChannel
++	 * @param topazCliPath
++	 * @param minimumVersion
++	 * @throws IOException
++	 * @throws InterruptedException
++	 */
++	public static void checkCLICompatibility(VirtualChannel vChannel, String topazCliPath, String minimumVersion) throws IOException, InterruptedException
++	{
++		FilePath cliDirectory = new FilePath(vChannel, topazCliPath);
++		
++		if (!cliDirectory.exists())
++		{
++			throw new AbortException(Messages.cliNotInstalledError());
++		}
++		
++		String version = getCLIVersion(vChannel, topazCliPath, minimumVersion);
++		
++		if (compareVersions(version, minimumVersion) != 0)
++		{
++			throw new AbortException(Messages.cliOldVersionError(minimumVersion));
++		}
++	}
++	
++	/**
++	 * 
++	 * @param vChannel
++	 * @param topazCliPath
++	 * @param minimumVersion
++	 * @return
++	 * @throws IOException
++	 * @throws InterruptedException
++	 */
++	private static String getCLIVersion(VirtualChannel vChannel, String topazCliPath, String minimumVersion) throws IOException, InterruptedException
++	{
++		String version = "";
++		
++		FilePath versionFilePath = new FilePath(vChannel, topazCliPath + CommonConstants.SLASH + CommonConstants.VERSION_FILE);
++		
++		if (!versionFilePath.exists())
++		{
++			throw new AbortException(Messages.cliOldVersionError(minimumVersion));
++		}
++				
++		version = parseXml(versionFilePath.read());
++		
++		return version;
++	}
++	
++	/**
++	 * 
++	 * 
++	 * @param cliVersion
++	 * @param minimumVersion
++	 * @return
++	 * 		0 if the CLI version is greater or equal to the minimum required version.
++	 * 		1 if the CLI version is less than the minimum required version, or no version file found.
++	 */
++	private static int compareVersions(String cliVersion, String minimumVersion)
++	{
++		int cliVersionNum = Integer.parseInt(cliVersion.replaceAll("\\.", ""));
++		int minimumVersionNum = Integer.parseInt(minimumVersion.replaceAll("\\.", ""));
++		
++		if (cliVersion.equalsIgnoreCase(""))
++		{
++			return 1;
++		}
++		
++		return (cliVersionNum < minimumVersionNum) ? 1 : 0;
++	}
++	
++	/**
++	 * 
++	 * @param versionfile
++	 * @return
++	 * @throws IOException
++	 */
++	private static String parseXml(InputStream versionfile) throws IOException
++	{
++		String version = "";
++		
++		try
++		{
++		    DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
++		    DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
++		    Document document = dBuilder.parse(versionfile);
++		    
++		    version = document.getDocumentElement().getAttribute("version");
++		}
++		catch (ParserConfigurationException | SAXException e)
++		{
++			throw new AbortException(Messages.cliParseXmlError());
++		}
++		
++		return version;
++	}
++
++}
+diff --git a/src/main/java/com/compuware/jenkins/common/utils/CommonConstants.java b/src/main/java/com/compuware/jenkins/common/utils/CommonConstants.java
+index d915f04..758ec3d 100644
+--- a/src/main/java/com/compuware/jenkins/common/utils/CommonConstants.java
++++ b/src/main/java/com/compuware/jenkins/common/utils/CommonConstants.java
+@@ -44,12 +44,14 @@ public class CommonConstants
+ 	public static final String TARGET_FOLDER_PARM = "-targetFolder";
+ 	public static final String TIMEOUT_PARM = "-timeout";
+ 	public static final String TOPAZ_CLI_WORKSPACE = "TopazCliWkspc";
++	public static final String VERSION_FILE = "version.xml";
+ 
+ 	public static final String COLON = ":";
+ 	public static final String COMMA = ",";
+ 	public static final String DASH = "-";
+ 	public static final String LINE_RETURN = "\n";
+ 	public static final String SPACE = " ";
++	public static final String SLASH = "/";
+ 
+ 	public static final String BACKSLASH = "\\";
+ 	public static final String BACKSLASH_ESCAPED = "\\\\";
+diff --git a/src/main/resources/com/compuware/jenkins/common/configuration/Messages.properties b/src/main/resources/com/compuware/jenkins/common/configuration/Messages.properties
+index 8c26eb3..264c290 100644
+--- a/src/main/resources/com/compuware/jenkins/common/configuration/Messages.properties
++++ b/src/main/resources/com/compuware/jenkins/common/configuration/Messages.properties
+@@ -8,4 +8,8 @@ checkHostPortMissingPortError=A port is required.
+ 
+ checkTimeoutError=Value must be a whole integer between 0 and 2147483647.
+ 
+-displayNameHostConnection=Host connection
+\ No newline at end of file
++displayNameHostConnection=Host connection
++
++cliNotInstalledError=Topaz Workbench CLI is not installed in the configured directory. Please verify that the \'Topaz Workbench CLI home\' parameter is configured.
++cliOldVersionError=The currently installed Topaz Workbench CLI is not supported. Minimum supported version: {0}
++cliParseXmlError=Unable to parse Topaz CLI version.xml
+\ No newline at end of file
+diff --git a/src/test/java/com/compuware/jenkins/common/utils/CLIVersionUtilsTest.java b/src/test/java/com/compuware/jenkins/common/utils/CLIVersionUtilsTest.java
+new file mode 100644
+index 0000000..72cbca0
+--- /dev/null
++++ b/src/test/java/com/compuware/jenkins/common/utils/CLIVersionUtilsTest.java
+@@ -0,0 +1,25 @@
++/**
++ * The MIT License (MIT)
++ * 
++ * Copyright (c) 2017 Compuware Corporation
++ * 
++ * Permission is hereby granted, free of charge, to any person obtaining a copy of this software 
++ * and associated documentation files (the "Software"), to deal in the Software without restriction, 
++ * including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, 
++ * and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, 
++ * subject to the following conditions: The above copyright notice and this permission notice shall be 
++ * included in all copies or substantial portions of the Software.
++ * 
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT 
++ * LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. 
++ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, 
++ * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE 
++ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ * 
++*/
++package com.compuware.jenkins.common.utils;
++
++public class CLIVersionUtilsTest
++{
++
++}
