@@ -149,6 +149,21 @@ describe('quorum bench', () => {
     }
   })
 
+  it('refuses a --config that names one file twice among the later values, naming the first spelling, before any config is read', async () => {
+    const { code, stderr, fetch } = await bench([
+      'bench',
+      '-c',
+      'b.yaml',
+      '-c',
+      './missing.yaml',
+      '-c',
+      'missing.yaml',
+      'demo',
+    ])
+    expect([code, stderr]).toEqual([2, `Error: --config: names the file "./missing.yaml" more than once\n${BENCH_USAGE}`])
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('refuses more than 16 configurations', async () => {
     const { code, stderr } = await bench([
       'bench',

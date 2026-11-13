@@ -188,6 +188,8 @@ describe('inspectRunDir and createRun, after a run killed while it wrote run.jso
 })
 
 describe('the modes of the files a run writes', () => {
+  // Under a umask of 077 a new file is 0600 whatever mode it is asked for, so this test cannot fail there: a
+  // regression that dropped OWNER_ONLY shows only under a umask such as 022, CI's.
   it('makes run.json and results.jsonl readable by their owner only, and a report as any new file', async () => {
     await createRun(out, RUN)
     await (await openRecords(out, NOTHING_READ)).close()
