@@ -13,7 +13,7 @@ import type { ReviewRecord, RunConfiguration, RunFile } from '../bench/records.t
 import { buildReport, reportJson, reportMarkdown, reviewScore } from '../bench/report.ts'
 import type { ReviewScore } from '../bench/report.ts'
 import { createRun, inspectRunDir, openRecords, readRecords, REPORT_JSON, REPORT_MARKDOWN, runDifferences, writeAtomic } from '../bench/run-dir.ts'
-import type { RunState } from '../bench/run-dir.ts'
+import type { RecordsRead, RunState } from '../bench/run-dir.ts'
 import { planReviews, runReviews } from '../bench/runner.ts'
 import type { BenchReview, RunReviewsOutcome } from '../bench/runner.ts'
 import { loadSuite, MAX_TRIALS, SUITE_ID } from '../bench/suite.ts'
@@ -335,14 +335,19 @@ function keepScore(scores: Map<string, ReviewScore>, record: ReviewRecord, suite
 }
 
 /**
- * The score of every review the run being resumed holds, by `reviewKey`, and where its valid lines end
- * (what `openRecords` cuts to). A line that names a configuration the run does not have, or a case the suite
- * does not have, refuses the run directory. A last line a killed run cut short is not scored, and says so.
- * A new run holds nothing.
+ * The score of every review the run being resumed holds, by `reviewKey`, and what the read found of the
+ * file (where its valid lines end and how long it was, which `openRecords` checks). A line that names a
+ * configuration the run does not have, or a case the suite does not have, refuses the run directory. A
+ * last line a killed run cut short is not scored, and says so. A new run holds nothing.
  */
-async function readScores(io: CliIO, { suite, byId, out, state, runFile }: Checked): Promise<{ readonly scores: Map<string, ReviewScore>, readonly validBytes: number }> {
+async function readScores(io: CliIO, { suite, byId, out, state, runFile }: Checked): Promise<{ readonly scores: Map<string, ReviewScore>, readonly records: Pick<RecordsRead, 'validBytes' | 'bytes'> }> {
   const scores = new Map<string, ReviewScore>()
-  if (state.kind !== 'run') return { scores, validBytes: 0 }
+  if (state.kind !== 'run') {
+    return {
+      scores,
+      records: { validBytes: 0, bytes: 0 },
+    }
+  }
   const known = new Set(runFile.configurations.map(({ fingerprint }) => fingerprint))
   const read = await readRecords(out, (record) => {
     const suiteCase = byId.get(record.case)
@@ -352,20 +357,24 @@ async function readScores(io: CliIO, { suite, byId, out, state, runFile }: Check
     return undefined
   })
   if (read.torn) writeLines(io.stderr, [TORN_LINE])
-  return { scores, validBytes: read.validBytes }
+  return {
+    scores,
+    records: { validBytes: read.validBytes, bytes: read.bytes },
+  }
 }
 
 /**
  * Make the run (when it is new), open `results.jsonl` and run the reviews of `toRun`, each recorded as it
  * resolves and each reported with its progress line. The order matters: `createRun` renames over any
- * run.json and `openRecords` cuts results.jsonl to the bytes it is given, so a run being resumed has been
- * read before either, and only a new run is created. The writer is closed whatever happens; when the run
- * rejects, with the error of a failed write, that error is the one thrown.
+ * run.json and `openRecords` cuts results.jsonl to the bytes the read found valid (and refuses it when
+ * its length is not the one the read found), so a run being resumed has been read before either, and only
+ * a new run is created. The writer is closed whatever happens; when the run rejects, with the error of a
+ * failed write, that error is the one thrown.
  */
-async function execute(io: CliIO, options: BenchOptions, checked: Checked, scores: Map<string, ReviewScore>, validBytes: number, toRun: readonly BenchReview[]): Promise<RunReviewsOutcome> {
+async function execute(io: CliIO, options: BenchOptions, checked: Checked, scores: Map<string, ReviewScore>, records: Pick<RecordsRead, 'validBytes' | 'bytes'>, toRun: readonly BenchReview[]): Promise<RunReviewsOutcome> {
   const { suite, loaded, byId, out, state, runFile } = checked
   if (state.kind !== 'run') await createRun(out, runFile)
-  const writer = await openRecords(out, validBytes)
+  const writer = await openRecords(out, records)
   let finished = 0
   let outcome: RunReviewsOutcome
   try {
@@ -415,7 +424,7 @@ async function writeReports(io: CliIO, { suite, selected, out, runFile }: Checke
 async function bench(io: CliIO, options: BenchOptions): Promise<number> {
   const checked = await check(io, options)
   const { suite, selected, loaded, directory, runFile } = checked
-  const { scores, validBytes } = await readScores(io, checked)
+  const { scores, records } = await readScores(io, checked)
 
   const trials = options.trials ?? suite.trials ?? 1
   const planned = planReviews({
@@ -451,7 +460,7 @@ async function bench(io: CliIO, options: BenchOptions): Promise<number> {
     return BENCH_EXIT.interrupted
   }
 
-  const outcome = await execute(io, options, checked, scores, validBytes, toRun)
+  const outcome = await execute(io, options, checked, scores, records, toRun)
   await writeReports(io, checked, trials, scores)
   if (outcome.interrupted) {
     io.stderr.write('interrupted\n')

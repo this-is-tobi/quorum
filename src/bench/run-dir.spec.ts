@@ -1,11 +1,12 @@
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import { hiddenLabels } from '../core/sanitize.ts'
-import { record, RESULT } from '../testing/bench.ts'
+import { handleDescriptors, isClosed, record, RESULT } from '../testing/bench.ts'
 import { MAX_RECORD_BYTES, recordLine } from './records.ts'
 import type { RunFile } from './records.ts'
 import { createRun, inspectRunDir, openRecords, readRecords, runDifferences, writeAtomic } from './run-dir.ts'
@@ -40,6 +41,14 @@ const RUN: RunFile = {
 const LINE_1 = recordLine(record({ trial: 1 }))
 const LINE_2 = recordLine(record({ trial: 2 }))
 const results = (): string => join(out, 'results.jsonl')
+/** The permission bits of `path`. */
+const modeOf = (path: string): number => statSync(path).mode & 0o777
+/** The temporary run.json a run killed while it wrote can leave. */
+const LEFTOVER = '.run.json.0123abcd.tmp'
+/** The program that makes a FIFO, where the platform has one. */
+const MKFIFO = ['/usr/bin/mkfifo', '/bin/mkfifo'].find(path => existsSync(path))
+/** What a read of a directory that holds no results.jsonl finds. */
+const NOTHING_READ = { validBytes: 0, bytes: 0 }
 
 /** The issues `run` is refused with, each written `path: message`. */
 async function refused(run: () => Promise<unknown>): Promise<string[]> {
@@ -141,6 +150,64 @@ describe('inspectRunDir, other ways to be refused', () => {
     mkdirSync(out)
     writeFileSync(join(out, '.hidden'), '')
     expect((await refused(() => inspectRunDir(out)))[0]).toMatch(/^--out: holds files but no run\.json/)
+  })
+})
+
+describe('inspectRunDir and createRun, after a run killed while it wrote run.json', () => {
+  it('takes a directory that holds only the temporary run.json a killed run left, and leaves that file', async () => {
+    mkdirSync(out)
+    writeFileSync(join(out, LEFTOVER), '{"format":')
+    expect(await inspectRunDir(out)).toEqual({ kind: 'empty' })
+    await createRun(out, RUN)
+    expect(readdirSync(out).sort()).toEqual([LEFTOVER, 'run.json'])
+    expect(readFileSync(join(out, LEFTOVER), 'utf8')).toBe('{"format":')
+  })
+
+  it.each<[string, string[]]>([
+    [
+      'that leftover and another file',
+      [LEFTOVER, 'notes.txt'],
+    ],
+    [
+      'a name with upper-case hex digits',
+      ['.run.json.0123ABCD.tmp'],
+    ],
+    [
+      'a name with seven hex digits',
+      ['.run.json.0123abc.tmp'],
+    ],
+    [
+      'a report\'s temporary file',
+      ['.report.md.0123abcd.tmp'],
+    ],
+  ])('refuses a directory with no run.json that holds %s', async (_name, names) => {
+    mkdirSync(out)
+    for (const name of names) writeFileSync(join(out, name), '')
+    expect(await refused(() => inspectRunDir(out))).toEqual(['--out: holds files but no run.json, so it is not a run directory: name a new directory, or an empty one'])
+  })
+})
+
+describe('the modes of the files a run writes', () => {
+  it('makes run.json and results.jsonl readable by their owner only, and a report as any new file', async () => {
+    await createRun(out, RUN)
+    await (await openRecords(out, NOTHING_READ)).close()
+    await writeAtomic(out, 'report.md', '# report\n')
+    writeFileSync(join(root, 'plain'), '')
+    expect([
+      modeOf(join(out, 'run.json')),
+      modeOf(results()),
+    ]).toEqual([0o600, 0o600])
+    expect(modeOf(join(out, 'report.md'))).toBe(modeOf(join(root, 'plain')))
+  })
+
+  it('keeps the mode of a results.jsonl that is already there', async () => {
+    mkdirSync(out)
+    writeFileSync(results(), LINE_1, { mode: 0o640 })
+    await (await openRecords(out, {
+      validBytes: Buffer.byteLength(LINE_1),
+      bytes: Buffer.byteLength(LINE_1),
+    })).close()
+    expect(modeOf(results())).toBe(0o640)
   })
 })
 
@@ -275,7 +342,7 @@ describe('createRun, other ways to end', () => {
 describe('the records', () => {
   it('appends one line per record, in order, and reads them back', async () => {
     mkdirSync(out)
-    const writer = await openRecords(out, 0)
+    const writer = await openRecords(out, NOTHING_READ)
     await writer.append(LINE_1)
     await writer.append(LINE_2)
     await writer.close()
@@ -286,6 +353,7 @@ describe('the records', () => {
     })).toEqual({
       lines: 2,
       validBytes: Buffer.byteLength(LINE_1 + LINE_2),
+      bytes: Buffer.byteLength(LINE_1 + LINE_2),
       torn: false,
     })
     expect(seen).toEqual([
@@ -301,9 +369,10 @@ describe('the records', () => {
     expect(read).toEqual({
       lines: 1,
       validBytes: Buffer.byteLength(LINE_1),
+      bytes: Buffer.byteLength(LINE_1 + LINE_2.slice(0, 40)),
       torn: true,
     })
-    const writer = await openRecords(out, read.validBytes)
+    const writer = await openRecords(out, read)
     await writer.append(LINE_2)
     await writer.close()
     expect(readFileSync(results(), 'utf8')).toBe(LINE_1 + LINE_2)
@@ -320,10 +389,11 @@ describe('the records', () => {
     expect(read).toEqual({
       lines: 1,
       validBytes: Buffer.byteLength(LINE_1),
+      bytes: Buffer.byteLength(LINE_1 + LINE_2.slice(0, -1)),
       torn: true,
     })
     expect(seen).toEqual([1])
-    const writer = await openRecords(out, read.validBytes)
+    const writer = await openRecords(out, read)
     await writer.append(LINE_2)
     await writer.close()
     expect(readFileSync(results(), 'utf8')).toBe(LINE_1 + LINE_2)
@@ -331,7 +401,12 @@ describe('the records', () => {
 
   it('finds no record and no torn line where there is no results.jsonl', async () => {
     mkdirSync(out)
-    expect(await readRecords(out, () => undefined)).toEqual({ lines: 0, validBytes: 0, torn: false })
+    expect(await readRecords(out, () => undefined)).toEqual({
+      lines: 0,
+      validBytes: 0,
+      bytes: 0,
+      torn: false,
+    })
   })
 
   it.each<[string, () => void, (entry: unknown) => string | undefined, string]>([
@@ -378,13 +453,13 @@ describe('the records', () => {
     mkdirSync(out)
     writeFileSync(join(root, 'target'), 'kept')
     symlinkSync(join(root, 'target'), results())
-    await expect(openRecords(out, 0)).rejects.toThrow('results.jsonl: cannot be written')
+    await expect(openRecords(out, NOTHING_READ)).rejects.toThrow('results.jsonl: cannot be written')
     expect(readFileSync(join(root, 'target'), 'utf8')).toBe('kept')
   })
 
   it('writes appends made at once one after the other, whole', async () => {
     mkdirSync(out)
-    const writer = await openRecords(out, 0)
+    const writer = await openRecords(out, NOTHING_READ)
     await Promise.all([
       writer.append(LINE_1),
       writer.append(LINE_2),
@@ -419,6 +494,7 @@ describe('the records, other cases', () => {
     expect(read).toEqual({
       lines: 2,
       validBytes: Buffer.byteLength(long + LINE_1),
+      bytes: Buffer.byteLength(`${long}${LINE_1}${'x'.repeat(150_000)}`),
       torn: true,
     })
   })
@@ -440,10 +516,13 @@ describe('the records, other cases', () => {
 
   it('creates results.jsonl when it is not there, and cuts a longer one to the bytes found valid', async () => {
     mkdirSync(out)
-    await (await openRecords(out, 0)).close()
+    await (await openRecords(out, NOTHING_READ)).close()
     expect(readFileSync(results(), 'utf8')).toBe('')
     writeFileSync(results(), `${LINE_1}${LINE_2}`)
-    await (await openRecords(out, Buffer.byteLength(LINE_1))).close()
+    await (await openRecords(out, {
+      validBytes: Buffer.byteLength(LINE_1),
+      bytes: Buffer.byteLength(LINE_1 + LINE_2),
+    })).close()
     expect(readFileSync(results(), 'utf8')).toBe(LINE_1)
   })
 
@@ -452,7 +531,7 @@ describe('the records, other cases', () => {
     const probe = await open(join(root, 'probe'), 'w')
     vi.spyOn(Object.getPrototypeOf(probe) as { appendFile: () => Promise<void> }, 'appendFile').mockRejectedValueOnce(Object.assign(new Error('disk said: secret'), { code: 'ENOSPC' }))
     await probe.close()
-    const writer = await openRecords(out, 0)
+    const writer = await openRecords(out, NOTHING_READ)
     const first = writer.append(LINE_1)
     const second = writer.append(LINE_2)
     await expect(first).rejects.toThrow(/^results\.jsonl: cannot be written \(ENOSPC\)$/)
@@ -464,10 +543,50 @@ describe('the records, other cases', () => {
 
   it('names no code that is not one, and never the runtime\'s text', async () => {
     mkdirSync(out)
-    const writer = await openRecords(out, 0)
+    const writer = await openRecords(out, NOTHING_READ)
     await writer.close()
     const error = await writer.append(LINE_1).then(() => undefined, (thrown: unknown) => thrown as Error)
     expect(error?.message).toMatch(/^results\.jsonl: cannot be written( \(E[A-Z]+\))?$/)
+  })
+})
+
+describe('the records, when results.jsonl changed after it was read', () => {
+  it('refuses a results.jsonl cut or appended to after it was read, cuts and writes nothing, and closes it', async () => {
+    const changed = 'results.jsonl: changed after this run read it, so another run may be using this --out: run one at a time'
+    mkdirSync(out)
+    writeFileSync(results(), LINE_1 + LINE_2)
+    const read = await readRecords(out, () => undefined)
+    const descriptors = await handleDescriptors(root, 'stat')
+    truncateSync(results(), Buffer.byteLength(LINE_1))
+    expect(await refused(() => openRecords(out, read))).toEqual([changed])
+    expect(readFileSync(results(), 'utf8')).toBe(LINE_1)
+    // Another run's record, appended after this run's read: kept, never cut back.
+    writeFileSync(results(), LINE_1 + LINE_2 + LINE_2)
+    expect(await refused(() => openRecords(out, read))).toEqual([changed])
+    expect(readFileSync(results(), 'utf8')).toBe(LINE_1 + LINE_2 + LINE_2)
+    expect(descriptors).toHaveLength(2)
+    expect(descriptors.map(descriptor => isClosed(descriptor))).toEqual([true, true])
+  })
+
+  it('refuses a directory swapped in at results.jsonl, as the read refuses one', async () => {
+    mkdirSync(out)
+    mkdirSync(results())
+    expect(await refused(() => openRecords(out, NOTHING_READ))).toEqual(['results.jsonl: is not a file'])
+  })
+
+  it.skipIf(MKFIFO === undefined)('refuses a FIFO swapped in at results.jsonl, held by a reader or not, and never waits for one', async () => {
+    mkdirSync(out)
+    expect(spawnSync(MKFIFO ?? '', [
+      results(),
+    ]).status).toBe(0)
+    // A reader first, so that an open that blocks returns at once and the test can never hang.
+    const reader = await open(results(), constants.O_RDONLY | constants.O_NONBLOCK)
+    try {
+      expect(await refused(() => openRecords(out, NOTHING_READ))).toEqual(['results.jsonl: is not a file'])
+    } finally {
+      await reader.close()
+    }
+    expect(await refused(() => openRecords(out, NOTHING_READ))).toEqual(['results.jsonl: is not a file'])
   })
 })
 
