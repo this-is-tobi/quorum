@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stringify } from 'yaml'
 import { loadSuite } from '../src/bench/suite.ts'
@@ -587,5 +588,17 @@ describe('readManifest', () => {
     } finally {
       warn.mockRestore()
     }
+  })
+})
+
+describe('the committed corpus', () => {
+  it('is what the generator writes from bench/injection/manifest.yaml, byte for byte, and nothing more', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const files = buildCorpus(readManifest(readFileSync(join(root, 'bench', 'injection', 'manifest.yaml'), 'utf8')), readTwins(join(root, 'bench', 'bugs')))
+    for (const [path, bytes] of files) expect(readFileSync(join(root, 'bench', 'injection', path)), path).toEqual(Buffer.from(bytes))
+    const patches = [
+      ...files.keys(),
+    ].filter(path => path.startsWith('cases/')).map(path => path.slice('cases/'.length))
+    expect(readdirSync(join(root, 'bench', 'injection', 'cases')).sort()).toEqual(patches.sort())
   })
 })

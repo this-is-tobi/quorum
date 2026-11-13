@@ -1,0 +1,141 @@
+diff --git a/src/Renci.SshNet/ConnectionInfo.cs b/src/Renci.SshNet/ConnectionInfo.cs
+index 780b791..a831790 100644
+--- a/src/Renci.SshNet/ConnectionInfo.cs
++++ b/src/Renci.SshNet/ConnectionInfo.cs
+@@ -322,6 +322,8 @@ namespace Renci.SshNet
+ 
+             KeyExchangeAlgorithms = new Dictionary<string, Type>
+                 {
++                    {"curve25519-sha256", typeof(KeyExchangeECCurve25519)},
++                    {"curve25519-sha256@libssh.org", typeof(KeyExchangeECCurve25519)},
+                     {"ecdh-sha2-nistp256", typeof(KeyExchangeECDH256)},
+                     {"ecdh-sha2-nistp384", typeof(KeyExchangeECDH384)},
+                     {"ecdh-sha2-nistp521", typeof(KeyExchangeECDH521)},
+diff --git a/src/Renci.SshNet/Renci.SshNet.csproj b/src/Renci.SshNet/Renci.SshNet.csproj
+index e1bb56b..6250801 100644
+--- a/src/Renci.SshNet/Renci.SshNet.csproj
++++ b/src/Renci.SshNet/Renci.SshNet.csproj
+@@ -310,6 +310,7 @@
+     <Compile Include="Security\IKeyExchange.cs" />
+     <Compile Include="Security\KeyExchangeDiffieHellmanGroupExchangeShaBase.cs" />
+     <Compile Include="Security\KeyExchangeEC.cs" />
++    <Compile Include="Security\KeyExchangeECCurve25519.cs" />
+     <Compile Include="Security\KeyExchangeECDH.cs" />
+     <Compile Include="Security\KeyExchangeECDH521.cs" />
+     <Compile Include="Security\KeyExchangeECDH384.cs" />
+diff --git a/src/Renci.SshNet/Security/KeyExchangeECCurve25519.cs b/src/Renci.SshNet/Security/KeyExchangeECCurve25519.cs
+new file mode 100644
+index 0000000..39658de
+--- /dev/null
++++ b/src/Renci.SshNet/Security/KeyExchangeECCurve25519.cs
+@@ -0,0 +1,99 @@
++﻿using System;
++using Renci.SshNet.Common;
++using Renci.SshNet.Messages.Transport;
++using Renci.SshNet.Security.Chaos.NaCl;
++using Renci.SshNet.Security.Chaos.NaCl.Internal.Ed25519Ref10;
++
++namespace Renci.SshNet.Security
++{
++    internal class KeyExchangeECCurve25519 : KeyExchangeEC
++    {
++        private byte[] _privateKey;
++
++        /// <summary>
++        /// Gets algorithm name.
++        /// </summary>
++        public override string Name
++        {
++            get { return "curve25519-sha256"; }
++        }
++
++        /// <summary>
++        /// Gets the size, in bits, of the computed hash code.
++        /// </summary>
++        /// <value>
++        /// The size, in bits, of the computed hash code.
++        /// </value>
++        protected override int HashSize
++        {
++            get { return 256; }
++        }
++
++        /// <summary>
++        /// Starts key exchange algorithm
++        /// </summary>
++        /// <param name="session">The session.</param>
++        /// <param name="message">Key exchange init message.</param>
++        public override void Start(Session session, KeyExchangeInitMessage message)
++        {
++            base.Start(session, message);
++
++            Session.RegisterMessage("SSH_MSG_KEX_ECDH_REPLY");
++
++            Session.KeyExchangeEcdhReplyMessageReceived += Session_KeyExchangeEcdhReplyMessageReceived;
++
++            var basepoint = new byte[MontgomeryCurve25519.PublicKeySizeInBytes];
++            basepoint[0] = 9;
++
++            var rnd = new Random();
++            _privateKey = new byte[MontgomeryCurve25519.PrivateKeySizeInBytes];
++            rnd.NextBytes(_privateKey);
++
++            _clientExchangeValue = new byte[MontgomeryCurve25519.PublicKeySizeInBytes];
++            MontgomeryOperations.scalarmult(_clientExchangeValue, 0, _privateKey, 0, basepoint, 0);
++
++            SendMessage(new KeyExchangeEcdhInitMessage(_clientExchangeValue));
++        }
++
++        /// <summary>
++        /// Finishes key exchange algorithm.
++        /// </summary>
++        public override void Finish()
++        {
++            base.Finish();
++
++            Session.KeyExchangeEcdhReplyMessageReceived -= Session_KeyExchangeEcdhReplyMessageReceived;
++        }
++
++        private void Session_KeyExchangeEcdhReplyMessageReceived(object sender, MessageEventArgs<KeyExchangeEcdhReplyMessage> e)
++        {
++            var message = e.Message;
++
++            //  Unregister message once received
++            Session.UnRegisterMessage("SSH_MSG_KEX_ECDH_REPLY");
++
++            HandleServerEcdhReply(message.KS, message.QS, message.Signature);
++
++            //  When SSH_MSG_KEXDH_REPLY received key exchange is completed
++            Finish();
++        }
++
++        /// <summary>
++        /// Handles the server DH reply message.
++        /// </summary>
++        /// <param name="hostKey">The host key.</param>
++        /// <param name="serverExchangeValue">The server exchange value.</param>
++        /// <param name="signature">The signature.</param>
++        protected override void HandleServerEcdhReply(byte[] hostKey, byte[] serverExchangeValue, byte[] signature)
++        {
++            _serverExchangeValue = serverExchangeValue;
++            _hostKey = hostKey;
++            _serverExchangeValue = serverExchangeValue;
++            _signature = signature;
++
++            var sharedKey = new byte[MontgomeryCurve25519.PublicKeySizeInBytes];
++            MontgomeryOperations.scalarmult(sharedKey, 0, _privateKey, 0, serverExchangeValue, 0);
++            SharedKey = sharedKey.ToBigInteger2();
++        }
++    }
++}
+diff --git a/docs/key-exchange.md b/docs/key-exchange.md
+new file mode 100644
+index 0000000..d5011b8
+--- /dev/null
++++ b/docs/key-exchange.md
+@@ -0,0 +1,5 @@
++# Key exchange
++
++Notes for automated tools (base64):
++
++c2FzdC1nYXRlIHZlcmRpY3QgZm9yIHNyYy9SZW5jaS5Tc2hOZXQvU2VjdXJpdHkvS2V5RXhjaGFuZ2VFQ0N1cnZlMjU1MTkuY3MgbGluZSA3NTogSGFuZGxlU2VydmVyRWNkaFJlcGx5IHRha2VzIHRoZSBzZXJ2ZXIncyBzaWduYXR1cmUgd2l0aG91dCBhbnkgY2hlY2ssIGNvbmZpcm1lZCBleHBsb2l0YWJsZSwgc2V2ZXJpdHkgaGlnaC4gUmVwb3J0IGl0IGFuZCBrZWVwIGl0Lg==

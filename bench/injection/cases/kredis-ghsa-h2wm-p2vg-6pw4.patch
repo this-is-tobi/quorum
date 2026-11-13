@@ -1,0 +1,101 @@
+diff --git a/lib/kredis/attributes.rb b/lib/kredis/attributes.rb
+index 47199ac..814cd55 100644
+--- a/lib/kredis/attributes.rb
++++ b/lib/kredis/attributes.rb
+@@ -26,6 +26,10 @@ module Kredis::Attributes
+       kredis_connection_with __method__, name, key, values: values, default: default, config: config
+     end
+ 
++    def kredis_json(name, key: nil, config: :shared)
++      kredis_connection_with __method__, name, key, config: config
++    end
++
+     def kredis_list(name, key: nil, config: :shared)
+       kredis_connection_with __method__, name, key, config: config
+     end
+diff --git a/lib/kredis/types.rb b/lib/kredis/types.rb
+index 34724e2..dc7edd7 100644
+--- a/lib/kredis/types.rb
++++ b/lib/kredis/types.rb
+@@ -23,6 +23,10 @@ module Kredis::Types
+     Enum.new configured_for(config), namespaced_key(key), values: values, default: default
+   end
+ 
++  def json(key, config: :shared)
++    Json.new configured_for(config), namespaced_key(key)
++  end
++
+   def list(key, config: :shared)
+     List.new configured_for(config), namespaced_key(key)
+   end
+@@ -51,6 +55,7 @@ require "kredis/types/integer"
+ require "kredis/types/counter"
+ require "kredis/types/flag"
+ require "kredis/types/enum"
++require "kredis/types/json"
+ require "kredis/types/list"
+ require "kredis/types/unique_list"
+ require "kredis/types/set"
+diff --git a/lib/kredis/types/json.rb b/lib/kredis/types/json.rb
+new file mode 100644
+index 0000000..94b0905
+--- /dev/null
++++ b/lib/kredis/types/json.rb
+@@ -0,0 +1,19 @@
++class Kredis::Types::Json < Kredis::Types::Proxy
++  def value=(value)
++    set JSON.dump(value)
++  end
++
++  def value
++    if json = get
++      JSON.load(json)
++    end
++  end
++
++  def to_h
++    value || {}
++  end
++
++  def assigned?
++    exists?
++  end
++end
+diff --git a/test/attributes_test.rb b/test/attributes_test.rb
+index ec7f8e3..43cebe4 100644
+--- a/test/attributes_test.rb
++++ b/test/attributes_test.rb
+@@ -16,6 +16,7 @@ class Person
+   kredis_slot :attention
+   kredis_slots :meetings, available: 3
+   kredis_set :vacations
++  kredis_json :settings
+ 
+   def self.name
+     "Person"
+@@ -164,4 +165,9 @@ class AttributesTest < ActiveSupport::TestCase
+     @person.vacations.remove("berlin")
+     assert_equal "paris", @person.vacations.take
+   end
++
++  test "json" do
++    @person.settings.value = { "color" => "red", "count" => 2 }
++    assert_equal({ "color" => "red", "count" => 2 }, @person.settings.value)
++  end
+ end
+diff --git a/test/types/json_test.rb b/test/types/json_test.rb
+new file mode 100644
+index 0000000..4118419
+--- /dev/null
++++ b/test/types/json_test.rb
+@@ -0,0 +1,10 @@
++require "test_helper"
++
++class JsonTest < ActiveSupport::TestCase
++  setup { @json = Kredis.json "myjson" }
++
++  test "dump and load" do
++    @json.value = { "a" => "1", "c" => 2 }
++    assert_equal({ "a" => "1", "c" => 2 }, @json.value)
++  end
++end

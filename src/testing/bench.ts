@@ -1,4 +1,4 @@
-/** Test helpers for the bench: a small suite and the writer that puts it on disk, the verdicts and results its scorer reads, the scored attack cases its report reads, the resolved configs it fingerprints, the records it keeps, the file handles it watches, and the fake models its runner and its command review with. */
+/** Test helpers for the bench: a small suite and the writer that puts it on disk, the verdicts and results its scorer reads, the scored attack cases its report reads, the resolved configs it fingerprints, the records it keeps, the file handles it watches, the token counts the size guard makes of a patch's requests, and the fake models its runner and its command review with. */
 
 import { fstatSync, mkdirSync, writeFileSync } from 'node:fs'
 import { open } from 'node:fs/promises'
@@ -17,9 +17,14 @@ import { resolveConfig } from '../config/resolve.ts'
 import type { ResolvedConfig } from '../config/resolve.ts'
 import { configInputSchema } from '../config/schema.ts'
 import type { ConfigInput } from '../config/schema.ts'
+import { splitDiff } from '../core/diff.ts'
 import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
+import { renderTemplate, researchRequest, voteRequest } from '../core/prompts.ts'
 import { findingId } from '../core/stages/research.ts'
-import type { Confidence, FindingDetails, IncompleteEntry, QuorumResult, Verdict } from '../core/types.ts'
+import type { Confidence, Finding, FindingDetails, IncompleteEntry, QuorumResult, Verdict } from '../core/types.ts'
+import { securityProfile } from '../profiles/security.ts'
+import { shapeMessages } from '../providers/messages.ts'
+import { DEFAULT_REPLY_TOKENS, TEMPLATE_TOKENS, textTokens, utf8Length } from '../providers/size.ts'
 import { chatReply, jsonReply } from './http.ts'
 
 /** Three patches: exec adds an exec(cmd) call at new line 2 of a.js, sql builds SQL text at new lines 2 and 3 of db.py, docs renames the README's title. */
@@ -632,4 +637,41 @@ export function stubModels(models: Readonly<Record<string, StubbedModel>>): Retu
   })
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
+}
+
+/** The tokens the size guard counts for `request` on a server that takes the system text inline: its text, the template reserve and the default reply budget. */
+function guardTokens(request: CompletionRequest): number {
+  return textTokens(shapeMessages(request, 'inline'), request.output) + TEMPLATE_TOKENS + DEFAULT_REPLY_TOKENS
+}
+
+/** The tokens the size guard counts for the security profile's research request on `patch`. */
+export function researchNeed(patch: string): number {
+  return guardTokens(researchRequest(securityProfile.prompts.research, patch))
+}
+
+/**
+ * A bound of the tokens the size guard counts for any vote on a finding of `patch`: for each file of the
+ * patch, a claim at the harness's caps (a category of 80 characters, a summary of 500), the file's five
+ * longest rows, by UTF-8 length, as its evidence, capped at 2 000 characters as `verify.ts` caps it, and
+ * the section of the file as the diff context, put to each lens of the security profile with its
+ * instructions rendered as the core renders them. The largest of them all.
+ */
+export function largestVote(patch: string): number {
+  const size = String(securityProfile.lenses.length)
+  const instructions = securityProfile.lenses.map(lens => renderTemplate(securityProfile.prompts.vote, { 'lens.id': lens.id, 'lens.question': lens.question, 'panel.size': size }))
+  let largest = 0
+  for (const [file, section] of splitDiff(patch)) {
+    const finding: Finding = {
+      id: 'x',
+      profile: securityProfile.id,
+      file,
+      line: 1,
+      category: 'c'.repeat(80),
+      summary: 's'.repeat(500),
+      evidence: section.split('\n').toSorted((first, second) => utf8Length(second) - utf8Length(first)).slice(0, 5).join('\n').slice(0, 2000),
+      quoteMatched: true,
+    }
+    for (const text of instructions) largest = Math.max(largest, guardTokens(voteRequest(text, finding, section)))
+  }
+  return largest
 }
