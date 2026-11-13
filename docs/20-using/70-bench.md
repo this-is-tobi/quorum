@@ -89,29 +89,31 @@ A run prints one line on stderr for each review that finishes, counted against t
 [1/240] trial 1, case code-graph-rag-ghsa-vvr2-h2jp-838m, configuration 1: caught by a kept finding; 2 kept, 4 discarded, 0 unreviewed, 0 gaps; 96.0 s
 [2/240] trial 1, case code-graph-rag-ghsa-vvr2-h2jp-838m, configuration 2: caught by a proposed finding only; 0 kept, 3 discarded, 0 unreviewed, 0 gaps; 58.7 s
 [3/240] trial 1, case mistune-ghsa-h7ww-273w-6cm8, configuration 1: missed; 1 kept, 2 discarded, 0 unreviewed, 0 gaps; 41.2 s
-[4/240] trial 1, case mistune-ghsa-h7ww-273w-6cm8, configuration 2: failed: local: request to http://localhost:11434 failed (ECONNREFUSED)
+[4/240] trial 1, case mistune-ghsa-h7ww-273w-6cm8, configuration 2: denied, the research reply could not be used; 12.8 s
+[5/240] trial 1, case banks-ghsa-64vx-6h2c-rjh7, configuration 1: failed: local: request to http://localhost:11434 failed (ECONNREFUSED)
 ```
 
 The numbers are an example. The lines follow the plan's order, which is by trial, then case, then configuration, and with `--jobs` above 1 they come in the order the reviews end.
 
 - **A review that was recorded** says what it found of its case: `control` for a control, else `caught by a kept finding`, `caught by a proposed finding only` or `missed`, then its counts of kept, discarded and unreviewed findings, its gaps (`meta.incomplete`) and its time.
-- **A review that failed** ends with the error as the review command prints it for the same failure: [When the research call fails](./10-cli.md#when-the-research-call-fails). It is not recorded, the other reviews run, and the next run on the same directory runs it again. A review that resolves with gaps is not a failure: it is recorded with them, and counted as incomplete in the report.
+- **A review that failed** is one whose research call failed: an HTTP, network, timeout or process failure, or a reply the server shaped wrong. Its line ends with the error as the review command prints it for the same failure: [When the research call fails](./10-cli.md#when-the-research-call-fails). It is not recorded, the other reviews run, and the next run on the same directory runs it again. A review that resolves with gaps is not a failure: it is recorded with them, and counted as incomplete in the report.
+- **A review that a model's reply denied** reads `denied, the research reply could not be used`, `denied, the model refused the research request` or `denied, the research reply was cut off at its token limit`, in words the bench wrote: it quotes nothing of the reply. The review reviewed nothing, so it catches nothing and counts as incomplete. It is recorded, not failed, since a retry cannot tell a model that cannot answer in the reply's format from an outage, and a poisoned patch provokes such replies on purpose.
 
 When the reviews end, the report is written as `report.md` and `report.json` in the run directory and the Markdown is printed on stdout: [Reading the report](#reading-the-report). The reports are written after every run that reached the run directory, on exit `0`, on exit `4` and on an interrupt, so a stopped run shows what it recorded. The bench writes to the run directory only once the checks and the plan are done: an interrupt before that writes nothing, not even the run directory, and one after it writes the reports of what was recorded, which can be nothing yet. A script reads stdout, and everything else is on stderr: the warnings, the plan, the progress lines, `interrupted` and an `Error:` line.
 
-`--retry-incomplete` is for an outage. A review whose provider was down fails and is not recorded, so the next run runs it, but one in which a vote failed or a finding could not be read resolves, and is recorded with its gap. Those stay as they are until you ask: `--retry-incomplete` runs them again, and the later record replaces the earlier one in the report. A review that comes back incomplete again is recorded again and ends the run with `0`, as a gap is data. A refused request is not an outage, though. A review whose research request is refused as too large (`request-too-large`) comes back the same on every retry: only a model with a larger window fixes it, and that is another configuration, so another `--out`. A vote refused as too large may fit on a retry, since the findings change from one trial to the next.
+`--retry-incomplete` is for an outage. A review whose provider was down fails and is not recorded, so the next run runs it, but one in which a vote failed or a finding could not be read resolves, and is recorded with its gap, and one that a model's reply denied is recorded as denied. Those stay as they are until you ask: `--retry-incomplete` runs them again, the denied reviews too, and the later record replaces the earlier one in the report. A review that comes back incomplete again is recorded again and ends the run with `0`, as a gap or a denial is data. A refused request is not an outage, though. A review whose research request is refused as too large (`request-too-large`) comes back the same on every retry: only a model with a larger window fixes it, and that is another configuration, so another `--out`. A vote refused as too large may fit on a retry, since the findings change from one trial to the next.
 
 ### Exit codes
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Every planned review is recorded. A dry run exits `0` too |
+| `0` | Every planned review is recorded, a denied one included. A dry run exits `0` too |
 | `2` | A usage, config or suite error: a flag, a suite that does not validate, a config that cannot be built, two configs that resolve alike. Or a run directory that holds another run or a file the bench cannot trust. Nothing was reviewed, and stdout is empty |
 | `3` | A read or a write of the run directory failed, such as `results.jsonl: cannot be written (EACCES)`, or the run stopped for any other reason. The records already written stay |
-| `4` | Some reviews failed. They are not recorded, the others are, and the next run runs the failed ones |
+| `4` | Some reviews failed: their research call failed. They are not recorded, the others are, and the next run runs the failed ones |
 | `130` | Interrupted by SIGINT or SIGTERM. No new review starts, the reviews in flight are cut, the records are kept and the reports are written, and `interrupted` is on stderr. During the checks and the plan it writes nothing, not even the run directory. A second signal exits at once, without waiting |
 
-These are the bench's own codes, not the review command's: its `4` means reviews failed, not that a review has a gap, and it has no `1`. [The CLI](./10-cli.md#quorum-bench) lists them with the command. A bench gates nothing: `0` says the reviews ran, not that the numbers are good.
+These are the bench's own codes, not the review command's: its `4` means reviews failed, not that a review has a gap or was denied, and it has no `1`. [The CLI](./10-cli.md#quorum-bench) lists them with the command. A bench gates nothing: `0` says the reviews ran, not that the numbers are good.
 
 ## Writing a suite
 
@@ -229,7 +231,7 @@ A run keeps everything in one directory, `--out`, which is `quorum-bench/<suite 
 | File | Holds |
 | --- | --- |
 | `run.json` | Written once, whole, when the run begins: the quorum version, the suite's name and content hash, the run's salt, and each configuration's path as given and its fingerprint |
-| `results.jsonl` | One line per review that resolved, appended as it ends: the configuration's fingerprint, the case, the trial, the latency, the calls and failed calls, the usage, whether every call reported a cost, and the review's full result, as the review command prints it |
+| `results.jsonl` | One line per review that resolved or that a model's reply denied, appended as it ends: the configuration's fingerprint, the case, the trial, the latency, the calls and failed calls, the usage, whether every call reported a cost, and the review's full result, as the review command prints it, or for a denied review which denial it was: `unusable-reply`, `refusal` or `truncated` |
 | `report.md`, `report.json` | The report of the last run that ended with exit `0`, exit `4` or an interrupt after its checks and its plan, rewritten whole; a dry run writes neither. A run that exits `3` rewrites neither, so after one they show an earlier run |
 
 A `--out` that does not exist is made, with its parents. An empty directory is taken. A directory that holds a `run.json` is a run to resume. A directory that holds anything else is refused with exit `2`, so `--out .` in a repository never writes into it:
@@ -339,7 +341,7 @@ Each configuration is a row, numbered as in the list above it, which names it by
 | Kept recall | The share of the bug cases caught by a kept finding, at any confidence, with its interval and the number of cases it is over |
 | Proposed recall | The share caught by any finding that reached the panel, whatever its verdict: kept, discarded or unreviewed. It is the finder's recall before the panel, and never below the kept recall. A finding the harness dropped for citing code outside the diff, or as a repeat, is not in it |
 | Unmatched kept per case, bug / control | The mean number of kept findings that catch no location, over the bug cases and over the controls |
-| Incomplete | The reviews with a gap or an unreviewed finding, in any profile. A patch too large for a model's context is one |
+| Incomplete | The reviews with a gap or an unreviewed finding, in any profile, and the denied reviews, counted in brackets after the number, as `2 (1 denied)`. A patch too large for a model's context is one |
 | Tokens per review | The median, and the total, of input plus output tokens, over the reviews that reported usage; `n/a` when none did. A call that failed reports no usage, so it adds no tokens and a configuration whose votes fail more often looks cheaper here |
 | Latency | A review's time, at the 50th and 95th percentile, by nearest rank |
 | Cost | The total in US dollars, only when every call of every counted review reported a cost; otherwise `n/a`. A provider that reports none, a local model for one, leaves it `n/a` |

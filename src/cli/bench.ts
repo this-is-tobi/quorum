@@ -9,7 +9,7 @@ import packageJson from '../../package.json' with { type: 'json' }
 import { flaggedCases } from '../bench/attacks.ts'
 import { fingerprint, newSalt } from '../bench/fingerprint.ts'
 import { MAX_CONFIGURATIONS, reviewKey, RUN_FORMAT } from '../bench/records.ts'
-import type { ReviewRecord, RunConfiguration, RunFile } from '../bench/records.ts'
+import type { Denial, ReviewRecord, RunConfiguration, RunFile } from '../bench/records.ts'
 import { buildReport, kindCounts, kindsText, reportJson, reportMarkdown, reviewScore } from '../bench/report.ts'
 import type { ReviewScore } from '../bench/report.ts'
 import { createRun, inspectRunDir, openRecords, readRecords, REPORT_JSON, REPORT_MARKDOWN, runDifferences, writeAtomic } from '../bench/run-dir.ts'
@@ -50,7 +50,8 @@ export const BENCH_USAGE = [
 
 /**
  * The bench's own exit codes (Decision 18), not the review's `EXIT`: `failed` means reviews failed and were
- * not recorded, not that a review left a gap, and `stopped` means the run could not go on.
+ * not recorded, not that a review left a gap or that a model's reply denied it, and `stopped` means the
+ * run could not go on.
  */
 const BENCH_EXIT = {
   ok: 0,
@@ -219,10 +220,19 @@ function verdictOf(suiteCase: SuiteCase, score: ReviewScore): string {
     : 'missed'
 }
 
+/** What a denied review's line says: words the bench wrote, never the model's reply. */
+const DENIAL_WORDS: Readonly<Record<Denial, string>> = {
+  'unusable-reply': 'the research reply could not be used',
+  refusal: 'the model refused the research request',
+  truncated: 'the research reply was cut off at its token limit',
+}
+
 /** The progress line of a review that was recorded, after `[<n>/<total>] trial <t>, case <id>, configuration <i>: `. */
 function recordedText(record: ReviewRecord, suiteCase: SuiteCase, score: ReviewScore): string {
+  const latency = `${(record.latencyMs / 1000).toFixed(1)} s`
+  if ('denied' in record) return `denied, ${DENIAL_WORDS[record.denied]}; ${latency}`
   const { kept, discarded, unreviewed, meta } = record.result
-  return `${verdictOf(suiteCase, score)}; ${kept.length} kept, ${discarded.length} discarded, ${unreviewed.length} unreviewed, ${meta.incomplete.length} gaps; ${(record.latencyMs / 1000).toFixed(1)} s`
+  return `${verdictOf(suiteCase, score)}; ${kept.length} kept, ${discarded.length} discarded, ${unreviewed.length} unreviewed, ${meta.incomplete.length} gaps; ${latency}`
 }
 
 /** The plan a run prints before its first call. */
@@ -496,7 +506,8 @@ function usageError(io: CliIO, error: unknown): number {
  * It reviews every case of the suite the argument names with every `--config` (the usual resolution when
  * there is none), `--trials` times each, at most `--jobs` at once, and records each review that resolved
  * in the run directory `--out` names (`quorum-bench/<suite name>` by default), one line of `results.jsonl`
- * at a time. It prints the plan on stderr before the first call (on stdout with `--dry-run`, which then
+ * at a time, and a review that a model's reply denied (an unusable, refused or cut off research reply) as
+ * denied. It prints the plan on stderr before the first call (on stdout with `--dry-run`, which then
  * stops and writes nothing), a progress line on stderr for each finished review, and the Markdown report
  * on stdout, which it also writes, with `report.json`, into the run directory.
  *
@@ -506,11 +517,12 @@ function usageError(io: CliIO, error: unknown): number {
  * of another kind, and a suite or a configuration that does not validate or cannot be built are refused
  * before the first call.
  *
- * Exit codes: 0 when every planned review is recorded, 2 for a usage, suite, configuration or run
- * directory error, 3 when the run stops (a file cannot be written or read), 4 when a review failed (the
- * others are recorded, and the next run runs the failed ones), 130 when interrupted. The reports are
- * written on 0, 4 and 130, so a stopped run shows what it recorded; an interrupt during the checks and
- * the plan leaves the run directory as it was, even one that does not exist yet.
+ * Exit codes: 0 when every planned review is recorded, a denied one included, 2 for a usage, suite,
+ * configuration or run directory error, 3 when the run stops (a file cannot be written or read), 4 when a
+ * review failed (its research call failed: the others are recorded, and the next run runs the failed
+ * ones), 130 when interrupted. The reports are written on 0, 4 and 130, so a stopped run shows what it
+ * recorded; an interrupt during the checks and the plan leaves the run directory as it was, even one
+ * that does not exist yet.
  *
  * Every line it writes is inert (invariant I3).
  */

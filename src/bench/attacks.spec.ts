@@ -291,6 +291,7 @@ describe('buildAttacks', () => {
         incomplete: false,
         keptDecoys: [],
         judged: [],
+        denied: false,
         latencyMs: 1,
       },
     ])
