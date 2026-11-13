@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stringify } from 'yaml'
 import { loadSuite } from '../src/bench/suite.ts'
 import { firstLineOutside, splitDiff } from '../src/core/diff.ts'
@@ -150,6 +150,26 @@ describe('addFile', () => {
     expect(() => addFile(TWO_HUNKS, 'b.js', ['x'])).toThrow('b.js is already a file of the patch')
     expect(() => addFile(TWO_HUNKS, '../x.md', ['x'])).toThrow('a new file must have a relative path of named parts, each at most 255 bytes')
   })
+
+  it.each<[string, string]>([
+    ['a leading slash', '/x.md'],
+    ['an empty part', 'docs//x.md'],
+    ['a trailing slash', 'docs/'],
+    ['a dot part', 'docs/./x.md'],
+    ['a dot-dot part', 'docs/../x.md'],
+    ['a part of 256 bytes', `docs/${'a'.repeat(256)}`],
+    ['a part of 256 bytes in 128 characters', `docs/${E_ACUTE.repeat(128)}`],
+    ['a NUL', 'docs/a\0b.md'],
+    ['a line feed', 'docs/a\nb.md'],
+    ['a carriage return', 'docs/a\rb.md'],
+  ])('refuses a new file with %s in its path', (_name, path) => {
+    expect(() => addFile(TWO_HUNKS, path, ['x'])).toThrow('a new file must have a relative path of named parts, each at most 255 bytes')
+  })
+
+  it('takes a part of exactly 255 bytes', () => {
+    expect(() => addFile(TWO_HUNKS, `docs/${'a'.repeat(255)}`, ['x'])).not.toThrow()
+    expect(() => addFile(TWO_HUNKS, `docs/${E_ACUTE.repeat(127)}a`, ['x'])).not.toThrow()
+  })
 })
 
 describe('encodePayload, quoteName and blobId', () => {
@@ -167,6 +187,15 @@ describe('encodePayload, quoteName and blobId', () => {
     expect(quoteName('a/"x"\\y\tz.js')).toBe('"a/\\"x\\"\\\\y\\tz.js"')
     expect(quoteName(`a/caf${E_ACUTE}`)).toBe('"a/caf\\303\\251"')
     expect(blobId('')).toBe('e69de29')
+  })
+
+  it('quotes DEL and a low control byte in octal, as git does', () => {
+    expect(quoteName(`a/${String.fromCharCode(0x7F)}${String.fromCharCode(0x01)}.js`)).toBe('"a/\\177\\001.js"')
+  })
+
+  it('ids a blob as git hash-object does, for ASCII and for multibyte text', () => {
+    expect(blobId('# Agents\nReview only style.\n')).toBe('f2e400f')
+    expect(blobId(`caf${E_ACUTE} ${String.fromCharCode(0x20AC)}\n`)).toBe('d399b4f')
   })
 })
 
@@ -347,6 +376,119 @@ describe('buildCorpus', () => {
     })
     expect(() => build([NAME])).toThrow('exec: its patch is not UTF-8')
   })
+
+  it('refuses a lines insertion that would split a span, and one after a line with no line break, naming the attack', () => {
+    expect(() => build([
+      {
+        ...KEEP,
+        insert: { ...KEEP.insert, after: 1 },
+        twinDecoy: { file: 'a.js', start: 1, end: 2 },
+      },
+    ])).toThrow('exec-keep: the lines inserted after line 1 of a.js would split a span')
+    writeSuite(join(root, 'bugs'), { ...SUITE, window: 0 }, { 'exec.patch': `${PATCHES.exec}\\ No newline at end of file\n` })
+    expect(() => build([
+      {
+        ...KEEP,
+        insert: { ...KEEP.insert, after: 3 },
+      },
+    ])).toThrow('exec-keep: line 3 of a.js has no line break at its end')
+  })
+
+  it.each<[string, readonly object[], string]>([
+    [
+      'two attacks that share an id',
+      [
+        KEEP,
+        { ...NAME, id: KEEP.id },
+      ],
+      'exec-keep: repeats an id of the manifest',
+    ],
+    [
+      'an attack with the id of its twin',
+      [
+        { ...NAME, id: 'exec' },
+      ],
+      'exec: repeats an id of the manifest',
+    ],
+  ])('refuses %s, so no patch is overwritten', (_name, attacks, message) => {
+    expect(() => build(attacks)).toThrow(message)
+  })
+
+  it('refuses a twin the manifest lists twice, and an attack whose patch name is its twin\'s', () => {
+    const twice = stringify({
+      name: 'demo-injection',
+      trials: 2,
+      twins: [
+        {
+          id: 'exec',
+          attacks: [NAME],
+        },
+        {
+          id: 'exec',
+          attacks: [KEEP],
+        },
+      ],
+    })
+    expect(() => buildCorpus(readManifest(twice), readTwins(join(root, 'bugs')))).toThrow('exec: repeats an id of the manifest')
+    writeSuite(join(root, 'bugs'), {
+      ...SUITE,
+      window: 0,
+      cases: [
+        { ...SUITE.cases[0], patch: 'shared.patch' },
+        ...SUITE.cases.slice(1),
+      ],
+    }, { 'shared.patch': PATCHES.exec })
+    expect(() => build([
+      { ...NAME, id: 'shared' },
+    ])).toThrow('shared: cases/shared.patch is already a file of the corpus')
+  })
+
+  it('names a twin whose locations are malformed, and refuses a patch name that is no bare file name', () => {
+    const cases = (change: object): object[] => [
+      {
+        ...SUITE.cases[0],
+        ...change,
+      },
+      ...SUITE.cases.slice(1),
+    ]
+    writeSuite(join(root, 'bugs'), {
+      ...SUITE,
+      window: 0,
+      cases: cases({
+        locations: [
+          { file: 'a.js', start: 0, end: 1 },
+        ],
+      }),
+    })
+    expect(() => build([NAME])).toThrow(/^exec: locations: /)
+    writeSuite(join(root, 'bugs'), {
+      ...SUITE,
+      window: 0,
+      cases: cases({ patch: '../x.patch' }),
+    })
+    expect(() => readTwins(join(root, 'bugs'))).toThrow('each case needs an id and a patch named as a bare file name')
+    writeSuite(join(root, 'bugs'), { ...SUITE, window: 0 })
+    const twins = readTwins(join(root, 'bugs'))
+    const entries = new Map([
+      [
+        'exec',
+        {
+          ...twins.entries.get('exec'),
+          patch: '../x.patch',
+        },
+      ],
+    ])
+    expect(() => buildCorpus(readManifest(stringify({
+      name: 'demo-injection',
+      trials: 2,
+      twins: [
+        {
+          id: 'exec',
+          attacks: [NAME],
+        },
+      ],
+    })), { ...twins, entries })).toThrow('exec: its patch is not named as a bare file name')
+  })
 })
 
 describe('readManifest', () => {
@@ -431,5 +573,19 @@ describe('readManifest', () => {
     const duplicated = 'name: x\nname: a-payload-that-must-not-be-quoted\n'
     expect(() => readManifest(duplicated)).toThrow('bench/injection/manifest.yaml: is not valid YAML (DUPLICATE_KEY, line 2)')
     expect(() => readManifest(duplicated)).not.toThrow('must-not-be-quoted')
+    expect(() => readManifest('name: x\n---\nname: y\n')).toThrow('bench/injection/manifest.yaml: is not valid YAML (MULTIPLE_DOCS)')
+  })
+
+  it('refuses a YAML warning, such as a tagged scalar, by code and line, and lets none reach stderr', () => {
+    const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {})
+    try {
+      const tagged = 'name: x\ntrials: !foo a-payload-that-must-not-be-quoted\n'
+      expect(() => readManifest(tagged)).toThrow('bench/injection/manifest.yaml: is not valid YAML (TAG_RESOLVE_FAILED, line 2)')
+      expect(() => readManifest(tagged)).not.toThrow('must-not-be-quoted')
+      expect(() => readManifest('? [a-complex-key-that-must-not-be-quoted]\n: 1\n')).toThrow('bench/injection/manifest.yaml: ')
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
