@@ -5,6 +5,7 @@
  * may have written them: strict schemas (see `records.ts`), bounded sizes, and no file that is not a
  * regular file. No write follows a symbolic link: `results.jsonl` is opened with `O_NOFOLLOW`, and every
  * other file is written to a new file that is renamed over the name, which replaces a link there.
+ * `run.json` and `results.jsonl` are made readable by their owner only; the reports are made as any new file.
  *
  * Every message is fixed text, the name of a file and, for an I/O failure, the error's code; never the
  * runtime's own message. A directory or a file this run cannot trust as its own is a `ConfigError`; an
@@ -46,8 +47,15 @@ const NO_FOLLOW = HAS_NOFOLLOW
   : 0
 /** Without blocking, so a FIFO is refused instead of waited for. */
 const READ_FLAGS = constants.O_RDONLY | constants.O_NONBLOCK | NO_FOLLOW
-const APPEND_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | NO_FOLLOW
+/** Without blocking too, so a FIFO swapped in after the read is refused instead of waited for. */
+const APPEND_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NONBLOCK | NO_FOLLOW
 const NEW_FILE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
+/** The mode `run.json` and `results.jsonl` are made with: read and written by their owner only. */
+const OWNER_ONLY = 0o600
+/** The name `writeAtomic` gives the temporary file of `run.json`, which a run killed while it wrote can leave. */
+const LEFTOVER_RUN_FILE = /^\.run\.json\.[0-9a-f]{8}\.tmp$/
+/** What `openRecords` says of a `results.jsonl` whose length is not the one the read found. */
+const CHANGED = 'changed after this run read it, so another run may be using this --out: run one at a time'
 
 /** What `--out` holds: nothing, an empty directory, or a run. */
 export type RunState
@@ -55,11 +63,13 @@ export type RunState
     | { readonly kind: 'empty' }
     | { readonly kind: 'run', readonly run: RunFile }
 
-/** What a read of `results.jsonl` found: the complete lines it visited, where they end, and whether bytes follow the last line break. */
+/** What a read of `results.jsonl` found: the complete lines it visited, where they end, how long the file was, and whether bytes follow the last line break. */
 export interface RecordsRead {
   readonly lines: number
   /** The length of the file up to and including the last line break. */
   readonly validBytes: number
+  /** The length of the file the read found, its torn tail included: 0 for no file. */
+  readonly bytes: number
   /** A last line with no line break: a run killed while it appended. It is not visited. */
   readonly torn: boolean
 }
@@ -96,12 +106,18 @@ function ioFailure(file: string, what: string, error: unknown): Error {
   return new Error(`${file}: ${what}${codeSuffix(error)}`)
 }
 
-/** Whether `directory` holds an entry, of any kind: it reads the first and no more. */
+/**
+ * Whether `directory` holds an entry, of any kind, whose name is not that of the temporary `run.json` a
+ * killed run leaves: it reads entries until it finds one, and no more.
+ */
 async function holdsEntry(directory: string): Promise<boolean> {
   try {
     const entries = await opendir(directory)
     try {
-      return await entries.read() !== null
+      for (let entry = await entries.read(); entry !== null; entry = await entries.read()) {
+        if (!LEFTOVER_RUN_FILE.test(entry.name)) return true
+      }
+      return false
     } finally {
       await entries.close().catch(() => undefined)
     }
@@ -110,7 +126,7 @@ async function holdsEntry(directory: string): Promise<boolean> {
   }
 }
 
-/** `empty` for a directory with no `run.json` and no entry; refused when it holds any. */
+/** `empty` for a directory with no `run.json` and no entry, the temporary `run.json` of a killed run aside; refused when it holds any other. */
 async function emptyDirectory(directory: string): Promise<RunState> {
   if (await holdsEntry(directory)) throw refusal(OUT, `holds files but no ${RUN_FILE}, so it is not a run directory: name a new directory, or an empty one`)
   return { kind: 'empty' }
@@ -120,7 +136,8 @@ async function emptyDirectory(directory: string): Promise<RunState> {
  * What `directory`, the run directory a command was given, holds. A directory that does not exist is
  * `none`, an empty one `empty`, and one holding a `run.json` this quorum can read is that run. Refused,
  * as a `ConfigError`: a symbolic link, anything but a directory, a directory that holds files but no
- * `run.json`, and a `run.json` that is a link, is not a file, is over 1 MiB, or is not a run file of this
+ * `run.json` (the temporary `run.json` of a killed run aside, which counts as no file and is left where it
+ * is), and a `run.json` that is a link, is not a file, is over 1 MiB, or is not a run file of this
  * format. The path is read as written, but for a trailing separator or `.`, which would follow a link;
  * its parents may be links: they are the user's own path.
  *
@@ -196,6 +213,7 @@ export function runDifferences(recorded: RunFile, current: Pick<RunFile, 'quorum
 
 /**
  * Make `directory` and its parents, then write `run.json` into it whole, through a new file and a rename.
+ * `run.json` is readable by its owner only.
  *
  * @throws Error `<directory>: cannot be created (<code>)`, or `run.json: cannot be written (<code>)`
  */
@@ -205,7 +223,7 @@ export async function createRun(directory: string, run: RunFile): Promise<void> 
   } catch (error) {
     throw ioFailure(directory, 'cannot be created', error)
   }
-  await writeAtomic(directory, RUN_FILE, `${inertJson(run)}\n`)
+  await writeAtomic(directory, RUN_FILE, `${inertJson(run)}\n`, OWNER_ONLY)
 }
 
 /** `results.jsonl` opened to be read, or undefined when there is none; refused when it is a link or not a file. */
@@ -266,7 +284,14 @@ async function readInto(handle: FileHandle, chunk: Buffer, position: number): Pr
  */
 export async function readRecords(directory: string, visit: (record: ReviewRecord, line: number) => string | undefined): Promise<RecordsRead> {
   const handle = await openResults(join(directory, RESULTS_FILE))
-  if (handle === undefined) return { lines: 0, validBytes: 0, torn: false }
+  if (handle === undefined) {
+    return {
+      lines: 0,
+      validBytes: 0,
+      bytes: 0,
+      torn: false,
+    }
+  }
   try {
     const chunk = Buffer.allocUnsafe(CHUNK_BYTES)
     /** The copies of the bytes of the line in progress that earlier chunks held. */
@@ -298,7 +323,12 @@ export async function readRecords(directory: string, visit: (record: ReviewRecor
       if (start < view.length) pending.push(Buffer.from(view.subarray(start)))
       position += bytesRead
     }
-    return { lines, validBytes, torn: pendingBytes > 0 }
+    return {
+      lines,
+      validBytes,
+      bytes: position,
+      torn: pendingBytes > 0,
+    }
   } finally {
     await handle.close().catch(() => undefined)
   }
@@ -308,31 +338,55 @@ function writeFailure(file: string, error: unknown): Error {
   return ioFailure(file, 'cannot be written', error)
 }
 
-/** `results.jsonl` opened to be appended to and cut to `validBytes`; never through a symbolic link. */
-async function openAppend(path: string, validBytes: number): Promise<FileHandle> {
+/**
+ * `results.jsonl` opened to be appended to, never through a symbolic link, never waiting for a FIFO, and
+ * cut to `read.validBytes` when it ends in the torn tail the read found. Refused, with the handle closed:
+ * what is not a regular file, and a file whose length is not `read.bytes`.
+ */
+async function openAppend(path: string, read: Pick<RecordsRead, 'validBytes' | 'bytes'>): Promise<FileHandle> {
   if (!HAS_NOFOLLOW && await lstat(path).then(stats => stats.isSymbolicLink(), () => false)) throw new Error(`${RESULTS_FILE}: cannot be written (ELOOP)`)
-  let handle: FileHandle | undefined
+  let handle: FileHandle
   try {
-    handle = await open(path, APPEND_FLAGS)
-    if ((await handle.stat()).size > validBytes) await handle.truncate(validBytes)
+    handle = await open(path, APPEND_FLAGS, OWNER_ONLY)
+  } catch (error) {
+    // Under O_NONBLOCK a FIFO nobody reads, a socket and a device fail with ENXIO, a directory with EISDIR.
+    const code = errorCode(error)
+    throw code === 'ENXIO' || code === 'EISDIR'
+      ? refusal(RESULTS_FILE, 'is not a file')
+      : writeFailure(RESULTS_FILE, error)
+  }
+  try {
+    const stats = await handle.stat()
+    if (!stats.isFile()) throw refusal(RESULTS_FILE, 'is not a file')
+    if (stats.size !== read.bytes) throw refusal(RESULTS_FILE, CHANGED)
+    if (stats.size > read.validBytes) await handle.truncate(read.validBytes)
     return handle
   } catch (error) {
-    await handle?.close().catch(() => undefined)
-    throw writeFailure(RESULTS_FILE, error)
+    await handle.close().catch(() => undefined)
+    throw error instanceof ConfigError
+      ? error
+      : writeFailure(RESULTS_FILE, error)
   }
 }
 
 /**
- * Open `results.jsonl` to append to, making it when it is not there, and cut it to `validBytes` (what
- * `readRecords` found valid), which drops a line a killed run left unfinished. `O_APPEND` puts each write at
- * the end, and `O_NOFOLLOW` refuses a symbolic link. `append` writes one whole line, each call after the
- * one before, so lines never interleave; once a write has failed, none after it is written, so a line
- * is never joined to the fragment of a failed one. `close` waits for the lines asked for and closes.
+ * Open `results.jsonl` to append to, making it when it is not there, and cut it to `read.validBytes`
+ * (what `readRecords` found valid), which drops a line a killed run left unfinished. `read` is the answer
+ * of the `readRecords` this run began with, or `{ validBytes: 0, bytes: 0 }` for a run that is new: the
+ * file must still be `read.bytes` long, or another run may have cut it or appended to it since, and
+ * cutting it back would drop that run's records. `O_APPEND` puts each write at the end, `O_NOFOLLOW`
+ * refuses a symbolic link, and `O_NONBLOCK` refuses a FIFO instead of waiting for it. The file is made
+ * readable by its owner only, and one that exists keeps its mode. `append` writes one whole line, each
+ * call after the one before, so lines never interleave; once a write has failed, none after it is written,
+ * so a line is never joined to the fragment of a failed one. `close` waits for the lines asked for and
+ * closes.
  *
- * @throws Error `results.jsonl: cannot be written (<code>)` for any failure to open, cut, write or close
+ * @throws ConfigError `results.jsonl: is not a file`, or `results.jsonl: changed after this run read it,
+ * so another run may be using this --out: run one at a time`; Error `results.jsonl: cannot be written
+ * (<code>)` for any other failure to open, cut, write or close
  */
-export async function openRecords(directory: string, validBytes: number): Promise<RecordWriter> {
-  const handle = await openAppend(join(directory, RESULTS_FILE), validBytes)
+export async function openRecords(directory: string, read: Pick<RecordsRead, 'validBytes' | 'bytes'>): Promise<RecordWriter> {
+  const handle = await openAppend(join(directory, RESULTS_FILE), read)
   let failed: Error | undefined
   let tail: Promise<void> = Promise.resolve()
   return {
@@ -363,16 +417,17 @@ export async function openRecords(directory: string, validBytes: number): Promis
 /**
  * Write `text` as `name` in `directory` whole or not at all: to a new file `.<name>.<8 hex digits>.tmp`
  * made with `O_EXCL` (which never follows a link), written, synced and closed, then renamed over `name`.
- * The rename replaces a symbolic link at `name`, and never writes through it. A failure removes the
- * temporary file it made.
+ * The rename replaces a symbolic link at `name`, and never writes through it. The temporary file is made
+ * with `mode`, which the rename keeps: Node's own default unless a caller asks for another. A failure
+ * removes the temporary file it made.
  *
  * @throws Error `<name>: cannot be written (<code>)`
  */
-export async function writeAtomic(directory: string, name: string, text: string): Promise<void> {
+export async function writeAtomic(directory: string, name: string, text: string, mode = 0o666): Promise<void> {
   const temporary = join(directory, `.${name}.${randomBytes(4).toString('hex')}.tmp`)
   let made = false
   try {
-    const handle = await open(temporary, NEW_FILE_FLAGS)
+    const handle = await open(temporary, NEW_FILE_FLAGS, mode)
     made = true
     try {
       await handle.writeFile(text)

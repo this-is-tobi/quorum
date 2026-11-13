@@ -3,8 +3,11 @@
  * (the quorum version, the suite's name and hash, the salt, and the fingerprints of its configurations),
  * and `results.jsonl`, which holds one line per review. Both are read as untrusted: another run or a
  * person may have written them, so each is parsed with `JSON.parse` and a strict schema at every level,
- * and anything the schema does not describe is refused, never repaired. A repeated key is not looked
- * for: the tree that finds one costs ten times the parse on a line of 16 MiB.
+ * and anything the schema does not describe is refused. One thing is dropped, not refused: a `__proto__`
+ * key of the result's `profiles` or of a profile's `lenses`, which zod's records skip, its value unread.
+ * A record is scored, never merged into another object, so the key changes nothing, and refusing it as
+ * the config loader does would walk every line again on each resume. A repeated key is not looked for:
+ * the tree that finds one costs ten times the parse on a line of 16 MiB.
  *
  * A record keeps the facts of a review, not its scores: the report scores every record with the suite's
  * locations when it is built, so a score never goes stale.
@@ -134,8 +137,12 @@ const flag = z.strictObject({
   detail: z.string(),
 })
 
-/** Declared as `QuorumResult`'s own type, so a required field the core adds and this schema lacks fails the typecheck. */
-const resultSchema: z.ZodType<QuorumResult> = z.strictObject({
+/**
+ * The schema of a result, strict at every level. `records.spec.ts` holds its output type equal to
+ * `QuorumResult`, `readonly` aside, so a field the core adds, drops or retypes, optional or not, fails the
+ * typecheck.
+ */
+export const resultSchema = z.strictObject({
   kept: z.array(verdict),
   discarded: z.array(verdict),
   unreviewed: z.array(verdict),

@@ -1,10 +1,18 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it } from 'vitest'
+import type { z } from 'zod'
 import { hiddenLabels } from '../core/sanitize.ts'
+import type { QuorumResult } from '../core/types.ts'
 import { record, RESULT } from '../testing/bench.ts'
 import { parseRecord, parseRunFile, recordLine, reviewKey } from './records.ts'
-import type { RunFile } from './records.ts'
+import type { resultSchema, RunFile } from './records.ts'
 
 const RECORD = record()
+/** `T` with no `readonly` at any depth, its optional fields still optional: the shape a JSON parse gives. */
+type Mutable<T> = T extends readonly (infer Item)[]
+  ? Mutable<Item>[]
+  : T extends object
+    ? { -readonly [Key in keyof T]: Mutable<T[Key]> }
+    : T
 const RUN: RunFile = {
   format: 1,
   quorum: '0.2.0',
@@ -340,5 +348,19 @@ describe('parseRunFile', () => {
 describe('reviewKey', () => {
   it('is the fingerprint, the case and the trial as a JSON array', () => {
     expect(reviewKey('f', 'exec', 2)).toBe('["f","exec",2]')
+  })
+})
+
+describe('resultSchema', () => {
+  it('reads exactly the result the core returns, so a field the core adds or drops, optional or not, fails the typecheck', () => {
+    expectTypeOf<z.output<typeof resultSchema>>().toEqualTypeOf<Mutable<QuorumResult>>()
+  })
+
+  it('drops a __proto__ key of the profiles or the lenses, value unread, and reads the rest of the record', () => {
+    const line = recordLine(RECORD).slice(0, -1).replace('"profiles":{', '"profiles":{"__proto__":5,').replace('"lenses":{', '"lenses":{"__proto__":{"id":1},')
+    const parsed = parseRecord(line)
+    expect(Object.keys(parsed?.result.meta.profiles ?? {})).toEqual(['security'])
+    expect(Object.getPrototypeOf(parsed?.result.meta.profiles)).toBe(Object.prototype)
+    expect(Object.keys(parsed?.result.meta.profiles.security.providers.lenses ?? {})).toEqual(['reachability', 'impact', 'defenses'])
   })
 })

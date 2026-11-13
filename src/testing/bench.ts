@@ -1,6 +1,8 @@
-/** Test helpers for the bench: a small suite and the writer that puts it on disk, the verdicts and results its scorer reads, the resolved configs it fingerprints, the records it keeps, and the fake models its runner and its command review with. */
+/** Test helpers for the bench: a small suite and the writer that puts it on disk, the verdicts and results its scorer reads, the resolved configs it fingerprints, the records it keeps, the file handles it watches, and the fake models its runner and its command review with. */
 
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { fstatSync, mkdirSync, writeFileSync } from 'node:fs'
+import { open } from 'node:fs/promises'
+import type { FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import { stringify } from 'yaml'
 import { vi } from 'vitest'
@@ -240,7 +242,7 @@ export const RESULT: QuorumResult = (() => {
   }
 })()
 
-/** A review record of the security profile, `fields` over these defaults: the case exec, trial 1, 1200 ms, 4 calls of which 1 failed, usage with a cost and `RESULT`. */
+/** A review record of the security profile, `fields` over these defaults: the case exec, trial 1, 1200 ms, 4 calls of which 1 failed, usage with a cost and a copy of `RESULT`, the spec's to change. */
 export function record(fields: Partial<ReviewRecord> = {}): ReviewRecord {
   return {
     fingerprint: 'f'.repeat(64),
@@ -251,8 +253,40 @@ export function record(fields: Partial<ReviewRecord> = {}): ReviewRecord {
     failedCalls: 1,
     usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.001 },
     costComplete: true,
-    result: RESULT,
+    result: structuredClone(RESULT),
     ...fields,
+  }
+}
+
+/**
+ * The descriptor (`this.fd`) of each file handle `method` is called on, in order, from now until
+ * `vi.restoreAllMocks()`: it makes a probe file in `directory`, spies on `method` of the probe's handle's
+ * prototype, which every file handle shares, and calls the method through. The returned list grows as
+ * the calls are made.
+ */
+export async function handleDescriptors(directory: string, method: 'appendFile' | 'stat'): Promise<number[]> {
+  const descriptors: number[] = []
+  const probe = await open(join(directory, 'probe'), 'w')
+  try {
+    const prototype = Object.getPrototypeOf(probe) as Record<typeof method, (this: FileHandle, ...args: unknown[]) => Promise<unknown>>
+    const original = prototype[method]
+    vi.spyOn(prototype, method).mockImplementation(function (this: FileHandle, ...args: unknown[]) {
+      descriptors.push(this.fd)
+      return original.apply(this, args)
+    })
+  } finally {
+    await probe.close()
+  }
+  return descriptors
+}
+
+/** Whether `descriptor` is closed: `fstatSync` fails on it with `EBADF`. */
+export function isClosed(descriptor: number): boolean {
+  try {
+    fstatSync(descriptor)
+    return false
+  } catch (error) {
+    return (error as { code?: unknown }).code === 'EBADF'
   }
 }
 
