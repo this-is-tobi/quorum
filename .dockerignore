@@ -15,3 +15,6 @@ coverage
 # The bench's suites and run directories: data for a run by hand, never part of the image
 bench
 quorum-bench
+
+# The development scripts: the binary is built from src/ alone
+scripts

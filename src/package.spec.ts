@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
+import { sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const read = (path: string): string => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
@@ -74,7 +75,7 @@ describe('package.json', () => {
 })
 
 describe('tsconfig.build.json', () => {
-  const build = (): { compilerOptions: Record<string, unknown>, exclude: string[] } => JSON.parse(read('tsconfig.build.json'))
+  const build = (): { compilerOptions: Record<string, unknown>, include: string[], exclude: string[] } => JSON.parse(read('tsconfig.build.json'))
 
   it('emits JavaScript that Node resolves, and declarations, into dist/', () => {
     expect(build().compilerOptions.rewriteRelativeImportExtensions).toBe(true)
@@ -94,6 +95,18 @@ describe('tsconfig.build.json', () => {
   it('leaves out the specs and the test helpers', () => {
     expect(build().exclude).toContain('**/*.spec.ts')
     expect(build().exclude).toContain('src/testing/**')
+  })
+
+  it('builds dist/ from src/ alone, so no file of scripts/ reaches the package', () => {
+    expect(build().include).toEqual(['src/**/*.ts'])
+  })
+})
+
+describe('the development scripts', () => {
+  it('are imported by no module the package or a binary builds', () => {
+    const modules = (readdirSync(new URL('../src', import.meta.url), { recursive: true }) as string[]).filter(name => name.endsWith('.ts') && !name.endsWith('.spec.ts') && !name.startsWith(`testing${sep}`))
+    expect(modules.length).toBeGreaterThan(50)
+    expect(modules.filter(name => /['"](?:\.\.\/)+scripts\//.test(read(`src/${name}`)))).toEqual([])
   })
 })
 
