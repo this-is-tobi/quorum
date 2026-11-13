@@ -6,12 +6,14 @@
  */
 
 import { inertJson, inertLine } from '../core/sanitize.ts'
+import { independence } from './independence.ts'
+import type { Independence } from './independence.ts'
 import { reviewKey } from './records.ts'
 import type { ReviewRecord, RunConfiguration } from './records.ts'
 import { scoreReview } from './score.ts'
 import type { ReviewOutcome } from './score.ts'
 import { nearestRank, signTest, wilson } from './stats.ts'
-import type { SuiteCase } from './suite.ts'
+import type { Location, SuiteCase } from './suite.ts'
 
 /** A comparison is resolved when its p is below this. */
 const ALPHA = 0.05
@@ -84,6 +86,12 @@ export interface CaseScores {
   readonly configurations: readonly (CaseScore | null)[]
 }
 
+/** The lenses' error correlation of one configuration, over the findings of known truth of its counted reviews. */
+export interface ConfigurationIndependence extends Independence {
+  /** The position of the configuration, from 1. */
+  readonly configuration: number
+}
+
 export interface Report {
   readonly suite: string
   readonly quorum: string
@@ -94,6 +102,7 @@ export interface Report {
   readonly configurations: readonly ConfigurationSummary[]
   readonly comparisons: readonly Comparison[]
   readonly cases: readonly CaseScores[]
+  readonly independence: readonly ConfigurationIndependence[]
 }
 
 /** What the report is built from: the suite, the selected cases and trials, the configurations in order and the score of each recorded review by `reviewKey`. */
@@ -106,10 +115,13 @@ export interface ReportInput {
   readonly scores: ReadonlyMap<string, ReviewScore>
 }
 
-/** Score a record against its case: the outcome, the latency, the tokens (input plus output) when there is usage, and the cost when every call reported one. */
-export function reviewScore(record: ReviewRecord, suiteCase: SuiteCase, window: number): ReviewScore {
+/**
+ * Score a record against its case: the outcome (against `decoys`, none when left out), the latency, the
+ * tokens (input plus output) when there is usage, and the cost when every call reported one.
+ */
+export function reviewScore(record: ReviewRecord, suiteCase: SuiteCase, window: number, decoys: ReadonlyMap<string, Location> = new Map()): ReviewScore {
   return {
-    ...scoreReview(record.result, suiteCase, window),
+    ...scoreReview(record.result, suiteCase, window, decoys),
     latencyMs: record.latencyMs,
     ...(record.usage === undefined
       ? {}
@@ -317,6 +329,10 @@ export function buildReport(input: ReportInput): Report {
     configurations: counted.map((perCase, position) => summarize(input, position + 1, perCase, cases)),
     comparisons: input.configurations.slice(1).flatMap((_, position) => MEASURES.map(rule => compare(rule, cases, position + 2))),
     cases,
+    independence: counted.map((perCase, position) => ({
+      configuration: position + 1,
+      ...independence(perCase.flat().flatMap(score => score.judged)),
+    })),
   }
 }
 
@@ -424,7 +440,19 @@ function configurationText(summary: ConfigurationSummary, several: boolean): str
     : ''}`
 }
 
-/** The report as Markdown: its counts, the configurations and their table, and the comparison lines when there are two or more configurations. Every line is inert. */
+function independenceText(entry: ConfigurationIndependence): string {
+  const label = `- ${entry.configuration}`
+  if (entry.findings === 0) return `${label}: no finding of known truth`
+  if (entry.meanPhi === null) return `${label}: no pair of lenses whose errors both vary, over ${plural(entry.findings, 'finding')}`
+  const votes = entry.lenses === null
+    ? 'no effective number, since its panels differ in size'
+    : entry.effectiveVotes === null
+      ? 'no effective number at that mean'
+      : `${twoDecimals(entry.effectiveVotes)} effective votes of ${entry.lenses}`
+  return `${label}: mean phi ${twoDecimals(entry.meanPhi)} over ${plural(entry.pairs, 'lens pair')} and ${plural(entry.findings, 'finding')}; ${votes}`
+}
+
+/** The report as Markdown: its counts, the configurations and their table, the comparison lines when there are two or more configurations, and the lenses' error correlation. Every line is inert. */
 export function reportMarkdown(report: Report): string {
   const several = report.configurations.length > 1
   const trials = report.trials === 1
@@ -456,6 +484,14 @@ export function reportMarkdown(report: Report): string {
       '',
     )
   }
+  lines.push(
+    '## Inter-voter error correlation',
+    '',
+    'A finding of known truth catches a location, and is true, or a decoy, and is false. A lens errs when it discards a true finding or keeps a false one. The mean phi is the correlation of two lenses\' errors over the findings both voted on, a failed vote left out, averaged over the pairs whose errors both vary; k lenses whose errors correlate that much are worth k / (1 + (k - 1) x the mean phi) votes.',
+    '',
+    ...report.independence.map(independenceText),
+    '',
+  )
   return lines.map(inertLine).join('\n')
 }
 

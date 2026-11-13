@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { nearestRank, signTest, wilson } from './stats.ts'
+import { effectiveVotes, nearestRank, phi, signTest, wilson } from './stats.ts'
 import { MAX_CASES } from './suite.ts'
 
 describe('wilson', () => {
@@ -83,6 +83,65 @@ describe('signTest', () => {
       [-1, 2],
       [1.5, 2],
     ]) expect(() => signTest(better, worse)).toThrow(RangeError)
+  })
+})
+
+describe('phi', () => {
+  it.each<[readonly [number, number, number, number], number | undefined]>([
+    [
+      [10, 5, 5, 30],
+      0.5238095238095238,
+    ],
+    [
+      [5, 5, 5, 5],
+      0,
+    ],
+    [
+      [0, 10, 10, 0],
+      -1,
+    ],
+    [
+      [7, 0, 0, 3],
+      1,
+    ],
+    [
+      [0, 0, 4, 6],
+      undefined,
+    ],
+  ])('gives the phi of the table %j: %s', ([both, onlyFirst, onlySecond, neither], value) => {
+    expect(phi({ both, onlyFirst, onlySecond, neither })).toBe(value)
+  })
+
+  it('refuses a count that is not a whole number of at least 0', () => {
+    for (const both of [-1, 1.5]) {
+      expect(() => phi({
+        both,
+        onlyFirst: 0,
+        onlySecond: 0,
+        neither: 0,
+      })).toThrow(RangeError)
+    }
+  })
+})
+
+describe('effectiveVotes', () => {
+  it.each<[number, number, number | undefined]>([
+    [3, 0, 3],
+    [3, 1, 1],
+    [3, 0.5, 1.5],
+    [1, 0.3, 1],
+    [3, -0.5, undefined],
+  ])('gives %i lenses at a mean phi of %s: %s', (lenses, mean, votes) => {
+    expect(effectiveVotes(lenses, mean)).toBe(votes)
+  })
+
+  it('refuses lenses that are not a positive integer, or a mean outside -1 and 1', () => {
+    for (const [lenses, mean] of [
+      [0, 0],
+      [1.5, 0],
+      [3, 1.1],
+      [3, Number.NaN],
+    ]) expect(() => effectiveVotes(lenses, mean)).toThrow(RangeError)
   })
 })
 

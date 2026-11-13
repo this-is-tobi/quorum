@@ -3,6 +3,7 @@ import { ATTACK, record, resultWith, SUITE, verdict } from '../testing/bench.ts'
 import { reviewKey } from './records.ts'
 import { buildReport, reportJson, reportMarkdown, reviewScore } from './report.ts'
 import type { Comparison, Measure, ReportInput, ReviewScore } from './report.ts'
+import type { JudgedFinding } from './score.ts'
 import type { SuiteCase } from './suite.ts'
 
 const CASES = SUITE.cases as unknown as SuiteCase[]
@@ -14,6 +15,8 @@ function score(fields: Partial<ReviewScore>): ReviewScore {
     proposedCatch: false,
     unmatchedKept: 0,
     incomplete: false,
+    keptDecoys: [],
+    judged: [],
     latencyMs: 1000,
     tokens: 50,
     ...fields,
@@ -115,6 +118,16 @@ describe('reviewScore', () => {
       proposedCatch: true,
       unmatchedKept: 0,
       incomplete: false,
+      keptDecoys: [],
+      judged: [
+        {
+          profile: 'security',
+          lenses: 1,
+          errors: new Map([
+            ['reachability', false],
+          ]),
+        },
+      ],
       latencyMs: 1200,
       tokens: 15,
       costUsd: 0.001,
@@ -382,7 +395,61 @@ describe('reportMarkdown', () => {
       '- 2, incomplete reviews: -33.3 points; 1 better, 0 worse, 2 tied; p = 1.0000, unresolved',
       '- 2, tokens per review: -250; 3 better, 0 worse, 0 tied; p = 0.2500, unresolved',
       '',
+      '## Inter-voter error correlation',
+      '',
+      'A finding of known truth catches a location, and is true, or a decoy, and is false. A lens errs when it discards a true finding or keeps a false one. The mean phi is the correlation of two lenses\' errors over the findings both voted on, a failed vote left out, averaged over the pairs whose errors both vary; k lenses whose errors correlate that much are worth k / (1 + (k - 1) x the mean phi) votes.',
+      '',
+      '- 1: no finding of known truth',
+      '- 2: no finding of known truth',
+      '',
     ].join('\n'))
+  })
+
+  it('writes the mean phi and the effective votes of each configuration, from the findings of known truth of its counted reviews', () => {
+    const finding = (...erred: boolean[]): JudgedFinding => ({
+      profile: 'security',
+      lenses: 3,
+      errors: new Map(erred.map((value, index) => [['reachability', 'impact', 'defenses'][index], value])),
+    })
+    const report = buildReport({
+      ...INPUT,
+      scores: new Map([
+        ...INPUT.scores,
+        [
+          reviewKey(A, 'exec', 1),
+          score({
+            keptCatch: true,
+            proposedCatch: true,
+            tokens: 100,
+            costUsd: 0.01,
+            judged: [
+              ...Array.from({ length: 4 }, () => finding(true, true, false)),
+              ...Array.from({ length: 4 }, () => finding(false, false, false)),
+              finding(true, false, false),
+            ],
+          }),
+        ],
+        [
+          reviewKey(B, 'docs', 1),
+          score({
+            judged: [
+              finding(false, false, false),
+            ],
+          }),
+        ],
+      ]),
+    })
+    expect(report.independence[1]).toEqual({
+      configuration: 2,
+      findings: 1,
+      pairs: 0,
+      meanPhi: null,
+      lenses: 3,
+      effectiveVotes: null,
+    })
+    const markdown = reportMarkdown(report)
+    expect(markdown).toContain('\n- 1: mean phi 0.80 over 1 lens pair and 9 findings; 1.15 effective votes of 3\n')
+    expect(markdown).toContain('\n- 2: no pair of lenses whose errors both vary, over 1 finding\n')
   })
 
   it('writes a difference that rounds to zero without a sign', () => {
