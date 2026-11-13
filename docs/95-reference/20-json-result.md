@@ -1,6 +1,6 @@
 # The JSON result
 
-What a review returns: the JSON the CLI prints on stdout, and the object `review` resolves with. It holds three lists of verdicts and `meta`. Every field below is listed in the order it is written, which is the order of its keys in the JSON. The CLI writes it with `inertJson`: a hidden character in a string is written as a `\uXXXX` escape, which a JSON parser reads back as the character.
+What a review returns: the JSON the CLI prints on stdout, and the object `review` resolves with. It holds three lists of verdicts and `meta`. Every field below is listed in the order it is written, which is the order of its keys in the JSON. The CLI writes it with `inertJson`: a hidden character in a string is written as a `\uXXXX` escape, which a JSON parser reads back as the character. `quorum bench` keeps a result in each line of its `results.jsonl`, written with `inertJsonLine`, which escapes the same characters on one line.
 
 ## The top level
 

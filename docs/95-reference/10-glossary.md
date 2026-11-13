@@ -53,7 +53,7 @@ The words these pages use in one particular way, and the acronyms they assume yo
 - **CLI** — command-line interface: `quorum` typed at a shell. [The CLI](../20-using/10-cli.md)
 - **CVE** — Common Vulnerabilities and Exposures: the identifier of a published vulnerability (`CVE-2026-62325`), which the notes of the real-bug suite give beside the advisory's own. [Benchmarks](../20-using/70-bench.md#the-real-bug-suite)
 - **CWE** — Common Weakness Enumeration, the numbered weaknesses (`CWE-89`) the security profile asks the finder to name as a finding's category.
-- **JSON** — JavaScript Object Notation: the format of the result on stdout and of every model reply quorum reads. [The JSON result](./20-json-result.md)
+- **JSON** — JavaScript Object Notation: the format of the result on stdout, of a bench's `run.json`, `results.jsonl` and `report.json`, and of every model reply quorum reads. [The JSON result](./20-json-result.md)
 - **LLM** — large language model: the finder and the voters are LLMs, reached through providers. [Providers](../20-using/30-providers.md)
 - **PR** — pull request: a proposed change, whose diff quorum reviews and whose author is the attacker of the threat model. [Threat model](../30-security/10-threat-model.md#the-attacker)
 - **SPDX** — Software Package Data Exchange: the standard short names of licenses, such as `MIT` and `BSD-3-Clause`, which a case's `license` holds and which name the files of `bench/LICENSES/`. [Benchmarks](../20-using/70-bench.md#the-real-bug-suite)
