@@ -190,6 +190,7 @@ function summarize(input: ReportInput, index: number, counted: readonly ReviewSc
       : [value]
   })
   const reviews = counted.flat()
+  const latencies = reviews.map(score => score.latencyMs)
   const tokens = reviews.flatMap(({ tokens: used }) => used === undefined
     ? []
     : [used])
@@ -211,11 +212,11 @@ function summarize(input: ReportInput, index: number, counted: readonly ReviewSc
           median: nearestRank(tokens, 50),
           total: tokens.reduce((sum, used) => sum + used, 0),
         },
-    latencyMs: reviews.length === 0
+    latencyMs: latencies.length === 0
       ? null
       : {
-          p50: nearestRank(reviews.map(score => score.latencyMs), 50),
-          p95: nearestRank(reviews.map(score => score.latencyMs), 95),
+          p50: nearestRank(latencies, 50),
+          p95: nearestRank(latencies, 95),
         },
     costUsd: reviews.length > 0 && reviews.every(score => score.costUsd !== undefined)
       ? reviews.reduce((sum, score) => sum + (score.costUsd ?? 0), 0)
