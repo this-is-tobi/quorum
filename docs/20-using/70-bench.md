@@ -25,11 +25,11 @@ Options:
   -h, --help              Print this help and exit
 ```
 
-`bench` must be the first argument ([The invocation](./10-cli.md#the-invocation)). The argument after the options is a suite's directory, the one that holds its `suite.yaml`. With no `--config` there is one configuration, the usual resolution: `QUORUM_CONFIG` and the `QUORUM_*` variables, as for a review ([Configuration](./20-configuration.md)). Each `--config` adds another, up to 16, and the **first is the reference**: the report compares every other one with it. A `QUORUM_*` variable overrides every config alike, so two configs it makes identical are refused before any call, naming both.
+`bench` must be the first argument ([The invocation](./10-cli.md#the-invocation)). The argument after the options is a suite's directory, the one that holds its `suite.yaml`. With no `--config` there is one configuration, the usual resolution: `QUORUM_CONFIG` and the `QUORUM_*` variables, as for a review ([Configuration](./20-configuration.md)). Each `--config` adds another, up to 16, and the **first is the reference**: the report compares every other one with it. A `QUORUM_*` variable overrides every config alike, so two configs it makes identical are refused before any call, naming both. A file named by two `--config` values, as `a.yaml` and `./a.yaml` or its absolute path, is a usage error before any config is read, `Error: --config: names the file "a.yaml" more than once`, and two names of one file, such as a link, are refused as two configs that resolve alike.
 
 | Flag | Effect |
 | --- | --- |
-| `-c, --config <path>` | A config file to compare. Repeat it for several; the first is the reference. An empty path is a usage error |
+| `-c, --config <path>` | A config file to compare. Repeat it for several; the first is the reference. An empty path, or a file named twice, is a usage error |
 | `-p, --profile <id>` | Run only this profile, as in a review, in every configuration. It repeats to run several. Every profile that runs counts toward a catch |
 | `--trials <n>` | The reviews of each case with each configuration, from 1 to 100: the suite's `trials`, else 1. Raising it on a run that exists adds the new trials: [The run directory](#the-run-directory) |
 | `--case <id>` | Run only this case, and report only it. It repeats for several. An id the suite lacks, or one given twice, is a usage error |
@@ -97,7 +97,7 @@ The numbers are an example. The lines follow the plan's order, which is by trial
 - **A review that was recorded** says what it found of its case: `control` for a control, else `caught by a kept finding`, `caught by a proposed finding only` or `missed`, then its counts of kept, discarded and unreviewed findings, its gaps (`meta.incomplete`) and its time.
 - **A review that failed** ends with the error as the review command prints it for the same failure: [When the research call fails](./10-cli.md#when-the-research-call-fails). It is not recorded, the other reviews run, and the next run on the same directory runs it again. A review that resolves with gaps is not a failure: it is recorded with them, and counted as incomplete in the report.
 
-When the reviews end, the report is written as `report.md` and `report.json` in the run directory and the Markdown is printed on stdout: [Reading the report](#reading-the-report). The reports are written after every run that reached the run directory, on exit `0`, on exit `4` and on an interrupt, so a stopped run shows what it recorded. An interrupt that comes before the first review starts, while the checks and the plan run, writes nothing, not even the run directory. A script reads stdout, and everything else is on stderr: the warnings, the plan, the progress lines, `interrupted` and an `Error:` line.
+When the reviews end, the report is written as `report.md` and `report.json` in the run directory and the Markdown is printed on stdout: [Reading the report](#reading-the-report). The reports are written after every run that reached the run directory, on exit `0`, on exit `4` and on an interrupt, so a stopped run shows what it recorded. The bench writes to the run directory only once the checks and the plan are done: an interrupt before that writes nothing, not even the run directory, and one after it writes the reports of what was recorded, which can be nothing yet. A script reads stdout, and everything else is on stderr: the warnings, the plan, the progress lines, `interrupted` and an `Error:` line.
 
 `--retry-incomplete` is for an outage. A review whose provider was down fails and is not recorded, so the next run runs it, but one in which a vote failed or a finding could not be read resolves, and is recorded with its gap. Those stay as they are until you ask: `--retry-incomplete` runs them again, and the later record replaces the earlier one in the report. A review that comes back incomplete again is recorded again and ends the run with `0`, as a gap is data. A refused request is not an outage, though. A review whose research request is refused as too large (`request-too-large`) comes back the same on every retry: only a model with a larger window fixes it, and that is another configuration, so another `--out`. A vote refused as too large may fit on a retry, since the findings change from one trial to the next.
 
@@ -109,7 +109,7 @@ When the reviews end, the report is written as `report.md` and `report.json` in 
 | `2` | A usage, config or suite error: a flag, a suite that does not validate, a config that cannot be built, two configs that resolve alike. Or a run directory that holds another run or a file the bench cannot trust. Nothing was reviewed, and stdout is empty |
 | `3` | A read or a write of the run directory failed, such as `results.jsonl: cannot be written (EACCES)`, or the run stopped for any other reason. The records already written stay |
 | `4` | Some reviews failed. They are not recorded, the others are, and the next run runs the failed ones |
-| `130` | Interrupted by SIGINT or SIGTERM. No new review starts, the reviews in flight are cut, the records are kept and the reports are written, and `interrupted` is on stderr. Before the first review starts it writes nothing. A second signal exits at once, without waiting |
+| `130` | Interrupted by SIGINT or SIGTERM. No new review starts, the reviews in flight are cut, the records are kept and the reports are written, and `interrupted` is on stderr. During the checks and the plan it writes nothing, not even the run directory. A second signal exits at once, without waiting |
 
 These are the bench's own codes, not the review command's: its `4` means reviews failed, not that a review has a gap, and it has no `1`. [The CLI](./10-cli.md#quorum-bench) lists them with the command. A bench gates nothing: `0` says the reviews ran, not that the numbers are good.
 
@@ -146,7 +146,7 @@ cases:
 
 | Field | Rule |
 | --- | --- |
-| `name` | Required. At most 64 characters, matching `^[a-z0-9][a-z0-9._-]*$`. It names the default run directory, `quorum-bench/<name>`, so it holds no separator and no `..` |
+| `name` | Required. At most 64 characters, matching `^[a-z0-9][a-z0-9._-]*$`. It names the default run directory, `quorum-bench/<name>`, so it is never `.` or `..`, and holds no separator |
 | `trials` | Optional, a whole number from 1 to 100: the trials a run takes when `--trials` is not given |
 | `window` | Optional, a whole number from 0 to 100, 3 by default: [Locations and the window](#locations-and-the-window) |
 | `cases` | Required, from 1 to 1000 cases |
@@ -230,7 +230,7 @@ A run keeps everything in one directory, `--out`, which is `quorum-bench/<suite 
 | --- | --- |
 | `run.json` | Written once, whole, when the run begins: the quorum version, the suite's name and content hash, the run's salt, and each configuration's path as given and its fingerprint |
 | `results.jsonl` | One line per review that resolved, appended as it ends: the configuration's fingerprint, the case, the trial, the latency, the calls and failed calls, the usage, whether every call reported a cost, and the review's full result, as the review command prints it |
-| `report.md`, `report.json` | The report of the last run that ended with exit `0`, exit `4` or an interrupt after its reviews began, rewritten whole. A run that exits `3` rewrites neither, so after one they show an earlier run |
+| `report.md`, `report.json` | The report of the last run that ended with exit `0`, exit `4` or an interrupt after its checks and its plan, rewritten whole; a dry run writes neither. A run that exits `3` rewrites neither, so after one they show an earlier run |
 
 A `--out` that does not exist is made, with its parents. An empty directory is taken. A directory that holds a `run.json` is a run to resume. A directory that holds anything else is refused with exit `2`, so `--out .` in a repository never writes into it:
 
@@ -238,7 +238,11 @@ A `--out` that does not exist is made, with its parents. An empty directory is t
 Error: --out: holds files but no run.json, so it is not a run directory: name a new directory, or an empty one
 ```
 
-`--out` as a symbolic link, or as anything but a directory, is refused too (`Error: --out: is a symbolic link`). Its parents may be links, since they are your own path. No write follows a symbolic link: `results.jsonl` is opened without following one, and every other file is written whole to a new file that is renamed over its name, which replaces a link at that name and never writes through it. `results.jsonl` holds what models wrote about each patch, in full, so treat it as the review command's result is treated: [Output handling](../30-security/30-output-handling.md#text-an-attacker-can-influence).
+One file is not counted: the temporary file of `run.json` that a run killed while it wrote can leave, named `.run.json.` then 8 hex digits then `.tmp`. A directory that holds only such files is taken as empty, the bench neither reads nor deletes them, and they are safe to delete.
+
+`--out` as a symbolic link, or as anything but a directory, is refused too (`Error: --out: is a symbolic link`). Its parents may be links, since they are your own path. No write follows a symbolic link: `results.jsonl` is opened without following one, and every other file is written whole to a new file that is renamed over its name, which replaces a link at that name and never writes through it. `results.jsonl` holds each review's full result, the text models wrote about each patch among it, so treat it as the review command's result is treated: [Output handling](../30-security/30-output-handling.md#text-an-attacker-can-influence).
+
+The bench makes `run.json` and `results.jsonl` readable and writable by their owner only (mode `0600`), and the files of a run being resumed keep their modes. The reports are made as any new file is, since they hold numbers, suite ids and config paths, never text a model wrote, and are made to be shared.
 
 ### Resuming
 
@@ -261,7 +265,7 @@ Each line shows when it applies. A suite of another name reads `run.json: is a r
 
 ### The fingerprint
 
-A configuration is known by its fingerprint, not by its file name: the HMAC-SHA-256, under the run's salt, of the settings a review uses. In plain words, it holds **every setting a review uses, except the key**: the profiles that run, with their prompts, lenses, policy and gating; each provider's every field, the base URL and the values of `headers`, `query` and `extraBody` among them; and `concurrency` and `maxFindings`. It is taken of the resolved configuration, so a `QUORUM_*` variable that changes a setting changes it, and it holds no file path, no warning and no provider name, so the same settings in another file, or under other names, are one configuration.
+A configuration is known by its fingerprint, not by its file name: the HMAC-SHA-256, under the run's salt, of the settings a review uses. In plain words, it holds **every setting a review uses, except the key**: the profiles that run, with their prompts, lenses, policy and gating; each provider's every field, the base URL and the values of `headers`, `query` and `extraBody` among them; and `concurrency` and `maxFindings`. It is taken of the resolved configuration, so a `QUORUM_*` variable that changes a setting changes it, and it holds no config-file path, no warning and no provider name, so the same settings in another file, or under other names, are one configuration.
 
 That settles when a run can go on:
 
@@ -271,7 +275,7 @@ That settles when a run can go on:
 
 What it cannot see is outside the configuration. A provider object, which a TS or JS config defines, is its config key and its model, since its code cannot be hashed: change its implementation under the same key and model and the fingerprint stays. Nor does it see the environment a `claude-code` provider inherits. For either, start a new `--out`.
 
-`run.json` holds the fingerprints, not the settings in the clear, and its salt keeps a short value from being looked up in a table made ahead of time. The salt is in the same file, though, so whoever reads `run.json` and knows the rest of a config can check a guess at a short value in it, a short credential in a header or a query. Keep `run.json` as private as the config.
+`run.json` holds the fingerprints, not the settings in the clear, and its salt keeps a short value from being looked up in a table made ahead of time. The salt is in the same file, though, so whoever reads `run.json` and knows the rest of a config can check a guess at a short value in it, a short credential in a header or a query, so the bench writes `run.json`, as it writes `results.jsonl`, readable by its owner only.
 
 ### Stopped runs
 
@@ -283,7 +287,15 @@ warning: results.jsonl: its last line was cut short, as a stopped run leaves it:
 
 Any other line that is no record of this run, is over 16 MiB, or names a configuration or a case the run does not have, refuses the directory with exit `2`, as `results.jsonl: line 12 is not a record of this run`. A review whose record would be over 16 MiB is a failed review. A read or write of the directory that fails stops the run with exit `3`, and its message holds the file and the error's code, as `results.jsonl: cannot be written (EACCES)`, never the runtime's text.
 
-Run one run at a time per directory: two runs on one `--out` could interleave their records, and nothing locks the directory.
+The append checks the file again, so a `results.jsonl` whose length changed since the run read it, shorter or longer, as another run on the same directory leaves it, stops the run with exit `2` before any review, and nothing is cut:
+
+```text
+Error: results.jsonl: changed after this run read it, so another run may be using this --out: run one at a time
+```
+
+A `results.jsonl` that is no longer a regular file, such as a directory or a FIFO, stops the run the same way, as `Error: results.jsonl: is not a file`, and the bench never waits for a FIFO to be read. A kind of file the system refuses to open, a unix socket on macOS, is a write failure instead, `results.jsonl: cannot be written` with exit `3`, which writes nothing either.
+
+Run one run at a time per directory: that check is made once, when the append opens the file, and nothing locks the directory, so two runs on one `--out` could interleave their records.
 
 ## Reading the report
 
@@ -336,7 +348,7 @@ Each configuration is a row, numbered as in the list above it, which names it by
 
 **Kept recall against proposed recall.** The gap between them is the bugs the finder found and the panel did not keep. A proposed recall far above the kept recall says the panel throws away real findings, and a kept recall that equals it says the panel lost none of the bugs the finder found.
 
-**Unmatched kept findings.** They are never called false positives, since a gold set is never complete: a kept finding on a bug case that matches no location can be a real flaw the suite does not list. A suite's `note` can say so, as the note of the mistune case of the real-bug suite does, which names two other advisories its fix closes. On a control, a kept finding is the nearest thing to a false alarm, since a control is a commit no advisory names, though that does not prove it clean.
+**Unmatched kept findings.** They are never called false positives, since a gold set, the list of bugs a suite records, is never complete: a kept finding on a bug case that matches no location can be a real flaw the suite does not list. A suite's `note` can say so, as the note of the mistune case of the real-bug suite does, which names two other advisories its fix closes. On a control, a kept finding is the nearest thing to a false alarm, since a control is a commit no advisory names, though that does not prove it clean.
 
 ### The interval
 
@@ -359,7 +371,7 @@ The same numbers as the table and the lines, plus each case's scores for each co
 A bench makes real calls on real models, and a lot of them. The reviews are the cases times the trials times the configurations, and each review is one research call for each profile and one vote for each finding for each lens: a review of the security profile with four candidate findings makes 13 calls, one to research and twelve votes, three lenses for each finding.
 
 - **Tokens grow with the patch**, at about one token for every three or four bytes of diff. The research call reads the whole patch, and each vote reads the cited file's part of it.
-- **Quorum counts more than that.** Its size guard counts one token for every byte of a request, with a reply budget of 16 000 tokens and 512 for the chat template, and refuses one that may not fit `contextTokens`: [The size of a request](./30-providers.md#the-size-of-a-request). A refused request is a `request-too-large` gap, so the review resolves, is recorded as incomplete, and catches nothing. At the default reply budget, the real-bug suite's largest patch, about 40 KB, needs a `contextTokens` of about 59 000, and a window of 32 768 refuses the research request of four of its ten cases: state the window the server really gives ([The context size](./20-configuration.md#the-context-size)), and compare configs whose windows hold the suite.
+- **Quorum counts more than that.** Its size guard counts one token for every byte of a request, with a reply budget of 16 000 tokens and 512 for the chat template (4096 for a `claude-code` provider), and refuses one that may not fit `contextTokens`: [The size of a request](./30-providers.md#the-size-of-a-request). A refused request is a `request-too-large` gap, so the review resolves, is recorded as incomplete, and catches nothing. At the default reply budget, the real-bug suite's largest patch, about 40 KB, needs a `contextTokens` of about 59 000, and a window of 32 768 refuses the research request of four of its ten cases: state the window the server really gives ([The context size](./20-configuration.md#the-context-size)), and compare configs whose windows hold the suite.
 - **Run `--dry-run` first**, which prints how many reviews a run makes and costs nothing.
 - **There is no spend cap yet.** A hosted model bills every call. Try one case and one trial first (`--case <id> --trials 1`), then widen. A stopped run resumes, so interrupting one loses nothing but the reviews in flight.
 
@@ -367,7 +379,7 @@ A bench makes real calls on real models, and a lot of them. The reviews are the 
 
 Run a bench by hand, or on a schedule on a trusted branch, never on a pull request. A pull request's author could change the suite, the configs or the prompts, and would spend your keys' budget on whatever they chose.
 
-A suite is data, so nothing in it runs. But its patches go to the configured models, and the configs it is run with are trusted input: they must come from a place the run trusts, as for a review ([Trust](./20-configuration.md#trust)). A TS or JS config runs when it loads, and its prompt files steer every review.
+A suite is data, so nothing in it runs. But its patches go to the configured models, and the configs it is run with are trusted input: they must come from a place the run trusts, as for a review ([Trust](./20-configuration.md#trust)). A config also chooses where each key goes, so one you did not write can send the key it names, with every patch, to an endpoint of its choosing. A TS or JS config runs when it loads, and its prompt files steer every review.
 
 ## The real-bug suite
 
@@ -376,7 +388,7 @@ A suite is data, so nothing in it runs. But its patches go to the configured mod
 - **Where the cases come from.** Each bug case is a vulnerability whose fix an advisory names, a GitHub security advisory (`GHSA-...`) or a CVE record. The case's patch is the diff of the commit that introduced it, and its locations are the lines of that diff the fix changed, or next to which the fix added its check. A case whose bug does not show in that diff is left out. Recent advisories are preferred, and each case's `date` is recorded, so a reader can compare it with a model's training cutoff.
 - **The controls** are two commits of the same projects that no advisory names: one of praktor and one of lettre. Their locations are none, and a kept finding on one is unmatched.
 - **Provenance.** Every case holds its `repo`, its fix and introducing commits, or its commit for a control, its `license`, its `copyright` lines, its `date` and a `note`. Where a patch leaves out a file, as the goshs case leaves out two test keys, the note says so. The dates are the committer's local day, as [Provenance](#provenance) says.
-- **Licenses.** The projects are permissively licensed, MIT and BSD-3-Clause today. `bench/LICENSES/` holds the text of each license the cases use, in one file named by its SPDX id, which is the REUSE layout, and a test checks that every case's license has its file there and that the directory holds no other. A project under Apache-2.0 with a `NOTICE` file is left out for now, since that layout does not carry its notice. `.gitattributes` keeps each patch byte for byte. Each patch is under 64 KiB and the largest is 40 797 bytes: the window a run needs for it is in [What a run costs](#what-a-run-costs).
+- **Licenses.** The projects are permissively licensed, MIT and BSD-3-Clause today, and the repository's test takes no license but MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause and ISC. `bench/LICENSES/` holds the text of each license the cases use, in one file named by its SPDX id, which is the REUSE layout, and a test checks that every case's license has its file there and that the directory holds no other. A project under Apache-2.0 with a `NOTICE` file is left out for now, since that layout does not carry its notice. `.gitattributes` keeps each patch byte for byte. Each patch is under 64 KiB and the largest is 40 797 bytes: the window a run needs for it is in [What a run costs](#what-a-run-costs).
 - **It ships nowhere.** The suite is in the repository and in no package, binary or image: to run it, use a clone, and point `quorum bench` at `bench/bugs`. `src/bench/suites.spec.ts` validates it in the default test suite, as a run does, with no model.
 
 The suite will grow to 30 to 50 cases. At ten cases, every interval of a report is wide, so read a first bench of it as a first look, and not as a ranking.

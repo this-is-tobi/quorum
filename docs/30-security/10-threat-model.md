@@ -6,7 +6,7 @@ What an attacker can do to a review, what quorum protects, which controls stand 
 
 Quorum feeds text an attacker controls to language models and reports what they answer. The attacker is anyone who can open a pull request, from a fork included, and they control the whole diff: its code, comments, strings and file names, and the commit messages a `git format-patch` series carries. They control every file of the pull request's branch too, so guidelines a caller loads from that branch's checkout are theirs as well, and so are a config file and the prompt files it names.
 
-What quorum answers goes to the JSON result on stdout and the lines on stderr, and from there to CI logs, terminals and whatever renders the result. `quorum bench` prints its Markdown report on stdout instead of the result, and writes its run directory, where `results.jsonl` holds every byte its models wrote. It usually runs in CI, with a model API key in its environment.
+What quorum answers goes to the JSON result on stdout and the lines on stderr, and from there to CI logs, terminals and whatever renders the result. `quorum bench` prints its Markdown report on stdout instead of the result, and writes its run directory, where `results.jsonl` holds each review's full result. It usually runs in CI, with a model API key in its environment.
 
 ## Assets
 
@@ -113,7 +113,7 @@ The harness reads the added lines and the file names of the diff by code, before
 
 ### Inert output
 
-The CLI writes nothing that a terminal or a GitHub Actions runner would act on, and shows or escapes every hidden character of the class in the text it carries. Every line of stderr that carries text from outside the CLI passes through `inertLine`, which shows each hidden character as `<U+XXXX>` and breaks the forms of a GitHub Actions workflow command, and stdout is written by `inertJson`, which escapes them and parses back to the same data. `quorum bench` prints its report, or its plan with `--dry-run`, on stdout through `inertLine`, and writes `results.jsonl` as one `inertJsonLine` per record, `run.json` and `report.json` through `inertJson` and `report.md` through `inertLine`, only inside `--out` and never through a symbolic link. [What the CLI writes](./30-output-handling.md#what-the-cli-writes) has the details and the limits.
+The CLI writes nothing that a terminal or a GitHub Actions runner would act on, and shows or escapes every hidden character of the class in the text it carries. Every line of stderr that carries text from outside the CLI passes through `inertLine`, which shows each hidden character as `<U+XXXX>` and breaks the forms of a GitHub Actions workflow command, and stdout is written by `inertJson`, which escapes them and parses back to the same data. `quorum bench` prints its report, or its plan with `--dry-run`, on stdout through `inertLine`, and writes `results.jsonl` as one `inertJsonLine` per record, `run.json` and `report.json` through `inertJson` and `report.md` through `inertLine`, only inside `--out`, which it makes with its missing parents, its two data files readable by their owner only, and never through a symbolic link. [What the CLI writes](./30-output-handling.md#what-the-cli-writes) has the details and the limits.
 
 ## What the harness cannot detect
 

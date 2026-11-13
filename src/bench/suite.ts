@@ -19,7 +19,7 @@ import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { hiddenLabels } from '../core/sanitize.ts'
 
-/** A suite name or a case id: a name for a directory and for a record, so it holds no separator and no `..`. */
+/** A suite name or a case id: a name for a directory and for a record, so it is never `.` or `..`, and holds no separator. */
 export const SUITE_ID = /^[a-z0-9][a-z0-9._-]*$/
 /** A patch's file name: bare, and not starting with a dot. */
 export const PATCH_NAME = /^[A-Z0-9][\w.-]*$/i

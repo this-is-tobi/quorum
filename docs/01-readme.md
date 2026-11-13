@@ -6,13 +6,14 @@ Quorum assists a reviewer; it does not replace human review of untrusted changes
 
 Nothing needs reading in order. Pick what you came to do: each track lists its pages in reading order, and every page outside the reference section ends by naming the one that follows it.
 
-## Three tracks
+## Four tracks
 
 | Track | You want to | Read | Afterwards you can |
 | --- | --- | --- | --- |
 | **A. Review a diff** | Run quorum on your own changes, at a terminal or in CI | Six pages: Installation, Quick start, The CLI, Configuration, Providers, Local models | Review a diff from a file or a pipe, read its result and its exit code, gate a CI job on that code, and point the finder and the panel at the models you choose, on a server of your own included |
 | **B. Use it from code, or review something else** | Call quorum from a TypeScript program, or review for something other than security | Five pages: Profiles, Lenses and policy, Prompts, Library API, The JSON result | Write a profile of your own, choose its lenses and how their votes are graded, run it through `createQuorum` with your providers, and follow a review through its events |
 | **C. Know what it protects against** | Decide what quorum can be trusted with before you run it on changes you did not write | Two pages: Threat model, Output handling | Say what an attacker who opens a pull request controls, which controls stand in their way today and what remains, and print a review without letting its text act on your terminal |
+| **D. Measure configurations** | Choose a model or a config by measurement, or see what a change of prompt, lens or policy did | One page: Benchmarks | Run a suite of known bugs with several configs, write a suite from your own history, resume a stopped run, and read its rates, intervals and comparisons |
 
 ### A. Review a diff
 
@@ -35,6 +36,10 @@ Nothing needs reading in order. Pick what you came to do: each track lists its p
 
 1. [Threat model](./30-security/10-threat-model.md) — the attacker, the assets, the residual risk stated plainly, the controls in place today, and what the panel's independence is worth.
 2. [Output handling](./30-security/30-output-handling.md) — what the CLI writes and how it is made inert, the advisory flags, and printing a review yourself.
+
+### D. Measure configurations
+
+1. [Benchmarks](./20-using/70-bench.md) — quorum bench: run a suite with several configs, write one, resume a run, and read the report and its intervals.
 
 ## If you arrive with a job
 
