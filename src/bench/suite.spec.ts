@@ -2,10 +2,20 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readBounded } from '../config/load.ts'
 import { ConfigError } from '../core/errors.ts'
 import { PATCHES, SUITE, writeSuite } from '../testing/bench.ts'
 import { loadSuite } from './suite.ts'
+
+/** `readBounded` as a spy that calls through, so a test can count the reads of one patch. */
+vi.mock('../config/load.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config/load.ts')>()
+  return {
+    ...actual,
+    readBounded: vi.fn(actual.readBounded),
+  }
+})
 
 let root = ''
 let directory = ''
@@ -260,7 +270,9 @@ describe('loadSuite', () => {
         { id: 'exec-again', kind: 'control', patch: 'exec.patch' },
       ],
     })
+    vi.mocked(readBounded).mockClear()
     const suite = await loadSuite(directory, 'demo')
+    expect(vi.mocked(readBounded).mock.calls.filter(([path]) => path.endsWith('exec.patch'))).toHaveLength(1)
     expect([
       ...suite.patches.keys(),
     ]).toEqual(['exec.patch', 'sql.patch', 'docs.patch'])
