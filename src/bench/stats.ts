@@ -1,7 +1,8 @@
 /**
  * The statistics of the report, written by hand and held to reference values: the Wilson score
- * interval of a rate, the exact two-sided sign test and nearest-rank percentiles. Pure code, with no
- * package behind it; each function throws a `RangeError` for an argument outside its domain.
+ * interval of a rate, the exact two-sided sign test, nearest-rank percentiles, the phi coefficient of
+ * two lenses' errors and the effective number of votes. Pure code, with no package behind it; each
+ * function throws a `RangeError` for an argument outside its domain.
  */
 
 /** The two-sided 95% quantile of the standard normal distribution. */
@@ -101,4 +102,58 @@ export function nearestRank(values: readonly number[], percent: number): number 
   if (!(percent > 0 && percent <= 100)) throw new RangeError('the percent must be above 0 and at most 100')
   const rank = Math.max(1, Math.ceil(percent * values.length / 100))
   return [...values].sort((a, b) => a - b)[rank - 1]
+}
+
+/** How two lenses' errors fell over the findings both voted on: each cell counts findings. */
+export interface ErrorTable {
+  /** Both lenses erred. */
+  readonly both: number
+  /** Only the first lens erred. */
+  readonly onlyFirst: number
+  /** Only the second lens erred. */
+  readonly onlySecond: number
+  /** Neither erred. */
+  readonly neither: number
+}
+
+/**
+ * The phi coefficient of a 2x2 table, the correlation of two lenses' errors: with
+ * `product = (both + onlyFirst) * (onlySecond + neither) * (both + onlySecond) * (onlyFirst + neither)`,
+ * `(both * neither - onlyFirst * onlySecond) / sqrt(product)`, from -1 to 1. It is undefined, and this
+ * returns `undefined`, when `product` is 0: a lens whose errors never vary (or always do), or no
+ * finding at all, has no correlation with anything.
+ *
+ * Reference values: [10, 5, 5, 30] (both, only first, only second, neither) gives 0.5238095238095238,
+ * [5, 5, 5, 5] gives 0, [0, 10, 10, 0] gives -1, [7, 0, 0, 3] gives 1 and [0, 0, 4, 6] is undefined.
+ *
+ * @throws {RangeError} when a count is not a whole number of at least 0.
+ */
+export function phi(table: ErrorTable): number | undefined {
+  const { both, onlyFirst, onlySecond, neither } = table
+  for (const count of [both, onlyFirst, onlySecond, neither]) {
+    if (!Number.isInteger(count) || count < 0) throw new RangeError('a count must be a whole number of at least 0')
+  }
+  const product = (both + onlyFirst) * (onlySecond + neither) * (both + onlySecond) * (onlyFirst + neither)
+  if (product === 0) return undefined
+  return (both * neither - onlyFirst * onlySecond) / Math.sqrt(product)
+}
+
+/**
+ * The effective number of independent votes that `lenses` lenses are worth when their errors correlate
+ * by `meanPhi` on average: with `d = 1 + (lenses - 1) * meanPhi`, `lenses / d`, which is `lenses` for
+ * errors that do not correlate, 1 for errors that always go together, and `undefined` when `d` is not
+ * above 0: a negative mean that strong has no effective number of votes.
+ *
+ * Reference values: 3 lenses at 0 gives 3, at 1 gives 1 and at 0.5 gives 1.5; 1 lens gives 1 at any
+ * mean; 3 lenses at -0.5 is undefined.
+ *
+ * @throws {RangeError} when `lenses` is not a positive integer, or `meanPhi` is not from -1 to 1.
+ */
+export function effectiveVotes(lenses: number, meanPhi: number): number | undefined {
+  if (!Number.isInteger(lenses) || lenses < 1) throw new RangeError('the lenses must be a positive integer')
+  if (!(meanPhi >= -1 && meanPhi <= 1)) throw new RangeError('the mean phi must be from -1 to 1')
+  const d = 1 + (lenses - 1) * meanPhi
+  return d > 0
+    ? lenses / d
+    : undefined
 }
