@@ -58,7 +58,7 @@ quorum ./my.diff > result.json
 
 Requires Claude Code 2.1.311 or newer. [`claudeCode`](./docs/20-using/30-providers.md#claudecode) has the command line, the isolation and the auth modes, and [Claude Code](./docs/20-using/20-configuration.md#claude-code) the setup, in CI too.
 
-The JSON result goes to stdout, and the exit code says what to do with it: `0` for a complete review in which no gating profile kept a `high` finding, `1` when one did, complete or not, `2` for a usage or configuration error, `3` when the research call failed, `4` when a gating profile's review is incomplete otherwise, and `130` when the run was interrupted. [Quick start](./docs/10-getting-started/20-quickstart.md) walks one review through, and [Start here](./docs/01-readme.md) lays out three tracks: review a diff, use it from code or review something else, and know what it protects against.
+The JSON result goes to stdout, and the exit code says what to do with it: `0` for a complete review in which no gating profile kept a `high` finding, `1` when one did, complete or not, `2` for a usage or configuration error, `3` when the research call failed, `4` when a gating profile's review is incomplete otherwise, and `130` when the run was interrupted. [Quick start](./docs/10-getting-started/20-quickstart.md) walks one review through, and [Start here](./docs/01-readme.md) lays out four tracks: review a diff, use it from code or review something else, know what it protects against, and measure configurations.
 
 ## Documentation
 
