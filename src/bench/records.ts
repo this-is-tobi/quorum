@@ -22,9 +22,11 @@ export const MAX_RECORD_BYTES = 16 * 1024 * 1024
 /** The most `run.json` may hold, in bytes. */
 export const MAX_RUN_FILE_BYTES = 1024 * 1024
 
+/** The most configurations a run holds. */
+export const MAX_CONFIGURATIONS = 16
+
 const MAX_ID = 64
 const MAX_QUORUM_VERSION = 64
-const MAX_CONFIGURATIONS = 16
 const MAX_CONFIG_PATH = 4096
 
 /** One configuration of a run: the path as given (null for the usual resolution) and its fingerprint. */

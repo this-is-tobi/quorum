@@ -3,7 +3,8 @@ import type { Provider } from '../core/ports.ts'
 import type { QuorumEvent } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
-import { bannerLines, progressSink, providerOrigin, renderEvent } from './render.ts'
+import { resolvedConfig } from '../testing/bench.ts'
+import { bannerLines, profileProviders, progressSink, providerOrigin, renderEvent } from './render.ts'
 
 /** A right-to-left override, which the sanitizer writes as text. */
 const RLO = String.fromCharCode(0x202E)
@@ -297,5 +298,21 @@ describe('bannerLines', () => {
     } finally {
       delete proto.baseUrl
     }
+  })
+})
+
+describe('profileProviders', () => {
+  it('names who researches and who votes in each profile, as the banner names them', () => {
+    const config = resolvedConfig({
+      providers: {
+        fake: {
+          model: 'm',
+          complete: async () => ({ text: '{}', model: 'm' }),
+        },
+      },
+    })
+    expect(profileProviders(config)).toEqual([
+      { profile: 'security', research: 'm @ the provider object fake', panel: 'm @ the provider object fake' },
+    ])
   })
 })

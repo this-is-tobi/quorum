@@ -3,43 +3,25 @@ import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import packageJson from '../../package.json' with { type: 'json' }
 import { readEnv } from '../config/env.ts'
-import type { Env } from '../config/env.ts'
 import { fromConfig } from '../config/from-config.ts'
 import { loadConfig } from '../config/load.ts'
 import { decodeDiff } from '../core/diff.ts'
 import { ConfigError } from '../core/errors.ts'
 import { inertJson, inertLine } from '../core/sanitize.ts'
 import type { Quorum, QuorumResult } from '../core/types.ts'
+import { runBench } from './bench.ts'
+import { errorLines, errorMessage, EXIT } from './io.ts'
+import type { CliIO } from './io.ts'
 import { printConfig } from './print-config.ts'
 import { bannerLines, progressSink } from './render.ts'
 
-/** Exit codes (ADR-0008, amended by ADR-0012). */
-export const EXIT = {
-  ok: 0,
-  finding: 1,
-  usage: 2,
-  runtime: 3,
-  incomplete: 4,
-  interrupted: 130,
-} as const
-
-export interface CliIO {
-  /** Arguments after the executable and script, e.g. `process.argv.slice(2)`. */
-  argv: readonly string[]
-  /** The directory a relative diff path and a relative `--config` resolve against, e.g. `process.cwd()`. */
-  readonly cwd: string
-  /** Environment variables, e.g. `process.env`. */
-  env: Env
-  stdin: AsyncIterable<Uint8Array | string> & { isTTY?: boolean }
-  stdout: { write: (text: string) => unknown }
-  stderr: { write: (text: string) => unknown }
-  /** The review's signal: once it is aborted, a run that ends without a result exits 130. */
-  readonly signal?: AbortSignal
-}
+export { errorMessage, EXIT }
+export type { CliIO }
 
 const USAGE = [
   'Usage: quorum [options] [diff-file]',
   '       git diff | quorum [options]',
+  '       quorum bench [options] <suite>',
   '',
   'Options:',
   '  -c, --config <path>     Read this config file, over QUORUM_CONFIG',
@@ -84,10 +66,14 @@ const OPTIONS = {
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
  * error ended the review, and writes no result. A review that has already resolved is complete.
  *
+ * The one subcommand is `bench`: when the first argument is `bench`, the rest goes to `runBench` and its exit
+ * code is returned, before any review flag is read. A file named `bench` is reviewed as `quorum ./bench`.
+ *
  * Everything the CLI writes is inert (invariant I3): each stderr line passes through `inertLine`, and
  * the JSON result through `inertJson`.
  */
 export async function runCli(io: CliIO): Promise<number> {
+  if (io.argv[0] === 'bench') return runBench(io, io.argv.slice(1))
   let flags: ReturnType<typeof parseFlags>
   try {
     flags = parseFlags(io.argv)
@@ -237,34 +223,4 @@ async function readDiff(io: CliIO, positionals: readonly string[]): Promise<stri
     : io.stdin)
   if (diff === undefined) throw new Error('the diff is over 16 MiB, the most quorum reads')
   return diff
-}
-
-/**
- * The `Error:` lines of a failure, each inert: a ConfigError's issues one per line, as its message
- * lists them, and any other failure's message on one line, so a line break in a file name or in text
- * a server sent cannot start a line of its own.
- */
-function errorLines(error: unknown): string {
-  const lines = error instanceof ConfigError
-    ? error.message.split('\n')
-    : [
-        errorMessage(error),
-      ]
-  return lines.map((line, index) => inertLine(index === 0
-    ? `Error: ${line}`
-    : line)).join('\n')
-}
-
-/**
- * The text of a failure, for any value a promise can reject with: an `Error`'s message, else the
- * value's text form, else a fixed text when even that throws, as it does for an object without a
- * prototype. It never throws, so neither do the lines built from it.
- */
-export function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message
-  try {
-    return String(error)
-  } catch {
-    return 'an error with no text form'
-  }
 }

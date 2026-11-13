@@ -1,5 +1,4 @@
 import { own } from '../config/profiles.ts'
-import type { ResolvedProfile } from '../config/profiles.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider } from '../config/schema.ts'
 import type { EventSink, Provider } from '../core/ports.ts'
@@ -95,14 +94,23 @@ function providerLabel(providers: ResolvedConfig['providers'], name: string): st
     : `${own(entry, 'model')} @ ${endpointOf(entry)}`
 }
 
-/** The banner of one profile: its research provider, then its panel, one provider for every lens when they share it. */
-function profileBanner({ research, voters }: ResolvedProfile, providers: ResolvedConfig['providers']): string[] {
-  const label = (name: string): string => providerLabel(providers, name)
-  const lenses = Object.entries(voters)
-  const panel = new Set(lenses.map(([, name]) => name)).size === 1
-    ? label(lenses[0][1])
-    : lenses.map(([lens, name]) => `${lens} (${label(name)})`).join(', ')
-  return [`Research (${label(research)})...`, `Panel will use ${panel}`]
+/**
+ * Who researches and who votes in each profile of a config, by profile in run order, as the banner names
+ * them: `<model> @ <origin>` for a provider (see `bannerLines`), the panel as one provider when every lens
+ * shares it, else each lens's. The labels are not yet inert: the caller makes each line it writes inert.
+ */
+export function profileProviders(config: ResolvedConfig): Array<{ readonly profile: string, readonly research: string, readonly panel: string }> {
+  const label = (name: string): string => providerLabel(config.providers, name)
+  return config.profiles.map(({ profile, research, voters }) => {
+    const lenses = Object.entries(voters)
+    return {
+      profile: profile.id,
+      research: label(research),
+      panel: new Set(lenses.map(([, name]) => name)).size === 1
+        ? label(lenses[0][1])
+        : lenses.map(([lens, name]) => `${lens} (${label(name)})`).join(', '),
+    }
+  })
 }
 
 /**
@@ -114,10 +122,10 @@ function profileBanner({ research, voters }: ResolvedProfile, providers: Resolve
  */
 export function bannerLines(config: ResolvedConfig): string[] {
   const prefixed = config.profiles.length > 1
-  return config.profiles.flatMap((resolved) => {
+  return profileProviders(config).flatMap(({ profile, research, panel }) => {
     const prefix = prefixed
-      ? profilePrefix(resolved.profile.id)
+      ? profilePrefix(profile)
       : ''
-    return profileBanner(resolved, config.providers).map(line => inertLine(`${prefix}${line}`))
+    return [`Research (${research})...`, `Panel will use ${panel}`].map(line => inertLine(`${prefix}${line}`))
   })
 }

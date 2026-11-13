@@ -9,6 +9,7 @@ import type { QuorumResult, Verdict } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { fakeClaudeEnv, readFakeRecord, writeFakeClaude } from '../testing/claude.ts'
 import * as fixtures from '../testing/fixtures/claude-code.ts'
+import { harness } from '../testing/cli.ts'
 import { chatReply, sent, stubChat, stubFetch, stubOllamaChat, textReply } from '../testing/http.ts'
 import { EXIT, exitCodeFor, interruptSignal, runCli } from './main.ts'
 import type { CliIO } from './main.ts'
@@ -76,36 +77,11 @@ const TWO_YAML = [
 /** A config of one provider, on an origin of its own. */
 const TEAM_YAML = 'providers:\n  team: {protocol: openai-compatible, baseUrl: "https://team.example/v1", model: t, contextTokens: 131072}\n'
 
-function harness(options: { argv?: string[], cwd?: string, stdin?: string, isTTY?: boolean, env?: Record<string, string>, signal?: AbortSignal } = {}): { io: CliIO, stdout: () => string, stderr: () => string } {
-  const out: string[] = []
-  const err: string[] = []
-  async function* chunks(): AsyncGenerator<string> {
-    if (options.stdin !== undefined) yield options.stdin
-  }
-  const io: CliIO = {
-    argv: options.argv ?? [],
-    cwd: options.cwd ?? process.cwd(),
-    env: options.env ?? {},
-    stdin: Object.assign(chunks(), { isTTY: options.isTTY ?? false }),
-    stdout: {
-      write: text => out.push(text),
-    },
-    stderr: {
-      write: text => err.push(text),
-    },
-    signal: options.signal,
-  }
-  return {
-    io,
-    stdout: () => out.join(''),
-    stderr: () => err.join(''),
-  }
-}
-
 /** The usage text, which `--help` prints on stdout and every usage error prints on stderr. */
 const USAGE = [
   'Usage: quorum [options] [diff-file]',
   '       git diff | quorum [options]',
+  '       quorum bench [options] <suite>',
   '',
   'Options:',
   '  -c, --config <path>     Read this config file, over QUORUM_CONFIG',

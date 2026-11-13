@@ -50,3 +50,6 @@ node_modules/
 
 # Local working notes (backlog, findings, ADRs, specs, plans) - kept out of the repo
 /.local/
+
+# The bench's default run directories, which hold model output
+/quorum-bench/

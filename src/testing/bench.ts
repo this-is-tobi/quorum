@@ -1,8 +1,9 @@
-/** Test helpers for the bench: a small suite and the writer that puts it on disk, the verdicts and results its scorer reads, the resolved configs it fingerprints, the records it keeps, and the fake models its runner reviews with. */
+/** Test helpers for the bench: a small suite and the writer that puts it on disk, the verdicts and results its scorer reads, the resolved configs it fingerprints, the records it keeps, and the fake models its runner and its command review with. */
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { stringify } from 'yaml'
+import { vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
 import type { ReviewRecord } from '../bench/records.ts'
 import type { Env } from '../config/env.ts'
@@ -14,6 +15,7 @@ import type { ConfigInput } from '../config/schema.ts'
 import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
 import { findingId } from '../core/stages/research.ts'
 import type { Confidence, FindingDetails, IncompleteEntry, QuorumResult, Verdict } from '../core/types.ts'
+import { chatReply, jsonReply } from './http.ts'
 
 /** Three patches: exec adds an exec(cmd) call at new line 2 of a.js, sql builds SQL text at new lines 2 and 3 of db.py, docs renames the README's title. */
 export const PATCHES = {
@@ -338,4 +340,59 @@ export function fakeConfig(fake: FakeModel = {}): ResolvedConfig {
       fake: fakeProvider(fake),
     },
   })
+}
+
+/** What a model behind `stubModels` does: the findings its research calls report when the diff holds them (none by default), whether its votes keep them (they do by default), and the HTTP status it answers with instead. */
+export interface StubbedModel {
+  readonly findings?: readonly FindingDetails[]
+  readonly keep?: boolean
+  /** Every call of the model fails with this status. */
+  readonly status?: number
+  /** Every vote of the model fails with this status. */
+  readonly voteStatus?: number
+}
+
+/** The `model` and the messages of an OpenAI-compatible chat request's body. */
+interface ChatBody {
+  readonly model: string
+  readonly messages: ReadonlyArray<{ readonly role: string, readonly content: string }>
+}
+
+/**
+ * `fetch` put in place with fake models behind it, each answering an OpenAI-compatible chat request by the
+ * `model` of its body. A request whose user message holds an `<untrusted-claim-` tag is a vote, which keeps
+ * (unless `keep` is false); any other is research, which reports the `findings` whose quote the diff it is
+ * shown holds, as a model that read the diff would: a finding that cites a line the diff lacks would make
+ * the review a gap. A `status` fails every call with it, a `voteStatus` every vote; a model `models` does
+ * not name fails with 404. Returns the mock.
+ */
+export function stubModels(models: Readonly<Record<string, StubbedModel>>): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(async (_url: unknown, init: { readonly body: string }) => {
+    const body = JSON.parse(init.body) as ChatBody
+    const fake = Object.hasOwn(models, body.model)
+      ? models[body.model]
+      : undefined
+    if (fake === undefined) {
+      return jsonReply({
+        error: { message: 'unknown model' },
+      }, 404)
+    }
+    const asked = body.messages.filter(message => message.role === 'user').map(message => message.content).join('\n')
+    const vote = asked.includes('<untrusted-claim-')
+    const status = fake.status ?? (vote
+      ? fake.voteStatus
+      : undefined)
+    if (status !== undefined) {
+      return jsonReply({
+        error: { message: 'down' },
+      }, status)
+    }
+    return chatReply(JSON.stringify(vote
+      ? { keep: fake.keep ?? true, reasoning: 'r' }
+      : {
+          findings: (fake.findings ?? []).filter(({ quote }) => asked.includes(quote)),
+        }))
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
 }
