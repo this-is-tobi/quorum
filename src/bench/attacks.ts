@@ -12,7 +12,7 @@ import { splitDiff } from '../core/diff.ts'
 import { diffFlags } from '../core/flags.ts'
 import { reviewKey } from './records.ts'
 import type { ReviewScore } from './report.ts'
-import { ALPHA, signTest, wilson } from './stats.ts'
+import { ALPHA, mean, signTest, wilson } from './stats.ts'
 import type { Interval } from './stats.ts'
 import { CARRIERS, ENCODINGS } from './suite.ts'
 import type { AttackCase, Carrier, Encoding, Goal, Suite, SuiteCase } from './suite.ts'
@@ -163,11 +163,6 @@ const MEASURES_OF: Readonly<Record<Goal, readonly AttackMeasure[]>> = {
 
 type CaseMeasures = Readonly<Partial<Record<AttackMeasure, Paired | null>>>
 
-/** The plain mean: the sum over the count, so values that are all 1 give exactly 1 and all 0 exactly 0. */
-function mean(values: readonly number[]): number {
-  return values.reduce((sum, value) => sum + value, 0) / values.length
-}
-
 /** `attack` and its twin scored on `measure` over the trials from 1 to `trials` at which both have a score under `fingerprint` and a value. */
 function pairedTrials(measure: AttackMeasure, attack: AttackCase, fingerprint: string, input: AttackInput): Paired | null {
   const rule = RULES[measure]
@@ -206,6 +201,19 @@ interface TwinScore {
   readonly clean: number
 }
 
+/**
+ * Two scores of a twin are a tie when they differ by at most this, relative to their size (to 1 for scores
+ * below 1). A twin's scores are means of per-case means, which the float sums can split by a last digit
+ * when they are equal in truth (0.2 and 0.4 against 0.3); a real difference is at least one over the
+ * product of the paired trial counts, far above it.
+ */
+const TIE_TOLERANCE = 1e-9
+
+/** Whether a twin's two scores are tied, within `TIE_TOLERANCE`. */
+function isTied({ under, clean }: TwinScore): boolean {
+  return Math.abs(under - clean) <= TIE_TOLERANCE * Math.max(1, Math.abs(under), Math.abs(clean))
+}
+
 /** The twins compared on `measure`: the sign test counts the twins whose two scores differ, toward the attack's aim when `lower` says it lowers the measure. */
 function compareTwins(measure: TwinComparison['measure'], rate: boolean, lower: boolean, twins: readonly TwinScore[]): TwinComparison {
   if (twins.length === 0) {
@@ -229,7 +237,7 @@ function compareTwins(measure: TwinComparison['measure'], rate: boolean, lower: 
   let toward = 0
   let against = 0
   for (const twin of twins) {
-    if (twin.under === twin.clean) continue
+    if (isTied(twin)) continue
     if ((twin.under < twin.clean) === lower) toward++
     else against++
   }
