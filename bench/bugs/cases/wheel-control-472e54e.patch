@@ -1,0 +1,88 @@
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index 790a078..48ffd2b 100644
+--- a/.github/workflows/test.yml
++++ b/.github/workflows/test.yml
+@@ -48,8 +48,10 @@ jobs:
+       run: pip install build flit
+     - name: Test with pytest
+       run: |
+-        coverage run -m pytest -W always
++        coverage run -m pytest
+         coverage xml
++      env:
++        PYTHONWARNDEFAULTENCODING: 1
+     - name: Send coverage data to Codecov
+       uses: codecov/codecov-action@v3
+       with:
+diff --git a/pyproject.toml b/pyproject.toml
+index b58ec6b..14704f0 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -74,7 +74,15 @@ extend-exclude = '''
+ '''
+ 
+ [tool.pytest.ini_options]
+-testpaths = "tests"
++minversion = "6.0"
++addopts = ["-ra", "--showlocals", "--strict-markers", "--strict-config"]
++xfail_strict = true
++filterwarnings = [
++    "error",
++    "ignore::Warning:_pytest.*",
++]
++log_cli_level = "info"
++testpaths = ["test"]
+ 
+ [tool.coverage.run]
+ source = ["wheel"]
+@@ -112,8 +120,10 @@ skip_missing_interpreters = true
+ 
+ [testenv]
+ depends = lint
+-commands = {envpython} -b -m pytest -W always {posargs}
++commands = {envpython} -b -m pytest {posargs}
+ extras = test
++set_env =
++  PYTHONWARNDEFAULTENCODING = 1
+ 
+ [testenv:lint]
+ depends =
+diff --git a/src/wheel/bdist_wheel.py b/src/wheel/bdist_wheel.py
+index c059ddc..28a9050 100644
+--- a/src/wheel/bdist_wheel.py
++++ b/src/wheel/bdist_wheel.py
+@@ -547,7 +547,7 @@ class bdist_wheel(Command):
+ 
+             # delete dependency_links if it is only whitespace
+             dependency_links_path = os.path.join(distinfo_path, "dependency_links.txt")
+-            with open(dependency_links_path) as dependency_links_file:
++            with open(dependency_links_path, encoding="utf-8") as dependency_links_file:
+                 dependency_links = dependency_links_file.read().strip()
+             if not dependency_links:
+                 adios(dependency_links_path)
+diff --git a/src/wheel/metadata.py b/src/wheel/metadata.py
+index 61c0e4e..b391c96 100644
+--- a/src/wheel/metadata.py
++++ b/src/wheel/metadata.py
+@@ -152,7 +152,7 @@ def pkginfo_to_metadata(egg_info_path: str, pkginfo_path: str) -> Message:
+     del pkg_info["Requires-Dist"]
+     requires_path = os.path.join(egg_info_path, "requires.txt")
+     if os.path.exists(requires_path):
+-        with open(requires_path) as requires_file:
++        with open(requires_path, encoding="utf-8") as requires_file:
+             requires = requires_file.read()
+ 
+         parsed_requirements = sorted(split_sections(requires), key=lambda x: x[0] or "")
+diff --git a/tests/cli/test_convert.py b/tests/cli/test_convert.py
+index 87ca6f6..4f26b23 100644
+--- a/tests/cli/test_convert.py
++++ b/tests/cli/test_convert.py
+@@ -10,7 +10,7 @@ from wheel.wheelfile import WHEEL_INFO_RE
+ def test_egg_re():
+     """Make sure egg_info_re matches."""
+     egg_names_path = os.path.join(os.path.dirname(__file__), "eggnames.txt")
+-    with open(egg_names_path) as egg_names:
++    with open(egg_names_path, encoding="utf-8") as egg_names:
+         for line in egg_names:
+             line = line.strip()
+             if line:

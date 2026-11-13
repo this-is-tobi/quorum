@@ -422,3 +422,159 @@ cases:
   - Copyright (c) 2013 The Gorilla Handlers Authors. All rights reserved.
   date: 2016-02-20
   note: "Control: the commit that adds http.Flusher and http.CloseNotifier support to the compress handler, two months after the commit that introduced the CORS flaw; no advisory names it"
+- id: wheel-ghsa-8rrh-rw8j-w5fx
+  kind: bug
+  patch: wheel-ghsa-8rrh-rw8j-w5fx.patch
+  locations:
+  - file: src/wheel/cli/unpack.py
+    start: 22
+    end: 22
+  - file: src/wheel/cli/unpack.py
+    start: 28
+    end: 28
+  repo: https://github.com/pypa/wheel
+  fixCommit: 7a7d2de96b22a9adf9208afcc9547e1001569fef
+  introducingCommit: 934fe177ff912c8e03d5ae951d3805e1fd90ba5e
+  license: MIT
+  copyright:
+  - Copyright (c) 2012 Daniel Holth <dholth@fastmail.fm> and contributors
+  date: 2026-01-22
+  note: "GHSA-8rrh-rw8j-w5fx (CVE-2026-24049), CWE-22: unpack() extracts each archive member and then calls chmod on destination.joinpath(zinfo.filename), a path built from the unsanitized member name instead of the path the member was extracted to, so a crafted wheel changes the permissions of files outside the destination; the commit adds the permission restoring loop, and the advisory names it"
+- id: fonttools-ghsa-6673-4983-2vx5
+  kind: bug
+  patch: fonttools-ghsa-6673-4983-2vx5.patch
+  locations:
+  - file: Lib/fontTools/subset/svg.py
+    start: 99
+    end: 99
+  repo: https://github.com/fonttools/fonttools
+  fixCommit: 9f61271dc1ca82ed91f529b130fe5dc5c9bf1f4c
+  introducingCommit: d44af9f2d7659894a3397d48bca49c123b6a1309
+  license: MIT
+  copyright:
+  - Copyright (c) 2017 Just van Rossum
+  date: 2023-09-15
+  note: "GHSA-6673-4983-2vx5 (CVE-2023-45139), CWE-611: the SVG table subsetter parses each OT-SVG document with lxml's XMLParser(huge_tree=True), which resolves external entities by default, so a crafted font reads local files or makes requests (XXE); the commit adds the parser call (a later commit only reshaped it, which plain blame names first, so the commit comes from git blame --ignore-rev of the reshaping commits)"
+- id: slab-ghsa-qx2v-8332-m4fv
+  kind: bug
+  patch: slab-ghsa-qx2v-8332-m4fv.patch
+  locations:
+  - file: src/lib.rs
+    start: 826
+    end: 826
+  - file: src/lib.rs
+    start: 832
+    end: 832
+  repo: https://github.com/tokio-rs/slab
+  fixCommit: 2d65c514bc964b192bab212ddf3c1fcea4ae96b8
+  introducingCommit: f801afe5cb2379b0178173758273a95f64510527
+  license: MIT
+  copyright:
+  - Copyright (c) 2019 Carl Lerche
+  date: 2025-08-08
+  note: "GHSA-qx2v-8332-m4fv (CVE-2025-55159), CWE-119: get_disjoint_mut() checks the keys against the capacity of the entries vector instead of its length and then dereferences the pointer in unsafe code, which reaches uninitialized memory; the commit adds the method"
+- id: ssh-net-ghsa-72p8-v4hg-v45p
+  kind: bug
+  patch: ssh-net-ghsa-72p8-v4hg-v45p.patch
+  locations:
+  - file: src/Renci.SshNet/Security/KeyExchangeECCurve25519.cs
+    start: 48
+    end: 50
+  repo: https://github.com/sshnet/SSH.NET
+  fixCommit: 03c6d60736b8f7b42e44d6989a53f9b644a091fb
+  introducingCommit: b58a11c0da55da1f5bad46faad2e9b71b7cb35b3
+  license: MIT
+  copyright:
+  - Copyright © Renci 2010-2017
+  date: 2022-05-29
+  note: "GHSA-72p8-v4hg-v45p (CVE-2022-29245), CWE-330 and CWE-338: the curve25519 key exchange draws the client private key from System.Random, which is not a cryptographically secure generator, so the key can be predicted; the commit adds the key exchange, and the advisory names it. The LICENSE of that commit holds no copyright line, so copyright is the project's notice in src/Renci.SshNet/Properties/CommonAssemblyInfo.cs at that commit (a Windows-1252 file)"
+- id: yii2-authclient-ghsa-rw54-6826-c8j5
+  kind: bug
+  patch: yii2-authclient-ghsa-rw54-6826-c8j5.patch
+  locations:
+  - file: src/OAuth2.php
+    start: 134
+    end: 134
+  repo: https://github.com/yiisoft/yii2-authclient
+  fixCommit: 721ed974bc44137437b0cdc8454e137fff8db213
+  introducingCommit: 97c51fa20227da6f0801dd893dacfe13872c5521
+  license: BSD-3-Clause
+  copyright:
+  - Copyright © 2008-2013 by Yii Software LLC (http://www.yiisoft.com)
+  date: 2023-12-16
+  note: "GHSA-rw54-6826-c8j5 (CVE-2023-50714), CWE-287 and CWE-347: the OAuth2 PKCE support sends the code verifier read from the session state without checking that one was stored and without removing it after use, so a PKCE downgrade works; the commit adds the PKCE support"
+- id: fosuserbundle-ghsa-pjx8-984p-7p3x
+  kind: bug
+  patch: fosuserbundle-ghsa-pjx8-984p-7p3x.patch
+  locations:
+  - file: Util/TokenGenerator.php
+    start: 40
+    end: 40
+  repo: https://github.com/FriendsOfSymfony/FOSUserBundle
+  fixCommit: b3ebfea52065e9727508f5f8e6c9f7459a1b06d8
+  introducingCommit: e896df3234ed33a97147f652ac6a9c9fa0893256
+  license: MIT
+  copyright:
+  - Copyright (c) 2010-2011 FriendsOfSymfony
+  date: 2014-09-04
+  note: "GHSA-pjx8-984p-7p3x (no CVE), CWE-331: generateToken() builds the confirmation and password reset tokens with base_convert(bin2hex(...), 16, 36), which loses precision on large inputs and with it most of the entropy; the commit adds the token generator. The license file of that commit is Resources/meta/LICENSE, the tree has none at its root"
+- id: kredis-ghsa-h2wm-p2vg-6pw4
+  kind: bug
+  patch: kredis-ghsa-h2wm-p2vg-6pw4.patch
+  locations:
+  - file: lib/kredis/types/json.rb
+    start: 8
+    end: 8
+  repo: https://github.com/rails/kredis
+  fixCommit: d576b7ae5c8d3d74eeb4bd84cad0aa64ffc299fa
+  introducingCommit: b4dc2159a20c5eb55fe7b6615a7e4984f56f9036
+  license: MIT
+  copyright:
+  - Copyright (c) 2020 Basecamp
+  date: 2023-03-13
+  note: "GHSA-h2wm-p2vg-6pw4 (CVE-2023-27531), CWE-502: the json type reads stored values with JSON.load, which can instantiate objects that the data names, so untrusted JSON deserializes into unexpected objects; the commit adds the json type, and the line later moved to type_casting.rb and type/json.rb, where the fix changes it (git log -S finds this commit as the first to hold it). The fix named by the advisory is on the v1.3.0.1 release tag, main carries the same change as 459a4cd"
+- id: binderhub-ghsa-9jjr-qqfp-ppwx
+  kind: bug
+  patch: binderhub-ghsa-9jjr-qqfp-ppwx.patch
+  locations:
+  - file: binderhub/repoproviders.py
+    start: 206
+    end: 206
+  repo: https://github.com/jupyterhub/binderhub
+  fixCommit: 195caac172690456dcdc8cc7a6ca50e05abf8182
+  introducingCommit: b845fa4ada07feee9687b4c38f74bf843b2bd48f
+  license: BSD-3-Clause
+  copyright:
+  - Copyright (c) Project Jupyter Contributors
+  date: 2021-08-19
+  note: "GHSA-9jjr-qqfp-ppwx (CVE-2021-39159), CWE-78 and CWE-94: get_resolved_ref() of the git provider runs git ls-remote with the repository URL taken from the spec and no -- before it, so a URL that starts with a dash is read as an option (for example --upload-pack) and runs a command; the commit adds the git ls-remote call"
+- id: wheel-control-472e54e
+  kind: control
+  patch: wheel-control-472e54e.patch
+  repo: https://github.com/pypa/wheel
+  commit: 472e54eadb37ec9ae66a49711c3eb4c311c014e1
+  license: MIT
+  copyright:
+  - Copyright (c) 2012 Daniel Holth <dholth@fastmail.fm> and contributors
+  date: 2023-03-13
+  note: "Control: the commit that passes an explicit utf-8 encoding to the open() calls of bdist_wheel.py and metadata.py and runs the tests with PYTHONWARNDEFAULTENCODING, the same day as the commit that introduced the unpack flaw; no advisory names it"
+- id: min-dash-control-b4ce77e
+  kind: control
+  patch: min-dash-control-b4ce77e.patch
+  repo: https://github.com/bpmn-io/min-dash
+  commit: b4ce77e177d88fe520ecfd7b0cc438421336d291
+  license: MIT
+  copyright:
+  - Copyright (c) 2017-present camunda Services GmbH
+  date: 2021-08-30
+  note: "Control: the commit that lets debounce() be cancelled and flushed, five months after the commit that introduced the set() flaw; no advisory names it"
+- id: kredis-control-e55eccb
+  kind: control
+  patch: kredis-control-e55eccb.patch
+  repo: https://github.com/rails/kredis
+  commit: e55eccb2ad953f5888434a43ce289cd9d13da7c4
+  license: MIT
+  copyright:
+  - Copyright (c) 2020 Basecamp
+  date: 2021-02-05
+  note: "Control: the commit that adds the Cycle type and a reset for the counter, five days after the commit that introduced the JSON deserialization flaw; no advisory names it"

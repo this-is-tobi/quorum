@@ -1,0 +1,144 @@
+diff --git a/README.md b/README.md
+index 827f00a..6548372 100644
+--- a/README.md
++++ b/README.md
+@@ -64,6 +64,15 @@ counter.increment by: 2         # => SETEX "mycounter" 900 0 + INCR "mycounter"
+ sleep 6.seconds
+ 0 == counter.value              # => GET "mycounter"
+ 
++cycle = Kredis.cycle "mycycle", values: %i[ one two three ]
++:one == cycle.value
++cycle.next
++:two == cycle.value
++cycle.next
++:three == cycle.value
++cycle.next
++:one == cycle.value
++
+ enum = Kredis.enum "myenum", values: %w[ one two three ], default: "one"
+ "one" == enum.value
+ true == enum.one?
+diff --git a/lib/kredis/types.rb b/lib/kredis/types.rb
+index 07632b4..2c2c2d1 100644
+--- a/lib/kredis/types.rb
++++ b/lib/kredis/types.rb
+@@ -41,6 +41,10 @@ module Kredis::Types
+     Counter.new configured_for(config), namespaced_key(key), expires_in: expires_in
+   end
+ 
++  def cycle(key, values:, expires_in: nil, config: :shared)
++    Cycle.new configured_for(config), namespaced_key(key), values: values, expires_in: expires_in
++  end
++
+   def flag(key, config: :shared)
+     Flag.new configured_for(config), namespaced_key(key)
+   end
+@@ -75,6 +79,7 @@ require "kredis/types/proxying"
+ 
+ require "kredis/types/scalar"
+ require "kredis/types/counter"
++require "kredis/types/cycle"
+ require "kredis/types/flag"
+ require "kredis/types/enum"
+ require "kredis/types/list"
+diff --git a/lib/kredis/types/counter.rb b/lib/kredis/types/counter.rb
+index 80acdc7..41434f2 100644
+--- a/lib/kredis/types/counter.rb
++++ b/lib/kredis/types/counter.rb
+@@ -1,5 +1,5 @@
+ class Kredis::Types::Counter < Kredis::Types::Proxying
+-  proxying :multi, :set, :incrby, :decrby, :get
++  proxying :multi, :set, :incrby, :decrby, :get, :del
+ 
+   attr_accessor :expires_in
+ 
+@@ -20,4 +20,8 @@ class Kredis::Types::Counter < Kredis::Types::Proxying
+   def value
+     get.to_i
+   end
++
++  def reset
++    del
++  end
+ end
+diff --git a/lib/kredis/types/cycle.rb b/lib/kredis/types/cycle.rb
+new file mode 100644
+index 0000000..8f843fb
+--- /dev/null
++++ b/lib/kredis/types/cycle.rb
+@@ -0,0 +1,13 @@
++class Kredis::Types::Cycle < Kredis::Types::Counter
++  attr_accessor :values
++
++  alias index value
++
++  def value
++    values[index]
++  end
++
++  def next
++    set (index + 1) % values.size
++  end
++end
+diff --git a/lib/kredis/types/limit.rb b/lib/kredis/types/limit.rb
+new file mode 100644
+index 0000000..5119588
+--- /dev/null
++++ b/lib/kredis/types/limit.rb
+@@ -0,0 +1,7 @@
++class Kredis::Types::Limit < Kredis::Types::Counter
++  attr_accessor :bound
++
++  def exceeded?
++    value >= bound
++  end
++end
+diff --git a/test/types/counter_test.rb b/test/types/counter_test.rb
+index 8ce3900..e4eb810 100644
+--- a/test/types/counter_test.rb
++++ b/test/types/counter_test.rb
+@@ -51,6 +51,14 @@ class CounterTest < ActiveSupport::TestCase
+     assert_equal 0, @counter.value
+   end
+ 
++  test "reset" do
++    @counter.increment
++    assert_equal 1, @counter.value
++
++    @counter.reset
++    assert_equal 0, @counter.value
++  end
++
+   test "failing open" do
+     stub_redis_down(@counter) { @counter.increment }
+     assert_equal 0, @counter.value
+diff --git a/test/types/cycle_test.rb b/test/types/cycle_test.rb
+new file mode 100644
+index 0000000..ffc467e
+--- /dev/null
++++ b/test/types/cycle_test.rb
+@@ -0,0 +1,24 @@
++require "test_helper"
++require "active_support/core_ext/integer"
++
++class CycleTest < ActiveSupport::TestCase
++  setup { @cycle = Kredis.cycle "mycycle", values: %i[ one two three ] }
++
++  test "next" do
++    assert_equal :one, @cycle.value
++
++    @cycle.next
++    assert_equal :two, @cycle.value
++
++    @cycle.next
++    assert_equal :three, @cycle.value
++
++    @cycle.next
++    assert_equal :one, @cycle.value
++  end
++
++  test "failing open" do
++    stub_redis_down(@cycle) { @cycle.next }
++    assert_equal :one, @cycle.value
++  end
++end

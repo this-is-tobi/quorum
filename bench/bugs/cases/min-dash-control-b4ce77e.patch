@@ -1,0 +1,137 @@
+diff --git a/lib/fn.js b/lib/fn.js
+index c3b9083..eb20733 100644
+--- a/lib/fn.js
++++ b/lib/fn.js
+@@ -1,6 +1,9 @@
+ /**
+- * Debounce fn, calling it only once if
+- * the given time elapsed between calls.
++ * Debounce fn, calling it only once if the given time
++ * elapsed between calls.
++ *
++ * Lodash-style the function exposes methods to `#clear`
++ * and `#flush` to control internal behavior.
+  *
+  * @param  {Function} fn
+  * @param  {Number} timeout
+@@ -16,11 +19,11 @@ export function debounce(fn, timeout) {
+ 
+   let lastNow;
+ 
+-  function fire() {
++  function fire(force) {
+ 
+     let now = Date.now();
+ 
+-    let scheduledDiff = (lastNow + timeout) - now;
++    let scheduledDiff = force ? 0 : (lastNow + timeout) - now;
+ 
+     if (scheduledDiff > 0) {
+       return schedule(scheduledDiff);
+@@ -28,15 +31,30 @@ export function debounce(fn, timeout) {
+ 
+     fn.apply(lastThis, lastArgs);
+ 
+-    timer = lastNow = lastArgs = lastThis = undefined;
++    clear();
+   }
+ 
+   function schedule(timeout) {
+     timer = setTimeout(fire, timeout);
+   }
+ 
+-  return function(...args) {
++  function clear() {
++    if (timer) {
++      clearTimeout(timer);
++    }
+ 
++    timer = lastNow = lastArgs = lastThis = undefined;
++  }
++
++  function flush() {
++    if (timer) {
++      fire(true);
++    }
++
++    clear();
++  }
++
++  function callback(...args) {
+     lastNow = Date.now();
+ 
+     lastArgs = args;
+@@ -46,8 +64,12 @@ export function debounce(fn, timeout) {
+     if (!timer) {
+       schedule(timeout);
+     }
+-  };
++  }
+ 
++  callback.flush = flush;
++  callback.cancel = clear;
++
++  return callback;
+ }
+ 
+ /**
+diff --git a/test/fn.spec.js b/test/fn.spec.js
+index 303ba87..addb93e 100644
+--- a/test/fn.spec.js
++++ b/test/fn.spec.js
+@@ -126,7 +126,7 @@ describe('fn', function() {
+     });
+ 
+ 
+-    it('should not #clearTimeout', function() {
++    it('should not repetitively call #clearTimeout', function() {
+ 
+       let callback = sinon.spy();
+       let debounced = debounce(callback, 100);
+@@ -147,7 +147,45 @@ describe('fn', function() {
+ 
+       // then
+       expect(callback).to.have.been.calledOnce;
+-      expect(clearTimeout).not.to.have.been.called;
++      expect(clearTimeout).to.have.been.calledOnce;
++    });
++
++
++    it('should #cancel', function() {
++
++      var callback = sinon.spy();
++      var debounced = debounce(callback, 100);
++
++      // when
++      debounced();
++      debounced.cancel();
++
++      // debounce timer elapsed
++      clock.tick(101);
++
++      // then
++      expect(callback).not.to.have.been.called;
++    });
++
++
++    it('should #flush', function() {
++
++      var callback = sinon.spy();
++      var debounced = debounce(callback, 100);
++
++      // when
++      debounced();
++      debounced.flush();
++
++      // then
++      expect(callback).to.have.been.calledOnce;
++
++      // but when
++      // debounce timer elapsed
++      clock.tick(101);
++
++      // then
++      expect(callback).to.have.been.calledOnce;
+     });
+ 
+   });
