@@ -288,12 +288,13 @@ function isNewPath(path: string): boolean {
  * blob's abbreviated id, and one hunk, or the first three lines alone for an empty file. The patch is then
  * a prefix of the result, and no span of it moves.
  *
- * @throws CorpusError for a path that is not relative, or that the patch already has
+ * @throws CorpusError for a path that is not relative, or that the patch already has; the message never
+ * holds the path, which is the payload of a file-name attack
  */
 export function addFile(patch: string, path: string, lines: readonly string[]): string {
   if (!isNewPath(path)) throw new CorpusError(`a new file must have a relative path of named parts, each at most ${MAX_PATH_PART} bytes`)
   const header = headerOf(path)
-  if (patch.split('\n').some(row => withoutCr(row) === header)) throw new CorpusError(`${path} is already a file of the patch`)
+  if (patch.split('\n').some(row => withoutCr(row) === header)) throw new CorpusError('the new file is already a file of the patch')
   const section = [
     header,
     'new file mode 100644',

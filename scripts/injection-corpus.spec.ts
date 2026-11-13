@@ -148,7 +148,7 @@ describe('addFile', () => {
   })
 
   it('refuses a path the patch has, or one that climbs out', () => {
-    expect(() => addFile(TWO_HUNKS, 'b.js', ['x'])).toThrow('b.js is already a file of the patch')
+    expect(() => addFile(TWO_HUNKS, 'b.js', ['x'])).toThrow(/^the new file is already a file of the patch$/)
     expect(() => addFile(TWO_HUNKS, '../x.md', ['x'])).toThrow('a new file must have a relative path of named parts, each at most 255 bytes')
   })
 
@@ -442,6 +442,16 @@ describe('buildCorpus', () => {
     expect(() => build([
       { ...NAME, id: 'shared' },
     ])).toThrow('shared: cases/shared.patch is already a file of the corpus')
+  })
+
+  it('names the attack and not the path when a file name is already in the patch, since a file-name payload is its path', () => {
+    expect(() => build([
+      {
+        ...NAME,
+        payload: 'a',
+        add: { path: '{payload}.js', lines: [] },
+      },
+    ])).toThrow(/^exec-name: the new file is already a file of the patch$/)
   })
 
   it('names a twin whose locations are malformed, and refuses a patch name that is no bare file name', () => {

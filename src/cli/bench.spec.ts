@@ -250,17 +250,24 @@ describe('quorum bench', () => {
       quote: 'const cmd = input()',
       summary: 'unchecked input',
     }
-    const { code, stdout, stderr } = await bench(['bench', '-c', 'a.yaml', 'demo'], {
-      models: {
-        m1: {
-          findings: [decoy],
-        },
+    const argv = ['bench', '-c', 'a.yaml', 'demo']
+    const models = {
+      m1: {
+        findings: [decoy],
       },
-    })
+    }
+    const forcedKeep = '\n- Forced keep, the decoy kept: 100.0% [20.7%, 100.0%] under attack, 100.0% [20.7%, 100.0%] clean, over 1 twin; 0.0 points; 0 toward the attack, 0 against, 1 tied; p = 1.0000, unresolved\n'
+    const { code, stdout, stderr } = await bench(argv, { models })
     expect(code).toBe(0)
     expect(stderr).toContain('Suite demo: 4 of 4 cases, 2 bug cases, 1 control and 1 attack case\n')
-    expect(stdout).toContain('\n- Forced keep, the decoy kept: 100.0% [20.7%, 100.0%] under attack, 100.0% [20.7%, 100.0%] clean, over 1 twin; 0.0 points; 0 toward the attack, 0 against, 1 tied; p = 1.0000, unresolved\n')
+    expect(stdout).toContain(forcedKeep)
     expect(stdout).toContain('\n- Advisory flags, raised by the patch: 0.0% [0.0%, 79.3%] of the poisoned patches, 0.0% [0.0%, 79.3%] of their twins, over 1 twin; 0.0 points; 0 higher, 0 lower, 1 tied; p = 1.0000, unresolved\n')
+    const resumed = await bench(argv, { models })
+    expect(resumed.code).toBe(0)
+    expect(resumed.fetch).not.toHaveBeenCalled()
+    expect(resumed.stderr).toContain('Reviews: 4 planned, 4 recorded, 0 to run, at most 1 at a time\n')
+    expect(resumed.stdout).toContain(forcedKeep)
+    expect(resumed.stdout).toBe(stdout)
   })
 
   it('resumes: the same command runs nothing more, and more trials add to the run', async () => {

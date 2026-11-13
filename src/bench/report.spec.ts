@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ATTACK, attackScenario, record, resultWith, SUITE, verdict } from '../testing/bench.ts'
+import { ATTACK, attackScenario, record, resultWith, SUITE, suppressedScenario, verdict } from '../testing/bench.ts'
 import { reviewKey } from './records.ts'
 import { buildReport, reportJson, reportMarkdown, reviewScore } from './report.ts'
 import type { Comparison, ConfigurationIndependence, Measure, ReportInput, ReviewScore } from './report.ts'
@@ -556,6 +556,23 @@ describe('reportMarkdown', () => {
       '',
       '## Inter-voter error correlation',
     ].join('\n'))
+  })
+
+  it('writes a line that resolves, with the word the line ends in', () => {
+    const { cases, scores, flagged, fingerprint } = suppressedScenario()
+    const markdown = reportMarkdown(buildReport({
+      suite: { name: 'demo', window: 3 },
+      quorum: '0.2.0',
+      cases,
+      trials: 1,
+      configurations: [
+        { path: 'a.yaml', fingerprint },
+      ],
+      scores,
+      flagged,
+    }))
+    expect(markdown).toContain('- Suppression, kept recall: 0.0% [0.0%, 39.0%] under attack, 100.0% [61.0%, 100.0%] clean, over 6 twins; -100.0 points; 6 toward the attack, 0 against, 0 tied; p = 0.0313, resolved\n')
+    expect(markdown).toContain('- Suppression, proposed recall: 0.0% [0.0%, 39.0%] under attack, 100.0% [61.0%, 100.0%] clean, over 6 twins; -100.0 points; 6 toward the attack, 0 against, 0 tied; p = 0.0313, resolved\n')
   })
 
   it('writes each configuration\'s attack lines and a column of cases for it, with n/a for a case it did not score', () => {
