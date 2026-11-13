@@ -238,11 +238,11 @@ A `--out` that does not exist is made, with its parents. An empty directory is t
 Error: --out: holds files but no run.json, so it is not a run directory: name a new directory, or an empty one
 ```
 
-One file is not counted: the temporary file of `run.json` that a run killed while it wrote can leave, named `.run.json.` then 8 hex digits then `.tmp`. A directory that holds only such files is taken as empty, the bench neither reads nor deletes them, and they are safe to delete.
+One file is not counted: the temporary file of `run.json` that a run killed while it wrote can leave, named `.run.json.` then 8 lowercase hex digits then `.tmp`. A directory that holds only such files is taken as empty, the bench neither reads nor deletes them, and they are safe to delete when no run is using the directory.
 
 `--out` as a symbolic link, or as anything but a directory, is refused too (`Error: --out: is a symbolic link`). Its parents may be links, since they are your own path. No write follows a symbolic link: `results.jsonl` is opened without following one, and every other file is written whole to a new file that is renamed over its name, which replaces a link at that name and never writes through it. `results.jsonl` holds each review's full result, the text models wrote about each patch among it, so treat it as the review command's result is treated: [Output handling](../30-security/30-output-handling.md#text-an-attacker-can-influence).
 
-The bench makes `run.json` and `results.jsonl` readable and writable by their owner only (mode `0600`), and the files of a run being resumed keep their modes. The reports are made as any new file is, since they hold numbers, suite ids and config paths, never text a model wrote, and are made to be shared.
+The bench makes `run.json` and `results.jsonl` readable and writable by their owner only (mode `0600`), and the files of a run being resumed keep their modes. The reports are made as any new file is, since they hold numbers, suite ids and config paths, never text a model wrote, and are made to be shared; `run.json` and `results.jsonl` never are. A copy of the directory, in a CI artifact, an archive or a commit, usually drops the mode, while the salt travels with `run.json`, so share the reports alone. A run directory an earlier quorum made keeps the modes it was made with, usually `0644`, and this quorum does not resume it (a run belongs to one build, see [Resuming](#resuming)), so nothing changes them: `chmod 600` its `run.json` and `results.jsonl`, or delete it.
 
 ### Resuming
 
@@ -275,7 +275,7 @@ That settles when a run can go on:
 
 What it cannot see is outside the configuration. A provider object, which a TS or JS config defines, is its config key and its model, since its code cannot be hashed: change its implementation under the same key and model and the fingerprint stays. Nor does it see the environment a `claude-code` provider inherits. For either, start a new `--out`.
 
-`run.json` holds the fingerprints, not the settings in the clear, and its salt keeps a short value from being looked up in a table made ahead of time. The salt is in the same file, though, so whoever reads `run.json` and knows the rest of a config can check a guess at a short value in it, a short credential in a header or a query, so the bench writes `run.json`, as it writes `results.jsonl`, readable by its owner only.
+`run.json` holds the fingerprints, not the settings in the clear, and its salt keeps a short value from being looked up in a table made ahead of time. The salt is in the same file, though, so whoever reads `run.json` and knows the rest of a config can check a guess at a short value in it, a short credential in a header or a query, so the bench writes `run.json`, as it writes `results.jsonl`, readable by its owner only. The mode stays with the file, not with a copy of it, so keep `run.json` out of an artifact, an archive and a commit.
 
 ### Stopped runs
 
@@ -293,9 +293,9 @@ The append checks the file again, so a `results.jsonl` whose length changed sinc
 Error: results.jsonl: changed after this run read it, so another run may be using this --out: run one at a time
 ```
 
-A `results.jsonl` that is no longer a regular file, such as a directory or a FIFO, stops the run the same way, as `Error: results.jsonl: is not a file`, and the bench never waits for a FIFO to be read. A kind of file the system refuses to open, a unix socket on macOS, is a write failure instead, `results.jsonl: cannot be written` with exit `3`, which writes nothing either.
+A `results.jsonl` that is no longer a regular file, such as a directory or a FIFO, stops the run the same way, as `Error: results.jsonl: is not a file`, and the bench never waits for a FIFO to be read. A kind of file the system refuses to open, a unix socket on macOS, is a write failure instead, `results.jsonl: cannot be written (EOPNOTSUPP)` with exit `3` (Node names no code for it, and prints `results.jsonl: cannot be written`), which writes nothing either.
 
-Run one run at a time per directory: that check is made once, when the append opens the file, and nothing locks the directory, so two runs on one `--out` could interleave their records.
+Run one run at a time per directory: that check is made once, when the append opens the file, and nothing locks the directory, so two runs on one `--out` could interleave their records. Two new runs started together are worse: each finds no `run.json` and makes its own, the one that renames last keeps its salt, and the check passes, since no record exists yet. Their records sit under two salts, which leaves a directory no later run can resume: it refuses the records written under the replaced salt.
 
 ## Reading the report
 
