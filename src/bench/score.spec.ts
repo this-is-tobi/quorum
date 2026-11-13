@@ -79,6 +79,15 @@ describe('scoreReview', () => {
     })
   })
 
+  it('counts only the kept findings that miss when a kept finding catches the bug', () => {
+    expect(scoreReview(resultWith({
+      kept: [
+        verdict('a.js', 11, 'high'),
+        verdict('c.js', 1, 'high'),
+      ],
+    }), bug, 3)).toMatchObject({ keptCatch: true, unmatchedKept: 1 })
+  })
+
   it('scores a control: no catch, and every kept finding unmatched', () => {
     expect(scoreReview(resultWith({
       kept: [
