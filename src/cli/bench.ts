@@ -60,6 +60,7 @@ const BENCH_EXIT = {
 
 const MAX_JOBS = 16
 const DEFAULT_CONFIGURATION = '(default configuration)'
+const UNPLANNED_CASE = 'a review names a case the plan does not hold'
 const TORN_LINE = 'warning: results.jsonl: its last line was cut short, as a stopped run leaves it: that review runs again'
 
 const OPTIONS = {
@@ -358,6 +359,15 @@ async function readScores(io: CliIO, { suite, byId, out, state, runFile }: Check
   }
 }
 
+/** What `execute` runs: the checked run, the scores of the reviews already recorded, what the read of `results.jsonl` found, the reviews to run and how many at once. */
+interface Execution {
+  readonly checked: Checked
+  readonly scores: Map<string, ReviewScore>
+  readonly records: ReadSizes
+  readonly toRun: readonly BenchReview[]
+  readonly jobs: number
+}
+
 /**
  * Make the run (when it is new), open `results.jsonl` and run the reviews of `toRun`, each recorded as it
  * resolves and each reported with its progress line. The order matters: `createRun` renames over any
@@ -366,7 +376,7 @@ async function readScores(io: CliIO, { suite, byId, out, state, runFile }: Check
  * a new run is created. The writer is closed whatever happens; when the run rejects, with the error of a
  * failed write, that error is the one thrown.
  */
-async function execute(io: CliIO, options: BenchOptions, checked: Checked, scores: Map<string, ReviewScore>, records: ReadSizes, toRun: readonly BenchReview[]): Promise<RunReviewsOutcome> {
+async function execute(io: CliIO, { checked, scores, records, toRun, jobs }: Execution): Promise<RunReviewsOutcome> {
   const { suite, loaded, byId, out, state, runFile } = checked
   if (state.kind !== 'run') await createRun(out, runFile)
   const writer = await openRecords(out, records)
@@ -377,14 +387,16 @@ async function execute(io: CliIO, options: BenchOptions, checked: Checked, score
       suite,
       configurations: loaded.map(({ config }, index) => ({ config, fingerprint: runFile.configurations[index].fingerprint })),
       reviews: toRun,
-      jobs: options.jobs,
+      jobs,
       env: io.env,
       signal: io.signal,
       append: writer.append,
       events: (event) => {
         finished += 1
         const { trial, caseId, configuration } = event.review
-        const suiteCase = byId.get(caseId) as SuiteCase
+        const suiteCase = byId.get(caseId)
+        // The plan is made from the selected cases, which `byId` holds, so a review never names another.
+        if (suiteCase === undefined) throw new Error(UNPLANNED_CASE)
         const text = event.type === 'recorded'
           ? recordedText(event.record, suiteCase, keepScore(scores, event.record, suiteCase, suite.window))
           : `failed: ${errorMessage(event.error)}`
@@ -455,7 +467,13 @@ async function bench(io: CliIO, options: BenchOptions): Promise<number> {
     return BENCH_EXIT.interrupted
   }
 
-  const outcome = await execute(io, options, checked, scores, records, toRun)
+  const outcome = await execute(io, {
+    checked,
+    scores,
+    records,
+    toRun,
+    jobs: options.jobs,
+  })
   await writeReports(io, checked, trials, scores)
   if (outcome.interrupted) {
     io.stderr.write('interrupted\n')
