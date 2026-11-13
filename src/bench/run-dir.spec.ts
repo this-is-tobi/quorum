@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import { chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -202,7 +202,8 @@ describe('the modes of the files a run writes', () => {
 
   it('keeps the mode of a results.jsonl that is already there', async () => {
     mkdirSync(out)
-    writeFileSync(results(), LINE_1, { mode: 0o640 })
+    writeFileSync(results(), LINE_1)
+    chmodSync(results(), 0o640)
     await (await openRecords(out, {
       validBytes: Buffer.byteLength(LINE_1),
       bytes: Buffer.byteLength(LINE_1),

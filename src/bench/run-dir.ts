@@ -74,6 +74,9 @@ export interface RecordsRead {
   readonly torn: boolean
 }
 
+/** What the append needs of a read: where its last whole line ends, and the file's length as the read found it. */
+export type ReadSizes = Pick<RecordsRead, 'validBytes' | 'bytes'>
+
 /** Appends lines to `results.jsonl`, one at a time. */
 export interface RecordWriter {
   readonly append: (line: string) => Promise<void>
@@ -343,13 +346,15 @@ function writeFailure(file: string, error: unknown): Error {
  * cut to `read.validBytes` when it ends in the torn tail the read found. Refused, with the handle closed:
  * what is not a regular file, and a file whose length is not `read.bytes`.
  */
-async function openAppend(path: string, read: Pick<RecordsRead, 'validBytes' | 'bytes'>): Promise<FileHandle> {
+async function openAppend(path: string, read: ReadSizes): Promise<FileHandle> {
   if (!HAS_NOFOLLOW && await lstat(path).then(stats => stats.isSymbolicLink(), () => false)) throw new Error(`${RESULTS_FILE}: cannot be written (ELOOP)`)
   let handle: FileHandle
   try {
     handle = await open(path, APPEND_FLAGS, OWNER_ONLY)
   } catch (error) {
-    // Under O_NONBLOCK a FIFO nobody reads, a socket and a device fail with ENXIO, a directory with EISDIR.
+    // Under O_NONBLOCK a FIFO with no reader fails with ENXIO and a directory with EISDIR: no regular file.
+    // Whatever else opens, a device or a FIFO with a reader, is refused by the stat below; any other
+    // failure, such as a socket on macOS, is a write failure.
     const code = errorCode(error)
     throw code === 'ENXIO' || code === 'EISDIR'
       ? refusal(RESULTS_FILE, 'is not a file')
@@ -385,7 +390,7 @@ async function openAppend(path: string, read: Pick<RecordsRead, 'validBytes' | '
  * so another run may be using this --out: run one at a time`; Error `results.jsonl: cannot be written
  * (<code>)` for any other failure to open, cut, write or close
  */
-export async function openRecords(directory: string, read: Pick<RecordsRead, 'validBytes' | 'bytes'>): Promise<RecordWriter> {
+export async function openRecords(directory: string, read: ReadSizes): Promise<RecordWriter> {
   const handle = await openAppend(join(directory, RESULTS_FILE), read)
   let failed: Error | undefined
   let tail: Promise<void> = Promise.resolve()

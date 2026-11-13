@@ -13,7 +13,7 @@ import type { ReviewRecord, RunConfiguration, RunFile } from '../bench/records.t
 import { buildReport, reportJson, reportMarkdown, reviewScore } from '../bench/report.ts'
 import type { ReviewScore } from '../bench/report.ts'
 import { createRun, inspectRunDir, openRecords, readRecords, REPORT_JSON, REPORT_MARKDOWN, runDifferences, writeAtomic } from '../bench/run-dir.ts'
-import type { RecordsRead, RunState } from '../bench/run-dir.ts'
+import type { ReadSizes, RunState } from '../bench/run-dir.ts'
 import { planReviews, runReviews } from '../bench/runner.ts'
 import type { BenchReview, RunReviewsOutcome } from '../bench/runner.ts'
 import { loadSuite, MAX_TRIALS, SUITE_ID } from '../bench/suite.ts'
@@ -340,7 +340,7 @@ function keepScore(scores: Map<string, ReviewScore>, record: ReviewRecord, suite
  * configuration the run does not have, or a case the suite does not have, refuses the run directory. A
  * last line a killed run cut short is not scored, and says so. A new run holds nothing.
  */
-async function readScores(io: CliIO, { suite, byId, out, state, runFile }: Checked): Promise<{ readonly scores: Map<string, ReviewScore>, readonly records: Pick<RecordsRead, 'validBytes' | 'bytes'> }> {
+async function readScores(io: CliIO, { suite, byId, out, state, runFile }: Checked): Promise<{ readonly scores: Map<string, ReviewScore>, readonly records: ReadSizes }> {
   const scores = new Map<string, ReviewScore>()
   if (state.kind !== 'run') {
     return {
@@ -371,7 +371,7 @@ async function readScores(io: CliIO, { suite, byId, out, state, runFile }: Check
  * a new run is created. The writer is closed whatever happens; when the run rejects, with the error of a
  * failed write, that error is the one thrown.
  */
-async function execute(io: CliIO, options: BenchOptions, checked: Checked, scores: Map<string, ReviewScore>, records: Pick<RecordsRead, 'validBytes' | 'bytes'>, toRun: readonly BenchReview[]): Promise<RunReviewsOutcome> {
+async function execute(io: CliIO, options: BenchOptions, checked: Checked, scores: Map<string, ReviewScore>, records: ReadSizes, toRun: readonly BenchReview[]): Promise<RunReviewsOutcome> {
   const { suite, loaded, byId, out, state, runFile } = checked
   if (state.kind !== 'run') await createRun(out, runFile)
   const writer = await openRecords(out, records)
