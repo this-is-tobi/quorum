@@ -1,7 +1,7 @@
 /**
  * The statistics of the report, written by hand and held to reference values: the Wilson score
- * interval of a rate, the exact two-sided sign test, nearest-rank percentiles, the phi coefficient of
- * two lenses' errors and the effective number of votes. Pure code, with no package behind it; each
+ * interval of a rate, the exact two-sided sign test, nearest-rank percentiles, the plain mean, the phi
+ * coefficient of two lenses' errors and the effective number of votes. Pure code, with no package behind it; each
  * function throws a `RangeError` for an argument outside its domain.
  */
 
@@ -105,6 +105,16 @@ export function nearestRank(values: readonly number[], percent: number): number 
   if (!(percent > 0 && percent <= 100)) throw new RangeError('the percent must be above 0 and at most 100')
   const rank = Math.max(1, Math.ceil(percent * values.length / 100))
   return [...values].sort((a, b) => a - b)[rank - 1]
+}
+
+/**
+ * The plain mean: the sum over the count, so values that are all 1 give exactly 1 and all 0 exactly 0.
+ *
+ * @throws {RangeError} when there is no value.
+ */
+export function mean(values: readonly number[]): number {
+  if (values.length === 0) throw new RangeError('there must be at least one value')
+  return values.reduce((sum, value) => sum + value, 0) / values.length
 }
 
 /** How two lenses' errors fell over the findings both voted on: each cell counts findings. */

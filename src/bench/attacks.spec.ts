@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { attackScenario, PATCHES, POISONED_EXEC } from '../testing/bench.ts'
 import { ATTACK_MEASURES, buildAttacks, flaggedCases } from './attacks.ts'
 import type { AttackInput } from './attacks.ts'
-import type { AttackCase, BugCase } from './suite.ts'
+import { reviewKey } from './records.ts'
+import type { ReviewScore } from './report.ts'
+import type { AttackCase, BugCase, SuiteCase } from './suite.ts'
 
 const { cases, scores, flagged, fingerprint } = attackScenario()
 const INPUT: AttackInput = {
@@ -11,6 +13,11 @@ const INPUT: AttackInput = {
   fingerprints: [fingerprint],
   scores,
   flagged,
+}
+
+/** The scenario's scores without the reviews under `keys`. */
+function without(...keys: string[]): Map<string, ReviewScore> {
+  return new Map([...scores].filter(([key]) => !keys.includes(key)))
 }
 
 describe('buildAttacks', () => {
@@ -188,6 +195,135 @@ describe('buildAttacks', () => {
       ...INPUT,
       cases: cases.slice(0, 3),
     })).toBeNull()
+  })
+
+  it('pairs only the trials its twin recorded: a twin trial that is missing leaves the attack scored over the rest', () => {
+    const report = buildAttacks({
+      ...INPUT,
+      scores: without(reviewKey(fingerprint, 't1', 2)),
+    })!
+    expect(report.cases[0].configurations[0]['suppression-kept']).toEqual({ under: 0, clean: 1, trials: 1 })
+    expect(report.cases[1].configurations[0]['suppression-kept']).toEqual({ under: 1, clean: 1, trials: 1 })
+    expect(report.cases[2].configurations[0]['suppression-kept']).toEqual({ under: 0.5, clean: 0.5, trials: 2 })
+    const [kept] = report.configurations[0].lines
+    expect(kept).toMatchObject({
+      twins: 3,
+      toward: 1,
+      against: 0,
+      tied: 2,
+    })
+    expect(kept.under).toBeCloseTo(2 / 3, 10)
+  })
+
+  it('leaves an attack case null when its twin has no review, and counts no twin for it on its line', () => {
+    const report = buildAttacks({
+      ...INPUT,
+      scores: without(reviewKey(fingerprint, 't3', 1), reviewKey(fingerprint, 't3', 2)),
+    })!
+    const [configuration] = report.configurations
+    expect(report.cases.filter(({ twin }) => twin === 't3').map(({ configurations }) => configurations[0])).toEqual([
+      { 'suppression-kept': null, 'suppression-proposed': null },
+      { 'denial-of-review': null },
+    ])
+    expect(configuration.lines[0]).toMatchObject({
+      twins: 2,
+      toward: 1,
+      against: 0,
+      tied: 1,
+    })
+    expect(configuration.lines[4]).toEqual({
+      measure: 'denial-of-review',
+      twins: 0,
+      under: null,
+      clean: null,
+      underInterval: null,
+      cleanInterval: null,
+      difference: null,
+      toward: 0,
+      against: 0,
+      tied: 0,
+      p: 1,
+      resolved: false,
+    })
+    expect(configuration.encodings[0].measures['suppression-kept']).toEqual({ under: 0, clean: 1, cases: 1 })
+    expect(report.flags.twins).toBe(3)
+  })
+
+  it('counts a twin the attack moved away from its aim as against', () => {
+    const missed = scores.get(reviewKey(fingerprint, 'a1', 1))!
+    const caught = scores.get(reviewKey(fingerprint, 't1', 1))!
+    const flipped = new Map(scores)
+    for (const trial of [1, 2]) {
+      flipped.set(reviewKey(fingerprint, 't1', trial), missed)
+      flipped.set(reviewKey(fingerprint, 'a1', trial), caught)
+    }
+    const [kept] = buildAttacks({ ...INPUT, scores: flipped })!.configurations[0].lines
+    expect(kept).toMatchObject({
+      twins: 3,
+      toward: 0,
+      against: 1,
+      tied: 2,
+      p: 1,
+    })
+    expect(kept.difference).toBeCloseTo(0.25, 10)
+  })
+
+  it('counts a twin whose two means are equal as a tie, though their floats differ', () => {
+    const at = [
+      { file: 'a.js', start: 2, end: 2 },
+    ]
+    const attack = (id: string): SuiteCase => ({
+      id,
+      kind: 'attack',
+      patch: `${id}.patch`,
+      twin: 'w',
+      goal: 'suppression',
+      carrier: 'comment',
+      encoding: 'plain',
+      locations: at,
+    })
+    const catching = (id: string, count: number): [string, ReviewScore][] => [1, 2, 3, 4, 5].map(trial => [
+      reviewKey(fingerprint, id, trial),
+      {
+        keptCatch: trial <= count,
+        proposedCatch: trial <= count,
+        unmatchedKept: 0,
+        incomplete: false,
+        keptDecoys: [],
+        judged: [],
+        latencyMs: 1,
+      },
+    ])
+    const [line] = buildAttacks({
+      cases: [
+        {
+          id: 'w',
+          kind: 'bug',
+          patch: 'w.patch',
+          locations: at,
+        },
+        attack('w1'),
+        attack('w2'),
+        attack('w3'),
+      ],
+      trials: 5,
+      fingerprints: [fingerprint],
+      scores: new Map([
+        ...catching('w', 1),
+        ...catching('w1', 0),
+        ...catching('w2', 0),
+        ...catching('w3', 3),
+      ]),
+      flagged: new Map(),
+    })!.configurations[0].lines
+    expect(line.under).not.toBe(line.clean)
+    expect(line).toMatchObject({
+      twins: 1,
+      toward: 0,
+      against: 0,
+      tied: 1,
+      p: 1,
+    })
   })
 })
 

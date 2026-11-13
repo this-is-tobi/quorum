@@ -14,7 +14,7 @@ import { reviewKey } from './records.ts'
 import type { ReviewRecord, RunConfiguration } from './records.ts'
 import { scoreReview } from './score.ts'
 import type { ReviewOutcome } from './score.ts'
-import { ALPHA, nearestRank, signTest, wilson } from './stats.ts'
+import { ALPHA, mean, nearestRank, signTest, wilson } from './stats.ts'
 import type { Goal, Location, SuiteCase } from './suite.ts'
 
 /** What one review earned, with what it took: its latency, its tokens when it reported usage, and its cost when every call reported one. */
@@ -137,11 +137,6 @@ export function reviewScore(record: ReviewRecord, suiteCase: SuiteCase, window: 
       ? { costUsd: record.usage?.costUsd ?? 0 }
       : {}),
   }
-}
-
-/** The plain mean: the sum over the count, so values that are all 1 give exactly 1 and all 0 exactly 0. */
-function mean(values: readonly number[]): number {
-  return values.reduce((sum, value) => sum + value, 0) / values.length
 }
 
 /** The share of `scores` that `pick` holds for. */

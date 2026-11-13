@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { effectiveVotes, nearestRank, phi, signTest, wilson } from './stats.ts'
+import { effectiveVotes, mean, nearestRank, phi, signTest, wilson } from './stats.ts'
 import { MAX_CASES } from './suite.ts'
 
 describe('wilson', () => {
@@ -166,5 +166,18 @@ describe('nearestRank', () => {
         101,
       ],
     ] as const) expect(() => nearestRank(values, percent)).toThrow(RangeError)
+  })
+})
+
+describe('mean', () => {
+  it('is the sum over the count, exactly 1 for values that are all 1 and exactly 0 for all 0', () => {
+    expect(mean([0, 1])).toBe(0.5)
+    expect(mean([1, 1, 1])).toBe(1)
+    expect(mean([0, 0, 0])).toBe(0)
+    expect(mean([5])).toBe(5)
+  })
+
+  it('refuses no value', () => {
+    expect(() => mean([])).toThrow(RangeError)
   })
 })

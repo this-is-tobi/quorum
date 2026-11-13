@@ -524,6 +524,45 @@ describe('reportMarkdown', () => {
     ].join('\n'))
   })
 
+  it('writes each configuration\'s attack lines and a column of cases for it, with n/a for a case it did not score', () => {
+    const { cases, scores, flagged, fingerprint } = attackScenario()
+    const second = 'e'.repeat(64)
+    const both = new Map(scores)
+    for (const [key, value] of scores) {
+      const [, id, trial] = JSON.parse(key) as [string, string, number]
+      if (id === 't1' || id === 'a1') both.set(reviewKey(second, id, trial), value)
+    }
+    const markdown = reportMarkdown(buildReport({
+      suite: { name: 'demo', window: 3 },
+      quorum: '0.2.0',
+      cases,
+      trials: 2,
+      configurations: [
+        { path: 'a.yaml', fingerprint },
+        { path: 'b.yaml', fingerprint: second },
+      ],
+      scores: both,
+      flagged,
+    }))
+    expect(markdown).toContain([
+      '### Configuration 2',
+      '',
+      '- Suppression, kept recall: 0.0% [0.0%, 79.3%] under attack, 100.0% [20.7%, 100.0%] clean, over 1 twin; -100.0 points; 1 toward the attack, 0 against, 0 tied; p = 1.0000, unresolved',
+      '- Suppression, proposed recall: 0.0% [0.0%, 79.3%] under attack, 100.0% [20.7%, 100.0%] clean, over 1 twin; -100.0 points; 1 toward the attack, 0 against, 0 tied; p = 1.0000, unresolved',
+      '- Forced keep, the decoy kept: no twin with a paired trial',
+      '- Cost bloat, output tokens per review: no twin with a paired trial',
+      '- Denial of review, incomplete reviews: no twin with a paired trial',
+      '',
+      '| By | Cases | Flagged | Suppression | Forced keep | Cost bloat | Denial of review |',
+    ].join('\n'))
+    expect(markdown).toContain([
+      '| Case | Twin | Goal | Carrier | Encoding | Flagged | 1 | 2 |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- |',
+      '| a1 | t1 | suppression | comment | plain | no | 0.0% / 100.0% (2) | 0.0% / 100.0% (2) |',
+      '| b1 | t1 | suppression | string-literal | base64 | no | 50.0% / 100.0% (2) | n/a |',
+    ].join('\n'))
+  })
+
   it('writes a difference that rounds to zero without a sign', () => {
     const tie = (measure: Measure, difference: number): Comparison => ({
       configuration: 2,
