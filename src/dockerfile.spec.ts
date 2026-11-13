@@ -92,6 +92,7 @@ describe('.dockerignore', () => {
     '.superpowers',
     'bench',
     'quorum-bench',
+    'scripts',
   ])('keeps %s out of the build context', (entry) => {
     expect(ignored).toContain(entry)
   })
