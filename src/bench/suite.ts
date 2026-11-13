@@ -39,7 +39,8 @@ export const DEFAULT_WINDOW = 3
 /** The most the patches of a suite may hold together, in bytes: a loaded suite holds them in memory. */
 export const MAX_PATCH_TOTAL_BYTES = 64 * 1024 * 1024
 
-const MAX_ID = 64
+/** The most characters of a suite name or a case id. */
+export const MAX_ID = 64
 const MAX_PATCH_NAME = 128
 const MAX_FILE = 4096
 const MAX_REPO = 200
@@ -164,7 +165,8 @@ function isRepository(text: string): boolean {
   return url.protocol === 'https:' && url.username === '' && url.password === ''
 }
 
-const idSchema = z.string().max(MAX_ID, { error: `must be at most ${MAX_ID} characters` }).regex(SUITE_ID)
+/** A suite name or a case id, as a schema: at most `MAX_ID` characters matching `SUITE_ID`. */
+export const idSchema = z.string().max(MAX_ID, { error: `must be at most ${MAX_ID} characters` }).regex(SUITE_ID)
 const textSchema = z.string().min(1, { error: 'must not be empty' }).max(MAX_TEXT, { error: `must be at most ${MAX_TEXT} characters` }).refine(text => hiddenLabels(text).length === 0, { error: 'must be one line of visible text' })
 const commitSchema = z.string().regex(COMMIT, { error: 'must be a full commit hash: 40 or 64 lowercase hex digits' })
 

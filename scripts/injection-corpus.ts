@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parse, stringify, YAMLParseError } from 'yaml'
+import { parseAllDocuments, stringify } from 'yaml'
 import { z } from 'zod'
-import { CARRIERS, DEFAULT_WINDOW, ENCODINGS, GOALS, MAX_TRIALS, SUITE_ID } from '../src/bench/suite.ts'
+import { CARRIERS, DEFAULT_WINDOW, ENCODINGS, GOALS, idSchema, MAX_TRIALS, PATCH_NAME } from '../src/bench/suite.ts'
 import type { Carrier, Encoding, Goal, Location } from '../src/bench/suite.ts'
 import { parseConfig } from '../src/config/schema.ts'
+import { ConfigError } from '../src/core/errors.ts'
 import { hiddenLabels } from '../src/core/sanitize.ts'
 
 // The injection corpus's writer: it builds `bench/injection/` (`suite.yaml` and the poisoned patches in
@@ -22,8 +23,6 @@ export const MAX_PAYLOAD = 400
 export const MAX_TECHNIQUE = 120
 export const MAX_PLANTED_LINES = 20
 
-/** A suite id's length, as `src/bench/suite.ts` bounds a case id. */
-const MAX_ID = 64
 /** The longest part of a path, in bytes: what a file system takes. */
 const MAX_PATH_PART = 255
 const MANIFEST = 'bench/injection/manifest.yaml'
@@ -71,22 +70,30 @@ function withoutCr(row: string): string {
     : row
 }
 
-/** `text` as YAML. A syntax error is named by its code and line: the message of the library quotes the text. */
+/**
+ * `text` as one YAML document. A syntax error, a warning (an unresolved tag, say) and a second document are
+ * refused by their code and line: the library's message quotes the text, and a warning goes to stderr with a
+ * code frame, so none is let through, and the library is told to log nothing.
+ */
 function parseYaml(text: string, label: string): unknown {
-  try {
-    return parse(text)
-  } catch (error) {
-    if (!(error instanceof YAMLParseError)) throw error
-    throw new CorpusError(`${label}: is not valid YAML (${error.code}, line ${error.linePos?.[0].line ?? 1})`)
+  const documents = Array.from(parseAllDocuments(text, { logLevel: 'silent' }))
+  for (const document of documents) {
+    const [problem] = [
+      ...document.errors,
+      ...document.warnings,
+    ]
+    if (problem !== undefined) throw new CorpusError(`${label}: is not valid YAML (${problem.code}, line ${problem.linePos?.[0].line ?? 1})`)
   }
+  if (documents.length > 1) throw new CorpusError(`${label}: is not valid YAML (MULTIPLE_DOCS)`)
+  return documents[0]?.toJS() ?? null
 }
 
-/** Run `build`, and put `id` and a colon before the message of the corpus error it throws. */
+/** Run `build`, and put `id` and a colon before the message of the corpus or config error it throws. */
 function named<T>(id: string, build: () => T): T {
   try {
     return build()
   } catch (error) {
-    if (error instanceof CorpusError) throw new CorpusError(`${id}: ${error.message}`)
+    if (error instanceof CorpusError || error instanceof ConfigError) throw new CorpusError(`${id}: ${error.message}`)
     throw error
   }
 }
@@ -307,7 +314,6 @@ export function addFile(patch: string, path: string, lines: readonly string[]): 
     : '\n'}${section.join('\n')}\n`
 }
 
-const idSchema = z.string().max(MAX_ID, { error: `must be at most ${MAX_ID} characters` }).regex(SUITE_ID)
 const visibleText = z.string().min(1, { error: 'must not be empty' }).refine(isVisible, { error: 'must be one line of visible text' })
 const lineSchema = z.string().refine(isVisible, { error: 'must be one line of visible text' })
 const locationSchema = z.strictObject({
@@ -370,7 +376,7 @@ export function readTwins(directory: string): Twins {
   const entries = new Map<string, Record<string, unknown>>()
   const patches = new Map<string, Uint8Array>()
   for (const entry of suite.cases) {
-    if (!isRecord(entry) || typeof entry.id !== 'string' || typeof entry.patch !== 'string') throw new CorpusError(`${file}: each case needs an id and a patch`)
+    if (!isRecord(entry) || typeof entry.id !== 'string' || typeof entry.patch !== 'string' || !PATCH_NAME.test(entry.patch)) throw new CorpusError(`${file}: each case needs an id and a patch named as a bare file name`)
     entries.set(entry.id, entry)
     patches.set(entry.id, readFileSync(join(directory, 'cases', entry.patch)))
   }
@@ -397,6 +403,7 @@ function twinOf(id: string, twins: Twins): Twin {
   const entry = twins.entries.get(id)
   const bytes = twins.patches.get(id)
   if (entry === undefined || bytes === undefined || entry.kind !== 'bug' || typeof entry.patch !== 'string') throw new CorpusError(`is not a bug case of ${TWINS}`)
+  if (!PATCH_NAME.test(entry.patch)) throw new CorpusError('its patch is not named as a bare file name')
   let patch: string
   try {
     patch = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
@@ -483,7 +490,8 @@ function buildAttack(attack: Attack, twinId: string, twin: Twin, window: number)
 /**
  * The corpus of a manifest, in memory: `suite.yaml`, then `cases/<name>` for each patch, each twin's
  * followed by its attacks'. A twin's entry and patch are copied as they are, its attacks follow it, and
- * every attack is checked before the next is built.
+ * every attack is checked before the next is built. An id the manifest names twice, or a patch name two
+ * cases would write to, is refused: a second would overwrite the first's patch.
  *
  * @throws CorpusError whose message starts with the id of the twin or the attack it refuses
  */
@@ -491,15 +499,30 @@ export function buildCorpus(manifest: Manifest, twins: Twins): Map<string, Uint8
   const encoder = new TextEncoder()
   const window = twins.window ?? DEFAULT_WINDOW
   const files = new Map<string, Uint8Array>()
+  const ids = new Set<string>()
   const cases: Record<string, unknown>[] = []
+  /** Take `id` for a case of the corpus and `path` for a file of it, each at most once: a second claim would overwrite a patch. */
+  const claim = (id: string, path: string): void => {
+    if (ids.has(id)) throw new CorpusError('repeats an id of the manifest')
+    if (files.has(path)) throw new CorpusError(`${path} is already a file of the corpus`)
+    ids.add(id)
+  }
   for (const { id, attacks } of manifest.twins) {
-    const twin = named(id, () => twinOf(id, twins))
+    const twin = named(id, () => {
+      const read = twinOf(id, twins)
+      claim(id, `cases/${read.patchName}`)
+      return read
+    })
     cases.push({ ...twin.entry })
     files.set(`cases/${twin.patchName}`, twin.bytes)
     for (const attack of attacks) {
-      const { entry, patch } = named(attack.id, () => buildAttack(attack, id, twin, window))
+      const path = `cases/${attack.id}.patch`
+      const { entry, patch } = named(attack.id, () => {
+        claim(attack.id, path)
+        return buildAttack(attack, id, twin, window)
+      })
       cases.push(entry)
-      files.set(`cases/${attack.id}.patch`, encoder.encode(patch))
+      files.set(path, encoder.encode(patch))
     }
   }
   const suite = {
