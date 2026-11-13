@@ -50,12 +50,12 @@ quorum bench --dry-run bench/bugs
 ```
 
 ```text
-Suite bugs: 10 of 10 cases, 8 bug cases and 2 controls
+Suite bugs: 40 of 40 cases, 30 bug cases and 10 controls
 Configurations:
   1. (default configuration)
      security: research qwen3.6:27b @ http://localhost:11434; panel qwen3.6:27b @ http://localhost:11434
 Trials: 1
-Reviews: 10 planned, 0 recorded, 10 to run, at most 1 at a time
+Reviews: 40 planned, 0 recorded, 40 to run, at most 1 at a time
 Run directory: quorum-bench/bugs
 Dry run: no review was run, and nothing was written.
 ```
@@ -67,14 +67,14 @@ quorum bench --dry-run -c qwen.yaml -c gpt-oss.yaml --trials 3 --jobs 2 bench/bu
 ```
 
 ```text
-Suite bugs: 10 of 10 cases, 8 bug cases and 2 controls
+Suite bugs: 40 of 40 cases, 30 bug cases and 10 controls
 Configurations:
   1. qwen.yaml (reference)
      security: research qwen3.6:27b @ http://localhost:11434; panel qwen3.6:27b @ http://localhost:11434
   2. gpt-oss.yaml
      security: research gpt-oss:120b @ http://localhost:11434; panel gpt-oss:120b @ http://localhost:11434
 Trials: 3
-Reviews: 60 planned, 0 recorded, 60 to run, at most 2 at a time
+Reviews: 240 planned, 0 recorded, 240 to run, at most 2 at a time
 Run directory: quorum-bench/bugs
 Dry run: no review was run, and nothing was written.
 ```
@@ -86,10 +86,10 @@ On a run directory that holds records, `recorded` counts the reviews already the
 A run prints one line on stderr for each review that finishes, counted against the reviews it has to run:
 
 ```text
-[1/60] trial 1, case code-graph-rag-ghsa-vvr2-h2jp-838m, configuration 1: caught by a kept finding; 2 kept, 4 discarded, 0 unreviewed, 0 gaps; 96.0 s
-[2/60] trial 1, case code-graph-rag-ghsa-vvr2-h2jp-838m, configuration 2: caught by a proposed finding only; 0 kept, 3 discarded, 0 unreviewed, 0 gaps; 58.7 s
-[3/60] trial 1, case mistune-ghsa-h7ww-273w-6cm8, configuration 1: missed; 1 kept, 2 discarded, 0 unreviewed, 0 gaps; 41.2 s
-[4/60] trial 1, case mistune-ghsa-h7ww-273w-6cm8, configuration 2: failed: local: request to http://localhost:11434 failed (ECONNREFUSED)
+[1/240] trial 1, case code-graph-rag-ghsa-vvr2-h2jp-838m, configuration 1: caught by a kept finding; 2 kept, 4 discarded, 0 unreviewed, 0 gaps; 96.0 s
+[2/240] trial 1, case code-graph-rag-ghsa-vvr2-h2jp-838m, configuration 2: caught by a proposed finding only; 0 kept, 3 discarded, 0 unreviewed, 0 gaps; 58.7 s
+[3/240] trial 1, case mistune-ghsa-h7ww-273w-6cm8, configuration 1: missed; 1 kept, 2 discarded, 0 unreviewed, 0 gaps; 41.2 s
+[4/240] trial 1, case mistune-ghsa-h7ww-273w-6cm8, configuration 2: failed: local: request to http://localhost:11434 failed (ECONNREFUSED)
 ```
 
 The numbers are an example. The lines follow the plan's order, which is by trial, then case, then configuration, and with `--jobs` above 1 they come in the order the reviews end.
@@ -299,7 +299,7 @@ Run one run at a time per directory: that check is made once, when the append op
 
 ## Reading the report
 
-A run prints its report on stdout and writes it as `report.md`, with the same numbers as `report.json`. This one is made up, to show the shape: two configs on eight bug cases and two controls, one trial.
+A run prints its report on stdout and writes it as `report.md`, with the same numbers as `report.json`. This one is made up, to show the shape, and is not a run of the real-bug suite: two configs on eight bug cases and two controls, one trial.
 
 ```text
 # quorum bench: example
@@ -352,13 +352,13 @@ Each configuration is a row, numbered as in the list above it, which names it by
 
 ### The interval
 
-The interval after a recall is a 95% Wilson interval over the cases. In plain words, it is the range of recalls this suite's cases are compatible with. It is wide on ten cases: 5 bugs caught of 8 is 62.5%, and recalls from about 31% to 86% are compatible with it. It narrows as the suite grows and not with more trials, which steady each case's score without adding a case. **Two intervals that overlap do not settle a comparison**, in either direction, so the report pairs the cases instead.
+The interval after a recall is a 95% Wilson interval over the cases. In plain words, it is the range of recalls this suite's cases are compatible with. It is wide on few cases: in the report above, 5 bugs caught of 8 is 62.5%, and recalls from about 31% to 86% are compatible with it. On the 30 bug cases of the real-bug suite it is narrower and still wide: 19 caught of 30 is 63.3%, and recalls from about 46% to 78% are compatible with it. It narrows as the suite grows and not with more trials, which steady each case's score without adding a case. **Two intervals that overlap do not settle a comparison**, in either direction, so the report pairs the cases instead.
 
 ### The comparison lines
 
 Each configuration after the reference gets five lines, one per measure: kept recall, proposed recall, unmatched kept findings per control, incomplete reviews, and tokens per review. A line pairs the cases both configurations scored, and gives the mean difference, the cases where the configuration is better, worse and tied, and the p of an exact sign test over the cases that differ. Ties are left out. Lower is better for the last three, and a line is resolved when p is below 0.05.
 
-**Each line is its own test**, so with several configurations and five measures some lines resolve by chance: with nothing behind them, up to one line in twenty does. Read a resolved line as a lead, and read the whole report before a conclusion. Ten cases are also few: with fewer than six cases that differ, no line can resolve, and six resolve only when all six differ the same way.
+**Each line is its own test**, so with several configurations and five measures some lines resolve by chance: with nothing behind them, up to one line in twenty does. Read a resolved line as a lead, and read the whole report before a conclusion. Cases that differ are also few: with fewer than six of them, no line can resolve, and six resolve only when all six differ the same way, on a suite of any size.
 
 A configuration with no case scored by both reads `no case scored by both`, and a run of one configuration has no comparison section.
 
@@ -371,7 +371,7 @@ The same numbers as the table and the lines, plus each case's scores for each co
 A bench makes real calls on real models, and a lot of them. The reviews are the cases times the trials times the configurations, and each review is one research call for each profile and one vote for each finding for each lens: a review of the security profile with four candidate findings makes 13 calls, one to research and twelve votes, three lenses for each finding.
 
 - **Tokens grow with the patch**, at about one token for every three or four bytes of diff. The research call reads the whole patch, and each vote reads the cited file's part of it.
-- **Quorum counts more than that.** Its size guard counts one token for every byte of a request, with a reply budget of 16 000 tokens and 512 for the chat template (4096 for a `claude-code` provider), and refuses one that may not fit `contextTokens`: [The size of a request](./30-providers.md#the-size-of-a-request). A refused request is a `request-too-large` gap, so the review resolves, is recorded as incomplete, and catches nothing. At the default reply budget, the real-bug suite's largest patch, about 40 KB, needs a `contextTokens` of about 59 000, and a window of 32 768 refuses the research request of four of its ten cases: state the window the server really gives ([The context size](./20-configuration.md#the-context-size)), and compare configs whose windows hold the suite.
+- **Quorum counts more than that.** Its size guard counts one token for every byte of a request, with a reply budget of 16 000 tokens and 512 for the chat template (4096 for a `claude-code` provider), and refuses one that may not fit `contextTokens`: [The size of a request](./30-providers.md#the-size-of-a-request). A refused request is a `request-too-large` gap, so the review resolves, is recorded as incomplete, and catches nothing. At the default reply budget, the real-bug suite's largest patch, 40 797 bytes, needs a `contextTokens` of 58 806 for its research request, and a window of 65 536 holds that request for every case of the suite. A window of 32 768 refuses it for 10 of the 40 cases, as the size guard counts them: the 10 bug cases whose patch is over 15 000 bytes. State the window the server really gives ([The context size](./20-configuration.md#the-context-size)), and compare configs whose windows hold the suite.
 - **Run `--dry-run` first**, which prints how many reviews a run makes and costs nothing.
 - **There is no spend cap yet.** A hosted model bills every call. Try one case and one trial first (`--case <id> --trials 1`), then widen. A stopped run resumes, so interrupting one loses nothing but the reviews in flight.
 
@@ -383,15 +383,17 @@ A suite is data, so nothing in it runs. But its patches go to the configured mod
 
 ## The real-bug suite
 
-`bench/bugs/` is a suite of real security vulnerabilities, since the shipped profile is `security`, and a suite of other defects would measure that prompt and not the models. It holds eight bug cases and two controls, in five languages: code-graph-rag, mistune and banks in Python, praktor and goshs in Go, CakePHP in PHP, lettre in Rust and flat-to-nested-js in JavaScript. Their weaknesses are path traversal (CWE-22) three times, and code injection through an import a template names (CWE-94), a missing authentication (CWE-306), SQL injection (CWE-89), a hostname check that is off by default (CWE-295) and prototype pollution (CWE-1321), once each.
+`bench/bugs/` is a suite of real security vulnerabilities, since the shipped profile is `security`, and a suite of other defects would measure that prompt and not the models. It holds 30 bug cases and 10 controls. The bug cases are in nine languages, none of them over a third of the bug cases, by the file of a case's first location: 6 in Python (code-graph-rag, mistune, banks, wheel, fonttools and BinderHub), 4 in Go (praktor, goshs, gorilla/handlers and gokey), 4 in JavaScript (flat-to-nested-js, fastify, opened and min-dash), 4 in PHP (CakePHP, Laravel, yii2-authclient and FOSUserBundle), 3 in TypeScript (Vue core, Hono and the React Native CLI), 3 in Ruby (ruby-jwe, mysql-binuuid-rails and kredis), 2 in Rust (lettre and slab), 2 in Java (the Compuware common configuration plugin for Jenkins and Spring Cloud Gateway) and 2 in C# (YoutubeDLSharp and SSH.NET).
+
+Their weaknesses are a wide mix, and each case's `note` names its advisory, its CWE and the flaw. Path traversal (CWE-22) is 4 cases and command injection (CWE-77, CWE-78) 5; SQL injection (CWE-89), XML external entities (CWE-611) and prototype pollution (CWE-1321) are 2 each, and predictable randomness (CWE-330, CWE-331) 3. Six more are flaws of authentication or of a check meant to establish trust (CWE-287, CWE-290, CWE-295, CWE-306, CWE-346, CWE-354), and one each is code injection (CWE-94), cross-site scripting (CWE-79), unsafe deserialization (CWE-502), an out-of-bounds access (CWE-119), a validator's result misread (CWE-20) and an SSL setting silently ignored (CWE-15). Their severities are those GitHub's advisories gave when each case was chosen: 10 critical, 15 high and 5 medium. The suite began with cases found by a search of high and critical advisories alone, and the cases added later took medium ones where a language's pool of high and critical held nothing sure. The medium ones are real flaws, none of them a denial-of-service class.
 
 - **Where the cases come from.** Each bug case is a vulnerability whose fix an advisory names, a GitHub security advisory (`GHSA-...`) or a CVE record. The case's patch is the diff of the commit that introduced it, and its locations are the lines of that diff the fix changed, or next to which the fix added its check. A case whose bug does not show in that diff is left out. Recent advisories are preferred, and each case's `date` is recorded, so a reader can compare it with a model's training cutoff.
-- **The controls** are two commits of the same projects that no advisory names: one of praktor and one of lettre. Their locations are none, and a kept finding on one is unmatched.
-- **Provenance.** Every case holds its `repo`, its fix and introducing commits, or its commit for a control, its `license`, its `copyright` lines, its `date` and a `note`. Where a patch leaves out a file, as the goshs case leaves out two test keys, the note says so. The dates are the committer's local day, as [Provenance](#provenance) says.
-- **Licenses.** The projects are permissively licensed, MIT and BSD-3-Clause today, and the repository's test takes no license but MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause and ISC. `bench/LICENSES/` holds the text of each license the cases use, in one file named by its SPDX id, which is the REUSE layout, and a test checks that every case's license has its file there and that the directory holds no other. A project under Apache-2.0 with a `NOTICE` file is left out for now, since that layout does not carry its notice. `.gitattributes` keeps each patch byte for byte. Each patch is under 64 KiB and the largest is 40 797 bytes: the window a run needs for it is in [What a run costs](#what-a-run-costs).
+- **The controls** are 10 commits that no advisory names, one each of ten of the same projects, which cover the nine languages: praktor, lettre, Vue core, the Compuware plugin, YoutubeDLSharp, Laravel, gorilla/handlers, wheel, min-dash and kredis. Their locations are none, and a kept finding on one is unmatched.
+- **Provenance.** Every case holds its `repo`, its fix and introducing commits, or its commit for a control, its `license`, its `copyright` lines, its `date` and a `note`. Where a patch leaves out a file, the note says so: the goshs case leaves out two test keys, and the React Native CLI and mysql-binuuid-rails cases a lockfile. The dates are the committer's local day, as [Provenance](#provenance) says.
+- **Licenses.** The projects are permissively licensed, MIT, BSD-3-Clause and Apache-2.0 today, and the repository's test takes no license but MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause and ISC. `bench/LICENSES/` holds the text of each license the cases use, in one file named by its SPDX id, which is the REUSE layout, and a test checks that every case's license has its file there and that the directory holds no other. A project under Apache-2.0 with a `NOTICE` file is left out for now, since that layout does not carry its notice. `.gitattributes` keeps each patch byte for byte. Each patch is under 64 KiB, and they run from 1 133 to 40 797 bytes: the window a run needs for the largest is in [What a run costs](#what-a-run-costs).
 - **It ships nowhere.** The suite is in the repository and in no package, binary or image: to run it, use a clone, and point `quorum bench` at `bench/bugs`. `src/bench/suites.spec.ts` validates it in the default test suite, as a run does, with no model.
 
-The suite will grow to 30 to 50 cases. At ten cases, every interval of a report is wide, so read a first bench of it as a first look, and not as a ranking.
+The suite may still grow. At 30 bug cases, every interval of a report is still wide, as [The interval](#the-interval) shows, so read a bench of it as a first look, and not as a ranking.
 
 ## Next
 
