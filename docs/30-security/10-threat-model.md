@@ -20,7 +20,7 @@ What quorum answers goes to the JSON result on stdout and the lines on stderr, a
 
 ## Residual risk
 
-A determined adaptive attacker may suppress or sway findings. In published studies no prompt-level defense held under adaptive attack, and a panel of blind voters filters false positives but cannot restore a finding the finder never proposed. Quorum keeps the model path harmless, raises the cost of an attack, and shows a human where to look: each verdict's vote split, its `quoteMatched` flag (whether the code the finder quoted appears in the evidence), the `invalidFindings` count of findings that cited code outside the diff, the unreviewed findings, the advisory flags of `meta.flags`, and the entries of `meta.incomplete`. It assists a reviewer; it does not replace human review of untrusted changes.
+A determined adaptive attacker may suppress or sway findings. In published studies no prompt-level defense held under adaptive attack, and a panel of blind voters filters false positives but cannot restore a finding the finder never proposed. Quorum keeps the model path harmless, raises the cost of an attack, and shows a human where to look: each verdict's vote split, its `quoteMatched` flag (whether the code the finder quoted appears in the evidence), the `invalidFindings` count of findings that cited code outside the diff, the unreviewed findings, the advisory flags of `meta.flags`, and the entries of `meta.incomplete`. It assists a reviewer; it does not replace human review of untrusted changes. How far planted text sways each class of model is measured, not assumed: [Measurement](./40-measurement.md).
 
 With no tool and no secret in the model path, the incident classes of 2025 and 2026, token theft and code execution through an AI agent in CI, do not apply. What remains is verdict manipulation, the places where model text is rendered, cost, and files that look trusted, such as guidelines or a config read from the pull request's checkout.
 
@@ -131,7 +131,7 @@ Beyond the guard, a job that reviews untrusted changes can bound the diff furthe
 
 ## Independence
 
-Voters are blind to each other, so their reasoning is independent. Their errors are not statistically independent: one study put nine judges from seven model families at about 2.2 effective votes, and prompt, ordering or temperature variants did not help, so three lenses on one model are probably worth one or two votes. Blind voting is still right: voting captures most of the gain of debate, and avoids sycophancy between agents.
+Voters are blind to each other, so their reasoning is independent. Their errors are not statistically independent: one study put nine judges from seven model families at about 2.2 effective votes, and prompt, ordering or temperature variants did not help, so three lenses on one model are probably worth one or two votes. Blind voting is still right: voting captures most of the gain of debate, and avoids sycophancy between agents. The bench measures the lenses' error correlation, so a panel's effective votes are a number and not a guess: [The lenses' error correlation](./40-measurement.md#the-lenses-error-correlation).
 
 - **A provider per lens is variance reduction, not a security measure.** Mixed model families helped in older studies, and nothing shows they stop a tuned attack.
 - **Voting filters false positives only.** Recall rests on the finder, which reads the same poisoned diff, so the finder is a single point of failure for suppression: the panel cannot judge a finding that was never proposed.

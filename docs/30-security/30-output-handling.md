@@ -151,4 +151,4 @@ Pass `events` as `ports.events` of `createQuorum`: [Library API](../95-reference
 
 ## Next
 
-[Local models](../90-recipes/10-local-models.md) — running quorum against Ollama, vLLM and llama.cpp: the window each gives a request, choosing a model, and reasoning mode.
+[Measurement](./40-measurement.md) — the injection corpus, what each outcome of an attack means, the baseline to come, and the residual risk.

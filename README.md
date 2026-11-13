@@ -82,6 +82,7 @@ The JSON result goes to stdout, and the exit code says what to do with it: `0` f
 *Security*
 - [Threat model](./docs/30-security/10-threat-model.md) *- The attacker, the assets, the residual risk stated plainly, the controls in place, and what the panel's independence is worth*
 - [Output handling](./docs/30-security/30-output-handling.md) *- What the CLI writes and how it is made inert, the advisory flags, and printing a review yourself*
+- [Measurement](./docs/30-security/40-measurement.md) *- The injection corpus, what each outcome of an attack means, the baseline to come, and the residual risk*
 
 *Recipes*
 - [Local models](./docs/90-recipes/10-local-models.md) *- Ollama, vLLM and llama.cpp: the window each gives a request, choosing a model, and what reasoning mode does to a request*
