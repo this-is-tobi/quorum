@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.3.0](https://github.com/this-is-tobi/quorum/compare/v0.2.0...v0.3.0) (2026-11-13)
+
+
+### Features
+
+* add the quorum bench command ([bbf06c9](https://github.com/this-is-tobi/quorum/commit/bbf06c95ea8f1f1453dad7ed28b17b34408cc5da))
+* fingerprint a bench configuration by every setting a review uses ([9cb6099](https://github.com/this-is-tobi/quorum/commit/9cb60997d5a44295cf164f41d60de8105aa138b2))
+* keep a bench run in a directory of its own ([eae880c](https://github.com/this-is-tobi/quorum/commit/eae880c9b0b04e8df0d5542b755e176b1423e472))
+* read and validate a bench suite ([79e2a6c](https://github.com/this-is-tobi/quorum/commit/79e2a6c699a88f4566425325dddd63235e7c999e))
+* report a bench run in Markdown and JSON ([a3ba338](https://github.com/this-is-tobi/quorum/commit/a3ba3384648b3a0ad53bc64236159a06ae654f04))
+* run the reviews of a bench, each with a quorum of its own ([aa08c29](https://github.com/this-is-tobi/quorum/commit/aa08c292e9f4503f075e63629dd2265e6da0f981))
+* score a bench review, and compute Wilson intervals and exact sign tests ([d4af8df](https://github.com/this-is-tobi/quorum/commit/d4af8df9839291d9bce17b987415a462db8877da))
+* seed bench/bugs with real security vulnerabilities ([a5f9f61](https://github.com/this-is-tobi/quorum/commit/a5f9f61ed0768decce7ed7072b65dfb4cc064f79))
+
+
+### Bug Fixes
+
+* keep a vote request's claim on its two lines, and word the data notice for one block ([358e5c9](https://github.com/this-is-tobi/quorum/commit/358e5c9cc676b227db3e178db7c38e36e24eb598))
+* name a changed configuration once when quorum bench refuses to resume a run ([36c7b32](https://github.com/this-is-tobi/quorum/commit/36c7b326fa74ba82505504a4670c513f05f0d369))
+* name in the mistune case's note the other advisories its fix closes ([1e703c0](https://github.com/this-is-tobi/quorum/commit/1e703c0e296312714fe0282bea7f4b7c7e1af3ac))
+* write nothing when quorum bench is interrupted before its first review starts ([1b9715a](https://github.com/this-is-tobi/quorum/commit/1b9715a784702508b6bff0a2c31c0fcbbdb4d262))
+
+
+### Dependencies
+
+* **deps:** update gcr.io/distroless/cc-debian13:nonroot docker digest to cb87acc ([f7c052c](https://github.com/this-is-tobi/quorum/commit/f7c052c0bdbc4a1c2bbadb151fc2976b16886296))
+
 ## [0.2.0](https://github.com/this-is-tobi/quorum/compare/v0.1.0...v0.2.0) (2026-11-12)
 
 
