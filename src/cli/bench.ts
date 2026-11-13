@@ -6,17 +6,19 @@
 
 import { resolve } from 'node:path'
 import packageJson from '../../package.json' with { type: 'json' }
+import { flaggedCases } from '../bench/attacks.ts'
 import { fingerprint, newSalt } from '../bench/fingerprint.ts'
 import { MAX_CONFIGURATIONS, reviewKey, RUN_FORMAT } from '../bench/records.ts'
 import type { ReviewRecord, RunConfiguration, RunFile } from '../bench/records.ts'
-import { buildReport, reportJson, reportMarkdown, reviewScore } from '../bench/report.ts'
+import { buildReport, kindCounts, kindsText, reportJson, reportMarkdown, reviewScore } from '../bench/report.ts'
 import type { ReviewScore } from '../bench/report.ts'
 import { createRun, inspectRunDir, openRecords, readRecords, REPORT_JSON, REPORT_MARKDOWN, runDifferences, writeAtomic } from '../bench/run-dir.ts'
 import type { ReadSizes, RunState } from '../bench/run-dir.ts'
 import { planReviews, runReviews } from '../bench/runner.ts'
 import type { BenchReview, RunReviewsOutcome } from '../bench/runner.ts'
+import { decoysOf } from '../bench/score.ts'
 import { loadSuite, MAX_TRIALS, SUITE_ID } from '../bench/suite.ts'
-import type { Suite, SuiteCase } from '../bench/suite.ts'
+import type { Location, Suite, SuiteCase } from '../bench/suite.ts'
 import { readEnv } from '../config/env.ts'
 import { fromConfig } from '../config/from-config.ts'
 import { loadConfig } from '../config/load.ts'
@@ -155,12 +157,6 @@ function nameOf({ path }: RunConfiguration): string {
   return path ?? DEFAULT_CONFIGURATION
 }
 
-function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1
-    ? ''
-    : 's'}`
-}
-
 /** The cases of `suite` the flags select, in the suite's order; every `--case` must be one of its cases. */
 function selectCases(suite: Suite, ids: readonly string[]): readonly SuiteCase[] {
   const unknown = ids.filter(id => !suite.cases.some(suiteCase => suiteCase.id === id))
@@ -243,9 +239,8 @@ function planLines(plan: {
   readonly directory: string
 }): string[] {
   const { suite, selected, loaded, trials, planned, recorded, toRun, again, jobs, directory } = plan
-  const bugs = selected.filter(({ kind }) => kind === 'bug').length
   return [
-    `Suite ${suite.name}: ${selected.length} of ${suite.cases.length} cases, ${plural(bugs, 'bug case')} and ${plural(selected.length - bugs, 'control')}`,
+    `Suite ${suite.name}: ${selected.length} of ${suite.cases.length} cases, ${kindsText(kindCounts(selected))}`,
     'Configurations:',
     ...loaded.flatMap(({ path, config }, index) => [
       `  ${index + 1}. ${path ?? DEFAULT_CONFIGURATION}${loaded.length > 1 && index === 0
@@ -269,6 +264,8 @@ interface Checked {
   readonly loaded: readonly LoadedConfiguration[]
   /** Every case of the suite by its id, the unselected ones too: a record of an earlier run may name one. */
   readonly byId: ReadonlyMap<string, SuiteCase>
+  /** The decoys each case's reviews are checked for, by case id and then by the attack they belong to. */
+  readonly decoys: ReadonlyMap<string, ReadonlyMap<string, Location>>
   /** The run directory as the plan names it: `--out` as given, or the default. */
   readonly directory: string
   /** The run directory as a path. */
@@ -316,6 +313,7 @@ async function check(io: CliIO, options: BenchOptions): Promise<Checked> {
     selected,
     loaded,
     byId,
+    decoys: decoysOf(suite.cases),
     directory,
     out,
     state,
@@ -323,9 +321,9 @@ async function check(io: CliIO, options: BenchOptions): Promise<Checked> {
   }
 }
 
-/** `record` scored against its case and kept in `scores` under its key, replacing an earlier record of the same review. */
-function keepScore(scores: Map<string, ReviewScore>, record: ReviewRecord, suiteCase: SuiteCase, window: number): ReviewScore {
-  const scored = reviewScore(record, suiteCase, window)
+/** `record` scored against its case and its decoys, and kept in `scores` under its key, replacing an earlier record of the same review. */
+function keepScore(scores: Map<string, ReviewScore>, record: ReviewRecord, suiteCase: SuiteCase, { suite, decoys }: Pick<Checked, 'suite' | 'decoys'>): ReviewScore {
+  const scored = reviewScore(record, suiteCase, suite.window, decoys.get(suiteCase.id))
   scores.set(reviewKey(record.fingerprint, record.case, record.trial), scored)
   return scored
 }
@@ -336,7 +334,8 @@ function keepScore(scores: Map<string, ReviewScore>, record: ReviewRecord, suite
  * configuration the run does not have, or a case the suite does not have, refuses the run directory. A
  * last line a killed run cut short is not scored, and says so. A new run holds nothing.
  */
-async function readScores(io: CliIO, { suite, byId, out, state, runFile }: Checked): Promise<{ readonly scores: Map<string, ReviewScore>, readonly records: ReadSizes }> {
+async function readScores(io: CliIO, checked: Checked): Promise<{ readonly scores: Map<string, ReviewScore>, readonly records: ReadSizes }> {
+  const { byId, out, state, runFile } = checked
   const scores = new Map<string, ReviewScore>()
   if (state.kind !== 'run') {
     return {
@@ -349,7 +348,7 @@ async function readScores(io: CliIO, { suite, byId, out, state, runFile }: Check
     const suiteCase = byId.get(record.case)
     if (!known.has(record.fingerprint)) return 'names a configuration this run does not have'
     if (suiteCase === undefined) return 'names a case the suite does not have'
-    keepScore(scores, record, suiteCase, suite.window)
+    keepScore(scores, record, suiteCase, checked)
     return undefined
   })
   if (read.torn) writeLines(io.stderr, [TORN_LINE])
@@ -398,7 +397,7 @@ async function execute(io: CliIO, { checked, scores, records, toRun, jobs }: Exe
         // The plan is made from the selected cases, which `byId` holds, so a review never names another.
         if (suiteCase === undefined) throw new Error(UNPLANNED_CASE)
         const text = event.type === 'recorded'
-          ? recordedText(event.record, suiteCase, keepScore(scores, event.record, suiteCase, suite.window))
+          ? recordedText(event.record, suiteCase, keepScore(scores, event.record, suiteCase, checked))
           : `failed: ${errorMessage(event.error)}`
         writeLines(io.stderr, [`[${finished}/${toRun.length}] trial ${trial}, case ${caseId}, configuration ${configuration + 1}: ${text}`])
       },
@@ -420,6 +419,7 @@ async function writeReports(io: CliIO, { suite, selected, out, runFile }: Checke
     trials,
     configurations: runFile.configurations,
     scores,
+    flagged: flaggedCases(selected, suite),
   })
   const markdown = reportMarkdown(report)
   await writeAtomic(out, REPORT_MARKDOWN, markdown)
