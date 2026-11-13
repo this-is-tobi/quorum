@@ -1,4 +1,5 @@
 import { constants } from 'node:fs'
+import type { Stats } from 'node:fs'
 import { lstat, open } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, resolve } from 'node:path'
@@ -70,18 +71,27 @@ function openProblem(error: unknown, noFollow: boolean): string {
     : 'cannot be read'
 }
 
-/** The problem a path has before an open that must not follow a link: it is one, or it is missing or unreadable; undefined when it is not a link. */
-async function linkProblem(absolute: string): Promise<string | undefined> {
+/** The `lstat` of a path, or the problem a failed one means by its code: the path is missing, or it cannot be read. */
+export async function lstatOf(absolute: string): Promise<Read<Stats>> {
   try {
-    return (await lstat(absolute)).isSymbolicLink()
-      ? 'is a symbolic link'
-      : undefined
+    return { value: await lstat(absolute) }
   } catch (error) {
     const code = (error as { code?: unknown }).code
-    return code === 'ENOENT' || code === 'ENOTDIR'
-      ? 'does not exist'
-      : 'cannot be read'
+    return {
+      problem: code === 'ENOENT' || code === 'ENOTDIR'
+        ? 'does not exist'
+        : 'cannot be read',
+    }
   }
+}
+
+/** The problem a path has before an open that must not follow a link: it is one, or it is missing or unreadable; undefined when it is not a link. */
+async function linkProblem(absolute: string): Promise<string | undefined> {
+  const stats = await lstatOf(absolute)
+  if ('problem' in stats) return stats.problem
+  return stats.value.isSymbolicLink()
+    ? 'is a symbolic link'
+    : undefined
 }
 
 /**
