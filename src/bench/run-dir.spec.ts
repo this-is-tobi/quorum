@@ -270,6 +270,26 @@ describe('the records', () => {
     expect(readFileSync(results(), 'utf8')).toBe(LINE_1 + LINE_2)
   })
 
+  it('drops a last line that is a whole record without its line break, so the next append cannot join two records', async () => {
+    mkdirSync(out)
+    writeFileSync(results(), `${LINE_1}${LINE_2.slice(0, -1)}`)
+    const seen: number[] = []
+    const read = await readRecords(out, (entry) => {
+      seen.push(entry.trial)
+      return undefined
+    })
+    expect(read).toEqual({
+      lines: 1,
+      validBytes: Buffer.byteLength(LINE_1),
+      torn: true,
+    })
+    expect(seen).toEqual([1])
+    const writer = await openRecords(out, read.validBytes)
+    await writer.append(LINE_2)
+    await writer.close()
+    expect(readFileSync(results(), 'utf8')).toBe(LINE_1 + LINE_2)
+  })
+
   it('finds no record and no torn line where there is no results.jsonl', async () => {
     mkdirSync(out)
     expect(await readRecords(out, () => undefined)).toEqual({ lines: 0, validBytes: 0, torn: false })

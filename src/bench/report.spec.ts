@@ -245,6 +245,78 @@ describe('buildReport', () => {
       tokens: 450,
     })
   })
+
+  it('counts a candidate that loses on every case as worse', () => {
+    const [reference, candidate] = INPUT.configurations
+    const report = buildReport({
+      ...INPUT,
+      configurations: [candidate, reference],
+    })
+    expect(report.comparisons[0]).toEqual({
+      configuration: 2,
+      measure: 'kept-recall',
+      difference: -0.5,
+      better: 0,
+      worse: 2,
+      tied: 0,
+      p: 0.5,
+      resolved: false,
+    })
+    expect(report.comparisons[4]).toMatchObject({
+      measure: 'tokens',
+      better: 0,
+      worse: 3,
+      tied: 0,
+    })
+  })
+
+  it('resolves a comparison whose p is below 0.05: six bug cases that only the candidate catches', () => {
+    const cases = Array.from({ length: 6 }, (_, index): SuiteCase => ({
+      id: `bug-${index + 1}`,
+      kind: 'bug',
+      patch: 'bug.patch',
+      locations: [
+        { file: 'a.js', start: 1, end: 1 },
+      ],
+    }))
+    const input: ReportInput = {
+      ...INPUT,
+      cases,
+      trials: 1,
+      scores: new Map(cases.flatMap(({ id }) => [
+        [
+          reviewKey(A, id, 1),
+          score({}),
+        ],
+        [
+          reviewKey(B, id, 1),
+          score({ keptCatch: true, proposedCatch: true }),
+        ],
+      ] as const)),
+    }
+    expect(buildReport(input).comparisons[0]).toEqual({
+      configuration: 2,
+      measure: 'kept-recall',
+      difference: 1,
+      better: 6,
+      worse: 0,
+      tied: 0,
+      p: 0.03125,
+      resolved: true,
+    })
+    expect(reportMarkdown(buildReport(input))).toContain('- 2, kept recall: +100.0 points; 6 better, 0 worse, 0 tied; p = 0.0313, resolved\n')
+  })
+
+  it('takes the tokens of the reviews that reported usage, and gives no cost when one review reported none', () => {
+    const scores = new Map(INPUT.scores)
+    scores.set(reviewKey(A, 'docs', 2), score({ latencyMs: 5000, tokens: undefined }))
+    const [first] = buildReport({ ...INPUT, scores }).configurations
+    expect(first).toMatchObject({
+      reviews: 5,
+      tokens: { median: 200, total: 1000 },
+      costUsd: null,
+    })
+  })
 })
 
 describe('reportMarkdown', () => {
@@ -302,6 +374,27 @@ describe('reportMarkdown', () => {
     expect(markdown).toContain('2. (default configuration)\n')
     expect(markdown).toContain('| 2 | 0 of 6 | n/a | n/a | n/a / n/a | 0 | n/a | n/a | n/a |')
     expect(markdown).toContain('- 2, kept recall: no case scored by both')
+  })
+
+  it('writes the swapped comparison as worse', () => {
+    const [reference, candidate] = INPUT.configurations
+    const markdown = reportMarkdown(buildReport({
+      ...INPUT,
+      configurations: [candidate, reference],
+    }))
+    expect(markdown).toContain('- 2, kept recall: -50.0 points; 0 better, 2 worse, 0 tied; p = 0.5000, unresolved\n')
+    expect(markdown).toContain('- 2, tokens per review: +250; 0 better, 3 worse, 0 tied; p = 0.2500, unresolved\n')
+  })
+
+  it('writes singular counts for one trial, one bug case, one control and a window of one line', () => {
+    const markdown = reportMarkdown(buildReport({
+      ...INPUT,
+      suite: { name: 'demo', window: 1 },
+      cases: [CASES[0], CASES[2]],
+      trials: 1,
+      configurations: [INPUT.configurations[0]],
+    }))
+    expect(markdown).toContain('quorum 0.2.0; 1 bug case and 1 control; trial 1; window 1 line.\n')
   })
 
   it('shows the hidden characters of a configuration path', () => {
