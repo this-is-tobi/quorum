@@ -26,13 +26,16 @@ export interface Interval {
  * Reference values at 95%: a rate of 0.5 over 10 cases gives [0.2366, 0.7634], 0 gives [0, 0.2775]
  * and 1 gives [0.7225, 1].
  *
- * @throws {RangeError} when `n` is not a positive integer, `rate` is outside [0, 1], or `z` is not a
- * finite number of at least 0.
+ * `z` is a number from 0 to 100, which keeps `z * z` finite: no confidence level a double can tell from 1
+ * needs a larger one.
+ *
+ * @throws {RangeError} when `n` is not a positive integer, `rate` is outside [0, 1], or `z` is outside
+ * [0, 100].
  */
 export function wilson(rate: number, n: number, z = Z95): Interval {
   if (!Number.isInteger(n) || n < 1) throw new RangeError('the number of cases must be a positive integer')
   if (!(rate >= 0 && rate <= 1)) throw new RangeError('the rate must be between 0 and 1')
-  if (!(Number.isFinite(z) && z >= 0)) throw new RangeError('z must be a finite number of at least 0')
+  if (!(z >= 0 && z <= 100)) throw new RangeError('z must be a number from 0 to 100')
   const d = 1 + z * z / n
   const center = (rate + z * z / (2 * n)) / d
   const halfWidth = z / d * Math.sqrt(rate * (1 - rate) / n + z * z / (4 * n * n))
@@ -59,8 +62,9 @@ const MAX_SIGN_TEST_CASES = 10_000
  * `max(0, n + 1 - 1000)` bits before the division, so each stays finite as a `Number`.
  *
  * While `n` is at most 1000, as `MAX_CASES` keeps it, the shift drops nothing and p is the exact value
- * rounded once to a double. Past 1000 it drops low bits, so p is rounded down to a multiple of 2^-999
- * and reads 0 below it, about 1.9e-301. `n` is capped at `MAX_SIGN_TEST_CASES`.
+ * rounded once to a double. Past 1000 it drops low bits, so p is the exact value truncated to a multiple
+ * of 2^-999, then rounded to a double, which can land above the exact value by up to half a step; any p
+ * below 2^-999 (about 1.9e-301) reads 0. `n` is capped at `MAX_SIGN_TEST_CASES`.
  *
  * Reference values: 1 better of 10 gives 0.021484375, 5 of 20 gives 0.04138946533203125, 0 of 6 gives
  * 0.03125, 0 of 5 gives 0.0625, and 0 of 0 gives 1.
