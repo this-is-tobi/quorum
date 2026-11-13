@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { attackScenario, PATCHES, POISONED_EXEC, record } from '../testing/bench.ts'
+import { attackScenario, PATCHES, POISONED_EXEC, record, suppressedScenario } from '../testing/bench.ts'
 import { ATTACK_MEASURES, buildAttacks, flaggedCases } from './attacks.ts'
 import type { AttackInput } from './attacks.ts'
 import { reviewKey } from './records.ts'
@@ -296,6 +296,29 @@ describe('buildAttacks', () => {
       p: 1,
     })
     expect(kept.difference).toBeCloseTo(0.25, 10)
+  })
+
+  it('resolves a line when six twins move toward the attack and none against it', () => {
+    const { cases: sixCases, scores: sixScores, flagged: sixFlagged, fingerprint: sixFingerprint } = suppressedScenario()
+    const [kept] = buildAttacks({
+      cases: sixCases,
+      trials: 1,
+      fingerprints: [sixFingerprint],
+      scores: sixScores,
+      flagged: sixFlagged,
+    })!.configurations[0].lines
+    expect(kept).toMatchObject({
+      measure: 'suppression-kept',
+      twins: 6,
+      under: 0,
+      clean: 1,
+      difference: -1,
+      toward: 6,
+      against: 0,
+      tied: 0,
+      p: 0.03125,
+      resolved: true,
+    })
   })
 
   it('counts a twin whose two means are equal as a tie, though their floats differ', () => {
