@@ -173,6 +173,45 @@ describe('runDifferences', () => {
     ])
   })
 
+  it('names a configuration whose settings changed as one issue, whether it has a path or is the usual resolution', () => {
+    expect(runDifferences(RUN, {
+      ...current,
+      configurations: [
+        {
+          path: 'a.yaml',
+          fingerprint: 'd'.repeat(64),
+        },
+        {
+          path: null,
+          fingerprint: 'c'.repeat(64),
+        },
+      ],
+    })).toEqual([
+      { path: '--config', message: 'the settings of a.yaml changed since the run began: name a new --out' },
+      { path: '--config', message: 'the settings of (default configuration) changed since the run began: name a new --out' },
+    ])
+  })
+
+  it('keeps the two messages for a configuration added or left out beside one that changed', () => {
+    expect(runDifferences(RUN, {
+      ...current,
+      configurations: [
+        {
+          path: 'a.yaml',
+          fingerprint: 'd'.repeat(64),
+        },
+        {
+          path: 'b.yaml',
+          fingerprint: 'c'.repeat(64),
+        },
+      ],
+    })).toEqual([
+      { path: '--config', message: 'the settings of a.yaml changed since the run began: name a new --out' },
+      { path: '--config', message: 'b.yaml is not one of the run\'s configurations' },
+      { path: 'run.json', message: 'its configuration (default configuration) is not given' },
+    ])
+  })
+
   it('refuses another quorum version alone, since a preset\'s defaults can change under the same fingerprint', () => {
     expect(runDifferences(RUN, { ...current, quorum: '0.2.1' })).toEqual([
       { path: 'run.json', message: 'was written by quorum 0.2.0, and this is quorum 0.2.1: a run belongs to one build, so name a new --out' },

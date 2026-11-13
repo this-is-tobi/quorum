@@ -158,9 +158,11 @@ export async function inspectRunDir(directory: string): Promise<RunState> {
  * quorum version first of all (a release can change a preset's defaults without changing a fingerprint,
  * which holds the preset by name), then another suite by its name, else a suite whose content changed,
  * then each current configuration the run does not hold, at `--config`, then each recorded one that is
- * not given again. The same configurations in another order are the same run. A configuration is named by
- * its path as written, or `(default configuration)`: the recorded paths are text from `run.json`, to make
- * inert where they are printed.
+ * not given again. A current and a recorded configuration that share a path (`null`, the usual
+ * resolution, included) but not a fingerprint are one configuration whose settings changed, and give one
+ * issue in place of the two. The same configurations in another order are the same run. A configuration
+ * is named by its path as written, or `(default configuration)`: the recorded paths are text from
+ * `run.json`, to make inert where they are printed.
  */
 export function runDifferences(recorded: RunFile, current: Pick<RunFile, 'quorum' | 'suite' | 'configurations'>): ConfigIssue[] {
   const issues: ConfigIssue[] = []
@@ -174,11 +176,20 @@ export function runDifferences(recorded: RunFile, current: Pick<RunFile, 'quorum
   }
   const recordedPrints = new Set(recorded.configurations.map(({ fingerprint }) => fingerprint))
   const currentPrints = new Set(current.configurations.map(({ fingerprint }) => fingerprint))
+  const changed = new Set<string>()
   for (const { path, fingerprint } of current.configurations) {
-    if (!recordedPrints.has(fingerprint)) issues.push({ path: '--config', message: `${path ?? DEFAULT_CONFIGURATION} is not one of the run's configurations` })
+    if (recordedPrints.has(fingerprint)) continue
+    const name = path ?? DEFAULT_CONFIGURATION
+    const before = recorded.configurations.find(entry => entry.path === path && !currentPrints.has(entry.fingerprint) && !changed.has(entry.fingerprint))
+    if (before === undefined) {
+      issues.push({ path: '--config', message: `${name} is not one of the run's configurations` })
+    } else {
+      changed.add(before.fingerprint)
+      issues.push({ path: '--config', message: `the settings of ${name} changed since the run began: name a new ${OUT}` })
+    }
   }
   for (const { path, fingerprint } of recorded.configurations) {
-    if (!currentPrints.has(fingerprint)) issues.push({ path: RUN_FILE, message: `its configuration ${path ?? DEFAULT_CONFIGURATION} is not given` })
+    if (!currentPrints.has(fingerprint) && !changed.has(fingerprint)) issues.push({ path: RUN_FILE, message: `its configuration ${path ?? DEFAULT_CONFIGURATION} is not given` })
   }
   return issues
 }
