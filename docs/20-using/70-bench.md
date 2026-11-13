@@ -275,7 +275,7 @@ That settles when a run can go on:
 
 What it cannot see is outside the configuration. A provider object, which a TS or JS config defines, is its config key and its model, since its code cannot be hashed: change its implementation under the same key and model and the fingerprint stays. Nor does it see the environment a `claude-code` provider inherits. For either, start a new `--out`.
 
-`run.json` holds the fingerprints, not the settings in the clear, and its salt keeps a short value from being looked up in a table made ahead of time. The salt is in the same file, though, so whoever reads `run.json` and knows the rest of a config can check a guess at a short value in it, a short credential in a header or a query, so the bench writes `run.json`, as it writes `results.jsonl`, readable by its owner only. The mode stays with the file, not with a copy of it, so keep `run.json` out of an artifact, an archive and a commit.
+`run.json` holds the fingerprints, not the settings in the clear, and its salt keeps a short value from being looked up in a table made ahead of time. The salt is in the same file, though, so whoever reads `run.json` and knows the rest of a config can check a guess at a short value in it, a short credential in a header or a query, so the bench writes `run.json`, as it writes `results.jsonl`, readable by its owner only. A copy often loses that mode, as a commit or a CI artifact does, so keep `run.json` out of an artifact, an archive and a commit.
 
 ### Stopped runs
 
@@ -293,7 +293,7 @@ The append checks the file again, so a `results.jsonl` whose length changed sinc
 Error: results.jsonl: changed after this run read it, so another run may be using this --out: run one at a time
 ```
 
-A `results.jsonl` that is no longer a regular file, such as a directory or a FIFO, stops the run the same way, as `Error: results.jsonl: is not a file`, and the bench never waits for a FIFO to be read. A kind of file the system refuses to open, a unix socket on macOS, is a write failure instead, `results.jsonl: cannot be written (EOPNOTSUPP)` with exit `3` (Node names no code for it, and prints `results.jsonl: cannot be written`), which writes nothing either.
+A `results.jsonl` that is no longer a regular file, such as a directory or a FIFO, stops the run the same way, as `Error: results.jsonl: is not a file`, and the bench never waits for a FIFO to be read. A kind of file the system refuses to open, a unix socket on macOS, is a write failure instead, with exit `3`, which writes nothing either: under Bun and the compiled binary it reads `results.jsonl: cannot be written (EOPNOTSUPP)`, and under Node, which names no code for it, `results.jsonl: cannot be written`.
 
 Run one run at a time per directory: that check is made once, when the append opens the file, and nothing locks the directory, so two runs on one `--out` could interleave their records. Two new runs started together are worse: each finds no `run.json` and makes its own, the one that renames last keeps its salt, and the check passes, since no record exists yet. Their records sit under two salts, which leaves a directory no later run can resume: it refuses the records written under the replaced salt.
 
