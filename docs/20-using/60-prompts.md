@@ -148,4 +148,4 @@ The controls are elsewhere: the code a voter sees is read from the diff by the h
 
 ## Next
 
-[Threat model](../30-security/10-threat-model.md) — the attacker, the assets, the residual risk stated plainly, the controls in place today, and what the panel's independence is worth.
+[Benchmarks](./70-bench.md) — `quorum bench`: measure configurations on a suite of bugs, write a suite of your own, resume a run, and read the report and its intervals.

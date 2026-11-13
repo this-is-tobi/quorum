@@ -77,6 +77,7 @@ The JSON result goes to stdout, and the exit code says what to do with it: `0` f
 - [Profiles](./docs/20-using/40-profiles.md) *- The security profile, writing your own, several in one review, gating and guidelines*
 - [Lenses and policy](./docs/20-using/50-lenses-and-policy.md) *- The panel's questions, the rules that turn kept votes into a confidence, failed votes, and what a level means*
 - [Prompts](./docs/20-using/60-prompts.md) *- The layout of every request, the templates and their variables, the notices, and what is not configurable*
+- [Benchmarks](./docs/20-using/70-bench.md) *- quorum bench: measure configurations on a suite of real bugs, write a suite, resume a run, and read the report and its intervals*
 
 *Security*
 - [Threat model](./docs/30-security/10-threat-model.md) *- The attacker, the assets, the residual risk stated plainly, the controls in place, and what the panel's independence is worth*

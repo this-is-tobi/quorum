@@ -1,10 +1,11 @@
 # The CLI
 
-The `quorum` command reviews one diff with the profiles its config selects, the security profile alone by default, prints the result as JSON and exits with a code that says what to do with it. This page is its whole surface: the invocation, what it reads, what goes to stdout and stderr, every exit code, and how a CI job should read them. Its settings are a config file that `--config` or `QUORUM_CONFIG` names and the environment variables, on [Configuration](./20-configuration.md).
+The `quorum` command reviews one diff with the profiles its config selects, the security profile alone by default, prints the result as JSON and exits with a code that says what to do with it. This page is its whole surface: the invocation, what it reads, what goes to stdout and stderr, every exit code, and how a CI job should read them. Its settings are a config file that `--config` or `QUORUM_CONFIG` names and the environment variables, on [Configuration](./20-configuration.md). Its one subcommand, `quorum bench`, measures configurations on a suite of bugs: [quorum bench](#quorum-bench).
 
 ```text
 Usage: quorum [options] [diff-file]
        git diff | quorum [options]
+       quorum bench [options] <suite>
 
 Options:
   -c, --config <path>     Read this config file, over QUORUM_CONFIG
@@ -27,6 +28,7 @@ git diff origin/main...HEAD | quorum
 - **A second argument** is an error: `Error: unexpected arguments: …` names the extra ones, then the usage, exit `2`.
 - **A file that cannot be read** is an error: `Error: ENOENT: no such file or directory, open '…'`, then the usage, exit `2`.
 - **A diff over 16 MiB**, on stdin or in a file, is an error: `Error: the diff is over 16 MiB, the most quorum reads`, then the usage, exit `2`. The bytes are counted as they arrive, and quorum stops reading there.
+- **`bench` as the first argument** runs [the bench](#quorum-bench), with the arguments after it, before any flag of a review is read. A diff file named `bench` is reviewed as `quorum ./bench`.
 
 The flags go before or after the file:
 
@@ -229,6 +231,37 @@ exit $code
 - **The base must be in the clone.** `origin/main...HEAD` needs `origin/main` and the commit where the branch left it, which a shallow clone may not have.
 - **A clean exit covers what the harness can detect.** Quorum refuses a request that may not fit the context size you state, but it trusts that number: an endpoint that loaded a smaller window than you stated cuts an oversized prompt in silence and can still give a clean review of what was left. Ollama's native API, the default, is sent the size you state and loads it, clamped to the model's trained context, so keep the number at most what `ollama show <model>` reports. State the window the server really gives: [What the harness cannot detect](../30-security/10-threat-model.md#what-the-harness-cannot-detect).
 - **The result is untrusted text.** It holds what models wrote about a change an attacker may have written: [Output handling](../30-security/30-output-handling.md#text-an-attacker-can-influence) says how to treat it before you render it anywhere.
+
+## quorum bench
+
+`quorum bench` reviews every case of a suite, a directory of patches whose bugs are known, with every config it is given, `--trials` times each, and reports what each caught, what it cost and how sure the numbers are. It records each review in a run directory it can resume, prints the plan and a line for each review on stderr, and prints its report on stdout. Its options and its exit codes are its own:
+
+```text
+Usage: quorum bench [options] <suite>
+
+Review every case of a suite with every config, --trials times each, and report what each caught.
+
+Options:
+  -c, --config <path>     A config file to compare; repeat it, and the first is the reference
+  -p, --profile <id>      Run only this profile; repeat it to run several
+      --trials <n>        Reviews of each case per config: the suite's trials, else 1
+      --case <id>         Run only this case; repeat it to run several
+  -j, --jobs <n>          The reviews run at once (default 1)
+  -o, --out <dir>         The run directory (default quorum-bench/<suite name>)
+      --retry-incomplete  Run again the recorded reviews that came back incomplete
+      --dry-run           Check the suite and the configs, print the plan, and exit
+  -h, --help              Print this help and exit
+```
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Every planned review is recorded, or `--dry-run` checked everything and printed the plan |
+| `2` | A usage, config or suite error, two configs that resolve to the same settings, or a run directory that holds another run or a file the bench cannot trust |
+| `3` | A read or a write of the run directory failed, or any other stop |
+| `4` | Reviews failed: they are not recorded, and the next run runs them again. A review with a gap is recorded and is not a failure |
+| `130` | Interrupted: the records are kept and the reports are written |
+
+These are the bench's own codes, not a review's: it has no `1`, and its `4` means failed reviews where a review's means an incomplete one. [Benchmarks](./70-bench.md) has the rest: the plan and the progress lines, writing a suite, the run directory and resuming it, reading the report, what a run costs, and where not to run it.
 
 ## Next
 
