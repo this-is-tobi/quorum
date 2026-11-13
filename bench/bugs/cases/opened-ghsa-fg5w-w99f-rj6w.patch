@@ -1,0 +1,757 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..39da6fa
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,6 @@
++.DS_Store
++.jshintrc
++build
++node_modules
++utimes_fixtures
++binding.node
+diff --git a/LICENSE b/LICENSE
+new file mode 100644
+index 0000000..c632aff
+--- /dev/null
++++ b/LICENSE
+@@ -0,0 +1,21 @@
++The MIT License (MIT)
++
++Copyright (c) 2017 Ronomon
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..5287c13
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,24 @@
++# utimes
++Check if a file is open in another application on Windows, macOS and Linux. Linux requires privileges.
++
++## Installation
++```
++npm install @ronomon/opened
++```
++
++## Usage
++
++```javascript
++var Opened = require('@ronomon/opened');
++var paths = [...];
++Opened.files(paths,
++  function(error, hashTable) {
++    if (error) throw error;
++    paths.forEach(
++      function(path) {
++        console.log(path + ' open=' + hashTable.hasOwnProperty(path));
++      }
++    );
++  }
++);
++```
+diff --git a/binding.cc b/binding.cc
+new file mode 100644
+index 0000000..e8df84c
+--- /dev/null
++++ b/binding.cc
+@@ -0,0 +1,82 @@
++#include <nan.h>
++#if defined(_WIN32)
++#include <io.h>
++#include <windows.h>
++#endif
++
++int open(const char* path) {
++#if defined(_WIN32)
++  int chars = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
++  if (chars == 0) return GetLastError();
++  WCHAR* pathw = (WCHAR*) malloc(chars * sizeof(WCHAR));
++  if (pathw == NULL) return ERROR_OUTOFMEMORY;
++  MultiByteToWideChar(CP_UTF8, 0, path, -1, pathw, chars);
++  HANDLE handle = CreateFileW(
++    pathw,
++    FILE_GENERIC_READ | FILE_GENERIC_WRITE,
++    0L,
++    NULL,
++    OPEN_EXISTING,
++    NULL,
++    NULL
++  );
++  free(pathw);
++  if (handle == INVALID_HANDLE_VALUE) return GetLastError();
++  CloseHandle(handle);
++  return 0;
++#else
++  return -1;
++#endif
++}
++
++class OpenWorker : public Nan::AsyncWorker {
++ public:
++  OpenWorker(
++    v8::Local<v8::Object> &pathHandle,
++    Nan::Callback *callback
++  ) : Nan::AsyncWorker(callback) {
++        SaveToPersistent("pathHandle", pathHandle);
++        path = node::Buffer::Data(pathHandle);
++  }
++
++  ~OpenWorker() {}
++
++  void Execute() {
++    error = open(path);
++  }
++
++  void HandleOKCallback () {
++    Nan::HandleScope scope;
++    v8::Local<v8::Value> argv[] = {
++      Nan::New<v8::Number>(error)
++    };
++    callback->Call(1, argv);
++  }
++
++ private:
++  const char* path;
++  int error;
++};
++
++NAN_METHOD(opened) {
++  if (
++    info.Length() != 2 ||
++    !node::Buffer::HasInstance(info[0]) ||
++    !info[1]->IsFunction()
++  ) {
++    return Nan::ThrowError(
++      "bad arguments, expected: (buffer path, function callback)"
++    );
++  }
++  v8::Local<v8::Object> pathHandle = info[0].As<v8::Object>();
++  Nan::Callback *callback = new Nan::Callback(info[1].As<v8::Function>());
++  Nan::AsyncQueueWorker(new OpenWorker(pathHandle, callback));
++}
++
++NAN_MODULE_INIT(Init) {
++  NAN_EXPORT(target, opened);
++}
++
++NODE_MODULE(binding, Init)
++
++// S.D.G.
+diff --git a/binding.gyp b/binding.gyp
+new file mode 100644
+index 0000000..ad51e1f
+--- /dev/null
++++ b/binding.gyp
+@@ -0,0 +1,20 @@
++{
++  "targets": [
++    {
++      "target_name": "binding",
++      "sources": [ "binding.cc" ],
++      "include_dirs": [ "<!(node -e \"require('nan')\")" ]
++    },
++    {
++      "target_name": "copy",
++      "type": "none",
++      "dependencies": [ "binding" ],
++      "copies": [
++        {
++          'destination': '<(module_root_dir)',
++          'files': ['<(module_root_dir)/build/Release/binding.node']
++        }
++      ]
++    }
++  ]
++}
+diff --git a/index.js b/index.js
+new file mode 100644
+index 0000000..92e6b77
+--- /dev/null
++++ b/index.js
+@@ -0,0 +1,257 @@
++'use strict';
++
++var Node = {
++  child: require('child_process'),
++  fs: require('fs'),
++  path: require('path'),
++  process: process
++};
++
++var Queue = require('@ronomon/queue');
++
++function assertFunction(key, value) {
++  if (typeof value !== 'function') {
++    throw new Error(key + ' must be a function');
++  }
++}
++
++function assertPath(key, value) {
++  if (typeof value !== 'string') {
++    throw new Error(key + ' must be a string');
++  }
++  if (value.length === 0) {
++    throw new Error(key + ' must not be empty');
++  }
++  if (value.indexOf('\u0000') !== -1) {
++    throw new Error(key + ' must be a string without null bytes');
++  }
++  if (value.indexOf(assertPathBadSep) !== -1) {
++    throw new Error(key + ' must be a string without ' + assertPathBadSepName);
++  }
++}
++
++if (Node.process.platform === 'win32') {
++  var assertPathBadSep = '\/';
++  var assertPathBadSepName = 'forward slashes';
++} else {
++  var assertPathBadSep = '\\';
++  var assertPathBadSepName = 'backslashes';
++}
++
++function assertPaths(key, value) {
++  if (!value || value.constructor !== Array) {
++    throw new Error(key + ' must be an array');
++  }
++  for (var index = 0, length = value.length; index < length; index++) {
++    assertPath('path at index ' + index, value[index]);
++  }
++}
++
++function pathBuffer(path) {
++  var pathLong = Node.path._makeLong(path);
++  var buffer = Buffer.alloc(Buffer.byteLength(pathLong, 'utf-8') + 1);
++  buffer.write(pathLong, 0, buffer.length - 1, 'utf-8');
++  buffer[buffer.length - 1] = 0;
++  if (buffer.indexOf(0) !== buffer.length - 1) {
++    throw new Error('path must be a string without null bytes');
++  }
++  return buffer;
++}
++
++var Unix = {};
++
++Unix.file = function(path, end) {
++  var self = this;
++  assertPath('path', path);
++  assertFunction('end', end);
++  self.files([path],
++    function(error, files) {
++      if (error) return end(error);
++      end(undefined, files.hasOwnProperty(path));
++    }
++  );
++};
++
++Unix.files = function(paths, end) {
++  var self = this;
++  assertPaths('paths', paths);
++  assertFunction('end', end);
++  var files = {};
++  var queue = new Queue(1); // Concurrency yields no improvement with lsof.
++  queue.onData = function(paths, end) {
++    var escapedPaths = paths.map(
++      function(path) {
++        return '"' + path.replace(/"/g, '\\"') + '"';
++      }
++    );
++    var command = 'lsof -F n -- ' + escapedPaths.join(' ');
++    var options = {
++      encoding: 'utf-8',
++      maxBuffer: 2 * 1024 * 1024
++    };
++    Node.child.exec(command, options,
++      function(error, stdout, stderr) {
++        // lsof returns an error and a status code of 1 if a file is not open:
++        if (error && error.code === 1 && stderr.length === 0) error = undefined;
++        if (error) {
++          if (/No such file or directory/i.test(stderr)) {
++            error.code = 'ENOENT';
++          }
++          return end(error);
++        }
++        var lines = stdout.split('\n');
++        for (var index = 0, length = lines.length; index < length; index++) {
++          var line = lines[index];
++          if (line[0] != 'n') continue;
++          var candidate = self.unescape(line.slice(1));
++          if (files.hasOwnProperty(candidate)) files[candidate] = true;
++        }
++        end();
++      }
++    );
++  };
++  queue.onEnd = function(error) {
++    if (error) return end(error);
++    end(undefined, files);
++  };
++  // lsof performs in constant time regardless of the number of paths.
++  // We therefore batch calls to lsof to improve latency.
++  // We must be careful however not to exceed any limits on command length.
++  // 32 paths at 32768 bytes per path requires just over 1 MB.
++  // We assume we are safe up to 2 MB.
++  // See: xargs --show-limits
++  var batch = [];
++  for (var index = 0, length = paths.length; index < length; index++) {
++    var path = paths[index];
++    if (files.hasOwnProperty(path)) continue;
++    files[path] = false;
++    batch.push(path);
++    if (batch.length === 32) {
++      queue.push(batch);
++      batch = [];
++    }
++  }
++  if (batch.length) queue.push(batch);
++  queue.end();
++};
++
++Unix.unescape = function(sourceString) {
++  var self = this;
++  var source = Buffer.from(sourceString, 'utf-8');
++  var target;
++  var targetIndex;
++  var sourceIndex = 0;
++  var sourceLength = source.length;
++  while (sourceIndex < sourceLength) {
++    if (source[sourceIndex] === 92 && sourceIndex + 1 < sourceLength) { // "\\"
++      if (!target) {
++        target = Buffer.alloc(sourceLength);
++        targetIndex = source.copy(target, 0, 0, sourceIndex);
++      }
++      sourceIndex++;
++      target[targetIndex++] = self.unescapeTable[source[sourceIndex++]];
++    } else if (target) {
++      target[targetIndex++] = source[sourceIndex++];
++    } else {
++      sourceIndex++;
++    }
++  }
++  if (target) {
++    return target.toString('utf-8', 0, targetIndex);
++  } else {
++    return sourceString;
++  }
++};
++
++Unix.unescapeTable = (function() {
++  var table = Buffer.alloc(256);
++  for (var code = 0; code < 256; code++) table[code] = code;
++  table['b'.charCodeAt(0)] = '\b'.charCodeAt(0);
++  table['f'.charCodeAt(0)] = '\f'.charCodeAt(0);
++  table['t'.charCodeAt(0)] = '\t'.charCodeAt(0);
++  table['n'.charCodeAt(0)] = '\n'.charCodeAt(0);
++  table['r'.charCodeAt(0)] = '\r'.charCodeAt(0);
++  return table;
++})();
++
++var Windows = {};
++
++// See: https://msdn.microsoft.com/en-us/library/windows/desktop/ms681382.aspx
++Windows.codes = {
++  1: 'EISDIR', // ERROR_INVALID_FUNCTION
++  2: 'ENOENT', // ERROR_FILE_NOT_FOUND
++  3: 'ENOENT', // ERROR_PATH_NOT_FOUND
++  4: 'EMFILE', // ERROR_TOO_MANY_OPEN_FILES
++  5: 'EPERM', // ERROR_ACCESS_DENIED
++  6: 'EBADF', // ERROR_INVALID_HANDLE
++  8: 'ENOMEM', // ERROR_NOT_ENOUGH_MEMORY
++  14: 'ENOMEM', // ERROR_OUTOFMEMORY
++  15: 'ENOENT', // ERROR_INVALID_DRIVE
++  32: 'ERROR_SHARING_VIOLATION',
++  33: 'ERROR_LOCK_VIOLATION'
++};
++
++if (Node.process.platform === 'win32') {
++  Windows.binding = require('./binding.node');
++}
++
++Windows.file = function(path, end) {
++  var self = this;
++  assertPath('path', path);
++  assertFunction('end', end);
++  self.binding.opened(pathBuffer(path),
++    function(result) {
++      if (result === 0) return end(undefined, false);
++      if (self.codes.hasOwnProperty(result)) {
++        var code = self.codes[result];
++      } else {
++        var code = 'ENOSYS';
++      }
++      if (
++        code === 'ERROR_SHARING_VIOLATION' ||
++        code === 'ERROR_LOCK_VIOLATION'
++      ) {
++        return end(undefined, true);
++      }
++      var error = new Error(code + ': -' + result + ', opened(' + path + ')');
++      error.code = code;
++      end(error);
++    }
++  );
++};
++
++Windows.files = function(paths, end) {
++  var self = this;
++  assertPaths('paths', paths);
++  assertFunction('end', end);
++  var files = {};
++  var queue = new Queue(4);
++  queue.onData = function(path, end) {
++    self.file(path,
++      function(error, opened) {
++        if (error) return end(error);
++        if (opened) files[path] = true;
++        end();
++      }
++    );
++  };
++  queue.onEnd = function(error) {
++    if (error) return end(error);
++    end(undefined, files);
++  };
++  for (var index = 0, length = paths.length; index < length; index++) {
++    var path = paths[index];
++    if (files.hasOwnProperty(path)) continue;
++    files[path] = false;
++    queue.push(path);
++  }
++  queue.end();
++};
++
++if (Node.process.platform === 'win32') {
++  module.exports = Windows;
++} else {
++  module.exports = Unix;
++}
++
++// S.D.G.
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..1672e2d
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,34 @@
++{
++  "name": "@ronomon/opened",
++  "version": "1.0.0",
++  "description": "Check if a file is open in another application on Windows, macOS and Linux.",
++  "main": "index.js",
++  "repository": {
++    "type": "git",
++    "url": "git+https://github.com/ronomon/opened.git"
++  },
++  "keywords": [
++    "exclusive",
++    "fd",
++    "file",
++    "fuser",
++    "lsof",
++    "open",
++    "opened"
++  ],
++  "author": "Joran Dirk Greef",
++  "license": "MIT",
++  "bugs": {
++    "url": "https://github.com/ronomon/opened/issues"
++  },
++  "homepage": "https://github.com/ronomon/opened#readme",
++  "scripts": {
++    "install": "node-gyp rebuild",
++    "postinstall": "node-gyp clean",
++    "test": "node test.js"
++  },
++  "dependencies": {
++    "@ronomon/queue": "^2.1.0",
++    "nan": "^2.6.2"
++  }
++}
+diff --git a/test.js b/test.js
+new file mode 100644
+index 0000000..1c5d0e8
+--- /dev/null
++++ b/test.js
+@@ -0,0 +1,265 @@
++var Node = {
++  fs: require('fs'),
++  path: require('path'),
++  process: process
++};
++var random = Math.random.bind(Math);
++var Queue = require('@ronomon/queue');
++
++var namespace = 'Opened';
++
++var Test = {};
++
++Test.equal = function(value, expected, namespace, description) {
++  value = JSON.stringify(value) + '';
++  expected = JSON.stringify(expected) + '';
++  if (value === expected) {
++    Test.pass(namespace, description, expected);
++  } else {
++    Test.fail(namespace, description, value + ' !== ' + expected);
++  }
++};
++
++Test.fail = function(namespace, description, message) {
++  console.log('');
++  throw 'FAIL: ' + Test.message(namespace, description, message);
++};
++
++Test.message = function(namespace, description, message) {
++  if ((namespace = namespace || '')) namespace += ': ';
++  if ((description = description || '')) description += ': ';
++  return namespace + description + (message || '');
++};
++
++Test.pass = function(namespace, description, message) {
++  console.log('PASS: ' + Test.message(namespace, description, message));
++};
++
++var root = Node.path.resolve(module.filename, '..');
++if (!root) throw new Error('root must not be empty');
++
++var fixtures = Node.path.join(root, 'opened_fixtures');
++
++var binding = require(Node.path.join(root, 'index.js'));
++
++var ALPHABET = '';
++ALPHABET += 'abcdefghijklmnopqrstuvwxyz';
++ALPHABET += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
++ALPHABET += '0123456789';
++ALPHABET += 'àáâäæãåāèéêëēėę';
++ALPHABET += '\b\f\t\n\r   ';
++
++function close(fds) {
++  fds.forEach(
++    function(fd) {
++      Node.fs.closeSync(fd);
++    }
++  );
++}
++
++function createPath(path) {
++  Node.fs.writeFileSync(path, '');
++}
++
++function createPaths(paths) {
++  paths.forEach(
++    function(path) {
++      createPath(path);
++    }
++  );
++}
++
++function generatePath() {
++  var chars = 1 + Math.floor(random() * 16);
++  var string = '';
++  while (string.length < chars) {
++    string += ALPHABET[Math.floor(random() * ALPHABET.length)];
++    if (string.trim() === string) continue;
++    string += ALPHABET[Math.floor(random() * ALPHABET.length)];
++    if (string.trim() === string) continue;
++    string += ALPHABET[Math.floor(random() * ALPHABET.length)];
++    string = string.trim(); // Avoid leading/trailing space on Windows.
++  }
++  if (random() < 0.5) {
++    if (random() < 0.5) {
++      string = string.normalize('NFC');
++    } else {
++      string = string.normalize('NFD');
++    }
++  }
++  return Node.path.join(fixtures, string);
++}
++
++function generatePaths() {
++  var paths = [];
++  var keys = {};
++  if (random() < 0.01) return paths;
++  var length = Math.floor(random() * 128);
++  while (length--) {
++    var path = generatePath();
++    var key = path.toUpperCase().normalize('NFC');
++    if (keys.hasOwnProperty(key)) continue;
++    keys[key] = 1;
++    paths.push(path);
++  }
++  return paths;
++}
++
++function openPath(path, expect, fds) {
++  if (random() < 0.5) {
++    expect[path] = false;
++  } else {
++    expect[path] = true;
++    fds.push(Node.fs.openSync(path, 'r+'));
++  }
++}
++
++function openPaths(paths, expect, fds) {
++  paths.forEach(
++    function(path) {
++      openPath(path, expect, fds);
++    }
++  );
++}
++
++function removeFixtures(callback) {
++  function remove() {
++    try {
++      var names = Node.fs.readdirSync(fixtures);
++    } catch (error) {
++      if (error.code !== 'ENOENT') throw error;
++      var names = [];
++    }
++    names.forEach(
++      function(name) {
++        Node.fs.unlinkSync(Node.path.join(fixtures, name));
++      }
++    );
++    try {
++      Node.fs.rmdirSync(fixtures);
++    } catch (error) {
++      if (error.code !== 'ENOENT') throw error;
++    }
++  }
++  if (callback) {
++    setTimeout(
++      function() {
++        remove();
++        callback();
++      },
++      // Wait for handles to be released by antivirus:
++      Node.process.platform === 'win32' ? 2000 : 0
++    );
++  } else {
++    remove();
++  }
++}
++
++function removePath(path) {
++  try {
++    Node.fs.unlinkSync(path, '');
++  } catch (error) {
++    // Ignore
++  }
++}
++
++function removePaths(paths) {
++  paths.forEach(
++    function(path) {
++      removePath(path);
++    }
++  );
++}
++
++removeFixtures();
++
++try {
++  Node.fs.mkdirSync(fixtures);
++} catch (error) {
++  if (error.code !== 'EEXIST') throw error;
++}
++
++var count = 0;
++var elapsed = 0;
++var maxCount = 0;
++var maxBatch = 0;
++var queue = new Queue(1);
++queue.onData = function(test, end) {
++  var paths = generatePaths();
++  var expect = {};
++  var fds = [];
++  createPaths(paths);
++  openPaths(paths, expect, fds);
++  var enoent = false;
++  if (random() < 0.2) {
++    enoent = generatePath();
++    paths.push(enoent);
++  }
++  var now = Date.now();
++  binding.files(paths,
++    function(error, actual) {
++      var time = Date.now() - now;
++      count += paths.length;
++      elapsed += time;
++      if (time > maxBatch) {
++        maxCount = paths.length;
++        maxBatch = time;
++      }
++      try {
++        if (enoent) {
++          Test.equal(error.code, 'ENOENT', namespace, 'error');
++          close(fds);
++          removePaths(paths);
++          return end();
++        } else {
++          Test.equal(error === undefined, true, namespace, 'error undefined');
++        }
++        if (error) throw error;
++        for (var a in actual) {
++          Test.equal(
++            expect.hasOwnProperty(a),
++            true,
++            namespace,
++            JSON.stringify(a) + ': name'
++          );
++          Test.equal(
++            actual[a],
++            expect[a],
++            namespace,
++            JSON.stringify(a) + ': open'
++          );
++        }
++        var x = Object.keys(actual).sort().join('');
++        var y = Object.keys(expect).sort().join('');
++        if (y !== x) {
++          Test.equal(x, y, namespace, 'names');
++        }
++      } catch (error) {
++        close(fds);
++        removePaths(paths);
++        return end(error);
++      }
++      close(fds);
++      removePaths(paths);
++      end();
++    }
++  );
++};
++queue.onEnd = function(error) {
++  removeFixtures(
++    function() {
++      if (error) throw error;
++      var avg = (elapsed / count).toFixed(5);
++      console.log(
++        avg + 'ms per file, ' + maxBatch + 'ms per ' + maxCount + ' file batch.'
++      );
++      console.log('================');
++      console.log('PASSED ALL TESTS');
++      console.log('================');
++    }
++  );
++};
++for (var test = 0; test < 10; test++) {
++  queue.push(test);
++}
++queue.end();

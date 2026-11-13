@@ -1,0 +1,766 @@
+diff --git a/docs/Reference/Validation-and-Serialization.md b/docs/Reference/Validation-and-Serialization.md
+index ab1f5c28..17c2ed2d 100644
+--- a/docs/Reference/Validation-and-Serialization.md
++++ b/docs/Reference/Validation-and-Serialization.md
+@@ -19,8 +19,9 @@ All the examples in this section are using the [JSON Schema Draft
+ > use with user-provided schemas. See [Ajv](https://npm.im/ajv) and
+ > [fast-json-stringify](https://npm.im/fast-json-stringify) for more details.
+ >
+-> Moreover, the [`$async` Ajv
+-> feature](https://ajv.js.org/guide/async-validation.html) should not be used as
++> Regardless the [`$async` Ajv
++> feature](https://ajv.js.org/guide/async-validation.html) is supported
++> by Fastify, it should not be used as
+ > part of the first validation strategy. This option is used to access Databases
+ > and reading them during the validation process may lead to Denial of Service
+ > Attacks to your application. If you need to run `async` tasks, use [Fastify's
+diff --git a/lib/handleRequest.js b/lib/handleRequest.js
+index e74c3ae5..84c9f640 100644
+--- a/lib/handleRequest.js
++++ b/lib/handleRequest.js
+@@ -89,14 +89,25 @@ function preValidationCallback (err, request, reply) {
+     return
+   }
+ 
+-  const result = validateSchema(reply[kRouteContext], request)
+-  if (result) {
++  const validationErr = validateSchema(reply[kRouteContext], request)
++  const isAsync = (validationErr && typeof validationErr.then === 'function') || false
++
++  if (isAsync) {
++    const cb = validationCompleted.bind(null, request, reply)
++    validationErr.then(cb, cb)
++  } else {
++    validationCompleted(request, reply, validationErr)
++  }
++}
++
++function validationCompleted (request, reply, validationErr) {
++  if (validationErr) {
+     if (reply[kRouteContext].attachValidation === false) {
+-      reply.send(result)
++      reply.send(validationErr)
+       return
+     }
+ 
+-    reply.request.validationError = result
++    reply.request.validationError = validationErr
+   }
+ 
+   // preHandler hook
+diff --git a/lib/validation.js b/lib/validation.js
+index 02540c33..d5b12efc 100644
+--- a/lib/validation.js
++++ b/lib/validation.js
+@@ -108,31 +108,113 @@ function compileSchemasForValidation (context, compile, isCustom) {
+ function validateParam (validatorFunction, request, paramName) {
+   const isUndefined = request[paramName] === undefined
+   const ret = validatorFunction && validatorFunction(isUndefined ? null : request[paramName])
+-  if (ret === false) return validatorFunction.errors
+-  if (ret && ret.error) return ret.error
+-  if (ret && ret.value) request[paramName] = ret.value
++
++  if (ret?.then) {
++    return ret
++      .then((res) => { return answer(res) })
++      .catch(err => { return err }) // return as simple error (not throw)
++  }
++
++  return answer(ret)
++
++  function answer (ret) {
++    if (ret === false) return validatorFunction.errors
++    if (ret && ret.error) return ret.error
++    if (ret && ret.value) request[paramName] = ret.value
++    return false
++  }
++}
++
++function validate (context, request, execution) {
++  const runExecution = execution === undefined
++
++  if (runExecution || !execution.skipParams) {
++    const params = validateParam(context[paramsSchema], request, 'params')
++    if (params) {
++      if (typeof params.then !== 'function') {
++        return wrapValidationError(params, 'params', context.schemaErrorFormatter)
++      } else {
++        return validateAsyncParams(params, context, request)
++      }
++    }
++  }
++
++  if (runExecution || !execution.skipBody) {
++    const body = validateParam(context[bodySchema], request, 'body')
++    if (body) {
++      if (typeof body.then !== 'function') {
++        return wrapValidationError(body, 'body', context.schemaErrorFormatter)
++      } else {
++        return validateAsyncBody(body, context, request)
++      }
++    }
++  }
++
++  if (runExecution || !execution.skipQuery) {
++    const query = validateParam(context[querystringSchema], request, 'query')
++    if (query) {
++      if (typeof query.then !== 'function') {
++        return wrapValidationError(query, 'querystring', context.schemaErrorFormatter)
++      } else {
++        return validateAsyncQuery(query, context, request)
++      }
++    }
++  }
++
++  const headers = validateParam(context[headersSchema], request, 'headers')
++  if (headers) {
++    if (typeof headers.then !== 'function') {
++      return wrapValidationError(headers, 'headers', context.schemaErrorFormatter)
++    } else {
++      return validateAsyncHeaders(headers, context, request)
++    }
++  }
++
+   return false
+ }
+ 
+-function validate (context, request) {
+-  const params = validateParam(context[paramsSchema], request, 'params')
++function validateAsyncParams (validatePromise, context, request) {
++  return validatePromise
++    .then((paramsResult) => {
++      if (paramsResult) {
++        return wrapValidationError(paramsResult, 'params', context.schemaErrorFormatter)
++      }
+ 
+-  if (params) {
+-    return wrapValidationError(params, 'params', context.schemaErrorFormatter)
+-  }
+-  const body = validateParam(context[bodySchema], request, 'body')
+-  if (body) {
+-    return wrapValidationError(body, 'body', context.schemaErrorFormatter)
+-  }
+-  const query = validateParam(context[querystringSchema], request, 'query')
+-  if (query) {
+-    return wrapValidationError(query, 'querystring', context.schemaErrorFormatter)
+-  }
+-  const headers = validateParam(context[headersSchema], request, 'headers')
+-  if (headers) {
+-    return wrapValidationError(headers, 'headers', context.schemaErrorFormatter)
+-  }
+-  return null
++      return validate(context, request, { skipParams: true })
++    })
++}
++
++function validateAsyncBody (validatePromise, context, request) {
++  return validatePromise
++    .then((bodyResult) => {
++      if (bodyResult) {
++        return wrapValidationError(bodyResult, 'body', context.schemaErrorFormatter)
++      }
++
++      return validate(context, request, { skipParams: true, skipBody: true })
++    })
++}
++
++function validateAsyncQuery (validatePromise, context, request) {
++  return validatePromise
++    .then((queryResult) => {
++      if (queryResult) {
++        return wrapValidationError(queryResult, 'querystring', context.schemaErrorFormatter)
++      }
++
++      return validate(context, request, { skipParams: true, skipBody: true, skipQuery: true })
++    })
++}
++
++function validateAsyncHeaders (validatePromise, context, request) {
++  return validatePromise
++    .then((headersResult) => {
++      if (headersResult) {
++        return wrapValidationError(headersResult, 'headers', context.schemaErrorFormatter)
++      }
++
++      return false
++    })
+ }
+ 
+ function wrapValidationError (result, dataVar, schemaErrorFormatter) {
+diff --git a/test/schema-special-usage.test.js b/test/schema-special-usage.test.js
+index 1fc99dc6..e71dc053 100644
+--- a/test/schema-special-usage.test.js
++++ b/test/schema-special-usage.test.js
+@@ -744,3 +744,572 @@ test('The default schema compilers should not be called when overwritte by the u
+ 
+   await fastify.ready()
+ })
++
++test('Supports async JOI validation', t => {
++  t.plan(7)
++
++  const schemaValidator = ({ schema }) => async data => {
++    const validationResult = await schema.validateAsync(data)
++    return validationResult
++  }
++
++  const fastify = Fastify({
++    exposeHeadRoutes: false
++  })
++  fastify.setValidatorCompiler(schemaValidator)
++
++  fastify.get('/', {
++    schema: {
++      headers: Joi.object({
++        'user-agent': Joi.string().external(async (val) => {
++          if (val !== 'lightMyRequest') {
++            throw new Error('Invalid user-agent')
++          }
++
++          t.equal(val, 'lightMyRequest')
++          return val
++        }),
++        host: Joi.string().required()
++      })
++    }
++  }, (request, reply) => {
++    reply.send(request.headers)
++  })
++
++  fastify.inject('/', (err, res) => {
++    t.error(err)
++    t.equal(res.statusCode, 200)
++    t.same(res.json(), {
++      'user-agent': 'lightMyRequest',
++      host: 'localhost:80'
++    })
++  })
++
++  fastify.inject({
++    url: '/',
++    headers: {
++      'user-agent': 'invalid'
++    }
++  }, (err, res) => {
++    t.error(err)
++    t.equal(res.statusCode, 400)
++    t.same(res.json(), {
++      statusCode: 400,
++      code: 'FST_ERR_VALIDATION',
++      error: 'Bad Request',
++      message: 'Invalid user-agent (user-agent)'
++    })
++  })
++})
++
++test('Supports async AJV validation', t => {
++  t.plan(12)
++
++  const fastify = Fastify({
++    exposeHeadRoutes: false,
++    ajv: {
++      customOptions: {
++        allErrors: true,
++        keywords: [
++          {
++            keyword: 'idExists',
++            async: true,
++            type: 'number',
++            validate: checkIdExists
++          }
++        ]
++      },
++      plugins: [
++        [ajvErrors, { singleError: '@@@@' }]
++      ]
++    }
++  })
++
++  async function checkIdExists (schema, data) {
++    const res = await Promise.resolve(data)
++    switch (res) {
++      case 42:
++        return true
++
++      case 500:
++        throw new Error('custom error')
++
++      default:
++        return false
++    }
++  }
++
++  const schema = {
++    $async: true,
++    type: 'object',
++    properties: {
++      userId: {
++        type: 'integer',
++        idExists: { table: 'users' }
++      },
++      postId: {
++        type: 'integer',
++        idExists: { table: 'posts' }
++      }
++    }
++  }
++
++  fastify.post('/', {
++    schema: {
++      body: schema
++    },
++    handler (req, reply) { reply.send(req.body) }
++  })
++
++  fastify.inject({
++    method: 'POST',
++    url: '/',
++    payload: { userId: 99 }
++  }, (err, res) => {
++    t.error(err)
++    t.equal(res.statusCode, 400)
++    t.same(res.json(), {
++      statusCode: 400,
++      code: 'FST_ERR_VALIDATION',
++      error: 'Bad Request',
++      message: 'validation failed'
++    })
++  })
++
++  fastify.inject({
++    method: 'POST',
++    url: '/',
++    payload: { userId: 500 }
++  }, (err, res) => {
++    t.error(err)
++    t.equal(res.statusCode, 400)
++    t.same(res.json(), {
++      statusCode: 400,
++      code: 'FST_ERR_VALIDATION',
++      error: 'Bad Request',
++      message: 'custom error'
++    })
++  })
++
++  fastify.inject({
++    method: 'POST',
++    url: '/',
++    payload: { userId: 42 }
++  }, (err, res) => {
++    t.error(err)
++    t.equal(res.statusCode, 200)
++    t.same(res.json(), { userId: 42 })
++  })
++
++  fastify.inject({
++    method: 'POST',
++    url: '/',
++    payload: { userId: 42, postId: 19 }
++  }, (err, res) => {
++    t.error(err)
++    t.equal(res.statusCode, 400)
++    t.same(res.json(), {
++      statusCode: 400,
++      code: 'FST_ERR_VALIDATION',
++      error: 'Bad Request',
++      message: 'validation failed'
++    })
++  })
++})
++
++test('Check all the async AJV validation paths', t => {
++  const fastify = Fastify({
++    exposeHeadRoutes: false,
++    ajv: {
++      customOptions: {
++        allErrors: true,
++        keywords: [
++          {
++            keyword: 'idExists',
++            async: true,
++            type: 'number',
++            validate: checkIdExists
++          }
++        ]
++      }
++    }
++  })
++
++  async function checkIdExists (schema, data) {
++    const res = await Promise.resolve(data)
++    switch (res) {
++      case 200:
++        return true
++
++      default:
++        return false
++    }
++  }
++
++  const schema = {
++    $async: true,
++    type: 'object',
++    properties: {
++      id: {
++        type: 'integer',
++        idExists: { table: 'posts' }
++      }
++    }
++  }
++
++  fastify.post('/:id', {
++    schema: {
++      params: schema,
++      body: schema,
++      query: schema,
++      headers: schema
++    },
++    handler (req, reply) { reply.send(req.body) }
++  })
++
++  const testCases = [
++    {
++      params: 400,
++      body: 200,
++      querystring: 200,
++      headers: 200,
++      response: 400
++    },
++    {
++      params: 200,
++      body: 400,
++      querystring: 200,
++      headers: 200,
++      response: 400
++    },
++    {
++      params: 200,
++      body: 200,
++      querystring: 400,
++      headers: 200,
++      response: 400
++    },
++    {
++      params: 200,
++      body: 200,
++      querystring: 200,
++      headers: 400,
++      response: 400
++    },
++    {
++      params: 200,
++      body: 200,
++      querystring: 200,
++      headers: 200,
++      response: 200
++    }
++  ]
++  t.plan(testCases.length * 2)
++  testCases.forEach(validate)
++
++  function validate ({
++    params,
++    body,
++    querystring,
++    headers,
++    response
++  }) {
++    fastify.inject({
++      method: 'POST',
++      url: `/${params}`,
++      headers: { id: headers },
++      query: { id: querystring },
++      payload: { id: body }
++    }, (err, res) => {
++      t.error(err)
++      t.equal(res.statusCode, response)
++    })
++  }
++})
++
++test('Check mixed sync and async AJV validations', t => {
++  const fastify = Fastify({
++    exposeHeadRoutes: false,
++    ajv: {
++      customOptions: {
++        allErrors: true,
++        keywords: [
++          {
++            keyword: 'idExists',
++            async: true,
++            type: 'number',
++            validate: checkIdExists
++          }
++        ]
++      }
++    }
++  })
++
++  async function checkIdExists (schema, data) {
++    const res = await Promise.resolve(data)
++    switch (res) {
++      case 200:
++        return true
++
++      default:
++        return false
++    }
++  }
++
++  const schemaSync = {
++    type: 'object',
++    properties: {
++      id: { type: 'integer' }
++    }
++  }
++
++  const schemaAsync = {
++    $async: true,
++    type: 'object',
++    properties: {
++      id: {
++        type: 'integer',
++        idExists: { table: 'posts' }
++      }
++    }
++  }
++
++  fastify.post('/queryAsync/:id', {
++    schema: {
++      params: schemaSync,
++      body: schemaSync,
++      query: schemaAsync,
++      headers: schemaSync
++    },
++    handler (req, reply) { reply.send(req.body) }
++  })
++
++  fastify.post('/paramsAsync/:id', {
++    schema: {
++      params: schemaAsync,
++      body: schemaSync
++    },
++    handler (req, reply) { reply.send(req.body) }
++  })
++
++  fastify.post('/bodyAsync/:id', {
++    schema: {
++      params: schemaAsync,
++      body: schemaAsync,
++      query: schemaSync
++    },
++    handler (req, reply) { reply.send(req.body) }
++  })
++
++  fastify.post('/headersSync/:id', {
++    schema: {
++      params: schemaSync,
++      body: schemaSync,
++      query: schemaAsync,
++      headers: schemaSync
++    },
++    handler (req, reply) { reply.send(req.body) }
++  })
++
++  fastify.post('/noHeader/:id', {
++    schema: {
++      params: schemaSync,
++      body: schemaSync,
++      query: schemaAsync
++    },
++    handler (req, reply) { reply.send(req.body) }
++  })
++
++  fastify.post('/noBody/:id', {
++    schema: {
++      params: schemaSync,
++      query: schemaAsync,
++      headers: schemaSync
++    },
++    handler (req, reply) { reply.send(req.body) }
++  })
++
++  const testCases = [
++    {
++      url: '/queryAsync',
++      params: 200,
++      body: 200,
++      querystring: 200,
++      headers: 'not a number sync',
++      response: 400
++    },
++    {
++      url: '/paramsAsync',
++      params: 200,
++      body: 'not a number sync',
++      querystring: 200,
++      headers: 200,
++      response: 400
++    },
++    {
++      url: '/bodyAsync',
++      params: 200,
++      body: 200,
++      querystring: 'not a number sync',
++      headers: 200,
++      response: 400
++    },
++    {
++      url: '/headersSync',
++      params: 200,
++      body: 200,
++      querystring: 200,
++      headers: 'not a number sync',
++      response: 400
++    },
++    {
++      url: '/noHeader',
++      params: 200,
++      body: 200,
++      querystring: 200,
++      headers: 'not a number sync, but not validated',
++      response: 200
++    },
++    {
++      url: '/noBody',
++      params: 200,
++      body: 'not a number sync, but not validated',
++      querystring: 200,
++      headers: 'not a number sync',
++      response: 400
++    }
++  ]
++  t.plan(testCases.length * 2)
++  testCases.forEach(validate)
++
++  function validate ({
++    url,
++    params,
++    body,
++    querystring,
++    headers,
++    response
++  }) {
++    fastify.inject({
++      method: 'POST',
++      url: `${url}/${params || ''}`,
++      headers: { id: headers },
++      query: { id: querystring },
++      payload: { id: body }
++    }, (err, res) => {
++      t.error(err)
++      t.equal(res.statusCode, response)
++    })
++  }
++})
++
++test('Check if hooks and attachValidation work with AJV validations', t => {
++  const fastify = Fastify({
++    exposeHeadRoutes: false,
++    ajv: {
++      customOptions: {
++        allErrors: true,
++        keywords: [
++          {
++            keyword: 'idExists',
++            async: true,
++            type: 'number',
++            validate: checkIdExists
++          }
++        ]
++      }
++    }
++  })
++
++  async function checkIdExists (schema, data) {
++    const res = await Promise.resolve(data)
++    switch (res) {
++      case 200:
++        return true
++
++      default:
++        return false
++    }
++  }
++
++  const schemaAsync = {
++    $async: true,
++    type: 'object',
++    properties: {
++      id: {
++        type: 'integer',
++        idExists: { table: 'posts' }
++      }
++    }
++  }
++
++  fastify.post('/:id', {
++    preHandler: function hook (request, reply, done) {
++      t.equal(request.validationError.message, 'validation failed')
++      t.pass('preHandler called')
++
++      reply.code(400).send(request.body)
++    },
++    attachValidation: true,
++    schema: {
++      params: schemaAsync,
++      body: schemaAsync,
++      query: schemaAsync,
++      headers: schemaAsync
++    },
++    handler (req, reply) { reply.send(req.body) }
++  })
++
++  const testCases = [
++    {
++      params: 200,
++      body: 200,
++      querystring: 200,
++      headers: 400,
++      response: 400
++    },
++    {
++      params: 200,
++      body: 400,
++      querystring: 200,
++      headers: 200,
++      response: 400
++    },
++    {
++      params: 200,
++      body: 200,
++      querystring: 400,
++      headers: 200,
++      response: 400
++    },
++    {
++      params: 200,
++      body: 200,
++      querystring: 200,
++      headers: 400,
++      response: 400
++    }
++  ]
++  t.plan(testCases.length * 4)
++  testCases.forEach(validate)
++
++  function validate ({
++    url,
++    params,
++    body,
++    querystring,
++    headers,
++    response
++  }) {
++    fastify.inject({
++      method: 'POST',
++      url: `/${params}`,
++      headers: { id: headers },
++      query: { id: querystring },
++      payload: { id: body }
++    }, (err, res) => {
++      t.error(err)
++      t.equal(res.statusCode, response)
++    })
++  }
++})

@@ -153,3 +153,146 @@ cases:
   - Copyright (c) 2018 K. <kayo@illumium.org>
   date: 2022-07-19
   note: "Control: the commit that fixes SMTP dot stuffing, three days after the commit that introduced the Boring TLS flaw; no advisory names it"
+- id: vue-core-ghsa-g2v6-rqmx-r4w6
+  kind: bug
+  patch: vue-core-ghsa-g2v6-rqmx-r4w6.patch
+  locations:
+  - file: packages/shared/src/domAttrConfig.ts
+    start: 18
+    end: 18
+  repo: https://github.com/vuejs/core
+  fixCommit: a2b40db9a83b36ed9da3a16403cf8f040262d73f
+  introducingCommit: 6f43c4b516dd1b2d15712d28950105232fedf20c
+  license: MIT
+  copyright:
+  - Copyright (c) 2018-present, Yuxi (Evan) You
+  date: 2026-08-11
+  note: "GHSA-g2v6-rqmx-r4w6 (no CVE id), CWE-79 and CWE-116: the SSR attribute-name blacklist leaves out the carriage return, so a name holding one passes isSSRSafeAttrName and reaches the markup; the commit creates the file with that blacklist"
+- id: hono-ghsa-xh87-mx6m-69f3
+  kind: bug
+  patch: hono-ghsa-xh87-mx6m-69f3.patch
+  locations:
+  - file: src/adapter/aws-lambda/conninfo.ts
+    start: 62
+    end: 63
+  repo: https://github.com/honojs/hono
+  fixCommit: 41adbf56e252c04611f8972364ac0887ae07a4c7
+  introducingCommit: 16321afd47e1bf8f48d06d9d8a2eae6b607c73ef
+  license: MIT
+  copyright:
+  - Copyright (c) 2021 - present, Yusuke Wada and Hono contributors
+  date: 2026-02-23
+  note: "GHSA-xh87-mx6m-69f3 (CVE-2026-27700), CWE-290 and CWE-345: getConnInfo for AWS Lambda behind an ALB takes the first X-Forwarded-For value, which the client controls since the ALB appends the real address last, so ipRestriction can be bypassed; the commit adds this file together with the getConnInfo of the Cloudflare Pages and Netlify adapters"
+- id: react-native-cli-ghsa-399j-vxmf-hjvr
+  kind: bug
+  patch: react-native-cli-ghsa-399j-vxmf-hjvr.patch
+  locations:
+  - file: packages/cli-server-api/src/openURLMiddleware.ts
+    start: 32
+    end: 34
+  repo: https://github.com/react-native-community/cli
+  fixCommit: 15089907d1f1301b22c72d7f68846a2ef20df547
+  introducingCommit: 21437526611a1fe6e01e452989648cd5626d7cce
+  license: MIT
+  copyright:
+  - Copyright (c) 2018 react-native-community
+  date: 2025-08-04
+  note: "GHSA-399j-vxmf-hjvr (CVE-2025-11953), CWE-78: the dev server's open-URL middleware passes the url of the request body to open() with no check of its protocol, the commit having deleted throwIfNonAllowedProtocol and the launchDefaultBrowser that used it; yarn.lock left out"
+- id: fastify-ghsa-667r-xxjv-c9mm
+  kind: bug
+  patch: fastify-ghsa-667r-xxjv-c9mm.patch
+  locations:
+  - file: lib/validation.js
+    start: 114
+    end: 114
+  repo: https://github.com/fastify/fastify
+  fixCommit: f02d8d4ab1ab208f10819c4dc213595b06497833
+  introducingCommit: a649133ebd60c59b284dcd92834aa20fa5d2a8e1
+  license: MIT
+  copyright:
+  - Copyright (c) 2016-2023 The Fastify Team
+  date: 2026-09-03
+  note: "GHSA-667r-xxjv-c9mm (CVE-2026-84504), CWE-20: the result of an async validator (an $async schema) goes through the unwrapping meant for a synchronous custom compiler, so a payload holding a value key replaces the request part; the fix the advisory names is on the 5.x branch"
+- id: opened-ghsa-fg5w-w99f-rj6w
+  kind: bug
+  patch: opened-ghsa-fg5w-w99f-rj6w.patch
+  locations:
+  - file: index.js
+    start: 82
+    end: 87
+  - file: index.js
+    start: 92
+    end: 92
+  repo: https://github.com/ronomon/opened
+  fixCommit: 7effe011d4fea8fac7f78c00615e0a6e69af68ec
+  introducingCommit: 55ced1ee89d463cb4e2ff436095c4cba4394ffae
+  license: MIT
+  copyright:
+  - Copyright (c) 2017 Ronomon
+  date: 2021-04-14
+  note: "GHSA-fg5w-w99f-rj6w (CVE-2021-29300), CWE-77: the file names handed to lsof are quoted by hand and joined into a command run through a shell by child_process.exec, so a name holding a quote and a command breaks out of the quoting; the commit is the project's first, with the whole library"
+- id: min-dash-ghsa-2m53-83f3-562j
+  kind: bug
+  patch: min-dash-ghsa-2m53-83f3-562j.patch
+  locations:
+  - file: lib/object.js
+    start: 31
+    end: 35
+  repo: https://github.com/bpmn-io/min-dash
+  fixCommit: 2c6689e2aa29f4b66a4874a2f3003431e9db48d1
+  introducingCommit: 91cd2536e7cfa254153c3f3d4fb0caf8f6037b2c
+  license: MIT
+  copyright:
+  - Copyright (c) 2017-present camunda Services GmbH
+  date: 2022-01-17
+  note: "GHSA-2m53-83f3-562j (CVE-2021-23460), CWE-1321: set() refuses only a key equal to the string __proto__, so a path key that is an array holding it, or the key constructor, still reaches Object.prototype; the fix adds checks of the key type and of constructor before that test"
+- id: compuware-common-configuration-plugin-ghsa-g43x-pcc9-f472
+  kind: bug
+  patch: compuware-common-configuration-plugin-ghsa-g43x-pcc9-f472.patch
+  locations:
+  - file: src/main/java/com/compuware/jenkins/common/utils/CLIVersionUtils.java
+    start: 133
+    end: 135
+  repo: https://github.com/jenkinsci/compuware-common-configuration-plugin
+  fixCommit: a92f1fba5ab375cfcceed92a16666a4c709e0f3b
+  introducingCommit: 07e422448c6097ef57a4ac4a0cd1c1a53444ff08
+  license: MIT
+  copyright:
+  - Copyright (c) 2017 Compuware-Corp
+  date: 2022-08-25
+  note: "GHSA-g43x-pcc9-f472 (CVE-2022-41226), CWE-611: the CLI version file is parsed with a DocumentBuilderFactory left at its defaults, so a crafted file can use external entities; the fix is on master, and 351a4679, which the advisory names too, is the same change on another line of history"
+- id: spring-cloud-gateway-ghsa-hwqh-2684-54fc
+  kind: bug
+  patch: spring-cloud-gateway-ghsa-hwqh-2684-54fc.patch
+  locations:
+  - file: spring-cloud-gateway-server/src/main/java/org/springframework/cloud/gateway/config/AbstractSslConfigurer.java
+    start: 70
+    end: 73
+  repo: https://github.com/spring-cloud/spring-cloud-gateway
+  fixCommit: 84009f2ee421e2191f8cc32ce3a84e7fc09e305e
+  introducingCommit: 0600b4d268435ee4eb8629c5a8bc50b4f7227586
+  license: Apache-2.0
+  copyright:
+  - Copyright 2013-2020 the original author or authors.
+  date: 2024-12-16
+  note: "GHSA-hwqh-2684-54fc (CVE-2026-22750), CWE-15: getBundle() returns null whenever an SSL bundle name is set, so a configured SSL bundle is silently ignored and the default SSL configuration is used; the commit adds SSL bundle support. The LICENSE file holds only the unfilled Apache template, so the copyright line is the one of the source file headers"
+- id: vue-core-control-04da2a8
+  kind: control
+  patch: vue-core-control-04da2a8.patch
+  repo: https://github.com/vuejs/core
+  commit: 04da2a82e8fbde2b60b2392bc4bdcc5e61113202
+  license: MIT
+  copyright:
+  - Copyright (c) 2018-present, Yuxi (Evan) You
+  date: 2020-01-31
+  note: "Control: the commit that makes the template code generator support a CommonJS mode, three days after the commit that introduced the attribute-name flaw; no advisory names it"
+- id: compuware-common-configuration-plugin-control-de710cd
+  kind: control
+  patch: compuware-common-configuration-plugin-control-de710cd.patch
+  repo: https://github.com/jenkinsci/compuware-common-configuration-plugin
+  commit: de710cd33d7c0a8967f37b890112cebf8ff443d4
+  license: MIT
+  copyright:
+  - Copyright (c) 2017 Compuware-Corp
+  date: 2017-09-08
+  note: "Control: the commit that forces a save of the global configuration when the settings of old Jenkins SCM plugins are migrated, about two weeks after the commit that introduced the XML parsing flaw; no advisory names it"
