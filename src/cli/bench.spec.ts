@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
-import { EXEC_FINDING, PATCHES, stubModels, SUITE, writeSuite } from '../testing/bench.ts'
+import { EXEC_FINDING, handleDescriptors, isClosed, PATCHES, stubModels, SUITE, writeSuite } from '../testing/bench.ts'
 import { harness } from '../testing/cli.ts'
 import { BENCH_USAGE } from './bench.ts'
 import { runCli } from './main.ts'
@@ -126,6 +126,27 @@ describe('quorum bench', () => {
     expect(stderr.startsWith(error)).toBe(true)
     expect(stderr.endsWith(`\n${BENCH_USAGE}`)).toBe(true)
     expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('refuses a --config that names one file twice, however it is spelled, with its usage, before any config is read', async () => {
+    for (const second of [
+      'missing.yaml',
+      './missing.yaml',
+      join(root, 'missing.yaml'),
+    ]) {
+      const { code, stderr, fetch } = await bench([
+        'bench',
+        '-c',
+        'missing.yaml',
+        '-c',
+        'b.yaml',
+        '-c',
+        second,
+        'demo',
+      ])
+      expect([code, stderr]).toEqual([2, `Error: --config: names the file "missing.yaml" more than once\n${BENCH_USAGE}`])
+      expect(fetch).not.toHaveBeenCalled()
+    }
   })
 
   it('refuses more than 16 configurations', async () => {
@@ -518,15 +539,16 @@ describe('quorum bench, what it writes and how it ends', () => {
     expect(readFileSync(join(out(), 'report.md'), 'utf8')).toBe(report)
   })
 
-  it.skipIf(!existsSync('/dev/fd'))('closes results.jsonl and exits 3 when the run stops after its first record, writing no report', async () => {
-    const descriptors = (): number => readdirSync('/dev/fd').length
-    const before = descriptors()
+  it('closes results.jsonl and exits 3 when the run stops after its first record, writing no report', async () => {
+    const descriptors = await handleDescriptors(root, 'appendFile')
     const { code, stdout, stderr } = await bench(TWO, {
       onStderr: (text) => {
         if (text.startsWith('[1/6]')) throw new Error('stderr closed')
       },
     })
-    expect(descriptors()).toBe(before)
+    vi.restoreAllMocks()
+    expect(descriptors).toHaveLength(1)
+    expect(isClosed(descriptors[0])).toBe(true)
     expect([code, stdout]).toEqual([3, ''])
     expect(stderr.endsWith('Error: stderr closed\n')).toBe(true)
     expect(lines()).toHaveLength(1)
