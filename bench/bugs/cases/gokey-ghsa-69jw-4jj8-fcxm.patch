@@ -1,0 +1,1095 @@
+diff --git a/LICENSE b/LICENSE
+new file mode 100644
+index 0000000..ec3250e
+--- /dev/null
++++ b/LICENSE
+@@ -0,0 +1,11 @@
++Copyright (c) 2016, Cloudflare. All rights reserved.
++
++Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
++
++1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
++
++2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
++
++3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
++
++THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..f5bc172
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,10 @@
++# gokey
++
++## A simple vaultless password manager in Go
++**gokey** is a password manager, which does not require a password vault. Instead of storing your passwords in a vault it derives your password on the fly from your master password and supplied _realm_ string (for example, resource URL). This way you do not have to manage, backup or sync your password vault (or trust its management to a third party) as your passwords are available immediately anywhere.
++
++#### example
++```
++gokey -p super-secret-master-password -r example.com
++```
++
+diff --git a/cmd/gokey/main.go b/cmd/gokey/main.go
+new file mode 100644
+index 0000000..0250dd2
+--- /dev/null
++++ b/cmd/gokey/main.go
+@@ -0,0 +1,145 @@
++// Command gokey is a vaultless password and key manager.
++package main
++
++import (
++	"flag"
++	"fmt"
++	"io"
++	"io/ioutil"
++	"log"
++	"os"
++
++	"github.com/cloudflare/gokey"
++)
++
++var (
++	pass, keyType, seedPath, realm, output string
++	unsafe                                 bool
++	seedSkipCount                          int
++)
++
++func init() {
++	flag.StringVar(&pass, "p", "", "master password")
++	flag.StringVar(&keyType, "t", "pass", "output type (can be pass, seed, raw, ec256, ec521, rsa2048, rsa4096)")
++	flag.StringVar(&seedPath, "s", "", "path to master seed file (optional)")
++	flag.IntVar(&seedSkipCount, "skip", 0, "number of bytes to skip from master seed file (default 0)")
++	flag.StringVar(&realm, "r", "", "password/key realm (most probably purpose of the password/key)")
++	flag.StringVar(&output, "o", "", "output path to store generated key/password (default stdout)")
++	flag.BoolVar(&unsafe, "u", false, "UNSAFE: allow key generation without a seed")
++}
++
++var keyTypes = map[string]int{
++	"ec256":   gokey.KEYTYPE_EC256,
++	"ec521":   gokey.KEYTYPE_EC521,
++	"rsa2048": gokey.KEYTYPE_RSA2048,
++	"rsa4096": gokey.KEYTYPE_RSA4096,
++}
++
++func genSeed(w io.Writer) {
++	seed, err := gokey.GenerateEncryptedKeySeed(pass)
++	if err != nil {
++		log.Fatalln(err)
++	}
++
++	_, err = w.Write(seed)
++	if err != nil {
++		log.Fatalln(err)
++	}
++}
++
++func genPass(seed []byte, w io.Writer) {
++	password, err := gokey.GetPass(pass, realm, seed, &gokey.PasswordSpec{10, 3, 3, 1, 1, ""})
++	if err != nil {
++		log.Fatalln(err)
++	}
++
++	_, err = io.WriteString(w, password)
++	if err != nil {
++		log.Fatalln(err)
++	}
++
++	fmt.Fprintln(w, "")
++}
++
++func genKey(seed []byte, w io.Writer) {
++	key, err := gokey.GetKey(pass, realm, seed, keyTypes[keyType], unsafe)
++	if err != nil {
++		log.Fatalln(err)
++	}
++
++	err = gokey.EncodeToPem(key, w)
++	if err != nil {
++		log.Fatalln(err)
++	}
++}
++
++// TODO: parametrize size
++// generates raw 32 bytes
++func genRaw(seed []byte, w io.Writer) {
++	raw, err := gokey.GetRaw(pass, realm, seed, unsafe)
++	if err != nil {
++		log.Fatalln(err)
++	}
++
++	_, err = io.CopyN(w, raw, 32)
++	if err != nil {
++		log.Fatalln(err)
++	}
++}
++
++func logFatal(format string, args ...interface{}) {
++	log.Printf(format, args...)
++	flag.PrintDefaults()
++	os.Exit(1)
++}
++
++func main() {
++	flag.Parse()
++
++	if pass == "" {
++		logFatal("no password provided")
++	}
++
++	out := os.Stdout
++	var err error
++	if output != "" {
++		out, err = os.OpenFile(output, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
++		if err != nil {
++			log.Fatalln(err)
++		}
++		defer out.Close()
++	}
++
++	if keyType == "seed" {
++		genSeed(out)
++	} else {
++		if realm == "" {
++			logFatal("no realm provided")
++		}
++
++		var seed []byte
++		if seedPath != "" {
++			seed, err = ioutil.ReadFile(seedPath)
++			if err != nil {
++				log.Fatalln(err)
++			}
++
++			if (seedSkipCount < 0) || (seedSkipCount >= len(seed)) {
++				log.Fatalln("invalid skip parameter")
++			}
++			seed = seed[seedSkipCount:]
++		}
++
++		switch keyType {
++		case "pass":
++			genPass(seed, out)
++		case "raw":
++			genRaw(seed, out)
++		default:
++			if _, ok := keyTypes[keyType]; !ok {
++				logFatal("unknown key type: %v", keyType)
++			}
++			genKey(seed, out)
++		}
++	}
++}
+diff --git a/csprng.go b/csprng.go
+new file mode 100644
+index 0000000..959161d
+--- /dev/null
++++ b/csprng.go
+@@ -0,0 +1,195 @@
++package gokey
++
++// we are using Fortuna Generator as our "reproducible" CSPRNG
++// this implementation is simplified as we need only a repeatable PRNG and we seed it only once
++// also, every instance of this PRNG will be used to generate only one password/key
++
++import (
++	"bytes"
++	"crypto/aes"
++	"crypto/cipher"
++	"crypto/rand"
++	"crypto/sha256"
++	"errors"
++	"io"
++
++	"golang.org/x/crypto/hkdf"
++	"golang.org/x/crypto/pbkdf2"
++)
++
++const (
++	keySeedLength = 256
++)
++
++type fortunaGenerator struct {
++	key     []byte
++	counter [16]byte
++	cipher  cipher.Block
++	buffer  *bytes.Buffer
++}
++
++func (g *fortunaGenerator) increment() {
++	// from cipher/ctr/ctr.go (changed byte order)
++	for i := 0; i < len(g.counter); i++ {
++		g.counter[i]++
++		if g.counter[i] != 0 {
++			break
++		}
++	}
++}
++
++func (g *fortunaGenerator) isCountZero() bool {
++	for i := len(g.counter) - 1; i >= 0; i-- {
++		if g.counter[i] != 0 {
++			return false
++		}
++	}
++
++	return true
++}
++
++func (g *fortunaGenerator) Reseed(seed []byte) {
++	hash := sha256.New()
++	hash.Write(g.key)
++	hash.Write(seed)
++	g.key = hash.Sum(nil)
++
++	aes, err := aes.NewCipher(g.key)
++	if err != nil {
++		panic(err)
++	}
++
++	g.cipher = aes
++	if g.buffer == nil {
++		g.buffer = bytes.NewBuffer(nil)
++	}
++	g.increment()
++}
++
++func (g *fortunaGenerator) generateBlocks(blockCount int) ([]byte, error) {
++	if g.isCountZero() {
++		return nil, errors.New("PRNG has not been seeded")
++	}
++
++	r := make([]byte, blockCount*16)
++
++	for i := 0; i < blockCount; i++ {
++		g.cipher.Encrypt(r[i*16:], g.counter[:])
++		g.increment()
++	}
++
++	return r, nil
++}
++
++func (g *fortunaGenerator) Read(p []byte) (n int, err error) {
++	// to be reproducible we will generate data in blocks and buffer them
++	// so, for example, Read(24) == Read(5) + Read(9)
++
++	for len(p) > g.buffer.Len() {
++		blocks, err := g.generateBlocks(256 / 16)
++		if err != nil {
++			return 0, err
++		}
++
++		g.key, err = g.generateBlocks(2)
++		if err != nil {
++			return 0, err
++		}
++
++		g.cipher, err = aes.NewCipher(g.key)
++		if err != nil {
++			return 0, err
++		}
++
++		g.buffer.Write(blocks)
++	}
++
++	return g.buffer.Read(p)
++}
++
++func passKey(password, realm string) []byte {
++	return pbkdf2.Key([]byte(password), []byte(realm), 4096, 32, sha256.New)
++}
++
++func NewDRNG(password, realm string) io.Reader {
++	rng := &fortunaGenerator{}
++	rng.Reseed(passKey(password, realm))
++
++	return rng
++}
++
++func NewDRNGwithSeed(password, realm string, seed []byte) (io.Reader, error) {
++	uSeed, err := unwrapSeed(password, seed)
++	if err != nil {
++		return nil, err
++	}
++
++	// will reuse some of the public seed info
++	salt := make([]byte, 12+16)
++	copy(salt[:12], uSeed[:12])
++	copy(salt[12:], uSeed[len(uSeed)-16:])
++
++	hkdf := hkdf.New(sha256.New, uSeed, salt, []byte(realm))
++	rngSeed := make([]byte, 32)
++	_, err = io.ReadFull(hkdf, rngSeed)
++	if err != nil {
++		return nil, err
++	}
++
++	rng := &fortunaGenerator{}
++	rng.Reseed(rngSeed)
++
++	return rng, nil
++}
++
++func GenerateEncryptedKeySeed(password string) ([]byte, error) {
++	seed := make([]byte, keySeedLength)
++
++	_, err := rand.Read(seed)
++	if err != nil {
++		return nil, err
++	}
++
++	masterkey := passKey(password, string(seed[:12]))
++
++	aes, err := aes.NewCipher(masterkey)
++	if err != nil {
++		return nil, err
++	}
++
++	gcm, err := cipher.NewGCM(aes)
++	if err != nil {
++		return nil, err
++	}
++
++	pt := seed[12 : len(seed)-16]
++
++	// encrypt in place
++	gcm.Seal(pt[:0], seed[:12], pt, nil)
++
++	return seed, nil
++}
++
++func unwrapSeed(password string, seed []byte) ([]byte, error) {
++	masterkey := passKey(password, string(seed[:12]))
++
++	aes, err := aes.NewCipher(masterkey)
++	if err != nil {
++		return nil, err
++	}
++
++	gcm, err := cipher.NewGCM(aes)
++	if err != nil {
++		return nil, err
++	}
++
++	pt := make([]byte, len(seed))
++	_, err = gcm.Open(pt[12:], seed[:12], seed[12:], nil)
++	if err != nil {
++		return nil, err
++	}
++
++	copy(pt[:12], seed[:12])
++	copy(pt[len(pt)-16:], seed[len(seed)-16:])
++	return pt, nil
++}
+diff --git a/csprng_test.go b/csprng_test.go
+new file mode 100644
+index 0000000..bf8e998
+--- /dev/null
++++ b/csprng_test.go
+@@ -0,0 +1,222 @@
++package gokey
++
++import (
++	"bytes"
++	"crypto/aes"
++	"encoding/binary"
++	"io"
++	"testing"
++)
++
++var (
++	sha256_of_abc = []byte{0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad}
++)
++
++func TestCSPRNGSeed(t *testing.T) {
++	fg := &fortunaGenerator{}
++
++	fg.Reseed([]byte{'a', 'b', 'c'})
++	counter := binary.LittleEndian.Uint64(fg.counter[:])
++
++	if bytes.Compare(fg.key, sha256_of_abc) != 0 || counter != 1 {
++		t.Fatal("seed operation failed")
++	}
++
++}
++
++func TestGenBlocks(t *testing.T) {
++	fg := &fortunaGenerator{}
++	fg.Reseed([]byte{'a', 'b', 'c'})
++
++	blocks, err := fg.generateBlocks(8)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if len(blocks) != 8*16 {
++		t.Fatal("invalid length of generated data")
++	}
++
++	for i := 0; i < 8; i++ {
++		aes, err := aes.NewCipher(sha256_of_abc)
++		if err != nil {
++			t.Fatal(err)
++		}
++
++		counter := make([]byte, 16)
++		binary.LittleEndian.PutUint64(counter, uint64(i+1))
++		aes.Encrypt(counter, counter)
++
++		if bytes.Compare(blocks[i*16:(i+1)*16], counter) != 0 {
++			t.Fatal("generated bad data")
++		}
++	}
++}
++
++func TestReproduce(t *testing.T) {
++	fg := &fortunaGenerator{}
++	fg.Reseed([]byte{'a', 'b', 'c'})
++
++	stream1 := make([]byte, 512)
++	_, err := io.ReadFull(fg, stream1)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	fg = &fortunaGenerator{}
++	fg.Reseed([]byte{'a', 'b', 'c'})
++
++	stream2 := make([]byte, 512)
++	_, err = io.ReadFull(fg, stream2[:258])
++	if err != nil {
++		t.Fatal(err)
++	}
++	_, err = io.ReadFull(fg, stream2[258:])
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if bytes.Compare(stream1, stream2) != 0 {
++		t.Fatal("generated streams do not match")
++	}
++}
++
++func TestDRNG(t *testing.T) {
++	var rngs [5]io.Reader
++
++	rngs[0] = NewDRNG("pass1", "realm1")
++	rngs[1] = NewDRNG("pass1", "realm2")
++	rngs[2] = NewDRNG("pass2", "realm1")
++	rngs[3] = NewDRNG("pass2", "realm2")
++	rngs[4] = NewDRNG("pass1", "realm1")
++
++	stream1 := make([]byte, 512)
++	_, err := io.ReadFull(rngs[0], stream1)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	stream2 := make([]byte, 512)
++	for i := 0; i < 4; i++ {
++		_, err = io.ReadFull(rngs[i], stream2)
++		if err != nil {
++			t.Fatal(err)
++		}
++
++		if bytes.Compare(stream1, stream2) == 0 {
++			t.Fatal("generated streams match")
++		}
++	}
++
++	_, err = io.ReadFull(rngs[4], stream2)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if bytes.Compare(stream1, stream2) != 0 {
++		t.Fatal("generated streams do not match")
++	}
++}
++
++func TestDRNGwithSeed(t *testing.T) {
++	var rngs [5]io.Reader
++
++	seed1, err := GenerateEncryptedKeySeed("pass1")
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	seed2, err := GenerateEncryptedKeySeed("pass2")
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	rngs[0], err = NewDRNGwithSeed("pass1", "realm1", seed1)
++	if err != nil {
++		t.Fatal(err)
++	}
++	rngs[1], err = NewDRNGwithSeed("pass1", "realm2", seed1)
++	if err != nil {
++		t.Fatal(err)
++	}
++	rngs[2], err = NewDRNGwithSeed("pass2", "realm1", seed2)
++	if err != nil {
++		t.Fatal(err)
++	}
++	rngs[3], err = NewDRNGwithSeed("pass2", "realm2", seed2)
++	if err != nil {
++		t.Fatal(err)
++	}
++	rngs[4], err = NewDRNGwithSeed("pass1", "realm1", seed1)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	// invalid password for a seed
++	_, err = NewDRNGwithSeed("pass1", "realm2", seed2)
++	if err == nil {
++		t.Fatal("incorrect password for seed unwrap succeeded")
++	}
++
++	stream1 := make([]byte, 512)
++	_, err = io.ReadFull(rngs[0], stream1)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	stream2 := make([]byte, 512)
++	for i := 0; i < 4; i++ {
++		_, err = io.ReadFull(rngs[i], stream2)
++		if err != nil {
++			t.Fatal(err)
++		}
++
++		if bytes.Compare(stream1, stream2) == 0 {
++			t.Fatal("generated streams match")
++		}
++	}
++
++	_, err = io.ReadFull(rngs[4], stream2)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if bytes.Compare(stream1, stream2) != 0 {
++		t.Fatal("generated streams do not match")
++	}
++}
++
++func TestEncryptedSeed(t *testing.T) {
++	seed, err := GenerateEncryptedKeySeed("pass1")
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	_, err = unwrapSeed("pass2", seed)
++	if err == nil {
++		t.Fatal("incorrect password for seed unwrap succeeded")
++	}
++
++	uSeed, err := unwrapSeed("pass1", seed)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	// do not waste precious random bytes
++	if len(uSeed) != len(seed) {
++		t.Fatal("unwrapped seed is shorter than encrypted seed")
++	}
++
++	if bytes.Compare(uSeed[:12], seed[:12]) != 0 {
++		t.Fatal("no nonce in unwrapped seed")
++	}
++
++	if bytes.Compare(uSeed[len(uSeed)-16:], seed[len(seed)-16:]) != 0 {
++		t.Fatal("no auth tag in unwrapped seed")
++	}
++
++	// rest should have been encrypted
++	if bytes.Compare(uSeed[12:len(uSeed)-16], seed[12:len(seed)-16]) == 0 {
++		t.Fatal("seed was not properly encrypted")
++	}
++}
+diff --git a/gokey.go b/gokey.go
+new file mode 100644
+index 0000000..7a1fd44
+--- /dev/null
++++ b/gokey.go
+@@ -0,0 +1,74 @@
++package gokey
++
++import (
++	"crypto"
++	"crypto/ecdsa"
++	"crypto/rsa"
++	"crypto/x509"
++	"encoding/pem"
++	"errors"
++	"fmt"
++	"io"
++)
++
++func GetPass(password, realm string, seed []byte, spec *PasswordSpec) (string, error) {
++	var rng io.Reader
++	var err error
++
++	if seed == nil {
++		rng = NewDRNG(password, realm)
++	} else {
++		rng, err = NewDRNGwithSeed(password, realm, seed)
++		if err != nil {
++			return "", err
++		}
++	}
++
++	gen := &KeyGen{rng}
++	return gen.GeneratePassword(spec)
++}
++
++func GetKey(password, realm string, seed []byte, keyType int, allowUnsafe bool) (crypto.PrivateKey, error) {
++	rng, err := GetRaw(password, realm, seed, allowUnsafe)
++	if err != nil {
++		return nil, err
++	}
++
++	gen := &KeyGen{rng}
++	return gen.GenerateKey(keyType)
++}
++
++func GetRaw(password, realm string, seed []byte, allowUnsafe bool) (io.Reader, error) {
++	var rng io.Reader
++	var err error
++
++	if seed != nil {
++		rng, err = NewDRNGwithSeed(password, realm, seed)
++		if err != nil {
++			return nil, err
++		}
++	} else if allowUnsafe {
++		rng = NewDRNG(password, realm)
++	} else {
++		return nil, errors.New("generating keys without strong seed is not allowed")
++	}
++
++	return rng, nil
++}
++
++func EncodeToPem(key crypto.PrivateKey, w io.Writer) error {
++	switch key.(type) {
++	case *ecdsa.PrivateKey:
++		der, err := x509.MarshalECPrivateKey(key.(*ecdsa.PrivateKey))
++		if err != nil {
++			return err
++		}
++
++		return pem.Encode(w, &pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
++	case *rsa.PrivateKey:
++		der := x509.MarshalPKCS1PrivateKey(key.(*rsa.PrivateKey))
++		return pem.Encode(w, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: der})
++	}
++
++	return fmt.Errorf("unable to encode key type %T", key)
++}
+diff --git a/gokey_test.go b/gokey_test.go
+new file mode 100644
+index 0000000..0bcb2c8
+--- /dev/null
++++ b/gokey_test.go
+@@ -0,0 +1,171 @@
++package gokey
++
++import (
++	"bytes"
++	"crypto"
++	"strings"
++	"testing"
++)
++
++var (
++	passSpec = &PasswordSpec{16, 3, 3, 2, 1, ""}
++)
++
++func TestGetPass(t *testing.T) {
++	pass1Seed1, err := GenerateEncryptedKeySeed("pass1")
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	pass1Seed2, err := GenerateEncryptedKeySeed("pass1")
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	pass1Example1, err := GetPass("pass1", "example.com", nil, passSpec)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	pass1Example2, err := GetPass("pass1", "example2.com", nil, passSpec)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	pass2Example1, err := GetPass("pass2", "example.com", nil, passSpec)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if strings.Compare(pass1Example1, pass1Example2) == 0 {
++		t.Fatal("passwords match for different realms")
++	}
++
++	if strings.Compare(pass1Example1, pass2Example1) == 0 {
++		t.Fatal("passwords match for different master passwords")
++	}
++
++	pass1Example1Seed1, err := GetPass("pass1", "example.com", pass1Seed1, passSpec)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	pass1Example1Seed2, err := GetPass("pass1", "example.com", pass1Seed2, passSpec)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if strings.Compare(pass1Example1, pass1Example1Seed1) == 0 {
++		t.Fatal("passwords match for seeded and non-seeded master password")
++	}
++
++	if strings.Compare(pass1Example1Seed1, pass1Example1Seed2) == 0 {
++		t.Fatal("passwords match for different seeds")
++	}
++
++	pass1Example1Retry, err := GetPass("pass1", "example.com", nil, passSpec)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	pass1Example1Seed1Retry, err := GetPass("pass1", "example.com", pass1Seed1, passSpec)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if (strings.Compare(pass1Example1, pass1Example1Retry) != 0) || (strings.Compare(pass1Example1Seed1, pass1Example1Seed1Retry) != 0) {
++		t.Fatal("passwords with same invocation options do not match")
++	}
++}
++
++func keyToBytes(key crypto.PrivateKey, t *testing.T) []byte {
++	buf := bytes.NewBuffer(nil)
++
++	err := EncodeToPem(key, buf)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	return buf.Bytes()
++}
++
++func testGetKeyType(keyType int, t *testing.T) {
++	pass1Seed1, err := GenerateEncryptedKeySeed("pass1")
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	pass1Seed2, err := GenerateEncryptedKeySeed("pass1")
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	key1Example1, err := GetKey("pass1", "example.com", nil, keyType, true)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	key1Example2, err := GetKey("pass1", "example2.com", nil, keyType, true)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	key2Example1, err := GetKey("pass2", "example.com", nil, keyType, true)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if bytes.Compare(keyToBytes(key1Example1, t), keyToBytes(key1Example2, t)) == 0 {
++		t.Fatal("keys match for different realms")
++	}
++
++	if bytes.Compare(keyToBytes(key1Example1, t), keyToBytes(key2Example1, t)) == 0 {
++		t.Fatal("keys match for different master passwords")
++	}
++
++	key1Example1Seed1, err := GetKey("pass1", "example.com", pass1Seed1, keyType, false)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	key1Example1Seed2, err := GetKey("pass1", "example.com", pass1Seed2, keyType, false)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if bytes.Compare(keyToBytes(key1Example1, t), keyToBytes(key1Example1Seed1, t)) == 0 {
++		t.Fatal("keys match for seeded and non-seeded master password")
++	}
++
++	if bytes.Compare(keyToBytes(key1Example1Seed1, t), keyToBytes(key1Example1Seed2, t)) == 0 {
++		t.Fatal("keys match for different seeds")
++	}
++
++	key1Example1Retry, err := GetKey("pass1", "example.com", nil, keyType, true)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	key1Example1Seed1Retry, err := GetKey("pass1", "example.com", pass1Seed1, keyType, false)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if (bytes.Compare(keyToBytes(key1Example1, t), keyToBytes(key1Example1Retry, t)) != 0) || (bytes.Compare(keyToBytes(key1Example1Seed1, t), keyToBytes(key1Example1Seed1Retry, t)) != 0) {
++		t.Fatal("keys with same invocation options do not match")
++	}
++}
++
++func TestGetKey(t *testing.T) {
++	testGetKeyType(KEYTYPE_EC256, t)
++	testGetKeyType(KEYTYPE_EC521, t)
++	testGetKeyType(KEYTYPE_RSA2048, t)
++	testGetKeyType(KEYTYPE_RSA4096, t)
++}
++
++func TestGetKeyUnsafe(t *testing.T) {
++	_, err := GetKey("pass1", "example.com", nil, KEYTYPE_EC256, false)
++	if err == nil {
++		t.Fatal("allowed unsafe key generation")
++	}
++}
+diff --git a/keygen.go b/keygen.go
+new file mode 100644
+index 0000000..fcdf41e
+--- /dev/null
++++ b/keygen.go
+@@ -0,0 +1,188 @@
++package gokey
++
++import (
++	"crypto"
++	"crypto/ecdsa"
++	"crypto/elliptic"
++	"crypto/rsa"
++	"errors"
++	"io"
++	"strings"
++	"unicode"
++)
++
++const (
++	KEYTYPE_EC256 = iota
++	KEYTYPE_EC521
++	KEYTYPE_RSA2048
++	KEYTYPE_RSA4096
++)
++
++type KeyGen struct {
++	rng io.Reader
++}
++
++type PasswordSpec struct {
++	Length         int
++	Upper          int
++	Lower          int
++	Digits         int
++	Special        int
++	AllowedSpecial string
++}
++
++func (spec *PasswordSpec) Valid() bool {
++	if spec.AllowedSpecial != "" {
++		for _, c := range spec.AllowedSpecial {
++			if !unicode.IsSymbol(c) && !unicode.IsPunct(c) {
++				return false
++			}
++		}
++	}
++
++	return spec.Length >= spec.Upper+spec.Lower+spec.Digits+spec.Special
++}
++
++func allowed(num, fromSpec int) bool {
++	if num > 0 && fromSpec == 0 {
++		return false
++	}
++
++	if num < fromSpec {
++		return false
++	}
++
++	return true
++}
++
++func (spec *PasswordSpec) Compliant(password string) bool {
++	var upper, lower, digits, special int
++	for _, c := range password {
++		if unicode.IsUpper(c) {
++			upper++
++		}
++
++		if unicode.IsLower(c) {
++			lower++
++		}
++
++		if unicode.IsDigit(c) {
++			digits++
++		}
++
++		if unicode.IsSymbol(c) || unicode.IsPunct(c) {
++			if spec.AllowedSpecial == "" {
++				special++
++			} else {
++				if strings.ContainsRune(spec.AllowedSpecial, c) {
++					special++
++				} else {
++					return false
++				}
++			}
++		}
++	}
++
++	if !allowed(upper, spec.Upper) || !allowed(lower, spec.Lower) || !allowed(digits, spec.Digits) || !allowed(special, spec.Special) {
++		return false
++	}
++
++	return true
++}
++
++const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890`~!@#$%^&*()-_=+[{]}\\|;:'\",<.>/?"
++
++func randRange(rng io.Reader, max byte) (byte, error) {
++	var base [1]byte
++
++	for {
++		_, err := io.ReadFull(rng, base[:])
++		if err != nil {
++			return 0, err
++		}
++
++		if 255 == base[0] {
++			continue
++		}
++
++		rem := 255 % max
++		buck := 255 / max
++
++		if base[0] < 255-rem {
++			return base[0] / buck, nil
++		}
++	}
++}
++
++func (keygen *KeyGen) genRandStr(length int) (string, error) {
++	bytes := make([]byte, length)
++
++	for i := 0; i < length; i++ {
++		pos, err := randRange(keygen.rng, byte(len(chars)))
++		if err != nil {
++			return "", err
++		}
++
++		bytes[i] = chars[pos]
++	}
++
++	return string(bytes), nil
++}
++
++func (keygen *KeyGen) GeneratePassword(spec *PasswordSpec) (string, error) {
++	if !spec.Valid() {
++		return "", errors.New("invalid password specification")
++	}
++
++	for {
++		password, err := keygen.genRandStr(spec.Length)
++		if err != nil {
++			return "", err
++		}
++
++		if spec.Compliant(password) {
++			return password, nil
++		}
++	}
++}
++
++func (keygen *KeyGen) generateRsa(keyType int) (crypto.PrivateKey, error) {
++	bits := 0
++
++	switch keyType {
++	case KEYTYPE_RSA2048:
++		bits = 2048
++	case KEYTYPE_RSA4096:
++		bits = 4096
++	default:
++		return nil, errors.New("invalid RSA key size requested")
++	}
++
++	return rsa.GenerateKey(keygen.rng, bits)
++}
++
++func (keygen *KeyGen) generateEc(keyType int) (crypto.PrivateKey, error) {
++	var curve elliptic.Curve
++
++	switch keyType {
++	case KEYTYPE_EC256:
++		curve = elliptic.P256()
++	case KEYTYPE_EC521:
++		curve = elliptic.P521()
++	default:
++		return nil, errors.New("invalid EC key size requested")
++	}
++
++	return ecdsa.GenerateKey(curve, keygen.rng)
++}
++
++func (keygen *KeyGen) GenerateKey(keyType int) (crypto.PrivateKey, error) {
++	switch keyType {
++	case KEYTYPE_EC256, KEYTYPE_EC521:
++		return keygen.generateEc(keyType)
++	case KEYTYPE_RSA2048, KEYTYPE_RSA4096:
++		return keygen.generateRsa(keyType)
++	}
++
++	return nil, errors.New("invalid key type requested")
++}
+diff --git a/keygen_test.go b/keygen_test.go
+new file mode 100644
+index 0000000..a9853a1
+--- /dev/null
++++ b/keygen_test.go
+@@ -0,0 +1,25 @@
++package gokey
++
++import (
++	"crypto/rand"
++	"testing"
++	"unicode"
++)
++
++func TestGenPass(t *testing.T) {
++	spec := &PasswordSpec{16, 2, 2, 1, 1, ""}
++	keygen := &KeyGen{rand.Reader}
++
++	_, err := keygen.GeneratePassword(spec)
++	if err != nil {
++		t.Fatal(err)
++	}
++}
++
++func TestAllowedChars(t *testing.T) {
++	for _, c := range chars {
++		if !unicode.IsLower(c) && !unicode.IsUpper(c) && !unicode.IsSymbol(c) && !unicode.IsPunct(c) && !unicode.IsDigit(c) {
++			t.Fatalf("not used character %c in allowed character string", c)
++		}
++	}
++}

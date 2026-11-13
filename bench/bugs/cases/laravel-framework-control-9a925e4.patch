@@ -1,0 +1,67 @@
+diff --git a/src/Illuminate/Database/Connection.php b/src/Illuminate/Database/Connection.php
+index eade5d34ed..c6ca41d7b3 100755
+--- a/src/Illuminate/Database/Connection.php
++++ b/src/Illuminate/Database/Connection.php
+@@ -334,11 +334,16 @@ class Connection implements ConnectionInterface
+ 
+             $statement->execute($me->prepareBindings($bindings));
+ 
++            $fetchMode = $me->getFetchMode();
+             $fetchArgument = $me->getFetchArgument();
+ 
+-            return isset($fetchArgument) ?
+-                $statement->fetchAll($me->getFetchMode(), $fetchArgument, $me->getFetchConstructorArgument()) :
+-                $statement->fetchAll($me->getFetchMode());
++            if ($fetchMode === PDO::FETCH_CLASS && ! isset($fetchArgument)) {
++                $fetchArgument = 'StdClass';
++            }
++
++            return isset($fetchArgument)
++                ? $statement->fetchAll($fetchMode, $fetchArgument, $me->getFetchConstructorArgument())
++                : $statement->fetchAll($fetchMode);
+         });
+     }
+ 
+@@ -359,10 +364,17 @@ class Connection implements ConnectionInterface
+ 
+             $statement = $this->getPdoForSelect($useReadPdo)->prepare($query);
+ 
+-            if ($me->getFetchMode() === PDO::FETCH_CLASS) {
+-                $statement->setFetchMode($me->getFetchMode(), 'StdClass');
++            $fetchMode = $me->getFetchMode();
++            $fetchArgument = $me->getFetchArgument();
++
++            if ($fetchMode === PDO::FETCH_CLASS && ! isset($fetchArgument)) {
++                $fetchArgument = 'StdClass';
++            }
++
++            if (isset($fetchArgument)) {
++                $statement->setFetchMode($fetchMode, $fetchArgument, $me->getFetchConstructorArgument());
+             } else {
+-                $statement->setFetchMode($me->getFetchMode());
++                $statement->setFetchMode($fetchMode);
+             }
+ 
+             $statement->execute($me->prepareBindings($bindings));
+diff --git a/tests/Database/DatabaseConnectionTest.php b/tests/Database/DatabaseConnectionTest.php
+index 791162472e..5605ece538 100755
+--- a/tests/Database/DatabaseConnectionTest.php
++++ b/tests/Database/DatabaseConnectionTest.php
+@@ -300,7 +300,7 @@ class DatabaseConnectionTest extends PHPUnit_Framework_TestCase
+         $stmt->expects($this->exactly(3))->method('fetchAll')->withConsecutive(
+             [PDO::FETCH_ASSOC],
+             [PDO::FETCH_COLUMN, 3, []],
+-            [PDO::FETCH_CLASS, 'stdClass', [1, 2, 3]]
++            [PDO::FETCH_CLASS, 'ClassName', [1, 2, 3]]
+         );
+         $pdo = $this->getMock('DatabaseConnectionTestMockPDO');
+         $pdo->expects($this->any())->method('prepare')->will($this->returnValue($stmt));
+@@ -309,7 +309,7 @@ class DatabaseConnectionTest extends PHPUnit_Framework_TestCase
+         $connection->select('SELECT * FROM foo');
+         $connection->setFetchMode(PDO::FETCH_COLUMN, 3);
+         $connection->select('SELECT * FROM foo');
+-        $connection->setFetchMode(PDO::FETCH_CLASS, 'stdClass', [1, 2, 3]);
++        $connection->setFetchMode(PDO::FETCH_CLASS, 'ClassName', [1, 2, 3]);
+         $connection->select('SELECT * FROM foo');
+     }
+ 

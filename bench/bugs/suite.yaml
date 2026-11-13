@@ -296,3 +296,129 @@ cases:
   - Copyright (c) 2017 Compuware-Corp
   date: 2017-09-08
   note: "Control: the commit that forces a save of the global configuration when the settings of old Jenkins SCM plugins are migrated, about two weeks after the commit that introduced the XML parsing flaw; no advisory names it"
+- id: ruby-jwe-ghsa-c7p4-hx26-pr73
+  kind: bug
+  patch: ruby-jwe-ghsa-c7p4-hx26-pr73.patch
+  locations:
+  - file: lib/jwe/enc/aes_gcm.rb
+    start: 33
+    end: 33
+  repo: https://github.com/jwt/ruby-jwe
+  fixCommit: 1e719d79ba3d7aadaa39a2f08c25df077a0f9ff1
+  introducingCommit: 937a467b74fb1d411b35a2964450aa8690cd52eb
+  license: MIT
+  copyright:
+  - Copyright © 2016 Francesco Boffa
+  date: 2025-08-07
+  note: "GHSA-c7p4-hx26-pr73 (CVE-2025-54887), CWE-354: decrypt() hands the tag of the JWE to the cipher without checking that it is 16 bytes long, so a truncated AES-GCM tag is accepted and can be brute forced; a later refactor (46bb3f8c) moved the line into setup_cipher(), where the fix puts the check"
+- id: mysql-binuuid-rails-ghsa-6j63-35hj-vmcg
+  kind: bug
+  patch: mysql-binuuid-rails-ghsa-6j63-35hj-vmcg.patch
+  locations:
+  - file: lib/mysql-binuuid/type.rb
+    start: 30
+    end: 30
+  repo: https://github.com/nedap/mysql-binuuid-rails
+  fixCommit: 9ae920951b46ff0163b16c55d744e89acb1036d4
+  introducingCommit: aa189ca1273725cf20fbc4a581ef24ba03ce0689
+  license: MIT
+  copyright:
+  - Copyright (c) 2017 Mark Oude Veldhuis
+  date: 2018-10-19
+  note: "GHSA-6j63-35hj-vmcg (CVE-2018-18476), CWE-89: serialize() wraps a value with its dashes stripped in the hex data of a binary column without checking that it is a UUID, so a value holding a quote breaks out of the hex literal; the commit is the gem's first, with Gemfile.lock left out"
+- id: youtubedlsharp-ghsa-2jh5-g5ch-43q5
+  kind: bug
+  patch: youtubedlsharp-ghsa-2jh5-g5ch-43q5.patch
+  locations:
+  - file: YoutubeDLSharp/YoutubeDL.cs
+    start: 345
+    end: 345
+  - file: YoutubeDLSharp/YoutubeDLProcess.cs
+    start: 41
+    end: 45
+  - file: YoutubeDLSharp/YoutubeDLProcess.cs
+    start: 99
+    end: 109
+  repo: https://github.com/Bluegrams/YoutubeDLSharp
+  fixCommit: b6051372bd5af30f95f73de47d9bc71c3a07de0f
+  introducingCommit: fdf3256da18d0e2da4a2f33ad4a1b72ff8273a50
+  license: BSD-3-Clause
+  copyright:
+  - Copyright (c) 2020-2022, Bluegrams.
+  date: 2025-04-22
+  note: "GHSA-2jh5-g5ch-43q5 (CVE-2025-43858), CWE-77 and CWE-78: on Windows the process is started as cmd.exe /C chcp 65001 && followed by a command line that holds the yt-dlp path, the options and the urls, so an argument holding shell metacharacters runs a command; the commit adds this workaround, on by default through UseWindowsEncodingWorkaround, and the fix removes the block"
+- id: laravel-framework-ghsa-w2pm-r78h-4m7v
+  kind: bug
+  patch: laravel-framework-ghsa-w2pm-r78h-4m7v.patch
+  locations:
+  - file: src/Illuminate/Filesystem/Filesystem.php
+    start: 204
+    end: 204
+  repo: https://github.com/laravel/framework
+  fixCommit: 44c3feb604944599ad1c782a9942981c3991fa31
+  introducingCommit: 3c43622db26dad44232b27b3a9ac416444b6abbe
+  license: MIT
+  copyright:
+  - Copyright (c) <Taylor Otwell>
+  date: 2019-05-14
+  note: "GHSA-w2pm-r78h-4m7v (CVE-2020-19316), CWE-78: on Windows Filesystem::link() builds a mklink command line with the link and target paths between double quotes and runs it with exec(), so a path holding a quote and a command breaks out of the quoting; the commit adds the link() method"
+- id: gorilla-handlers-ghsa-jcr6-mmjj-pchw
+  kind: bug
+  patch: gorilla-handlers-ghsa-jcr6-mmjj-pchw.patch
+  locations:
+  - file: cors.go
+    start: 111
+    end: 111
+  repo: https://github.com/gorilla/handlers
+  fixCommit: 90663712d74cb411cbef281bc1e08c19d1a76145
+  introducingCommit: 7ffaf5f0b6e89929596d73ef34208704909a8cfb
+  license: BSD-3-Clause
+  copyright:
+  - Copyright (c) 2013 The Gorilla Handlers Authors. All rights reserved.
+  date: 2017-11-01
+  note: "GHSA-jcr6-mmjj-pchw (CVE-2017-20146), CWE-346: the CORS handler answers with the Origin header of the request as Access-Control-Allow-Origin, also when the allowed origins are configured as *, so the requester controls the header; the commit is the handler's first implementation"
+- id: gokey-ghsa-69jw-4jj8-fcxm
+  kind: bug
+  patch: gokey-ghsa-69jw-4jj8-fcxm.patch
+  locations:
+  - file: csprng.go
+    start: 187
+    end: 187
+  repo: https://github.com/cloudflare/gokey
+  fixCommit: f261819e99ea169843bd5aa3e643d046260ff511
+  introducingCommit: 6ad4b61303bedb59ad56b5fa587f273fb693b351
+  license: BSD-3-Clause
+  copyright:
+  - Copyright (c) 2016, Cloudflare. All rights reserved.
+  date: 2025-11-18
+  note: "GHSA-69jw-4jj8-fcxm (CVE-2025-13353), CWE-330: unwrapSeed() decrypts the seed with gcm.Open(pt[12:], ...) and drops the returned plaintext, so the buffer keeps only the nonce and the tag and the secrets derived with a seed file do not depend on the seed; the commit is the project's first, with the whole tool and its tests"
+- id: youtubedlsharp-control-07ad27f
+  kind: control
+  patch: youtubedlsharp-control-07ad27f.patch
+  repo: https://github.com/Bluegrams/YoutubeDLSharp
+  commit: 07ad27fbcbc43a9d5ffb43b0b3a346bd15741f82
+  license: BSD-3-Clause
+  copyright:
+  - Copyright (c) 2020-2022, Bluegrams.
+  date: 2022-10-23
+  note: "Control: the commit that extracts the chapters and the comments of a video from its metadata, six days before the commit that introduced the cmd.exe workaround; no advisory names it"
+- id: laravel-framework-control-9a925e4
+  kind: control
+  patch: laravel-framework-control-9a925e4.patch
+  repo: https://github.com/laravel/framework
+  commit: 9a925e45876e40b6fd4cfcdbf3e1abc49c1d627b
+  license: MIT
+  copyright:
+  - Copyright (c) <Taylor Otwell>
+  date: 2016-06-27
+  note: "Control: the commit that makes select() and cursor() support PDO::FETCH_CLASS without a class name, a day after the commit that added Filesystem::link(); no advisory names it"
+- id: gorilla-handlers-control-9c216e1
+  kind: control
+  patch: gorilla-handlers-control-9c216e1.patch
+  repo: https://github.com/gorilla/handlers
+  commit: 9c216e13efe27a9b84faec6a748eca9d2ad49e1e
+  license: BSD-3-Clause
+  copyright:
+  - Copyright (c) 2013 The Gorilla Handlers Authors. All rights reserved.
+  date: 2016-02-20
+  note: "Control: the commit that adds http.Flusher and http.CloseNotifier support to the compress handler, two months after the commit that introduced the CORS flaw; no advisory names it"

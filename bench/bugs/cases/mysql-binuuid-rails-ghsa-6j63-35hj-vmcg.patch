@@ -1,0 +1,534 @@
+diff --git a/Gemfile b/Gemfile
+new file mode 100644
+index 0000000..98bade3
+--- /dev/null
++++ b/Gemfile
+@@ -0,0 +1,4 @@
++source "https://rubygems.org"
++
++# Specify your gem's dependencies in the gemspec
++gemspec
+diff --git a/LICENSE.txt b/LICENSE.txt
+new file mode 100644
+index 0000000..0958fbf
+--- /dev/null
++++ b/LICENSE.txt
+@@ -0,0 +1,20 @@
++Copyright (c) 2017 Mark Oude Veldhuis
++
++Permission is hereby granted, free of charge, to any person obtaining
++a copy of this software and associated documentation files (the
++"Software"), to deal in the Software without restriction, including
++without limitation the rights to use, copy, modify, merge, publish,
++distribute, sublicense, and/or sell copies of the Software, and to
++permit persons to whom the Software is furnished to do so, subject to
++the following conditions:
++
++The above copyright notice and this permission notice shall be
++included in all copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
++EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
++MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
++NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
++LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
++OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
++WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..355c6ca
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,89 @@
++# mysql-binuuid-rails
++
++`mysql-binuuid-rails` leverages the Attributes API of Rails 5 and lets you
++define attributes of type UUID on your models. By doing so, you can store your
++UUIDs as binary values in your database, and still be able to query using
++the string representations since the database will take care of the
++type conversion.
++
++As the name suggests, it only supports MySQL. If you're on PostgreSQL, you
++can use UUIDs the proper way already.
++
++If you were to store a UUID of 32 characters (without the dashes) as text in
++your database, it would cost you at least 32 bytes. And that only counts if
++every character only requires 1 byte. But that completely depends on your
++encoding. If every character requires 2 bytes, storing it would already cost
++you 64 bytes. And that's a lot, if you think about the fact that a UUID is
++only 128 bits.
++
++Being 128 bits, a UUID first precisely in a column of 16 bytes. Though it won't
++be really readable it sure saves up a lot of space and it's only 4x bigger
++than a 32-bit integer, or 2x bigger than a 64-bit integer.
++
++Not to mention the space you'll be saving when you create an index on the
++column holding your UUID.
++
++# Installation
++You know the drill, add this line to your gemfile:
++
++```
++gem 'mysql-binuuid-rails'
++```
++
++# Usage
++Using binary columns for UUIDs is very easy. There's only two steps you need to
++perform which are described here.
++
++## Adding the column to store your UUID
++Suppose you have a model called `Book` to which you want to add a unique
++identifier in the form of a UUID. First, make sure your database is able to
++hold this attribute. So let's create a migration.
++
++```
++$ rails g migration AddUuidColumnToBooks
++```
++
++Open up the migration file and change it as you'd like:
++
++```ruby
++class AddUuidColumnToBooks < ActiveRecord::Migration[5.1]
++  def change
++    # 'uuid' is the column name, and 'binary' is the column type. You have to
++    # specify it as a binary column yourself. And because we know that a UUID
++    # takes up 16 bytes, we set can specify its limit.
++    add_column :books, :uuid, :binary, limit: 16
++  end
++end
++```
++
++Perform the migration:
++
++```
++rails db:migrate
++```
++
++## Tell your model how to handle the binary UUID column
++All you have to do now, is specify in your `Book` model how Rails should handle
++the `uuid` column. Open up `app/models/book.rb` and simply add the following
++single line:
++
++```ruby
++class Book < ApplicationRecord
++  attribute :uuid, MySQLBinUUID::Type.new
++end
++```
++
++# Contributing
++
++To start coding on `mysql-binuuid-rails`, fork the project, clone it locally
++and then run `bin/setup` to get up and running. If you want to fool around in
++a console with the changes you made, run `bin/console`.
++
++Bug reports and pull requests are welcome on GitHub at
++https://github.com/nedap/mysql-binuuid-rails
++
++
++# License
++
++The gem is available as open source under the terms of the
++[MIT License](http://opensource.org/licenses/MIT).
+diff --git a/Rakefile b/Rakefile
+new file mode 100644
+index 0000000..d433a1e
+--- /dev/null
++++ b/Rakefile
+@@ -0,0 +1,10 @@
++require "bundler/gem_tasks"
++require "rake/testtask"
++
++Rake::TestTask.new(:test) do |t|
++  t.libs << "test"
++  t.libs << "lib"
++  t.test_files = FileList["test/**/*_test.rb"]
++end
++
++task :default => :test
+diff --git a/VERSION b/VERSION
+new file mode 100644
+index 0000000..6c6aa7c
+--- /dev/null
++++ b/VERSION
+@@ -0,0 +1 @@
++0.1.0
+\ No newline at end of file
+diff --git a/bin/console b/bin/console
+new file mode 100755
+index 0000000..1bd8d25
+--- /dev/null
++++ b/bin/console
+@@ -0,0 +1,15 @@
++#!/usr/bin/env ruby
++
++require "bundler/setup"
++require "rails/all"
++require "mysql-binuuid-rails"
++
++# You can add fixtures and/or initialization code here to make experimenting
++# with your gem easier. You can also use a different console, if you like.
++
++# (If you use this, don't forget to add pry to your Gemfile!)
++# require "pry"
++# Pry.start
++
++require "irb"
++IRB.start(__FILE__)
+diff --git a/bin/setup b/bin/setup
+new file mode 100755
+index 0000000..dce67d8
+--- /dev/null
++++ b/bin/setup
+@@ -0,0 +1,8 @@
++#!/usr/bin/env bash
++set -euo pipefail
++IFS=$'\n\t'
++set -vx
++
++bundle install
++
++# Do any other automated setup that you need to do here
+diff --git a/lib/mysql-binuuid-rails.rb b/lib/mysql-binuuid-rails.rb
+new file mode 100644
+index 0000000..188f611
+--- /dev/null
++++ b/lib/mysql-binuuid-rails.rb
+@@ -0,0 +1,6 @@
++require 'mysql-binuuid/type'
++
++ActiveModel::Type.register(:uuid, MySQLBinUUID::Type)
++
++module MySQLBinUUID
++end
+diff --git a/lib/mysql-binuuid/type.rb b/lib/mysql-binuuid/type.rb
+new file mode 100644
+index 0000000..eea5442
+--- /dev/null
++++ b/lib/mysql-binuuid/type.rb
+@@ -0,0 +1,77 @@
++module MySQLBinUUID
++  class Type < ActiveModel::Type::Binary
++
++    def type
++      :uuid
++    end
++
++    # Invoked when a value that is returned from the database needs to be
++    # displayed into something readable again.
++    def cast(value)
++      if value.is_a?(MySQLBinUUID::Type::Data)
++        # It could be a Data object, in which case we should add dashes to the
++        # string value from there.
++        add_dashes(value.to_s)
++      elsif value.is_a?(String) && value.encoding == Encoding::ASCII_8BIT
++        # We cannot unpack something that looks like a UUID, with or without
++        # dashes. Not entirely sure why ActiveRecord does a weird combination of
++        # cast and serialize before anything needs to be saved..
++        undashed_uuid = value.unpack("H*")[0]
++        add_dashes(undashed_uuid.to_s)
++      else
++        super
++      end
++    end
++
++    # Invoked when the provided value needs to be serialized before storing
++    # it to the database.
++    def serialize(value)
++      return if value.nil?
++      Data.new(strip_dashes(value))
++    end
++
++    # We're inheriting from the Binary type since ActiveRecord in that case
++    # will get the hex value. All we need to do to provide the hex value of the
++    # UUID, is to return the UUID without dashes. And because this inherits
++    # from Binary::Data, ActiveRecord will quote the hex value as required by
++    # the database to store it.
++    class Data < ActiveModel::Type::Binary::Data
++      def initialize(value)
++        @value = value
++      end
++
++      def hex
++        @value
++      end
++    end
++
++  private
++
++    # A UUID consists of 5 groups of characters.
++    #   8 chars - 4 chars - 4 chars - 4 chars - 12 characters
++    #
++    # This function re-introduces the dashes since we removed them during
++    # serialization, so:
++    #
++    #   add_dashes("2b4a233152694c6e9d1e098804ab812b")
++    #     => "2b4a2331-5269-4c6e-9d1e-098804ab812b"
++    #
++    def add_dashes(uuid)
++      return uuid if uuid =~ /\-/
++      [uuid[0..7], uuid[8..11], uuid[12..15], uuid[16..19], uuid[20..-1]].join("-")
++    end
++
++    # A UUID has 4 dashes is displayed with 4 dashes at the same place all
++    # the time. So they don't add anything semantically. We can safely remove
++    # them before storing to the database, and re-add them whenever we
++    # retrieved a value from the database.
++    #
++    #   strip_dashes("2b4a2331-5269-4c6e-9d1e-098804ab812b")
++    #     => "2b4a233152694c6e9d1e098804ab812b"
++    #
++    def strip_dashes(uuid)
++      uuid.delete("-")
++    end
++
++  end
++end
+diff --git a/lib/mysql-binuuid/version.rb b/lib/mysql-binuuid/version.rb
+new file mode 100644
+index 0000000..798c83f
+--- /dev/null
++++ b/lib/mysql-binuuid/version.rb
+@@ -0,0 +1,3 @@
++module MySQLBinUUID
++  VERSION = "0.1.0"
++end
+diff --git a/mysql-binuuid-rails.gemspec b/mysql-binuuid-rails.gemspec
+new file mode 100644
+index 0000000..40cce9b
+--- /dev/null
++++ b/mysql-binuuid-rails.gemspec
+@@ -0,0 +1,41 @@
++# coding: utf-8
++lib = File.expand_path("../lib", __FILE__)
++$LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
++
++require "mysql-binuuid/version"
++
++Gem::Specification.new do |spec|
++  spec.name     = "mysql-binuuid-rails"
++  spec.version  = MySQLBinUUID::VERSION
++  spec.authors  = ["Mark Oude Veldhuis"]
++  spec.email    = ["mark.oudeveldhuis@nedap.com"]
++
++  spec.summary  = "Let ActiveRecord serialize and cast your UUIDs to and from binary columns in your database."
++  spec.homepage = "https://github.com/nedap/mysql-binuuid-rails"
++  spec.license  = "MIT"
++
++  # Prevent pushing this gem to RubyGems.org. To allow pushes either set the 'allowed_push_host'
++  # to allow pushing to a single host or delete this section to allow pushing to any host.
++  if spec.respond_to?(:metadata)
++    spec.metadata["allowed_push_host"] = "TODO: Set to 'http://mygemserver.com'"
++  else
++    raise "RubyGems 2.0 or newer is required to protect against " \
++      "public gem pushes."
++  end
++
++  spec.require_paths = ["lib"]
++  spec.files         = `git ls-files -z`.split("\x0").reject do |f|
++    f.match(%r{^(test|spec|features)/})
++  end
++
++  spec.required_ruby_version = ">= 2.2"
++
++  spec.add_runtime_dependency "rails", ENV["RAILS_VERSION"] || ">= 5"
++
++  spec.add_development_dependency "bundler"
++  spec.add_development_dependency "rake"
++  spec.add_development_dependency "mysql2"
++  spec.add_development_dependency "minitest"
++  spec.add_development_dependency "minitest-spec-context"
++  spec.add_development_dependency "minitest-hooks"
++end
+diff --git a/test/integration/mysql_integration_test.rb b/test/integration/mysql_integration_test.rb
+new file mode 100644
+index 0000000..8f255ee
+--- /dev/null
++++ b/test/integration/mysql_integration_test.rb
+@@ -0,0 +1,93 @@
++require 'rails/all'
++require 'minitest/hooks'
++require 'securerandom'
++
++require_relative '../test_helper'
++
++class MyUuidModel < ActiveRecord::Base
++  attribute :the_uuid, MySQLBinUUID::Type.new
++end
++
++describe MyUuidModel do
++  include Minitest::Hooks
++
++  def connection
++    ActiveRecord::Base.connection
++  end
++
++  let(:db_config) do
++    { adapter:  'mysql2',
++      host:     'localhost',
++      username: 'root',
++      password: '',
++      database: 'binuuid_rails_test' }
++  end
++
++  before(:all) do
++    db_config_without_db_name = db_config.dup
++    db_config_without_db_name.delete(:database)
++
++    # Create a connection without selecting a database first to create the db
++    ActiveRecord::Base.establish_connection(db_config_without_db_name)
++    connection.create_database(db_config[:database])
++
++    # Then establish a new connection with the database name
++    ActiveRecord::Base.establish_connection(db_config)
++    connection.create_table("my_uuid_models")
++    connection.add_column("my_uuid_models", "the_uuid", :binary, limit: 16)
++  end
++
++  after(:all) do
++    connection.drop_database(db_config[:database])
++  end
++
++  let(:sample_uuid) { SecureRandom.uuid }
++
++  context "without saving" do
++    it "does not change the uuid when retrieved without saving" do
++      my_model = MyUuidModel.new(the_uuid: sample_uuid)
++      assert_equal sample_uuid, my_model.the_uuid
++      assert_equal sample_uuid, my_model.attributes["the_uuid"]
++    end
++  end
++
++  context "after persisting to the database" do
++    before do
++      @my_model = MyUuidModel.create!(the_uuid: sample_uuid)
++    end
++
++    after do
++      MyUuidModel.delete_all
++    end
++
++    it "stores a binary value in the database" do
++      raw_value = connection.execute("SELECT * FROM my_uuid_models").to_a.first[1]
++      assert_equal raw_value.encoding, Encoding::ASCII_8BIT
++    end
++
++    it "stores a binary value without dashes" do
++      raw_value = connection.execute("SELECT * FROM my_uuid_models").to_a.first[1]
++
++      # Create a version without dashes of the sample uuid
++      sample_uuid_no_dashes = sample_uuid.delete("-")
++
++      # Put it in an array so we can create the binary representation we
++      # also get from the database.
++      assert_equal [sample_uuid_no_dashes].pack("H*"), raw_value
++    end
++
++    it "can be found using .find_by" do
++      find_result = MyUuidModel.find_by(the_uuid: sample_uuid)
++      assert_equal find_result, @my_model
++      assert_equal find_result.the_uuid, sample_uuid
++    end
++
++    it "can be found using .where" do
++      results = MyUuidModel.where(the_uuid: sample_uuid)
++      assert_equal results.count, 1
++      assert_equal results.first, @my_model
++      assert_equal results.first.the_uuid, sample_uuid
++    end
++  end
++
++end
+diff --git a/test/mysql-binuuid/type_data_test.rb b/test/mysql-binuuid/type_data_test.rb
+new file mode 100644
+index 0000000..c63911b
+--- /dev/null
++++ b/test/mysql-binuuid/type_data_test.rb
+@@ -0,0 +1,13 @@
++require_relative '../test_helper'
++
++describe MySQLBinUUID::Type::Data do
++
++  it "is of kind ActiveModel::Type::Binary::Data" do
++    assert_kind_of ActiveModel::Type::Binary::Data, MySQLBinUUID::Type::Data.new(nil)
++  end
++
++  it "returns the raw value as hex value" do
++    assert_equal "e7db0d1a", MySQLBinUUID::Type::Data.new("e7db0d1a").hex
++  end
++
++end
+diff --git a/test/mysql-binuuid/type_test.rb b/test/mysql-binuuid/type_test.rb
+new file mode 100644
+index 0000000..a13287d
+--- /dev/null
++++ b/test/mysql-binuuid/type_test.rb
+@@ -0,0 +1,50 @@
++require_relative '../test_helper'
++
++require 'securerandom'
++
++describe MySQLBinUUID::Type do
++
++  before do
++    @type = MySQLBinUUID::Type.new
++  end
++
++  describe '#type' do
++    it 'reports :uuid as its type' do
++      assert_equal :uuid, @type.type
++    end
++  end
++
++  describe '#cast' do
++    it 'returns a dashed uuid if provided with a MySQLBinUUID::Type::Data' do
++      uuid = "c5997c21-3355-4603-9e41-4fdc7194fe2d"
++      data = MySQLBinUUID::Type::Data.new(uuid)
++
++      assert_equal uuid, @type.cast(data)
++    end
++
++    it 'returns a dashed uuid if provided with a binary string' do
++      uuid = "6d7c7ff2-dca8-45eb-b3a0-3b9a24a5270e"
++      binstring = [uuid.delete("-")].pack("H*")
++      binstring.force_encoding("ASCII-8BIT")
++      assert_equal uuid, @type.cast(binstring)
++    end
++
++    it 'returns the value itself if provided with something else' do
++      assert_equal 42, @type.cast(42)
++    end
++  end
++
++  describe '#serialize' do
++    it 'returns nil if provided with nil (touché)' do
++      assert_nil @type.serialize(nil)
++    end
++
++    it 'returns a MySQLBinUUID::Type::Data with stripped values if provided with a UUID' do
++      uuid = "3511f33f-3c93-4806-9846-52b4a7618298"
++
++      assert_instance_of MySQLBinUUID::Type::Data, @type.serialize(uuid)
++      assert_equal "3511f33f3c934806984652b4a7618298", @type.serialize(uuid).to_s
++    end
++  end
++
++end
+diff --git a/test/test_helper.rb b/test/test_helper.rb
+new file mode 100644
+index 0000000..0677d05
+--- /dev/null
++++ b/test/test_helper.rb
+@@ -0,0 +1,13 @@
++require 'minitest/autorun'
++require 'minitest/pride'
++
++require 'minitest-spec-context'
++
++require 'rails/railtie'
++
++require 'active_model/type'
++require 'active_model/type/value'
++require 'active_model/type/binary'
++
++require_relative '../lib/mysql-binuuid-rails'
++require_relative '../lib/mysql-binuuid/type'
