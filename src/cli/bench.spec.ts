@@ -569,13 +569,39 @@ describe('quorum bench, what it writes and how it ends', () => {
     expect(stderr.endsWith('interrupted\n')).toBe(true)
   })
 
-  it('exits 130 when the signal was aborted before the run began, and calls no model', async () => {
+  it('exits 130 when the signal was aborted before the run began, calling no model and writing nothing', async () => {
     const controller = new AbortController()
     controller.abort()
-    const { code, stderr, fetch } = await bench(TWO, { signal: controller.signal })
-    expect(code).toBe(130)
+    const { code, stdout, stderr, fetch } = await bench(TWO, { signal: controller.signal })
+    expect([code, stdout]).toEqual([130, ''])
     expect(stderr.endsWith('interrupted\n')).toBe(true)
     expect(fetch).not.toHaveBeenCalled()
-    expect(lines()).toHaveLength(0)
+    expect(existsSync(join(root, 'quorum-bench'))).toBe(false)
+  })
+
+  it('leaves a run directory as it was when the signal was aborted before the run began', async () => {
+    await bench(TWO)
+    const before = [
+      'run.json',
+      'results.jsonl',
+      'report.md',
+      'report.json',
+    ].map(name => readFileSync(join(out(), name), 'utf8'))
+    const controller = new AbortController()
+    controller.abort()
+    const { code, stdout } = await bench([...TWO, '--trials', '2'], { signal: controller.signal })
+    expect([code, stdout]).toEqual([130, ''])
+    expect(readdirSync(out()).sort()).toEqual([
+      'report.json',
+      'report.md',
+      'results.jsonl',
+      'run.json',
+    ])
+    expect([
+      'run.json',
+      'results.jsonl',
+      'report.md',
+      'report.json',
+    ].map(name => readFileSync(join(out(), name), 'utf8'))).toEqual(before)
   })
 })

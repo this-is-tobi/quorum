@@ -446,6 +446,10 @@ async function bench(io: CliIO, options: BenchOptions): Promise<number> {
     writeLines(io.stdout, ['Dry run: no review was run, and nothing was written.'])
     return BENCH_EXIT.ok
   }
+  if (io.signal?.aborted) {
+    io.stderr.write('interrupted\n')
+    return BENCH_EXIT.interrupted
+  }
 
   const outcome = await execute(io, options, checked, scores, validBytes, toRun)
   await writeReports(io, checked, trials, scores)
@@ -483,7 +487,8 @@ function usageError(io: CliIO, error: unknown): number {
  * Exit codes: 0 when every planned review is recorded, 2 for a usage, suite, configuration or run
  * directory error, 3 when the run stops (a file cannot be written or read), 4 when a review failed (the
  * others are recorded, and the next run runs the failed ones), 130 when interrupted. The reports are
- * written on 0, 4 and 130, so a stopped run shows what it recorded.
+ * written on 0, 4 and 130, so a stopped run shows what it recorded; an interrupt that comes before the
+ * first review starts leaves the run directory untouched, even one that does not exist yet.
  *
  * Every line it writes is inert (invariant I3).
  */
