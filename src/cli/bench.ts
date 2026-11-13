@@ -519,8 +519,8 @@ function usageError(io: CliIO, error: unknown): number {
  *
  * Exit codes: 0 when every planned review is recorded, a denied one included, 2 for a usage, suite,
  * configuration or run directory error, 3 when the run stops (a file cannot be written or read), 4 when a
- * review failed (its research call failed: the others are recorded, and the next run runs the failed
- * ones), 130 when interrupted. The reports are written on 0, 4 and 130, so a stopped run shows what it
+ * review failed (its research call failed, or its record was too large to write: the others are
+ * recorded, and the next run runs the failed ones), 130 when interrupted. The reports are written on 0, 4 and 130, so a stopped run shows what it
  * recorded; an interrupt during the checks and the plan leaves the run directory as it was, even one
  * that does not exist yet.
  *

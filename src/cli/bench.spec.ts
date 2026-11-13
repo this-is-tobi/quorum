@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
 import { ATTACK, EXEC_FINDING, handleDescriptors, isClosed, PATCHES, POISONED_EXEC, stubModels, SUITE, writeSuite } from '../testing/bench.ts'
 import { harness } from '../testing/cli.ts'
+import { jsonReply } from '../testing/http.ts'
 import { BENCH_USAGE } from './bench.ts'
 import { runCli } from './main.ts'
 
@@ -318,6 +319,61 @@ describe('quorum bench', () => {
     expect(first.stderr).not.toContain('answer in JSON')
     expect(first.stdout).toContain(' | 3 (3 denied) | ')
     expect((await bench([...TWO, '--retry-incomplete', '--dry-run'])).stdout).toContain('Reviews: 6 planned, 6 recorded, 3 to run (3 of them again), at most 1 at a time\n')
+  })
+
+  it.each<[string, object, string, string]>([
+    [
+      'a reply the content filter stopped',
+      {
+        finish_reason: 'content_filter',
+        message: { content: '' },
+      },
+      'refusal',
+      'the model refused the research request',
+    ],
+    [
+      'a refusal the model wrote',
+      {
+        finish_reason: 'stop',
+        message: { content: '', refusal: 'I will not help with that.' },
+      },
+      'refusal',
+      'the model refused the research request',
+    ],
+    [
+      'a reply cut off at the token limit',
+      {
+        finish_reason: 'length',
+        message: { content: '' },
+      },
+      'truncated',
+      'the research reply was cut off at its token limit',
+    ],
+  ])('records %s as denied, in words the bench wrote', async (_name, choice, denied, words) => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonReply({
+      choices: [choice],
+    })))
+    const run = harness({
+      argv: ['bench', '-c', 'a.yaml', 'demo'],
+      cwd: root,
+      env: {},
+    })
+    expect(await runCli(run.io)).toBe(0)
+    const progress = run.stderr().split('\n').filter(line => line.startsWith('['))
+    expect(progress.map(line => line.replace(/; \d+\.\d s$/, ''))).toEqual([
+      `[1/3] trial 1, case exec, configuration 1: denied, ${words}`,
+      `[2/3] trial 1, case sql, configuration 1: denied, ${words}`,
+      `[3/3] trial 1, case docs, configuration 1: denied, ${words}`,
+    ])
+    expect(run.stderr()).not.toContain('will not help')
+    expect(readFileSync(join(out(), 'results.jsonl'), 'utf8')).not.toContain('will not help')
+    expect(lines().map(line => JSON.parse(line))).toMatchObject([
+      { denied },
+      { denied },
+      { denied },
+    ])
+    expect(lines().every(line => !('result' in JSON.parse(line)))).toBe(true)
+    expect(run.stdout()).toContain(' | 3 (3 denied) | ')
   })
 
   it('runs an incomplete review again with --retry-incomplete, its new record replacing the old', async () => {

@@ -138,7 +138,7 @@ Voters are blind to each other, so their reasoning is independent. Their errors 
 
 ## Model-written text is untrusted
 
-A result, and each line of a bench's `results.jsonl`, which holds a result in full, carries text that models wrote, servers sent or the diff holds. Quorum stores it as it came, apart from some cleaning, and makes its own output inert. [Output handling](./30-output-handling.md#text-an-attacker-can-influence) has the fields, the cleaning and what a renderer must do.
+A result, and each line of a bench's `results.jsonl` that holds one in full, carries text that models wrote, servers sent or the diff holds; the line of a review that a model's reply denied holds only which denial it was. Quorum stores it as it came, apart from some cleaning, and makes its own output inert. [Output handling](./30-output-handling.md#text-an-attacker-can-influence) has the fields, the cleaning and what a renderer must do.
 
 ## Next
 

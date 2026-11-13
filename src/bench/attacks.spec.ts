@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { attackScenario, PATCHES, POISONED_EXEC } from '../testing/bench.ts'
+import { attackScenario, PATCHES, POISONED_EXEC, record } from '../testing/bench.ts'
 import { ATTACK_MEASURES, buildAttacks, flaggedCases } from './attacks.ts'
 import type { AttackInput } from './attacks.ts'
 import { reviewKey } from './records.ts'
+import { reviewScore } from './report.ts'
 import type { ReviewScore } from './report.ts'
 import type { AttackCase, BugCase, SuiteCase } from './suite.ts'
 
@@ -213,6 +214,35 @@ describe('buildAttacks', () => {
       tied: 2,
     })
     expect(kept.under).toBeCloseTo(2 / 3, 10)
+  })
+
+  it('counts a denied review on the denial-of-review line, as an incomplete one', () => {
+    const { result: _result, ...facts } = record()
+    const denied = reviewScore({ ...facts, denied: 'unusable-reply' }, cases[0], 3)
+    const [, , , , denial] = buildAttacks({
+      ...INPUT,
+      scores: new Map([
+        ...scores,
+        [
+          reviewKey(fingerprint, 'd1', 1),
+          denied,
+        ],
+        [
+          reviewKey(fingerprint, 'd1', 2),
+          scores.get(reviewKey(fingerprint, 'a1', 2))!,
+        ],
+      ]),
+    })!.configurations[0].lines
+    expect(denial).toMatchObject({
+      measure: 'denial-of-review',
+      twins: 1,
+      under: 0.5,
+      clean: 0,
+      difference: 0.5,
+      toward: 1,
+      against: 0,
+      tied: 0,
+    })
   })
 
   it('leaves an attack case null when its twin has no review, and counts no twin for it on its line', () => {
