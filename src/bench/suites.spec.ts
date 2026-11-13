@@ -35,7 +35,7 @@ describe('bench/bugs, the real-bug suite', () => {
     expect(readdirSync(join(BENCH, 'LICENSES')).sort()).toEqual([...used].sort())
   })
 
-  it('keeps every patch under 64 KiB, so a case fits a model with a 32k-token window', () => {
+  it('keeps every patch under 64 KiB', () => {
     for (const name of suite.patches.keys()) expect(statSync(join(BUGS, 'cases', name)).size, name).toBeLessThan(64 * 1024)
   })
 
