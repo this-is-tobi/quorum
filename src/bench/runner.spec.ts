@@ -2,11 +2,13 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { OutputError, ProviderError } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
 import { EXEC_FINDING, fakeConfig, writeSuite } from '../testing/bench.ts'
 import type { FakeModel } from '../testing/bench.ts'
 import { parseRecord } from './records.ts'
-import { planReviews, runReviews } from './runner.ts'
+import type { Denial, ResultRecord } from './records.ts'
+import { denialOf, planReviews, runReviews } from './runner.ts'
 import type { BenchReview, RunnerEvent, RunReviewsOptions } from './runner.ts'
 import { loadSuite } from './suite.ts'
 import type { Suite } from './suite.ts'
@@ -90,6 +92,58 @@ describe('planReviews', () => {
   })
 })
 
+describe('denialOf', () => {
+  it.each<[string, unknown, Denial | undefined]>([
+    [
+      'an unusable reply',
+      new OutputError('research', 'reply contains no JSON object', 'no'),
+      'unusable-reply',
+    ],
+    [
+      'a refusal',
+      new ProviderError({ providerId: 'p', kind: 'refusal', message: 'model refused' }),
+      'refusal',
+    ],
+    [
+      'a reply cut off',
+      new ProviderError({ providerId: 'p', kind: 'truncated', message: 'cut off' }),
+      'truncated',
+    ],
+    [
+      'an HTTP error',
+      new ProviderError({
+        providerId: 'p',
+        kind: 'http',
+        status: 500,
+        message: 'HTTP 500',
+      }),
+      undefined,
+    ],
+    [
+      'a network error',
+      new ProviderError({ providerId: 'p', kind: 'network', message: 'down' }),
+      undefined,
+    ],
+    [
+      'a timeout',
+      new ProviderError({ providerId: 'p', kind: 'timeout', message: 'slow' }),
+      undefined,
+    ],
+    [
+      'a reply the server shaped wrong',
+      new ProviderError({ providerId: 'p', kind: 'invalid-response', message: 'no text' }),
+      undefined,
+    ],
+    [
+      'any other error',
+      new Error('research failed'),
+      undefined,
+    ],
+  ])('classifies %s: %s', (_name, error, denial) => {
+    expect(denialOf(error)).toBe(denial)
+  })
+})
+
 describe('runReviews', () => {
   it('records a review with its calls, its usage, its cost, its latency and its full result', async () => {
     const { outcome, lines, events } = await run([
@@ -100,7 +154,7 @@ describe('runReviews', () => {
       review('exec'),
     ])
     expect(outcome).toEqual({ recorded: 1, failed: 0, interrupted: false })
-    const record = parseRecord(lines[0].slice(0, -1))
+    const record = parseRecord(lines[0].slice(0, -1)) as ResultRecord | undefined
     expect(record).toMatchObject({
       fingerprint: A,
       case: 'exec',
@@ -148,6 +202,57 @@ describe('runReviews', () => {
       review: review('exec', 0),
       error: expect.objectContaining({ message: 'research failed' }),
     })
+  })
+
+  it('records a review whose research reply cannot be used as denied, with its calls and its usage, and runs the others', async () => {
+    const { outcome, lines, events } = await run([
+      { researchText: 'I cannot help with that.' },
+      {},
+    ], [
+      review('exec', 0),
+      review('exec', 1),
+    ])
+    expect(outcome).toEqual({ recorded: 2, failed: 0, interrupted: false })
+    const denied = parseRecord(lines[0].slice(0, -1))
+    expect(denied).toMatchObject({
+      fingerprint: A,
+      case: 'exec',
+      denied: 'unusable-reply',
+      calls: 1,
+      failedCalls: 0,
+      usage: { inputTokens: 10, outputTokens: 5 },
+    })
+    expect(denied).not.toHaveProperty('result')
+    expect(lines[0]).not.toContain('help with that')
+    expect(events.map(({ type }) => type)).toEqual(['recorded', 'recorded'])
+  })
+
+  it('records no denial that an interrupt cut', async () => {
+    const controller = new AbortController()
+    const { outcome, lines } = await run([
+      {
+        researchText: 'no JSON here',
+        onCall: () => controller.abort(),
+      },
+    ], [
+      review('exec'),
+    ], { signal: controller.signal })
+    expect(outcome).toEqual({ recorded: 0, failed: 0, interrupted: true })
+    expect(lines).toEqual([])
+  })
+
+  it('records no denial even when the interrupt\'s own reason is the error of a denial', async () => {
+    const controller = new AbortController()
+    const { outcome, lines } = await run([
+      {
+        researchText: 'no JSON here',
+        onCall: () => controller.abort(new OutputError('research', 'reply contains no JSON object', 'no')),
+      },
+    ], [
+      review('exec'),
+    ], { signal: controller.signal })
+    expect(outcome).toEqual({ recorded: 0, failed: 0, interrupted: true })
+    expect(lines).toEqual([])
   })
 
   it('gives each review a quorum of its own, so its record counts only its own calls', async () => {

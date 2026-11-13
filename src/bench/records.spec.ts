@@ -4,7 +4,7 @@ import { hiddenLabels } from '../core/sanitize.ts'
 import type { QuorumResult } from '../core/types.ts'
 import { record, RESULT } from '../testing/bench.ts'
 import { parseRecord, parseRunFile, recordLine, reviewKey } from './records.ts'
-import type { resultSchema, RunFile } from './records.ts'
+import type { DeniedRecord, ResultRecord, resultSchema, RunFile } from './records.ts'
 
 const RECORD = record()
 /** `T` with no `readonly` at any depth, its optional fields still optional: the shape a JSON parse gives. */
@@ -90,6 +90,32 @@ describe('parseRecord', () => {
     ],
   ])('refuses %s', (_name, line) => {
     expect(parseRecord(line)).toBeUndefined()
+  })
+})
+
+describe('a denied record', () => {
+  const { result: _result, ...facts } = record()
+  const DENIED: DeniedRecord = { ...facts, denied: 'unusable-reply' }
+
+  it('reads back the record of a denied review, which holds no result', () => {
+    expect(parseRecord(recordLine(DENIED).slice(0, -1))).toEqual(DENIED)
+  })
+
+  it.each<[string, object]>([
+    [
+      'a record with a result and a denial',
+      {
+        ...record(),
+        denied: 'refusal',
+      },
+    ],
+    [
+      'a denial outside the three',
+      { ...facts, denied: 'timeout' },
+    ],
+    ['a record with neither', facts],
+  ])('refuses %s', (_name, value) => {
+    expect(parseRecord(JSON.stringify(value))).toBeUndefined()
   })
 })
 
@@ -236,7 +262,7 @@ describe('parseRecord, level by level', () => {
 
   it('drops a __proto__ key of a record without letting it reach a prototype', () => {
     const line = recordLine(RECORD).replace('"profiles":{', '"profiles":{"__proto__":{"polluted":true},')
-    const parsed = parseRecord(line.slice(0, -1))
+    const parsed = parseRecord(line.slice(0, -1)) as ResultRecord | undefined
     expect(parsed).toBeDefined()
     expect(Object.getPrototypeOf(parsed?.result.meta.profiles)).toBe(Object.prototype)
     expect(Object.hasOwn(parsed?.result.meta.profiles ?? {}, '__proto__')).toBe(false)
@@ -358,7 +384,7 @@ describe('resultSchema', () => {
 
   it('drops a __proto__ key of the profiles or the lenses, value unread, and reads the rest of the record', () => {
     const line = recordLine(RECORD).slice(0, -1).replace('"profiles":{', '"profiles":{"__proto__":5,').replace('"lenses":{', '"lenses":{"__proto__":{"id":1},')
-    const parsed = parseRecord(line)
+    const parsed = parseRecord(line) as ResultRecord | undefined
     expect(Object.keys(parsed?.result.meta.profiles ?? {})).toEqual(['security'])
     expect(Object.getPrototypeOf(parsed?.result.meta.profiles)).toBe(Object.prototype)
     expect(Object.keys(parsed?.result.meta.profiles.security.providers.lenses ?? {})).toEqual(['reachability', 'impact', 'defenses'])

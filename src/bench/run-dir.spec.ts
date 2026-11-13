@@ -8,7 +8,7 @@ import { ConfigError } from '../core/errors.ts'
 import { hiddenLabels } from '../core/sanitize.ts'
 import { handleDescriptors, isClosed, record, RESULT } from '../testing/bench.ts'
 import { MAX_RECORD_BYTES, recordLine } from './records.ts'
-import type { RunFile } from './records.ts'
+import type { ResultRecord, RunFile } from './records.ts'
 import { createRun, inspectRunDir, openRecords, readRecords, runDifferences, writeAtomic } from './run-dir.ts'
 
 let root = ''
@@ -490,7 +490,7 @@ describe('the records, other cases', () => {
     writeFileSync(results(), `${long}${LINE_1}${'x'.repeat(150_000)}`)
     const summaries: number[] = []
     const read = await readRecords(out, (entry) => {
-      summaries.push(entry.result.kept[0].summary.length)
+      summaries.push((entry as ResultRecord).result.kept[0].summary.length)
       return undefined
     })
     expect(summaries).toEqual([100_000, RESULT.kept[0].summary.length])

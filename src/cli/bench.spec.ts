@@ -305,6 +305,21 @@ describe('quorum bench', () => {
     expect(lines()).toHaveLength(6)
   })
 
+  it('records a review whose research reply cannot be used as denied, quotes nothing of it, and runs it again with --retry-incomplete', async () => {
+    const first = await bench(TWO, {
+      models: {
+        m1: { researchText: 'I will not answer in JSON.' },
+        m2: {},
+      },
+    })
+    expect(first.code).toBe(0)
+    expect(lines()).toHaveLength(6)
+    expect(first.stderr).toMatch(/^\[1\/6\] trial 1, case exec, configuration 1: denied, the research reply could not be used; \d+\.\d s$/m)
+    expect(first.stderr).not.toContain('answer in JSON')
+    expect(first.stdout).toContain(' | 3 (3 denied) | ')
+    expect((await bench([...TWO, '--retry-incomplete', '--dry-run'])).stdout).toContain('Reviews: 6 planned, 6 recorded, 3 to run (3 of them again), at most 1 at a time\n')
+  })
+
   it('runs an incomplete review again with --retry-incomplete, its new record replacing the old', async () => {
     await bench(TWO, {
       models: {

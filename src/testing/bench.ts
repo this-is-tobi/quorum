@@ -8,7 +8,7 @@ import { stringify } from 'yaml'
 import { vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
 import { reviewKey } from '../bench/records.ts'
-import type { ReviewRecord } from '../bench/records.ts'
+import type { ResultRecord } from '../bench/records.ts'
 import type { ReviewScore } from '../bench/report.ts'
 import type { Carrier, Encoding, Goal, SuiteCase } from '../bench/suite.ts'
 import type { Env } from '../config/env.ts'
@@ -169,6 +169,7 @@ export function attackScenario(): { readonly cases: SuiteCase[], readonly scores
     incomplete: false,
     keptDecoys: [],
     judged: [],
+    denied: false,
     latencyMs: 1,
     ...fields,
   })
@@ -436,7 +437,7 @@ export const RESULT: QuorumResult = (() => {
 })()
 
 /** A review record of the security profile, `fields` over these defaults: the case exec, trial 1, 1200 ms, 4 calls of which 1 failed, usage with a cost and a copy of `RESULT`, the spec's to change. */
-export function record(fields: Partial<ReviewRecord> = {}): ReviewRecord {
+export function record(fields: Partial<ResultRecord> = {}): ResultRecord {
   return {
     fingerprint: 'f'.repeat(64),
     case: 'exec',
@@ -499,12 +500,15 @@ export const EXEC_FINDING: FindingDetails = {
 
 /**
  * How a fake model answers: the model it names, the findings a research call reports (none by default),
- * whether a vote keeps them (it does by default), whether research fails, whether its answers report a
- * cost (they do by default), a gate its calls wait for, and a hook each call runs first.
+ * the text it answers a research call with instead, whether a vote keeps them (it does by default),
+ * whether research fails, whether its answers report a cost (they do by default), a gate its calls wait
+ * for, and a hook each call runs first.
  */
 export interface FakeModel {
   readonly model?: string
   readonly findings?: readonly FindingDetails[]
+  /** The text a research call answers with in place of the findings: a reply the review cannot use, for one. */
+  readonly researchText?: string
   readonly keep?: boolean
   readonly failResearch?: boolean
   readonly cost?: boolean
@@ -531,8 +535,9 @@ function waitFor(gate: Promise<void>, signal: AbortSignal | undefined): Promise<
 
 /**
  * A provider that answers from `fake` and calls no model: a research request (`research_findings`) gets
- * the findings, or an `Error` under `failResearch`; a vote gets `keep` and a reason. Each answer reports
- * 10 input and 5 output tokens, and a cost of 0.001 unless `cost` is false.
+ * the findings, or `researchText` when it is set, or an `Error` under `failResearch`; a vote gets `keep`
+ * and a reason. Each answer reports 10 input and 5 output tokens, and a cost of 0.001 unless `cost` is
+ * false.
  */
 export function fakeProvider(fake: FakeModel = {}): { readonly model: string, readonly complete: (request: CompletionRequest) => Promise<CompletionResponse> } {
   const model = fake.model ?? 'm'
@@ -544,9 +549,11 @@ export function fakeProvider(fake: FakeModel = {}): { readonly model: string, re
       const research = request.output.name === 'research_findings'
       if (research && fake.failResearch === true) throw new Error('research failed')
       return {
-        text: JSON.stringify(research
-          ? { findings: fake.findings ?? [] }
-          : { keep: fake.keep ?? true, reasoning: 'r' }),
+        text: research && fake.researchText !== undefined
+          ? fake.researchText
+          : JSON.stringify(research
+              ? { findings: fake.findings ?? [] }
+              : { keep: fake.keep ?? true, reasoning: 'r' }),
         model,
         usage: {
           inputTokens: 10,
@@ -572,6 +579,8 @@ export function fakeConfig(fake: FakeModel = {}): ResolvedConfig {
 /** What a model behind `stubModels` does: the findings its research calls report when the diff holds them (none by default), whether its votes keep them (they do by default), and the HTTP status it answers with instead. */
 export interface StubbedModel {
   readonly findings?: readonly FindingDetails[]
+  /** The text its research calls answer with in place of the findings. */
+  readonly researchText?: string
   readonly keep?: boolean
   /** Every call of the model fails with this status. */
   readonly status?: number
@@ -590,8 +599,8 @@ interface ChatBody {
  * `model` of its body. A request whose user message holds an `<untrusted-claim-` tag is a vote, which keeps
  * (unless `keep` is false); any other is research, which reports the `findings` whose quote the diff it is
  * shown holds, as a model that read the diff would: a finding that cites a line the diff lacks would make
- * the review a gap. A `status` fails every call with it, a `voteStatus` every vote; a model `models` does
- * not name fails with 404. Returns the mock.
+ * the review a gap, or the `researchText` when it is set. A `status` fails every call with it, a
+ * `voteStatus` every vote; a model `models` does not name fails with 404. Returns the mock.
  */
 export function stubModels(models: Readonly<Record<string, StubbedModel>>): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async (_url: unknown, init: { readonly body: string }) => {
@@ -614,6 +623,7 @@ export function stubModels(models: Readonly<Record<string, StubbedModel>>): Retu
         error: { message: 'down' },
       }, status)
     }
+    if (!vote && fake.researchText !== undefined) return chatReply(fake.researchText)
     return chatReply(JSON.stringify(vote
       ? { keep: fake.keep ?? true, reasoning: 'r' }
       : {

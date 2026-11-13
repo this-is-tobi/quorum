@@ -10,7 +10,8 @@
  * the tree that finds one costs ten times the parse on a line of 16 MiB.
  *
  * A record keeps the facts of a review, not its scores: the report scores every record with the suite's
- * locations when it is built, so a score never goes stale.
+ * locations when it is built, so a score never goes stale. It keeps the review's result or, for a review
+ * that a model's reply denied, which denial it was, never the reply.
  */
 
 import { z } from 'zod'
@@ -49,8 +50,16 @@ export interface RunFile {
   readonly configurations: readonly RunConfiguration[]
 }
 
-/** What one line of `results.jsonl` holds: a review that resolved, as the bench saw it. */
-export interface ReviewRecord {
+/**
+ * How a model's reply denied a review: its research reply could not be used, the model refused the
+ * research request, or its reply was cut off at its token limit.
+ */
+export const DENIALS = ['unusable-reply', 'refusal', 'truncated'] as const
+
+export type Denial = typeof DENIALS[number]
+
+/** What every line of `results.jsonl` holds of a review, as the bench saw it, whatever came back. */
+interface RecordFacts {
   readonly fingerprint: string
   /** The id of the suite's case. */
   readonly case: string
@@ -63,8 +72,16 @@ export interface ReviewRecord {
   readonly usage?: Usage
   /** Whether every call reported a cost. */
   readonly costComplete: boolean
-  readonly result: QuorumResult
 }
+
+/** A review that resolved: its facts and its full result. */
+export type ResultRecord = RecordFacts & { readonly result: QuorumResult }
+
+/** A review that a model's reply denied: its facts and which denial, and no result. */
+export type DeniedRecord = RecordFacts & { readonly denied: Denial }
+
+/** What one line of `results.jsonl` holds: a review that resolved, or one that a model's reply denied. */
+export type ReviewRecord = ResultRecord | DeniedRecord
 
 const digest = z.string().regex(/^[0-9a-f]{64}$/)
 const identifier = z.string().max(MAX_ID).regex(SUITE_ID)
@@ -157,7 +174,7 @@ export const resultSchema = z.strictObject({
   }),
 })
 
-const recordSchema: z.ZodType<ReviewRecord> = z.strictObject({
+const facts = {
   fingerprint: digest,
   case: identifier,
   trial: z.int().min(1).max(MAX_TRIALS),
@@ -166,8 +183,16 @@ const recordSchema: z.ZodType<ReviewRecord> = z.strictObject({
   failedCalls: count,
   usage: usage.optional(),
   costComplete: z.boolean(),
-  result: resultSchema,
-}).refine(({ calls, failedCalls }) => failedCalls <= calls)
+}
+
+/** A record holds exactly one of a result and a denial: each alternative is strict, so a line with both, or with neither, is refused. */
+const recordSchema: z.ZodType<ReviewRecord> = z.union([
+  z.strictObject({ ...facts, result: resultSchema }),
+  z.strictObject({
+    ...facts,
+    denied: z.enum(DENIALS),
+  }),
+]).refine(({ calls, failedCalls }) => failedCalls <= calls)
 
 const runFileSchema: z.ZodType<RunFile> = z.strictObject({
   format: z.literal(RUN_FORMAT),

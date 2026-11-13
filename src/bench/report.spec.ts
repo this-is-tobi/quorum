@@ -17,6 +17,7 @@ function score(fields: Partial<ReviewScore>): ReviewScore {
     incomplete: false,
     keptDecoys: [],
     judged: [],
+    denied: false,
     latencyMs: 1000,
     tokens: 50,
     ...fields,
@@ -129,6 +130,7 @@ describe('reviewScore', () => {
           ]),
         },
       ],
+      denied: false,
       latencyMs: 1200,
       tokens: 15,
       outputTokens: 5,
@@ -137,6 +139,23 @@ describe('reviewScore', () => {
     expect(reviewScore({ ...entry, costComplete: false }, CASES[0], 3).costUsd).toBeUndefined()
     expect(reviewScore({ ...entry, usage: undefined }, CASES[0], 3).tokens).toBeUndefined()
     expect(reviewScore({ ...entry, usage: undefined }, CASES[0], 3).outputTokens).toBeUndefined()
+  })
+
+  it('scores a denied record: no catch, incomplete, no finding, its tokens and its cost', () => {
+    const { result: _result, ...facts } = record()
+    expect(reviewScore({ ...facts, denied: 'truncated' }, CASES[0], 3)).toEqual({
+      keptCatch: false,
+      proposedCatch: false,
+      unmatchedKept: 0,
+      incomplete: true,
+      keptDecoys: [],
+      judged: [],
+      denied: true,
+      latencyMs: 1200,
+      tokens: 15,
+      outputTokens: 5,
+      costUsd: 0.001,
+    })
   })
 })
 
@@ -355,6 +374,21 @@ describe('buildReport', () => {
       resolved: true,
     })
     expect(reportMarkdown(buildReport(input))).toContain('- 2, kept recall: +100.0 points; 6 better, 0 worse, 0 tied; p = 0.0313, resolved\n')
+  })
+
+  it('counts the denied reviews among the incomplete ones', () => {
+    const report = buildReport({
+      ...INPUT,
+      scores: new Map([
+        ...INPUT.scores,
+        [
+          reviewKey(A, 'exec', 2),
+          score({ incomplete: true, denied: true }),
+        ],
+      ]),
+    })
+    expect(report.configurations[0]).toMatchObject({ incomplete: 2, denied: 1 })
+    expect(reportMarkdown(report)).toContain(' | 2 (1 denied) | ')
   })
 
   it('takes the tokens of the reviews that reported usage, and gives no cost when one review reported none', () => {
