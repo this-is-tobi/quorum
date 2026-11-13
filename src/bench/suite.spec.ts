@@ -191,6 +191,18 @@ describe('loadSuite', () => {
       'demo/suite.yaml: cases.0.note: must be one line of visible text',
     ],
     [
+      'an empty note',
+      withCase(0, { note: '' }),
+      'demo/suite.yaml: cases.0.note: must not be empty',
+    ],
+    [
+      'an empty copyright line',
+      withCase(0, {
+        copyright: ['Copyright (c) A', ''],
+      }),
+      'demo/suite.yaml: cases.0.copyright.1: must not be empty',
+    ],
+    [
       'a date that is no day',
       withCase(0, { date: '2026-02-30' }),
       'demo/suite.yaml: cases.0.date: must be a date written YYYY-MM-DD',
@@ -238,6 +250,53 @@ describe('loadSuite', () => {
   ])('refuses %s', async (_name, suite, issue) => {
     writeSuite(directory, suite)
     expect(await refused()).toEqual([issue])
+  })
+
+  it('reads and hashes once a patch that two cases name', async () => {
+    writeSuite(directory, {
+      ...SUITE,
+      cases: [
+        ...SUITE.cases,
+        { id: 'exec-again', kind: 'control', patch: 'exec.patch' },
+      ],
+    })
+    const suite = await loadSuite(directory, 'demo')
+    expect([
+      ...suite.patches.keys(),
+    ]).toEqual(['exec.patch', 'sql.patch', 'docs.patch'])
+    expect(suite.hash).toBe(`sha256:${sha256(JSON.stringify([
+      [
+        'suite.yaml',
+        sha256(readFileSync(join(directory, 'suite.yaml'))),
+      ],
+      [
+        'cases/docs.patch',
+        sha256(PATCHES.docs),
+      ],
+      [
+        'cases/exec.patch',
+        sha256(PATCHES.exec),
+      ],
+      [
+        'cases/sql.patch',
+        sha256(PATCHES.sql),
+      ],
+    ]))}`)
+  })
+
+  it('refuses a patch that two cases name with an issue for each', async () => {
+    writeSuite(directory, {
+      ...SUITE,
+      cases: [
+        ...SUITE.cases,
+        { id: 'sql-again', kind: 'control', patch: 'sql.patch' },
+      ],
+    })
+    rmSync(join(directory, 'cases', 'sql.patch'))
+    expect(await refused()).toEqual([
+      'demo/suite.yaml: cases.1.patch: does not exist',
+      'demo/suite.yaml: cases.3.patch: does not exist',
+    ])
   })
 
   it.each<[string, () => void, string[]]>([

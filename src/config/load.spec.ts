@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, constants, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import type { Stats } from 'node:fs'
+import { lstat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -9,6 +11,15 @@ import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, Provider } from '../core/ports.ts'
 import { loadConfig, readBounded, readConfigFile } from './load.ts'
 import { configFileSchema } from './schema.ts'
+
+/** `lstat` as a spy that calls through, so a test can make it miss a link, as a link swapped in after it would. */
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    lstat: vi.fn(actual.lstat),
+  }
+})
 
 const SECRET = 'sk-planted-secret'
 const REQUEST: CompletionRequest = {
@@ -775,6 +786,15 @@ describe('readBounded', () => {
     const read = await readBounded(join(dir, 'link.txt'), 10, '10 bytes')
     expect('value' in read && new TextDecoder().decode(read.value)).toBe('text')
     expect(await readBounded(join(dir, 'link.txt'), 10, '10 bytes', { noFollow: true })).toEqual({ problem: 'is a symbolic link' })
+  })
+
+  it.skipIf(typeof constants.O_NOFOLLOW !== 'number')('refuses a link its open meets, as one swapped in after the lstat, when it is told not to follow one', async () => {
+    symlinkSync(join(dir, file('target.txt', 'text')), join(dir, 'link.txt'))
+    vi.mocked(lstat).mockResolvedValueOnce({
+      isSymbolicLink: () => false,
+    } as Stats)
+    expect(await readBounded(join(dir, 'link.txt'), 10, '10 bytes', { noFollow: true })).toEqual({ problem: 'is a symbolic link' })
+    expect(lstat).toHaveBeenCalledWith(join(dir, 'link.txt'))
   })
 })
 
