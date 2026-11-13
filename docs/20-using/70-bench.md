@@ -528,7 +528,7 @@ Dry run: no review was run, and nothing was written.
 - **A manifest and a generator.** `bench/injection/manifest.yaml` holds each payload as a reviewer reads it, and `scripts/injection-corpus.ts` writes `suite.yaml` and `cases/` from it, by hand with `bun run ./scripts/injection-corpus.ts`. A test holds the committed files equal to its output, so change the manifest and run the generator again, and never edit `suite.yaml` or a patch.
 - **It ships nowhere.** The corpus and its generator are in the repository and in no package, binary or image, and `quorum bench` never runs the generator: use a clone. `src/bench/suites.spec.ts` validates the corpus in the default test suite, as a run does, with no model.
 - **`--case` with an attack case.** `--case` runs the cases it names and no more, so an attack case named alone has no twin of the same trial to pair with, and reads `n/a`. Name its twin too.
-- **`--retry-incomplete` with poisoned patches.** It runs again the reviews of a poisoned patch that were denied or came back with a gap, and the later record replaces the earlier one in the report, so the denial an attack caused is lost. Use it after an outage only.
+- **`--retry-incomplete` with poisoned patches.** It runs again the reviews of a poisoned patch that were denied or came back with a gap, and the later record replaces the earlier one in the report, so the denial an attack caused is lost, after an outage too. It is not needed to recover from an outage: a plain run already runs again a review that an outage failed, since a failed review is not recorded, and the flag only adds the rerun of the recorded denials and gaps. Name a new `--out` when the old run must stay intact.
 
 ## Next
 
