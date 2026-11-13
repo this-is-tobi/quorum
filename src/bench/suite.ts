@@ -80,7 +80,7 @@ export type Goal = typeof GOALS[number]
 export type Carrier = typeof CARRIERS[number]
 export type Encoding = typeof ENCODINGS[number]
 
-/** A span of lines of the new file that holds a bug, at the file's own path in the patch. */
+/** A span of lines of the new file, at the file's own path in the patch: where a bug is, or a decoy. */
 export interface Location {
   readonly file: string
   readonly start: number

@@ -463,6 +463,17 @@ const DECOYS = {
   decoy: { file: 'a.js', start: 1, end: 1 },
   twinDecoy: { file: 'a.js', start: 1, end: 1 },
 }
+/** A patch of 30 context lines of a.js, long enough for a decoy to lie on either side of a location, at either distance of the rule's boundary. */
+const LONG_PATCH = [
+  'diff --git a/a.js b/a.js',
+  '--- a/a.js',
+  '+++ b/a.js',
+  '@@ -1,30 +1,30 @@',
+  ...Array.from({ length: 30 }, (_, index) => ` line ${index + 1}`),
+  '',
+].join('\n')
+const DECOY_ISSUE = 'demo/suite.yaml: cases.3.decoy: is within twice the window of a location, so one finding could catch both'
+const TWIN_DECOY_ISSUE = 'demo/suite.yaml: cases.3.twinDecoy: is within twice the window of a location of the twin, so one finding could catch both'
 
 describe('attack cases', () => {
   it('reads an attack case with its twin, goal, carrier, encoding and locations', async () => {
@@ -476,6 +487,14 @@ describe('attack cases', () => {
   })
 
   it.each<[string, object, string[]]>([
+    [
+      'an attack without a goal, with a decoy',
+      withAttack({
+        goal: undefined,
+        decoy: { file: 'a.js', start: 1, end: 1 },
+      }),
+      ['demo/suite.yaml: cases.3.goal: is required for an attack'],
+    ],
     [
       'an attack without its four fields',
       withAttack({
@@ -588,5 +607,55 @@ describe('attack cases', () => {
       'demo/suite.yaml: cases.3.decoy: is within twice the window of a location, so one finding could catch both',
       'demo/suite.yaml: cases.3.twinDecoy: is within twice the window of a location of the twin, so one finding could catch both',
     ])
+  })
+
+  it.each<[string, number, number, string[]]>([
+    [
+      'a decoy 6 lines after its location is refused',
+      16,
+      30,
+      [DECOY_ISSUE],
+    ],
+    [
+      'a decoy 6 lines before its location is refused',
+      4,
+      30,
+      [DECOY_ISSUE],
+    ],
+    [
+      'a decoy 7 lines after its location passes',
+      17,
+      30,
+      [],
+    ],
+    [
+      'a decoy 7 lines before its location passes',
+      3,
+      30,
+      [],
+    ],
+    [
+      'a twin decoy 6 lines after the twin\'s location is refused',
+      30,
+      8,
+      [TWIN_DECOY_ISSUE],
+    ],
+    [
+      'a twin decoy 7 lines after the twin\'s location passes',
+      30,
+      9,
+      [],
+    ],
+  ])('keeps a decoy out of twice the window of a location, at window 3: %s', async (_name, decoy, twinDecoy, issues) => {
+    writeSuite(directory, withAttack({
+      goal: 'forced-keep',
+      locations: [
+        { file: 'a.js', start: 10, end: 10 },
+      ],
+      decoy: { file: 'a.js', start: decoy, end: decoy },
+      twinDecoy: { file: 'a.js', start: twinDecoy, end: twinDecoy },
+    }, 3), { 'exec.patch': LONG_PATCH, 'exec-comment.patch': LONG_PATCH })
+    if (issues.length === 0) await expect(loadSuite(directory, 'demo')).resolves.toBeDefined()
+    else expect(await refused()).toEqual(issues)
   })
 })
