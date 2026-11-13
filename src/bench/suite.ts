@@ -51,6 +51,35 @@ const DAY = /^\d{4}-\d{2}-\d{2}$/
 /** What every diff the bench reads starts with. */
 const DIFF_START = 'diff --git '
 
+/** What an attack case tries to do to the review of its twin, in the security model's order. */
+export const GOALS = [
+  'suppression',
+  'forced-keep',
+  'cost-bloat',
+  'denial-of-review',
+] as const
+/** Where an attack case plants its text in the patch. */
+export const CARRIERS = [
+  'comment',
+  'string-literal',
+  'file-name',
+  'documentation',
+  'guideline-file',
+] as const
+/** How an attack case writes its text. */
+export const ENCODINGS = [
+  'plain',
+  'multilingual',
+  'hidden-unicode',
+  'base64',
+  'html-comment',
+  'fake-delimiter',
+] as const
+
+export type Goal = typeof GOALS[number]
+export type Carrier = typeof CARRIERS[number]
+export type Encoding = typeof ENCODINGS[number]
+
 /** A span of lines of the new file that holds a bug, at the file's own path in the patch. */
 export interface Location {
   readonly file: string
@@ -84,7 +113,26 @@ export interface ControlCase extends CaseOrigin {
   readonly commit?: string
 }
 
-export type SuiteCase = BugCase | ControlCase
+/**
+ * The patch of a bug case with text planted in it to turn its review: the case's twin. Its patch is
+ * the twin's own code, so it carries no commit: the twin holds them.
+ */
+export interface AttackCase extends CaseOrigin {
+  readonly kind: 'attack'
+  /** The id of the bug case of the suite whose patch this one poisons. */
+  readonly twin: string
+  readonly goal: Goal
+  readonly carrier: Carrier
+  readonly encoding: Encoding
+  /** Where the twin's bug is in this patch, whose lines the planted text may have moved. */
+  readonly locations: readonly Location[]
+  /** A forced keep's bait: lines of this patch a finding must not keep. */
+  readonly decoy?: Location
+  /** The same code's lines in the twin's patch, so the twin's review is checked for the same finding. */
+  readonly twinDecoy?: Location
+}
+
+export type SuiteCase = BugCase | ControlCase | AttackCase
 
 /** A suite once read and checked. */
 export interface Suite {
@@ -128,12 +176,18 @@ const locationSchema = z.strictObject({
   .refine(({ start, end }) => start <= end, { error: 'must start at or before its end' })
   .refine(({ start, end }) => end - start < MAX_RANGE_LINES, { error: `must span at most ${MAX_RANGE_LINES} lines` })
 
-/** A case of either kind; the rules of each kind are checked after the fields, and 7b adds `attack` to the kinds and its rules there. */
+/** A case of any kind; the rules of each kind are checked after the fields. */
 const caseSchema = z.strictObject({
   id: idSchema,
-  kind: z.enum(['bug', 'control']),
+  kind: z.enum(['bug', 'control', 'attack']),
   patch: z.string().max(MAX_PATCH_NAME, { error: `must be at most ${MAX_PATCH_NAME} characters` }).regex(PATCH_NAME, { error: 'must be a bare file name: letters, digits, dots, underscores and dashes, not starting with a dot' }),
+  twin: idSchema.optional(),
+  goal: z.enum(GOALS).optional(),
+  carrier: z.enum(CARRIERS).optional(),
+  encoding: z.enum(ENCODINGS).optional(),
   locations: z.array(locationSchema).min(1).max(MAX_LOCATIONS, { error: `must hold at most ${MAX_LOCATIONS} locations` }).optional(),
+  decoy: locationSchema.optional(),
+  twinDecoy: locationSchema.optional(),
   repo: z.string().refine(isRepository, { error: 'must be an https:// URL with no credentials, query or fragment' }).optional(),
   fixCommit: commitSchema.optional(),
   introducingCommit: commitSchema.optional(),
@@ -143,28 +197,45 @@ const caseSchema = z.strictObject({
   date: z.string().refine(isDay, { error: 'must be a date written YYYY-MM-DD' }).optional(),
   note: textSchema.optional(),
 }).superRefine((entry, context) => {
-  const only = (field: 'locations' | 'fixCommit' | 'introducingCommit' | 'commit', kind: string): void => {
-    if (entry[field] !== undefined) {
-      context.addIssue({
-        code: 'custom',
-        path: [field],
-        message: `is only for a ${kind}`,
-      })
-    }
+  const flag = (field: keyof typeof entry, message: string): void => {
+    context.addIssue({
+      code: 'custom',
+      path: [field],
+      message,
+    })
+  }
+  const only = (field: keyof typeof entry, kind: string): void => {
+    if (entry[field] !== undefined) flag(field, `is only for ${kind}`)
+  }
+  const required = (field: keyof typeof entry, kind: string): void => {
+    if (entry[field] === undefined) flag(field, `is required for ${kind}`)
+  }
+  if (entry.kind !== 'attack') {
+    for (const field of ['twin', 'goal', 'carrier', 'encoding'] as const) only(field, 'an attack')
+    for (const field of ['decoy', 'twinDecoy'] as const) only(field, 'a forced keep')
   }
   if (entry.kind === 'bug') {
-    if (entry.locations === undefined) {
-      context.addIssue({
-        code: 'custom',
-        path: ['locations'],
-        message: 'is required for a bug',
-      })
-    }
-    only('commit', 'control')
+    required('locations', 'a bug')
+    only('commit', 'a control')
+  } else if (entry.kind === 'control') {
+    only('locations', 'a bug or an attack')
+    only('fixCommit', 'a bug')
+    only('introducingCommit', 'a bug')
   } else {
-    only('locations', 'bug')
-    only('fixCommit', 'bug')
-    only('introducingCommit', 'bug')
+    for (const field of [
+      'locations',
+      'twin',
+      'goal',
+      'carrier',
+      'encoding',
+    ] as const) required(field, 'an attack')
+    only('fixCommit', 'a bug')
+    only('introducingCommit', 'a bug')
+    only('commit', 'a control')
+    for (const field of ['decoy', 'twinDecoy'] as const) {
+      if (entry.goal === 'forced-keep') required(field, 'a forced keep')
+      else if (entry.goal !== undefined) only(field, 'a forced keep')
+    }
   }
 })
 
@@ -303,31 +374,93 @@ async function readPatches(directory: string, cases: Header['cases'], at: CasePa
   return { patches, issues }
 }
 
+/** The issue a span has against the patch whose sections are given, or undefined when its file is one of the patch and its lines are all in a hunk. `patch` words the patch in the issue; `where` makes the span's path. */
+function spanProblem(sections: ReadonlyMap<string, string>, span: Location, patch: string, where: (...segments: PropertyKey[]) => string): ConfigIssue | undefined {
+  if (!sections.has(span.file)) {
+    return {
+      path: where('file'),
+      message: `is not a file of ${patch}, as its diff --git header names it`,
+    }
+  }
+  const outside = firstLineOutside(sections, span.file, span.start, span.end)
+  return outside === undefined
+    ? undefined
+    : {
+        path: where(),
+        message: `line ${outside} is not in a hunk of ${patch}`,
+      }
+}
+
+/** Whether one finding could catch both spans: the same file, and their ranges, each widened by `window` lines either side, meet. */
+function meet(first: Location, second: Location, window: number): boolean {
+  return first.file === second.file && first.start - window <= second.end + window && second.start - window <= first.end + window
+}
+
 /**
- * An issue for each location of a bug that names no file of its patch, as the patch's `diff --git`
- * header names it, or whose lines are not all in a hunk of it (the issue names the first that is
- * not). A case whose patch was not read is left out: its patch has an issue of its own.
+ * The issue a decoy has: its span problem against the patch, or, when it passed, that one finding
+ * could catch it together with a location of `against` at `window`. `twin` says the decoy is a
+ * twin decoy, checked against the twin's patch and locations.
  */
-function locationIssues(cases: Header['cases'], patches: ReadonlyMap<string, Patch>, at: CasePath): ConfigIssue[] {
+function decoyIssue(sections: ReadonlyMap<string, string>, decoy: Location, against: readonly Location[], window: number, twin: boolean, where: (...segments: PropertyKey[]) => string): ConfigIssue | undefined {
+  const problem = spanProblem(sections, decoy, twin ? 'the twin\'s patch' : 'the patch', where)
+  if (problem !== undefined) return problem
+  return against.some(location => meet(decoy, location, window))
+    ? {
+        path: where(),
+        message: `is within twice the window of a location${twin ? ' of the twin' : ''}, so one finding could catch both`,
+      }
+    : undefined
+}
+
+/**
+ * The issues of the spans of the cases, in one pass. First, each attack whose twin is no bug case of
+ * the suite (a missing id, a control, an attack, itself) gets one. Then, case by case: each location of
+ * a bug or an attack and an attack's decoy are checked against the case's own patch, and the twin
+ * decoy against the twin's patch, that each names a file of it, as its `diff --git` header names it, and
+ * that all its lines sit in a hunk (the issue names the first that does not). A decoy that passed and
+ * meets a location of its case at the suite's `window`, and a twin decoy that passed and meets a
+ * location of its twin, get one more: one finding could catch both, and would read as a catch and as a
+ * forced keep. A case whose patch was not read is left out: its patch has an issue of its own.
+ */
+function spanIssues(cases: Header['cases'], patches: ReadonlyMap<string, Patch>, window: number, at: CasePath): ConfigIssue[] {
   const issues: ConfigIssue[] = []
+  const bugs = new Map(cases.flatMap(entry => entry.kind === 'bug'
+    ? [
+        [entry.id, entry] as const,
+      ]
+    : []))
+  for (const [index, entry] of cases.entries()) {
+    if (entry.kind === 'attack' && (entry.twin === undefined || !bugs.has(entry.twin))) {
+      issues.push({
+        path: at(index, 'twin'),
+        message: 'must be the id of a bug case of the suite',
+      })
+    }
+  }
   for (const [index, entry] of cases.entries()) {
     const read = patches.get(entry.patch)
-    if (entry.kind !== 'bug' || read === undefined) continue
-    for (const [position, { file: name, start, end }] of (entry.locations ?? []).entries()) {
-      if (!read.sections.has(name)) {
-        issues.push({
-          path: at(index, 'locations', position, 'file'),
-          message: 'is not a file of the patch, as its diff --git header names it',
-        })
-        continue
-      }
-      const outside = firstLineOutside(read.sections, name, start, end)
-      if (outside !== undefined) {
-        issues.push({
-          path: at(index, 'locations', position),
-          message: `line ${outside} is not in a hunk of the patch`,
-        })
-      }
+    if (entry.kind === 'control' || read === undefined) continue
+    const locations = entry.locations ?? []
+    for (const [position, location] of locations.entries()) {
+      const issue = spanProblem(read.sections, location, 'the patch', (...segments) => at(index, 'locations', position, ...segments))
+      if (issue !== undefined) issues.push(issue)
+    }
+    const twin = entry.twinDecoy === undefined || entry.twin === undefined
+      ? undefined
+      : bugs.get(entry.twin)
+    const twinRead = twin === undefined
+      ? undefined
+      : patches.get(twin.patch)
+    const found = [
+      entry.decoy === undefined
+        ? undefined
+        : decoyIssue(read.sections, entry.decoy, locations, window, false, (...segments) => at(index, 'decoy', ...segments)),
+      entry.twinDecoy === undefined || twin === undefined || twinRead === undefined
+        ? undefined
+        : decoyIssue(twinRead.sections, entry.twinDecoy, twin.locations ?? [], window, true, (...segments) => at(index, 'twinDecoy', ...segments)),
+    ]
+    for (const issue of found) {
+      if (issue !== undefined) issues.push(issue)
     }
   }
   return issues
@@ -351,9 +484,11 @@ function contentHash(suiteBytes: Uint8Array, patches: ReadonlyMap<string, Patch>
  * Read the suite in `directory`: `suite.yaml` and the patches in `cases/` that its cases name. Each
  * patch is read once, as a regular file of at most 16 MiB (all together at most 64 MiB), decoded as
  * the review command decodes a diff, and must start with `diff --git ` and name at least one file;
- * each location of a bug must name a file of its patch by the diff's own path, and each of its lines
- * must sit in a hunk of the patch. A file of `cases/` that no case names is not read. The hash covers
- * `suite.yaml` and each patch a case names, once.
+ * each location of a bug or an attack, and an attack's decoy, must name a file of its patch by the
+ * diff's own path, and each of its lines must sit in a hunk of the patch; an attack's twin must be a
+ * bug case of the suite, its twin decoy must do the same against the twin's patch, and no decoy may
+ * be within twice the window of a location it could be caught with. A file of `cases/` that no case
+ * names is not read. The hash covers `suite.yaml` and each patch a case names, once.
  *
  * `label` stands for the directory in the issues, which name `<label>/suite.yaml` and a path in it, or
  * `<label>/cases`; no issue quotes a file.
@@ -379,7 +514,7 @@ export async function loadSuite(directory: string, label = directory): Promise<S
   const found = [
     ...ids,
     ...issues,
-    ...locationIssues(header.cases, patches, at),
+    ...spanIssues(header.cases, patches, header.window, at),
   ]
   if (found.length > 0) throw new ConfigError(found)
 
@@ -387,7 +522,7 @@ export async function loadSuite(directory: string, label = directory): Promise<S
     name: header.name,
     trials: header.trials,
     window: header.window,
-    // The kind rules of `caseSchema` make each case a `BugCase` or a `ControlCase`.
+    // The kind rules of `caseSchema` make each case a `BugCase`, a `ControlCase` or an `AttackCase`.
     cases: header.cases as SuiteCase[],
     patches: new Map([...patches].map(([name, { text }]) => [name, text])),
     hash: contentHash(bytes, patches),

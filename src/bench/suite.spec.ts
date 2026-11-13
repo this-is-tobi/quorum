@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readBounded } from '../config/load.ts'
 import { ConfigError } from '../core/errors.ts'
-import { PATCHES, SUITE, writeSuite } from '../testing/bench.ts'
+import { ATTACK, ATTACK_SUITE, PATCHES, POISONED_EXEC, SUITE, writeSuite } from '../testing/bench.ts'
 import { loadSuite } from './suite.ts'
 
 /** `readBounded` as a spy that calls through, so a test can count the reads of one patch. */
@@ -132,8 +132,8 @@ describe('loadSuite', () => {
     ],
     [
       'a kind no case has',
-      withCase(0, { kind: 'attack' }),
-      'demo/suite.yaml: cases.0.kind: must be one of bug or control',
+      withCase(0, { kind: 'exploit' }),
+      'demo/suite.yaml: cases.0.kind: must be one of bug, control or attack',
     ],
     [
       'a bug without locations',
@@ -147,7 +147,7 @@ describe('loadSuite', () => {
           { file: 'README.md', start: 1, end: 1 },
         ],
       }),
-      'demo/suite.yaml: cases.2.locations: is only for a bug',
+      'demo/suite.yaml: cases.2.locations: is only for a bug or an attack',
     ],
     [
       'a control with a fix commit',
@@ -438,5 +438,155 @@ describe('loadSuite', () => {
   ])('refuses %s', async (_name, setup, issues) => {
     setup()
     expect(await refused()).toEqual(issues)
+  })
+})
+
+/** The attack suite with `fields` set on its attack case, and `window` when one is given. */
+function withAttack(fields: Record<string, unknown>, window?: number): object {
+  return {
+    ...ATTACK_SUITE,
+    ...(window === undefined
+      ? {}
+      : { window }),
+    cases: [
+      ...SUITE.cases,
+      {
+        ...ATTACK,
+        ...fields,
+      },
+    ],
+  }
+}
+const POISONED = { 'exec-comment.patch': POISONED_EXEC }
+const DECOYS = {
+  goal: 'forced-keep',
+  decoy: { file: 'a.js', start: 1, end: 1 },
+  twinDecoy: { file: 'a.js', start: 1, end: 1 },
+}
+
+describe('attack cases', () => {
+  it('reads an attack case with its twin, goal, carrier, encoding and locations', async () => {
+    writeSuite(directory, ATTACK_SUITE, POISONED)
+    expect((await loadSuite(directory, 'demo')).cases[3]).toEqual(ATTACK)
+  })
+
+  it('reads a forced keep with its decoy and its twin decoy', async () => {
+    writeSuite(directory, withAttack(DECOYS, 0), POISONED)
+    expect((await loadSuite(directory, 'demo')).cases[3]).toMatchObject(DECOYS)
+  })
+
+  it.each<[string, object, string[]]>([
+    [
+      'an attack without its four fields',
+      withAttack({
+        twin: undefined,
+        goal: undefined,
+        carrier: undefined,
+        encoding: undefined,
+      }),
+      [
+        'demo/suite.yaml: cases.3.twin: is required for an attack',
+        'demo/suite.yaml: cases.3.goal: is required for an attack',
+        'demo/suite.yaml: cases.3.carrier: is required for an attack',
+        'demo/suite.yaml: cases.3.encoding: is required for an attack',
+      ],
+    ],
+    [
+      'an attack without locations',
+      withAttack({ locations: undefined }),
+      ['demo/suite.yaml: cases.3.locations: is required for an attack'],
+    ],
+    [
+      'a goal outside the list',
+      withAttack({ goal: 'leak' }),
+      ['demo/suite.yaml: cases.3.goal: must be one of suppression, forced-keep, cost-bloat or denial-of-review'],
+    ],
+    [
+      'a carrier outside the list',
+      withAttack({ carrier: 'commit-message' }),
+      ['demo/suite.yaml: cases.3.carrier: must be one of comment, string-literal, file-name, documentation or guideline-file'],
+    ],
+    [
+      'an encoding outside the list',
+      withAttack({ encoding: 'rot13' }),
+      ['demo/suite.yaml: cases.3.encoding: must be one of plain, multilingual, hidden-unicode, base64, html-comment or fake-delimiter'],
+    ],
+    [
+      'a forced keep without its decoys',
+      withAttack({ goal: 'forced-keep' }),
+      [
+        'demo/suite.yaml: cases.3.decoy: is required for a forced keep',
+        'demo/suite.yaml: cases.3.twinDecoy: is required for a forced keep',
+      ],
+    ],
+    [
+      'a suppression with a decoy',
+      withAttack({
+        decoy: { file: 'a.js', start: 1, end: 1 },
+      }),
+      ['demo/suite.yaml: cases.3.decoy: is only for a forced keep'],
+    ],
+    [
+      'an attack with commits',
+      withAttack({
+        fixCommit: 'a'.repeat(40),
+        commit: 'b'.repeat(40),
+      }),
+      [
+        'demo/suite.yaml: cases.3.fixCommit: is only for a bug',
+        'demo/suite.yaml: cases.3.commit: is only for a control',
+      ],
+    ],
+    [
+      'a bug with a twin and a goal',
+      withCase(0, { twin: 'sql', goal: 'suppression' }),
+      [
+        'demo/suite.yaml: cases.0.twin: is only for an attack',
+        'demo/suite.yaml: cases.0.goal: is only for an attack',
+      ],
+    ],
+    [
+      'a control with a twin decoy',
+      withCase(2, {
+        twinDecoy: { file: 'a.js', start: 1, end: 1 },
+      }),
+      ['demo/suite.yaml: cases.2.twinDecoy: is only for a forced keep'],
+    ],
+  ])('refuses %s', async (_name, suite, issues) => {
+    writeSuite(directory, suite, POISONED)
+    expect(await refused()).toEqual(issues)
+  })
+
+  it.each<[string, string]>([
+    ['no case', 'nothing'],
+    ['a control', 'docs'],
+    ['itself', 'exec-comment'],
+  ])('refuses a twin that names %s', async (_name, twin) => {
+    writeSuite(directory, withAttack({ twin }), POISONED)
+    expect(await refused()).toEqual(['demo/suite.yaml: cases.3.twin: must be the id of a bug case of the suite'])
+  })
+
+  it('checks the locations and the decoy against the poisoned patch, and the twin decoy against the twin\'s', async () => {
+    writeSuite(directory, withAttack({
+      ...DECOYS,
+      locations: [
+        { file: 'a.js', start: 4, end: 5 },
+      ],
+      decoy: { file: 'b.js', start: 1, end: 1 },
+      twinDecoy: { file: 'a.js', start: 4, end: 4 },
+    }, 0), POISONED)
+    expect(await refused()).toEqual([
+      'demo/suite.yaml: cases.3.locations.0: line 5 is not in a hunk of the patch',
+      'demo/suite.yaml: cases.3.decoy.file: is not a file of the patch, as its diff --git header names it',
+      'demo/suite.yaml: cases.3.twinDecoy: line 4 is not in a hunk of the twin\'s patch',
+    ])
+  })
+
+  it('refuses a decoy one finding could catch with a location, at the suite\'s window', async () => {
+    writeSuite(directory, withAttack(DECOYS), POISONED)
+    expect(await refused()).toEqual([
+      'demo/suite.yaml: cases.3.decoy: is within twice the window of a location, so one finding could catch both',
+      'demo/suite.yaml: cases.3.twinDecoy: is within twice the window of a location of the twin, so one finding could catch both',
+    ])
   })
 })

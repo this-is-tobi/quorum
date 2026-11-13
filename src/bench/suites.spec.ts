@@ -68,7 +68,7 @@ describe('bench/bugs, the real-bug suite', () => {
         'ISC',
       ], entry.id).toContain(entry.license)
       if (entry.kind === 'bug') expect([entry.fixCommit, entry.introducingCommit].every(Boolean), entry.id).toBe(true)
-      else expect(entry.commit, entry.id).toBeDefined()
+      else if (entry.kind === 'control') expect(entry.commit, entry.id).toBeDefined()
     }
   })
 
