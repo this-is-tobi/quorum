@@ -26,11 +26,13 @@ export interface Interval {
  * Reference values at 95%: a rate of 0.5 over 10 cases gives [0.2366, 0.7634], 0 gives [0, 0.2775]
  * and 1 gives [0.7225, 1].
  *
- * @throws {RangeError} when `n` is not a positive integer, or `rate` is outside [0, 1].
+ * @throws {RangeError} when `n` is not a positive integer, `rate` is outside [0, 1], or `z` is not a
+ * finite number of at least 0.
  */
 export function wilson(rate: number, n: number, z = Z95): Interval {
   if (!Number.isInteger(n) || n < 1) throw new RangeError('the number of cases must be a positive integer')
   if (!(rate >= 0 && rate <= 1)) throw new RangeError('the rate must be between 0 and 1')
+  if (!(Number.isFinite(z) && z >= 0)) throw new RangeError('z must be a finite number of at least 0')
   const d = 1 + z * z / n
   const center = (rate + z * z / (2 * n)) / d
   const halfWidth = z / d * Math.sqrt(rate * (1 - rate) / n + z * z / (4 * n * n))
@@ -44,21 +46,32 @@ export function wilson(rate: number, n: number, z = Z95): Interval {
 }
 
 /**
- * The exact two-sided p of a sign test: `better` and `worse` cases that differ, ties left out. With
+ * The most cases that differ `signTest` takes: ten times `MAX_CASES`, the most cases a suite holds. It
+ * also makes both counts safe integers, and keeps one call to milliseconds under Node and Bun.
+ */
+const MAX_SIGN_TEST_CASES = 10_000
+
+/**
+ * The two-sided p of a sign test: `better` and `worse` cases that differ, ties left out. With
  * `n = better + worse` and `k = min(better, worse)`, p is `2 * sum(C(n, i), i = 0..k) / 2^n`, at most 1,
  * and 1 when `n` is 0. The coefficients are summed exactly in `BigInt`, each from the previous one
  * (`C(n, i) = C(n, i - 1) * (n - i + 1) / i`), then both terms are shifted right by the same
- * `max(0, n + 1 - 1000)` bits before the division, so each stays finite as a `Number` for any `n` and
- * the reference values come out exact.
+ * `max(0, n + 1 - 1000)` bits before the division, so each stays finite as a `Number`.
+ *
+ * While `n` is at most 1000, as `MAX_CASES` keeps it, the shift drops nothing and p is the exact value
+ * rounded once to a double. Past 1000 it drops low bits, so p is rounded down to a multiple of 2^-999
+ * and reads 0 below it, about 1.9e-301. `n` is capped at `MAX_SIGN_TEST_CASES`.
  *
  * Reference values: 1 better of 10 gives 0.021484375, 5 of 20 gives 0.04138946533203125, 0 of 6 gives
  * 0.03125, 0 of 5 gives 0.0625, and 0 of 0 gives 1.
  *
- * @throws {RangeError} when a count is not an integer of at least 0.
+ * @throws {RangeError} when a count is not an integer of at least 0, or the counts add up to more than
+ * `MAX_SIGN_TEST_CASES`.
  */
 export function signTest(better: number, worse: number): number {
   if (!Number.isInteger(better) || better < 0 || !Number.isInteger(worse) || worse < 0) throw new RangeError('a count must be a whole number of at least 0')
   const n = better + worse
+  if (n > MAX_SIGN_TEST_CASES) throw new RangeError(`the counts must add up to at most ${MAX_SIGN_TEST_CASES}`)
   if (n === 0) return 1
   const k = Math.min(better, worse)
   let coefficient = 1n

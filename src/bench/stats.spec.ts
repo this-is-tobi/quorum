@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { nearestRank, signTest, wilson } from './stats.ts'
+import { MAX_CASES } from './suite.ts'
 
 describe('wilson', () => {
   it.each<[number, number, number, number]>([
@@ -15,6 +16,11 @@ describe('wilson', () => {
   it('stays inside 0 and 1', () => {
     expect(wilson(0, 10).low).toBe(0)
     expect(wilson(1, 10).high).toBe(1)
+  })
+
+  it('refuses a z that is not a finite number of at least 0, and takes 0', () => {
+    for (const z of [Number.NaN, -1, Number.POSITIVE_INFINITY]) expect(() => wilson(0.5, 10, z)).toThrow(RangeError)
+    expect(wilson(0.5, 10, 0)).toEqual({ low: 0.5, high: 0.5 })
   })
 
   it('refuses no case, a share of cases, or a rate outside 0 and 1', () => {
@@ -45,6 +51,24 @@ describe('signTest', () => {
     expect(signTest(0, 2000)).toBe(0)
     expect(signTest(450, 550)).toBeGreaterThan(0.0017)
     expect(signTest(450, 550)).toBeLessThan(0.0018)
+  })
+
+  it.each<[number, number, number]>([
+    [30, 70, 0.0000785013964559367],
+    [100, 140, 0.011664092317677663],
+    [450, 550, 0.0017305360849763176],
+    [0, 1000, 1.8665272370064378e-301],
+    [700, 1300, 1.6293497027604705e-41],
+    [900, 1100, 0.000008457089535503927],
+  ])('gives the exact p, rounded once, of %i better and %i worse: %s', (better, worse, p) => {
+    expect(signTest(better, worse)).toBe(p)
+  })
+
+  it('takes up to 10000 cases that differ, every count a suite can give, and refuses more', () => {
+    expect(signTest(5000, 5000)).toBe(1)
+    expect(() => signTest(0, MAX_CASES)).not.toThrow()
+    expect(() => signTest(5000, 5001)).toThrow(RangeError)
+    expect(() => signTest(10_001, 0)).toThrow(RangeError)
   })
 
   it('refuses a count that is not a whole number of at least 0', () => {

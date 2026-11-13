@@ -355,11 +355,16 @@ function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)} s`
 }
 
-/** `value` with its sign always written, its magnitude as `digits` decimals of `value * scale`. */
+/**
+ * `value * scale` as `digits` decimals, with its sign written unless it reads as zero: a difference
+ * that rounds to zero is `0.0`, never `-0.0` or `+0.0`.
+ */
 function signed(value: number, scale: number, digits: number): string {
+  const magnitude = Math.abs(value * scale).toFixed(digits)
+  if (Number(magnitude) === 0) return magnitude
   return `${value < 0
     ? '-'
-    : '+'}${Math.abs(value * scale).toFixed(digits)}`
+    : '+'}${magnitude}`
 }
 
 function differenceText(measure: Measure, difference: number): string {

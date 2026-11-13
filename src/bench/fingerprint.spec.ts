@@ -148,12 +148,22 @@ describe('fingerprint', () => {
     expect(fingerprint(of(PROVIDER), SALT)).not.toBe(fingerprint(of(PROVIDER), 'b'.repeat(64)))
   })
 
-  it('refuses a salt that is not 64 lowercase hex digits', () => {
-    for (const salt of [
-      '',
-      'a'.repeat(63),
-      'A'.repeat(64),
-    ]) expect(() => fingerprint(of(PROVIDER), salt)).toThrow(RangeError)
+  it.each([
+    '',
+    'a'.repeat(63),
+    'a'.repeat(65),
+    'A'.repeat(64),
+    `g${'a'.repeat(63)}`,
+    `${'a'.repeat(64)}\n`,
+  ])('refuses the salt %j, in a message that never holds it', (salt) => {
+    let thrown: unknown
+    try {
+      fingerprint(of(PROVIDER), salt)
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(RangeError)
+    expect((thrown as RangeError).message).toBe('the salt must be 64 lowercase hex digits')
   })
 })
 

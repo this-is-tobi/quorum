@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { record, resultWith, SUITE, verdict } from '../testing/bench.ts'
 import { reviewKey } from './records.ts'
 import { buildReport, reportJson, reportMarkdown, reviewScore } from './report.ts'
-import type { ReportInput, ReviewScore } from './report.ts'
+import type { Comparison, Measure, ReportInput, ReviewScore } from './report.ts'
 import type { SuiteCase } from './suite.ts'
 
 const CASES = SUITE.cases as unknown as SuiteCase[]
@@ -349,6 +349,32 @@ describe('reportMarkdown', () => {
       '- 2, tokens per review: -250; 3 better, 0 worse, 0 tied; p = 0.2500, unresolved',
       '',
     ].join('\n'))
+  })
+
+  it('writes a difference that rounds to zero without a sign', () => {
+    const tie = (measure: Measure, difference: number): Comparison => ({
+      configuration: 2,
+      measure,
+      difference,
+      better: 1,
+      worse: 1,
+      tied: 0,
+      p: 1,
+      resolved: false,
+    })
+    const markdown = reportMarkdown({
+      ...buildReport(INPUT),
+      comparisons: [
+        tie('kept-recall', -0.0001),
+        tie('incomplete', 0),
+        tie('unmatched-kept-per-control', 0.004),
+        tie('tokens', -0.4),
+      ],
+    })
+    expect(markdown).toContain('- 2, kept recall: 0.0 points; 1 better, 1 worse, 0 tied; p = 1.0000, unresolved\n')
+    expect(markdown).toContain('- 2, incomplete reviews: 0.0 points; 1 better')
+    expect(markdown).toContain('- 2, unmatched kept findings per control: 0.00; 1 better')
+    expect(markdown).toContain('- 2, tokens per review: 0; 1 better')
   })
 
   it('leaves the comparisons out for one configuration', () => {
