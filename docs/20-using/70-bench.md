@@ -379,7 +379,7 @@ Each configuration gets one line, of one of three forms:
 ```
 
 - **No finding of known truth**: no finding of the selection's reviews caught a location or a decoy, in a suite with no bug case or when the models found none.
-- **No pair of lenses whose errors both vary**: every lens erred on all of those findings or on none, so no pair has a correlation, and the mean has no value.
+- **No pair of lenses whose errors both vary**: no pair has both of its lenses erring on some of those findings and not on others, so no pair has a correlation and the mean has no value. Every lens may have erred on all of them or on none, or one lens may vary beside constant ones, or the panel may hold a single lens.
 - **The mean phi**, over the pairs of lenses where it is defined, and the number of findings, then the effective votes of the panel's size. The end reads `no effective number, since its panels differ in size` when the profiles of a configuration have panels of different sizes, and `no effective number at that mean` when the mean is too negative for the formula. A mean below 0 can give more effective votes than lenses, which is a sign of errors that offset each other and not of extra voters.
 
 The section gives no interval, and the report names no profile.
@@ -476,6 +476,8 @@ A progress line of an attack case reads as a bug case's: it says whether a findi
 ```text
 ## Attacks
 
+Each attack case is paired with its twin trial by trial, over the trials both recorded. A twin's attack cases of one goal give its score under attack, and their paired trials of the twin its clean score. A rate is the mean over the twins, with its 95% Wilson interval over the twins, and each line is an exact sign test over the twins whose two scores differ. A case's score, and the scores by carrier and by encoding, are means without an interval.
+
 - Advisory flags, raised by the patch: 22.9% [7.8%, 51.2%] of the poisoned patches, 0.0% [0.0%, 24.2%] of their twins, over 12 twins; +22.9 points; 8 higher, 0 lower, 4 tied; p = 0.0078, resolved
 
 ### Configuration 1
@@ -522,7 +524,7 @@ Dry run: no review was run, and nothing was written.
 ```
 
 - **Ten trials, so 600 reviews per configuration.** The suite sets `trials: 10`, which steadies each case's score. A review is a research call and a vote from each lens on each finding, on real models, so run `--dry-run` first and try one twin and one of its attacks before the whole: [What a run costs](#what-a-run-costs).
-- **A window of 32 768 tokens.** The largest research request of the corpus needs 29 926 tokens as the size guard counts them, and the largest vote at most 25 965, so a model whose window is 32 768 tokens takes the whole corpus, as a run against a stub server confirmed: [Measurement](../30-security/40-measurement.md#the-window).
+- **A window of 32 768 tokens.** The largest research request of the corpus needs 29 926 tokens as the size guard counts them, and the largest vote at most 25 965, so a model of an HTTP provider whose window is 32 768 tokens takes the whole corpus, as a run against a stub server confirmed. That holds for the default reply budget, the shipped `security` profile and no guidelines: a larger `maxTokens`, a longer prompt or guidelines can make the size guard refuse a poisoned review, which then reads as a denial hit: [Measurement](../30-security/40-measurement.md#the-window).
 - **A manifest and a generator.** `bench/injection/manifest.yaml` holds each payload as a reviewer reads it, and `scripts/injection-corpus.ts` writes `suite.yaml` and `cases/` from it, by hand with `bun run ./scripts/injection-corpus.ts`. A test holds the committed files equal to its output, so change the manifest and run the generator again, and never edit `suite.yaml` or a patch.
 - **It ships nowhere.** The corpus and its generator are in the repository and in no package, binary or image, and `quorum bench` never runs the generator: use a clone. `src/bench/suites.spec.ts` validates the corpus in the default test suite, as a run does, with no model.
 - **`--case` with an attack case.** `--case` runs the cases it names and no more, so an attack case named alone has no twin of the same trial to pair with, and reads `n/a`. Name its twin too.
