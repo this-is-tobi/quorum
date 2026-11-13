@@ -518,6 +518,26 @@ describe('quorum bench, what it writes and how it ends', () => {
     expect(readFileSync(join(out(), 'report.md'), 'utf8')).toBe(report)
   })
 
+  it.skipIf(!existsSync('/dev/fd'))('closes results.jsonl and exits 3 when the run stops after its first record, writing no report', async () => {
+    const descriptors = (): number => readdirSync('/dev/fd').length
+    const before = descriptors()
+    const { code, stdout, stderr } = await bench(TWO, {
+      onStderr: (text) => {
+        if (text.startsWith('[1/6]')) throw new Error('stderr closed')
+      },
+    })
+    expect(descriptors()).toBe(before)
+    expect([code, stdout]).toEqual([3, ''])
+    expect(stderr.endsWith('Error: stderr closed\n')).toBe(true)
+    expect(lines()).toHaveLength(1)
+    expect(existsSync(join(out(), 'report.md'))).toBe(false)
+    expect(existsSync(join(out(), 'report.json'))).toBe(false)
+    const resume = await bench(TWO)
+    expect(resume.code).toBe(0)
+    expect(resume.stderr).toContain('Reviews: 6 planned, 1 recorded, 5 to run, at most 1 at a time\n')
+    expect(lines()).toHaveLength(6)
+  })
+
   it('exits 130 when the interrupt came after the last review, which is recorded and reported', async () => {
     const controller = new AbortController()
     const { code, stdout, stderr } = await bench(TWO, {
