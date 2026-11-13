@@ -48,7 +48,7 @@ const NO_FOLLOW = HAS_NOFOLLOW
 /** Without blocking, so a FIFO is refused instead of waited for. */
 const READ_FLAGS = constants.O_RDONLY | constants.O_NONBLOCK | NO_FOLLOW
 /** Without blocking too, so a FIFO swapped in after the read is refused instead of waited for. */
-const APPEND_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NONBLOCK | NO_FOLLOW
+const APPEND_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_NONBLOCK | NO_FOLLOW
 const NEW_FILE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
 /** The mode `run.json` and `results.jsonl` are made with: read and written by their owner only. */
 const OWNER_ONLY = 0o600
@@ -343,19 +343,26 @@ function writeFailure(file: string, error: unknown): Error {
 
 /**
  * `results.jsonl` opened to be appended to, never through a symbolic link, never waiting for a FIFO, and
- * cut to `read.validBytes` when it ends in the torn tail the read found. Refused, with the handle closed:
- * what is not a regular file, and a file whose length is not `read.bytes`.
+ * cut to `read.validBytes` when it ends in the torn tail the read found. A read that found no bytes opens
+ * with `O_CREAT`: a new run's file, or an empty one deleted since, is made. A read that found bytes opens
+ * without it, so a file deleted since is refused instead of made again, empty. Refused, with the handle
+ * closed: what is not a regular file, a file that is gone or whose length is not `read.bytes`.
  */
 async function openAppend(path: string, read: ReadSizes): Promise<FileHandle> {
   if (!HAS_NOFOLLOW && await lstat(path).then(stats => stats.isSymbolicLink(), () => false)) throw new Error(`${RESULTS_FILE}: cannot be written (ELOOP)`)
+  const flags = read.bytes > 0
+    ? APPEND_FLAGS
+    : APPEND_FLAGS | constants.O_CREAT
   let handle: FileHandle
   try {
-    handle = await open(path, APPEND_FLAGS, OWNER_ONLY)
+    handle = await open(path, flags, OWNER_ONLY)
   } catch (error) {
     // Under O_NONBLOCK a FIFO with no reader fails with ENXIO and a directory with EISDIR: no regular file.
     // Whatever else opens, a device or a FIFO with a reader, is refused by the stat below; any other
-    // failure, such as a socket on macOS, is a write failure.
+    // failure, such as a socket on macOS, is a write failure. Without O_CREAT, ENOENT is a file that was
+    // there when the read found bytes in it, and is not now.
     const code = errorCode(error)
+    if (code === 'ENOENT' && read.bytes > 0) throw refusal(RESULTS_FILE, CHANGED)
     throw code === 'ENXIO' || code === 'EISDIR'
       ? refusal(RESULTS_FILE, 'is not a file')
       : writeFailure(RESULTS_FILE, error)
@@ -375,20 +382,22 @@ async function openAppend(path: string, read: ReadSizes): Promise<FileHandle> {
 }
 
 /**
- * Open `results.jsonl` to append to, making it when it is not there, and cut it to `read.validBytes`
- * (what `readRecords` found valid), which drops a line a killed run left unfinished. `read` is the answer
- * of the `readRecords` this run began with, or `{ validBytes: 0, bytes: 0 }` for a run that is new: the
- * file must still be `read.bytes` long, or another run may have cut it or appended to it since, and
- * cutting it back would drop that run's records. `O_APPEND` puts each write at the end, `O_NOFOLLOW`
- * refuses a symbolic link, and `O_NONBLOCK` refuses a FIFO instead of waiting for it. The file is made
- * readable by its owner only, and one that exists keeps its mode. `append` writes one whole line, each
- * call after the one before, so lines never interleave; once a write has failed, none after it is written,
- * so a line is never joined to the fragment of a failed one. `close` waits for the lines asked for and
- * closes.
+ * Open `results.jsonl` to append to, and cut it to `read.validBytes` (what `readRecords` found valid),
+ * which drops a line a killed run left unfinished. `read` is the answer of the `readRecords` this run
+ * began with, or `{ validBytes: 0, bytes: 0 }` for a run that is new: the file must still be `read.bytes`
+ * long, or another run may have cut it or appended to it since, and cutting it back would drop that run's
+ * records. A read that found no bytes makes the file when it is not there, which loses nothing; one that
+ * found bytes never makes it, so a file deleted since is refused with nothing written. `O_APPEND` puts
+ * each write at the end, `O_NOFOLLOW` refuses a symbolic link, and `O_NONBLOCK` refuses a FIFO instead of
+ * waiting for it. A file made here is readable by its owner only, and one that exists keeps its mode.
+ * `append` writes one whole line, each call after the one before, so lines never interleave; once a write
+ * has failed, none after it is written, so a line is never joined to the fragment of a failed one. `close`
+ * waits for the lines asked for and closes.
  *
  * @throws ConfigError `results.jsonl: is not a file`, or `results.jsonl: changed after this run read it,
- * so another run may be using this --out: run one at a time`; Error `results.jsonl: cannot be written
- * (<code>)` for any other failure to open, cut, write or close
+ * so another run may be using this --out: run one at a time` (a file cut, appended to or deleted since the
+ * read); Error `results.jsonl: cannot be written (<code>)` for any other failure to open, cut, write or
+ * close
  */
 export async function openRecords(directory: string, read: ReadSizes): Promise<RecordWriter> {
   const handle = await openAppend(join(directory, RESULTS_FILE), read)
