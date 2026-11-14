@@ -55,7 +55,7 @@ One provider object may fill several ports: the research provider of a profile c
 | `profiles.<index>.id` | `repeats the profile id "security"` |
 | `concurrency`, `maxFindings` | `must be a positive integer, got 0`, the value quoted when it is a number |
 | `exclude` | `must be an array`, or `must hold at most 100 patterns` |
-| `exclude.<index>` | `must be a string`, or what to write instead: `must not be empty`, `must be at most 256 characters long`, `ends with /, so it matches no file: end it with /** to leave out what the directory holds`, `holds ** inside a name: …`, `holds \, which escapes nothing here: …`, `holds !, which negates nothing here: …` or `holds {, which lists no alternatives here: …` |
+| `exclude.<index>` | `must be a string`, or what to write instead: `must not be empty`, `must be at most 256 characters long`, `ends with /, so it matches no file: end it with /** to leave out what the directory holds`, `holds ** inside a name: …`, `holds an empty, . or .. name, which no path in a diff has: …`, `holds \, which escapes nothing here: …`, `holds !, which negates nothing here: …` or `holds {, which lists no alternatives here: …` |
 | `ports.profiles` | `must be an object keyed by profile id` |
 | `ports.profiles.<id>` | `is missing`, `must be an object with a research provider and voters`, or `names no profile of the run` |
 | `ports.profiles.<id>.research` | `is missing`, or `must be a provider: an object with a string id, a string model and a complete function` |
@@ -91,7 +91,7 @@ const result = await quorum.review({ diff }, {
 })
 ```
 
-- **`diff`** is the unified diff, as a string. A blank one, or one whose every file `exclude` leaves out, runs no stage and calls no model; the review still sends `run:start` and `run:end`, and resolves with empty lists.
+- **`diff`** is the unified diff, as a string. A blank one runs no stage, calls no model and resolves with empty lists, the review still sending `run:start` and `run:end`. One whose every file `exclude` leaves out does the same, except that its `meta.leftOut` lists the files, a `left-out` event is sent, and the text before the first header, a mail's message say, is still researched.
 - **`signal`**, optional, stops the review: [Abort](#abort).
 - **A quorum reviews any number of diffs**, one per call. Each review has its own concurrency limit and its own signal, and several may run at once.
 
@@ -253,7 +253,7 @@ const result = await quorum.review({ diff })
 - **A `ResolvedConfig`** holds `providers`, the ones a profile that runs uses, by name: a spec with its key read into `apiKey`, or the snapshot of an object implementing `Provider`; `profiles`, each a `ResolvedProfile`: its `profile`, `research`, the name of its research provider, and `voters`, the name of each lens's provider, by lens id; `concurrency`, `maxFindings`, `exclude` when the config lists a pattern, and `warnings`. It is a copy, frozen all the way down: a provider object is a frozen snapshot of the program's, with no prototype, named by its config key as its `id`.
 - **A `ResolvedConfig` holds the keys it read**, as a code config does: never print or log one. The CLI's [`--print-config`](../20-using/10-cli.md#printing-the-resolved-config) redacts them.
 - **`fromConfig` of a `ResolvedConfig` reads no environment**: what `loadConfig` resolved is what runs, whatever `options.env` holds, except that a `claude-code` provider's child still starts from `options.env`, else `process.env`.
-- **A config is read as its own fields, with one limit.** A field planted on `Object.prototype` is a prototype pollution bug in the same process. An enumerable one is a field of every object, so it is refused as `is not a known field` wherever the schema does not know it: a planted `baseUrl` is refused at the top level, while a planted `concurrency`, `maxFindings` or `version` passes when the config holds no object that refuses it. One planted with `Object.defineProperty` is not enumerable, and the schema reads each field it knows through the prototype, so it becomes a field of the config, or of every provider that leaves it unset. Code that can plant either can read the keys directly: quorum does not defend against it.
+- **A config is read as its own fields, with one limit.** A field planted on `Object.prototype` is a prototype pollution bug in the same process. An enumerable one is a field of every object, so it is refused as `is not a known field` wherever the schema does not know it: a planted `baseUrl` is refused at the top level, while a planted `concurrency`, `maxFindings`, `exclude` or `version` passes when the config holds no object that refuses it, and a planted `exclude` is the one that widens what passes unread. One planted with `Object.defineProperty` is not enumerable, and the schema reads each field it knows through the prototype, so it becomes a field of the config, or of every provider that leaves it unset. Code that can plant either can read the keys directly: quorum does not defend against it.
 
 ### Layering
 

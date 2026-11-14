@@ -324,3 +324,50 @@ export const PLAIN = [
   '+two',
   '',
 ].join('\n')
+
+/**
+ * `git diff` of `src/auth.js` renamed, with changes, to `src/x b/dist/auth.js`: git does not quote a
+ * path that holds a space, so the header reads as a rename to `dist/auth.js` as well, while the
+ * `rename to` line names the new path whole. The tab after the `+++` name is what git puts after a name
+ * that holds a space.
+ */
+export const RENAMED_INTO_DIST = [
+  'diff --git a/src/auth.js b/src/x b/dist/auth.js',
+  'similarity index 65%',
+  'rename from src/auth.js',
+  'rename to src/x b/dist/auth.js',
+  'index 04ad716..a30ef13 100644',
+  '--- a/src/auth.js',
+  '+++ b/src/x b/dist/auth.js\t',
+  '@@ -1,5 +1,5 @@',
+  ' export function check(user) {',
+  '-  if (!user.admin) throw new Error("denied")',
+  '+  // admin check removed',
+  '   return true',
+  ' }',
+  ' // line 5',
+  '',
+].join('\n')
+
+/**
+ * `git diff` of `dist/a.js` renamed, with changes, to `s x/dist/a.js b/s`: the header's two names are
+ * halves of the same length around the middle space, so it reads as a change to `dist/a.js b/s`, while
+ * the `rename to` line names the new path whole.
+ */
+export const RENAMED_OUT_OF_DIST = [
+  'diff --git a/dist/a.js b/s x/dist/a.js b/s',
+  'similarity index 61%',
+  'rename from dist/a.js',
+  'rename to s x/dist/a.js b/s',
+  'index f2fc3bb..2da1677 100644',
+  '--- a/dist/a.js',
+  '+++ b/s x/dist/a.js b/s\t',
+  '@@ -1,5 +1,5 @@',
+  ' export const check = (u) => {',
+  '-  if (!u.admin) throw new Error("denied")',
+  '+  // gone',
+  '   return true',
+  ' }',
+  ' // 5',
+  '',
+].join('\n')

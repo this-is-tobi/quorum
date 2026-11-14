@@ -673,7 +673,7 @@ describe('resolveConfig', () => {
     expect(Object.isFrozen(object)).toBe(false)
   })
 
-  it('reads only own fields: a polluted Object.prototype gives no provider a key, a role, a profile or a limit', () => {
+  it('reads exclude, like every field of its input, as its own: a polluted Object.prototype gives no provider a key, a role, a profile, a limit or an exclude', () => {
     const proto = Object.prototype as Record<string, unknown>
     const planted: Record<string, unknown> = {
       apiKey: 'sk-planted',

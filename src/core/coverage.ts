@@ -1,4 +1,4 @@
-import { diffSections } from './diff.ts'
+import { diffSections, movedTo } from './diff.ts'
 import type { IncompleteEntry, LeftOutFile, LeftOutReason } from './types.ts'
 
 const BINARY_FILES_START = 'Binary files '
@@ -77,6 +77,15 @@ function markersOf(text: string): Markers {
  * not name is ever excluded: the text before the first header, a diff without such headers and a
  * header that names no path quorum reads.
  *
+ * A header can read two ways: git does not quote a path that holds a space, so a rename's header
+ * (`a/src/auth.js b/src/x b/dist/auth.js`) can name a path the file does not have. A section is
+ * therefore excluded only when every `rename to` and `copy to` line it holds names the header's
+ * path, as `movedTo` reads them; otherwise it is kept, as a header quorum cannot read is, its markers
+ * read and its text sent. A forged line, such as a `format-patch` series carries in the next mail's
+ * message, can then only make quorum exclude less. That next mail's headers and message sit at the
+ * end of the previous file's section and leave with it when that file is excluded: no code hides
+ * there, since `git am` applies only the patch sections, and a `Submodule` line still counts.
+ *
  * The empty name stands for a part of the diff that no `diff --git` header names: the text before the
  * first header, a diff without such headers, a header that names no path quorum reads, and a
  * `Submodule` line. A readable header never names the empty path, so it is never a file's.
@@ -112,7 +121,7 @@ export function reviewScope(diff: string, excluded: (path: string) => boolean = 
   const kept: string[] = []
   for (const { path, text } of sections) {
     const markers = markersOf(text)
-    if (path !== undefined && path !== '' && isExcluded(path)) {
+    if (path !== undefined && path !== '' && isExcluded(path) && movedTo(text).every(moved => moved === path)) {
       list(path, 'excluded')
     } else {
       kept.push(text)

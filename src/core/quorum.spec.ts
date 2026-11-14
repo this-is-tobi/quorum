@@ -1518,6 +1518,38 @@ describe('excludes', () => {
     ])
   })
 
+  it('reviews a renamed file whose header reads as an excluded path its rename to line does not name', async () => {
+    const finder = fake('finder', () => findings())
+    const result = await createQuorum({
+      profiles: [securityProfile],
+      exclude: ['dist/**'],
+    }, portsFor(securityProfile, finder)).review({ diff: git.RENAMED_INTO_DIST })
+    expect(finder.requests).toHaveLength(1)
+    expect(finder.requests[0].messages[0].content).toContain('admin check removed')
+    expect(result.meta.leftOut).toEqual([])
+  })
+
+  it('records the submodule a Submodule line names when the section that holds it is excluded, and runs no stage', async () => {
+    const finder = fake('finder', () => findings())
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [securityProfile],
+      exclude: ['app.js'],
+    }, {
+      ...portsFor(securityProfile, finder),
+      events: event => events.push(event),
+    }).review({ diff: git.SUBMODULE_LOG_BUMPED })
+    expect(finder.requests).toEqual([])
+    expect(events.map(event => event.type)).not.toContain('stage:start')
+    expect(result.meta.leftOut).toEqual([
+      { file: 'app.js', reason: 'excluded' },
+      { file: '', reason: 'submodule' },
+    ])
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'submodule', detail: 'the diff carries no content for 1 submodule(s), listed in meta.leftOut' },
+    ])
+  })
+
   it('refuses a pattern that can mislead, and an exclude that is not a list of strings, in one ConfigError', () => {
     expect(issuesOf(() => createQuorum({
       profiles: [securityProfile],

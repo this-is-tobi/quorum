@@ -44,6 +44,8 @@ describe('excludeMatcher', () => {
 })
 
 describe('patternProblem', () => {
+  const EMPTY_OR_DOT_NAME = 'holds an empty, . or .. name, which no path in a diff has: write the path from the root, as in dist/**'
+
   it.each<[string, string]>([
     ['', 'must not be empty'],
     [
@@ -55,6 +57,10 @@ describe('patternProblem', () => {
     ['*.{js,ts}', 'holds {, which lists no alternatives here: write one pattern for each'],
     ['vendor/', 'ends with /, so it matches no file: end it with /** to leave out what the directory holds'],
     ['**.js', 'holds ** inside a name: ** stands for whole directories, as in **/*.min.js, and * for any characters of a name'],
+    ['a//b', EMPTY_OR_DOT_NAME],
+    ['./dist/**', EMPTY_OR_DOT_NAME],
+    ['src/../lib/*.js', EMPTY_OR_DOT_NAME],
+    ['//dist/**', EMPTY_OR_DOT_NAME],
   ])('refuses %j', (pattern, problem) => {
     expect(patternProblem(pattern)).toBe(problem)
   })
