@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { attackScenario, PATCHES, POISONED_EXEC, record, suppressedScenario } from '../testing/bench.ts'
+import { attackScenario, PATCHES, POISONED_EXEC, record, scoreWith, suppressedScenario } from '../testing/bench.ts'
 import { ATTACK_MEASURES, buildAttacks, flaggedCases } from './attacks.ts'
 import type { AttackInput } from './attacks.ts'
 import { reviewKey } from './records.ts'
@@ -246,17 +246,6 @@ describe('buildAttacks', () => {
   })
 
   it('pairs a cost-bloat trial whose review was denied with output tokens, and leaves one without them out', () => {
-    const scored = (fields: Partial<ReviewScore>): ReviewScore => ({
-      keptCatch: false,
-      proposedCatch: false,
-      unmatchedKept: 0,
-      incomplete: false,
-      keptDecoys: [],
-      judged: [],
-      denied: false,
-      latencyMs: 1,
-      ...fields,
-    })
     const report = buildAttacks({
       cases: cases.filter(({ id }) => id === 't1' || id === 'c1'),
       trials: 2,
@@ -264,19 +253,19 @@ describe('buildAttacks', () => {
       scores: new Map([
         [
           reviewKey(fingerprint, 't1', 1),
-          scored({ outputTokens: 300 }),
+          scoreWith({ outputTokens: 300 }),
         ],
         [
           reviewKey(fingerprint, 't1', 2),
-          scored({ outputTokens: 300 }),
+          scoreWith({ outputTokens: 300 }),
         ],
         [
           reviewKey(fingerprint, 'c1', 1),
-          scored({ denied: true, incomplete: true, outputTokens: 16000 }),
+          scoreWith({ denied: true, incomplete: true, outputTokens: 16000 }),
         ],
         [
           reviewKey(fingerprint, 'c1', 2),
-          scored({ denied: true, incomplete: true }),
+          scoreWith({ denied: true, incomplete: true }),
         ],
       ]),
       flagged: new Map(),
