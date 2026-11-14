@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProviderError } from '../core/errors.ts'
 import { brokenReply, jsonReply, streamedReply, textReply } from '../testing/http.ts'
 import { endpointUrl, httpOrigin, originOf, postJson, redactionsOf, snippet } from './http.ts'
@@ -376,5 +376,61 @@ describe('postJson', () => {
     const error = await postJson(options).catch((caught: Error) => caught) as Error
     expect(error).toMatchObject({ kind: 'invalid-response', retryable: false, message: 'p: response body is not JSON' })
     expect(error.cause).toBeUndefined()
+  })
+})
+
+describe('the runtimes\' timers', () => {
+  const KEY = Symbol.for('undici.globalDispatcher.1')
+  const scope = globalThis as unknown as Record<symbol, unknown>
+  interface Delegate { dispatch: (options: object, handler: unknown) => unknown }
+  let saved: unknown
+
+  beforeEach(() => {
+    saved = scope[KEY]
+  })
+
+  afterEach(() => {
+    if (saved === undefined) Reflect.deleteProperty(scope, KEY)
+    else scope[KEY] = saved
+  })
+
+  /** The init `postJson` hands `fetch`, read as `fetch` reads it: through the object itself. */
+  async function initOf(): Promise<{ timeout: unknown, dispatcher: Delegate | undefined }> {
+    const fetchMock = vi.fn().mockImplementation(async () => jsonReply({}))
+    vi.stubGlobal('fetch', fetchMock)
+    await postJson(options)
+    return fetchMock.mock.calls[0][1]
+  }
+
+  it('turns Bun\'s timer off, and hands Node\'s global dispatcher each request with both its timers off, read when fetch reads its init', async () => {
+    const first = {
+      dispatch: vi.fn((_options: object, _handler: unknown): unknown => true),
+    }
+    scope[KEY] = first
+    const init = await initOf()
+    expect(init.timeout).toBe(false)
+
+    const second = {
+      dispatch: vi.fn((_options: object, _handler: unknown): unknown => 'second'),
+    }
+    scope[KEY] = second
+    const handler = {}
+    expect(init.dispatcher?.dispatch({ path: '/x', headersTimeout: 300_000 }, handler)).toBe('second')
+    expect(second.dispatch).toHaveBeenCalledWith({ path: '/x', headersTimeout: 0, bodyTimeout: 0 }, handler)
+    expect(second.dispatch.mock.contexts[0]).toBe(second)
+    expect(first.dispatch).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['no global dispatcher', undefined],
+    ['a global dispatcher that is not an object', 'agent'],
+    [
+      'a global dispatcher whose dispatch is not a function',
+      { dispatch: 'x' },
+    ],
+  ])('hands fetch no dispatcher when the runtime has %s', async (_name, global) => {
+    scope[KEY] = global
+    const init = await initOf()
+    expect(init.dispatcher).toBeUndefined()
   })
 })

@@ -87,6 +87,10 @@ The `llamacpp` preset points at `http://127.0.0.1:9931/v1`, where `llama-server`
 - **Leave `--context-shift` off**, its default (`LLAMA_ARG_CONTEXT_SHIFT` sets it too). On, a reply that fills its slot makes llama-server drop the start of the prompt and keep writing, and the reply still ends as an ordinary stop, so nothing shows that the model lost part of the diff. If you turn it on, set `maxTokens`, which the guard keeps room for and which stops the reply before the slot is full.
 - **`--api-key`, `LLAMA_API_KEY` or `--api-key-file` sets the key**, which the server reads from `Authorization` or `X-Api-Key`. Quorum sends `Authorization: Bearer <key>`. `llama-server` listens on the loopback by default.
 
+## Long replies and a loading model
+
+- **A reverse proxy in front of a server cuts a reply it sees no byte of** within its idle limit, whatever quorum's deadline is: nginx's `proxy_read_timeout` is 60 s by default. For a thinking model, which can send nothing for minutes, raise it above the deadline, 600000 ms unless the provider states one: [The deadline of an attempt](../20-using/30-providers.md#the-deadline-of-an-attempt).
+
 ## Choosing a model
 
 - **One that follows a JSON Schema.** All three servers constrain a reply by constrained decoding: Ollama through `format`, vLLM and llama-server through `response_format`. The `ollama`, `vllm` and `llamacpp` presets ask for a JSON object, `structuredOutput: json`, with the schema in the system message, and `structuredOutput: schema` has the server enforce the schema itself: [Structured output](../20-using/30-providers.md#structured-output). A reply quorum cannot read is never read as clean. An unreadable finding is a `finding-unreadable` gap and an unusable vote is a failed vote, either of which can make a gating profile exit `4`, and a research reply that is no usable object at all ends the run with exit `3`.

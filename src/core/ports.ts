@@ -14,6 +14,7 @@ export interface CompletionRequest {
   messages: readonly ChatMessage[]
   /** The reply shape the caller validates against; adapters may also use it for native enforcement. */
   output: { name: string, schema: JsonSchema }
+  /** The attempt's own signal: aborted with the review's, or at the attempt's deadline. */
   signal?: AbortSignal
 }
 
@@ -28,6 +29,30 @@ export interface CompletionResponse {
   usage?: Usage
 }
 
+/** The deadline of an attempt when its provider states none: ten minutes. */
+export const DEFAULT_TIMEOUT_MS = 600_000
+/** The shortest deadline: one second. */
+export const MIN_TIMEOUT_MS = 1000
+/** The longest deadline an option, a config or a variable sets: 24 hours. */
+export const MAX_TIMEOUT_MS = 86_400_000
+/** The most retries a call is given. */
+export const MAX_RETRIES = 5
+/**
+ * The longest deadline a provider states: six times `MAX_TIMEOUT_MS`, since a provider that runs
+ * the retries itself states the deadline of its whole call, `timeoutMs` times `MAX_RETRIES + 1`.
+ */
+export const MAX_STATED_TIMEOUT_MS = MAX_TIMEOUT_MS * (MAX_RETRIES + 1)
+
+/**
+ * What is wrong with a deadline, worded with what to write, or undefined for a safe integer from
+ * `MIN_TIMEOUT_MS` to `max`. The value is never quoted: it may be anything.
+ */
+export function timeoutProblem(value: unknown, max: number = MAX_TIMEOUT_MS): string | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= MIN_TIMEOUT_MS && value <= max
+    ? undefined
+    : `must be a whole number of milliseconds from ${MIN_TIMEOUT_MS} to ${max}`
+}
+
 /**
  * A model behind a port: it receives text and returns text (invariant I1). No environment value, key
  * or credential appears in a request; keys live in adapters only. The core never trusts the reply
@@ -37,9 +62,17 @@ export interface Provider {
   readonly id: string
   readonly model: string
   /**
+   * The deadline of one attempt, in whole milliseconds from 1000 to 518400000; `DEFAULT_TIMEOUT_MS`
+   * when unset. At it the core aborts the attempt's signal and fails the attempt as a timeout,
+   * whatever the provider does. It is read once, when the quorum is created, as an own data
+   * property: a getter is never run and an inherited property states nothing, so a class sets it as
+   * a field.
+   */
+  readonly timeoutMs?: number
+  /**
    * Answer one request. It should honour `request.signal`, settling soon after the signal aborts:
-   * stopping a call in flight is cooperative, so a review can wait for a call it cut until the
-   * provider settles.
+   * the core settles the call at its deadline or at the review's abort without waiting for the
+   * provider, and a provider that ignores the signal works on, outside the review, until it ends.
    */
   complete: (request: CompletionRequest) => Promise<CompletionResponse>
 }

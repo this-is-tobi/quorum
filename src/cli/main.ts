@@ -156,7 +156,7 @@ export interface SignalSource {
 
 /**
  * The signal of one review, aborted by the first SIGINT or SIGTERM. The next one calls `exit(130)`: the
- * way out of a provider that ignores its signal, since no timer waits for it.
+ * way out when what a provider still runs, after the review settled its call, keeps the process alive.
  */
 export function interruptSignal(source: SignalSource, exit: (code: number) => void): AbortSignal {
   const controller = new AbortController()

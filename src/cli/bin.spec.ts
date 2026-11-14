@@ -72,15 +72,14 @@ describe('bin', () => {
   })
 
   it('exits 3, never 0, when the run stops with nothing left to wait for', () => {
-    writeFileSync(join(dir, 'hang.mjs'), 'export default { providers: { mine: { model: \'m\', complete: () => new Promise(() => {}) } } }\n')
+    writeFileSync(join(dir, 'hang.mjs'), 'await new Promise(() => {})\nexport default {}\n')
     writeFileSync(join(dir, 'x.diff'), DIFF)
     const { status, stdout, stderr } = run(['x.diff'], {
       QUORUM_CONFIG: join(dir, 'hang.mjs'),
     })
     expect(status).toBe(3)
     expect(stdout).toBe('')
-    expect(stderr).toContain('Research (m @ the provider object mine)...\n')
-    expect(stderr.endsWith('Error: the run stopped without a result\n')).toBe(true)
+    expect(stderr).toBe('Error: the run stopped without a result\n')
   })
 
   it('exits with the code a failed run returns, and writes no result', () => {

@@ -1,6 +1,6 @@
 # Providers
 
-A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds its providers from its config, each from a preset or a protocol ([Configuration](./20-configuration.md)); a program builds its own, with one of the five shipped adapters or from scratch. This page covers the port, the adapters, the presets, the options the HTTP adapters share, the key header styles, the tool fields each of them refuses, the limits of a request, the body each sends and the replies it reads, the Claude Code adapter's command line, isolation and errors, the errors a provider raises, and writing a provider of your own.
+A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds its providers from its config, each from a preset or a protocol ([Configuration](./20-configuration.md)); a program builds its own, with one of the five shipped adapters or from scratch. This page covers the port, the deadline of a call, the adapters, the presets, the options the HTTP adapters share, the key header styles, the tool fields each of them refuses, the limits of a request, the body each sends and the replies it reads, the Claude Code adapter's command line, isolation and errors, the errors a provider raises, and writing a provider of your own.
 
 ## The port
 
@@ -8,6 +8,7 @@ A provider is how quorum reaches a model: an object that takes one request and r
 interface Provider {
   readonly id: string
   readonly model: string
+  readonly timeoutMs?: number
   complete: (request: CompletionRequest) => Promise<CompletionResponse>
 }
 
@@ -25,12 +26,29 @@ interface CompletionResponse {
 }
 ```
 
-- **Text in, text out.** A request carries the instructions in `system`, the fenced data in `messages` (one `user` message), the shape of the reply in `output` (named `research_findings` or `panel_vote`, with its JSON Schema), and the review's `signal`. The request has no field for a tool, a function, a file or a network capability, and quorum offers none to a model. Each shipped adapter refuses the body fields of its protocol that would offer one, so `extraBody` cannot add them, but a model id can bring tools of its own, which only a preset's list refuses, and `headers` are sent as given: [The tool fields](#the-tool-fields).
+- **Text in, text out.** A request carries the instructions in `system`, the fenced data in `messages` (one `user` message), the shape of the reply in `output` (named `research_findings` or `panel_vote`, with its JSON Schema), and the attempt's `signal`. The request has no field for a tool, a function, a file or a network capability, and quorum offers none to a model. Each shipped adapter refuses the body fields of its protocol that would offer one, so `extraBody` cannot add them, but a model id can bring tools of its own, which only a preset's list refuses, and `headers` are sent as given: [The tool fields](#the-tool-fields).
 - **No secret in a request.** No environment value, key or credential appears in a request: a key lives in the adapter that holds it.
 - **The core never trusts the reply.** It extracts and validates the JSON in `text` itself, whatever the provider did to get it, and reads `usage` (`inputTokens`, `outputTokens`, optional `costUsd`) only when its counts are finite numbers of at least 0.
 - **`id` and `model` name the provider** in events and in `meta`, as they were when the quorum was created.
+- **A provider may state its deadline**, `timeoutMs`: [Deadlines and retries](#deadlines-and-retries).
 
 [Prompts](./60-prompts.md) shows what `system` and `messages` hold.
+
+## Deadlines and retries
+
+The core runs each call's attempts inside the call's concurrency slot, and gives each a deadline of its own. A call is one attempt for now: quorum does not retry it.
+
+### The deadline of an attempt
+
+- **Each attempt has a deadline**: the provider's `timeoutMs`, 600000 ms when it states none. At it the core aborts the attempt's signal and fails the attempt itself, as a `timeout`, `<id>: no reply within 600000 ms`, so a provider that ignores its signal cannot hold a review, and what it does after is ignored.
+- **The review's abort ends an attempt at once**, without waiting for the provider.
+- **The runtimes' own timers are off** on every request of the HTTP adapters: Bun's idle timer with `timeout: false`, and Node's 300-second header and body timeouts through a dispatcher of each request that hands it to Node's global one with both off, so a proxy agent an operator set still carries it. A long reply of a thinking model is no longer cut at 300 s.
+- **A proxy in front of a server can still cut one**: Cloudflare answers 524 after 125 s with no response, an AWS load balancer closes a connection idle for 60 s, and nginx's `proxy_read_timeout` is 60 s: [Local models](../90-recipes/10-local-models.md#long-replies-and-a-loading-model).
+
+### What a provider states
+
+- **`timeoutMs`** is a whole number of milliseconds from 1000 to 518400000, an own data field of the provider object, read once, when the quorum is created. A getter is never run and an inherited field states nothing, so a class sets it as a field. A provider that states none has 600000 ms.
+- **A value out of range is refused** where the provider is given, as the issue `ports.profiles.<id>.research.timeoutMs` or `ports.profiles.<id>.voters.<lens>.timeoutMs`: `must be a whole number of milliseconds from 1000 to 518400000`. The message never repeats the value.
 
 ## The adapters
 
@@ -80,7 +98,7 @@ const hosted = openaiCompatible({
 const code = claudeCode({ id: 'code', model: 'sonnet', contextTokens: 1000000 })
 ```
 
-Every HTTP adapter sends one JSON `POST` per call through the same hardened path, [The limits of a request](#the-limits-of-a-request), passes the request's signal to `fetch`, and reports in `usage` every prompt token the request carried, cached ones included, and every token the model generated, thinking included, from the counts its protocol sends: never a cost. The counts a protocol keeps apart, such as Anthropic's cache tokens or Gemini's thought tokens, are added in when they are numbers; a reply without both main counts as numbers reports no `usage`. A reply the adapter reads and then refuses, cut off at its token limit, refused or unusable, carries the same counts in its `ProviderError`'s `usage`, which the review counts: a status outside 2xx carries none. `claudeCode` sends no request of its own: it runs a process, [`claudeCode`](#claudecode), and is the one adapter that reports a cost.
+Every HTTP adapter sends one JSON `POST` per call through the same hardened path, [The limits of a request](#the-limits-of-a-request), passes the request's signal to `fetch` with the runtime's own timers off: [The deadline of an attempt](#the-deadline-of-an-attempt), and reports in `usage` every prompt token the request carried, cached ones included, and every token the model generated, thinking included, from the counts its protocol sends: never a cost. The counts a protocol keeps apart, such as Anthropic's cache tokens or Gemini's thought tokens, are added in when they are numbers; a reply without both main counts as numbers reports no `usage`. A reply the adapter reads and then refuses, cut off at its token limit, refused or unusable, carries the same counts in its `ProviderError`'s `usage`, which the review counts: a status outside 2xx carries none. `claudeCode` sends no request of its own: it runs a process, [`claudeCode`](#claudecode), and is the one adapter that reports a cost.
 
 ## Presets
 
@@ -572,7 +590,7 @@ Every message starts with the provider id. A quoted text is cut, written as a JS
 - **An abort sends SIGTERM to `claude`'s process group**, then SIGKILL `2000` ms later if it has not closed, and the call rejects as `aborted` once the directory is removed. Stdout past 16 MiB stops it the same way. When `claude` exits, SIGKILL goes to what is left of its group, since a helper that still holds its pipes would keep the call from settling, and `2000` ms after the exit its stdout and stderr are closed, so a helper that left the group (it called `setsid`) and holds them cannot keep the call from settling either: it is beyond quorum's reach and is left running. While a run is live, quorum's own exit sends SIGKILL to the group and removes the directory, which covers `process.exit` and a second interrupt but not a SIGKILL of quorum. Windows has no process groups, so there only `claude` is signalled, and the adapter is not tested there yet.
 - **It runs inside a Claude Code session too.** `CLAUDECODE=1` in the environment does no harm, which was checked live, and the parent session's own variables are removed: [The isolation](#the-isolation).
 - **One process per call.** The review's concurrency limit, 4 by default, bounds the calls in flight across every provider, so it bounds the `claude` processes too.
-- **No timeout is set.** Claude Code retries a failed API call by itself, for minutes, and a deadline is the program's own `signal`.
+- **The core's deadline covers the whole run**, 600000 ms unless the provider states one: at it, the child's group is stopped as an abort stops it. Claude Code retries a failed API call by itself, for minutes, inside that deadline.
 - **The version: 2.1.311 or newer.** The isolation rests on environment variables that an older Claude Code does not know, and one it ignores is a file mention that is not turned off. So before its first request a provider runs `claude --version`, with the request's environment, from the request's empty directory and with the request's signal, and the result is kept for the life of the process, once per command. A version below 2.1.311, or an output that does not start with `<major>.<minor>.<patch>`, fails the request as `process`: `Claude Code 2.1.311 or newer is required, found 2.1.310`. The version is quoted only when each of its parts is at most four digits, else the message reads `found an unknown version`, so nothing else `claude` printed comes with it. It has 10 seconds to answer: past them its process group is stopped as an abort stops one (SIGTERM, then SIGKILL `2000` ms later), the request's directory is removed and the request fails with `claude --version did not answer within 10 s`. A check that failed is run again by the next request, and a request that waits for a check another request started aborts on its own signal, without stopping that check. A Claude Code that lacks one of the flags fails the run too, closed. `bun run live:claude-code` checks the adapter against the real `claude`. You run it by hand, with Claude Code installed and logged in, and neither `bun run test` nor CI does: it makes four calls on `haiku`, each capped by `--max-budget-usd 0.05`: structured output from a directory that holds a planted `CLAUDE.md`, which shows the child runs in an empty directory of its own and not in that one, one in `prompt` mode, one whose message names a canary file with a random token as `@<its absolute path>`, which fails if the token comes back, and one that names a model that does not exist. It passed against Claude Code 2.1.311, at under a tenth of a cent.
 
 ### Claude Code configuration errors
@@ -628,7 +646,7 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 | `too-large` | A request may not fit the model's context, and the provider refused it before sending it: `<id>: may need <n> tokens, more than contextTokens (<c>): ...`, with the numbers [The size of a request](#the-size-of-a-request) explains. Not retryable. The review records it as a `request-too-large` gap, on research and on a vote alike, and never fails on it. `claudeCode` adds a message over its 10,000,000-byte stdin cap, and Claude Code's own refusal of a prompt as too long, which are gaps too: [The size of a Claude Code request](#the-size-of-a-claude-code-request) |
 | `process` | A `claude` that failed, exited or could not start: `claude exited 2: "..."`, `claude failed (...): "..."`, `could not start the claude CLI (ENOENT)`. Only `claudeCode` raises it |
 | `unsupported` | `claudeCode` refuses a request that is not exactly one user message, or whose message starts with `/`. Only `claudeCode` raises it |
-| `timeout` | Never: it is for other providers |
+| `timeout` | The core raises it at an attempt's deadline: `<id>: no reply within 600000 ms`, the id the provider had when the quorum was created |
 
 The core raises one more itself: a provider whose reply has no string `text` fails that call with `<id>: returned no reply text`, of kind `invalid-response`.
 
@@ -639,46 +657,28 @@ Quorum does not retry a call. A failed research call fails the review, unless it
 Any object of the port's shape is a provider. It must:
 
 - **return the model's raw text** in `text`, without parsing it: the core extracts and validates the JSON itself, and a reply it cannot use is a failed vote, or, for research, a failed review;
-- **honour `request.signal`**, settling soon after it aborts: stopping a call in flight is cooperative, so a review that was aborted can wait for a provider that ignores its signal;
+- **honour `request.signal`**, settling soon after it aborts: the core settles the call at its deadline or at the review's abort without waiting, and a provider that ignores the signal works on, outside the review, until it ends;
 - **throw when the call fails**, a `ProviderError` with the closest `kind` for preference. A vote records the message of any `Error`, and the text of anything else thrown;
 - **report `usage` only when it knows it**: `inputTokens` and `outputTokens`, and `costUsd` when it knows the price. It reports it on a reply it returns, and in the `usage` of the `ProviderError` it throws for a reply it read but cannot use, which the review counts as the failed call's;
 - **check the size of its own requests**: quorum states no context size for a provider object and counts nothing for it. A provider that refuses a request as too large throws a `ProviderError` of kind `too-large`, which the review records as a `request-too-large` gap, on research and on a vote alike, instead of a failure: [`ProviderError`](#providererror). The review recognises the refusal by an own `kind` property of `'too-large'`, not by class, so one raised by a second copy of quorum counts too.
 
-A provider can wrap another. Quorum sets no time limit on a call, so this one adds a limit to any provider that honours its signal, as the shipped adapters do, and reports a call that ran out of time as a `timeout`. It does not stop a provider that ignores its signal: it waits for that call to settle, however long it takes:
+A provider states its deadline with a `timeoutMs` field on its object: [What a provider states](#what-a-provider-states). A shipped adapter returns a plain object, so a spread keeps it and adds the field:
 
 ```ts
-import { ollama, ProviderError } from '@tobi-or-not/quorum'
-import type { Provider } from '@tobi-or-not/quorum'
+import { ollama } from '@tobi-or-not/quorum'
 
-/** The same provider, with every call stopped after `ms` milliseconds. */
-function withTimeout(inner: Provider, ms: number): Provider {
-  return {
-    id: inner.id,
-    model: inner.model,
-    async complete(request) {
-      const timeout = AbortSignal.timeout(ms)
-      const signal = request.signal === undefined
-        ? timeout
-        : AbortSignal.any([request.signal, timeout])
-      try {
-        return await inner.complete({ ...request, signal })
-      } catch (error) {
-        if (!timeout.aborted || request.signal?.aborted) throw error
-        throw new ProviderError({ providerId: inner.id, kind: 'timeout', message: `no reply within ${ms} ms` })
-      }
-    },
-  }
+const voter = {
+  ...ollama({
+    id: 'voter',
+    baseUrl: 'http://localhost:11434',
+    model: 'qwen3.6:27b',
+    contextTokens: 131072
+  }),
+  timeoutMs: 120_000
 }
-
-const voter = withTimeout(ollama({
-  id: 'voter',
-  baseUrl: 'http://localhost:11434',
-  model: 'qwen3.6:27b',
-  contextTokens: 131072
-}), 120_000)
 ```
 
-A vote that runs out of time is then a failed vote, `voter: no reply within 120000 ms`, and a review aborted by its own signal still rejects with that signal's reason.
+A vote with no reply within two minutes is then a failed vote, `voter: no reply within 120000 ms`, and a review aborted by its own signal still rejects with that signal's reason.
 
 ## Next
 
