@@ -131,10 +131,10 @@ export interface IncompleteEntry {
   detail: string
 }
 
-/** Why a file is in `meta.leftOut`: its change reaches the models only as binary, or as a submodule's commit. */
-export type LeftOutReason = 'binary' | 'submodule'
+/** Why a file is in `meta.leftOut`: an `exclude` pattern matches it, or its change reaches the models only as binary, or as a submodule's commit. */
+export type LeftOutReason = 'excluded' | 'binary' | 'submodule'
 
-/** A file whose change the diff does not carry, and which the review therefore left out. */
+/** A file the review left out: one an `exclude` pattern matches, which is no gap, or one whose change the diff does not carry, which is a gap of every profile. */
 export interface LeftOutFile {
   /** The diff's own path, decoded; '' for a part of the diff that no `diff --git` header names. */
   file: string
@@ -195,7 +195,7 @@ export interface QuorumMeta {
   usage?: Usage
   /** Gaps that are not findings. An entry here, or an unreviewed finding, makes the review incomplete. */
   incomplete: IncompleteEntry[]
-  /** The files whose change the diff does not carry, in the diff's order, once per file and reason. Each is also a gap of every profile. */
+  /** The files the review left out, in the diff's order, once per file and reason. Each, but an excluded one, is also a gap of every profile. */
   leftOut: LeftOutFile[]
   /** Advisory signals the harness read from the diff: where a human should look. They change no verdict and no exit code. */
   flags: Flag[]
@@ -218,6 +218,8 @@ export interface QuorumOptions {
   readonly concurrency?: number
   /** How many findings of a research reply each profile sends to the panel; `DEFAULT_MAX_FINDINGS` when unset. */
   readonly maxFindings?: number
+  /** Path patterns of the files left out of every request; none when unset. */
+  readonly exclude?: readonly string[]
 }
 
 /** A quorum built by createQuorum: its profiles compiled once, ready to review any number of diffs. */

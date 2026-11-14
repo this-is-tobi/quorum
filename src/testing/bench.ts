@@ -491,6 +491,7 @@ export const RESULT: QuorumResult = (() => {
       ...base.meta,
       usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.001 },
       leftOut: [
+        { file: 'package-lock.json', reason: 'excluded' },
         { file: 'logo.png', reason: 'binary' },
       ],
       flags: [

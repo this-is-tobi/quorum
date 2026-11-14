@@ -11,6 +11,7 @@ interface QuorumOptions {
   readonly profiles: readonly Profile[]
   readonly concurrency?: number
   readonly maxFindings?: number
+  readonly exclude?: readonly string[]
 }
 
 interface QuorumPorts {
@@ -36,6 +37,7 @@ interface Quorum {
 | `profiles` | The profiles to run: at least one, ids unique | Required |
 | `concurrency` | The most provider calls in flight at once in one review, shared by every profile; a positive integer | `4` |
 | `maxFindings` | The most findings of a research reply each profile reads, the only ones that can reach its panel; a positive integer | `50` |
+| `exclude` | Path patterns of the files left out of every request: `*` and `?` within a name, `**` for whole directories, no `/` to match a file name in any directory, a leading `/` for the root. Each file excluded reaches no model and is listed in `meta.leftOut` as `excluded`, never as a gap. At most 100 patterns, each at most 256 characters | None |
 | `ports.profiles` | One entry per profile, keyed by profile id: `research`, its research provider, and `voters`, one provider per lens keyed by lens id | Required |
 | `ports.events` | The event sink: a function that receives every event of every review | None |
 
@@ -52,6 +54,8 @@ One provider object may fill several ports: the research provider of a profile c
 | `profiles.<index>`, `<id>` and below | The profile's own issues: [The checks](../20-using/40-profiles.md#the-checks) |
 | `profiles.<index>.id` | `repeats the profile id "security"` |
 | `concurrency`, `maxFindings` | `must be a positive integer, got 0`, the value quoted when it is a number |
+| `exclude` | `must be an array`, or `must hold at most 100 patterns` |
+| `exclude.<index>` | `must be a string`, or what to write instead: `must not be empty`, `must be at most 256 characters long`, `ends with /, so it matches no file: end it with /** to leave out what the directory holds`, `holds ** inside a name: …`, `holds \, which escapes nothing here: …`, `holds !, which negates nothing here: …` or `holds {, which lists no alternatives here: …` |
 | `ports.profiles` | `must be an object keyed by profile id` |
 | `ports.profiles.<id>` | `is missing`, `must be an object with a research provider and voters`, or `names no profile of the run` |
 | `ports.profiles.<id>.research` | `is missing`, or `must be a provider: an object with a string id, a string model and a complete function` |
@@ -73,7 +77,7 @@ ports.events: must be a function
 
 ### The snapshot
 
-Each profile is compiled once, when the quorum is created: its vote template rendered for each lens, its thresholds resolved, and its providers captured beside the `{ id, model }` each had then, which is what events and `meta` report. A later change to a profile, or to which provider a port names, is never seen by a review of that quorum. The provider objects themselves are called as they are.
+Each profile is compiled once, when the quorum is created: its vote template rendered for each lens, its thresholds resolved, and its providers captured beside the `{ id, model }` each had then, which is what events and `meta` report. A later change to a profile, to `exclude`, or to which provider a port names, is never seen by a review of that quorum. The provider objects themselves are called as they are.
 
 ### `warnings`
 
@@ -87,7 +91,7 @@ const result = await quorum.review({ diff }, {
 })
 ```
 
-- **`diff`** is the unified diff, as a string. A blank one runs no stage and calls no model; the review still sends `run:start` and `run:end`, and resolves with empty lists.
+- **`diff`** is the unified diff, as a string. A blank one, or one whose every file `exclude` leaves out, runs no stage and calls no model; the review still sends `run:start` and `run:end`, and resolves with empty lists.
 - **`signal`**, optional, stops the review: [Abort](#abort).
 - **A quorum reviews any number of diffs**, one per call. Each review has its own concurrency limit and its own signal, and several may run at once.
 

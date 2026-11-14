@@ -18,11 +18,11 @@ const SUBMODULE_LINE_START = 'Submodule '
 /** The characters a hunk row starts with, the only ones that can come before `Subproject commit`. */
 const ROW_MARKERS = '+- '
 
-/** What a review covers of a diff: the diff every stage reads, and the files whose change it does not carry. */
+/** What a review covers of a diff: the diff every stage reads, and the files it leaves out. */
 export interface ReviewScope {
-  /** The diff every stage reads. */
+  /** The diff every stage reads: the given one less the excluded sections. */
   readonly diff: string
-  /** The files whose change the diff does not carry, in the diff's order, once per file and reason. */
+  /** The files left out, excluded or with a change the diff does not carry, in the diff's order, once per file and reason. */
   readonly leftOut: LeftOutFile[]
 }
 
@@ -59,9 +59,9 @@ function markersOf(text: string): Markers {
 }
 
 /**
- * What a review covers of a diff: the files whose change the diff does not carry, found from the
- * markers git prints in their place, each section read line by line (a trailing `\r` is dropped), so a
- * Windows-made diff reads as any other. In each section:
+ * What a review covers of a diff: the files `excluded` leaves out, and the files whose change the
+ * diff does not carry, found from the markers git prints in their place, each section read line by
+ * line (a trailing `\r` is dropped), so a Windows-made diff reads as any other. In each section:
  * - a `binary` file shows as a line that starts with `Binary files ` and ends with ` differ`, or one
  *   that starts with `GIT binary patch`;
  * - a `submodule` shows as a `Subproject commit` row (past at most one leading `+`, `-` or space), a
@@ -70,19 +70,27 @@ function markersOf(text: string): Markers {
  * - a `Submodule` line, which git's `log` and `diff` formats print in place of a header, at the end of
  *   the section before it, lists a `submodule` under the empty name, whatever section holds it.
  *
- * A file is listed by the diff's own path, decoded, in the diff's order, once per file and reason. The
- * empty name stands for a part of the diff that no `diff --git` header names: the text before the
+ * A file is listed by the diff's own path, decoded, in the diff's order, once per file and reason.
+ * `excluded` is asked once per distinct path a header names; a section it takes is listed as
+ * `excluded`, leaves the scope's `diff` and has its own markers left unread, but its `Submodule`
+ * lines still list their submodule, since such a line belongs to no section. Nothing a header does
+ * not name is ever excluded: the text before the first header, a diff without such headers and a
+ * header that names no path quorum reads.
+ *
+ * The empty name stands for a part of the diff that no `diff --git` header names: the text before the
  * first header, a diff without such headers, a header that names no path quorum reads, and a
  * `Submodule` line. A readable header never names the empty path, so it is never a file's.
  *
  * Detection is generous: a line of the same form elsewhere, such as a commit message line of a
  * `format-patch` series, lists the file whose section holds it, since a gap it should not have stops a
  * review for a person to look, where a missed one would pass a change unread. The scope's `diff` is
- * the given string.
+ * the given string itself when no section was excluded, the kept sections joined by line feeds when
+ * some were, and '' when every section was.
  */
-export function reviewScope(diff: string): ReviewScope {
+export function reviewScope(diff: string, excluded: (path: string) => boolean = () => false): ReviewScope {
   const leftOut: LeftOutFile[] = []
   const listed: Record<LeftOutReason, Set<string>> = {
+    excluded: new Set(),
     binary: new Set(),
     submodule: new Set(),
   }
@@ -91,17 +99,38 @@ export function reviewScope(diff: string): ReviewScope {
     listed[reason].add(file)
     leftOut.push({ file, reason })
   }
-  for (const { path, text } of diffSections(diff)) {
+  const answers = new Map<string, boolean>()
+  const isExcluded = (path: string): boolean => {
+    let answer = answers.get(path)
+    if (answer === undefined) {
+      answer = excluded(path)
+      answers.set(path, answer)
+    }
+    return answer
+  }
+  const sections = diffSections(diff)
+  const kept: string[] = []
+  for (const { path, text } of sections) {
     const markers = markersOf(text)
-    if (markers.binary) list(path ?? '', 'binary')
-    if (markers.submodule) list(path ?? '', 'submodule')
+    if (path !== undefined && path !== '' && isExcluded(path)) {
+      list(path, 'excluded')
+    } else {
+      kept.push(text)
+      if (markers.binary) list(path ?? '', 'binary')
+      if (markers.submodule) list(path ?? '', 'submodule')
+    }
     if (markers.submoduleLine) list('', 'submodule')
   }
-  return { diff, leftOut }
+  return {
+    diff: kept.length === sections.length
+      ? diff
+      : kept.join('\n'),
+    leftOut,
+  }
 }
 
-/** How a gap's detail names what it counts. */
-const GAP_THINGS: Readonly<Record<LeftOutReason, string>> = {
+/** How a gap's detail names what it counts. An excluded file is no gap, so `excluded` has no entry. */
+const GAP_THINGS: Readonly<Record<Exclude<LeftOutReason, 'excluded'>, string>> = {
   binary: 'binary file(s)',
   submodule: 'submodule(s)',
 }

@@ -79,11 +79,12 @@ A usage count is valid when it is a finite number of at least 0. A failed call's
 
 | Field | Type | Holds |
 | --- | --- | --- |
-| `file` | string | The diff's own path of the file, as the `diff --git` header names it, decoded from git's quoting: the new path of a rename, the old one of a deletion. `""` for a part of the diff that no header names: the text before the first header, a diff without such headers, a section whose header names no path quorum reads, such as a rename under `--no-prefix`, and a submodule that git's `log` or `diff` format prints as a `Submodule` line. A readable header never names `""`, and no file of a change has an empty path, so the empty name is never a file's |
+| `file` | string | The diff's own path of the file, as the `diff --git` header names it, decoded from git's quoting: the new path of a rename, the old one of a deletion. `""` for a part of the diff that no header names: the text before the first header, a diff without such headers, a section whose header names no path quorum reads, such as a rename under `--no-prefix`, and a submodule that git's `log` or `diff` format prints as a `Submodule` line. A readable header never names `""`, and no file of a change has an empty path, so the empty name is never a file's. A part of the diff with no path is never excluded |
 | `reason` | string | Why the review left it out, below |
 
 | `reason` | Why the review left the file out |
 | --- | --- |
+| `excluded` | An `exclude` pattern of the review matches its path, so its section reached no model, the size guard did not count it, and a finding that cites it was dropped as outside the diff. It is no gap: leaving it out was the operator's choice |
 | `binary` | The diff shows its change only as `Binary files <a> and <b> differ`, or as a `GIT binary patch` block, with none of the content. Git prints it for a file that holds a NUL byte near its start, or that an attribute marks `-diff`: the change's own `.gitattributes` included, when the diff is made in its checkout |
 | `submodule` | The diff shows a submodule's change only as its commit: its `Subproject commit` lines, a header of mode `160000`, or a `Submodule` line, and none of its code |
 
