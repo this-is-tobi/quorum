@@ -214,6 +214,7 @@ describe('buildReport', () => {
       quorum: '0.2.0',
       reviewHash: RUN_SUITE.reviewHash,
       scoringHash: RUN_SUITE.scoringHash,
+      firstScoringHash: RUN_SUITE.firstScoringHash,
       trials: 2,
       window: 3,
       bugCases: 2,
@@ -504,6 +505,23 @@ describe('reportMarkdown', () => {
     const markdown = reportMarkdown(report)
     expect(markdown).toContain('\n- 1: mean phi 0.80 over 1 lens pair and 9 findings; 1.15 effective votes of 3\n')
     expect(markdown).toContain('\n- 2: no pair of lenses whose errors both vary, over 1 finding\n')
+  })
+
+  it('says in one line that a run was re-scored, naming the scoring hash it began with, and says nothing of it otherwise', () => {
+    const first = `sha256:${'3'.repeat(64)}`
+    const report = buildReport({
+      ...INPUT,
+      suite: { ...INPUT.suite, firstScoringHash: first },
+    })
+    expect(report.firstScoringHash).toBe(first)
+    expect(reportMarkdown(report)).toContain([
+      `Scored under the review hash ${RUN_SUITE.reviewHash} and the scoring hash ${RUN_SUITE.scoringHash}.`,
+      '',
+      `Re-scored: the run began under the scoring hash ${first}; its reviews, of the same patches, are scored here under the scoring hash above.`,
+      '',
+      'A review counts when',
+    ].join('\n'))
+    expect(reportMarkdown(buildReport(INPUT))).not.toContain('Re-scored')
   })
 
   it('names the attack cases among the kinds', () => {

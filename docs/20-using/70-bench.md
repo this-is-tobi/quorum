@@ -79,7 +79,7 @@ Run directory: quorum-bench/bugs
 Dry run: no review was run, and nothing was written.
 ```
 
-On a run directory that holds records, `recorded` counts the reviews already there and `to run` those left, with `(<n> of them again)` for the recorded ones `--retry-incomplete` runs again. Each profile of a configuration names the provider that researches and the one that votes, by model and origin, as the banner of a review does ([stdout and stderr](./10-cli.md#stdout-and-stderr)). A configuration's own warnings print before the plan, one line each, as `warning: configuration <i>: <text>`.
+On a run directory that holds records, `recorded` counts the reviews already there and `to run` those left, with `(<n> of them again)` for the recorded ones `--retry-incomplete` runs again. Each profile of a configuration names the provider that researches and the one that votes, by model and origin, as the banner of a review does ([stdout and stderr](./10-cli.md#stdout-and-stderr)). A configuration's own warnings print before the plan, one line each, as `warning: configuration <i>: <text>`. A line `Scoring:` follows when `suite.yaml` is not the one the run began with, so its recorded reviews are scored again: [Re-scoring](#re-scoring).
 
 ### Progress and the report
 
@@ -215,6 +215,7 @@ A bug your project fixed is a case: the patch is the commit that introduced it. 
 4. **Say where it comes from.** `repo`, the two commits, and a `note` for the weakness; a `date` as above.
 5. **Add controls.** A control is a commit of the same project that you know no flaw in, with no `locations`. Every kept finding on it is unmatched, which is the nearest thing a bench has to a rate of false alarms.
 6. **Check it.** `quorum bench --dry-run my-suite` validates the whole suite, every location included, and costs nothing.
+7. **Correct it after a run.** A run can show a location to be off, a finding at the sink of a missing check a few lines past it, say. Correct it in `suite.yaml`, check it with `--dry-run`, and run the same command on the same `--out`: its recorded reviews are scored again, with no call ([Re-scoring](#re-scoring)). A patch written again is another run.
 
 A commit can change files that should not go into a patch that is sent to a model and kept in a repository: a lockfile, a generated file, or a test fixture that holds a key or a secret. Leave them out with `:(exclude)` pathspecs, and say so in the case's `note`:
 
@@ -230,7 +231,7 @@ A run keeps everything in one directory, `--out`, which is `quorum-bench/<suite 
 
 | File | Holds |
 | --- | --- |
-| `run.json` | Written once, whole, when the run begins: the quorum version, the suite's name, its review hash and its scoring hash, the scoring hash the run began with, the run's salt, and each configuration's path as given and its fingerprint |
+| `run.json` | Written whole when the run begins, and again when a re-score records the suite's new scoring hash: the quorum version, the suite's name, its review hash and its scoring hash, the scoring hash the run began with, the run's salt, and each configuration's path as given and its fingerprint |
 | `results.jsonl` | One line per review that resolved or that a model's reply denied, appended as it ends: the configuration's fingerprint, the case, the trial, the latency, the calls and failed calls, the usage, a failed call's included when its reply reported counts, whether every call reported a cost, and the review's full result, as the review command prints it, or for a denied review which denial it was: `unusable-reply`, `refusal` or `truncated` |
 | `report.md`, `report.json` | The report of the last run that ended with exit `0`, exit `4` or an interrupt after its checks and its plan, rewritten whole; a dry run writes neither. A run that exits `3` rewrites neither, so after one they show an earlier run |
 
@@ -244,7 +245,7 @@ One file is not counted: the temporary file of `run.json` that a run killed whil
 
 `--out` as a symbolic link, or as anything but a directory, is refused too (`Error: --out: is a symbolic link`). Its parents may be links, since they are your own path. No write follows a symbolic link: `results.jsonl` is opened without following one, and every other file is written whole to a new file that is renamed over its name, which replaces a link at that name and never writes through it. `results.jsonl` holds each review's full result, the text models wrote about each patch among it, so treat it as the review command's result is treated: [Output handling](../30-security/30-output-handling.md#text-an-attacker-can-influence).
 
-The bench makes `run.json` and `results.jsonl` readable and writable by their owner only (mode `0600`), and the files of a run being resumed keep their modes. The reports are made as any new file is, since they hold numbers, suite ids and config paths, never text a model wrote, and are made to be shared; `run.json` and `results.jsonl` never are. A copy of the directory, in a CI artifact, an archive or a commit, usually drops the mode, while the salt travels with `run.json`, so share the reports alone. A run directory an earlier quorum made keeps the modes it was made with, usually `0644`, and this quorum does not resume it (a run belongs to one build, see [Resuming](#resuming)), so nothing changes them: `chmod 600` its `run.json` and `results.jsonl`, or delete it.
+The bench makes `run.json` and `results.jsonl` readable and writable by their owner only (mode `0600`), and the files of a run being resumed keep their modes, but for a re-score's `run.json`, which is written again with that mode. The reports are made as any new file is, since they hold numbers, suite ids and config paths, never text a model wrote, and are made to be shared; `run.json` and `results.jsonl` never are. A copy of the directory, in a CI artifact, an archive or a commit, usually drops the mode, while the salt travels with `run.json`, so share the reports alone. A run directory an earlier quorum made keeps the modes it was made with, usually `0644`, and this quorum does not resume it (a run belongs to one build, see [Resuming](#resuming)), so nothing changes them: `chmod 600` its `run.json` and `results.jsonl`, or delete it.
 
 ### Resuming
 
@@ -254,7 +255,7 @@ A run directory begun with other settings is refused with exit `2`, and the diff
 
 ```text
 Error: run.json: was written by quorum 0.3.0, and this is quorum 0.4.0: a run belongs to one build, so name a new --out
-run.json: the suite's suite.yaml or patches changed since the run began: name a new --out
+run.json: the suite's case ids, trials or patches changed since the run began: name a new --out
 --config: qwen.yaml is not one of the run's configurations
 run.json: its configuration old.yaml is not given
 ```
@@ -262,8 +263,29 @@ run.json: its configuration old.yaml is not given
 Each line shows when it applies. A suite of another name reads `run.json: is a run of the suite <name>, not <name>: name a new --out`, and a configuration given again with other settings, whether its file was edited or another `--profile` selects other profiles, reads `--config: the settings of qwen.yaml changed since the run began: name a new --out` in place of the two lines a configuration added and one left out would give. The usual resolution, with no `--config`, is named `(default configuration)`. They mean:
 
 - **A run belongs to one build of quorum.** A release can change what a review does without changing a fingerprint, since a preset's defaults and the code that builds a request are not in it, so the quorum version is checked first. The version does not change between development commits, so after you change quorum's own code, start a new `--out`.
-- **A run belongs to one suite as it was.** Its two hashes cover `suite.yaml`, a `note` included, and each patch a case names. Change any byte of them and the run is another one.
+- **A run belongs to its suite's cases and patches.** The review hash covers what a review's requests depend on and which reviews the run holds: the case ids, the suite's `trials` and the bytes of each case's patch. Add a case, rename one, change `trials` or a byte of a patch, and the run is another one. To add trials to a run, pass `--trials`.
+- **The rest of `suite.yaml` only scores.** The scoring hash covers the bytes of `suite.yaml`: the kinds, the locations, the `window`, an attack case's fields and decoys, the provenance and the notes, and the comments and the layout too. A suite changed there alone is the same run, re-scored: [Re-scoring](#re-scoring).
 - **A run belongs to its set of configurations.** One added or left out is refused, and so is one whose settings changed, since its fingerprint no longer matches; the message says which of the three it is, and for a change not which setting, since the run keeps only the fingerprint. The same set in another order is the same run, and the first `--config` is the reference of the report either way.
+
+### Re-scoring
+
+A suite's locations are written by hand, and a run can show one to be off: a model that points at the sink of a missing check, a few lines past the location, counts as a miss. Correct the location in `suite.yaml` and run the same command again. A resume whose suite changed in `suite.yaml` alone, and in none of its case ids, its `trials` or its patches, scores its recorded reviews again under the suite as it is now, and calls no model for them:
+
+```text
+Reviews: 40 planned, 40 recorded, 0 to run, at most 1 at a time
+Scoring: suite.yaml changed since the run began; its recorded reviews are scored again under it, with no call
+```
+
+- **A record holds what a review returned, never its score.** Every run scores the records it reads, so a corrected location, kind or `window` changes the numbers of the reviews already recorded. The reviews the run does not hold yet still run: one that failed, a trial `--trials` adds, and one `--retry-incomplete` runs again.
+- **`run.json` keeps the scoring hash the run began with.** A re-score writes the new scoring hash beside it and changes nothing else in it. Put `suite.yaml` back as it was and the run is scored as at the start, and no longer reads as re-scored.
+- **The report says so.** Its header names the review hash and the scoring hash it was scored under. While `suite.yaml` is not the one the run began with, one more line names the scoring hash the run began with, so a number you publish carries its re-scoring with it:
+
+  ```text
+  Re-scored: the run began under the scoring hash sha256:c1f82adb3de98627658ee13b04f9e222de59d7b2d1dc81189daa14acc1fa1f88; its reviews, of the same patches, are scored here under the scoring hash above.
+  ```
+
+- **Any byte of `suite.yaml` counts.** A comment or the cases in another order change the scoring hash too, and read as a re-score whose numbers are the same.
+- **The suite is validated first.** A correction the validation refuses, such as a location outside a hunk or a decoy within twice a wider `window` of a location, stops the run with exit `2` before the run directory is read, and leaves it as it was. `--dry-run` prints the `Scoring:` line and writes nothing.
 
 ### The fingerprint
 
@@ -333,7 +355,7 @@ Each line pairs the cases both configurations scored and is its own exact sign t
 - 2, tokens per review: +19000; 0 better, 10 worse, 0 tied; p = 0.0020, resolved
 ```
 
-The line after the counts names the suite the report was scored under, by its two hashes: the review hash, of the case ids, the suite's `trials` and each case's patch, which the models saw, and the scoring hash, of the bytes of `suite.yaml`. Give both with a number you publish.
+The line after the counts names the suite the report was scored under, by its two hashes: the review hash, of the case ids, the suite's `trials` and each case's patch, which the models saw, and the scoring hash, of the bytes of `suite.yaml`. Give both with a number you publish. A run re-scored since it began has one more line, which names the scoring hash it began with: [Re-scoring](#re-scoring).
 
 ### The table
 
@@ -390,7 +412,7 @@ The section gives no interval, and the report names no profile.
 
 ### `report.json`
 
-The same numbers as the table and the lines, the suite's `reviewHash` and `scoringHash`, plus each case's scores for each configuration, which are the inputs of every line: a reader can recompute any of them. It holds numbers, suite ids and config paths, and never text a model wrote.
+The same numbers as the table and the lines, the suite's `reviewHash` and `scoringHash`, and `firstScoringHash`, the scoring hash the run began with, plus each case's scores for each configuration, which are the inputs of every line: a reader can recompute any of them. It holds numbers, suite ids and config paths, and never text a model wrote.
 
 ## What a run costs
 
