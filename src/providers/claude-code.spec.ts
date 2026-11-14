@@ -15,7 +15,7 @@ import { CONTEXT_REQUIRED } from './options.ts'
 import { replyFailure } from './reply.ts'
 
 const options: ClaudeCodeOptions = { id: 'cc', model: 'sonnet', contextTokens: 200000 }
-/** The deadline per attempt and the retries a provider with neither option hands Claude Code. */
+/** The wait for each attempt's headers and the retries a provider with neither option hands Claude Code. */
 const ATTEMPTS = { timeoutMs: 600_000, retries: 2 }
 const ISOLATED = [
   '--tools',
@@ -268,7 +268,7 @@ describe('childEnv', () => {
     expect(childEnv(Object.create({ ANTHROPIC_API_KEY: 'inherited' }) as Record<string, string>, 'inherit', undefined, '/t', ATTEMPTS)).toEqual({ ...ISOLATION, CLAUDE_CODE_TMPDIR: '/t' })
   })
 
-  it('sets Claude Code\'s own deadline per attempt and its own retries from the provider\'s, over the environment\'s, in any letter case', () => {
+  it('sets Claude Code\'s own wait for each attempt\'s headers and its own retries from the provider\'s, over the environment\'s, in any letter case', () => {
     expect(childEnv({ PATH: '/usr/bin', API_TIMEOUT_MS: '1', claude_code_max_retries: '10' }, 'inherit', undefined, '/t', { timeoutMs: 120_000, retries: 0 })).toEqual({
       PATH: '/usr/bin',
       ...ISOLATION,
@@ -1092,7 +1092,7 @@ describe('claudeCode', () => {
     expect(() => claudeCode({ ...options, auth: 'bearer' as never })).toThrow('cc.auth: must be inherit, login or api-key')
   })
 
-  it('states no retry to the core, and a deadline that covers every one of Claude Code\'s own attempts', () => {
+  it('states no retry to the core, and one deadline for the whole run, timeoutMs times retries plus one', () => {
     const stated = (fields: Partial<ClaudeCodeOptions>) => {
       const { timeoutMs, retries } = claudeCode({
         ...options,

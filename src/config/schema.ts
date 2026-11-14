@@ -75,7 +75,7 @@ const providerShape = {
   maxTokens: z.int().min(1).optional().describe('The most tokens the reply may hold'),
   maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']).optional().describe('The body field that carries maxTokens, on the openai-compatible protocol'),
   systemPrompt: z.enum(['native', 'inline']).optional().describe('Where the instructions go: the protocol\'s system field, or inline in the first message'),
-  timeoutMs: z.int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe('The deadline of one attempt of a call, in milliseconds; 600000 when unset'),
+  timeoutMs: z.int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe('The deadline of one attempt of a call, in milliseconds; 600000 when unset. On claude-code, Claude Code\'s wait for each attempt\'s response headers, and the whole run\'s deadline is timeoutMs times retries plus one'),
   retries: z.int().min(0).max(MAX_RETRIES).optional().describe('How many times a call that failed in passing is tried again; 2 when unset'),
   args: z.array(z.string()).optional().describe('On claude-code, extra claude flags, each with its value: --effort, --fallback-model, --max-budget-usd, or --betas with auth api-key'),
 }
