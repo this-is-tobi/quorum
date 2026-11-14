@@ -9,11 +9,11 @@ import type { ConfigIssue } from './errors.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
 import { diffFlags } from './flags.ts'
 import { isRecord } from './output.ts'
-import { MAX_STATED_TIMEOUT_MS, timeoutProblem } from './ports.ts'
+import { MAX_STATED_TIMEOUT_MS, retriesProblem, timeoutProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts } from './ports.ts'
 import { profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
 import { renderTemplate } from './prompts.ts'
-import { elapsed, ownData, stage, targetOf } from './stages/context.ts'
+import { addUsage, elapsed, ownData, stage, targetOf } from './stages/context.ts'
 import type { ProfileRun, RunContext } from './stages/context.ts'
 import { dedup } from './stages/dedup.ts'
 import { panel } from './stages/panel.ts'
@@ -54,11 +54,11 @@ interface Tally {
  * profile's own issues, a repeated profile id, a `concurrency` or `maxFindings` that is not a
  * positive integer, an `exclude` that is not a list of at most 100 patterns that can be taken, a
  * missing or malformed research provider or voter, a provider's stated `timeoutMs` that is not a
- * whole number of milliseconds from 1000 to 518400000, ports for a profile or a lens the run does
- * not have (a likely typo), and an event sink that is not a function. Ports are
- * checked only for the profiles that have no issue of their own, and not at all when `profiles` is
- * not an array. Every record keyed by a caller's id is read as an own property, since `constructor`
- * is a valid id.
+ * whole number of milliseconds from 1000 to 518400000 or `retries` that is not a whole number from
+ * 0 to 5, ports for a profile or a lens the run does not have (a likely typo), and an event sink
+ * that is not a function. Ports are checked only for the profiles that have no issue of their own,
+ * and not at all when `profiles` is not an array. Every record keyed by a caller's id is read as an
+ * own property, since `constructor` is a valid id.
  *
  * Each profile is compiled into a frozen `ProfileRun`, its instructions rendered, its thresholds
  * resolved and its providers captured, and `exclude` is compiled into a matcher, so later changes to
@@ -270,16 +270,6 @@ function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
   return issues
 }
 
-/** The usage of one more call added to a running total; `costUsd` is summed over the calls that reported one. */
-function addUsage(total: Usage | undefined, call: Usage): Usage {
-  const sum: Usage = { inputTokens: (total?.inputTokens ?? 0) + call.inputTokens, outputTokens: (total?.outputTokens ?? 0) + call.outputTokens }
-  const costUsd = call.costUsd === undefined
-    ? total?.costUsd
-    : (total?.costUsd ?? 0) + call.costUsd
-  if (costUsd !== undefined) sum.costUsd = costUsd
-  return sum
-}
-
 /** Who reviews for a profile, as new objects the caller may keep or change: never the frozen refs of the run. */
 function providersOf(run: ProfileRun): ProfileProviders {
   return {
@@ -443,7 +433,10 @@ function profilePortIssues(entries: Record<string, unknown>, profile: Profile): 
   return issues
 }
 
-/** The issues of one provider: it is missing, it is not one, or the `timeoutMs` it states, as own data, is out of range. */
+/**
+ * The issues of one provider: it is missing, it is not one, or the `timeoutMs` or the `retries` it
+ * states, as own data, is out of range.
+ */
 function providerIssues(path: string, value: unknown): ConfigIssue[] {
   if (value === undefined) {
     return [
@@ -455,15 +448,18 @@ function providerIssues(path: string, value: unknown): ConfigIssue[] {
       { path, message: PROVIDER_SHAPE },
     ]
   }
-  const stated = ownData(value, 'timeoutMs')
-  const problem = stated === undefined
+  const issues: ConfigIssue[] = []
+  const timeoutMs = ownData(value, 'timeoutMs')
+  const timeout = timeoutMs === undefined
     ? undefined
-    : timeoutProblem(stated, MAX_STATED_TIMEOUT_MS)
-  return problem === undefined
-    ? []
-    : [
-        { path: `${path}.timeoutMs`, message: problem },
-      ]
+    : timeoutProblem(timeoutMs, MAX_STATED_TIMEOUT_MS)
+  if (timeout !== undefined) issues.push({ path: `${path}.timeoutMs`, message: timeout })
+  const retries = ownData(value, 'retries')
+  const retry = retries === undefined
+    ? undefined
+    : retriesProblem(retries)
+  if (retry !== undefined) issues.push({ path: `${path}.retries`, message: retry })
+  return issues
 }
 
 /** A provider is a non-null object with a string id, a string model and a complete function. */

@@ -38,7 +38,7 @@ interface Quorum {
 | `concurrency` | The most provider calls in flight at once in one review, shared by every profile; a positive integer | `4` |
 | `maxFindings` | The most findings of a research reply each profile reads, the only ones that can reach its panel; a positive integer | `50` |
 | `exclude` | Path patterns of the files left out of every request ([Excludes](../20-using/20-configuration.md#excludes)). Each file excluded reaches no model and is listed in `meta.leftOut` as `excluded`, never as a gap. At most 100 patterns, each at most 256 characters | None |
-| `ports.profiles` | One entry per profile, keyed by profile id: `research`, its research provider, and `voters`, one provider per lens keyed by lens id. A provider may state its `timeoutMs`: [What a provider states](../20-using/30-providers.md#what-a-provider-states) | Required |
+| `ports.profiles` | One entry per profile, keyed by profile id: `research`, its research provider, and `voters`, one provider per lens keyed by lens id. A provider may state its `timeoutMs` and its `retries`: [What a provider states](../20-using/30-providers.md#what-a-provider-states) | Required |
 | `ports.events` | The event sink: a function that receives every event of every review | None |
 
 One provider object may fill several ports: the research provider of a profile can also be every one of its voters.
@@ -62,6 +62,7 @@ One provider object may fill several ports: the research provider of a profile c
 | `ports.profiles.<id>.voters` | `is missing`, or `must be an object keyed by lens id` |
 | `ports.profiles.<id>.voters.<lens>` | `is missing`, the provider message above, or `names no lens of the profile` |
 | `ports.profiles.<id>.research.timeoutMs`, `ports.profiles.<id>.voters.<lens>.timeoutMs` | `must be a whole number of milliseconds from 1000 to 518400000` |
+| `ports.profiles.<id>.research.retries`, `ports.profiles.<id>.voters.<lens>.retries` | `must be a whole number from 0 to 5` |
 | `ports.events` | `must be a function` |
 
 A port for a profile or a lens the review does not have is refused, as a likely typo. A profile's ports are checked only when the profile itself has no issue, and no port is checked when `profiles` is not an array. Every record keyed by an id is read through its own properties, so `constructor` is as valid an id as any other. For the security profile with `concurrency: 0`, `maxFindings: 2.5`, a research port that is not a provider, its `defenses` voter missing and one named `typo` instead, a port for a profile named `other`, and a sink that is a string, the message reads:
@@ -119,7 +120,7 @@ The sink receives every event of a review, synchronously and in order, as each t
 | `flag` | `flag`, as `meta.flags` holds it: [A flag](./20-json-result.md#a-flag) | Once per flag, after `run:start`, the `left-out` event and the gaps, before any stage |
 | `stage:start` | `profile`; `stage`: `research`, `dedup` or `panel` | When a stage of a profile starts |
 | `stage:end` | `profile`, `stage`; `durationMs`, the stage's wall-clock time, waits for a concurrency slot included; `count`, the findings it produced, or the verdicts for `panel` | When that stage ends |
-| `call` | `profile`; `role`: `research` or `vote`; `lens`, for a vote; `provider`, its `{ id, model }`; `durationMs`, the provider's latency inside its slot; `ok`; `usage`, when the counts its reply reported are valid: a call that succeeded, or one that failed on a reply its provider read and refused, whose error carries them in an own `usage` property ([`ProviderError`](../20-using/30-providers.md#providererror)) | Once per provider call, failed ones included |
+| `call` | `profile`; `role`: `research` or `vote`; `lens`, for a vote; `provider`, its `{ id, model }`; `durationMs`, from the call's first attempt to its end, inside its slot, the waits between attempts included; `ok`; `attempts`, the number of attempts, only when the call made more than one; `usage`, summed over its attempts, when the counts they reported are valid: a call that succeeded, or one that failed on a reply its provider read and refused, whose error carries them in an own `usage` property ([`ProviderError`](../20-using/30-providers.md#providererror)) | Once per provider call, failed ones included |
 | `finding:invalid` | `profile`; `reason`, such as `src/auth.js:3 is not in the diff` | Once per finding dropped for citing code outside the diff |
 | `incomplete` | `entry`, as `meta.incomplete` will hold it | Once per gap, as it is recorded: the gaps of the diff's binary and submodule files first, right after `run:start` and the `left-out` event |
 | `vote` | `profile`, `findingId`, `lens`; `keep`: `true`, `false`, or `null` when the vote failed; `error`, for a failed vote | Once per vote |
@@ -168,7 +169,7 @@ An aborted review never resolves, and never fails open:
 | --- | --- | --- | --- |
 | `QuorumError` | `Error` | `name`, the class's own name | The base of every error quorum raises on purpose |
 | `ConfigError` | `QuorumError` | `issues`, each a `{ path, message }`, every one; the message holds one `path: message` line per issue for the first 50, then `and <n> more issues` | Invalid configuration or input, every issue at once. The CLI exits `2` on it |
-| `ProviderError` | `QuorumError` | `providerId`, `kind`, `status`, `retryable`, `usage` | A provider call that failed: [`ProviderError`](../20-using/30-providers.md#providererror) |
+| `ProviderError` | `QuorumError` | `providerId`, `kind`, `status`, `retryable`, `retryAfterMs`, `usage` | A provider call that failed: [`ProviderError`](../20-using/30-providers.md#providererror) |
 | `OutputError` | `QuorumError` | `stage`, `reason`; `snippet`, the first 200 characters of the reply | A model reply that could not be read: `<stage> reply unusable: <reason> (reply starts: "<snippet>")` |
 
 A failed research call rejects the review with its `ProviderError`, and an unusable research reply with its `OutputError`. The same errors from a vote are recorded in the vote's `error` instead. A `ProviderError` of kind `too-large`, from research or from a vote, is a `request-too-large` gap instead: the review does not reject, and a provider of your own raises it to have its own refusal of an oversized request recorded so. Any object with an own `kind` property of `'too-large'` counts, whatever its class, so a refusal from a second copy of quorum is a gap too.

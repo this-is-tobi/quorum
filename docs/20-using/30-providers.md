@@ -9,6 +9,7 @@ interface Provider {
   readonly id: string
   readonly model: string
   readonly timeoutMs?: number
+  readonly retries?: number
   complete: (request: CompletionRequest) => Promise<CompletionResponse>
 }
 
@@ -30,13 +31,13 @@ interface CompletionResponse {
 - **No secret in a request.** No environment value, key or credential appears in a request: a key lives in the adapter that holds it.
 - **The core never trusts the reply.** It extracts and validates the JSON in `text` itself, whatever the provider did to get it, and reads `usage` (`inputTokens`, `outputTokens`, optional `costUsd`) only when its counts are finite numbers of at least 0.
 - **`id` and `model` name the provider** in events and in `meta`, as they were when the quorum was created.
-- **A provider may state its deadline**, `timeoutMs`: [Deadlines and retries](#deadlines-and-retries).
+- **A provider may state its deadline**, `timeoutMs`, and its `retries`: [Deadlines and retries](#deadlines-and-retries).
 
 [Prompts](./60-prompts.md) shows what `system` and `messages` hold.
 
 ## Deadlines and retries
 
-The core runs each call's attempts inside the call's concurrency slot, and gives each a deadline of its own. A call is one attempt for now: quorum does not retry it.
+The core runs each call's attempts inside the call's concurrency slot, and gives each a deadline of its own. A call that fails in passing is retried, as often as its provider states, after a growing wait.
 
 ### The deadline of an attempt
 
@@ -45,10 +46,24 @@ The core runs each call's attempts inside the call's concurrency slot, and gives
 - **The runtimes' own timers are off** on every request of the HTTP adapters: Bun's idle timer with `timeout: false`, and Node's 300-second header and body timeouts through a dispatcher of each request that hands it to Node's global one with both off, so a proxy agent an operator set still carries it. A long reply of a thinking model is no longer cut at 300 s.
 - **A proxy in front of a server can still cut one**: Cloudflare answers 524 after 125 s with no response, an AWS load balancer closes a connection idle for 60 s, and nginx's `proxy_read_timeout` is 60 s: [Local models](../90-recipes/10-local-models.md#long-replies-and-a-loading-model).
 
+### What is retried
+
+- **A failure that passes**: a dropped connection, a timeout, an HTTP 408, 409, 429 or 5xx, as the error's `retryable` says, within the provider's `retries` retries after the first attempt.
+- **Never a `refusal`, `truncated`, `invalid-response`, `unsupported`, `too-large`, `process` or `aborted` failure**, whatever `retryable` says: planted text can cause each of them, so a retry would let it multiply the spend.
+- **A timeout, the core's or a gateway's 504 or 524, once per call**: a slow request is likely slow again, and may be billed each time. A second one ends the call, and a failure that passes after a timeout is retried as any other.
+- **Nothing once the review is aborted.**
+
+### The wait between attempts
+
+- **Before retry n**, counting the first retry as 0, quorum waits a random time from 0 to the lesser of 8 s and 0.5 s times 2 to the n.
+- **A server's hint** of the wait it asks for, the error's `retryAfterMs`, replaces that when it is above 0 and up to 60 s, and quorum waits up to a second more. A hint over 60 s ends the call at once; one of 0 or less, or that is not a finite number, counts as none.
+- **The wait holds the call's slot**, and an interrupt ends it at once.
+
 ### What a provider states
 
 - **`timeoutMs`** is a whole number of milliseconds from 1000 to 518400000, an own data field of the provider object, read once, when the quorum is created. A getter is never run and an inherited field states nothing, so a class sets it as a field. A provider that states none has 600000 ms.
-- **A value out of range is refused** where the provider is given, as the issue `ports.profiles.<id>.research.timeoutMs` or `ports.profiles.<id>.voters.<lens>.timeoutMs`: `must be a whole number of milliseconds from 1000 to 518400000`. The message never repeats the value.
+- **`retries`** is a whole number from 0 to 5, read as `timeoutMs` is. A provider that states none gets no retry, since the core must not retry what may retry by itself.
+- **A value out of range is refused** where the provider is given, as the issue `ports.profiles.<id>.research.<field>` or `ports.profiles.<id>.voters.<lens>.<field>`, `<field>` being `timeoutMs` or `retries`: `must be a whole number of milliseconds from 1000 to 518400000` and `must be a whole number from 0 to 5`. The message never repeats the value.
 
 ## The adapters
 
@@ -632,7 +647,8 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 | `providerId` | The provider's id |
 | `kind` | What went wrong, below |
 | `status` | The HTTP status, for `http`. For a server error in an `openaiCompatible` 2xx reply, it is the status the body's `code` names. For a `claudeCode` `process` error that follows an exit of `claude` (a reported error, or `claude exited 2`), it is that exit code. A signal, a version that is too old, a start failure and a directory failure carry none |
-| `retryable` | `true` for `network` and `timeout`, and for `http` with status 408, 409, 429 or 5xx: a caller may try the call again |
+| `retryable` | `true` for `network` and `timeout`, and for `http` with status 408, 409, 429 or 5xx: a caller may try the call again. A provider may set it, and the core retries only `network`, `timeout` and `http` failures, whatever it says |
+| `retryAfterMs` | The wait the server asked for at least, in milliseconds, or `undefined` |
 | `usage` | The counts of the reply the call failed on, `{ inputTokens, outputTokens, costUsd? }`, when the provider read one that reports them; `undefined` otherwise. The review counts them as the failed call's usage, in its `call` event and in `meta.usage`. The shipped adapters set it on every failure that follows a reply they read and that reports its counts |
 
 | Kind | Raised when |
@@ -650,7 +666,7 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 
 The core raises one more itself: a provider whose reply has no string `text` fails that call with `<id>: returned no reply text`, of kind `invalid-response`.
 
-Quorum does not retry a call. A failed research call fails the review, unless it is a `too-large` refusal: the CLI exits `3`, and `review` rejects with the error. A failed vote is recorded in the vote's `error` and counts as a reject: [Failed votes](./50-lenses-and-policy.md#failed-votes).
+The core retries a call as [Deadlines and retries](#deadlines-and-retries) says. A failed research call fails the review, unless it is a `too-large` refusal: the CLI exits `3`, and `review` rejects with the error. A failed vote is recorded in the vote's `error` and counts as a reject: [Failed votes](./50-lenses-and-policy.md#failed-votes).
 
 ## Writing a provider
 
@@ -662,7 +678,7 @@ Any object of the port's shape is a provider. It must:
 - **report `usage` only when it knows it**: `inputTokens` and `outputTokens`, and `costUsd` when it knows the price. It reports it on a reply it returns, and in the `usage` of the `ProviderError` it throws for a reply it read but cannot use, which the review counts as the failed call's;
 - **check the size of its own requests**: quorum states no context size for a provider object and counts nothing for it. A provider that refuses a request as too large throws a `ProviderError` of kind `too-large`, which the review records as a `request-too-large` gap, on research and on a vote alike, instead of a failure: [`ProviderError`](#providererror). The review recognises the refusal by an own `kind` property of `'too-large'`, not by class, so one raised by a second copy of quorum counts too.
 
-A provider states its deadline with a `timeoutMs` field on its object: [What a provider states](#what-a-provider-states). A shipped adapter returns a plain object, so a spread keeps it and adds the field:
+A provider states its deadline with a `timeoutMs` field on its object, and its retries with a `retries` field: [What a provider states](#what-a-provider-states). A shipped adapter returns a plain object, so a spread keeps it and adds the field:
 
 ```ts
 import { ollama } from '@tobi-or-not/quorum'

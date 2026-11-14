@@ -248,6 +248,28 @@ describe('createQuorum', () => {
     expect(() => create(stating(1000), stating(1000), stating(518_400_000), stating(1000))).not.toThrow()
   })
 
+  it('refuses a provider\'s retries out of range at each port that holds it', () => {
+    const stating = (retries: unknown): Provider => ({ ...provider, retries }) as Provider
+    const create = (research: Provider, reachability: Provider, impact: Provider, defenses: Provider): Quorum => createQuorum({
+      profiles: [securityProfile],
+    }, {
+      profiles: {
+        security: {
+          research,
+          voters: { reachability, impact, defenses },
+        },
+      },
+    })
+    const range = 'must be a whole number from 0 to 5'
+    expect(issuesOf(() => create(stating(6), stating(-1), stating(1.5), stating('2')))).toEqual([
+      `ports.profiles.security.research.retries: ${range}`,
+      `ports.profiles.security.voters.reachability.retries: ${range}`,
+      `ports.profiles.security.voters.impact.retries: ${range}`,
+      `ports.profiles.security.voters.defenses.retries: ${range}`,
+    ])
+    expect(() => create(stating(0), stating(5), stating(2), stating(undefined))).not.toThrow()
+  })
+
   it('reads a provider\'s timeoutMs as own data: a getter never runs, and an inherited one states nothing', () => {
     let read = false
     const getter = { ...provider }
@@ -1863,6 +1885,41 @@ describe('event sink', () => {
       ...portsFor(securityProfile, model),
       events: sink,
     }).review({ diff })).rejects.toBe(bug)
+  })
+})
+
+describe('the retries of a call', () => {
+  it('retries a research call as its provider states, through the review and on the system clock', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    onTestFinished(() => {
+      vi.restoreAllMocks()
+    })
+    const events: QuorumEvent[] = []
+    let ran = 0
+    const flaky: Provider = {
+      id: 'f',
+      model: 'f-model',
+      retries: 1,
+      async complete() {
+        ran += 1
+        if (ran === 1) throw new ProviderError({ providerId: 'f', kind: 'network', message: 'down' })
+        return {
+          text: findings(),
+          model: 'f-model',
+        }
+      },
+    }
+    const ports = {
+      ...portsFor(securityProfile, flaky, fake('v', () => vote(true))),
+      events: (event: QuorumEvent) => { events.push(event) },
+    }
+    await expect(createQuorum({
+      profiles: [securityProfile],
+    }, ports).review({ diff })).resolves.toMatchObject({ kept: [] })
+    expect(ran).toBe(2)
+    expect(events.filter(event => event.type === 'call')).toEqual([
+      expect.objectContaining({ role: 'research', ok: true, attempts: 2 }),
+    ])
   })
 })
 

@@ -254,8 +254,14 @@ export type QuorumEvent
     | { type: 'stage:start', profile: string, stage: StageName }
     /** A stage of one profile ends; `count` is the findings it produced, or the verdicts for `panel`. */
     | { type: 'stage:end', profile: string, stage: StageName, durationMs: number, count: number }
-    /** One per provider call, failed ones included: its latency inside its slot and its usage, when valid. */
-    | { type: 'call', profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, durationMs: number, ok: boolean, usage?: Usage }
+    /**
+     * One per provider call, failed ones included, sent when the call ends. The call runs its
+     * attempts inside its slot, retried as the retry policy decides, so `durationMs` runs from its
+     * first attempt to its end, the waits between attempts included; `attempts` is their number,
+     * only when the call made more than one; `usage` is summed over the attempts that reported
+     * valid counts.
+     */
+    | { type: 'call', profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, durationMs: number, ok: boolean, attempts?: number, usage?: Usage }
     /** A finding was dropped for citing code outside the diff, with the reason. */
     | { type: 'finding:invalid', profile: string, reason: string }
     /** A gap was recorded, as `meta.incomplete` will hold it. */

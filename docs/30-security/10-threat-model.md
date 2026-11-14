@@ -15,7 +15,7 @@ What quorum answers goes to the JSON result on stdout and the lines on stderr, a
 | Verdict integrity | Suppress a real finding, sway a verdict, or forge a finding | Code-derived evidence, strict parsing, blind votes and arithmetic confidence, within the limits of the [residual risk](#residual-risk) |
 | Secrets: the model key, a CI token, repository credentials | Have a model read or leak them | A model path with no tool and no secret, a key sent only to its own endpoint, and a binary that reads nothing from the working directory, a config file included unless it is named |
 | Output channels: CI logs, terminals, what renders the result | Turn model text into markup, a link, a workflow command or an escape sequence | The CLI makes the text it writes inert for a terminal and a GitHub Actions log; anything else that renders the result, or reads a bench's `results.jsonl`, must treat its text as untrusted: [Output handling](./30-output-handling.md) |
-| Availability and spend | Multiply the calls and their cost with a huge or finding-flooding pull request | `maxFindings`, the concurrency limit, the reply caps, and each call's deadline |
+| Availability and spend | Multiply the calls and their cost with a huge or finding-flooding pull request | `maxFindings`, the concurrency limit, the reply caps, and each call's deadline and its bounded retries |
 | Coverage | Have the run review less than the whole change, silently | The size guard, which refuses a request that may not fit the model's context, and unreviewed findings and incomplete reviews, exit `4`, for the gaps the harness detects, a file whose change the diff does not carry among them; what the guard cannot know is not one of them: [What the harness cannot detect](#what-the-harness-cannot-detect) |
 
 ## Residual risk
@@ -92,6 +92,10 @@ All the data a model reads, the diff, the claim, the evidence, the diff section 
 ### `maxFindings` and the concurrency limit
 
 Only the first `maxFindings` findings a research reply lists, 50 by default, are read, and only those can reach the panel; the rest are counted in a `findings-capped` gap, so a reply built to flood the run costs bounded work. With the security profile and the default cap, a review of one diff makes at most 151 calls: one research call, and three votes for each of 50 findings. `concurrency`, 4 by default, caps the calls in flight across every profile of the review. The size of what each call carries is bounded too: [The size guard](#the-size-guard).
+
+### Deadlines and bounded retries
+
+Every attempt has a deadline, 600000 ms unless its provider states one, so a model or a server that never answers cannot hold a review. A call that fails in passing is retried as often as its provider states, at most five times, after a random wait that grows with each retry. What planted text causes directly, a refusal, a cut-off or an unusable reply, is never retried, so it cannot multiply the spend. A reply it draws out can still time out, or end in a gateway's 504, and that is retried once, never twice. Nothing is retried once the review is aborted: [Deadlines and retries](../20-using/30-providers.md#deadlines-and-retries).
 
 ### The size guard
 
