@@ -412,6 +412,7 @@ export function resultWith(parts: {
         },
       },
       incomplete: [...incomplete],
+      leftOut: [],
       flags: [],
     },
   }
@@ -419,8 +420,8 @@ export function resultWith(parts: {
 
 /**
  * A result that fills every field the type has: a kept verdict with a confidence and a failed vote
- * among its votes, a discarded and an unreviewed one, a gap with a file and one without, a flag with a
- * file and a line, usage with a cost, and a summary that holds `##[` and U+2028.
+ * among its votes, a discarded and an unreviewed one, a gap with a file and one without, a file left
+ * out, a flag with a file and a line, usage with a cost, and a summary that holds `##[` and U+2028.
  */
 export const RESULT: QuorumResult = (() => {
   const base = resultWith({
@@ -481,6 +482,7 @@ export const RESULT: QuorumResult = (() => {
         detail: 'a vote failed',
       },
       { profile: 'security', reason: 'findings-capped', detail: 'findings beyond the cap' },
+      { profile: 'security', reason: 'binary', detail: 'the diff carries no content for 1 binary file(s), listed in meta.leftOut' },
     ],
   })
   return {
@@ -488,6 +490,9 @@ export const RESULT: QuorumResult = (() => {
     meta: {
       ...base.meta,
       usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.001 },
+      leftOut: [
+        { file: 'logo.png', reason: 'binary' },
+      ],
       flags: [
         {
           code: 'hidden-characters',

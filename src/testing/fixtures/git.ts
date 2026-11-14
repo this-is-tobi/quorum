@@ -1,0 +1,326 @@
+/**
+ * What git 2.50.1 prints for content a diff does not carry, captured in scratch repositories with fixed
+ * dates and authors. Each constant is one command's output, or an excerpt of whole sections in their order.
+ */
+
+/** `git diff` of a binary file modified, added, deleted and renamed with changes, of two names git quotes, and of a text file */
+export const BINARY = [
+  'diff --git "a/a\\"quote.bin" "b/a\\"quote.bin"',
+  'index 61cc3c6..6db49da 100644',
+  'Binary files "a/a\\"quote.bin" and "b/a\\"quote.bin" differ',
+  'diff --git "a/donn\\303\\251es.bin" "b/donn\\303\\251es.bin"',
+  'index c9c87e5..2682944 100644',
+  'Binary files "a/donn\\303\\251es.bin" and "b/donn\\303\\251es.bin" differ',
+  'diff --git a/img.png b/img.png',
+  'index 9597448..9ad844f 100644',
+  'Binary files a/img.png and b/img.png differ',
+  'diff --git a/ren.bin b/moved.bin',
+  'similarity index 97%',
+  'rename from ren.bin',
+  'rename to moved.bin',
+  'index e57fd5b..02e77e3 100644',
+  'Binary files a/ren.bin and b/moved.bin differ',
+  'diff --git a/new.bin b/new.bin',
+  'new file mode 100644',
+  'index 0000000..557c785',
+  'Binary files /dev/null and b/new.bin differ',
+  'diff --git a/old.bin b/old.bin',
+  'deleted file mode 100644',
+  'index 09101ac..0000000',
+  'Binary files a/old.bin and /dev/null differ',
+  'diff --git a/text.js b/text.js',
+  'index a29bdeb..c0d0fb4 100644',
+  '--- a/text.js',
+  '+++ b/text.js',
+  '@@ -1 +1,2 @@',
+  ' line1',
+  '+line2',
+  '',
+].join('\n')
+
+/** An excerpt of `git diff --binary` of the same change: a quoted name, the modified file, the deleted one and the text file */
+export const BINARY_PATCH = [
+  'diff --git "a/donn\\303\\251es.bin" "b/donn\\303\\251es.bin"',
+  'index c9c87e5b5d54609786ccfc6add5971fddd6c48f5..26829443a42ec99a0e314af6984f065b15be2bfd 100644',
+  'GIT binary patch',
+  'literal 13',
+  'Ucmd1LOI1kDNX$!5O<~{y03k92Hvj+t',
+  '',
+  'literal 5',
+  'Mcmd1LOJ(2!00kidO#lD@',
+  '',
+  'diff --git a/img.png b/img.png',
+  'index 95974481c1e3e814881326e6bf837dbe6818b87b..9ad844f44ec450ddb5534bac6ea8b436d533b1fe 100644',
+  'GIT binary patch',
+  'literal 22',
+  'dcmWIWb7x>=V$MiSOi3+LNX|&iOHWPV0sug321x(_',
+  '',
+  'literal 14',
+  'VcmWIWb7x>=V$MiSOi3-`0st1Y1783D',
+  '',
+  'diff --git a/old.bin b/old.bin',
+  'deleted file mode 100644',
+  'index 09101ac7df05612029782400cb30796293e8ca27..0000000000000000000000000000000000000000',
+  'GIT binary patch',
+  'literal 0',
+  'HcmV?d00001',
+  '',
+  'literal 11',
+  'Scmd1LNnuFJ%u6h)<N^Q}tOL&g',
+  '',
+  'diff --git a/text.js b/text.js',
+  'index a29bdeb..c0d0fb4 100644',
+  '--- a/text.js',
+  '+++ b/text.js',
+  '@@ -1 +1,2 @@',
+  ' line1',
+  '+line2',
+  '',
+].join('\n')
+
+/** An excerpt of `git diff --no-prefix` of the same change: the rename's header names no path quorum reads */
+export const NO_PREFIX = [
+  'diff --git img.png img.png',
+  'index 9597448..9ad844f 100644',
+  'Binary files img.png and img.png differ',
+  'diff --git ren.bin moved.bin',
+  'similarity index 97%',
+  'rename from ren.bin',
+  'rename to moved.bin',
+  'index e57fd5b..02e77e3 100644',
+  'Binary files ren.bin and moved.bin differ',
+  'diff --git text.js text.js',
+  'index a29bdeb..c0d0fb4 100644',
+  '--- text.js',
+  '+++ text.js',
+  '@@ -1 +1,2 @@',
+  ' line1',
+  '+line2',
+  '',
+].join('\n')
+
+/** An excerpt of `git format-patch --stdout` of the same commit: the mail and its diffstat, the modified file, the text file and the signature */
+export const FORMAT_PATCH = [
+  'From 90895a0c3885e621279f409092ef909d3a92d77f Mon Sep 17 00:00:00 2001',
+  'From: t <t@example.com>',
+  'Date: Thu, 1 Jan 2026 00:00:00 +0000',
+  'Subject: [PATCH] head',
+  '',
+  '---',
+  ' "a\\"quote.bin"       | Bin 5 -> 13 bytes',
+  ' "donn\\303\\251es.bin" | Bin 5 -> 13 bytes',
+  ' img.png              | Bin 14 -> 22 bytes',
+  ' ren.bin => moved.bin | Bin 2048 -> 2053 bytes',
+  ' new.bin              | Bin 0 -> 11 bytes',
+  ' old.bin              | Bin 11 -> 0 bytes',
+  ' text.js              |   1 +',
+  ' 7 files changed, 1 insertion(+)',
+  ' rename ren.bin => moved.bin (97%)',
+  ' create mode 100644 new.bin',
+  ' delete mode 100644 old.bin',
+  '',
+  'diff --git a/img.png b/img.png',
+  'index 95974481c1e3e814881326e6bf837dbe6818b87b..9ad844f44ec450ddb5534bac6ea8b436d533b1fe 100644',
+  'GIT binary patch',
+  'literal 22',
+  'dcmWIWb7x>=V$MiSOi3+LNX|&iOHWPV0sug321x(_',
+  '',
+  'literal 14',
+  'VcmWIWb7x>=V$MiSOi3-`0st1Y1783D',
+  '',
+  'diff --git a/text.js b/text.js',
+  'index a29bdeb..c0d0fb4 100644',
+  '--- a/text.js',
+  '+++ b/text.js',
+  '@@ -1 +1,2 @@',
+  ' line1',
+  '+line2',
+  '-- ',
+  '2.50.1 (Apple Git-155)',
+  '',
+  '',
+].join('\n')
+
+/** `git diff` in the checkout of a change that adds `src/a.js -diff` to `.gitattributes` and a line to `src/a.js` */
+export const ATTRIBUTE_IN_CHECKOUT = [
+  'diff --git a/.gitattributes b/.gitattributes',
+  'new file mode 100644',
+  'index 0000000..8b8c320',
+  '--- /dev/null',
+  '+++ b/.gitattributes',
+  '@@ -0,0 +1 @@',
+  '+src/a.js -diff',
+  'diff --git a/src/a.js b/src/a.js',
+  'index c0d0fb4..9a202f1 100644',
+  'Binary files a/src/a.js and b/src/a.js differ',
+  '',
+].join('\n')
+
+/** `git --attr-source=<base> diff --no-textconv --no-ext-diff <base>...<head>` of the same change */
+export const ATTRIBUTE_FROM_BASE = [
+  'diff --git a/.gitattributes b/.gitattributes',
+  'new file mode 100644',
+  'index 0000000..8b8c320',
+  '--- /dev/null',
+  '+++ b/.gitattributes',
+  '@@ -0,0 +1 @@',
+  '+src/a.js -diff',
+  'diff --git a/src/a.js b/src/a.js',
+  'index c0d0fb4..9a202f1 100644',
+  '--- a/src/a.js',
+  '+++ b/src/a.js',
+  '@@ -1,2 +1,3 @@',
+  ' line1',
+  ' line2',
+  '+require("evil")',
+  '',
+].join('\n')
+
+/** `git diff --submodule=short` of a submodule added at `vendor/lib` */
+export const SUBMODULE_ADDED = [
+  'diff --git a/.gitmodules b/.gitmodules',
+  'new file mode 100644',
+  'index 0000000..6d1a355',
+  '--- /dev/null',
+  '+++ b/.gitmodules',
+  '@@ -0,0 +1,3 @@',
+  '+[submodule "vendor/lib"]',
+  '+\tpath = vendor/lib',
+  '+\turl = ../sub-src',
+  'diff --git a/vendor/lib b/vendor/lib',
+  'new file mode 160000',
+  'index 0000000..6444d28',
+  '--- /dev/null',
+  '+++ b/vendor/lib',
+  '@@ -0,0 +1 @@',
+  '+Subproject commit 6444d281e632ffb52db5161c2e2b1f6750da7c66',
+  '',
+].join('\n')
+
+/** `git diff --submodule=short` of that submodule bumped beside a text change */
+export const SUBMODULE_BUMPED = [
+  'diff --git a/app.js b/app.js',
+  'index b80f0bd..df1f7b9 100644',
+  '--- a/app.js',
+  '+++ b/app.js',
+  '@@ -1 +1 @@',
+  '-app',
+  '+app2',
+  'diff --git a/vendor/lib b/vendor/lib',
+  'index 6444d28..63e7d79 160000',
+  '--- a/vendor/lib',
+  '+++ b/vendor/lib',
+  '@@ -1 +1 @@',
+  '-Subproject commit 6444d281e632ffb52db5161c2e2b1f6750da7c66',
+  '+Subproject commit 63e7d795762c8a1f7e43531daf2590a3a30c122e',
+  '',
+].join('\n')
+
+/** `git diff --submodule=short` of that submodule removed */
+export const SUBMODULE_REMOVED = [
+  'diff --git a/.gitmodules b/.gitmodules',
+  'index 6d1a355..e69de29 100644',
+  '--- a/.gitmodules',
+  '+++ b/.gitmodules',
+  '@@ -1,3 +0,0 @@',
+  '-[submodule "vendor/lib"]',
+  '-\tpath = vendor/lib',
+  '-\turl = ../sub-src',
+  'diff --git a/vendor/lib b/vendor/lib',
+  'deleted file mode 160000',
+  'index 63e7d79..0000000',
+  '--- a/vendor/lib',
+  '+++ /dev/null',
+  '@@ -1 +0,0 @@',
+  '-Subproject commit 63e7d795762c8a1f7e43531daf2590a3a30c122e',
+  '',
+].join('\n')
+
+/** `git diff` under `diff.submodule=log` of the submodule added */
+export const SUBMODULE_LOG_ADDED = [
+  'diff --git a/.gitmodules b/.gitmodules',
+  'new file mode 100644',
+  'index 0000000..6d1a355',
+  '--- /dev/null',
+  '+++ b/.gitmodules',
+  '@@ -0,0 +1,3 @@',
+  '+[submodule "vendor/lib"]',
+  '+\tpath = vendor/lib',
+  '+\turl = ../sub-src',
+  'Submodule vendor/lib 0000000...6444d28 (new submodule)',
+  '',
+].join('\n')
+
+/** `git diff` under `diff.submodule=log` of the bump, the submodule checked out: its commits' subjects follow */
+export const SUBMODULE_LOG_BUMPED = [
+  'diff --git a/app.js b/app.js',
+  'index b80f0bd..df1f7b9 100644',
+  '--- a/app.js',
+  '+++ b/app.js',
+  '@@ -1 +1 @@',
+  '-app',
+  '+app2',
+  'Submodule vendor/lib 6444d28..63e7d79:',
+  '  > lib v3',
+  '  > lib v2',
+  '',
+].join('\n')
+
+/** `git diff` under `diff.submodule=log` of the submodule removed */
+export const SUBMODULE_LOG_REMOVED = [
+  'diff --git a/.gitmodules b/.gitmodules',
+  'index 6d1a355..e69de29 100644',
+  '--- a/.gitmodules',
+  '+++ b/.gitmodules',
+  '@@ -1,3 +0,0 @@',
+  '-[submodule "vendor/lib"]',
+  '-\tpath = vendor/lib',
+  '-\turl = ../sub-src',
+  'Submodule vendor/lib 63e7d79...0000000 (submodule deleted)',
+  '',
+].join('\n')
+
+/** `git diff` under `diff.submodule=diff` of the bump, the submodule checked out: its own diff follows */
+export const SUBMODULE_DIFF_BUMPED = [
+  'diff --git a/app.js b/app.js',
+  'index b80f0bd..df1f7b9 100644',
+  '--- a/app.js',
+  '+++ b/app.js',
+  '@@ -1 +1 @@',
+  '-app',
+  '+app2',
+  'Submodule vendor/lib 6444d28..63e7d79:',
+  'diff --git a/vendor/lib/lib.c b/vendor/lib/lib.c',
+  'index 626799f..aaf983b 100644',
+  '--- a/vendor/lib/lib.c',
+  '+++ b/vendor/lib/lib.c',
+  '@@ -1 +1 @@',
+  '-v1',
+  '+v3 with more',
+  '',
+].join('\n')
+
+/** `git diff` under `diff.submodule=diff` of the bump, in a clone that never fetched the submodule */
+export const SUBMODULE_DIFF_NOT_PRESENT = [
+  'diff --git a/app.js b/app.js',
+  'index b80f0bd..df1f7b9 100644',
+  '--- a/app.js',
+  '+++ b/app.js',
+  '@@ -1 +1 @@',
+  '-app',
+  '+app2',
+  'Submodule vendor/lib 6444d28...63e7d79 (commits not present)',
+  '',
+].join('\n')
+
+/** `diff -ru a b` (Apple diff, from FreeBSD) of a binary and a text file: no `diff --git` header */
+export const PLAIN = [
+  'Binary files a/img.bin and b/img.bin differ',
+  'diff -ru a/t.txt b/t.txt',
+  '--- a/t.txt\t2026-11-14 17:10:49',
+  '+++ b/t.txt\t2026-11-14 17:10:49',
+  '@@ -1 +1 @@',
+  '-one',
+  '+two',
+  '',
+].join('\n')

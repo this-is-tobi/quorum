@@ -175,10 +175,33 @@ describe('parseRecord, level by level', () => {
       withMeta({ extra: 1 }),
     ],
     [
-      'a gap for a reason outside the five',
+      'a gap for a reason outside the seven',
       withMeta({
         incomplete: [
           { profile: 'security', reason: 'other', detail: 'x' },
+        ],
+      }),
+    ],
+    [
+      'a meta without leftOut',
+      withResult({
+        ...RESULT,
+        meta: Object.fromEntries(Object.entries(RESULT.meta).filter(([key]) => key !== 'leftOut')),
+      }),
+    ],
+    [
+      'a file left out for a reason the core has none of',
+      withMeta({
+        leftOut: [
+          { file: 'a.png', reason: 'skipped' },
+        ],
+      }),
+    ],
+    [
+      'a file left out with a field it does not know',
+      withMeta({
+        leftOut: [
+          { file: 'a.png', reason: 'binary', profile: 'security' },
         ],
       }),
     ],

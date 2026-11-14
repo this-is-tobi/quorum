@@ -145,6 +145,45 @@ function headerPath(header: string): string | undefined {
   return sharedPath(names) || renamedPath(names) || undefined
 }
 
+/** One section of a diff: the text from a `diff --git` header to the next, or the text before the first one. */
+export interface DiffSection {
+  /** The path the header names; '' for the text before the first header or a diff without headers; undefined for a header that names no readable path. */
+  readonly path: string | undefined
+  readonly text: string
+}
+
+/**
+ * Every section of a git-style unified diff, in order. Only `diff --git` lines open a section, so the
+ * text before the first one is a section of its own, of path '', and a diff without such headers
+ * (plain `diff -u` output) is one section of path ''. A header that names no path quorum can read
+ * gives a section of path `undefined`, kept here whatever `splitDiff` does with it. A section holds
+ * at least one line, so a diff that starts with its header has no section before it, and the texts
+ * joined by line feeds are the diff.
+ */
+export function diffSections(diff: string): DiffSection[] {
+  const sections: DiffSection[] = []
+  let path: string | undefined = ''
+  let lines: string[] = []
+  const flush = (): void => {
+    if (lines.length > 0) {
+      sections.push({
+        path,
+        text: lines.join('\n'),
+      })
+    }
+  }
+  for (const line of diff.split('\n')) {
+    if (line.startsWith(GIT_HEADER)) {
+      flush()
+      path = headerPath(line)
+      lines = []
+    }
+    lines.push(line)
+  }
+  flush()
+  return sections
+}
+
 /**
  * Split a git-style unified diff into sections keyed by file path. Only `diff --git` lines open a
  * section: inside a hunk every line starts with ' ', '+', '-' or '\', so that text cannot appear
@@ -162,28 +201,17 @@ function headerPath(header: string): string | undefined {
  */
 export function splitDiff(diff: string): Map<string, string> {
   const sections = new Map<string, string>()
-  let path: string | undefined = ''
-  let lines: string[] = []
-  const flush = (): void => {
-    if (path === undefined || lines.length === 0) return
-    const text = lines.join('\n')
+  const all = diffSections(diff)
+  for (const { path, text } of all) {
+    if (path === undefined) continue
     const previous = sections.get(path)
     sections.set(path, previous === undefined
       ? text
       : `${previous}\n${text}`)
   }
-  for (const line of diff.split('\n')) {
-    if (line.startsWith(GIT_HEADER)) {
-      flush()
-      path = headerPath(line)
-      lines = []
-    }
-    lines.push(line)
-  }
-  flush()
-  // `path` is '' only before the first header: when every header was unreadable, the preamble is
-  // all that is left, and it must not stand for a file.
-  if (path !== '' && sections.size === 1) sections.delete('')
+  // A section whose path is not '' means a header was met, an unreadable one included: when every
+  // header was unreadable, the preamble is all that is left, and it must not stand for a file.
+  if (all.some(({ path }) => path !== '') && sections.size === 1) sections.delete('')
   return sections
 }
 

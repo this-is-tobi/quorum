@@ -51,7 +51,8 @@ A failed vote counts as a reject.
 | `durationMs` | number | How long it took, in whole milliseconds |
 | `profiles` | object | One entry per profile, keyed by profile id, in the order of the review's profiles |
 | `usage` | object | Only when at least one call reported valid counts: `inputTokens` and `outputTokens` summed over those calls, then `costUsd`, summed over the calls that reported one, when any did |
-| `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's research gaps before its panel's. A review is complete when this list and `unreviewed` are both empty |
+| `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's gaps for the files left out first, then its research gaps, then its panel's. A review is complete when this list and `unreviewed` are both empty |
+| `leftOut` | entry[] | Every file the review left out, in the diff's order, once per file and reason: [A file left out](#a-file-left-out). Empty when it left none out, a blank diff included |
 | `flags` | flag[] | The advisory flags read from the diff, file by file in its order: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
 
 A usage count is valid when it is a finite number of at least 0. A failed call's usage counts too, when its reply reported valid counts, as a reply refused or cut off at its token limit does. `meta.usage` and each `invalidFindings` are counted from the review's own events, so `meta` and the events cannot disagree.
@@ -70,9 +71,23 @@ A usage count is valid when it is a finite number of at least 0. A failed call's
 | Field | Type | Holds |
 | --- | --- | --- |
 | `profile` | string | The profile whose run has the gap |
-| `reason` | string | One of the five [incomplete reasons](#incomplete-reasons) |
+| `reason` | string | One of the seven [incomplete reasons](#incomplete-reasons) |
 | `file` | string | The file of the finding the gap is about, when it is about one finding the harness could read: `vote-failed` has it, and so does a vote's `request-too-large` |
 | `detail` | string | What is missing, in words |
+
+### A file left out
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `file` | string | The diff's own path of the file, as the `diff --git` header names it, decoded from git's quoting: the new path of a rename, the old one of a deletion. `""` for a part of the diff that no header names: the text before the first header, a diff without such headers, a section whose header names no path quorum reads, such as a rename under `--no-prefix`, and a submodule that git's `log` or `diff` format prints as a `Submodule` line. A readable header never names `""`, and no file of a change has an empty path, so the empty name is never a file's |
+| `reason` | string | Why the review left it out, below |
+
+| `reason` | Why the review left the file out |
+| --- | --- |
+| `binary` | The diff shows its change only as `Binary files <a> and <b> differ`, or as a `GIT binary patch` block, with none of the content. Git prints it for a file that holds a NUL byte, or that an attribute marks `-diff`: the change's own `.gitattributes` included, when the diff is made in its checkout |
+| `submodule` | The diff shows a submodule's change only as its commit: its `Subproject commit` lines, a header of mode `160000`, or a `Submodule` line, and none of its code |
+
+A `binary` or `submodule` file makes the review incomplete: every profile records a gap of that reason that counts them, which no flag lifts for a gating profile ([Incomplete reasons](#incomplete-reasons)). Its section still reaches the models, which read nothing of the change. A line of the same form elsewhere, such as a line of a commit message in a `format-patch` series, lists the file whose section holds it: quorum counts it, since a gap it should not have stops a review for a person to look, where a missed one would pass a change unread.
 
 ### A flag
 
@@ -102,8 +117,10 @@ A detail names at most eight code points or patterns, then `and N more`. [Adviso
 | `research-unusable` | The reply lists findings, and not one of those read is usable: each was unreadable or cited code outside the diff | `2 finding(s) reported, none usable`, or, when the cap applied, `62 finding(s) reported, the first 50 read, none usable` |
 | `vote-failed` | A kept finding's failed votes, had they been keeps, would have raised it to a higher level | `"src/a.js":12 is kept at medium, but 1 failed vote(s) could have made it high`, the file written as a JSON string |
 | `request-too-large` | A request may not fit its provider's context, so it was not sent: the profile's research request, which leaves the profile with no finding, or the vote requests of a finding, each a failed vote | `the research request was not sent: <the provider's message>`, or `"src/a.js":12: 2 of 3 vote requests were not sent: <the first provider's message>`, the file written as a JSON string |
+| `binary` | `meta.leftOut` lists a file whose change the diff shows only as binary: one gap per profile, counting the files | `the diff carries no content for 2 binary file(s), listed in meta.leftOut` |
+| `submodule` | `meta.leftOut` lists a submodule whose change the diff shows only as a commit: one gap per profile, counting them | `the diff carries no content for 1 submodule(s), listed in meta.leftOut` |
 
-Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4` for a gap of a gating profile, unless a gating profile kept a `high` finding. `--allow-incomplete` lifts every gap but this one for a gating profile: a `request-too-large` gap exits `4` whatever the flags, since a pull request can cause it by padding the diff. The flag lifts every other gap, including gaps a pull request can cause: decoy findings that push a real one past `maxFindings`, or text that trips a hosted voter's content filter. On a gating profile, do not use it for a pull request you do not trust.
+Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4` for a gap of a gating profile, unless a gating profile kept a `high` finding. `--allow-incomplete` lifts every gap but three for a gating profile: a `request-too-large`, `binary` or `submodule` gap exits `4` whatever the flags, since a pull request causes the first by padding the diff, and the others with one `.gitattributes` line, one NUL byte or a submodule's bump. The flag lifts every other gap, including gaps a pull request can cause: decoy findings that push a real one past `maxFindings`, or text that trips a hosted voter's content filter. On a gating profile, do not use it for a pull request you do not trust.
 
 ## An example
 
@@ -275,6 +292,7 @@ A review of a diff that touches three files, run on the one provider, named `def
         "detail": "findings[4]: quote: Invalid input: expected string, received undefined"
       }
     ],
+    "leftOut": [],
     "flags": []
   }
 }

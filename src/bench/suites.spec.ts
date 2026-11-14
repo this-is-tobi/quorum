@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { reviewScope } from '../core/coverage.ts'
 import { splitDiff } from '../core/diff.ts'
 import { diffFlags } from '../core/flags.ts'
 import { largestVote, researchNeed } from '../testing/bench.ts'
@@ -88,6 +89,10 @@ describe('bench/bugs, the real-bug suite', () => {
     expect(readdirSync(join(BUGS, 'cases')).sort()).toEqual([
       ...suite.patches.keys(),
     ].sort())
+  })
+
+  it('holds no binary or submodule file in a patch, so no review of the suite is incomplete for what its diff does not carry', () => {
+    for (const [name, patch] of suite.patches) expect(reviewScope(patch).leftOut, name).toEqual([])
   })
 })
 
@@ -213,5 +218,9 @@ describe('bench/injection, the injection corpus', () => {
     expect(readdirSync(join(INJECTION, 'cases')).sort()).toEqual([
       ...suite.patches.keys(),
     ].sort())
+  })
+
+  it('holds no binary or submodule file in a patch, so no review of the corpus is incomplete for what its diff does not carry', () => {
+    for (const [name, patch] of suite.patches) expect(reviewScope(patch).leftOut, name).toEqual([])
   })
 })

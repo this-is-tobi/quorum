@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeDiff, diffSectionFor, firstLineOutside, locate, sectionFor, splitDiff } from './diff.ts'
+import { decodeDiff, diffSectionFor, diffSections, firstLineOutside, locate, sectionFor, splitDiff } from './diff.ts'
 
 const gitDiff = [
   'diff --git a/src/a.js b/src/a.js',
@@ -252,6 +252,30 @@ describe('splitDiff', () => {
       ...splitDiff(plain).entries(),
     ]).toEqual([
       ['', plain],
+    ])
+  })
+})
+
+describe('diffSections', () => {
+  it('reads every section in order, the text before the first header and a header it cannot read included, and joins back to the diff', () => {
+    const diff = 'From x\n\ndiff --git a/a.js b/a.js\n+1\ndiff --git x y\nBinary files x and y differ\ndiff --git a/b.js b/b.js\n+2\n'
+    const sections = diffSections(diff)
+    expect(sections).toEqual([
+      { path: '', text: 'From x\n' },
+      { path: 'a.js', text: 'diff --git a/a.js b/a.js\n+1' },
+      { path: undefined, text: 'diff --git x y\nBinary files x and y differ' },
+      { path: 'b.js', text: 'diff --git a/b.js b/b.js\n+2\n' },
+    ])
+    expect(sections.map(({ text }) => text).join('\n')).toBe(diff)
+  })
+
+  it('gives a diff that starts with its header no preamble, and a diff without headers one section of path ""', () => {
+    expect(diffSections('diff --git a/a.js b/a.js\n+1')).toEqual([
+      { path: 'a.js', text: 'diff --git a/a.js b/a.js\n+1' },
+    ])
+    const plain = '--- a\n+++ b\n@@ -1 +1 @@\n-a\n+b\n'
+    expect(diffSections(plain)).toEqual([
+      { path: '', text: plain },
     ])
   })
 })
