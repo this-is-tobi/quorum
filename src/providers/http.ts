@@ -11,6 +11,9 @@ const MAX_ERROR_BYTES = 64 * 1024
 /** A reply body over this many bytes is refused: the core refuses reply text over 1,000,000 characters anyway. */
 const MAX_REPLY_BYTES = 16 * 1024 * 1024
 
+/** The symbol under which Node keeps the dispatcher its `fetch` uses. */
+const NODE_GLOBAL_DISPATCHER = Symbol.for('undici.globalDispatcher.1')
+
 const REDACTED = '[redacted]'
 const UNKNOWN_ENDPOINT = 'the endpoint'
 const PLAIN_IDENTIFIER = /^[A-Z]\w{0,39}$/i
@@ -173,6 +176,28 @@ function codeSuffix(error: unknown): string {
   return ''
 }
 
+/**
+ * Node's global dispatcher handed each request with both of undici's timers off, the 300-second
+ * limits on the headers and on the body, or undefined when the runtime has none: Bun's `fetch`
+ * never reads a dispatcher, and its own timer goes off with `timeout: false`. The global is read at
+ * each request, never kept, so a proxy agent an operator set still carries it. The delegate calls
+ * the global's `dispatch` as its method, with the request's options and both timeouts at 0 (none),
+ * and the same handler.
+ */
+export function timersOff(): { dispatch: (options: object, handler: unknown) => unknown } | undefined {
+  // eslint-disable-next-line no-restricted-globals -- Node's fetch keeps its dispatcher on the global object, under this symbol alone.
+  const shared: unknown = (globalThis as Record<symbol, unknown>)[NODE_GLOBAL_DISPATCHER]
+  if (typeof shared !== 'object' || shared === null) return undefined
+  const { dispatch } = shared as { dispatch?: unknown }
+  if (typeof dispatch !== 'function') return undefined
+  return {
+    dispatch: (options, handler) => Reflect.apply(dispatch, shared, [
+      { ...options, headersTimeout: 0, bodyTimeout: 0 },
+      handler,
+    ]),
+  }
+}
+
 /** At most `max` bytes of the body, decoded as UTF-8, and whether that was all of it. The rest is never read. */
 async function readCapped(response: Response, max: number): Promise<{ text: string, complete: boolean }> {
   const reader = response.body?.getReader()
@@ -203,10 +228,11 @@ async function readErrorText(response: Response): Promise<string> {
 
 /**
  * POST a JSON body and return the parsed JSON reply. A redirect is not followed: it is an `http` error,
- * so a key sent in any header never reaches another endpoint. A reply body over 16 MiB is refused
- * unread. Every failure is a `ProviderError` without a `cause`: the runtime's own error text can hold
- * the URL with its credentials or a header value, so it is never copied, and no header value appears in
- * a message.
+ * so a key sent in any header never reaches another endpoint. The runtimes' own timers are off, so
+ * the core's deadline is the only one: a long reply of a thinking model is not cut at 300 seconds.
+ * A reply body over 16 MiB is refused unread. Every failure is a `ProviderError` without a `cause`:
+ * the runtime's own error text can hold the URL with its credentials or a header value, so it is
+ * never copied, and no header value appears in a message.
  */
 export async function postJson<T>(options: PostJsonOptions): Promise<T> {
   const { providerId, url, headers, body, signal, redact } = options
@@ -221,13 +247,21 @@ export async function postJson<T>(options: PostJsonOptions): Promise<T> {
 
   let response: Response
   try {
-    response = await fetch(url, {
+    // `timeout: false` turns Bun's idle timer off. Node reads `dispatcher` when its fetch reads the
+    // init, which is the first moment its global dispatcher is certain to exist, so it is a getter.
+    // undici types the option as its whole `Dispatcher` class, which the delegate is not.
+    const init = {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
       body: payload,
       redirect: 'manual',
       signal,
-    })
+      timeout: false,
+      get dispatcher() {
+        return timersOff()
+      },
+    }
+    response = await fetch(url, init as RequestInit)
   } catch (error) {
     throw lost('request to', error)
   }

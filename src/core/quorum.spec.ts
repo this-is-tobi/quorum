@@ -226,6 +226,45 @@ describe('createQuorum', () => {
     ])
   })
 
+  it('refuses a provider\'s timeoutMs out of range at each port that holds it, and takes one up to 518400000', () => {
+    const stating = (timeoutMs: unknown): Provider => ({ ...provider, timeoutMs }) as Provider
+    const create = (research: Provider, reachability: Provider, impact: Provider, defenses: Provider): Quorum => createQuorum({
+      profiles: [securityProfile],
+    }, {
+      profiles: {
+        security: {
+          research,
+          voters: { reachability, impact, defenses },
+        },
+      },
+    })
+    const range = 'must be a whole number of milliseconds from 1000 to 518400000'
+    expect(issuesOf(() => create(stating(999), stating(1.5), stating(518_400_001), stating('600000')))).toEqual([
+      `ports.profiles.security.research.timeoutMs: ${range}`,
+      `ports.profiles.security.voters.reachability.timeoutMs: ${range}`,
+      `ports.profiles.security.voters.impact.timeoutMs: ${range}`,
+      `ports.profiles.security.voters.defenses.timeoutMs: ${range}`,
+    ])
+    expect(() => create(stating(1000), stating(1000), stating(518_400_000), stating(1000))).not.toThrow()
+  })
+
+  it('reads a provider\'s timeoutMs as own data: a getter never runs, and an inherited one states nothing', () => {
+    let read = false
+    const getter = { ...provider }
+    Object.defineProperty(getter, 'timeoutMs', {
+      enumerable: true,
+      get() {
+        read = true
+        return 5
+      },
+    })
+    const inherited: Provider = Object.assign(Object.create({ timeoutMs: 5 }), provider)
+    expect(() => createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, getter, inherited))).not.toThrow()
+    expect(read).toBe(false)
+  })
+
   it('refuses ports for a profile or a lens the run does not have, as a likely typo, and a sink that is not a function', () => {
     const model = fake('m', () => '')
     const voters = {

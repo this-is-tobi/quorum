@@ -1,13 +1,20 @@
+import type { Clock } from '../clock.ts'
 import type { Limiter } from '../concurrency.ts'
 import { ProviderError } from '../errors.ts'
 import { isRecord } from '../output.ts'
+import { DEFAULT_TIMEOUT_MS, MAX_STATED_TIMEOUT_MS, timeoutProblem } from '../ports.ts'
 import type { CompletionRequest, CompletionResponse, EventSink, Provider } from '../ports.ts'
 import type { ProviderRef, StageName, Thresholds, Usage } from '../types.ts'
 
-/** A provider as a compiled profile holds it: the object it calls, and the ref captured at creation that events and meta report. */
+/**
+ * A provider as a compiled profile holds it: the object it calls, the ref captured at creation that
+ * events and meta report, and the deadline of each of its attempts.
+ */
 export interface Target {
   readonly provider: Provider
   readonly ref: Readonly<ProviderRef>
+  /** The deadline of one attempt, in milliseconds: what the provider stated when the quorum was created, else the default. */
+  readonly timeoutMs: number
 }
 
 /** One lens of a compiled profile: its vote instructions, rendered once, and its own provider. */
@@ -41,8 +48,8 @@ export interface RunContext {
   readonly emit: EventSink
   /**
    * Aborted when the caller's signal is, when the event sink throws, when a profile's research fails
-   * or when the profiles' run rejects: every stage and every call checks it, and every request
-   * carries it.
+   * or when the profiles' run rejects: every stage and every call checks it, and every attempt
+   * carries a signal of its own, which this one and the attempt's deadline abort.
    */
   readonly signal: AbortSignal
   /**
@@ -54,13 +61,15 @@ export interface RunContext {
   readonly fail: (error: unknown) => void
   /** How many findings of a research reply each profile sends to the panel. */
   readonly maxFindings: number
+  /** The time and the randomness the call path reads: the system's, unless a spec injects its own. */
+  readonly clock: Clock
 }
 
 /** What a refusal as too large says when it holds no message of its own. */
 const REFUSAL_FALLBACK = 'refused as too large'
 
 /** The value of an own data property of an object, else undefined: a getter is never run, an inherited property or a throwing proxy never matches. */
-function ownData(value: unknown, key: string): unknown {
+export function ownData(value: unknown, key: string): unknown {
   if (typeof value !== 'object' || value === null) return undefined
   try {
     const descriptor = Object.getOwnPropertyDescriptor(value, key)
@@ -114,6 +123,23 @@ export interface Requester {
   readonly lens?: string
 }
 
+/**
+ * A provider as a run holds it: the ref captured now, which events and meta report, and its
+ * deadline, read as own data and taken only when it passes its check, else the default. The quorum's
+ * checks ran first, so a plain object's value is the one they passed; a proxy that answers the
+ * check and this read differently still gets an in-range deadline, never an unbounded one.
+ */
+export function targetOf(provider: Provider): Target {
+  const stated = ownData(provider, 'timeoutMs')
+  return {
+    provider,
+    ref: Object.freeze({ id: provider.id, model: provider.model }),
+    timeoutMs: timeoutProblem(stated, MAX_STATED_TIMEOUT_MS) === undefined
+      ? stated as number
+      : DEFAULT_TIMEOUT_MS,
+  }
+}
+
 /** Whole milliseconds since `started`, a `performance.now()` reading. */
 export function elapsed(started: number): number {
   return Math.round(performance.now() - started)
@@ -125,13 +151,14 @@ export function elapsed(started: number): number {
  * review is aborted never starts. `buildRequest` runs inside the slot once that check passes: a
  * request holds the diff or a section of it, and building it only there keeps the requests a
  * review holds at once to its concurrency, whatever the number of findings and lenses (ADR-0009).
- * The request carries the signal, so the provider can stop a call in flight. A failed research
- * call aborts the review through `ctx.fail` before it leaves its slot, so the queued call the slot
- * goes to next never starts, unless the provider refused the request as too large: that refusal is
- * a gap, never a reason to stop the other profiles, so the research stage records it. A failed vote
- * does not abort the review, since the panel records it. The duration is measured inside the slot,
- * once the request is built: the provider's latency, not the time the call waited for a slot or
- * took to build its request. A reply whose text is not a string is a `ProviderError`. Each call
+ * The attempt has the provider's deadline, and the provider is handed the attempt's own signal, so
+ * it can stop a call in flight: the review's abort settles the attempt at once, without waiting for
+ * the provider. A failed research call aborts the review through `ctx.fail` before it leaves its
+ * slot, so the queued call the slot goes to next never starts, unless the provider refused the
+ * request as too large: that refusal is a gap, never a reason to stop the other profiles, so the
+ * research stage records it. A failed vote does not abort the review, since the panel records it.
+ * The duration is measured inside the slot, once the request is built: the provider's latency, not
+ * the time the call waited for a slot or took to build its request. A reply whose text is not a string is a `ProviderError`. Each call
  * emits one `call` event, which names the provider by the ref captured at creation, never by the
  * live object: failed, before the error is rethrown, with the usage its error carries when its counts
  * are valid, or ok, with the usage when its counts are valid. The ok event is emitted outside the
@@ -142,10 +169,11 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
   return ctx.limit(async () => {
     ctx.signal.throwIfAborted()
     const request = buildRequest()
-    const started = performance.now()
+    const started = ctx.clock.now()
+    const took = (): number => Math.round(ctx.clock.now() - started)
     let response: CompletionResponse
     try {
-      response = await target.provider.complete({ ...request, signal: ctx.signal })
+      response = await attempt(ctx, target, request)
       if (typeof response?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
     } catch (error) {
       const failedUsage = failureUsage(error)
@@ -153,7 +181,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
         type: 'call',
         ...requester,
         provider: target.ref,
-        durationMs: elapsed(started),
+        durationMs: took(),
         ok: false,
         ...(failedUsage === undefined
           ? {}
@@ -168,13 +196,63 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       type: 'call',
       ...requester,
       provider: target.ref,
-      durationMs: elapsed(started),
+      durationMs: took(),
       ok: true,
       ...(usage === undefined
         ? {}
         : { usage }),
     })
     return response.text
+  })
+}
+
+/**
+ * One attempt of a call, settled once, by the first of: the provider's reply or failure; the
+ * deadline, as a `timeout` error of the core's own with the attempt's signal aborted with it as the
+ * reason; the review's abort, with its reason. The deadline's timer and the join to the review's
+ * signal go when it settles, on every path. A provider that throws before it returns a promise, or
+ * returns a plain object, is handled; whatever it does once the attempt settled is caught and
+ * ignored, and it is never an unhandled rejection. The join is one listener, not `AbortSignal.any`,
+ * so nothing builds up on a signal that outlives thousands of attempts.
+ */
+function attempt(ctx: RunContext, target: Target, request: CompletionRequest): Promise<CompletionResponse> {
+  if (ctx.signal.aborted) return Promise.reject(ctx.signal.reason)
+  const controller = new AbortController()
+  return new Promise<CompletionResponse>((resolve, reject) => {
+    let settled = false
+    let cancel = (): void => {}
+    /** True the first time, when it clears the timer and the listener; false once the attempt has settled. */
+    function done(): boolean {
+      if (settled) return false
+      settled = true
+      cancel()
+      ctx.signal.removeEventListener('abort', onAbort)
+      return true
+    }
+    function onAbort(): void {
+      if (!done()) return
+      controller.abort(ctx.signal.reason)
+      reject(ctx.signal.reason)
+    }
+    cancel = ctx.clock.timer(target.timeoutMs, () => {
+      if (!done()) return
+      const error = new ProviderError({ providerId: target.ref.id, kind: 'timeout', message: `no reply within ${target.timeoutMs} ms` })
+      controller.abort(error)
+      reject(error)
+    })
+    ctx.signal.addEventListener('abort', onAbort, { once: true })
+    let call: Promise<CompletionResponse>
+    try {
+      call = Promise.resolve(target.provider.complete({ ...request, signal: controller.signal }))
+    } catch (error) {
+      if (done()) reject(error)
+      return
+    }
+    call.then((response) => {
+      if (done()) resolve(response)
+    }, (error: unknown) => {
+      if (done()) reject(error)
+    })
   })
 }
 

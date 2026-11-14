@@ -15,7 +15,7 @@ What quorum answers goes to the JSON result on stdout and the lines on stderr, a
 | Verdict integrity | Suppress a real finding, sway a verdict, or forge a finding | Code-derived evidence, strict parsing, blind votes and arithmetic confidence, within the limits of the [residual risk](#residual-risk) |
 | Secrets: the model key, a CI token, repository credentials | Have a model read or leak them | A model path with no tool and no secret, a key sent only to its own endpoint, and a binary that reads nothing from the working directory, a config file included unless it is named |
 | Output channels: CI logs, terminals, what renders the result | Turn model text into markup, a link, a workflow command or an escape sequence | The CLI makes the text it writes inert for a terminal and a GitHub Actions log; anything else that renders the result, or reads a bench's `results.jsonl`, must treat its text as untrusted: [Output handling](./30-output-handling.md) |
-| Availability and spend | Multiply the calls and their cost with a huge or finding-flooding pull request | `maxFindings`, the concurrency limit and the reply caps |
+| Availability and spend | Multiply the calls and their cost with a huge or finding-flooding pull request | `maxFindings`, the concurrency limit, the reply caps, and each call's deadline |
 | Coverage | Have the run review less than the whole change, silently | The size guard, which refuses a request that may not fit the model's context, and unreviewed findings and incomplete reviews, exit `4`, for the gaps the harness detects, a file whose change the diff does not carry among them; what the guard cannot know is not one of them: [What the harness cannot detect](#what-the-harness-cannot-detect) |
 
 ## Residual risk

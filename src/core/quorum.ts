@@ -1,4 +1,5 @@
 import packageJson from '../../package.json' with { type: 'json' }
+import { systemClock } from './clock.ts'
 import { createLimiter, DEFAULT_CONCURRENCY } from './concurrency.ts'
 import { leftOutGaps, reviewScope } from './coverage.ts'
 import type { ReviewScope } from './coverage.ts'
@@ -8,11 +9,12 @@ import type { ConfigIssue } from './errors.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
 import { diffFlags } from './flags.ts'
 import { isRecord } from './output.ts'
+import { MAX_STATED_TIMEOUT_MS, timeoutProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts } from './ports.ts'
 import { profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
 import { renderTemplate } from './prompts.ts'
-import { elapsed, stage } from './stages/context.ts'
-import type { ProfileRun, RunContext, Target } from './stages/context.ts'
+import { elapsed, ownData, stage, targetOf } from './stages/context.ts'
+import type { ProfileRun, RunContext } from './stages/context.ts'
 import { dedup } from './stages/dedup.ts'
 import { panel } from './stages/panel.ts'
 import type { PanelOutcome } from './stages/panel.ts'
@@ -51,8 +53,9 @@ interface Tally {
  * gets the checks a config file gets: options and ports that are not objects, no profile, each
  * profile's own issues, a repeated profile id, a `concurrency` or `maxFindings` that is not a
  * positive integer, an `exclude` that is not a list of at most 100 patterns that can be taken, a
- * missing or malformed research provider or voter, ports for a profile or a lens the run does not
- * have (a likely typo), and an event sink that is not a function. Ports are
+ * missing or malformed research provider or voter, a provider's stated `timeoutMs` that is not a
+ * whole number of milliseconds from 1000 to 518400000, ports for a profile or a lens the run does
+ * not have (a likely typo), and an event sink that is not a function. Ports are
  * checked only for the profiles that have no issue of their own, and not at all when `profiles` is
  * not an array. Every record keyed by a caller's id is read as an own property, since `constructor`
  * is a valid id.
@@ -109,13 +112,14 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
  * events before the sink receives them.
  *
  * Abort never fails open. The review's signal joins the caller's `signal` to an internal one; every
- * stage and every call checks it, every request carries it, and it is checked once more after the
- * profiles have run, a blank diff included, so an aborted review rejects with the signal's reason,
- * whatever error a call it cut raised, and never resolves. No event is delivered once the review is
- * aborted. A sink that throws aborts the review with its error, and a research failure (the call or
- * its reply) aborts it with that failure where it fails, so no other profile starts a call after
- * it; any other failure aborts the review when the profiles' run rejects. Either way the review
- * rejects with the first reason. An abort after `run:end` has no effect: the review is over.
+ * stage and every call checks it, every attempt carries a signal of its own, which the review's
+ * abort and the attempt's deadline abort, and it is checked once more after the profiles have run,
+ * a blank diff included, so an aborted review rejects with the signal's reason, whatever error a
+ * call it cut raised, and never resolves. No event is delivered once the review is aborted. A sink
+ * that throws aborts the review with its error, and a research failure (the call or its reply)
+ * aborts it with that failure where it fails, so no other profile starts a call after it; any other
+ * failure aborts the review when the profiles' run rejects. Either way the review rejects with the
+ * first reason. An abort after `run:end` has no effect: the review is over.
  *
  * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, options that are not an object, a `signal` that is not an AbortSignal
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
@@ -175,6 +179,7 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
     signal,
     fail,
     maxFindings: compiled.maxFindings,
+    clock: systemClock,
   }
   emit({
     type: 'run:start',
@@ -298,33 +303,27 @@ function profileMeta(run: ProfileRun, invalidFindings: number): ProfileMeta {
 /**
  * Compile a checked profile and its checked ports into the frozen run every review reads: the vote
  * template rendered once per lens, the thresholds resolved, `gating` true unless the profile says
- * otherwise, and each provider captured beside the `{ id, model }` ref events and meta report.
+ * otherwise, and each provider captured beside the `{ id, model }` ref events and meta report and
+ * the deadline of its attempts.
  */
 function compile(profile: Profile, ports: ProfilePorts): ProfileRun {
   const panelSize = String(profile.lenses.length)
   const lenses = profile.lenses.map(lens => Object.freeze({
     id: lens.id,
     instructions: renderTemplate(profile.prompts.vote, { 'lens.id': lens.id, 'lens.question': lens.question, 'panel.size': panelSize }),
-    ...target(ports.voters[lens.id]),
+    ...targetOf(ports.voters[lens.id]),
   }))
   return Object.freeze({
     id: profile.id,
     research: Object.freeze({
       instructions: profile.prompts.research,
-      ...target(ports.research),
+      ...targetOf(ports.research),
     }),
     lenses: Object.freeze(lenses),
     thresholds: Object.freeze(thresholdsFor(profile)),
     gating: profile.gating ?? true,
     guidelines: profile.guidelines,
   })
-}
-
-function target(provider: Provider): Target {
-  return {
-    provider,
-    ref: Object.freeze({ id: provider.id, model: provider.model }),
-  }
 }
 
 /**
@@ -444,16 +443,26 @@ function profilePortIssues(entries: Record<string, unknown>, profile: Profile): 
   return issues
 }
 
+/** The issues of one provider: it is missing, it is not one, or the `timeoutMs` it states, as own data, is out of range. */
 function providerIssues(path: string, value: unknown): ConfigIssue[] {
   if (value === undefined) {
     return [
       { path, message: 'is missing' },
     ]
   }
-  return isProvider(value)
+  if (!isProvider(value)) {
+    return [
+      { path, message: PROVIDER_SHAPE },
+    ]
+  }
+  const stated = ownData(value, 'timeoutMs')
+  const problem = stated === undefined
+    ? undefined
+    : timeoutProblem(stated, MAX_STATED_TIMEOUT_MS)
+  return problem === undefined
     ? []
     : [
-        { path, message: PROVIDER_SHAPE },
+        { path: `${path}.timeoutMs`, message: problem },
       ]
 }
 

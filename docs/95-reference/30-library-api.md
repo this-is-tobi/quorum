@@ -38,7 +38,7 @@ interface Quorum {
 | `concurrency` | The most provider calls in flight at once in one review, shared by every profile; a positive integer | `4` |
 | `maxFindings` | The most findings of a research reply each profile reads, the only ones that can reach its panel; a positive integer | `50` |
 | `exclude` | Path patterns of the files left out of every request ([Excludes](../20-using/20-configuration.md#excludes)). Each file excluded reaches no model and is listed in `meta.leftOut` as `excluded`, never as a gap. At most 100 patterns, each at most 256 characters | None |
-| `ports.profiles` | One entry per profile, keyed by profile id: `research`, its research provider, and `voters`, one provider per lens keyed by lens id | Required |
+| `ports.profiles` | One entry per profile, keyed by profile id: `research`, its research provider, and `voters`, one provider per lens keyed by lens id. A provider may state its `timeoutMs`: [What a provider states](../20-using/30-providers.md#what-a-provider-states) | Required |
 | `ports.events` | The event sink: a function that receives every event of every review | None |
 
 One provider object may fill several ports: the research provider of a profile can also be every one of its voters.
@@ -61,6 +61,7 @@ One provider object may fill several ports: the research provider of a profile c
 | `ports.profiles.<id>.research` | `is missing`, or `must be a provider: an object with a string id, a string model and a complete function` |
 | `ports.profiles.<id>.voters` | `is missing`, or `must be an object keyed by lens id` |
 | `ports.profiles.<id>.voters.<lens>` | `is missing`, the provider message above, or `names no lens of the profile` |
+| `ports.profiles.<id>.research.timeoutMs`, `ports.profiles.<id>.voters.<lens>.timeoutMs` | `must be a whole number of milliseconds from 1000 to 518400000` |
 | `ports.events` | `must be a function` |
 
 A port for a profile or a lens the review does not have is refused, as a likely typo. A profile's ports are checked only when the profile itself has no issue, and no port is checked when `profiles` is not an array. Every record keyed by an id is read through its own properties, so `constructor` is as valid an id as any other. For the security profile with `concurrency: 0`, `maxFindings: 2.5`, a research port that is not a provider, its `defenses` voter missing and one named `typo` instead, a port for a profile named `other`, and a sink that is a string, the message reads:
@@ -154,12 +155,12 @@ await pending // rejects with controller.signal.reason
 An aborted review never resolves, and never fails open:
 
 - **It rejects with the signal's reason**, whatever error a call it cut raised. A signal already aborted rejects at once, before any event or call.
-- **The signal is checked before every stage, and inside every call's concurrency slot** before the provider is called, so a call still queued when the review is aborted never starts. Every request carries the review's signal, so a provider can stop a call in flight. It is checked once more after the profiles have run, a blank diff included, so an abort that lands when no stage is left to check still rejects.
+- **The signal is checked before every stage, and inside every call's concurrency slot** before the provider is called, so a call still queued when the review is aborted never starts. Every request carries its attempt's signal, so a provider can stop a call in flight. It is checked once more after the profiles have run, a blank diff included, so an abort that lands when no stage is left to check still rejects.
 - **A vote cut by the abort is never a failed vote.** It rethrows the abort's reason, so an aborted review never resolves with a finding the abort left unreviewed, and the review rejects at once, without waiting for the votes still in flight.
 - **No event is delivered once the review is aborted.**
 - **One failed profile stops the others.** A profile whose research fails aborts the review with that error, and the review rejects with it. When the research call itself fails, the review is aborted before the call's concurrency slot is released, so no other profile starts a call after it. When the reply is not a valid envelope, the review is aborted when the reply is checked, which happens after the call has released its slot, so a call another profile had queued may already have started. Either way, no event arrives after the rejection.
 - **An abort after `run:end` has no effect**: the review is over, and resolves with its result.
-- **Stopping a call in flight is cooperative.** The shipped adapters pass the signal to `fetch`. A provider that ignores it can keep an aborted review waiting until its call settles, unless another call of the review stops on the signal first; the review then rejects all the same.
+- **The review never waits for a call it stopped.** Each attempt has a signal of its own, aborted with the review's or at its deadline, and the review settles the attempt at once; the shipped adapters stop their request or process on it, and a provider that ignores it works on, outside the review.
 
 ## Errors
 
