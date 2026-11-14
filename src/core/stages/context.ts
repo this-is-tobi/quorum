@@ -2,19 +2,23 @@ import type { Clock } from '../clock.ts'
 import type { Limiter } from '../concurrency.ts'
 import { ProviderError } from '../errors.ts'
 import { isRecord } from '../output.ts'
-import { DEFAULT_TIMEOUT_MS, MAX_STATED_TIMEOUT_MS, timeoutProblem } from '../ports.ts'
+import { DEFAULT_TIMEOUT_MS, MAX_STATED_TIMEOUT_MS, retriesProblem, timeoutProblem } from '../ports.ts'
 import type { CompletionRequest, CompletionResponse, EventSink, Provider } from '../ports.ts'
+import { isTimeout, retryWait } from '../retry.ts'
+import type { FailureFacts } from '../retry.ts'
 import type { ProviderRef, StageName, Thresholds, Usage } from '../types.ts'
 
 /**
  * A provider as a compiled profile holds it: the object it calls, the ref captured at creation that
- * events and meta report, and the deadline of each of its attempts.
+ * events and meta report, the deadline of each of its attempts and the retries of a call.
  */
 export interface Target {
   readonly provider: Provider
   readonly ref: Readonly<ProviderRef>
   /** The deadline of one attempt, in milliseconds: what the provider stated when the quorum was created, else the default. */
   readonly timeoutMs: number
+  /** The retries of a call after its first attempt: what the provider stated when the quorum was created, else none. */
+  readonly retries: number
 }
 
 /** One lens of a compiled profile: its vote instructions, rendered once, and its own provider. */
@@ -101,6 +105,21 @@ export function refusalMessage(refusal: unknown): string {
 }
 
 /**
+ * The usage of one more attempt added to a running total: both sums are of the attempts that
+ * reported valid counts, and `costUsd` is summed over those that reported one. With no more usage
+ * the total stays as it is.
+ */
+export function addUsage(total: Usage | undefined, more: Usage | undefined): Usage | undefined {
+  if (more === undefined) return total
+  const sum: Usage = { inputTokens: (total?.inputTokens ?? 0) + more.inputTokens, outputTokens: (total?.outputTokens ?? 0) + more.outputTokens }
+  const costUsd = more.costUsd === undefined
+    ? total?.costUsd
+    : (total?.costUsd ?? 0) + more.costUsd
+  if (costUsd !== undefined) sum.costUsd = costUsd
+  return sum
+}
+
+/**
  * The usage a failed call's thrown value carries, when its counts can be trusted: its own data property
  * `usage`, and that object's own data `inputTokens`, `outputTokens` and `costUsd`, checked as a reply's
  * usage is. It is matched by those properties, not by class, as `isTooLarge` is, so a `ProviderError`
@@ -125,18 +144,23 @@ export interface Requester {
 
 /**
  * A provider as a run holds it: the ref captured now, which events and meta report, and its
- * deadline, read as own data and taken only when it passes its check, else the default. The quorum's
- * checks ran first, so a plain object's value is the one they passed; a proxy that answers the
- * check and this read differently still gets an in-range deadline, never an unbounded one.
+ * deadline and retries, each read as own data and taken only when it passes its check, else the
+ * default: 600000 ms and no retry. The quorum's checks ran first, so a plain object's values are the
+ * ones they passed; a proxy that answers the check and this read differently still gets an in-range
+ * deadline and no retry, never an unbounded one.
  */
 export function targetOf(provider: Provider): Target {
-  const stated = ownData(provider, 'timeoutMs')
+  const timeoutMs = ownData(provider, 'timeoutMs')
+  const retries = ownData(provider, 'retries')
   return {
     provider,
     ref: Object.freeze({ id: provider.id, model: provider.model }),
-    timeoutMs: timeoutProblem(stated, MAX_STATED_TIMEOUT_MS) === undefined
-      ? stated as number
+    timeoutMs: timeoutProblem(timeoutMs, MAX_STATED_TIMEOUT_MS) === undefined
+      ? timeoutMs as number
       : DEFAULT_TIMEOUT_MS,
+    retries: retriesProblem(retries) === undefined
+      ? retries as number
+      : 0,
   }
 }
 
@@ -151,19 +175,23 @@ export function elapsed(started: number): number {
  * review is aborted never starts. `buildRequest` runs inside the slot once that check passes: a
  * request holds the diff or a section of it, and building it only there keeps the requests a
  * review holds at once to its concurrency, whatever the number of findings and lenses (ADR-0009).
- * The attempt has the provider's deadline, and the provider is handed the attempt's own signal, so
- * it can stop a call in flight: the review's abort settles the attempt at once, without waiting for
- * the provider. A failed research call aborts the review through `ctx.fail` before it leaves its
- * slot, so the queued call the slot goes to next never starts, unless the provider refused the
- * request as too large: that refusal is a gap, never a reason to stop the other profiles, so the
- * research stage records it. A failed vote does not abort the review, since the panel records it.
- * The duration is measured inside the slot, once the request is built: the provider's latency, not
- * the time the call waited for a slot or took to build its request. A reply whose text is not a
- * string is a `ProviderError`. Each call emits one `call` event, which names the provider by the ref
- * captured at creation, never by the live object: failed, before the error is rethrown, with the
- * usage its error carries when its counts are valid, or ok, with the usage when its counts are
- * valid. The ok event is emitted outside the `try` that catches the provider's failure, so a sink
- * that throws on it is never reported as a failed call.
+ * The call runs its attempts inside its slot, retried as `retryWait` decides, the waits between
+ * them holding the slot: the review's abort ends a wait at once, and no failure is retried once the
+ * review is aborted. Each attempt has the provider's deadline, and the provider is handed the
+ * attempt's own signal, so it can stop a call in flight: the review's abort settles the attempt at
+ * once, without waiting for the provider. A failed research call aborts the review through
+ * `ctx.fail` before it leaves its slot, so the queued call the slot goes to next never starts,
+ * unless the provider refused the request as too large: that refusal is a gap, never a reason to
+ * stop the other profiles, so the research stage records it. A failed vote does not abort the
+ * review, since the panel records it. The duration is measured inside the slot, from the first
+ * attempt, once the request is built, to the call's end, the waits included: the provider's
+ * latency, not the time the call waited for a slot or took to build its request. A reply whose
+ * text is not a string is a `ProviderError`. Each call emits one `call` event, which names the
+ * provider by the ref captured at creation, never by the live object, and counts its attempts when
+ * it made more than one: failed, before the error is rethrown, with the usage summed over its
+ * attempts when their counts are valid, or ok, with that usage. The ok event is emitted outside the
+ * `try` that catches the provider's failure, so a sink that throws on it is never reported as a
+ * failed call.
  */
 export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest): Promise<string> {
   return ctx.limit(async () => {
@@ -171,38 +199,91 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     const request = buildRequest()
     const started = ctx.clock.now()
     const took = (): number => Math.round(ctx.clock.now() - started)
-    let response: CompletionResponse
-    try {
-      response = await attempt(ctx, target, request)
-      if (typeof response?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
-    } catch (error) {
-      const failedUsage = failureUsage(error)
-      ctx.emit({
-        type: 'call',
-        ...requester,
-        provider: target.ref,
-        durationMs: took(),
-        ok: false,
-        ...(failedUsage === undefined
-          ? {}
-          : { usage: failedUsage }),
-      })
-      // Still inside the slot: the queued call it is handed to next sees the abort and never starts.
-      if (requester.role === 'research' && !isTooLarge(error)) ctx.fail(error)
-      throw error
+    let attempts = 0
+    let usage: Usage | undefined
+    let timedOut = false
+    let response: CompletionResponse | undefined
+    while (response === undefined) {
+      attempts += 1
+      try {
+        const reply = await attempt(ctx, target, request)
+        if (typeof reply?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
+        response = reply
+      } catch (error) {
+        usage = addUsage(usage, failureUsage(error))
+        const facts = failureFacts(error)
+        const wait = ctx.signal.aborted
+          ? undefined
+          : retryWait(facts, { retried: attempts - 1, retries: target.retries, timedOut }, ctx.clock.random)
+        if (wait === undefined) {
+          ctx.emit({
+            type: 'call',
+            ...requester,
+            provider: target.ref,
+            durationMs: took(),
+            ok: false,
+            ...counted(attempts, usage),
+          })
+          // Still inside the slot: the queued call it is handed to next sees the abort and never starts.
+          if (requester.role === 'research' && !isTooLarge(error)) ctx.fail(error)
+          throw error
+        }
+        timedOut ||= isTimeout(facts)
+        await pause(ctx, wait)
+      }
     }
-    const usage = checkedUsage(response.usage)
     ctx.emit({
       type: 'call',
       ...requester,
       provider: target.ref,
       durationMs: took(),
       ok: true,
-      ...(usage === undefined
-        ? {}
-        : { usage }),
+      ...counted(attempts, addUsage(usage, checkedUsage(response.usage))),
     })
     return response.text
+  })
+}
+
+/** The fields of a `call` event that hold what the call's attempts add up to: their number when above one, and their summed usage when valid. */
+function counted(attempts: number, usage: Usage | undefined): { attempts?: number, usage?: Usage } {
+  return {
+    ...(attempts > 1
+      ? { attempts }
+      : {}),
+    ...(usage === undefined
+      ? {}
+      : { usage }),
+  }
+}
+
+/** What the retry policy reads of a thrown value: its `kind`, `status`, `retryable` and `retryAfterMs` as own data, so a getter decides nothing and never runs. */
+function failureFacts(error: unknown): FailureFacts {
+  return {
+    kind: ownData(error, 'kind'),
+    status: ownData(error, 'status'),
+    retryable: ownData(error, 'retryable'),
+    retryAfterMs: ownData(error, 'retryAfterMs'),
+  }
+}
+
+/**
+ * Wait `ms` milliseconds between two attempts of a call, which holds its slot meanwhile. The review's
+ * abort ends the wait at once: it rejects with the abort's reason, and the timer is cancelled. Each of
+ * the timer and the abort listener removes the other when it goes first.
+ */
+function pause(ctx: RunContext, ms: number): Promise<void> {
+  if (ctx.signal.aborted) return Promise.reject(ctx.signal.reason)
+  return new Promise<void>((resolve, reject) => {
+    let cancel = (): void => {}
+    function onAbort(): void {
+      cancel()
+      reject(ctx.signal.reason)
+    }
+    cancel = ctx.clock.timer(ms, () => {
+      ctx.signal.removeEventListener('abort', onAbort)
+      resolve()
+    })
+    ctx.signal.addEventListener('abort', onAbort, { once: true })
   })
 }
 

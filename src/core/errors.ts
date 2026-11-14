@@ -69,7 +69,7 @@ export class ConfigError extends QuorumError {
   }
 }
 
-/** What went wrong with a provider call. `retryable` is derived from it. */
+/** What went wrong with a provider call. `retryable` is derived from it, unless the adapter sets it. */
 export type ProviderErrorKind
   = | 'http'
     | 'network'
@@ -99,19 +99,25 @@ export class ProviderError extends QuorumError {
   readonly providerId: string
   readonly kind: ProviderErrorKind
   readonly status: number | undefined
-  /** True for network errors, timeouts, 408, 409, 429 and 5xx; a caller may retry the call. */
+  /**
+   * A caller may retry the call: true for network errors, timeouts, 408, 409, 429 and 5xx, unless
+   * the adapter set it. The core retries only `network`, `timeout` and `http` failures, whatever it says.
+   */
   readonly retryable: boolean
+  /** The wait the server asked for at least, in milliseconds, when the adapter read one. */
+  readonly retryAfterMs: number | undefined
   /** What the reply the call failed on reported, when the provider read one: the review counts it as the failed call's usage. */
   readonly usage: Usage | undefined
 
-  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, usage?: Usage, cause?: unknown }) {
+  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, retryAfterMs?: number, usage?: Usage, cause?: unknown }) {
     super(`${details.providerId}: ${details.message}`, details.cause === undefined
       ? undefined
       : { cause: details.cause })
     this.providerId = details.providerId
     this.kind = details.kind
     this.status = details.status
-    this.retryable = isRetryable(details.kind, details.status)
+    this.retryable = details.retryable ?? isRetryable(details.kind, details.status)
+    this.retryAfterMs = details.retryAfterMs
     this.usage = details.usage
   }
 }

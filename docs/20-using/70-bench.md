@@ -374,7 +374,7 @@ Each configuration is a row, numbered as in the list above it, which names it by
 | Unmatched kept per case, bug / control | The mean number of kept findings that catch no location, over the bug cases and over the controls |
 | Incomplete | The reviews with a gap or an unreviewed finding, in any profile, and the denied reviews, which are among them: when some are denied the cell counts them in brackets, as `2 (1 denied)` for 2 incomplete reviews, one of them denied. A patch too large for a model's context is one |
 | Tokens per review | The median, and the total, of input plus output tokens, over the reviews that reported usage; `n/a` when none did. A call that failed adds the tokens its reply reported, as a reply cut off at its token limit or refused does; one that failed with no reply read, a network error or a status outside 2xx, adds none, so a configuration whose calls fail that way more often looks cheaper here |
-| Latency | A review's time, at the 50th and 95th percentile, by nearest rank |
+| Latency | A review's time, the waits between a call's attempts included, at the 50th and 95th percentile, by nearest rank |
 | Cost | The total in US dollars, only when every call of every counted review reported a cost; otherwise `n/a`. A provider that reports none, a local model for one, leaves it `n/a` |
 
 **Which reviews count.** A review counts when it is recorded for one of the selected cases and a trial from 1 to `--trials`. A case scores the share of its counted trials with the outcome, so a case with fewer counted trials, after an interrupt or a failure, scores the share of those, and a case with none counted is left out of the rates.

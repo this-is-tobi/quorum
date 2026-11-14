@@ -51,6 +51,30 @@ describe('provider errors', () => {
     })
   })
 
+  it('derives retryable from its kind and status unless it is given one, and keeps the hint it is given', () => {
+    const details = { providerId: 'p', message: 'm' } as const
+    expect(new ProviderError({
+      ...details,
+      kind: 'http',
+      status: 400,
+      retryable: true,
+    }).retryable).toBe(true)
+    expect(new ProviderError({
+      ...details,
+      kind: 'http',
+      status: 503,
+      retryable: false,
+    }).retryable).toBe(false)
+    expect(new ProviderError({ ...details, kind: 'http', status: 503 }).retryable).toBe(true)
+    expect(new ProviderError({
+      ...details,
+      kind: 'http',
+      status: 429,
+      retryAfterMs: 1500,
+    }).retryAfterMs).toBe(1500)
+    expect(new ProviderError({ ...details, kind: 'http', status: 429 }).retryAfterMs).toBeUndefined()
+  })
+
   it('keeps the usage it is given, and holds undefined when it is given none', () => {
     const details = { providerId: 'p', kind: 'truncated', message: 'm' } as const
     expect(new ProviderError({

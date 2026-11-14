@@ -38,6 +38,11 @@ export const MAX_TIMEOUT_MS = 86_400_000
 /** The most retries a call is given. */
 export const MAX_RETRIES = 5
 /**
+ * The retries a shipped adapter states when its options set none: two. A provider that states none
+ * gets no retry, since the core must not retry what may retry by itself.
+ */
+export const DEFAULT_RETRIES = 2
+/**
  * The longest deadline a provider states: six times `MAX_TIMEOUT_MS`, since a provider that runs
  * the retries itself states the deadline of its whole call, `timeoutMs` times `MAX_RETRIES + 1`.
  */
@@ -51,6 +56,16 @@ export function timeoutProblem(value: unknown, max: number = MAX_TIMEOUT_MS): st
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= MIN_TIMEOUT_MS && value <= max
     ? undefined
     : `must be a whole number of milliseconds from ${MIN_TIMEOUT_MS} to ${max}`
+}
+
+/**
+ * What is wrong with a count of retries, worded with what to write, or undefined for a whole number
+ * from 0 to `MAX_RETRIES`. The value is never quoted: it may be anything.
+ */
+export function retriesProblem(value: unknown): string | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_RETRIES
+    ? undefined
+    : `must be a whole number from 0 to ${MAX_RETRIES}`
 }
 
 /**
@@ -69,6 +84,14 @@ export interface Provider {
    * a field.
    */
   readonly timeoutMs?: number
+  /**
+   * How often the core retries a call that failed in passing, after its first attempt: a whole
+   * number from 0 to 5; none when unset, since a provider that retries by itself must not be
+   * retried again. The core retries only a `network`, `timeout` or `http` failure that says it may
+   * be retried, and never a call's second timeout. It is read once, when the quorum is created, as
+   * an own data property, as `timeoutMs` is.
+   */
+  readonly retries?: number
   /**
    * Answer one request. It should honour `request.signal`, settling soon after the signal aborts:
    * the core settles the call at its deadline or at the review's abort without waiting for the
