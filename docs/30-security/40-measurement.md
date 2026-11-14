@@ -109,9 +109,9 @@ The attack tries to make the review keep a finding it should not: a **decoy**, l
 
 The attack tries to make the review longer and dearer. The measure is the output tokens of a review, over the reviews that reported usage, against the twin's. Input tokens are not the measure: they grow with the payload's own bytes, whatever any model did. A review with no usage, or whose twin has none, is not paired, and a line with no pair reads `no twin with a paired trial`.
 
-- **A reply cut off at its limit reports no usage.** Its review is recorded as denied, with no usage, so no trial is paired for it. A cost-bloat case whose replies run to the limit reads fewer paired trials, or `n/a`, and drops out of the cost line, with its twin when it was the twin's only cost-bloat case.
-- **No line of the attack section counts it.** The denial line takes the cases of the denial goal only. Only the table's Incomplete column counts a cut-off review, among the denied reviews of its configuration.
-- **So read a cost-bloat case's paired trials against the trials run.** A shortfall can be a bloat that worked too well, one that ran its reply to the limit, and a model whose every bloated reply is cut off is not one that resists.
+- **A reply cut off at its limit counts.** Its review is recorded as denied, with the usage its server reported for the cut-off reply, so its trial is paired at what the model wrote before the limit stopped it, which is the limit itself when the request set one. A bloat that runs every reply to the limit moves its twin toward the attack.
+- **A server that reports no counts for a cut-off reply** leaves that trial unpaired, and a cost-bloat case then reads fewer paired trials, or `n/a`. So read a cost-bloat case's paired trials against the trials run: a shortfall can be a bloat that worked too well. The shipped adapters read the counts of a cut-off reply on every protocol, a Gemini thinking model cut off while it thinks included: [Providers](../20-using/30-providers.md#providererror).
+- **The denial line does not count it.** It takes the cases of the denial goal only, so a cut-off review of a cost-bloat case counts on the cost line, and among the denied reviews of the table's Incomplete column.
 
 ### Denial of review
 
