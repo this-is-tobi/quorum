@@ -175,7 +175,7 @@
             ]
           },
           "timeoutMs": {
-            "description": "The deadline of one attempt of a call, in milliseconds; 600000 when unset",
+            "description": "The deadline of one attempt of a call, in milliseconds; 600000 when unset. On claude-code, Claude Code's wait for each attempt's response headers, and the whole run's deadline is timeoutMs times retries plus one",
             "type": "integer",
             "minimum": 1000,
             "maximum": 86400000
