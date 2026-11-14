@@ -1,6 +1,6 @@
 # Providers
 
-A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds its providers from its config, each from a preset or a protocol ([Configuration](./20-configuration.md)); a program builds its own, with one of the five shipped adapters or from scratch. This page covers the port, the deadline of a call, the adapters, the presets, the options the HTTP adapters share, the key header styles, the tool fields each of them refuses, the limits of a request, the body each sends and the replies it reads, the Claude Code adapter's command line, isolation and errors, the errors a provider raises, and writing a provider of your own.
+A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds its providers from its config, each from a preset or a protocol ([Configuration](./20-configuration.md)); a program builds its own, with one of the five shipped adapters or from scratch. This page covers the port, the deadline and the retries of a call, the adapters, the presets, the options the HTTP adapters share, the key header styles, the tool fields each of them refuses, the limits of a request, the body each sends and the replies it reads, the Claude Code adapter's command line, isolation and errors, the errors a provider raises, and writing a provider of your own.
 
 ## The port
 
@@ -51,12 +51,15 @@ The core runs each call's attempts inside the call's concurrency slot, and gives
 - **A failure that passes**: a dropped connection, a timeout, an HTTP 408, 409, 429 or 5xx, as the error's `retryable` says, within the provider's `retries` retries after the first attempt.
 - **Never a `refusal`, `truncated`, `invalid-response`, `unsupported`, `too-large`, `process` or `aborted` failure**, whatever `retryable` says: planted text can cause each of them, so a retry would let it multiply the spend.
 - **A timeout, the core's or a gateway's 504 or 524, once per call**: a slow request is likely slow again, and may be billed each time. A second one ends the call, and a failure that passes after a timeout is retried as any other.
+- **Never a reply that says its credit, spend limit or quota is used up**, whatever its status: OpenAI's codes `credit_balance_exhausted`, `organization_usage_limit_exceeded`, any `..._spend_limit_exceeded` and `insufficient_quota`, Anthropic's `enforced_spend_limit_reached`, Gemini's per-day quota, and `x-should-retry: false`.
+- **A reply that says `x-should-retry: true` is retried**, whatever its status, and so is an OpenRouter 402 of its in-flight budget (`metadata.limit_source` of `openrouter_in_flight_budget`) that carries a `Retry-After`, the one 402 retried. A reply that says both to retry and never to is never retried.
 - **Nothing once the review is aborted.**
 
 ### The wait between attempts
 
 - **Before retry n**, counting the first retry as 0, quorum waits a random time from 0 to the lesser of 8 s and 0.5 s times 2 to the n.
 - **A server's hint** of the wait it asks for, the error's `retryAfterMs`, replaces that when it is above 0 and up to 60 s, and quorum waits up to a second more. A hint over 60 s ends the call at once; one of 0 or less, or that is not a finite number, counts as none.
+- **A hint comes from the reply.** The HTTP adapters read `retry-after-ms` in milliseconds, then `retry-after` in seconds or as an HTTP date, and `gemini` also the body's `RetryInfo.retryDelay`, such as `34s`. A malformed one, 0 or a date in the past is none, and only the IMF date form, `Sat, 14 Nov 2026 12:00:30 GMT`, is read: the runtimes read other forms as local time, or `1` as a year.
 - **The wait holds the call's slot**, and an interrupt ends it at once.
 
 ### What a provider states
@@ -254,6 +257,7 @@ Every request goes through one hardened path:
 - **A redirect is not followed.** It is an `http` error that names it, `HTTP 307 (redirects are not followed): "<body>"`, so a key in any header never reaches another endpoint.
 - **A reply body over 16 MiB is refused**, without reading the rest.
 - **At most 64 KiB of an error body is read**, enough for the 500 characters a message quotes.
+- **A failed reply's hint and codes** are read as numbers and words, never quoted: the message quotes the body as before.
 - **Server text in a message is redacted** of the key, of the base URL's path and of the values of `headers`, as written and trimmed, since `fetch` sends a header value trimmed; a value that is blank once trimmed redacts nothing. Every occurrence is redacted, and values that overlap in the text become one `[redacted]`. It is redacted once escaped ASCII is decoded, each value matched as written and with its own escapes decoded, then cut to 500 characters: 200 for model text and for a server error in a 2xx reply, 40 for a stop or finish reason. A server echoes the path in a 404, and a gateway's own credential goes in a header, so both are redacted too.
 
 ### The size of a request
@@ -416,7 +420,7 @@ The body of every request holds, in this order:
 - `generationConfig`, left out when it would be empty: `temperature` when set, `maxOutputTokens` when `maxTokens` is set, `responseMimeType: 'application/json'` in `json` and `schema` mode, and `responseJsonSchema: <output.schema>` in `schema` mode, as Google's JavaScript SDK sends it (`responseSchema` is deprecated);
 - then `extraBody`, merged: `{ generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } }` goes beside the rest. It cannot replace `contents` or `systemInstruction`, or set `generationConfig.maxOutputTokens`, which `maxTokens` sets. Its `generationConfig` must be an object, written `generationConfig`: another spelling, such as `generation_config`, would send a second key, so it is refused.
 
-A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose parts hold text. The text is the `text` of the first candidate's `content.parts`, joined, without the parts flagged as thoughts. `model` is the reply's `modelVersion`, or the configured model. The input count is `usageMetadata.promptTokenCount`; the output count is `usageMetadata.candidatesTokenCount`, plus `usageMetadata.thoughtsTokenCount` when it is a number. Gemini leaves a zero count out of its JSON, so a candidates count the reply leaves out reads as 0: a thinking model cut off while it thinks reports only its prompt and thought counts. A reply without `promptTokenCount`, or with a prompt or candidates count that is not a number, reports no `usage`. A status outside 2xx is an `http` error that quotes Google's `{ "error": { "code", "message", "status", "details" } }` body; a 402, which Google sends for a depleted prepay balance, is not retryable, unlike a 429.
+A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose parts hold text. The text is the `text` of the first candidate's `content.parts`, joined, without the parts flagged as thoughts. `model` is the reply's `modelVersion`, or the configured model. The input count is `usageMetadata.promptTokenCount`; the output count is `usageMetadata.candidatesTokenCount`, plus `usageMetadata.thoughtsTokenCount` when it is a number. Gemini leaves a zero count out of its JSON, so a candidates count the reply leaves out reads as 0: a thinking model cut off while it thinks reports only its prompt and thought counts. A reply without `promptTokenCount`, or with a prompt or candidates count that is not a number, reports no `usage`. A status outside 2xx is an `http` error that quotes Google's `{ "error": { "code", "message", "status", "details" } }` body; a 402, which Google sends for a depleted prepay balance, is not retryable, unlike a 429, and a 429 of a per-day quota is not either.
 
 | The reply | Kind | Message |
 | --- | --- | --- |
@@ -648,7 +652,7 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 | `kind` | What went wrong, below |
 | `status` | The HTTP status, for `http`. For a server error in an `openaiCompatible` 2xx reply, it is the status the body's `code` names. For a `claudeCode` `process` error that follows an exit of `claude` (a reported error, or `claude exited 2`), it is that exit code. A signal, a version that is too old, a start failure and a directory failure carry none |
 | `retryable` | `true` for `network` and `timeout`, and for `http` with status 408, 409, 429 or 5xx: a caller may try the call again. A provider may set it, and the core retries only `network`, `timeout` and `http` failures, whatever it says |
-| `retryAfterMs` | The wait the server asked for at least, in milliseconds, or `undefined` |
+| `retryAfterMs` | The wait the server asked for at least, in milliseconds, or `undefined`. The HTTP adapters set it from the reply's headers, and `gemini` from its body |
 | `usage` | The counts of the reply the call failed on, `{ inputTokens, outputTokens, costUsd? }`, when the provider read one that reports them; `undefined` otherwise. The review counts them as the failed call's usage, in its `call` event and in `meta.usage`. The shipped adapters set it on every failure that follows a reply they read and that reports its counts |
 
 | Kind | Raised when |
