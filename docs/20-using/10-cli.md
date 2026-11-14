@@ -249,19 +249,20 @@ Options:
   -j, --jobs <n>          The reviews run at once (default 1)
   -o, --out <dir>         The run directory (default quorum-bench/<suite name>)
       --retry-incomplete  Run again the recorded reviews that came back incomplete
+      --report-only       Write the reports of what is recorded, and run no review
       --dry-run           Check the suite and the configs, print the plan, and exit
   -h, --help              Print this help and exit
 ```
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Every planned review is recorded, a review that a model's reply denied included, or `--dry-run` checked everything and printed the plan |
+| `0` | Every planned review is recorded, a review that a model's reply denied included, `--report-only` wrote the reports, or `--dry-run` checked everything and printed the plan |
 | `2` | A usage, config or suite error, two configs that resolve to the same settings, or a run directory that holds another run or a file the bench cannot trust |
 | `3` | A read or a write of the run directory failed, or any other stop |
 | `4` | Reviews failed, because a research call failed or a review's record was too large to write: they are not recorded, and the next run runs them again. A review with a gap, or one that a model's reply denied, is recorded and is not a failure |
 | `130` | Interrupted: the records are kept and the reports are written, or nothing is written when it came during the checks and the plan |
 
-These are the bench's own codes, not a review's: it has no `1`, and its `4` means failed reviews where a review's means an incomplete one. [Benchmarks](./70-bench.md) has the rest: the plan and the progress lines, writing a suite, the run directory and resuming it, reading the report, what a run costs, and where not to run it.
+These are the bench's own codes, not a review's: it has no `1`, and its `4` means failed reviews where a review's means an incomplete one. [Benchmarks](./70-bench.md) has the rest: the plan and the progress lines, writing a suite, the run directory, resuming it and re-scoring it, reading the report, what a run costs, and where not to run it.
 
 ## Next
 

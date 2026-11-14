@@ -21,6 +21,7 @@ Options:
   -j, --jobs <n>          The reviews run at once (default 1)
   -o, --out <dir>         The run directory (default quorum-bench/<suite name>)
       --retry-incomplete  Run again the recorded reviews that came back incomplete
+      --report-only       Write the reports of what is recorded, and run no review
       --dry-run           Check the suite and the configs, print the plan, and exit
   -h, --help              Print this help and exit
 ```
@@ -36,6 +37,7 @@ Options:
 | `-j, --jobs <n>` | The reviews that run at once, from 1 to 16, 1 by default. Each review keeps the config's own `concurrency` for its calls, so up to `--jobs` times that many calls are in flight |
 | `-o, --out <dir>` | The run directory, `quorum-bench/<suite name>` in the working directory by default |
 | `--retry-incomplete` | Run again the recorded reviews that came back incomplete, for use after an outage |
+| `--report-only` | Run no review: write the reports of what is recorded, scored under the suite as it is now. It needs a run directory that holds a run, and cannot be given with `--retry-incomplete`: [Re-scoring](#re-scoring) |
 | `--dry-run` | Check everything, print the plan, and exit, writing nothing |
 | `-h, --help` | Print the usage on stdout and exit `0` |
 
@@ -107,7 +109,7 @@ When the reviews end, the report is written as `report.md` and `report.json` in 
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Every planned review is recorded, a denied one included. A dry run exits `0` too |
+| `0` | Every planned review is recorded, a denied one included, or `--report-only` wrote the reports. A dry run exits `0` too |
 | `2` | A usage, config or suite error: a flag, a suite that does not validate, a config that cannot be built, two configs that resolve alike. Or a run directory that holds another run or a file the bench cannot trust. Nothing was reviewed, and stdout is empty |
 | `3` | A read or a write of the run directory failed, such as `results.jsonl: cannot be written (EACCES)`, or the run stopped for any other reason. The records already written stay |
 | `4` | Some reviews failed: a research call failed, or a record would be over 16 MiB. They are not recorded, the others are, and the next run runs the failed ones |
@@ -277,6 +279,7 @@ Scoring: suite.yaml changed since the run began; its recorded reviews are scored
 ```
 
 - **A record holds what a review returned, never its score.** Every run scores the records it reads, so a corrected location, kind or `window` changes the numbers of the reviews already recorded. The reviews the run does not hold yet still run: one that failed, a trial `--trials` adds, and one `--retry-incomplete` runs again.
+- **`--report-only` runs none.** It scores what is recorded and writes the reports, with no call, where a plain run would run the reviews that failed first. It needs a run directory that holds a run, and leaves `results.jsonl` as it is.
 - **`run.json` keeps the scoring hash the run began with.** A re-score writes the new scoring hash beside it and changes nothing else in it. Put `suite.yaml` back as it was and the run is scored as at the start, and no longer reads as re-scored.
 - **The report says so.** Its header names the review hash and the scoring hash it was scored under. While `suite.yaml` is not the one the run began with, one more line names the scoring hash the run began with, so a number you publish carries its re-scoring with it:
 
