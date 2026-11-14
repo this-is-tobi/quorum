@@ -16,7 +16,7 @@ What quorum answers goes to the JSON result on stdout and the lines on stderr, a
 | Secrets: the model key, a CI token, repository credentials | Have a model read or leak them | A model path with no tool and no secret, a key sent only to its own endpoint, and a binary that reads nothing from the working directory, a config file included unless it is named |
 | Output channels: CI logs, terminals, what renders the result | Turn model text into markup, a link, a workflow command or an escape sequence | The CLI makes the text it writes inert for a terminal and a GitHub Actions log; anything else that renders the result, or reads a bench's `results.jsonl`, must treat its text as untrusted: [Output handling](./30-output-handling.md) |
 | Availability and spend | Multiply the calls and their cost with a huge or finding-flooding pull request | `maxFindings`, the concurrency limit and the reply caps |
-| Coverage | Have the run review less than the whole change, silently | The size guard, which refuses a request that may not fit the model's context, and unreviewed findings and incomplete reviews, exit `4`, for the gaps the harness detects; what the guard cannot know is not one of them: [What the harness cannot detect](#what-the-harness-cannot-detect) |
+| Coverage | Have the run review less than the whole change, silently | The size guard, which refuses a request that may not fit the model's context, and unreviewed findings and incomplete reviews, exit `4`, for the gaps the harness detects, a file whose change the diff does not carry among them; what the guard cannot know is not one of them: [What the harness cannot detect](#what-the-harness-cannot-detect) |
 
 ## Residual risk
 
@@ -102,6 +102,13 @@ A model that reads less than the whole diff can miss what an attacker put in the
 - **A request over the bound is a gap, and no flag lifts it for a gating profile.** Nothing is sent. The review records a `request-too-large` gap and keeps what it can still review, and the CLI exits `4` for a gating profile even with `--allow-incomplete`; a kept `high` finding of a gating profile still exits `1`.
 
 The flag stays out of reach because of the padding attack. A pull request that pads its diff, or one file of it, until a request is refused needs no persuasion of any model, and a flag that waved the gap through would let the padding push a finding out of the reviewed text. `--allow-incomplete` lifts every other gap but a binary or submodule file's, including gaps a pull request can cause: decoy findings that push a real one past `maxFindings`, or text that trips a hosted voter's content filter. On a gating profile, do not use it for a pull request you do not trust. This is also why no ratio of bytes to tokens is offered: encoded content takes 1 to 1.5 bytes per token, so any ratio above one lets the padding past.
+
+### Content the diff does not carry
+
+A diff can hide a file's change behind one line. A pull request that adds `src/a.js -diff` to `.gitattributes` makes `git diff`, run in its checkout, print `Binary files a/src/a.js and b/src/a.js differ` and none of the change. One NUL byte in the file does the same with no attribute at all, and a submodule's bump shows a commit and none of its code. A model handed that section reads one line, finds nothing, and the review would pass with the file unread.
+
+- **Such a file is a gap.** quorum reads git's markers by code, section by section: the `Binary files … differ` line, a `GIT binary patch`, the `Subproject commit` lines and a header of mode `160000`, and the `Submodule` line of git's `log` and `diff` formats. It lists the file in `meta.leftOut`, and every profile records a `binary` or `submodule` gap, which no flag lifts for a gating profile: exit `4`, even with `--allow-incomplete`. The section still reaches the models. A line of the same form elsewhere counts too, such as a commit message's: a gap it should not have stops the review for a person, where a missed one would pass a change unread.
+- **The CI diff reads the base branch's attributes.** The recipe makes the diff with `git --attr-source=<base> diff --no-textconv --no-ext-diff --submodule=short <base>...HEAD`, so the change's own `.gitattributes`, text converters and external diff programs have no effect, and each submodule is a section of its own: [Using it in CI](../20-using/10-cli.md#using-it-in-ci). What is left is what the base itself shows as binary, a NUL byte in the file or a `-diff` the base branch set, which is still a gap.
 
 ### Unreviewed and incomplete reviews
 
