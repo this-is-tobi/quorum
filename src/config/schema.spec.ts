@@ -1185,6 +1185,55 @@ describe('configCodeSchema', () => {
     ])
   })
 
+  it.each<[string, string, unknown, string]>([
+    [
+      'a timeoutMs that is a string',
+      'timeoutMs',
+      '1000',
+      'must be a whole number of milliseconds from 1000 to 518400000',
+    ],
+    [
+      'a retries that is NaN',
+      'retries',
+      Number.NaN,
+      'must be a whole number from 0 to 5',
+    ],
+  ])('refuses a provider object with %s at its field', (_name, field, value, message) => {
+    expect(issuesOf({
+      providers: {
+        mine: { ...fakeProvider, [field]: value },
+      },
+    }, configCodeSchema)).toEqual([
+      at(`providers.mine.${field}`, message),
+    ])
+  })
+
+  it('reads a provider object whose stated timeoutMs is refused once, never offering it to the settings form', () => {
+    const reads = { model: 0, retries: 0, preset: 0 }
+    const object = {
+      complete: fakeProvider.complete,
+      timeoutMs: 5,
+      get model() {
+        reads.model += 1
+        return 'm'
+      },
+      get retries() {
+        reads.retries += 1
+        return 3
+      },
+      get preset() {
+        reads.preset += 1
+        return 'ollama'
+      },
+    }
+    expect(issuesOf({
+      providers: { mine: object },
+    }, configCodeSchema)).toEqual([
+      at('providers.mine.timeoutMs', 'must be a whole number of milliseconds from 1000 to 518400000'),
+    ])
+    expect(reads).toEqual({ model: 1, retries: 0, preset: 0 })
+  })
+
   it('reports a provider\'s settings at their field, and a value that is neither form at the entry', () => {
     expect(issuesOf({
       providers: {

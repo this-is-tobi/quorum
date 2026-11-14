@@ -282,6 +282,26 @@ describe('the deadline and retries variables', () => {
   })
 })
 
+describe('the variables of a role, read as the role\'s own', () => {
+  it('reads no rule for a variable off Object.prototype, so a planted property sets no number rule', () => {
+    const proto: object = Object.prototype
+    Object.defineProperty(proto, 'model', {
+      value: { form: /x/, max: 1, message: 'planted' },
+      configurable: true,
+    })
+    try {
+      expect(readEnv({ QUORUM_RESEARCH_MODEL: 'm' })).toEqual({
+        research: { model: 'm' },
+        voter: {},
+        warnings: [],
+        issues: [],
+      })
+    } finally {
+      delete (proto as Record<string, unknown>).model
+    }
+  })
+})
+
 describe('the variables quorum does not read', () => {
   const QUORUM_VARIABLES = [...READ_VARIABLES].filter(name => name.startsWith('QUORUM_'))
 
