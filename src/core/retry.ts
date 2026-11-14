@@ -49,7 +49,8 @@ export function isTimeout(failure: FailureFacts): boolean {
  * call path's to check, before this.
  */
 export function retryWait(failure: FailureFacts, call: CallState, random: () => number): number | undefined {
-  if (call.retried >= call.retries) return undefined
+  // Not `>=`: a retry count that is not a number compares false both ways, and must end the call.
+  if (!(call.retried < call.retries)) return undefined
   if (!RETRIED_KINDS.has(failure.kind) || failure.retryable !== true) return undefined
   if (call.timedOut && isTimeout(failure)) return undefined
   const hint = failure.retryAfterMs
