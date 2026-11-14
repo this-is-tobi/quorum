@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ConfigError } from '../core/errors.ts'
+import { ConfigError, ProviderError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
 import type { Quorum, QuorumEvent } from '../core/types.ts'
@@ -292,6 +292,24 @@ describe('fromConfig', () => {
       },
     })
     expect(JSON.stringify(outcome)).not.toContain('SECRET')
+  })
+
+  it('hands a code config\'s provider object\'s stated retries to the review, so the call it states them for is retried', async () => {
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0)
+    try {
+      const complete = vi.fn<(request: CompletionRequest) => Promise<CompletionResponse>>()
+        .mockRejectedValueOnce(new ProviderError({ providerId: 'mine', kind: 'network', message: 'down' }))
+        .mockResolvedValue({ text: '{"findings":[]}', model: 'm' })
+      const config = {
+        providers: {
+          mine: { model: 'm', retries: 1, complete },
+        },
+      }
+      await expect((await fromConfig(config, { env: {} })).review({ diff })).resolves.toBeDefined()
+      expect(complete).toHaveBeenCalledTimes(2)
+    } finally {
+      random.mockRestore()
+    }
   })
 
   it('hands exclude to the quorum it builds', async () => {

@@ -6,11 +6,12 @@
  * The form holds every setting a review uses but the key: the profiles that run, in run order, each with
  * its id, prompts, lenses, policy and gating, and its research provider and each lens's provider written
  * out in place of their names; every field of a provider defined as data but its key, the values of
- * `headers`, `query` and `extraBody` and the whole base URL included; a provider object as its config key
- * and its model; `concurrency` and `maxFindings` as the review applies them, defaults filled in, and
- * `exclude` when the config lists a pattern. It holds no config-file path, no warning and no provider
- * name, so the same settings under other names are one configuration, and a rotated key keeps a run. A
- * `claude-code` provider's resolved command path is one of its settings, so it is in the form.
+ * `headers`, `query` and `extraBody` and the whole base URL included, `timeoutMs` and `retries` among them;
+ * a provider object as its config key, its model and the `timeoutMs` and `retries` it states, so one that
+ * states none keeps the form it had; `concurrency` and `maxFindings` as the review applies them, defaults
+ * filled in, and `exclude` when the config lists a pattern. It holds no config-file path, no warning and no
+ * provider name, so the same settings under other names are one configuration, and a rotated key keeps a
+ * run. A `claude-code` provider's resolved command path is one of its settings, so it is in the form.
  *
  * The form can hold a secret (a credential kept in a header, a query parameter or the base path), so it
  * never leaves this module: not written, not logged, not put in an error message. Only the HMAC does.
@@ -22,7 +23,7 @@
 import { createHmac, randomBytes } from 'node:crypto'
 import { isPlainObject } from '../config/load.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
-import { isProvider } from '../config/schema.ts'
+import { isProvider, statedFacts } from '../config/schema.ts'
 import { DEFAULT_CONCURRENCY } from '../core/concurrency.ts'
 import { DEFAULT_MAX_FINDINGS } from '../core/stages/research.ts'
 
@@ -33,9 +34,15 @@ export function newSalt(): string {
   return randomBytes(32).toString('hex')
 }
 
-/** A provider as the form holds it: a provider object by its config key and model, a spec by its fields less the key. */
+/** A provider as the form holds it: a provider object by its config key, its model and the facts it states, a spec by its fields less the key. */
 function providerForm(provider: ResolvedProvider): unknown {
-  if (isProvider(provider)) return { object: provider.id, model: provider.model }
+  if (isProvider(provider)) {
+    return {
+      object: provider.id,
+      model: provider.model,
+      ...statedFacts(provider).stated,
+    }
+  }
   return Object.fromEntries(Object.entries(provider).filter(([field]) => field !== 'apiKey'))
 }
 

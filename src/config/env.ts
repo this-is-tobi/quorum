@@ -1,4 +1,5 @@
 import type { ConfigIssue } from '../core/errors.ts'
+import { MAX_RETRIES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS } from '../core/ports.ts'
 import type { Provider } from '../core/ports.ts'
 import { commandProblem } from '../providers/claude-code.ts'
 import { httpOrigin } from '../providers/http.ts'
@@ -21,13 +22,18 @@ export function envValue(env: Env, name: string): string | undefined {
     : undefined
 }
 
-/** What the variables of one role set: only the variables that are set. `contextTokens` is `QUORUM_<ROLE>_CONTEXT_TOKENS`, read as a whole number. */
+/**
+ * What the variables of one role set: only the variables that are set. `contextTokens`, `timeoutMs` and
+ * `retries` are `QUORUM_<ROLE>_CONTEXT_TOKENS`, `_TIMEOUT_MS` and `_RETRIES`, each read as a whole number.
+ */
 export interface RoleOverrides {
   readonly preset?: string
   readonly protocol?: string
   readonly baseUrl?: string
   readonly model?: string
   readonly contextTokens?: number
+  readonly timeoutMs?: number
+  readonly retries?: number
   readonly apiKey?: string
 }
 
@@ -53,6 +59,8 @@ const VARIABLES: ReadonlyArray<{ readonly field: keyof RoleOverrides, readonly s
   { field: 'baseUrl', suffix: 'BASE_URL', aliased: true },
   { field: 'model', suffix: 'MODEL', aliased: true },
   { field: 'contextTokens', suffix: 'CONTEXT_TOKENS', aliased: false },
+  { field: 'timeoutMs', suffix: 'TIMEOUT_MS', aliased: false },
+  { field: 'retries', suffix: 'RETRIES', aliased: false },
   { field: 'apiKey', suffix: 'API_KEY', aliased: true },
 ]
 const ROLES: readonly Role[] = ['RESEARCH', 'VOTER']
@@ -86,13 +94,20 @@ export const READ_VARIABLES: ReadonlySet<string> = new Set([
   ...ROLES.flatMap(role => VARIABLES.filter(({ aliased }) => aliased).map(({ suffix }) => `${role}_${suffix}`)),
 ])
 
-/** A context size variable: a whole number of tokens, written in decimal digits, from 1 to 999999999. */
-const CONTEXT_TOKENS = /^[1-9]\d{0,8}$/
-const CONTEXT_TOKENS_FORM = 'must be a whole number of tokens, from 1 to 999999999'
+/**
+ * The variables that hold a whole number, each as the field it sets: the form it is written in (decimal
+ * digits, no sign, no leading zero), the most it may be, and the message that says what to write.
+ */
+const NUMBERS: Readonly<Partial<Record<keyof RoleOverrides, { readonly form: RegExp, readonly max: number, readonly message: string }>>> = {
+  contextTokens: { form: /^[1-9]\d{0,8}$/, max: 999_999_999, message: 'must be a whole number of tokens, from 1 to 999999999' },
+  timeoutMs: { form: /^[1-9]\d{3,7}$/, max: MAX_TIMEOUT_MS, message: `must be a whole number of milliseconds, from ${MIN_TIMEOUT_MS} to ${MAX_TIMEOUT_MS}` },
+  retries: { form: /^[0-5]$/, max: MAX_RETRIES, message: `must be a whole number, from 0 to ${MAX_RETRIES}` },
+}
 
 /**
  * The variables of one role that are set, each as its field and value: the `QUORUM_` form, else its alias. A
- * context size that is not a whole number in range sets nothing and is an issue at its variable, which never repeats it.
+ * number (the context size, the deadline, the retries) that is not a whole number in range sets nothing and is
+ * an issue at its variable, which never repeats it.
  */
 function readRole(env: Env, role: Role): { overrides: RoleOverrides, issues: ConfigIssue[] } {
   const entries: Array<[string, string | number]> = []
@@ -103,15 +118,16 @@ function readRole(env: Env, role: Role): { overrides: RoleOverrides, issues: Con
       ? envValue(env, `${role}_${suffix}`)
       : undefined)
     if (value === undefined) continue
-    if (field !== 'contextTokens') {
+    const number = NUMBERS[field]
+    if (number === undefined) {
       entries.push([field, value])
-    } else if (CONTEXT_TOKENS.test(value)) {
+    } else if (number.form.test(value) && Number(value) <= number.max) {
       entries.push([
         field,
         Number(value),
       ])
     } else {
-      issues.push({ path: name, message: CONTEXT_TOKENS_FORM })
+      issues.push({ path: name, message: number.message })
     }
   }
   return {
@@ -187,12 +203,13 @@ function readClaudeCodeCommand(env: Env): Pick<EnvLayer, 'claudeCodeCommand' | '
 }
 
 /**
- * Read the `QUORUM_*` variables: the preset, protocol, base URL, model, context size and key of each role,
- * which are `QUORUM_RESEARCH_*` and `QUORUM_VOTER_*`, `QUORUM_PROFILES`, and `QUORUM_CLAUDE_CODE_COMMAND`, the
- * executable of the `claude-code` protocol: an absolute path, or a name to find on `PATH`. `RESEARCH_*` and
- * `VOTER_*` are read as deprecated aliases of the base URL, model and key, and the `QUORUM_` form wins; the
- * context size (`QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS`) has no alias. Any other
- * variable set under a `QUORUM_` name is named in one warning. No message repeats a value.
+ * Read the `QUORUM_*` variables: the preset, protocol, base URL, model, context size, deadline, retries and key
+ * of each role, which are `QUORUM_RESEARCH_*` and `QUORUM_VOTER_*`, `QUORUM_PROFILES`, and
+ * `QUORUM_CLAUDE_CODE_COMMAND`, the executable of the `claude-code` protocol: an absolute path, or a name to
+ * find on `PATH`. `RESEARCH_*` and `VOTER_*` are read as deprecated aliases of the base URL, model and key, and
+ * the `QUORUM_` form wins; the context size (`QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS`),
+ * the deadline (`_TIMEOUT_MS`) and the retries (`_RETRIES`) have no alias. Any other variable set under a
+ * `QUORUM_` name is named in one warning. No message repeats a value.
  */
 export function readEnv(env: Env): EnvLayer {
   const { issues: profileIssues, ...profiles } = readProfiles(env)
@@ -352,12 +369,12 @@ function unboundRoles(providers: Readonly<Record<string, ProviderEntry>>, roles:
  * Set the variables of each role on its provider. The research variables go on the provider research is
  * bound to. The voter variables go on the voter's own provider, or, when the voter shares the research
  * provider, derive a provider named `voter` from it: a copy on the same endpoint, and on another one a copy
- * with no key, header, query, body field, model or context size (ADR-0013). A preset or a protocol variable
- * builds the role's provider from its variables alone. A context size describes one model on one endpoint,
- * so it crosses to neither: a role's variables that name a preset, a protocol, a base URL or a model drop the
- * context size of the provider they are set on, the derived voter's included, unless they set one; a key
- * variable alone leaves it. A provider object cannot be changed: each variable aimed at one
- * is an issue. Nothing it is given changes; nested objects are shared. A role bound to a name that is not an
+ * with no key, header, query, body field, model or context size (ADR-0013); its deadline and retries stay, as
+ * its `maxTokens` does. A preset or a protocol variable builds the role's provider from its variables alone.
+ * A context size describes one model on one endpoint, so it crosses to neither: a role's variables that name a
+ * preset, a protocol, a base URL or a model drop the context size of the provider they are set on, the
+ * derived voter's included, unless they set one; a key, a deadline or a retries variable alone leaves it. A
+ * provider object cannot be changed: each variable aimed at one is an issue. Nothing it is given changes; nested objects are shared. A role bound to a name that is not an
  * own key of `providers` is an issue at that role, and nothing is applied. `builtIn` is true when `providers`
  * is the built-in default alone: while the research variables name no preset or protocol, a voter derived from
  * it whose variables set a base URL alone speaks OpenAI-compatible to it, as that variable always meant, and

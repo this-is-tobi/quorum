@@ -294,7 +294,7 @@ Scoring: suite.yaml changed since the run began; its recorded reviews are scored
 
 ### The fingerprint
 
-A configuration is known by its fingerprint, not by its file name: the HMAC-SHA-256, under the run's salt, of the settings a review uses. In plain words, it holds **every setting a review uses, except the key**: the profiles that run, with their prompts, lenses, policy and gating; each provider's every field, the base URL and the values of `headers`, `query` and `extraBody` among them; `concurrency` and `maxFindings`; and `exclude`, when the config lists a pattern, so a configuration without one keeps the fingerprint it had. It is taken of the resolved configuration, so a `QUORUM_*` variable that changes a setting changes it, and it holds no config-file path, no warning and no provider name, so the same settings in another file, or under other names, are one configuration.
+A configuration is known by its fingerprint, not by its file name: the HMAC-SHA-256, under the run's salt, of the settings a review uses. In plain words, it holds **every setting a review uses, except the key**: the profiles that run, with their prompts, lenses, policy and gating; each provider's every field, the base URL, `timeoutMs`, `retries` and the values of `headers`, `query` and `extraBody` among them; `concurrency` and `maxFindings`; and `exclude`, when the config lists a pattern, so a configuration without one keeps the fingerprint it had. It is taken of the resolved configuration, so a `QUORUM_*` variable that changes a setting changes it, and it holds no config-file path, no warning and no provider name, so the same settings in another file, or under other names, are one configuration.
 
 That settles when a run can go on:
 
@@ -302,7 +302,7 @@ That settles when a run can go on:
 - **A rotated credential in a header, a query parameter or the base path does not.** They are settings, so they are in it: start a new `--out`.
 - **A `claude-code` provider's resolved command path is in it.** The same run on another machine, or after `claude` moves, needs a new `--out`.
 
-What it cannot see is outside the configuration. A provider object, which a TS or JS config defines, is its config key and its model, since its code cannot be hashed: change its implementation under the same key and model and the fingerprint stays. Nor does it see the environment a `claude-code` provider inherits. For either, start a new `--out`.
+What it cannot see is outside the configuration. A provider object, which a TS or JS config defines, is its config key, its model, and the `timeoutMs` and `retries` it states, since its code cannot be hashed: change its implementation under the same key and model and the fingerprint stays. Nor does it see the environment a `claude-code` provider inherits. For either, start a new `--out`.
 
 `run.json` holds the fingerprints, not the settings in the clear, and its salt keeps a short value from being looked up in a table made ahead of time. The salt is in the same file, though, so whoever reads `run.json` and knows the rest of a config can check a guess at a short value in it, a short credential in a header or a query, so the bench writes `run.json`, as it writes `results.jsonl`, readable by its owner only. A copy often loses that mode, as a commit or a CI artifact does, so keep `run.json` out of an artifact, an archive and a commit.
 

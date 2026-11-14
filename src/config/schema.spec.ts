@@ -157,6 +157,76 @@ describe('configFileSchema', () => {
     })).toEqual([])
   })
 
+  it('takes a provider\'s timeoutMs and retries in range', () => {
+    for (const fields of [
+      { timeoutMs: 1000, retries: 0 },
+      { timeoutMs: 86_400_000, retries: 5 },
+    ]) {
+      expect(issuesOf({
+        providers: {
+          local: {
+            preset: 'ollama',
+            model: 'q',
+            contextTokens: 131072,
+            ...fields,
+          },
+        },
+      })).toEqual([])
+    }
+  })
+
+  it.each<[string, string, unknown, string]>([
+    [
+      'timeoutMs 999',
+      'timeoutMs',
+      999,
+      'must be at least 1000',
+    ],
+    [
+      'timeoutMs 86400001',
+      'timeoutMs',
+      86_400_001,
+      'must be at most 86400000',
+    ],
+    [
+      'timeoutMs 1.5',
+      'timeoutMs',
+      1.5,
+      'must be an integer',
+    ],
+    [
+      'retries -1',
+      'retries',
+      -1,
+      'must be at least 0',
+    ],
+    [
+      'retries 6',
+      'retries',
+      6,
+      'must be at most 5',
+    ],
+    [
+      'retries \'2\'',
+      'retries',
+      '2',
+      'must be a number',
+    ],
+  ])('refuses %s', (_name, field, value, message) => {
+    expect(issuesOf({
+      providers: {
+        local: {
+          preset: 'ollama',
+          model: 'q',
+          contextTokens: 131072,
+          [field]: value,
+        },
+      },
+    })).toEqual([
+      at(`providers.local.${field}`, message),
+    ])
+  })
+
   it.each<[unknown, string]>([
     [0, 'must be at least 1'],
     [1.5, 'must be an integer'],
@@ -1071,6 +1141,48 @@ describe('configCodeSchema', () => {
     })
     expect(reads).toEqual({ model: 1, complete: 1 })
     expect(calledOnObject).toBe(true)
+  })
+
+  it('keeps a provider object\'s stated timeoutMs and retries in its snapshot, as own data, never running a getter', () => {
+    const snapshotOf = (object: unknown): Provider => parseConfig(configCodeSchema, {
+      providers: { mine: object },
+    }).providers?.mine as Provider
+    const stated = snapshotOf({ ...fakeProvider, timeoutMs: 120_000, retries: 3 })
+    expect(Object.keys(stated)).toEqual([
+      'model',
+      'complete',
+      'timeoutMs',
+      'retries',
+    ])
+    expect(stated).toMatchObject({ timeoutMs: 120_000, retries: 3 })
+    let ran = false
+    const read = snapshotOf({
+      ...fakeProvider,
+      timeoutMs: 120_000,
+      get retries() {
+        ran = true
+        return 3
+      },
+    })
+    expect(Object.keys(read)).toEqual(['model', 'complete', 'timeoutMs'])
+    expect(ran).toBe(false)
+  })
+
+  it('refuses a provider object\'s stated timeoutMs or retries out of range at its field', () => {
+    expect(issuesOf({
+      providers: {
+        mine: { ...fakeProvider, timeoutMs: 5 },
+      },
+    }, configCodeSchema)).toEqual([
+      at('providers.mine.timeoutMs', 'must be a whole number of milliseconds from 1000 to 518400000'),
+    ])
+    expect(issuesOf({
+      providers: {
+        mine: { ...fakeProvider, retries: 9 },
+      },
+    }, configCodeSchema)).toEqual([
+      at('providers.mine.retries', 'must be a whole number from 0 to 5'),
+    ])
   })
 
   it('reports a provider\'s settings at their field, and a value that is neither form at the entry', () => {
