@@ -687,7 +687,7 @@ The core retries a call as [Deadlines and retries](#deadlines-and-retries) says.
 
 Any object of the port's shape is a provider. It must:
 
-- **return the model's raw text** in `text`, without parsing it: the core extracts and validates the JSON itself, and a reply it cannot use is a failed vote, or, for research, a failed review;
+- **return the model's raw text** in `text`, without parsing it: the core extracts and validates the JSON itself, and a reply it cannot use is a failed vote, or, for research, a failed review of a gating profile and a `research-failed` gap of an advisory one;
 - **honour `request.signal`**, settling soon after it aborts: the core settles the call at its deadline or at the review's abort without waiting, and a provider that ignores the signal works on, outside the review, until it ends;
 - **throw when the call fails**, a `ProviderError` with the closest `kind` for preference. A vote records the message of any `Error`, and the text of anything else thrown;
 - **report `usage` only when it knows it**: `inputTokens` and `outputTokens`, and `costUsd` when it knows the price. It reports it on a reply it returns, and in the `usage` of the `ProviderError` it throws for a reply it read but cannot use, which the review counts as the failed call's;

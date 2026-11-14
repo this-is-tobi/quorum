@@ -138,7 +138,7 @@ const quorum = createQuorum({
 - **One concurrency limit.** `concurrency` (4 by default) caps the provider calls in flight across every profile of the review.
 - **Every finding is tagged with its profile**, and its `id` hashes the profile too, so a line two profiles flag is two findings with two ids, each judged by its own panel.
 - **Nothing is merged across profiles.** No request of one profile holds another profile's output. In each list of the result, a profile's verdicts follow the previous profile's, in the order of `profiles`, and `meta.profiles` has one entry per profile.
-- **One failure stops them all.** A profile whose research call or reply fails ends the whole review: [Abort](../95-reference/30-library-api.md#abort).
+- **One failure stops them all.** A gating profile whose research call or reply fails ends the whole review: [Abort](../95-reference/30-library-api.md#abort). An advisory profile's is its own `research-failed` gap: [Gating](#gating).
 
 The cost grows with each profile: one more research call, and one call per lens for each of its findings.
 

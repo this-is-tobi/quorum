@@ -303,7 +303,7 @@ providers:
 
 ### The Claude Code version
 
-Quorum requires Claude Code 2.1.311 or newer. Before a provider's first request it runs `claude --version` once and keeps the answer for the life of the process; an older version fails every request with `Claude Code 2.1.311 or newer is required, found 2.1.310`, and a research request that fails is exit `3`. The isolation depends on environment variables that an older Claude Code ignores, one of which keeps a file named in the diff from reaching the model: [Stopping, nesting and the version](./30-providers.md#stopping-nesting-and-the-version).
+Quorum requires Claude Code 2.1.311 or newer. Before a provider's first request it runs `claude --version` once and keeps the answer for the life of the process; an older version fails every request with `Claude Code 2.1.311 or newer is required, found 2.1.310`, and a gating profile's research request that fails is exit `3`. The isolation depends on environment variables that an older Claude Code ignores, one of which keeps a file named in the diff from reaching the model: [Stopping, nesting and the version](./30-providers.md#stopping-nesting-and-the-version).
 
 ### The context size of Claude's models
 
