@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.4.0](https://github.com/this-is-tobi/quorum/compare/v0.3.0...v0.4.0) (2026-11-14)
+
+
+### Features
+
+* add bench/injection, 48 attack cases on twelve twins of the real-bug suite ([f42a676](https://github.com/this-is-tobi/quorum/commit/f42a67612d0d9b773302ab59c8631aad70bccfc3))
+* add the development script that writes the injection corpus from its manifest ([5bc4e02](https://github.com/this-is-tobi/quorum/commit/5bc4e026124d16946adece0421240f29a38ac256))
+* grow bench/bugs with vulnerabilities in Python, Rust, C#, PHP and Ruby ([895880b](https://github.com/this-is-tobi/quorum/commit/895880b8aabcb3cccc88e53f9efdc10a827efb52))
+* grow bench/bugs with vulnerabilities in Ruby, C#, PHP and Go ([1220874](https://github.com/this-is-tobi/quorum/commit/1220874320412d21fe20983da9a818533445b09b))
+* grow bench/bugs with vulnerabilities in TypeScript, JavaScript and Java ([0612c29](https://github.com/this-is-tobi/quorum/commit/0612c290355522ae5650ec70034ba626bcfea59c))
+* read attack cases in a bench suite, the poisoned twins of its bug cases ([049ded0](https://github.com/this-is-tobi/quorum/commit/049ded0f93b5d85ba8c13a8c13d966d5b0b7f945))
+* record a bench review that a model's reply denied, rather than retry it ([c754319](https://github.com/this-is-tobi/quorum/commit/c754319be24f0a736ddb5a468d2c1fc55140fd75))
+* score a bench review against decoys, and report the lenses' error correlation ([a46e5e2](https://github.com/this-is-tobi/quorum/commit/a46e5e2895899c1d1d5d73e3f59698ed0f010b1d))
+* score the attack cases of a bench suite against their twins ([e90f4db](https://github.com/this-is-tobi/quorum/commit/e90f4dbad3ba651b3e10203a44b7d695d60a25c0))
+
+
+### Bug Fixes
+
+* bound the z of the bench's wilson interval, and word where signTest's p stops being exact ([1cb6f97](https://github.com/this-is-tobi/quorum/commit/1cb6f9712b8319d3534fa63fb0a7c333eab692a9))
+* carry a refused or cut-off reply's counts on its error, and read Gemini's missing counts as 0 ([a52a5c3](https://github.com/this-is-tobi/quorum/commit/a52a5c351627fe6a1a4246acd828d521169eaee3))
+* check each location of a bench suite against its patch's hunks in one pass ([51239a1](https://github.com/this-is-tobi/quorum/commit/51239a14c6d96da42c279175084af8e74674696c))
+* count a tie between a twin's two means as a tie, and test a twin's missing trial ([a861c1a](https://github.com/this-is-tobi/quorum/commit/a861c1a42f73bc66dc6d93ca8fa444af8347f65b))
+* count the usage a failed call's error carries, in its call event and meta.usage ([4347cdb](https://github.com/this-is-tobi/quorum/commit/4347cdbbab055ade9f7ec02c7b70051990bcf75a))
+* hold the denial's fail-closed cases and words in tests, and say what a denied trial counts as ([e8fd992](https://github.com/this-is-tobi/quorum/commit/e8fd992a8f838e0a8bdcf8578572746c350a1a97))
+* keep the bench's statistics to their domains, and write a zero difference without a sign ([bc5deba](https://github.com/this-is-tobi/quorum/commit/bc5debaec79cf75da361f9de611e0681841c1488))
+* keep the three notices of the gateway case's files, and word a missing CVE id alike ([0239e55](https://github.com/this-is-tobi/quorum/commit/0239e55322b506086ddf443a501387c6d9d5a8ee))
+* move one guideline-file attack to .cursorrules, and test the corpus's payload rules ([bbedb3f](https://github.com/this-is-tobi/quorum/commit/bbedb3f13033560709e2ddb160b13073ac8e8d54))
+* print a mean phi that rounds to zero without its sign, and judge unreviewed findings in a test ([e6f7a36](https://github.com/this-is-tobi/quorum/commit/e6f7a364af89c64a0c172d9493baa489c1d709ff))
+* refuse a --config that quorum bench is given twice, before it reads any config ([31dc723](https://github.com/this-is-tobi/quorum/commit/31dc723c472efb82f907dab057fccaaad6260cd8))
+* refuse a repeated id in the corpus manifest, and refuse YAML warnings without quoting them ([583712f](https://github.com/this-is-tobi/quorum/commit/583712f8b346dd327f369b564ee23f900bd785b3))
+* refuse a results.jsonl deleted after quorum bench read it, without making it again ([19b0977](https://github.com/this-is-tobi/quorum/commit/19b09772a805f721fc381c87c8499412dd302781))
+* refuse a results.jsonl that changed after quorum bench read it, and keep its data private ([f6ac83f](https://github.com/this-is-tobi/quorum/commit/f6ac83f29acd684f102ceac4b369eb033cef18e3))
+* say in the FOSUserBundle case's note that a finding on its weak fallback is unmatched ([3caa6e5](https://github.com/this-is-tobi/quorum/commit/3caa6e5ed1d314932975f608ee3398fcda4950f1))
+* say that three later commits reshaped the fonttools case's parser call, not one ([704e475](https://github.com/this-is-tobi/quorum/commit/704e475358157460e1f3b2d36346fdbbfb10e553))
+
+
+### Code Refactoring
+
+* build a configuration's latency list once in the bench report ([93b29e1](https://github.com/this-is-tobi/quorum/commit/93b29e12172f1a7a12f21531fe9fe07bd8ea43f4))
+* give quorum bench's execute one object of what it runs, and check the case it scores ([29a57cd](https://github.com/this-is-tobi/quorum/commit/29a57cd20e1d8efc639940f52aa451c894c75353))
+* share one strict flag parser between quorum and quorum bench ([86c6640](https://github.com/this-is-tobi/quorum/commit/86c6640d3cd9053bdd5b4ed20dd09b5daf190d80))
+* split loadSuite into its stages, and share the lstat mapping with the config loader ([af46fae](https://github.com/this-is-tobi/quorum/commit/af46fae6d0bbd61d47e6932cffb6f765c7d535ed))
+
 ## [0.3.0](https://github.com/this-is-tobi/quorum/compare/v0.2.0...v0.3.0) (2026-11-13)
 
 
