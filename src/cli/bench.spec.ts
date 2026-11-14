@@ -325,10 +325,17 @@ describe('quorum bench', () => {
     expect(readFileSync(join(out(), 'report.md'), 'utf8')).toContain(`\nScored under the review hash ${reviewHash} and the scoring hash ${scoringHash}.\n`)
   })
 
-  it.each<[string, () => void]>([
+  const changePatch = (): void => writeFileSync(join(root, 'demo', 'cases', 'docs.patch'), PATCHES.docs.replace('Demo app', 'Demo site'))
+
+  it.each<[string, () => void, string[]?]>([
     [
       'a patch\'s bytes',
-      () => writeFileSync(join(root, 'demo', 'cases', 'docs.patch'), PATCHES.docs.replace('Demo app', 'Demo site')),
+      changePatch,
+    ],
+    [
+      'a patch\'s bytes, under --report-only',
+      changePatch,
+      ['--report-only'],
     ],
     [
       'its case ids, a location corrected beside them',
@@ -351,11 +358,14 @@ describe('quorum bench', () => {
       'its trials',
       () => writeSuite(join(root, 'demo'), { ...SUITE, trials: 2 }),
     ],
-  ])('refuses a run directory whose suite changed %s, before any call, leaving run.json as it was', async (_change, change) => {
+  ])('refuses a run directory whose suite changed %s, before any call, leaving run.json as it was', async (_change, change, flags = []) => {
     await bench(TWO)
     const run = readFileSync(join(out(), 'run.json'), 'utf8')
     change()
-    const { code, stderr, fetch } = await bench(TWO)
+    const { code, stderr, fetch } = await bench([
+      ...TWO,
+      ...flags,
+    ])
     expect([code, stderr]).toEqual([2, 'Error: run.json: the suite\'s case ids, trials or patches changed since the run began: name a new --out\n'])
     expect(fetch).not.toHaveBeenCalled()
     expect(readFileSync(join(out(), 'run.json'), 'utf8')).toBe(run)
