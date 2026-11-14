@@ -43,6 +43,7 @@ export const BENCH_USAGE = [
   '  -j, --jobs <n>          The reviews run at once (default 1)',
   '  -o, --out <dir>         The run directory (default quorum-bench/<suite name>)',
   '      --retry-incomplete  Run again the recorded reviews that came back incomplete',
+  '      --report-only       Write the reports of what is recorded, and run no review',
   '      --dry-run           Check the suite and the configs, print the plan, and exit',
   '  -h, --help              Print this help and exit',
   '',
@@ -75,6 +76,7 @@ const OPTIONS = {
   jobs: { type: 'string', short: 'j' },
   out: { type: 'string', short: 'o' },
   'retry-incomplete': { type: 'boolean' },
+  'report-only': { type: 'boolean' },
   'dry-run': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
 } as const
@@ -89,6 +91,7 @@ interface BenchOptions {
   readonly jobs: number
   readonly out: string | undefined
   readonly retryIncomplete: boolean
+  readonly reportOnly: boolean
   readonly dryRun: boolean
 }
 
@@ -137,6 +140,7 @@ function checkOptions(values: ReturnType<typeof parseFlags<typeof OPTIONS>>['val
   const cases = values.case ?? []
   if (cases.some(id => !SUITE_ID.test(id))) throw usageIssue('--case', `must be a case id matching ${SUITE_ID.source}`)
   if (new Set(cases).size < cases.length) throw usageIssue('--case', 'names a case more than once')
+  if (values['report-only'] === true && values['retry-incomplete'] === true) throw usageIssue('--report-only', 'runs no review, so it cannot be given with --retry-incomplete')
   return {
     suite,
     configs,
@@ -146,6 +150,7 @@ function checkOptions(values: ReturnType<typeof parseFlags<typeof OPTIONS>>['val
     jobs: jobs ?? 1,
     out: values.out,
     retryIncomplete: values['retry-incomplete'] === true,
+    reportOnly: values['report-only'] === true,
     dryRun: values['dry-run'] === true,
   }
 }
@@ -302,6 +307,7 @@ async function check(io: CliIO, options: BenchOptions): Promise<Checked> {
   const directory = options.out ?? `quorum-bench/${suite.name}`
   const out = resolve(io.cwd, directory)
   const state = await inspectRunDir(out)
+  if (options.reportOnly && state.kind !== 'run') throw usageIssue('--out', 'holds no run, so --report-only has nothing to report')
   const salt = state.kind === 'run'
     ? state.run.salt
     : newSalt()
@@ -479,10 +485,12 @@ async function bench(io: CliIO, options: BenchOptions): Promise<number> {
     configurations: runFile.configurations.length,
   })
   const scoreOf = ({ configuration, caseId, trial }: BenchReview): ReviewScore | undefined => scores.get(reviewKey(runFile.configurations[configuration].fingerprint, caseId, trial))
-  const toRun = planned.filter((review) => {
-    const recorded = scoreOf(review)
-    return recorded === undefined || (options.retryIncomplete && recorded.incomplete)
-  })
+  const toRun = options.reportOnly
+    ? []
+    : planned.filter((review) => {
+        const recorded = scoreOf(review)
+        return recorded === undefined || (options.retryIncomplete && recorded.incomplete)
+      })
 
   writeLines(io.stderr, loaded.flatMap(({ warnings }, index) => warnings.map(warning => `warning: configuration ${index + 1}: ${warning}`)))
   writeLines(options.dryRun ? io.stdout : io.stderr, planLines({
@@ -507,6 +515,11 @@ async function bench(io: CliIO, options: BenchOptions): Promise<number> {
     return BENCH_EXIT.interrupted
   }
 
+  if (options.reportOnly) {
+    await writeRun(checked)
+    await writeReports(io, checked, trials, scores)
+    return BENCH_EXIT.ok
+  }
   const outcome = await execute(io, {
     checked,
     scores,
@@ -551,12 +564,17 @@ function usageError(io: CliIO, error: unknown): number {
  * changed, and a suite or a configuration that does not validate or cannot be built are refused before
  * the first call.
  *
- * Exit codes: 0 when every planned review is recorded, a denied one included, 2 for a usage, suite,
- * configuration or run directory error, 3 when the run stops (a file cannot be written or read), 4 when a
- * review failed (its research call failed, or its record was too large to write: the others are
- * recorded, and the next run runs the failed ones), 130 when interrupted. The reports are written on 0, 4 and 130, so a stopped run shows what it
- * recorded; an interrupt during the checks and the plan leaves the run directory as it was, even one
- * that does not exist yet.
+ * `--report-only` runs no review: it scores what the run directory records, writes `run.json` again when
+ * the scoring hash changed, writes the reports and exits 0, whatever is recorded. It never opens
+ * `results.jsonl` to append, so a cut last line stays, and warns of it. It refuses a run directory that
+ * holds no run, and `--retry-incomplete`, which runs reviews.
+ *
+ * Exit codes: 0 when every planned review is recorded, a denied one included, or `--report-only` wrote the
+ * reports, 2 for a usage, suite, configuration or run directory error, 3 when the run stops (a file cannot
+ * be written or read), 4 when a review failed (its research call failed, or its record was too large to
+ * write: the others are recorded, and the next run runs the failed ones), 130 when interrupted. The
+ * reports are written on 0, 4 and 130, so a stopped run shows what it recorded; an interrupt during the
+ * checks and the plan leaves the run directory as it was, even one that does not exist yet.
  *
  * Every line it writes is inert (invariant I3).
  */

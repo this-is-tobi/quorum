@@ -140,6 +140,15 @@ describe('quorum bench', () => {
       ['bench', '--nope', 'demo'],
       'Error: Unknown option \'--nope\'',
     ],
+    [
+      [
+        'bench',
+        '--report-only',
+        '--retry-incomplete',
+        'demo',
+      ],
+      'Error: --report-only: runs no review, so it cannot be given with --retry-incomplete',
+    ],
   ])('refuses %j with exit 2 and its usage, before any call', async (argv, error) => {
     const { code, stderr, fetch } = await bench(argv)
     expect(code).toBe(2)
@@ -426,6 +435,68 @@ describe('quorum bench', () => {
     expect((await bench(TWO, { signal: controller.signal })).code).toBe(130)
     expect(texts()).toEqual(kept)
     expect(statSync(join(out(), 'run.json')).ino).toBe(inode)
+  })
+
+  it('writes the reports of what is recorded with --report-only, running no review and leaving results.jsonl as it is, a cut last line included', async () => {
+    const failing = {
+      models: {
+        m1: {
+          findings: [EXEC_FINDING],
+        },
+        m2: { status: 500 },
+      },
+    }
+    expect((await bench(TWO, failing)).code).toBe(4)
+    const results = join(out(), 'results.jsonl')
+    truncateSync(results, statSync(results).size - 10)
+    const kept = readFileSync(results, 'utf8')
+    const dry = await bench([...TWO, '--report-only', '--dry-run'])
+    expect(dry.stdout).toContain('Reviews: 6 planned, 2 recorded, 0 to run, at most 1 at a time\nRun directory: quorum-bench/demo\nDry run: no review was run, and nothing was written.\n')
+    const { code, stdout, stderr, fetch } = await bench([...TWO, '--report-only'], failing)
+    expect(code).toBe(0)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(stderr).toContain('warning: results.jsonl: its last line was cut short')
+    expect(stderr).toContain('Reviews: 6 planned, 2 recorded, 0 to run, at most 1 at a time\n')
+    expect(stdout).toBe(readFileSync(join(out(), 'report.md'), 'utf8'))
+    expect(stdout).toContain('| 1 | 2 of 3 |')
+    expect(stdout).toContain('| 2 | 0 of 3 |')
+    expect(readFileSync(results, 'utf8')).toBe(kept)
+  })
+
+  it('re-scores with --report-only, with no call though some reviews failed, and records the new scoring hash', async () => {
+    const directory = join(root, 'demo')
+    writeSuite(directory, MISPLACED)
+    const failing = {
+      models: {
+        m1: {
+          findings: [EXEC_FINDING],
+        },
+        m2: { status: 500 },
+      },
+    }
+    expect((await bench(TWO, failing)).code).toBe(4)
+    writeSuite(directory, CORRECTED)
+    const { scoringHash } = await loadSuite(directory, 'demo')
+    const { code, stdout, stderr, fetch } = await bench([...TWO, '--report-only'], failing)
+    expect(code).toBe(0)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(stderr).toContain(`Reviews: 6 planned, 3 recorded, 0 to run, at most 1 at a time\n${RESCORED}\n`)
+    expect(stdout).toContain('| 1 | 3 of 3 | 50.0% [9.5%, 90.5%] over 2 cases |')
+    expect(stdout).toContain('\nRe-scored: ')
+    expect(JSON.parse(readFileSync(join(out(), 'run.json'), 'utf8')).suite.scoringHash).toBe(scoringHash)
+  })
+
+  it('refuses --report-only where --out holds no run, before any call, writing nothing', async () => {
+    const refusal = [2, 'Error: --out: holds no run, so --report-only has nothing to report\n']
+    const fresh = await bench([...TWO, '--report-only'])
+    expect([fresh.code, fresh.stderr]).toEqual(refusal)
+    expect(fresh.fetch).not.toHaveBeenCalled()
+    expect(existsSync(join(root, 'quorum-bench'))).toBe(false)
+    mkdirSync(out(), { recursive: true })
+    const empty = await bench([...TWO, '--report-only'])
+    expect([empty.code, empty.stderr]).toEqual(refusal)
+    expect(empty.fetch).not.toHaveBeenCalled()
+    expect(readdirSync(out())).toEqual([])
   })
 
   it('refuses a directory that holds files but no run.json', async () => {
