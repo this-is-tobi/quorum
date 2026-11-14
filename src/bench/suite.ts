@@ -145,8 +145,17 @@ export interface Suite {
   readonly cases: readonly SuiteCase[]
   /** The decoded text of each patch by name, in the order the cases first name them. */
   readonly patches: ReadonlyMap<string, string>
-  /** `sha256:` and the hex SHA-256 of the files' own hashes: `suite.yaml` and each patch a case names. */
-  readonly hash: string
+  /**
+   * `sha256:` and the hex SHA-256 of what the reviews of the suite depend on and which of them a run holds:
+   * its `trials`, and each case's id with the hex SHA-256 of the bytes of its patch. A change of it plans
+   * or sends other reviews.
+   */
+  readonly reviewHash: string
+  /**
+   * `sha256:` and the hex SHA-256 of the bytes of `suite.yaml`, so it moves with any byte of the file: the
+   * locations and the window a score reads, and a comment too.
+   */
+  readonly scoringHash: string
 }
 
 const sha256 = (data: string | Uint8Array): string => createHash('sha256').update(data).digest('hex')
@@ -468,18 +477,23 @@ function spanIssues(cases: Header['cases'], patches: ReadonlyMap<string, Patch>,
   return issues
 }
 
-/** The suite's content hash: `sha256:` and the hex SHA-256 of the files' own hashes, `suite.yaml` first, then each patch by name. */
-function contentHash(suiteBytes: Uint8Array, patches: ReadonlyMap<string, Patch>): string {
-  const files = [
-    [
-      'suite.yaml',
-      sha256(suiteBytes),
-    ],
-    ...[...patches].sort(([first], [second]) => first < second
-      ? -1
-      : 1).map(([name, { hash }]) => [`cases/${name}`, hash]),
-  ]
-  return `sha256:${sha256(JSON.stringify(files))}`
+/**
+ * The suite's review hash: `sha256:` and the hex SHA-256 of the JSON of its `trials` (null when it names
+ * none) and its cases, each as its id and the hex SHA-256 of its patch's bytes as read, in the code-unit
+ * order of the ids, which are unique. A patch is named by its bytes, not its file name, since only its
+ * bytes reach a review.
+ *
+ * @throws Error when a case names a patch that `patches` lacks, which `loadSuite` refuses the suite for first
+ */
+function reviewHashOf(header: Header, patches: ReadonlyMap<string, Patch>): string {
+  const cases = header.cases.map(({ id, patch }): [string, string] => {
+    const read = patches.get(patch)
+    if (read === undefined) throw new Error('a case names a patch that was not read')
+    return [id, read.hash]
+  }).sort(([first], [second]) => first < second
+    ? -1
+    : 1)
+  return `sha256:${sha256(JSON.stringify({ trials: header.trials ?? null, cases }))}`
 }
 
 /**
@@ -490,7 +504,8 @@ function contentHash(suiteBytes: Uint8Array, patches: ReadonlyMap<string, Patch>
  * diff's own path, and each of its lines must sit in a hunk of the patch; an attack's twin must be a
  * bug case of the suite, its twin decoy must do the same against the twin's patch, and no decoy may
  * be within twice the window of a location it could be caught with. A file of `cases/` that no case
- * names is not read. The hash covers `suite.yaml` and each patch a case names, once.
+ * names is not read. The review hash covers the case ids, `trials` and the bytes of each patch a case
+ * names; the scoring hash covers the bytes of `suite.yaml`.
  *
  * `label` stands for the directory in the issues, which name `<label>/suite.yaml` and a path in it, or
  * `<label>/cases`; no issue quotes a file.
@@ -527,6 +542,7 @@ export async function loadSuite(directory: string, label = directory): Promise<S
     // The kind rules of `caseSchema` make each case a `BugCase`, a `ControlCase` or an `AttackCase`.
     cases: header.cases as SuiteCase[],
     patches: new Map([...patches].map(([name, { text }]) => [name, text])),
-    hash: contentHash(bytes, patches),
+    reviewHash: reviewHashOf(header, patches),
+    scoringHash: `sha256:${sha256(bytes)}`,
   }
 }

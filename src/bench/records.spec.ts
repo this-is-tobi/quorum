@@ -2,7 +2,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 import type { z } from 'zod'
 import { hiddenLabels } from '../core/sanitize.ts'
 import type { QuorumResult } from '../core/types.ts'
-import { record, RESULT } from '../testing/bench.ts'
+import { record, RESULT, RUN_SUITE } from '../testing/bench.ts'
 import { parseRecord, parseRunFile, recordLine, reviewKey } from './records.ts'
 import type { DeniedRecord, ResultRecord, resultSchema, RunFile } from './records.ts'
 
@@ -14,9 +14,9 @@ type Mutable<T> = T extends readonly (infer Item)[]
     ? { -readonly [Key in keyof T]: Mutable<T[Key]> }
     : T
 const RUN: RunFile = {
-  format: 1,
+  format: 2,
   quorum: '0.2.0',
-  suite: { name: 'demo', hash: `sha256:${'1'.repeat(64)}` },
+  suite: RUN_SUITE,
   salt: 'a'.repeat(64),
   configurations: [
     {
@@ -277,8 +277,8 @@ describe('parseRunFile', () => {
 
   it.each<[string, object]>([
     [
-      'another format',
-      { ...RUN, format: 2 },
+      'the format before this one',
+      { ...RUN, format: 1 },
     ],
     [
       'a salt of 63 digits',
@@ -296,12 +296,41 @@ describe('parseRunFile', () => {
       { ...RUN, extra: 1 },
     ],
     [
-      'a hash without its prefix',
+      'a review hash without its prefix',
       {
         ...RUN,
         suite: {
           ...RUN.suite,
-          hash: '1'.repeat(64),
+          reviewHash: '1'.repeat(64),
+        },
+      },
+    ],
+    [
+      'a run file of format 1, with its one content hash',
+      {
+        ...RUN,
+        format: 1,
+        suite: { name: 'demo', hash: `sha256:${'1'.repeat(64)}` },
+      },
+    ],
+    [
+      'a suite without the scoring hash the run began with',
+      {
+        ...RUN,
+        suite: {
+          name: RUN_SUITE.name,
+          reviewHash: RUN_SUITE.reviewHash,
+          scoringHash: RUN_SUITE.scoringHash,
+        },
+      },
+    ],
+    [
+      'a scoring hash in upper case',
+      {
+        ...RUN,
+        suite: {
+          ...RUN.suite,
+          scoringHash: `sha256:${'A'.repeat(64)}`,
         },
       },
     ],

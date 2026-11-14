@@ -1,6 +1,6 @@
 /**
  * The two files of a bench run directory, as data: `run.json`, which holds what makes the run one run
- * (the quorum version, the suite's name and hash, the salt, and the fingerprints of its configurations),
+ * (the quorum version, the suite's name and two hashes, the salt, and the fingerprints of its configurations),
  * and `results.jsonl`, which holds one line per review. Both are read as untrusted: another run or a
  * person may have written them, so each is parsed with `JSON.parse` and a strict schema at every level,
  * and anything the schema does not describe is refused. One thing is dropped, not refused: a `__proto__`
@@ -20,7 +20,7 @@ import type { QuorumResult, Usage } from '../core/types.ts'
 import { MAX_TRIALS, SUITE_ID } from './suite.ts'
 
 /** The `format` of the run file this quorum writes and reads. */
-export const RUN_FORMAT = 1
+export const RUN_FORMAT = 2
 /** The most one line of `results.jsonl` may hold, its line break not counted, in bytes. */
 export const MAX_RECORD_BYTES = 16 * 1024 * 1024
 /** The most `run.json` may hold, in bytes. */
@@ -39,12 +39,21 @@ export interface RunConfiguration {
   readonly fingerprint: string
 }
 
+/** The suite a run was made under: its name and the two hashes of `loadSuite`, and the scoring hash the run began with. */
+export interface RunSuite {
+  readonly name: string
+  readonly reviewHash: string
+  readonly scoringHash: string
+  /** The scoring hash of the suite when the run began, which a later scoring hash is told apart from. */
+  readonly firstScoringHash: string
+}
+
 /** What `run.json` holds. */
 export interface RunFile {
-  readonly format: 1
+  readonly format: 2
   /** The version of the quorum that began the run. */
   readonly quorum: string
-  readonly suite: { readonly name: string, readonly hash: string }
+  readonly suite: RunSuite
   /** The key the fingerprints are keyed with: 32 random bytes as 64 lowercase hex digits. */
   readonly salt: string
   readonly configurations: readonly RunConfiguration[]
@@ -194,12 +203,16 @@ const recordSchema: z.ZodType<ReviewRecord> = z.union([
   }),
 ]).refine(({ calls, failedCalls }) => failedCalls <= calls)
 
+const hash = z.string().regex(/^sha256:[0-9a-f]{64}$/)
+
 const runFileSchema: z.ZodType<RunFile> = z.strictObject({
   format: z.literal(RUN_FORMAT),
   quorum: z.string().min(1).max(MAX_QUORUM_VERSION),
   suite: z.strictObject({
     name: identifier,
-    hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    reviewHash: hash,
+    scoringHash: hash,
+    firstScoringHash: hash,
   }),
   salt: digest,
   configurations: z.array(z.strictObject({

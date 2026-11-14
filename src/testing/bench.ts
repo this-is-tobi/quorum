@@ -1,4 +1,4 @@
-/** Test helpers for the bench: a small suite and the writer that puts it on disk, the verdicts and results its scorer reads, the scored attack cases its report reads, the resolved configs it fingerprints, the records it keeps, the file handles it watches, the token counts the size guard makes of a patch's requests, and the fake models its runner and its command review with. */
+/** Test helpers for the bench: a small suite and the writer that puts it on disk, the suite identity a run file records, the verdicts and results its scorer reads, the scored attack cases its report reads, the resolved configs it fingerprints, the records it keeps, the file handles it watches, the token counts the size guard makes of a patch's requests, and the fake models its runner and its command review with. */
 
 import { fstatSync, mkdirSync, writeFileSync } from 'node:fs'
 import { open } from 'node:fs/promises'
@@ -8,7 +8,7 @@ import { stringify } from 'yaml'
 import { vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
 import { reviewKey } from '../bench/records.ts'
-import type { ResultRecord } from '../bench/records.ts'
+import type { ResultRecord, RunSuite } from '../bench/records.ts'
 import type { ReviewScore } from '../bench/report.ts'
 import type { Carrier, Encoding, Goal, SuiteCase } from '../bench/suite.ts'
 import type { Env } from '../config/env.ts'
@@ -125,6 +125,14 @@ export function writeSuite(directory: string, suite: object = SUITE, patches: Re
     ...patches,
   }
   for (const [name, content] of Object.entries(files)) writeFileSync(join(directory, 'cases', name), content)
+}
+
+/** The suite identity a run file records in the specs that need no suite on disk: the name `demo`, and the two hashes, the scoring hash being the one the run began with. */
+export const RUN_SUITE: RunSuite = {
+  name: 'demo',
+  reviewHash: `sha256:${'1'.repeat(64)}`,
+  scoringHash: `sha256:${'2'.repeat(64)}`,
+  firstScoringHash: `sha256:${'2'.repeat(64)}`,
 }
 
 /** What the attack specs score: the cases, each review's score by `reviewKey`, whether each patch is flagged, and the one fingerprint. */

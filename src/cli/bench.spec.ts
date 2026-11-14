@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
+import { loadSuite } from '../bench/suite.ts'
 import { ATTACK, EXEC_FINDING, handleDescriptors, isClosed, PATCHES, POISONED_EXEC, stubModels, SUITE, writeSuite } from '../testing/bench.ts'
 import { harness } from '../testing/cli.ts'
 import { jsonReply } from '../testing/http.ts'
@@ -279,6 +280,22 @@ describe('quorum bench', () => {
     const more = await bench([...TWO, '--trials', '2'])
     expect(more.code).toBe(0)
     expect(lines()).toHaveLength(12)
+  })
+
+  it('records the suite\'s two hashes in run.json, the first scoring hash among them, and names them in the reports', async () => {
+    await bench(TWO)
+    const { reviewHash, scoringHash } = await loadSuite(join(root, 'demo'), 'demo')
+    expect(JSON.parse(readFileSync(join(out(), 'run.json'), 'utf8'))).toMatchObject({
+      format: 2,
+      suite: {
+        name: 'demo',
+        reviewHash,
+        scoringHash,
+        firstScoringHash: scoringHash,
+      },
+    })
+    expect(JSON.parse(readFileSync(join(out(), 'report.json'), 'utf8'))).toMatchObject({ reviewHash, scoringHash })
+    expect(readFileSync(join(out(), 'report.md'), 'utf8')).toContain(`\nScored under the review hash ${reviewHash} and the scoring hash ${scoringHash}.\n`)
   })
 
   it('refuses a run directory whose suite changed, saying so', async () => {

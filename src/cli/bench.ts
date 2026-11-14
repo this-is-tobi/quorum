@@ -309,7 +309,14 @@ async function check(io: CliIO, options: BenchOptions): Promise<Checked> {
   const runFile: RunFile = {
     format: RUN_FORMAT,
     quorum: packageJson.version,
-    suite: { name: suite.name, hash: suite.hash },
+    suite: {
+      name: suite.name,
+      reviewHash: suite.reviewHash,
+      scoringHash: suite.scoringHash,
+      firstScoringHash: state.kind === 'run'
+        ? state.run.suite.firstScoringHash
+        : suite.scoringHash,
+    },
     salt,
     configurations,
   }
@@ -423,7 +430,7 @@ async function execute(io: CliIO, { checked, scores, records, toRun, jobs }: Exe
 /** Build the report from the scores, write `report.md` and `report.json` into the run directory, and print the Markdown. */
 async function writeReports(io: CliIO, { suite, selected, out, runFile }: Checked, trials: number, scores: ReadonlyMap<string, ReviewScore>): Promise<void> {
   const report = buildReport({
-    suite: { name: suite.name, window: suite.window },
+    suite: { ...runFile.suite, window: suite.window },
     quorum: packageJson.version,
     cases: selected,
     trials,

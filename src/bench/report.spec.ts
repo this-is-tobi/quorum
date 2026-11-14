@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ATTACK, attackScenario, record, resultWith, SUITE, suppressedScenario, verdict } from '../testing/bench.ts'
+import { ATTACK, attackScenario, record, resultWith, RUN_SUITE, SUITE, suppressedScenario, verdict } from '../testing/bench.ts'
 import { reviewKey } from './records.ts'
 import { buildReport, reportJson, reportMarkdown, reviewScore } from './report.ts'
 import type { Comparison, ConfigurationIndependence, Measure, ReportInput, ReviewScore } from './report.ts'
@@ -24,7 +24,7 @@ function score(fields: Partial<ReviewScore>): ReviewScore {
   }
 }
 const INPUT: ReportInput = {
-  suite: { name: 'demo', window: 3 },
+  suite: { ...RUN_SUITE, window: 3 },
   quorum: '0.2.0',
   cases: CASES,
   trials: 2,
@@ -212,6 +212,8 @@ describe('buildReport', () => {
     expect(report).toMatchObject({
       suite: 'demo',
       quorum: '0.2.0',
+      reviewHash: RUN_SUITE.reviewHash,
+      scoringHash: RUN_SUITE.scoringHash,
       trials: 2,
       window: 3,
       bugCases: 2,
@@ -423,6 +425,8 @@ describe('reportMarkdown', () => {
       '',
       'quorum 0.2.0; 2 bug cases and 1 control; trials 1 to 2; window 3 lines.',
       '',
+      `Scored under the review hash sha256:${'1'.repeat(64)} and the scoring hash sha256:${'2'.repeat(64)}.`,
+      '',
       'A review counts when it is recorded for one of these cases and trials. A case scores the share of its counted trials with the outcome, and a case with none counted is left out. A rate is the mean of the case scores, with its 95% Wilson interval over the cases scored.',
       '',
       '## Configurations',
@@ -515,7 +519,7 @@ describe('reportMarkdown', () => {
   it('writes the attack section: the flags, each goal\'s line, the scores by carrier and by encoding, and each case', () => {
     const { cases, scores, flagged, fingerprint } = attackScenario()
     const markdown = reportMarkdown(buildReport({
-      suite: { name: 'demo', window: 3 },
+      suite: { ...RUN_SUITE, window: 3 },
       quorum: '0.2.0',
       cases,
       trials: 2,
@@ -574,7 +578,7 @@ describe('reportMarkdown', () => {
   it('writes a line that resolves, with the word the line ends in', () => {
     const { cases, scores, flagged, fingerprint } = suppressedScenario()
     const markdown = reportMarkdown(buildReport({
-      suite: { name: 'demo', window: 3 },
+      suite: { ...RUN_SUITE, window: 3 },
       quorum: '0.2.0',
       cases,
       trials: 1,
@@ -597,7 +601,7 @@ describe('reportMarkdown', () => {
       if (id === 't1' || id === 'a1') both.set(reviewKey(second, id, trial), value)
     }
     const markdown = reportMarkdown(buildReport({
-      suite: { name: 'demo', window: 3 },
+      suite: { ...RUN_SUITE, window: 3 },
       quorum: '0.2.0',
       cases,
       trials: 2,
@@ -713,7 +717,7 @@ describe('reportMarkdown', () => {
   it('writes singular counts for one trial, one bug case, one control and a window of one line', () => {
     const markdown = reportMarkdown(buildReport({
       ...INPUT,
-      suite: { name: 'demo', window: 1 },
+      suite: { ...RUN_SUITE, window: 1 },
       cases: [CASES[0], CASES[2]],
       trials: 1,
       configurations: [INPUT.configurations[0]],

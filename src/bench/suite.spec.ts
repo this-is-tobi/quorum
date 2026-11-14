@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -55,7 +55,7 @@ async function refused(): Promise<string[]> {
 }
 
 describe('loadSuite', () => {
-  it('reads the suite, its defaults, its patches and its content hash', async () => {
+  it('reads the suite, its defaults, its patches and its two hashes', async () => {
     writeSuite(directory)
     const suite = await loadSuite(directory, 'demo')
     expect([suite.name, suite.window, suite.trials]).toEqual(['demo', 3, undefined])
@@ -69,25 +69,24 @@ describe('loadSuite', () => {
       ['sql.patch', PATCHES.sql],
       ['docs.patch', PATCHES.docs],
     ])
-    const files = [
-      [
-        'suite.yaml',
-        sha256(readFileSync(join(directory, 'suite.yaml'))),
+    expect(suite.reviewHash).toBe(`sha256:${sha256(JSON.stringify({
+      trials: null,
+      cases: [
+        [
+          'docs',
+          sha256(PATCHES.docs),
+        ],
+        [
+          'exec',
+          sha256(PATCHES.exec),
+        ],
+        [
+          'sql',
+          sha256(PATCHES.sql),
+        ],
       ],
-      [
-        'cases/docs.patch',
-        sha256(PATCHES.docs),
-      ],
-      [
-        'cases/exec.patch',
-        sha256(PATCHES.exec),
-      ],
-      [
-        'cases/sql.patch',
-        sha256(PATCHES.sql),
-      ],
-    ]
-    expect(suite.hash).toBe(`sha256:${sha256(JSON.stringify(files))}`)
+    }))}`)
+    expect(suite.scoringHash).toBe(`sha256:${sha256(readFileSync(join(directory, 'suite.yaml')))}`)
   })
 
   it('decodes a patch as the review command decodes a diff: a byte-order mark dropped, a byte that is not UTF-8 replaced', async () => {
@@ -276,24 +275,27 @@ describe('loadSuite', () => {
     expect([
       ...suite.patches.keys(),
     ]).toEqual(['exec.patch', 'sql.patch', 'docs.patch'])
-    expect(suite.hash).toBe(`sha256:${sha256(JSON.stringify([
-      [
-        'suite.yaml',
-        sha256(readFileSync(join(directory, 'suite.yaml'))),
+    expect(suite.reviewHash).toBe(`sha256:${sha256(JSON.stringify({
+      trials: null,
+      cases: [
+        [
+          'docs',
+          sha256(PATCHES.docs),
+        ],
+        [
+          'exec',
+          sha256(PATCHES.exec),
+        ],
+        [
+          'exec-again',
+          sha256(PATCHES.exec),
+        ],
+        [
+          'sql',
+          sha256(PATCHES.sql),
+        ],
       ],
-      [
-        'cases/docs.patch',
-        sha256(PATCHES.docs),
-      ],
-      [
-        'cases/exec.patch',
-        sha256(PATCHES.exec),
-      ],
-      [
-        'cases/sql.patch',
-        sha256(PATCHES.sql),
-      ],
-    ]))}`)
+    }))}`)
   })
 
   it('refuses a patch that two cases name with an issue for each', async () => {
@@ -657,5 +659,114 @@ describe('attack cases', () => {
     }, 3), { 'exec.patch': LONG_PATCH, 'exec-comment.patch': LONG_PATCH })
     if (issues.length === 0) await expect(loadSuite(directory, 'demo')).resolves.toBeDefined()
     else expect(await refused()).toEqual(issues)
+  })
+})
+
+describe('the two hashes', () => {
+  /** `ATTACK_SUITE` with `fields` set on case `index`; a field set to `undefined` is left out of the YAML. */
+  function edited(index: number, fields: Record<string, unknown>): object {
+    return {
+      ...ATTACK_SUITE,
+      cases: ATTACK_SUITE.cases.map((entry, at) => at === index
+        ? {
+            ...entry,
+            ...fields,
+          }
+        : entry),
+    }
+  }
+
+  const write = (suite: object = ATTACK_SUITE, patches: Readonly<Record<string, string>> = {}): void => writeSuite(directory, suite, { 'exec-comment.patch': POISONED_EXEC, ...patches })
+
+  async function hashes(): Promise<{ readonly review: string, readonly scoring: string }> {
+    const { reviewHash, scoringHash } = await loadSuite(directory, 'demo')
+    return { review: reviewHash, scoring: scoringHash }
+  }
+
+  it.each<[string, () => void, { readonly review: boolean, readonly scoring: boolean }]>([
+    [
+      'a location',
+      () => write(edited(1, {
+        locations: [
+          { file: 'db.py', start: 3, end: 3 },
+        ],
+      })),
+      { review: false, scoring: true },
+    ],
+    [
+      'the window',
+      () => write({ ...ATTACK_SUITE, window: 0 }),
+      { review: false, scoring: true },
+    ],
+    [
+      'a case\'s kind',
+      () => write(edited(1, { kind: 'control', locations: undefined })),
+      { review: false, scoring: true },
+    ],
+    [
+      'an attack case\'s goal',
+      () => write(edited(3, { goal: 'denial-of-review' })),
+      { review: false, scoring: true },
+    ],
+    [
+      'a note',
+      () => write(edited(0, { note: 'A command built from input.' })),
+      { review: false, scoring: true },
+    ],
+    [
+      'a comment',
+      () => {
+        write()
+        appendFileSync(join(directory, 'suite.yaml'), '# checked by hand\n')
+      },
+      { review: false, scoring: true },
+    ],
+    [
+      'the order of the cases',
+      () => write({
+        ...ATTACK_SUITE,
+        cases: [...ATTACK_SUITE.cases].reverse(),
+      }),
+      { review: false, scoring: true },
+    ],
+    [
+      'a patch\'s name, its bytes the same',
+      () => write(edited(0, { patch: 'exec-renamed.patch' }), { 'exec-renamed.patch': PATCHES.exec }),
+      { review: false, scoring: true },
+    ],
+    [
+      'a patch\'s bytes',
+      () => write(ATTACK_SUITE, {
+        'docs.patch': PATCHES.docs.replace('Demo app', 'Demo site'),
+      }),
+      { review: true, scoring: false },
+    ],
+    [
+      'a case added',
+      () => write({
+        ...ATTACK_SUITE,
+        cases: [
+          ...ATTACK_SUITE.cases,
+          { id: 'docs-again', kind: 'control', patch: 'docs.patch' },
+        ],
+      }),
+      { review: true, scoring: true },
+    ],
+    [
+      'a case\'s id',
+      () => write(edited(2, { id: 'readme' })),
+      { review: true, scoring: true },
+    ],
+    [
+      'the trials',
+      () => write({ ...ATTACK_SUITE, trials: 2 }),
+      { review: true, scoring: true },
+    ],
+  ])('moves the hashes a change of %s should move', async (_name, change, moved) => {
+    write()
+    const before = await hashes()
+    change()
+    const after = await hashes()
+    expect({ review: after.review !== before.review, scoring: after.scoring !== before.scoring }).toEqual(moved)
   })
 })
