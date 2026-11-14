@@ -158,12 +158,12 @@ export function elapsed(started: number): number {
  * request as too large: that refusal is a gap, never a reason to stop the other profiles, so the
  * research stage records it. A failed vote does not abort the review, since the panel records it.
  * The duration is measured inside the slot, once the request is built: the provider's latency, not
- * the time the call waited for a slot or took to build its request. A reply whose text is not a string is a `ProviderError`. Each call
- * emits one `call` event, which names the provider by the ref captured at creation, never by the
- * live object: failed, before the error is rethrown, with the usage its error carries when its counts
- * are valid, or ok, with the usage when its counts are valid. The ok event is emitted outside the
- * `try` that catches the provider's failure, so a sink that throws on it is never reported as a
- * failed call.
+ * the time the call waited for a slot or took to build its request. A reply whose text is not a
+ * string is a `ProviderError`. Each call emits one `call` event, which names the provider by the ref
+ * captured at creation, never by the live object: failed, before the error is rethrown, with the
+ * usage its error carries when its counts are valid, or ok, with the usage when its counts are
+ * valid. The ok event is emitted outside the `try` that catches the provider's failure, so a sink
+ * that throws on it is never reported as a failed call.
  */
 export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest): Promise<string> {
   return ctx.limit(async () => {
