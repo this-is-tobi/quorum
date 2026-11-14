@@ -257,6 +257,31 @@ describe('runReviews', () => {
     expect(events.map(({ type }) => type)).toEqual(['recorded', 'recorded'])
   })
 
+  it('records a review whose research reply was cut off with the usage its error carries', async () => {
+    const { lines } = await run([
+      {
+        onCall: (request) => {
+          if (!isResearch(request)) return
+          throw new ProviderError({
+            providerId: 'p',
+            kind: 'truncated',
+            message: 'reply was cut off by the token limit',
+            usage: { inputTokens: 900, outputTokens: 16000, costUsd: 0.02 },
+          })
+        },
+      },
+    ], [
+      review('exec'),
+    ])
+    expect(parseRecord(lines[0].slice(0, -1))).toMatchObject({
+      denied: 'truncated',
+      calls: 1,
+      failedCalls: 1,
+      usage: { inputTokens: 900, outputTokens: 16000, costUsd: 0.02 },
+      costComplete: true,
+    })
+  })
+
   it('records no denial that an interrupt cut', async () => {
     const controller = new AbortController()
     const { outcome, lines } = await run([
