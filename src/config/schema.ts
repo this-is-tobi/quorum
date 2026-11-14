@@ -3,6 +3,8 @@ import { ConfigError, isSafeSegment, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { MAX_PATTERNS, patternProblem, TOO_MANY_PATTERNS } from '../core/exclude.ts'
 import type { CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
+import { MAX_RETRIES, MAX_STATED_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, retriesProblem, timeoutProblem } from '../core/ports.ts'
+import { ownData } from '../core/stages/context.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { ProviderProtocol } from '../providers/build.ts'
 import { wordList } from '../providers/options.ts'
@@ -73,6 +75,8 @@ const providerShape = {
   maxTokens: z.int().min(1).optional().describe('The most tokens the reply may hold'),
   maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']).optional().describe('The body field that carries maxTokens, on the openai-compatible protocol'),
   systemPrompt: z.enum(['native', 'inline']).optional().describe('Where the instructions go: the protocol\'s system field, or inline in the first message'),
+  timeoutMs: z.int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe('The deadline of one attempt of a call, in milliseconds; 600000 when unset'),
+  retries: z.int().min(0).max(MAX_RETRIES).optional().describe('How many times a call that failed in passing is tried again; 2 when unset'),
   args: z.array(z.string()).optional().describe('On claude-code, extra claude flags, each with its value: --effort, --fallback-model, --max-budget-usd, or --betas with auth api-key'),
 }
 
@@ -139,8 +143,41 @@ export function isProvider(value: unknown): value is Provider {
 /** The snapshots the schema made of provider objects, recognised by identity: a settings object is never taken for one, whatever its prototype holds. */
 const SNAPSHOTS = new WeakSet<object>()
 
+/** The facts a provider object states of its calls, as the port names them. */
+interface StatedFacts {
+  readonly timeoutMs?: number
+  readonly retries?: number
+}
+
+/** Each fact a provider states, with the check of its value: a deadline up to what a provider may state, which is more than an option takes. */
+const FACTS: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly problem: (value: unknown) => string | undefined }> = [
+  {
+    field: 'timeoutMs',
+    problem: value => timeoutProblem(value, MAX_STATED_TIMEOUT_MS),
+  },
+  { field: 'retries', problem: retriesProblem },
+]
+
+/**
+ * The facts `provider` states, each read as own data, so a getter never runs and an inherited property
+ * or a proxy that throws states nothing: `stated` holds those that pass their check, and `problems` the
+ * field and wording of each that does not. A value is never quoted.
+ */
+export function statedFacts(provider: unknown): { readonly stated: StatedFacts, readonly problems: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly message: string }> } {
+  const stated: Record<string, number> = {}
+  const problems: Array<{ field: keyof StatedFacts, message: string }> = []
+  for (const { field, problem } of FACTS) {
+    const value = ownData(provider, field)
+    if (value === undefined) continue
+    const message = problem(value)
+    if (message === undefined) stated[field] = value as number
+    else problems.push({ field, message })
+  }
+  return { stated, problems }
+}
+
 /** A provider object as a snapshot: its fields as plain data, frozen, with no prototype. */
-function snapshot(fields: { readonly id?: string, readonly model: unknown, readonly complete: Provider['complete'] }): Provider {
+function snapshot(fields: { readonly id?: string, readonly model: unknown, readonly complete: Provider['complete'] } & StatedFacts): Provider {
   const made = Object.freeze(withoutPrototype<Provider>(Object.entries(fields)))
   SNAPSHOTS.add(made)
   return made
@@ -150,7 +187,9 @@ function snapshot(fields: { readonly id?: string, readonly model: unknown, reado
  * The provider-object form of a code config's provider: an object whose `complete` is a function, read once
  * into a snapshot. The check reads `model` and `complete` one time each, and nothing reads the object again,
  * so a getter of the program's cannot run outside the guard that hides what it throws. The snapshot calls the
- * method read here on the object itself, through `Reflect.apply`, which reads nothing off the function.
+ * method read here on the object itself, through `Reflect.apply`, which reads nothing off the function. The
+ * `timeoutMs` and `retries` it states are read as own data, so no getter runs for them; the snapshot keeps
+ * each that is in range, and a value out of range is an issue at its field.
  */
 const providerObject = z.custom<Provider>(value => typeof value === 'object' && value !== null).transform((object, ctx) => {
   const { model, complete } = object
@@ -158,20 +197,39 @@ const providerObject = z.custom<Provider>(value => typeof value === 'object' && 
     ctx.issues.push({ code: 'custom', message: 'complete is not a function', input: object })
     return z.NEVER
   }
+  const { stated, problems } = statedFacts(object)
+  // `continue` keeps the union from setting this form aside as aborted: the object took its shape, so its issues are the ones reported.
+  for (const { field, message } of problems) {
+    ctx.issues.push({
+      code: 'custom',
+      message,
+      input: object,
+      path: [field],
+      continue: true,
+    })
+  }
+  if (problems.length > 0) return z.NEVER
   return snapshot({
     model,
     complete: request => Reflect.apply(complete, object, [request]) as Promise<CompletionResponse>,
+    ...stated,
   })
 })
 
 /**
  * `entry` named `id`, the config's key for it, when it is a snapshot the schema made of a provider object: a
- * copy that holds `id` as well, built from the snapshot's own data. Anything else is returned as it is.
+ * copy that holds `id` as well, built from the snapshot's own data, the facts it states included. Anything
+ * else is returned as it is.
  */
 export function nameSnapshot(id: string, entry: unknown): unknown {
   if (typeof entry !== 'object' || entry === null || !SNAPSHOTS.has(entry)) return entry
   const { model, complete } = entry as { readonly model: unknown, readonly complete: Provider['complete'] }
-  return snapshot({ id, model, complete })
+  return snapshot({
+    id,
+    model,
+    complete,
+    ...statedFacts(entry).stated,
+  })
 }
 
 /**

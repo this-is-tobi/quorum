@@ -162,6 +162,23 @@ describe('fingerprint', () => {
     expect(same(of(object('m'), 'fake'), of(object('n'), 'fake'))).toBe(false)
   })
 
+  it('holds a provider object\'s stated deadline and retries beside its key and model, and leaves one that states none as it was', () => {
+    const stated = of({
+      ...object('m'),
+      timeoutMs: 120000,
+    }, 'fake')
+    const unstated = of(object('m'), 'fake')
+    expect(same(stated, unstated)).toBe(false)
+    const researchOf = (config: ResolvedConfig): unknown => (JSON.parse(canonicalSettings(config)) as { profiles: Array<{ research: unknown }> }).profiles[0].research
+    expect(researchOf(stated)).toEqual({ model: 'm', object: 'fake', timeoutMs: 120000 })
+    expect(researchOf(unstated)).toEqual({ model: 'm', object: 'fake' })
+  })
+
+  it('changes with a provider\'s timeoutMs or retries', () => {
+    expect(same(of({ ...PROVIDER, retries: 0 }), of(PROVIDER))).toBe(false)
+    expect(same(of({ ...PROVIDER, timeoutMs: 120000 }), of(PROVIDER))).toBe(false)
+  })
+
   it('changes with the salt', () => {
     expect(fingerprint(of(PROVIDER), SALT)).not.toBe(fingerprint(of(PROVIDER), 'b'.repeat(64)))
   })

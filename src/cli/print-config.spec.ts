@@ -138,6 +138,23 @@ describe('printConfig', () => {
     expect(printed({ ...SPEC, contextTokens: 65536 })).toContain('    model: m\n    contextTokens: 65536\n')
   })
 
+  it('prints a provider\'s timeoutMs and retries after its system prompt when it sets them, and a provider object\'s after its model', () => {
+    expect(printed({ ...SPEC, timeoutMs: 120000, retries: 0 })).toContain('    timeoutMs: 120000\n    retries: 0\n')
+    const unset = printed(SPEC)
+    expect(unset).not.toContain('timeoutMs')
+    expect(unset).not.toContain('retries')
+    const complete: Provider['complete'] = async () => ({ text: '', model: 'm' })
+    expect(printConfig(config({
+      mine: {
+        id: 'mine',
+        model: 'm',
+        complete,
+        timeoutMs: 120000,
+        retries: 3,
+      },
+    }), undefined)).toContain('  mine:\n    implements: Provider\n    model: m\n    timeoutMs: 120000\n    retries: 3\nprofiles:\n')
+  })
+
   it('prints a provider\'s own fields only, and nothing a polluted prototype holds', () => {
     const proto = Object.prototype as Record<string, unknown>
     proto.headers = { 'x-polluted': 'SECRET' }

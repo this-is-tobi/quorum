@@ -3,7 +3,7 @@ import { stringify } from 'yaml'
 import { own } from '../config/profiles.ts'
 import type { ResolvedProfile } from '../config/profiles.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
-import { isProvider } from '../config/schema.ts'
+import { isProvider, statedFacts } from '../config/schema.ts'
 import { DEFAULT_CONCURRENCY } from '../core/concurrency.ts'
 import type { Provider } from '../core/ports.ts'
 import { thresholdsFor } from '../core/profile.ts'
@@ -76,17 +76,22 @@ function specView(spec: ProviderSpec): Record<string, unknown> {
     maxTokens: own(spec, 'maxTokens'),
     maxTokensField: own(spec, 'maxTokensField'),
     systemPrompt: systemPromptView(own(spec, 'systemPrompt')),
+    timeoutMs: own(spec, 'timeoutMs'),
+    retries: own(spec, 'retries'),
   }
 }
 
-/** A provider object by what it implements and its model, when that is a string; never its function. */
+/** A provider object by what it implements, its model when that is a string, and the `timeoutMs` and `retries` it states; never its function. */
 function objectView(provider: Readonly<Provider>): Record<string, unknown> {
   const model = own(provider, 'model')
+  const { timeoutMs, retries } = statedFacts(provider).stated
   return {
     implements: 'Provider',
     model: typeof model === 'string'
       ? model
       : undefined,
+    timeoutMs,
+    retries,
   }
 }
 
@@ -108,7 +113,8 @@ function profileView({ profile, research, voters }: ResolvedProfile): Record<str
  * The resolved config as the YAML `--print-config` writes, for a CI log that anyone can read: the file it
  * came from (`null` for none), the providers, the profiles that run, the limits the review applies, the
  * patterns it excludes, and the warnings. A key and every value of `headers`, `query` and `extraBody`
- * print as `[redacted]`, a base URL as its origin, and a prompt as its SHA-256. A `claude-code` provider
+ * print as `[redacted]`, a base URL as its origin, and a prompt as its SHA-256. A provider's `timeoutMs` and
+ * `retries` print when it sets them, a provider object's when it states them. A `claude-code` provider
  * prints its protocol, command, model, context size, key (redacted), auth mode and args, and no origin:
  * the command and the args are the user's own config. The view is an allowlist, so a field added to the
  * config prints nothing until it is added here on purpose.

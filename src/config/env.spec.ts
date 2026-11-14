@@ -175,6 +175,113 @@ describe('the context size variables', () => {
   })
 })
 
+describe('the deadline and retries variables', () => {
+  const TIMEOUT = 'must be a whole number of milliseconds, from 1000 to 86400000'
+  const RETRIES = 'must be a whole number, from 0 to 5'
+
+  it('reads each role\'s deadline and retries in decimal digits and in range, as it reads its context size', () => {
+    expect(readEnv({
+      QUORUM_RESEARCH_TIMEOUT_MS: '120000',
+      QUORUM_RESEARCH_RETRIES: '0',
+      QUORUM_VOTER_TIMEOUT_MS: '86400000',
+      QUORUM_VOTER_RETRIES: '5',
+    })).toEqual({
+      research: { timeoutMs: 120000, retries: 0 },
+      voter: { timeoutMs: 86400000, retries: 5 },
+      warnings: [],
+      issues: [],
+    })
+  })
+
+  it.each<[string, string, string, string]>([
+    [
+      'QUORUM_RESEARCH_TIMEOUT_MS=999',
+      'QUORUM_RESEARCH_TIMEOUT_MS',
+      '999',
+      TIMEOUT,
+    ],
+    [
+      'QUORUM_RESEARCH_TIMEOUT_MS=86400001',
+      'QUORUM_RESEARCH_TIMEOUT_MS',
+      '86400001',
+      TIMEOUT,
+    ],
+    [
+      'QUORUM_RESEARCH_TIMEOUT_MS=1e5',
+      'QUORUM_RESEARCH_TIMEOUT_MS',
+      '1e5',
+      TIMEOUT,
+    ],
+    [
+      'QUORUM_RESEARCH_TIMEOUT_MS=0x3e8',
+      'QUORUM_RESEARCH_TIMEOUT_MS',
+      '0x3e8',
+      TIMEOUT,
+    ],
+    [
+      'QUORUM_RESEARCH_TIMEOUT_MS=1500.5',
+      'QUORUM_RESEARCH_TIMEOUT_MS',
+      '1500.5',
+      TIMEOUT,
+    ],
+    [
+      'QUORUM_RESEARCH_TIMEOUT_MS=-1000',
+      'QUORUM_RESEARCH_TIMEOUT_MS',
+      '-1000',
+      TIMEOUT,
+    ],
+    [
+      'QUORUM_RESEARCH_TIMEOUT_MS=120s',
+      'QUORUM_RESEARCH_TIMEOUT_MS',
+      '120s',
+      TIMEOUT,
+    ],
+    [
+      'QUORUM_RESEARCH_TIMEOUT_MS=0120000',
+      'QUORUM_RESEARCH_TIMEOUT_MS',
+      '0120000',
+      TIMEOUT,
+    ],
+    [
+      'QUORUM_VOTER_RETRIES=6',
+      'QUORUM_VOTER_RETRIES',
+      '6',
+      RETRIES,
+    ],
+    [
+      'QUORUM_VOTER_RETRIES=-1',
+      'QUORUM_VOTER_RETRIES',
+      '-1',
+      RETRIES,
+    ],
+    [
+      'QUORUM_VOTER_RETRIES=1.5',
+      'QUORUM_VOTER_RETRIES',
+      '1.5',
+      RETRIES,
+    ],
+    [
+      'QUORUM_VOTER_RETRIES=02',
+      'QUORUM_VOTER_RETRIES',
+      '02',
+      RETRIES,
+    ],
+    [
+      'QUORUM_VOTER_RETRIES=two',
+      'QUORUM_VOTER_RETRIES',
+      'two',
+      RETRIES,
+    ],
+  ])('refuses %s, never repeating it', (_label, name, value, message) => {
+    const layer = readEnv({ [name]: value })
+    expect(layer.issues).toEqual([
+      { path: name, message },
+    ])
+    expect(layer).toMatchObject({ research: {}, voter: {} })
+    expect(JSON.stringify(layer.issues)).not.toContain(value)
+  })
+})
+
 describe('the variables quorum does not read', () => {
   const QUORUM_VARIABLES = [...READ_VARIABLES].filter(name => name.startsWith('QUORUM_'))
 
@@ -655,5 +762,30 @@ describe('the context size through the role variables', () => {
     }, { research: 'main', voter: 'panel' }, {
       voter: { model: 'v' },
     }).providers.panel).not.toHaveProperty('contextTokens')
+  })
+})
+
+describe('the deadline and retries through the role variables', () => {
+  const stated: ProviderSettings = {
+    protocol: 'openai-compatible',
+    baseUrl: 'https://a.example/v1',
+    model: 'm',
+    contextTokens: 32768,
+    timeoutMs: 120000,
+    retries: 1,
+  }
+  const both: RoleBinding = { research: 'a', voter: 'a' }
+
+  it('sets them on the role\'s provider, keeps them on a voter derived at another origin, and leaves the context size where it was', () => {
+    expect(apply({ a: stated }, both, {
+      research: { retries: 0 },
+    }).providers.a).toEqual({ ...stated, retries: 0 })
+    expect(apply({ a: stated }, both, {
+      research: { retries: 0 },
+      voter: { baseUrl: 'https://v.example/v1', model: 'v', contextTokens: 16384 },
+    }).providers.voter).toMatchObject({ timeoutMs: 120000, retries: 0, contextTokens: 16384 })
+    expect(apply({ a: stated }, both, {
+      voter: { timeoutMs: 30000 },
+    }).providers.voter).toEqual({ ...stated, timeoutMs: 30000 })
   })
 })
