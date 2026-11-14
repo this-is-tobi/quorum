@@ -79,7 +79,7 @@ export interface Provider {
   /**
    * The deadline of one attempt, in whole milliseconds from 1000 to 518400000; `DEFAULT_TIMEOUT_MS`
    * when unset. At it the core aborts the attempt's signal and fails the attempt as a timeout,
-   * whatever the provider does. It is read once, when the quorum is created, as an own data
+   * whatever the provider does. It is read when the quorum is created, as an own data
    * property: a getter is never run and an inherited property states nothing, so a class sets it as
    * a field.
    */
@@ -88,7 +88,7 @@ export interface Provider {
    * How often the core retries a call that failed in passing, after its first attempt: a whole
    * number from 0 to 5; none when unset, since a provider that retries by itself must not be
    * retried again. The core retries only a `network`, `timeout` or `http` failure that says it may
-   * be retried, and never a call's second timeout. It is read once, when the quorum is created, as
+   * be retried, and never a call's second timeout. It is read when the quorum is created, as
    * an own data property, as `timeoutMs` is.
    */
   readonly retries?: number
