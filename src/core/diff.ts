@@ -1,6 +1,7 @@
 const GIT_HEADER = 'diff --git '
 const QUOTED_NEW_SIDE = ' "b/'
 const NEW_SIDE_MARKERS = [QUOTED_NEW_SIDE, ' b/']
+const MOVED_TO_PREFIXES = ['rename to ', 'copy to ']
 const PATH_PREFIX = /^(?:[ab]\/|\.\/)/
 const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 /** How many diff lines of a hunk, either side of the cited one, make up a finding's evidence. */
@@ -143,6 +144,30 @@ function headerPath(header: string): string | undefined {
     : header
   const names = line.slice(GIT_HEADER.length)
   return sharedPath(names) || renamedPath(names) || undefined
+}
+
+/**
+ * The paths the `rename to ` and `copy to ` lines of a section name, in order, each less a trailing
+ * `\r` and decoded when git quoted it. Git does not quote a path that holds a space, so a path with a
+ * space before `b/` makes a rename's `diff --git` header read two ways (`a/src/auth.js b/src/x
+ * b/dist/auth.js` reads as a rename to `dist/auth.js`), while these lines name the new path whole. A
+ * hunk row starts with a space, `+`, `-` or `\`, never with these words, so the section's lines are
+ * read with no hunk parsing.
+ */
+export function movedTo(text: string): string[] {
+  const paths: string[] = []
+  for (const raw of text.split('\n')) {
+    const line = raw.endsWith('\r')
+      ? raw.slice(0, -1)
+      : raw
+    const prefix = MOVED_TO_PREFIXES.find(start => line.startsWith(start))
+    if (prefix === undefined) continue
+    const name = line.slice(prefix.length)
+    paths.push(isQuoted(name)
+      ? decodeQuoted(name.slice(1, -1))
+      : name)
+  }
+  return paths
 }
 
 /** One section of a diff: the text from a `diff --git` header to the next, or the text before the first one. */

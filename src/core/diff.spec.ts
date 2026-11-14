@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeDiff, diffSectionFor, diffSections, firstLineOutside, locate, sectionFor, splitDiff } from './diff.ts'
+import { decodeDiff, diffSectionFor, diffSections, firstLineOutside, locate, movedTo, sectionFor, splitDiff } from './diff.ts'
 
 const gitDiff = [
   'diff --git a/src/a.js b/src/a.js',
@@ -277,6 +277,31 @@ describe('diffSections', () => {
     expect(diffSections(plain)).toEqual([
       { path: '', text: plain },
     ])
+  })
+})
+
+describe('movedTo', () => {
+  it('gives the path a rename to or a copy to line names, in order', () => {
+    expect(movedTo('diff --git a/a b/b\nrename from a\nrename to b\n')).toEqual(['b'])
+    expect(movedTo('diff --git a/a b/b\ncopy from a\ncopy to b\n')).toEqual(['b'])
+    expect(movedTo('rename to x\ncopy to y\nrename to z')).toEqual(['x', 'y', 'z'])
+  })
+
+  it('gives the whole path, a space before b/ included', () => {
+    expect(movedTo('rename to src/x b/dist/auth.js')).toEqual(['src/x b/dist/auth.js'])
+  })
+
+  it('decodes a quoted name', () => {
+    expect(movedTo('rename to "dist/donn\\303\\251es.js"')).toEqual([`dist/donn${String.fromCharCode(0xE9)}es.js`])
+  })
+
+  it('drops a trailing carriage return', () => {
+    expect(movedTo('rename to dist/x.js\r\n')).toEqual(['dist/x.js'])
+  })
+
+  it('gives none for a section without such a line, and for a context row that holds the words', () => {
+    expect(movedTo('diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-a\n+b')).toEqual([])
+    expect(movedTo('diff --git a/a b/a\n rename to x\n+rename to y\n-copy to z')).toEqual([])
   })
 })
 

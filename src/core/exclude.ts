@@ -12,6 +12,8 @@ const QUESTION = 0x3F
 const HIGH_SURROGATES = [0xD800, 0xDBFF] as const
 const LOW_SURROGATES = [0xDC00, 0xDFFF] as const
 const WHOLE_DIRECTORIES = '**'
+/** The names a segment of a pattern can hold that no path of a diff has. */
+const NAMES_NO_PATH_HAS: ReadonlySet<string> = new Set(['', '.', '..'])
 
 /** How many code units the character at `at` takes: 2 for a surrogate pair, else 1. */
 function width(text: string, at: number): number {
@@ -32,9 +34,11 @@ function anchoredSegments(pattern: string): string[] {
 
 /**
  * The first problem with a pattern, with what to write instead, or undefined when it can be taken.
- * The problems come in this order: empty, too long, a `\`, a `!`, a `{`, a trailing `/`, and a `**`
- * inside a name (a segment other than `**` that holds it). A pattern that would exclude something
- * other than what its author meant is refused rather than guessed at. No message repeats the pattern.
+ * The problems come in this order: empty, too long, a `\`, a `!`, a `{`, a trailing `/`, a `**`
+ * inside a name (a segment other than `**` that holds it), and an empty, `.` or `..` name (a segment
+ * of the pattern, less one leading `/`, that is one of them: no path in a diff has such a name, so
+ * the pattern would match less than its author meant). A pattern that would exclude something other
+ * than what its author meant is refused rather than guessed at. No message repeats the pattern.
  */
 export function patternProblem(pattern: string): string | undefined {
   if (pattern === '') return 'must not be empty'
@@ -43,8 +47,12 @@ export function patternProblem(pattern: string): string | undefined {
   if (pattern.includes('!')) return 'holds !, which negates nothing here: list only the paths to leave out'
   if (pattern.includes('{')) return 'holds {, which lists no alternatives here: write one pattern for each'
   if (pattern.endsWith('/')) return 'ends with /, so it matches no file: end it with /** to leave out what the directory holds'
-  if (anchoredSegments(pattern).some(segment => segment !== WHOLE_DIRECTORIES && segment.includes(WHOLE_DIRECTORIES))) {
+  const segments = anchoredSegments(pattern)
+  if (segments.some(segment => segment !== WHOLE_DIRECTORIES && segment.includes(WHOLE_DIRECTORIES))) {
     return 'holds ** inside a name: ** stands for whole directories, as in **/*.min.js, and * for any characters of a name'
+  }
+  if (segments.some(segment => NAMES_NO_PATH_HAS.has(segment))) {
+    return 'holds an empty, . or .. name, which no path in a diff has: write the path from the root, as in dist/**'
   }
   return undefined
 }

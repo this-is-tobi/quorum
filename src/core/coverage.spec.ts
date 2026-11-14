@@ -192,6 +192,54 @@ describe('reviewScope, with excludes', () => {
       { file: DONNEES, reason: 'excluded' },
     ])
   })
+
+  it('keeps a renamed section whose header reads as an excluded path its rename to line does not name', () => {
+    for (const renamed of [git.RENAMED_INTO_DIST, git.RENAMED_OUT_OF_DIST]) {
+      const result = scope(renamed, 'dist/**')
+      expect(result.leftOut).toEqual([])
+      expect(result.diff).toBe(renamed)
+    }
+  })
+
+  it('excludes a rename or a copy its rename to or copy to line confirms, a quoted name decoded', () => {
+    const moved = (verb: string): string => [
+      'diff --git a/src/x.js b/dist/x.js',
+      'similarity index 90%',
+      `${verb} from src/x.js`,
+      `${verb} to dist/x.js`,
+      '@@ -1 +1 @@',
+      '-a',
+      '+b',
+    ].join('\n')
+    const entry = [
+      { file: 'dist/x.js', reason: 'excluded' },
+    ]
+    expect(scope(moved('rename'), 'dist/**').leftOut).toEqual(entry)
+    expect(scope(moved('copy'), 'dist/**').leftOut).toEqual(entry)
+    const quoted = [
+      'diff --git "a/src/donn\\303\\251es.js" "b/dist/donn\\303\\251es.js"',
+      'rename to "dist/donn\\303\\251es.js"',
+      '@@ -1 +1 @@',
+      '-a',
+      '+b',
+    ].join('\n')
+    expect(scope(quoted, 'dist/**').leftOut).toEqual([
+      { file: `dist/donn${String.fromCharCode(0xE9)}es.js`, reason: 'excluded' },
+    ])
+  })
+
+  it('keeps and lists as binary a renamed binary file whose header it misreads', () => {
+    const binary = [
+      'diff --git a/src/auth.js b/src/x b/dist/auth.js',
+      'rename from src/auth.js',
+      'rename to src/x b/dist/auth.js',
+      'index 04ad716..a30ef13 100644',
+      'Binary files a/src/auth.js and b/src/x b/dist/auth.js differ',
+    ].join('\n')
+    expect(scope(binary, 'dist/**').leftOut).toEqual([
+      { file: 'dist/auth.js', reason: 'binary' },
+    ])
+  })
 })
 
 describe('leftOutGaps', () => {
