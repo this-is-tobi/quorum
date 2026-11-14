@@ -97,6 +97,7 @@ export async function fromConfig(config: ConfigInput | ResolvedConfig, options: 
     profiles: resolved.profiles.map(({ profile }) => profile),
     concurrency: resolved.concurrency,
     maxFindings: resolved.maxFindings,
+    exclude: resolved.exclude,
   }, { profiles: ports, events: options.events })
   return Object.freeze({
     review: quorum.review,

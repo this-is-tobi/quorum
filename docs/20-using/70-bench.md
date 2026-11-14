@@ -294,7 +294,7 @@ Scoring: suite.yaml changed since the run began; its recorded reviews are scored
 
 ### The fingerprint
 
-A configuration is known by its fingerprint, not by its file name: the HMAC-SHA-256, under the run's salt, of the settings a review uses. In plain words, it holds **every setting a review uses, except the key**: the profiles that run, with their prompts, lenses, policy and gating; each provider's every field, the base URL and the values of `headers`, `query` and `extraBody` among them; and `concurrency` and `maxFindings`. It is taken of the resolved configuration, so a `QUORUM_*` variable that changes a setting changes it, and it holds no config-file path, no warning and no provider name, so the same settings in another file, or under other names, are one configuration.
+A configuration is known by its fingerprint, not by its file name: the HMAC-SHA-256, under the run's salt, of the settings a review uses. In plain words, it holds **every setting a review uses, except the key**: the profiles that run, with their prompts, lenses, policy and gating; each provider's every field, the base URL and the values of `headers`, `query` and `extraBody` among them; `concurrency` and `maxFindings`; and `exclude`, when the config lists a pattern, so a configuration without one keeps the fingerprint it had. It is taken of the resolved configuration, so a `QUORUM_*` variable that changes a setting changes it, and it holds no config-file path, no warning and no provider name, so the same settings in another file, or under other names, are one configuration.
 
 That settles when a run can go on:
 

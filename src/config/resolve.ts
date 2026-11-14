@@ -29,6 +29,8 @@ export interface ResolvedConfig {
   readonly profiles: readonly ResolvedProfile[]
   readonly concurrency?: number
   readonly maxFindings?: number
+  /** The path patterns of the files every review leaves out; absent when the config lists none. */
+  readonly exclude?: readonly string[]
   readonly warnings: readonly string[]
 }
 
@@ -496,6 +498,7 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
 
   const concurrency = own(input, 'concurrency')
   const maxFindings = own(input, 'maxFindings')
+  const exclude = own(input, 'exclude')
   const resolved: ResolvedConfig = Object.freeze({
     providers: deepFreeze(Object.fromEntries(checked.providers)),
     profiles: Object.freeze([...profiles.profiles]),
@@ -505,6 +508,11 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
     ...maxFindings === undefined
       ? {}
       : { maxFindings },
+    ...exclude === undefined || exclude.length === 0
+      ? {}
+      : {
+          exclude: Object.freeze([...exclude]),
+        },
     warnings: Object.freeze([
       ...layer.warnings,
       ...checked.warnings,

@@ -1,6 +1,6 @@
 # Configuration
 
-The CLI reads its settings from three sources, each laid over the one before: the built-in defaults, a config file the CLI is named, and the environment. The flags come last: `--config` names the file and `--profile` chooses which profiles run. With no file named, `QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` set, the defaults and those two variables are enough: the CLI reviews against Ollama on this machine, through its native API. This page covers the config file, how to name it, how the layers combine, the `QUORUM_*` variables, the voter's fallback, the context size, running Claude Code, the keys, the trust a named config needs in CI, and the errors a bad setting causes.
+The CLI reads its settings from three sources, each laid over the one before: the built-in defaults, a config file the CLI is named, and the environment. The flags come last: `--config` names the file and `--profile` chooses which profiles run. With no file named, `QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` set, the defaults and those two variables are enough: the CLI reviews against Ollama on this machine, through its native API. This page covers the config file, how to name it, how the layers combine, the `QUORUM_*` variables, the voter's fallback, the context size, the files to exclude, running Claude Code, the keys, the trust a named config needs in CI, and the errors a bad setting causes.
 
 A program that uses quorum as a library builds its providers itself, as [Providers](./30-providers.md) shows, or has `loadConfig` and `fromConfig` read the same settings: [`loadConfig` and `fromConfig`](../95-reference/30-library-api.md#loadconfig-and-fromconfig).
 
@@ -59,6 +59,7 @@ profiles:
 - **`providers`** names each endpoint, by a name of lower-case letters, digits, `_` and `-`, which starts with a letter. A provider starts from a [preset](./30-providers.md#presets), or from a `protocol` and a `baseUrl`, and sets the [options](./30-providers.md#options) of its adapter: its `contextTokens` ([The context size](#the-context-size)), `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField` and `systemPrompt`. One with `protocol: claude-code` runs your Claude Code CLI instead, has no base URL, and sets `args` besides: [Claude Code](#claude-code).
 - **`roles`** says which provider researches and which votes. A profile's own `roles`, and a lens's `provider`, override them.
 - **`profiles`** defines the review profiles: [Profiles](./40-profiles.md), [Lenses and policy](./50-lenses-and-policy.md) and [Prompts](./60-prompts.md) say what each field means. A prompt is a string, or `{ file }`: the file's text. A prompt file resolves against the directory of the config file, whatever the working directory is, and holds at most 64 KiB, and the prompt files of a config 1 MiB in all.
+- **`exclude`** lists the files every review leaves out, as path patterns: [Excludes](#excludes).
 
 The JSON Schema in [`schema/quorum.schema.json`](../../schema/quorum.schema.json) lets an editor check and complete a YAML or JSON config. A YAML file names it in a comment on its first line, `# yaml-language-server: $schema=<path or URL of the schema>`, as the example does with the path of a clone beside the directory that holds the config, or `./node_modules/@tobi-or-not/quorum/schema/quorum.schema.json`, the copy the npm package ships, when the package is installed in the project that holds the config; a JSON file names it in its `"$schema"` field. Quorum itself ignores both.
 
@@ -238,6 +239,28 @@ Neither of these is done today. Counting with a vendor's own tokenizer would shr
 
 A refused research request leaves its profile with no finding and a `request-too-large` gap, and the other profiles run. A refused vote is a failed vote ([Failed votes](./50-lenses-and-policy.md#failed-votes)), and its finding records a `request-too-large` gap as well, whatever its status: kept, discarded or `unreviewed`, the gap stays. A gating profile with such a gap exits `4`, even with `--allow-incomplete`, unless it also kept a `high` finding, which exits `1`; the gap of an advisory profile changes no code. The result says what was not sent: [Incomplete reasons](../95-reference/20-json-result.md#incomplete-reasons). A provider with no context size is a configuration error, exit `2`, before any request.
 
+## Excludes
+
+`exclude` lists the files a review leaves out, as path patterns. Nothing is excluded by default, and every file excluded is listed in the result, never dropped in silence:
+
+```yaml
+exclude:
+- package-lock.json
+- "*.min.js"
+- vendor/**
+- /docs/images/**
+```
+
+- **What it does.** A pattern matches a file's path as the diff names it: the new path of a rename, the old one of a deletion, a name git quotes decoded. The file's section then reaches no model, neither the research request nor a vote, so the size guard does not count it, and a finding that cites it is dropped as outside the diff. It is listed in `meta.leftOut` as `excluded` and on stderr, and it is no gap, even when it is binary: leaving it out is your choice. The advisory flags still read it, since they are code and call no model.
+- **The syntax.** `*` stands for any characters of a name and `?` for one, both within a directory; `**`, as a whole segment between slashes, for any number of directories, none included. A pattern with no `/` matches a file's name in any directory: `*.min.js` matches `dist/app.min.js`. A pattern with a `/` matches the whole path from the root of the repository, and a leading `/` only anchors: `/package-lock.json` is the root's alone, where `package-lock.json` is any directory's. A pattern that ends with `/**` matches everything inside its directory, at any depth, and never a file named like the directory. A directory's name alone names a file: `dist` leaves out a file called `dist`, not what a `dist` directory holds, which `dist/**` does for the root's and `**/dist/**` for any. Every other character stands for itself, `[` and `]` included, so `pages/[id].js` names that file, and case counts: `*.PNG` does not match `logo.png`.
+- **What is refused**, before any call, with what to write instead: an empty pattern, one over 256 characters, one that ends with `/` (`vendor/` matches no file: write `vendor/**`), a `**` inside a name (`**.js`: write `**/*.js`), a `\`, a `!` or a `{`, none of which means anything here, and more than 100 patterns. A pattern written for another tool can only exclude less: no character but the three wildcards matches more than itself.
+- **What is never excluded:** a part of the diff that no `diff --git` header names, which is listed under the empty name. That is the text before the first header, a diff without such headers, a section whose header quorum cannot read, and a submodule that git's `log` or `diff` format prints as a `Submodule` line. Make the diff with `--submodule=short`, as the [CI command](./10-cli.md#using-it-in-ci) does, and a submodule has a section of its own, which a pattern matches: `vendor/**`.
+- **Only from the config you name.** No `QUORUM_*` variable and no flag sets it, since it widens what passes unread: it belongs in the config a reviewer of the job reads, which [`--print-config`](./10-cli.md#printing-the-resolved-config) prints. Nothing of the change is read as an exclude: no `.gitattributes`, no `linguist-generated` attribute, no file's content. The base branch's own attributes still shape the diff, though: a `-diff` the base sets, for a lockfile say, shows that file as binary, which is a gap unless `exclude` lists it.
+- **A pattern lets the change choose what passes unread.** A pull request can add a file at any path a pattern matches, and no model reads it. Keep each pattern as narrow as the files it names, anchored with a leading `/` where a file has one place (`/package-lock.json`). The code that loads such a file is still reviewed, and the stderr line and `meta.leftOut` name every file left out, a new one included.
+- **What excluding a lockfile gives up.** A lockfile is a real place to hide an attack: a `resolved` URL pointed at a copy of a package its author controls keeps the package's name and version, and few people read thousands of generated lines. Excluding it saves the calls it costs, and can make a research request the size guard refused fit, since the guard counts only what is sent; but no model reads its change. Check lockfiles another way, with a tool such as lockfile-lint, which checks every `resolved` host, or review their changes by hand.
+
+quorum matches a pattern with code of its own, segment by segment, never turning it into a regular expression, so a long path in the diff cannot make it slow. [A file left out](../95-reference/20-json-result.md#a-file-left-out) says what the result lists.
+
 ## Claude Code
 
 A `claude-code` provider runs your installed Claude Code CLI as the model, headless and isolated, once per request. [`claudeCode`](./30-providers.md#claudecode) has its command line, its isolation and its errors; this section sets one up.
@@ -390,6 +413,8 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `quorum.yaml: providers.a.modl: is not a known field` | A field quorum does not know, `apiKey` in a YAML or JSON file included. Every issue of the file is reported at once, one per line |
 | `quorum.yaml: version: must be 1, the only config version this quorum reads: upgrade quorum to read a later one` | A `version` other than `1` |
 | `quorum.yaml: profiles.naming.prompts.research.file: does not exist` | A prompt file that cannot be read: it does not exist, is not a file, is over 64 KiB, is not UTF-8, or takes the prompt files over 1 MiB in all |
+| `quorum.yaml: exclude.2: ends with /, so it matches no file: end it with /** to leave out what the directory holds` | A pattern that can mislead; [Excludes](#excludes) lists what each message refuses |
+| `quorum.yaml: exclude: must hold at most 100 patterns` | More than 100 patterns |
 | `quorum.config.mts: has a syntax error`, `failed to load (Error)` or `must export an object as its default` | A TS or JS config that does not load, whose code threw, or whose default export is not an object. Only the error's name is kept: what a config threw can hold a secret |
 | `roles.research: is required when several providers are defined` | Several providers, and no research role |
 | `roles.research: unknown provider "aa" (did you mean "a"?)` | A role, a profile's role or a lens's `provider` names a provider that is not defined |

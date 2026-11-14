@@ -138,6 +138,24 @@ describe('fingerprint', () => {
     }), of(PROVIDER))).toBe(false)
   })
 
+  it('holds exclude when the config lists a pattern, and leaves a config without one as it was', () => {
+    const plain = resolvedConfig({
+      providers: { p: PROVIDER },
+    })
+    const none = resolvedConfig({
+      providers: { p: PROVIDER },
+      exclude: [],
+    })
+    const one = resolvedConfig({
+      providers: { p: PROVIDER },
+      exclude: ['*.lock'],
+    })
+    expect(canonicalSettings(none)).toBe(canonicalSettings(plain))
+    expect(canonicalSettings(plain)).not.toContain('exclude')
+    expect(same(one, plain)).toBe(false)
+    expect((JSON.parse(canonicalSettings(one)) as { exclude: unknown }).exclude).toEqual(['*.lock'])
+  })
+
   it('reads a provider object by its config key and its model, never its code', () => {
     expect(same(of(object('m'), 'fake'), of(object('m'), 'fake'))).toBe(true)
     expect(same(of(object('m'), 'fake'), of(object('m'), 'other'))).toBe(false)

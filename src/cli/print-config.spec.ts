@@ -107,8 +107,14 @@ describe('printConfig', () => {
   })
 
   it('prints the values the review applies when the config sets none', () => {
-    expect(printed(SPEC)).toContain('\nconcurrency: 4\nmaxFindings: 50\nwarnings: []\n')
+    expect(printed(SPEC)).toContain('\nconcurrency: 4\nmaxFindings: 50\nexclude: []\nwarnings: []\n')
     expect(printConfig(config({ a: SPEC }, { concurrency: 2, maxFindings: 5 }), undefined)).toContain('\nconcurrency: 2\nmaxFindings: 5\n')
+  })
+
+  it('prints exclude as the config lists it, every pattern as written', () => {
+    expect(printConfig(config({ a: SPEC }, {
+      exclude: ['*.min.js', 'vendor/**'],
+    }), undefined)).toContain('\nexclude:\n  - "*.min.js"\n  - vendor/**\nwarnings: []\n')
   })
 
   it('prints source null when no file was read, and the warnings it lists', () => {
