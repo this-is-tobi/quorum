@@ -80,13 +80,16 @@ export interface ClaudeCodeOptions {
   /** The environment `claude` inherits, less what its auth mode removes. Read once, when the provider is made. Default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>
   /**
-   * Claude Code's own deadline per attempt at its API call, in milliseconds, from 1000 to 86400000. Default 600000.
-   * The provider states `timeoutMs` times `retries` plus one to the core, so one deadline covers every attempt.
+   * How long Claude Code waits for the response headers of each attempt at its API call (`API_TIMEOUT_MS`), in
+   * milliseconds, from 1000 to 86400000. Default 600000. It bounds that wait only. The provider states
+   * `timeoutMs` times `retries` plus one to the core as the deadline of the whole run, so raise it for a long run.
+   * It replaces an `API_TIMEOUT_MS` of the environment.
    */
   timeoutMs?: number
   /**
    * Claude Code's own retries of an API call that failed in passing, from 0 to 5. Default 2, where Claude Code
-   * alone makes 10. The provider states no retry to the core, which would retry what Claude Code retried.
+   * alone makes 10. The provider states no retry to the core, which would retry what Claude Code retried. It
+   * replaces a `CLAUDE_CODE_MAX_RETRIES` of the environment.
    */
   retries?: number
 }
@@ -441,9 +444,9 @@ function removedVariable(name: string, auth: ClaudeCodeAuth, runVariables: Reado
  * own, trimmed, when that is not blank. Last come twelve variables the run sets over whatever the environment
  * held, in any case: no auto memory, no compaction of a long prompt, a temporary directory of its own, no
  * IDE connection or claude.ai MCP connector, which are on by default, no attachment, file mention,
- * `CLAUDE.md` file, bundled skill or managed skill, and Claude Code's own deadline per attempt and its own
- * retries, which follow the provider's settings (`attempts`). A line naming a path (`@/path`) in the message makes
- * Claude Code attach that file for the model to read, with every tool off, unless the first two are set.
+ * `CLAUDE.md` file, bundled skill or managed skill, and Claude Code's wait for each attempt's response headers
+ * and its own retries, which follow the provider's settings (`attempts`). A line naming a path (`@/path`) in the
+ * message makes Claude Code attach that file for the model to read, with every tool off, unless the first two are set.
  */
 export function childEnv(env: Readonly<Record<string, string | undefined>>, auth: ClaudeCodeAuth, apiKey: string | undefined, tmpDir: string, attempts: { readonly timeoutMs: number, readonly retries: number }): Record<string, string> {
   const runVariables = {
@@ -1037,9 +1040,11 @@ async function requireVersion(launch: Launch, signal: AbortSignal | undefined, f
  *
  * Claude Code retries a failed API call by itself, ten times by default, so the provider sets `API_TIMEOUT_MS`
  * and `CLAUDE_CODE_MAX_RETRIES` in the child's environment from `timeoutMs` and `retries` (600000 ms and 2 by
- * default) and states no retry to the core, which would retry what Claude Code retried. It states one deadline
- * for every attempt of Claude Code's own, `timeoutMs` times `retries` plus one: at it the core aborts the
- * signal, which stops the child's group as step 11 says.
+ * default) over any the environment held, and states no retry to the core, which would retry what Claude Code
+ * retried. It states one deadline for the whole run, `timeoutMs` times `retries` plus one: Claude Code's own
+ * attempts and the waits between them, its start and the version check, and each reply's time after its
+ * headers all count against it, where `API_TIMEOUT_MS` limits only an attempt's wait for its headers. At it
+ * the core aborts the signal, which stops the child's group as step 11 says.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
