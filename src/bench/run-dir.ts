@@ -1,11 +1,12 @@
 /**
- * Every read and write of a bench run directory, which holds `run.json` (written once, whole),
- * `results.jsonl` (one line per review, appended one at a time), and the reports (`report.md` and
- * `report.json`, rewritten whole). Both data files are read as untrusted, since another run or a person
- * may have written them: strict schemas (see `records.ts`), bounded sizes, and no file that is not a
- * regular file. No write follows a symbolic link: `results.jsonl` is opened with `O_NOFOLLOW`, and every
- * other file is written to a new file that is renamed over the name, which replaces a link there.
- * `run.json` and `results.jsonl` are made readable by their owner only; the reports are made as any new file.
+ * Every read and write of a bench run directory, which holds `run.json` (written whole when the run begins,
+ * and again when a re-score records the suite's new scoring hash), `results.jsonl` (one line per review,
+ * appended one at a time), and the reports (`report.md` and `report.json`, rewritten whole). Both data
+ * files are read as untrusted, since another run or a person may have written them: strict schemas (see
+ * `records.ts`), bounded sizes, and no file that is not a regular file. No write follows a symbolic link:
+ * `results.jsonl` is opened with `O_NOFOLLOW`, and every other file is written to a new file that is
+ * renamed over the name, which replaces a link there. `run.json` and `results.jsonl` are made readable by
+ * their owner only; the reports are made as any new file.
  *
  * Every message is fixed text, the name of a file and, for an I/O failure, the error's code; never the
  * runtime's own message. A directory or a file this run cannot trust as its own is a `ConfigError`; an
@@ -176,13 +177,15 @@ export async function inspectRunDir(directory: string): Promise<RunState> {
 /**
  * What stops a run from resuming `recorded` as the run `current` describes, each an issue to print: the
  * quorum version first of all (a release can change a preset's defaults without changing a fingerprint,
- * which holds the preset by name), then another suite by its name, else a suite whose content changed,
- * then each current configuration the run does not hold, at `--config`, then each recorded one that is
- * not given again. A current and a recorded configuration that share a path (`null`, the usual
- * resolution, included) but not a fingerprint are one configuration whose settings changed, and give one
- * issue in place of the two. The same configurations in another order are the same run. A configuration
- * is named by its path as written, or `(default configuration)`: the recorded paths are text from
- * `run.json`, to make inert where they are printed.
+ * which holds the preset by name), then another suite by its name, else a suite whose review hash changed
+ * (its case ids, its trials or its patches), then each current configuration the run does not hold, at
+ * `--config`, then each recorded one that is not given again. A changed scoring hash alone is no
+ * difference: the run's records are scored again under the suite as it is now. A current and a recorded
+ * configuration that share a path (`null`, the usual resolution, included) but not a fingerprint are one
+ * configuration whose settings changed, and give one issue in place of the two. The same configurations in
+ * another order are the same run. A configuration is named by its path as written, or
+ * `(default configuration)`: the recorded paths are text from `run.json`, to make inert where they are
+ * printed.
  */
 export function runDifferences(recorded: RunFile, current: Pick<RunFile, 'quorum' | 'suite' | 'configurations'>): ConfigIssue[] {
   const issues: ConfigIssue[] = []
@@ -191,8 +194,8 @@ export function runDifferences(recorded: RunFile, current: Pick<RunFile, 'quorum
   }
   if (recorded.suite.name !== current.suite.name) {
     issues.push({ path: RUN_FILE, message: `is a run of the suite ${recorded.suite.name}, not ${current.suite.name}: name a new ${OUT}` })
-  } else if (recorded.suite.hash !== current.suite.hash) {
-    issues.push({ path: RUN_FILE, message: `the suite's suite.yaml or patches changed since the run began: name a new ${OUT}` })
+  } else if (recorded.suite.reviewHash !== current.suite.reviewHash) {
+    issues.push({ path: RUN_FILE, message: `the suite's case ids, trials or patches changed since the run began: name a new ${OUT}` })
   }
   const recordedPrints = new Set(recorded.configurations.map(({ fingerprint }) => fingerprint))
   const currentPrints = new Set(current.configurations.map(({ fingerprint }) => fingerprint))
@@ -215,8 +218,17 @@ export function runDifferences(recorded: RunFile, current: Pick<RunFile, 'quorum
 }
 
 /**
- * Make `directory` and its parents, then write `run.json` into it whole, through a new file and a rename.
- * `run.json` is readable by its owner only.
+ * Write `run.json` into `directory` whole, through a new file and a rename, which replaces the file that
+ * was there. `run.json` is readable by its owner only, so a looser mode its owner gave it is not kept.
+ *
+ * @throws Error `run.json: cannot be written (<code>)`
+ */
+export async function writeRunFile(directory: string, run: RunFile): Promise<void> {
+  await writeAtomic(directory, RUN_FILE, `${inertJson(run)}\n`, OWNER_ONLY)
+}
+
+/**
+ * Make `directory` and its parents, then write `run.json` into it (see `writeRunFile`).
  *
  * @throws Error `<directory>: cannot be created (<code>)`, or `run.json: cannot be written (<code>)`
  */
@@ -226,7 +238,7 @@ export async function createRun(directory: string, run: RunFile): Promise<void> 
   } catch (error) {
     throw ioFailure(directory, 'cannot be created', error)
   }
-  await writeAtomic(directory, RUN_FILE, `${inertJson(run)}\n`, OWNER_ONLY)
+  await writeRunFile(directory, run)
 }
 
 /** `results.jsonl` opened to be read, or undefined when there is none; refused when it is a link or not a file. */

@@ -6,10 +6,10 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import { hiddenLabels } from '../core/sanitize.ts'
-import { handleDescriptors, isClosed, record, RESULT } from '../testing/bench.ts'
+import { handleDescriptors, isClosed, record, RESULT, RUN_SUITE } from '../testing/bench.ts'
 import { MAX_RECORD_BYTES, recordLine } from './records.ts'
 import type { ResultRecord, RunFile } from './records.ts'
-import { createRun, inspectRunDir, openRecords, readRecords, runDifferences, writeAtomic } from './run-dir.ts'
+import { createRun, inspectRunDir, openRecords, readRecords, runDifferences, writeAtomic, writeRunFile } from './run-dir.ts'
 
 let root = ''
 let out = ''
@@ -23,9 +23,9 @@ afterEach(() => {
 })
 
 const RUN: RunFile = {
-  format: 1,
+  format: 2,
   quorum: '0.2.0',
-  suite: { name: 'demo', hash: `sha256:${'1'.repeat(64)}` },
+  suite: RUN_SUITE,
   salt: 'a'.repeat(64),
   configurations: [
     {
@@ -227,7 +227,7 @@ describe('runDifferences', () => {
   it('names every difference: the build, the suite\'s content, a configuration added and one left out', () => {
     expect(runDifferences(RUN, {
       quorum: '0.3.0',
-      suite: { name: 'demo', hash: `sha256:${'2'.repeat(64)}` },
+      suite: { ...RUN_SUITE, reviewHash: `sha256:${'3'.repeat(64)}` },
       configurations: [
         {
           path: 'b.yaml',
@@ -237,7 +237,7 @@ describe('runDifferences', () => {
       ],
     })).toEqual([
       { path: 'run.json', message: 'was written by quorum 0.2.0, and this is quorum 0.3.0: a run belongs to one build, so name a new --out' },
-      { path: 'run.json', message: 'the suite\'s suite.yaml or patches changed since the run began: name a new --out' },
+      { path: 'run.json', message: 'the suite\'s case ids, trials or patches changed since the run began: name a new --out' },
       { path: '--config', message: 'b.yaml is not one of the run\'s configurations' },
       { path: 'run.json', message: 'its configuration a.yaml is not given' },
     ])
@@ -282,6 +282,13 @@ describe('runDifferences', () => {
     ])
   })
 
+  it('finds none for a suite whose scoring hash alone changed, which the run re-scores', () => {
+    expect(runDifferences(RUN, {
+      ...current,
+      suite: { ...RUN_SUITE, scoringHash: `sha256:${'4'.repeat(64)}` },
+    })).toEqual([])
+  })
+
   it('refuses another quorum version alone, since a preset\'s defaults can change under the same fingerprint', () => {
     expect(runDifferences(RUN, { ...current, quorum: '0.2.1' })).toEqual([
       { path: 'run.json', message: 'was written by quorum 0.2.0, and this is quorum 0.2.1: a run belongs to one build, so name a new --out' },
@@ -291,7 +298,7 @@ describe('runDifferences', () => {
   it('names another suite by its name, and the usual resolution as the default configuration', () => {
     expect(runDifferences(RUN, {
       ...current,
-      suite: { name: 'other', hash: RUN.suite.hash },
+      suite: { ...RUN_SUITE, name: 'other' },
       configurations: [RUN.configurations[0]],
     })).toEqual([
       { path: 'run.json', message: 'is a run of the suite demo, not other: name a new --out' },
@@ -311,6 +318,21 @@ describe('createRun', () => {
   it('writes into an empty directory it is given', async () => {
     mkdirSync(out)
     await createRun(out, RUN)
+    expect(readdirSync(out)).toEqual(['run.json'])
+  })
+})
+
+describe('writeRunFile', () => {
+  it('writes run.json again whole, readable by its owner only, leaving no temporary file', async () => {
+    const rescored: RunFile = {
+      ...RUN,
+      suite: { ...RUN.suite, scoringHash: `sha256:${'4'.repeat(64)}` },
+    }
+    await createRun(out, RUN)
+    chmodSync(join(out, 'run.json'), 0o644)
+    await writeRunFile(out, rescored)
+    expect(await inspectRunDir(out)).toEqual({ kind: 'run', run: rescored })
+    expect(modeOf(join(out, 'run.json'))).toBe(0o600)
     expect(readdirSync(out)).toEqual(['run.json'])
   })
 })
