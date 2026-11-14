@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
 import type { QuorumResult, Verdict } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
@@ -19,9 +19,14 @@ let dir = ''
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'quorum-cli-'))
 })
+// Every adapter retries by default, and the system clock reads this at each wait: pinned, no backoff takes time.
+beforeEach(() => {
+  vi.spyOn(Math, 'random').mockReturnValue(0)
+})
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
+  vi.restoreAllMocks()
 })
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true })
@@ -277,6 +282,17 @@ describe('runCli', () => {
     }), vote(false), vote(false), vote(true))
     const { io } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.ok)
+  })
+
+  it('retries a vote whose endpoint failed in passing, twice by default, and keeps the finding', async () => {
+    const fetchMock = stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockImplementationOnce(async () => chatReply(vote(true)))
+    const { io } = harness({ env: MODEL, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    expect(fetchMock).toHaveBeenCalledTimes(5)
   })
 
   it('exits 4 when every voter fails, instead of reading the outage as a clean review', async () => {

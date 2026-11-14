@@ -66,6 +66,7 @@ The core runs each call's attempts inside the call's concurrency slot, and gives
 
 - **`timeoutMs`** is a whole number of milliseconds from 1000 to 518400000, an own data field of the provider object, read once, when the quorum is created. A getter is never run and an inherited field states nothing, so a class sets it as a field. A provider that states none has 600000 ms.
 - **`retries`** is a whole number from 0 to 5, read as `timeoutMs` is. A provider that states none gets no retry, since the core must not retry what may retry by itself.
+- **The shipped adapters state both.** The HTTP adapters from their options, `timeoutMs` and `retries`, 600000 ms and 2 retries by default, so a call that fails in passing makes at most three attempts. `claudeCode` states no retry, and one deadline for all of Claude Code's own attempts: [Stopping, nesting and the version](#stopping-nesting-and-the-version).
 - **A value out of range is refused** where the provider is given, as the issue `ports.profiles.<id>.research.<field>` or `ports.profiles.<id>.voters.<lens>.<field>`, `<field>` being `timeoutMs` or `retries`: `must be a whole number of milliseconds from 1000 to 518400000` and `must be a whole number from 0 to 5`. The message never repeats the value.
 
 ## The adapters
@@ -183,7 +184,7 @@ A provider built from a preset or a protocol is checked first for the problems b
 
 ## The shared options
 
-These are the options of the four HTTP adapters. `claudeCode` takes `id`, `model`, `contextTokens`, `apiKey` and `structuredOutput`, with its own rules, refuses the rest, and has options of its own: [Claude Code options](#claude-code-options).
+These are the options of the four HTTP adapters. `claudeCode` takes `id`, `model`, `contextTokens`, `apiKey`, `structuredOutput`, `timeoutMs` and `retries`, with its own rules, refuses the rest, and has options of its own: [Claude Code options](#claude-code-options).
 
 ### Options
 
@@ -200,6 +201,8 @@ These are the options of the four HTTP adapters. `claudeCode` takes `id`, `model
 | `extraBody` | `Record<string, unknown>` | None | JSON values deep-merged into the body last: objects merge key by key, anything else replaces. A top-level key cannot replace a field the adapter writes for the conversation, or set one that offers the model a tool: [The tool fields](#the-tool-fields). Nor can it set the reply limit, which `maxTokens` sets: [The size of a request](#the-size-of-a-request) |
 | `temperature` | `number \| null` | The adapter's | Sent where the protocol takes it; `null` leaves it out, for a model that rejects it |
 | `maxTokens` | `number` | None, but `anthropic`'s 16000; the size guard keeps 16000 for the reply when it is unset | The most tokens the reply may hold, in the protocol's own field |
+| `timeoutMs` | `number` | `600000` | The deadline of one attempt, in milliseconds, from 1000 to 86400000: [The deadline of an attempt](#the-deadline-of-an-attempt) |
+| `retries` | `number` | `2` | How many times a call that failed in passing is tried again, from 0 to 5: [What is retried](#what-is-retried) |
 | `systemPrompt` | `'native' \| 'inline'` | `'native'` | `native` sends the system text in the protocol's own place; `inline` puts it at the head of the first user message, joined by a blank line, for a chat template that rejects a system role |
 | `structuredOutput` | `'prompt' \| 'json' \| 'schema'` | The adapter's | How the reply's shape reaches the endpoint: [Structured output](#structured-output) |
 
@@ -326,6 +329,8 @@ Each adapter checks its options when it is called, before any request, and throw
 | `<id>.systemPrompt` | `must be native or inline` |
 | `<id>.structuredOutput` | `must be prompt, json or schema` |
 | `<id>.structuredOutput` | `must be prompt or schema` |
+| `<id>.timeoutMs` | `must be a whole number of milliseconds from 1000 to 86400000` |
+| `<id>.retries` | `must be a whole number from 0 to 5` |
 | `<id>.maxTokensField` | `must be max_tokens or max_completion_tokens` |
 | `<id>.query.<name>` | `would carry a key in the URL: set apiKey instead` |
 | `<id>.extraBody.generationConfig` | `must be written generationConfig` |
@@ -512,6 +517,7 @@ Each measure of the command line and of the environment, and what it stops:
 | `CLAUDE_CODE_DISABLE_ATTACHMENTS=1`, `CLAUDE_CODE_DISABLE_FILE_MENTIONS=1` | A file named in the message. A line such as `@/path/to/file` in the diff makes Claude Code attach that file for the model to read, with every tool off, and the model repeated a canary file's content that way (observed live with 2.1.311). With both set the model saw none. They are why an older Claude Code is refused: [Stopping, nesting and the version](#stopping-nesting-and-the-version) |
 | `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` | Every `CLAUDE.md` file, the managed one included (from Claude Code's documentation, not observed live) |
 | `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`, `CLAUDE_CODE_DISABLE_POLICY_SKILLS=1` | The skills Claude Code bundles and the ones an organization's managed policy brings (from Claude Code's documentation, not observed live) |
+| `API_TIMEOUT_MS=<timeoutMs>`, `CLAUDE_CODE_MAX_RETRIES=<retries>` | Claude Code's own deadline per attempt and its own retries, which follow the provider's settings over the environment's: 2 retries by default, where Claude Code alone makes 10 |
 | The parent session's variables, removed in every mode | `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EMIT_STARTUP_TIMING` and `CLAUDE_CODE_STARTUP_FAILURE_RESULTS`: a run nested in a Claude Code session does not inherit its messaging token or socket |
 | The capability variables, removed in every mode | `CLAUDE_CODE_PLUGIN_DIRS`, `CLAUDE_CODE_PLUGIN_SEED_DIR`, `CLAUDE_CODE_PLUGIN_CACHE_DIR`, `CLAUDE_CODE_SYNC_PLUGINS`, `CLAUDE_CODE_SYNC_SKILLS`, `CLAUDE_CODE_PROCESS_WRAPPER`, `CLAUDE_CODE_ENABLE_CFC`, `CLAUDE_CODE_ENABLE_TODO_TOOLS`, `CLAUDE_CODE_ENABLE_TASKS`, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, `CLAUDE_CODE_USE_POWERSHELL_TOOL`, `CLAUDE_CODE_EXTRA_BODY` and `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE`: they load plugins and skills, start every process through a wrapper, enable a tool, merge a JSON object into every request body or keep the session `--no-session-persistence` drops, and no flag governs them |
 | A process group of its own | What `claude` starts: an abort stops the whole group, and so does quorum's exit, `process.exit` or a second interrupt included (not on Windows, which has none) |
@@ -534,6 +540,8 @@ Not everything is off, and no flag of this list turns the rest off: an organizat
 | `args` | `readonly string[]` | None | Flags passed to `claude`: `--effort` (`low`, `medium`, `high`, `xhigh` or `max`), `--fallback-model`, `--max-budget-usd` (a positive decimal) and `--betas` (`api-key` only), each followed by its value or written `--flag=value`, each at most once. A value is visible ASCII that does not start with `-`. Any other element is refused by its index, and never repeated, so no option loosens the isolation |
 | `command` | `string` | `'claude'` | The executable: an absolute path, or a bare name that `spawn` finds on `PATH`. A path with a separator that is not absolute is refused, since it would resolve inside the working directory, and so is a `.cmd` or `.bat` file, which runs only through a shell |
 | `env` | `Record<string, string \| undefined>` | `process.env` | The environment `claude` inherits, less what its mode removes. Read once, when the provider is made |
+| `timeoutMs` | `number` | `600000` | Claude Code's own deadline per attempt at its API call, in milliseconds, from 1000 to 86400000, set as `API_TIMEOUT_MS`. The provider states one deadline for all of its attempts: [Stopping, nesting and the version](#stopping-nesting-and-the-version) |
+| `retries` | `number` | `2` | Claude Code's own retries of an API call that failed in passing, from 0 to 5, set as `CLAUDE_CODE_MAX_RETRIES`, where Claude Code alone makes 10. The provider states no retry to the core |
 
 `ClaudeCodeOptions` types them and `ClaudeCodeAuth` types `auth`. The options of an HTTP endpoint (`baseUrl`, `headers`, `query`, `extraBody`, `temperature`, `maxTokens` and `systemPrompt`) are refused: the reply budget is fixed at 16000, and there is no endpoint.
 
@@ -609,7 +617,7 @@ Every message starts with the provider id. A quoted text is cut, written as a JS
 - **An abort sends SIGTERM to `claude`'s process group**, then SIGKILL `2000` ms later if it has not closed, and the call rejects as `aborted` once the directory is removed. Stdout past 16 MiB stops it the same way. When `claude` exits, SIGKILL goes to what is left of its group, since a helper that still holds its pipes would keep the call from settling, and `2000` ms after the exit its stdout and stderr are closed, so a helper that left the group (it called `setsid`) and holds them cannot keep the call from settling either: it is beyond quorum's reach and is left running. While a run is live, quorum's own exit sends SIGKILL to the group and removes the directory, which covers `process.exit` and a second interrupt but not a SIGKILL of quorum. Windows has no process groups, so there only `claude` is signalled, and the adapter is not tested there yet.
 - **It runs inside a Claude Code session too.** `CLAUDECODE=1` in the environment does no harm, which was checked live, and the parent session's own variables are removed: [The isolation](#the-isolation).
 - **One process per call.** The review's concurrency limit, 4 by default, bounds the calls in flight across every provider, so it bounds the `claude` processes too.
-- **The core's deadline covers the whole run**, 600000 ms unless the provider states one: at it, the child's group is stopped as an abort stops it. Claude Code retries a failed API call by itself, for minutes, inside that deadline.
+- **The provider states no retry to the core**, since Claude Code retries by itself, and a deadline of `timeoutMs` times `retries` plus one, 1800000 ms by default, which covers every attempt of Claude Code's own; at it, the child's group is stopped as an abort stops it. Claude Code's own deadline per attempt and its own retries are set from the options, `API_TIMEOUT_MS` and `CLAUDE_CODE_MAX_RETRIES`: [The isolation](#the-isolation). The default takes Claude Code from its own 10 retries to 2, and `retries` stops at 5.
 - **The version: 2.1.311 or newer.** The isolation rests on environment variables that an older Claude Code does not know, and one it ignores is a file mention that is not turned off. So before its first request a provider runs `claude --version`, with the request's environment, from the request's empty directory and with the request's signal, and the result is kept for the life of the process, once per command. A version below 2.1.311, or an output that does not start with `<major>.<minor>.<patch>`, fails the request as `process`: `Claude Code 2.1.311 or newer is required, found 2.1.310`. The version is quoted only when each of its parts is at most four digits, else the message reads `found an unknown version`, so nothing else `claude` printed comes with it. It has 10 seconds to answer: past them its process group is stopped as an abort stops one (SIGTERM, then SIGKILL `2000` ms later), the request's directory is removed and the request fails with `claude --version did not answer within 10 s`. A check that failed is run again by the next request, and a request that waits for a check another request started aborts on its own signal, without stopping that check. A Claude Code that lacks one of the flags fails the run too, closed. `bun run live:claude-code` checks the adapter against the real `claude`. You run it by hand, with Claude Code installed and logged in, and neither `bun run test` nor CI does: it makes four calls on `haiku`, each capped by `--max-budget-usd 0.05`: structured output from a directory that holds a planted `CLAUDE.md`, which shows the child runs in an empty directory of its own and not in that one, one in `prompt` mode, one whose message names a canary file with a random token as `@<its absolute path>`, which fails if the token comes back, and one that names a model that does not exist. It passed against Claude Code 2.1.311, at under a tenth of a cent.
 
 ### Claude Code configuration errors
@@ -639,6 +647,8 @@ Every message starts with the provider id. A quoted text is cut, written as a JS
 | `<id>.command` | `must name an executable` |
 | `<id>.command` | `is a Windows script, which runs only through a shell: name claude.exe instead` |
 | `<id>.command` | `must be an absolute path, or a name to find on PATH` |
+| `<id>.timeoutMs` | `must be a whole number of milliseconds from 1000 to 86400000` |
+| `<id>.retries` | `must be a whole number from 0 to 5` |
 
 `<index>` is the index of the element in `args`, or of the value after a flag when the value is the problem. `--tools`, `--mcp-config`, `--settings`, `--add-dir` and `--dangerously-skip-permissions` are refused as any element outside the allowlist is, and `--effort=high --tools=Bash` in one element is refused as an `--effort` value: no `args` element loosens the isolation.
 
@@ -682,23 +692,21 @@ Any object of the port's shape is a provider. It must:
 - **report `usage` only when it knows it**: `inputTokens` and `outputTokens`, and `costUsd` when it knows the price. It reports it on a reply it returns, and in the `usage` of the `ProviderError` it throws for a reply it read but cannot use, which the review counts as the failed call's;
 - **check the size of its own requests**: quorum states no context size for a provider object and counts nothing for it. A provider that refuses a request as too large throws a `ProviderError` of kind `too-large`, which the review records as a `request-too-large` gap, on research and on a vote alike, instead of a failure: [`ProviderError`](#providererror). The review recognises the refusal by an own `kind` property of `'too-large'`, not by class, so one raised by a second copy of quorum counts too.
 
-A provider states its deadline with a `timeoutMs` field on its object, and its retries with a `retries` field: [What a provider states](#what-a-provider-states). A shipped adapter returns a plain object, so a spread keeps it and adds the field:
+A provider object of your own states `timeoutMs` and `retries` as plain fields: [What a provider states](#what-a-provider-states). The core reads a thrown value's `kind`, `status`, `retryable` and `retryAfterMs` as own data properties too, so a plain `Error`, or an error whose fields are getters, is never retried: throw a `ProviderError` with the closest kind to be retried. A shipped adapter takes both as options, and states them itself:
 
 ```ts
 import { ollama } from '@tobi-or-not/quorum'
 
-const voter = {
-  ...ollama({
-    id: 'voter',
-    baseUrl: 'http://localhost:11434',
-    model: 'qwen3.6:27b',
-    contextTokens: 131072
-  }),
+const voter = ollama({
+  id: 'voter',
+  baseUrl: 'http://localhost:11434',
+  model: 'qwen3.6:27b',
+  contextTokens: 131072,
   timeoutMs: 120_000
-}
+})
 ```
 
-A vote with no reply within two minutes is then a failed vote, `voter: no reply within 120000 ms`, and a review aborted by its own signal still rejects with that signal's reason.
+A vote with no reply within two minutes is a timeout, which is tried again once, and a second silence of two minutes fails the vote, `voter: no reply within 120000 ms`: `retries: 0` fails it at the first. A review aborted by its own signal still rejects with that signal's reason.
 
 ## Next
 

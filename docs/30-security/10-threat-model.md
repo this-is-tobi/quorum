@@ -91,7 +91,7 @@ All the data a model reads, the diff, the claim, the evidence, the diff section 
 
 ### `maxFindings` and the concurrency limit
 
-Only the first `maxFindings` findings a research reply lists, 50 by default, are read, and only those can reach the panel; the rest are counted in a `findings-capped` gap, so a reply built to flood the run costs bounded work. With the security profile and the default cap, a review of one diff makes at most 151 calls: one research call, and three votes for each of 50 findings. `concurrency`, 4 by default, caps the calls in flight across every profile of the review. The size of what each call carries is bounded too: [The size guard](#the-size-guard).
+Only the first `maxFindings` findings a research reply lists, 50 by default, are read, and only those can reach the panel; the rest are counted in a `findings-capped` gap, so a reply built to flood the run costs bounded work. With the security profile and the default cap, a review of one diff makes at most 151 calls: one research call, and three votes for each of 50 findings. Those are calls, and each makes one attempt and up to `retries` more when it fails in passing, three attempts by default and six at most, so the same review makes at most 453 attempts by default and 906 at the most: [Deadlines and bounded retries](#deadlines-and-bounded-retries). `concurrency`, 4 by default, caps the calls in flight across every profile of the review. The size of what each call carries is bounded too: [The size guard](#the-size-guard).
 
 ### Deadlines and bounded retries
 

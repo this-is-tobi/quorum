@@ -467,5 +467,28 @@ export function describeProviderContract(subject: ContractSubject): void {
       await subject.make(base).complete({ ...request, signal })
       expect((fetchMock.mock.calls[0] as [string, RequestInit])[1].signal).toBe(signal)
     })
+
+    it('states its deadline and its retries from its options, 600000 ms and 2 by default, as own data properties', () => {
+      /** What `provider` holds as own data: a getter or an inherited field gives `undefined`, as the core reads it. */
+      const stated = (provider: Provider): unknown => Object.fromEntries(['timeoutMs', 'retries'].map(field => [
+        field,
+        Object.getOwnPropertyDescriptor(provider, field)?.value,
+      ]))
+      expect(stated(subject.make(base))).toEqual({ timeoutMs: 600_000, retries: 2 })
+      expect(stated(subject.make({ ...base, timeoutMs: 120_000, retries: 0 }))).toEqual({ timeoutMs: 120_000, retries: 0 })
+    })
+
+    it('refuses a deadline or retries out of range at its field, before any request', () => {
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      const problems = [
+        { path: 'p.timeoutMs', message: 'must be a whole number of milliseconds from 1000 to 86400000' },
+        { path: 'p.retries', message: 'must be a whole number from 0 to 5' },
+      ]
+      expect(issuesOf({ timeoutMs: 999, retries: 6 })).toEqual(problems)
+      expect(issuesOf({ timeoutMs: 86_400_001, retries: 1.5 })).toEqual(problems)
+      expect(issuesOf({ timeoutMs: 86_400_000, retries: 5 })).toEqual([])
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
   })
 }

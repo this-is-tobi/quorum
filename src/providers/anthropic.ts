@@ -1,3 +1,4 @@
+import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
 import type { CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson } from './http.ts'
 import { shapeMessages } from './messages.ts'
@@ -86,7 +87,7 @@ function readReply(reply: unknown, { id, model }: Pick<AnthropicOptions, 'id' | 
  * @throws ConfigError with every problem of the options, before any request
  */
 export function anthropic(options: AnthropicOptions): Provider {
-  const { id, model, auth = 'bearer' as Auth, temperature, maxTokens = DEFAULT_REPLY_TOKENS, contextTokens, systemPrompt = 'native', structuredOutput = 'prompt' } = options
+  const { id, model, auth = 'bearer' as Auth, temperature, maxTokens = DEFAULT_REPLY_TOKENS, contextTokens, systemPrompt = 'native', structuredOutput = 'prompt', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
   const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/v1/messages')
   // The version goes last, so no header can replace it.
   const sent = { ...headers, 'anthropic-version': ANTHROPIC_VERSION }
@@ -95,6 +96,8 @@ export function anthropic(options: AnthropicOptions): Provider {
   return {
     id,
     model,
+    timeoutMs,
+    retries,
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       checkFits(id, { system, messages }, request.output, budget)

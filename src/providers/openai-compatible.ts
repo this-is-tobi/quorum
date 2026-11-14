@@ -1,3 +1,4 @@
+import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
@@ -162,7 +163,7 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
  * @throws ConfigError with every problem of the options, before any request
  */
 export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
-  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, maxTokensField = 'max_tokens', systemPrompt = 'native', structuredOutput = 'json' } = options
+  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, maxTokensField = 'max_tokens', systemPrompt = 'native', structuredOutput = 'json', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
   const fieldIssues = MAX_TOKENS_FIELDS.has(maxTokensField)
     ? []
     : [
@@ -174,6 +175,8 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
   return {
     id,
     model,
+    timeoutMs,
+    retries,
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       checkFits(id, { system, messages }, request.output, budget)

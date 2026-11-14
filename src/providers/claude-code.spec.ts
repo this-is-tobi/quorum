@@ -15,6 +15,8 @@ import { CONTEXT_REQUIRED } from './options.ts'
 import { replyFailure } from './reply.ts'
 
 const options: ClaudeCodeOptions = { id: 'cc', model: 'sonnet', contextTokens: 200000 }
+/** The deadline per attempt and the retries a provider with neither option hands Claude Code. */
+const ATTEMPTS = { timeoutMs: 600_000, retries: 2 }
 const ISOLATED = [
   '--tools',
   '',
@@ -198,10 +200,12 @@ describe('childEnv', () => {
     CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
     CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1',
     CLAUDE_CODE_DISABLE_POLICY_SKILLS: '1',
+    API_TIMEOUT_MS: '600000',
+    CLAUDE_CODE_MAX_RETRIES: '2',
   }
 
   it('passes the environment through under inherit, without the parent session\'s variables or what loads or adds, and with the isolation set: the connectors, attachments, mentions, CLAUDE.md files and bundled and managed skills off', () => {
-    expect(childEnv(env, 'inherit', undefined, '/run/tmp')).toEqual({
+    expect(childEnv(env, 'inherit', undefined, '/run/tmp', ATTEMPTS)).toEqual({
       ...KEPT,
       ...CREDENTIALS,
       ...ISOLATION,
@@ -209,14 +213,14 @@ describe('childEnv', () => {
   })
 
   it('removes every credential, header and endpoint variable under login, so the Claude Code login answers', () => {
-    expect(childEnv(env, 'login', undefined, '/run/tmp')).toEqual({
+    expect(childEnv(env, 'login', undefined, '/run/tmp', ATTEMPTS)).toEqual({
       ...KEPT,
       ...ISOLATION,
     })
   })
 
   it('removes the same variables under api-key, then sets its key', () => {
-    expect(childEnv(env, 'api-key', 'sk-mine', '/run/tmp')).toEqual({
+    expect(childEnv(env, 'api-key', 'sk-mine', '/run/tmp', ATTEMPTS)).toEqual({
       ...KEPT,
       ...ISOLATION,
       ANTHROPIC_API_KEY: 'sk-mine',
@@ -224,7 +228,7 @@ describe('childEnv', () => {
   })
 
   it('keeps the environment\'s ANTHROPIC_API_KEY under api-key when it is given no key', () => {
-    expect(childEnv(env, 'api-key', undefined, '/run/tmp')).toEqual({
+    expect(childEnv(env, 'api-key', undefined, '/run/tmp', ATTEMPTS)).toEqual({
       ...KEPT,
       ...ISOLATION,
       ANTHROPIC_API_KEY: 'sk-env',
@@ -249,9 +253,9 @@ describe('childEnv', () => {
       Claude_Code_Disable_Policy_Skills: '0',
       claude_code_force_session_persistence: '1',
     }
-    expect(childEnv(mixed, 'login', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', ...ISOLATION })
-    expect(childEnv(mixed, 'api-key', undefined, '/run/tmp')).toEqual({ PATH: '/usr/bin', ...ISOLATION, ANTHROPIC_API_KEY: 'sk-win' })
-    expect(childEnv(mixed, 'inherit', undefined, '/run/tmp')).toEqual({
+    expect(childEnv(mixed, 'login', undefined, '/run/tmp', ATTEMPTS)).toEqual({ PATH: '/usr/bin', ...ISOLATION })
+    expect(childEnv(mixed, 'api-key', undefined, '/run/tmp', ATTEMPTS)).toEqual({ PATH: '/usr/bin', ...ISOLATION, ANTHROPIC_API_KEY: 'sk-win' })
+    expect(childEnv(mixed, 'inherit', undefined, '/run/tmp', ATTEMPTS)).toEqual({
       PATH: '/usr/bin',
       Anthropic_Api_Key: 'sk-win',
       claude_code_use_bedrock: '1',
@@ -261,7 +265,17 @@ describe('childEnv', () => {
   })
 
   it('reads only the environment\'s own variables', () => {
-    expect(childEnv(Object.create({ ANTHROPIC_API_KEY: 'inherited' }) as Record<string, string>, 'inherit', undefined, '/t')).toEqual({ ...ISOLATION, CLAUDE_CODE_TMPDIR: '/t' })
+    expect(childEnv(Object.create({ ANTHROPIC_API_KEY: 'inherited' }) as Record<string, string>, 'inherit', undefined, '/t', ATTEMPTS)).toEqual({ ...ISOLATION, CLAUDE_CODE_TMPDIR: '/t' })
+  })
+
+  it('sets Claude Code\'s own deadline per attempt and its own retries from the provider\'s, over the environment\'s, in any letter case', () => {
+    expect(childEnv({ PATH: '/usr/bin', API_TIMEOUT_MS: '1', claude_code_max_retries: '10' }, 'inherit', undefined, '/t', { timeoutMs: 120_000, retries: 0 })).toEqual({
+      PATH: '/usr/bin',
+      ...ISOLATION,
+      CLAUDE_CODE_TMPDIR: '/t',
+      API_TIMEOUT_MS: '120000',
+      CLAUDE_CODE_MAX_RETRIES: '0',
+    })
   })
 })
 
@@ -298,7 +312,7 @@ describe('credentialValues', () => {
     'oauth-refresh',
     'passphrase',
   ]
-  const valuesOf = (auth: 'inherit' | 'login' | 'api-key', apiKey?: string): string[] => credentialValues(childEnv(env, auth, apiKey, '/run/tmp')).sort()
+  const valuesOf = (auth: 'inherit' | 'login' | 'api-key', apiKey?: string): string[] => credentialValues(childEnv(env, auth, apiKey, '/run/tmp', ATTEMPTS)).sort()
 
   it('holds every credential the child receives under inherit, and nothing else', () => {
     expect(valuesOf('inherit')).toEqual(Object.values(SECRETS).sort())
@@ -320,7 +334,7 @@ describe('credentialValues', () => {
       ANTHROPIC_API_KEY: '',
       HOME: ' not-a-secret ',
     }
-    expect(credentialValues(childEnv(odd, 'inherit', undefined, '/t')).sort()).toEqual([' spaced ', 'spaced'])
+    expect(credentialValues(childEnv(odd, 'inherit', undefined, '/t', ATTEMPTS)).sort()).toEqual([' spaced ', 'spaced'])
   })
 })
 
@@ -706,6 +720,26 @@ describe('claudeCodeIssues', () => {
     expect(issues).toHaveLength(5)
     expect(JSON.stringify(issues)).not.toContain('SECRET')
   })
+
+  it('refuses a deadline or retries out of range after its other options, and repeats no value', () => {
+    expect(issuesOf({
+      model: '-p',
+      command: '',
+      timeoutMs: 999,
+      retries: 6,
+    })).toEqual([
+      at('model', MODEL),
+      at('command', 'must name an executable'),
+      at('timeoutMs', 'must be a whole number of milliseconds from 1000 to 86400000'),
+      at('retries', 'must be a whole number from 0 to 5'),
+    ])
+    expect(issuesOf({ timeoutMs: 86_400_001, retries: 1.5 })).toEqual([
+      at('timeoutMs', 'must be a whole number of milliseconds from 1000 to 86400000'),
+      at('retries', 'must be a whole number from 0 to 5'),
+    ])
+    expect(issuesOf({ timeoutMs: 86_400_000, retries: 5 })).toEqual([])
+    expect(JSON.stringify(issuesOf({ timeoutMs: 987_654_321, retries: 4242 }))).not.toMatch(/987654321|4242/)
+  })
 })
 
 describe('readResult', () => {
@@ -1058,6 +1092,20 @@ describe('claudeCode', () => {
     expect(() => claudeCode({ ...options, auth: 'bearer' as never })).toThrow('cc.auth: must be inherit, login or api-key')
   })
 
+  it('states no retry to the core, and a deadline that covers every one of Claude Code\'s own attempts', () => {
+    const stated = (fields: Partial<ClaudeCodeOptions>) => {
+      const { timeoutMs, retries } = claudeCode({
+        ...options,
+        ...fields,
+      })
+      return { timeoutMs, retries }
+    }
+    expect(stated({})).toEqual({ timeoutMs: 1_800_000, retries: 0 })
+    expect(stated({ timeoutMs: 120_000, retries: 5 })).toEqual({ timeoutMs: 720_000, retries: 0 })
+    expect(stated({ timeoutMs: 86_400_000, retries: 5 })).toEqual({ timeoutMs: 518_400_000, retries: 0 })
+    expect(stated({ retries: 0 })).toEqual({ timeoutMs: 600_000, retries: 0 })
+  })
+
   it.each<[ChatMessage[]]>([
     [[]],
     [
@@ -1169,6 +1217,8 @@ describe('claudeCode', () => {
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
       CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1',
       CLAUDE_CODE_DISABLE_POLICY_SKILLS: '1',
+      API_TIMEOUT_MS: '600000',
+      CLAUDE_CODE_MAX_RETRIES: '2',
     })
     // The first request on this command checks the version first, with the request's environment and an empty directory.
     expect(readFakeVersionRecords(dir, 'round')).toEqual([

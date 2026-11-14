@@ -911,6 +911,29 @@ describe('buildProvider', () => {
     })).toThrow(RangeError)
   })
 
+  it('hands a spec\'s timeoutMs and retries to its adapter, which states them', () => {
+    const stated = (spec: Record<string, unknown>) => {
+      const { timeoutMs, retries } = buildProvider(sized(spec) as unknown as ProviderSpec)
+      return { timeoutMs, retries }
+    }
+    expect(stated({
+      id: 'p',
+      protocol: 'ollama',
+      baseUrl: 'http://localhost:11434',
+      model: 'm',
+      timeoutMs: 120_000,
+      retries: 0,
+    })).toEqual({ timeoutMs: 120_000, retries: 0 })
+    expect(stated({
+      id: 'p',
+      protocol: 'claude-code',
+      model: 'sonnet',
+      command: '/usr/bin/claude',
+      timeoutMs: 120_000,
+      retries: 2,
+    })).toEqual({ timeoutMs: 360_000, retries: 0 })
+  })
+
   it('repeats no value in a message, the key least of all', () => {
     const key = 'sk-zz-secret'
     const specs = [

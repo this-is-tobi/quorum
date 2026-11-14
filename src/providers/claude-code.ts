@@ -6,10 +6,11 @@ import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue, ProviderError } from '../core/errors.ts'
+import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
 import type { ChatMessage, CompletionRequest, CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
 import type { Usage } from '../core/types.ts'
 import { snippet } from './http.ts'
-import { contextTokensIssues, isRecord, NOT_VISIBLE_ASCII, wordList } from './options.ts'
+import { attemptIssues, contextTokensIssues, isRecord, NOT_VISIBLE_ASCII, wordList } from './options.ts'
 import { replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, utf8Length } from './size.ts'
 
@@ -78,6 +79,16 @@ export interface ClaudeCodeOptions {
   command?: string
   /** The environment `claude` inherits, less what its auth mode removes. Read once, when the provider is made. Default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>
+  /**
+   * Claude Code's own deadline per attempt at its API call, in milliseconds, from 1000 to 86400000. Default 600000.
+   * The provider states `timeoutMs` times `retries` plus one to the core, so one deadline covers every attempt.
+   */
+  timeoutMs?: number
+  /**
+   * Claude Code's own retries of an API call that failed in passing, from 0 to 5. Default 2, where Claude Code
+   * alone makes 10. The provider states no retry to the core, which would retry what Claude Code retried.
+   */
+  retries?: number
 }
 
 /** The command-line settings of a run. */
@@ -367,7 +378,7 @@ function apiKeyIssues(path: string, auth: unknown, apiKey: unknown): ConfigIssue
  * message repeats a value: a key, a model id or an argument can be a secret.
  */
 export function claudeCodeIssues(options: ClaudeCodeOptions): ConfigIssue[] {
-  const { id, model, contextTokens, auth, apiKey, structuredOutput, args, command } = options
+  const { id, model, contextTokens, auth, apiKey, structuredOutput, args, command, timeoutMs, retries } = options
   const at = (field: string, message: string): ConfigIssue => ({ path: `${id}.${field}`, message })
   const given = options as unknown as Record<string, unknown>
   const issues: ConfigIssue[] = HTTP_FIELDS
@@ -386,6 +397,7 @@ export function claudeCodeIssues(options: ClaudeCodeOptions): ConfigIssue[] {
     const problem = commandProblem(command)
     if (problem !== undefined) issues.push(at('command', problem))
   }
+  issues.push(...attemptIssues(id, timeoutMs, retries))
   return issues
 }
 
@@ -426,14 +438,15 @@ function removedVariable(name: string, auth: ClaudeCodeAuth, runVariables: Reado
  * every credential, header and endpoint variable, so a login or a key never reaches another host or travels
  * with another credential. Names are matched in any letter case, since Windows reads them so. Under
  * `api-key`, `ANTHROPIC_API_KEY` is then `apiKey` when it is a non-empty string, else the environment's
- * own, trimmed, when that is not blank. Last come ten variables the run sets over whatever the environment
+ * own, trimmed, when that is not blank. Last come twelve variables the run sets over whatever the environment
  * held, in any case: no auto memory, no compaction of a long prompt, a temporary directory of its own, no
- * IDE connection or claude.ai MCP connector, which are on by default, and no attachment, file mention,
- * `CLAUDE.md` file, bundled skill or managed skill. A line naming a path (`@/path`) in the message makes
+ * IDE connection or claude.ai MCP connector, which are on by default, no attachment, file mention,
+ * `CLAUDE.md` file, bundled skill or managed skill, and Claude Code's own deadline per attempt and its own
+ * retries, which follow the provider's settings (`attempts`). A line naming a path (`@/path`) in the message makes
  * Claude Code attach that file for the model to read, with every tool off, unless the first two are set.
  */
-export function childEnv(env: Readonly<Record<string, string | undefined>>, auth: ClaudeCodeAuth, apiKey: string | undefined, tmpDir: string): Record<string, string> {
-  const isolation = {
+export function childEnv(env: Readonly<Record<string, string | undefined>>, auth: ClaudeCodeAuth, apiKey: string | undefined, tmpDir: string, attempts: { readonly timeoutMs: number, readonly retries: number }): Record<string, string> {
+  const runVariables = {
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
     DISABLE_COMPACT: '1',
     CLAUDE_CODE_TMPDIR: tmpDir,
@@ -444,6 +457,8 @@ export function childEnv(env: Readonly<Record<string, string | undefined>>, auth
     CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
     CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1',
     CLAUDE_CODE_DISABLE_POLICY_SKILLS: '1',
+    API_TIMEOUT_MS: String(attempts.timeoutMs),
+    CLAUDE_CODE_MAX_RETRIES: String(attempts.retries),
   }
   const own = Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
   const inheritedKey = (own.find(([name]) => name === KEY_VARIABLE) ?? own.find(([name]) => name.toUpperCase() === KEY_VARIABLE))?.[1].trim()
@@ -451,11 +466,11 @@ export function childEnv(env: Readonly<Record<string, string | undefined>>, auth
     ? apiKey
     : inheritedKey
   return {
-    ...Object.fromEntries(own.filter(([name]) => !removedVariable(name, auth, isolation))),
+    ...Object.fromEntries(own.filter(([name]) => !removedVariable(name, auth, runVariables))),
     ...(auth === 'api-key' && key !== undefined && key !== ''
       ? { [KEY_VARIABLE]: key }
       : {}),
-    ...isolation,
+    ...runVariables,
   }
 }
 
@@ -1020,15 +1035,19 @@ async function requireVersion(launch: Launch, signal: AbortSignal | undefined, f
  * 13. an aborted signal: `aborted`; else `readResult`'s reply or failure, with every credential of the
  *     child's environment redacted from the text it quotes (`credentialValues`).
  *
- * No timeout is set: Claude Code retries a failed API call by itself, for minutes, and a deadline is the
- * caller's own (a signal).
+ * Claude Code retries a failed API call by itself, ten times by default, so the provider sets `API_TIMEOUT_MS`
+ * and `CLAUDE_CODE_MAX_RETRIES` in the child's environment from `timeoutMs` and `retries` (600000 ms and 2 by
+ * default) and states no retry to the core, which would retry what Claude Code retried. It states one deadline
+ * for every attempt of Claude Code's own, `timeoutMs` times `retries` plus one: at it the core aborts the
+ * signal, which stops the child's group as step 11 says.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function claudeCode(options: ClaudeCodeOptions): Provider {
   const issues = claudeCodeIssues(options)
   if (issues.length > 0) throw new ConfigError(issues)
-  const { id, model, contextTokens, auth = 'inherit', apiKey, structuredOutput = 'schema', command = 'claude' } = options
+  const { id, model, contextTokens, auth = 'inherit', apiKey, structuredOutput = 'schema', command = 'claude', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
+  const attempts = { timeoutMs, retries }
   const args = [
     ...options.args ?? [],
   ]
@@ -1038,6 +1057,8 @@ export function claudeCode(options: ClaudeCodeOptions): Provider {
   return {
     id,
     model,
+    timeoutMs: timeoutMs * (retries + 1),
+    retries: 0,
     async complete(request) {
       const fail = replyFailure(id)
       const message = messageOf(request, fail)
@@ -1052,7 +1073,7 @@ export function claudeCode(options: ClaudeCodeOptions): Provider {
       const untrack = trackRun(live)
       try {
         throwIfAborted(signal, fail)
-        const environment = childEnv(env, auth, apiKey, run.tmp)
+        const environment = childEnv(env, auth, apiKey, run.tmp, attempts)
         await requireVersion({
           command,
           args: [],
