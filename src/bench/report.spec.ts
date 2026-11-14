@@ -157,6 +157,19 @@ describe('reviewScore', () => {
       costUsd: 0.001,
     })
   })
+
+  it('scores a denied record\'s tokens when its reply reported usage', () => {
+    const { result: _result, ...facts } = record({
+      usage: { inputTokens: 900, outputTokens: 16000 },
+    })
+    expect(reviewScore({ ...facts, denied: 'truncated' }, CASES[0], 3)).toMatchObject({
+      denied: true,
+      incomplete: true,
+      keptCatch: false,
+      tokens: 16900,
+      outputTokens: 16000,
+    })
+  })
 })
 
 describe('buildReport', () => {

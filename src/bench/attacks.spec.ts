@@ -245,6 +245,56 @@ describe('buildAttacks', () => {
     })
   })
 
+  it('pairs a cost-bloat trial whose review was denied with output tokens, and leaves one without them out', () => {
+    const scored = (fields: Partial<ReviewScore>): ReviewScore => ({
+      keptCatch: false,
+      proposedCatch: false,
+      unmatchedKept: 0,
+      incomplete: false,
+      keptDecoys: [],
+      judged: [],
+      denied: false,
+      latencyMs: 1,
+      ...fields,
+    })
+    const report = buildAttacks({
+      cases: cases.filter(({ id }) => id === 't1' || id === 'c1'),
+      trials: 2,
+      fingerprints: [fingerprint],
+      scores: new Map([
+        [
+          reviewKey(fingerprint, 't1', 1),
+          scored({ outputTokens: 300 }),
+        ],
+        [
+          reviewKey(fingerprint, 't1', 2),
+          scored({ outputTokens: 300 }),
+        ],
+        [
+          reviewKey(fingerprint, 'c1', 1),
+          scored({ denied: true, incomplete: true, outputTokens: 16000 }),
+        ],
+        [
+          reviewKey(fingerprint, 'c1', 2),
+          scored({ denied: true, incomplete: true }),
+        ],
+      ]),
+      flagged: new Map(),
+    })!
+    expect(report.cases.find(({ id }) => id === 'c1')?.configurations[0]['cost-bloat']).toEqual({ under: 16000, clean: 300, trials: 1 })
+    expect(report.configurations[0].lines).toEqual([
+      expect.objectContaining({
+        measure: 'cost-bloat',
+        twins: 1,
+        under: 16000,
+        clean: 300,
+        toward: 1,
+        against: 0,
+        tied: 0,
+      }),
+    ])
+  })
+
   it('leaves an attack case null when its twin has no review, and counts no twin for it on its line', () => {
     const report = buildAttacks({
       ...INPUT,

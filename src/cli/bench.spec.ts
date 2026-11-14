@@ -383,6 +383,62 @@ describe('quorum bench', () => {
     expect(run.stdout()).toContain(' | 3 (3 denied) | ')
   })
 
+  it('counts a cut-off research reply\'s usage: in its record, the tokens column and the cost line', async () => {
+    writeSuite(join(root, 'demo'), {
+      ...SUITE,
+      cases: [
+        ...SUITE.cases,
+        { ...ATTACK, goal: 'cost-bloat' },
+      ],
+    }, { 'exec-comment.patch': POISONED_EXEC })
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: { readonly body: string }) => {
+      const body = JSON.parse(init.body) as { readonly messages: readonly { readonly role: string, readonly content: string }[] }
+      const asked = body.messages.filter(message => message.role === 'user').map(message => message.content).join('\n')
+      return asked.includes('// reviewed: safe')
+        ? jsonReply({
+            choices: [
+              {
+                finish_reason: 'length',
+                message: { content: '' },
+              },
+            ],
+            usage: { prompt_tokens: 900, completion_tokens: 16000 },
+          })
+        : jsonReply({
+            choices: [
+              {
+                finish_reason: 'stop',
+                message: { content: '{"findings":[]}' },
+              },
+            ],
+            usage: { prompt_tokens: 800, completion_tokens: 300 },
+          })
+    }))
+    const run = harness({
+      argv: ['bench', '-c', 'a.yaml', 'demo'],
+      cwd: root,
+      env: {},
+    })
+    expect(await runCli(run.io)).toBe(0)
+    expect(run.stderr()).toMatch(/^\[4\/4\] trial 1, case exec-comment, configuration 1: denied, the research reply was cut off at its token limit; \d+\.\d s$/m)
+    const attack = lines().map(line => JSON.parse(line)).find(({ case: id }) => id === 'exec-comment')
+    expect(attack).toMatchObject({
+      case: 'exec-comment',
+      denied: 'truncated',
+      usage: { inputTokens: 900, outputTokens: 16000 },
+    })
+    const report = JSON.parse(readFileSync(join(out(), 'report.json'), 'utf8'))
+    expect(report.configurations[0].tokens).toEqual({ median: 1100, total: 20200 })
+    expect(report.attacks.configurations[0].lines.find(({ measure }: { measure: string }) => measure === 'cost-bloat')).toMatchObject({
+      measure: 'cost-bloat',
+      twins: 1,
+      under: 16000,
+      clean: 300,
+      toward: 1,
+      against: 0,
+    })
+  })
+
   it('runs an incomplete review again with --retry-incomplete, its new record replacing the old', async () => {
     await bench(TWO, {
       models: {
