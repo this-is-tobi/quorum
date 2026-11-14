@@ -113,7 +113,7 @@ The sink receives every event of a review, synchronously and in order, as each t
 | `flag` | `flag`, as `meta.flags` holds it: [A flag](./20-json-result.md#a-flag) | Once per flag, right after `run:start`, before any stage |
 | `stage:start` | `profile`; `stage`: `research`, `dedup` or `panel` | When a stage of a profile starts |
 | `stage:end` | `profile`, `stage`; `durationMs`, the stage's wall-clock time, waits for a concurrency slot included; `count`, the findings it produced, or the verdicts for `panel` | When that stage ends |
-| `call` | `profile`; `role`: `research` or `vote`; `lens`, for a vote; `provider`, its `{ id, model }`; `durationMs`, the provider's latency inside its slot; `ok`; `usage`, when the call succeeded and its counts are valid | Once per provider call, failed ones included |
+| `call` | `profile`; `role`: `research` or `vote`; `lens`, for a vote; `provider`, its `{ id, model }`; `durationMs`, the provider's latency inside its slot; `ok`; `usage`, when the counts its reply reported are valid: a call that succeeded, or one that failed on a reply its provider read and refused, whose error carries them in an own `usage` property ([`ProviderError`](../20-using/30-providers.md#providererror)) | Once per provider call, failed ones included |
 | `finding:invalid` | `profile`; `reason`, such as `src/auth.js:3 is not in the diff` | Once per finding dropped for citing code outside the diff |
 | `incomplete` | `entry`, as `meta.incomplete` will hold it | Once per gap, as it is recorded |
 | `vote` | `profile`, `findingId`, `lens`; `keep`: `true`, `false`, or `null` when the vote failed; `error`, for a failed vote | Once per vote |
@@ -162,7 +162,7 @@ An aborted review never resolves, and never fails open:
 | --- | --- | --- | --- |
 | `QuorumError` | `Error` | `name`, the class's own name | The base of every error quorum raises on purpose |
 | `ConfigError` | `QuorumError` | `issues`, each a `{ path, message }`, every one; the message holds one `path: message` line per issue for the first 50, then `and <n> more issues` | Invalid configuration or input, every issue at once. The CLI exits `2` on it |
-| `ProviderError` | `QuorumError` | `providerId`, `kind`, `status`, `retryable` | A provider call that failed: [`ProviderError`](../20-using/30-providers.md#providererror) |
+| `ProviderError` | `QuorumError` | `providerId`, `kind`, `status`, `retryable`, `usage` | A provider call that failed: [`ProviderError`](../20-using/30-providers.md#providererror) |
 | `OutputError` | `QuorumError` | `stage`, `reason`; `snippet`, the first 200 characters of the reply | A model reply that could not be read: `<stage> reply unusable: <reason> (reply starts: "<snippet>")` |
 
 A failed research call rejects the review with its `ProviderError`, and an unusable research reply with its `OutputError`. The same errors from a vote are recorded in the vote's `error` instead. A `ProviderError` of kind `too-large`, from research or from a vote, is a `request-too-large` gap instead: the review does not reject, and a provider of your own raises it to have its own refusal of an oversized request recorded so. Any object with an own `kind` property of `'too-large'` counts, whatever its class, so a refusal from a second copy of quorum is a gap too.

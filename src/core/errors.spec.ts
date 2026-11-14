@@ -50,6 +50,15 @@ describe('provider errors', () => {
       cause,
     })
   })
+
+  it('keeps the usage it is given, and holds undefined when it is given none', () => {
+    const details = { providerId: 'p', kind: 'truncated', message: 'm' } as const
+    expect(new ProviderError({
+      ...details,
+      usage: { inputTokens: 10, outputTokens: 20 },
+    }).usage).toEqual({ inputTokens: 10, outputTokens: 20 })
+    expect(new ProviderError(details).usage).toBeUndefined()
+  })
 })
 
 describe('issuePath', () => {
