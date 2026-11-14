@@ -190,7 +190,7 @@ export async function inspectRunDir(directory: string): Promise<RunState> {
 export function runDifferences(recorded: RunFile, current: Pick<RunFile, 'quorum' | 'suite' | 'configurations'>): ConfigIssue[] {
   const issues: ConfigIssue[] = []
   if (recorded.quorum !== current.quorum) {
-    issues.push({ path: RUN_FILE, message: `was written by quorum ${recorded.quorum}, and this is quorum ${current.quorum}: a run belongs to one build, so name a new ${OUT}` })
+    issues.push({ path: RUN_FILE, message: `was written by quorum ${recorded.quorum}, and this is quorum ${current.quorum}: a run belongs to one build, so resume it with the quorum that began it, or name a new ${OUT}` })
   }
   if (recorded.suite.name !== current.suite.name) {
     issues.push({ path: RUN_FILE, message: `is a run of the suite ${recorded.suite.name}, not ${current.suite.name}: name a new ${OUT}` })

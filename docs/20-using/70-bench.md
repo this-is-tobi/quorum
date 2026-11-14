@@ -217,7 +217,7 @@ A bug your project fixed is a case: the patch is the commit that introduced it. 
 4. **Say where it comes from.** `repo`, the two commits, and a `note` for the weakness; a `date` as above.
 5. **Add controls.** A control is a commit of the same project that you know no flaw in, with no `locations`. Every kept finding on it is unmatched, which is the nearest thing a bench has to a rate of false alarms.
 6. **Check it.** `quorum bench --dry-run my-suite` validates the whole suite, every location included, and costs nothing.
-7. **Correct it after a run.** A run can show a location to be off, a finding at the sink of a missing check a few lines past it, say. Correct it in `suite.yaml`, check it with `--dry-run`, and run the same command on the same `--out`: its recorded reviews are scored again, with no call ([Re-scoring](#re-scoring)). A patch written again is another run.
+7. **Correct it after a run.** A run can show a location to be off, a finding at the sink of a missing check a few lines past it, say. Correct it in `suite.yaml`, check it with `--dry-run`, and run the same command on the same `--out`, with the quorum release that began the run: its recorded reviews are scored again, with no call ([Re-scoring](#re-scoring)). A patch written again is another run.
 
 A commit can change files that should not go into a patch that is sent to a model and kept in a repository: a lockfile, a generated file, or a test fixture that holds a key or a secret. Leave them out with `:(exclude)` pathspecs, and say so in the case's `note`:
 
@@ -256,7 +256,7 @@ Resuming is running the same command again. The reviews already recorded are not
 A run directory begun with other settings is refused with exit `2`, and the differences it can name, so no review is made against records that are not comparable:
 
 ```text
-Error: run.json: was written by quorum 0.4.0, and this is quorum 0.5.0: a run belongs to one build, so name a new --out
+Error: run.json: was written by quorum 0.4.0, and this is quorum 0.5.0: a run belongs to one build, so resume it with the quorum that began it, or name a new --out
 run.json: the suite's case ids, trials or patches changed since the run began: name a new --out
 --config: qwen.yaml is not one of the run's configurations
 run.json: its configuration old.yaml is not given
@@ -264,7 +264,7 @@ run.json: its configuration old.yaml is not given
 
 Each line shows when it applies. A suite of another name reads `run.json: is a run of the suite <name>, not <name>: name a new --out`, and a configuration given again with other settings, whether its file was edited or another `--profile` selects other profiles, reads `--config: the settings of qwen.yaml changed since the run began: name a new --out` in place of the two lines a configuration added and one left out would give. The usual resolution, with no `--config`, is named `(default configuration)`. They mean:
 
-- **A run belongs to one build of quorum.** A release can change what a review does without changing a fingerprint, since a preset's defaults and the code that builds a request are not in it, so the quorum version is checked first. The version does not change between development commits, so after you change quorum's own code, start a new `--out`. A run directory made by a release before re-scoring holds a run file of an earlier format, and is refused as `run.json: is not a run file this quorum writes`: it needs a new `--out` too.
+- **A run belongs to one build of quorum.** A release can change what a review does without changing a fingerprint, since a preset's defaults and the code that builds a request are not in it, so the quorum version is checked first. To resume a run, a re-score included, run it with the release that began it, and keep that release until you are done with the run: the npm package at that version (`npm install -g @tobi-or-not/quorum@<version>`), its binary or its image ([Installation](../10-getting-started/10-installation.md)). A new `--out` runs every review again. The version does not change between development commits, so after you change quorum's own code, start a new `--out`. A run directory made by a release before re-scoring holds a run file of an earlier format, and is refused as `run.json: is not a run file this quorum writes`: it needs a new `--out` too.
 - **A run belongs to its suite's cases and patches.** The review hash covers what a review's requests depend on and which reviews the run holds: the case ids, the suite's `trials` and the bytes of each case's patch. Add a case, rename one, change `trials` or a byte of a patch, and the run is another one. To add trials to a run, pass `--trials`.
 - **The rest of `suite.yaml` only scores.** The scoring hash covers the bytes of `suite.yaml`: the kinds, the locations, the `window`, an attack case's fields and decoys, the provenance and the notes, and the comments and the layout too. A suite changed there alone is the same run, re-scored: [Re-scoring](#re-scoring).
 - **A run belongs to its set of configurations.** One added or left out is refused, and so is one whose settings changed, since its fingerprint no longer matches; the message says which of the three it is, and for a change not which setting, since the run keeps only the fingerprint. The same set in another order is the same run, and the first `--config` is the reference of the report either way.
@@ -280,6 +280,7 @@ Scoring: suite.yaml changed since the run began; its recorded reviews are scored
 
 - **A record holds what a review returned, never its score.** Every run scores the records it reads, so a corrected location, kind or `window` changes the numbers of the reviews already recorded. The reviews the run does not hold yet still run: one that failed, a trial `--trials` adds, and one `--retry-incomplete` runs again.
 - **`--report-only` runs none.** It scores what is recorded and writes the reports, with no call, where a plain run would run the reviews that failed first. It needs a run directory that holds a run, and leaves `results.jsonl` as it is. It loads and builds every configuration, as a run does, so it needs the variables that hold their keys, though it calls no model.
+- **A re-score needs the release that began the run.** Another version of quorum refuses the run ([Resuming](#resuming)), and a new `--out` pays for every review again, so keep that release until the run's locations are corrected.
 - **`run.json` keeps the scoring hash the run began with.** A re-score writes the new scoring hash beside it and changes nothing else in it. Put `suite.yaml` back as it was and the run is scored as at the start, and no longer reads as re-scored.
 - **The report says so.** Its header names the review hash and the scoring hash it was scored under. While `suite.yaml` is not the one the run began with, one more line names the scoring hash the run began with, so a number you publish carries its re-scoring with it:
 

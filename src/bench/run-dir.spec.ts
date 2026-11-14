@@ -236,7 +236,7 @@ describe('runDifferences', () => {
         RUN.configurations[1],
       ],
     })).toEqual([
-      { path: 'run.json', message: 'was written by quorum 0.2.0, and this is quorum 0.3.0: a run belongs to one build, so name a new --out' },
+      { path: 'run.json', message: 'was written by quorum 0.2.0, and this is quorum 0.3.0: a run belongs to one build, so resume it with the quorum that began it, or name a new --out' },
       { path: 'run.json', message: 'the suite\'s case ids, trials or patches changed since the run began: name a new --out' },
       { path: '--config', message: 'b.yaml is not one of the run\'s configurations' },
       { path: 'run.json', message: 'its configuration a.yaml is not given' },
@@ -291,7 +291,7 @@ describe('runDifferences', () => {
 
   it('refuses another quorum version alone, since a preset\'s defaults can change under the same fingerprint', () => {
     expect(runDifferences(RUN, { ...current, quorum: '0.2.1' })).toEqual([
-      { path: 'run.json', message: 'was written by quorum 0.2.0, and this is quorum 0.2.1: a run belongs to one build, so name a new --out' },
+      { path: 'run.json', message: 'was written by quorum 0.2.0, and this is quorum 0.2.1: a run belongs to one build, so resume it with the quorum that began it, or name a new --out' },
     ])
   })
 
