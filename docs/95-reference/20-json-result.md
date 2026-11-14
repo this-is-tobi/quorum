@@ -54,7 +54,7 @@ A failed vote counts as a reject.
 | `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's research gaps before its panel's. A review is complete when this list and `unreviewed` are both empty |
 | `flags` | flag[] | The advisory flags read from the diff, file by file in its order: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
 
-A usage count is valid when it is a finite number of at least 0. `meta.usage` and each `invalidFindings` are counted from the review's own events, so `meta` and the events cannot disagree.
+A usage count is valid when it is a finite number of at least 0. A failed call's usage counts too, when its reply reported valid counts, as a reply refused or cut off at its token limit does. `meta.usage` and each `invalidFindings` are counted from the review's own events, so `meta` and the events cannot disagree.
 
 ### Per profile
 
