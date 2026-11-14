@@ -395,6 +395,62 @@ describe('openaiCompatible', () => {
     })
   })
 
+  const counted = { prompt_tokens: 7, completion_tokens: 9 }
+
+  it.each([
+    [
+      'a model\'s refusal',
+      'refusal',
+      {
+        finish_reason: 'stop',
+        message: { content: null, refusal: 'no' },
+      },
+    ],
+    [
+      'the content filter',
+      'refusal',
+      {
+        finish_reason: 'content_filter',
+        message: { content: '' },
+      },
+    ],
+    [
+      'a reply with no message content',
+      'invalid-response',
+      {
+        finish_reason: 'stop',
+        message: { content: null },
+      },
+    ],
+  ])('carries the counts of a reply it refuses on its error: %s', async (_name, kind, choice) => {
+    stubFetch({
+      choices: [choice],
+      usage: counted,
+    })
+    await expect(provider.complete(request)).rejects.toMatchObject({
+      name: 'ProviderError',
+      kind,
+      usage: { inputTokens: 7, outputTokens: 9 },
+    })
+  })
+
+  it('carries no usage for a refused reply whose counts are missing or not numbers', async () => {
+    const choices = [
+      {
+        message: { content: null, refusal: 'no' },
+      },
+    ]
+    for (const usage of [
+      undefined,
+      { prompt_tokens: 7, completion_tokens: '9' },
+    ]) {
+      stubFetch({ choices, usage })
+      const failed = await provider.complete(request).catch((error: unknown) => error)
+      expect(failed, JSON.stringify(usage)).toMatchObject({ kind: 'refusal' })
+      expect((failed as { usage?: unknown }).usage, JSON.stringify(usage)).toBeUndefined()
+    }
+  })
+
   it('reports a server error sent with status 200 by its own code, so a 5xx stays retryable (OpenRouter)', async () => {
     stubFetch(openRouterGenerationError)
     await expect(provider.complete(request)).rejects.toMatchObject({

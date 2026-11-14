@@ -28,7 +28,7 @@ export interface ContractSubject {
   defaultKeyHeader: (key: string) => readonly [name: string, value: string]
   /**
    * Recorded replies, as the protocol sends them: a success whose text is `{}`, with the model and usage it
-   * names, a truncation and, when the protocol has one, a refusal.
+   * names, a truncation, which reports the success's counts, and, when the protocol has one, a refusal.
    */
   replies: { ok: unknown, model: string, usage: Usage, refusal?: unknown, truncated: unknown }
   /** Where a sent body holds the system text, the first user message, the temperature and the token limit. */
@@ -419,17 +419,22 @@ export function describeProviderContract(subject: ContractSubject): void {
     })
 
     it('maps a recorded refusal, when the protocol has one, to a refusal and a recorded truncation to truncated, neither retryable', async () => {
-      const cases: Array<[unknown, ProviderErrorKind]> = [
-        [subject.replies.truncated, 'truncated'],
+      const cases: Array<[unknown, ProviderErrorKind, object]> = [
+        [
+          subject.replies.truncated,
+          'truncated',
+          { usage: subject.replies.usage },
+        ],
       ]
-      if (subject.replies.refusal !== undefined) cases.unshift([subject.replies.refusal, 'refusal'])
-      for (const [reply, kind] of cases) {
+      if (subject.replies.refusal !== undefined) cases.unshift([subject.replies.refusal, 'refusal', {}])
+      for (const [reply, kind, extra] of cases) {
         vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(reply)))
         await expect(subject.make(base).complete(request), kind).rejects.toMatchObject({
           name: 'ProviderError',
           kind,
           retryable: false,
           providerId: 'p',
+          ...extra,
         })
       }
     })

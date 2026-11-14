@@ -89,12 +89,17 @@ function generationConfig({ temperature, maxTokens, structuredOutput }: Generati
 
 /**
  * Turn a `generateContent` reply into text, or a `ProviderError`. Every property is read defensively: the
- * reply is untrusted. A blocked prompt comes first, since its reply has no candidates.
+ * reply is untrusted. A blocked prompt comes first, since its reply has no candidates. The counts are read
+ * once, after the body check, and every failure from then on carries them, since the server generated those
+ * tokens. Gemini leaves a zero count out of its JSON, so a candidates count the reply leaves out reads as 0.
  */
 function readReply(reply: unknown, { id, model }: Pick<GeminiOptions, 'id' | 'model'>, redact: readonly string[]): CompletionResponse {
-  const fail = replyFailure(id)
-  if (!isRecord(reply)) throw fail('invalid-response', 'reply is not a JSON object')
+  if (!isRecord(reply)) throw replyFailure(id)('invalid-response', 'reply is not a JSON object')
 
+  const usage = isRecord(reply.usageMetadata)
+    ? tokenUsage({ candidatesTokenCount: 0, ...reply.usageMetadata }, ['promptTokenCount'], ['candidatesTokenCount', 'thoughtsTokenCount'])
+    : undefined
+  const fail = replyFailure(id, usage)
   const blocked = isRecord(reply.promptFeedback)
     ? reply.promptFeedback.blockReason
     : undefined
@@ -127,7 +132,7 @@ function readReply(reply: unknown, { id, model }: Pick<GeminiOptions, 'id' | 'mo
     model: typeof reply.modelVersion === 'string' && reply.modelVersion !== ''
       ? reply.modelVersion
       : model,
-    usage: tokenUsage(reply.usageMetadata, ['promptTokenCount'], ['candidatesTokenCount', 'thoughtsTokenCount']),
+    usage,
   }
 }
 

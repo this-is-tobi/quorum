@@ -772,6 +772,23 @@ describe('readResult', () => {
     expect(failure(() => read(change(fixtures.unknownModel, { stop_reason: 'max_tokens' }), { code: 1 }))).toMatchObject({ kind: 'http', status: 404 })
   })
 
+  it('carries the summed counts of a result it cuts off, refuses or fails after on its error, and none when no model reports any', () => {
+    const usage = { inputTokens: 2662, outputTokens: 225, costUsd: 0.000525 }
+    expect(failure(() => read(change(fixtures.schema, { stop_reason: 'max_tokens' })))).toMatchObject({ kind: 'truncated', usage })
+    expect(failure(() => read(fixtures.refusal))).toMatchObject({ kind: 'refusal', usage })
+    expect(failure(() => read(fixtures.schema, { code: 2 }))).toMatchObject({ kind: 'process', usage })
+    expect(failure(() => read(change(fixtures.schema, { structured_output: null })))).toMatchObject({ kind: 'invalid-response', usage })
+    expect(failure(() => read(change(fixtures.schema, { is_error: true, api_error_status: 529 })))).toMatchObject({ kind: 'http', status: 529, usage })
+    expect(failure(() => read(change(fixtures.schema, { is_error: true, subtype: 'error_during_execution' })))).toMatchObject({ kind: 'process', usage })
+
+    const unknownModel = failure(() => read(fixtures.unknownModel, { code: 1 }))
+    expect(unknownModel).toMatchObject({ kind: 'http', status: 404 })
+    expect(unknownModel.usage).toBeUndefined()
+    const tooLong = failure(() => read(fixtures.promptTooLong, { code: 1 }))
+    expect(tooLong).toMatchObject({ kind: 'too-large' })
+    expect(tooLong.usage).toBeUndefined()
+  })
+
   it('fails a schema run that ends without structured output, though it reports no error', () => {
     expect(failure(() => read(fixtures.noStructuredOutput))).toMatchObject({ kind: 'invalid-response', message: 'cc: reply has no structured output' })
   })
