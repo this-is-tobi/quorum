@@ -16,8 +16,8 @@ function fail(error: unknown): never {
 process.on('uncaughtException', fail)
 process.on('unhandledRejection', fail)
 
-// Exit 3 until the run settles. A provider whose promise never settles, and holds no timer or socket,
-// empties the event loop: the runtime then exits with the code it holds, which must never be 0 with no result.
+// Exit 3 until the run settles. A config module whose loading never finishes leaves nothing to wait
+// for and empties the event loop: the runtime then exits with the code it holds, which must never be 0 with no result.
 process.exitCode = EXIT.runtime
 let settled = false
 process.once('beforeExit', () => {

@@ -109,13 +109,20 @@ describe('the deadline of an attempt', () => {
     const clock = fakeClock()
     const controller = new AbortController()
     const { ctx } = context(clock, controller)
-    const deaf = target(() => new Promise(() => {}))
+    let kept: AbortSignal | undefined
+    const deaf = target((given) => {
+      kept = given.signal
+      return new Promise(() => {})
+    })
     const call = callProvider(ctx, requester, deaf, () => request)
     await turn()
     expect(clock.pending()).toBe(1)
+    expect(kept?.aborted).toBe(false)
     const reason = new Error('stop')
     controller.abort(reason)
     await expect(call).rejects.toBe(reason)
+    expect(kept?.aborted).toBe(true)
+    expect(kept?.reason).toBe(reason)
     expect(clock.pending()).toBe(0)
   })
 
