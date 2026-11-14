@@ -32,7 +32,10 @@ const USAGE = [
   '',
 ].join('\n')
 
-/** The gaps no flag lifts for a gating profile: a pull request can cause each one. */
+/**
+ * The gaps no flag lifts for a gating profile. A pull request can cause the first three; `research-failed` is a
+ * guard no review meets, since a gating profile's failed research ends the review instead.
+ */
 const UNLIFTED: ReadonlySet<IncompleteReason> = new Set([
   'request-too-large',
   'binary',
@@ -180,7 +183,8 @@ export function interruptSignal(source: SignalSource, exit: (code: number) => vo
 /**
  * The exit code of a finished review: 1 when a kept finding is `high` and its profile gates, 4 when
  * an unreviewed finding or a gap belongs to a gating profile (unless `allowIncomplete` turns it into
- * 0, which it does for every gap but a `request-too-large`, `binary` or `submodule` one), 0 otherwise.
+ * 0, which it does for every gap but a `request-too-large`, `binary`, `submodule` or `research-failed` one), 0
+ * otherwise.
  * A profile gates unless `meta.profiles` holds it with `gating: false`, so a profile missing from the
  * result counts as gating and a gap never hides. The set no flag lifts holds `research-failed` too,
  * as a guard no review meets: a review records that gap for an advisory profile alone, and a gating
