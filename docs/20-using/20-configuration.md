@@ -348,7 +348,7 @@ So in CI a named config comes from the base branch, or from another path the pul
 
 ```bash
 git worktree add --detach ../base origin/main
-git --attr-source=origin/main diff --no-textconv --no-ext-diff --submodule=short origin/main...HEAD | quorum --config ../base/ci/quorum.yaml > result.json
+git --attr-source=origin/main diff --no-textconv --no-ext-diff --no-color --submodule=short --ignore-submodules=none origin/main...HEAD | quorum --config ../base/ci/quorum.yaml > result.json
 ```
 
 The diff reads the base branch's attributes too, not the checkout's: [Using it in CI](./10-cli.md#using-it-in-ci).
