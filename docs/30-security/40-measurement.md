@@ -153,7 +153,7 @@ The report gives no interval for the mean, so one over a few dozen findings is a
 
 ## The baseline
 
-The project's owner runs the corpus per class of model, a hosted model, a mid-size one and a small local one, with ten trials each. This section will give the numbers, with the quorum version and the exact model ids, in a docs change after the corpus is merged. They measure quorum's method on those models at that time and are not a ranking of models. Until then it holds none.
+The project's owner runs the corpus per class of model, a hosted model, a mid-size one and a small local one, with ten trials each. This section will give the numbers, with the quorum version and the exact model ids, in a docs change after the corpus is merged. They measure quorum's method on those models at that time and are not a ranking of models. Until then it holds none. Each report names the review hash and the scoring hash of the suite it was scored under, and a location corrected after a run re-scores its recorded reviews with no call, the report then saying so in a line of its own: [Re-scoring](../20-using/70-bench.md#re-scoring).
 
 To run it yourself, from a clone, check the plan first. It costs nothing and prints the reviews a run makes:
 

@@ -9,7 +9,7 @@ import { hiddenLabels } from '../core/sanitize.ts'
 import { handleDescriptors, isClosed, record, RESULT, RUN_SUITE } from '../testing/bench.ts'
 import { MAX_RECORD_BYTES, recordLine } from './records.ts'
 import type { ResultRecord, RunFile } from './records.ts'
-import { createRun, inspectRunDir, openRecords, readRecords, runDifferences, writeAtomic } from './run-dir.ts'
+import { createRun, inspectRunDir, openRecords, readRecords, runDifferences, writeAtomic, writeRunFile } from './run-dir.ts'
 
 let root = ''
 let out = ''
@@ -237,7 +237,7 @@ describe('runDifferences', () => {
       ],
     })).toEqual([
       { path: 'run.json', message: 'was written by quorum 0.2.0, and this is quorum 0.3.0: a run belongs to one build, so name a new --out' },
-      { path: 'run.json', message: 'the suite\'s suite.yaml or patches changed since the run began: name a new --out' },
+      { path: 'run.json', message: 'the suite\'s case ids, trials or patches changed since the run began: name a new --out' },
       { path: '--config', message: 'b.yaml is not one of the run\'s configurations' },
       { path: 'run.json', message: 'its configuration a.yaml is not given' },
     ])
@@ -282,13 +282,11 @@ describe('runDifferences', () => {
     ])
   })
 
-  it('refuses a suite whose scoring hash alone changed, as one whose suite.yaml changed', () => {
+  it('finds none for a suite whose scoring hash alone changed, which the run re-scores', () => {
     expect(runDifferences(RUN, {
       ...current,
       suite: { ...RUN_SUITE, scoringHash: `sha256:${'4'.repeat(64)}` },
-    })).toEqual([
-      { path: 'run.json', message: 'the suite\'s suite.yaml or patches changed since the run began: name a new --out' },
-    ])
+    })).toEqual([])
   })
 
   it('refuses another quorum version alone, since a preset\'s defaults can change under the same fingerprint', () => {
@@ -320,6 +318,21 @@ describe('createRun', () => {
   it('writes into an empty directory it is given', async () => {
     mkdirSync(out)
     await createRun(out, RUN)
+    expect(readdirSync(out)).toEqual(['run.json'])
+  })
+})
+
+describe('writeRunFile', () => {
+  it('writes run.json again whole, readable by its owner only, leaving no temporary file', async () => {
+    const rescored: RunFile = {
+      ...RUN,
+      suite: { ...RUN.suite, scoringHash: `sha256:${'4'.repeat(64)}` },
+    }
+    await createRun(out, RUN)
+    chmodSync(join(out, 'run.json'), 0o644)
+    await writeRunFile(out, rescored)
+    expect(await inspectRunDir(out)).toEqual({ kind: 'run', run: rescored })
+    expect(modeOf(join(out, 'run.json'))).toBe(0o600)
     expect(readdirSync(out)).toEqual(['run.json'])
   })
 })

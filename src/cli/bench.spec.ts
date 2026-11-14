@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
+import type { RunFile } from '../bench/records.ts'
 import { loadSuite } from '../bench/suite.ts'
 import { ATTACK, EXEC_FINDING, handleDescriptors, isClosed, PATCHES, POISONED_EXEC, stubModels, SUITE, writeSuite } from '../testing/bench.ts'
 import { harness } from '../testing/cli.ts'
@@ -41,6 +42,23 @@ afterEach(() => {
 })
 
 const out = (): string => join(root, 'quorum-bench', 'demo')
+/** The suite with the `exec` case's location one line above where `EXEC_FINDING` cites, so no review of it counts as a catch, at a window of 0. */
+const MISPLACED = {
+  ...SUITE,
+  window: 0,
+  cases: SUITE.cases.map(suiteCase => suiteCase.id === 'exec'
+    ? {
+        ...suiteCase,
+        locations: [
+          { file: 'a.js', start: 1, end: 1 },
+        ],
+      }
+    : suiteCase),
+}
+/** `MISPLACED` with the location corrected: the one `SUITE` holds, at a window of 0. */
+const CORRECTED = { ...SUITE, window: 0 }
+/** What the plan says when suite.yaml is not the one the run began with. */
+const RESCORED = 'Scoring: suite.yaml changed since the run began; its recorded reviews are scored again under it, with no call'
 const lines = (): string[] => readFileSync(join(out(), 'results.jsonl'), 'utf8').split('\n').filter(line => line !== '')
 
 /** Run quorum with `argv` in the temporary directory, the models of `models` behind fetch. */
@@ -298,11 +316,116 @@ describe('quorum bench', () => {
     expect(readFileSync(join(out(), 'report.md'), 'utf8')).toContain(`\nScored under the review hash ${reviewHash} and the scoring hash ${scoringHash}.\n`)
   })
 
-  it('refuses a run directory whose suite changed, saying so', async () => {
+  it.each<[string, () => void]>([
+    [
+      'a patch\'s bytes',
+      () => writeFileSync(join(root, 'demo', 'cases', 'docs.patch'), PATCHES.docs.replace('Demo app', 'Demo site')),
+    ],
+    [
+      'its case ids, a location corrected beside them',
+      () => writeSuite(join(root, 'demo'), {
+        ...SUITE,
+        cases: [
+          ...SUITE.cases.map(suiteCase => suiteCase.id === 'sql'
+            ? {
+                ...suiteCase,
+                locations: [
+                  { file: 'db.py', start: 3, end: 3 },
+                ],
+              }
+            : suiteCase),
+          { id: 'docs-again', kind: 'control', patch: 'docs.patch' },
+        ],
+      }),
+    ],
+    [
+      'its trials',
+      () => writeSuite(join(root, 'demo'), { ...SUITE, trials: 2 }),
+    ],
+  ])('refuses a run directory whose suite changed %s, before any call, leaving run.json as it was', async (_change, change) => {
     await bench(TWO)
-    writeFileSync(join(root, 'demo', 'cases', 'docs.patch'), PATCHES.docs.replace('Demo app', 'Demo site'))
-    const { code, stderr } = await bench(TWO)
-    expect([code, stderr]).toEqual([2, 'Error: run.json: the suite\'s suite.yaml or patches changed since the run began: name a new --out\n'])
+    const run = readFileSync(join(out(), 'run.json'), 'utf8')
+    change()
+    const { code, stderr, fetch } = await bench(TWO)
+    expect([code, stderr]).toEqual([2, 'Error: run.json: the suite\'s case ids, trials or patches changed since the run began: name a new --out\n'])
+    expect(fetch).not.toHaveBeenCalled()
+    expect(readFileSync(join(out(), 'run.json'), 'utf8')).toBe(run)
+  })
+
+  it('re-scores a run whose location was corrected, with no call: the records scored under the suite as it is now, run.json given the new scoring hash alone, and the plan and the reports saying so', async () => {
+    const directory = join(root, 'demo')
+    writeSuite(directory, MISPLACED)
+    const first = await bench(TWO)
+    const begun = await loadSuite(directory, 'demo')
+    const run = JSON.parse(readFileSync(join(out(), 'run.json'), 'utf8')) as RunFile
+    const results = readFileSync(join(out(), 'results.jsonl'), 'utf8')
+    expect(first.stdout).toContain('| 1 | 3 of 3 | 0.0% [0.0%, 65.8%] over 2 cases |')
+    writeSuite(directory, CORRECTED)
+    const corrected = await loadSuite(directory, 'demo')
+    // The same run, its configurations in the other order: run.json keeps the order it began with.
+    const again = await bench([
+      'bench',
+      '-c',
+      'b.yaml',
+      '-c',
+      'a.yaml',
+      'demo',
+    ])
+    expect(again.code).toBe(0)
+    expect(again.fetch).not.toHaveBeenCalled()
+    expect(again.stderr).toContain(`Reviews: 6 planned, 6 recorded, 0 to run, at most 1 at a time\n${RESCORED}\nRun directory: quorum-bench/demo\n`)
+    expect(again.stdout).toContain('| 2 | 3 of 3 | 50.0% [9.5%, 90.5%] over 2 cases |')
+    expect(again.stdout).toContain(`\nRe-scored: the run began under the scoring hash ${begun.scoringHash}; its reviews, of the same patches, are scored here under the scoring hash above.\n`)
+    expect(corrected.reviewHash).toBe(begun.reviewHash)
+    expect(JSON.parse(readFileSync(join(out(), 'run.json'), 'utf8'))).toEqual({
+      ...run,
+      suite: { ...run.suite, scoringHash: corrected.scoringHash },
+    })
+    expect(JSON.parse(readFileSync(join(out(), 'report.json'), 'utf8'))).toMatchObject({ reviewHash: begun.reviewHash, scoringHash: corrected.scoringHash, firstScoringHash: begun.scoringHash })
+    expect(readFileSync(join(out(), 'results.jsonl'), 'utf8')).toBe(results)
+  })
+
+  it('says a run was re-scored on every later run, writing run.json no more, and stops once suite.yaml is back to the one the run began with', async () => {
+    const directory = join(root, 'demo')
+    writeSuite(directory, MISPLACED)
+    await bench(TWO)
+    const begun = await loadSuite(directory, 'demo')
+    writeSuite(directory, CORRECTED)
+    expect((await bench(TWO)).stdout).toContain('\nRe-scored: ')
+    const inode = statSync(join(out(), 'run.json')).ino
+    const later = await bench(TWO)
+    expect(later.stderr).toContain(`\n${RESCORED}\n`)
+    expect(later.stdout).toContain('\nRe-scored: ')
+    expect(statSync(join(out(), 'run.json')).ino).toBe(inode)
+    writeSuite(directory, MISPLACED)
+    const back = await bench(TWO)
+    expect(back.code).toBe(0)
+    expect(back.stderr).not.toContain('Scoring:')
+    expect(back.stdout).not.toContain('Re-scored')
+    expect(JSON.parse(readFileSync(join(out(), 'run.json'), 'utf8')).suite).toMatchObject({ scoringHash: begun.scoringHash, firstScoringHash: begun.scoringHash })
+  })
+
+  it('plans a re-score in a dry run, and leaves the run directory as it was after that dry run and after an interrupt before the run began', async () => {
+    const directory = join(root, 'demo')
+    writeSuite(directory, MISPLACED)
+    await bench(TWO)
+    const texts = (): string[] => [
+      'run.json',
+      'results.jsonl',
+      'report.md',
+      'report.json',
+    ].map(file => readFileSync(join(out(), file), 'utf8'))
+    const kept = texts()
+    const inode = statSync(join(out(), 'run.json')).ino
+    writeSuite(directory, CORRECTED)
+    const dry = await bench([...TWO, '--dry-run'])
+    expect(dry.code).toBe(0)
+    expect(dry.stdout).toContain(`Reviews: 6 planned, 6 recorded, 0 to run, at most 1 at a time\n${RESCORED}\n`)
+    const controller = new AbortController()
+    controller.abort()
+    expect((await bench(TWO, { signal: controller.signal })).code).toBe(130)
+    expect(texts()).toEqual(kept)
+    expect(statSync(join(out(), 'run.json')).ino).toBe(inode)
   })
 
   it('refuses a directory that holds files but no run.json', async () => {

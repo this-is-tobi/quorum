@@ -12,7 +12,7 @@ import { MAX_CONFIGURATIONS, reviewKey, RUN_FORMAT } from '../bench/records.ts'
 import type { Denial, ReviewRecord, RunConfiguration, RunFile } from '../bench/records.ts'
 import { buildReport, kindCounts, kindsText, reportJson, reportMarkdown, reviewScore } from '../bench/report.ts'
 import type { ReviewScore } from '../bench/report.ts'
-import { createRun, inspectRunDir, openRecords, readRecords, REPORT_JSON, REPORT_MARKDOWN, runDifferences, writeAtomic } from '../bench/run-dir.ts'
+import { createRun, inspectRunDir, openRecords, readRecords, REPORT_JSON, REPORT_MARKDOWN, runDifferences, writeAtomic, writeRunFile } from '../bench/run-dir.ts'
 import type { ReadSizes, RunState } from '../bench/run-dir.ts'
 import { planReviews, runReviews } from '../bench/runner.ts'
 import type { BenchReview, RunReviewsOutcome } from '../bench/runner.ts'
@@ -65,6 +65,7 @@ const MAX_JOBS = 16
 const DEFAULT_CONFIGURATION = '(default configuration)'
 const UNPLANNED_CASE = 'a review names a case the plan does not hold'
 const TORN_LINE = 'warning: results.jsonl: its last line was cut short, as a stopped run leaves it: that review runs again'
+const RESCORED_LINE = 'Scoring: suite.yaml changed since the run began; its recorded reviews are scored again under it, with no call'
 
 const OPTIONS = {
   config: { type: 'string', short: 'c', multiple: true },
@@ -235,7 +236,7 @@ function recordedText(record: ReviewRecord, suiteCase: SuiteCase, score: ReviewS
   return `${verdictOf(suiteCase, score)}; ${kept.length} kept, ${discarded.length} discarded, ${unreviewed.length} unreviewed, ${meta.incomplete.length} gaps; ${latency}`
 }
 
-/** The plan a run prints before its first call. */
+/** The plan a run prints before its first call; `rescored` adds the line that says its recorded reviews are scored again. */
 function planLines(plan: {
   readonly suite: Suite
   readonly selected: readonly SuiteCase[]
@@ -247,8 +248,9 @@ function planLines(plan: {
   readonly again: number
   readonly jobs: number
   readonly directory: string
+  readonly rescored: boolean
 }): string[] {
-  const { suite, selected, loaded, trials, planned, recorded, toRun, again, jobs, directory } = plan
+  const { suite, selected, loaded, trials, planned, recorded, toRun, again, jobs, directory, rescored } = plan
   return [
     `Suite ${suite.name}: ${selected.length} of ${suite.cases.length} cases, ${kindsText(kindCounts(selected))}`,
     'Configurations:',
@@ -262,6 +264,9 @@ function planLines(plan: {
     `Reviews: ${planned} planned, ${recorded} recorded, ${toRun} to run${again > 0
       ? ` (${again} of them again)`
       : ''}, at most ${jobs} at a time`,
+    ...rescored
+      ? [RESCORED_LINE]
+      : [],
     `Run directory: ${directory}`,
   ]
 }
@@ -385,16 +390,33 @@ interface Execution {
 }
 
 /**
- * Make the run (when it is new), open `results.jsonl` and run the reviews of `toRun`, each recorded as it
- * resolves and each reported with its progress line. The order matters: `createRun` renames over any
+ * Write `run.json` as the run needs it: a new run is made, with its directory; a run being resumed whose
+ * recorded scoring hash is not the suite's now is written again with that scoring hash alone changed, so
+ * its first scoring hash, its configurations' paths and order, its salt and its version stay as recorded;
+ * any other run is left as it is.
+ */
+async function writeRun({ out, state, runFile }: Checked): Promise<void> {
+  if (state.kind !== 'run') {
+    await createRun(out, runFile)
+  } else if (state.run.suite.scoringHash !== runFile.suite.scoringHash) {
+    await writeRunFile(out, {
+      ...state.run,
+      suite: { ...state.run.suite, scoringHash: runFile.suite.scoringHash },
+    })
+  }
+}
+
+/**
+ * Write `run.json` (see `writeRun`), open `results.jsonl` and run the reviews of `toRun`, each recorded as
+ * it resolves and each reported with its progress line. The order matters: `writeRun` renames over any
  * run.json and `openRecords` cuts results.jsonl to the bytes the read found valid (and refuses it when
- * its length is not the one the read found), so a run being resumed has been read before either, and only
- * a new run is created. The writer is closed whatever happens; when the run rejects, with the error of a
- * failed write, that error is the one thrown.
+ * its length is not the one the read found), so a run being resumed has been read before either. The
+ * writer is closed whatever happens; when the run rejects, with the error of a failed write, that error
+ * is the one thrown.
  */
 async function execute(io: CliIO, { checked, scores, records, toRun, jobs }: Execution): Promise<RunReviewsOutcome> {
-  const { suite, loaded, byId, out, state, runFile } = checked
-  if (state.kind !== 'run') await createRun(out, runFile)
+  const { suite, loaded, byId, out, runFile } = checked
+  await writeRun(checked)
   const writer = await openRecords(out, records)
   let finished = 0
   let outcome: RunReviewsOutcome
@@ -474,6 +496,7 @@ async function bench(io: CliIO, options: BenchOptions): Promise<number> {
     again: toRun.filter(review => scoreOf(review) !== undefined).length,
     jobs: options.jobs,
     directory,
+    rescored: runFile.suite.scoringHash !== runFile.suite.firstScoringHash,
   }))
   if (options.dryRun) {
     writeLines(io.stdout, ['Dry run: no review was run, and nothing was written.'])
@@ -520,9 +543,13 @@ function usageError(io: CliIO, error: unknown): number {
  *
  * A run directory that holds a run resumes it: the reviews it records are not run again, `--retry-incomplete`
  * runs again those that came back incomplete, and a last line a killed run cut short is dropped, with a
- * warning. A run directory of another suite, another quorum or other configurations, one that holds files
- * of another kind, and a suite or a configuration that does not validate or cannot be built are refused
- * before the first call.
+ * warning. A suite whose scoring hash alone changed (`suite.yaml`, but not a case id, `trials` or a patch)
+ * re-scores the run: its records are scored under the suite as it is now, with no call, `run.json` records
+ * the new scoring hash beside the one the run began with, and the plan and the reports say so while the
+ * suite is not the one the run began with. A run directory of another suite, another quorum or other
+ * configurations, one that holds files of another kind, a suite whose case ids, `trials` or patches
+ * changed, and a suite or a configuration that does not validate or cannot be built are refused before
+ * the first call.
  *
  * Exit codes: 0 when every planned review is recorded, a denied one included, 2 for a usage, suite,
  * configuration or run directory error, 3 when the run stops (a file cannot be written or read), 4 when a
