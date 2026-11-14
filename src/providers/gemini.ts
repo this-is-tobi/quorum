@@ -2,6 +2,7 @@ import { issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson, snippet } from './http.ts'
+import type { ErrorHints } from './http.ts'
 import { shapeMessages } from './messages.ts'
 import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues, unlessEmpty } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
@@ -40,6 +41,54 @@ const FILTERED: ReadonlySet<unknown> = new Set([
   'SPII',
   'IMAGE_SAFETY',
 ])
+
+const RETRY_INFO = 'type.googleapis.com/google.rpc.RetryInfo'
+const QUOTA_FAILURE = 'type.googleapis.com/google.rpc.QuotaFailure'
+/** A `retryDelay` as Google's protobuf JSON writes a duration: whole or fractional seconds, nine digits at most. */
+const RETRY_DELAY = /^(\d+(?:\.\d{1,9})?)s$/
+/** The part of a quota's id that names a per-day limit, which no wait of seconds lifts. */
+const PER_DAY = 'PerDay'
+
+/** The entries of `list` that are objects of the given `@type`, when it is a list. */
+function detailsOfType(list: unknown, type: string): Array<Record<string, unknown>> {
+  return Array.isArray(list)
+    ? list.filter((entry): entry is Record<string, unknown> => isRecord(entry) && entry['@type'] === type)
+    : []
+}
+
+/** A `retryDelay` as milliseconds, when it is a positive duration in seconds. */
+function delayMs(retryDelay: unknown): number | undefined {
+  const match = typeof retryDelay === 'string'
+    ? RETRY_DELAY.exec(retryDelay)
+    : null
+  const ms = Number(match?.[1]) * 1000
+  return Number.isFinite(ms) && ms > 0
+    ? ms
+    : undefined
+}
+
+/**
+ * What an error body of Google's `{ error: { details } }` says of a retry, read defensively: the first
+ * `RetryInfo` with a valid `retryDelay` is the wait, and a `QuotaFailure` violation whose `quotaId` names
+ * a per-day limit turns the retry off, whatever the delay says, since the quota is back only the next day.
+ * Only numbers and a verdict leave this function: no text of the body does.
+ */
+function errorHints(body: unknown): ErrorHints {
+  const details = isRecord(body) && isRecord(body.error)
+    ? body.error.details
+    : undefined
+  const retryAfterMs = detailsOfType(details, RETRY_INFO).map(info => delayMs(info.retryDelay)).find(ms => ms !== undefined)
+  const perDay = detailsOfType(details, QUOTA_FAILURE).some(failure => Array.isArray(failure.violations)
+    && failure.violations.some(violation => isRecord(violation) && typeof violation.quotaId === 'string' && violation.quotaId.includes(PER_DAY)))
+  return {
+    ...(retryAfterMs === undefined
+      ? {}
+      : { retryAfterMs }),
+    ...(perDay
+      ? { retryable: false }
+      : {}),
+  }
+}
 
 /** A `key` query parameter, in any letter case, would put the key in the URL: it travels only in the header `auth` names. */
 function keyParameterIssues(id: string, query: Readonly<Record<string, unknown>>): ConfigIssue[] {
@@ -190,6 +239,7 @@ export function gemini(options: GeminiOptions): Provider {
         }, extraBody),
         signal: request.signal,
         redact,
+        errorHints,
       })
       return readReply(reply, { id, model }, redact)
     },

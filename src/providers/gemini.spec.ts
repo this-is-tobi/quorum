@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
-import type { ProviderErrorKind } from '../core/errors.ts'
+import type { ProviderError, ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
 import { sent, stubFetch } from '../testing/http.ts'
 import { gemini } from './gemini.ts'
@@ -515,6 +515,70 @@ describe('gemini', () => {
       retryable: false,
       providerId: 'gemini',
       message: expected,
+    })
+  })
+
+  describe('on a 429', () => {
+    const RETRY_INFO = 'type.googleapis.com/google.rpc.RetryInfo'
+    const QUOTA_FAILURE = 'type.googleapis.com/google.rpc.QuotaFailure'
+    const exhausted = (details: unknown): unknown => ({
+      error: {
+        code: 429,
+        message: 'Resource exhausted',
+        status: 'RESOURCE_EXHAUSTED',
+        details,
+      },
+    })
+    const retryInfo = (retryDelay: string): unknown => ({ '@type': RETRY_INFO, retryDelay })
+    const quotaFailure = (quotaId: string): unknown => ({
+      '@type': QUOTA_FAILURE,
+      violations: [
+        { quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests', quotaId },
+      ],
+    })
+    const failure = async (details: unknown): Promise<unknown> => {
+      stubFetch(exhausted(details), 429)
+      return await provider.complete(request).catch((caught: unknown) => caught)
+    }
+
+    it.each([
+      ['42s', 42_000],
+      ['1.5s', 1500],
+      ['0s', undefined],
+      ['42', undefined],
+      ['-1s', undefined],
+      ['1m', undefined],
+      ['1.0000000001s', undefined],
+    ])('reads the RetryInfo retryDelay %j', async (retryDelay, expected) => {
+      const error = await failure([
+        retryInfo(retryDelay),
+      ]) as ProviderError
+      expect(error).toMatchObject({ kind: 'http', status: 429, retryable: true })
+      expect(error.retryAfterMs).toBe(expected)
+    })
+
+    it('never retries a 429 of a per-day quota, whatever its RetryInfo says, and retries a per-minute one', async () => {
+      expect(await failure([
+        quotaFailure('GenerateRequestsPerDayPerProjectPerModel-FreeTier'),
+        retryInfo('34s'),
+      ])).toMatchObject({ retryable: false, retryAfterMs: 34_000 })
+      expect(await failure([
+        quotaFailure('GenerateRequestsPerMinutePerProjectPerModel-FreeTier'),
+        retryInfo('34s'),
+      ])).toMatchObject({ retryable: true, retryAfterMs: 34_000 })
+    })
+
+    it('reads no hint from details that are no list, or entries of another type', async () => {
+      for (const details of [
+        {},
+        [
+          { '@type': 'type.googleapis.com/google.rpc.Help' },
+        ],
+      ]) {
+        const error = await failure(details) as ProviderError
+        expect(error, JSON.stringify(details)).toMatchObject({ retryable: true })
+        expect(error.retryAfterMs, JSON.stringify(details)).toBeUndefined()
+      }
     })
   })
 

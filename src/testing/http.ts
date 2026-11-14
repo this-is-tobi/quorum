@@ -68,9 +68,9 @@ export function sent(fetchMock: ReturnType<typeof vi.fn>, call = 0): { url: stri
   }
 }
 
-/** A reply holding `text` as it is. */
-export function textReply(text: string, status: number): Response {
-  return new Response(text, { status })
+/** A reply holding `text` as it is, with `headers` when it has some. */
+export function textReply(text: string, status: number, headers: Record<string, string> = {}): Response {
+  return new Response(text, { status, headers })
 }
 
 /** A reply whose body is `chunk` repeated `count` times, each made only when it is read, and how many were read. */

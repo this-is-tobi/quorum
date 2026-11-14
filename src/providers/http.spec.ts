@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProviderError } from '../core/errors.ts'
 import { brokenReply, jsonReply, streamedReply, textReply } from '../testing/http.ts'
-import { endpointUrl, httpOrigin, originOf, postJson, redactionsOf, snippet } from './http.ts'
+import { endpointUrl, httpOrigin, originOf, postJson, redactionsOf, retryAfterHint, snippet } from './http.ts'
+import type { ErrorHints } from './http.ts'
 
 const options = { providerId: 'p', url: 'http://h/x', body: {} }
 
@@ -175,6 +176,149 @@ describe('endpointUrl', () => {
     expect(endpointUrl('http://h/v1//', '/chat/completions')).toBe('http://h/v1/chat/completions')
     expect(endpointUrl('http://h/v1', '/chat/completions', {})).toBe('http://h/v1/chat/completions')
     expect(endpointUrl('http://h', '/api/chat', { 'api-version': '1' })).toBe('http://h/api/chat?api-version=1')
+  })
+})
+
+describe('retryAfterHint', () => {
+  const now = Date.parse('Sat, 14 Nov 2026 12:00:00 GMT')
+
+  it.each<[string, Array<[string, string]>, number]>([
+    [
+      'retry-after-ms: 1500',
+      [
+        ['retry-after-ms', '1500'],
+      ],
+      1500,
+    ],
+    [
+      'retry-after-ms: 250.5',
+      [
+        ['retry-after-ms', '250.5'],
+      ],
+      250.5,
+    ],
+    [
+      'retry-after: 2',
+      [
+        ['retry-after', '2'],
+      ],
+      2000,
+    ],
+    [
+      'retry-after: 1.5',
+      [
+        ['retry-after', '1.5'],
+      ],
+      1500,
+    ],
+    [
+      'retry-after-ms: 300 beside retry-after: 9',
+      [
+        ['retry-after-ms', '300'],
+        ['retry-after', '9'],
+      ],
+      300,
+    ],
+    [
+      'retry-after-ms: soon beside retry-after: 3',
+      [
+        ['retry-after-ms', 'soon'],
+        ['retry-after', '3'],
+      ],
+      3000,
+    ],
+    [
+      'retry-after as an HTTP date',
+      [
+        ['retry-after', 'Sat, 14 Nov 2026 12:00:30 GMT'],
+      ],
+      30_000,
+    ],
+    [
+      'retry-after: 90, which the policy then refuses',
+      [
+        ['retry-after', '90'],
+      ],
+      90_000,
+    ],
+  ])('reads %s', (_name, headers, expected) => {
+    expect(retryAfterHint(new Headers(headers), now)).toBe(expected)
+  })
+
+  it.each<[string, Array<[string, string]>]>([
+    [
+      'retry-after: 0',
+      [
+        ['retry-after', '0'],
+      ],
+    ],
+    [
+      'retry-after-ms: 0',
+      [
+        ['retry-after-ms', '0'],
+      ],
+    ],
+    [
+      'a negative number',
+      [
+        ['retry-after', '-1'],
+      ],
+    ],
+    [
+      'an exponent',
+      [
+        ['retry-after', '1e3'],
+      ],
+    ],
+    [
+      'a hexadecimal number',
+      [
+        ['retry-after', '0x10'],
+      ],
+    ],
+    [
+      'two headers joined',
+      [
+        ['retry-after', '1'],
+        ['retry-after', '2'],
+      ],
+    ],
+    [
+      'an asctime date',
+      [
+        ['retry-after', 'Sat Nov 14 12:00:30 2026'],
+      ],
+    ],
+    [
+      'an RFC 850 date',
+      [
+        ['retry-after', 'Saturday, 14-Nov-26 12:00:30 GMT'],
+      ],
+    ],
+    [
+      'a past date',
+      [
+        ['retry-after', 'Sat, 14 Nov 2026 11:59:00 GMT'],
+      ],
+    ],
+    [
+      '400 nines',
+      [
+        [
+          'retry-after',
+          '9'.repeat(400),
+        ],
+      ],
+    ],
+    [
+      'a blank value',
+      [
+        ['retry-after', ''],
+      ],
+    ],
+    ['no header', []],
+  ])('reads no hint from %s', (_name, headers) => {
+    expect(retryAfterHint(new Headers(headers), now)).toBeUndefined()
   })
 })
 
@@ -376,6 +520,162 @@ describe('postJson', () => {
     const error = await postJson(options).catch((caught: Error) => caught) as Error
     expect(error).toMatchObject({ kind: 'invalid-response', retryable: false, message: 'p: response body is not JSON' })
     expect(error.cause).toBeUndefined()
+  })
+})
+
+describe('postJson on a failed reply', () => {
+  async function failure(body: string, status: number, headers: Record<string, string> = {}, extra: Partial<Parameters<typeof postJson>[0]> = {}): Promise<ProviderError> {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply(body, status, headers)))
+    return await postJson({
+      ...options,
+      ...extra,
+    }).catch((caught: unknown) => caught) as ProviderError
+  }
+
+  it('puts the server\'s hint on its error as a number, and quotes the body as before, never a header', async () => {
+    expect(await failure('slow down', 429, { 'retry-after': '2' })).toMatchObject({
+      kind: 'http',
+      status: 429,
+      retryable: true,
+      retryAfterMs: 2000,
+      message: 'p: HTTP 429: "slow down"',
+    })
+  })
+
+  it.each([
+    [
+      'of credit_balance_exhausted',
+      429,
+      {},
+      {
+        error: { code: 'credit_balance_exhausted' },
+      },
+    ],
+    [
+      'of organization_usage_limit_exceeded',
+      429,
+      {},
+      {
+        error: { code: 'organization_usage_limit_exceeded' },
+      },
+    ],
+    [
+      'of a project_spend_limit_exceeded',
+      429,
+      {},
+      {
+        error: { code: 'project_spend_limit_exceeded' },
+      },
+    ],
+    [
+      'of an insufficient_quota code and type',
+      429,
+      {},
+      {
+        error: { code: 'insufficient_quota', type: 'insufficient_quota' },
+      },
+    ],
+    [
+      'of an insufficient_quota type with no code',
+      429,
+      {},
+      {
+        error: { type: 'insufficient_quota', code: null },
+      },
+    ],
+    [
+      'of Anthropic\'s enforced_spend_limit_reached',
+      429,
+      {},
+      {
+        type: 'error',
+        error: {
+          type: 'rate_limit_error',
+          message: 'limit',
+          details: { error_code: 'enforced_spend_limit_reached' },
+        },
+      },
+    ],
+    [
+      'that says x-should-retry: false',
+      503,
+      { 'x-should-retry': 'false' },
+      {
+        error: { code: 'server_error' },
+      },
+    ],
+    [
+      'that says x-should-retry: true beside a spend code',
+      429,
+      { 'x-should-retry': 'true' },
+      {
+        error: { code: 'credit_balance_exhausted' },
+      },
+    ],
+  ])('never retries a reply %s, whatever its status', async (_name, status, headers, body) => {
+    const error = await failure(JSON.stringify(body), status, headers)
+    expect(error).toMatchObject({ kind: 'http', status, retryable: false })
+  })
+
+  it('retries a reply that says x-should-retry: true, whatever its status', async () => {
+    expect(await failure('bad request', 400, { 'x-should-retry': 'true' })).toMatchObject({ kind: 'http', status: 400, retryable: true })
+  })
+
+  it('retries an OpenRouter 402 of its in-flight budget only when it carries a Retry-After', async () => {
+    const inFlight = JSON.stringify({
+      error: {
+        code: 402,
+        message: 'in flight',
+        metadata: { limit_source: 'openrouter_in_flight_budget' },
+      },
+    })
+    expect(await failure(inFlight, 402, { 'retry-after': '1' })).toMatchObject({ retryable: true, retryAfterMs: 1000 })
+    expect(await failure(inFlight, 402)).toMatchObject({ retryable: false })
+    const keyLimit = JSON.stringify({
+      error: {
+        code: 402,
+        message: 'limit',
+        metadata: { limit_source: 'openrouter_key_limit' },
+      },
+    })
+    expect(await failure(keyLimit, 402, { 'retry-after': '1' })).toMatchObject({ retryable: false })
+  })
+
+  it('leaves the status to decide for a body that is no JSON or names no code it knows', async () => {
+    const cases: Array<[string, number, boolean]> = [
+      ['busy', 503, true],
+      [
+        JSON.stringify({
+          error: { code: 'server_error' },
+        }),
+        503,
+        true,
+      ],
+      [
+        JSON.stringify({ error: 'slow' }),
+        429,
+        true,
+      ],
+      ['{}', 400, false],
+    ]
+    for (const [body, status, retryable] of cases) {
+      const error = await failure(body, status)
+      expect(error, body).toMatchObject({ status, retryable })
+      expect(error.retryAfterMs, body).toBeUndefined()
+    }
+  })
+
+  it('hands its errorHints the parsed body, takes their hint after the headers\', and lets them turn a retry off', async () => {
+    const hook = vi.fn((_body: unknown): ErrorHints => ({ retryAfterMs: 4000 }))
+    expect(await failure('{ "e": 1 }', 429, {}, { errorHints: hook })).toMatchObject({ retryable: true, retryAfterMs: 4000 })
+    expect(hook).toHaveBeenCalledWith({ e: 1 })
+    expect(await failure('{}', 429, { 'retry-after': '1' }, { errorHints: hook })).toMatchObject({ retryAfterMs: 1000 })
+    expect(await failure('{}', 503, {}, {
+      errorHints: () => ({ retryable: false }),
+    })).toMatchObject({ status: 503, retryable: false })
+    hook.mockClear()
+    await failure('not json', 429, {}, { errorHints: hook })
+    expect(hook).toHaveBeenCalledWith(undefined)
   })
 })
 

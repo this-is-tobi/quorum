@@ -17,8 +17,26 @@ const NODE_GLOBAL_DISPATCHER = Symbol.for('undici.globalDispatcher.1')
 const REDACTED = '[redacted]'
 const UNKNOWN_ENDPOINT = 'the endpoint'
 const PLAIN_IDENTIFIER = /^[A-Z]\w{0,39}$/i
+/** A wait as a header writes it: decimal digits with an optional fraction. Never a sign, an exponent, a hexadecimal or a list. */
+const DECIMAL = /^\d+(?:\.\d+)?$/
+/** The one date form read: an IMF-fixdate. Both engines read the others as local time, or `1` as a year. */
+const IMF_FIXDATE = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/
+/** The codes of OpenAI that say a credit or a spend limit is used up: a retry cannot succeed, and would be billed. */
+const SPEND_CODES: ReadonlySet<string> = new Set(['credit_balance_exhausted', 'organization_usage_limit_exceeded', 'insufficient_quota'])
+const SPEND_LIMIT_SUFFIX = '_spend_limit_exceeded'
+const ANTHROPIC_SPEND_CODE = 'enforced_spend_limit_reached'
+const OPENROUTER_IN_FLIGHT = 'openrouter_in_flight_budget'
 /** A JSON unicode escape (a backslash, then u00 and two hex digits) for printable ASCII, U+0020 to U+007E. */
 const ESCAPED_PRINTABLE_ASCII = /\\u00(2[0-9a-fA-F]|[3-6][0-9a-fA-F]|7[0-9a-eA-E])/g
+
+/**
+ * What an adapter reads of a failed reply's body that `postJson` cannot: a wait the server asks for, in
+ * milliseconds, and a reason never to retry. A hook can add a hint and turn a retry off, never on.
+ */
+export interface ErrorHints {
+  readonly retryAfterMs?: number
+  readonly retryable?: false
+}
 
 export interface PostJsonOptions {
   providerId: string
@@ -28,6 +46,8 @@ export interface PostJsonOptions {
   signal?: AbortSignal
   /** Values redacted from any server text that echoes them: the key, the base URL's path and the header values. */
   redact?: readonly string[]
+  /** What the adapter reads of a failed reply's body, handed the body parsed as JSON, or `undefined` when it is none. */
+  errorHints?: (body: unknown) => ErrorHints
 }
 
 /** Every form in which a server may echo the secret. */
@@ -226,6 +246,109 @@ async function readErrorText(response: Response): Promise<string> {
   }
 }
 
+/** The number if it is positive and finite, else nothing: a hint of 0, a negative one or one that is no number is none. */
+function positiveOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : undefined
+}
+
+/** `value` times `unit`, when it is written as decimal digits with an optional fraction. */
+function scaled(value: string | null, unit: number): number | undefined {
+  return value !== null && DECIMAL.test(value)
+    ? positiveOrUndefined(Number(value) * unit)
+    : undefined
+}
+
+/** The wait, in milliseconds, until an HTTP date written as an IMF-fixdate, given the wall clock `now`. */
+function untilDate(value: string | null, now: number): number | undefined {
+  return value !== null && IMF_FIXDATE.test(value)
+    ? positiveOrUndefined(Date.parse(value) - now)
+    : undefined
+}
+
+/**
+ * The wait a failed reply asks for, in milliseconds: `retry-after-ms`, then `retry-after` in seconds, then
+ * `retry-after` as an HTTP date less `now`, the wall clock in milliseconds. The first that is a positive
+ * finite number is the hint. A value is read as decimal digits with an optional fraction, or as an
+ * IMF-fixdate matched by its shape before `Date.parse` reads it, since the runtimes read a bare `1` or
+ * `120` as a year and the other date forms as local time. Anything else is no hint, and the header is
+ * never copied anywhere.
+ */
+export function retryAfterHint(headers: Headers, now: number): number | undefined {
+  const after = headers.get('retry-after')
+  return scaled(headers.get('retry-after-ms'), 1) ?? scaled(after, 1000) ?? untilDate(after, now)
+}
+
+/** The own property `key` of `value` when it is an object, else nothing: the body is untrusted, and so is its prototype. */
+function member(value: unknown, key: string): unknown {
+  return typeof value === 'object' && value !== null && Object.hasOwn(value, key)
+    ? (value as Record<string, unknown>)[key]
+    : undefined
+}
+
+function isSpendCode(code: unknown): boolean {
+  return typeof code === 'string' && (SPEND_CODES.has(code) || code.endsWith(SPEND_LIMIT_SUFFIX))
+}
+
+/**
+ * What the body of a failed reply says of a retry that the vendors' own codes settle: `false` for a used-up
+ * credit, spend limit or quota (OpenAI's `error.code`, or its `error.type` for `insufficient_quota`, and
+ * Anthropic's `error.details.error_code`), `true` for OpenRouter's 402 of its in-flight budget when the
+ * reply is `hinted` with a wait, else `undefined`, and the status decides. A code is only compared, never
+ * copied. This checks objects with a local test, since `options.ts` imports this module.
+ */
+export function vendorRetryable(body: unknown, status: number, hinted: boolean): boolean | undefined {
+  const error = member(body, 'error')
+  if (isSpendCode(member(error, 'code')) || member(error, 'type') === 'insufficient_quota' || member(member(error, 'details'), 'error_code') === ANTHROPIC_SPEND_CODE) return false
+  if (status === 402 && hinted && member(member(error, 'metadata'), 'limit_source') === OPENROUTER_IN_FLIGHT) return true
+  return undefined
+}
+
+/** The body as JSON, or nothing when it is none. */
+function jsonOrUndefined(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
+/** A failed reply's error: its message quotes the body, and its hint and verdict are numbers and booleans, never text. */
+function httpFailure(options: PostJsonOptions, response: Response, text: string): ProviderError {
+  const { providerId, redact } = options
+  const { status } = response
+  const body = jsonOrUndefined(text)
+  const extra = options.errorHints?.(body) ?? {}
+  const retryAfterMs = retryAfterHint(response.headers, Date.now()) ?? positiveOrUndefined(extra.retryAfterMs)
+  const said = response.headers.get('x-should-retry')
+  const verdicts = [
+    said === 'false'
+      ? false
+      : said === 'true'
+        ? true
+        : undefined,
+    vendorRetryable(body, status, retryAfterMs !== undefined),
+    extra.retryable,
+  ]
+  const retryable = verdicts.includes(false)
+    ? false
+    : verdicts.includes(true)
+      ? true
+      : undefined
+  const redirect = status >= 300 && status < 400
+    ? ' (redirects are not followed)'
+    : ''
+  return new ProviderError({
+    providerId,
+    kind: 'http',
+    message: `HTTP ${status}${redirect}: ${snippet(text, MAX_ERROR_BODY, redact)}`,
+    status,
+    retryAfterMs,
+    retryable,
+  })
+}
+
 /**
  * POST a JSON body and return the parsed JSON reply. A redirect is not followed: it is an `http` error,
  * so a key sent in any header never reaches another endpoint. The runtimes' own timers are off, so
@@ -233,9 +356,15 @@ async function readErrorText(response: Response): Promise<string> {
  * A reply body over 16 MiB is refused unread. Every failure is a `ProviderError` without a `cause`:
  * the runtime's own error text can hold the URL with its credentials or a header value, so it is
  * never copied, and no header value appears in a message.
+ *
+ * A failed reply's error quotes the body in its message, as it always did, and carries what the reply
+ * says of a retry as a number and a boolean, never as text: `retryAfterMs` from `retry-after-ms` or
+ * `retry-after`, else from `errorHints`, and `retryable` when the reply settles it, which a "never" wins:
+ * `x-should-retry: false`, a used-up credit, spend limit or quota, or a hook's, else `x-should-retry: true`
+ * or OpenRouter's in-flight 402 with a hint, else the status decides.
  */
 export async function postJson<T>(options: PostJsonOptions): Promise<T> {
-  const { providerId, url, headers, body, signal, redact } = options
+  const { providerId, url, headers, body, signal } = options
   const fail = (kind: ProviderErrorKind, message: string, status?: number): ProviderError =>
     new ProviderError({ providerId, kind, message, status })
   const lost = (what: string, error: unknown): ProviderError => signal?.aborted
@@ -266,13 +395,7 @@ export async function postJson<T>(options: PostJsonOptions): Promise<T> {
     throw lost('request to', error)
   }
 
-  if (!response.ok) {
-    const { status } = response
-    const redirect = status >= 300 && status < 400
-      ? ' (redirects are not followed)'
-      : ''
-    throw fail('http', `HTTP ${status}${redirect}: ${snippet(await readErrorText(response), MAX_ERROR_BODY, redact)}`, status)
-  }
+  if (!response.ok) throw httpFailure(options, response, await readErrorText(response))
 
   let reply: { text: string, complete: boolean }
   try {
