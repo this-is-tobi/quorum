@@ -148,6 +148,7 @@ const incompleteEntry = z.strictObject({
   profile: z.string(),
   reason: z.enum([
     'research-unusable',
+    'research-failed',
     'findings-capped',
     'finding-unreadable',
     'vote-failed',

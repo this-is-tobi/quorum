@@ -116,14 +116,15 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
  * abort and the attempt's deadline abort, and it is checked once more after the profiles have run,
  * a blank diff included, so an aborted review rejects with the signal's reason, whatever error a
  * call it cut raised, and never resolves. No event is delivered once the review is aborted. A sink
- * that throws aborts the review with its error, and a research failure (the call or its reply)
- * aborts it with that failure where it fails, so no other profile starts a call after it; any other
- * failure aborts the review when the profiles' run rejects. Either way the review rejects with the
- * first reason. An abort after `run:end` has no effect: the review is over.
+ * that throws aborts the review with its error, and a gating profile's research failure (the call or
+ * its reply) aborts it with that failure where it fails, so no other profile starts a call after
+ * it; any other failure aborts the review when the profiles' run rejects. Either way the review
+ * rejects with the first reason. An advisory profile's research failure is its `research-failed`
+ * gap and aborts nothing. An abort after `run:end` has no effect: the review is over.
  *
  * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, options that are not an object, a `signal` that is not an AbortSignal
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
- * @throws the error of a sink that throws, or of a profile that fails: a ProviderError from its research call, an OutputError for its reply
+ * @throws the error of a sink that throws, or of a gating profile that fails: a ProviderError from its research call, an OutputError for its reply
  */
 async function review(compiled: Compiled, input: { readonly diff: string }, options: ReviewOptions = {}): Promise<QuorumResult> {
   const issues = reviewIssues(input, options)
@@ -195,7 +196,7 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
   }
   for (const flag of flags) emit({ type: 'flag', flag })
   const outcomes = await reviewAll(ctx, runs, scope.diff, sections).catch((error: unknown) => {
-    // A research failure aborted the review where it failed; any other failure aborts it here. The first reason stays the reason.
+    // A gating profile's research failure aborted the review where it failed; any other failure aborts it here. The first reason stays the reason.
     const reason: unknown = signal.aborted ? signal.reason : error
     internal.abort(reason)
     throw reason

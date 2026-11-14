@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
+import { OutputError, PROVIDER_ERROR_KINDS } from '../errors.ts'
 import { parseResearchReply } from '../output.ts'
 import { researchRequest } from '../prompts.ts'
 import type { Finding, IncompleteEntry } from '../types.ts'
 import { verifyFindings } from '../verify.ts'
-import { callProvider, isTooLarge, refusalMessage } from './context.ts'
+import { callProvider, isTooLarge, ownData, refusalMessage } from './context.ts'
 import type { ProfileRun, RunContext } from './context.ts'
 
 /** How many reported findings a research reply may send to the panel; the rest is reported as incomplete. */
@@ -16,7 +17,7 @@ export interface ResearchOutcome {
    * code outside the diff, or names no file). An unreadable finding is reported in `incomplete` only.
    */
   invalid: string[]
-  /** What the run could not review: findings the harness could not read, findings beyond the cap, a reply whose findings were all unusable, or a research request refused as too large. */
+  /** What the run could not review: findings the harness could not read, findings beyond the cap, a reply whose findings were all unusable, a research request refused as too large, or an advisory profile's research that failed. */
   incomplete: IncompleteEntry[]
 }
 
@@ -82,37 +83,81 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
  * panel receives. Each finding dropped for citing code outside the diff is reported by a
  * `finding:invalid` event, and each gap by an `incomplete` event. A research request its provider
  * refused as too large (a `too-large` `ProviderError`) was not sent: the profile reviews nothing,
- * records one `request-too-large` gap, and the other profiles run. Any other failed research
- * call, or a reply that is not a valid envelope, fails the profile and aborts the review where it
- * fails (`callProvider` aborts it for the call), so no other profile starts a call after it.
+ * records one `request-too-large` gap, and the other profiles run. For any other failed research,
+ * the call after its retries or a reply that is not a valid envelope, a gating profile fails and
+ * aborts the review where it fails (`onFailure` aborts it for the call), so no other profile starts
+ * a call after it; an advisory profile's failure is its own `research-failed` gap, in words the code
+ * writes, and the other profiles run. A review that is aborted rejects with its reason, never with a
+ * gap.
  *
- * @throws ProviderError, or whatever a custom provider throws, when the research call fails for any other reason than a refusal as too large
- * @throws OutputError when the reply is not one JSON object holding a `findings` array and nothing else
+ * @throws ProviderError, or whatever a custom provider throws, when a gating profile's research call fails for any other reason than a refusal as too large
+ * @throws OutputError when a gating profile's reply is not one JSON object holding a `findings` array and nothing else
  */
 export async function research(ctx: RunContext, run: ProfileRun, diff: string, sections: ReadonlyMap<string, string>): Promise<ResearchOutcome> {
+  let attempts = 1
   let text: string
   try {
-    text = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, () => researchRequest(run.research.instructions, diff, run.guidelines))
+    text = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, () => researchRequest(run.research.instructions, diff, run.guidelines), (error, made) => {
+      attempts = made
+      if (run.gating && !isTooLarge(error)) ctx.fail(error)
+    })
   } catch (error) {
-    if (!isTooLarge(error)) throw error
-    // An aborted review rejects with its reason, never with a gap.
-    ctx.signal.throwIfAborted()
-    const entry: IncompleteEntry = { profile: run.id, reason: 'request-too-large', detail: `the research request was not sent: ${refusalMessage(error)}` }
-    ctx.emit({ type: 'incomplete', entry })
-    return {
-      findings: [],
-      invalid: [],
-      incomplete: [entry],
+    // A review that is aborted rejects with its reason, never with a gap.
+    if (isTooLarge(error)) {
+      ctx.signal.throwIfAborted()
+      return gap(ctx, { profile: run.id, reason: 'request-too-large', detail: `the research request was not sent: ${refusalMessage(error)}` })
     }
+    // A gating profile's failure aborted the review where it failed (`onFailure`).
+    if (run.gating) throw error
+    ctx.signal.throwIfAborted()
+    return gap(ctx, {
+      profile: run.id,
+      reason: 'research-failed',
+      detail: researchFailed(error, attempts),
+    })
   }
   let outcome: ResearchOutcome
   try {
     outcome = checkReply(text, sections, run.id, ctx.maxFindings)
   } catch (error) {
-    ctx.fail(error)
-    throw error
+    if (run.gating || !(error instanceof OutputError)) {
+      ctx.fail(error)
+      throw error
+    }
+    ctx.signal.throwIfAborted()
+    return gap(ctx, { profile: run.id, reason: 'research-failed', detail: `the research reply could not be read: ${error.reason}` })
   }
   for (const reason of outcome.invalid) ctx.emit({ type: 'finding:invalid', profile: run.id, reason })
   for (const entry of outcome.incomplete) ctx.emit({ type: 'incomplete', entry })
   return outcome
+}
+
+/** A profile that reviews nothing: the one gap it records, reported by an `incomplete` event. */
+function gap(ctx: RunContext, entry: IncompleteEntry): ResearchOutcome {
+  ctx.emit({ type: 'incomplete', entry })
+  return {
+    findings: [],
+    invalid: [],
+    incomplete: [entry],
+  }
+}
+
+/**
+ * What a failed research call says in a gap, in words the code writes: `the research call failed`,
+ * then ` (<kind>)` when the failure's own data `kind` is a kind of `ProviderError`, with ` <status>`
+ * after an `http` kind when its own data `status` is an HTTP status, then ` after <n> attempts` when
+ * the call made more than one. The provider's message, which can quote a server, is never read: a
+ * gating review rejects with it, and a gap carries nothing a server or a model wrote.
+ */
+function researchFailed(error: unknown, attempts: number): string {
+  const kind = PROVIDER_ERROR_KINDS.find(known => known === ownData(error, 'kind'))
+  const status = ownData(error, 'status')
+  const isStatus = typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
+  const named = kind === 'http' && isStatus
+    ? `${kind} ${status}`
+    : kind
+  const words = ['the research call failed']
+  if (named !== undefined) words.push(`(${named})`)
+  if (attempts > 1) words.push(`after ${attempts} attempts`)
+  return words.join(' ')
 }

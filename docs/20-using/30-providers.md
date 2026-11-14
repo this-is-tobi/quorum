@@ -681,7 +681,7 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 
 The core raises one more itself: a provider whose reply has no string `text` fails that call with `<id>: returned no reply text`, of kind `invalid-response`.
 
-The core retries a call as [Deadlines and retries](#deadlines-and-retries) says. A failed research call fails the review, unless it is a `too-large` refusal: the CLI exits `3`, and `review` rejects with the error. A failed vote is recorded in the vote's `error` and counts as a reject: [Failed votes](./50-lenses-and-policy.md#failed-votes).
+The core retries a call as [Deadlines and retries](#deadlines-and-retries) says. A gating profile's failed research call fails the review, unless it is a `too-large` refusal: the CLI exits `3`, and `review` rejects with the error; an advisory profile's is a `research-failed` gap, and the other profiles go on. A failed vote is recorded in the vote's `error` and counts as a reject: [Failed votes](./50-lenses-and-policy.md#failed-votes).
 
 ## Writing a provider
 

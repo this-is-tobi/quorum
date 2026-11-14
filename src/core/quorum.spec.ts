@@ -1954,6 +1954,150 @@ describe('failure', () => {
   })
 })
 
+describe('an advisory profile\'s failed research', () => {
+  const quiet: Profile = { ...style, gating: false }
+
+  /** A provider that fails every call with `error`, and states `retries` when it is given. */
+  const failing = (error: unknown, retries?: number): Provider => ({
+    id: 'styled',
+    model: 'styled-model',
+    ...retries === undefined
+      ? {}
+      : { retries },
+    async complete() {
+      throw error
+    },
+  })
+
+  /** A review of the security profile on providers that work, and of `quiet` with `research`. */
+  function reviewWith(research: Provider, extras: { events?: QuorumEvent[], signal?: AbortSignal } = {}): Promise<QuorumResult> {
+    const working = fake('security', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
+    const { events } = extras
+    return createQuorum({
+      profiles: [securityProfile, quiet],
+    }, {
+      profiles: {
+        ...portsFor(securityProfile, working).profiles,
+        ...portsFor(quiet, research).profiles,
+      },
+      ...events === undefined
+        ? {}
+        : {
+            events: (event: QuorumEvent) => { events.push(event) },
+          },
+    }).review({ diff }, { signal: extras.signal })
+  }
+
+  it('records a research-failed gap of the advisory profile, in words the code wrote, and the other profiles go on', async () => {
+    const events: QuorumEvent[] = []
+    const busy = new ProviderError({
+      providerId: 'styled',
+      kind: 'http',
+      status: 503,
+      message: 'HTTP 503: "busy now"',
+    })
+    const result = await reviewWith(failing(busy), { events })
+    const gap = { profile: 'style', reason: 'research-failed', detail: 'the research call failed (http 503)' }
+    expect(result.kept.map(verdict => [verdict.profile, verdict.confidence])).toEqual([
+      ['security', 'high'],
+    ])
+    expect(result.meta.incomplete).toEqual([gap])
+    expect(events).toContainEqual({ type: 'incomplete', entry: gap })
+    expect(JSON.stringify(result.meta)).not.toContain('busy')
+  })
+
+  it('records an advisory profile\'s reply that is no findings envelope as research-failed, naming the parser\'s reason', async () => {
+    const result = await reviewWith(fake('styled', () => 'No issues found.'))
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'style', reason: 'research-failed', detail: 'the research reply could not be read: reply contains no JSON object' },
+    ])
+    expect(result.kept.map(verdict => verdict.profile)).toEqual(['security'])
+  })
+
+  it.each<[string, unknown, number | undefined, string]>([
+    [
+      'a network failure after its retries',
+      new ProviderError({ providerId: 'styled', kind: 'network', message: 'down' }),
+      2,
+      'the research call failed (network) after 3 attempts',
+    ],
+    [
+      'a refusal, which is not retried',
+      new ProviderError({ providerId: 'styled', kind: 'refusal', message: 'no' }),
+      2,
+      'the research call failed (refusal)',
+    ],
+    [
+      'an http failure of no status',
+      new ProviderError({
+        providerId: 'styled',
+        kind: 'http',
+        retryable: false,
+        message: 'no',
+      }),
+      undefined,
+      'the research call failed (http)',
+    ],
+    [
+      'an http failure of a status that is no HTTP status',
+      new ProviderError({
+        providerId: 'styled',
+        kind: 'http',
+        status: 999,
+        message: 'no',
+      }),
+      undefined,
+      'the research call failed (http)',
+    ],
+    [
+      'an error of no kind',
+      new Error('secret detail'),
+      undefined,
+      'the research call failed',
+    ],
+    [
+      'a kind no provider error has',
+      Object.assign(new Error('secret detail'), { kind: '<b>x</b>' }),
+      undefined,
+      'the research call failed',
+    ],
+  ])('words %s', async (_name, error, retries, detail) => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    onTestFinished(() => {
+      vi.restoreAllMocks()
+    })
+    const result = await reviewWith(failing(error, retries))
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'style', reason: 'research-failed', detail },
+    ])
+    expect(JSON.stringify(result.meta)).not.toContain('secret')
+  })
+
+  it('rejects with the abort\'s reason when the review is aborted, never with a gap', async () => {
+    const controller = new AbortController()
+    const reason = new Error('stopped')
+    const research: Provider = {
+      id: 'styled',
+      model: 'styled-model',
+      async complete() {
+        controller.abort(reason)
+        throw new ProviderError({ providerId: 'styled', kind: 'network', message: 'cut' })
+      },
+    }
+    await expect(reviewWith(research, { signal: controller.signal })).rejects.toBe(reason)
+  })
+
+  it('keeps an advisory profile\'s research refused as too large a request-too-large gap', async () => {
+    const refused = new ProviderError({ providerId: 'styled', kind: 'too-large', message: 'may need 9 tokens' })
+    const result = await reviewWith(failing(refused))
+    expect(result.meta.incomplete.map(entry => [entry.profile, entry.reason])).toEqual([
+      ['style', 'request-too-large'],
+    ])
+  })
+})
+
 describe('a request too large for its provider', () => {
   const MESSAGE = 'may need 9 tokens, more than contextTokens (8)'
   const refusing = (id: string): Fake => fake(id, () => {

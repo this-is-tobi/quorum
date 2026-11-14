@@ -349,6 +349,20 @@ describe('runCli', () => {
     expect(result.meta.profiles.security.gating).toBe(false)
   })
 
+  it('exits 0 with a research-failed gap when the one profile is advisory and its research fails', async () => {
+    const advisory = write('advisory.yaml', 'profiles:\n  security: {gating: false}\n')
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')))
+    const { io, stdout, stderr } = harness({
+      cwd: dir,
+      env: { ...MODEL, QUORUM_CONFIG: advisory },
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const gap = { profile: 'security', reason: 'research-failed', detail: 'the research call failed (network) after 3 attempts' }
+    expect(JSON.parse(stdout()).meta.incomplete).toEqual([gap])
+    expect(stderr()).toContain(`incomplete: research-failed (${gap.detail})`)
+  })
+
   it('exits 4 when the research reply lists only unusable findings', async () => {
     const fetchMock = stubChat(JSON.stringify({
       findings: [
@@ -741,6 +755,15 @@ describe('exitCodeFor', () => {
         refused('style'),
       ]), { allowIncomplete })).toBe(EXIT.ok)
     }
+  })
+
+  it('never lifts a research-failed gap of a gating profile, which only a result built by hand holds', () => {
+    expect(exitCodeFor(withGaps({ security: true }, [
+      { profile: 'security', reason: 'research-failed' },
+    ]), { allowIncomplete: true })).toBe(EXIT.incomplete)
+    expect(exitCodeFor(withGaps({ style: false }, [
+      { profile: 'style', reason: 'research-failed' },
+    ]), { allowIncomplete: true })).toBe(EXIT.ok)
   })
 
   it('exits 4 for a binary or submodule gap of a gating profile, even with allowIncomplete, 0 for an advisory one, and 1 beside a gating high finding', () => {

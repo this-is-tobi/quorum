@@ -2,7 +2,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 import type { z } from 'zod'
 import { hiddenLabels } from '../core/sanitize.ts'
 import type { QuorumResult } from '../core/types.ts'
-import { record, RESULT, RUN_SUITE } from '../testing/bench.ts'
+import { record, RESULT, resultWith, RUN_SUITE } from '../testing/bench.ts'
 import { parseRecord, parseRunFile, recordLine, reviewKey } from './records.ts'
 import type { DeniedRecord, ResultRecord, resultSchema, RunFile } from './records.ts'
 
@@ -281,6 +281,17 @@ describe('parseRecord, level by level', () => {
       },
     })
     expect(parseRecord(recordLine(bare).slice(0, -1))).toEqual(bare)
+  })
+
+  it('reads a record whose result holds a research-failed gap', () => {
+    const failed = record({
+      result: resultWith({
+        incomplete: [
+          { profile: 'security', reason: 'research-failed', detail: 'the research call failed (http 503) after 3 attempts' },
+        ],
+      }),
+    })
+    expect(parseRecord(recordLine(failed).slice(0, -1))).toEqual(failed)
   })
 
   it('drops a __proto__ key of a record without letting it reach a prototype', () => {

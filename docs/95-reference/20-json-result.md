@@ -71,7 +71,7 @@ A usage count is valid when it is a finite number of at least 0. A failed call's
 | Field | Type | Holds |
 | --- | --- | --- |
 | `profile` | string | The profile whose run has the gap |
-| `reason` | string | One of the seven [incomplete reasons](#incomplete-reasons) |
+| `reason` | string | One of the eight [incomplete reasons](#incomplete-reasons) |
 | `file` | string | The file of the finding the gap is about, when it is about one finding the harness could read: `vote-failed` has it, and so does a vote's `request-too-large` |
 | `detail` | string | What is missing, in words |
 
@@ -116,6 +116,7 @@ A detail names at most eight code points or patterns, then `and N more`. [Adviso
 | `finding-unreadable` | A finding among the first `maxFindings` the research reply lists does not match the reply schema, names an empty file or a line below 1, or holds an object or array under a key the schema does not name | `findings[<index>]: ` and what is wrong: `findings[4]: quote: Invalid input: expected string, received undefined`, `findings[2]: file must be non-empty and line at least 1`, or `findings[3]: carries a nested object or array outside the reply schema` |
 | `findings-capped` | The reply lists more findings than `maxFindings`, 50 by default: the rest are counted, not read | `12 of 62 reported findings were not reviewed (the cap is 50)` |
 | `research-unusable` | The reply lists findings, and not one of those read is usable: each was unreadable or cited code outside the diff | `2 finding(s) reported, none usable`, or, when the cap applied, `62 finding(s) reported, the first 50 read, none usable` |
+| `research-failed` | An advisory profile's research call failed after its retries, or its reply was not one JSON object holding a `findings` array and nothing else: the profile reviews nothing, and the gap gates nothing. A gating profile's ends the review instead, exit `3` | `the research call failed (http 503) after 3 attempts`, or `the research reply could not be read: reply contains no JSON object` |
 | `vote-failed` | A kept finding's failed votes, had they been keeps, would have raised it to a higher level | `"src/a.js":12 is kept at medium, but 1 failed vote(s) could have made it high`, the file written as a JSON string |
 | `request-too-large` | A request may not fit its provider's context, so it was not sent: the profile's research request, which leaves the profile with no finding, or the vote requests of a finding, each a failed vote | `the research request was not sent: <the provider's message>`, or `"src/a.js":12: 2 of 3 vote requests were not sent: <the first provider's message>`, the file written as a JSON string |
 | `binary` | `meta.leftOut` lists a file whose change the diff shows only as binary: one gap per profile, counting the files | `the diff carries no content for 2 binary file(s), listed in meta.leftOut` |

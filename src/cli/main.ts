@@ -33,7 +33,12 @@ const USAGE = [
 ].join('\n')
 
 /** The gaps no flag lifts for a gating profile: a pull request can cause each one. */
-const UNLIFTED: ReadonlySet<IncompleteReason> = new Set(['request-too-large', 'binary', 'submodule'])
+const UNLIFTED: ReadonlySet<IncompleteReason> = new Set([
+  'request-too-large',
+  'binary',
+  'submodule',
+  'research-failed',
+])
 
 const OPTIONS = {
   config: { type: 'string', short: 'c' },
@@ -46,10 +51,11 @@ const OPTIONS = {
 
 /**
  * Run one review and return the process exit code. Never throws: usage and configuration problems
- * exit 2, runtime failures exit 3, an interrupt exits 130, and an incomplete review (a finding its
- * failed votes left undecided, or a research gap) of a gating profile exits 4 unless a `high` finding
- * was kept by a gating profile, so CI can tell a broken run and a partial review from a real finding
- * (exit 1) and from a clean one (exit 0). `exitCodeFor` maps the result; advisory flags never change it.
+ * exit 2, a gating profile's failed research and other runtime failures exit 3, an interrupt exits
+ * 130, and an incomplete review (a finding its failed votes left undecided, or a research gap) of a
+ * gating profile exits 4 unless a `high` finding was kept by a gating profile, so CI can tell a
+ * broken run and a partial review from a real finding (exit 1) and from a clean one (exit 0).
+ * `exitCodeFor` maps the result; advisory flags never change it.
  *
  * It reads at most 16 MiB of diff, from stdin or a file, counted in bytes: a larger diff is a usage error,
  * and reading stops at the chunk that crosses the cap.
@@ -176,7 +182,10 @@ export function interruptSignal(source: SignalSource, exit: (code: number) => vo
  * an unreviewed finding or a gap belongs to a gating profile (unless `allowIncomplete` turns it into
  * 0, which it does for every gap but a `request-too-large`, `binary` or `submodule` one), 0 otherwise.
  * A profile gates unless `meta.profiles` holds it with `gating: false`, so a profile missing from the
- * result counts as gating and a gap never hides.
+ * result counts as gating and a gap never hides. The set no flag lifts holds `research-failed` too,
+ * as a guard no review meets: a review records that gap for an advisory profile alone, and a gating
+ * profile's failed research ends it with exit 3, but a result built by hand could hold one, and a
+ * review that read nothing is never turned into exit 0.
  *
  * A `request-too-large`, `binary` or `submodule` gap of a gating profile exits 4 whatever
  * `allowIncomplete` says: a pull request can cause the first by padding the diff until a request is

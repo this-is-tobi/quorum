@@ -350,6 +350,30 @@ describe('the retries of a call', () => {
     expect(read).toBe(false)
   })
 
+  it('calls onFailure once, inside the slot, with the last failure and the attempts, before a queued call starts', async () => {
+    const clock = fakeClock(0)
+    const { ctx, failures } = context(clock)
+    const order: string[] = []
+    const thrown = new ProviderError({ providerId: 'p', kind: 'network', message: 'down' })
+    const down = target(async () => {
+      throw thrown
+    }, { retries: 1 })
+    const behind = target(async () => {
+      order.push('queued started')
+      return { text: 'queued', model: 'm' }
+    })
+    const researcher: Requester = { profile: 'security', role: 'research' }
+    const first = settle(clock, callProvider(ctx, researcher, down, () => request, (error, attempts) => {
+      order.push(`failed ${attempts} ${error === thrown}`)
+    })).catch(() => {
+      order.push('first settled')
+    })
+    const queued = callProvider(ctx, requester, behind, () => request)
+    await Promise.all([first, queued])
+    expect(order).toEqual(['failed 2 true', 'queued started', 'first settled'])
+    expect(failures).toEqual([])
+  })
+
   it('gives a provider that states no retries none, and reads stated retries as own data', () => {
     const complete = async (): Promise<CompletionResponse> => ({ text: '', model: 'm' })
     const provider: Provider = { id: 'p', model: 'm', complete }

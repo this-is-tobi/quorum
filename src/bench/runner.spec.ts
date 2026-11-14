@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { OutputError, ProviderError } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
-import { EXEC_FINDING, fakeConfig, writeSuite } from '../testing/bench.ts'
+import { EXEC_FINDING, fakeConfig, fakeProvider, resolvedConfig, writeSuite } from '../testing/bench.ts'
 import type { FakeModel } from '../testing/bench.ts'
 import { parseRecord } from './records.ts'
 import type { Denial, ResultRecord } from './records.ts'
@@ -231,6 +231,40 @@ describe('runReviews', () => {
       type: 'failed',
       review: review('exec', 0),
       error: expect.objectContaining({ message: 'research failed' }),
+    })
+  })
+
+  it('records a review whose advisory profile\'s research failed with its gap, as neither a failure nor a denial', async () => {
+    const { outcome, lines } = await run([], [
+      review('exec'),
+    ], {
+      configurations: [
+        {
+          config: resolvedConfig({
+            providers: {
+              fake: fakeProvider({ failResearch: true }),
+            },
+            profiles: {
+              security: { gating: false },
+            },
+          }),
+          fingerprint: A,
+        },
+      ],
+    })
+    expect(outcome).toEqual({ recorded: 1, failed: 0, interrupted: false })
+    const recorded = parseRecord(lines[0].slice(0, -1))
+    expect(recorded).not.toHaveProperty('denied')
+    expect(recorded).toMatchObject({
+      calls: 1,
+      failedCalls: 1,
+      result: {
+        meta: {
+          incomplete: [
+            { profile: 'security', reason: 'research-failed', detail: 'the research call failed' },
+          ],
+        },
+      },
     })
   })
 

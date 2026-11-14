@@ -137,7 +137,7 @@ echo $code
 | `0` | The review is complete, and no gating profile kept a `high` finding | Pass |
 | `1` | A gating profile kept a `high` finding; the security profile gates | Fail: read the kept findings |
 | `2` | A usage or configuration error: nothing was reviewed | Fail: fix the command or the variables |
-| `3` | The research call failed: nothing was reviewed | Fail: fix the endpoint, or run again |
+| `3` | A gating profile's research call failed: nothing was reviewed | Fail: fix the endpoint, or run again |
 | `4` | The review is incomplete, and no gating profile kept a `high` finding | Fail: read the unreviewed findings and `meta.incomplete`; run again only for a failed vote |
 | `130` | The run was interrupted by SIGINT or SIGTERM: nothing was reviewed | Fail: the job was cancelled, run it again |
 
