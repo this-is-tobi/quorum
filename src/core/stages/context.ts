@@ -51,16 +51,16 @@ export interface RunContext {
   /** Delivers one event of the review to the sink, as a copy; it delivers nothing once the review is aborted. */
   readonly emit: EventSink
   /**
-   * Aborted when the caller's signal is, when the event sink throws, when a profile's research fails
+   * Aborted when the caller's signal is, when the event sink throws, when a gating profile's research fails
    * or when the profiles' run rejects: every stage and every call checks it, and every attempt
    * carries a signal of its own, which this one and the attempt's deadline abort.
    */
   readonly signal: AbortSignal
   /**
    * Aborts the review with `error`, unless it is already aborted, so a caller's abort reason or a
-   * sink's error stays the reason. A research failure, the call or its reply, calls it where it
-   * fails, so no other profile starts a call after it; a research request refused as too large is
-   * a gap, not a failure, and does not.
+   * sink's error stays the reason. A gating profile's research failure, the call or its reply, calls
+   * it where it fails, so no other profile starts a call after it; an advisory profile's research
+   * failure is a gap, like a research request refused as too large, and does not.
    */
   readonly fail: (error: unknown) => void
   /** How many findings of a research reply each profile sends to the panel. */
@@ -179,21 +179,20 @@ export function elapsed(started: number): number {
  * them holding the slot: the review's abort ends a wait at once, and no failure is retried once the
  * review is aborted. Each attempt has the provider's deadline, and the provider is handed the
  * attempt's own signal, so it can stop a call in flight: the review's abort settles the attempt at
- * once, without waiting for the provider. A failed research call aborts the review through
- * `ctx.fail` before it leaves its slot, so the queued call the slot goes to next never starts,
- * unless the provider refused the request as too large: that refusal is a gap, never a reason to
- * stop the other profiles, so the research stage records it. A failed vote does not abort the
- * review, since the panel records it. The duration is measured inside the slot, from the first
- * attempt, once the request is built, to the call's end, the waits included: the provider's
- * latency, not the time the call waited for a slot or took to build its request. A reply whose
- * text is not a string is a `ProviderError`. Each call emits one `call` event, which names the
- * provider by the ref captured at creation, never by the live object, and counts its attempts when
- * it made more than one: failed, before the error is rethrown, with the usage summed over its
- * attempts when their counts are valid, or ok, with that usage. The ok event is emitted outside the
- * `try` that catches the provider's failure, so a sink that throws on it is never reported as a
- * failed call.
+ * once, without waiting for the provider. A call whose last attempt failed hands that failure and
+ * its attempts to `onFailure`, once, inside its slot, after its failed event and before the
+ * rethrow: the research stage aborts the review there for a gating profile, so the queued call the
+ * slot goes to next never starts. A failed vote has no `onFailure`: the panel records it. The
+ * duration is measured inside the slot, from the first attempt, once the request is built, to the
+ * call's end, the waits included: the provider's latency, not the time the call waited for a slot
+ * or took to build its request. A reply whose text is not a string is a `ProviderError`. Each call
+ * emits one `call` event, which names the provider by the ref captured at creation, never by the
+ * live object, and counts its attempts when it made more than one: failed, before the error is
+ * rethrown, with the usage summed over its attempts when their counts are valid, or ok, with that
+ * usage. The ok event is emitted outside the `try` that catches the provider's failure, so a sink
+ * that throws on it is never reported as a failed call.
  */
-export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest): Promise<string> {
+export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest, onFailure?: (error: unknown, attempts: number) => void): Promise<string> {
   return ctx.limit(async () => {
     ctx.signal.throwIfAborted()
     const request = buildRequest()
@@ -224,8 +223,8 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
             ok: false,
             ...counted(attempts, usage),
           })
-          // Still inside the slot: the queued call it is handed to next sees the abort and never starts.
-          if (requester.role === 'research' && !isTooLarge(error)) ctx.fail(error)
+          // Still inside the slot: a review aborted here never starts the queued call the slot goes to next.
+          onFailure?.(error, attempts)
           throw error
         }
         timedOut ||= isTimeout(facts)

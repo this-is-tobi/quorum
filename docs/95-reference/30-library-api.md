@@ -104,8 +104,8 @@ It resolves with the [result](./20-json-result.md), or rejects:
 | A `ConfigError` | The input is malformed, before any event: `input: must be an object holding the diff string` when the input is not an object, such as the diff text passed on its own; `diff: must be a string`; `options: must be an object`; or `signal: must be an AbortSignal` |
 | The signal's reason | The signal aborted, before the review or while it ran |
 | The sink's error | The event sink threw |
-| A `ProviderError`, or what a provider of your own throws | A profile's research call failed, unless it was a refusal of kind `too-large`, which is a gap |
-| An `OutputError` | A profile's research reply is not one JSON object holding a `findings` array and nothing else |
+| A `ProviderError`, or what a provider of your own throws | A gating profile's research call failed, unless it was a refusal of kind `too-large`, which is a gap |
+| An `OutputError` | A gating profile's research reply is not one JSON object holding a `findings` array and nothing else |
 
 A failed vote never rejects a review: it is recorded in its verdict.
 
@@ -159,7 +159,7 @@ An aborted review never resolves, and never fails open:
 - **The signal is checked before every stage, and inside every call's concurrency slot** before the provider is called, so a call still queued when the review is aborted never starts. Every request carries its attempt's signal, so a provider can stop a call in flight. It is checked once more after the profiles have run, a blank diff included, so an abort that lands when no stage is left to check still rejects.
 - **A vote cut by the abort is never a failed vote.** It rethrows the abort's reason, so an aborted review never resolves with a finding the abort left unreviewed, and the review rejects at once, without waiting for the votes still in flight.
 - **No event is delivered once the review is aborted.**
-- **One failed profile stops the others.** A profile whose research fails aborts the review with that error, and the review rejects with it. When the research call itself fails, the review is aborted before the call's concurrency slot is released, so no other profile starts a call after it. When the reply is not a valid envelope, the review is aborted when the reply is checked, which happens after the call has released its slot, so a call another profile had queued may already have started. Either way, no event arrives after the rejection.
+- **One failed gating profile stops the others.** A gating profile whose research fails aborts the review with that error, and the review rejects with it. An advisory profile's failed research, the call or its reply, is its `research-failed` gap instead: it aborts nothing, and the other profiles go on. When the research call itself fails, the review is aborted before the call's concurrency slot is released, so no other profile starts a call after it. When the reply is not a valid envelope, the review is aborted when the reply is checked, which happens after the call has released its slot, so a call another profile had queued may already have started. Either way, no event arrives after the rejection.
 - **An abort after `run:end` has no effect**: the review is over, and resolves with its result.
 - **The review never waits for a call it stopped.** Each attempt has a signal of its own, aborted with the review's or at its deadline, and the review settles the attempt at once; the shipped adapters stop their request or process on it, and a provider that ignores it works on, outside the review.
 
@@ -172,7 +172,7 @@ An aborted review never resolves, and never fails open:
 | `ProviderError` | `QuorumError` | `providerId`, `kind`, `status`, `retryable`, `retryAfterMs`, `usage` | A provider call that failed: [`ProviderError`](../20-using/30-providers.md#providererror) |
 | `OutputError` | `QuorumError` | `stage`, `reason`; `snippet`, the first 200 characters of the reply | A model reply that could not be read: `<stage> reply unusable: <reason> (reply starts: "<snippet>")` |
 
-A failed research call rejects the review with its `ProviderError`, and an unusable research reply with its `OutputError`. The same errors from a vote are recorded in the vote's `error` instead. A `ProviderError` of kind `too-large`, from research or from a vote, is a `request-too-large` gap instead: the review does not reject, and a provider of your own raises it to have its own refusal of an oversized request recorded so. Any object with an own `kind` property of `'too-large'` counts, whatever its class, so a refusal from a second copy of quorum is a gap too.
+A gating profile's failed research call rejects the review with its `ProviderError`, and its unusable research reply with its `OutputError`. An advisory profile's is its `research-failed` gap instead, in words the code writes: `the research call failed (http 503) after 3 attempts`, or `the research reply could not be read: <reason>`, which quote nothing a server or a model wrote. The same errors from a vote are recorded in the vote's `error` instead. A `ProviderError` of kind `too-large`, from research or from a vote, is a `request-too-large` gap instead: the review does not reject, and a provider of your own raises it to have its own refusal of an oversized request recorded so. Any object with an own `kind` property of `'too-large'` counts, whatever its class, so a refusal from a second copy of quorum is a gap too.
 
 ## Config types
 

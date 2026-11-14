@@ -69,18 +69,22 @@ export class ConfigError extends QuorumError {
   }
 }
 
+/** Every kind of a provider call's failure: the kinds a `ProviderError` has, and the only ones a gap's detail names. */
+export const PROVIDER_ERROR_KINDS = [
+  'http',
+  'network',
+  'process',
+  'timeout',
+  'aborted',
+  'refusal',
+  'truncated',
+  'invalid-response',
+  'unsupported',
+  'too-large',
+] as const
+
 /** What went wrong with a provider call. `retryable` is derived from it, unless the adapter sets it. */
-export type ProviderErrorKind
-  = | 'http'
-    | 'network'
-    | 'process'
-    | 'timeout'
-    | 'aborted'
-    | 'refusal'
-    | 'truncated'
-    | 'invalid-response'
-    | 'unsupported'
-    | 'too-large'
+export type ProviderErrorKind = typeof PROVIDER_ERROR_KINDS[number]
 
 const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([408, 409, 429])
 

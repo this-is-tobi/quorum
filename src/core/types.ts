@@ -108,19 +108,22 @@ export interface Verdict extends Finding {
 export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
 
 /**
- * Why part of a review is missing, as an `IncompleteEntry` records it. `request-too-large`: a
- * provider refused a request that may not fit its model's context, so it was not sent. `binary` and
- * `submodule`: the diff carries no content for a file, shown only as binary or as a submodule's
- * commit; `meta.leftOut` lists the files.
+ * Why part of a review is missing, as an `IncompleteEntry` records it. `research-failed`: an
+ * advisory profile's research call failed after its retries, or its reply was no findings
+ * envelope, so the profile reviewed nothing; a gating profile's ends the review instead.
+ * `request-too-large`: a provider refused a request that may not fit its model's context, so it was
+ * not sent. `binary` and `submodule`: the diff carries no content for a file, shown only as binary
+ * or as a submodule's commit; `meta.leftOut` lists the files.
  */
-export type IncompleteReason = 'research-unusable' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'binary' | 'submodule'
+export type IncompleteReason = 'research-unusable' | 'research-failed' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'binary' | 'submodule'
 
 /**
- * Work the run could not review: a research reply with findings but none usable, findings beyond
- * the cap, a finding the harness could not read, a kept finding whose failed votes could have
- * raised it to a higher level, a request its provider refused as too large to send, or a file whose
- * change the diff does not carry, binary or a submodule's commit. It is reported and counted, never
- * dropped silently (ADR-0012).
+ * Work the run could not review: a research reply with findings but none usable, an advisory
+ * profile's research that failed (`research-failed`), findings beyond the cap, a finding the
+ * harness could not read, a kept finding whose failed votes could have raised it to a higher
+ * level, a request its provider refused as too large to send, or a file whose change the diff does
+ * not carry, binary or a submodule's commit. It is reported and counted, never dropped silently
+ * (ADR-0012).
  */
 export interface IncompleteEntry {
   /** The id of the profile whose run has the gap. */
