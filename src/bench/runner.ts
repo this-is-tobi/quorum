@@ -116,6 +116,8 @@ function tallyCalls(): { readonly sink: EventSink, readonly counts: () => Pick<R
  * other rejection (an HTTP, network, timeout or process failure, a reply the server shaped wrong) says
  * nothing of the model's answer, so the review fails and runs again. The classes are matched with
  * `instanceof`: an error from a second copy of quorum is no denial, so it fails, which fails closed.
+ * Only a gating profile's failed research rejects a review: an advisory profile's, the call or its
+ * reply, resolves it with a `research-failed` gap, recorded with its result, neither failed nor denied.
  */
 export function denialOf(error: unknown): Denial | undefined {
   if (error instanceof OutputError) return 'unusable-reply'
