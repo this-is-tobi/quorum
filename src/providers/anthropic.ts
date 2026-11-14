@@ -50,11 +50,14 @@ const FINISHED: ReadonlySet<unknown> = new Set(['end_turn', 'stop_sequence'])
 /**
  * Turn a Messages reply into text, or a `ProviderError`. Every property is read defensively: the reply
  * is untrusted. The stop reason comes first, since a refused or cut-off reply can still hold some text.
+ * The counts are read once, after the body check, and every failure from then on carries them, since the
+ * server generated those tokens.
  */
 function readReply(reply: unknown, { id, model }: Pick<AnthropicOptions, 'id' | 'model'>, redact: readonly string[]): CompletionResponse {
-  const fail = replyFailure(id)
-  if (!isRecord(reply)) throw fail('invalid-response', 'reply is not a JSON object')
+  if (!isRecord(reply)) throw replyFailure(id)('invalid-response', 'reply is not a JSON object')
 
+  const usage = tokenUsage(reply.usage, ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'], ['output_tokens'])
+  const fail = replyFailure(id, usage)
   const reason = reply.stop_reason
   if (reason === 'refusal') throw fail('refusal', 'model refused')
   if (reason === 'max_tokens') throw fail('truncated', 'reply was cut off by the token limit')
@@ -69,7 +72,7 @@ function readReply(reply: unknown, { id, model }: Pick<AnthropicOptions, 'id' | 
     model: typeof reply.model === 'string' && reply.model !== ''
       ? reply.model
       : model,
-    usage: tokenUsage(reply.usage, ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'], ['output_tokens']),
+    usage,
   }
 }
 

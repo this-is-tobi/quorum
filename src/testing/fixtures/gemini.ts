@@ -59,6 +59,23 @@ export const truncated = {
 }
 
 /**
+ * A thinking model cut off while it thinks: `finishReason: 'MAX_TOKENS'`, `content` without `parts`, and a
+ * `usageMetadata` that leaves out `candidatesTokenCount`, which is 0 (Gemini leaves a zero count out of its
+ * JSON). Built after the payloads reported publicly, where `totalTokenCount` is the prompt plus the thoughts.
+ */
+export const thoughtsOnlyCutOff = {
+  candidates: [
+    {
+      content: {},
+      finishReason: 'MAX_TOKENS',
+      index: 0,
+    },
+  ],
+  usageMetadata: { promptTokenCount: 1124, totalTokenCount: 1171, thoughtsTokenCount: 47 },
+  modelVersion: 'gemini-3.8-flash',
+}
+
+/**
  * A reply with a thought summary first and a thought signature on the answer's part
  * (https://aistudio.google.com/docs/thinking?generate-content=true).
  */

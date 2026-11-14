@@ -14,6 +14,12 @@ describe('replyFailure', () => {
     })
     expect(fail('truncated', 'reply was cut off by the token limit')).toMatchObject({ kind: 'truncated', status: undefined, retryable: false })
   })
+
+  it('puts the usage it is given on every error it builds, and none otherwise', () => {
+    expect(replyFailure('p', { inputTokens: 1, outputTokens: 2 })('truncated', 'm').usage).toEqual({ inputTokens: 1, outputTokens: 2 })
+    expect(replyFailure('p', { inputTokens: 1, outputTokens: 2 })('http', 'm', 503).usage).toEqual({ inputTokens: 1, outputTokens: 2 })
+    expect(replyFailure('p')('truncated', 'm').usage).toBeUndefined()
+  })
 })
 
 describe('tokenUsage', () => {

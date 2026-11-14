@@ -275,6 +275,26 @@ describe('anthropic', () => {
     })
   })
 
+  it.each([
+    'refusal',
+    'model_context_window_exceeded',
+  ])('carries the counts of a reply stopped for %s, cache tokens included, on its error', async (stopReason) => {
+    stubFetch({
+      ...message,
+      stop_reason: stopReason,
+      usage: {
+        input_tokens: 50,
+        cache_creation_input_tokens: 1000,
+        cache_read_input_tokens: 2000,
+        output_tokens: 503,
+      },
+    })
+    await expect(provider.complete(request)).rejects.toMatchObject({
+      name: 'ProviderError',
+      usage: { inputTokens: 3050, outputTokens: 503 },
+    })
+  })
+
   it('redacts the key from a stop reason it quotes', async () => {
     stubFetch({ ...message, stop_reason: 'sk-ant-k' })
     await expect(provider.complete(request)).rejects.toMatchObject({ message: 'claude: reply ended early: "[redacted]"' })

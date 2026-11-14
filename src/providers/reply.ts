@@ -9,9 +9,19 @@ export const MAX_MODEL_TEXT = 200
 /** The most characters of a stop reason that an error message quotes. */
 const MAX_REASON = 40
 
-/** The failures of one provider: a `ProviderError` of `kind`, with its message and, for `http`, its status. */
-export function replyFailure(providerId: string): (kind: ProviderErrorKind, message: string, status?: number) => ProviderError {
-  return (kind, message, status) => new ProviderError({ providerId, kind, message, status })
+/**
+ * The failures of one provider: a `ProviderError` of `kind`, with its message and, for `http`, its status.
+ * Each carries `usage`, the counts of a reply the adapter read before it failed, so the review counts the
+ * tokens of a reply it refuses.
+ */
+export function replyFailure(providerId: string, usage?: Usage): (kind: ProviderErrorKind, message: string, status?: number) => ProviderError {
+  return (kind, message, status) => new ProviderError({
+    providerId,
+    kind,
+    message,
+    status,
+    usage,
+  })
 }
 
 /** The count `source` holds under the first key, plus each other key's when it is a number; undefined unless the first is one. */

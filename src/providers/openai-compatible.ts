@@ -98,13 +98,14 @@ function textOf(content: unknown): string | undefined {
  * reply is untrusted, and a malformed shape must fail as a provider error, not as a `TypeError`. A
  * server error comes first, since some servers answer 200 with one beside an empty choice (OpenRouter,
  * for a failure during generation), as `{ error: { message, code } }` or `{ error: "text" }`. A tool the
- * server ran comes next, before a refusal or a finish reason.
+ * server ran comes next, before a refusal or a finish reason. The counts are read once, after the body
+ * check, and every failure from then on carries them, since the server generated those tokens.
  */
 function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 'id' | 'model'>, redact: readonly string[]): CompletionResponse {
-  const fail = replyFailure(id)
+  if (!isRecord(reply)) throw replyFailure(id)('invalid-response', 'reply is not a JSON object')
 
-  if (!isRecord(reply)) throw fail('invalid-response', 'reply is not a JSON object')
-
+  const usage = tokenUsage(reply.usage, ['prompt_tokens'], ['completion_tokens'])
+  const fail = replyFailure(id, usage)
   const { error } = reply
   if (typeof error === 'string' || isRecord(error)) {
     const text = typeof error === 'string'
@@ -149,7 +150,7 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
     model: typeof reply.model === 'string' && reply.model !== ''
       ? reply.model
       : model,
-    usage: tokenUsage(reply.usage, ['prompt_tokens'], ['completion_tokens']),
+    usage,
   }
 }
 

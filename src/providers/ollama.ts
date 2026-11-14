@@ -69,11 +69,14 @@ function format(mode: StructuredOutput, output: CompletionRequest['output']): un
 /**
  * Turn an `/api/chat` reply into text, or a `ProviderError`. Every property is read defensively: the
  * reply is untrusted. A server error comes first: a local server answers one with an error status, but
- * the reply of a remote model could carry one in a 200.
+ * the reply of a remote model could carry one in a 200. The counts are read once, after the body check,
+ * and every failure from then on carries them, since the server generated those tokens.
  */
 function readReply(reply: unknown, { id, model }: Pick<OllamaOptions, 'id' | 'model'>, redact: readonly string[]): CompletionResponse {
-  const fail = replyFailure(id)
-  if (!isRecord(reply)) throw fail('invalid-response', 'reply is not a JSON object')
+  if (!isRecord(reply)) throw replyFailure(id)('invalid-response', 'reply is not a JSON object')
+
+  const usage = tokenUsage(reply, ['prompt_eval_count'], ['eval_count'])
+  const fail = replyFailure(id, usage)
   if (typeof reply.error === 'string') throw fail('invalid-response', `server error: ${snippet(reply.error, MAX_MODEL_TEXT, redact)}`)
 
   if (reply.done !== true || !DONE.has(reply.done_reason)) throw fail('invalid-response', 'reply has not finished')
@@ -89,7 +92,7 @@ function readReply(reply: unknown, { id, model }: Pick<OllamaOptions, 'id' | 'mo
     model: typeof reply.model === 'string' && reply.model !== ''
       ? reply.model
       : model,
-    usage: tokenUsage(reply, ['prompt_eval_count'], ['eval_count']),
+    usage,
   }
 }
 

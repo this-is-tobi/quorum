@@ -5,7 +5,7 @@ import type { CompletionRequest } from '../core/ports.ts'
 import { sent, stubFetch } from '../testing/http.ts'
 import { gemini } from './gemini.ts'
 import type { GeminiOptions } from './gemini.ts'
-import { candidate, generateContentResponse, invalidKey, promptBlocked, truncated, withThoughts } from '../testing/fixtures/gemini.ts'
+import { candidate, generateContentResponse, invalidKey, promptBlocked, thoughtsOnlyCutOff, truncated, withThoughts } from '../testing/fixtures/gemini.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
 
 const request: CompletionRequest = {
@@ -312,9 +312,43 @@ describe('gemini', () => {
     stubFetch({
       candidates: [candidate],
       modelVersion: '',
-      usageMetadata: { promptTokenCount: 10 },
+      usageMetadata: { candidatesTokenCount: 4 },
     })
     await expect(provider.complete(request)).resolves.toEqual({ text: '{}', model: 'gemini-3.8-flash', usage: undefined })
+  })
+
+  it('carries the counts of a thinking model cut off while it thinks, reading the candidates count it leaves out as 0', async () => {
+    stubFetch(thoughtsOnlyCutOff)
+    await expect(provider.complete(request)).rejects.toMatchObject({
+      kind: 'truncated',
+      usage: { inputTokens: 1124, outputTokens: 47 },
+    })
+  })
+
+  it('reads a candidates count a reply leaves out as 0, and needs the prompt count', async () => {
+    stubFetch(promptBlocked)
+    await expect(provider.complete(request)).rejects.toMatchObject({
+      kind: 'refusal',
+      usage: { inputTokens: 1840, outputTokens: 0 },
+    })
+    stubFetch({
+      candidates: [candidate],
+      usageMetadata: { promptTokenCount: 10, thoughtsTokenCount: 5 },
+    })
+    await expect(provider.complete(request)).resolves.toMatchObject({
+      usage: { inputTokens: 10, outputTokens: 5 },
+    })
+    for (const usageMetadata of [
+      { candidatesTokenCount: 3 },
+      { promptTokenCount: 10, candidatesTokenCount: null },
+    ]) {
+      stubFetch({
+        candidates: [candidate],
+        usageMetadata,
+      })
+      const reply = await provider.complete(request)
+      expect(reply.usage, JSON.stringify(usageMetadata)).toBeUndefined()
+    }
   })
 
   const { finishReason: _finishReason, ...unfinished } = candidate

@@ -80,7 +80,7 @@ const hosted = openaiCompatible({
 const code = claudeCode({ id: 'code', model: 'sonnet', contextTokens: 1000000 })
 ```
 
-Every HTTP adapter sends one JSON `POST` per call through the same hardened path, [The limits of a request](#the-limits-of-a-request), passes the request's signal to `fetch`, and reports in `usage` every prompt token the request carried, cached ones included, and every token the model generated, thinking included, from the counts its protocol sends: never a cost. The counts a protocol keeps apart, such as Anthropic's cache tokens or Gemini's thought tokens, are added in when they are numbers; a reply without both main counts as numbers reports no `usage`. `claudeCode` sends no request of its own: it runs a process, [`claudeCode`](#claudecode), and is the one adapter that reports a cost.
+Every HTTP adapter sends one JSON `POST` per call through the same hardened path, [The limits of a request](#the-limits-of-a-request), passes the request's signal to `fetch`, and reports in `usage` every prompt token the request carried, cached ones included, and every token the model generated, thinking included, from the counts its protocol sends: never a cost. The counts a protocol keeps apart, such as Anthropic's cache tokens or Gemini's thought tokens, are added in when they are numbers; a reply without both main counts as numbers reports no `usage`. A reply the adapter reads and then refuses, cut off at its token limit, refused or unusable, carries the same counts in its `ProviderError`'s `usage`, which the review counts: a status outside 2xx carries none. `claudeCode` sends no request of its own: it runs a process, [`claudeCode`](#claudecode), and is the one adapter that reports a cost.
 
 ## Presets
 
@@ -383,7 +383,7 @@ The body of every request holds, in this order:
 - `generationConfig`, left out when it would be empty: `temperature` when set, `maxOutputTokens` when `maxTokens` is set, `responseMimeType: 'application/json'` in `json` and `schema` mode, and `responseJsonSchema: <output.schema>` in `schema` mode, as Google's JavaScript SDK sends it (`responseSchema` is deprecated);
 - then `extraBody`, merged: `{ generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } }` goes beside the rest. It cannot replace `contents` or `systemInstruction`, or set `generationConfig.maxOutputTokens`, which `maxTokens` sets. Its `generationConfig` must be an object, written `generationConfig`: another spelling, such as `generation_config`, would send a second key, so it is refused.
 
-A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose parts hold text. The text is the `text` of the first candidate's `content.parts`, joined, without the parts flagged as thoughts. `model` is the reply's `modelVersion`, or the configured model. The input count is `usageMetadata.promptTokenCount`; the output count is `usageMetadata.candidatesTokenCount`, plus `usageMetadata.thoughtsTokenCount` when it is a number. A status outside 2xx is an `http` error that quotes Google's `{ "error": { "code", "message", "status", "details" } }` body; a 402, which Google sends for a depleted prepay balance, is not retryable, unlike a 429.
+A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose parts hold text. The text is the `text` of the first candidate's `content.parts`, joined, without the parts flagged as thoughts. `model` is the reply's `modelVersion`, or the configured model. The input count is `usageMetadata.promptTokenCount`; the output count is `usageMetadata.candidatesTokenCount` plus `usageMetadata.thoughtsTokenCount`. Gemini leaves a zero count out of its JSON, so a candidates count the reply leaves out reads as 0: a thinking model cut off while it thinks reports only its prompt and thought counts. A reply without `promptTokenCount`, or with a count that is not a number, reports no `usage`. A status outside 2xx is an `http` error that quotes Google's `{ "error": { "code", "message", "status", "details" } }` body; a 402, which Google sends for a depleted prepay balance, is not retryable, unlike a 429.
 
 | The reply | Kind | Message |
 | --- | --- | --- |
@@ -562,7 +562,7 @@ Before `claude` starts, and around it:
 
 Every message starts with the provider id. A quoted text is cut, written as a JSON string and redacted, as an HTTP adapter's is, and stdout is read to 16 MiB and stderr to 64 KiB, the rest dropped.
 
-- **`usage` is the sum over every model the result reports** in `modelUsage`: the input is every prompt token, cached ones included (`inputTokens`, `cacheReadInputTokens` and `cacheCreationInputTokens`), and the output every token generated. The result's own `usage` covers the last turn only, 2 input tokens against 1199 in a schema run, so its token counts are not read.
+- **`usage` is the sum over every model the result reports** in `modelUsage`: the input is every prompt token, cached ones included (`inputTokens`, `cacheReadInputTokens` and `cacheCreationInputTokens`), and the output every token generated. The result's own `usage` covers the last turn only, 2 input tokens against 1199 in a schema run, so its token counts are not read. A result the adapter refuses, cut off, refused or failed after it, carries the same sum in its `ProviderError`'s `usage`; one with no `modelUsage` entry carries none.
 - **`costUsd` is `total_cost_usd`**, Claude Code's own estimate, when it is a number of at least 0.
 - **`model` is the one that answered**: the single key of `modelUsage`, since `--fallback-model` can change it, else the configured one.
 - **The text** is `structured_output` serialized in `schema` mode, and `result` in `prompt` mode.
@@ -615,7 +615,7 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 | `kind` | What went wrong, below |
 | `status` | The HTTP status, for `http`. For a server error in an `openaiCompatible` 2xx reply, it is the status the body's `code` names. For a `claudeCode` `process` error that follows an exit of `claude` (a reported error, or `claude exited 2`), it is that exit code. A signal, a version that is too old, a start failure and a directory failure carry none |
 | `retryable` | `true` for `network` and `timeout`, and for `http` with status 408, 409, 429 or 5xx: a caller may try the call again |
-| `usage` | The counts of the reply the call failed on, `{ inputTokens, outputTokens, costUsd? }`, when the provider read one that reports them; `undefined` otherwise. The review counts them as the failed call's usage, in its `call` event and in `meta.usage` |
+| `usage` | The counts of the reply the call failed on, `{ inputTokens, outputTokens, costUsd? }`, when the provider read one that reports them; `undefined` otherwise. The review counts them as the failed call's usage, in its `call` event and in `meta.usage`. The shipped adapters set it on every failure that follows a reply they read and that reports its counts |
 
 | Kind | Raised when |
 | --- | --- |

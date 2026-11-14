@@ -585,10 +585,10 @@ function replyText(result: Record<string, unknown>, structuredOutput: ClaudeCode
 /**
  * The failure of a result that reports an error: `http` with the status when `api_error_status` is one from
  * 400 to 599, so 429 and 5xx stay retryable, else `process` with the exit code, naming the reason when it
- * is a short word.
+ * is a short word. It carries `usage`, the counts the result reports.
  */
-function errorFailure(result: Record<string, unknown>, run: ClaudeRun, { id, redact }: ResultContext): ProviderError {
-  const fail = replyFailure(id)
+function errorFailure(result: Record<string, unknown>, run: ClaudeRun, { id, redact }: ResultContext, usage: Usage | undefined): ProviderError {
+  const fail = replyFailure(id, usage)
   const status = result.api_error_status
   const detail = failureDetail(result, redact)
   if (typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 599) return fail('http', `HTTP ${status} from the model API: ${detail}`, status)
@@ -612,22 +612,23 @@ function signalName(signal: string): string {
  * refusal, an error (anything but an `is_error` of `false` is one), a child a signal ended or a non-zero
  * exit after a success, a tool the server ran, a reply the token limit cut off, then the text. Claude Code
  * reports an API error as exit 1 with `subtype: "success"` and `is_error: true`, so the JSON on stdout is
- * read before the exit code.
+ * read before the exit code. Every failure carries the usage the result reports, summed as `sumUsage`
+ * does, since the model generated and billed those tokens whatever came after.
  */
 function readFinished(result: Record<string, unknown>, run: ClaudeRun, context: ResultContext): CompletionResponse {
-  const fail = replyFailure(context.id)
-  if (isPromptTooLong(result)) throw fail('too-large', 'Claude Code refused the prompt as too long for the model\'s context')
-  if (result.stop_reason === 'refusal') throw fail('refusal', 'model refused')
-  if (result.is_error !== false || result.subtype !== 'success') throw errorFailure(result, run, context)
-  if (run.signal !== null) throw fail('process', `claude was stopped by ${signalName(run.signal)} after its result`)
-  if (run.code !== null && run.code !== 0) throw fail('process', `claude exited ${run.code} after its result`, run.code)
   const modelUsage = isRecord(result.modelUsage)
     ? Object.values(result.modelUsage).filter(isRecord)
     : []
+  const usage = sumUsage(modelUsage, result.total_cost_usd)
+  const fail = replyFailure(context.id, usage)
+  if (isPromptTooLong(result)) throw fail('too-large', 'Claude Code refused the prompt as too long for the model\'s context')
+  if (result.stop_reason === 'refusal') throw fail('refusal', 'model refused')
+  if (result.is_error !== false || result.subtype !== 'success') throw errorFailure(result, run, context, usage)
+  if (run.signal !== null) throw fail('process', `claude was stopped by ${signalName(run.signal)} after its result`)
+  if (run.code !== null && run.code !== 0) throw fail('process', `claude exited ${run.code} after its result`, run.code)
   if (ranServerTool(result, modelUsage)) throw fail('invalid-response', 'the server ran a tool for this reply, which quorum never allows')
   if (result.stop_reason === 'max_tokens') throw fail('truncated', 'reply was cut off by the token limit')
   const text = replyText(result, context.structuredOutput, fail)
-  const usage = sumUsage(modelUsage, result.total_cost_usd)
   const models = isRecord(result.modelUsage)
     ? Object.keys(result.modelUsage)
     : []
