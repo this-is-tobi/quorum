@@ -914,7 +914,7 @@ describe('quorum bench, what it writes and how it ends', () => {
     const run = JSON.parse(readFileSync(runFile, 'utf8')) as Record<string, unknown>
     writeFileSync(runFile, JSON.stringify({ ...run, quorum: `9.9.9${RLO}` }))
     const resumed = await bench(TWO)
-    expect([resumed.code, resumed.stderr]).toEqual([2, `Error: run.json: was written by quorum 9.9.9<U+202E>, and this is quorum ${packageJson.version}: a run belongs to one build, so name a new --out\n`])
+    expect([resumed.code, resumed.stderr]).toEqual([2, `Error: run.json: was written by quorum 9.9.9<U+202E>, and this is quorum ${packageJson.version}: a run belongs to one build, so resume it with the quorum that began it, or name a new --out\n`])
   })
 
   it.skipIf(process.getuid?.() === 0)('exits 3 when the run directory cannot be made, the name it prints inert, and runs nothing', async () => {
