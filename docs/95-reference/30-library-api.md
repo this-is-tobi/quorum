@@ -110,12 +110,13 @@ The sink receives every event of a review, synchronously and in order, as each t
 | Event | Fields | Sent |
 | --- | --- | --- |
 | `run:start` | `profiles`, the ids in order; `providers`, who reviews for each profile: `research` and `lenses`, each a `{ id, model }` | First, when the review starts |
-| `flag` | `flag`, as `meta.flags` holds it: [A flag](./20-json-result.md#a-flag) | Once per flag, after `run:start` and the gaps of the diff's binary and submodule files, before any stage |
+| `left-out` | `files`, as `meta.leftOut` holds them: [A file left out](./20-json-result.md#a-file-left-out) | Once, right after `run:start`, when the review leaves a file out |
+| `flag` | `flag`, as `meta.flags` holds it: [A flag](./20-json-result.md#a-flag) | Once per flag, after `run:start`, the `left-out` event and the gaps, before any stage |
 | `stage:start` | `profile`; `stage`: `research`, `dedup` or `panel` | When a stage of a profile starts |
 | `stage:end` | `profile`, `stage`; `durationMs`, the stage's wall-clock time, waits for a concurrency slot included; `count`, the findings it produced, or the verdicts for `panel` | When that stage ends |
 | `call` | `profile`; `role`: `research` or `vote`; `lens`, for a vote; `provider`, its `{ id, model }`; `durationMs`, the provider's latency inside its slot; `ok`; `usage`, when the counts its reply reported are valid: a call that succeeded, or one that failed on a reply its provider read and refused, whose error carries them in an own `usage` property ([`ProviderError`](../20-using/30-providers.md#providererror)) | Once per provider call, failed ones included |
 | `finding:invalid` | `profile`; `reason`, such as `src/auth.js:3 is not in the diff` | Once per finding dropped for citing code outside the diff |
-| `incomplete` | `entry`, as `meta.incomplete` will hold it | Once per gap, as it is recorded: the gaps of the diff's binary and submodule files first, right after `run:start` |
+| `incomplete` | `entry`, as `meta.incomplete` will hold it | Once per gap, as it is recorded: the gaps of the diff's binary and submodule files first, right after `run:start` and the `left-out` event |
 | `vote` | `profile`, `findingId`, `lens`; `keep`: `true`, `false`, or `null` when the vote failed; `error`, for a failed vote | Once per vote |
 | `verdict` | `profile`, `findingId`, `keptVotes`, `totalVotes`; `confidence`, when it reached one; `status`: `kept`, `discarded` or `unreviewed` | Once per finding, when all its votes are in |
 | `run:end` | `kept`, `discarded`, `unreviewed` and `incomplete`, the counts; `durationMs` | Last, when the review ends |
@@ -132,7 +133,7 @@ The first events of the review on [The JSON result](./20-json-result.md#an-examp
 ```
 
 - **The sink runs inside the review.** Each event is delivered before the review goes on, so a slow sink slows the review.
-- **Events carry no model text beyond `error` strings**, the file name a `finding:invalid` reason quotes, which is the finder's, cleaned and capped at 80 characters, and, for a diff without per-file headers, the `file` and `detail` of a `vote-failed` entry or of a vote's `request-too-large` entry, which hold the finder's name for the file, cleaned and capped at 260. The `file` of a `flag` event is the diff's own path, and absent for a diff without per-file headers.
+- **Events carry no model text beyond `error` strings**, the file name a `finding:invalid` reason quotes, which is the finder's, cleaned and capped at 80 characters, and, for a diff without per-file headers, the `file` and `detail` of a `vote-failed` entry or of a vote's `request-too-large` entry, which hold the finder's name for the file, cleaned and capped at 260. The `file` of a `flag` event is the diff's own path, and absent for a diff without per-file headers. The `file` of a `left-out` event's files is the diff's own path, or `""`.
 - **The sink gets a copy of each event.** Changing one changes neither the review nor its result.
 - **`meta` agrees with the events.** `meta.usage` and each `invalidFindings` are counted from them.
 - **A sink that throws aborts the review** with its error, so the bug surfaces instead of being swallowed: no profile starts another call, no further event is delivered, and the review rejects with that error, even when it threw on `run:end`.
@@ -405,7 +406,7 @@ The stages, the profile checks and the CLI's exit-code rule are not exported: a 
 declare function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult>
 ```
 
-Deprecated: use `loadConfig` and `fromConfig`. `runQuorum` reviews `diff` as the CLI does with no flag: it calls `loadConfig()` and `fromConfig` on the result, so it reads the file `QUORUM_CONFIG` names, if any, which must be an absolute path, and the `QUORUM_*` variables of `process.env` with their `RESEARCH_*` and `VOTER_*` aliases, and it runs the profiles they select, the security profile alone by default: [Configuration](../20-using/20-configuration.md). `onProgress` receives the CLI's progress lines, the `flag:` lines included, each one inert and each profile's line starting with `[<id>] ` when several run, but neither the banner, nor a warning, nor `empty diff: nothing to review`, which the CLI writes itself. A configuration error, a missing model included, rejects with a `ConfigError`, for an empty diff too.
+Deprecated: use `loadConfig` and `fromConfig`. `runQuorum` reviews `diff` as the CLI does with no flag: it calls `loadConfig()` and `fromConfig` on the result, so it reads the file `QUORUM_CONFIG` names, if any, which must be an absolute path, and the `QUORUM_*` variables of `process.env` with their `RESEARCH_*` and `VOTER_*` aliases, and it runs the profiles they select, the security profile alone by default: [Configuration](../20-using/20-configuration.md). `onProgress` receives the CLI's progress lines, the `left out:` and `flag:` lines included, each one inert and each profile's line starting with `[<id>] ` when several run, but neither the banner, nor a warning, nor `empty diff: nothing to review`, which the CLI writes itself. A configuration error, a missing model included, rejects with a `ConfigError`, for an empty diff too.
 
 ## A complete example
 

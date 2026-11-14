@@ -1382,8 +1382,14 @@ describe('content the diff does not carry', () => {
       'style finding-unreadable',
     ])
     expect(result.meta.incomplete).toContainEqual(binaryGap('style'))
-    expect(events.slice(0, 3)).toEqual([
+    expect(events.slice(0, 4)).toEqual([
       expect.objectContaining({ type: 'run:start' }),
+      {
+        type: 'left-out',
+        files: [
+          { file: 'img.png', reason: 'binary' },
+        ],
+      },
       {
         type: 'incomplete',
         entry: binaryGap('security'),
@@ -1393,7 +1399,7 @@ describe('content the diff does not carry', () => {
         entry: binaryGap('style'),
       },
     ])
-    expect(events.findIndex(event => event.type === 'stage:start')).toBe(3)
+    expect(events.findIndex(event => event.type === 'stage:start')).toBe(4)
     expect(finder.requests[0].messages[0].content).toContain('Binary files a/img.png and b/img.png differ')
   })
 
@@ -1429,6 +1435,17 @@ describe('content the diff does not carry', () => {
       expect(result.meta.leftOut).toEqual([])
       expect(result.meta.incomplete).toEqual([])
     }
+  })
+
+  it('sends no left-out event for a review that leaves no file out', async () => {
+    const events: QuorumEvent[] = []
+    await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, fake('finder', () => findings())),
+      events: event => events.push(event),
+    }).review({ diff })
+    expect(events.map(event => event.type)).not.toContain('left-out')
   })
 })
 
