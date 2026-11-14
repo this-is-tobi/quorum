@@ -1,3 +1,5 @@
+import type { Usage } from './types.ts'
+
 /** Base class for every error quorum raises on purpose. */
 export class QuorumError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -90,6 +92,8 @@ function isRetryable(kind: ProviderErrorKind, status: number | undefined): boole
 /**
  * A provider call that failed. The message starts with the provider id. Adapters never put request
  * headers, keys or the runtime's own error text in it; they quote server text through `snippet`.
+ * `usage` holds the counts of a reply the provider read and then refused, which the review counts as
+ * the failed call's usage.
  */
 export class ProviderError extends QuorumError {
   readonly providerId: string
@@ -97,8 +101,10 @@ export class ProviderError extends QuorumError {
   readonly status: number | undefined
   /** True for network errors, timeouts, 408, 409, 429 and 5xx; a caller may retry the call. */
   readonly retryable: boolean
+  /** What the reply the call failed on reported, when the provider read one: the review counts it as the failed call's usage. */
+  readonly usage: Usage | undefined
 
-  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, cause?: unknown }) {
+  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, usage?: Usage, cause?: unknown }) {
     super(`${details.providerId}: ${details.message}`, details.cause === undefined
       ? undefined
       : { cause: details.cause })
@@ -106,5 +112,6 @@ export class ProviderError extends QuorumError {
     this.kind = details.kind
     this.status = details.status
     this.retryable = isRetryable(details.kind, details.status)
+    this.usage = details.usage
   }
 }

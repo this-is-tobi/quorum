@@ -91,6 +91,22 @@ export function refusalMessage(refusal: unknown): string {
     : REFUSAL_FALLBACK
 }
 
+/**
+ * The usage a failed call's thrown value carries, when its counts can be trusted: its own data property
+ * `usage`, and that object's own data `inputTokens`, `outputTokens` and `costUsd`, checked as a reply's
+ * usage is. It is matched by those properties, not by class, as `isTooLarge` is, so a `ProviderError`
+ * from a second copy of quorum or a library provider's own error object counts too. It never runs a
+ * getter and never throws: an inherited property, a getter or a throwing proxy reads as no usage.
+ */
+export function failureUsage(error: unknown): Usage | undefined {
+  const usage = ownData(error, 'usage')
+  return checkedUsage({
+    inputTokens: ownData(usage, 'inputTokens'),
+    outputTokens: ownData(usage, 'outputTokens'),
+    costUsd: ownData(usage, 'costUsd'),
+  })
+}
+
 /** Who requests a provider call, as its `call` event names it: `lens` only for a vote. */
 export interface Requester {
   readonly profile: string
@@ -117,9 +133,10 @@ export function elapsed(started: number): number {
  * once the request is built: the provider's latency, not the time the call waited for a slot or
  * took to build its request. A reply whose text is not a string is a `ProviderError`. Each call
  * emits one `call` event, which names the provider by the ref captured at creation, never by the
- * live object: failed, before the error is rethrown, or ok, with the usage when its counts are
- * valid. The ok event is emitted outside the `try` that catches the provider's failure, so a sink
- * that throws on it is never reported as a failed call.
+ * live object: failed, before the error is rethrown, with the usage its error carries when its counts
+ * are valid, or ok, with the usage when its counts are valid. The ok event is emitted outside the
+ * `try` that catches the provider's failure, so a sink that throws on it is never reported as a
+ * failed call.
  */
 export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest): Promise<string> {
   return ctx.limit(async () => {
@@ -131,12 +148,16 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       response = await target.provider.complete({ ...request, signal: ctx.signal })
       if (typeof response?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
     } catch (error) {
+      const failedUsage = failureUsage(error)
       ctx.emit({
         type: 'call',
         ...requester,
         provider: target.ref,
         durationMs: elapsed(started),
         ok: false,
+        ...(failedUsage === undefined
+          ? {}
+          : { usage: failedUsage }),
       })
       // Still inside the slot: the queued call it is handed to next sees the abort and never starts.
       if (requester.role === 'research' && !isTooLarge(error)) ctx.fail(error)

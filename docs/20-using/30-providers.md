@@ -615,6 +615,7 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 | `kind` | What went wrong, below |
 | `status` | The HTTP status, for `http`. For a server error in an `openaiCompatible` 2xx reply, it is the status the body's `code` names. For a `claudeCode` `process` error that follows an exit of `claude` (a reported error, or `claude exited 2`), it is that exit code. A signal, a version that is too old, a start failure and a directory failure carry none |
 | `retryable` | `true` for `network` and `timeout`, and for `http` with status 408, 409, 429 or 5xx: a caller may try the call again |
+| `usage` | The counts of the reply the call failed on, `{ inputTokens, outputTokens, costUsd? }`, when the provider read one that reports them; `undefined` otherwise. The review counts them as the failed call's usage, in its `call` event and in `meta.usage` |
 
 | Kind | Raised when |
 | --- | --- |
@@ -640,7 +641,7 @@ Any object of the port's shape is a provider. It must:
 - **return the model's raw text** in `text`, without parsing it: the core extracts and validates the JSON itself, and a reply it cannot use is a failed vote, or, for research, a failed review;
 - **honour `request.signal`**, settling soon after it aborts: stopping a call in flight is cooperative, so a review that was aborted can wait for a provider that ignores its signal;
 - **throw when the call fails**, a `ProviderError` with the closest `kind` for preference. A vote records the message of any `Error`, and the text of anything else thrown;
-- **report `usage` only when it knows it**: `inputTokens` and `outputTokens`, and `costUsd` when it knows the price;
+- **report `usage` only when it knows it**: `inputTokens` and `outputTokens`, and `costUsd` when it knows the price. It reports it on a reply it returns, and in the `usage` of the `ProviderError` it throws for a reply it read but cannot use, which the review counts as the failed call's;
 - **check the size of its own requests**: quorum states no context size for a provider object and counts nothing for it. A provider that refuses a request as too large throws a `ProviderError` of kind `too-large`, which the review records as a `request-too-large` gap, on research and on a vote alike, instead of a failure: [`ProviderError`](#providererror). The review recognises the refusal by an own `kind` property of `'too-large'`, not by class, so one raised by a second copy of quorum counts too.
 
 A provider can wrap another. Quorum sets no time limit on a call, so this one adds a limit to any provider that honours its signal, as the shipped adapters do, and reports a call that ran out of time as a `timeout`. It does not stop a provider that ignores its signal: it waits for that call to settle, however long it takes:

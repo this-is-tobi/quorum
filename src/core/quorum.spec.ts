@@ -1004,6 +1004,164 @@ describe('meta and events', () => {
     ])
   })
 
+  it('counts the usage a failed vote\'s error carries, on its call event and in meta.usage', async () => {
+    const cutOff = new ProviderError({
+      providerId: 'metered',
+      kind: 'truncated',
+      message: 'reply was cut off by the token limit',
+      usage: { inputTokens: 30, outputTokens: 4000 },
+    })
+    const metered: Provider = {
+      id: 'metered',
+      model: 'metered-model',
+      complete: async (request) => {
+        if (isVote(request)) throw cutOff
+        return {
+          text: findings(reported),
+          model: 'metered-model',
+          usage: { inputTokens: 100, outputTokens: 50 },
+        }
+      },
+    }
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [securityProfile],
+      concurrency: 1,
+    }, {
+      ...portsFor(securityProfile, metered),
+      events: event => events.push(event),
+    }).review({ diff })
+    const voteCalls = events.filter(event => event.type === 'call' && event.role === 'vote')
+    const votes = voteCalls.length
+    expect(votes).toBeGreaterThanOrEqual(1)
+    for (const call of voteCalls) {
+      expect(call).toMatchObject({
+        ok: false,
+        usage: { inputTokens: 30, outputTokens: 4000 },
+      })
+    }
+    expect(result.meta.usage).toEqual({ inputTokens: 100 + 30 * votes, outputTokens: 50 + 4000 * votes })
+    expect(result.unreviewed).toHaveLength(1)
+    expect(result.meta.incomplete).toEqual([])
+  })
+
+  it('reports a failed research call\'s usage on its call event, and still rejects with the provider\'s own error', async () => {
+    const cutOff = new ProviderError({
+      providerId: 'metered',
+      kind: 'truncated',
+      message: 'reply was cut off by the token limit',
+      usage: { inputTokens: 900, outputTokens: 16000 },
+    })
+    const events: QuorumEvent[] = []
+    const review = createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, fake('metered', () => {
+        throw cutOff
+      })),
+      events: event => events.push(event),
+    }).review({ diff })
+    await expect(review).rejects.toBe(cutOff)
+    const calls = events.filter(event => event.type === 'call')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      role: 'research',
+      ok: false,
+      usage: { inputTokens: 900, outputTokens: 16000 },
+    })
+  })
+
+  describe('a failed call\'s usage', () => {
+    let getterRan = false
+    const withUsageGetter = (): Error => {
+      const error = new Error('cut off')
+      Object.defineProperty(error, 'usage', {
+        get() {
+          getterRan = true
+          throw new Error('the getter ran')
+        },
+      })
+      return error
+    }
+    const withCountGetter = (): Error => Object.assign(new Error('cut off'), {
+      usage: {
+        inputTokens: 1,
+        get outputTokens() {
+          getterRan = true
+          return 2
+        },
+      },
+    })
+    const throwingProxy = (): Error => new Proxy(new Error('cut off'), {
+      getOwnPropertyDescriptor() {
+        throw new Error('the trap ran')
+      },
+    })
+
+    it.each([
+      ['an own getter that throws', withUsageGetter, undefined],
+      ['a count that is a getter', withCountGetter, undefined],
+      [
+        'an inherited usage',
+        () => Object.create({
+          usage: { inputTokens: 1, outputTokens: 2 },
+        }),
+        undefined,
+      ],
+      ['a proxy whose traps throw', throwingProxy, undefined],
+      [
+        'a negative count',
+        () => ({
+          usage: { inputTokens: 1, outputTokens: -1 },
+        }),
+        undefined,
+      ],
+      [
+        'a count that is a string',
+        () => ({
+          usage: { inputTokens: '1', outputTokens: 2 },
+        }),
+        undefined,
+      ],
+      [
+        'a plain object with a cost',
+        () => ({
+          usage: { inputTokens: 1, outputTokens: 2, costUsd: 0.25 },
+        }),
+        { inputTokens: 1, outputTokens: 2, costUsd: 0.25 },
+      ],
+      [
+        'a negative cost',
+        () => ({
+          usage: { inputTokens: 1, outputTokens: 2, costUsd: -1 },
+        }),
+        { inputTokens: 1, outputTokens: 2 },
+      ],
+    ] as Array<[string, () => unknown, Usage | undefined]>)('reads a failed call\'s usage as own data only: %s', async (_name, thrownBy, expected) => {
+      getterRan = false
+      const thrown = thrownBy()
+      const events: QuorumEvent[] = []
+      const review = createQuorum({
+        profiles: [securityProfile],
+      }, {
+        ...portsFor(securityProfile, fake('metered', () => {
+          throw thrown
+        })),
+        events: event => events.push(event),
+      }).review({ diff })
+      await expect(review).rejects.toBe(thrown)
+      const [call, ...others] = events.filter(event => event.type === 'call')
+      expect(others).toEqual([])
+      expect(call).toMatchObject({ role: 'research', ok: false })
+      if (expected === undefined) {
+        expect('usage' in call).toBe(false)
+      } else {
+        expect((call as { usage?: Usage }).usage).toEqual(expected)
+      }
+      expect(getterRan).toBe(false)
+    })
+  })
+
   it('reports the run through events: run, stages, calls, votes and the verdict', async () => {
     const events: QuorumEvent[] = []
     const finder = fake('finder', () => findings(reported))
