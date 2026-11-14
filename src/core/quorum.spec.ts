@@ -1449,6 +1449,105 @@ describe('content the diff does not carry', () => {
   })
 })
 
+describe('excludes', () => {
+  const lock = [
+    'diff --git a/package-lock.json b/package-lock.json',
+    '--- a/package-lock.json',
+    '+++ b/package-lock.json',
+    '@@ -1 +1 @@',
+    '-{}',
+    '+{"x":1}',
+  ].join('\n')
+
+  it('leaves an excluded file out of every request, drops a finding that cites it, and lists it with no gap', async () => {
+    const finder = fake('finder', () => findings(reported, { ...reported, file: 'package-lock.json', quote: '{"x":1}' }))
+    const voter = fake('voter', () => vote(true))
+    const result = await createQuorum({
+      profiles: [securityProfile],
+      exclude: ['package-lock.json'],
+    }, portsFor(securityProfile, finder, voter)).review({ diff: `${diff}\n${lock}` })
+    expect(result.meta.leftOut).toEqual([
+      { file: 'package-lock.json', reason: 'excluded' },
+    ])
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.meta.profiles.security.invalidFindings).toBe(1)
+    expect(finder.requests.length).toBeGreaterThan(0)
+    expect(voter.requests.length).toBeGreaterThan(0)
+    for (const request of [
+      ...finder.requests,
+      ...voter.requests,
+    ]) expect(request.messages[0].content).not.toContain('package-lock')
+  })
+
+  it('runs no stage when every file is excluded, and lists each', async () => {
+    const finder = fake('finder', () => findings())
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [securityProfile],
+      exclude: ['**'],
+    }, {
+      ...portsFor(securityProfile, finder),
+      events: event => events.push(event),
+    }).review({ diff })
+    expect(finder.requests).toEqual([])
+    expect(result.meta.leftOut).toEqual([
+      { file: 'a.js', reason: 'excluded' },
+      { file: 'other.js', reason: 'excluded' },
+    ])
+    expect(events.map(event => event.type)).toEqual(['run:start', 'left-out', 'run:end'])
+  })
+
+  it('still researches the text before the first header when every file is excluded', async () => {
+    const finder = fake('finder', () => findings())
+    await createQuorum({
+      profiles: [securityProfile],
+      exclude: ['**'],
+    }, portsFor(securityProfile, finder)).review({ diff: `From x\nSubject: [PATCH] y\n\n${diff}` })
+    expect(finder.requests).toHaveLength(1)
+    expect(finder.requests[0].messages[0].content).toContain('Subject: [PATCH] y')
+    expect(finder.requests[0].messages[0].content).not.toContain('a.js')
+  })
+
+  it('reads the flags of an excluded file', async () => {
+    const result = await createQuorum({
+      profiles: [securityProfile],
+      exclude: ['other.js'],
+    }, portsFor(securityProfile, fake('finder', () => findings()))).review({ diff: flaggedDiff })
+    expect(result.meta.flags).toEqual([
+      expect.objectContaining({ code: 'hidden-characters', file: 'other.js' }),
+    ])
+  })
+
+  it('refuses a pattern that can mislead, and an exclude that is not a list of strings, in one ConfigError', () => {
+    expect(issuesOf(() => createQuorum({
+      profiles: [securityProfile],
+      exclude: ['vendor/', 7] as never,
+    }, portsFor(securityProfile, provider)))).toEqual([
+      'exclude.0: ends with /, so it matches no file: end it with /** to leave out what the directory holds',
+      'exclude.1: must be a string',
+    ])
+    expect(issuesOf(() => createQuorum({
+      profiles: [securityProfile],
+      exclude: '*.lock' as never,
+    }, portsFor(securityProfile, provider)))).toEqual(['exclude: must be an array'])
+  })
+
+  it('does not see a change to exclude after creation', async () => {
+    const exclude = ['other.js']
+    const finder = fake('finder', () => findings())
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+      exclude,
+    }, portsFor(securityProfile, finder))
+    exclude.push('a.js')
+    const result = await quorum.review({ diff })
+    expect(result.meta.leftOut).toEqual([
+      { file: 'other.js', reason: 'excluded' },
+    ])
+    expect(finder.requests[0].messages[0].content).toContain('diff --git a/a.js b/a.js')
+  })
+})
+
 describe('events as copies', () => {
   it('hands the sink a copy of every event, so a sink that changes one changes nothing else', async () => {
     const finder = fake('finder', () => findings(reported, { file: 'x.js' }))

@@ -5,6 +5,7 @@ import type { ReviewScope } from './coverage.ts'
 import { splitDiff } from './diff.ts'
 import { ConfigError } from './errors.ts'
 import type { ConfigIssue } from './errors.ts'
+import { excludeIssues, excludeMatcher } from './exclude.ts'
 import { diffFlags } from './flags.ts'
 import { isRecord } from './output.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts } from './ports.ts'
@@ -28,6 +29,8 @@ interface Compiled {
   readonly runs: readonly ProfileRun[]
   readonly concurrency: number
   readonly maxFindings: number
+  /** Whether a file's path is left out of every request, built once from `exclude`. */
+  readonly excluded: (path: string) => boolean
   readonly sink: EventSink | undefined
 }
 
@@ -47,16 +50,18 @@ interface Tally {
  * Every problem is reported at once, in one ConfigError, never as a TypeError, so an untyped caller
  * gets the checks a config file gets: options and ports that are not objects, no profile, each
  * profile's own issues, a repeated profile id, a `concurrency` or `maxFindings` that is not a
- * positive integer, a missing or malformed research provider or voter, ports for a profile or a
- * lens the run does not have (a likely typo), and an event sink that is not a function. Ports are
+ * positive integer, an `exclude` that is not a list of at most 100 patterns that can be taken, a
+ * missing or malformed research provider or voter, ports for a profile or a lens the run does not
+ * have (a likely typo), and an event sink that is not a function. Ports are
  * checked only for the profiles that have no issue of their own, and not at all when `profiles` is
  * not an array. Every record keyed by a caller's id is read as an own property, since `constructor`
  * is a valid id.
  *
  * Each profile is compiled into a frozen `ProfileRun`, its instructions rendered, its thresholds
- * resolved and its providers captured, so later changes to the caller's profiles or ports are not
- * seen. `warnings` lists what the profiles set that cannot take full effect. Each review can be
- * stopped through its own signal; a throwing event sink or a failing profile stops it too.
+ * resolved and its providers captured, and `exclude` is compiled into a matcher, so later changes to
+ * the caller's profiles, ports or `exclude` are not seen. `warnings` lists what the profiles set
+ * that cannot take full effect. Each review can be stopped through its own signal; a throwing event
+ * sink or a failing profile stops it too.
  *
  * @throws ConfigError listing every issue of the options and the ports
  *
@@ -73,6 +78,7 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
     runs: Object.freeze(options.profiles.map(profile => compile(profile, ports.profiles[profile.id]))),
     concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
     maxFindings: options.maxFindings ?? DEFAULT_MAX_FINDINGS,
+    excluded: excludeMatcher(options.exclude ?? []),
     sink: ports.events,
   }
   const warnings: readonly string[] = Object.freeze(options.profiles.flatMap(profile => profileWarnings(profile)))
@@ -84,18 +90,23 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
 
 /**
  * One review of a diff by every profile of the quorum, concurrently, each through research, dedup
- * and panel under the review's one concurrency limit; a blank diff runs no stage. The diff is split
- * once, for every profile and for the advisory flags, which are read from it before any stage runs.
- * The review lists the files whose change the diff does not carry, binary files and submodules'
- * commits, in `meta.leftOut`, and records a gap of each reason for every profile; their sections
- * still reach the stages. Everything it knows before a call is sent in this order: `run:start`, then
- * a `left-out` event naming those files when it leaves one out, then the gaps' `incomplete` events,
- * then the `flag` events of the advisory flags, kept in `meta.flags`, none of which changes a verdict,
- * then the stages. Each event is handed to the sink as a copy, so a sink that changes one changes
- * nothing else. The review reports itself through events, from `run:start` to `run:end`, and its
- * result merges the profiles' verdicts and gaps in profile order.
- * `meta.profiles[<id>].invalidFindings` and `meta.usage` are counted from the events before the
- * sink receives them.
+ * and panel under the review's one concurrency limit; a blank diff runs no stage. The diff is
+ * filtered once: the sections the quorum's `exclude` patterns match leave every request, so
+ * research, the check of each finding and the votes read the diff less those sections, split into
+ * one section per file once for every profile, and a finding that cites an excluded file is dropped
+ * as outside the diff. A filtered diff that is blank, with every file excluded and nothing before
+ * the first header, runs no stage, as a blank diff does. The advisory flags are read before any
+ * stage runs, from the whole diff, the excluded files included. The review lists the files it
+ * leaves out in `meta.leftOut`: the excluded ones, which are no gap, and the files whose change the
+ * diff does not carry, binary files and submodules' commits, for each reason of which it records a
+ * gap for every profile; their sections still reach the stages. Everything it knows before a call
+ * is sent in this order: `run:start`, then a `left-out` event naming those files when it leaves one
+ * out, then the gaps' `incomplete` events, then the `flag` events of the advisory flags, kept in
+ * `meta.flags`, none of which changes a verdict, then the stages. Each event is handed to the sink
+ * as a copy, so a sink that changes one changes nothing else. The review reports itself through
+ * events, from `run:start` to `run:end`, and its result merges the profiles' verdicts and gaps in
+ * profile order. `meta.profiles[<id>].invalidFindings` and `meta.usage` are counted from the
+ * events before the sink receives them.
  *
  * Abort never fails open. The review's signal joins the caller's `signal` to an internal one; every
  * stage and every call checks it, every request carries it, and it is checked once more after the
@@ -124,15 +135,21 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
   const startedAt = new Date().toISOString()
   const started = performance.now()
   const { runs, sink } = compiled
-  const sections = input.diff.trim() === ''
+  const whole = input.diff.trim() === ''
     ? undefined
     : splitDiff(input.diff)
-  const flags = sections === undefined
+  const flags = whole === undefined
     ? []
-    : diffFlags(sections)
-  const scope: ReviewScope = sections === undefined
+    : diffFlags(whole)
+  const scope: ReviewScope = whole === undefined
     ? { diff: input.diff, leftOut: [] }
-    : reviewScope(input.diff)
+    : reviewScope(input.diff, compiled.excluded)
+  // What the stages read: none when the filtered diff is blank, else the sections the flags read when nothing was left out.
+  const sections = scope.diff.trim() === ''
+    ? undefined
+    : scope.diff === input.diff
+      ? whole
+      : splitDiff(scope.diff)
   const gaps = new Map(runs.map(run => [
     run.id,
     leftOutGaps(run.id, scope.leftOut),
@@ -312,7 +329,8 @@ function target(provider: Provider): Target {
 
 /**
  * Every problem with the options and the ports, in this order: options and ports that are not
- * objects, `profiles`, each profile's own issues and repeated ids, the limits, then the ports.
+ * objects, `profiles`, each profile's own issues and repeated ids, the limits, `exclude`, then the
+ * ports.
  */
 function inputIssues(options: unknown, ports: unknown): ConfigIssue[] {
   const issues: ConfigIssue[] = []
@@ -324,11 +342,12 @@ function inputIssues(options: unknown, ports: unknown): ConfigIssue[] {
       ...issues,
       { path: 'profiles', message: 'must be an array of profiles' },
       ...limitIssues(options),
+      ...excludeIssues(options.exclude),
     ]
   }
   // `Array.from` reads a hole as `undefined`, so it is reported like any other profile that is not an object.
   const profiles = profileListIssues(Array.from<unknown>(options.profiles))
-  issues.push(...profiles.issues, ...limitIssues(options))
+  issues.push(...profiles.issues, ...limitIssues(options), ...excludeIssues(options.exclude))
   if (isRecord(ports)) issues.push(...portIssues(ports, profiles.checked, profiles.named))
   return issues
 }

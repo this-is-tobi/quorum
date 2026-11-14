@@ -160,7 +160,7 @@ const incompleteEntry = z.strictObject({
 })
 const leftOutFile = z.strictObject({
   file: z.string(),
-  reason: z.enum(['binary', 'submodule']),
+  reason: z.enum(['excluded', 'binary', 'submodule']),
 })
 const flag = z.strictObject({
   code: z.enum(['hidden-characters', 'ai-addressed-text']),

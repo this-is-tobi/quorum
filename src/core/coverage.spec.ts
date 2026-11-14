@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import * as git from '../testing/fixtures/git.ts'
 import { leftOutGaps, reviewScope } from './coverage.ts'
+import { splitDiff } from './diff.ts'
+import { excludeMatcher } from './exclude.ts'
 import type { LeftOutReason } from './types.ts'
 
 const DONNEES = `donn${String.fromCharCode(0xE9)}es.bin`
@@ -132,6 +134,66 @@ describe('reviewScope, line by line', () => {
   })
 })
 
+describe('reviewScope, with excludes', () => {
+  const scope = (diff: string, ...patterns: string[]) => reviewScope(diff, excludeMatcher(patterns))
+
+  it('lists an excluded binary file as excluded only, and leaves its section out of the diff', () => {
+    const result = scope(git.BINARY, '*.png')
+    expect(result.leftOut).toContainEqual({ file: 'img.png', reason: 'excluded' })
+    expect(result.leftOut).not.toContainEqual({ file: 'img.png', reason: 'binary' })
+    expect([
+      ...splitDiff(result.diff).keys(),
+    ]).toEqual([
+      ...splitDiff(git.BINARY).keys(),
+    ].filter(file => file !== 'img.png'))
+    expect(result.diff).not.toContain('img.png')
+  })
+
+  it('excludes a submodule of the short format by its path', () => {
+    const result = scope(git.SUBMODULE_BUMPED, 'vendor/**')
+    expect(result.leftOut).toEqual([
+      { file: 'vendor/lib', reason: 'excluded' },
+    ])
+    expect([
+      ...splitDiff(result.diff).keys(),
+    ]).toEqual(['app.js'])
+  })
+
+  it('keeps the submodule a Submodule line names when the section that holds the line is excluded', () => {
+    const result = scope(git.SUBMODULE_LOG_BUMPED, 'app.js')
+    expect(result.leftOut).toEqual([
+      { file: 'app.js', reason: 'excluded' },
+      { file: '', reason: 'submodule' },
+    ])
+    expect(result.diff).toBe('')
+  })
+
+  it('never excludes a part of the diff no header names', () => {
+    expect(scope(git.PLAIN, '**').leftOut).toEqual([
+      { file: '', reason: 'binary' },
+    ])
+    expect(scope(git.NO_PREFIX, '**').leftOut).toEqual([
+      { file: 'img.png', reason: 'excluded' },
+      { file: '', reason: 'binary' },
+      { file: 'text.js', reason: 'excluded' },
+    ])
+  })
+
+  it('keeps exactly the other sections, in order, when the first, the last or every file goes', () => {
+    const three = 'diff --git a/a.js b/a.js\n+a\ndiff --git a/b.js b/b.js\n+b\ndiff --git a/c.js b/c.js\n+c\n'
+    expect(scope(three, 'a.js', 'c.js').diff).toBe('diff --git a/b.js b/b.js\n+b')
+    expect(scope(three, 'b.js').diff).toBe('diff --git a/a.js b/a.js\n+a\ndiff --git a/c.js b/c.js\n+c\n')
+    expect(scope(`From x\n\n${three}`, 'a.js', 'b.js', 'c.js').diff).toBe('From x\n')
+  })
+
+  it('matches a quoted name by its decoded path', () => {
+    expect(scope(git.BINARY, DONNEES, 'a"quote.bin').leftOut.slice(0, 2)).toEqual([
+      { file: 'a"quote.bin', reason: 'excluded' },
+      { file: DONNEES, reason: 'excluded' },
+    ])
+  })
+})
+
 describe('leftOutGaps', () => {
   it('gives one gap per reason, binary then submodule, counting the files, and none for a list without them', () => {
     expect(leftOutGaps('security', [
@@ -143,5 +205,11 @@ describe('leftOutGaps', () => {
       { profile: 'security', reason: 'submodule', detail: 'the diff carries no content for 1 submodule(s), listed in meta.leftOut' },
     ])
     expect(leftOutGaps('security', [])).toEqual([])
+  })
+
+  it('gives no gap for an excluded file', () => {
+    expect(leftOutGaps('security', [
+      { file: 'lock.json', reason: 'excluded' },
+    ])).toEqual([])
   })
 })
