@@ -215,17 +215,18 @@ A step that keeps the result and says which case it hit:
 ```bash
 set -o pipefail
 code=0
-git diff origin/main...HEAD | quorum > result.json || code=$?
+git --attr-source=origin/main diff --no-textconv --no-ext-diff --submodule=short origin/main...HEAD | quorum > result.json || code=$?
 case $code in
   0) echo "complete: no gating profile kept a high finding" ;;
   1) echo "a high finding was kept: read result.json" ;;
-  4) echo "incomplete: read the unreviewed findings and meta.incomplete in result.json" ;;
+  4) echo "incomplete: read the unreviewed findings, meta.incomplete and meta.leftOut in result.json" ;;
   *) echo "nothing was reviewed (exit $code): read the error above" ;;
 esac
 exit $code
 ```
 
 - **`set -o pipefail`** makes a failing `git diff` fail the step. Without it, a base branch the job never fetched leaves quorum an empty stdin, which it reviews as a blank diff and passes with `0`.
+- **Make the diff with the base branch's attributes.** `--attr-source=origin/main` (git 2.41 or later) reads `.gitattributes` from the base branch, where `git diff` would read the checkout's, which is the pull request's. A line the pull request adds, `src/a.js -diff`, would make git print `Binary files a/src/a.js and b/src/a.js differ` and none of the change. `--no-textconv` and `--no-ext-diff` keep a text converter or an external diff program from rewriting what the diff shows, and `--submodule=short` prints each submodule as a section of its own, whatever `diff.submodule` says. A file the diff still shows as binary, because it holds a NUL byte or the base branch marks it `-diff`, and a submodule's bump, are listed in `meta.leftOut` and exit `4`: [A file left out](../95-reference/20-json-result.md#a-file-left-out). On your own machine `git diff` is enough: the attributes and the config are your own.
 - **Give `docker run` `-i` when the image stands in for `quorum`.** Without `-i`, `docker run` gives the container an empty stdin, which quorum reviews as an empty diff and passes with `0`, so the gate passes having reviewed nothing. Always pass `-i` when the diff comes on stdin: [A container image](../10-getting-started/10-installation.md#a-container-image).
 - **Run the binary or the npm package's `quorum`, not `bun run start`.** The job's working directory is the pull request's checkout, and Bun reads a `bunfig.toml` and a `.env` from its working directory: the pull request could add one that runs its code first, or one that points the finder at its own endpoint. A `.env` can also set `QUORUM_CONFIG`, which names a config the pull request wrote (and a TS or JS one runs), and any `QUORUM_*` variable. The binary reads neither, and neither does Node, which runs the npm package's `quorum`: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory). Install the package with `npm install -g @tobi-or-not/quorum`, and never run it through `npx`, `npm exec` or `pnpm dlx` in that directory: they read the checkout's `.npmrc`, which can name another registry for the package to come from, where `npm install -g` does not read the project's `.npmrc`.
 - **Name a config from the base branch.** A config file loads only when `--config` or `QUORUM_CONFIG` names it, and in CI it must come from the base branch or another path the pull request cannot write, its prompt files included: [Trust](./20-configuration.md#trust). `QUORUM_CONFIG` must be an absolute path, since a relative one would name a file of the checkout, which is the pull request's; quorum refuses it with exit `2`.
