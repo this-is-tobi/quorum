@@ -1,8 +1,8 @@
 /**
  * The report of a bench run: what each configuration caught, what it cost and how sure the numbers are,
  * built from the scored reviews and rendered as Markdown and as JSON. Pure code over scores, so the
- * report can be built again from a run directory. It holds numbers, suite ids and configuration paths,
- * never text a model wrote.
+ * report can be built again from a run directory. It holds numbers, suite ids, configuration paths and
+ * the suite's two hashes, never text a model wrote.
  */
 
 import { inertJson, inertLine } from '../core/sanitize.ts'
@@ -11,7 +11,7 @@ import type { AttackMeasure, AttackReport, ConfigurationAttacks, GroupScores, Tw
 import { independence } from './independence.ts'
 import type { Independence } from './independence.ts'
 import { reviewKey } from './records.ts'
-import type { ReviewRecord, RunConfiguration } from './records.ts'
+import type { ReviewRecord, RunConfiguration, RunSuite } from './records.ts'
 import { scoreReview } from './score.ts'
 import type { ReviewOutcome } from './score.ts'
 import { ALPHA, mean, nearestRank, signTest, wilson } from './stats.ts'
@@ -101,6 +101,10 @@ export interface ConfigurationIndependence extends Independence {
 export interface Report {
   readonly suite: string
   readonly quorum: string
+  /** The suite's review hash: the case ids, the trials and the patches the reviews were made on. */
+  readonly reviewHash: string
+  /** The suite's scoring hash: the bytes of the `suite.yaml` the reviews were scored under. */
+  readonly scoringHash: string
   readonly trials: number
   readonly window: number
   readonly bugCases: number
@@ -116,7 +120,7 @@ export interface Report {
 
 /** What the report is built from: the suite, the selected cases and trials, the configurations in order and the score of each recorded review by `reviewKey`. */
 export interface ReportInput {
-  readonly suite: { readonly name: string, readonly window: number }
+  readonly suite: RunSuite & { readonly window: number }
   readonly quorum: string
   readonly cases: readonly SuiteCase[]
   readonly trials: number
@@ -353,6 +357,8 @@ export function buildReport(input: ReportInput): Report {
   return {
     suite: input.suite.name,
     quorum: input.quorum,
+    reviewHash: input.suite.reviewHash,
+    scoringHash: input.suite.scoringHash,
     trials: input.trials,
     window: input.suite.window,
     ...kindCounts(input.cases),
@@ -637,7 +643,7 @@ function independenceText(entry: ConfigurationIndependence): string {
   return `${label}: mean phi ${twoDecimals(entry.meanPhi)} over ${plural(entry.pairs, 'lens pair')} and ${plural(entry.findings, 'finding')}; ${votes}`
 }
 
-/** The report as Markdown: its counts, the configurations and their table, the comparison lines when there are two or more configurations, the attack section when the selection holds an attack case, and the lenses' error correlation. Every line is inert. */
+/** The report as Markdown: its counts and the two hashes it was scored under, the configurations and their table, the comparison lines when there are two or more configurations, the attack section when the selection holds an attack case, and the lenses' error correlation. Every line is inert. */
 export function reportMarkdown(report: Report): string {
   const several = report.configurations.length > 1
   const trials = report.trials === 1
@@ -647,6 +653,8 @@ export function reportMarkdown(report: Report): string {
     `# quorum bench: ${report.suite}`,
     '',
     `quorum ${report.quorum}; ${kindsText(report)}; ${trials}; window ${plural(report.window, 'line')}.`,
+    '',
+    `Scored under the review hash ${report.reviewHash} and the scoring hash ${report.scoringHash}.`,
     '',
     'A review counts when it is recorded for one of these cases and trials. A case scores the share of its counted trials with the outcome, and a case with none counted is left out. A rate is the mean of the case scores, with its 95% Wilson interval over the cases scored.',
     '',

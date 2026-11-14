@@ -230,7 +230,7 @@ A run keeps everything in one directory, `--out`, which is `quorum-bench/<suite 
 
 | File | Holds |
 | --- | --- |
-| `run.json` | Written once, whole, when the run begins: the quorum version, the suite's name and content hash, the run's salt, and each configuration's path as given and its fingerprint |
+| `run.json` | Written once, whole, when the run begins: the quorum version, the suite's name, its review hash and its scoring hash, the scoring hash the run began with, the run's salt, and each configuration's path as given and its fingerprint |
 | `results.jsonl` | One line per review that resolved or that a model's reply denied, appended as it ends: the configuration's fingerprint, the case, the trial, the latency, the calls and failed calls, the usage, a failed call's included when its reply reported counts, whether every call reported a cost, and the review's full result, as the review command prints it, or for a denied review which denial it was: `unusable-reply`, `refusal` or `truncated` |
 | `report.md`, `report.json` | The report of the last run that ended with exit `0`, exit `4` or an interrupt after its checks and its plan, rewritten whole; a dry run writes neither. A run that exits `3` rewrites neither, so after one they show an earlier run |
 
@@ -262,7 +262,7 @@ run.json: its configuration old.yaml is not given
 Each line shows when it applies. A suite of another name reads `run.json: is a run of the suite <name>, not <name>: name a new --out`, and a configuration given again with other settings, whether its file was edited or another `--profile` selects other profiles, reads `--config: the settings of qwen.yaml changed since the run began: name a new --out` in place of the two lines a configuration added and one left out would give. The usual resolution, with no `--config`, is named `(default configuration)`. They mean:
 
 - **A run belongs to one build of quorum.** A release can change what a review does without changing a fingerprint, since a preset's defaults and the code that builds a request are not in it, so the quorum version is checked first. The version does not change between development commits, so after you change quorum's own code, start a new `--out`.
-- **A run belongs to one suite as it was.** The content hash covers `suite.yaml`, a `note` included, and each patch a case names. Change any byte of them and the run is another one.
+- **A run belongs to one suite as it was.** Its two hashes cover `suite.yaml`, a `note` included, and each patch a case names. Change any byte of them and the run is another one.
 - **A run belongs to its set of configurations.** One added or left out is refused, and so is one whose settings changed, since its fingerprint no longer matches; the message says which of the three it is, and for a change not which setting, since the run keeps only the fingerprint. The same set in another order is the same run, and the first `--config` is the reference of the report either way.
 
 ### The fingerprint
@@ -308,6 +308,8 @@ A run prints its report on stdout and writes it as `report.md`, with the same nu
 
 quorum 0.3.0; 8 bug cases and 2 controls; trial 1; window 3 lines.
 
+Scored under the review hash sha256:358fd8e38cceb573431f77a060bab3d681d12c6638efe7f6c0f3c2571c2e06a9 and the scoring hash sha256:eb7a2494c0055e00f525484fed8873c77afda4c8946580ded1c8cbef993cb645.
+
 A review counts when it is recorded for one of these cases and trials. A case scores the share of its counted trials with the outcome, and a case with none counted is left out. A rate is the mean of the case scores, with its 95% Wilson interval over the cases scored.
 
 ## Configurations
@@ -330,6 +332,8 @@ Each line pairs the cases both configurations scored and is its own exact sign t
 - 2, incomplete reviews: +10.0 points; 0 better, 1 worse, 9 tied; p = 1.0000, unresolved
 - 2, tokens per review: +19000; 0 better, 10 worse, 0 tied; p = 0.0020, resolved
 ```
+
+The line after the counts names the suite the report was scored under, by its two hashes: the review hash, of the case ids, the suite's `trials` and each case's patch, which the models saw, and the scoring hash, of the bytes of `suite.yaml`. Give both with a number you publish.
 
 ### The table
 
@@ -386,7 +390,7 @@ The section gives no interval, and the report names no profile.
 
 ### `report.json`
 
-The same numbers as the table and the lines, plus each case's scores for each configuration, which are the inputs of every line: a reader can recompute any of them. It holds numbers, suite ids and config paths, and never text a model wrote.
+The same numbers as the table and the lines, the suite's `reviewHash` and `scoringHash`, plus each case's scores for each configuration, which are the inputs of every line: a reader can recompute any of them. It holds numbers, suite ids and config paths, and never text a model wrote.
 
 ## What a run costs
 

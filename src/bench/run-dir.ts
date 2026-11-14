@@ -176,7 +176,7 @@ export async function inspectRunDir(directory: string): Promise<RunState> {
 /**
  * What stops a run from resuming `recorded` as the run `current` describes, each an issue to print: the
  * quorum version first of all (a release can change a preset's defaults without changing a fingerprint,
- * which holds the preset by name), then another suite by its name, else a suite whose content changed,
+ * which holds the preset by name), then another suite by its name, else a suite whose review or scoring hash changed,
  * then each current configuration the run does not hold, at `--config`, then each recorded one that is
  * not given again. A current and a recorded configuration that share a path (`null`, the usual
  * resolution, included) but not a fingerprint are one configuration whose settings changed, and give one
@@ -191,7 +191,7 @@ export function runDifferences(recorded: RunFile, current: Pick<RunFile, 'quorum
   }
   if (recorded.suite.name !== current.suite.name) {
     issues.push({ path: RUN_FILE, message: `is a run of the suite ${recorded.suite.name}, not ${current.suite.name}: name a new ${OUT}` })
-  } else if (recorded.suite.hash !== current.suite.hash) {
+  } else if (recorded.suite.reviewHash !== current.suite.reviewHash || recorded.suite.scoringHash !== current.suite.scoringHash) {
     issues.push({ path: RUN_FILE, message: `the suite's suite.yaml or patches changed since the run began: name a new ${OUT}` })
   }
   const recordedPrints = new Set(recorded.configurations.map(({ fingerprint }) => fingerprint))
