@@ -7,7 +7,7 @@ import { loadConfig } from '../config/load.ts'
 import { decodeDiff } from '../core/diff.ts'
 import { ConfigError } from '../core/errors.ts'
 import { inertJson, inertLine } from '../core/sanitize.ts'
-import type { Quorum, QuorumResult } from '../core/types.ts'
+import type { IncompleteReason, Quorum, QuorumResult } from '../core/types.ts'
 import { runBench } from './bench.ts'
 import { errorLines, errorMessage, EXIT, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
@@ -25,12 +25,15 @@ const USAGE = [
   'Options:',
   '  -c, --config <path>     Read this config file, over QUORUM_CONFIG',
   '  -p, --profile <id>      Run only this profile; repeat it to run several',
-  '      --allow-incomplete  Exit 0 instead of 4 when the review is incomplete, except for a request too large for its model',
+  '      --allow-incomplete  Exit 0 instead of 4 when the review is incomplete, except for a request too large for its model or a binary or submodule file',
   '      --print-config      Print the resolved config, keys redacted, and exit',
   '  -h, --help              Print this help and exit',
   '  -v, --version           Print the version and exit',
   '',
 ].join('\n')
+
+/** The gaps no flag lifts for a gating profile: a pull request can cause each one. */
+const UNLIFTED: ReadonlySet<IncompleteReason> = new Set(['request-too-large', 'binary', 'submodule'])
 
 const OPTIONS = {
   config: { type: 'string', short: 'c' },
@@ -171,20 +174,22 @@ export function interruptSignal(source: SignalSource, exit: (code: number) => vo
 /**
  * The exit code of a finished review: 1 when a kept finding is `high` and its profile gates, 4 when
  * an unreviewed finding or a gap belongs to a gating profile (unless `allowIncomplete` turns it into
- * 0, which it does for every gap but a `request-too-large` one), 0 otherwise. A profile gates
- * unless `meta.profiles` holds it with `gating: false`, so a profile missing from the result counts
- * as gating and a gap never hides.
+ * 0, which it does for every gap but a `request-too-large`, `binary` or `submodule` one), 0 otherwise.
+ * A profile gates unless `meta.profiles` holds it with `gating: false`, so a profile missing from the
+ * result counts as gating and a gap never hides.
  *
- * A `request-too-large` gap of a gating profile exits 4 whatever `allowIncomplete` says: a pull
- * request can cause that gap by padding the diff until a request is refused, so no flag lifts it
- * (ADR-0012). The flag lifts every other gap, including gaps a pull request can cause: decoy findings
- * that push a real one past `maxFindings`, or text that trips a hosted voter's content filter. On a
- * gating profile, do not use it for a pull request you do not trust.
+ * A `request-too-large`, `binary` or `submodule` gap of a gating profile exits 4 whatever
+ * `allowIncomplete` says: a pull request can cause the first by padding the diff until a request is
+ * refused, and the others with one `.gitattributes` line, one NUL byte or a submodule's bump, which
+ * leave a file's change out of the diff, so no flag lifts them (ADR-0012). The flag lifts every other
+ * gap, including gaps a pull request can cause: decoy findings that push a real one past
+ * `maxFindings`, or text that trips a hosted voter's content filter. On a gating profile, do not use
+ * it for a pull request you do not trust.
  */
 export function exitCodeFor(result: QuorumResult, options: { readonly allowIncomplete?: boolean } = {}): number {
   const gates = (profile: string): boolean => !Object.hasOwn(result.meta.profiles, profile) || result.meta.profiles[profile].gating !== false
   if (result.kept.some(verdict => verdict.confidence === 'high' && gates(verdict.profile))) return EXIT.finding
-  if (result.meta.incomplete.some(entry => entry.reason === 'request-too-large' && gates(entry.profile))) return EXIT.incomplete
+  if (result.meta.incomplete.some(entry => UNLIFTED.has(entry.reason) && gates(entry.profile))) return EXIT.incomplete
   const incomplete = result.unreviewed.some(verdict => gates(verdict.profile)) || result.meta.incomplete.some(entry => gates(entry.profile))
   return incomplete && options.allowIncomplete !== true
     ? EXIT.incomplete

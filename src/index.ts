@@ -24,6 +24,8 @@ export type {
   FlagCode,
   IncompleteEntry,
   IncompleteReason,
+  LeftOutFile,
+  LeftOutReason,
   Lens,
   LensVote,
   Profile,

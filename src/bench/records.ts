@@ -152,9 +152,15 @@ const incompleteEntry = z.strictObject({
     'finding-unreadable',
     'vote-failed',
     'request-too-large',
+    'binary',
+    'submodule',
   ]),
   file: z.string().optional(),
   detail: z.string(),
+})
+const leftOutFile = z.strictObject({
+  file: z.string(),
+  reason: z.enum(['binary', 'submodule']),
 })
 const flag = z.strictObject({
   code: z.enum(['hidden-characters', 'ai-addressed-text']),
@@ -179,6 +185,7 @@ export const resultSchema = z.strictObject({
     profiles: z.record(z.string(), profileMeta),
     usage: usage.optional(),
     incomplete: z.array(incompleteEntry),
+    leftOut: z.array(leftOutFile),
     flags: z.array(flag),
   }),
 })

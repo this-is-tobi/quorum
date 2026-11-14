@@ -86,7 +86,7 @@ const USAGE = [
   'Options:',
   '  -c, --config <path>     Read this config file, over QUORUM_CONFIG',
   '  -p, --profile <id>      Run only this profile; repeat it to run several',
-  '      --allow-incomplete  Exit 0 instead of 4 when the review is incomplete, except for a request too large for its model',
+  '      --allow-incomplete  Exit 0 instead of 4 when the review is incomplete, except for a request too large for its model or a binary or submodule file',
   '      --print-config      Print the resolved config, keys redacted, and exit',
   '  -h, --help              Print this help and exit',
   '  -v, --version           Print the version and exit',
@@ -724,6 +724,44 @@ describe('exitCodeFor', () => {
       expect(exitCodeFor(withGaps({ security: true, style: false }, [
         refused('style'),
       ]), { allowIncomplete })).toBe(EXIT.ok)
+    }
+  })
+
+  it('exits 4 for a binary or submodule gap of a gating profile, even with allowIncomplete, 0 for an advisory one, and 1 beside a gating high finding', () => {
+    for (const allowIncomplete of [false, true]) {
+      for (const reason of ['binary', 'submodule']) {
+        expect(exitCodeFor(withGaps({ security: true }, [
+          { profile: 'security', reason },
+        ]), { allowIncomplete })).toBe(EXIT.incomplete)
+        expect(exitCodeFor(withGaps({ security: true, style: false }, [
+          { profile: 'style', reason },
+        ]), { allowIncomplete })).toBe(EXIT.ok)
+        expect(exitCodeFor(withGaps({ security: true }, [
+          { profile: 'security', reason },
+        ], [
+          kept('security', 'high'),
+        ]), { allowIncomplete })).toBe(EXIT.finding)
+      }
+    }
+  })
+})
+
+describe('content the diff does not carry', () => {
+  const WITH_IMAGE = `${DIFF}diff --git a/img.png b/img.png\nindex 9597448..9ad844f 100644\nBinary files a/img.png and b/img.png differ\n`
+
+  it('exits 4 for a binary file, even with --allow-incomplete, lists it in the result, and still sends its section', async () => {
+    for (const argv of [
+      [],
+      ['--allow-incomplete'],
+    ]) {
+      const fetchMock = stubChat(JSON.stringify({ findings: [] }))
+      const { io, stdout, stderr } = harness({ argv, env: MODEL, stdin: WITH_IMAGE })
+      expect(await runCli(io)).toBe(EXIT.incomplete)
+      expect(JSON.parse(stdout()).meta.leftOut).toEqual([
+        { file: 'img.png', reason: 'binary' },
+      ])
+      expect(stderr()).toContain('\nincomplete: binary (the diff carries no content for 1 binary file(s), listed in meta.leftOut)\n')
+      expect((sent(fetchMock).body.messages as Array<{ content: string }>)[1].content).toContain('Binary files a/img.png and b/img.png differ')
     }
   })
 })

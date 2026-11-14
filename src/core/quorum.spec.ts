@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
 import { securityProfile } from '../profiles/security.ts'
+import * as git from '../testing/fixtures/git.ts'
 import { ConfigError, OutputError, ProviderError } from './errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts } from './ports.ts'
 import { createQuorum } from './quorum.ts'
-import type { Finding, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, Usage } from './types.ts'
+import type { Finding, IncompleteEntry, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, Usage } from './types.ts'
 
 /** Replies, in call order, for the one fake provider that plays both roles. */
 const complete = vi.fn<(request: CompletionRequest) => Promise<string>>()
@@ -926,6 +927,7 @@ describe('meta and events', () => {
         },
       },
       incomplete: [],
+      leftOut: [],
       flags: [],
     })
     expect(result.meta).not.toHaveProperty('usage')
@@ -954,6 +956,7 @@ describe('meta and events', () => {
       'durationMs',
       'profiles',
       'incomplete',
+      'leftOut',
       'flags',
     ])
   })
@@ -992,6 +995,7 @@ describe('meta and events', () => {
       'profiles',
       'usage',
       'incomplete',
+      'leftOut',
       'flags',
     ])
     expect(events.flatMap(event => event.type === 'call'
@@ -1345,6 +1349,86 @@ describe('advisory flags', () => {
     }).review({ diff: '  \n' })
     expect(result.meta.flags).toEqual([])
     expect(events.map(event => event.type)).toEqual(['run:start', 'run:end'])
+  })
+})
+
+describe('content the diff does not carry', () => {
+  const image = [
+    'diff --git a/img.png b/img.png',
+    'index 9597448..9ad844f 100644',
+    'Binary files a/img.png and b/img.png differ',
+  ].join('\n')
+  const binaryGap = (profile: string): IncompleteEntry => ({ profile, reason: 'binary', detail: 'the diff carries no content for 1 binary file(s), listed in meta.leftOut' })
+
+  it('lists a binary file in meta.leftOut, records its gap first for every profile and before any stage, and still sends its section', async () => {
+    const finder = fake('finder', () => findings(reported, { ...reported, quote: undefined }))
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [securityProfile, style],
+    }, {
+      profiles: {
+        ...portsFor(securityProfile, finder, fake('voter', () => vote(true))).profiles,
+        ...portsFor(style, finder, fake('styler', () => vote(true))).profiles,
+      },
+      events: event => events.push(event),
+    }).review({ diff: `${diff}\n${image}` })
+    expect(result.meta.leftOut).toEqual([
+      { file: 'img.png', reason: 'binary' },
+    ])
+    expect(result.meta.incomplete.map(({ profile, reason }) => `${profile} ${reason}`)).toEqual([
+      'security binary',
+      'security finding-unreadable',
+      'style binary',
+      'style finding-unreadable',
+    ])
+    expect(result.meta.incomplete).toContainEqual(binaryGap('style'))
+    expect(events.slice(0, 3)).toEqual([
+      expect.objectContaining({ type: 'run:start' }),
+      {
+        type: 'incomplete',
+        entry: binaryGap('security'),
+      },
+      {
+        type: 'incomplete',
+        entry: binaryGap('style'),
+      },
+    ])
+    expect(events.findIndex(event => event.type === 'stage:start')).toBe(3)
+    expect(finder.requests[0].messages[0].content).toContain('Binary files a/img.png and b/img.png differ')
+  })
+
+  it('lists a submodule the short format shows, with its gap', async () => {
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, fake('finder', () => findings()))).review({ diff: git.SUBMODULE_BUMPED })
+    expect(result.meta.leftOut).toEqual([
+      { file: 'vendor/lib', reason: 'submodule' },
+    ])
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'submodule', detail: 'the diff carries no content for 1 submodule(s), listed in meta.leftOut' },
+    ])
+  })
+
+  it('counts a thousand binary files in one gap per profile, and lists every one in the diff\'s order', async () => {
+    const many = Array.from({ length: 1000 }, (_, index) => image.replaceAll('img.png', `img${index}.png`)).join('\n')
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, fake('finder', () => findings()))).review({ diff: many })
+    expect(result.meta.leftOut).toHaveLength(1000)
+    expect(result.meta.leftOut[999]).toEqual({ file: 'img999.png', reason: 'binary' })
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'binary', detail: 'the diff carries no content for 1000 binary file(s), listed in meta.leftOut' },
+    ])
+  })
+
+  it('lists nothing and records no gap for a text diff or a blank one', async () => {
+    for (const text of [diff, '  \n']) {
+      const result = await createQuorum({
+        profiles: [securityProfile],
+      }, portsFor(securityProfile, fake('finder', () => findings()))).review({ diff: text })
+      expect(result.meta.leftOut).toEqual([])
+      expect(result.meta.incomplete).toEqual([])
+    }
   })
 })
 

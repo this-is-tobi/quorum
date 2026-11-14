@@ -1,5 +1,7 @@
 import packageJson from '../../package.json' with { type: 'json' }
 import { createLimiter, DEFAULT_CONCURRENCY } from './concurrency.ts'
+import { leftOutGaps, reviewScope } from './coverage.ts'
+import type { ReviewScope } from './coverage.ts'
 import { splitDiff } from './diff.ts'
 import { ConfigError } from './errors.ts'
 import type { ConfigIssue } from './errors.ts'
@@ -85,7 +87,10 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
  * and panel under the review's one concurrency limit; a blank diff runs no stage. The diff is split
  * once, for every profile and for the advisory flags, which are read from it before any stage runs.
  * Each is sent as a `flag` event right after `run:start` and kept in `meta.flags`, and none of them
- * changes a verdict. Each event is handed to the sink as a copy, so a sink that changes one changes
+ * changes a verdict. The review also lists the files whose change the diff does not carry, binary
+ * files and submodules' commits, in `meta.leftOut`, and records a gap of each reason for every
+ * profile before any stage, as `incomplete` events right after `run:start`; their sections still
+ * reach the stages. Each event is handed to the sink as a copy, so a sink that changes one changes
  * nothing else. The review reports itself through events, from `run:start` to `run:end`, and its
  * result merges the profiles' verdicts and gaps in profile order.
  * `meta.profiles[<id>].invalidFindings` and `meta.usage` are counted from the events before the
@@ -124,6 +129,13 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
   const flags = sections === undefined
     ? []
     : diffFlags(sections)
+  const scope: ReviewScope = sections === undefined
+    ? { diff: input.diff, leftOut: [] }
+    : reviewScope(input.diff)
+  const gaps = new Map(runs.map(run => [
+    run.id,
+    leftOutGaps(run.id, scope.leftOut),
+  ] as const))
   const tally: Tally = {
     invalidFindings: new Map(),
   }
@@ -154,8 +166,11 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
       providersOf(run),
     ])),
   })
+  for (const run of runs) {
+    for (const entry of gaps.get(run.id) ?? []) emit({ type: 'incomplete', entry })
+  }
   for (const flag of flags) emit({ type: 'flag', flag })
-  const outcomes = await reviewAll(ctx, runs, input.diff, sections).catch((error: unknown) => {
+  const outcomes = await reviewAll(ctx, runs, scope.diff, sections).catch((error: unknown) => {
     // A research failure aborted the review where it failed; any other failure aborts it here. The first reason stays the reason.
     const reason: unknown = signal.aborted ? signal.reason : error
     internal.abort(reason)
@@ -165,7 +180,10 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
   const kept = outcomes.flatMap(outcome => outcome.kept)
   const discarded = outcomes.flatMap(outcome => outcome.discarded)
   const unreviewed = outcomes.flatMap(outcome => outcome.unreviewed)
-  const incomplete = outcomes.flatMap(outcome => outcome.incomplete)
+  const incomplete = runs.flatMap((run, index) => [
+    ...gaps.get(run.id) ?? [],
+    ...outcomes[index]?.incomplete ?? [],
+  ])
   const durationMs = elapsed(started)
   const meta: QuorumMeta = {
     version: packageJson.version,
@@ -179,6 +197,7 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
       ? {}
       : { usage: tally.usage }),
     incomplete,
+    leftOut: scope.leftOut,
     flags,
   }
   emit({

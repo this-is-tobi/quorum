@@ -109,15 +109,18 @@ export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
 
 /**
  * Why part of a review is missing, as an `IncompleteEntry` records it. `request-too-large`: a
- * provider refused a request that may not fit its model's context, so it was not sent.
+ * provider refused a request that may not fit its model's context, so it was not sent. `binary` and
+ * `submodule`: the diff carries no content for a file, shown only as binary or as a submodule's
+ * commit; `meta.leftOut` lists the files.
  */
-export type IncompleteReason = 'research-unusable' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large'
+export type IncompleteReason = 'research-unusable' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'binary' | 'submodule'
 
 /**
  * Work the run could not review: a research reply with findings but none usable, findings beyond
  * the cap, a finding the harness could not read, a kept finding whose failed votes could have
- * raised it to a higher level, or a request its provider refused as too large to send. It is
- * reported and counted, never dropped silently (ADR-0012).
+ * raised it to a higher level, a request its provider refused as too large to send, or a file whose
+ * change the diff does not carry, binary or a submodule's commit. It is reported and counted, never
+ * dropped silently (ADR-0012).
  */
 export interface IncompleteEntry {
   /** The id of the profile whose run has the gap. */
@@ -126,6 +129,16 @@ export interface IncompleteEntry {
   /** The file of the finding the gap is about, when it is about one finding the harness could read: held by `vote-failed` and by a vote's `request-too-large`. */
   file?: string
   detail: string
+}
+
+/** Why a file is in `meta.leftOut`: its change reaches the models only as binary, or as a submodule's commit. */
+export type LeftOutReason = 'binary' | 'submodule'
+
+/** A file whose change the diff does not carry, and which the review therefore left out. */
+export interface LeftOutFile {
+  /** The diff's own path, decoded; '' for a part of the diff that no `diff --git` header names. */
+  file: string
+  reason: LeftOutReason
 }
 
 /** What an advisory flag points at. */
@@ -182,6 +195,8 @@ export interface QuorumMeta {
   usage?: Usage
   /** Gaps that are not findings. An entry here, or an unreviewed finding, makes the review incomplete. */
   incomplete: IncompleteEntry[]
+  /** The files whose change the diff does not carry, in the diff's order, once per file and reason. Each is also a gap of every profile. */
+  leftOut: LeftOutFile[]
   /** Advisory signals the harness read from the diff: where a human should look. They change no verdict and no exit code. */
   flags: Flag[]
 }
