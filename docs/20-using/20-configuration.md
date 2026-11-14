@@ -297,6 +297,7 @@ providers:
 - **`protocol: claude-code` has no preset and no base URL.** `preset: claude-code` is refused as an unknown preset, and a `baseUrl`, `headers`, `query`, `extraBody`, `temperature`, `maxTokens` or `systemPrompt` is refused.
 - **`auth`** is `inherit`, `login` or `api-key`, `inherit` when unset: [The auth modes](#the-auth-modes).
 - **`args`** passes `--effort`, `--fallback-model`, `--max-budget-usd` and, in `api-key` mode, `--betas`, each followed by its value or written `--flag=value`. No other flag is accepted, so `args` cannot loosen the isolation: [Claude Code options](./30-providers.md#claude-code-options).
+- **`timeoutMs` and `retries` bound the run.** Its deadline is `timeoutMs` times `retries` plus one, 30 minutes by default, so raise `timeoutMs` for a long run, such as one at `--effort high`: [Stopping, nesting and the version](./30-providers.md#stopping-nesting-and-the-version).
 - **`structuredOutput`** is `schema` by default, and `prompt` leaves the reply's shape to the prompt.
 - **`apiKeyEnv`** names the variable that holds the key in `api-key` mode, `ANTHROPIC_API_KEY` by default. Under `inherit` or `login` it is refused, `providers.claude.apiKeyEnv: is set, but auth is not api-key`, and the variable is never read.
 - **A YAML or JSON provider cannot name the executable.** `command` is code-only: [Where the command comes from](#where-the-command-comes-from).
