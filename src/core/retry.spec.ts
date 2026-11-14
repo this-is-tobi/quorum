@@ -90,6 +90,11 @@ describe('retryWait', () => {
       { ...first, retries: 0 },
     ],
     [
+      'a call whose retry count is not a number',
+      network,
+      { retried: 0, retries: Number.NaN, timedOut: false },
+    ],
+    [
       'a second timeout',
       timeout,
       { ...first, timedOut: true },
