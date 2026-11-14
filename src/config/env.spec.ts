@@ -186,6 +186,10 @@ describe('the variables quorum does not read', () => {
     expect(readEnv({ QUORUM_DEBUG: '1' }).warnings).toEqual(['QUORUM_DEBUG is not a variable quorum reads'])
   })
 
+  it('reads no exclude from the environment: QUORUM_EXCLUDE is a variable nothing reads', () => {
+    expect(readEnv({ QUORUM_EXCLUDE: '*.lock' }).warnings).toEqual(['QUORUM_EXCLUDE is not a variable quorum reads'])
+  })
+
   it('warns about none of the variables it reads', () => {
     expect(QUORUM_VARIABLES).toContain('QUORUM_RESEARCH_API_KEY')
     expect(readEnv(Object.fromEntries(QUORUM_VARIABLES.map(name => [name, 'x']))).warnings).toEqual([])

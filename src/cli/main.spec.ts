@@ -766,6 +766,39 @@ describe('content the diff does not carry', () => {
   })
 })
 
+describe('the files a named config excludes', () => {
+  it('leaves out the files the named config excludes, lists them, and calls no model when it excludes every file', async () => {
+    const fetchMock = stubChat()
+    const { io, stdout, stderr } = harness({
+      argv: [
+        '--config',
+        write('exclude.yaml', `${TEAM_YAML}exclude:\n  - "*.js"\n`),
+      ],
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(JSON.parse(stdout()).meta.leftOut).toEqual([
+      { file: 'a.js', reason: 'excluded' },
+    ])
+    expect(stderr()).toContain('\nleft out: 1 file(s): "a.js" (excluded)\n')
+  })
+
+  it('exits 2 for a misleading pattern of the named config, naming the file and the index, before any call', async () => {
+    const fetchMock = stubChat()
+    const { io, stderr } = harness({
+      argv: [
+        '--config',
+        write('slash.yaml', `${TEAM_YAML}exclude:\n  - vendor/\n`),
+      ],
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(stderr()).toBe(`Error: ${join(dir, 'slash.yaml')}: exclude.0: ends with /, so it matches no file: end it with /** to leave out what the directory holds\n`)
+  })
+})
+
 describe('the diff byte cap', () => {
   const MiB = 1024 * 1024
   const OVER = `Error: the diff is over 16 MiB, the most quorum reads\n${USAGE}`
@@ -1110,6 +1143,7 @@ describe('--print-config', () => {
       `      vote: ${sha256(securityProfile.prompts.vote)}`,
       'concurrency: 2',
       'maxFindings: 50',
+      'exclude: []',
       'warnings: []',
       '',
     ].join('\n'))

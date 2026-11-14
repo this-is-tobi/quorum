@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { ConfigError, isSafeSegment, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
+import { MAX_PATTERNS, patternProblem, TOO_MANY_PATTERNS } from '../core/exclude.ts'
 import type { CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { ProviderProtocol } from '../providers/build.ts'
@@ -28,6 +29,12 @@ const STRUCTURED_OUTPUTS: Readonly<Record<StructuredOutput, true>> = { prompt: t
 const VERSION = 'must be 1, the only config version this quorum reads: upgrade quorum to read a later one'
 
 const name = z.string().regex(NAME)
+
+/** A path pattern of `exclude`, refused in the words `createQuorum` uses, since both ask `patternProblem`. */
+const pattern = z.string().check((ctx) => {
+  const problem = patternProblem(ctx.value)
+  if (problem !== undefined) ctx.issues.push({ code: 'custom', message: problem, input: ctx.value })
+})
 
 const roles = z.strictObject({
   research: name.optional().describe('The provider that looks for candidate findings'),
@@ -119,6 +126,7 @@ function configSchema<P extends z.ZodType, R extends z.ZodType>(provider: P, pro
     roles: roles.optional().describe('The providers every profile uses, unless it names its own. research is required once several providers are defined; voter is research when unset'),
     concurrency: z.int().min(1).optional().describe('The most provider calls in flight at once in one review, shared by every profile'),
     maxFindings: z.int().min(1).optional().describe('The most findings of a research reply each profile reads, the only ones that can reach its panel'),
+    exclude: z.array(pattern.describe('A path pattern: * and ? within a name, ** for whole directories, no / to match a file name in any directory, a leading / for the root')).max(MAX_PATTERNS, { error: TOO_MANY_PATTERNS }).optional().describe('The files left out of every request, by path pattern, each listed as excluded in meta.leftOut; nothing is excluded by default'),
     profiles: z.record(name, profileSchema(promptForm)).optional().describe('The review profiles, by id: a built-in profile, one that extends it, or one of your own. The ones --profile names run, else the ones QUORUM_PROFILES names, else every one listed here, else the security profile alone'),
   })
 }

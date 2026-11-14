@@ -7,10 +7,10 @@
  * its id, prompts, lenses, policy and gating, and its research provider and each lens's provider written
  * out in place of their names; every field of a provider defined as data but its key, the values of
  * `headers`, `query` and `extraBody` and the whole base URL included; a provider object as its config key
- * and its model; `concurrency` and `maxFindings` as the review applies them, defaults filled in. It holds
- * no config-file path, no warning and no provider name, so the same settings under other names are one
- * configuration, and a rotated key keeps a run. A `claude-code` provider's resolved command path is one
- * of its settings, so it is in the form.
+ * and its model; `concurrency` and `maxFindings` as the review applies them, defaults filled in, and
+ * `exclude` when the config lists a pattern. It holds no config-file path, no warning and no provider
+ * name, so the same settings under other names are one configuration, and a rotated key keeps a run. A
+ * `claude-code` provider's resolved command path is one of its settings, so it is in the form.
  *
  * The form can hold a secret (a credential kept in a header, a query parameter or the base path), so it
  * never leaves this module: not written, not logged, not put in an error message. Only the HMAC does.
@@ -70,6 +70,9 @@ export function canonicalSettings(config: ResolvedConfig): string {
   return JSON.stringify({
     concurrency: config.concurrency ?? DEFAULT_CONCURRENCY,
     maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,
+    ...config.exclude === undefined
+      ? {}
+      : { exclude: config.exclude },
     profiles,
   }, sortKeys)
 }

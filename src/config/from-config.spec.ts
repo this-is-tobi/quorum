@@ -294,6 +294,25 @@ describe('fromConfig', () => {
     expect(JSON.stringify(outcome)).not.toContain('SECRET')
   })
 
+  it('hands exclude to the quorum it builds', async () => {
+    const requests: CompletionRequest[] = []
+    const mine = {
+      model: 'm',
+      async complete(request: CompletionRequest): Promise<CompletionResponse> {
+        requests.push(request)
+        return { text: '{"findings":[]}', model: 'm' }
+      },
+    }
+    const result = await (await fromConfig({
+      providers: { mine },
+      exclude: ['a.js'],
+    }, { env: {} })).review({ diff })
+    expect(requests).toEqual([])
+    expect(result.meta.leftOut).toEqual([
+      { file: 'a.js', reason: 'excluded' },
+    ])
+  })
+
   it('lists the config\'s warnings, then the core\'s', async () => {
     const config: ConfigInput = {
       profiles: {

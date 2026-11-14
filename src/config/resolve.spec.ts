@@ -17,7 +17,7 @@ const NO_MODEL = 'no model configured: set QUORUM_RESEARCH_MODEL, or name a conf
 const PROFILES = 'must list profile ids separated by commas, each matching ^[a-z][a-z0-9_-]*$'
 const VOTER_MODEL = 'must be set when the voter variables name another endpoint than the research provider\'s'
 /** The built-in provider, with the context size every run here that has no file states. */
-const LOCAL = { protocol: 'ollama', baseUrl: 'http://localhost:11434', contextTokens: 131072 }
+const LOCAL: ProviderSettings = { protocol: 'ollama', baseUrl: 'http://localhost:11434', contextTokens: 131072 }
 /** The variables that state that context size for each role. */
 const SIZE = { QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }
 const VOTER_SIZE = { QUORUM_VOTER_CONTEXT_TOKENS: '131072' }
@@ -682,6 +682,7 @@ describe('resolveConfig', () => {
       profiles: ['planted'],
       concurrency: 99,
       maxFindings: 99,
+      exclude: ['*'],
     }
     for (const [key, value] of Object.entries(planted)) proto[key] = value
     try {
@@ -692,7 +693,7 @@ describe('resolveConfig', () => {
       expect(config.profiles.map(({ profile, research }) => [profile.id, research])).toEqual([
         ['security', 'default'],
       ])
-      expect(Object.hasOwn(config, 'concurrency') || Object.hasOwn(config, 'maxFindings')).toBe(false)
+      expect(Object.hasOwn(config, 'concurrency') || Object.hasOwn(config, 'maxFindings') || Object.hasOwn(config, 'exclude')).toBe(false)
     } finally {
       for (const key of Object.keys(planted)) delete proto[key]
     }
@@ -700,6 +701,19 @@ describe('resolveConfig', () => {
 
   it('passes concurrency and maxFindings through', () => {
     expect(resolve({ concurrency: 2, maxFindings: 10 }, { QUORUM_RESEARCH_MODEL: 'q', ...SIZE })).toMatchObject({ concurrency: 2, maxFindings: 10 })
+  })
+
+  it('keeps exclude when it lists a pattern, frozen, and leaves it out when it lists none', () => {
+    const providers = {
+      local: { ...LOCAL, model: 'm' },
+    }
+    const listed = resolve({
+      providers,
+      exclude: ['*.lock'],
+    })
+    expect(listed.exclude).toEqual(['*.lock'])
+    expect(Object.isFrozen(listed.exclude)).toBe(true)
+    expect(Object.hasOwn(resolve({ providers, exclude: [] }), 'exclude')).toBe(false)
   })
 
   it('returns a frozen copy it knows as resolved, and a resolved config as it is', () => {

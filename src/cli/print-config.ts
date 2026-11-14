@@ -106,12 +106,12 @@ function profileView({ profile, research, voters }: ResolvedProfile): Record<str
 
 /**
  * The resolved config as the YAML `--print-config` writes, for a CI log that anyone can read: the file it
- * came from (`null` for none), the providers, the profiles that run, the limits the review applies, and
- * the warnings. A key and every value of `headers`, `query` and `extraBody` print as `[redacted]`, a base
- * URL as its origin, and a prompt as its SHA-256. A `claude-code` provider prints its protocol, command,
- * model, context size, key (redacted), auth mode and args, and no origin: the command and the args are the
- * user's own config. The view is an allowlist, so a field added to the config prints nothing until it is
- * added here on purpose.
+ * came from (`null` for none), the providers, the profiles that run, the limits the review applies, the
+ * patterns it excludes, and the warnings. A key and every value of `headers`, `query` and `extraBody`
+ * print as `[redacted]`, a base URL as its origin, and a prompt as its SHA-256. A `claude-code` provider
+ * prints its protocol, command, model, context size, key (redacted), auth mode and args, and no origin:
+ * the command and the args are the user's own config. The view is an allowlist, so a field added to the
+ * config prints nothing until it is added here on purpose.
  *
  * The text ends with a newline, and each line passes through `inertLine`. It is YAML 1.1, so a reader of
  * that version reads `off` as a string, and no line folds.
@@ -131,6 +131,9 @@ export function printConfig(config: ResolvedConfig, source: string | undefined):
     ])),
     concurrency: config.concurrency ?? DEFAULT_CONCURRENCY,
     maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,
+    exclude: [
+      ...config.exclude ?? [],
+    ],
     warnings: [...config.warnings],
   }
   return stringify(view, { version: '1.1', lineWidth: 0, blockQuote: false }).split('\n').map(line => inertLine(line)).join('\n')

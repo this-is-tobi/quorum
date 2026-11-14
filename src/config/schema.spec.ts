@@ -67,6 +67,12 @@ const FULL: QuorumConfigFile = {
   roles: { research: 'local', voter: 'hosted_2' },
   concurrency: 4,
   maxFindings: 50,
+  exclude: [
+    'package-lock.json',
+    '*.min.js',
+    'vendor/**',
+    '/docs/images/**',
+  ],
   profiles: {
     security: {},
     'security-strict': {
@@ -118,6 +124,29 @@ describe('configFileSchema', () => {
 
   it('parses an empty config: every field is optional, since a later layer can fill it', () => {
     expect(parseConfig(configFileSchema, {})).toEqual({})
+  })
+
+  it('refuses a misleading pattern of exclude at its index, in the core\'s words, once each', () => {
+    expect(issuesOf({
+      exclude: [
+        '*.lock',
+        'vendor/',
+        7,
+        'a'.repeat(300),
+      ],
+    })).toEqual([
+      at('exclude.1', 'ends with /, so it matches no file: end it with /** to leave out what the directory holds'),
+      at('exclude.2', 'must be a string'),
+      at('exclude.3', 'must be at most 256 characters long'),
+    ])
+  })
+
+  it('refuses more than 100 patterns in the core\'s words', () => {
+    expect(issuesOf({
+      exclude: Array.from({ length: 101 }).fill('*.lock'),
+    })).toEqual([
+      at('exclude', 'must hold at most 100 patterns'),
+    ])
   })
 
   it('takes contextTokens as a whole number of at least 1', () => {
@@ -1238,6 +1267,14 @@ describe('configJsonSchema', () => {
 
   it('advertises the bounds of contextTokens, 1 to 999999999, as the variable takes them', () => {
     expect(node('properties', 'providers', 'additionalProperties', 'properties', 'contextTokens')).toMatchObject({ type: 'integer', minimum: 1, maximum: 999_999_999 })
+  })
+
+  it('advertises exclude as at most 100 described strings', () => {
+    expect(node('properties', 'exclude')).toMatchObject({
+      type: 'array',
+      maxItems: 100,
+      items: { type: 'string' },
+    })
   })
 
   it('is what schema/quorum.schema.json holds, byte for byte', () => {
