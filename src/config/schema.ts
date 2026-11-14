@@ -164,7 +164,8 @@ const FACTS: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly problem
  * field and wording of each that does not. A value is never quoted.
  */
 export function statedFacts(provider: unknown): { readonly stated: StatedFacts, readonly problems: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly message: string }> } {
-  const stated: Record<string, number> = {}
+  // No prototype, so a reader of `stated` never finds a fact on `Object.prototype`.
+  const stated: Record<string, number> = Object.create(null)
   const problems: Array<{ field: keyof StatedFacts, message: string }> = []
   for (const { field, problem } of FACTS) {
     const value = ownData(provider, field)
@@ -239,14 +240,30 @@ export function nameSnapshot(id: string, entry: unknown): unknown {
  */
 export const configFileSchema = configSchema(z.strictObject(providerShape), prompt)
 
+/** The settings of a provider in a code config: those of a file, which may also hold the key itself and the executable. */
+const codeSettings = z.strictObject({
+  ...providerShape,
+  apiKey: z.string().optional().describe('The key itself, which only a code config may hold'),
+  command: z.string().optional().describe('On claude-code, the claude executable: an absolute path, or a name found on PATH; only a code config may name it'),
+})
+
+/**
+ * Whether `value` may be the settings of a provider: anything but an object that holds a `complete`, unless
+ * that is plain data and no function, which the settings form reports as a field it does not know. An object
+ * that holds one is a provider object, read once, by `providerObject` alone; the settings form reads every
+ * field it knows through the object, a getter's included, so it is never offered one. Only the key and its
+ * descriptor are looked at here, so no getter of the object runs.
+ */
+function isSettings(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || !('complete' in value)) return true
+  const descriptor = Object.getOwnPropertyDescriptor(value, 'complete')
+  return descriptor !== undefined && Object.hasOwn(descriptor, 'value') && typeof descriptor.value !== 'function'
+}
+
 /** What a code config may hold as a provider: settings that may hold their key, or an object implementing `Provider`. */
 const codeProvider = z.union([
   providerObject,
-  z.strictObject({
-    ...providerShape,
-    apiKey: z.string().optional().describe('The key itself, which only a code config may hold'),
-    command: z.string().optional().describe('On claude-code, the claude executable: an absolute path, or a name found on PATH; only a code config may name it'),
-  }),
+  z.custom<z.input<typeof codeSettings>>(isSettings).pipe(codeSettings),
 ], { error: 'must be the settings of a provider, or an object whose complete is a function' })
 
 /** A TS or JS config: the file variant, where a provider may also hold its key, or be an object implementing `Provider`. */

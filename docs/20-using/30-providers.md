@@ -67,6 +67,7 @@ The core runs each call's attempts inside the call's concurrency slot, and gives
 - **`timeoutMs`** is a whole number of milliseconds from 1000 to 518400000, an own data field of the provider object, read once, when the quorum is created. A getter is never run and an inherited field states nothing, so a class sets it as a field. A provider that states none has 600000 ms.
 - **`retries`** is a whole number from 0 to 5, read as `timeoutMs` is. A provider that states none gets no retry, since the core must not retry what may retry by itself.
 - **The shipped adapters state both.** The HTTP adapters from their options, `timeoutMs` and `retries`, 600000 ms and 2 retries by default, so a call that fails in passing makes at most three attempts. `claudeCode` states no retry, and one deadline for all of Claude Code's own attempts: [Stopping, nesting and the version](#stopping-nesting-and-the-version).
+- **A config sets them too**: the `timeoutMs` and `retries` fields of a provider, and the role variables `QUORUM_RESEARCH_TIMEOUT_MS`, `QUORUM_RESEARCH_RETRIES`, `QUORUM_VOTER_TIMEOUT_MS` and `QUORUM_VOTER_RETRIES`, as [The environment variables](./20-configuration.md#the-environment-variables) says.
 - **A value out of range is refused** where the provider is given, as the issue `ports.profiles.<id>.research.<field>` or `ports.profiles.<id>.voters.<lens>.<field>`, `<field>` being `timeoutMs` or `retries`: `must be a whole number of milliseconds from 1000 to 518400000` and `must be a whole number from 0 to 5`. The message never repeats the value.
 
 ## The adapters

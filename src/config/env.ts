@@ -94,15 +94,28 @@ export const READ_VARIABLES: ReadonlySet<string> = new Set([
   ...ROLES.flatMap(role => VARIABLES.filter(({ aliased }) => aliased).map(({ suffix }) => `${role}_${suffix}`)),
 ])
 
-/**
- * The variables that hold a whole number, each as the field it sets: the form it is written in (decimal
- * digits, no sign, no leading zero), the most it may be, and the message that says what to write.
- */
-const NUMBERS: Readonly<Partial<Record<keyof RoleOverrides, { readonly form: RegExp, readonly max: number, readonly message: string }>>> = {
-  contextTokens: { form: /^[1-9]\d{0,8}$/, max: 999_999_999, message: 'must be a whole number of tokens, from 1 to 999999999' },
-  timeoutMs: { form: /^[1-9]\d{3,7}$/, max: MAX_TIMEOUT_MS, message: `must be a whole number of milliseconds, from ${MIN_TIMEOUT_MS} to ${MAX_TIMEOUT_MS}` },
-  retries: { form: /^[0-5]$/, max: MAX_RETRIES, message: `must be a whole number, from 0 to ${MAX_RETRIES}` },
+/** How a variable that holds a whole number is read: the form it is written in, the most it may be, and the message that says what to write. */
+interface NumberRule {
+  readonly form: RegExp
+  readonly max: number
+  readonly message: string
 }
+
+/** The variables that hold a whole number, each by the field it sets: decimal digits, no sign, no leading zero. A `Map`, so a field is never found on a prototype. */
+const NUMBERS: ReadonlyMap<keyof RoleOverrides, NumberRule> = new Map([
+  [
+    'contextTokens',
+    { form: /^[1-9]\d{0,8}$/, max: 999_999_999, message: 'must be a whole number of tokens, from 1 to 999999999' },
+  ],
+  [
+    'timeoutMs',
+    { form: /^[1-9]\d{3,7}$/, max: MAX_TIMEOUT_MS, message: `must be a whole number of milliseconds, from ${MIN_TIMEOUT_MS} to ${MAX_TIMEOUT_MS}` },
+  ],
+  [
+    'retries',
+    { form: /^[0-5]$/, max: MAX_RETRIES, message: `must be a whole number, from 0 to ${MAX_RETRIES}` },
+  ],
+])
 
 /**
  * The variables of one role that are set, each as its field and value: the `QUORUM_` form, else its alias. A
@@ -118,7 +131,7 @@ function readRole(env: Env, role: Role): { overrides: RoleOverrides, issues: Con
       ? envValue(env, `${role}_${suffix}`)
       : undefined)
     if (value === undefined) continue
-    const number = NUMBERS[field]
+    const number = NUMBERS.get(field)
     if (number === undefined) {
       entries.push([field, value])
     } else if (number.form.test(value) && Number(value) <= number.max) {
@@ -373,12 +386,13 @@ function unboundRoles(providers: Readonly<Record<string, ProviderEntry>>, roles:
  * its `maxTokens` does. A preset or a protocol variable builds the role's provider from its variables alone.
  * A context size describes one model on one endpoint, so it crosses to neither: a role's variables that name a
  * preset, a protocol, a base URL or a model drop the context size of the provider they are set on, the
- * derived voter's included, unless they set one; a key, a deadline or a retries variable alone leaves it. A
- * provider object cannot be changed: each variable aimed at one is an issue. Nothing it is given changes; nested objects are shared. A role bound to a name that is not an
- * own key of `providers` is an issue at that role, and nothing is applied. `builtIn` is true when `providers`
- * is the built-in default alone: while the research variables name no preset or protocol, a voter derived from
- * it whose variables set a base URL alone speaks OpenAI-compatible to it, as that variable always meant, and
- * does not inherit the default's own protocol. A provider of a config keeps what it names.
+ * derived voter's included, unless they set one; a variable that sets only a key, a deadline or a retry
+ * count leaves it. A provider object cannot be changed: each variable aimed at one is an issue. Nothing it
+ * is given changes; nested objects are shared. A role bound to a name that is not an own key of `providers`
+ * is an issue at that role, and nothing is applied. `builtIn` is true when `providers` is the built-in
+ * default alone: while the research variables name no preset or protocol, a voter derived from it whose
+ * variables set a base URL alone speaks OpenAI-compatible to it, as that variable always meant, and does not
+ * inherit the default's own protocol. A provider of a config keeps what it names.
  */
 export function applyRoleOverrides(
   providers: Readonly<Record<string, ProviderEntry>>,

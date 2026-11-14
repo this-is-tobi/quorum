@@ -155,6 +155,23 @@ describe('printConfig', () => {
     }), undefined)).toContain('  mine:\n    implements: Provider\n    model: m\n    timeoutMs: 120000\n    retries: 3\nprofiles:\n')
   })
 
+  it('prints the timeoutMs and retries of a provider object that states its own only, and nothing a polluted prototype holds', () => {
+    const proto = Object.prototype as Record<string, unknown>
+    proto.timeoutMs = 4242
+    proto.retries = 4
+    try {
+      const complete: Provider['complete'] = async () => ({ text: '', model: 'm' })
+      const text = printConfig(config({
+        mine: { id: 'mine', model: 'm', complete },
+      }), undefined)
+      expect(text).toContain('  mine:\n    implements: Provider\n    model: m\nprofiles:\n')
+      expect(text).not.toContain('4242')
+    } finally {
+      delete proto.timeoutMs
+      delete proto.retries
+    }
+  })
+
   it('prints a provider\'s own fields only, and nothing a polluted prototype holds', () => {
     const proto = Object.prototype as Record<string, unknown>
     proto.headers = { 'x-polluted': 'SECRET' }
