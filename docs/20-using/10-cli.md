@@ -75,13 +75,14 @@ Each `warning:` line is printed once, before the banner, and holds no value: a d
 
 | Line | Printed |
 | --- | --- |
+| `left out: <n> file(s): "<file>" (<reason>), … and <k> more` | Once, before the research starts, when the review leaves a file out: the count, the first five files as JSON strings with their reasons, `<no path>` for a part of the diff that no header names, then how many more. `meta.leftOut` holds every one: [A file left out](../95-reference/20-json-result.md#a-file-left-out) |
 | `flag: <code> at "<file>":<line> (<detail>)` | Once per [advisory flag](../30-security/30-output-handling.md#advisory-flags), before the research starts. It reads `at "<file>"` for a file name and `at line <line>` for a diff without per-file headers. A flag changes no exit code |
 | `invalid finding dropped: <reason>` | Once per finding that cites code outside the diff. The reason reads `<file>:<line> is not in the diff`, or `line <line> names no file` |
 | `incomplete: <reason> (<detail>)` | Once per gap, as it is recorded in `meta.incomplete`; [the reasons](../95-reference/20-json-result.md#incomplete-reasons) say what each detail holds |
 | `<n> candidate(s) after dedup` | When research and dedup are done: the findings the panel judges |
 | `<k> kept, <d> discarded, <u> unreviewed by panel` | When the review ends, a blank diff included |
 
-When several profiles run, the `invalid finding dropped`, `incomplete` and `candidate(s) after dedup` lines start with `[<id>] `, the id of the profile they belong to. The `flag:` and totals lines belong to the whole review and never do.
+When several profiles run, the `invalid finding dropped`, `incomplete` and `candidate(s) after dedup` lines start with `[<id>] `, the id of the profile they belong to. The `left out:`, `flag:` and totals lines belong to the whole review and never do.
 
 ## Exit codes
 

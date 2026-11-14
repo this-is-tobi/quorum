@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Provider } from '../core/ports.ts'
-import type { QuorumEvent } from '../core/types.ts'
+import type { LeftOutFile, LeftOutReason, QuorumEvent } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { resolvedConfig } from '../testing/bench.ts'
@@ -55,6 +55,31 @@ describe('renderEvent', () => {
       type: 'flag',
       flag: { code: 'hidden-characters', file: 'a\nb.js', detail: 'the file name holds U+000A' },
     })).toBe('flag: hidden-characters at "a\\nb.js" (the file name holds U+000A)')
+  })
+
+  it('renders the files left out in one line: five at most, each a JSON string with its reason, the empty name as <no path>, inert, never prefixed', () => {
+    const file = (name: string, reason: LeftOutReason = 'binary'): LeftOutFile => ({ file: name, reason })
+    expect(renderEvent({
+      type: 'left-out',
+      files: [
+        file('a.png'),
+        file(''),
+        file('vendor/lib', 'submodule'),
+      ],
+    }))
+      .toBe('left out: 3 file(s): "a.png" (binary), <no path> (binary), "vendor/lib" (submodule)')
+    expect(renderEvent({
+      type: 'left-out',
+      files: ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map(name => file(`${name}.png`)),
+    }))
+      .toBe('left out: 7 file(s): "a.png" (binary), "b.png" (binary), "c.png" (binary), "d.png" (binary), "e.png" (binary) and 2 more')
+    expect(renderEvent({
+      type: 'left-out',
+      files: [
+        file(`x${String.fromCharCode(0x202E)}\n.png`),
+      ],
+    }, true))
+      .toBe('left out: 1 file(s): "x<U+202E>\\n.png" (binary)')
   })
 
   it('renders the text a line carries inert', () => {

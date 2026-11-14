@@ -3,7 +3,7 @@ import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider } from '../config/schema.ts'
 import type { EventSink, Provider } from '../core/ports.ts'
 import { inertLine } from '../core/sanitize.ts'
-import type { Flag, QuorumEvent } from '../core/types.ts'
+import type { Flag, LeftOutFile, QuorumEvent } from '../core/types.ts'
 import { isClaudeCode } from '../providers/build.ts'
 import { originOf } from '../providers/http.ts'
 import { presetOf } from '../providers/presets.ts'
@@ -13,8 +13,8 @@ import { presetOf } from '../providers/presets.ts'
  * are the CLI's progress output on stderr, so a person follows a run without the full event stream.
  * Each line passes through `inertLine` whole: the reasons, details and file names it carries come
  * from the finder or the diff, and nothing in them can act on a terminal or a CI log. When `prefixed`,
- * a line of an event that names a profile starts with `[<profile>] `: the `flag:` and totals lines
- * belong to the whole review and never do.
+ * a line of an event that names a profile starts with `[<profile>] `: the `left out:`, `flag:` and totals
+ * lines belong to the whole review and never do.
  */
 export function renderEvent(event: QuorumEvent, prefixed = false): string | undefined {
   const line = progressLine(event, prefixed)
@@ -24,6 +24,9 @@ export function renderEvent(event: QuorumEvent, prefixed = false): string | unde
 }
 
 const profilePrefix = (profile: string): string => `[${profile}] `
+
+/** How many of the files left out the progress line names; the JSON result lists every one. */
+const LISTED_FILES = 5
 
 function progressLine(event: QuorumEvent, prefixed: boolean): string | undefined {
   const of = (profile: string, line: string): string => prefixed
@@ -38,6 +41,8 @@ function progressLine(event: QuorumEvent, prefixed: boolean): string | undefined
       return of(event.profile, `invalid finding dropped: ${event.reason}`)
     case 'incomplete':
       return of(event.entry.profile, `incomplete: ${event.entry.reason} (${event.entry.detail})`)
+    case 'left-out':
+      return leftOutLine(event.files)
     case 'flag':
       return `flag: ${event.flag.code}${where(event.flag)} (${event.flag.detail})`
     case 'run:end':
@@ -45,6 +50,22 @@ function progressLine(event: QuorumEvent, prefixed: boolean): string | undefined
     default:
       return undefined
   }
+}
+
+/**
+ * The line that names the files a review left out: their count, the first `LISTED_FILES` of them as
+ * `<file> (<reason>)`, then how many more. A file is a JSON string, as a flag's is; the empty name, which
+ * stands for a part of the diff no header names, is `<no path>`.
+ */
+function leftOutLine(files: readonly LeftOutFile[]): string {
+  const named = (file: string): string => file === ''
+    ? '<no path>'
+    : JSON.stringify(file)
+  const entries = files.slice(0, LISTED_FILES).map(({ file, reason }) => `${named(file)} (${reason})`)
+  const more = files.length > LISTED_FILES
+    ? ` and ${files.length - LISTED_FILES} more`
+    : ''
+  return `left out: ${files.length} file(s): ${entries.join(', ')}${more}`
 }
 
 /** Where a flag points: the file as a JSON string, with the line when it has one, else the line alone. */

@@ -86,11 +86,12 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
  * One review of a diff by every profile of the quorum, concurrently, each through research, dedup
  * and panel under the review's one concurrency limit; a blank diff runs no stage. The diff is split
  * once, for every profile and for the advisory flags, which are read from it before any stage runs.
- * Each is sent as a `flag` event right after `run:start` and kept in `meta.flags`, and none of them
- * changes a verdict. The review also lists the files whose change the diff does not carry, binary
- * files and submodules' commits, in `meta.leftOut`, and records a gap of each reason for every
- * profile before any stage, as `incomplete` events right after `run:start`; their sections still
- * reach the stages. Each event is handed to the sink as a copy, so a sink that changes one changes
+ * The review lists the files whose change the diff does not carry, binary files and submodules'
+ * commits, in `meta.leftOut`, and records a gap of each reason for every profile; their sections
+ * still reach the stages. Everything it knows before a call is sent in this order: `run:start`, then
+ * a `left-out` event naming those files when it leaves one out, then the gaps' `incomplete` events,
+ * then the `flag` events of the advisory flags, kept in `meta.flags`, none of which changes a verdict,
+ * then the stages. Each event is handed to the sink as a copy, so a sink that changes one changes
  * nothing else. The review reports itself through events, from `run:start` to `run:end`, and its
  * result merges the profiles' verdicts and gaps in profile order.
  * `meta.profiles[<id>].invalidFindings` and `meta.usage` are counted from the events before the
@@ -166,6 +167,7 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
       providersOf(run),
     ])),
   })
+  if (scope.leftOut.length > 0) emit({ type: 'left-out', files: scope.leftOut })
   for (const run of runs) {
     for (const entry of gaps.get(run.id) ?? []) emit({ type: 'incomplete', entry })
   }

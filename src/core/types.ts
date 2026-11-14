@@ -244,6 +244,8 @@ export type StageName = 'research' | 'dedup' | 'panel'
 export type QuorumEvent
   /** The review starts: the profiles it runs, and who reviews for each. */
   = | { type: 'run:start', profiles: string[], providers: Record<string, ProfileProviders> }
+    /** The files the review leaves out, as `meta.leftOut` holds them: sent once right after `run:start` when there is one. */
+    | { type: 'left-out', files: LeftOutFile[] }
     /** An advisory flag read from the diff, sent before any stage starts. */
     | { type: 'flag', flag: Flag }
     /** A stage of one profile starts. */

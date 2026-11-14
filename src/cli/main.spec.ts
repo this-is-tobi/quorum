@@ -760,7 +760,7 @@ describe('content the diff does not carry', () => {
       expect(JSON.parse(stdout()).meta.leftOut).toEqual([
         { file: 'img.png', reason: 'binary' },
       ])
-      expect(stderr()).toContain('\nincomplete: binary (the diff carries no content for 1 binary file(s), listed in meta.leftOut)\n')
+      expect(stderr()).toContain('\nleft out: 1 file(s): "img.png" (binary)\nincomplete: binary (the diff carries no content for 1 binary file(s), listed in meta.leftOut)\n')
       expect((sent(fetchMock).body.messages as Array<{ content: string }>)[1].content).toContain('Binary files a/img.png and b/img.png differ')
     }
   })
