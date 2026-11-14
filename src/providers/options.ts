@@ -1,5 +1,6 @@
 import { ConfigError, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
+import { retriesProblem, timeoutProblem } from '../core/ports.ts'
 import { endpointUrl, redactionsOf } from './http.ts'
 import type { SystemPrompt } from './messages.ts'
 import { DEFAULT_REPLY_TOKENS, TEMPLATE_TOKENS } from './size.ts'
@@ -60,6 +61,10 @@ export interface HttpProviderOptions {
   maxTokens?: number
   systemPrompt?: SystemPrompt
   structuredOutput?: StructuredOutput
+  /** The deadline of one attempt, in milliseconds, from 1000 to 86400000. Default 600000. */
+  timeoutMs?: number
+  /** The retries of a call that failed in passing, from 0 to 5. Default 2. */
+  retries?: number
 }
 
 /** What an adapter declares of its protocol, which the shared checks hold the options to. */
@@ -311,11 +316,28 @@ export function contextTokensIssues(id: string, contextTokens: number | undefine
 }
 
 /**
+ * The problems of the deadline and the retries an adapter takes, each at `<id>.<field>` when it is set
+ * and out of range: the deadline first. No message repeats a value.
+ */
+export function attemptIssues(id: string, timeoutMs: unknown, retries: unknown): ConfigIssue[] {
+  const issues: ConfigIssue[] = []
+  const deadline = timeoutMs === undefined
+    ? undefined
+    : timeoutProblem(timeoutMs)
+  if (deadline !== undefined) issues.push({ path: `${id}.timeoutMs`, message: deadline })
+  const count = retries === undefined
+    ? undefined
+    : retriesProblem(retries)
+  if (count !== undefined) issues.push({ path: `${id}.retries`, message: count })
+  return issues
+}
+
+/**
  * The problems of the options every HTTP adapter shares, under the rules the adapter declares. No
  * message repeats a value: a key, a header value or a URL can be a secret.
  */
 export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRules): ConfigIssue[] {
-  const { id, baseUrl, apiKey, headers, query, extraBody, temperature, maxTokens, contextTokens, systemPrompt, structuredOutput } = options
+  const { id, baseUrl, apiKey, headers, query, extraBody, temperature, maxTokens, contextTokens, systemPrompt, structuredOutput, timeoutMs, retries } = options
   const { auth, structuredOutputs } = rules
   const fixedHeaders = rules.fixedHeaders.map(name => name.toLowerCase())
   const issues = [
@@ -353,6 +375,7 @@ export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRul
   if (structuredOutput !== undefined && !structuredOutputs.includes(structuredOutput)) {
     issues.push({ path: `${id}.structuredOutput`, message: `must be ${wordList(structuredOutputs)}` })
   }
+  issues.push(...attemptIssues(id, timeoutMs, retries))
   return issues
 }
 

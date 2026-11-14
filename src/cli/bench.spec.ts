@@ -31,6 +31,8 @@ const RLO = String.fromCharCode(0x202E)
 
 let root = ''
 beforeEach(() => {
+  // Every adapter retries by default, and the system clock reads this at each wait: pinned, no backoff takes time.
+  vi.spyOn(Math, 'random').mockReturnValue(0)
   root = mkdtempSync(join(tmpdir(), 'quorum-bench-'))
   writeSuite(join(root, 'demo'))
   writeFileSync(join(root, 'a.yaml'), config('m1'))
@@ -38,6 +40,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   rmSync(root, { recursive: true, force: true })
 })
 

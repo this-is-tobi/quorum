@@ -90,6 +90,7 @@ The `llamacpp` preset points at `http://127.0.0.1:9931/v1`, where `llama-server`
 ## Long replies and a loading model
 
 - **A reverse proxy in front of a server cuts a reply it sees no byte of** within its idle limit, whatever quorum's deadline is: nginx's `proxy_read_timeout` is 60 s by default. For a thinking model, which can send nothing for minutes, raise it above the deadline, 600000 ms unless the provider states one: [The deadline of an attempt](../20-using/30-providers.md#the-deadline-of-an-attempt).
+- **A server answers 503 while it loads a model**: llama.cpp until the model is ready, and Ollama when its queue is full. A call that fails in passing is tried again, twice by default, but the two retries wait seconds where a load takes minutes, so start a review once the server answers: [What is retried](../20-using/30-providers.md#what-is-retried).
 
 ## Choosing a model
 

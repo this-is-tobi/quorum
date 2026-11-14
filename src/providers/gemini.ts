@@ -1,5 +1,6 @@
 import { issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
+import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson, snippet } from './http.ts'
 import type { ErrorHints } from './http.ts'
@@ -193,7 +194,7 @@ function readReply(reply: unknown, { id, model }: Pick<GeminiOptions, 'id' | 'mo
  * @throws ConfigError with every problem of the options, before any request
  */
 export function gemini(options: GeminiOptions): Provider {
-  const { id, model, auth = { header: 'x-goog-api-key' } as Auth, query, temperature, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json' } = options
+  const { id, model, auth = { header: 'x-goog-api-key' } as Auth, query, temperature, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
   const modelId = typeof model === 'string'
     ? model.replace(/^models\//, '')
     : ''
@@ -211,6 +212,8 @@ export function gemini(options: GeminiOptions): Provider {
   return {
     id,
     model,
+    timeoutMs,
+    retries,
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       checkFits(id, { system, messages }, request.output, budget)
