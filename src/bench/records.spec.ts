@@ -325,6 +325,16 @@ describe('parseRunFile', () => {
       },
     ],
     [
+      'a first scoring hash without its prefix',
+      {
+        ...RUN,
+        suite: {
+          ...RUN.suite,
+          firstScoringHash: '2'.repeat(64),
+        },
+      },
+    ],
+    [
       'a scoring hash in upper case',
       {
         ...RUN,
