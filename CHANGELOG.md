@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.5.0](https://github.com/this-is-tobi/quorum/compare/v0.4.0...v0.5.0) (2026-11-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* a review now ends at 30 minutes by default (reviewTimeoutMs): what it has not done by then is a review-deadline gap, which exits 4 for a gating profile, even with --allow-incomplete.
+* a review now stops at 2000000 tokens by default (maxReviewTokens): what it has not done by then is a token-cap gap, which exits 4 for a gating profile, even with --allow-incomplete. Every call event now carries spent, the tokens the cap counted for the call, so a program that reads the events strictly must take the field.
+* --allow-incomplete no longer lifts decoy findings past maxFindings, an unreadable finding, an unusable research reply, or a vote refused, cut off or unusable: a run that passed with the flag can now exit 4. Nor does it lift a vote that failed as process, invalid-response, aborted or unsupported, or with an error a custom provider throws. Every vote of the JSON result now carries failure, null for a vote that was cast, so a strict reader of the result must take it.
+* an openai-compatible, gemini or ollama provider without maxTokens now sends 16000 as the reply's limit, where it sent none, and a claude-code provider sends 16000, where Claude Code asked for 128000; a longer reply now fails as truncated, so raise maxTokens for a reasoning model. An openai-compatible provider with no preset sends the limit as max_tokens, which the reasoning models of OpenAI and Azure refuse, so set maxTokensField to max_completion_tokens for them.
+* a claude-code provider's run now has a deadline, timeoutMs times retries plus one, 30 minutes by default, which also bounds a long reply; Claude Code's own retries follow retries, 2 by default where Claude Code alone makes 10; and the provider's timeoutMs and retries replace an API_TIMEOUT_MS or CLAUDE_CODE_MAX_RETRIES the environment sets. A provider object that already has its own timeoutMs or retries field now states them to the core.
+* a gating review now exits 4 when the diff shows a file only as binary or a submodule only as its commit, even with --allow-incomplete. List such files in the named config's exclude to review the rest of the change.
+
+### Features
+
+* cap what a review spends at 2000000 tokens, reserving each attempt before it is sent ([b317d9b](https://github.com/this-is-tobi/quorum/commit/b317d9b0eba76e7b2e01b18d51cb9dd282c7c936))
+* end a review at 30 minutes with an answer, recording what it had not done as a gap ([313275f](https://github.com/this-is-tobi/quorum/commit/313275f8ee7504b55d0bda18f92e550d16ed8b47))
+* leave out of every request the files createQuorum's exclude patterns match ([d1226d5](https://github.com/this-is-tobi/quorum/commit/d1226d506c28119c336d06795bb65bb0f77a29d3))
+* let a provider state the worst case of one attempt, counted as its size guard counts ([f197049](https://github.com/this-is-tobi/quorum/commit/f197049deb70af7b97dd072c0199bc79a6f2adc5))
+* name the files a review left out in one line on stderr, and in a left-out event ([d981a5d](https://github.com/this-is-tobi/quorum/commit/d981a5d490efcb1daa6fe29cb77758ead8be9414))
+* read a failed reply's retry hint and spend codes, and Gemini's retry delay and per-day quota ([cd6717f](https://github.com/this-is-tobi/quorum/commit/cd6717fc7c111cc0f76ea5feac1924923ac3315c))
+* read exclude from the named config, print it, and hold it in the bench's fingerprint ([6ab2978](https://github.com/this-is-tobi/quorum/commit/6ab2978906f6c528e92602e2d9274aa0e120bd93))
+* record an advisory profile's failed research as its own gap, so it no longer fails the run ([f538d69](https://github.com/this-is-tobi/quorum/commit/f538d6975bfae39827cc0957e18c1b5dfb8b3372))
+* retry a call that failed in passing, as often as its provider states, after a growing wait ([bc471db](https://github.com/this-is-tobi/quorum/commit/bc471db6c4efe9a40a5bac87cdde375783292fe3))
+* retry a shipped provider's call twice by default, and set Claude Code's own retries to two ([199f8d3](https://github.com/this-is-tobi/quorum/commit/199f8d39052e6f79cc300c377b5906942bd73a80))
+* set the review's token cap and deadline in a config or in their own variables ([8cf4235](https://github.com/this-is-tobi/quorum/commit/8cf42357a95b5db4cefc4abcd23f123fe432ce08))
+* set timeoutMs and retries in a config or the role variables, printed and in the fingerprint ([b383ab9](https://github.com/this-is-tobi/quorum/commit/b383ab91e8c3e83b560d40c5722e2fc4b58a99ce))
+* stop starting bench reviews once a run has spent --max-run-tokens ([bf2933f](https://github.com/this-is-tobi/quorum/commit/bf2933f2cb241531b1186ee193a32e6e02df2db7))
+
+
+### Bug Fixes
+
+* exclude a renamed file only when its rename to line confirms the header's path ([714aef8](https://github.com/this-is-tobi/quorum/commit/714aef8ae8e609381db4680a1834e49785d980ce))
+* give each provider call a 10-minute deadline of quorum's own, and turn the runtimes' timers off ([50c6ce8](https://github.com/this-is-tobi/quorum/commit/50c6ce863a671408f1fa56763ea99109ca173f9d))
+* lift a gap with --allow-incomplete only when a vote failed in passing ([477f0e8](https://github.com/this-is-tobi/quorum/commit/477f0e83176e6661bab445263b006689458849bd))
+* make the CI recipe's diff override the ignore setting a pull request writes in .gitmodules ([bfb49da](https://github.com/this-is-tobi/quorum/commit/bfb49da0d31cec433f090eb248109a6d861dc1c3))
+* never run a code config provider object's getters when one of its stated facts is refused ([393517d](https://github.com/this-is-tobi/quorum/commit/393517d51401219375699431197ae3dc3b1875ab))
+* record a binary or submodule file the diff does not show as a gap no flag lifts ([55bdec9](https://github.com/this-is-tobi/quorum/commit/55bdec91b6fa0ed8d65384aeb5df898bc05e4031))
+* say what bounds a claude-code run, and that its settings replace Claude Code's own ([99ccbbc](https://github.com/this-is-tobi/quorum/commit/99ccbbcfd43ef644c31676519da5cb7a90f3d1c7))
+* send a reply limit of 16000 tokens by default, Claude Code's included, so no reply runs on ([4e23e40](https://github.com/this-is-tobi/quorum/commit/4e23e4092dd765d00ddb64b4d0ab1cd47216e32b))
+
+
+### Code Refactoring
+
+* end a call's retries when its retry count is not a number ([15c620b](https://github.com/this-is-tobi/quorum/commit/15c620bec790ba384d14a0668be94514d1bd8b2d))
+
 ## [0.4.0](https://github.com/this-is-tobi/quorum/compare/v0.3.0...v0.4.0) (2026-11-14)
 
 
