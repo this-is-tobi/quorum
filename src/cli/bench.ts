@@ -36,23 +36,24 @@ export const BENCH_USAGE = [
   'Review every case of a suite with every config, --trials times each, and report what each caught.',
   '',
   'Options:',
-  '  -c, --config <path>     A config file to compare; repeat it, and the first is the reference',
-  '  -p, --profile <id>      Run only this profile; repeat it to run several',
-  '      --trials <n>        Reviews of each case per config: the suite\'s trials, else 1',
-  '      --case <id>         Run only this case; repeat it to run several',
-  '  -j, --jobs <n>          The reviews run at once (default 1)',
-  '  -o, --out <dir>         The run directory (default quorum-bench/<suite name>)',
-  '      --retry-incomplete  Run again the recorded reviews that came back incomplete',
-  '      --report-only       Write the reports of what is recorded, and run no review',
-  '      --dry-run           Check the suite and the configs, print the plan, and exit',
-  '  -h, --help              Print this help and exit',
+  '  -c, --config <path>       A config file to compare; repeat it, and the first is the reference',
+  '  -p, --profile <id>        Run only this profile; repeat it to run several',
+  '      --trials <n>          Reviews of each case per config: the suite\'s trials, else 1',
+  '      --case <id>           Run only this case; repeat it to run several',
+  '  -j, --jobs <n>            The reviews run at once (default 1)',
+  '      --max-run-tokens <n>  Start no review once the run has spent <n> tokens; the next run runs the rest',
+  '  -o, --out <dir>           The run directory (default quorum-bench/<suite name>)',
+  '      --retry-incomplete    Run again the recorded reviews that came back incomplete',
+  '      --report-only         Write the reports of what is recorded, and run no review',
+  '      --dry-run             Check the suite and the configs, print the plan, and exit',
+  '  -h, --help                Print this help and exit',
   '',
 ].join('\n')
 
 /**
  * The bench's own exit codes (Decision 18), not the review's `EXIT`: `failed` means reviews failed and were
- * not recorded, not that a review left a gap or that a model's reply denied it, and `stopped` means the
- * run could not go on.
+ * not recorded, or that `--max-run-tokens` left reviews unrun, not that a review left a gap or that a
+ * model's reply denied it, and `stopped` means the run could not go on.
  */
 const BENCH_EXIT = {
   ok: 0,
@@ -74,6 +75,7 @@ const OPTIONS = {
   trials: { type: 'string' },
   case: { type: 'string', multiple: true },
   jobs: { type: 'string', short: 'j' },
+  'max-run-tokens': { type: 'string' },
   out: { type: 'string', short: 'o' },
   'retry-incomplete': { type: 'boolean' },
   'report-only': { type: 'boolean' },
@@ -89,6 +91,8 @@ interface BenchOptions {
   readonly trials: number | undefined
   readonly cases: readonly string[]
   readonly jobs: number
+  /** The tokens after which the run starts no review; undefined when the flag was not given. */
+  readonly maxRunTokens: number | undefined
   readonly out: string | undefined
   readonly retryIncomplete: boolean
   readonly reportOnly: boolean
@@ -131,6 +135,7 @@ function checkOptions(values: ReturnType<typeof parseFlags<typeof OPTIONS>>['val
   if (extra.length > 0) throw new Error(`unexpected arguments: ${extra.join(' ')}`)
   const trials = wholeNumber('--trials', values.trials, MAX_TRIALS)
   const jobs = wholeNumber('--jobs', values.jobs, MAX_JOBS)
+  const maxRunTokens = wholeNumber('--max-run-tokens', values['max-run-tokens'], Number.MAX_SAFE_INTEGER)
   const configs = values.config ?? []
   if (configs.includes('')) throw usageIssue('--config', 'must name a file')
   if (configs.length > MAX_CONFIGURATIONS) throw usageIssue('--config', `names more than ${MAX_CONFIGURATIONS} configurations`)
@@ -148,6 +153,7 @@ function checkOptions(values: ReturnType<typeof parseFlags<typeof OPTIONS>>['val
     trials,
     cases,
     jobs: jobs ?? 1,
+    maxRunTokens,
     out: values.out,
     retryIncomplete: values['retry-incomplete'] === true,
     reportOnly: values['report-only'] === true,
@@ -393,6 +399,7 @@ interface Execution {
   readonly records: ReadSizes
   readonly toRun: readonly BenchReview[]
   readonly jobs: number
+  readonly maxRunTokens: number | undefined
 }
 
 /**
@@ -420,7 +427,7 @@ async function writeRun({ out, state, runFile }: Checked): Promise<void> {
  * writer is closed whatever happens; when the run rejects, with the error of a failed write, that error
  * is the one thrown.
  */
-async function execute(io: CliIO, { checked, scores, records, toRun, jobs }: Execution): Promise<RunReviewsOutcome> {
+async function execute(io: CliIO, { checked, scores, records, toRun, jobs, maxRunTokens }: Execution): Promise<RunReviewsOutcome> {
   const { suite, loaded, byId, out, runFile } = checked
   await writeRun(checked)
   const writer = await openRecords(out, records)
@@ -432,6 +439,7 @@ async function execute(io: CliIO, { checked, scores, records, toRun, jobs }: Exe
       configurations: loaded.map(({ config }, index) => ({ config, fingerprint: runFile.configurations[index].fingerprint })),
       reviews: toRun,
       jobs,
+      maxRunTokens,
       env: io.env,
       signal: io.signal,
       append: writer.append,
@@ -526,11 +534,16 @@ async function bench(io: CliIO, options: BenchOptions): Promise<number> {
     records,
     toRun,
     jobs: options.jobs,
+    maxRunTokens: options.maxRunTokens,
   })
   await writeReports(io, checked, trials, scores)
   if (outcome.interrupted) {
     io.stderr.write('interrupted\n')
     return BENCH_EXIT.interrupted
+  }
+  if (outcome.notRun > 0 && options.maxRunTokens !== undefined) {
+    writeLines(io.stderr, [`--max-run-tokens: the run reached its cap of ${options.maxRunTokens} tokens (it spent ${outcome.spent}), so ${outcome.notRun} review(s) were not run; the next run runs them`])
+    return BENCH_EXIT.failed
   }
   return outcome.failed > 0
     ? BENCH_EXIT.failed
@@ -569,13 +582,19 @@ function usageError(io: CliIO, error: unknown): number {
  * `results.jsonl` to append, so a cut last line stays, and warns of it. It refuses a run directory that
  * holds no run, and `--retry-incomplete`, which runs reviews.
  *
+ * `--max-run-tokens <n>` stops the run from starting reviews once its reviews have spent `n` tokens, counted
+ * from each call's `spent`, the tokens its review's own cap counted (`maxReviewTokens`): the reviews in flight
+ * finish and are recorded, the reports are written, one stderr line says how many reviews were not run, and
+ * the next run runs them. The check is made before each review starts, so the reviews in flight can pass
+ * the cap by up to `--jobs` reviews' own caps, and the calls a failing review's abort cut are not counted.
+ *
  * Exit codes: 0 when every planned review is recorded, a denied one included, or `--report-only` wrote the
  * reports, 2 for a usage, suite, configuration or run directory error, 3 when the run stops (a file cannot
  * be written or read), 4 when a review failed (its gating profile's research call failed, or its record
- * was too large to write: the others are recorded, and the next run runs the failed ones), 130 when
- * interrupted. The reports are written on 0, 4 and 130, so a stopped run shows what it recorded; an
- * interrupt during the checks and the plan leaves the run directory as it was, even one that does not
- * exist yet.
+ * was too large to write: the others are recorded, and the next run runs the failed ones) or
+ * `--max-run-tokens` left reviews unrun, 130 when interrupted. The reports are written on 0, 4 and 130,
+ * so a stopped run shows what it recorded; an interrupt during the checks and the plan leaves the run
+ * directory as it was, even one that does not exist yet.
  *
  * Every line it writes is inert (invariant I3).
  */

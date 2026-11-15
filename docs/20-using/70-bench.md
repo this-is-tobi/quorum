@@ -14,16 +14,17 @@ Usage: quorum bench [options] <suite>
 Review every case of a suite with every config, --trials times each, and report what each caught.
 
 Options:
-  -c, --config <path>     A config file to compare; repeat it, and the first is the reference
-  -p, --profile <id>      Run only this profile; repeat it to run several
-      --trials <n>        Reviews of each case per config: the suite's trials, else 1
-      --case <id>         Run only this case; repeat it to run several
-  -j, --jobs <n>          The reviews run at once (default 1)
-  -o, --out <dir>         The run directory (default quorum-bench/<suite name>)
-      --retry-incomplete  Run again the recorded reviews that came back incomplete
-      --report-only       Write the reports of what is recorded, and run no review
-      --dry-run           Check the suite and the configs, print the plan, and exit
-  -h, --help              Print this help and exit
+  -c, --config <path>       A config file to compare; repeat it, and the first is the reference
+  -p, --profile <id>        Run only this profile; repeat it to run several
+      --trials <n>          Reviews of each case per config: the suite's trials, else 1
+      --case <id>           Run only this case; repeat it to run several
+  -j, --jobs <n>            The reviews run at once (default 1)
+      --max-run-tokens <n>  Start no review once the run has spent <n> tokens; the next run runs the rest
+  -o, --out <dir>           The run directory (default quorum-bench/<suite name>)
+      --retry-incomplete    Run again the recorded reviews that came back incomplete
+      --report-only         Write the reports of what is recorded, and run no review
+      --dry-run             Check the suite and the configs, print the plan, and exit
+  -h, --help                Print this help and exit
 ```
 
 `bench` must be the first argument ([The invocation](./10-cli.md#the-invocation)). The argument after the options is a suite's directory, the one that holds its `suite.yaml`. With no `--config` there is one configuration, the usual resolution: `QUORUM_CONFIG` and the `QUORUM_*` variables, as for a review ([Configuration](./20-configuration.md)). Each `--config` adds another, up to 16, and the **first is the reference**: the report compares every other one with it. A `QUORUM_*` variable overrides every config alike, so two configs it makes identical are refused before any call, naming both. A file named by two `--config` values, as `a.yaml` and `./a.yaml` or its absolute path, is a usage error before any config is read, `Error: --config: names the file "a.yaml" more than once`, and two names of one file, such as a link, are refused as two configs that resolve alike.
@@ -35,6 +36,7 @@ Options:
 | `--trials <n>` | The reviews of each case with each configuration, from 1 to 100: the suite's `trials`, else 1. Raising it on a run that exists adds the new trials: [The run directory](#the-run-directory) |
 | `--case <id>` | Run only this case, and report only it. It repeats for several. An id the suite lacks, or one given twice, is a usage error |
 | `-j, --jobs <n>` | The reviews that run at once, from 1 to 16, 1 by default. Each review keeps the config's own `concurrency` for its calls, so up to `--jobs` times that many calls are in flight |
+| `--max-run-tokens <n>` | Start no review once the run has spent `n` tokens, input and output, as each review's own cap counts them: the reviews in flight finish and are recorded, the reports are written, and the next run runs the rest. A review's own cap is `maxReviewTokens` ([The limits of a review](./20-configuration.md#the-limits-of-a-review)), in its fingerprint; the run's is no setting of a review, so it is not. The cap is checked before each review starts, so the reviews in flight can pass it by up to `--jobs` reviews' own caps |
 | `-o, --out <dir>` | The run directory, `quorum-bench/<suite name>` in the working directory by default |
 | `--retry-incomplete` | Run again the recorded reviews that came back incomplete, for use after an outage |
 | `--report-only` | Run no review: write the reports of what is recorded, scored under the suite as it is now. It needs a run directory that holds a run, and cannot be given with `--retry-incomplete`. It loads and builds every configuration, as a run does, so it needs the variables that hold their keys, though it calls no model: [Re-scoring](#re-scoring) |
@@ -112,10 +114,10 @@ When the reviews end, the report is written as `report.md` and `report.json` in 
 | `0` | Every planned review is recorded, a denied one included, or `--report-only` wrote the reports. A dry run exits `0` too |
 | `2` | A usage, config or suite error: a flag, a suite that does not validate, a config that cannot be built, two configs that resolve alike. Or a run directory that holds another run or a file the bench cannot trust. Nothing was reviewed, and stdout is empty |
 | `3` | A read or a write of the run directory failed, such as `results.jsonl: cannot be written (EACCES)`, or the run stopped for any other reason. The records already written stay |
-| `4` | Some reviews failed: a gating profile's research call failed, or a record would be over 16 MiB. They are not recorded, the others are, and the next run runs the failed ones |
+| `4` | Some reviews failed: a gating profile's research call failed, or a record would be over 16 MiB. They are not recorded, the others are, and the next run runs the failed ones. Or `--max-run-tokens` left reviews unrun, which one stderr line counts |
 | `130` | Interrupted by SIGINT or SIGTERM. No new review starts, the reviews in flight are cut, the records are kept and the reports are written, and `interrupted` is on stderr. During the checks and the plan it writes nothing, not even the run directory. A second signal exits at once, without waiting |
 
-These are the bench's own codes, not the review command's: its `4` means reviews failed, not that a review has a gap or was denied, and it has no `1`. [The CLI](./10-cli.md#quorum-bench) lists them with the command. A bench gates nothing: `0` says the reviews ran, not that the numbers are good.
+These are the bench's own codes, not the review command's: its `4` means reviews failed or went unrun under `--max-run-tokens`, not that a review has a gap or was denied, and it has no `1`. [The CLI](./10-cli.md#quorum-bench) lists them with the command. A bench gates nothing: `0` says the reviews ran, not that the numbers are good.
 
 ## Writing a suite
 
