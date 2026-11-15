@@ -14,8 +14,8 @@ import type { ProviderRef, StageName, Thresholds, Usage } from '../types.ts'
 
 /**
  * A provider as a compiled profile holds it: the object it calls, the ref captured at creation that
- * events and meta report, the deadline of each of its attempts, the retries of a call and the worst case
- * it states.
+ * events and meta report, the deadline of each of its attempts, the retries of a call, and the worst case
+ * and the room it states.
  */
 export interface Target {
   readonly provider: Provider
@@ -26,6 +26,8 @@ export interface Target {
   readonly retries: number
   /** The worst case of one attempt the provider stated when the quorum was created, when it is a function; `reservationOf` reads its result. */
   readonly worstCase: ((request: CompletionRequest) => unknown) | undefined
+  /** The room the provider stated when the quorum was created, when it is a function; `roomOf` reads its result. */
+  readonly room: ((request: CompletionRequest) => unknown) | undefined
 }
 
 /** One lens of a compiled profile: its vote instructions, rendered once, and its own provider. */
@@ -186,12 +188,14 @@ export interface Requester {
  * default: 600000 ms and no retry. The quorum's checks ran first, so a plain object's values are the
  * ones they passed; a proxy that answers the check and this read differently still gets an in-range
  * deadline and no retry, never an unbounded one. The worst case it states is its own data value when
- * that is a function, else none: a getter is never run, and an inherited method states nothing.
+ * that is a function, else none, and so is the room it states: a getter is never run, and an inherited method
+ * states nothing.
  */
 export function targetOf(provider: Provider): Target {
   const timeoutMs = ownData(provider, 'timeoutMs')
   const retries = ownData(provider, 'retries')
   const worstCase = ownData(provider, 'worstCase')
+  const room = ownData(provider, 'room')
   return {
     provider,
     ref: Object.freeze({ id: provider.id, model: provider.model }),
@@ -204,7 +208,29 @@ export function targetOf(provider: Provider): Target {
     worstCase: typeof worstCase === 'function'
       ? worstCase as Target['worstCase']
       : undefined,
+    room: typeof room === 'function'
+      ? room as Target['room']
+      : undefined,
   }
+}
+
+/**
+ * The safe integer a provider's stated function returns for `request`, called once, synchronously, with the
+ * request and the provider as `this`: undefined for anything else. A result that is not a safe integer (a
+ * promise included, whose rejection is marked handled) and a throw state nothing. It never throws.
+ */
+function statedInteger(stating: (request: CompletionRequest) => unknown, provider: Provider, request: CompletionRequest): number | undefined {
+  try {
+    const stated: unknown = Reflect.apply(stating, provider, [request])
+    if (typeof stated === 'number' && Number.isSafeInteger(stated)) return stated
+    // It is called synchronously: a promise states nothing, and a rejected one must not crash the process.
+    if ((typeof stated === 'object' && stated !== null) || typeof stated === 'function') {
+      Promise.resolve(stated).then(undefined, () => {})
+    }
+  } catch {
+    // A function that throws states nothing.
+  }
+  return undefined
 }
 
 /**
@@ -216,20 +242,25 @@ export function targetOf(provider: Provider): Target {
  * misbehaves never reserves nothing. It never throws.
  */
 export function reservationOf(target: Target, request: CompletionRequest): number {
-  const { worstCase } = target
-  if (worstCase !== undefined) {
-    try {
-      const stated: unknown = Reflect.apply(worstCase, target.provider, [request])
-      if (typeof stated === 'number' && Number.isSafeInteger(stated) && stated >= 1) return stated
-      // It is called synchronously: a promise states nothing, and a rejected one must not crash the process.
-      if ((typeof stated === 'object' && stated !== null) || typeof stated === 'function') {
-        Promise.resolve(stated).then(undefined, () => {})
-      }
-    } catch {
-      // A worst case that throws states nothing.
-    }
-  }
-  return requestTokens(request) + TEMPLATE_TOKENS + DEFAULT_REPLY_TOKENS
+  const stated = target.worstCase === undefined
+    ? undefined
+    : statedInteger(target.worstCase, target.provider, request)
+  return stated !== undefined && stated >= 1
+    ? stated
+    : requestTokens(request) + TEMPLATE_TOKENS + DEFAULT_REPLY_TOKENS
+}
+
+/**
+ * The room the provider states for `request`: how many more tokens of text it could hold and still fit the
+ * provider's window, called once with the request and the provider as `this`, when it returns a safe integer,
+ * 0 and a negative one included. A provider that states none, a result that is anything else (a promise
+ * included, whose rejection is marked handled) and a throw all state nothing, which is `undefined`, and the
+ * caller then reviews as it does for a provider that states no room. It never throws.
+ */
+export function roomOf(target: Target, request: CompletionRequest): number | undefined {
+  return target.room === undefined
+    ? undefined
+    : statedInteger(target.room, target.provider, request)
 }
 
 /** Whole milliseconds since `started`, a `performance.now()` reading. */

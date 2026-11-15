@@ -5,7 +5,7 @@ import { shapeMessages } from './messages.ts'
 import { isRecord, mergeBody, prepareHttp } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { endedEarly, joinedText, MAX_MODEL_TEXT, replyFailure, tokenUsage } from './reply.ts'
-import { checkFits, contextBudget, worstCaseTokens } from './size.ts'
+import { checkFits, contextBudget, roomTokens, worstCaseTokens } from './size.ts'
 
 /** The options of an OpenAI-compatible provider. */
 export interface OpenAICompatibleOptions extends HttpProviderOptions {
@@ -160,7 +160,8 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
  * only in the header `auth` names, `Authorization: Bearer` by default (invariant I1). It refuses, before
  * any request, a request that may not fit `contextTokens`. It sends the reply's limit, `maxTokens` else the
  * budget of the size guard, under `maxTokensField`, so the server bounds a reply's length. It states its
- * worst case from the count its size guard keeps: the text it sends, the template reserve and that budget.
+ * worst case from the count its size guard keeps: the text it sends, the template reserve and that budget,
+ * and the room its guard leaves from the same count: `contextTokens` less those three.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
@@ -180,6 +181,7 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
     timeoutMs,
     retries,
     worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budget),
+    room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budget),
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       checkFits(id, { system, messages }, request.output, budget)

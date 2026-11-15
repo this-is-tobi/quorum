@@ -324,6 +324,41 @@ describe('createQuorum', () => {
     expect(read).toBe(false)
   })
 
+  it('refuses a provider\'s room that is not a function at each port that holds it, and runs no getter', () => {
+    const stating = (room: unknown): Provider => ({ ...provider, room }) as Provider
+    const create = (research: Provider, reachability: Provider, impact: Provider, defenses: Provider): Quorum => createQuorum({
+      profiles: [securityProfile],
+    }, {
+      profiles: {
+        security: {
+          research,
+          voters: { reachability, impact, defenses },
+        },
+      },
+    })
+    expect(issuesOf(() => create(stating(5), stating('60'), stating(null), stating({})))).toEqual([
+      'ports.profiles.security.research.room: must be a function',
+      'ports.profiles.security.voters.reachability.room: must be a function',
+      'ports.profiles.security.voters.impact.room: must be a function',
+      'ports.profiles.security.voters.defenses.room: must be a function',
+    ])
+    expect(() => create(stating(() => 60), stating(undefined), stating(() => -1), stating(undefined))).not.toThrow()
+
+    let read = false
+    const getter = { ...provider }
+    Object.defineProperty(getter, 'room', {
+      enumerable: true,
+      get() {
+        read = true
+        return 5
+      },
+    })
+    expect(() => createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, getter))).not.toThrow()
+    expect(read).toBe(false)
+  })
+
   it('refuses ports for a profile or a lens the run does not have, as a likely typo, and a sink that is not a function', () => {
     const model = fake('m', () => '')
     const voters = {

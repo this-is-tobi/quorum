@@ -8,11 +8,12 @@ import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue, ProviderError } from '../core/errors.ts'
 import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
 import type { ChatMessage, CompletionRequest, CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
+import { tokenBound } from '../core/tokens.ts'
 import type { Usage } from '../core/types.ts'
 import { snippet } from './http.ts'
 import { attemptIssues, contextTokensIssues, isRecord, maxTokensIssues, NOT_VISIBLE_ASCII, wordList } from './options.ts'
 import { replyFailure, tokenUsage } from './reply.ts'
-import { checkFits, contextBudget, DEFAULT_REPLY_TOKENS, utf8Length, worstCaseTokens } from './size.ts'
+import { checkFits, contextBudget, DEFAULT_REPLY_TOKENS, roomTokens, utf8Length, worstCaseTokens } from './size.ts'
 
 /**
  * The `claude-code` adapter runs the user's installed `claude` CLI once per request, headless and isolated,
@@ -1067,6 +1068,11 @@ async function requireVersion(launch: Launch, signal: AbortSignal | undefined, f
  * it continues after its limit, up to three times a turn, and its own retries: those count once the run
  * reports its usage.
  *
+ * It states the room its checks leave: the lesser of what its size guard leaves, from the same count, and what
+ * the stdin cap leaves, `MAX_STDIN_BYTES` less the message at one token per byte, which bounds the bytes the
+ * cap checks, so a request whose room is not negative passes both and text added to the message lowers the
+ * room by exactly its count.
+ *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function claudeCode(options: ClaudeCodeOptions): Provider {
@@ -1091,6 +1097,13 @@ export function claudeCode(options: ClaudeCodeOptions): Provider {
     }, request.output, budget, structuredOutput === 'schema'
       ? 2
       : 1),
+    room: request => Math.min(
+      roomTokens({
+        system: request.system,
+        messages: [...request.messages],
+      }, request.output, budget),
+      MAX_STDIN_BYTES - tokenBound(request.messages[0]?.content ?? ''),
+    ),
     async complete(request) {
       const fail = replyFailure(id)
       const message = messageOf(request, fail)

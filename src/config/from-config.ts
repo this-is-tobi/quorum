@@ -8,7 +8,7 @@ import type { Env } from './env.ts'
 import { checkCodeValue } from './load.ts'
 import { isResolvedConfig, resolveConfig } from './resolve.ts'
 import type { ResolvedConfig, ResolvedProvider } from './resolve.ts'
-import { configInputSchema, configPath, isProvider, statedFacts, statedWorstCase } from './schema.ts'
+import { configInputSchema, configPath, isProvider, statedFacts, statedRoom, statedWorstCase } from './schema.ts'
 import type { ConfigInput } from './schema.ts'
 
 /** A provider the config defines as data, built by the builder: its issues name the provider where the config defines it. */
@@ -26,7 +26,7 @@ function fromSpec(name: string, spec: Exclude<ResolvedProvider, Provider>, env: 
   }
 }
 
-/** A provider object of the config, which the check read once into a snapshot, under the name the config gives it, with the `timeoutMs`, `retries` and `worstCase` the snapshot holds. */
+/** A provider object of the config, which the check read once into a snapshot, under the name the config gives it, with the `timeoutMs`, `retries`, `worstCase` and `room` the snapshot holds. */
 function fromObject(name: string, snapshot: Provider): { readonly provider?: Provider, readonly issues: readonly ConfigIssue[] } {
   const { model, complete }: { model: unknown, complete: Provider['complete'] } = snapshot
   if (typeof model !== 'string') {
@@ -40,6 +40,7 @@ function fromObject(name: string, snapshot: Provider): { readonly provider?: Pro
     }
   }
   const worstCase = statedWorstCase(snapshot)
+  const room = statedRoom(snapshot)
   return {
     provider: {
       id: name,
@@ -49,6 +50,9 @@ function fromObject(name: string, snapshot: Provider): { readonly provider?: Pro
       ...worstCase === undefined
         ? {}
         : { worstCase },
+      ...room === undefined
+        ? {}
+        : { room },
     },
     issues: [],
   }

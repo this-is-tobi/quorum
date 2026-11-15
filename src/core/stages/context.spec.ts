@@ -7,7 +7,7 @@ import { ProviderError } from '../errors.ts'
 import { createLedger, DEFAULT_REVIEW_TIMEOUT_MS, LimitError } from '../limits.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../ports.ts'
 import type { QuorumEvent } from '../types.ts'
-import { callProvider, reservationOf, targetOf } from './context.ts'
+import { callProvider, reservationOf, roomOf, targetOf } from './context.ts'
 import type { Requester, RunContext, Target } from './context.ts'
 
 /**
@@ -44,13 +44,14 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
 }
 
 /** A target whose provider's own id is not the id of its ref, which is the one an error and an event name. */
-function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'retries' | 'worstCase'>> = {}): Target {
+function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'retries' | 'worstCase' | 'room'>> = {}): Target {
   return {
     provider: { id: 'live-id', model: 'm', complete },
     ref: { id: 'p', model: 'm' },
     timeoutMs: 1000,
     retries: 0,
     worstCase: undefined,
+    room: undefined,
     ...facts,
   }
 }
@@ -513,6 +514,103 @@ describe('the worst case of a call', () => {
       ...stating,
       worstCase: () => Number.MAX_SAFE_INTEGER,
     }, request)).toBe(Number.MAX_SAFE_INTEGER)
+  })
+})
+
+describe('the room a provider states', () => {
+  const complete = async (): Promise<CompletionResponse> => ({ text: '', model: 'm' })
+  const provider: Provider = { id: 'p', model: 'm', complete }
+
+  it('reads a stated room as own data: a getter never runs, an inherited one states nothing, a non-function is none', () => {
+    const stated = (): number => 60
+    expect(targetOf({ ...provider, room: stated }).room).toBe(stated)
+
+    let read = false
+    const getter = { ...provider }
+    Object.defineProperty(getter, 'room', {
+      enumerable: true,
+      get() {
+        read = true
+        return stated
+      },
+    })
+    expect(targetOf(getter).room).toBeUndefined()
+    expect(read).toBe(false)
+
+    const inherited: Provider = Object.assign(Object.create({ room: stated }), provider)
+    expect(targetOf(inherited).room).toBeUndefined()
+
+    expect(targetOf({ ...provider, room: 5 } as unknown as Provider).room).toBeUndefined()
+  })
+
+  it.each<[string, Target['room']]>([
+    ['is unset', undefined],
+    [
+      'returns 1.5',
+      () => 1.5,
+    ],
+    [
+      'returns Number.NaN',
+      () => Number.NaN,
+    ],
+    [
+      'returns a string',
+      () => '100',
+    ],
+    [
+      'returns Number.MAX_SAFE_INTEGER + 2',
+      () => Number.MAX_SAFE_INTEGER + 2,
+    ],
+    [
+      'returns Number.POSITIVE_INFINITY',
+      () => Number.POSITIVE_INFINITY,
+    ],
+    [
+      'throws',
+      () => {
+        throw new Error('no room')
+      },
+    ],
+    [
+      'returns a rejected promise',
+      () => Promise.reject(new Error('later')),
+    ],
+  ])('states no room when it %s', async (_name, room) => {
+    const rejections: unknown[] = []
+    const record = (reason: unknown): void => {
+      rejections.push(reason)
+    }
+    process.on('unhandledRejection', record)
+    onTestFinished(() => {
+      process.off('unhandledRejection', record)
+    })
+    expect(roomOf({
+      ...target(complete),
+      room,
+    }, request)).toBeUndefined()
+    await turn()
+    await turn()
+    expect(rejections).toEqual([])
+  })
+
+  it('takes a stated room that is a safe integer, 0 and a negative one included, called with the request and the provider as this', () => {
+    const calls: Array<{ self: unknown, args: unknown[] }> = []
+    const stating: Target = {
+      ...target(complete),
+      room(this: unknown, ...args: unknown[]) {
+        calls.push({ self: this, args })
+        return -5
+      },
+    }
+    expect(roomOf(stating, request)).toBe(-5)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.args).toHaveLength(1)
+    expect(calls[0]?.args[0]).toBe(request)
+    expect(calls[0]?.self).toBe(stating.provider)
+    expect(roomOf({
+      ...stating,
+      room: () => 0,
+    }, request)).toBe(0)
   })
 })
 

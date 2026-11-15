@@ -54,19 +54,35 @@ export function worstCaseTokens(shaped: ShapedMessages, output: CompletionReques
   return turns * (textTokens(shaped, output) + template) + (2 * turns - 1) * budget.replyTokens
 }
 
+/** What a request needs of its context: the tokens of its text, the template reserve, the reply budget, and their sum. */
+function neededOf(shaped: ShapedMessages, output: CompletionRequest['output'], budget: ContextBudget): { readonly text: number, readonly template: number, readonly need: number } {
+  const text = textTokens(shaped, output)
+  const template = budget.templateTokens ?? TEMPLATE_TOKENS
+  return { text, template, need: text + template + budget.replyTokens }
+}
+
+/**
+ * How many more tokens of text a request could hold and still fit the model's context, from what the guard
+ * counts: the context less the text, the budget's template reserve (`TEMPLATE_TOKENS` unless it names one)
+ * and the reply budget. It is negative exactly when the request does not fit, and `checkFits` reads the same
+ * count, so the guard and the room an adapter states never drift: a request at a room of 0 is sent, one at -1
+ * is refused.
+ */
+export function roomTokens(shaped: ShapedMessages, output: CompletionRequest['output'], budget: ContextBudget): number {
+  return budget.contextTokens - neededOf(shaped, output, budget).need
+}
+
 /**
  * Refuse, before it is sent, a request that may not fit the model's context: some endpoints cut an oversized
  * prompt in silence and answer 200, which would leave a review of text the model never read. The request
  * fits only when its text, the budget's template reserve (`TEMPLATE_TOKENS` unless it names one) and the
- * reply budget together stay within `contextTokens`.
+ * reply budget together stay within `contextTokens`, which is when its room is not negative.
  * The message holds the provider id and numbers, never the text.
  *
  * @throws ProviderError of kind `too-large`, which is not retryable
  */
 export function checkFits(providerId: string, shaped: ShapedMessages, output: CompletionRequest['output'], budget: ContextBudget): void {
-  const text = textTokens(shaped, output)
-  const template = budget.templateTokens ?? TEMPLATE_TOKENS
-  const need = text + template + budget.replyTokens
+  const { text, template, need } = neededOf(shaped, output, budget)
   if (need <= budget.contextTokens) return
   throw new ProviderError({
     providerId,

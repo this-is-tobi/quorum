@@ -65,7 +65,7 @@ interface Tally {
  * 86400000, an `exclude` that is not a list of at most 100 patterns that can be taken, a
  * missing or malformed research provider or voter, a provider's stated `timeoutMs` that is not a
  * whole number of milliseconds from 1000 to 518400000, `retries` that is not a whole number from
- * 0 to 5 or `worstCase` that is not a function, ports for a profile or a lens the run does not have
+ * 0 to 5 or `worstCase` or `room` that is not a function, ports for a profile or a lens the run does not have
  * (a likely typo), and an event sink that is not a function. Ports are checked only for the profiles
  * that have no issue of their own, and not at all when `profiles` is not an array. Every record keyed
  * by a caller's id is read as an own property, since `constructor` is a valid id. `maxReviewTokens`,
@@ -521,7 +521,7 @@ function profilePortIssues(entries: Record<string, unknown>, profile: Profile): 
 
 /**
  * The issues of one provider: it is missing, it is not one, the `timeoutMs` or the `retries` it
- * states, as own data, is out of range, or the `worstCase` it states, as own data, is not a function.
+ * states, as own data, is out of range, or the `worstCase` or the `room` it states, as own data, is not a function.
  */
 function providerIssues(path: string, value: unknown): ConfigIssue[] {
   if (value === undefined) {
@@ -547,6 +547,8 @@ function providerIssues(path: string, value: unknown): ConfigIssue[] {
   if (retry !== undefined) issues.push({ path: `${path}.retries`, message: retry })
   const worstCase = ownData(value, 'worstCase')
   if (worstCase !== undefined && typeof worstCase !== 'function') issues.push({ path: `${path}.worstCase`, message: 'must be a function' })
+  const room = ownData(value, 'room')
+  if (room !== undefined && typeof room !== 'function') issues.push({ path: `${path}.room`, message: 'must be a function' })
   return issues
 }
 
