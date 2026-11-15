@@ -138,6 +138,14 @@ describe('fingerprint', () => {
     }), of(PROVIDER))).toBe(false)
   })
 
+  it('changes with the review\'s limits, and holds their defaults when unset', () => {
+    const providers = { p: PROVIDER }
+    const plain = resolvedConfig({ providers })
+    expect(same(resolvedConfig({ providers, maxReviewTokens: 500000 }), plain)).toBe(false)
+    expect(same(resolvedConfig({ providers, reviewTimeoutMs: 600000 }), plain)).toBe(false)
+    expect(same(resolvedConfig({ providers, maxReviewTokens: 2000000, reviewTimeoutMs: 1800000 }), plain)).toBe(true)
+  })
+
   it('holds exclude when the config lists a pattern, and leaves a config without one as it was', () => {
     const plain = resolvedConfig({
       providers: { p: PROVIDER },
@@ -174,6 +182,15 @@ describe('fingerprint', () => {
     expect(researchOf(unstated)).toEqual({ model: 'm', object: 'fake' })
   })
 
+  it('never holds the worstCase a provider object states: one that states it is the same configuration as one that does not', () => {
+    const stated = of({
+      ...object('m'),
+      worstCase: () => 123456,
+    }, 'fake')
+    const unstated = of(object('m'), 'fake')
+    expect(same(stated, unstated)).toBe(true)
+  })
+
   it('changes with a provider\'s timeoutMs or retries', () => {
     expect(same(of({ ...PROVIDER, retries: 0 }), of(PROVIDER))).toBe(false)
     expect(same(of({ ...PROVIDER, timeoutMs: 120000 }), of(PROVIDER))).toBe(false)
@@ -207,7 +224,8 @@ describe('canonicalSettings', () => {
     const config = of({ ...PROVIDER, apiKey: 'sk-SECRET' })
     const text = canonicalSettings(config)
     expect(text).not.toContain('sk-SECRET')
-    expect(text.startsWith('{"concurrency":4,"maxFindings":50,"profiles":[{"profile":{')).toBe(true)
+    expect(text.startsWith('{"concurrency":4,"maxFindings":50,"maxReviewTokens":2000000,"profiles":[{"profile":{')).toBe(true)
+    expect(text.endsWith(',"reviewTimeoutMs":1800000}')).toBe(true)
     const provider = {
       baseUrl: PROVIDER.baseUrl,
       contextTokens: 32768,
@@ -217,6 +235,7 @@ describe('canonicalSettings', () => {
     expect(JSON.parse(text)).toEqual({
       concurrency: 4,
       maxFindings: 50,
+      maxReviewTokens: 2000000,
       profiles: [
         {
           profile: JSON.parse(JSON.stringify(config.profiles[0].profile)),
@@ -224,6 +243,7 @@ describe('canonicalSettings', () => {
           voters: { reachability: provider, impact: provider, defenses: provider },
         },
       ],
+      reviewTimeoutMs: 1800000,
     })
   })
 

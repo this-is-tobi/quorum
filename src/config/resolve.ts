@@ -29,6 +29,10 @@ export interface ResolvedConfig {
   readonly profiles: readonly ResolvedProfile[]
   readonly concurrency?: number
   readonly maxFindings?: number
+  /** The most tokens one review spends: `QUORUM_MAX_REVIEW_TOKENS`, else the config's; absent when neither sets it. */
+  readonly maxReviewTokens?: number
+  /** The deadline of one review, in milliseconds: `QUORUM_REVIEW_TIMEOUT_MS`, else the config's; absent when neither sets it. */
+  readonly reviewTimeoutMs?: number
   /** The path patterns of the files every review leaves out; absent when the config lists none. */
   readonly exclude?: readonly string[]
   readonly warnings: readonly string[]
@@ -423,7 +427,9 @@ function bindRoles(roles: ConfigInput['roles'], names: readonly string[]): { rea
  * preset's own variable is read only at the preset's origin. Every provider needs a context size, and the issue
  * of a missing one names what to set (`reportMissingContext`). A `claude-code` provider in use gets its
  * command as it gets its key: `QUORUM_CLAUDE_CODE_COMMAND`, else the config's, else `claude` in an absolute
- * entry of `PATH`, found or refused here, and its billing warning. A resolved config is returned as it is. The
+ * entry of `PATH`, found or refused here, and its billing warning. The review's limits, `maxReviewTokens` and
+ * `reviewTimeoutMs`, come from `QUORUM_MAX_REVIEW_TOKENS` and `QUORUM_REVIEW_TIMEOUT_MS`, else from the config,
+ * and are kept only when one of them sets them. A resolved config is returned as it is. The
  * input must already have passed a config schema. `options.selection`, when given, names the profiles that
  * run, over `QUORUM_PROFILES`, which is still checked; its ids are checked before anything is resolved.
  *
@@ -498,6 +504,8 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
 
   const concurrency = own(input, 'concurrency')
   const maxFindings = own(input, 'maxFindings')
+  const maxReviewTokens = own(layer, 'maxReviewTokens') ?? own(input, 'maxReviewTokens')
+  const reviewTimeoutMs = own(layer, 'reviewTimeoutMs') ?? own(input, 'reviewTimeoutMs')
   const exclude = own(input, 'exclude')
   const resolved: ResolvedConfig = Object.freeze({
     providers: deepFreeze(Object.fromEntries(checked.providers)),
@@ -508,6 +516,12 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
     ...maxFindings === undefined
       ? {}
       : { maxFindings },
+    ...maxReviewTokens === undefined
+      ? {}
+      : { maxReviewTokens },
+    ...reviewTimeoutMs === undefined
+      ? {}
+      : { reviewTimeoutMs },
     ...exclude === undefined || exclude.length === 0
       ? {}
       : {

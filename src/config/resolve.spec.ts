@@ -682,6 +682,8 @@ describe('resolveConfig', () => {
       profiles: ['planted'],
       concurrency: 99,
       maxFindings: 99,
+      maxReviewTokens: 99,
+      reviewTimeoutMs: 99,
       exclude: ['*'],
     }
     for (const [key, value] of Object.entries(planted)) proto[key] = value
@@ -693,7 +695,13 @@ describe('resolveConfig', () => {
       expect(config.profiles.map(({ profile, research }) => [profile.id, research])).toEqual([
         ['security', 'default'],
       ])
-      expect(Object.hasOwn(config, 'concurrency') || Object.hasOwn(config, 'maxFindings') || Object.hasOwn(config, 'exclude')).toBe(false)
+      expect([
+        'concurrency',
+        'maxFindings',
+        'maxReviewTokens',
+        'reviewTimeoutMs',
+        'exclude',
+      ].some(field => Object.hasOwn(config, field))).toBe(false)
     } finally {
       for (const key of Object.keys(planted)) delete proto[key]
     }
@@ -701,6 +709,20 @@ describe('resolveConfig', () => {
 
   it('passes concurrency and maxFindings through', () => {
     expect(resolve({ concurrency: 2, maxFindings: 10 }, { QUORUM_RESEARCH_MODEL: 'q', ...SIZE })).toMatchObject({ concurrency: 2, maxFindings: 10 })
+  })
+
+  it('layers the variables\' limits over the file\'s, and keeps none that neither sets', () => {
+    const providers = {
+      local: { ...LOCAL, model: 'm' },
+    }
+    const layered = resolve({
+      providers,
+      maxReviewTokens: 100000,
+      reviewTimeoutMs: 120000,
+    }, { QUORUM_MAX_REVIEW_TOKENS: '200000' })
+    expect(layered).toMatchObject({ maxReviewTokens: 200000, reviewTimeoutMs: 120000 })
+    const unset = resolve({ providers })
+    expect(Object.hasOwn(unset, 'maxReviewTokens') || Object.hasOwn(unset, 'reviewTimeoutMs')).toBe(false)
   })
 
   it('keeps exclude when it lists a pattern, frozen, and leaves it out when it lists none', () => {

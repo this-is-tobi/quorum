@@ -282,6 +282,48 @@ describe('the deadline and retries variables', () => {
   })
 })
 
+describe('the review\'s limits variables', () => {
+  const TOKENS = 'must be a whole number of tokens, from 1 to 9007199254740991'
+  const DEADLINE = 'must be a whole number of milliseconds, from 1000 to 86400000'
+
+  it('reads the review\'s limits from their variables, in decimal digits and in range', () => {
+    expect(readEnv({
+      QUORUM_MAX_REVIEW_TOKENS: '500000',
+      QUORUM_REVIEW_TIMEOUT_MS: '600000',
+    })).toEqual({
+      research: {},
+      voter: {},
+      maxReviewTokens: 500000,
+      reviewTimeoutMs: 600000,
+      warnings: [],
+      issues: [],
+    })
+  })
+
+  it.each<[string, string, string]>([
+    ['0', 'QUORUM_MAX_REVIEW_TOKENS', TOKENS],
+    ['9007199254740992', 'QUORUM_MAX_REVIEW_TOKENS', TOKENS],
+    ['1e6', 'QUORUM_MAX_REVIEW_TOKENS', TOKENS],
+    ['+5', 'QUORUM_MAX_REVIEW_TOKENS', TOKENS],
+    ['02000000', 'QUORUM_MAX_REVIEW_TOKENS', TOKENS],
+    ['2,000,000', 'QUORUM_MAX_REVIEW_TOKENS', TOKENS],
+    ['999', 'QUORUM_REVIEW_TIMEOUT_MS', DEADLINE],
+    ['86400001', 'QUORUM_REVIEW_TIMEOUT_MS', DEADLINE],
+    ['30m', 'QUORUM_REVIEW_TIMEOUT_MS', DEADLINE],
+  ])('refuses %s, never repeating it', (value, name, message) => {
+    const layer = readEnv({ [name]: value })
+    expect(layer.issues).toEqual([
+      { path: name, message },
+    ])
+    expect(layer).toMatchObject({ research: {}, voter: {} })
+    expect(Object.hasOwn(layer, 'maxReviewTokens') || Object.hasOwn(layer, 'reviewTimeoutMs')).toBe(false)
+  })
+
+  it('names neither variable among those quorum does not read', () => {
+    expect(readEnv({ QUORUM_MAX_REVIEW_TOKENS: '500000', QUORUM_REVIEW_TIMEOUT_MS: '600000' }).warnings).toEqual([])
+  })
+})
+
 describe('the variables of a role, read as the role\'s own', () => {
   it('reads no rule for a variable off Object.prototype, so a planted property sets no number rule', () => {
     const proto: object = Object.prototype

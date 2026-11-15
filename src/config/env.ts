@@ -45,6 +45,10 @@ export interface EnvLayer {
   readonly voter: RoleOverrides
   /** `QUORUM_CLAUDE_CODE_COMMAND`, trimmed: present only when it is set and `commandProblem` finds nothing wrong with it. */
   readonly claudeCodeCommand?: string
+  /** `QUORUM_MAX_REVIEW_TOKENS`: present only when it is set and in range. */
+  readonly maxReviewTokens?: number
+  /** `QUORUM_REVIEW_TIMEOUT_MS`: present only when it is set and in range. */
+  readonly reviewTimeoutMs?: number
   /** The deprecation line, when an alias is set, then the line naming the `QUORUM_` variables nothing reads. */
   readonly warnings: readonly string[]
   readonly issues: readonly ConfigIssue[]
@@ -81,19 +85,6 @@ const canonicalName = (role: Role, suffix: string): string => `QUORUM_${role}_${
 /** The variable that names the executable of every `claude-code` provider. */
 export const CLAUDE_CODE_COMMAND = 'QUORUM_CLAUDE_CODE_COMMAND'
 
-/**
- * Every variable the environment layer reads: `QUORUM_CONFIG`, `QUORUM_PROFILES`, `QUORUM_CLAUDE_CODE_COMMAND`, the
- * `QUORUM_` form of each role's variables and the deprecated aliases of those that have one. The one list: a
- * variable added to `VARIABLES` joins it.
- */
-export const READ_VARIABLES: ReadonlySet<string> = new Set([
-  'QUORUM_CONFIG',
-  'QUORUM_PROFILES',
-  CLAUDE_CODE_COMMAND,
-  ...ROLES.flatMap(role => VARIABLES.map(({ suffix }) => canonicalName(role, suffix))),
-  ...ROLES.flatMap(role => VARIABLES.filter(({ aliased }) => aliased).map(({ suffix }) => `${role}_${suffix}`)),
-])
-
 /** How a variable that holds a whole number is read: the form it is written in, the most it may be, and the message that says what to write. */
 interface NumberRule {
   readonly form: RegExp
@@ -101,21 +92,60 @@ interface NumberRule {
   readonly message: string
 }
 
-/** The variables that hold a whole number, each by the field it sets: decimal digits, no sign, no leading zero. A `Map`, so a field is never found on a prototype. */
+/** The deadline variables' rule, a role's `_TIMEOUT_MS` and the review's alike: milliseconds in the range a provider's deadline may take. */
+const TIMEOUT_RULE: NumberRule = {
+  form: /^[1-9]\d{3,7}$/,
+  max: MAX_TIMEOUT_MS,
+  message: `must be a whole number of milliseconds, from ${MIN_TIMEOUT_MS} to ${MAX_TIMEOUT_MS}`,
+}
+
+/** The variables of the review itself, which belong to no role: each by the field it sets and the rule it is read by. */
+const LIMIT_VARIABLES: ReadonlyArray<{ readonly field: 'maxReviewTokens' | 'reviewTimeoutMs', readonly name: string, readonly rule: NumberRule }> = [
+  {
+    field: 'maxReviewTokens',
+    name: 'QUORUM_MAX_REVIEW_TOKENS',
+    rule: { form: /^[1-9]\d{0,15}$/, max: Number.MAX_SAFE_INTEGER, message: `must be a whole number of tokens, from 1 to ${Number.MAX_SAFE_INTEGER}` },
+  },
+  { field: 'reviewTimeoutMs', name: 'QUORUM_REVIEW_TIMEOUT_MS', rule: TIMEOUT_RULE },
+]
+
+/**
+ * Every variable the environment layer reads: `QUORUM_CONFIG`, `QUORUM_PROFILES`, `QUORUM_CLAUDE_CODE_COMMAND`, the
+ * review's two limits, the `QUORUM_` form of each role's variables and the deprecated aliases of those that have one.
+ * The one list: a variable added to `VARIABLES` or `LIMIT_VARIABLES` joins it.
+ */
+export const READ_VARIABLES: ReadonlySet<string> = new Set([
+  'QUORUM_CONFIG',
+  'QUORUM_PROFILES',
+  CLAUDE_CODE_COMMAND,
+  ...LIMIT_VARIABLES.map(({ name }) => name),
+  ...ROLES.flatMap(role => VARIABLES.map(({ suffix }) => canonicalName(role, suffix))),
+  ...ROLES.flatMap(role => VARIABLES.filter(({ aliased }) => aliased).map(({ suffix }) => `${role}_${suffix}`)),
+])
+
+/** The variables of a role that hold a whole number, each by the field it sets: decimal digits, no sign, no leading zero. A `Map`, so a field is never found on a prototype. */
 const NUMBERS: ReadonlyMap<keyof RoleOverrides, NumberRule> = new Map([
   [
     'contextTokens',
     { form: /^[1-9]\d{0,8}$/, max: 999_999_999, message: 'must be a whole number of tokens, from 1 to 999999999' },
   ],
-  [
-    'timeoutMs',
-    { form: /^[1-9]\d{3,7}$/, max: MAX_TIMEOUT_MS, message: `must be a whole number of milliseconds, from ${MIN_TIMEOUT_MS} to ${MAX_TIMEOUT_MS}` },
-  ],
+  ['timeoutMs', TIMEOUT_RULE],
   [
     'retries',
     { form: /^[0-5]$/, max: MAX_RETRIES, message: `must be a whole number, from 0 to ${MAX_RETRIES}` },
   ],
 ])
+
+/** The number a variable holds, or the issue at the variable when it is not a whole number in the rule's range, which never repeats it. */
+function readNumber(name: string, value: string, rule: NumberRule): { readonly number: number } | { readonly issue: ConfigIssue } {
+  return rule.form.test(value) && Number(value) <= rule.max
+    ? {
+        number: Number(value),
+      }
+    : {
+        issue: { path: name, message: rule.message },
+      }
+}
 
 /**
  * The variables of one role that are set, each as its field and value: the `QUORUM_` form, else its alias. A
@@ -131,17 +161,14 @@ function readRole(env: Env, role: Role): { overrides: RoleOverrides, issues: Con
       ? envValue(env, `${role}_${suffix}`)
       : undefined)
     if (value === undefined) continue
-    const number = NUMBERS.get(field)
-    if (number === undefined) {
+    const rule = NUMBERS.get(field)
+    if (rule === undefined) {
       entries.push([field, value])
-    } else if (number.form.test(value) && Number(value) <= number.max) {
-      entries.push([
-        field,
-        Number(value),
-      ])
-    } else {
-      issues.push({ path: name, message: number.message })
+      continue
     }
+    const read = readNumber(name, value, rule)
+    if ('issue' in read) issues.push(read.issue)
+    else entries.push([field, read.number])
   }
   return {
     overrides: Object.fromEntries(entries),
@@ -177,6 +204,23 @@ function unreadWarnings(env: Env): string[] {
       ? `${printed[0]} is not a variable quorum reads`
       : `${wordList(printed, 'and')} are not variables quorum reads`,
   ]
+}
+
+/** The review's limits the variables set, each as its field and value, and an issue at each variable that is not a whole number in range, which never repeats it. */
+function readLimits(env: Env): Pick<EnvLayer, 'maxReviewTokens' | 'reviewTimeoutMs' | 'issues'> {
+  const entries: Array<[string, number]> = []
+  const issues: ConfigIssue[] = []
+  for (const { field, name, rule } of LIMIT_VARIABLES) {
+    const value = envValue(env, name)
+    if (value === undefined) continue
+    const read = readNumber(name, value, rule)
+    if ('issue' in read) issues.push(read.issue)
+    else entries.push([field, read.number])
+  }
+  return {
+    ...Object.fromEntries(entries),
+    issues,
+  }
 }
 
 /** The profile ids of `QUORUM_PROFILES`, or the one issue that refuses it. Neither repeats the value. */
@@ -219,7 +263,9 @@ function readClaudeCodeCommand(env: Env): Pick<EnvLayer, 'claudeCodeCommand' | '
  * Read the `QUORUM_*` variables: the preset, protocol, base URL, model, context size, deadline, retries and key
  * of each role, which are `QUORUM_RESEARCH_*` and `QUORUM_VOTER_*`, `QUORUM_PROFILES`, and
  * `QUORUM_CLAUDE_CODE_COMMAND`, the executable of the `claude-code` protocol: an absolute path, or a name to
- * find on `PATH`. `RESEARCH_*` and `VOTER_*` are read as deprecated aliases of the base URL, model and key, and
+ * find on `PATH`; and the review's two limits, the run-level `QUORUM_MAX_REVIEW_TOKENS` and
+ * `QUORUM_REVIEW_TIMEOUT_MS`, which belong to no role and are read as strictly as a role's numbers.
+ * `RESEARCH_*` and `VOTER_*` are read as deprecated aliases of the base URL, model and key, and
  * the `QUORUM_` form wins; the context size (`QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS`),
  * the deadline (`_TIMEOUT_MS`) and the retries (`_RETRIES`) have no alias. Any other variable set under a
  * `QUORUM_` name is named in one warning. No message repeats a value.
@@ -227,11 +273,13 @@ function readClaudeCodeCommand(env: Env): Pick<EnvLayer, 'claudeCodeCommand' | '
 export function readEnv(env: Env): EnvLayer {
   const { issues: profileIssues, ...profiles } = readProfiles(env)
   const { issues: commandIssues, ...command } = readClaudeCodeCommand(env)
+  const { issues: limitIssues, ...limits } = readLimits(env)
   const research = readRole(env, 'RESEARCH')
   const voter = readRole(env, 'VOTER')
   return {
     ...profiles,
     ...command,
+    ...limits,
     research: research.overrides,
     voter: voter.overrides,
     warnings: [
@@ -241,6 +289,7 @@ export function readEnv(env: Env): EnvLayer {
     issues: [
       ...profileIssues,
       ...commandIssues,
+      ...limitIssues,
       ...research.issues,
       ...voter.issues,
     ],

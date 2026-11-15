@@ -312,6 +312,44 @@ describe('fromConfig', () => {
     }
   })
 
+  it('hands the review\'s limits to the quorum it builds', async () => {
+    const complete = vi.fn<(request: CompletionRequest) => Promise<CompletionResponse>>()
+      .mockResolvedValue({ text: '{"findings":[]}', model: 'm' })
+    const result = await (await fromConfig({
+      providers: {
+        mine: { model: 'm', complete },
+      },
+      maxReviewTokens: 10,
+    }, { env: {} })).review({ diff })
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 10 tokens stopped its research' },
+    ])
+    expect(complete).not.toHaveBeenCalled()
+  })
+
+  it('hands a code config\'s provider object\'s stated worstCase to the review', async () => {
+    const complete = vi.fn<(request: CompletionRequest) => Promise<CompletionResponse>>()
+      .mockResolvedValue({ text: '{"findings":[]}', model: 'm' })
+    const worstCase = vi.fn<(request: CompletionRequest) => number>().mockReturnValue(50)
+    const mine = { model: 'm', complete, worstCase }
+    const refused = await (await fromConfig({
+      providers: { mine },
+      maxReviewTokens: 49,
+    }, { env: {} })).review({ diff })
+    expect(refused.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 49 tokens stopped its research' },
+    ])
+    expect(complete).not.toHaveBeenCalled()
+    // The size the object states is below the core's own count of a request, so only its worstCase lets this cap hold the call.
+    const sent = await (await fromConfig({
+      providers: { mine },
+      maxReviewTokens: 1000,
+    }, { env: {} })).review({ diff })
+    expect(sent.meta.incomplete).toEqual([])
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(worstCase).toHaveBeenCalledTimes(2)
+  })
+
   it('hands exclude to the quorum it builds', async () => {
     const requests: CompletionRequest[] = []
     const mine = {

@@ -67,6 +67,8 @@ const FULL: QuorumConfigFile = {
   roles: { research: 'local', voter: 'hosted_2' },
   concurrency: 4,
   maxFindings: 50,
+  maxReviewTokens: 500000,
+  reviewTimeoutMs: 600000,
   exclude: [
     'package-lock.json',
     '*.min.js',
@@ -224,6 +226,52 @@ describe('configFileSchema', () => {
       },
     })).toEqual([
       at(`providers.local.${field}`, message),
+    ])
+  })
+
+  it('takes maxReviewTokens and reviewTimeoutMs in range', () => {
+    for (const fields of [
+      { maxReviewTokens: 1, reviewTimeoutMs: 1000 },
+      { maxReviewTokens: 9_007_199_254_740_991, reviewTimeoutMs: 86_400_000 },
+    ]) {
+      expect(issuesOf(fields)).toEqual([])
+    }
+  })
+
+  it.each<[string, string, unknown, string]>([
+    [
+      'maxReviewTokens 0',
+      'maxReviewTokens',
+      0,
+      'must be at least 1',
+    ],
+    [
+      'maxReviewTokens 1.5',
+      'maxReviewTokens',
+      1.5,
+      'must be an integer',
+    ],
+    [
+      'maxReviewTokens \'5\'',
+      'maxReviewTokens',
+      '5',
+      'must be a number',
+    ],
+    [
+      'reviewTimeoutMs 999',
+      'reviewTimeoutMs',
+      999,
+      'must be at least 1000',
+    ],
+    [
+      'reviewTimeoutMs 86400001',
+      'reviewTimeoutMs',
+      86_400_001,
+      'must be at most 86400000',
+    ],
+  ])('refuses %s', (_name, field, value, message) => {
+    expect(issuesOf({ [field]: value })).toEqual([
+      at(field, message),
     ])
   })
 
@@ -1206,6 +1254,45 @@ describe('configCodeSchema', () => {
     }, configCodeSchema)).toEqual([
       at(`providers.mine.${field}`, message),
     ])
+  })
+
+  it('keeps a provider object\'s stated worstCase in its snapshot, calling it on the object, and refuses one that is no function', () => {
+    const snapshotOf = (object: unknown): Provider => parseConfig(configCodeSchema, {
+      providers: { mine: object },
+    }).providers?.mine as Provider
+    const request = {
+      system: '',
+      messages: [],
+      output: { name: 'x', schema: {} },
+    }
+    let calls = 0
+    const stated = snapshotOf({
+      ...fakeProvider,
+      worstCase(this: { model: string }) {
+        calls += 1
+        return this.model.length + 99
+      },
+    })
+    expect(Object.keys(stated)).toEqual(['model', 'complete', 'worstCase'])
+    expect(stated.worstCase?.(request)).toBe(100)
+    expect(calls).toBe(1)
+    expect(issuesOf({
+      providers: {
+        mine: { ...fakeProvider, worstCase: 5 },
+      },
+    }, configCodeSchema)).toEqual([
+      at('providers.mine.worstCase', 'must be a function'),
+    ])
+    let ran = false
+    const read = snapshotOf({
+      ...fakeProvider,
+      get worstCase() {
+        ran = true
+        return () => 5
+      },
+    })
+    expect(Object.keys(read)).toEqual(['model', 'complete'])
+    expect(ran).toBe(false)
   })
 
   it('reads a provider object whose stated timeoutMs is refused once, never offering it to the settings form', () => {
