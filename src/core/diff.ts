@@ -321,10 +321,8 @@ export function locate(sections: ReadonlyMap<string, string>, file: string, line
   const section = sectionFor(sections, file)
   if (!section) return undefined
   for (const hunk of hunksOf(sections, section.path, section.text)) {
-    if (hunk.rows.length === 0 || line < hunk.start || line >= hunk.start + Math.max(hunk.count, 1)) continue
-    const at = hunk.rowOfLine[line - hunk.start] ?? -1
-    if (at === -1 && hunk.count > 0) continue
-    const center = Math.max(at, 0)
+    if (!holds(hunk, line)) continue
+    const center = hunk.rowOfLine[line - hunk.start] ?? 0
     const rows = hunk.rows.slice(Math.max(0, center - EVIDENCE_RADIUS), center + EVIDENCE_RADIUS + 1)
     return {
       path: section.path,
@@ -399,7 +397,9 @@ export function addedLines(sections: ReadonlyMap<string, string>, path: string):
   return added
 }
 
-interface Hunk {
+export interface Hunk {
+  /** The index of the hunk's `@@` line among the section's lines split at line feeds. */
+  at: number
   /** First new-file line of the hunk. */
   start: number
   /** Number of new-file lines the header promises. */
@@ -417,7 +417,7 @@ interface Hunk {
  */
 const parsedSections = new WeakMap<ReadonlyMap<string, string>, Map<string, Hunk[]>>()
 
-function hunksOf(sections: ReadonlyMap<string, string>, path: string, text: string): Hunk[] {
+export function hunksOf(sections: ReadonlyMap<string, string>, path: string, text: string): Hunk[] {
   let parsed = parsedSections.get(sections)
   if (!parsed) {
     parsed = new Map()
@@ -432,7 +432,7 @@ function hunksOf(sections: ReadonlyMap<string, string>, path: string, text: stri
 }
 
 /** A run of new-file lines, both ends included. */
-interface Span {
+export interface Span {
   readonly start: number
   readonly end: number
 }
@@ -440,8 +440,19 @@ interface Span {
 /** The merged spans of each section, built once, in a cache that is dropped with the sections map like `parsedSections`. */
 const coveredSections = new WeakMap<ReadonlyMap<string, string>, Map<string, readonly Span[]>>()
 
+/**
+ * Whether `hunk` holds the new-file line `line`, as `locate` takes it: the line is within the hunk's
+ * start and its count (a count of 0 holds its start alone), the hunk shows a row, and, for a hunk
+ * that counts new lines, a row shows the line, so a hunk cut short of its count does not hold the
+ * lines it never shows.
+ */
+export function holds(hunk: Hunk, line: number): boolean {
+  if (hunk.rows.length === 0 || line < hunk.start || line >= hunk.start + Math.max(hunk.count, 1)) return false
+  return hunk.count === 0 || hunk.rowOfLine[line - hunk.start] !== undefined
+}
+
 /** The new-file lines a hunk holds for `locate`: those it shows from its start, up to its count, or its start alone for a hunk that counts no new line; none for a hunk that shows no row. */
-function heldSpan(hunk: Hunk): Span | undefined {
+export function heldSpan(hunk: Hunk): Span | undefined {
   if (hunk.rows.length === 0) return undefined
   const shown = hunk.count === 0
     ? 1
@@ -485,15 +496,18 @@ function spansOf(sections: ReadonlyMap<string, string>, path: string, text: stri
  * headers and `\ No newline at end of file` markers are never mistaken for hunk lines, and a line
  * that cannot belong to a hunk closes it even when the counts promised more. The empty element
  * after a final newline is not a line; an empty line before it is a blank context row.
+ *
+ * This is the one reading of a hunk: the packer of a large change, `locate` and a vote's context
+ * share it, so they agree on where each hunk opens, at the line `at` of its `@@` header.
  */
-function parseHunks(section: string): Hunk[] {
+export function parseHunks(section: string): Hunk[] {
   const hunks: Hunk[] = []
   let current: Hunk | undefined
   let oldLeft = 0
   let newLeft = 0
   const lines = section.split('\n')
   if (lines.at(-1) === '') lines.pop()
-  for (const raw of lines) {
+  for (const [at, raw] of lines.entries()) {
     const text = raw.endsWith('\r')
       ? raw.slice(0, -1)
       : raw
@@ -518,10 +532,18 @@ function parseHunks(section: string): Hunk[] {
     }
     const header = HUNK_HEADER.exec(text)
     if (header) {
-      oldLeft = Number(header[1] ?? 1)
-      newLeft = Number(header[3] ?? 1)
+      const [oldCount, start, newCount] = [
+        Number(header[1] ?? 1),
+        Number(header[2]),
+        Number(header[3] ?? 1),
+      ]
+      // A header whose numbers are no line numbers opens no hunk: its line is text outside any hunk.
+      if (!isLineNumbers(oldCount, start, newCount)) continue
+      oldLeft = oldCount
+      newLeft = newCount
       current = {
-        start: Number(header[2]),
+        at,
+        start,
         count: newLeft,
         rows: [],
         rowOfLine: [],
@@ -530,6 +552,12 @@ function parseHunks(section: string): Hunk[] {
     }
   }
   return hunks
+}
+
+/** Whether a header's old count, new start and new count are safe integers, and the last new line the hunk can hold is one too, so no range read from the hunk is anything but a line number. */
+function isLineNumbers(oldCount: number, start: number, newCount: number): boolean {
+  return Number.isSafeInteger(oldCount) && Number.isSafeInteger(start) && Number.isSafeInteger(newCount)
+    && start <= Number.MAX_SAFE_INTEGER - Math.max(newCount, 1) + 1
 }
 
 /** The most diff quorum reads, from stdin, a file or a suite, in bytes: a larger one is refused and reading stops there. */
