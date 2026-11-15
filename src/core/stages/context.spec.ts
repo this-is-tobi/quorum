@@ -167,6 +167,7 @@ describe('the deadline of an attempt', () => {
       throw thrown
     }), () => request)).rejects.toBe(thrown)
     expect(clock.pending()).toBe(0)
+    expect(getEventListeners(ctx.stop, 'abort')).toHaveLength(0)
   })
 
   it('takes a reply its provider returns as a plain object, not a promise', async () => {
@@ -256,6 +257,7 @@ describe('the retries of a call', () => {
     })
     await expect(settle(clock, queued)).resolves.toBe('queued')
     expect(order).toEqual(['first', 'first', 'queued'])
+    expect(getEventListeners(ctx.stop, 'abort')).toHaveLength(0)
   })
 
   it('waits a server\'s hint before the next attempt, and ends the call at once on a hint over 60000 ms', async () => {
@@ -589,6 +591,7 @@ describe('the review\'s token cap', () => {
     expect(sent).toEqual(['first', 'second'])
     expect(spentOf(events)).toEqual([20, 10])
     expect(clock.pending()).toBe(0)
+    expect(getEventListeners(ctx.stop, 'abort')).toHaveLength(0)
   })
 
   it('refuses a waiter once the settlement it waited for leaves no room', async () => {
@@ -652,7 +655,7 @@ describe('the review\'s token cap', () => {
     expect(sent).toBe(1)
     expect(built).toBe(0)
     expect(clock.pending()).toBe(0)
-    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
+    expect(getEventListeners(ctx.stop, 'abort')).toHaveLength(0)
     expect(events).toEqual([])
   })
 
@@ -790,6 +793,7 @@ describe('the review\'s deadline', () => {
       },
     ])
     expect(clock.pending()).toBe(0)
+    expect(getEventListeners(ctx.stop, 'abort')).toHaveLength(0)
   })
 
   it('ends a backoff at the deadline, and never builds the request of a call queued behind it', async () => {
@@ -819,6 +823,7 @@ describe('the review\'s deadline', () => {
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({ ok: false, attempts: 3, durationMs: 2000 })
     expect(clock.pending()).toBe(0)
+    expect(getEventListeners(ctx.stop, 'abort')).toHaveLength(0)
   })
 
   it('ends a wait for room at the deadline, before its first attempt, with no event', async () => {
@@ -848,6 +853,7 @@ describe('the review\'s deadline', () => {
       spent: 60,
     })
     expect(clock.pending()).toBe(0)
+    expect(getEventListeners(ctx.stop, 'abort')).toHaveLength(0)
   })
 
   it('ends a call at once, with its last failure, when a server\'s hint is longer than the time the review has left', async () => {
