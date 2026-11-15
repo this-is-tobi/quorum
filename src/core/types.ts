@@ -381,3 +381,6 @@ export interface Usage {
   outputTokens: number
   costUsd?: number
 }
+
+/** The hash a repository names its objects with: `sha1` is git's default, `sha256` the repositories made with `--object-format=sha256`. A full id is 40 hexadecimal characters for the first and 64 for the second. */
+export type ObjectFormat = 'sha1' | 'sha256'
