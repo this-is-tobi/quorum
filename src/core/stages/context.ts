@@ -1,6 +1,7 @@
 import type { Clock } from '../clock.ts'
 import type { Limiter } from '../concurrency.ts'
-import { ProviderError } from '../errors.ts'
+import { PROVIDER_ERROR_KINDS, ProviderError } from '../errors.ts'
+import type { ProviderErrorKind } from '../errors.ts'
 import { isRecord } from '../output.ts'
 import { DEFAULT_TIMEOUT_MS, MAX_STATED_TIMEOUT_MS, retriesProblem, timeoutProblem } from '../ports.ts'
 import type { CompletionRequest, CompletionResponse, EventSink, Provider } from '../ports.ts'
@@ -94,6 +95,21 @@ export function ownData(value: unknown, key: string): unknown {
  */
 export function isTooLarge(error: unknown): boolean {
   return ownData(error, 'kind') === 'too-large'
+}
+
+/**
+ * What a failed call says of itself, as facts: the own data `kind` when it is one of `PROVIDER_ERROR_KINDS`,
+ * and for an `http` failure its own data `status` when that is an integer from 100 to 599. A message, which can
+ * quote a server, is never read. It is matched by those properties, not by class, as `isTooLarge` is, and it
+ * never runs a getter and never throws: any other value, a kind of no provider's included, is undefined.
+ */
+export function providerFailure(error: unknown): { readonly kind: ProviderErrorKind, readonly status?: number } | undefined {
+  const kind = PROVIDER_ERROR_KINDS.find(known => known === ownData(error, 'kind'))
+  if (kind === undefined) return undefined
+  const status = ownData(error, 'status')
+  return kind === 'http' && typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
+    ? { kind, status }
+    : { kind }
 }
 
 /** What a refusal as too large says: its own data string `message`, else a fixed text, never anything else from the object. */

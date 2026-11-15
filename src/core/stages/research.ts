@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto'
-import { OutputError, PROVIDER_ERROR_KINDS } from '../errors.ts'
+import { OutputError } from '../errors.ts'
 import { parseResearchReply } from '../output.ts'
 import { researchRequest } from '../prompts.ts'
 import type { Finding, IncompleteEntry } from '../types.ts'
 import { verifyFindings } from '../verify.ts'
-import { callProvider, isTooLarge, ownData, refusalMessage } from './context.ts'
+import { callProvider, isTooLarge, providerFailure, refusalMessage } from './context.ts'
 import type { ProfileRun, RunContext } from './context.ts'
 
 /** How many reported findings a research reply may send to the panel; the rest is reported as incomplete. */
@@ -144,20 +144,19 @@ function gap(ctx: RunContext, entry: IncompleteEntry): ResearchOutcome {
 
 /**
  * What a failed research call says in a gap, in words the code writes: `the research call failed`,
- * then ` (<kind>)` when the failure's own data `kind` is a kind of `ProviderError`, with ` <status>`
- * after an `http` kind when its own data `status` is an HTTP status, then ` after <n> attempts` when
- * the call made more than one. The provider's message, which can quote a server, is never read: a
- * gating review rejects with it, and a gap carries nothing a server or a model wrote.
+ * then ` (<kind>)` when `providerFailure` reads a kind of `ProviderError` in the failure, with ` <status>`
+ * after an `http` kind when it reads an HTTP status too, then ` after <n> attempts` when the call made
+ * more than one. The provider's message, which can quote a server, is never read: a gating review
+ * rejects with it, and a gap carries nothing a server or a model wrote.
  */
 function researchFailed(error: unknown, attempts: number): string {
-  const kind = PROVIDER_ERROR_KINDS.find(known => known === ownData(error, 'kind'))
-  const status = ownData(error, 'status')
-  const isStatus = typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
-  const named = kind === 'http' && isStatus
-    ? `${kind} ${status}`
-    : kind
+  const failure = providerFailure(error)
   const words = ['the research call failed']
-  if (named !== undefined) words.push(`(${named})`)
+  if (failure !== undefined) {
+    words.push(failure.status === undefined
+      ? `(${failure.kind})`
+      : `(${failure.kind} ${failure.status})`)
+  }
   if (attempts > 1) words.push(`after ${attempts} attempts`)
   return words.join(' ')
 }

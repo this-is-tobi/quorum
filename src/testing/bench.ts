@@ -372,6 +372,7 @@ export function verdict(file: string, line: number, confidence?: Confidence): Ve
         angle: 'reachability',
         vote: { keep: true, reasoning: 'It is reachable.' },
         error: null,
+        failure: null,
       },
     ],
   }
@@ -420,8 +421,9 @@ export function resultWith(parts: {
 
 /**
  * A result that fills every field the type has: a kept verdict with a confidence and a failed vote
- * among its votes, a discarded and an unreviewed one, a gap with a file and one without, a file left
- * out, a flag with a file and a line, usage with a cost, and a summary that holds `##[` and U+2028.
+ * among its votes, whose failure holds a status, a discarded and an unreviewed one, a gap with a file
+ * and one without, a file left out, a flag with a file and a line, usage with a cost, and a summary
+ * that holds `##[` and U+2028.
  */
 export const RESULT: QuorumResult = (() => {
   const base = resultWith({
@@ -436,13 +438,20 @@ export const RESULT: QuorumResult = (() => {
             angle: 'reachability',
             vote: { keep: true, reasoning: 'It is reachable.' },
             error: null,
+            failure: null,
           },
           {
             angle: 'impact',
             vote: { keep: true, reasoning: 'It runs a command.' },
             error: null,
+            failure: null,
           },
-          { angle: 'defenses', vote: null, error: 'HTTP 503' },
+          {
+            angle: 'defenses',
+            vote: null,
+            error: 'HTTP 503',
+            failure: { kind: 'http', status: 503 },
+          },
         ],
       },
     ],
@@ -455,6 +464,7 @@ export const RESULT: QuorumResult = (() => {
             angle: 'reachability',
             vote: { keep: false, reasoning: 'It is not reachable.' },
             error: null,
+            failure: null,
           },
         ],
       },
@@ -469,8 +479,14 @@ export const RESULT: QuorumResult = (() => {
             angle: 'reachability',
             vote: { keep: true, reasoning: 'It is reachable.' },
             error: null,
+            failure: null,
           },
-          { angle: 'impact', vote: null, error: 'timeout' },
+          {
+            angle: 'impact',
+            vote: null,
+            error: 'timeout',
+            failure: { kind: 'timeout' },
+          },
         ],
       },
     ],

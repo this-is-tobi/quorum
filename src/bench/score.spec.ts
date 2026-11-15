@@ -139,6 +139,9 @@ function voted(file: string, line: number, keeps: readonly (boolean | null)[]): 
       error: keep === null
         ? 'HTTP 503'
         : null,
+      failure: keep === null
+        ? { kind: 'http', status: 503 }
+        : null,
     })),
   }
 }

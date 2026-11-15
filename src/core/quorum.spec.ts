@@ -5,7 +5,7 @@ import * as git from '../testing/fixtures/git.ts'
 import { ConfigError, OutputError, ProviderError } from './errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts } from './ports.ts'
 import { createQuorum } from './quorum.ts'
-import type { Finding, IncompleteEntry, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, Usage } from './types.ts'
+import type { Finding, IncompleteEntry, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, Usage, VoteFailure } from './types.ts'
 
 /** Replies, in call order, for the one fake provider that plays both roles. */
 const complete = vi.fn<(request: CompletionRequest) => Promise<string>>()
@@ -407,6 +407,7 @@ describe('review', () => {
       angle: lens.id,
       vote: { keep: true, reasoning: 'r' },
       error: null,
+      failure: null,
     }))
     expect(result.kept).toEqual([
       {
@@ -947,7 +948,12 @@ describe('review', () => {
   it('records a vote whose provider throws something other than an Error with its text', async () => {
     complete.mockResolvedValueOnce(findings(reported)).mockResolvedValueOnce(vote(true)).mockResolvedValueOnce(vote(true)).mockRejectedValueOnce('socket closed')
     const result = await run().review({ diff })
-    expect(result.kept[0].votes[2]).toEqual({ angle: 'defenses', vote: null, error: 'socket closed' })
+    expect(result.kept[0].votes[2]).toEqual({
+      angle: 'defenses',
+      vote: null,
+      error: 'socket closed',
+      failure: { kind: 'unknown' },
+    })
   })
 
   it('counts a reply without text as a failed call, not a crash', async () => {
@@ -1344,6 +1350,7 @@ describe('meta and events', () => {
       lens: 'defenses',
       keep: null,
       error: 'endpoint down',
+      failure: { kind: 'unknown' },
     })
     expect(events.filter(event => event.type === 'call').at(-1)).toMatchObject({ role: 'vote', lens: 'defenses', ok: false })
     expect(events.flatMap(event => event.type === 'incomplete'
@@ -1357,6 +1364,95 @@ describe('meta and events', () => {
         detail: '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high',
       },
     ])
+  })
+})
+
+describe('a failed vote\'s failure', () => {
+  /** A review of one finding on the `complete` mock: two voters keep it, and the third's call ends as `third` says. */
+  async function reviewWith(third: () => Promise<string>): Promise<{ result: QuorumResult, events: QuorumEvent[] }> {
+    complete.mockResolvedValueOnce(findings(reported)).mockResolvedValueOnce(vote(true)).mockResolvedValueOnce(vote(true)).mockImplementationOnce(third)
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, provider),
+      events: event => events.push(event),
+    }).review({ diff })
+    return { result, events }
+  }
+
+  it.each<[string, VoteFailure, unknown]>([
+    [
+      'an http 503',
+      { kind: 'http', status: 503 },
+      new ProviderError({
+        providerId: 'fake',
+        kind: 'http',
+        message: 'HTTP 503',
+        status: 503,
+      }),
+    ],
+    [
+      'a dropped connection',
+      { kind: 'network' },
+      new ProviderError({ providerId: 'fake', kind: 'network', message: 'fetch failed' }),
+    ],
+    [
+      'a reply cut at its limit',
+      { kind: 'truncated' },
+      new ProviderError({
+        providerId: 'fake',
+        kind: 'truncated',
+        message: 'cut off',
+        usage: { inputTokens: 5, outputTokens: 10 },
+      }),
+    ],
+    [
+      'a status that is a string',
+      { kind: 'http' },
+      { kind: 'http', status: '503' },
+    ],
+    [
+      'a status that is no HTTP status',
+      { kind: 'http' },
+      { kind: 'http', status: 999 },
+    ],
+    [
+      'a kind no provider has',
+      { kind: 'unknown' },
+      { kind: '<b>x</b>' },
+    ],
+    [
+      'a plain error',
+      { kind: 'unknown' },
+      new Error('x'),
+    ],
+    [
+      'a string',
+      { kind: 'unknown' },
+      'boom',
+    ],
+  ])('records a vote that failed with %s as %j', async (_name, failure, thrown) => {
+    const { result, events } = await reviewWith(() => Promise.reject(thrown))
+    expect(result.kept[0].votes.map(lensVote => lensVote.failure)).toStrictEqual([null, null, failure])
+    const voteEvents = events.filter(event => event.type === 'vote')
+    expect(voteEvents).toHaveLength(3)
+    expect(voteEvents.at(-1)?.failure).toStrictEqual(failure)
+  })
+
+  it('records a vote whose reply could not be read as unusable-reply, and a cast vote with a null failure', async () => {
+    const { result, events } = await reviewWith(async () => 'not json')
+    const votes = result.kept[0].votes
+    expect(votes[2]).toEqual({
+      angle: 'defenses',
+      vote: null,
+      error: expect.stringMatching(/^vote reply unusable: .*\(reply starts: "not json"\)$/),
+      failure: { kind: 'unusable-reply' },
+    })
+    expect(votes.slice(0, 2).map(lensVote => lensVote.failure)).toEqual([null, null])
+    const voteEvents = events.filter(event => event.type === 'vote')
+    expect(voteEvents.at(-1)?.failure).toStrictEqual({ kind: 'unusable-reply' })
+    for (const event of voteEvents.slice(0, 2)) expect(event).not.toHaveProperty('failure')
   })
 })
 

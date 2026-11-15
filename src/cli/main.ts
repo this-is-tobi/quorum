@@ -7,7 +7,8 @@ import { loadConfig } from '../config/load.ts'
 import { decodeDiff } from '../core/diff.ts'
 import { ConfigError } from '../core/errors.ts'
 import { inertJson, inertLine } from '../core/sanitize.ts'
-import type { IncompleteReason, Quorum, QuorumResult } from '../core/types.ts'
+import { ownData } from '../core/stages/context.ts'
+import type { Quorum, QuorumResult, Verdict } from '../core/types.ts'
 import { runBench } from './bench.ts'
 import { errorLines, errorMessage, EXIT, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
@@ -25,23 +26,15 @@ const USAGE = [
   'Options:',
   '  -c, --config <path>     Read this config file, over QUORUM_CONFIG',
   '  -p, --profile <id>      Run only this profile; repeat it to run several',
-  '      --allow-incomplete  Exit 0 instead of 4 when the review is incomplete, except for a request too large for its model or a binary or submodule file',
+  '      --allow-incomplete  Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --print-config      Print the resolved config, keys redacted, and exit',
   '  -h, --help              Print this help and exit',
   '  -v, --version           Print the version and exit',
   '',
 ].join('\n')
 
-/**
- * The gaps no flag lifts for a gating profile. A pull request can cause the first three; `research-failed` is a
- * guard no review meets, since a gating profile's failed research ends the review instead.
- */
-const UNLIFTED: ReadonlySet<IncompleteReason> = new Set([
-  'request-too-large',
-  'binary',
-  'submodule',
-  'research-failed',
-])
+/** The HTTP statuses, besides 5xx, that a call fails with in passing: a request timeout, a conflict and a rate limit. */
+const PASSING_STATUSES: ReadonlySet<number> = new Set([408, 409, 429])
 
 const OPTIONS = {
   config: { type: 'string', short: 'c' },
@@ -55,9 +48,10 @@ const OPTIONS = {
 /**
  * Run one review and return the process exit code. Never throws: usage and configuration problems
  * exit 2, a gating profile's failed research and other runtime failures exit 3, an interrupt exits
- * 130, and an incomplete review (a finding its failed votes left undecided, or a research gap) of a
- * gating profile exits 4 unless a `high` finding was kept by a gating profile, so CI can tell a
- * broken run and a partial review from a real finding (exit 1) and from a clean one (exit 0).
+ * 130, and an incomplete review (a finding its failed votes left undecided, or a gap) of a gating
+ * profile exits 4 unless a `high` finding was kept by a gating profile, so CI can tell a broken run
+ * and a partial review from a real finding (exit 1) and from a clean one (exit 0). `--allow-incomplete`
+ * turns that exit 4 into 0 only when every failed vote behind it failed in passing (see `exitCodeFor`).
  * `exitCodeFor` maps the result; advisory flags never change it.
  *
  * It reads at most 16 MiB of diff, from stdin or a file, counted in bytes: a larger diff is a usage error,
@@ -182,31 +176,100 @@ export function interruptSignal(source: SignalSource, exit: (code: number) => vo
 
 /**
  * The exit code of a finished review: 1 when a kept finding is `high` and its profile gates, 4 when
- * an unreviewed finding or a gap belongs to a gating profile (unless `allowIncomplete` turns it into
- * 0, which it does for every gap but a `request-too-large`, `binary`, `submodule` or `research-failed` one), 0
- * otherwise.
+ * an unreviewed finding or a gap belongs to a gating profile, 0 otherwise. `allowIncomplete` turns
+ * that 4 into 0 only when every gap of a gating profile is a `vote-failed` one (an unreviewed finding
+ * is no gap) and, for each gating profile that has a gap, every failed vote of its own kept and
+ * unreviewed findings failed in passing, as `failedInPassing` says: a dropped connection, a timeout,
+ * or an HTTP 408, 409, 429 or 5xx. A gating profile with no gap blocks no other profile's lift. A gap
+ * with no failed vote behind it lifts nothing: an unreviewed finding whose votes hold none, or a
+ * `vote-failed` gap beside kept findings that hold none, which no review writes.
  * A profile gates unless `meta.profiles` holds it with `gating: false`, so a profile missing from the
- * result counts as gating and a gap never hides. The set no flag lifts holds `research-failed` too,
- * as a guard no review meets: a review records that gap for an advisory profile alone, and a gating
- * profile's failed research ends it with exit 3, but a result built by hand could hold one, and a
- * review that read nothing is never turned into exit 0.
+ * result counts as gating and a gap never hides.
  *
- * A `request-too-large`, `binary` or `submodule` gap of a gating profile exits 4 whatever
- * `allowIncomplete` says: a pull request can cause the first by padding the diff until a request is
- * refused, and the others with one `.gitattributes` line, one NUL byte or a submodule's bump, which
- * leave a file's change out of the diff, so no flag lifts them (ADR-0012). The flag lifts every other
- * gap, including gaps a pull request can cause: decoy findings that push a real one past
- * `maxFindings`, or text that trips a hosted voter's content filter. On a gating profile, do not use
- * it for a pull request you do not trust.
+ * Why so narrow: a pull request causes the other gaps directly (ADR-0012). It pads the diff until a
+ * request is refused as too large, floods the research with decoy findings past `maxFindings`, or
+ * plants text that a voter refuses or that cuts its reply off or leaves it unusable, and one
+ * `.gitattributes` line, one NUL byte or a submodule's bump leaves a file's change out of the diff.
+ * The flag lifts only what the code names, so a reason added later is out of its reach by default,
+ * and so is what a result built by hand or by an older quorum leaves unsaid: a failed vote with no
+ * `failure`, a verdict whose `votes` is no array, a reason no quorum writes. A gating profile's
+ * `research-failed` gap, which no review records, is out too: a review that read nothing is never
+ * turned into exit 0. Planted text can still draw out a reply that ends in a lifted failure, a
+ * timeout of its own, so on a gating profile do not use the flag for a pull request you do not trust.
  */
 export function exitCodeFor(result: QuorumResult, options: { readonly allowIncomplete?: boolean } = {}): number {
   const gates = (profile: string): boolean => !Object.hasOwn(result.meta.profiles, profile) || result.meta.profiles[profile].gating !== false
   if (result.kept.some(verdict => verdict.confidence === 'high' && gates(verdict.profile))) return EXIT.finding
-  if (result.meta.incomplete.some(entry => UNLIFTED.has(entry.reason) && gates(entry.profile))) return EXIT.incomplete
   const incomplete = result.unreviewed.some(verdict => gates(verdict.profile)) || result.meta.incomplete.some(entry => gates(entry.profile))
-  return incomplete && options.allowIncomplete !== true
-    ? EXIT.incomplete
-    : EXIT.ok
+  if (!incomplete) return EXIT.ok
+  return options.allowIncomplete === true && liftable(result, gates)
+    ? EXIT.ok
+    : EXIT.incomplete
+}
+
+/** True when every gap of a gating profile is a `vote-failed` one, and each gating profile that has a gap passes `liftsProfile`. */
+function liftable(result: QuorumResult, gates: (profile: string) => boolean): boolean {
+  const gaps = result.meta.incomplete.filter(entry => gates(entry.profile))
+  if (gaps.some(entry => entry.reason !== 'vote-failed')) return false
+  const unreviewed = result.unreviewed.filter(verdict => gates(verdict.profile))
+  const profiles = new Set([
+    ...gaps,
+    ...unreviewed,
+  ].map(({ profile }) => profile))
+  return [...profiles].every(profile => liftsProfile(result, profile, gaps.some(entry => entry.profile === profile)))
+}
+
+/**
+ * True when the failed votes behind `profile`'s gaps all failed in passing: those of its own kept and
+ * unreviewed findings, each finding's `votes` an array. Every unreviewed finding holds a failed vote, and
+ * so do the kept findings when the profile has a `vote-failed` gap (`gap`): a gap with no failed vote behind
+ * it lifts nothing.
+ */
+function liftsProfile(result: QuorumResult, profile: string, gap: boolean): boolean {
+  const kept = failedVotesOf(result.kept.filter(verdict => verdict.profile === profile))
+  const unreviewed = failedVotesOf(result.unreviewed.filter(verdict => verdict.profile === profile))
+  if (kept === undefined || unreviewed === undefined) return false
+  return [
+    ...kept,
+    ...unreviewed,
+  ].every(failed => failed.every(lensVote => failedInPassing(ownData(lensVote, 'failure'))))
+  && unreviewed.every(failed => failed.length > 0)
+  && (!gap || kept.some(failed => failed.length > 0))
+}
+
+/**
+ * The failed votes of each verdict, in order, or undefined when the `votes` of one is no array. A vote is
+ * cast only when its own data `vote` is an object and its own data `failure` is `null` or absent: any other
+ * entry is failed, so a vote that records a failure never counts as cast.
+ */
+function failedVotesOf(verdicts: readonly Verdict[]): unknown[][] | undefined {
+  const lists = verdicts.map((verdict) => {
+    const votes: unknown = verdict.votes
+    return Array.isArray(votes)
+      ? votes.filter((lensVote) => {
+          const cast = ownData(lensVote, 'vote')
+          const failure = ownData(lensVote, 'failure')
+          return typeof cast !== 'object' || cast === null || (failure !== null && failure !== undefined)
+        })
+      : undefined
+  })
+  return lists.every(list => list !== undefined)
+    ? lists
+    : undefined
+}
+
+/**
+ * True for a vote's failure that is infrastructure's: its own data `kind` is `network` or `timeout`, or
+ * `http` with an own data `status` of 408, 409, 429 or an integer from 500 to 599. Anything else is false:
+ * a refusal, a reply cut off or unusable, a request too large, any other status, a status that is no
+ * number, a kind no provider has, `null` and a value that is no object. It reads own data only, never
+ * runs a getter and never throws.
+ */
+export function failedInPassing(failure: unknown): boolean {
+  const kind = ownData(failure, 'kind')
+  if (kind === 'network' || kind === 'timeout') return true
+  const status = ownData(failure, 'status')
+  return kind === 'http' && typeof status === 'number' && Number.isInteger(status) && (PASSING_STATUSES.has(status) || (status >= 500 && status <= 599))
 }
 
 /** Write a usage error and the usage, and return its exit code. */

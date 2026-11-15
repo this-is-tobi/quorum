@@ -78,7 +78,8 @@ jq '.kept[0]' result.json
         "keep": true,
         "reasoning": "request.query.id reaches the query text unchanged on every call of findUser."
       },
-      "error": null
+      "error": null,
+      "failure": null
     },
     {
       "angle": "impact",
@@ -86,7 +87,8 @@ jq '.kept[0]' result.json
         "keep": true,
         "reasoning": "Any caller can read or change every row of the users table."
       },
-      "error": null
+      "error": null,
+      "failure": null
     },
     {
       "angle": "defenses",
@@ -94,7 +96,8 @@ jq '.kept[0]' result.json
         "keep": true,
         "reasoning": "No validation or parameter binding is left on this path."
       },
-      "error": null
+      "error": null,
+      "failure": null
     }
   ]
 }
@@ -102,7 +105,7 @@ jq '.kept[0]' result.json
 
 - `confidence` is `high` because all three lenses kept the finding: `keptVotes` is 3 of `totalVotes` 3.
 - `evidence` is the diff's own lines around line 12, read by the harness, and `quoteMatched` says that the code the finder quoted appears in them.
-- `votes` holds each lens's vote with its reasoning, in the profile's lens order. A failed vote would read `"vote": null` with its `error`.
+- `votes` holds each lens's vote with its reasoning, in the profile's lens order. A failed vote would read `"vote": null` with its `error` and its `failure`, the kind it failed with, and `"failure": null` is what a cast vote carries.
 
 The other two findings of that run went elsewhere. The path traversal in `src/upload.js` was kept by one lens of three, which reaches no level: it is in `discarded`. The session token in `src/session.js` got one keep, one reject and one failed vote; had the failed vote been a keep, it would have reached `medium`, so the finding is neither kept nor cleared: it is in `unreviewed`. And `meta.incomplete` holds the finding the harness could not read:
 

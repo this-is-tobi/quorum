@@ -102,10 +102,28 @@ const vote = z.strictObject({
   keep: z.boolean(),
   reasoning: z.string(),
 })
+const voteFailure = z.strictObject({
+  kind: z.enum([
+    'http',
+    'network',
+    'process',
+    'timeout',
+    'aborted',
+    'refusal',
+    'truncated',
+    'invalid-response',
+    'unsupported',
+    'too-large',
+    'unusable-reply',
+    'unknown',
+  ]),
+  status: z.int().min(100).max(599).optional(),
+})
 const lensVote = z.strictObject({
   angle: z.string(),
   vote: vote.nullable(),
   error: z.string().nullable(),
+  failure: voteFailure.nullable(),
 })
 const verdict = z.strictObject({
   id: z.string(),
