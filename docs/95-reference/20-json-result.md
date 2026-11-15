@@ -39,8 +39,9 @@ Cleaned means stripped of control, format and other invisible characters, with w
 | `angle` | string | The id of the lens the vote was cast from |
 | `vote` | object or `null` | `keep`, a boolean, then `reasoning`, a string; `null` when the vote failed |
 | `error` | string or `null` | `null`, or why the vote failed: the message of the error, such as `default: HTTP 503: "model is loading"`, or the text of anything else the provider threw |
+| `failure` | object or `null` | `null` for a vote that was cast; else `kind`, what the vote failed with: a provider's kind (`http`, `network`, `timeout`, `refusal`, `truncated` and the rest: [`ProviderError`](../20-using/30-providers.md#providererror)), `unusable-reply` for a reply the panel could not read, or `unknown`; and `status`, an `http` failure's HTTP status, when the provider stated one |
 
-A failed vote counts as a reject.
+A failed vote counts as a reject. Its `failure` holds only what the code read, never a word of the server's or the model's, and it is what the CLI's `--allow-incomplete` reads to tell a vote that failed in passing from one a pull request can cause: [Exit codes](../20-using/10-cli.md#exit-codes).
 
 ## meta
 
@@ -122,7 +123,7 @@ A detail names at most eight code points or patterns, then `and N more`. [Adviso
 | `binary` | `meta.leftOut` lists a file whose change the diff shows only as binary: one gap per profile, counting the files | `the diff carries no content for 2 binary file(s), listed in meta.leftOut` |
 | `submodule` | `meta.leftOut` lists a submodule whose change the diff shows only as a commit: one gap per profile, counting them | `the diff carries no content for 1 submodule(s), listed in meta.leftOut` |
 
-Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4` for a gap of a gating profile, unless a gating profile kept a `high` finding. `--allow-incomplete` lifts every gap but three for a gating profile: a `request-too-large`, `binary` or `submodule` gap exits `4` whatever the flags, since a pull request causes the first by padding the diff, and the others with one `.gitattributes` line, one NUL byte or a submodule's bump. The flag lifts every other gap, including gaps a pull request can cause: decoy findings that push a real one past `maxFindings`, or text that trips a hosted voter's content filter. On a gating profile, do not use it for a pull request you do not trust.
+Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4` for a gap of a gating profile, unless a gating profile kept a `high` finding. `--allow-incomplete` lifts a gating profile's gaps only when each is an unreviewed finding or a `vote-failed` gap, and every failed vote behind them failed in passing: a dropped connection, a timeout of its own, or an HTTP 408, 409, 429 or 5xx, as the votes' `failure` says ([Exit codes](../20-using/10-cli.md#exit-codes)). Every other gap exits `4` whatever the flags, since a pull request causes it directly: a `request-too-large` gap by padding the diff, `binary` and `submodule` with one `.gitattributes` line, one NUL byte or a submodule's bump, `findings-capped` with decoy findings, and `finding-unreadable` and `research-unusable` with text that breaks the finder's reply. A `vote-failed` gap beside a vote that was refused, cut off at its token limit or unusable exits `4` too. On a gating profile, do not use the flag for a pull request you do not trust.
 
 ## An example
 
@@ -150,7 +151,8 @@ A review of a diff that touches three files, run on the one provider, named `def
             "keep": true,
             "reasoning": "request.query.id reaches the query text unchanged on every call of findUser."
           },
-          "error": null
+          "error": null,
+          "failure": null
         },
         {
           "angle": "impact",
@@ -158,7 +160,8 @@ A review of a diff that touches three files, run on the one provider, named `def
             "keep": true,
             "reasoning": "Any caller can read or change every row of the users table."
           },
-          "error": null
+          "error": null,
+          "failure": null
         },
         {
           "angle": "defenses",
@@ -166,7 +169,8 @@ A review of a diff that touches three files, run on the one provider, named `def
             "keep": true,
             "reasoning": "No validation or parameter binding is left on this path."
           },
-          "error": null
+          "error": null,
+          "failure": null
         }
       ]
     }
@@ -190,7 +194,8 @@ A review of a diff that touches three files, run on the one provider, named `def
             "keep": true,
             "reasoning": "file.name comes from the multipart request."
           },
-          "error": null
+          "error": null,
+          "failure": null
         },
         {
           "angle": "impact",
@@ -198,7 +203,8 @@ A review of a diff that touches three files, run on the one provider, named `def
             "keep": false,
             "reasoning": "The name has no directory part left, so the write stays inside UPLOADS."
           },
-          "error": null
+          "error": null,
+          "failure": null
         },
         {
           "angle": "defenses",
@@ -206,7 +212,8 @@ A review of a diff that touches three files, run on the one provider, named `def
             "keep": false,
             "reasoning": "path.basename on the line above already removes any traversal."
           },
-          "error": null
+          "error": null,
+          "failure": null
         }
       ]
     }
@@ -230,12 +237,17 @@ A review of a diff that touches three files, run on the one provider, named `def
             "keep": true,
             "reasoning": "newToken is called on every login."
           },
-          "error": null
+          "error": null,
+          "failure": null
         },
         {
           "angle": "impact",
           "vote": null,
-          "error": "default: HTTP 503: \"model is loading\""
+          "error": "default: HTTP 503: \"model is loading\"",
+          "failure": {
+            "kind": "http",
+            "status": 503
+          }
         },
         {
           "angle": "defenses",
@@ -243,7 +255,8 @@ A review of a diff that touches three files, run on the one provider, named `def
             "keep": false,
             "reasoning": "Each token is bound to the client address and expires after five minutes."
           },
-          "error": null
+          "error": null,
+          "failure": null
         }
       ]
     }

@@ -10,7 +10,7 @@ import { securityProfile } from '../profiles/security.ts'
 import { fakeClaudeEnv, readFakeRecord, writeFakeClaude } from '../testing/claude.ts'
 import * as fixtures from '../testing/fixtures/claude-code.ts'
 import { harness } from '../testing/cli.ts'
-import { chatReply, sent, stubChat, stubFetch, stubOllamaChat, textReply } from '../testing/http.ts'
+import { chatReply, jsonReply, sent, stubChat, stubFetch, stubOllamaChat, textReply } from '../testing/http.ts'
 import { EXIT, exitCodeFor, interruptSignal, runCli } from './main.ts'
 import type { CliIO } from './main.ts'
 
@@ -91,7 +91,7 @@ const USAGE = [
   'Options:',
   '  -c, --config <path>     Read this config file, over QUORUM_CONFIG',
   '  -p, --profile <id>      Run only this profile; repeat it to run several',
-  '      --allow-incomplete  Exit 0 instead of 4 when the review is incomplete, except for a request too large for its model or a binary or submodule file',
+  '      --allow-incomplete  Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --print-config      Print the resolved config, keys redacted, and exit',
   '  -h, --help              Print this help and exit',
   '  -v, --version           Print the version and exit',
@@ -440,6 +440,40 @@ describe('runCli', () => {
     expect(stderr()).toContain('vote-failed')
   })
 
+  it('exits 4 with --allow-incomplete when a gating profile\'s vote was cut off at its token limit', async () => {
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true)).mockImplementationOnce(async () => jsonReply({
+      choices: [
+        {
+          finish_reason: 'length',
+          message: { content: '' },
+        },
+      ],
+    }))
+    const { io, stdout } = harness({
+      argv: ['--allow-incomplete'],
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    const result = JSON.parse(stdout())
+    expect(result.kept[0].confidence).toBe('medium')
+    expect(result.kept[0].votes.map((lensVote: { failure: unknown }) => lensVote.failure)).toEqual([
+      null,
+      null,
+      { kind: 'truncated' },
+    ])
+    expect(result.meta.incomplete).toEqual([
+      {
+        profile: 'security',
+        reason: 'vote-failed',
+        file: 'a.js',
+        detail: expect.stringMatching(/^"a\.js":1 is kept at medium/),
+      },
+    ])
+  })
+
   it('prints each warning once, inert, before the banner, and keeps stdout to the JSON result', async () => {
     const { io, stdout, stderr } = harness({
       env: { RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
@@ -709,13 +743,6 @@ describe('exitCodeFor', () => {
     expect(exitCodeFor(result([], {}, ['team']))).toBe(EXIT.incomplete)
   })
 
-  it('turns 4 into 0 with allowIncomplete, and never 1', () => {
-    expect(exitCodeFor(result([], { security: true }, ['security']), { allowIncomplete: true })).toBe(EXIT.ok)
-    expect(exitCodeFor(result([
-      kept('security', 'high'),
-    ], { security: true }, ['security']), { allowIncomplete: true })).toBe(EXIT.finding)
-  })
-
   const withGaps = (gating: Record<string, boolean>, gaps: object[], verdicts: Verdict[] = []): QuorumResult => {
     const base = result(verdicts, gating)
     return {
@@ -723,6 +750,235 @@ describe('exitCodeFor', () => {
       meta: { ...base.meta, incomplete: gaps },
     } as unknown as QuorumResult
   }
+  /** A verdict of `profile` and `confidence` with three votes: one failed vote per `failures` entry, the rest kept; an `undefined` entry is a failed vote with no `failure` key. */
+  const voted = (profile: string, confidence: Verdict['confidence'], failures: readonly unknown[]): Verdict => ({
+    profile,
+    confidence,
+    votes: Array.from({ length: 3 }, (_, index) => index < failures.length
+      ? {
+          angle: `lens${index}`,
+          vote: null,
+          error: 'failed',
+          ...(failures[index] === undefined
+            ? {}
+            : { failure: failures[index] }),
+        }
+      : {
+          angle: `lens${index}`,
+          vote: { keep: true, reasoning: 'r' },
+          error: null,
+          failure: null,
+        }),
+  }) as unknown as Verdict
+  const voteFailedGap = { profile: 'security', reason: 'vote-failed' }
+  const securityGates = { security: true }
+
+  it('turns 4 into 0 with allowIncomplete, and never 1', () => {
+    expect(exitCodeFor(withGaps(securityGates, [voteFailedGap], [
+      voted('security', 'medium', [
+        { kind: 'network' },
+      ]),
+    ]), { allowIncomplete: true })).toBe(EXIT.ok)
+    expect(exitCodeFor(result([
+      kept('security', 'high'),
+    ], securityGates, ['security']), { allowIncomplete: true })).toBe(EXIT.finding)
+  })
+
+  it.each<[unknown]>([
+    [
+      { kind: 'network' },
+    ],
+    [
+      { kind: 'timeout' },
+    ],
+    [
+      { kind: 'http', status: 408 },
+    ],
+    [
+      { kind: 'http', status: 409 },
+    ],
+    [
+      { kind: 'http', status: 429 },
+    ],
+    [
+      { kind: 'http', status: 500 },
+    ],
+    [
+      { kind: 'http', status: 503 },
+    ],
+    [
+      { kind: 'http', status: 599 },
+    ],
+  ])('lifts a gating profile\'s gap with allowIncomplete when its failed vote failed with %j', (failure) => {
+    const verdicts = [
+      voted('security', 'medium', [failure]),
+    ]
+    expect(exitCodeFor(withGaps(securityGates, [voteFailedGap], verdicts), { allowIncomplete: true })).toBe(EXIT.ok)
+    expect(exitCodeFor(withGaps(securityGates, [voteFailedGap], verdicts))).toBe(EXIT.incomplete)
+  })
+
+  it.each<[unknown]>([
+    [
+      { kind: 'http', status: 400 },
+    ],
+    [
+      { kind: 'http', status: 404 },
+    ],
+    [
+      { kind: 'http', status: 499 },
+    ],
+    [
+      { kind: 'http', status: 600 },
+    ],
+    [
+      { kind: 'http' },
+    ],
+    [
+      { kind: 'http', status: '503' },
+    ],
+    [
+      { kind: 'refusal' },
+    ],
+    [
+      { kind: 'truncated' },
+    ],
+    [
+      { kind: 'invalid-response' },
+    ],
+    [
+      { kind: 'unusable-reply' },
+    ],
+    [
+      { kind: 'unknown' },
+    ],
+    [
+      { kind: 'too-large' },
+    ],
+    [
+      { kind: 'process' },
+    ],
+    [
+      { kind: 'aborted' },
+    ],
+    [
+      { kind: 'unsupported' },
+    ],
+    [null],
+    [undefined],
+  ])('never lifts a gap whose failed vote failed with %j', (failure) => {
+    expect(exitCodeFor(withGaps(securityGates, [voteFailedGap], [
+      voted('security', 'medium', [failure]),
+    ]), { allowIncomplete: true })).toBe(EXIT.incomplete)
+  })
+
+  it.each([
+    'research-unusable',
+    'findings-capped',
+    'finding-unreadable',
+    'request-too-large',
+    'binary',
+    'submodule',
+    'research-failed',
+    'a-reason-no-quorum-writes',
+  ])('never lifts a gating profile\'s %s gap', (reason) => {
+    const gap = { profile: 'security', reason }
+    const network = { kind: 'network' }
+    expect(exitCodeFor(withGaps(securityGates, [voteFailedGap, gap], [
+      voted('security', 'medium', [network]),
+    ]), { allowIncomplete: true })).toBe(EXIT.incomplete)
+    expect(exitCodeFor({
+      ...withGaps(securityGates, [gap]),
+      unreviewed: [
+        voted('security', undefined, [network]),
+      ],
+    }, { allowIncomplete: true })).toBe(EXIT.incomplete)
+    expect(exitCodeFor(withGaps({ security: true, style: false }, [
+      { profile: 'style', reason },
+    ]), { allowIncomplete: true })).toBe(EXIT.ok)
+  })
+
+  it('lifts an unreviewed finding whose failed votes all failed in passing, and not one beside a vote cut off', () => {
+    const network = { kind: 'network' }
+    expect(exitCodeFor(result([], securityGates, [], [
+      voted('security', undefined, [network, network]),
+    ]), { allowIncomplete: true })).toBe(EXIT.ok)
+    expect(exitCodeFor(result([], securityGates, [], [
+      voted('security', undefined, [
+        network,
+        { kind: 'truncated' },
+      ]),
+    ]), { allowIncomplete: true })).toBe(EXIT.incomplete)
+  })
+
+  it('lifts nothing, and throws nothing, for a verdict whose votes are not an array', () => {
+    for (const votes of [
+      undefined,
+      null,
+      'x',
+      { length: 1 },
+    ]) {
+      const verdict = {
+        ...kept('security', 'medium'),
+        votes,
+      } as unknown as Verdict
+      expect(exitCodeFor(withGaps(securityGates, [voteFailedGap], [verdict]), { allowIncomplete: true })).toBe(EXIT.incomplete)
+    }
+  })
+
+  it('counts a vote that records a failure as failed, whatever its own vote says', () => {
+    const cast = { keep: true, reasoning: 'r' }
+    const verdict = {
+      ...kept('security', 'medium'),
+      votes: [
+        {
+          angle: 'a',
+          vote: cast,
+          error: null,
+          failure: { kind: 'truncated' },
+        },
+        {
+          angle: 'b',
+          vote: null,
+          error: 'failed',
+          failure: { kind: 'network' },
+        },
+        {
+          angle: 'c',
+          vote: cast,
+          error: null,
+          failure: null,
+        },
+      ],
+    } as unknown as Verdict
+    expect(exitCodeFor(withGaps(securityGates, [voteFailedGap], [verdict]), { allowIncomplete: true })).toBe(EXIT.incomplete)
+  })
+
+  it('lifts one gating profile\'s gap whatever the failed votes of a gating profile with no gap', () => {
+    const verdicts = [
+      voted('security', 'medium', [
+        { kind: 'network' },
+      ]),
+      voted('team', 'medium', [
+        { kind: 'truncated' },
+      ]),
+    ]
+    const gates = { security: true, team: true }
+    expect(exitCodeFor(withGaps(gates, [voteFailedGap], verdicts), { allowIncomplete: true })).toBe(EXIT.ok)
+    expect(exitCodeFor(withGaps(gates, [voteFailedGap], verdicts))).toBe(EXIT.incomplete)
+  })
+
+  it('never lifts an unreviewed finding whose votes hold no failed vote', () => {
+    expect(exitCodeFor(result([], securityGates, [], [
+      voted('security', undefined, []),
+    ]), { allowIncomplete: true })).toBe(EXIT.incomplete)
+  })
+
+  it('never lifts a vote-failed gap whose profile\'s kept findings hold no failed vote', () => {
+    expect(exitCodeFor(withGaps(securityGates, [voteFailedGap], [
+      voted('security', 'medium', []),
+    ]), { allowIncomplete: true })).toBe(EXIT.incomplete)
+  })
+
   const refused = (profile?: string): object => ({
     ...profile === undefined
       ? {}

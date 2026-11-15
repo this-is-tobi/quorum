@@ -45,6 +45,32 @@ describe('parseRecord', () => {
     expect(parseRecord(recordLine(RECORD).slice(0, -1))).toEqual(RECORD)
   })
 
+  it('reads a record whose votes carry their failure, a status included', () => {
+    const [cast, , failed] = RECORD.result.kept[0].votes
+    expect(cast.failure).toBeNull()
+    expect(failed.failure).toEqual({ kind: 'http', status: 503 })
+    expect(parseRecord(recordLine(RECORD).slice(0, -1))).toEqual(RECORD)
+    const withFailure = (failure: unknown): string => JSON.stringify({
+      ...RECORD,
+      result: {
+        ...RESULT,
+        kept: [
+          {
+            ...RESULT.kept[0],
+            votes: [
+              { ...failed, failure },
+            ],
+          },
+        ],
+      },
+    })
+    expect(parseRecord(withFailure({ kind: 'later' }))).toBeUndefined()
+    expect(parseRecord(withFailure({ kind: 'http', status: 999 }))).toBeUndefined()
+    expect(parseRecord(withFailure({ kind: 'http', status: '503' }))).toBeUndefined()
+    expect(parseRecord(withFailure({ kind: 'http', status: 503, extra: 1 }))).toBeUndefined()
+    expect(parseRecord(withFailure({ kind: 'http', status: 503 }))).toBeDefined()
+  })
+
   it.each<[string, string]>([
     ['text that is not JSON', '{'],
     ['an array', '[]'],
@@ -151,6 +177,7 @@ describe('parseRecord, level by level', () => {
                 angle: 'impact',
                 vote: { keep: true },
                 error: null,
+                failure: null,
               },
             ],
           },

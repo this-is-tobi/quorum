@@ -2,8 +2,8 @@ import { diffSectionFor } from '../diff.ts'
 import { parseVoteReply } from '../output.ts'
 import { confidenceFor, undecidedLevel, verdictStatus } from '../policy.ts'
 import { voteRequest } from '../prompts.ts'
-import type { Confidence, Finding, IncompleteEntry, LensVote, Verdict, VerdictStatus } from '../types.ts'
-import { callProvider, isTooLarge, refusalMessage } from './context.ts'
+import type { Confidence, Finding, IncompleteEntry, LensVote, Verdict, VerdictStatus, VoteFailure } from '../types.ts'
+import { callProvider, isTooLarge, providerFailure, refusalMessage } from './context.ts'
 import type { LensRun, ProfileRun, RunContext } from './context.ts'
 
 /** Where the panel put each finding, the arrays keeping the findings' order, and the gaps its failed votes left. */
@@ -41,10 +41,11 @@ interface Cast {
  * self-reported confidence gets to override: with the security profile, unanimous 3/3 is a ceiling
  * of 'high', a 2/3 split is capped at 'medium' no matter how certain any one voter sounded.
  *
- * A failed vote counts as a reject and is recorded with its error, never as a crash, but a vote cut
- * by the review's abort is not a failed vote: it rejects the panel with the abort's reason at once,
- * without waiting for the votes still in flight. A vote request its provider refused as too large
- * is a failed vote that also records a `request-too-large` gap. Each vote emits a `vote` event.
+ * A failed vote counts as a reject and is recorded with its error and its failure, never as a crash,
+ * but a vote cut by the review's abort is not a failed vote: it rejects the panel with the abort's
+ * reason at once, without waiting for the votes still in flight. A vote request its provider refused
+ * as too large is a failed vote that also records a `request-too-large` gap. Each vote emits a `vote`
+ * event.
  * Once a finding's votes are in, its verdict emits a `verdict` event, then its gaps are reported by
  * `incomplete` events: one `request-too-large` gap when any vote request was refused, and a
  * `vote-failed` gap when a kept verdict's failed votes leave a higher level undecided (ADR-0012).
@@ -104,21 +105,26 @@ async function judge(ctx: RunContext, run: ProfileRun, finding: Finding, diffCon
 /**
  * One lens's vote on one finding, from the lens's own provider. A failed call or an unusable reply
  * is a vote of null with its error: the message of an `Error`, the text of anything else thrown.
- * A request its provider refused as too large is that failed vote too, and carries the refusal's
- * message besides, for the finding's `request-too-large` gap. Once the review is aborted, the vote
- * rethrows the abort's reason instead, whatever the call raised, so an aborted review never
- * resolves with a finding the abort left unreviewed. The `vote` event is emitted after the vote's
- * own `try`, so a sink that throws on it is never recorded as a failed vote.
+ * It also records its failure: `voteFailureOf` the error for a failed call, `unusable-reply` for a
+ * reply that came back and could not be read as a vote; a cast vote's failure is null. A request its
+ * provider refused as too large is that failed vote too, and carries the refusal's message besides,
+ * for the finding's `request-too-large` gap. Once the review is aborted, the vote rethrows the
+ * abort's reason instead, whatever the call raised, so an aborted review never resolves with a
+ * finding the abort left unreviewed. The `vote` event is emitted after the vote's own `try`, so a
+ * sink that throws on it is never recorded as a failed vote.
  */
 async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens: LensRun, diffContext: string): Promise<Cast> {
   let lensVote: LensVote
   let refusal: string | undefined
+  let replied = false
   try {
     const text = await callProvider(ctx, { profile: run.id, role: 'vote', lens: lens.id }, lens, () => voteRequest(lens.instructions, finding, diffContext, run.guidelines))
+    replied = true
     lensVote = {
       angle: lens.id,
       vote: parseVoteReply(text),
       error: null,
+      failure: null,
     }
   } catch (error) {
     // Once the review is aborted, a failed call is not the voter's failure: the review rejects with the abort's reason.
@@ -129,10 +135,13 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
       error: error instanceof Error
         ? error.message
         : String(error),
+      failure: replied
+        ? { kind: 'unusable-reply' }
+        : voteFailureOf(error),
     }
     if (isTooLarge(error)) refusal = refusalMessage(error)
   }
-  const { error } = lensVote
+  const { error, failure } = lensVote
   ctx.emit({
     type: 'vote',
     profile: run.id,
@@ -142,10 +151,18 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
     ...(error === null
       ? {}
       : { error }),
+    ...(failure === null
+      ? {}
+      : { failure }),
   })
   return refusal === undefined
     ? { lensVote }
     : { lensVote, refusal }
+}
+
+/** What a call that failed says of itself as a vote's failure: what `providerFailure` reads, else `unknown`. */
+function voteFailureOf(error: unknown): VoteFailure {
+  return providerFailure(error) ?? { kind: 'unknown' }
 }
 
 /**

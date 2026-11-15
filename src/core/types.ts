@@ -45,12 +45,31 @@ export interface Lens {
   readonly question: string
 }
 
-/** One lens's vote, or the error if that call failed. */
+/**
+ * What a vote failed with: a provider's kind of failure, `unusable-reply` for a reply the panel could not
+ * read as a vote, or `unknown` for anything else thrown. The kinds a gating profile's `--allow-incomplete`
+ * lifts are `network`, `timeout` and an `http` failure of status 408, 409, 429 or 5xx.
+ */
+export type VoteFailureKind = 'http' | 'network' | 'process' | 'timeout' | 'aborted' | 'refusal' | 'truncated' | 'invalid-response' | 'unsupported' | 'too-large' | 'unusable-reply' | 'unknown'
+
+/** The facts of a failed vote the code read, never a word a server or a model wrote. */
+export interface VoteFailure {
+  kind: VoteFailureKind
+  /** An `http` failure's HTTP status, an integer from 100 to 599; absent for every other kind, and for an `http` failure that states none. */
+  status?: number
+}
+
+/**
+ * One lens's vote, or the error if that call failed. A failed vote also records its `failure`: what it
+ * failed with, which the CLI's `--allow-incomplete` reads to lift only a vote that failed in passing.
+ */
 export interface LensVote {
   /** The id of the lens the vote was cast from. */
   angle: string
   vote: Vote | null
   error: string | null
+  /** What a failed vote failed with; `null` for a vote that was cast. */
+  failure: VoteFailure | null
 }
 
 /** Instruction templates, one per stage. `{{name}}` placeholders are filled by renderTemplate. */
@@ -269,8 +288,8 @@ export type QuorumEvent
     | { type: 'finding:invalid', profile: string, reason: string }
     /** A gap was recorded, as `meta.incomplete` will hold it. */
     | { type: 'incomplete', entry: IncompleteEntry }
-    /** One lens voted on one finding; `keep` is null, with the error, when the vote failed. */
-    | { type: 'vote', profile: string, findingId: string, lens: string, keep: boolean | null, error?: string }
+    /** One lens voted on one finding; `keep` is null, with the error and the failure's kind and status, when the vote failed. */
+    | { type: 'vote', profile: string, findingId: string, lens: string, keep: boolean | null, error?: string, failure?: VoteFailure }
     /** The panel decided one finding: its vote split, the confidence it earned and where it lands. */
     | { type: 'verdict', profile: string, findingId: string, keptVotes: number, totalVotes: number, confidence?: Confidence, status: VerdictStatus }
     /** The review ends: how many verdicts landed where, how many gaps it recorded, and how long it took. */

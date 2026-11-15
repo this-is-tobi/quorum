@@ -44,6 +44,8 @@ export type {
   Verdict,
   VerdictStatus,
   Vote,
+  VoteFailure,
+  VoteFailureKind,
 } from './core/types.ts'
 export { securityProfile } from './profiles/security.ts'
 export { anthropic } from './providers/anthropic.ts'

@@ -8,11 +8,17 @@ function ballots(...outcomes: Array<boolean | null>): Pick<Verdict, 'keptVotes' 
   return {
     keptVotes: outcomes.filter(keep => keep === true).length,
     votes: outcomes.map(keep => (keep === null
-      ? { angle: 'impact' as const, vote: null, error: 'endpoint down' }
+      ? {
+          angle: 'impact' as const,
+          vote: null,
+          error: 'endpoint down',
+          failure: { kind: 'network' as const },
+        }
       : {
           angle: 'impact' as const,
           vote: { keep, reasoning: 'r' },
           error: null,
+          failure: null,
         })),
   }
 }
