@@ -5,7 +5,7 @@ import { fakeClock, settle } from '../testing/clock.ts'
 import * as git from '../testing/fixtures/git.ts'
 import { ConfigError, OutputError, ProviderError } from './errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts } from './ports.ts'
-import { researchRequest } from './prompts.ts'
+import { researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum, createQuorumWith } from './quorum.ts'
 import { requestTokens, tokenBound } from './tokens.ts'
 import type { Finding, IncompleteEntry, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, Usage, VoteFailure } from './types.ts'
@@ -59,6 +59,8 @@ const finding: Finding = {
 const vote = (keep: boolean, reasoning = 'r'): string => JSON.stringify({ keep, reasoning })
 const findings = (...items: unknown[]): string => JSON.stringify({ findings: items })
 const isVote = (request: CompletionRequest): boolean => request.output.name === 'panel_vote'
+/** A request with its nonces named alike, so two requests built apart compare equal. */
+const plain = (request: CompletionRequest): unknown => JSON.parse(JSON.stringify({ system: request.system, messages: request.messages }).replaceAll(/(untrusted-[a-z]+)-[0-9a-f]{8}/g, '$1-N'))
 
 interface Fake extends Provider {
   readonly requests: CompletionRequest[]
@@ -2820,8 +2822,6 @@ describe('a large change in parts', () => {
   const turn = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
   const partOf = (request: CompletionRequest): number => Number(/Part (\d+) of \d+ of the change\./.exec(request.messages[0].content)?.[1])
   const hasParts = (request: CompletionRequest): boolean => request.messages[0].content.includes('untrusted-parts-')
-  /** A request with its nonces named alike, so two requests built apart compare equal. */
-  const plain = (request: CompletionRequest): unknown => JSON.parse(JSON.stringify({ system: request.system, messages: request.messages }).replaceAll(/(untrusted-[a-z]+)-[0-9a-f]{8}/g, '$1-N'))
   const reviewedFiles = (files: readonly string[]): unknown[] => files.map(file => ({ file, status: 'reviewed' }))
   const quorumOf = (finder: Provider, options: Omit<QuorumOptions, 'profiles'> = {}, profile: Profile = securityProfile, events?: QuorumEvent[]): Quorum => createQuorum({
     ...options,
@@ -3330,5 +3330,136 @@ describe('a large change in parts', () => {
     await turn()
     await turn()
     expect(rejections).toEqual([])
+  })
+})
+
+describe('a vote\'s context', () => {
+  const PAD = 'p'.repeat(46)
+  const HEADER = [
+    'diff --git a/v.js b/v.js',
+    '--- a/v.js',
+    '+++ b/v.js',
+  ].join('\n')
+  /** A hunk of `v.js` at new line `line`, 80 to 82 tokens. */
+  const hunkAt = (line: number): string => [
+    `@@ -${line} +${line} @@`,
+    '-safe()',
+    `+exec(cmd) // ${PAD}`,
+  ].join('\n')
+  const oneFile = [
+    HEADER,
+    ...[1, 11, 21, 31, 41, 51, 61, 71].map(hunkAt),
+  ].join('\n')
+  const cited = {
+    file: 'v.js',
+    line: 41,
+    category: 'CWE-78',
+    quote: 'exec(cmd)',
+    summary: 'command injection',
+  }
+  const PARTIAL = 'part of the diff section of the cited file: its header and the hunks nearest the cited line, since the whole section does not fit.'
+  const WHOLE = 'the diff section of the cited file, or the whole diff when the file has no section of its own.'
+  const MESSAGE = 'may need 9 tokens, more than contextTokens (8)'
+
+  const finder = (): Fake => fake('finder', () => findings(cited))
+  const diffBlock = (request: CompletionRequest): string => /<untrusted-diff-[0-9a-f]{8}>\n([\s\S]*?)\n<\/untrusted-diff-/.exec(request.messages[0].content)?.[1] ?? ''
+  /** A voter that votes to keep, stating `room`. */
+  const stating = (room?: Provider['room'], answer: () => string = () => vote(true)): Fake => ({
+    ...fake('voter', answer),
+    ...room === undefined
+      ? {}
+      : { room },
+  })
+
+  it('sends the hunks nearest the cited line to a voter whose room does not hold the section', async () => {
+    const voter = stating(request => 300 - tokenBound(diffBlock(request)))
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder(), voter)).review({ diff: oneFile })
+    expect(voter.requests).toHaveLength(3)
+    for (const request of voter.requests) {
+      expect(diffBlock(request)).toBe([
+        HEADER,
+        hunkAt(31),
+        hunkAt(41),
+        hunkAt(51),
+      ].join('\n'))
+      expect(request.system).toContain(`: ${PARTIAL}\n`)
+      expect(request.system).not.toContain(WHOLE)
+    }
+    expect(result.kept.map(verdict => [verdict.file, verdict.line, verdict.confidence])).toEqual([
+      ['v.js', 41, 'high'],
+    ])
+    expect(result.meta.incomplete).toEqual([])
+  })
+
+  it('takes the room of the request that carries the partial description, which is the one it sends', async () => {
+    const solo: Profile = {
+      id: 'solo',
+      prompts: { research: 'Find issues.', vote: 'Judge it.' },
+      lenses: [
+        { id: 'only', question: 'Is it wrong?' },
+      ],
+      policy: { high: 'unanimous', medium: 'off', low: 'off' },
+    }
+    // The room is what its system message and its diff block leave of a budget one token short of the
+    // header and three hunks once the partial description is counted.
+    const three = tokenBound([
+      HEADER,
+      hunkAt(31),
+      hunkAt(41),
+      hunkAt(51),
+    ].join('\n'))
+    const budget = three - 1 + tokenBound(voteRequest('Judge it.', finding, '', undefined, true).system)
+    // The longer partial description leaves less room than the whole section's request does, enough for three hunks.
+    expect(budget - tokenBound(voteRequest('Judge it.', finding, '').system)).toBeGreaterThanOrEqual(three)
+    const voter = stating(request => budget - tokenBound(request.system) - tokenBound(diffBlock(request)))
+    await createQuorum({
+      profiles: [solo],
+    }, portsFor(solo, finder(), voter)).review({ diff: oneFile })
+    expect(voter.requests).toHaveLength(1)
+    expect(diffBlock(voter.requests[0])).toBe([
+      HEADER,
+      hunkAt(31),
+      hunkAt(41),
+    ].join('\n'))
+    expect(voter.requests[0].system).toContain(`: ${PARTIAL}\n`)
+  })
+
+  it('sends the whole section, as before, to a voter that states no room or whose room holds it', async () => {
+    const silent = stating()
+    const roomy = stating(() => 100_000)
+    for (const voter of [silent, roomy]) {
+      await createQuorum({
+        profiles: [securityProfile],
+      }, portsFor(securityProfile, finder(), voter)).review({ diff: oneFile })
+    }
+    expect(silent.requests).toHaveLength(3)
+    expect(roomy.requests.map(plain)).toEqual(silent.requests.map(plain))
+    for (const request of roomy.requests) {
+      expect(diffBlock(request)).toBe(oneFile)
+      expect(request.system).toContain(`: ${WHOLE}\n`)
+      expect(request.system).not.toContain(PARTIAL)
+    }
+  })
+
+  it('sends the whole section to a voter that cannot hold the cited hunk alone, which records request-too-large as before', async () => {
+    const voter = stating(() => 10, () => {
+      throw new ProviderError({ providerId: 'voter', kind: 'too-large', message: MESSAGE })
+    })
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder(), voter)).review({ diff: oneFile })
+    expect(voter.requests.map(diffBlock)).toEqual(Array.from({ length: 3 }).fill(oneFile))
+    expect(result.unreviewed).toHaveLength(1)
+    expect(result.unreviewed[0].votes.map(entry => entry.failure)).toEqual(Array.from({ length: 3 }).fill({ kind: 'too-large' }))
+    expect(result.meta.incomplete).toEqual([
+      {
+        profile: 'security',
+        reason: 'request-too-large',
+        file: 'v.js',
+        detail: `"v.js":41: 3 of 3 vote requests were not sent: voter: ${MESSAGE}`,
+      },
+    ])
   })
 })

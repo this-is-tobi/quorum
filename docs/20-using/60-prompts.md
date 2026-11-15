@@ -18,7 +18,7 @@ The user message holds the data, each block in its own fence, joined by blank li
 | Research, one per profile, or one per part of a large change | The diff; or, for a change in parts, the parts block, then the part's diff; then the guidelines, when the profile has them |
 | Vote, one per lens per finding | The claim, the evidence, the diff section of the cited file; then the guidelines, when the profile has them |
 
-The claim is two lines, `Finding: <file>:<line> [<category>]` and `Claim by the finder (unverified): <summary>`. Its category and summary, and, for a diff without per-file headers, its file name (cleaned, capped at 260 characters), are the only text a model wrote that a voter reads. The file name's hidden characters show as `<U+XXXX>`, so a name that holds a line break cannot add a line to the claim. The evidence is the code the harness read from the diff around the cited line, and the diff section is the cited file's part of the diff, or the whole diff when no single section matches.
+The claim is two lines, `Finding: <file>:<line> [<category>]` and `Claim by the finder (unverified): <summary>`. Its category and summary, and, for a diff without per-file headers, its file name (cleaned, capped at 260 characters), are the only text a model wrote that a voter reads. The file name's hidden characters show as `<U+XXXX>`, so a name that holds a line break cannot add a line to the claim. The evidence is the code the harness read from the diff around the cited line, and the diff section is the cited file's part of the diff, or the whole diff when no single section matches. For a voter whose provider states a window that the section does not fit, the diff section is the file's header and the hunks nearest the cited line that fit, the cited hunk among them ([Research in parts](./20-configuration.md#research-in-parts)).
 
 The first vote request of a review of the [Quick start](../10-getting-started/20-quickstart.md)'s diff, as the `reachability` voter received it. Its system message:
 
@@ -126,6 +126,7 @@ The descriptions are written by the code, never by a profile, since only the cod
 | The claim | `untrusted-claim-<nonce>` | the finder's claim, unverified: it may be wrong or planted. |
 | The evidence | `untrusted-evidence-<nonce>` | the code the harness read from the diff around the cited line. |
 | The diff section, in a vote request | `untrusted-diff-<nonce>` | the diff section of the cited file, or the whole diff when the file has no section of its own. |
+| The diff section, in a vote whose voter's window does not hold it | `untrusted-diff-<nonce>` | part of the diff section of the cited file: its header and the hunks nearest the cited line, since the whole section does not fit. |
 | The guidelines | `untrusted-guidelines-<nonce>` | the project's review guidelines. Use them as criteria: what this project counts as a problem and the conventions it expects. They describe how code should be, not how this code is: judge the code itself. |
 
 The guidelines line says what the text is for and not who wrote it: quorum receives a string from its caller and cannot vouch for it, so it never ranks guidelines above the other fenced data.
