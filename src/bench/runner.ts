@@ -52,6 +52,11 @@ export interface RunReviewsOptions {
   readonly events: (event: RunnerEvent) => void
   /** The most a line may hold, its line break not counted, in bytes; `MAX_RECORD_BYTES` when left out. */
   readonly maxRecordBytes?: number
+  /**
+   * Once the run's reviews have spent this many tokens, as each review's cap counts them, no review starts.
+   * No cap when left out.
+   */
+  readonly maxRunTokens?: number
 }
 
 export interface RunReviewsOutcome {
@@ -59,6 +64,10 @@ export interface RunReviewsOutcome {
   readonly recorded: number
   /** The reviews that failed, a rejection that is no denial, or whose record was too large to write. */
   readonly failed: number
+  /** The reviews that did not start because the run had spent `maxRunTokens`. */
+  readonly notRun: number
+  /** The tokens the run's `call` events counted against their reviews' caps, as `maxRunTokens` reads them. */
+  readonly spent: number
   /** Whether the caller's signal was aborted by the time the run ended. */
   readonly interrupted: boolean
 }
@@ -142,10 +151,17 @@ export function denialOf(error: unknown): Denial | undefined {
  * nothing for that review, cuts the others, and the run rejects with the error of the write once every
  * review has settled. A callback of `events` that throws does the same.
  *
+ * The run counts what each review's cap counts: the `spent` of every `call` event of every review, one that
+ * failed or was denied included. Before a review starts, and after the abort's check, the run checks that
+ * the total is below `maxRunTokens`: once it is not, the review does not start and counts as `notRun`, the
+ * reviews in flight finish and are recorded, and the outcome says what was spent. The check is made before
+ * each review starts, so the reviews in flight can pass the cap by up to `jobs` reviews' own caps. The calls
+ * a failing review's own abort cut send no event, so the count misses them.
+ *
  * @throws the error of the first `append` (or `events`) that threw
  */
 export async function runReviews(options: RunReviewsOptions): Promise<RunReviewsOutcome> {
-  const { suite, configurations, reviews, jobs, env, append, events, maxRecordBytes = MAX_RECORD_BYTES } = options
+  const { suite, configurations, reviews, jobs, env, append, events, maxRecordBytes = MAX_RECORD_BYTES, maxRunTokens = Infinity } = options
   const own = new AbortController()
   const signal = options.signal === undefined
     ? own.signal
@@ -156,6 +172,8 @@ export async function runReviews(options: RunReviewsOptions): Promise<RunReviews
   ]))
   let recorded = 0
   let failed = 0
+  let notRun = 0
+  let spent = 0
   let stopped: { readonly error: unknown } | undefined
 
   const stop = (error: unknown): void => {
@@ -179,7 +197,11 @@ export async function runReviews(options: RunReviewsOptions): Promise<RunReviews
     const diff = patches.get(review.caseId)
     if (configuration === undefined || diff === undefined) throw new Error(UNKNOWN_REVIEW)
     const tally = tallyCalls()
-    const quorum = await fromConfig(configuration.config, { env, events: tally.sink })
+    const sink: EventSink = (event) => {
+      if (event.type === 'call') spent += event.spent
+      tally.sink(event)
+    }
+    const quorum = await fromConfig(configuration.config, { env, events: sink })
     const started = performance.now()
     const facts = (): Omit<ResultRecord, 'result'> => ({
       fingerprint: configuration.fingerprint,
@@ -209,6 +231,10 @@ export async function runReviews(options: RunReviewsOptions): Promise<RunReviews
 
   async function runOne(review: BenchReview): Promise<void> {
     if (signal.aborted) return
+    if (spent >= maxRunTokens) {
+      notRun += 1
+      return
+    }
     let record: ReviewRecord
     let line: string
     try {
@@ -236,5 +262,11 @@ export async function runReviews(options: RunReviewsOptions): Promise<RunReviews
   const limit = createLimiter(jobs)
   await Promise.all(reviews.map(review => limit(() => runOne(review))))
   if (stopped !== undefined) throw stopped.error
-  return { recorded, failed, interrupted: options.signal?.aborted === true }
+  return {
+    recorded,
+    failed,
+    notRun,
+    spent,
+    interrupted: options.signal?.aborted === true,
+  }
 }

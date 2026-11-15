@@ -132,6 +132,33 @@ describe('quorum bench', () => {
       'Error: --jobs: must be a whole number from 1 to 16',
     ],
     [
+      [
+        'bench',
+        '--max-run-tokens',
+        '0',
+        'demo',
+      ],
+      'Error: --max-run-tokens: must be a whole number from 1 to 9007199254740991',
+    ],
+    [
+      [
+        'bench',
+        '--max-run-tokens',
+        '1.5',
+        'demo',
+      ],
+      'Error: --max-run-tokens: must be a whole number from 1 to 9007199254740991',
+    ],
+    [
+      [
+        'bench',
+        '--max-run-tokens',
+        '9007199254740992',
+        'demo',
+      ],
+      'Error: --max-run-tokens: must be a whole number from 1 to 9007199254740991',
+    ],
+    [
       ['bench', '--config', '', 'demo'],
       'Error: --config: must name a file',
     ],
@@ -535,6 +562,18 @@ describe('quorum bench', () => {
     const next = await bench(TWO)
     expect(next.code).toBe(0)
     expect(lines()).toHaveLength(6)
+  })
+
+  it('stops starting reviews at --max-run-tokens, writes the reports, says how many did not run, and exits 4', async () => {
+    const capped = await bench([...TWO, '--max-run-tokens', '1'])
+    expect(capped.code).toBe(4)
+    expect(lines()).toHaveLength(1)
+    expect(capped.stderr).toMatch(/^--max-run-tokens: the run reached its cap of 1 tokens \(it spent \d+\), so 5 review\(s\) were not run; the next run runs them$/m)
+    expect(capped.stdout).toBe(readFileSync(join(out(), 'report.md'), 'utf8'))
+    const next = await bench(TWO)
+    expect(next.code).toBe(0)
+    expect(lines()).toHaveLength(6)
+    expect(next.stderr).not.toContain('--max-run-tokens')
   })
 
   it('records a review whose research reply cannot be used as denied, quotes nothing of it, and runs it again with --retry-incomplete', async () => {

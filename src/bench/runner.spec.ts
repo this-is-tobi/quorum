@@ -9,7 +9,7 @@ import type { FakeModel } from '../testing/bench.ts'
 import { parseRecord } from './records.ts'
 import type { Denial, ResultRecord } from './records.ts'
 import { denialOf, planReviews, runReviews } from './runner.ts'
-import type { BenchReview, RunnerEvent, RunReviewsOptions } from './runner.ts'
+import type { BenchReview, RunnerEvent, RunReviewsOptions, RunReviewsOutcome } from './runner.ts'
 import { loadSuite } from './suite.ts'
 import type { Suite } from './suite.ts'
 
@@ -49,6 +49,18 @@ function deferred() {
     open = resolve
   })
   return { promise, open }
+}
+
+/** The outcome of a run that records and fails what `fields` say and counts nothing else: nothing unrun, not interrupted, a spend of any size unless `fields` says it. */
+function outcomeOf(fields: Partial<Record<keyof RunReviewsOutcome, unknown>>) {
+  return {
+    recorded: 0,
+    failed: 0,
+    notRun: 0,
+    spent: expect.any(Number),
+    interrupted: false,
+    ...fields,
+  }
 }
 
 /** Run the reviews with these fakes, by configuration, and keep the lines and events it gives. */
@@ -183,7 +195,7 @@ describe('runReviews', () => {
     ], [
       review('exec'),
     ])
-    expect(outcome).toEqual({ recorded: 1, failed: 0, interrupted: false })
+    expect(outcome).toEqual(outcomeOf({ recorded: 1, spent: 60 }))
     const record = parseRecord(lines[0].slice(0, -1)) as ResultRecord | undefined
     expect(record).toMatchObject({
       fingerprint: A,
@@ -225,7 +237,7 @@ describe('runReviews', () => {
       review('exec', 0),
       review('exec', 1),
     ])
-    expect(outcome).toEqual({ recorded: 1, failed: 1, interrupted: false })
+    expect(outcome).toEqual(outcomeOf({ recorded: 1, failed: 1 }))
     expect(lines.map(line => parseRecord(line.slice(0, -1))?.fingerprint)).toEqual([B])
     expect(events[0]).toEqual({
       type: 'failed',
@@ -252,7 +264,7 @@ describe('runReviews', () => {
         },
       ],
     })
-    expect(outcome).toEqual({ recorded: 1, failed: 0, interrupted: false })
+    expect(outcome).toEqual(outcomeOf({ recorded: 1 }))
     const recorded = parseRecord(lines[0].slice(0, -1))
     expect(recorded).not.toHaveProperty('denied')
     expect(recorded).toMatchObject({
@@ -276,7 +288,7 @@ describe('runReviews', () => {
       review('exec', 0),
       review('exec', 1),
     ])
-    expect(outcome).toEqual({ recorded: 2, failed: 0, interrupted: false })
+    expect(outcome).toEqual(outcomeOf({ recorded: 2, spent: 30 }))
     const denied = parseRecord(lines[0].slice(0, -1))
     expect(denied).toMatchObject({
       fingerprint: A,
@@ -326,7 +338,7 @@ describe('runReviews', () => {
     ], [
       review('exec'),
     ], { signal: controller.signal })
-    expect(outcome).toEqual({ recorded: 0, failed: 0, interrupted: true })
+    expect(outcome).toEqual(outcomeOf({ interrupted: true }))
     expect(lines).toEqual([])
   })
 
@@ -340,7 +352,7 @@ describe('runReviews', () => {
     ], [
       review('exec'),
     ], { signal: controller.signal })
-    expect(outcome).toEqual({ recorded: 0, failed: 0, interrupted: true })
+    expect(outcome).toEqual(outcomeOf({ interrupted: true }))
     expect(lines).toEqual([])
   })
 
@@ -402,6 +414,76 @@ describe('runReviews', () => {
     ])
   })
 
+  it('starts no review once the run has spent maxRunTokens, and records the ones it ran', async () => {
+    const counter = researchCounter()
+    const { outcome, lines } = await run([
+      { onCall: counter.onCall },
+    ], [
+      review('exec'),
+      review('sql'),
+    ], { maxRunTokens: 15 })
+    expect(outcome).toEqual({
+      recorded: 1,
+      failed: 0,
+      notRun: 1,
+      spent: 15,
+      interrupted: false,
+    })
+    expect(lines).toHaveLength(1)
+    expect(counter.calls).toBe(1)
+  })
+
+  it('counts the calls of a review that failed', async () => {
+    const counter = researchCounter()
+    const { outcome, lines, events } = await run([
+      { failResearch: true },
+      { onCall: counter.onCall },
+    ], [
+      review('exec', 0),
+      review('exec', 1),
+    ], { maxRunTokens: 1 })
+    expect(events.map(({ type }) => type)).toEqual(['failed'])
+    expect(outcome).toEqual({
+      recorded: 0,
+      failed: 1,
+      notRun: 1,
+      spent: expect.any(Number),
+      interrupted: false,
+    })
+    expect(outcome.spent).toBeGreaterThanOrEqual(16_000)
+    expect(lines).toEqual([])
+    expect(counter.calls).toBe(0)
+  })
+
+  it('lets the reviews in flight finish once the count reaches the cap', async () => {
+    const gate = deferred()
+    const second = deferred()
+    const counter = researchCounter()
+    const onCall = (request: CompletionRequest): void => {
+      counter.onCall(request)
+      if (counter.calls === 2) second.open()
+    }
+    const running = run([
+      { gate: gate.promise, onCall },
+    ], [
+      review('exec'),
+      review('sql'),
+      review('docs'),
+    ], { jobs: 2, maxRunTokens: 15 })
+    await second.promise
+    gate.open()
+    const { outcome, lines } = await running
+    expect(outcome).toEqual({
+      recorded: 2,
+      failed: 0,
+      notRun: 1,
+      spent: 30,
+      interrupted: false,
+    })
+    expect(lines).toHaveLength(2)
+    expect(counter.calls).toBe(2)
+  })
+
   it('starts no review once interrupted, and keeps the records written', async () => {
     const controller = new AbortController()
     const counter = researchCounter()
@@ -415,7 +497,7 @@ describe('runReviews', () => {
       signal: controller.signal,
       events: () => controller.abort(),
     })
-    expect(outcome).toEqual({ recorded: 1, failed: 0, interrupted: true })
+    expect(outcome).toEqual(outcomeOf({ recorded: 1, spent: 15, interrupted: true }))
     expect(lines).toHaveLength(1)
     expect(counter.calls).toBe(1)
   })
@@ -438,7 +520,7 @@ describe('runReviews', () => {
     await second.promise
     controller.abort()
     const { outcome, events } = await running
-    expect(outcome).toEqual({ recorded: 0, failed: 0, interrupted: true })
+    expect(outcome).toEqual(outcomeOf({ interrupted: true }))
     expect(events).toEqual([])
   })
 
@@ -491,7 +573,7 @@ describe('runReviews', () => {
     const { outcome, lines, events } = await run([{}], [
       review('exec'),
     ], { maxRecordBytes: 100 })
-    expect(outcome).toEqual({ recorded: 0, failed: 1, interrupted: false })
+    expect(outcome).toEqual(outcomeOf({ failed: 1, spent: 15 }))
     expect(lines).toEqual([])
     expect(events).toEqual([
       {
@@ -521,14 +603,14 @@ describe('runReviews', () => {
         },
       ], [
         review('exec'),
-      ], { maxRecordBytes: size })).outcome).toEqual({ recorded: 1, failed: 0, interrupted: false })
+      ], { maxRecordBytes: size })).outcome).toEqual(outcomeOf({ recorded: 1, spent: 60 }))
       expect((await run([
         {
           findings: [wide],
         },
       ], [
         review('exec'),
-      ], { maxRecordBytes: size - 1 })).outcome).toEqual({ recorded: 0, failed: 1, interrupted: false })
+      ], { maxRecordBytes: size - 1 })).outcome).toEqual(outcomeOf({ failed: 1, spent: 60 }))
     } finally {
       clock.mockRestore()
     }
@@ -554,7 +636,7 @@ describe('runReviews', () => {
       review('nope'),
       review('exec', 3),
     ])
-    expect(outcome).toEqual({ recorded: 0, failed: 2, interrupted: false })
+    expect(outcome).toEqual(outcomeOf({ failed: 2, spent: 0 }))
     expect(lines).toEqual([])
     expect(events.map(event => event.type === 'failed' && (event.error as Error).message)).toEqual([message, message])
   })
