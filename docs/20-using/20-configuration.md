@@ -263,6 +263,21 @@ exclude:
 
 quorum matches a pattern with code of its own, segment by segment, never turning it into a regular expression, so a long path in the diff cannot make it slow. [A file left out](../95-reference/20-json-result.md#a-file-left-out) says what the result lists.
 
+## The limits of a review
+
+A review is bounded, so that nothing a pull request holds can make it run away. Each limit stops part of the work and says so in a gap of its own, never as a failed run.
+
+### The token cap
+
+A review spends at most `maxReviewTokens`, 2000000 by default, input and output together, with every attempt counted, retries included. So neither a pull request nor text planted in it can spend past it: padding a diff, flooding the research with decoy findings or drawing out a reply all run into the same number.
+
+- **Before each attempt the review reserves its worst case**: the provider's [`worstCase`](./30-providers.md#what-a-provider-states), else the request's text at one token per byte with 512 tokens for the template and 16000 for the reply. **It settles when the attempt ends**, at the usage the reply reports, at nothing for a request the server refused before any work (an `http` failure with a client status but 408, or a refusal as too large), else at the whole reservation, so a failure that reports nothing never costs less than it may have.
+- **An attempt that does not fit beside what was already spent is not sent**, and its call is a `token-cap` gap: a research request leaves its profile with no finding, a vote is a failed vote of kind `token-cap`, and each profile has one gap that counts them. A gating profile's gap exits `4`, with or without `--allow-incomplete`: [Exit codes](./10-cli.md#exit-codes). A review the cap stops is no failed review, and the other profiles and votes run as far as it lets them.
+- **An attempt that fits beside what was spent, but not beside the calls in flight, waits for them**, holding its slot, and goes as soon as a settlement leaves room. Waiting attempts go in the order they began to wait, and a newcomer waits behind them. Because the reservation counts code at about three times its tokens, the cap waits more than it refuses.
+- **It counts tokens, not dollars**, so it holds for a local model as well as a hosted one, whatever the price.
+
+A typical review spends a few hundred thousand tokens, and a `claude-code` vote counts its text twice, which its worst case reserves: [The size of a Claude Code request](./30-providers.md#the-size-of-a-claude-code-request). To raise the cap, set `maxReviewTokens`, a whole number of tokens from 1 to 9007199254740991, in the options of `createQuorum`: [Library API](../95-reference/30-library-api.md#options-and-ports). There is no off switch, only a larger number, so the default stays on when nothing says otherwise. What the cap leaves open, and why, is in the threat model: [The token cap](../30-security/10-threat-model.md#the-token-cap).
+
 ## Claude Code
 
 A `claude-code` provider runs your installed Claude Code CLI as the model, headless and isolated, once per request. [`claudeCode`](./30-providers.md#claudecode) has its command line, its isolation and its errors; this section sets one up.

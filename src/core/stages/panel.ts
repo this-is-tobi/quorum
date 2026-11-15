@@ -1,4 +1,5 @@
 import { diffSectionFor } from '../diff.ts'
+import { isLimit } from '../limits.ts'
 import { parseVoteReply } from '../output.ts'
 import { confidenceFor, undecidedLevel, verdictStatus } from '../policy.ts'
 import { voteRequest } from '../prompts.ts'
@@ -105,13 +106,13 @@ async function judge(ctx: RunContext, run: ProfileRun, finding: Finding, diffCon
 /**
  * One lens's vote on one finding, from the lens's own provider. A failed call or an unusable reply
  * is a vote of null with its error: the message of an `Error`, the text of anything else thrown.
- * It also records its failure: `voteFailureOf` the error for a failed call, `unusable-reply` for a
- * reply that came back and could not be read as a vote; a cast vote's failure is null. A request its
- * provider refused as too large is that failed vote too, and carries the refusal's message besides,
- * for the finding's `request-too-large` gap. Once the review is aborted, the vote rethrows the
- * abort's reason instead, whatever the call raised, so an aborted review never resolves with a
- * finding the abort left unreviewed. The `vote` event is emitted after the vote's own `try`, so a
- * sink that throws on it is never recorded as a failed vote.
+ * It also records its failure: `voteFailureOf` the error for a failed call (a call the token cap
+ * stopped is a failed vote of kind `token-cap`), `unusable-reply` for a reply that came back and could
+ * not be read as a vote; a cast vote's failure is null. A request its provider refused as too large is
+ * that failed vote too, and carries the refusal's message besides, for the finding's `request-too-large`
+ * gap. Once the review is aborted, the vote rethrows the abort's reason instead, whatever the call
+ * raised, so an aborted review never resolves with a finding the abort left unreviewed. The `vote` event
+ * is emitted after the vote's own `try`, so a sink that throws on it is never recorded as a failed vote.
  */
 async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens: LensRun, diffContext: string): Promise<Cast> {
   let lensVote: LensVote
@@ -160,8 +161,9 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
     : { lensVote, refusal }
 }
 
-/** What a call that failed says of itself as a vote's failure: what `providerFailure` reads, else `unknown`. */
+/** What a call that failed says of itself as a vote's failure: the limit that stopped it, else what `providerFailure` reads, else `unknown`. */
 function voteFailureOf(error: unknown): VoteFailure {
+  if (isLimit(error)) return { kind: error.limit }
   return providerFailure(error) ?? { kind: 'unknown' }
 }
 

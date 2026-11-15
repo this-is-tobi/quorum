@@ -15,7 +15,7 @@ What quorum answers goes to the JSON result on stdout and the lines on stderr, a
 | Verdict integrity | Suppress a real finding, sway a verdict, or forge a finding | Code-derived evidence, strict parsing, blind votes and arithmetic confidence, within the limits of the [residual risk](#residual-risk) |
 | Secrets: the model key, a CI token, repository credentials | Have a model read or leak them | A model path with no tool and no secret, a key sent only to its own endpoint, and a binary that reads nothing from the working directory, a config file included unless it is named |
 | Output channels: CI logs, terminals, what renders the result | Turn model text into markup, a link, a workflow command or an escape sequence | The CLI makes the text it writes inert for a terminal and a GitHub Actions log; anything else that renders the result, or reads a bench's `results.jsonl`, must treat its text as untrusted: [Output handling](./30-output-handling.md) |
-| Availability and spend | Multiply the calls and their cost with a huge or finding-flooding pull request | `maxFindings`, the concurrency limit, the reply caps, and each call's deadline and its bounded retries |
+| Availability and spend | Multiply the calls and their cost with a huge or finding-flooding pull request | `maxFindings`, the concurrency limit, each call's deadline and its bounded retries, the reply's limit, and the token cap |
 | Coverage | Have the run review less than the whole change, silently | The size guard, which refuses a request that may not fit the model's context, and unreviewed findings and incomplete reviews, exit `4`, for the gaps the harness detects, a file whose change the diff does not carry among them; what the guard cannot know is not one of them: [What the harness cannot detect](#what-the-harness-cannot-detect) |
 
 ## Residual risk
@@ -96,6 +96,15 @@ Only the first `maxFindings` findings a research reply lists, 50 by default, are
 ### Deadlines and bounded retries
 
 Every attempt has a deadline, 600000 ms unless its provider states one, so a model or a server that never answers cannot hold a review. A call that fails in passing is retried as often as its provider states, at most five times, after a random wait that grows with each retry. What planted text causes directly, a refusal, a cut-off or an unusable reply, is never retried, so it cannot multiply the spend. A reply it draws out can still time out, or end in a gateway's 504, and that is retried once, never twice. Nothing is retried once the review is aborted: [Deadlines and retries](../20-using/30-providers.md#deadlines-and-retries).
+
+### The token cap
+
+Denial of wallet is a named threat: OWASP lists unbounded consumption as LLM10:2025, and MITRE ATLAS names cost harvesting. A pull request drives it with decoy findings, which each cost a panel of votes, and with text that draws a reply out. `maxFindings`, the deadlines and the reply's limit bound each part, and none of them bounds the sum. A review spends at most `maxReviewTokens`, 2000000 by default, input and output, every attempt counted: [The token cap](../20-using/20-configuration.md#the-token-cap).
+
+- **It reserves before it sends.** Each attempt reserves its worst case in the review's ledger before it is sent and settles when it ends, inside the call's slot, so calls in flight at once cannot overshoot the cap between them. A check after each call lets every slot pass it once, by what one call spends, and a diff of decoy findings makes that as many calls as the concurrency allows.
+- **An attempt that does not fit is not sent.** It is a `token-cap` gap of its profile, never a failed run, and a gating profile's gap exits `4` whatever the flags: no flag lifts it, since a pull request causes it directly.
+- **A failure that reports nothing counts the whole reservation**, and only a failure the server refused before any work counts nothing, so a request that fails cannot be made to look cheap.
+- **What is left.** A provider that spends more than it states is counted when it settles, so the calls in flight can pass the cap by that much. Claude Code continues a reply cut at its limit, up to three times a turn, and retries a failed call on its own: the reservation counts neither, and the usage it reports does. Gemini can report thought tokens past `maxOutputTokens`. The cap then refuses what no longer fits, so the overshoot is bounded by the calls in flight, and a new attempt never starts on top of it.
 
 ### The size guard
 

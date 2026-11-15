@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 import { OutputError } from '../errors.ts'
+import { isLimit } from '../limits.ts'
+import type { LimitName } from '../limits.ts'
 import { parseResearchReply } from '../output.ts'
 import { researchRequest } from '../prompts.ts'
 import type { Finding, IncompleteEntry } from '../types.ts'
@@ -19,6 +21,8 @@ export interface ResearchOutcome {
   invalid: string[]
   /** What the run could not review: findings the harness could not read, findings beyond the cap, a reply whose findings were all unusable, a research request refused as too large, or an advisory profile's research that failed. */
   incomplete: IncompleteEntry[]
+  /** The limit that stopped the research request, so the profile reviews nothing. Its gap is written once the profile's panel has run, with the votes the limit stopped. */
+  stopped?: LimitName
 }
 
 /**
@@ -87,8 +91,10 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
  * the call after its retries or a reply that is not a valid envelope, a gating profile fails and
  * aborts the review where it fails (`onFailure` aborts it for the call), so no other profile starts
  * a call after it; an advisory profile's failure is its own `research-failed` gap, in words the code
- * writes, and the other profiles run. A review that is aborted rejects with its reason, never with a
- * gap.
+ * writes, and the other profiles run. A research request a limit stopped (the token cap refused it, or no
+ * room was left for it) is no failure of either kind: the outcome holds no finding and names the limit in
+ * `stopped`, which the review turns into the profile's one gap for that limit, a gating profile's included.
+ * A review that is aborted rejects with its reason, never with a gap.
  *
  * @throws ProviderError, or whatever a custom provider throws, when a gating profile's research call fails for any other reason than a refusal as too large
  * @throws OutputError when a gating profile's reply is not one JSON object holding a `findings` array and nothing else
@@ -99,10 +105,19 @@ export async function research(ctx: RunContext, run: ProfileRun, diff: string, s
   try {
     text = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, () => researchRequest(run.research.instructions, diff, run.guidelines), (error, made) => {
       attempts = made
-      if (run.gating && !isTooLarge(error)) ctx.fail(error)
+      if (run.gating && !isTooLarge(error) && !isLimit(error)) ctx.fail(error)
     })
   } catch (error) {
     // A review that is aborted rejects with its reason, never with a gap.
+    if (isLimit(error)) {
+      ctx.signal.throwIfAborted()
+      return {
+        findings: [],
+        invalid: [],
+        incomplete: [],
+        stopped: error.limit,
+      }
+    }
     if (isTooLarge(error)) {
       ctx.signal.throwIfAborted()
       return gap(ctx, { profile: run.id, reason: 'request-too-large', detail: `the research request was not sent: ${refusalMessage(error)}` })

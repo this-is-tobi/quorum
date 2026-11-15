@@ -46,11 +46,12 @@ export interface Lens {
 }
 
 /**
- * What a vote failed with: a provider's kind of failure, `unusable-reply` for a reply the panel could not
- * read as a vote, or `unknown` for anything else thrown. The kinds a gating profile's `--allow-incomplete`
- * lifts are `network`, `timeout` and an `http` failure of status 408, 409, 429 or 5xx.
+ * What a vote failed with: a provider's kind of failure, the limit that stopped it (`token-cap`),
+ * `unusable-reply` for a reply the panel could not read as a vote, or `unknown` for anything else thrown.
+ * The kinds a gating profile's `--allow-incomplete` lifts are `network`, `timeout` and an `http` failure of
+ * status 408, 409, 429 or 5xx.
  */
-export type VoteFailureKind = 'http' | 'network' | 'process' | 'timeout' | 'aborted' | 'refusal' | 'truncated' | 'invalid-response' | 'unsupported' | 'too-large' | 'unusable-reply' | 'unknown'
+export type VoteFailureKind = 'http' | 'network' | 'process' | 'timeout' | 'aborted' | 'refusal' | 'truncated' | 'invalid-response' | 'unsupported' | 'too-large' | 'token-cap' | 'unusable-reply' | 'unknown'
 
 /** The facts of a failed vote the code read, never a word a server or a model wrote. */
 export interface VoteFailure {
@@ -132,17 +133,19 @@ export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
  * envelope, so the profile reviewed nothing; a gating profile's ends the review instead.
  * `request-too-large`: a provider refused a request that may not fit its model's context, so it was
  * not sent. `binary` and `submodule`: the diff carries no content for a file, shown only as binary
- * or as a submodule's commit; `meta.leftOut` lists the files.
+ * or as a submodule's commit; `meta.leftOut` lists the files. `token-cap`: the review's token cap
+ * stopped part of the profile's work, its research request or some of its votes, which were not sent;
+ * one entry per profile counts them.
  */
-export type IncompleteReason = 'research-unusable' | 'research-failed' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'binary' | 'submodule'
+export type IncompleteReason = 'research-unusable' | 'research-failed' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'token-cap' | 'binary' | 'submodule'
 
 /**
  * Work the run could not review: a research reply with findings but none usable, an advisory
  * profile's research that failed (`research-failed`), findings beyond the cap, a finding the
  * harness could not read, a kept finding whose failed votes could have raised it to a higher
- * level, a request its provider refused as too large to send, or a file whose change the diff does
- * not carry, binary or a submodule's commit. It is reported and counted, never dropped silently
- * (ADR-0012).
+ * level, a request its provider refused as too large to send, work the review's token cap stopped, or
+ * a file whose change the diff does not carry, binary or a submodule's commit. It is reported and
+ * counted, never dropped silently (ADR-0012).
  */
 export interface IncompleteEntry {
   /** The id of the profile whose run has the gap. */
@@ -242,6 +245,12 @@ export interface QuorumOptions {
   readonly maxFindings?: number
   /** Path patterns of the files left out of every request; none when unset. */
   readonly exclude?: readonly string[]
+  /**
+   * The most tokens, input and output, one review may spend: a whole number from 1 to `Number.MAX_SAFE_INTEGER`,
+   * 2000000 when unset. Each attempt reserves its worst case before it is sent and settles at what it spent; what
+   * the cap stops is a `token-cap` gap of its profile.
+   */
+  readonly maxReviewTokens?: number
 }
 
 /** A quorum built by createQuorum: its profiles compiled once, ready to review any number of diffs. */
@@ -281,9 +290,10 @@ export type QuorumEvent
      * attempts inside its slot, retried as the retry policy decides, so `durationMs` runs from its
      * first attempt to its end, the waits between attempts included; `attempts` is their number,
      * only when the call made more than one; `usage` is summed over the attempts that reported
-     * valid counts.
+     * valid counts; `spent` is the tokens the review's cap counted for the call: each attempt's
+     * reported usage, nothing for one the server refused before any work, else its reservation.
      */
-    | { type: 'call', profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, durationMs: number, ok: boolean, attempts?: number, usage?: Usage }
+    | { type: 'call', profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, durationMs: number, ok: boolean, attempts?: number, usage?: Usage, spent: number }
     /** A finding was dropped for citing code outside the diff, with the reason. */
     | { type: 'finding:invalid', profile: string, reason: string }
     /** A gap was recorded, as `meta.incomplete` will hold it. */
