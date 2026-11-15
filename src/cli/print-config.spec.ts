@@ -107,12 +107,16 @@ describe('printConfig', () => {
   })
 
   it('prints the values the review applies when the config sets none', () => {
-    expect(printed(SPEC)).toContain('\nconcurrency: 4\nmaxFindings: 50\nmaxReviewTokens: 2000000\nreviewTimeoutMs: 1800000\nexclude: []\nwarnings: []\n')
+    expect(printed(SPEC)).toContain('\nconcurrency: 4\nmaxFindings: 50\npartTokens: 32768\nmaxReviewTokens: 2000000\nreviewTimeoutMs: 1800000\nexclude: []\nwarnings: []\n')
     expect(printConfig(config({ a: SPEC }, { concurrency: 2, maxFindings: 5 }), undefined)).toContain('\nconcurrency: 2\nmaxFindings: 5\n')
   })
 
   it('prints the review\'s limits as the review applies them', () => {
     expect(printConfig(config({ a: SPEC }, { maxReviewTokens: 500000, reviewTimeoutMs: 600000 }), undefined)).toContain('\nmaxReviewTokens: 500000\nreviewTimeoutMs: 600000\n')
+  })
+
+  it('prints the config\'s partTokens', () => {
+    expect(printConfig(config({ a: SPEC }, { partTokens: 4096 }), undefined)).toContain('\npartTokens: 4096\n')
   })
 
   it('prints exclude as the config lists it, every pattern as written', () => {

@@ -60,6 +60,7 @@ profiles:
 - **`roles`** says which provider researches and which votes. A profile's own `roles`, and a lens's `provider`, override them.
 - **`profiles`** defines the review profiles: [Profiles](./40-profiles.md), [Lenses and policy](./50-lenses-and-policy.md) and [Prompts](./60-prompts.md) say what each field means. A prompt is a string, or `{ file }`: the file's text. A prompt file resolves against the directory of the config file, whatever the working directory is, and holds at most 64 KiB, and the prompt files of a config 1 MiB in all.
 - **`exclude`** lists the files every review leaves out, as path patterns: [Excludes](#excludes).
+- **`partTokens`** bounds the diff text one research request of a large change holds, 32768 when unset: [Research in parts](#research-in-parts).
 - **`maxReviewTokens`** and **`reviewTimeoutMs`** bound one review: the most tokens it spends, 2000000 when unset, and its deadline in milliseconds, 1800000 when unset. `QUORUM_MAX_REVIEW_TOKENS` and `QUORUM_REVIEW_TIMEOUT_MS` set them over the file's: [The limits of a review](#the-limits-of-a-review).
 
 The JSON Schema in [`schema/quorum.schema.json`](../../schema/quorum.schema.json) lets an editor check and complete a YAML or JSON config. A YAML file names it in a comment on its first line, `# yaml-language-server: $schema=<path or URL of the schema>`, as the example does with the path of a clone beside the directory that holds the config, or `./node_modules/@tobi-or-not/quorum/schema/quorum.schema.json`, the copy the npm package ships, when the package is installed in the project that holds the config; a JSON file names it in its `"$schema"` field. Quorum itself ignores both.
@@ -259,7 +260,7 @@ A change larger than one research request is reviewed in parts, not refused. Eac
 - **The findings of all parts** are read in their order, up to `maxFindings` in all, each checked against the whole diff, and a repeat across parts is dropped.
 - **A provider that states no room**, a provider object that does not state `room` among them, is sent the whole diff in one request, as before ([What a provider states](./30-providers.md#what-a-provider-states)).
 
-`partTokens` is an option of `createQuorum`: [Library API](../95-reference/30-library-api.md#options-and-ports).
+`partTokens` is a whole number of tokens from 1024 to 9007199254740991, set in the config a run names or in the options of `createQuorum` ([Library API](../95-reference/30-library-api.md#options-and-ports)), and 32768 when unset. No `QUORUM_*` variable sets it, since it tunes a review rather than bounding it, like `maxFindings`, and it never comes from the change: [`--print-config`](./10-cli.md#printing-the-resolved-config) prints the value a run applies. A smaller value means more, smaller parts and more calls; a larger one, fewer and longer requests. A value below 1024 is refused, never raised: [Configuration errors](#configuration-errors).
 
 ## Excludes
 
@@ -471,6 +472,7 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `quorum.yaml: exclude.2: ends with /, so it matches no file: end it with /** to leave out what the directory holds` | A pattern that can mislead; [Excludes](#excludes) lists what each message refuses |
 | `quorum.yaml: exclude: must hold at most 100 patterns` | More than 100 patterns |
 | `quorum.yaml: maxReviewTokens: must be at least 1`, `must be an integer`, `must be a number` or `must be at most 9007199254740991` | A `maxReviewTokens` that is not a whole number of tokens from 1 to 9007199254740991: `0`, `1.5`, `'5'` and `9007199254740992` are refused |
+| `quorum.yaml: partTokens: must be at least 1024`, `must be an integer`, `must be a number` or `must be at most 9007199254740991` | A `partTokens` that is not a whole number of tokens from 1024 to 9007199254740991: `1023`, `1.5`, `'32768'` and a value written in thousands, `32`, are refused, never raised |
 | `quorum.yaml: reviewTimeoutMs: must be at least 1000` or `must be at most 86400000` | A `reviewTimeoutMs` outside 1000 to 86400000 ms: `999` and `86400001` are refused; a value that is no whole number is `must be an integer` or `must be a number`, as every number of a config is |
 | `quorum.config.mts: has a syntax error`, `failed to load (Error)` or `must export an object as its default` | A TS or JS config that does not load, whose code threw, or whose default export is not an object. Only the error's name is kept: what a config threw can hold a secret |
 | `roles.research: is required when several providers are defined` | Several providers, and no research role |

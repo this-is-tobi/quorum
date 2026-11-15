@@ -9,7 +9,7 @@
  * `headers`, `query` and `extraBody` and the whole base URL included, `timeoutMs` and `retries` among them;
  * a provider object as its config key, its model and the `timeoutMs` and `retries` it states, so one that
  * states none keeps the form it had, and never the `worstCase` or the `room` it states, which are code like its
- * `complete`; `concurrency`, `maxFindings`, `maxReviewTokens` and `reviewTimeoutMs` as the review applies
+ * `complete`; `concurrency`, `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs` as the review applies
  * them, defaults filled in, and `exclude` when the config lists a pattern. It holds no config-file path, no
  * warning and no provider name, so the same settings under other names are one configuration, and a rotated
  * key keeps a run. A `claude-code` provider's resolved command path is one of its settings, so it is in the form.
@@ -27,6 +27,7 @@ import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider, statedFacts } from '../config/schema.ts'
 import { DEFAULT_CONCURRENCY } from '../core/concurrency.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../core/limits.ts'
+import { DEFAULT_PART_TOKENS } from '../core/parts.ts'
 import { DEFAULT_MAX_FINDINGS } from '../core/stages/research.ts'
 
 const SALT = /^[0-9a-f]{64}$/
@@ -79,6 +80,7 @@ export function canonicalSettings(config: ResolvedConfig): string {
   return JSON.stringify({
     concurrency: config.concurrency ?? DEFAULT_CONCURRENCY,
     maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,
+    partTokens: config.partTokens ?? DEFAULT_PART_TOKENS,
     maxReviewTokens: config.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS,
     reviewTimeoutMs: config.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
     ...config.exclude === undefined

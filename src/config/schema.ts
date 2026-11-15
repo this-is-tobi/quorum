@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { ConfigError, isSafeSegment, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { MAX_PATTERNS, patternProblem, TOO_MANY_PATTERNS } from '../core/exclude.ts'
+import { MIN_PART_TOKENS } from '../core/parts.ts'
 import type { CompletionRequest, CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
 import { MAX_RETRIES, MAX_STATED_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, retriesProblem, timeoutProblem } from '../core/ports.ts'
 import { ownData } from '../core/stages/context.ts'
@@ -130,6 +131,7 @@ function configSchema<P extends z.ZodType, R extends z.ZodType>(provider: P, pro
     roles: roles.optional().describe('The providers every profile uses, unless it names its own. research is required once several providers are defined; voter is research when unset'),
     concurrency: z.int().min(1).optional().describe('The most provider calls in flight at once in one review, shared by every profile'),
     maxFindings: z.int().min(1).optional().describe('The most findings of a research reply each profile reads, the only ones that can reach its panel'),
+    partTokens: z.int().min(MIN_PART_TOKENS).optional().describe('The most tokens of diff text, at one token per byte, one research request of a large change holds; 32768 when unset'),
     maxReviewTokens: z.int().min(1).optional().describe('The most tokens, input and output, one review may spend; 2000000 when unset. Set here or in QUORUM_MAX_REVIEW_TOKENS'),
     reviewTimeoutMs: z.int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe('The deadline of one review, in milliseconds; 1800000 when unset. Set here or in QUORUM_REVIEW_TIMEOUT_MS'),
     exclude: z.array(pattern.describe('A path pattern: * and ? within a name, ** for whole directories, no / to match a file name in any directory, a leading / for the root')).max(MAX_PATTERNS, { error: TOO_MANY_PATTERNS }).optional().describe('The files left out of every request, by path pattern, each listed as excluded in meta.leftOut; nothing is excluded by default'),

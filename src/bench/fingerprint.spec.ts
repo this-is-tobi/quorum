@@ -146,6 +146,13 @@ describe('fingerprint', () => {
     expect(same(resolvedConfig({ providers, maxReviewTokens: 2000000, reviewTimeoutMs: 1800000 }), plain)).toBe(true)
   })
 
+  it('changes with partTokens, and holds its default when unset', () => {
+    const providers = { p: PROVIDER }
+    const plain = resolvedConfig({ providers })
+    expect(same(resolvedConfig({ providers, partTokens: 4096 }), plain)).toBe(false)
+    expect(same(resolvedConfig({ providers, partTokens: 32768 }), plain)).toBe(true)
+  })
+
   it('holds exclude when the config lists a pattern, and leaves a config without one as it was', () => {
     const plain = resolvedConfig({
       providers: { p: PROVIDER },
@@ -233,7 +240,7 @@ describe('canonicalSettings', () => {
     const config = of({ ...PROVIDER, apiKey: 'sk-SECRET' })
     const text = canonicalSettings(config)
     expect(text).not.toContain('sk-SECRET')
-    expect(text.startsWith('{"concurrency":4,"maxFindings":50,"maxReviewTokens":2000000,"profiles":[{"profile":{')).toBe(true)
+    expect(text.startsWith('{"concurrency":4,"maxFindings":50,"maxReviewTokens":2000000,"partTokens":32768,"profiles":[{"profile":{')).toBe(true)
     expect(text.endsWith(',"reviewTimeoutMs":1800000}')).toBe(true)
     const provider = {
       baseUrl: PROVIDER.baseUrl,
@@ -245,6 +252,7 @@ describe('canonicalSettings', () => {
       concurrency: 4,
       maxFindings: 50,
       maxReviewTokens: 2000000,
+      partTokens: 32768,
       profiles: [
         {
           profile: JSON.parse(JSON.stringify(config.profiles[0].profile)),

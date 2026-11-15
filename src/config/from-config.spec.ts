@@ -395,6 +395,38 @@ describe('fromConfig', () => {
     expect(result.meta.incomplete).toEqual([])
   })
 
+  it('hands partTokens to the quorum it builds', async () => {
+    // Two files of about 900 tokens each, which a part of 1024 tokens holds one of, and the default part both of.
+    const two = ['a.js', 'b.js'].map(file => [
+      `diff --git a/${file} b/${file}`,
+      `--- a/${file}`,
+      `+++ b/${file}`,
+      '@@ -0,0 +1,35 @@',
+      ...Array.from({ length: 35 }, (_, row) => `+exec(input${String(row).padStart(2, '0')}); // ${file}`),
+    ].join('\n')).join('\n')
+    const base = requestTokens(researchRequest(securityProfile.prompts.research, ''))
+    const research = async (partTokens?: number): Promise<number> => {
+      const requests: CompletionRequest[] = []
+      const mine = {
+        model: 'm',
+        room: (request: CompletionRequest): number => base + 100_000 - requestTokens(request),
+        async complete(request: CompletionRequest): Promise<CompletionResponse> {
+          requests.push(request)
+          return { text: '{"findings":[]}', model: 'm' }
+        },
+      }
+      await (await fromConfig({
+        providers: { mine },
+        ...partTokens === undefined
+          ? {}
+          : { partTokens },
+      }, { env: {} })).review({ diff: two })
+      return requests.length
+    }
+    expect(await research()).toBe(1)
+    expect(await research(1024)).toBe(2)
+  })
+
   it('hands exclude to the quorum it builds', async () => {
     const requests: CompletionRequest[] = []
     const mine = {
