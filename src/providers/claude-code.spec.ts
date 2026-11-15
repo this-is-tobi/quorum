@@ -1244,6 +1244,9 @@ describe('claudeCode', () => {
       id: 'cc',
       model: 'haiku',
       contextTokens: 200000,
+      maxTokens: 8000,
+      timeoutMs: 120_000,
+      retries: 1,
       command: claude,
       env,
     })
@@ -1279,9 +1282,9 @@ describe('claudeCode', () => {
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
       CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1',
       CLAUDE_CODE_DISABLE_POLICY_SKILLS: '1',
-      API_TIMEOUT_MS: '600000',
-      CLAUDE_CODE_MAX_RETRIES: '2',
-      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '16000',
+      API_TIMEOUT_MS: '120000',
+      CLAUDE_CODE_MAX_RETRIES: '1',
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8000',
     })
     // The first request on this command checks the version first, with the request's environment and an empty directory.
     expect(readFakeVersionRecords(dir, 'round')).toEqual([
