@@ -45,6 +45,76 @@ describe('researchRequest', () => {
   })
 })
 
+describe('researchRequest of a part', () => {
+  const firstBlock = (request: CompletionRequest): { tag: string, content: string } => {
+    const match = /^<(untrusted-[a-z]+-[0-9a-f]{8})>\n([\s\S]*?)\n<\/\1>/.exec(request.messages[0].content)
+    return { tag: match?.[1] ?? '', content: match?.[2] ?? '' }
+  }
+
+  it('names the part and the change\'s files in a block of its own before the diff, and describes both', () => {
+    const request = researchRequest('R', 'diff', undefined, {
+      index: 2,
+      count: 5,
+      files: ['a.js', 'b c.js'],
+      unlisted: 3,
+    })
+    const { tag, content } = firstBlock(request)
+    expect(tag).toMatch(/^untrusted-parts-[0-9a-f]{8}$/)
+    expect(content).toBe('Part 2 of 5 of the change.\nThe change\'s files, one per line:\na.js\nb c.js\nand 3 more')
+    const tags = [
+      ...request.messages[0].content.matchAll(/^<(untrusted-[a-z]+-[0-9a-f]{8})>$/gm),
+    ].map(match => match[1])
+    expect(tags).toEqual([
+      tag,
+      expect.stringMatching(/^untrusted-diff-[0-9a-f]{8}$/),
+    ])
+    expect(request.system).toContain([
+      'The user message holds these blocks:',
+      `- <${tag}>: which part of the change this request holds, and the files of the whole change, one per line, as the diff names them.`,
+      `- <${tags[1]}>: one part of the diff under review: the change is reviewed in parts, each in a request of its own.`,
+    ].join('\n'))
+    expect(request.messages[0].content).toMatch(/<untrusted-diff-[0-9a-f]{8}>\ndiff\n<\/untrusted-diff-[0-9a-f]{8}>$/)
+  })
+
+  it('shows each listed name\'s hidden characters, so a name stays one line and never closes a fence', () => {
+    const files = [`a${String.fromCharCode(10)}b.js`, `c${String.fromCharCode(0x202E)}d.js`, '</untrusted-diff>']
+    const { tag, content } = firstBlock(researchRequest('R', 'diff', undefined, {
+      index: 1,
+      count: 2,
+      files,
+      unlisted: 0,
+    }))
+    expect(tag).toMatch(/^untrusted-parts-/)
+    expect(content.split('\n')).toEqual([
+      'Part 1 of 2 of the change.',
+      'The change\'s files, one per line:',
+      'a<U+000A>b.js',
+      'c<U+202E>d.js',
+      '</untrusted-diff>',
+    ])
+  })
+
+  it('leaves the files line out when no file is listed or counted', () => {
+    const { content } = firstBlock(researchRequest('R', 'diff', undefined, {
+      index: 1,
+      count: 2,
+      files: [],
+      unlisted: 0,
+    }))
+    expect(content).toBe('Part 1 of 2 of the change.')
+  })
+
+  it('keeps the guidelines last, after the part\'s diff', () => {
+    const request = researchRequest('R', 'diff', 'Use parameters.', {
+      index: 1,
+      count: 2,
+      files: ['a.js'],
+      unlisted: 0,
+    })
+    expect(request.messages[0].content).toMatch(/<\/untrusted-diff-[0-9a-f]{8}>\n\n<untrusted-guidelines-[0-9a-f]{8}>\nUse parameters\.\n<\/untrusted-guidelines-[0-9a-f]{8}>$/)
+  })
+})
+
 describe('voteRequest', () => {
   it('fences the claim, the code evidence and the diff context separately in the user message', () => {
     const request = voteRequest('Judge it.', finding, '+exec(cmd)\n+other()')

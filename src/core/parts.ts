@@ -10,7 +10,7 @@
 
 import type { ReviewScope } from './coverage.ts'
 import type { DiffSection, Hunk } from './diff.ts'
-import type { CoverageEntry, CoverageReason, LeftOutReason, LeftRange } from './types.ts'
+import type { CoverageEntry, CoverageReason, IncompleteEntry, LeftOutFile, LeftOutReason, LeftRange } from './types.ts'
 import { heldSpan, parseHunks } from './diff.ts'
 import { showHidden } from './sanitize.ts'
 import { tokenBound } from './tokens.ts'
@@ -226,6 +226,27 @@ export function listedFiles(sections: readonly DiffSection[], maxTokens: number)
     files.push(name)
   }
   return { files, unlisted: names.size - files.length }
+}
+
+/**
+ * The one gap of a profile whose packing set a unit aside, counting the hunks and the files they belong to,
+ * a section with no hunk counting as one hunk and a file of several sections as one file; undefined when
+ * the packing set nothing aside, or there is none. A file that `leftOut` lists as `binary` or `submodule`
+ * counts for nothing: its coverage entry is `unreviewed` with that reason, whatever became of its part, and
+ * its own gap stands, so the detail's pointer to a `too-large` range would lead nowhere. The detail names
+ * the profile's coverage, which lists the ranges, and no file.
+ */
+export function tooLargeGap(profile: string, sections: readonly DiffSection[], packing: Packing | undefined, leftOut: readonly LeftOutFile[]): IncompleteEntry | undefined {
+  if (packing === undefined) return undefined
+  const covered = new Set(leftOut.filter(({ reason }) => reason === 'binary' || reason === 'submodule').map(({ file }) => file))
+  const hunks = packing.tooLarge.filter(({ section }) => !covered.has(sections[section].path ?? ''))
+  if (hunks.length === 0) return undefined
+  const files = new Set(hunks.map(({ section }) => sections[section].path ?? ''))
+  return {
+    profile,
+    reason: 'too-large',
+    detail: `${hunks.length} hunk(s) of ${files.size} file(s) fit in no research part of its model's window, listed as too-large in meta.profiles.${profile}.coverage`,
+  }
 }
 
 /** What became of the research part that held a unit: it was read, or the reason it was not. */

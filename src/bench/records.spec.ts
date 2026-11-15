@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import type { z } from 'zod'
 import { hiddenLabels } from '../core/sanitize.ts'
-import type { QuorumResult } from '../core/types.ts'
+import type { CoverageEntry, QuorumResult } from '../core/types.ts'
 import { record, RESULT, resultWith, RUN_SUITE, verdict } from '../testing/bench.ts'
 import { parseRecord, parseRunFile, recordLine, reviewKey } from './records.ts'
 import type { DeniedRecord, ResultRecord, resultSchema, RunFile } from './records.ts'
@@ -319,6 +319,61 @@ describe('parseRecord, level by level', () => {
       }),
     })
     expect(parseRecord(recordLine(failed).slice(0, -1))).toEqual(failed)
+  })
+
+  it('reads a record with a profile\'s coverage and a too-large gap, and refuses a coverage entry of an unknown status', () => {
+    const coverage: CoverageEntry[] = [
+      {
+        file: 'a.js',
+        status: 'partial',
+        left: [
+          { start: 1, end: 2, reason: 'token-cap' },
+        ],
+      },
+      { file: 'b.js', status: 'reviewed' },
+      { file: 'c.js', status: 'unreviewed', reason: 'too-large' },
+      { file: 'd.js', status: 'excluded' },
+    ]
+    /** A record whose profile holds `entries` as its coverage, whatever they are, and a too-large gap. */
+    const holding = (entries: unknown): ResultRecord => record({
+      result: {
+        ...RESULT,
+        meta: {
+          ...RESULT.meta,
+          profiles: {
+            security: { ...RESULT.meta.profiles.security, coverage: entries as CoverageEntry[] },
+          },
+          incomplete: [
+            { profile: 'security', reason: 'too-large', detail: 'x' },
+          ],
+        },
+      },
+    })
+    const stored = holding(coverage)
+    expect(parseRecord(recordLine(stored).slice(0, -1))).toEqual(stored)
+    expect(parseRecord(recordLine(holding([])).slice(0, -1))).toEqual(holding([]))
+    for (const entry of [
+      { file: 'a.js', status: 'skipped' },
+      { file: 'a.js', status: 'unreviewed', reason: 'later' },
+      {
+        file: 'a.js',
+        status: 'partial',
+        left: [
+          { start: 1, end: 2, reason: 'later' },
+        ],
+      },
+      {
+        file: 'a.js',
+        status: 'partial',
+        left: [
+          { start: 1, end: 2 },
+        ],
+      },
+      { file: 'a.js', status: 'reviewed', extra: 1 },
+      { status: 'reviewed' },
+    ]) {
+      expect(parseRecord(JSON.stringify(holding([entry])))).toBeUndefined()
+    }
   })
 
   it('reads a record with a token-cap gap and a vote that failed with it', () => {

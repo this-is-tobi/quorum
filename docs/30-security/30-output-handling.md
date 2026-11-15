@@ -11,7 +11,7 @@ A result carries text that models wrote while reading a change an attacker may h
 | `summary`, `category` | The finder | Stripped of control, format and other invisible characters, then capped |
 | `votes[].vote.reasoning` | A voter | Nothing is done to it |
 | `votes[].error`, the CLI's `Error:` line, and a failed review's progress line in `quorum bench` | The provider, or the core when a reply is unusable | The server text or reply they quote is a JSON string, cut short; a provider of your own writes its messages as it likes. A bench's failed review quotes the error of an endpoint's failure, never a model's reply: a review whose reply could not be used is recorded as denied, or with a `research-failed` gap when its profile is advisory, and its line holds only words the bench wrote |
-| `file`, and the `file` of each entry of `meta.leftOut` | The pull request, which named the file | The diff's own path, which can hold any character a file name can; for a diff without per-file headers, the finder's name for it, cleaned |
+| `file`, and the `file` of each entry of `meta.leftOut` and of each profile's coverage | The pull request, which named the file | The diff's own path, which can hold any character a file name can; for a diff without per-file headers, the finder's name for it, cleaned |
 | `evidence` | The pull request | The diff's lines around the cited one, as they are, hidden characters included, capped at 2,000 characters |
 
 Apart from the cleaning in the table, the result stores this text as it came, and each place that prints it makes it inert.

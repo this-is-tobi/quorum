@@ -35,7 +35,7 @@ interface CompletionResponse {
 - **`id` and `model` name the provider** in events and in `meta`, as they were when the quorum was created.
 - **A provider may state its deadline**, `timeoutMs`, and its `retries`: [Deadlines and retries](#deadlines-and-retries).
 - **A provider may state its worst case**, `worstCase(request)`: the most tokens one attempt of the request may spend, which the review's token cap reserves before it is sent ([The token cap](./20-configuration.md#the-token-cap)): [What a provider states](#what-a-provider-states).
-- **A provider may state its room**, `room(request)`: how many more tokens of text the request could hold and still fit its window, counted as its size guard counts, negative when it does not fit: [What a provider states](#what-a-provider-states).
+- **A provider may state its room**, `room(request)`: how many more tokens of text the request could hold and still fit its window, counted as its size guard counts, negative when it does not fit, which the review reads to split a large change into parts ([Research in parts](./20-configuration.md#research-in-parts)): [What a provider states](#what-a-provider-states).
 
 [Prompts](./60-prompts.md) shows what `system` and `messages` hold.
 

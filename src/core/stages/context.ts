@@ -90,6 +90,8 @@ export interface RunContext {
   readonly fail: (error: unknown) => void
   /** How many findings of a research reply each profile sends to the panel. */
   readonly maxFindings: number
+  /** The review's concurrency: how many parts of its research one profile has in flight at once. */
+  readonly concurrency: number
   /** The time and the randomness the call path reads: the system's, unless a spec injects its own. */
   readonly clock: Clock
 }

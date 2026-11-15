@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { splitDiff } from '../diff.ts'
 import { OutputError } from '../errors.ts'
-import { checkReply, DEFAULT_MAX_FINDINGS, findingId } from './research.ts'
+import { checkReplies, checkReply, DEFAULT_MAX_FINDINGS, findingId } from './research.ts'
 
 const diff = [
   'diff --git a/a.js b/a.js',
@@ -190,5 +190,131 @@ describe('checkReply', () => {
       { profile: 'security', reason: 'findings-capped', detail: '4950 of 5000 reported findings were not reviewed (the cap is 50)' },
       { profile: 'security', reason: 'research-unusable', detail: '5000 finding(s) reported, the first 50 read, none usable' },
     ])
+  })
+})
+
+describe('checkReplies', () => {
+  const named = (prefix: string, count: number): unknown[] => Array.from({ length: count }, (_, index) => ({ ...reported, category: `${prefix}${index}` }))
+
+  it('reads the replies in order, up to maxFindings entries in all, and counts the rest in one findings-capped gap', () => {
+    const outcome = checkReplies([
+      {
+        text: reply(named('A', 30)),
+      },
+      {
+        text: reply(named('B', 30)),
+      },
+    ], sections, 'security')
+    expect(outcome.findings.map(found => found.category)).toEqual([
+      ...named('A', 30).map(entry => (entry as { category: string }).category),
+      ...named('B', 20).map(entry => (entry as { category: string }).category),
+    ])
+    expect(outcome.findings).toHaveLength(50)
+    expect(outcome.invalid).toEqual([])
+    expect(outcome.incomplete).toEqual([
+      { profile: 'security', reason: 'findings-capped', detail: '10 of 60 reported findings were not reviewed (the cap is 50)' },
+    ])
+  })
+
+  it('still counts the findings of a reply that comes after the cap was reached', () => {
+    const outcome = checkReplies([
+      {
+        text: reply(named('A', 2)),
+      },
+      {
+        text: reply(named('B', 3)),
+      },
+    ], sections, 'security', 2)
+    expect(outcome.findings.map(found => found.category)).toEqual(['A0', 'A1'])
+    expect(outcome.incomplete).toEqual([
+      { profile: 'security', reason: 'findings-capped', detail: '3 of 5 reported findings were not reviewed (the cap is 2)' },
+    ])
+  })
+
+  it('names the part of each unreadable entry', () => {
+    const outcome = checkReplies([
+      {
+        text: reply([reported]),
+        label: 'part 1',
+      },
+      {
+        text: reply([
+          { ...reported, quote: undefined },
+        ]),
+        label: 'part 2',
+      },
+    ], sections, 'security')
+    expect(outcome.findings).toHaveLength(1)
+    expect(outcome.incomplete).toEqual([
+      { profile: 'security', reason: 'finding-unreadable', detail: 'part 2: findings[0]: quote: Invalid input: expected string, received undefined' },
+    ])
+  })
+
+  it('records research-unusable when the parts reported findings and none was usable', () => {
+    const outcome = checkReplies([
+      {
+        text: reply([
+          { file: 'x.js' },
+        ]),
+        label: 'part 1',
+      },
+      {
+        text: reply([
+          { ...reported, line: 99 },
+        ]),
+        label: 'part 2',
+      },
+    ], sections, 'security')
+    expect(outcome.findings).toEqual([])
+    expect(outcome.invalid).toEqual(['a.js:99 is not in the diff'])
+    expect(outcome.incomplete.map(entry => [entry.reason, entry.detail])).toEqual([
+      [
+        'finding-unreadable',
+        expect.stringMatching(/^part 1: findings\[0\]: /),
+      ],
+      ['research-unusable', '2 finding(s) reported, none usable'],
+    ])
+  })
+
+  it('reads one reply as checkReply always has', () => {
+    const texts = [
+      reply([
+        reported,
+        { ...reported, file: 'missing.js' },
+        { file: 'x.js' },
+      ]),
+      reply([]),
+      reply(named('A', 3)),
+      reply([
+        { file: 'x.js' },
+        { file: 'y.js' },
+      ]),
+    ]
+    for (const text of texts) {
+      expect(checkReplies([
+        { text },
+      ], sections, 'security')).toEqual(checkReply(text, sections, 'security'))
+      expect(checkReplies([
+        { text },
+      ], sections, 'security', 2)).toEqual(checkReply(text, sections, 'security', 2))
+    }
+  })
+
+  it('fails closed on a reply that is no envelope, and rejects a cap that is not a positive integer', () => {
+    expect(() => checkReplies([
+      {
+        text: reply([]),
+      },
+      { text: '{"result":"nothing"}' },
+    ], sections, 'security')).toThrow(OutputError)
+    expect(() => checkReplies([
+      {
+        text: reply([]),
+      },
+    ], sections, 'security', 0)).toThrow(RangeError)
+  })
+
+  it('reads no reply as a complete result', () => {
+    expect(checkReplies([], sections, 'security')).toEqual({ findings: [], invalid: [], incomplete: [] })
   })
 })

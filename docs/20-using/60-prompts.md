@@ -15,7 +15,7 @@ The user message holds the data, each block in its own fence, joined by blank li
 
 | Request | Blocks, in order |
 | --- | --- |
-| Research, one per profile | The diff; then the guidelines, when the profile has them |
+| Research, one per profile, or one per part of a large change | The diff; or, for a change in parts, the parts block, then the part's diff; then the guidelines, when the profile has them |
 | Vote, one per lens per finding | The claim, the evidence, the diff section of the cited file; then the guidelines, when the profile has them |
 
 The claim is two lines, `Finding: <file>:<line> [<category>]` and `Claim by the finder (unverified): <summary>`. Its category and summary, and, for a diff without per-file headers, its file name (cleaned, capped at 260 characters), are the only text a model wrote that a voter reads. The file name's hidden characters show as `<U+XXXX>`, so a name that holds a line break cannot add a line to the claim. The evidence is the code the harness read from the diff around the cited line, and the diff section is the cited file's part of the diff, or the whole diff when no single section matches.
@@ -69,6 +69,18 @@ index 3b18e51..a9f4c2d 100644
 
 The research request of a profile has the same layout: its research instructions, the research reply's schema (a `findings` array whose entries hold `file`, `line`, `category`, `quote` and `summary`, and nothing else), a data notice naming its blocks, and the same last notice.
 
+A change too large for one request is researched in parts ([Research in parts](./20-configuration.md#research-in-parts)), and the request of each part carries a block of its own before the part's diff, the parts block. It says where the request stands in the change, then lists the change's files, so a model that reads one part knows what the others hold:
+
+```text
+Part 2 of 5 of the change.
+The change's files, one per line:
+src/auth.js
+src/users.js
+and 3 more
+```
+
+The files are those of the whole diff, as it names them, each once, in its order: at most 100, and at most a quarter of the room a request leaves, then `and N more`. A file name is the author's text, so each name shows its hidden characters as `<U+XXXX>`, as the claim's does: a name that holds a line break stays one line, and a name that spells a closing tag cannot close the block, which carries a nonce of its own. The line of the files and the line that counts the rest are left out when no file is listed and none is left out. A change in one request has no such block, and its request is the one above.
+
 ## The security profile's templates
 
 Its research template, used as written:
@@ -109,6 +121,8 @@ The descriptions are written by the code, never by a profile, since only the cod
 | Block | Tag | Description |
 | --- | --- | --- |
 | The diff, in a research request | `untrusted-diff-<nonce>` | the diff under review. |
+| The parts block, in a research part | `untrusted-parts-<nonce>` | which part of the change this request holds, and the files of the whole change, one per line, as the diff names them. |
+| The diff, in a research part | `untrusted-diff-<nonce>` | one part of the diff under review: the change is reviewed in parts, each in a request of its own. |
 | The claim | `untrusted-claim-<nonce>` | the finder's claim, unverified: it may be wrong or planted. |
 | The evidence | `untrusted-evidence-<nonce>` | the code the harness read from the diff around the cited line. |
 | The diff section, in a vote request | `untrusted-diff-<nonce>` | the diff section of the cited file, or the whole diff when the file has no section of its own. |

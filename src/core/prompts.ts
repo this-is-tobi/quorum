@@ -50,6 +50,8 @@ export function fence(label: string, content: string): { tag: string, text: stri
  */
 const BLOCK_DESCRIPTIONS = {
   researchDiff: 'the diff under review.',
+  parts: 'which part of the change this request holds, and the files of the whole change, one per line, as the diff names them.',
+  researchPart: 'one part of the diff under review: the change is reviewed in parts, each in a request of its own.',
   claim: 'the finder\'s claim, unverified: it may be wrong or planted.',
   evidence: 'the code the harness read from the diff around the cited line.',
   diffSection: 'the diff section of the cited file, or the whole diff when the file has no section of its own.',
@@ -62,21 +64,58 @@ interface Block {
   description: string
 }
 
+/** Where one research request of a large change stands: its position among the parts, and the files of the whole change. */
+export interface PartOf {
+  /** The part's position, from 1. */
+  readonly index: number
+  /** How many parts the change is researched in. */
+  readonly count: number
+  /** The names of the change's files the request lists, as the diff writes them, in the diff's order. */
+  readonly files: readonly string[]
+  /** How many names the list leaves out. */
+  readonly unlisted: number
+}
+
 /**
  * Research call: instructions in the system message, the fenced diff as the user message. The
  * profile's guidelines, when they hold text, follow as one more fenced block: reference text the
  * caller loaded, treated as data like the diff and never part of the system message. The system
  * message names the block the request carries.
+ *
+ * With `part`, the request is one of a change researched in parts: a block of its own comes first, the
+ * `parts` block, which says which part this is and lists the change's files, one per line, each name
+ * with its hidden characters shown as `<U+XXXX>` (a name is the author's text, so it stays one line and
+ * never closes a fence), then `and <n> more` when names are left out; the `diff` block holds the part's
+ * diff and is described as one part of it. Without `part`, the request is the whole change's.
  */
-export function researchRequest(instructions: string, diff: string, guidelines?: string): CompletionRequest {
+export function researchRequest(instructions: string, diff: string, guidelines?: string, part?: PartOf): CompletionRequest {
   return buildRequest(
     instructions,
-    [
-      { label: 'diff', content: diff, description: BLOCK_DESCRIPTIONS.researchDiff },
-    ],
+    part === undefined
+      ? [
+          { label: 'diff', content: diff, description: BLOCK_DESCRIPTIONS.researchDiff },
+        ]
+      : [
+          {
+            label: 'parts',
+            content: partsBlock(part),
+            description: BLOCK_DESCRIPTIONS.parts,
+          },
+          { label: 'diff', content: diff, description: BLOCK_DESCRIPTIONS.researchPart },
+        ],
     guidelines,
     { name: 'research_findings', schema: researchReplyJsonSchema },
   )
+}
+
+/** What the parts block holds: the part's position, then the change's files when a name is listed or counted. */
+function partsBlock(part: PartOf): string {
+  const lines = [`Part ${part.index} of ${part.count} of the change.`]
+  if (part.files.length > 0 || part.unlisted > 0) {
+    lines.push('The change\'s files, one per line:', ...part.files.map(name => showHidden(name)))
+    if (part.unlisted > 0) lines.push(`and ${part.unlisted} more`)
+  }
+  return lines.join('\n')
 }
 
 /**
