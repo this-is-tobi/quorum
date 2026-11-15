@@ -12,7 +12,7 @@ import type { Usage } from '../core/types.ts'
 import { snippet } from './http.ts'
 import { attemptIssues, contextTokensIssues, isRecord, maxTokensIssues, NOT_VISIBLE_ASCII, wordList } from './options.ts'
 import { replyFailure, tokenUsage } from './reply.ts'
-import { checkFits, contextBudget, DEFAULT_REPLY_TOKENS, utf8Length } from './size.ts'
+import { checkFits, contextBudget, DEFAULT_REPLY_TOKENS, utf8Length, worstCaseTokens } from './size.ts'
 
 /**
  * The `claude-code` adapter runs the user's installed `claude` CLI once per request, headless and isolated,
@@ -1060,6 +1060,13 @@ async function requireVersion(launch: Launch, signal: AbortSignal | undefined, f
  * `API_TIMEOUT_MS` limits only an attempt's wait for its headers. At it the core aborts the signal, which
  * stops the child's group as step 11 says.
  *
+ * It states its worst case from the count its size guard keeps, over the model turns of a run: in `schema`
+ * mode two, since the model answers by calling the schema tool and `claude` then makes a second turn after
+ * the tool's result, which carries the first reply as input, so `2 * (text + 4096) + 3 * maxTokens`; in
+ * `prompt` mode one, `text + 4096 + maxTokens`. It leaves out what Claude Code spends beyond that, a reply
+ * it continues after its limit, up to three times a turn, and its own retries: those count once the run
+ * reports its usage.
+ *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function claudeCode(options: ClaudeCodeOptions): Provider {
@@ -1078,6 +1085,12 @@ export function claudeCode(options: ClaudeCodeOptions): Provider {
     model,
     timeoutMs: timeoutMs * (retries + 1),
     retries: 0,
+    worstCase: request => worstCaseTokens({
+      system: request.system,
+      messages: [...request.messages],
+    }, request.output, budget, structuredOutput === 'schema'
+      ? 2
+      : 1),
     async complete(request) {
       const fail = replyFailure(id)
       const message = messageOf(request, fail)

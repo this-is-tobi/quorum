@@ -8,7 +8,7 @@ import { shapeMessages } from './messages.ts'
 import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { endedEarly, joinedText, replyFailure, tokenUsage } from './reply.ts'
-import { checkFits, contextBudget } from './size.ts'
+import { checkFits, contextBudget, worstCaseTokens } from './size.ts'
 
 /** The options of a Gemini provider: the ones every HTTP adapter takes, and no other. */
 export type GeminiOptions = HttpProviderOptions
@@ -191,7 +191,8 @@ function readReply(reply: unknown, { id, model }: Pick<GeminiOptions, 'id' | 'mo
  * header `auth` names, `x-goog-api-key` by default (invariant I1), never in the `key` query parameter. It
  * refuses, before any request, a request that may not fit `contextTokens`. It sends the reply's limit,
  * `maxTokens` else the budget of the size guard, as `generationConfig.maxOutputTokens`, so the server bounds
- * a reply's length.
+ * a reply's length. It states its worst case from the count its size guard keeps: the text it sends, the
+ * template reserve and that budget.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
@@ -216,6 +217,7 @@ export function gemini(options: GeminiOptions): Provider {
     model,
     timeoutMs,
     retries,
+    worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budget),
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       checkFits(id, { system, messages }, request.output, budget)

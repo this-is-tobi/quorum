@@ -482,6 +482,14 @@ export function describeProviderContract(subject: ContractSubject): void {
       expect(stated(subject.make({ ...base, timeoutMs: 120_000, retries: 0 }))).toEqual({ timeoutMs: 120_000, retries: 0 })
     })
 
+    it('states the worst case of one attempt as an own data property: the tokens its guard counts for the request', () => {
+      const provider = subject.make(base)
+      expect(typeof Object.getOwnPropertyDescriptor(provider, 'worstCase')?.value).toBe('function')
+      expect(provider.worstCase?.(request)).toBe(16_545)
+      expect(subject.make({ ...base, systemPrompt: 'inline' }).worstCase?.(request)).toBe(16_547)
+      expect(subject.make({ ...base, maxTokens: 100 }).worstCase?.(request)).toBe(645)
+    })
+
     it('refuses a deadline or retries out of range at its field, before any request', () => {
       const fetchMock = vi.fn()
       vi.stubGlobal('fetch', fetchMock)

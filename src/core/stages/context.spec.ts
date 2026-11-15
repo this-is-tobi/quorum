@@ -5,7 +5,7 @@ import { createLimiter } from '../concurrency.ts'
 import { ProviderError } from '../errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../ports.ts'
 import type { QuorumEvent } from '../types.ts'
-import { callProvider, targetOf } from './context.ts'
+import { callProvider, reservationOf, targetOf } from './context.ts'
 import type { Requester, RunContext, Target } from './context.ts'
 
 /** A context of one review: its events as the sink would receive them, and what `fail` was given. */
@@ -34,6 +34,7 @@ function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'tim
     ref: { id: 'p', model: 'm' },
     timeoutMs: 1000,
     retries: 0,
+    worstCase: undefined,
     ...facts,
   }
 }
@@ -391,5 +392,99 @@ describe('the retries of a call', () => {
     expect(targetOf(getter).retries).toBe(0)
     expect(read).toBe(false)
     expect(targetOf({ ...provider, retries: 6 }).retries).toBe(0)
+  })
+})
+
+describe('the worst case of a call', () => {
+  const complete = async (): Promise<CompletionResponse> => ({ text: '', model: 'm' })
+  const provider: Provider = { id: 'p', model: 'm', complete }
+
+  it('reads a stated worst case as own data: a getter never runs, an inherited one states nothing, a non-function is none', () => {
+    const stated = (): number => 60
+    expect(targetOf({ ...provider, worstCase: stated }).worstCase).toBe(stated)
+
+    let read = false
+    const getter = { ...provider }
+    Object.defineProperty(getter, 'worstCase', {
+      enumerable: true,
+      get() {
+        read = true
+        return stated
+      },
+    })
+    expect(targetOf(getter).worstCase).toBeUndefined()
+    expect(read).toBe(false)
+
+    const inherited: Provider = Object.assign(Object.create({ worstCase: stated }), provider)
+    expect(targetOf(inherited).worstCase).toBeUndefined()
+
+    expect(targetOf({ ...provider, worstCase: 5 } as unknown as Provider).worstCase).toBeUndefined()
+  })
+
+  it.each<[string, Target['worstCase']]>([
+    ['is unset', undefined],
+    [
+      'returns 0',
+      () => 0,
+    ],
+    [
+      'returns 1.5',
+      () => 1.5,
+    ],
+    [
+      'returns Number.NaN',
+      () => Number.NaN,
+    ],
+    [
+      'returns a string',
+      () => '16000',
+    ],
+    [
+      'returns Number.MAX_SAFE_INTEGER + 2',
+      () => Number.MAX_SAFE_INTEGER + 2,
+    ],
+    [
+      'throws',
+      () => {
+        throw new Error('no count')
+      },
+    ],
+    [
+      'returns a rejected promise',
+      () => Promise.reject(new Error('no count')),
+    ],
+    [
+      'returns a promise that resolves to 60',
+      () => Promise.resolve(60),
+    ],
+  ])('reserves the core\'s count with 512 and 16000 for a worst case that %s', (_name, worstCase) => {
+    expect(reservationOf({
+      ...target(complete),
+      worstCase,
+    }, request)).toBe(4 + 512 + 16_000)
+  })
+
+  it('takes a stated worst case that is a safe integer of at least 1, called with the request and the provider as this', () => {
+    const calls: Array<{ self: unknown, args: unknown[] }> = []
+    const stating: Target = {
+      ...target(complete),
+      worstCase(this: unknown, ...args: unknown[]) {
+        calls.push({ self: this, args })
+        return 60
+      },
+    }
+    expect(reservationOf(stating, request)).toBe(60)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.args).toHaveLength(1)
+    expect(calls[0]?.args[0]).toBe(request)
+    expect(calls[0]?.self).toBe(stating.provider)
+    expect(reservationOf({
+      ...stating,
+      worstCase: () => 1,
+    }, request)).toBe(1)
+    expect(reservationOf({
+      ...stating,
+      worstCase: () => Number.MAX_SAFE_INTEGER,
+    }, request)).toBe(Number.MAX_SAFE_INTEGER)
   })
 })

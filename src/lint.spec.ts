@@ -67,6 +67,12 @@ const CASES: Array<[string, string, string, string[]]> = [
     [],
   ],
   [
+    'a provider imports the core\'s token count',
+    'src/providers/probe.ts',
+    'import { tokenBound } from \'../core/tokens.ts\'\n\nexport const probe = tokenBound\n',
+    [],
+  ],
+  [
     'a provider refuses the config layer',
     'src/providers/probe.ts',
     'import { readEnv } from \'../config/env.ts\'\n\nexport const probe = readEnv\n',

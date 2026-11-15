@@ -7,7 +7,7 @@ import { shapeMessages } from './messages.ts'
 import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { MAX_MODEL_TEXT, replyFailure, tokenUsage } from './reply.ts'
-import { checkFits, contextBudget } from './size.ts'
+import { checkFits, contextBudget, worstCaseTokens } from './size.ts'
 
 /** The options of an Ollama provider: the ones every HTTP adapter takes, and no other. */
 export type OllamaOptions = HttpProviderOptions
@@ -106,7 +106,8 @@ function readReply(reply: unknown, { id, model }: Pick<OllamaOptions, 'id' | 'mo
  * later; an older server ignores both fields). It sends `contextTokens` as `options.num_ctx`, so the server
  * loads the context the size guard counts with, and refuses, before any request, a request that may not
  * fit it. It sends the reply's limit, `maxTokens` else the budget of the size guard, as `options.num_predict`,
- * so the server bounds a reply's length.
+ * so the server bounds a reply's length. It states its worst case from the count its size guard keeps: the
+ * text it sends, the template reserve and that budget.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
@@ -120,6 +121,7 @@ export function ollama(options: OllamaOptions): Provider {
     model,
     timeoutMs,
     retries,
+    worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budget),
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       checkFits(id, { system, messages }, request.output, budget)

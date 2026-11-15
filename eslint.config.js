@@ -132,7 +132,7 @@ export default antfu(
     },
   },
   {
-    // An adapter sees the core only through its ports, errors and types.
+    // An adapter sees the core only through its ports, errors, types and token count.
     files: ['src/providers/**/*.ts'],
     ignores: ['src/**/*.spec.ts'],
     rules: {
@@ -140,7 +140,7 @@ export default antfu(
         'error',
         {
           patterns: [
-            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(ports|errors|types)\\.ts$)', message: 'A provider imports only its own modules and core/ports.ts, core/errors.ts and core/types.ts.' },
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(ports|errors|types|tokens)\\.ts$)', message: 'A provider imports only its own modules and core/ports.ts, core/errors.ts, core/types.ts and core/tokens.ts.' },
           ],
         },
       ],
@@ -165,7 +165,7 @@ export default antfu(
         'error',
         {
           patterns: [
-            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(ports|errors|types)\\.ts$|node:(child_process|fs|fs/promises|os|path)$)', message: 'The claude-code adapter imports only its own modules, core/ports.ts, core/errors.ts, core/types.ts, node:child_process, node:fs, node:fs/promises, node:os and node:path.' },
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(ports|errors|types|tokens)\\.ts$|node:(child_process|fs|fs/promises|os|path)$)', message: 'The claude-code adapter imports only its own modules, core/ports.ts, core/errors.ts, core/types.ts, core/tokens.ts, node:child_process, node:fs, node:fs/promises, node:os and node:path.' },
           ],
         },
       ],
