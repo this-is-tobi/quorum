@@ -155,6 +155,8 @@ profiles:
       vote: sha256:<64 hex digits>
 concurrency: 4
 maxFindings: 50
+maxReviewTokens: 2000000
+reviewTimeoutMs: 1800000
 exclude: []
 warnings: []
 ```
@@ -164,9 +166,10 @@ That run set a base URL on its own, so its provider is `openai-compatible`. With
 | Field | What it holds |
 | --- | --- |
 | `source` | The absolute path of the config file, or `null` when no file is named |
-| `providers` | Each provider a profile that runs uses, by its config key, in the order the config defines them. A provider defined as data prints the fields it sets, in this order: `preset`, `protocol`, `command`, `origin` (always, but for a `claude-code` provider, which has none), `model`, `contextTokens`, `apiKey`, `auth`, `args`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature` (`null` too), `maxTokens`, `maxTokensField`, `systemPrompt`, `timeoutMs` and `retries`. A `claude-code` provider prints the absolute path of the `claude` it found as its `command`, and its `auth` is `inherit` when it sets none, as it runs. A provider object, which a TS or JS config defines, prints `implements: Provider`, its `model`, and the `timeoutMs` and `retries` it states, in that order |
+| `providers` | Each provider a profile that runs uses, by its config key, in the order the config defines them. A provider defined as data prints the fields it sets, in this order: `preset`, `protocol`, `command`, `origin` (always, but for a `claude-code` provider, which has none), `model`, `contextTokens`, `apiKey`, `auth`, `args`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature` (`null` too), `maxTokens`, `maxTokensField`, `systemPrompt`, `timeoutMs` and `retries`. A `claude-code` provider prints the absolute path of the `claude` it found as its `command`, and its `auth` is `inherit` when it sets none, as it runs. A provider object, which a TS or JS config defines, prints `implements: Provider`, its `model`, and the `timeoutMs` and `retries` it states, in that order, and never its code: a `worstCase` it states is not printed |
 | `profiles` | Each profile that runs, by id, in run order: `gating` (`true` unless the profile sets `false`), `research` (the provider that looks for findings), `lenses` (the provider each lens votes through), `thresholds` (the kept votes each confidence level needs, `null` for a level the policy disables) and `prompts` (`research` and `vote`, each as a hash) |
 | `concurrency`, `maxFindings` | The values the review applies: the config's, else the defaults, `4` and `50` |
+| `maxReviewTokens`, `reviewTimeoutMs` | The limits of a review as the review applies them, defaults filled in: `QUORUM_MAX_REVIEW_TOKENS` and `QUORUM_REVIEW_TIMEOUT_MS`, else the config's, else `2000000` tokens and `1800000` ms ([The limits of a review](./20-configuration.md#the-limits-of-a-review)) |
 | `exclude` | The config's patterns, as written, `[]` when it lists none: what every review leaves out ([Excludes](./20-configuration.md#excludes)) |
 | `warnings` | The config's warnings: the deprecated variables, the variables nothing reads and the keys that are not sent or sent in cleartext. A run prints these as `warning:` lines before its banner, and adds the warnings of the profiles, such as a policy level that is never reached: [Warnings](./40-profiles.md#warnings) |
 
