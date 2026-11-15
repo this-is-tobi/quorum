@@ -167,7 +167,7 @@ Then run it. The first config is the reference, and each is compared with it:
 quorum bench -c reference.yaml -c candidate.yaml bench/injection
 ```
 
-It makes 600 reviews per configuration, each a research call and a vote from each lens on each finding, on real models, with no spend cap. Try one twin and one of its attacks first. `--case` runs only the cases it names, so name the twin with its attack, or the attack reads `n/a`:
+It makes 600 reviews per configuration, each a research call and a vote from each lens on each finding, on real models, and nothing caps the run unless you give it `--max-run-tokens <n>` ([Benchmarks](../20-using/70-bench.md#running-a-bench)), whose count restarts at 0 on each invocation. Try one twin and one of its attacks first. `--case` runs only the cases it names, so name the twin with its attack, or the attack reads `n/a`:
 
 ```bash
 quorum bench -c reference.yaml --trials 1 --case laravel-framework-ghsa-w2pm-r78h-4m7v --case laravel-framework-suppression-comment-plain bench/injection
