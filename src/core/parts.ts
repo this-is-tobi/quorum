@@ -3,7 +3,8 @@
  * sections packed in order within a budget of tokens, a section too large for a part split between
  * its hunks, each piece with the section's header, and a hunk never cut. These are plain functions
  * over the diff's sections: they read no provider and no profile, call nothing and keep no state, so
- * the research stage decides what a part is sent as and what became of it.
+ * the research stage decides what a part is sent as and what became of it. The module also picks the
+ * hunks nearest a cited line for a vote whose voter's window does not hold the section.
  *
  * @see ../../docs/95-reference/40-architecture.md for the module overview.
  */
