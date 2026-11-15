@@ -287,6 +287,42 @@ describe('createQuorum', () => {
     expect(read).toBe(false)
   })
 
+  it('refuses a provider\'s worstCase that is not a function at each port that holds it, and runs no getter', () => {
+    const stating = (worstCase: unknown): Provider => ({ ...provider, worstCase }) as Provider
+    const create = (research: Provider, reachability: Provider, impact: Provider, defenses: Provider): Quorum => createQuorum({
+      profiles: [securityProfile],
+    }, {
+      profiles: {
+        security: {
+          research,
+          voters: { reachability, impact, defenses },
+        },
+      },
+    })
+    const problem = 'must be a function'
+    expect(issuesOf(() => create(stating(5), stating('60'), stating(null), stating({})))).toEqual([
+      `ports.profiles.security.research.worstCase: ${problem}`,
+      `ports.profiles.security.voters.reachability.worstCase: ${problem}`,
+      `ports.profiles.security.voters.impact.worstCase: ${problem}`,
+      `ports.profiles.security.voters.defenses.worstCase: ${problem}`,
+    ])
+    expect(() => create(stating(() => 60), stating(undefined), stating(() => 1), stating(undefined))).not.toThrow()
+
+    let read = false
+    const getter = { ...provider }
+    Object.defineProperty(getter, 'worstCase', {
+      enumerable: true,
+      get() {
+        read = true
+        return 5
+      },
+    })
+    expect(() => createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, getter))).not.toThrow()
+    expect(read).toBe(false)
+  })
+
   it('refuses ports for a profile or a lens the run does not have, as a likely typo, and a sink that is not a function', () => {
     const model = fake('m', () => '')
     const voters = {

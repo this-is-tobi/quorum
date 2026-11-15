@@ -38,7 +38,7 @@ interface Quorum {
 | `concurrency` | The most provider calls in flight at once in one review, shared by every profile; a positive integer | `4` |
 | `maxFindings` | The most findings of a research reply each profile reads, the only ones that can reach its panel; a positive integer | `50` |
 | `exclude` | Path patterns of the files left out of every request ([Excludes](../20-using/20-configuration.md#excludes)). Each file excluded reaches no model and is listed in `meta.leftOut` as `excluded`, never as a gap. At most 100 patterns, each at most 256 characters | None |
-| `ports.profiles` | One entry per profile, keyed by profile id: `research`, its research provider, and `voters`, one provider per lens keyed by lens id. A provider may state its `timeoutMs` and its `retries`: [What a provider states](../20-using/30-providers.md#what-a-provider-states) | Required |
+| `ports.profiles` | One entry per profile, keyed by profile id: `research`, its research provider, and `voters`, one provider per lens keyed by lens id. A provider may state its `timeoutMs`, its `retries` and its `worstCase`: [What a provider states](../20-using/30-providers.md#what-a-provider-states) | Required |
 | `ports.events` | The event sink: a function that receives every event of every review | None |
 
 One provider object may fill several ports: the research provider of a profile can also be every one of its voters.
@@ -63,6 +63,7 @@ One provider object may fill several ports: the research provider of a profile c
 | `ports.profiles.<id>.voters.<lens>` | `is missing`, the provider message above, or `names no lens of the profile` |
 | `ports.profiles.<id>.research.timeoutMs`, `ports.profiles.<id>.voters.<lens>.timeoutMs` | `must be a whole number of milliseconds from 1000 to 518400000` |
 | `ports.profiles.<id>.research.retries`, `ports.profiles.<id>.voters.<lens>.retries` | `must be a whole number from 0 to 5` |
+| `ports.profiles.<id>.research.worstCase`, `ports.profiles.<id>.voters.<lens>.worstCase` | `must be a function` |
 | `ports.events` | `must be a function` |
 
 A port for a profile or a lens the review does not have is refused, as a likely typo. A profile's ports are checked only when the profile itself has no issue, and no port is checked when `profiles` is not an array. Every record keyed by an id is read through its own properties, so `constructor` is as valid an id as any other. For the security profile with `concurrency: 0`, `maxFindings: 2.5`, a research port that is not a provider, its `defenses` voter missing and one named `typo` instead, a port for a profile named `other`, and a sink that is a string, the message reads:

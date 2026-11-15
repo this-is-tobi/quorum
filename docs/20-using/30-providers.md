@@ -10,6 +10,7 @@ interface Provider {
   readonly model: string
   readonly timeoutMs?: number
   readonly retries?: number
+  readonly worstCase?: (request: CompletionRequest) => number
   complete: (request: CompletionRequest) => Promise<CompletionResponse>
 }
 
@@ -32,6 +33,7 @@ interface CompletionResponse {
 - **The core never trusts the reply.** It extracts and validates the JSON in `text` itself, whatever the provider did to get it, and reads `usage` (`inputTokens`, `outputTokens`, optional `costUsd`) only when its counts are finite numbers of at least 0.
 - **`id` and `model` name the provider** in events and in `meta`, as they were when the quorum was created.
 - **A provider may state its deadline**, `timeoutMs`, and its `retries`: [Deadlines and retries](#deadlines-and-retries).
+- **A provider may state its worst case**, `worstCase(request)`: the most tokens one attempt of the request may spend, which the review's token cap reserves before it is sent: [What a provider states](#what-a-provider-states).
 
 [Prompts](./60-prompts.md) shows what `system` and `messages` hold.
 
@@ -68,7 +70,9 @@ The core runs each call's attempts inside the call's concurrency slot, and gives
 - **`retries`** is a whole number from 0 to 5, read as `timeoutMs` is. A provider that states none gets no retry, since the core must not retry what may retry by itself.
 - **The shipped adapters state both.** The HTTP adapters from their options, `timeoutMs` and `retries`, 600000 ms and 2 retries by default, so a call that fails in passing makes at most three attempts. `claudeCode` states no retry, and one deadline for the whole run, which is not a sum of its attempts' limits: [Stopping, nesting and the version](#stopping-nesting-and-the-version).
 - **A config sets them too**: the `timeoutMs` and `retries` fields of a provider, and the role variables `QUORUM_RESEARCH_TIMEOUT_MS`, `QUORUM_RESEARCH_RETRIES`, `QUORUM_VOTER_TIMEOUT_MS` and `QUORUM_VOTER_RETRIES`, as [The environment variables](./20-configuration.md#the-environment-variables) says.
-- **A value out of range is refused** where the provider is given, as the issue `ports.profiles.<id>.research.<field>` or `ports.profiles.<id>.voters.<lens>.<field>`, `<field>` being `timeoutMs` or `retries`: `must be a whole number of milliseconds from 1000 to 518400000` and `must be a whole number from 0 to 5`. The message never repeats the value.
+- **`worstCase`** is the most tokens, input and output, that one attempt of a request may spend as the provider is billed for it, an own data function of the provider object, read when the quorum is created and called once per call with the request, synchronously: a promise states nothing, so an `async` function does not state a worst case. A result that is not a whole number of at least 1, a promise, or a throw, states nothing, and the core then reserves its own count of the request with 512 and 16000, as it does for a provider that states none. A class states it as an arrow-function field, since a method is inherited.
+- **The shipped adapters state it** from what their size guard counts: the text they send, the template reserve and the reply budget, which [The size of a request](#the-size-of-a-request) explains. `claudeCode` counts two model turns in `schema` mode: [The size of a Claude Code request](#the-size-of-a-claude-code-request).
+- **A value out of range is refused** where the provider is given, as the issue `ports.profiles.<id>.research.<field>` or `ports.profiles.<id>.voters.<lens>.<field>`, `<field>` being `timeoutMs` or `retries`: `must be a whole number of milliseconds from 1000 to 518400000` and `must be a whole number from 0 to 5`. A `worstCase` that is not a function is refused the same way: `must be a function`. The message never repeats the value.
 
 ## The adapters
 
@@ -273,6 +277,8 @@ Some endpoints cut a prompt that is too long for the model in silence and still 
 - **The reply** takes `maxTokens`, else 16000, and every adapter sends that number as the server's limit, so the budget the guard keeps is the one the server enforces: [The reply's limit](#the-replys-limit).
 
 A request is sent only when `text + 512 + reply <= contextTokens`. One token per byte bounds byte-level BPE and byte-fallback SentencePiece tokenizers. Counting each code point at its longest form bounds every normalized form of the text, so a tokenizer that normalizes with NFC, NFKC, NFD or NFKD first stays bounded: Qwen 2.5's NFC normalizer turns 300 bytes of U+0F81 into 500 tokens, which is why the count is not the raw bytes. Decomposition works one code point at a time and composing never lengthens UTF-8, so the sum is an upper bound, and the text is never normalized as a whole, which takes quadratic time on a long run of combining marks. Case folding is not proven covered, and no chat model's tokenizer is known to fold case. It costs room: accented letters count one more byte per accent, Hangul syllables up to three times their size, and code runs about three bytes to a token, so the guard accepts about a third of the diff that would really fit.
+
+The core counts a request's text with the same bound, so the worst case a provider states and the core's own count never drift.
 
 A request over the bound is not sent. The call fails with a `ProviderError` of kind `too-large`, which is not retryable, and its message holds the provider id and numbers only, never the text or the URL: `<id>: may need <n> tokens, more than contextTokens (<c>): <t> for its text at one token per byte, 512 for the chat template and <r> for the reply`. The review records it as a gap: [`ProviderError`](#providererror).
 
@@ -576,6 +582,7 @@ The guard of [The size of a request](#the-size-of-a-request), with two differenc
 - **The message is at most 10,000,000 bytes**, the smaller reading of the 10 MB that Claude Code reads on stdin, checked first: a larger one is `too-large` too.
 - **Claude Code's own refusal of a prompt is `too-large`** as well. When it reports `terminal_reason: "prompt_too_long"`, or an error result (`is_error`) whose text starts `Prompt is too long`, a prompt the guard let through and Claude refused is the same `request-too-large` gap, which `--allow-incomplete` does not lift.
 - **A long prompt is not summarized.** `DISABLE_COMPACT=1` is meant to keep Claude Code from compacting it, so that what the model reads is the prompt the guard counted; that is from Claude Code's documentation, and was not observed live.
+- **It states its worst case** over the model turns of a run. In `schema` mode there are two, the second carrying the first reply: `2 * (text + 4096) + 3 * maxTokens`. In `prompt` mode there is one: `text + 4096 + maxTokens`. Not counted: a reply Claude Code continues after its limit (up to three times a turn) and its own retries, which count once the run reports its usage.
 
 ### Claude Code replies and errors
 

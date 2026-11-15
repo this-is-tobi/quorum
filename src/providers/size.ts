@@ -1,19 +1,9 @@
 import { ProviderError } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
+import { DEFAULT_REPLY_TOKENS, TEMPLATE_TOKENS, tokenBound } from '../core/tokens.ts'
 import type { ShapedMessages } from './messages.ts'
 
-/**
- * Tokens kept for what a server adds around the messages: the chat template's role markers, a thinking
- * or Harmony preamble, a tokenizer's dummy prefix. Measured at 10 to 29 tokens for Llama 3 and Qwen 2.5;
- * the margin is many times that, since a preamble can be longer than any measured.
- */
-export const TEMPLATE_TOKENS = 512
-
-/**
- * Tokens kept for the reply when `maxTokens` is not set, and the limit every adapter sends as the server's
- * then, so the budget the guard keeps is the one the server enforces.
- */
-export const DEFAULT_REPLY_TOKENS = 16_000
+export { DEFAULT_REPLY_TOKENS, TEMPLATE_TOKENS, utf8Length } from '../core/tokens.ts'
 
 /** The model's context window, the tokens a reply may take of it, and the tokens kept for what is added around the messages. */
 export interface ContextBudget {
@@ -23,8 +13,6 @@ export interface ContextBudget {
   readonly templateTokens?: number
 }
 
-const encoder = new TextEncoder()
-
 /**
  * The budget a request is checked against: the context size, the reply budget, `maxTokens` else
  * `DEFAULT_REPLY_TOKENS`, and the template reserve, which an adapter whose server adds more context than a
@@ -32,62 +20,6 @@ const encoder = new TextEncoder()
  */
 export function contextBudget(contextTokens: number, maxTokens: number | undefined, templateTokens = TEMPLATE_TOKENS): ContextBudget {
   return { contextTokens, replyTokens: maxTokens ?? DEFAULT_REPLY_TOKENS, templateTokens }
-}
-
-/** The length of `text` in UTF-8 bytes. A lone surrogate counts the 3 bytes of U+FFFD, as the encoder writes it. */
-export function utf8Length(text: string): number {
-  return encoder.encode(text).length
-}
-
-/**
- * The bytes of the longest form of each code point, 0 until it is first seen, so a repeated character is
- * normalized once. A fixed table of 1.1 MB, where a map grew past 200 MB on a text holding every code
- * point; the longest form, U+FDFA's, is 33 bytes, so a byte holds any of them.
- */
-const longestFormBytes = new Uint8Array(0x110000)
-
-/**
- * The most UTF-8 bytes a code point takes as sent, decomposed (NFD) or compatibility-decomposed (NFKD): U+0F81
- * is 3 bytes and 6 decomposed, U+00E9 is 2 and 3, a Hangul syllable up to 3 times its size, U+FDFA is 3 and 33.
- * A lone surrogate is 3, the bytes of the U+FFFD the encoder writes for it.
- */
-function longestFormLength(codePoint: number): number {
-  if (codePoint >= 0xD800 && codePoint <= 0xDFFF) return 3
-  const cached = longestFormBytes[codePoint]
-  if (cached !== undefined && cached !== 0) return cached
-  const char = String.fromCodePoint(codePoint)
-  const bytes = Math.max(utf8Length(char), utf8Length(char.normalize('NFD')), utf8Length(char.normalize('NFKD')))
-  longestFormBytes[codePoint] = bytes
-  return bytes
-}
-
-/**
- * A bound of the UTF-8 bytes of `text` in any normalization: the sum over its code points of each one's
- * longest form. The text itself is never normalized, since that takes quadratic time on a long run of
- * combining marks (canonical reordering) and a gigabyte on a run of U+FDFA. It is a bound because
- * decomposition works on one code point at a time, reordering only permutes code points, and composing
- * never lengthens UTF-8 (true of every code point, which `size.spec.ts` checks), so no NFC, NFKC, NFD or
- * NFKD form of the whole text is longer. Normalizing each character as NFC, or the text in chunks, is not
- * a bound: a mark that composes first, or one that crosses a chunk, can lengthen the whole.
- */
-function normalizedLength(text: string): number {
-  let bytes = 0
-  for (let index = 0; index < text.length; index++) {
-    const unit = text.charCodeAt(index)
-    if (unit < 0x80) {
-      bytes += 1
-      continue
-    }
-    const low = index + 1 < text.length
-      ? text.charCodeAt(index + 1)
-      : 0
-    const pair = unit >= 0xD800 && unit <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF
-    bytes += longestFormLength(pair
-      ? 0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00)
-      : unit)
-    if (pair) index++
-  }
-  return bytes
 }
 
 /**
@@ -99,7 +31,8 @@ function normalizedLength(text: string): number {
  * the count is not the raw bytes. One that folds case is not covered; no chat model's tokenizer is known
  * to. The price is that accented letters count one more byte per accent and Hangul syllables up to three
  * times their size. The schema counts once more than the body carries it, since a server may add it to the
- * prompt.
+ * prompt. The core counts a request's text with the same bound (`requestTokens`), so the worst case an adapter
+ * states and the core's own count never drift.
  */
 export function textTokens(shaped: ShapedMessages, output: CompletionRequest['output']): number {
   const texts = [
@@ -107,7 +40,18 @@ export function textTokens(shaped: ShapedMessages, output: CompletionRequest['ou
     ...shaped.messages.map(message => message.content),
     JSON.stringify(output.schema),
   ]
-  return texts.reduce((sum, text) => sum + normalizedLength(text), 0)
+  return texts.reduce((sum, text) => sum + tokenBound(text), 0)
+}
+
+/**
+ * The most tokens, input and output, that one attempt of a request may spend as the provider is billed for
+ * it, from what the guard counts: each of `turns` model turns sends the text and the template reserve, and
+ * the reply of every turn but the last is the input of the next, so the replies count `2 * turns - 1` times.
+ * One turn is the text, the template reserve and the reply budget, which `checkFits` keeps within the context.
+ */
+export function worstCaseTokens(shaped: ShapedMessages, output: CompletionRequest['output'], budget: ContextBudget, turns = 1): number {
+  const template = budget.templateTokens ?? TEMPLATE_TOKENS
+  return turns * (textTokens(shaped, output) + template) + (2 * turns - 1) * budget.replyTokens
 }
 
 /**

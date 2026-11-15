@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ProviderError } from '../core/errors.ts'
-import { checkFits, contextBudget, textTokens, utf8Length } from './size.ts'
+import { checkFits, contextBudget, textTokens, utf8Length, worstCaseTokens } from './size.ts'
 
 const output = {
   name: 'panel_vote',
@@ -257,5 +257,18 @@ describe('checkFits', () => {
 
   it('lets a request through at the bound', () => {
     expect(() => checkFits('p', shaped, output, { contextTokens: 645, replyTokens: 100 })).not.toThrow()
+  })
+})
+
+describe('worstCaseTokens', () => {
+  it('is the text, the template reserve and the reply budget of one turn', () => {
+    expect(worstCaseTokens(shaped, output, contextBudget(100_000, undefined))).toBe(16_545)
+    expect(worstCaseTokens(shaped, output, contextBudget(100_000, 100))).toBe(645)
+    expect(worstCaseTokens(shaped, output, contextBudget(100_000, undefined, 4096))).toBe(20_129)
+  })
+
+  it('counts each turn\'s text and template, and each turn\'s reply as input to the next', () => {
+    expect(worstCaseTokens(shaped, output, contextBudget(100_000, undefined, 4096), 2)).toBe(2 * (33 + 4096) + 3 * 16_000)
+    expect(worstCaseTokens(shaped, output, contextBudget(100_000, undefined, 4096), 2)).toBe(56_258)
   })
 })

@@ -11,8 +11,10 @@ import { fakeClaudeEnv, isRunning, readFakeRecord, readFakeVersionRecords, write
 import * as fixtures from '../testing/fixtures/claude-code.ts'
 import { childEnv, claudeArgs, claudeCode, claudeCodeIssues, credentialValues, KILL_GRACE_MS, MAX_STDERR_BYTES, MAX_STDOUT_BYTES, MIN_CLAUDE_CODE_VERSION, prepareRun, readCapped, readResult, stopLiveRuns, trackRun, VERSION_CHECK_MS, versionProblem } from './claude-code.ts'
 import type { ClaudeCodeOptions } from './claude-code.ts'
+import { shapeMessages } from './messages.ts'
 import { CONTEXT_REQUIRED } from './options.ts'
 import { replyFailure } from './reply.ts'
+import { textTokens } from './size.ts'
 
 const options: ClaudeCodeOptions = { id: 'cc', model: 'sonnet', contextTokens: 200000 }
 /** The wait for each attempt's headers, the retries and the reply limit a provider with none of the three options hands Claude Code. */
@@ -1213,6 +1215,17 @@ describe('claudeCode', () => {
       kind: 'too-large',
       message: 'cc: may need 12129 tokens, more than contextTokens (12128): 33 for its text at one token per byte, 4096 for the chat template and 8000 for the reply',
     })
+  })
+
+  it('states a worst case of two turns in schema mode and one in prompt mode, each with its 4096-token reserve', () => {
+    const text = textTokens(shapeMessages(request, 'native'), request.output)
+    const stated = (fields: Partial<ClaudeCodeOptions>): number | undefined => claudeCode({
+      ...options,
+      ...fields,
+    }).worstCase?.(request)
+    expect(stated({})).toBe(2 * (text + 4096) + 3 * 16_000)
+    expect(stated({ structuredOutput: 'prompt' })).toBe(text + 4096 + 16_000)
+    expect(stated({ maxTokens: 8000 })).toBe(2 * (text + 4096) + 24_000)
   })
 
   it('rejects as aborted, and starts nothing, when the signal has already aborted', async () => {

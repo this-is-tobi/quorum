@@ -93,6 +93,16 @@ export interface Provider {
    */
   readonly retries?: number
   /**
+   * The most tokens, input and output, that one attempt of `request` may spend as the provider is billed
+   * for it, which is what the core reserves for each attempt of the request. It is called once per call,
+   * once the request is built; a result that is not a whole number of at least 1, or a throw, states
+   * nothing, and the core then reserves its own count of the request plus 512 tokens for what a server
+   * adds and 16000 for the reply, as it does when this is unset. It is read when the quorum is created,
+   * as an own data property, as `timeoutMs` is: a getter is never run and an inherited method states
+   * nothing, so a class sets it as an arrow-function field.
+   */
+  readonly worstCase?: (request: CompletionRequest) => number
+  /**
    * Answer one request. It should honour `request.signal`, settling soon after the signal aborts:
    * the core settles the call at its deadline or at the review's abort without waiting for the
    * provider, and a provider that ignores the signal works on, outside the review, until it ends.

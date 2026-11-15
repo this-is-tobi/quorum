@@ -7,11 +7,13 @@ import { DEFAULT_TIMEOUT_MS, MAX_STATED_TIMEOUT_MS, retriesProblem, timeoutProbl
 import type { CompletionRequest, CompletionResponse, EventSink, Provider } from '../ports.ts'
 import { isTimeout, retryWait } from '../retry.ts'
 import type { FailureFacts } from '../retry.ts'
+import { DEFAULT_REPLY_TOKENS, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
 import type { ProviderRef, StageName, Thresholds, Usage } from '../types.ts'
 
 /**
  * A provider as a compiled profile holds it: the object it calls, the ref captured at creation that
- * events and meta report, the deadline of each of its attempts and the retries of a call.
+ * events and meta report, the deadline of each of its attempts, the retries of a call and the worst case
+ * it states.
  */
 export interface Target {
   readonly provider: Provider
@@ -20,6 +22,8 @@ export interface Target {
   readonly timeoutMs: number
   /** The retries of a call after its first attempt: what the provider stated when the quorum was created, else none. */
   readonly retries: number
+  /** The worst case of one attempt the provider stated when the quorum was created, when it is a function; `reservationOf` reads its result. */
+  readonly worstCase: ((request: CompletionRequest) => unknown) | undefined
 }
 
 /** One lens of a compiled profile: its vote instructions, rendered once, and its own provider. */
@@ -163,11 +167,13 @@ export interface Requester {
  * deadline and retries, each read as own data and taken only when it passes its check, else the
  * default: 600000 ms and no retry. The quorum's checks ran first, so a plain object's values are the
  * ones they passed; a proxy that answers the check and this read differently still gets an in-range
- * deadline and no retry, never an unbounded one.
+ * deadline and no retry, never an unbounded one. The worst case it states is its own data value when
+ * that is a function, else none: a getter is never run, and an inherited method states nothing.
  */
 export function targetOf(provider: Provider): Target {
   const timeoutMs = ownData(provider, 'timeoutMs')
   const retries = ownData(provider, 'retries')
+  const worstCase = ownData(provider, 'worstCase')
   return {
     provider,
     ref: Object.freeze({ id: provider.id, model: provider.model }),
@@ -177,7 +183,35 @@ export function targetOf(provider: Provider): Target {
     retries: retriesProblem(retries) === undefined
       ? retries as number
       : 0,
+    worstCase: typeof worstCase === 'function'
+      ? worstCase as Target['worstCase']
+      : undefined,
   }
+}
+
+/**
+ * The tokens one attempt of `request` is reserved: the worst case the provider states, called once with the
+ * request and the provider as `this`, when it returns a safe integer of at least 1. A provider that states
+ * none, a result that is anything else (a promise included, whose rejection is marked handled) and a throw
+ * all reserve the core's own count of the request plus
+ * `TEMPLATE_TOKENS` for what a server adds and `DEFAULT_REPLY_TOKENS` for the reply, so a worst case that
+ * misbehaves never reserves nothing. It never throws.
+ */
+export function reservationOf(target: Target, request: CompletionRequest): number {
+  const { worstCase } = target
+  if (worstCase !== undefined) {
+    try {
+      const stated: unknown = Reflect.apply(worstCase, target.provider, [request])
+      if (typeof stated === 'number' && Number.isSafeInteger(stated) && stated >= 1) return stated
+      // It is called synchronously: a promise states nothing, and a rejected one must not crash the process.
+      if ((typeof stated === 'object' && stated !== null) || typeof stated === 'function') {
+        Promise.resolve(stated).then(undefined, () => {})
+      }
+    } catch {
+      // A worst case that throws states nothing.
+    }
+  }
+  return requestTokens(request) + TEMPLATE_TOKENS + DEFAULT_REPLY_TOKENS
 }
 
 /** Whole milliseconds since `started`, a `performance.now()` reading. */
