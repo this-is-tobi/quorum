@@ -684,6 +684,7 @@ describe('resolveConfig', () => {
       maxFindings: 99,
       maxReviewTokens: 99,
       reviewTimeoutMs: 99,
+      partTokens: 99,
       exclude: ['*'],
     }
     for (const [key, value] of Object.entries(planted)) proto[key] = value
@@ -700,6 +701,7 @@ describe('resolveConfig', () => {
         'maxFindings',
         'maxReviewTokens',
         'reviewTimeoutMs',
+        'partTokens',
         'exclude',
       ].some(field => Object.hasOwn(config, field))).toBe(false)
     } finally {
@@ -709,6 +711,16 @@ describe('resolveConfig', () => {
 
   it('passes concurrency and maxFindings through', () => {
     expect(resolve({ concurrency: 2, maxFindings: 10 }, { QUORUM_RESEARCH_MODEL: 'q', ...SIZE })).toMatchObject({ concurrency: 2, maxFindings: 10 })
+  })
+
+  it('keeps the config\'s partTokens, which no variable sets', () => {
+    const env = { QUORUM_RESEARCH_MODEL: 'q', ...SIZE }
+    expect(resolve({ partTokens: 4096 }, env)).toMatchObject({ partTokens: 4096 })
+    expect(Object.hasOwn(resolve({}, env), 'partTokens')).toBe(false)
+    const variable = resolve({ partTokens: 4096 }, { ...env, QUORUM_PART_TOKENS: '8192' })
+    expect(variable.partTokens).toBe(4096)
+    expect(Object.hasOwn(resolve({}, { ...env, QUORUM_PART_TOKENS: '8192' }), 'partTokens')).toBe(false)
+    expect(variable.warnings).toContain('QUORUM_PART_TOKENS is not a variable quorum reads')
   })
 
   it('layers the variables\' limits over the file\'s, and keeps none that neither sets', () => {

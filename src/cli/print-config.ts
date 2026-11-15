@@ -7,6 +7,7 @@ import { isProvider, statedFacts } from '../config/schema.ts'
 import { DEFAULT_CONCURRENCY } from '../core/concurrency.ts'
 import type { Provider } from '../core/ports.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../core/limits.ts'
+import { DEFAULT_PART_TOKENS } from '../core/parts.ts'
 import { thresholdsFor } from '../core/profile.ts'
 import { inertLine } from '../core/sanitize.ts'
 import { DEFAULT_MAX_FINDINGS } from '../core/stages/research.ts'
@@ -113,7 +114,7 @@ function profileView({ profile, research, voters }: ResolvedProfile): Record<str
 /**
  * The resolved config as the YAML `--print-config` writes, for a CI log that anyone can read: the file it
  * came from (`null` for none), the providers, the profiles that run, the limits the review applies
- * (`concurrency`, `maxFindings`, `maxReviewTokens` and `reviewTimeoutMs`, defaults filled in), the
+ * (`concurrency`, `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs`, defaults filled in), the
  * patterns it excludes, and the warnings. A key and every value of `headers`, `query` and `extraBody`
  * print as `[redacted]`, a base URL as its origin, and a prompt as its SHA-256. A provider's `timeoutMs` and
  * `retries` print when it sets them, a provider object's when it states them. A `claude-code` provider
@@ -139,6 +140,7 @@ export function printConfig(config: ResolvedConfig, source: string | undefined):
     ])),
     concurrency: config.concurrency ?? DEFAULT_CONCURRENCY,
     maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,
+    partTokens: config.partTokens ?? DEFAULT_PART_TOKENS,
     maxReviewTokens: config.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS,
     reviewTimeoutMs: config.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
     exclude: [

@@ -275,6 +275,22 @@ describe('configFileSchema', () => {
     ])
   })
 
+  it('takes a partTokens from 1024', () => {
+    for (const partTokens of [1024, 9_007_199_254_740_991]) {
+      expect(issuesOf({ partTokens })).toEqual([])
+    }
+  })
+
+  it.each<[unknown, string]>([
+    [1023, 'must be at least 1024'],
+    [1.5, 'must be an integer'],
+    ['32768', 'must be a number'],
+  ])('refuses a partTokens of %j, at its field', (partTokens, message) => {
+    expect(issuesOf({ partTokens })).toEqual([
+      at('partTokens', message),
+    ])
+  })
+
   it.each<[unknown, string]>([
     [0, 'must be at least 1'],
     [1.5, 'must be an integer'],

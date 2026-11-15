@@ -29,6 +29,8 @@ export interface ResolvedConfig {
   readonly profiles: readonly ResolvedProfile[]
   readonly concurrency?: number
   readonly maxFindings?: number
+  /** The most tokens of diff text one research request of a large change holds: the config's alone, no variable sets it; absent when the config does not. */
+  readonly partTokens?: number
   /** The most tokens one review spends: `QUORUM_MAX_REVIEW_TOKENS`, else the config's; absent when neither sets it. */
   readonly maxReviewTokens?: number
   /** The deadline of one review, in milliseconds: `QUORUM_REVIEW_TIMEOUT_MS`, else the config's; absent when neither sets it. */
@@ -504,6 +506,7 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
 
   const concurrency = own(input, 'concurrency')
   const maxFindings = own(input, 'maxFindings')
+  const partTokens = own(input, 'partTokens')
   const maxReviewTokens = own(layer, 'maxReviewTokens') ?? own(input, 'maxReviewTokens')
   const reviewTimeoutMs = own(layer, 'reviewTimeoutMs') ?? own(input, 'reviewTimeoutMs')
   const exclude = own(input, 'exclude')
@@ -516,6 +519,9 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
     ...maxFindings === undefined
       ? {}
       : { maxFindings },
+    ...partTokens === undefined
+      ? {}
+      : { partTokens },
     ...maxReviewTokens === undefined
       ? {}
       : { maxReviewTokens },

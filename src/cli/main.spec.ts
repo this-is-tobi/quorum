@@ -1502,6 +1502,7 @@ describe('--print-config', () => {
       `      vote: ${sha256(securityProfile.prompts.vote)}`,
       'concurrency: 2',
       'maxFindings: 50',
+      'partTokens: 32768',
       'maxReviewTokens: 2000000',
       'reviewTimeoutMs: 1800000',
       'exclude: []',

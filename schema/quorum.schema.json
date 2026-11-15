@@ -226,6 +226,12 @@
       "minimum": 1,
       "maximum": 9007199254740991
     },
+    "partTokens": {
+      "description": "The most tokens of diff text, at one token per byte, one research request of a large change holds; 32768 when unset",
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 9007199254740991
+    },
     "maxReviewTokens": {
       "description": "The most tokens, input and output, one review may spend; 2000000 when unset. Set here or in QUORUM_MAX_REVIEW_TOKENS",
       "type": "integer",
