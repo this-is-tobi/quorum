@@ -8,6 +8,7 @@ import { ConfigError } from './errors.ts'
 import type { ConfigIssue } from './errors.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
 import { diffFlags } from './flags.ts'
+import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, limitGaps, maxReviewTokensProblem } from './limits.ts'
 import { isRecord } from './output.ts'
 import { MAX_STATED_TIMEOUT_MS, retriesProblem, timeoutProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts } from './ports.ts'
@@ -31,6 +32,8 @@ interface Compiled {
   readonly runs: readonly ProfileRun[]
   readonly concurrency: number
   readonly maxFindings: number
+  /** The most tokens one review spends: each review gets a ledger of this cap. */
+  readonly maxReviewTokens: number
   /** Whether a file's path is left out of every request, built once from `exclude`. */
   readonly excluded: (path: string) => boolean
   readonly sink: EventSink | undefined
@@ -52,13 +55,15 @@ interface Tally {
  * Every problem is reported at once, in one ConfigError, never as a TypeError, so an untyped caller
  * gets the checks a config file gets: options and ports that are not objects, no profile, each
  * profile's own issues, a repeated profile id, a `concurrency` or `maxFindings` that is not a
- * positive integer, an `exclude` that is not a list of at most 100 patterns that can be taken, a
+ * positive integer, a `maxReviewTokens` that is not a whole number of tokens from 1 to
+ * 9007199254740991, an `exclude` that is not a list of at most 100 patterns that can be taken, a
  * missing or malformed research provider or voter, a provider's stated `timeoutMs` that is not a
  * whole number of milliseconds from 1000 to 518400000, `retries` that is not a whole number from
  * 0 to 5 or `worstCase` that is not a function, ports for a profile or a lens the run does not have
  * (a likely typo), and an event sink that is not a function. Ports are checked only for the profiles
  * that have no issue of their own, and not at all when `profiles` is not an array. Every record keyed
- * by a caller's id is read as an own property, since `constructor` is a valid id.
+ * by a caller's id is read as an own property, since `constructor` is a valid id. `maxReviewTokens`,
+ * the most tokens one review spends, input and output, is 2000000 when unset: see `review`.
  *
  * Each profile is compiled into a frozen `ProfileRun`, its instructions rendered, its thresholds
  * resolved and its providers captured, and `exclude` is compiled into a matcher, so later changes to
@@ -81,6 +86,7 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
     runs: Object.freeze(options.profiles.map(profile => compile(profile, ports.profiles[profile.id]))),
     concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
     maxFindings: options.maxFindings ?? DEFAULT_MAX_FINDINGS,
+    maxReviewTokens: options.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS,
     excluded: excludeMatcher(options.exclude ?? []),
     sink: ports.events,
   }
@@ -121,6 +127,12 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
  * it; any other failure aborts the review when the profiles' run rejects. Either way the review
  * rejects with the first reason. An advisory profile's research failure is its `research-failed`
  * gap and aborts nothing. An abort after `run:end` has no effect: the review is over.
+ *
+ * A review spends at most `maxReviewTokens` tokens. Each review has its own ledger of that cap: every
+ * attempt of every call reserves its worst case in it before it is sent and settles at what it spent,
+ * so concurrent calls cannot overshoot it. A call the cap stops is no failed review: its profile's
+ * research or vote is a `token-cap` gap, which exits 4 for a gating profile, and the other profiles
+ * and votes run as far as the cap lets them.
  *
  * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, options that are not an object, a `signal` that is not an AbortSignal
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
@@ -176,6 +188,7 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
   }
   const ctx: RunContext = {
     limit: createLimiter(compiled.concurrency),
+    ledger: createLedger(compiled.maxReviewTokens),
     emit,
     signal,
     fail,
@@ -242,16 +255,26 @@ async function reviewAll(ctx: RunContext, runs: readonly ProfileRun[], diff: str
   return Promise.all(runs.map(run => reviewProfile(ctx, run, diff, sections)))
 }
 
-/** One profile's review: its panel's outcome, with the research gaps before the panel's own. */
+/**
+ * One profile's review: its panel's outcome, with the research gaps before the panel's own, and last the
+ * gap of each limit that stopped its work, reported by an `incomplete` event once the panel's stage has ended.
+ */
 async function reviewProfile(ctx: RunContext, run: ProfileRun, diff: string, sections: ReadonlyMap<string, string>): Promise<PanelOutcome> {
   const researched = await stage(ctx, run.id, 'research', () => research(ctx, run, diff, sections), outcome => outcome.findings.length)
   const candidates = await stage(ctx, run.id, 'dedup', () => dedup(researched.findings), found => found.length)
   const judged = await stage(ctx, run.id, 'panel', () => panel(ctx, run, candidates, sections, diff), outcome => outcome.kept.length + outcome.discarded.length + outcome.unreviewed.length)
+  const limits = limitGaps(run.id, researched.stopped, [
+    ...judged.kept,
+    ...judged.discarded,
+    ...judged.unreviewed,
+  ], { cap: ctx.ledger.cap })
+  for (const entry of limits) ctx.emit({ type: 'incomplete', entry })
   return {
     ...judged,
     incomplete: [
       ...researched.incomplete,
       ...judged.incomplete,
+      ...limits,
     ],
   }
 }
@@ -368,9 +391,13 @@ function profileListIssues(profiles: readonly unknown[]): { issues: ConfigIssue[
   return { issues, checked, named }
 }
 
-/** `concurrency` and `maxFindings` are positive integers when set. A number is quoted; anything else is described by the rule alone. */
+/**
+ * `concurrency` and `maxFindings` are positive integers when set, and `maxReviewTokens` a whole number of
+ * tokens from 1 to 9007199254740991. A number is quoted in the first two; anything else is described by the
+ * rule alone.
+ */
 function limitIssues(options: Record<string, unknown>): ConfigIssue[] {
-  return LIMITS.flatMap((path) => {
+  const issues: ConfigIssue[] = LIMITS.flatMap((path) => {
     const value = options[path]
     if (value === undefined || (typeof value === 'number' && Number.isInteger(value) && value >= 1)) return []
     const got = typeof value === 'number'
@@ -380,6 +407,11 @@ function limitIssues(options: Record<string, unknown>): ConfigIssue[] {
       { path, message: `must be a positive integer${got}` },
     ]
   })
+  const problem = options.maxReviewTokens === undefined
+    ? undefined
+    : maxReviewTokensProblem(options.maxReviewTokens)
+  if (problem !== undefined) issues.push({ path: 'maxReviewTokens', message: problem })
+  return issues
 }
 
 /** The ports of each checked profile in order, then the ports no profile of the run names, then the sink. */

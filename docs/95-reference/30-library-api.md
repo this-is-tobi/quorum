@@ -12,6 +12,7 @@ interface QuorumOptions {
   readonly concurrency?: number
   readonly maxFindings?: number
   readonly exclude?: readonly string[]
+  readonly maxReviewTokens?: number
 }
 
 interface QuorumPorts {
@@ -38,6 +39,7 @@ interface Quorum {
 | `concurrency` | The most provider calls in flight at once in one review, shared by every profile; a positive integer | `4` |
 | `maxFindings` | The most findings of a research reply each profile reads, the only ones that can reach its panel; a positive integer | `50` |
 | `exclude` | Path patterns of the files left out of every request ([Excludes](../20-using/20-configuration.md#excludes)). Each file excluded reaches no model and is listed in `meta.leftOut` as `excluded`, never as a gap. At most 100 patterns, each at most 256 characters | None |
+| `maxReviewTokens` | The most tokens, input and output, one review may spend: [The token cap](../20-using/20-configuration.md#the-token-cap). A whole number from 1 to 9007199254740991 | `2000000` |
 | `ports.profiles` | One entry per profile, keyed by profile id: `research`, its research provider, and `voters`, one provider per lens keyed by lens id. A provider may state its `timeoutMs`, its `retries` and its `worstCase`: [What a provider states](../20-using/30-providers.md#what-a-provider-states) | Required |
 | `ports.events` | The event sink: a function that receives every event of every review | None |
 
@@ -54,6 +56,7 @@ One provider object may fill several ports: the research provider of a profile c
 | `profiles.<index>`, `<id>` and below | The profile's own issues: [The checks](../20-using/40-profiles.md#the-checks) |
 | `profiles.<index>.id` | `repeats the profile id "security"` |
 | `concurrency`, `maxFindings` | `must be a positive integer, got 0`, the value quoted when it is a number |
+| `maxReviewTokens` | `must be a whole number of tokens from 1 to 9007199254740991` |
 | `exclude` | `must be an array`, or `must hold at most 100 patterns` |
 | `exclude.<index>` | `must be a string`, or what to write instead: `must not be empty`, `must be at most 256 characters long`, `ends with /, so it matches no file: end it with /** to leave out what the directory holds`, `holds ** inside a name: …`, `holds an empty, . or .. name, which no path in a diff has: …`, `holds \, which escapes nothing here: …`, `holds !, which negates nothing here: …` or `holds {, which lists no alternatives here: …` |
 | `ports.profiles` | `must be an object keyed by profile id` |
@@ -121,9 +124,9 @@ The sink receives every event of a review, synchronously and in order, as each t
 | `flag` | `flag`, as `meta.flags` holds it: [A flag](./20-json-result.md#a-flag) | Once per flag, after `run:start`, the `left-out` event and the gaps, before any stage |
 | `stage:start` | `profile`; `stage`: `research`, `dedup` or `panel` | When a stage of a profile starts |
 | `stage:end` | `profile`, `stage`; `durationMs`, the stage's wall-clock time, waits for a concurrency slot included; `count`, the findings it produced, or the verdicts for `panel` | When that stage ends |
-| `call` | `profile`; `role`: `research` or `vote`; `lens`, for a vote; `provider`, its `{ id, model }`; `durationMs`, from the call's first attempt to its end, inside its slot, the waits between attempts included; `ok`; `attempts`, the number of attempts, only when the call made more than one; `usage`, summed over its attempts, when the counts they reported are valid: a call that succeeded, or one that failed on a reply its provider read and refused, whose error carries them in an own `usage` property ([`ProviderError`](../20-using/30-providers.md#providererror)) | Once per provider call, failed ones included |
+| `call` | `profile`; `role`: `research` or `vote`; `lens`, for a vote; `provider`, its `{ id, model }`; `durationMs`, from the call's first attempt to its end, inside its slot, the waits between attempts included; `ok`; `attempts`, the number of attempts, only when the call made more than one; `usage`, summed over its attempts, when the counts they reported are valid: a call that succeeded, or one that failed on a reply its provider read and refused, whose error carries them in an own `usage` property ([`ProviderError`](../20-using/30-providers.md#providererror)); `spent`, the tokens the review's cap counted for the call: each attempt's reported usage, nothing for one the server refused before any work, else its reservation ([The token cap](../20-using/20-configuration.md#the-token-cap)) | Once per provider call, failed ones included; none for a call the cap stopped before its first attempt |
 | `finding:invalid` | `profile`; `reason`, such as `src/auth.js:3 is not in the diff` | Once per finding dropped for citing code outside the diff |
-| `incomplete` | `entry`, as `meta.incomplete` will hold it | Once per gap, as it is recorded: the gaps of the diff's binary and submodule files first, right after `run:start` and the `left-out` event |
+| `incomplete` | `entry`, as `meta.incomplete` will hold it | Once per gap, as it is recorded: the gaps of the diff's binary and submodule files first, right after `run:start` and the `left-out` event; a limit's gap last for its profile, after the `stage:end` of its `panel` |
 | `vote` | `profile`, `findingId`, `lens`; `keep`: `true`, `false`, or `null` when the vote failed; `error`, then `failure`, for a failed vote: its `kind` and, for an `http` failure, its `status`, as the result's vote holds them ([A vote](./20-json-result.md#a-vote)) | Once per vote |
 | `verdict` | `profile`, `findingId`, `keptVotes`, `totalVotes`; `confidence`, when it reached one; `status`: `kept`, `discarded` or `unreviewed` | Once per finding, when all its votes are in |
 | `run:end` | `kept`, `discarded`, `unreviewed` and `incomplete`, the counts; `durationMs` | Last, when the review ends |
@@ -133,7 +136,7 @@ The first events of the review on [The JSON result](./20-json-result.md#an-examp
 ```text
 {"type":"run:start","profiles":["security"],"providers":{"security":{"research":{"id":"default","model":"qwen3.6:27b"},"lenses":{"reachability":{"id":"default","model":"qwen3.6:27b"},"impact":{"id":"default","model":"qwen3.6:27b"},"defenses":{"id":"default","model":"qwen3.6:27b"}}}}}
 {"type":"stage:start","profile":"security","stage":"research"}
-{"type":"call","profile":"security","role":"research","provider":{"id":"default","model":"qwen3.6:27b"},"durationMs":0,"ok":true,"usage":{"inputTokens":1840,"outputTokens":412}}
+{"type":"call","profile":"security","role":"research","provider":{"id":"default","model":"qwen3.6:27b"},"durationMs":0,"ok":true,"usage":{"inputTokens":1840,"outputTokens":412},"spent":2252}
 {"type":"finding:invalid","profile":"security","reason":"src/auth.js:3 is not in the diff"}
 {"type":"incomplete","entry":{"profile":"security","reason":"finding-unreadable","detail":"findings[4]: quote: Invalid input: expected string, received undefined"}}
 {"type":"stage:end","profile":"security","stage":"research","durationMs":8,"count":3}

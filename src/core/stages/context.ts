@@ -2,6 +2,8 @@ import type { Clock } from '../clock.ts'
 import type { Limiter } from '../concurrency.ts'
 import { PROVIDER_ERROR_KINDS, ProviderError } from '../errors.ts'
 import type { ProviderErrorKind } from '../errors.ts'
+import { settlementOf } from '../limits.ts'
+import type { Ledger } from '../limits.ts'
 import { isRecord } from '../output.ts'
 import { DEFAULT_TIMEOUT_MS, MAX_STATED_TIMEOUT_MS, retriesProblem, timeoutProblem } from '../ports.ts'
 import type { CompletionRequest, CompletionResponse, EventSink, Provider } from '../ports.ts'
@@ -53,6 +55,12 @@ export interface ProfileRun {
 export interface RunContext {
   /** The review's one concurrency limit, shared by every profile. */
   readonly limit: Limiter
+  /**
+   * The review's one token ledger, shared by every profile: each attempt of a call reserves its worst case in
+   * it before the attempt is sent and settles after, inside the call's slot, so the attempts in flight can
+   * never pass the cap between them.
+   */
+  readonly ledger: Ledger
   /** Delivers one event of the review to the sink, as a copy; it delivers nothing once the review is aborted. */
   readonly emit: EventSink
   /**
@@ -229,56 +237,94 @@ export function elapsed(started: number): number {
  * them holding the slot: the review's abort ends a wait at once, and no failure is retried once the
  * review is aborted. Each attempt has the provider's deadline, and the provider is handed the
  * attempt's own signal, so it can stop a call in flight: the review's abort settles the attempt at
- * once, without waiting for the provider. A call whose last attempt failed hands that failure and
- * its attempts to `onFailure`, once, inside its slot, after its failed event and before the
- * rethrow: the research stage aborts the review there for a gating profile, so the queued call the
- * slot goes to next never starts. A failed vote has no `onFailure`: the panel records it. The
- * duration is measured inside the slot, from the first attempt, once the request is built, to the
- * call's end, the waits included: the provider's latency, not the time the call waited for a slot
- * or took to build its request. A reply whose text is not a string is a `ProviderError`. Each call
- * emits one `call` event, which names the provider by the ref captured at creation, never by the
- * live object, and counts its attempts when it made more than one: failed, before the error is
- * rethrown, with the usage summed over its attempts when their counts are valid, or ok, with that
- * usage. The ok event is emitted outside the `try` that catches the provider's failure, so a sink
- * that throws on it is never reported as a failed call.
+ * once, without waiting for the provider.
+ *
+ * Each attempt, the first and every retry, reserves the call's worst case (`reservationOf`, taken once
+ * the request is built) in the review's ledger before it is sent, and settles it once it ends, inside the
+ * slot: at the usage its reply or its failure reports, at nothing when the server refused it before any
+ * work, else at the whole reservation. An attempt that does not fit beside what was settled is never
+ * sent, and the call fails with the cap's `LimitError`; one that fits but not beside the attempts in
+ * flight waits for them, holding its slot, and the review's abort ends that wait too. A call a limit
+ * stops before its first attempt sends no `call` event, since no provider was called; one it stops
+ * after an attempt sends its failed event first, as any failed call does.
+ *
+ * A call that fails once its request is built, for any reason, ends through one place: it sends its
+ * failed `call` event when an attempt was made, then hands that failure and the attempts made, 0 when
+ * none, to `onFailure`, once, inside its slot, and rethrows. The research stage aborts the review there
+ * for a gating profile, so the queued call the slot goes to next never starts; a failed vote has no
+ * `onFailure`: the panel records it. The duration is measured inside the slot, from the first attempt,
+ * once the request is built, to the call's end, the waits included: the provider's latency, not the time
+ * the call waited for a slot or for room, or took to build its request. A reply whose text is not a string
+ * is a `ProviderError`. Each call emits one `call` event, which names the provider by the ref captured at
+ * creation, never by the live object, and counts its attempts when it made more than one: failed, before
+ * the error is rethrown, with the usage summed over its attempts when their counts are valid, or ok, with
+ * that usage; both carry `spent`, the sum of what its attempts settled at. The ok event is emitted outside
+ * the `try` that catches the provider's failure, so a sink that throws on it is never reported as a failed
+ * call.
  */
 export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest, onFailure?: (error: unknown, attempts: number) => void): Promise<string> {
   return ctx.limit(async () => {
     ctx.signal.throwIfAborted()
     const request = buildRequest()
+    const reservation = reservationOf(target, request)
     const started = ctx.clock.now()
     const took = (): number => Math.round(ctx.clock.now() - started)
     let attempts = 0
     let usage: Usage | undefined
+    let spent = 0
     let timedOut = false
     let response: CompletionResponse | undefined
+    let replied: Usage | undefined
+    /** Settles the attempt's reservation at `tokens`, which the call's `spent` adds. */
+    const settle = (tokens: number): void => {
+      ctx.ledger.settle(reservation, tokens)
+      spent += tokens
+    }
+    /** Ends the call with `error`: its failed event when an attempt was made, then `onFailure`; the error to throw. */
+    const end = (error: unknown): unknown => {
+      if (attempts > 0) {
+        ctx.emit({
+          type: 'call',
+          ...requester,
+          provider: target.ref,
+          durationMs: took(),
+          ok: false,
+          ...counted(attempts, usage, spent),
+        })
+      }
+      // Still inside the slot: a review aborted here never starts the queued call the slot goes to next.
+      onFailure?.(error, attempts)
+      return error
+    }
     while (response === undefined) {
+      try {
+        await ctx.ledger.reserve(reservation, ctx.signal)
+      } catch (error) {
+        throw end(error)
+      }
       attempts += 1
       try {
         const reply = await attempt(ctx, target, request)
         if (typeof reply?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
+        // The reply's usage is read once, so its settlement and its event cannot disagree.
+        replied = checkedUsage(reply.usage)
+        settle(settlementOf(reservation, replied))
         response = reply
       } catch (error) {
-        usage = addUsage(usage, failureUsage(error))
+        const reported = failureUsage(error)
+        usage = addUsage(usage, reported)
         const facts = failureFacts(error)
+        settle(settlementOf(reservation, reported, facts))
         const wait = ctx.signal.aborted
           ? undefined
           : retryWait(facts, { retried: attempts - 1, retries: target.retries, timedOut }, ctx.clock.random)
-        if (wait === undefined) {
-          ctx.emit({
-            type: 'call',
-            ...requester,
-            provider: target.ref,
-            durationMs: took(),
-            ok: false,
-            ...counted(attempts, usage),
-          })
-          // Still inside the slot: a review aborted here never starts the queued call the slot goes to next.
-          onFailure?.(error, attempts)
-          throw error
-        }
+        if (wait === undefined) throw end(error)
         timedOut ||= isTimeout(facts)
-        await pause(ctx, wait)
+        try {
+          await pause(ctx, wait)
+        } catch (stopped) {
+          throw end(stopped)
+        }
       }
     }
     ctx.emit({
@@ -287,14 +333,14 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       provider: target.ref,
       durationMs: took(),
       ok: true,
-      ...counted(attempts, addUsage(usage, checkedUsage(response.usage))),
+      ...counted(attempts, addUsage(usage, replied), spent),
     })
     return response.text
   })
 }
 
-/** The fields of a `call` event that hold what the call's attempts add up to: their number when above one, and their summed usage when valid. */
-function counted(attempts: number, usage: Usage | undefined): { attempts?: number, usage?: Usage } {
+/** The fields of a `call` event that hold what the call's attempts add up to: their number when above one, their summed usage when valid, and the tokens the cap counted. */
+function counted(attempts: number, usage: Usage | undefined, spent: number): { attempts?: number, usage?: Usage, spent: number } {
   return {
     ...(attempts > 1
       ? { attempts }
@@ -302,6 +348,7 @@ function counted(attempts: number, usage: Usage | undefined): { attempts?: numbe
     ...(usage === undefined
       ? {}
       : { usage }),
+    spent,
   }
 }
 

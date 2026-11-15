@@ -1,19 +1,22 @@
+import { getEventListeners } from 'node:events'
 import { describe, expect, it, onTestFinished } from 'vitest'
 import { fakeClock, settle } from '../../testing/clock.ts'
 import type { FakeClock } from '../../testing/clock.ts'
 import { createLimiter } from '../concurrency.ts'
 import { ProviderError } from '../errors.ts'
+import { createLedger, LimitError } from '../limits.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../ports.ts'
 import type { QuorumEvent } from '../types.ts'
 import { callProvider, reservationOf, targetOf } from './context.ts'
 import type { Requester, RunContext, Target } from './context.ts'
 
 /** A context of one review: its events as the sink would receive them, and what `fail` was given. */
-function context(clock: FakeClock, controller = new AbortController(), concurrency = 1): { ctx: RunContext, events: QuorumEvent[], failures: unknown[] } {
+function context(clock: FakeClock, controller = new AbortController(), concurrency = 1, limits: { readonly cap?: number } = {}): { ctx: RunContext, events: QuorumEvent[], failures: unknown[] } {
   const events: QuorumEvent[] = []
   const failures: unknown[] = []
   const ctx: RunContext = {
     limit: createLimiter(concurrency),
+    ledger: createLedger(limits.cap ?? 2_000_000),
     emit: (event) => {
       if (!controller.signal.aborted) events.push(event)
     },
@@ -28,7 +31,7 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
 }
 
 /** A target whose provider's own id is not the id of its ref, which is the one an error and an event name. */
-function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'retries'>> = {}): Target {
+function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'retries' | 'worstCase'>> = {}): Target {
   return {
     provider: { id: 'live-id', model: 'm', complete },
     ref: { id: 'p', model: 'm' },
@@ -48,6 +51,13 @@ const request: CompletionRequest = {
 }
 
 const requester: Requester = { profile: 'security', role: 'vote', lens: 'impact' }
+
+/** The worst case a provider states: `tokens` for any request. */
+function worst(tokens: number): Pick<Target, 'worstCase'> {
+  return {
+    worstCase: () => tokens,
+  }
+}
 
 /** One turn of the event loop's macrotask queue: every microtask queued so far has run. */
 const turn = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
@@ -81,6 +91,7 @@ describe('the deadline of an attempt', () => {
         provider: { id: 'p', model: 'm' },
         durationMs: 1000,
         ok: false,
+        spent: 16_516,
       },
     ])
   })
@@ -228,6 +239,7 @@ describe('the retries of a call', () => {
       ok: true,
       attempts: 2,
       usage: { inputTokens: 4, outputTokens: 6 },
+      spent: 10,
     })
     await expect(settle(clock, queued)).resolves.toBe('queued')
     expect(order).toEqual(['first', 'first', 'queued'])
@@ -486,5 +498,248 @@ describe('the worst case of a call', () => {
       ...stating,
       worstCase: () => Number.MAX_SAFE_INTEGER,
     }, request)).toBe(Number.MAX_SAFE_INTEGER)
+  })
+})
+
+describe('the review\'s token cap', () => {
+  const NO_ROOM = 'the review\'s token cap of 100 tokens leaves no room for this call'
+  const used = (inputTokens: number, outputTokens: number): Pick<CompletionResponse, 'usage'> => ({
+    usage: { inputTokens, outputTokens },
+  })
+  /** What each `call` event counted, in the order sent. */
+  const spentOf = (events: readonly QuorumEvent[]): Array<number | undefined> => events.map(event => event.type === 'call'
+    ? event.spent
+    : undefined)
+
+  it('refuses an attempt that does not fit beside the settled total, before sending it, with no event', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock, new AbortController(), 1, { cap: 100 })
+    let sent = 0
+    const metered = target(async () => {
+      sent += 1
+      return {
+        text: 'ok',
+        model: 'm',
+        ...used(50, 10),
+      }
+    }, worst(60))
+    await expect(callProvider(ctx, requester, metered, () => request)).resolves.toBe('ok')
+    expect(spentOf(events)).toEqual([60])
+    const error = await callProvider(ctx, requester, metered, () => request).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(LimitError)
+    expect(error).toMatchObject({ limit: 'token-cap', message: NO_ROOM })
+    expect(sent).toBe(1)
+    expect(events).toHaveLength(1)
+    expect(clock.pending()).toBe(0)
+    let sentOver = 0
+    const over = target(async () => {
+      sentOver += 1
+      return { text: 'ok', model: 'm' }
+    }, worst(101))
+    await expect(callProvider(context(clock, new AbortController(), 1, { cap: 100 }).ctx, requester, over, () => request)).rejects.toMatchObject({ limit: 'token-cap', message: NO_ROOM })
+    expect(sentOver).toBe(0)
+  })
+
+  it('waits inside its slot while the reservations in flight leave no room, and goes once one settles lower', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock, new AbortController(), 2, { cap: 100 })
+    const sent: string[] = []
+    let release: (response: CompletionResponse) => void = () => {}
+    const first = target(() => {
+      sent.push('first')
+      return new Promise<CompletionResponse>((resolve) => {
+        release = resolve
+      })
+    }, {
+      ...worst(60),
+      timeoutMs: 100_000,
+    })
+    const second = target(async () => {
+      sent.push('second')
+      return {
+        text: 'second',
+        model: 'm',
+        ...used(5, 5),
+      }
+    }, worst(60))
+    const one = callProvider(ctx, requester, first, () => request)
+    const two = callProvider(ctx, { ...requester, lens: 'defenses' }, second, () => request)
+    await turn()
+    expect(sent).toEqual(['first'])
+    release({
+      text: 'first',
+      model: 'm',
+      ...used(12, 8),
+    })
+    await expect(one).resolves.toBe('first')
+    await expect(two).resolves.toBe('second')
+    expect(sent).toEqual(['first', 'second'])
+    expect(spentOf(events)).toEqual([20, 10])
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('refuses a waiter once the settlement it waited for leaves no room', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock, new AbortController(), 2, { cap: 100 })
+    let release: (response: CompletionResponse) => void = () => {}
+    const first = target(() => new Promise<CompletionResponse>((resolve) => {
+      release = resolve
+    }), {
+      ...worst(60),
+      timeoutMs: 100_000,
+    })
+    let sent = 0
+    const second = target(async () => {
+      sent += 1
+      return { text: 'second', model: 'm' }
+    }, worst(60))
+    const one = callProvider(ctx, requester, first, () => request)
+    const two = callProvider(ctx, { ...requester, lens: 'defenses' }, second, () => request).catch((caught: unknown) => caught)
+    await turn()
+    release({
+      text: 'first',
+      model: 'm',
+      ...used(30, 20),
+    })
+    await expect(one).resolves.toBe('first')
+    const error = await two
+    expect(error).toBeInstanceOf(LimitError)
+    expect(error).toMatchObject({ limit: 'token-cap', message: NO_ROOM })
+    expect(sent).toBe(0)
+    expect(spentOf(events)).toEqual([50])
+  })
+
+  it('ends every wait for room on the review\'s abort, with its reason, and leaves no timer', async () => {
+    const clock = fakeClock()
+    const controller = new AbortController()
+    const { ctx, events } = context(clock, controller, 2, { cap: 100 })
+    let sent = 0
+    const stuck = target(() => {
+      sent += 1
+      return new Promise<CompletionResponse>(() => {})
+    }, {
+      ...worst(60),
+      timeoutMs: 100_000,
+    })
+    const one = callProvider(ctx, requester, stuck, () => request)
+    const two = callProvider(ctx, { ...requester, lens: 'defenses' }, stuck, () => request)
+    let built = 0
+    const three = callProvider(ctx, { ...requester, lens: 'reachability' }, stuck, () => {
+      built += 1
+      return request
+    })
+    await turn()
+    expect(sent).toBe(1)
+    expect(clock.pending()).toBe(1)
+    const reason = new Error('stop')
+    controller.abort(reason)
+    await expect(one).rejects.toBe(reason)
+    await expect(two).rejects.toBe(reason)
+    await expect(three).rejects.toBe(reason)
+    expect(sent).toBe(1)
+    expect(built).toBe(0)
+    expect(clock.pending()).toBe(0)
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
+    expect(events).toEqual([])
+  })
+
+  it('reserves again for a retry, and refuses a retry the cap no longer fits, ending the call with the cap\'s failure', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, events } = context(clock, new AbortController(), 1, { cap: 130 })
+    let ran = 0
+    const flaky = target(async () => {
+      ran += 1
+      if (ran === 1) {
+        throw failure({
+          kind: 'http',
+          status: 503,
+          retryable: true,
+          usage: { inputTokens: 40, outputTokens: 40 },
+        })
+      }
+      return { text: 'second', model: 'm' }
+    }, {
+      ...worst(60),
+      retries: 2,
+    })
+    const error = await settle(clock, callProvider(ctx, requester, flaky, () => request)).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(LimitError)
+    expect(error).toMatchObject({ limit: 'token-cap', message: 'the review\'s token cap of 130 tokens leaves no room for this call' })
+    expect(ran).toBe(1)
+    expect(events).toEqual([
+      {
+        type: 'call',
+        profile: 'security',
+        role: 'vote',
+        lens: 'impact',
+        provider: { id: 'p', model: 'm' },
+        durationMs: 250,
+        ok: false,
+        usage: { inputTokens: 40, outputTokens: 40 },
+        spent: 80,
+      },
+    ])
+    expect(events[0]).not.toHaveProperty('attempts')
+    expect(clock.pending()).toBe(0)
+  })
+
+  it.each<[string, () => Promise<CompletionResponse>, number]>([
+    [
+      'a reply\'s usage',
+      async () => ({
+        text: 'ok',
+        model: 'm',
+        ...used(7, 3),
+      }),
+      10,
+    ],
+    [
+      'a reply without usage',
+      async () => ({ text: 'ok', model: 'm' }),
+      60,
+    ],
+    [
+      'an http 400 without usage',
+      async () => {
+        throw failure({ kind: 'http', status: 400 })
+      },
+      0,
+    ],
+    [
+      'an http 408',
+      async () => {
+        throw failure({ kind: 'http', status: 408 })
+      },
+      60,
+    ],
+    [
+      'a too-large refusal',
+      async () => {
+        throw new ProviderError({ providerId: 'p', kind: 'too-large', message: 'too big' })
+      },
+      0,
+    ],
+    [
+      'a 503',
+      async () => {
+        throw failure({ kind: 'http', status: 503 })
+      },
+      60,
+    ],
+    [
+      'a truncated failure with usage',
+      async () => {
+        throw failure({
+          kind: 'truncated',
+          usage: { inputTokens: 50, outputTokens: 40 },
+        })
+      },
+      90,
+    ],
+  ])('settles %s through a call', async (_name, complete, spent) => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    await callProvider(ctx, requester, target(complete, worst(60)), () => request).catch(() => undefined)
+    expect(spentOf(events)).toEqual([spent])
   })
 })

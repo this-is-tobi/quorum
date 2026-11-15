@@ -2,7 +2,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 import type { z } from 'zod'
 import { hiddenLabels } from '../core/sanitize.ts'
 import type { QuorumResult } from '../core/types.ts'
-import { record, RESULT, resultWith, RUN_SUITE } from '../testing/bench.ts'
+import { record, RESULT, resultWith, RUN_SUITE, verdict } from '../testing/bench.ts'
 import { parseRecord, parseRunFile, recordLine, reviewKey } from './records.ts'
 import type { DeniedRecord, ResultRecord, resultSchema, RunFile } from './records.ts'
 
@@ -319,6 +319,38 @@ describe('parseRecord, level by level', () => {
       }),
     })
     expect(parseRecord(recordLine(failed).slice(0, -1))).toEqual(failed)
+  })
+
+  it('reads a record with a token-cap gap and a vote that failed with it', () => {
+    const capped = record({
+      result: resultWith({
+        unreviewed: [
+          {
+            ...verdict('c.js', 9),
+            keptVotes: 1,
+            totalVotes: 2,
+            votes: [
+              {
+                angle: 'reachability',
+                vote: { keep: true, reasoning: 'It is reachable.' },
+                error: null,
+                failure: null,
+              },
+              {
+                angle: 'impact',
+                vote: null,
+                error: 'the review\'s token cap of 100 tokens leaves no room for this call',
+                failure: { kind: 'token-cap' },
+              },
+            ],
+          },
+        ],
+        incomplete: [
+          { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 100 tokens stopped 1 vote(s)' },
+        ],
+      }),
+    })
+    expect(parseRecord(recordLine(capped).slice(0, -1))).toEqual(capped)
   })
 
   it('drops a __proto__ key of a record without letting it reach a prototype', () => {

@@ -1865,7 +1865,8 @@ describe('abort', () => {
     const quorum = createQuorum({
       profiles: [securityProfile],
     }, portsFor(securityProfile, finder))
-    await expect(quorum.review({ diff }, { signal: controller.signal })).rejects.toBe(controller.signal.reason)
+    const rejection = await quorum.review({ diff }, { signal: controller.signal }).catch((error: unknown) => error)
+    expect(rejection).toBe(controller.signal.reason)
   })
 
   it('refuses a signal that is not an AbortSignal', async () => {
@@ -2499,5 +2500,83 @@ describe('a request too large for its provider', () => {
       ])
       expect(ran()).toBe(0)
     })
+  })
+})
+
+describe('the review\'s token cap', () => {
+  it('records the research the cap refuses as the gating profile\'s token-cap gap, never a failed review', async () => {
+    const finder = fake('finder', () => findings(reported))
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [securityProfile],
+      maxReviewTokens: 10,
+    }, {
+      ...portsFor(securityProfile, finder),
+      events: event => events.push(event),
+    }).review({ diff })
+    const gap: IncompleteEntry = { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 10 tokens stopped its research' }
+    expect(result.meta.incomplete).toEqual([gap])
+    expect(result.kept).toEqual([])
+    expect(result.unreviewed).toEqual([])
+    expect(finder.requests).toEqual([])
+    expect(events.filter(event => event.type === 'call')).toEqual([])
+    expect(events.filter(event => event.type === 'incomplete')).toEqual([
+      { type: 'incomplete', entry: gap },
+    ])
+  })
+
+  it('records the votes the cap refuses as failed votes of the cap, and one gap counting them, after the panel\'s stage:end', async () => {
+    const metered: Provider = {
+      id: 'metered',
+      model: 'metered-model',
+      worstCase: () => 100,
+      complete: async request => ({
+        text: isVote(request)
+          ? vote(true)
+          : findings(reported),
+        model: 'metered-model',
+        usage: { inputTokens: 60, outputTokens: 40 },
+      }),
+    }
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [securityProfile],
+      maxReviewTokens: 250,
+    }, {
+      ...portsFor(securityProfile, metered),
+      events: event => events.push(event),
+    }).review({ diff })
+    expect(events.filter(event => event.type === 'call').map(event => event.role)).toEqual(['research', 'vote'])
+    expect(result.kept).toEqual([])
+    expect(result.unreviewed).toHaveLength(1)
+    const failed = result.unreviewed[0].votes.filter(lensVote => lensVote.vote === null)
+    expect(failed.map(lensVote => lensVote.failure)).toEqual([
+      { kind: 'token-cap' },
+      { kind: 'token-cap' },
+    ])
+    expect(failed.map(lensVote => lensVote.error)).toEqual(Array.from({ length: 2 }).fill('the review\'s token cap of 250 tokens leaves no room for this call'))
+    const gap: IncompleteEntry = { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 250 tokens stopped 2 vote(s)' }
+    expect(result.meta.incomplete.at(-1)).toEqual(gap)
+    const panelEnd = events.findIndex(event => event.type === 'stage:end' && event.stage === 'panel')
+    expect(panelEnd).toBeGreaterThan(-1)
+    expect(events.slice(panelEnd + 1)).toEqual([
+      { type: 'incomplete', entry: gap },
+      expect.objectContaining({ type: 'run:end' }),
+    ])
+  })
+
+  it('refuses a maxReviewTokens that is not a whole number of at least 1', () => {
+    for (const maxReviewTokens of [0, 1.5]) {
+      expect(issuesOf(() => createQuorum({
+        profiles: [securityProfile],
+        concurrency: 0,
+        maxFindings: 0,
+        maxReviewTokens,
+      }, portsFor(securityProfile, provider)))).toEqual([
+        'concurrency: must be a positive integer, got 0',
+        'maxFindings: must be a positive integer, got 0',
+        'maxReviewTokens: must be a whole number of tokens from 1 to 9007199254740991',
+      ])
+    }
   })
 })
