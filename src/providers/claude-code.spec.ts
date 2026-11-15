@@ -1226,6 +1226,7 @@ describe('claudeCode', () => {
     expect(stated({})).toBe(2 * (text + 4096) + 3 * 16_000)
     expect(stated({ structuredOutput: 'prompt' })).toBe(text + 4096 + 16_000)
     expect(stated({ maxTokens: 8000 })).toBe(2 * (text + 4096) + 24_000)
+    expect(typeof Object.getOwnPropertyDescriptor(claudeCode(options), 'worstCase')?.value).toBe('function')
   })
 
   it('rejects as aborted, and starts nothing, when the signal has already aborted', async () => {
