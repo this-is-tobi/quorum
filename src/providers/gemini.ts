@@ -5,7 +5,7 @@ import type { CompletionRequest, CompletionResponse, Provider } from '../core/po
 import { postJson, snippet } from './http.ts'
 import type { ErrorHints } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues, unlessEmpty } from './options.ts'
+import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { endedEarly, joinedText, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget } from './size.ts'
@@ -116,25 +116,25 @@ function generationConfigIssues(id: string, extraBody: unknown): ConfigIssue[] {
   })
 }
 
-/** What shapes the generation config: the options that set it, and the mode. */
+/** What shapes the generation config: the options that set it, the reply's limit and the mode. */
 interface Generation {
   temperature: number | null | undefined
-  maxTokens: number | undefined
+  replyTokens: number
   structuredOutput: StructuredOutput
 }
 
-/** The generation config of a request, or undefined when it would be empty. */
-function generationConfig({ temperature, maxTokens, structuredOutput }: Generation, output: CompletionRequest['output']): Record<string, unknown> | undefined {
-  return unlessEmpty({
+/** The generation config of a request: it always holds the reply's limit. */
+function generationConfig({ temperature, replyTokens, structuredOutput }: Generation, output: CompletionRequest['output']): Record<string, unknown> {
+  return {
     temperature: temperature ?? undefined,
-    maxOutputTokens: maxTokens,
+    maxOutputTokens: replyTokens,
     responseMimeType: structuredOutput === 'prompt'
       ? undefined
       : 'application/json',
     responseJsonSchema: structuredOutput === 'schema'
       ? output.schema
       : undefined,
-  })
+  }
 }
 
 /**
@@ -189,7 +189,9 @@ function readReply(reply: unknown, { id, model }: Pick<GeminiOptions, 'id' | 'mo
 /**
  * A provider for the Gemini API's `generateContent`. The key, when there is one, travels only in the
  * header `auth` names, `x-goog-api-key` by default (invariant I1), never in the `key` query parameter. It
- * refuses, before any request, a request that may not fit `contextTokens`.
+ * refuses, before any request, a request that may not fit `contextTokens`. It sends the reply's limit,
+ * `maxTokens` else the budget of the size guard, as `generationConfig.maxOutputTokens`, so the server bounds
+ * a reply's length.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
@@ -217,7 +219,7 @@ export function gemini(options: GeminiOptions): Provider {
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       checkFits(id, { system, messages }, request.output, budget)
-      // JSON.stringify drops the undefined fields: no systemInstruction inline, no generationConfig when it is empty.
+      // JSON.stringify drops the undefined fields: no systemInstruction inline, no temperature unless set.
       const reply = await postJson<unknown>({
         providerId: id,
         url,
@@ -238,7 +240,7 @@ export function gemini(options: GeminiOptions): Provider {
                   { text: system },
                 ],
               },
-          generationConfig: generationConfig({ temperature, maxTokens, structuredOutput }, request.output),
+          generationConfig: generationConfig({ temperature, replyTokens: budget.replyTokens, structuredOutput }, request.output),
         }, extraBody),
         signal: request.signal,
         redact,

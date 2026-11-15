@@ -186,6 +186,10 @@ export function describeProviderContract(subject: ContractSubject): void {
       expect(subject.read.temperature((await send({ temperature: null })).body)).toBeUndefined()
     })
 
+    it('sends the reply\'s limit on every request: 16000 when maxTokens is unset, the budget the guard keeps', async () => {
+      expect(subject.read.maxTokens((await send()).body)).toBe(16_000)
+    })
+
     it('refuses a request that may not fit contextTokens, before sending it', async () => {
       const fetchMock = vi.fn()
       vi.stubGlobal('fetch', fetchMock)

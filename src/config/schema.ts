@@ -72,7 +72,7 @@ const providerShape = {
   extraBody: z.record(z.string(), z.json()).optional().describe('JSON values deep-merged into the request body last'),
   structuredOutput: z.enum(Object.keys(STRUCTURED_OUTPUTS) as [StructuredOutput, ...StructuredOutput[]]).optional().describe('How the reply shape reaches the endpoint: described in the prompt, as a JSON object, or as a strict schema'),
   temperature: z.number().nullable().optional().describe('The sampling temperature; null leaves the field out'),
-  maxTokens: z.int().min(1).optional().describe('The most tokens the reply may hold'),
+  maxTokens: z.int().min(1).optional().describe('The most tokens the reply may hold, thinking included, sent as the server\'s limit; 16000 when unset. On claude-code, Claude Code\'s own limit on each reply'),
   maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']).optional().describe('The body field that carries maxTokens, on the openai-compatible protocol'),
   systemPrompt: z.enum(['native', 'inline']).optional().describe('Where the instructions go: the protocol\'s system field, or inline in the first message'),
   timeoutMs: z.int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe('The deadline of one attempt of a call, in milliseconds; 600000 when unset. On claude-code, Claude Code\'s wait for each attempt\'s response headers, and the whole run\'s deadline is timeoutMs times retries plus one'),

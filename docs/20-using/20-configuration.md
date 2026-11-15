@@ -294,10 +294,11 @@ providers:
     - high
 ```
 
-- **`protocol: claude-code` has no preset and no base URL.** `preset: claude-code` is refused as an unknown preset, and a `baseUrl`, `headers`, `query`, `extraBody`, `temperature`, `maxTokens` or `systemPrompt` is refused.
+- **`protocol: claude-code` has no preset and no base URL.** `preset: claude-code` is refused as an unknown preset, and a `baseUrl`, `headers`, `query`, `extraBody`, `temperature` or `systemPrompt` is refused.
 - **`auth`** is `inherit`, `login` or `api-key`, `inherit` when unset: [The auth modes](#the-auth-modes).
 - **`args`** passes `--effort`, `--fallback-model`, `--max-budget-usd` and, in `api-key` mode, `--betas`, each followed by its value or written `--flag=value`. No other flag is accepted, so `args` cannot loosen the isolation: [Claude Code options](./30-providers.md#claude-code-options).
 - **`timeoutMs` and `retries` bound the run.** Its deadline is `timeoutMs` times `retries` plus one, 30 minutes by default, so raise `timeoutMs` for a long run, such as one at `--effort high`: [Stopping, nesting and the version](./30-providers.md#stopping-nesting-and-the-version).
+- **`maxTokens`** sets Claude Code's own limit on each reply, as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, 16000 by default: raise it, with `timeoutMs`, at a high `--effort`: [Stopping, nesting and the version](./30-providers.md#stopping-nesting-and-the-version).
 - **`structuredOutput`** is `schema` by default, and `prompt` leaves the reply's shape to the prompt.
 - **`apiKeyEnv`** names the variable that holds the key in `api-key` mode, `ANTHROPIC_API_KEY` by default. Under `inherit` or `login` it is refused, `providers.claude.apiKeyEnv: is set, but auth is not api-key`, and the variable is never read.
 - **A YAML or JSON provider cannot name the executable.** `command` is code-only: [Where the command comes from](#where-the-command-comes-from).
@@ -310,7 +311,7 @@ Quorum requires Claude Code 2.1.311 or newer. Before a provider's first request 
 
 `contextTokens` is what the model gives you, stated as for any provider: [The context size](#the-context-size). On Anthropic's API, `sonnet`, `opus` and `haiku` resolve to models with a 1M window, so `1000000`. On Bedrock and Vertex, `sonnet` and `haiku` resolve to the 4.5 models, whose window is `200000`. A 4.6 model has the 1M window only with the `[1m]` suffix, as in `opus[1m]`, and `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` in the environment holds the 1M models to 200K. When in doubt, state the smaller number.
 
-The guard keeps 4096 tokens for what Claude Code adds around the messages and 16000 for the reply, so the window must be more than 20096, and the diff a research request of the `security` profile leaves room for is `contextTokens` less 21,593 bytes: 1,497 of instructions, fences and reply schema, 4096 and 16000. [The size of a Claude Code request](./30-providers.md#the-size-of-a-claude-code-request) has the rule.
+The guard keeps 4096 tokens for what Claude Code adds around the messages and the reply budget, `maxTokens`, 16000 by default, so the window must be more than 20096 by default, and the diff a research request of the `security` profile leaves room for is `contextTokens` less 21,593 bytes: 1,497 of instructions, fences and reply schema, 4096 and 16000. [The size of a Claude Code request](./30-providers.md#the-size-of-a-claude-code-request) has the rule.
 
 ### The auth modes
 

@@ -57,7 +57,7 @@ export interface HttpProviderOptions {
   extraBody?: Readonly<Record<string, unknown>>
   /** `null` leaves the field out, for models that reject it. */
   temperature?: number | null
-  /** The most tokens the reply may hold. */
+  /** The most tokens the reply may hold, thinking included, sent as the server's limit. Default 16000. */
   maxTokens?: number
   systemPrompt?: SystemPrompt
   structuredOutput?: StructuredOutput
@@ -289,6 +289,14 @@ function isTokenCount(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 1
 }
 
+/** The problem of `maxTokens`, the reply's limit, when it is set and is not a whole number of at least 1. */
+export function maxTokensIssues(id: string, maxTokens: unknown): ConfigIssue[] {
+  if (maxTokens === undefined || (typeof maxTokens === 'number' && isTokenCount(maxTokens))) return []
+  return [
+    { path: `${id}.maxTokens`, message: 'must be a whole number of at least 1' },
+  ]
+}
+
 /**
  * The problems of `contextTokens`: not set, not a whole number of at least 1, or no more than the reply budget
  * and the template reserve (`TEMPLATE_TOKENS` unless the adapter names one), which leaves no room for a
@@ -367,9 +375,7 @@ export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRul
   if (temperature !== undefined && temperature !== null && !Number.isFinite(temperature)) {
     issues.push({ path: `${id}.temperature`, message: 'must be a finite number, or null to leave it out' })
   }
-  if (maxTokens !== undefined && !isTokenCount(maxTokens)) {
-    issues.push({ path: `${id}.maxTokens`, message: 'must be a whole number of at least 1' })
-  }
+  issues.push(...maxTokensIssues(id, maxTokens))
   issues.push(...contextTokensIssues(id, contextTokens, maxTokens))
   if (systemPrompt !== undefined && !SYSTEM_PROMPTS.has(systemPrompt)) issues.push({ path: `${id}.systemPrompt`, message: 'must be native or inline' })
   if (structuredOutput !== undefined && !structuredOutputs.includes(structuredOutput)) {
@@ -431,13 +437,6 @@ export function mergeBody(body: Record<string, unknown>, extra: Readonly<Record<
       : value
   }
   return merged
-}
-
-/** `fields`, or undefined when every one of them is undefined, so the body leaves out an object that would be empty. */
-export function unlessEmpty(fields: Record<string, unknown>): Record<string, unknown> | undefined {
-  return Object.values(fields).every(value => value === undefined)
-    ? undefined
-    : fields
 }
 
 /** Whether `value` is a non-null object that is not an array. */

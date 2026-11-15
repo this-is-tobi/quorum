@@ -10,9 +10,9 @@ import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
 import type { ChatMessage, CompletionRequest, CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
 import type { Usage } from '../core/types.ts'
 import { snippet } from './http.ts'
-import { attemptIssues, contextTokensIssues, isRecord, NOT_VISIBLE_ASCII, wordList } from './options.ts'
+import { attemptIssues, contextTokensIssues, isRecord, maxTokensIssues, NOT_VISIBLE_ASCII, wordList } from './options.ts'
 import { replyFailure, tokenUsage } from './reply.ts'
-import { checkFits, contextBudget, utf8Length } from './size.ts'
+import { checkFits, contextBudget, DEFAULT_REPLY_TOKENS, utf8Length } from './size.ts'
 
 /**
  * The `claude-code` adapter runs the user's installed `claude` CLI once per request, headless and isolated,
@@ -55,10 +55,16 @@ export interface ClaudeCodeOptions {
   model: string
   /**
    * The model's context window in tokens, prompt and reply together. Required: every request is checked
-   * against it and refused, before it is run, when it may not fit. It must be more than 20096, the reply
-   * budget and the reserve for what Claude Code adds.
+   * against it and refused, before it is run, when it may not fit. It must be more than `maxTokens` and the
+   * 4096 tokens reserved for what Claude Code adds: 20096 by default.
    */
   contextTokens: number
+  /**
+   * The most tokens each reply may hold, thinking included, which Claude Code reads from
+   * `CLAUDE_CODE_MAX_OUTPUT_TOKENS` and caps at the model's own limit: a whole number of at least 1. Default 16000.
+   * It replaces a `CLAUDE_CODE_MAX_OUTPUT_TOKENS` of the environment.
+   */
+  maxTokens?: number
   /** Whose credentials `claude` uses. Default `inherit`. */
   auth?: ClaudeCodeAuth
   /**
@@ -128,7 +134,6 @@ const HTTP_FIELDS = [
   'query',
   'extraBody',
   'temperature',
-  'maxTokens',
   'systemPrompt',
 ] as const
 const WINDOWS_SCRIPT = /\.(?:cmd|bat)$/i
@@ -381,14 +386,15 @@ function apiKeyIssues(path: string, auth: unknown, apiKey: unknown): ConfigIssue
  * message repeats a value: a key, a model id or an argument can be a secret.
  */
 export function claudeCodeIssues(options: ClaudeCodeOptions): ConfigIssue[] {
-  const { id, model, contextTokens, auth, apiKey, structuredOutput, args, command, timeoutMs, retries } = options
+  const { id, model, contextTokens, maxTokens, auth, apiKey, structuredOutput, args, command, timeoutMs, retries } = options
   const at = (field: string, message: string): ConfigIssue => ({ path: `${id}.${field}`, message })
   const given = options as unknown as Record<string, unknown>
   const issues: ConfigIssue[] = HTTP_FIELDS
     .filter(field => Object.hasOwn(given, field) && given[field] !== undefined)
     .map(field => at(field, 'is not an option of the claude-code protocol'))
   if (typeof model !== 'string' || !plainValue(model)) issues.push(at('model', 'must be a model id of visible ASCII characters, with no space, that does not start with -'))
-  issues.push(...contextTokensIssues(id, contextTokens, undefined, CLAUDE_CODE_TEMPLATE_TOKENS))
+  issues.push(...maxTokensIssues(id, maxTokens))
+  issues.push(...contextTokensIssues(id, contextTokens, maxTokens, CLAUDE_CODE_TEMPLATE_TOKENS))
   if (auth !== undefined && !AUTH_MODES.includes(auth)) issues.push(at('auth', `must be ${wordList(AUTH_MODES)}`))
   issues.push(...apiKeyIssues(`${id}.apiKey`, auth, apiKey))
   if (structuredOutput !== undefined && !STRUCTURED_OUTPUTS.includes(structuredOutput)) issues.push(at('structuredOutput', `must be ${wordList(STRUCTURED_OUTPUTS)}`))
@@ -441,14 +447,15 @@ function removedVariable(name: string, auth: ClaudeCodeAuth, runVariables: Reado
  * every credential, header and endpoint variable, so a login or a key never reaches another host or travels
  * with another credential. Names are matched in any letter case, since Windows reads them so. Under
  * `api-key`, `ANTHROPIC_API_KEY` is then `apiKey` when it is a non-empty string, else the environment's
- * own, trimmed, when that is not blank. Last come twelve variables the run sets over whatever the environment
+ * own, trimmed, when that is not blank. Last come thirteen variables the run sets over whatever the environment
  * held, in any case: no auto memory, no compaction of a long prompt, a temporary directory of its own, no
  * IDE connection or claude.ai MCP connector, which are on by default, no attachment, file mention,
- * `CLAUDE.md` file, bundled skill or managed skill, and Claude Code's wait for each attempt's response headers
- * and its own retries, which follow the provider's settings (`attempts`). A line naming a path (`@/path`) in the
- * message makes Claude Code attach that file for the model to read, with every tool off, unless the first two are set.
+ * `CLAUDE.md` file, bundled skill or managed skill, Claude Code's wait for each attempt's response headers
+ * and its own retries, and, the last, its limit on each reply, which follow the provider's settings
+ * (`settings`). A line naming a path (`@/path`) in the message makes Claude Code attach that file for the
+ * model to read, with every tool off, unless the first two are set.
  */
-export function childEnv(env: Readonly<Record<string, string | undefined>>, auth: ClaudeCodeAuth, apiKey: string | undefined, tmpDir: string, attempts: { readonly timeoutMs: number, readonly retries: number }): Record<string, string> {
+export function childEnv(env: Readonly<Record<string, string | undefined>>, auth: ClaudeCodeAuth, apiKey: string | undefined, tmpDir: string, settings: { readonly timeoutMs: number, readonly retries: number, readonly maxTokens: number }): Record<string, string> {
   const runVariables = {
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
     DISABLE_COMPACT: '1',
@@ -460,8 +467,9 @@ export function childEnv(env: Readonly<Record<string, string | undefined>>, auth
     CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
     CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1',
     CLAUDE_CODE_DISABLE_POLICY_SKILLS: '1',
-    API_TIMEOUT_MS: String(attempts.timeoutMs),
-    CLAUDE_CODE_MAX_RETRIES: String(attempts.retries),
+    API_TIMEOUT_MS: String(settings.timeoutMs),
+    CLAUDE_CODE_MAX_RETRIES: String(settings.retries),
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(settings.maxTokens),
   }
   const own = Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
   const inheritedKey = (own.find(([name]) => name === KEY_VARIABLE) ?? own.find(([name]) => name.toUpperCase() === KEY_VARIABLE))?.[1].trim()
@@ -627,11 +635,13 @@ function signalName(signal: string): string {
 
 /**
  * The reply of a result, or the `ProviderError` it amounts to, in this order: a prompt too long, a
- * refusal, an error (anything but an `is_error` of `false` is one), a child a signal ended or a non-zero
- * exit after a success, a tool the server ran, a reply the token limit cut off, then the text. Claude Code
- * reports an API error as exit 1 with `subtype: "success"` and `is_error: true`, so the JSON on stdout is
- * read before the exit code. Every failure carries the usage the result reports, summed as `sumUsage`
- * does, since the model generated and billed those tokens whatever came after.
+ * refusal, a reply Claude Code reports cut off at its output limit (an error result whose `api_error` is
+ * `max_output_tokens`, which it gives after continuing the reply three times), an error (anything but an
+ * `is_error` of `false` is one), a child a signal ended or a non-zero exit after a success, a tool the server
+ * ran, a reply the token limit cut off, then the text. Claude Code reports an API error as exit 1 with
+ * `subtype: "success"` and `is_error: true`, so the JSON on stdout is read before the exit code. Every
+ * failure carries the usage the result reports, summed as `sumUsage` does, since the model generated and
+ * billed those tokens whatever came after.
  */
 function readFinished(result: Record<string, unknown>, run: ClaudeRun, context: ResultContext): CompletionResponse {
   const modelUsage = isRecord(result.modelUsage)
@@ -641,6 +651,7 @@ function readFinished(result: Record<string, unknown>, run: ClaudeRun, context: 
   const fail = replyFailure(context.id, usage)
   if (isPromptTooLong(result)) throw fail('too-large', 'Claude Code refused the prompt as too long for the model\'s context')
   if (result.stop_reason === 'refusal') throw fail('refusal', 'model refused')
+  if (result.api_error === 'max_output_tokens') throw fail('truncated', 'reply was cut off by the token limit')
   if (result.is_error !== false || result.subtype !== 'success') throw errorFailure(result, run, context, usage)
   if (run.signal !== null) throw fail('process', `claude was stopped by ${signalName(run.signal)} after its result`)
   if (run.code !== null && run.code !== 0) throw fail('process', `claude exited ${run.code} after its result`, run.code)
@@ -663,7 +674,7 @@ function readFinished(result: Record<string, unknown>, run: ClaudeRun, context: 
  * JSON result: a signal, a non-zero exit with a quote of stderr, or nothing at all, each a failure. Every
  * quoted text goes through `snippet`, redacted of the key.
  *
- * @throws ProviderError of the kind the failure is: `too-large`, `refusal`, `http`, `process` or `invalid-response`
+ * @throws ProviderError of the kind the failure is: `too-large`, `refusal`, `truncated`, `http`, `process` or `invalid-response`
  */
 export function readResult(run: ClaudeRun, context: ResultContext): CompletionResponse {
   const result = parseResult(run.stdout)
@@ -1019,7 +1030,8 @@ async function requireVersion(launch: Launch, signal: AbortSignal | undefined, f
  * 1. exactly one message, a user message, else `unsupported`;
  * 2. a message that starts with `/` after white space, which `-p` would run as a command: `unsupported`;
  * 3. a message over `MAX_STDIN_BYTES` bytes: `too-large`;
- * 4. the size guard, with `CLAUDE_CODE_TEMPLATE_TOKENS` kept for the context Claude Code adds: `too-large`;
+ * 4. the size guard, with the reply budget, `maxTokens`, and `CLAUDE_CODE_TEMPLATE_TOKENS` kept for the
+ *    context Claude Code adds: `too-large`;
  * 5. an aborted signal: `aborted`;
  * 6. a directory of its own, under the temporary directory, holding an empty working directory, `claude`'s
  *    scratch directory and the system text's file: a failure to make it is `process`;
@@ -1041,23 +1053,25 @@ async function requireVersion(launch: Launch, signal: AbortSignal | undefined, f
  * Claude Code retries a failed API call by itself, ten times by default, so the provider sets `API_TIMEOUT_MS`
  * and `CLAUDE_CODE_MAX_RETRIES` in the child's environment from `timeoutMs` and `retries` (600000 ms and 2 by
  * default) over any the environment held, and states no retry to the core, which would retry what Claude Code
- * retried. It states one deadline for the whole run, `timeoutMs` times `retries` plus one: Claude Code's own
- * attempts and the waits between them, its start and the version check, and each reply's time after its
- * headers all count against it, where `API_TIMEOUT_MS` limits only an attempt's wait for its headers. At it
- * the core aborts the signal, which stops the child's group as step 11 says.
+ * retried. It sets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` the same way from `maxTokens` (16000 by default, where
+ * Claude Code asks for up to 128000 by itself), so the model's API bounds every reply. It states one deadline
+ * for the whole run, `timeoutMs` times `retries` plus one: Claude Code's own attempts and the waits between
+ * them, its start and the version check, and each reply's time after its headers all count against it, where
+ * `API_TIMEOUT_MS` limits only an attempt's wait for its headers. At it the core aborts the signal, which
+ * stops the child's group as step 11 says.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function claudeCode(options: ClaudeCodeOptions): Provider {
   const issues = claudeCodeIssues(options)
   if (issues.length > 0) throw new ConfigError(issues)
-  const { id, model, contextTokens, auth = 'inherit', apiKey, structuredOutput = 'schema', command = 'claude', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
-  const attempts = { timeoutMs, retries }
+  const { id, model, contextTokens, maxTokens = DEFAULT_REPLY_TOKENS, auth = 'inherit', apiKey, structuredOutput = 'schema', command = 'claude', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
+  const settings = { timeoutMs, retries, maxTokens }
   const args = [
     ...options.args ?? [],
   ]
   const env = Object.fromEntries(Object.entries(options.env ?? process.env))
-  const budget = contextBudget(contextTokens, undefined, CLAUDE_CODE_TEMPLATE_TOKENS)
+  const budget = contextBudget(contextTokens, maxTokens, CLAUDE_CODE_TEMPLATE_TOKENS)
 
   return {
     id,
@@ -1078,7 +1092,7 @@ export function claudeCode(options: ClaudeCodeOptions): Provider {
       const untrack = trackRun(live)
       try {
         throwIfAborted(signal, fail)
-        const environment = childEnv(env, auth, apiKey, run.tmp, attempts)
+        const environment = childEnv(env, auth, apiKey, run.tmp, settings)
         await requireVersion({
           command,
           args: [],

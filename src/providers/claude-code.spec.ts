@@ -15,8 +15,8 @@ import { CONTEXT_REQUIRED } from './options.ts'
 import { replyFailure } from './reply.ts'
 
 const options: ClaudeCodeOptions = { id: 'cc', model: 'sonnet', contextTokens: 200000 }
-/** The wait for each attempt's headers and the retries a provider with neither option hands Claude Code. */
-const ATTEMPTS = { timeoutMs: 600_000, retries: 2 }
+/** The wait for each attempt's headers, the retries and the reply limit a provider with none of the three options hands Claude Code. */
+const SETTINGS = { timeoutMs: 600_000, retries: 2, maxTokens: 16_000 }
 const ISOLATED = [
   '--tools',
   '',
@@ -202,10 +202,11 @@ describe('childEnv', () => {
     CLAUDE_CODE_DISABLE_POLICY_SKILLS: '1',
     API_TIMEOUT_MS: '600000',
     CLAUDE_CODE_MAX_RETRIES: '2',
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS: '16000',
   }
 
   it('passes the environment through under inherit, without the parent session\'s variables or what loads or adds, and with the isolation set: the connectors, attachments, mentions, CLAUDE.md files and bundled and managed skills off', () => {
-    expect(childEnv(env, 'inherit', undefined, '/run/tmp', ATTEMPTS)).toEqual({
+    expect(childEnv(env, 'inherit', undefined, '/run/tmp', SETTINGS)).toEqual({
       ...KEPT,
       ...CREDENTIALS,
       ...ISOLATION,
@@ -213,14 +214,14 @@ describe('childEnv', () => {
   })
 
   it('removes every credential, header and endpoint variable under login, so the Claude Code login answers', () => {
-    expect(childEnv(env, 'login', undefined, '/run/tmp', ATTEMPTS)).toEqual({
+    expect(childEnv(env, 'login', undefined, '/run/tmp', SETTINGS)).toEqual({
       ...KEPT,
       ...ISOLATION,
     })
   })
 
   it('removes the same variables under api-key, then sets its key', () => {
-    expect(childEnv(env, 'api-key', 'sk-mine', '/run/tmp', ATTEMPTS)).toEqual({
+    expect(childEnv(env, 'api-key', 'sk-mine', '/run/tmp', SETTINGS)).toEqual({
       ...KEPT,
       ...ISOLATION,
       ANTHROPIC_API_KEY: 'sk-mine',
@@ -228,7 +229,7 @@ describe('childEnv', () => {
   })
 
   it('keeps the environment\'s ANTHROPIC_API_KEY under api-key when it is given no key', () => {
-    expect(childEnv(env, 'api-key', undefined, '/run/tmp', ATTEMPTS)).toEqual({
+    expect(childEnv(env, 'api-key', undefined, '/run/tmp', SETTINGS)).toEqual({
       ...KEPT,
       ...ISOLATION,
       ANTHROPIC_API_KEY: 'sk-env',
@@ -253,9 +254,9 @@ describe('childEnv', () => {
       Claude_Code_Disable_Policy_Skills: '0',
       claude_code_force_session_persistence: '1',
     }
-    expect(childEnv(mixed, 'login', undefined, '/run/tmp', ATTEMPTS)).toEqual({ PATH: '/usr/bin', ...ISOLATION })
-    expect(childEnv(mixed, 'api-key', undefined, '/run/tmp', ATTEMPTS)).toEqual({ PATH: '/usr/bin', ...ISOLATION, ANTHROPIC_API_KEY: 'sk-win' })
-    expect(childEnv(mixed, 'inherit', undefined, '/run/tmp', ATTEMPTS)).toEqual({
+    expect(childEnv(mixed, 'login', undefined, '/run/tmp', SETTINGS)).toEqual({ PATH: '/usr/bin', ...ISOLATION })
+    expect(childEnv(mixed, 'api-key', undefined, '/run/tmp', SETTINGS)).toEqual({ PATH: '/usr/bin', ...ISOLATION, ANTHROPIC_API_KEY: 'sk-win' })
+    expect(childEnv(mixed, 'inherit', undefined, '/run/tmp', SETTINGS)).toEqual({
       PATH: '/usr/bin',
       Anthropic_Api_Key: 'sk-win',
       claude_code_use_bedrock: '1',
@@ -265,16 +266,25 @@ describe('childEnv', () => {
   })
 
   it('reads only the environment\'s own variables', () => {
-    expect(childEnv(Object.create({ ANTHROPIC_API_KEY: 'inherited' }) as Record<string, string>, 'inherit', undefined, '/t', ATTEMPTS)).toEqual({ ...ISOLATION, CLAUDE_CODE_TMPDIR: '/t' })
+    expect(childEnv(Object.create({ ANTHROPIC_API_KEY: 'inherited' }) as Record<string, string>, 'inherit', undefined, '/t', SETTINGS)).toEqual({ ...ISOLATION, CLAUDE_CODE_TMPDIR: '/t' })
   })
 
   it('sets Claude Code\'s own wait for each attempt\'s headers and its own retries from the provider\'s, over the environment\'s, in any letter case', () => {
-    expect(childEnv({ PATH: '/usr/bin', API_TIMEOUT_MS: '1', claude_code_max_retries: '10' }, 'inherit', undefined, '/t', { timeoutMs: 120_000, retries: 0 })).toEqual({
+    expect(childEnv({ PATH: '/usr/bin', API_TIMEOUT_MS: '1', claude_code_max_retries: '10' }, 'inherit', undefined, '/t', { timeoutMs: 120_000, retries: 0, maxTokens: 16_000 })).toEqual({
       PATH: '/usr/bin',
       ...ISOLATION,
       CLAUDE_CODE_TMPDIR: '/t',
       API_TIMEOUT_MS: '120000',
       CLAUDE_CODE_MAX_RETRIES: '0',
+    })
+  })
+
+  it('sets Claude Code\'s output limit to maxTokens over the environment\'s, in any letter case', () => {
+    expect(childEnv({ PATH: '/usr/bin', claude_code_max_output_tokens: '128000' }, 'inherit', undefined, '/t', { timeoutMs: 600_000, retries: 2, maxTokens: 8000 })).toEqual({
+      PATH: '/usr/bin',
+      ...ISOLATION,
+      CLAUDE_CODE_TMPDIR: '/t',
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8000',
     })
   })
 })
@@ -312,7 +322,7 @@ describe('credentialValues', () => {
     'oauth-refresh',
     'passphrase',
   ]
-  const valuesOf = (auth: 'inherit' | 'login' | 'api-key', apiKey?: string): string[] => credentialValues(childEnv(env, auth, apiKey, '/run/tmp', ATTEMPTS)).sort()
+  const valuesOf = (auth: 'inherit' | 'login' | 'api-key', apiKey?: string): string[] => credentialValues(childEnv(env, auth, apiKey, '/run/tmp', SETTINGS)).sort()
 
   it('holds every credential the child receives under inherit, and nothing else', () => {
     expect(valuesOf('inherit')).toEqual(Object.values(SECRETS).sort())
@@ -334,7 +344,7 @@ describe('credentialValues', () => {
       ANTHROPIC_API_KEY: '',
       HOME: ' not-a-secret ',
     }
-    expect(credentialValues(childEnv(odd, 'inherit', undefined, '/t', ATTEMPTS)).sort()).toEqual([' spaced ', 'spaced'])
+    expect(credentialValues(childEnv(odd, 'inherit', undefined, '/t', SETTINGS)).sort()).toEqual([' spaced ', 'spaced'])
   })
 })
 
@@ -489,6 +499,7 @@ describe('claudeCodeIssues', () => {
     expect(issuesOf({
       args: ['--max-budget-usd=99999999.999'],
     })).toEqual([])
+    expect(issuesOf({ maxTokens: 1 })).toEqual([])
   })
 
   it.each<[Record<string, unknown>, ConfigIssue[]]>([
@@ -693,7 +704,6 @@ describe('claudeCodeIssues', () => {
         query: {},
         extraBody: {},
         temperature: 0,
-        maxTokens: 100,
         systemPrompt: 'native',
       },
       [
@@ -702,12 +712,28 @@ describe('claudeCodeIssues', () => {
         'query',
         'extraBody',
         'temperature',
-        'maxTokens',
         'systemPrompt',
       ].map(field => at(field, NOT_AN_OPTION)),
     ],
   ])('refuses %j', (fields, issues) => {
     expect(issuesOf(fields)).toEqual(issues)
+  })
+
+  it.each<unknown>([
+    0,
+    1.5,
+    '16000',
+    Number.NaN,
+    Number.MAX_SAFE_INTEGER + 2,
+  ])('refuses a maxTokens of %j at its field', (maxTokens) => {
+    expect(issuesOf({ maxTokens })).toContainEqual(at('maxTokens', 'must be a whole number of at least 1'))
+  })
+
+  it('needs contextTokens above maxTokens and the 4096 tokens it keeps for Claude Code\'s context', () => {
+    expect(issuesOf({ maxTokens: 30_000, contextTokens: 34_096 })).toEqual([
+      at('contextTokens', 'must be more than 34096, the 30000 tokens of the reply budget and 4096 for the chat template'),
+    ])
+    expect(issuesOf({ maxTokens: 30_000, contextTokens: 34_097 })).toEqual([])
   })
 
   it('never repeats a value it refuses', () => {
@@ -804,6 +830,30 @@ describe('readResult', () => {
     expect(failure(() => read(change(fixtures.schema, { stop_reason: 'max_tokens', structured_output: undefined })))).toMatchObject(cut)
     // An error result stays an error.
     expect(failure(() => read(change(fixtures.unknownModel, { stop_reason: 'max_tokens' }), { code: 1 }))).toMatchObject({ kind: 'http', status: 404 })
+  })
+
+  it('reads a result whose api_error is max_output_tokens as a reply cut off by the token limit, with its usage', () => {
+    const stdout = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      api_error: 'max_output_tokens',
+      terminal_reason: 'completed',
+      result: 'API Error: Claude\'s response exceeded the 16000 output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.',
+      modelUsage: {
+        'claude-haiku-5-5': {
+          inputTokens: 10,
+          outputTokens: 16_000,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+      },
+    })
+    expect(failure(() => read(stdout, { code: 1 }))).toMatchObject({
+      kind: 'truncated',
+      message: 'cc: reply was cut off by the token limit',
+      usage: { inputTokens: 10, outputTokens: 16_000 },
+    })
   })
 
   it('carries the summed counts of a result it cuts off, refuses or fails after on its error, and none when no model reports any', () => {
@@ -1153,6 +1203,18 @@ describe('claudeCode', () => {
     })
   })
 
+  it('keeps maxTokens for the reply in its size guard', async () => {
+    await expect(claudeCode({
+      ...options,
+      maxTokens: 8000,
+      contextTokens: 12_128,
+      command: missing,
+    }).complete(request)).rejects.toMatchObject({
+      kind: 'too-large',
+      message: 'cc: may need 12129 tokens, more than contextTokens (12128): 33 for its text at one token per byte, 4096 for the chat template and 8000 for the reply',
+    })
+  })
+
   it('rejects as aborted, and starts nothing, when the signal has already aborted', async () => {
     const controller = new AbortController()
     controller.abort()
@@ -1219,6 +1281,7 @@ describe('claudeCode', () => {
       CLAUDE_CODE_DISABLE_POLICY_SKILLS: '1',
       API_TIMEOUT_MS: '600000',
       CLAUDE_CODE_MAX_RETRIES: '2',
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '16000',
     })
     // The first request on this command checks the version first, with the request's environment and an empty directory.
     expect(readFakeVersionRecords(dir, 'round')).toEqual([
