@@ -278,6 +278,17 @@ A review spends at most `maxReviewTokens`, 2000000 by default, input and output 
 
 A typical review spends a few hundred thousand tokens, and a `claude-code` vote counts its text twice, which its worst case reserves: [The size of a Claude Code request](./30-providers.md#the-size-of-a-claude-code-request). To raise the cap, set `maxReviewTokens`, a whole number of tokens from 1 to 9007199254740991, in the options of `createQuorum`: [Library API](../95-reference/30-library-api.md#options-and-ports). There is no off switch, only a larger number, so the default stays on when nothing says otherwise. What the cap leaves open, and why, is in the threat model: [The token cap](../30-security/10-threat-model.md#the-token-cap).
 
+### The review's deadline
+
+A review ends at `reviewTimeoutMs`, 1800000 ms (30 minutes) by default, so a CI job ends with an answer instead of waiting on a model that never replies.
+
+- **At the deadline every call in flight and every wait is stopped at once**, a wait for room under the token cap and one between two attempts included, and no new call starts, a call still queued for a slot included. It is a limit of the whole review, apart from each attempt's own `timeoutMs`: [The deadline of an attempt](./30-providers.md#the-deadline-of-an-attempt).
+- **What was not done is a `review-deadline` gap of its profile**: a research request that was not done leaves the profile with no finding, and votes that were not cast are failed votes of kind `review-deadline`, with one gap per profile counting them. The review resolves with its findings so far, and a finding that the votes it cut could still have kept is `unreviewed`. A call whose retry the deadline prevented is recorded as the deadline's, never as the failure it was retrying after, so no flag lifts it. A gating profile's gap exits `4` whatever the flags, `--allow-incomplete` included: [Exit codes](./10-cli.md#exit-codes).
+- **An interrupt still exits `130`**, before the deadline or after it: the deadline resolves the review, and an abort still rejects it.
+- **A server's hint longer than the time the review has left ends its call at once**, with its last failure, since the wait would outlast the review: [The wait between attempts](./30-providers.md#the-wait-between-attempts).
+
+A slow local model raises it: set `reviewTimeoutMs`, a whole number of milliseconds from 1000 to 86400000, in the options of `createQuorum`: [Library API](../95-reference/30-library-api.md#options-and-ports). Like the token cap, it has no off switch, only a longer deadline, so the default stays on when nothing says otherwise. What it leaves open is in the threat model: [Deadlines and bounded retries](../30-security/10-threat-model.md#deadlines-and-bounded-retries).
+
 ## Claude Code
 
 A `claude-code` provider runs your installed Claude Code CLI as the model, headless and isolated, once per request. [`claudeCode`](./30-providers.md#claudecode) has its command line, its isolation and its errors; this section sets one up.

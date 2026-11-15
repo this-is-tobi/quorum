@@ -46,12 +46,13 @@ export interface Lens {
 }
 
 /**
- * What a vote failed with: a provider's kind of failure, the limit that stopped it (`token-cap`),
- * `unusable-reply` for a reply the panel could not read as a vote, or `unknown` for anything else thrown.
+ * What a vote failed with: a provider's kind of failure, the limit that stopped it (`token-cap` or
+ * `review-deadline`), `unusable-reply` for a reply the panel could not read as a vote, or `unknown` for
+ * anything else thrown.
  * The kinds a gating profile's `--allow-incomplete` lifts are `network`, `timeout` and an `http` failure of
  * status 408, 409, 429 or 5xx.
  */
-export type VoteFailureKind = 'http' | 'network' | 'process' | 'timeout' | 'aborted' | 'refusal' | 'truncated' | 'invalid-response' | 'unsupported' | 'too-large' | 'token-cap' | 'unusable-reply' | 'unknown'
+export type VoteFailureKind = 'http' | 'network' | 'process' | 'timeout' | 'aborted' | 'refusal' | 'truncated' | 'invalid-response' | 'unsupported' | 'too-large' | 'token-cap' | 'review-deadline' | 'unusable-reply' | 'unknown'
 
 /** The facts of a failed vote the code read, never a word a server or a model wrote. */
 export interface VoteFailure {
@@ -135,16 +136,17 @@ export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
  * not sent. `binary` and `submodule`: the diff carries no content for a file, shown only as binary
  * or as a submodule's commit; `meta.leftOut` lists the files. `token-cap`: the review's token cap
  * stopped part of the profile's work, its research request or some of its votes, which were not sent;
- * one entry per profile counts them.
+ * `review-deadline`: the review reached its deadline, which stopped part of the profile's work, its
+ * research request or some of its votes, in flight or not yet sent; one entry per limit and profile counts them.
  */
-export type IncompleteReason = 'research-unusable' | 'research-failed' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'token-cap' | 'binary' | 'submodule'
+export type IncompleteReason = 'research-unusable' | 'research-failed' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'binary' | 'submodule'
 
 /**
  * Work the run could not review: a research reply with findings but none usable, an advisory
  * profile's research that failed (`research-failed`), findings beyond the cap, a finding the
  * harness could not read, a kept finding whose failed votes could have raised it to a higher
- * level, a request its provider refused as too large to send, work the review's token cap stopped, or
- * a file whose change the diff does not carry, binary or a submodule's commit. It is reported and
+ * level, a request its provider refused as too large to send, work the review's token cap or deadline
+ * stopped, or a file whose change the diff does not carry, binary or a submodule's commit. It is reported and
  * counted, never dropped silently (ADR-0012).
  */
 export interface IncompleteEntry {
@@ -251,6 +253,12 @@ export interface QuorumOptions {
    * the cap stops is a `token-cap` gap of its profile.
    */
   readonly maxReviewTokens?: number
+  /**
+   * How long one review runs, in milliseconds: a whole number from 1000 to 86400000, 1800000 (30 minutes) when
+   * unset. At it every call in flight and every wait is stopped at once and no new call starts, and what was not
+   * done is a `review-deadline` gap of its profile: the review resolves with its findings so far. It is no abort.
+   */
+  readonly reviewTimeoutMs?: number
 }
 
 /** A quorum built by createQuorum: its profiles compiled once, ready to review any number of diffs. */

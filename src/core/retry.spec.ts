@@ -22,7 +22,12 @@ function http(status: number, retryAfterMs?: unknown): FailureFacts {
     retryAfterMs,
   }
 }
-const first: CallState = { retried: 0, retries: 5, timedOut: false }
+const first: CallState = {
+  retried: 0,
+  retries: 5,
+  timedOut: false,
+  timeLeftMs: 1_800_000,
+}
 
 describe('retryWait', () => {
   it.each<[string, FailureFacts, CallState]>([
@@ -92,7 +97,12 @@ describe('retryWait', () => {
     [
       'a call whose retry count is not a number',
       network,
-      { retried: 0, retries: Number.NaN, timedOut: false },
+      {
+        retried: 0,
+        retries: Number.NaN,
+        timedOut: false,
+        timeLeftMs: 1_800_000,
+      },
     ],
     [
       'a second timeout',
@@ -129,6 +139,11 @@ describe('retryWait', () => {
     expect(retryWait(http(429, 2000), first, () => 0.5)).toBe(2500)
     expect(retryWait(http(429, 60_000), first, () => 0.5)).toBe(60_500)
     expect(retryWait(http(429, 1), first, () => 0)).toBe(1)
+  })
+
+  it('ends the call on a hint longer than the time the review has left, and waits one that fits', () => {
+    expect(retryWait(http(429, 2000), { ...first, timeLeftMs: 1999 }, () => 0.5)).toBeUndefined()
+    expect(retryWait(http(429, 2000), { ...first, timeLeftMs: 2000 }, () => 0.5)).toBe(2500)
   })
 
   it('takes a hint of 0, a negative one or one that is not a finite number for none, and backs off', () => {

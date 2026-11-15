@@ -1,5 +1,6 @@
 import packageJson from '../../package.json' with { type: 'json' }
 import { systemClock } from './clock.ts'
+import type { Clock } from './clock.ts'
 import { createLimiter, DEFAULT_CONCURRENCY } from './concurrency.ts'
 import { leftOutGaps, reviewScope } from './coverage.ts'
 import type { ReviewScope } from './coverage.ts'
@@ -8,7 +9,7 @@ import { ConfigError } from './errors.ts'
 import type { ConfigIssue } from './errors.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
 import { diffFlags } from './flags.ts'
-import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, limitGaps, maxReviewTokensProblem } from './limits.ts'
+import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, LimitError, limitGaps, maxReviewTokensProblem } from './limits.ts'
 import { isRecord } from './output.ts'
 import { MAX_STATED_TIMEOUT_MS, retriesProblem, timeoutProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts } from './ports.ts'
@@ -34,6 +35,10 @@ interface Compiled {
   readonly maxFindings: number
   /** The most tokens one review spends: each review gets a ledger of this cap. */
   readonly maxReviewTokens: number
+  /** How long one review runs, in milliseconds: each review arms a deadline of this length on `clock`. */
+  readonly reviewTimeoutMs: number
+  /** The time and the randomness every review reads: the system's, unless a spec injects its own through `createQuorumWith`. */
+  readonly clock: Clock
   /** Whether a file's path is left out of every request, built once from `exclude`. */
   readonly excluded: (path: string) => boolean
   readonly sink: EventSink | undefined
@@ -56,14 +61,16 @@ interface Tally {
  * gets the checks a config file gets: options and ports that are not objects, no profile, each
  * profile's own issues, a repeated profile id, a `concurrency` or `maxFindings` that is not a
  * positive integer, a `maxReviewTokens` that is not a whole number of tokens from 1 to
- * 9007199254740991, an `exclude` that is not a list of at most 100 patterns that can be taken, a
+ * 9007199254740991, a `reviewTimeoutMs` that is not a whole number of milliseconds from 1000 to
+ * 86400000, an `exclude` that is not a list of at most 100 patterns that can be taken, a
  * missing or malformed research provider or voter, a provider's stated `timeoutMs` that is not a
  * whole number of milliseconds from 1000 to 518400000, `retries` that is not a whole number from
  * 0 to 5 or `worstCase` that is not a function, ports for a profile or a lens the run does not have
  * (a likely typo), and an event sink that is not a function. Ports are checked only for the profiles
  * that have no issue of their own, and not at all when `profiles` is not an array. Every record keyed
  * by a caller's id is read as an own property, since `constructor` is a valid id. `maxReviewTokens`,
- * the most tokens one review spends, input and output, is 2000000 when unset: see `review`.
+ * the most tokens one review spends, input and output, is 2000000 when unset, and `reviewTimeoutMs`,
+ * how long one review runs, is 1800000 (30 minutes) when unset: see `review`.
  *
  * Each profile is compiled into a frozen `ProfileRun`, its instructions rendered, its thresholds
  * resolved and its providers captured, and `exclude` is compiled into a matcher, so later changes to
@@ -79,6 +86,17 @@ interface Tally {
  * const { kept, meta } = await quorum.review({ diff: diffText }, { signal: controller.signal })
  */
 export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum {
+  return createQuorumWith(options, ports, systemClock)
+}
+
+/**
+ * `createQuorum` on a clock of the caller's: the time, the randomness and the one timer the call path and the
+ * review's deadline read. It is the specs' seam, so a review's deadline and a call's waits run on a fake clock
+ * and cost no real time; the package does not export it, and `createQuorum` passes the system's clock.
+ *
+ * @throws ConfigError listing every issue of the options and the ports, as `createQuorum` does
+ */
+export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clock: Clock): Quorum {
   const issues = inputIssues(options, ports)
   if (issues.length > 0) throw new ConfigError(issues)
   // The checks found every profile valid and named once, with an own entry in ports.profiles and an own voter per lens.
@@ -87,6 +105,8 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
     concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
     maxFindings: options.maxFindings ?? DEFAULT_MAX_FINDINGS,
     maxReviewTokens: options.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS,
+    reviewTimeoutMs: options.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
+    clock,
     excluded: excludeMatcher(options.exclude ?? []),
     sink: ports.events,
   }
@@ -128,6 +148,15 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
  * rejects with the first reason. An advisory profile's research failure is its `research-failed`
  * gap and aborts nothing. An abort after `run:end` has no effect: the review is over.
  *
+ * A review ends at its deadline, `reviewTimeoutMs` after it starts, with an answer: at it every call in
+ * flight and every wait is stopped at once, no call still queued starts, and what was not done is a
+ * `review-deadline` gap of its profile, its research request or its votes, each a failed vote of the
+ * deadline. The review then resolves with its findings so far, exiting `4` for a gating profile whatever
+ * the flags; the deadline is no abort, so an interrupt still rejects with its reason, before the deadline
+ * or after it, and a review that reaches its deadline is never a failed run. The deadline's timer is armed
+ * once the input checks pass and cleared however the review ends: it resolves, it rejects, its sink throws
+ * or it is aborted.
+ *
  * A review spends at most `maxReviewTokens` tokens. Each review has its own ledger of that cap: every
  * attempt of every call reserves its worst case in it before it is sent and settles at what it spent,
  * so concurrent calls cannot overshoot it. A call the cap stops is no failed review: its profile's
@@ -142,6 +171,24 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
   const issues = reviewIssues(input, options)
   if (issues.length > 0) throw new ConfigError(issues)
   options.signal?.throwIfAborted()
+  const { clock, reviewTimeoutMs } = compiled
+  const deadline = { at: clock.now() + reviewTimeoutMs, ms: reviewTimeoutMs }
+  const expired = new AbortController()
+  const cancel = clock.timer(reviewTimeoutMs, () => {
+    expired.abort(new LimitError('review-deadline', `the review reached its deadline of ${reviewTimeoutMs} ms`))
+  })
+  try {
+    return await reviewUntil(compiled, input, options, deadline, expired.signal)
+  } finally {
+    cancel()
+  }
+}
+
+/**
+ * What `review` does once its deadline is armed: everything from its signals to its result, with `expired`, the
+ * deadline's own signal, joined to the review's into the one `stop` the call path reads.
+ */
+async function reviewUntil(compiled: Compiled, input: { readonly diff: string }, options: ReviewOptions, deadline: RunContext['deadline'], expired: AbortSignal): Promise<QuorumResult> {
   const internal = new AbortController()
   const signal = options.signal === undefined
     ? internal.signal
@@ -191,9 +238,11 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
     ledger: createLedger(compiled.maxReviewTokens),
     emit,
     signal,
+    stop: AbortSignal.any([signal, expired]),
+    deadline,
     fail,
     maxFindings: compiled.maxFindings,
-    clock: systemClock,
+    clock: compiled.clock,
   }
   emit({
     type: 'run:start',
@@ -267,7 +316,7 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, diff: string, sec
     ...judged.kept,
     ...judged.discarded,
     ...judged.unreviewed,
-  ], { cap: ctx.ledger.cap })
+  ], { cap: ctx.ledger.cap, deadlineMs: ctx.deadline.ms })
   for (const entry of limits) ctx.emit({ type: 'incomplete', entry })
   return {
     ...judged,
@@ -392,9 +441,9 @@ function profileListIssues(profiles: readonly unknown[]): { issues: ConfigIssue[
 }
 
 /**
- * `concurrency` and `maxFindings` are positive integers when set, and `maxReviewTokens` a whole number of
- * tokens from 1 to 9007199254740991. A number is quoted in the first two; anything else is described by the
- * rule alone.
+ * `concurrency` and `maxFindings` are positive integers when set, `maxReviewTokens` a whole number of
+ * tokens from 1 to 9007199254740991, and `reviewTimeoutMs` a whole number of milliseconds from 1000 to
+ * 86400000. A number is quoted in the first two; anything else is described by the rule alone.
  */
 function limitIssues(options: Record<string, unknown>): ConfigIssue[] {
   const issues: ConfigIssue[] = LIMITS.flatMap((path) => {
@@ -411,6 +460,10 @@ function limitIssues(options: Record<string, unknown>): ConfigIssue[] {
     ? undefined
     : maxReviewTokensProblem(options.maxReviewTokens)
   if (problem !== undefined) issues.push({ path: 'maxReviewTokens', message: problem })
+  const timeout = options.reviewTimeoutMs === undefined
+    ? undefined
+    : timeoutProblem(options.reviewTimeoutMs)
+  if (timeout !== undefined) issues.push({ path: 'reviewTimeoutMs', message: timeout })
   return issues
 }
 

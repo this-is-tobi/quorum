@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
 import { securityProfile } from '../profiles/security.ts'
+import { fakeClock, settle } from '../testing/clock.ts'
 import * as git from '../testing/fixtures/git.ts'
 import { ConfigError, OutputError, ProviderError } from './errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts } from './ports.ts'
-import { createQuorum } from './quorum.ts'
+import { createQuorum, createQuorumWith } from './quorum.ts'
 import type { Finding, IncompleteEntry, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, Usage, VoteFailure } from './types.ts'
 
 /** Replies, in call order, for the one fake provider that plays both roles. */
@@ -2576,6 +2577,140 @@ describe('the review\'s token cap', () => {
         'concurrency: must be a positive integer, got 0',
         'maxFindings: must be a positive integer, got 0',
         'maxReviewTokens: must be a whole number of tokens from 1 to 9007199254740991',
+      ])
+    }
+  })
+})
+
+describe('the review\'s deadline', () => {
+  const never = (): Promise<string> => new Promise<string>(() => {})
+  /** A provider whose attempts end far past the deadlines of these tests, as `timeoutMs: 600000` states. */
+  const patient = (id: string, answer: (request: CompletionRequest) => string | Promise<string>): Fake => ({
+    ...fake(id, answer),
+    timeoutMs: 600_000,
+  })
+  const turn = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
+
+  it('resolves at its deadline with the votes it cut as failed votes of the deadline, the finding unreviewed and one gap, and leaves no timer', async () => {
+    const clock = fakeClock()
+    const finder = patient('finder', request => isVote(request)
+      ? never()
+      : findings(reported))
+    const events: QuorumEvent[] = []
+    const quorum = createQuorumWith({
+      profiles: [securityProfile],
+      reviewTimeoutMs: 1000,
+    }, {
+      ...portsFor(securityProfile, finder),
+      events: event => events.push(event),
+    }, clock)
+    const result = await settle(clock, quorum.review({ diff }))
+    expect(result.kept).toEqual([])
+    expect(result.unreviewed).toHaveLength(1)
+    expect(result.unreviewed[0].votes.map(lensVote => lensVote.failure)).toEqual(Array.from({ length: 3 }).fill({ kind: 'review-deadline' }))
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'review-deadline', detail: 'the review\'s deadline of 1000 ms stopped 3 vote(s)' },
+    ])
+    expect(clock.pending()).toBe(0)
+    expect(events.map(event => event.type === 'stage:end'
+      ? `${event.type} ${event.stage}`
+      : event.type)).toEqual([
+      'run:start',
+      'stage:start',
+      'call',
+      'stage:end research',
+      'stage:start',
+      'stage:end dedup',
+      'stage:start',
+      'call',
+      'call',
+      'call',
+      'vote',
+      'vote',
+      'vote',
+      'verdict',
+      'stage:end panel',
+      'incomplete',
+      'run:end',
+    ])
+  })
+
+  it('records a research request the deadline stopped as the gating profile\'s gap, never a failed review', async () => {
+    const clock = fakeClock()
+    const quorum = createQuorumWith({
+      profiles: [securityProfile],
+      reviewTimeoutMs: 1000,
+    }, portsFor(securityProfile, patient('finder', never)), clock)
+    const result = await settle(clock, quorum.review({ diff }))
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'review-deadline', detail: 'the review\'s deadline of 1000 ms stopped its research' },
+    ])
+    expect(result.kept).toEqual([])
+    expect(result.unreviewed).toEqual([])
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('rejects with the interrupt\'s reason before the deadline, and leaves no timer', async () => {
+    const clock = fakeClock()
+    const controller = new AbortController()
+    const quorum = createQuorumWith({
+      profiles: [securityProfile],
+      reviewTimeoutMs: 100_000,
+    }, portsFor(securityProfile, patient('finder', never)), clock)
+    const outcome = quorum.review({ diff }, { signal: controller.signal }).catch((error: unknown) => error)
+    await turn()
+    const reason = new Error('stop')
+    controller.abort(reason)
+    expect(await outcome).toBe(reason)
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('rejects with the interrupt\'s reason when it comes after the deadline cut a call, before the review resolves', async () => {
+    const clock = fakeClock()
+    const controller = new AbortController()
+    const reason = new Error('stop')
+    const finder = patient('finder', request => isVote(request)
+      ? never()
+      : findings(reported))
+    const quorum = createQuorumWith({
+      profiles: [securityProfile],
+      reviewTimeoutMs: 1000,
+    }, {
+      ...portsFor(securityProfile, finder),
+      events: (event) => {
+        if (event.type === 'vote') controller.abort(reason)
+      },
+    }, clock)
+    const outcome = await settle(clock, quorum.review({ diff }, { signal: controller.signal })).catch((error: unknown) => error)
+    expect(outcome).toBe(reason)
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('clears its timer when its sink throws', async () => {
+    const clock = fakeClock()
+    const bug = new Error('sink bug')
+    const quorum = createQuorumWith({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, patient('finder', never)),
+      events: (event) => {
+        if (event.type === 'run:start') throw bug
+      },
+    }, clock)
+    await expect(quorum.review({ diff })).rejects.toBe(bug)
+    expect(clock.armed).toEqual([1_800_000])
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('refuses a reviewTimeoutMs out of range', () => {
+    for (const reviewTimeoutMs of [999, 86_400_001]) {
+      expect(issuesOf(() => createQuorum({
+        profiles: [securityProfile],
+        maxReviewTokens: 0,
+        reviewTimeoutMs,
+      }, portsFor(securityProfile, provider)))).toEqual([
+        'maxReviewTokens: must be a whole number of tokens from 1 to 9007199254740991',
+        'reviewTimeoutMs: must be a whole number of milliseconds from 1000 to 86400000',
       ])
     }
   })

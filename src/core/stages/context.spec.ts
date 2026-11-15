@@ -4,16 +4,27 @@ import { fakeClock, settle } from '../../testing/clock.ts'
 import type { FakeClock } from '../../testing/clock.ts'
 import { createLimiter } from '../concurrency.ts'
 import { ProviderError } from '../errors.ts'
-import { createLedger, LimitError } from '../limits.ts'
+import { createLedger, DEFAULT_REVIEW_TIMEOUT_MS, LimitError } from '../limits.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../ports.ts'
 import type { QuorumEvent } from '../types.ts'
 import { callProvider, reservationOf, targetOf } from './context.ts'
 import type { Requester, RunContext, Target } from './context.ts'
 
-/** A context of one review: its events as the sink would receive them, and what `fail` was given. */
-function context(clock: FakeClock, controller = new AbortController(), concurrency = 1, limits: { readonly cap?: number } = {}): { ctx: RunContext, events: QuorumEvent[], failures: unknown[] } {
+/**
+ * A context of one review: its events as the sink would receive them, and what `fail` was given. When
+ * `limits.deadlineMs` is given, a timer on the fake clock aborts the review's deadline with its failure, as the
+ * review arms it, and `stop` joins that to the review's signal.
+ */
+function context(clock: FakeClock, controller = new AbortController(), concurrency = 1, limits: { readonly cap?: number, readonly deadlineMs?: number } = {}): { ctx: RunContext, events: QuorumEvent[], failures: unknown[] } {
   const events: QuorumEvent[] = []
   const failures: unknown[] = []
+  const deadlineMs = limits.deadlineMs ?? DEFAULT_REVIEW_TIMEOUT_MS
+  const deadline = new AbortController()
+  if (limits.deadlineMs !== undefined) {
+    clock.timer(deadlineMs, () => {
+      deadline.abort(new LimitError('review-deadline', `the review reached its deadline of ${deadlineMs} ms`))
+    })
+  }
   const ctx: RunContext = {
     limit: createLimiter(concurrency),
     ledger: createLedger(limits.cap ?? 2_000_000),
@@ -21,6 +32,8 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
       if (!controller.signal.aborted) events.push(event)
     },
     signal: controller.signal,
+    stop: AbortSignal.any([controller.signal, deadline.signal]),
+    deadline: { at: clock.now() + deadlineMs, ms: deadlineMs },
     fail: (error) => {
       failures.push(error)
     },
@@ -741,5 +754,228 @@ describe('the review\'s token cap', () => {
     const { ctx, events } = context(clock)
     await callProvider(ctx, requester, target(complete, worst(60)), () => request).catch(() => undefined)
     expect(spentOf(events)).toEqual([spent])
+  })
+})
+
+describe('the review\'s deadline', () => {
+  const REACHED = (ms: number): string => `the review reached its deadline of ${ms} ms`
+  const never: Provider['complete'] = () => new Promise(() => {})
+
+  it('settles an attempt in flight at the deadline with the deadline\'s failure, aborting the signal it handed the provider, and sends its failed event', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock, new AbortController(), 1, { deadlineMs: 5000 })
+    let kept: AbortSignal | undefined
+    const stuck = target((given) => {
+      kept = given.signal
+      return new Promise(() => {})
+    }, { timeoutMs: 600_000 })
+    const error = await settle(clock, callProvider(ctx, requester, stuck, () => request)).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(LimitError)
+    expect(error).toMatchObject({
+      limit: 'review-deadline',
+      message: REACHED(5000),
+    })
+    expect(kept?.aborted).toBe(true)
+    expect(kept?.reason).toBe(error)
+    expect(events).toEqual([
+      {
+        type: 'call',
+        profile: 'security',
+        role: 'vote',
+        lens: 'impact',
+        provider: { id: 'p', model: 'm' },
+        durationMs: 5000,
+        ok: false,
+        spent: 16_516,
+      },
+    ])
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('ends a backoff at the deadline, and never builds the request of a call queued behind it', async () => {
+    const clock = fakeClock(0.999)
+    const { ctx, events } = context(clock, new AbortController(), 1, { deadlineMs: 2000 })
+    const down = target(async () => {
+      throw failure({ kind: 'network', retryable: true })
+    }, { retries: 5, timeoutMs: 1000 })
+    const behind = target(async () => ({ text: 'queued', model: 'm' }))
+    let built = 0
+    const call = callProvider(ctx, requester, down, () => request)
+    const queued = callProvider(ctx, { ...requester, lens: 'defenses' }, behind, () => {
+      built += 1
+      return request
+    })
+    const outcomes = await settle(clock, Promise.allSettled([call, queued]))
+    for (const outcome of outcomes) {
+      expect(outcome.status).toBe('rejected')
+      const reason: unknown = (outcome as PromiseRejectedResult).reason
+      expect(reason).toBeInstanceOf(LimitError)
+      expect(reason).toMatchObject({
+        limit: 'review-deadline',
+        message: REACHED(2000),
+      })
+    }
+    expect(built).toBe(0)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ ok: false, attempts: 3, durationMs: 2000 })
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('ends a wait for room at the deadline, before its first attempt, with no event', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock, new AbortController(), 2, { cap: 100, deadlineMs: 3000 })
+    const stuck = target(never, {
+      ...worst(60),
+      timeoutMs: 100_000,
+    })
+    const one = callProvider(ctx, requester, stuck, () => request)
+    const two = callProvider(ctx, { ...requester, lens: 'defenses' }, stuck, () => request)
+    const outcomes = await settle(clock, Promise.allSettled([one, two]))
+    for (const outcome of outcomes) {
+      expect(outcome.status).toBe('rejected')
+      const reason: unknown = (outcome as PromiseRejectedResult).reason
+      expect(reason).toBeInstanceOf(LimitError)
+      expect(reason).toMatchObject({
+        limit: 'review-deadline',
+        message: REACHED(3000),
+      })
+    }
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      type: 'call',
+      lens: 'impact',
+      ok: false,
+      spent: 60,
+    })
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('ends a call at once, with its last failure, when a server\'s hint is longer than the time the review has left', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx } = context(clock, new AbortController(), 1, { deadlineMs: 10_000 })
+    const hinted = failure({
+      kind: 'http',
+      status: 429,
+      retryable: true,
+      retryAfterMs: 30_000,
+    })
+    let attempts = 0
+    const limited = target(async () => {
+      attempts += 1
+      throw hinted
+    }, { retries: 2 })
+    await expect(settle(clock, callProvider(ctx, requester, limited, () => request))).rejects.toBe(hinted)
+    expect(attempts).toBe(1)
+  })
+
+  /**
+   * A context whose deadline falls as a failed attempt settles in the ledger: after the attempt has failed, before
+   * the retry policy decides. The attempt has settled by then, so the stop's abort reaches the call's catch, not the
+   * attempt's own listener on the stop.
+   */
+  function fallingAtSettlement(clock: FakeClock, deadlineMs: number): { ctx: RunContext, events: QuorumEvent[] } {
+    const { ctx, events } = context(clock, new AbortController(), 1, { deadlineMs })
+    return {
+      ctx: {
+        ...ctx,
+        ledger: {
+          ...ctx.ledger,
+          settle: (reserved, spent) => {
+            ctx.ledger.settle(reserved, spent)
+            clock.fireNext()
+          },
+        },
+      },
+      events,
+    }
+  }
+
+  it('records the deadline, not the failure, when the deadline stops a retry the call had left', async () => {
+    // The attempt's own timeout and the deadline fall in the same tick, the deadline's timer being the first armed.
+    const tied = fakeClock()
+    const { ctx, events } = context(tied, new AbortController(), 1, { deadlineMs: 1000 })
+    const slow = target(never, { retries: 2, timeoutMs: 1000 })
+    const cut = await settle(tied, callProvider(ctx, requester, slow, () => request)).catch((caught: unknown) => caught)
+    expect(cut).toBeInstanceOf(LimitError)
+    expect(cut).toMatchObject({
+      limit: 'review-deadline',
+      message: REACHED(1000),
+    })
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ type: 'call', ok: false, durationMs: 1000 })
+    expect(events[0]).not.toHaveProperty('attempts')
+    expect(tied.pending()).toBe(0)
+
+    // The deadline falls once the attempt failed in passing, so the call reaches its retry decision with the stop aborted.
+    for (const facts of [
+      { kind: 'http', status: 503, retryable: true },
+      { kind: 'network', retryable: true },
+      {
+        kind: 'http',
+        status: 429,
+        retryable: true,
+        retryAfterMs: 5000,
+      },
+    ]) {
+      const clock = fakeClock()
+      const stopped = fallingAtSettlement(clock, 1000)
+      let sent = 0
+      const flaky = target(async () => {
+        sent += 1
+        throw failure(facts)
+      }, { retries: 2 })
+      const error = await callProvider(stopped.ctx, requester, flaky, () => request).catch((caught: unknown) => caught)
+      expect(error).toBeInstanceOf(LimitError)
+      expect(error).toMatchObject({
+        limit: 'review-deadline',
+        message: REACHED(1000),
+      })
+      expect(sent).toBe(1)
+      expect(stopped.events).toHaveLength(1)
+      expect(stopped.events[0]).toMatchObject({
+        type: 'call',
+        ok: false,
+        durationMs: 1000,
+      })
+      expect(stopped.events[0]).not.toHaveProperty('attempts')
+      expect(clock.pending()).toBe(0)
+    }
+  })
+
+  it('keeps the failure a call ended with when no retry was left for the deadline to stop', async () => {
+    const clock = fakeClock()
+    const stopped = fallingAtSettlement(clock, 1000)
+    const thrown = failure({ kind: 'http', status: 503, retryable: true })
+    const spent = target(async () => {
+      throw thrown
+    }, { retries: 0 })
+    await expect(callProvider(stopped.ctx, requester, spent, () => request)).rejects.toBe(thrown)
+    expect(stopped.ctx.stop.aborted).toBe(true)
+    expect(stopped.events).toHaveLength(1)
+
+    const second = fakeClock()
+    const refused = fallingAtSettlement(second, 1000)
+    const refusal = new ProviderError({ providerId: 'p', kind: 'refusal', message: 'no' })
+    await expect(callProvider(refused.ctx, requester, target(async () => {
+      throw refusal
+    }, { retries: 2 }), () => request)).rejects.toBe(refusal)
+    expect(refused.ctx.stop.aborted).toBe(true)
+  })
+
+  it('tells the deadline apart from an attempt\'s own timeout', async () => {
+    const clock = fakeClock()
+    const own = await settle(clock, callProvider(context(clock).ctx, requester, target(never), () => request)).catch((caught: unknown) => caught)
+    expect(own).toBeInstanceOf(ProviderError)
+    expect(own).not.toBeInstanceOf(LimitError)
+    expect(own).toMatchObject({ kind: 'timeout' })
+
+    const other = fakeClock()
+    const cut = await settle(other, callProvider(context(other, new AbortController(), 1, { deadlineMs: 500 }).ctx, requester, target(never), () => request)).catch((caught: unknown) => caught)
+    expect(cut).toBeInstanceOf(LimitError)
+    expect(cut).not.toBeInstanceOf(ProviderError)
+    expect(cut).toMatchObject({
+      limit: 'review-deadline',
+      message: REACHED(500),
+    })
   })
 })
