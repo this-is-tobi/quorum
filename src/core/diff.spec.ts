@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeDiff, diffSectionFor, diffSections, firstLineOutside, locate, movedTo, sectionFor, splitDiff } from './diff.ts'
+import { decodeDiff, diffSectionFor, diffSections, firstLineOutside, holds, locate, movedTo, parseHunks, sectionFor, splitDiff } from './diff.ts'
 
 const gitDiff = [
   'diff --git a/src/a.js b/src/a.js',
@@ -698,6 +698,62 @@ describe('locate', () => {
     }
     expect(performance.now() - started).toBeLessThan(300)
     expect(located).toBe(1_000)
+  })
+})
+
+describe('parseHunks', () => {
+  it('reads each hunk with the index of the line that opens it, and holds a line exactly where locate finds it', () => {
+    const section = [
+      'diff --git a/f.js b/f.js',
+      '--- a/f.js',
+      '+++ b/f.js',
+      '@@ -1,3 +1,3 @@',
+      ' a',
+      'junk',
+      '@@ -9 +9 @@',
+      '-b',
+      '+c',
+      '\\ No newline at end of file',
+      '@@ -20,2 +19,0 @@',
+      '-d',
+      '-e',
+    ].join('\n')
+    const hunks = parseHunks(section)
+    expect(hunks.map(hunk => hunk.at)).toEqual([3, 6, 10])
+    const sections = splitDiff(section)
+    for (let line = 0; line <= 30; line++) {
+      expect(hunks.some(hunk => holds(hunk, line))).toBe(locate(sections, 'f.js', line) !== undefined)
+    }
+  })
+
+  it('opens no hunk at a header whose start or count is no safe integer, or whose last line is none, and keeps its text with the hunk before it', () => {
+    const first = [
+      'diff --git a/h.js b/h.js',
+      '--- a/h.js',
+      '+++ b/h.js',
+      '@@ -1 +1 @@',
+      '-a',
+      '+b',
+    ]
+    const unsafe = 2 ** 53
+    for (const header of [
+      `@@ -1 +${'9'.repeat(400)} @@`,
+      `@@ -1 +${unsafe} @@`,
+      `@@ -1,${'9'.repeat(400)} +1 @@`,
+      `@@ -1 +1,${unsafe} @@`,
+      `@@ -1 +${Number.MAX_SAFE_INTEGER},2 @@`,
+    ]) {
+      const hunks = parseHunks([...first, header, '-c', '+d'].join('\n'))
+      expect(hunks.map(hunk => hunk.at)).toEqual([3])
+      expect(hunks[0].rows).toEqual(['-a', '+b'])
+    }
+    // The last safe line still opens a hunk.
+    expect(parseHunks([
+      ...first,
+      `@@ -1 +${Number.MAX_SAFE_INTEGER} @@`,
+      '-c',
+      '+d',
+    ].join('\n')).map(hunk => hunk.at)).toEqual([3, 6])
   })
 })
 

@@ -206,7 +206,7 @@ async function reviewUntil(compiled: Compiled, input: { readonly diff: string },
     ? []
     : diffFlags(whole)
   const scope: ReviewScope = whole === undefined
-    ? { diff: input.diff, leftOut: [] }
+    ? { diff: input.diff, leftOut: [], files: [] }
     : reviewScope(input.diff, compiled.excluded)
   // What the stages read: none when the filtered diff is blank, else the sections the flags read when nothing was left out.
   const sections = scope.diff.trim() === ''

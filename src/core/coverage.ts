@@ -24,6 +24,8 @@ export interface ReviewScope {
   readonly diff: string
   /** The files left out, excluded or with a change the diff does not carry, in the diff's order, once per file and reason. */
   readonly leftOut: LeftOutFile[]
+  /** Every file of the given diff, excluded ones too, in the diff's order, once each: '' for the text no header names, none for a blank preamble. */
+  readonly files: string[]
 }
 
 /** What one section shows of content the diff does not carry. */
@@ -88,7 +90,10 @@ function markersOf(text: string): Markers {
  *
  * The empty name stands for a part of the diff that no `diff --git` header names: the text before the
  * first header, a diff without such headers, a header that names no path quorum reads, and a
- * `Submodule` line. A readable header never names the empty path, so it is never a file's.
+ * `Submodule` line. A readable header never names the empty path, so it is never a file's. The scope's
+ * `files` names every section's file as it is read, once each, in the diff's order: the empty name
+ * for such a part, and again, after the section that holds one, for a `Submodule` line; a preamble
+ * that is blank names no file.
  *
  * Detection is generous: a line of the same form elsewhere, such as a commit message line of a
  * `format-patch` series, lists the file whose section holds it, since a gap it should not have stops a
@@ -117,10 +122,12 @@ export function reviewScope(diff: string, excluded: (path: string) => boolean = 
     }
     return answer
   }
+  const files = new Set<string>()
   const sections = diffSections(diff)
   const kept: string[] = []
   for (const { path, text } of sections) {
     const markers = markersOf(text)
+    if (path !== '' || text.trim() !== '') files.add(path ?? '')
     if (path !== undefined && path !== '' && isExcluded(path) && movedTo(text).every(moved => moved === path)) {
       list(path, 'excluded')
     } else {
@@ -128,13 +135,17 @@ export function reviewScope(diff: string, excluded: (path: string) => boolean = 
       if (markers.binary) list(path ?? '', 'binary')
       if (markers.submodule) list(path ?? '', 'submodule')
     }
-    if (markers.submoduleLine) list('', 'submodule')
+    if (markers.submoduleLine) {
+      list('', 'submodule')
+      files.add('')
+    }
   }
   return {
     diff: kept.length === sections.length
       ? diff
       : kept.join('\n'),
     leftOut,
+    files: [...files],
   }
 }
 

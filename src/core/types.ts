@@ -168,6 +168,39 @@ export interface LeftOutFile {
   reason: LeftOutReason
 }
 
+/**
+ * Why part of a file was not reviewed, as `CoverageEntry` records it: a `LeftOutReason`'s `binary` or
+ * `submodule`, `too-large` for a hunk, or a section with no hunk, that fits in no research request
+ * of its model's window, or the `IncompleteReason` of the research part that held it and did not
+ * read it: `request-too-large`, `token-cap`, `review-deadline` or `research-failed`.
+ */
+export type CoverageReason = 'binary' | 'submodule' | 'too-large' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'research-failed'
+
+/**
+ * How much of a file a profile's research reviewed: `reviewed` when every part that holds it was
+ * read, `partial` when some was not, `unreviewed` when none was, and `excluded` when an `exclude`
+ * pattern keeps it out of every request.
+ */
+export type CoverageStatus = 'reviewed' | 'partial' | 'unreviewed' | 'excluded'
+
+/** A run of new-file lines a profile's research did not review, both ends included, and why. */
+export interface LeftRange {
+  start: number
+  end: number
+  reason: CoverageReason
+}
+
+/** One file of the input diff and how much of it a profile's research reviewed. */
+export interface CoverageEntry {
+  /** The diff's own path, decoded; '' for a part of the diff that no `diff --git` header names. */
+  file: string
+  status: CoverageStatus
+  /** Why the file is unreviewed; absent for any other status. */
+  reason?: CoverageReason
+  /** The ranges a partial file left unreviewed, in the diff's order; absent for any other status. */
+  left?: LeftRange[]
+}
+
 /** What an advisory flag points at. */
 export type FlagCode = 'hidden-characters' | 'ai-addressed-text'
 

@@ -86,6 +86,22 @@ describe('reviewScope, on what git prints', () => {
     ])
   })
 
+  it('lists every file of the diff once, in its order: the empty name for a preamble, an unreadable header and a Submodule line, and none for a blank preamble', () => {
+    const section = (file: string): string => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-a\n+b`
+    const diff = [
+      'From 1234 Mon Sep 17 00:00:00 2001',
+      section('a.js'),
+      'diff --git unreadable',
+      section('a.js'),
+      `${section('a.js')}\nSubmodule lib 1234567..89abcde:`,
+    ].join('\n')
+    expect(reviewScope(diff).files).toEqual(['', 'a.js'])
+    expect(reviewScope(`\n${section('b.js')}`).files).toEqual(['b.js'])
+    expect(reviewScope(`\n \n${section('b.js')}`).files).toEqual(['b.js'])
+    expect(reviewScope(`${section('b.js')}\nSubmodule lib 1234567..89abcde:`).files).toEqual(['b.js', ''])
+    expect(reviewScope(`${section('a.js')}\n${section('b.js')}`, path => path === 'a.js').files).toEqual(['a.js', 'b.js'])
+  })
+
   it('hands back the diff itself when nothing is excluded', () => {
     expect(reviewScope(git.BINARY).diff).toBe(git.BINARY)
   })
