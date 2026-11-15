@@ -106,9 +106,9 @@ async function judge(ctx: RunContext, run: ProfileRun, finding: Finding, diffCon
 /**
  * One lens's vote on one finding, from the lens's own provider. A failed call or an unusable reply
  * is a vote of null with its error: the message of an `Error`, the text of anything else thrown.
- * It also records its failure: `voteFailureOf` the error for a failed call (a call the token cap
- * stopped is a failed vote of kind `token-cap`), `unusable-reply` for a reply that came back and could
- * not be read as a vote; a cast vote's failure is null. A request its provider refused as too large is
+ * It also records its failure: `voteFailureOf` the error for a failed call (a call the token cap or the
+ * review's deadline stopped is a failed vote of kind `token-cap` or `review-deadline`), `unusable-reply`
+ * for a reply that came back and could not be read as a vote; a cast vote's failure is null. A request its provider refused as too large is
  * that failed vote too, and carries the refusal's message besides, for the finding's `request-too-large`
  * gap. Once the review is aborted, the vote rethrows the abort's reason instead, whatever the call
  * raised, so an aborted review never resolves with a finding the abort left unreviewed. The `vote` event
