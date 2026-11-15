@@ -48,7 +48,8 @@ export function isTimeout(failure: FailureFacts): boolean {
  * timeout of the call, or the server asks for more than `MAX_HINT_MS` or for more than the time the
  * review has left. Otherwise the wait is the server's hint, when it is a finite number above 0, plus
  * up to a second; else a random time from 0 to the lesser of 8 s and 0.5 s times 2 to the number of
- * retries made. The review's abort and its deadline are the call path's to check, before this.
+ * retries made. The call path asks this first, with infinite time left once the review's stop is aborted, so a
+ * retry that only the stop prevents is the stop's doing, and it checks the stop after.
  */
 export function retryWait(failure: FailureFacts, call: CallState, random: () => number): number | undefined {
   // Not `>=`: a retry count that is not a number compares false both ways, and must end the call.

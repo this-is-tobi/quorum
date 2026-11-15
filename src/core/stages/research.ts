@@ -91,9 +91,10 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
  * the call after its retries or a reply that is not a valid envelope, a gating profile fails and
  * aborts the review where it fails (`onFailure` aborts it for the call), so no other profile starts
  * a call after it; an advisory profile's failure is its own `research-failed` gap, in words the code
- * writes, and the other profiles run. A research request a limit stopped (the token cap refused it, or no
- * room was left for it) is no failure of either kind: the outcome holds no finding and names the limit in
- * `stopped`, which the review turns into the profile's one gap for that limit, a gating profile's included.
+ * writes, and the other profiles run. A research request a limit stopped (the token cap refused it or left
+ * no room for it, or the review's deadline ended it) is no failure of either kind: the outcome holds no
+ * finding and names the limit in `stopped`, which the review turns into the profile's one gap for that
+ * limit, a gating profile's included.
  * A review that is aborted rejects with its reason, never with a gap.
  *
  * @throws ProviderError, or whatever a custom provider throws, when a gating profile's research call fails for any other reason than a refusal as too large
