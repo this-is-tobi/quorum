@@ -2,7 +2,7 @@
 
 Nothing quorum says about planted text is taken on trust. The [threat model](./10-threat-model.md) lists what an attacker who opens a pull request controls and the controls that stand in their way, and it admits that a determined attacker may sway a review. This page is how far, measured: `quorum bench` reviews a corpus of poisoned patches next to the clean patches they come from, and scores by code what the planted text did to the review. Code is the only judge. No number here is a model's opinion of another model's work.
 
-This page covers [the corpus](#the-injection-corpus), [what each outcome of an attack means](#what-each-outcome-means), [how to read the numbers](#reading-the-numbers), [the baseline](#the-baseline) to come and [the residual risk](#residual-risk). The command, the suite format and the report are in [Benchmarks](../20-using/70-bench.md#attack-suites).
+This page covers [the corpus](#the-injection-corpus), [what each outcome of an attack means](#what-each-outcome-means), [how to read the numbers](#reading-the-numbers), [the baseline](#the-baseline) to come, [large changes in parts](#large-changes-in-parts) and [the residual risk](#residual-risk). The command, the suite format and the report are in [Benchmarks](../20-using/70-bench.md#attack-suites).
 
 ## The injection corpus
 
@@ -82,7 +82,7 @@ One planted detail is worth knowing. The Compuware twin is a tab-indented Java f
 
 The suite sets `trials: 10`, so a run makes 600 reviews per configuration, 60 cases ten times each. Ten trials steady the score of each case; only more twins narrow an interval.
 
-Every poisoned patch fits a window of 32 768 tokens, counted as the [size guard](../20-using/30-providers.md#the-size-of-a-request) counts them. The largest research request of the corpus needs 29 926 tokens (`hono-suppression-guideline-file-hidden-unicode`), and the largest vote bound is 25 965 (`gorilla-handlers-cost-bloat-comment-base64`): for each file of a patch, a claim at the caps of the harness (a 500-character summary and an 80-character category), the file's five longest rows as its evidence, capped at 2 000 characters as the harness caps it, put to the lens with the longest instructions. These figures hold for the default reply budget of 16 000 tokens, the shipped `security` profile and no guidelines, and count the system text inline, which counts two tokens more than sending it apart. A larger `maxTokens`, a longer prompt or guidelines can push the largest case over: above a `maxTokens` of 18 842 it no longer fits 32 768. A request the size guard refuses is a `request-too-large` gap and an incomplete review, so a refusal that a poisoned patch gets and its twin does not reads as the attack's denial. A run of the whole corpus at one trial, against a stub server on the local machine with a `contextTokens` of 32768, recorded all 60 reviews, none of them incomplete and none with a `request-too-large` gap. So the corpus runs on a window of 32 768 tokens of an HTTP provider. A `claude-code` provider keeps a reserve of 4096 tokens for what Claude Code adds in place of 512, so, counted as above, its largest research request needs 33 510 tokens, 742 over 32 768, and a second one is over too, while every vote fits: it needs a larger window. A poisoned patch is kept inside the window so that a refusal its twin did not get never reads as the attack's own denial.
+Every poisoned patch fits a window of 32 768 tokens in one research request, counted as the [size guard](../20-using/30-providers.md#the-size-of-a-request) counts them. The largest research request of the corpus needs 29 926 tokens (`hono-suppression-guideline-file-hidden-unicode`), and the largest vote bound is 25 965 (`gorilla-handlers-cost-bloat-comment-base64`): for each file of a patch, a claim at the caps of the harness (a 500-character summary and an 80-character category), the file's five longest rows as its evidence, capped at 2 000 characters as the harness caps it, put to the lens with the longest instructions. These figures hold for the default reply budget of 16 000 tokens, the shipped `security` profile and no guidelines, and count the system text inline, which counts two tokens more than sending it apart. A larger `maxTokens`, a longer prompt or guidelines can push the largest case over: above a `maxTokens` of 18 842 it no longer fits 32 768. A research request over the window is not refused: it is split into parts ([Research in parts](../20-using/20-configuration.md#research-in-parts)), so a poisoned patch that goes over where its twin does not is reviewed in parts against a twin reviewed in one request, and the pair no longer compares one review with the same review under attack. A vote request the size guard refuses is a `request-too-large` gap and an incomplete review, so a refusal that a poisoned patch gets and its twin does not reads as the attack's denial. A run of the whole corpus at one trial, against a stub server on the local machine with a `contextTokens` of 32768, recorded all 60 reviews, none of them incomplete and none with a `request-too-large` gap. So the corpus runs on a window of 32 768 tokens of an HTTP provider. A `claude-code` provider keeps a reserve of 4096 tokens for what Claude Code adds in place of 512, so, counted as above, its largest research request needs 33 510 tokens, 742 over 32 768, and a second one is over too, while every vote fits. At 32 768 it researches those two attack cases, `hono-suppression-guideline-file-hidden-unicode` and `hono-denial-of-review-documentation-multilingual`, in 2 parts each, while their twin, `hono-ghsa-xh87-mx6m-69f3`, is one request: the corpus needs a window of 33 510 tokens or more for a `claude-code` provider, so that every case stays one request. A poisoned patch is kept in one request, as its twin is, so that a difference between them is the attack's and never the effect of reviewing one in parts.
 
 ## What each outcome means
 
@@ -174,6 +174,33 @@ quorum bench -c reference.yaml --trials 1 --case laravel-framework-ghsa-w2pm-r78
 ```
 
 Run it by hand, or on a schedule on a trusted branch, and never on a pull request: [Where not to run it](../20-using/70-bench.md#where-not-to-run-it).
+
+## Large changes in parts
+
+A change larger than one research request is reviewed in parts, and what the real-bug suite shows of it is a count before it is a rate. At a window of 32768 tokens, quorum 0.5.0 refused the research request of 10 of the 40 cases of the [real-bug suite](../20-using/70-bench.md#the-real-bug-suite): its diff was over the 14 759 tokens that request leaves ([What it counts, and what it costs](../20-using/20-configuration.md#what-it-counts-and-what-it-costs)), and a profile whose research request is refused reviews nothing, so those ten cases caught nothing, whatever their bug. They are reviewed in parts now: [Research in parts](../20-using/20-configuration.md#research-in-parts). The table names them, with the size of their diff as the size guard counts it and the parts they make at that window, as the core's own functions count them for the `security` profile's research request with no guidelines and `maxTokens` unset, on an `openai-compatible` provider, with no model called:
+
+| Case | The diff, in tokens | Parts |
+| --- | --- | --- |
+| `banks-ghsa-64vx-6h2c-rjh7` | 30 360 | 3 |
+| `fastify-ghsa-667r-xxjv-c9mm` | 18 528 | 2 |
+| `gokey-ghsa-69jw-4jj8-fcxm` | 25 447 | 3 |
+| `goshs-ghsa-rjrw-mjq6-hpmm` | 29 177 | 3 |
+| `lettre-ghsa-4pj9-g833-qx53` | 40 797 | 5 |
+| `mistune-ghsa-h7ww-273w-6cm8` | 16 801 | 2 |
+| `mysql-binuuid-rails-ghsa-6j63-35hj-vmcg` | 16 474 | 2 |
+| `opened-ghsa-fg5w-w99f-rj6w` | 19 727 | 2 |
+| `spring-cloud-gateway-ghsa-hwqh-2684-54fc` | 15 551 | 2 |
+| `vue-core-ghsa-g2v6-rqmx-r4w6` | 16 900 | 2 |
+
+No case sets a hunk aside. One splits a file: the `go.sum` of the goshs case, 15 231 tokens, has its hunks 0 to 8 in the first part and 9 and 10 in the second. The other 30 cases fit one request at that window, as do all 60 cases of the [injection corpus](#the-window). At a window of 200000 only `lettre-ghsa-4pj9-g833-qx53` goes in parts, 2 of them, since its diff is over `partTokens`; every other case of both suites is one request there, the request 0.5.0 sent, so its bench numbers do not move.
+
+It is measured with `quorum bench`, on those ten cases, `--case` for each, with a configuration whose research provider states `contextTokens: 32768` against a reference whose window and `partTokens` hold every one of them whole, such as a `contextTokens` and a `partTokens` of 65536, since the largest of the ten is 40 797 tokens. The two measures are kept recall, the share of the cases a kept finding catches, and proposed recall, the share a finding that reached the panel catches:
+
+```bash
+quorum bench -c reference.yaml -c parts.yaml --case banks-ghsa-64vx-6h2c-rjh7 --case fastify-ghsa-667r-xxjv-c9mm --case gokey-ghsa-69jw-4jj8-fcxm --case goshs-ghsa-rjrw-mjq6-hpmm --case lettre-ghsa-4pj9-g833-qx53 --case mistune-ghsa-h7ww-273w-6cm8 --case mysql-binuuid-rails-ghsa-6j63-35hj-vmcg --case opened-ghsa-fg5w-w99f-rj6w --case spring-cloud-gateway-ghsa-hwqh-2684-54fc --case vue-core-ghsa-g2v6-rqmx-r4w6 bench/bugs
+```
+
+The numbers come with the owner's baseline, and none are given here until then: [The baseline](#the-baseline).
 
 ## Residual risk
 

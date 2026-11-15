@@ -79,7 +79,7 @@ src/users.js
 and 3 more
 ```
 
-The files are those of the whole diff, as it names them, each once, in its order: at most 100, and at most a quarter of the room a request leaves, then `and N more`. A file name is the author's text, so each name shows its hidden characters as `<U+XXXX>`, as the claim's does: a name that holds a line break stays one line, and a name that spells a closing tag cannot close the block, which carries a nonce of its own. The line of the files and the line that counts the rest are left out when no file is listed and none is left out. A change in one request has no such block, and its request is the one above.
+The files are those of the whole diff, as it names them, each once, in its order: at most 100, and at most a quarter of the lesser of the room a request leaves and `partTokens`, then `and N more`. When the names would leave a hunk out that a part holds without them, all are dropped, and the block reads `and N more` alone under the line that introduces the list. A file name is the author's text, so each name shows its hidden characters as `<U+XXXX>`, as the claim's does: a name that holds a line break stays one line, and a name that spells a closing tag cannot close the block, which carries a nonce of its own. The line of the files and the line that counts the rest are left out when no file is listed and none is left out. A change in one request has no such block, and its request is the one above.
 
 ## The security profile's templates
 
