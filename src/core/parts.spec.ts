@@ -2,9 +2,9 @@ import type { DiffSection, Hunk } from './diff.ts'
 import type { Packing, PartOutcome, Slice } from './parts.ts'
 import { describe, expect, it } from 'vitest'
 import { reviewScope } from './coverage.ts'
-import { diffSections, parseHunks } from './diff.ts'
+import { diffSections, heldSpan, parseHunks } from './diff.ts'
 import { excludeMatcher } from './exclude.ts'
-import { coverageOf, listedFiles, packParts, partText, partTokensProblem, sliceText } from './parts.ts'
+import { coverageOf, listedFiles, nearestHunks, packParts, partText, partTokensProblem, sliceText } from './parts.ts'
 import { tokenBound } from './tokens.ts'
 
 const t = tokenBound
@@ -940,5 +940,104 @@ describe('coverageOf', () => {
     }, ['reviewed'])).toEqual([
       { file: 'a.js', status: 'partial', left: [] },
     ])
+  })
+})
+
+describe('nearestHunks', () => {
+  /** A hunk that adds one line at new line `start`, the line `pad` characters longer. */
+  const addAt = (start: number, pad = 0): string => `@@ -${start},0 +${start},1 @@\n+l${start}${'y'.repeat(pad)}`
+  const header = headerOf('a.js')
+  /** The count of the header, a line feed after it included. */
+  const head = t(header) + 1
+  const sectionOf = (...hunks: string[]): { text: string, hunks: Hunk[] } => {
+    const text = [header, ...hunks].join('\n')
+    return {
+      text,
+      hunks: parseHunks(text),
+    }
+  }
+
+  it('takes the cited hunk with the section\'s header, then the nearer neighbour in new-file lines, the earlier on a tie, in the section\'s order', () => {
+    const hunks = [1, 10, 20, 30].map(start => addAt(start))
+    const [first, second, third, fourth] = hunks
+    const section = sectionOf(...hunks)
+    const two = head + t(third) + 1 + t(second)
+    expect(nearestHunks(section.text, section.hunks, 20, two)).toBe([header, second, third].join('\n'))
+    expect(nearestHunks(section.text, section.hunks, 20, two + 1 + t(fourth))).toBe([header, second, third, fourth].join('\n'))
+    expect(nearestHunks(section.text, section.hunks, 20, two - 1)).toBe([header, third].join('\n'))
+    // The hunk at 1 is nearer to line 10 than the one at 20 is.
+    expect(nearestHunks(section.text, section.hunks, 10, head + t(second) + 1 + t(first))).toBe([header, first, second].join('\n'))
+    expect(nearestHunks(section.text, section.hunks, 10, two)).toBe([header, first, second].join('\n'))
+  })
+
+  it('closes a side at a hunk that does not fit, and goes on with the other', () => {
+    const hunks = [
+      addAt(1),
+      addAt(10, 200),
+      addAt(20),
+      addAt(30),
+    ]
+    const section = sectionOf(...hunks)
+    const two = head + t(hunks[2]) + 1 + t(hunks[3])
+    expect(nearestHunks(section.text, section.hunks, 20, two)).toBe([header, hunks[2], hunks[3]].join('\n'))
+    // The hunk at 1 would fit too, but it lies past the hunk at 10, which closed that side.
+    expect(nearestHunks(section.text, section.hunks, 20, two + 1 + t(hunks[0]))).toBe([header, hunks[2], hunks[3]].join('\n'))
+  })
+
+  it('is undefined when no hunk holds the line, or when the cited hunk does not fit alone', () => {
+    const hunks = [1, 10, 20, 30].map(start => addAt(start))
+    const section = sectionOf(...hunks)
+    expect(nearestHunks(section.text, section.hunks, 25, 100_000)).toBeUndefined()
+    expect(nearestHunks(section.text, section.hunks, 20, head + t(hunks[2]))).toBe([header, hunks[2]].join('\n'))
+    expect(nearestHunks(section.text, section.hunks, 20, head + t(hunks[2]) - 1)).toBeUndefined()
+    expect(nearestHunks(section.text, section.hunks, 20, -1)).toBeUndefined()
+  })
+
+  it('measures a neighbour from the nearer end of the lines it holds, not from its start', () => {
+    // The hunk before the cited line holds lines 10 to 17, so it is 3 lines away though it starts 10 lines away; the one after is 4 away.
+    const [before, cited, after] = [
+      hunkOf(8, 'c', 10),
+      addAt(20),
+      addAt(24),
+    ]
+    const section = sectionOf(before, cited, after)
+    const withOne = head + t(cited) + 1 + t(before)
+    expect(nearestHunks(section.text, section.hunks, 20, withOne)).toBe([header, before, cited].join('\n'))
+    expect(nearestHunks(section.text, section.hunks, 20, withOne + 1 + t(after))).toBe([header, before, cited, after].join('\n'))
+  })
+
+  it('measures a deletion-only neighbour, and a hunk that holds no line, from its start line alone', () => {
+    const deletion = '@@ -22,2 +22,0 @@\n-a\n-b'
+    const [near, cited, far] = [
+      addAt(17),
+      addAt(20),
+      deletion,
+    ]
+    const around = sectionOf(near, cited, far)
+    // The deletion-only hunk after holds its start line, 2 lines away; the one-line hunk before is 3 away.
+    expect(nearestHunks(around.text, around.hunks, 20, head + t(cited) + 1 + Math.max(t(near), t(far)))).toBe([header, cited, far].join('\n'))
+    // A header that promises new lines the hunk never shows holds none: its start line, 2 away, still counts.
+    const shown = '@@ -18,2 +18,2 @@\n-a\n-b'
+    expect(heldSpan(parseHunks(shown)[0])).toBeUndefined()
+    const [empty, center, last] = [
+      shown,
+      addAt(20),
+      addAt(24),
+    ]
+    const none = sectionOf(empty, center, last)
+    expect(nearestHunks(none.text, none.hunks, 20, head + t(center) + 1 + t(empty))).toBe([header, empty, center].join('\n'))
+  })
+
+  it('takes the hunk locate takes for a deletion-only hunk, and a section with no header lines', () => {
+    const gone = '@@ -5,2 +5,0 @@\n-a\n-b'
+    const section = sectionOf(addAt(1), gone, addAt(30))
+    expect(nearestHunks(section.text, section.hunks, 5, head + t(gone))).toBe([header, gone].join('\n'))
+    const plain = [
+      addAt(1),
+      addAt(10),
+    ].join('\n')
+    expect(nearestHunks(plain, parseHunks(plain), 10, t(addAt(10)))).toBe(addAt(10))
+    expect(nearestHunks(plain, parseHunks(plain), 10, t(plain))).toBe(plain)
+    expect(nearestHunks(plain, parseHunks(plain), 10, t(addAt(10)) - 1)).toBeUndefined()
   })
 })

@@ -11,7 +11,7 @@
 import type { ReviewScope } from './coverage.ts'
 import type { DiffSection, Hunk } from './diff.ts'
 import type { CoverageEntry, CoverageReason, IncompleteEntry, LeftOutFile, LeftOutReason, LeftRange } from './types.ts'
-import { heldSpan, parseHunks } from './diff.ts'
+import { heldSpan, holds, parseHunks } from './diff.ts'
 import { showHidden } from './sanitize.ts'
 import { tokenBound } from './tokens.ts'
 
@@ -198,6 +198,65 @@ export function sliceText(sections: readonly DiffSection[], packing: Packing, sl
   return starts[0] === 0
     ? hunks
     : `${text.slice(0, starts[0] - 1)}\n${hunks}`
+}
+
+/** How far `line` is from the new-file lines `hunk` holds, as `heldSpan` gives them: 0 inside them, else the lines to the nearer end; a hunk that holds none counts its start line alone. */
+function distance(hunk: Hunk, line: number): number {
+  const { start, end } = heldSpan(hunk) ?? { start: hunk.start, end: hunk.start }
+  return Math.max(start - line, line - end, 0)
+}
+
+/**
+ * The part of a section a voter whose room cannot hold the whole of it is shown: the section's header
+ * (the text before its first hunk, which is none for a section that starts with its first `@@` line), a
+ * line feed, and the hunks nearest the cited `line` that fit `room` tokens, as `tokenBound` counts them.
+ * `hunks` are the section's own, as `hunksOf` reads them from the whole `text`, never from a piece of it.
+ * The cited hunk is the first that holds `line`, as `locate` takes it. Then, of the hunks beside those
+ * taken, the one nearer `line` in new-file lines comes next, the earlier on a tie, so the hunks taken
+ * are always the section's own run of neighbours, in its order, and the context reads as a diff. A
+ * hunk that does not fit closes its side, the one before the run or the one after it, and the other
+ * side goes on; it stops when both sides are closed or the section's ends are reached. The hunk's
+ * count is its lines to the next `@@` line, so text outside any hunk travels with the hunk before it,
+ * and the header is always the text before the first hunk of `text`, whatever it holds.
+ *
+ * It is undefined when no hunk holds `line`, or when the header and the cited hunk alone do not fit
+ * `room`: the caller then sends the whole section, which its provider refuses as too large.
+ */
+export function nearestHunks(text: string, hunks: readonly Hunk[], line: number, room: number): string | undefined {
+  const cited = hunks.findIndex(hunk => holds(hunk, line))
+  if (cited === -1) return undefined
+  const starts = lineStarts(text, hunks)
+  // The header's line feed is the one before the first `@@` line, which `starts[0]` is past.
+  const header = text.slice(0, starts[0])
+  const countOf = (hunk: number): number => tokenBound(hunksText(text, starts, hunk, hunk + 1))
+  let used = tokenBound(header) + countOf(cited)
+  if (used > room) return undefined
+  let low = cited
+  let high = cited
+  let before = cited > 0
+  let after = cited < hunks.length - 1
+  while (before || after) {
+    const takeBefore = before && (!after || distance(hunks[low - 1], line) <= distance(hunks[high + 1], line))
+    const next = takeBefore
+      ? low - 1
+      : high + 1
+    // The line feed that joins the hunk to the run counts with it.
+    const joined = 1 + countOf(next)
+    if (used + joined > room) {
+      if (takeBefore) before = false
+      else after = false
+      continue
+    }
+    used += joined
+    if (takeBefore) {
+      low = next
+      before = low > 0
+    } else {
+      high = next
+      after = high < hunks.length - 1
+    }
+  }
+  return header + hunksText(text, starts, low, high + 1)
 }
 
 /** The text of a part: its slices joined by line feeds. */

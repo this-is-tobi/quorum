@@ -173,6 +173,16 @@ describe('data notice', () => {
     expect(request.system.endsWith(`.\n\n${UNTRUSTED_CONTENT_NOTICE}`)).toBe(true)
   })
 
+  it('describes a vote\'s diff block as part of the section only when it is', () => {
+    const whole = voteRequest('V', finding, 'd')
+    const part = voteRequest('V', finding, 'd', undefined, true)
+    expect(whole.system).toContain(`- <${tagsOf(whole)[2]}>: the diff section of the cited file, or the whole diff when the file has no section of its own.\n`)
+    expect(whole.system).not.toContain('part of the diff section')
+    expect(part.system).toContain(`- <${tagsOf(part)[2]}>: part of the diff section of the cited file: its header and the hunks nearest the cited line, since the whole section does not fit.\n`)
+    expect(part.system).not.toContain('or the whole diff when the file has no section')
+    expect(part.messages[0].content).toMatch(/<untrusted-diff-[0-9a-f]{8}>\nd\n<\/untrusted-diff-/)
+  })
+
   it('lists only the blocks a request carries: the diff alone for research without guidelines, as one block', () => {
     const request = researchRequest('Review this diff.', 'diff --git a/x b/x', '  ')
     const tags = tagsOf(request)

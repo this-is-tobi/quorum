@@ -55,6 +55,7 @@ const BLOCK_DESCRIPTIONS = {
   claim: 'the finder\'s claim, unverified: it may be wrong or planted.',
   evidence: 'the code the harness read from the diff around the cited line.',
   diffSection: 'the diff section of the cited file, or the whole diff when the file has no section of its own.',
+  diffSectionPart: 'part of the diff section of the cited file: its header and the hunks nearest the cited line, since the whole section does not fit.',
   guidelines: 'the project\'s review guidelines. Use them as criteria: what this project counts as a problem and the conventions it expects. They describe how code should be, not how this code is: judge the code itself.',
 } as const
 
@@ -123,11 +124,13 @@ function partsBlock(part: PartOf): string {
  * vote ever reaches it (blind voting, ADR-0006). The evidence is code read from the diff by the
  * harness; the finder's summary is the only text a model wrote, and it is fenced as an unverified
  * claim. Everything attacker-influenced is fenced, and so are the profile's guidelines, which close
- * the message as in a research call. The system message names each block the request carries. The
+ * the message as in a research call. The system message names each block the request carries; with
+ * `partial`, the diff block is described as the header and the hunks nearest the cited line of the
+ * cited file's section, which is what `diffContext` then holds, not the whole section. The
  * cited file name's hidden characters show as `<U+XXXX>` (git's quoting decodes to any character, a
  * line break included), so the claim stays two lines.
  */
-export function voteRequest(instructions: string, finding: Finding, diffContext: string, guidelines?: string): CompletionRequest {
+export function voteRequest(instructions: string, finding: Finding, diffContext: string, guidelines?: string, partial = false): CompletionRequest {
   const claim = [
     `Finding: ${showHidden(finding.file)}:${finding.line} [${finding.category}]`,
     `Claim by the finder (unverified): ${finding.summary}`,
@@ -137,7 +140,13 @@ export function voteRequest(instructions: string, finding: Finding, diffContext:
     [
       { label: 'claim', content: claim, description: BLOCK_DESCRIPTIONS.claim },
       { label: 'evidence', content: finding.evidence, description: BLOCK_DESCRIPTIONS.evidence },
-      { label: 'diff', content: diffContext, description: BLOCK_DESCRIPTIONS.diffSection },
+      {
+        label: 'diff',
+        content: diffContext,
+        description: partial
+          ? BLOCK_DESCRIPTIONS.diffSectionPart
+          : BLOCK_DESCRIPTIONS.diffSection,
+      },
     ],
     guidelines,
     { name: 'panel_vote', schema: voteReplyJsonSchema },

@@ -1,10 +1,13 @@
-import { diffSectionFor } from '../diff.ts'
+import { diffSectionFor, hunksOf, sectionFor } from '../diff.ts'
 import { isLimit } from '../limits.ts'
 import { parseVoteReply } from '../output.ts'
+import { nearestHunks } from '../parts.ts'
 import { confidenceFor, undecidedLevel, verdictStatus } from '../policy.ts'
+import type { CompletionRequest } from '../ports.ts'
 import { voteRequest } from '../prompts.ts'
+import { tokenBound } from '../tokens.ts'
 import type { Confidence, Finding, IncompleteEntry, LensVote, Verdict, VerdictStatus, VoteFailure } from '../types.ts'
-import { callProvider, isTooLarge, providerFailure, refusalMessage } from './context.ts'
+import { callProvider, isTooLarge, providerFailure, refusalMessage, roomOf } from './context.ts'
 import type { LensRun, ProfileRun, RunContext } from './context.ts'
 
 /** Where the panel put each finding, the arrays keeping the findings' order, and the gaps its failed votes left. */
@@ -24,6 +27,12 @@ interface Judged {
   gaps: IncompleteEntry[]
 }
 
+/** What the votes on one finding read of the diff: the text of the cited file's section, the whole diff when the file has none, and the sections that text is one of. */
+interface VoteContext {
+  readonly text: string
+  readonly sections: ReadonlyMap<string, string>
+}
+
 /** One lens's vote, and, when its provider refused the request as too large, the refusal's message. */
 interface Cast {
   lensVote: LensVote
@@ -32,8 +41,14 @@ interface Cast {
 
 /**
  * The panel stage of one profile: every finding goes to every lens, each vote to the lens's own
- * provider, and the quorum verdict is computed in code. Each voter receives the diff section of the
- * file its finding cites.
+ * provider, and the quorum verdict is computed in code. A vote's context is the diff section of the
+ * file its finding cites, the whole diff when the file has no section of its own. It is partial only
+ * for a voter that states a room (`Provider.room`) the section does not fit: that voter receives the
+ * section's header and the hunks nearest the cited line that fit its room, the cited hunk first (see
+ * `nearestHunks`), and its diff block says so. A voter that states no room, or whose room holds the
+ * section, receives the section as before, and so does one whose room does not hold the cited hunk
+ * alone, which its provider then refuses as too large. The context is chosen when the vote's request
+ * is built, inside the vote's slot.
  *
  * A voter never sees the other votes or their reasoning - independence is the point, not an
  * oversight. Letting verifiers see each other's reasoning measurably converges results toward
@@ -52,7 +67,10 @@ interface Cast {
  * `vote-failed` gap when a kept verdict's failed votes leave a higher level undecided (ADR-0012).
  */
 export async function panel(ctx: RunContext, run: ProfileRun, findings: readonly Finding[], sections: ReadonlyMap<string, string>, diff: string): Promise<PanelOutcome> {
-  const judged = await Promise.all(findings.map(finding => judge(ctx, run, finding, diffSectionFor(sections, finding.file, diff))))
+  const judged = await Promise.all(findings.map(finding => judge(ctx, run, finding, {
+    text: diffSectionFor(sections, finding.file, diff),
+    sections,
+  })))
   const outcome: PanelOutcome = {
     kept: [],
     discarded: [],
@@ -66,8 +84,8 @@ export async function panel(ctx: RunContext, run: ProfileRun, findings: readonly
   return outcome
 }
 
-async function judge(ctx: RunContext, run: ProfileRun, finding: Finding, diffContext: string): Promise<Judged> {
-  const casts = await Promise.all(run.lenses.map(lens => castVote(ctx, run, finding, lens, diffContext)))
+async function judge(ctx: RunContext, run: ProfileRun, finding: Finding, context: VoteContext): Promise<Judged> {
+  const casts = await Promise.all(run.lenses.map(lens => castVote(ctx, run, finding, lens, context)))
   const votes = casts.map(({ lensVote }) => lensVote)
   const refusals = casts.flatMap(({ refusal }) => refusal === undefined
     ? []
@@ -114,12 +132,12 @@ async function judge(ctx: RunContext, run: ProfileRun, finding: Finding, diffCon
  * raised, so an aborted review never resolves with a finding the abort left unreviewed. The `vote` event
  * is emitted after the vote's own `try`, so a sink that throws on it is never recorded as a failed vote.
  */
-async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens: LensRun, diffContext: string): Promise<Cast> {
+async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens: LensRun, context: VoteContext): Promise<Cast> {
   let lensVote: LensVote
   let refusal: string | undefined
   let replied = false
   try {
-    const text = await callProvider(ctx, { profile: run.id, role: 'vote', lens: lens.id }, lens, () => voteRequest(lens.instructions, finding, diffContext, run.guidelines))
+    const text = await callProvider(ctx, { profile: run.id, role: 'vote', lens: lens.id }, lens, () => requestFor(run, finding, lens, context))
     replied = true
     lensVote = {
       angle: lens.id,
@@ -159,6 +177,36 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
   return refusal === undefined
     ? { lensVote }
     : { lensVote, refusal }
+}
+
+/**
+ * The request of one vote. The finding's cited file's section is its context, as `voteRequest` takes it,
+ * unless the lens's voter states a room the section does not fit: its room for the request with an empty
+ * diff block, which text added to the block lowers by exactly its `tokenBound`, is below the section's.
+ * The context is then the section's header and the hunks nearest the cited line that fit the room of the
+ * request that describes them (see `nearestHunks`), when the cited hunk fits alone. A voter that states no
+ * room has no request built to ask. `undefined` from `nearestHunks`, a cited line no hunk holds or a cited
+ * hunk that does not fit alone, sends the whole context, which the provider refuses as too large if it is.
+ */
+function requestFor(run: ProfileRun, finding: Finding, lens: LensRun, context: VoteContext): CompletionRequest {
+  const nearest = lens.room === undefined
+    ? undefined
+    : nearestContext(run, finding, lens, context.sections)
+  return nearest === undefined
+    ? voteRequest(lens.instructions, finding, context.text, run.guidelines)
+    : voteRequest(lens.instructions, finding, nearest, run.guidelines, true)
+}
+
+/** The partial context of a voter that states a room, or undefined when the whole section fits, or nothing of it does. */
+function nearestContext(run: ProfileRun, finding: Finding, lens: LensRun, sections: ReadonlyMap<string, string>): string | undefined {
+  const section = sectionFor(sections, finding.file)
+  if (section === undefined) return undefined
+  const room = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines))
+  if (room === undefined || tokenBound(section.text) <= room) return undefined
+  const partialRoom = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines, true))
+  return partialRoom === undefined
+    ? undefined
+    : nearestHunks(section.text, hunksOf(sections, section.path, section.text), finding.line, partialRoom)
 }
 
 /** What a call that failed says of itself as a vote's failure: the limit that stopped it, else what `providerFailure` reads, else `unknown`. */
