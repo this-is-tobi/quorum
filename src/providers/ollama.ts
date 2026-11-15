@@ -105,7 +105,8 @@ function readReply(reply: unknown, { id, model }: Pick<OllamaOptions, 'id' | 'mo
  * stop as a truncation, instead of part of the prompt dropped so the reply can go on (Ollama 0.12.6 or
  * later; an older server ignores both fields). It sends `contextTokens` as `options.num_ctx`, so the server
  * loads the context the size guard counts with, and refuses, before any request, a request that may not
- * fit it.
+ * fit it. It sends the reply's limit, `maxTokens` else the budget of the size guard, as `options.num_predict`,
+ * so the server bounds a reply's length.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
@@ -122,7 +123,7 @@ export function ollama(options: OllamaOptions): Provider {
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       checkFits(id, { system, messages }, request.output, budget)
-      // JSON.stringify drops the undefined fields: no format for `prompt`, no temperature for null, no limit unless set.
+      // JSON.stringify drops the undefined fields: no format for `prompt`, no temperature for null.
       const reply = await postJson<unknown>({
         providerId: id,
         url,
@@ -138,7 +139,7 @@ export function ollama(options: OllamaOptions): Provider {
           stream: false,
           truncate: false,
           shift: false,
-          options: { temperature: temperature ?? undefined, num_predict: maxTokens, num_ctx: contextTokens },
+          options: { temperature: temperature ?? undefined, num_predict: budget.replyTokens, num_ctx: contextTokens },
           format: format(structuredOutput, request.output),
         }, extraBody),
         signal: request.signal,

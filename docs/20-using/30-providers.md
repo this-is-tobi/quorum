@@ -185,7 +185,7 @@ A provider built from a preset or a protocol is checked first for the problems b
 
 ## The shared options
 
-These are the options of the four HTTP adapters. `claudeCode` takes `id`, `model`, `contextTokens`, `apiKey`, `structuredOutput`, `timeoutMs` and `retries`, with its own rules, refuses the rest, and has options of its own: [Claude Code options](#claude-code-options).
+These are the options of the four HTTP adapters. `claudeCode` takes `id`, `model`, `contextTokens`, `maxTokens`, `apiKey`, `structuredOutput`, `timeoutMs` and `retries`, with its own rules, refuses the rest, and has options of its own: [Claude Code options](#claude-code-options).
 
 ### Options
 
@@ -201,7 +201,7 @@ These are the options of the four HTTP adapters. `claudeCode` takes `id`, `model
 | `query` | `Record<string, string>` | None | Added to every request URL. Not redacted from error messages: never put a key here. A value equal to `apiKey` is refused |
 | `extraBody` | `Record<string, unknown>` | None | JSON values deep-merged into the body last: objects merge key by key, anything else replaces. A top-level key cannot replace a field the adapter writes for the conversation, or set one that offers the model a tool: [The tool fields](#the-tool-fields). Nor can it set the reply limit, which `maxTokens` sets: [The size of a request](#the-size-of-a-request) |
 | `temperature` | `number \| null` | The adapter's | Sent where the protocol takes it; `null` leaves it out, for a model that rejects it |
-| `maxTokens` | `number` | None, but `anthropic`'s 16000; the size guard keeps 16000 for the reply when it is unset | The most tokens the reply may hold, in the protocol's own field |
+| `maxTokens` | `number` | `16000` | The most tokens the reply may hold, thinking included, sent as the server's limit in the protocol's own field: [The reply's limit](#the-replys-limit) |
 | `timeoutMs` | `number` | `600000` | The deadline of one attempt, in milliseconds, from 1000 to 86400000: [The deadline of an attempt](#the-deadline-of-an-attempt) |
 | `retries` | `number` | `2` | How many times a call that failed in passing is tried again, from 0 to 5: [What is retried](#what-is-retried) |
 | `systemPrompt` | `'native' \| 'inline'` | `'native'` | `native` sends the system text in the protocol's own place; `inline` puts it at the head of the first user message, joined by a blank line, for a chat template that rejects a system role |
@@ -270,7 +270,7 @@ Some endpoints cut a prompt that is too long for the model in silence and still 
 
 - **The text** is the system text and every message as the adapter sends them (`systemPrompt: 'inline'` counts the blank line that joins them), at one token per UTF-8 byte, each code point at its longest form (as it is, decomposed with NFD, or compatibility-decomposed with NFKD), and the reply schema's JSON once more, since a server may add it to the prompt.
 - **The chat template** takes 512 tokens, for what a server adds around the messages. `claudeCode` keeps 4096 instead, for the context Claude Code adds itself: [The size of a Claude Code request](#the-size-of-a-claude-code-request).
-- **The reply** takes `maxTokens`, else 16000. Only `anthropic` sends that number when `maxTokens` is unset; the other adapters send no limit then, so for them it is room the guard keeps, not a cap the server applies.
+- **The reply** takes `maxTokens`, else 16000, and every adapter sends that number as the server's limit, so the budget the guard keeps is the one the server enforces: [The reply's limit](#the-replys-limit).
 
 A request is sent only when `text + 512 + reply <= contextTokens`. One token per byte bounds byte-level BPE and byte-fallback SentencePiece tokenizers. Counting each code point at its longest form bounds every normalized form of the text, so a tokenizer that normalizes with NFC, NFKC, NFD or NFKD first stays bounded: Qwen 2.5's NFC normalizer turns 300 bytes of U+0F81 into 500 tokens, which is why the count is not the raw bytes. Decomposition works one code point at a time and composing never lengthens UTF-8, so the sum is an upper bound, and the text is never normalized as a whole, which takes quadratic time on a long run of combining marks. Case folding is not proven covered, and no chat model's tokenizer is known to fold case. It costs room: accented letters count one more byte per accent, Hangul syllables up to three times their size, and code runs about three bytes to a token, so the guard accepts about a third of the diff that would really fit.
 
@@ -292,6 +292,15 @@ A `contextTokens` that leaves no room for a request, at most the reply budget an
 Each is a configuration error, `<id>.extraBody.<key>: sets the reply limit: use maxTokens`, where `<key>` is the field's path, such as `generationConfig.maxOutputTokens`. The key is matched as in [The tool fields](#the-tool-fields).
 
 The guard does not count the text that `extraBody` adds to a request, such as a vLLM `chat_template`, and the 512 tokens do not cover what a server adds beyond them, such as an Ollama Modelfile's `TEMPLATE` or `SYSTEM`. It does not see a server-side switch that truncates a prompt either, which `extraBody` can turn on: vLLM's `truncate_prompt_tokens`, or OpenRouter's `transforms` with `middle-out`. Do not set one. It trusts the number it is given: a server that loads a smaller context than `contextTokens` can still cut a prompt in silence, which is why `ollama` is told the context it counts with, below.
+
+### The reply's limit
+
+Planted text can draw a reply out to the model's whole window, so every request carries the reply's limit, `maxTokens` else 16000, in the field of the last column of [the presets table](#presets), and the server stops the reply there.
+
+- **Thinking counts inside it** on Anthropic, OpenAI and Gemini, so a reasoning model needs more than a model that answers at once: OpenAI advises at least 25000 for its reasoning models. Raise `maxTokens`, and `contextTokens` with it, since the guard keeps the whole limit as room for the reply.
+- **A reply that reaches it fails** as `truncated`, `reply was cut off by the token limit`, and is never retried: [`ProviderError`](#providererror).
+- **A model whose own output limit is below 16000** may refuse the request. An older model that an Azure deployment still serves is one: set `maxTokens` to its limit. Every current model of the presets takes more than 16000.
+- **`claudeCode` sends it as Claude Code's own limit**, in `CLAUDE_CODE_MAX_OUTPUT_TOKENS`: [The size of a Claude Code request](#the-size-of-a-claude-code-request).
 
 ### Configuration errors
 
@@ -355,14 +364,14 @@ For any OpenAI-compatible `/chat/completions` endpoint. Ollama's `/v1` is one, a
 
 | Option | Type | Default | Does |
 | --- | --- | --- | --- |
-| `maxTokensField` | `'max_tokens' \| 'max_completion_tokens'` | `'max_tokens'` | The body field of `maxTokens`, once `maxTokens` is set. OpenAI's reasoning models need `max_completion_tokens` |
+| `maxTokensField` | `'max_tokens' \| 'max_completion_tokens'` | `'max_tokens'` | The body field of the reply's limit. OpenAI's reasoning models need `max_completion_tokens` |
 
 The body of every request holds, in this order:
 
 - `model` and `messages`: the request's messages, with the system text first as a `system` message, or inline at the head of the first user message;
 - `response_format`, unless `structuredOutput` is `prompt`;
 - `temperature`, unless it is `null`;
-- `maxTokens` under `maxTokensField`, when set;
+- the reply's limit under `maxTokensField`, `maxTokens` else 16000;
 - then `extraBody`, merged. It cannot replace `model`, `messages` or `stream`, or set `max_tokens` or `max_completion_tokens`, which `maxTokens` sets.
 
 The text is the first choice's `message.content`: a string, or an array of parts whose `text` parts are joined, as Mistral sends it. Every other part is skipped, thinking parts included. `model` is the one the reply names, or the configured one when it names none. `usage` is read from `usage.prompt_tokens` and `usage.completion_tokens`.
@@ -423,7 +432,7 @@ The body of every request holds, in this order:
 
 - `contents`: each message as `{ role, parts: [{ text }] }`, an `assistant` message with the role `model`;
 - `systemInstruction: { parts: [{ text: <system text> }] }`, unless `systemPrompt` is `inline`;
-- `generationConfig`, left out when it would be empty: `temperature` when set, `maxOutputTokens` when `maxTokens` is set, `responseMimeType: 'application/json'` in `json` and `schema` mode, and `responseJsonSchema: <output.schema>` in `schema` mode, as Google's JavaScript SDK sends it (`responseSchema` is deprecated);
+- `generationConfig`: `temperature` when set, `maxOutputTokens`, `maxTokens` else 16000, `responseMimeType: 'application/json'` in `json` and `schema` mode, and `responseJsonSchema: <output.schema>` in `schema` mode, as Google's JavaScript SDK sends it (`responseSchema` is deprecated);
 - then `extraBody`, merged: `{ generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } }` goes beside the rest. It cannot replace `contents` or `systemInstruction`, or set `generationConfig.maxOutputTokens`, which `maxTokens` sets. Its `generationConfig` must be an object, written `generationConfig`: another spelling, such as `generation_config`, would send a second key, so it is refused.
 
 A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose parts hold text. The text is the `text` of the first candidate's `content.parts`, joined, without the parts flagged as thoughts. `model` is the reply's `modelVersion`, or the configured model. The input count is `usageMetadata.promptTokenCount`; the output count is `usageMetadata.candidatesTokenCount`, plus `usageMetadata.thoughtsTokenCount` when it is a number. Gemini leaves a zero count out of its JSON, so a candidates count the reply leaves out reads as 0: a thinking model cut off while it thinks reports only its prompt and thought counts. A reply without `promptTokenCount`, or with a prompt or candidates count that is not a number, reports no `usage`. A status outside 2xx is an `http` error that quotes Google's `{ "error": { "code", "message", "status", "details" } }` body; a 402, which Google sends for a depleted prepay balance, is not retryable, unlike a 429, and a 429 of a per-day quota is not either.
@@ -453,7 +462,7 @@ The body of every request holds, in this order:
 
 - `model` and `messages`: the request's messages, with the system text first as a `system` message, or inline at the head of the first user message;
 - `stream: false`, `truncate: false` and `shift: false`;
-- `options`: `temperature`, unless it is `null`, `num_predict`, when `maxTokens` is set, and `num_ctx`, always, from `contextTokens`;
+- `options`: `temperature`, unless it is `null`, `num_predict`, `maxTokens` else 16000, and `num_ctx`, always, from `contextTokens`;
 - `format`: `'json'` in `json` mode, `<output.schema>` in `schema` mode;
 - then `extraBody`, merged: `{ options: { seed: 7 } }` goes beside the temperature. It cannot replace `model`, `messages`, `stream`, `truncate` or `shift`, or set `options.num_ctx`, which `contextTokens` sets, or `options.num_predict`, which `maxTokens` sets. Its `options` must be an object.
 
@@ -519,6 +528,7 @@ Each measure of the command line and of the environment, and what it stops:
 | `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` | Every `CLAUDE.md` file, the managed one included (from Claude Code's documentation, not observed live) |
 | `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`, `CLAUDE_CODE_DISABLE_POLICY_SKILLS=1` | The skills Claude Code bundles and the ones an organization's managed policy brings (from Claude Code's documentation, not observed live) |
 | `API_TIMEOUT_MS=<timeoutMs>`, `CLAUDE_CODE_MAX_RETRIES=<retries>` | How long Claude Code waits for the headers of each attempt's response, and its own retries. The provider's `timeoutMs` and `retries` replace the environment's two variables, which are removed in any letter case: 2 retries by default, where Claude Code alone makes 10 |
+| `CLAUDE_CODE_MAX_OUTPUT_TOKENS=<maxTokens>` | Claude Code's limit on each reply, over the environment's: 16000 by default, where Claude Code asks for up to 128000 by itself |
 | The parent session's variables, removed in every mode | `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EMIT_STARTUP_TIMING` and `CLAUDE_CODE_STARTUP_FAILURE_RESULTS`: a run nested in a Claude Code session does not inherit its messaging token or socket |
 | The capability variables, removed in every mode | `CLAUDE_CODE_PLUGIN_DIRS`, `CLAUDE_CODE_PLUGIN_SEED_DIR`, `CLAUDE_CODE_PLUGIN_CACHE_DIR`, `CLAUDE_CODE_SYNC_PLUGINS`, `CLAUDE_CODE_SYNC_SKILLS`, `CLAUDE_CODE_PROCESS_WRAPPER`, `CLAUDE_CODE_ENABLE_CFC`, `CLAUDE_CODE_ENABLE_TODO_TOOLS`, `CLAUDE_CODE_ENABLE_TASKS`, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, `CLAUDE_CODE_USE_POWERSHELL_TOOL`, `CLAUDE_CODE_EXTRA_BODY` and `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE`: they load plugins and skills, start every process through a wrapper, enable a tool, merge a JSON object into every request body or keep the session `--no-session-persistence` drops, and no flag governs them |
 | A process group of its own | What `claude` starts: an abort stops the whole group, and so does quorum's exit, `process.exit` or a second interrupt included (not on Windows, which has none) |
@@ -534,7 +544,8 @@ Not everything is off, and no flag of this list turns the rest off: an organizat
 | --- | --- | --- | --- |
 | `id` | `string` | Required | Names the provider in events, `meta` and its error messages |
 | `model` | `string` | Required | What `claude --model` takes: an alias, `sonnet`, `opus`, `haiku` or `fable`, or a full model id, with `[1m]` after it (`opus[1m]`) for a 1M window on a 4.6 model. Visible ASCII, no space, and not starting with `-` |
-| `contextTokens` | `number` | Required | The model's context window in tokens, prompt and reply together. It must be more than 20096: [The size of a Claude Code request](#the-size-of-a-claude-code-request) |
+| `contextTokens` | `number` | Required | The model's context window in tokens, prompt and reply together. It must be more than `maxTokens` and 4096, so more than 20096 by default: [The size of a Claude Code request](#the-size-of-a-claude-code-request) |
+| `maxTokens` | `number` | `16000` | The most tokens each reply may hold, thinking included, as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`: Claude Code caps a value above the model's own limit, and a model that thinks with a budget needs more than 1024 |
 | `auth` | `'inherit' \| 'login' \| 'api-key'` | `'inherit'` | Whose credentials `claude` uses: [The auth modes](#the-auth-modes) |
 | `apiKey` | `string` | None | `api-key` only: the key handed to `claude` as `ANTHROPIC_API_KEY`, in its environment and nowhere else. Without one, `api-key` keeps the environment's own `ANTHROPIC_API_KEY`. Refused under another mode |
 | `structuredOutput` | `'prompt' \| 'schema'` | `'schema'` | `schema` has `claude` enforce the reply schema with `--json-schema`, and reads the reply from its structured output; `prompt` leaves the shape to the prompt, adds no tool, and reads the result's text |
@@ -544,7 +555,7 @@ Not everything is off, and no flag of this list turns the rest off: an organizat
 | `timeoutMs` | `number` | `600000` | How long Claude Code waits for the response headers of each attempt at its API call, in milliseconds, from 1000 to 86400000, set as `API_TIMEOUT_MS` in place of any the environment sets. It bounds that wait only, so raise it for a long run: the provider states `timeoutMs` times `retries` plus one as the deadline of the whole run: [Stopping, nesting and the version](#stopping-nesting-and-the-version) |
 | `retries` | `number` | `2` | Claude Code's own retries of an API call that failed in passing, from 0 to 5, set as `CLAUDE_CODE_MAX_RETRIES`, where Claude Code alone makes 10, and replacing a `CLAUDE_CODE_MAX_RETRIES` of the environment. The provider states no retry to the core |
 
-`ClaudeCodeOptions` types them and `ClaudeCodeAuth` types `auth`. The options of an HTTP endpoint (`baseUrl`, `headers`, `query`, `extraBody`, `temperature`, `maxTokens` and `systemPrompt`) are refused: the reply budget is fixed at 16000, and there is no endpoint.
+`ClaudeCodeOptions` types them and `ClaudeCodeAuth` types `auth`. The options of an HTTP endpoint (`baseUrl`, `headers`, `query`, `extraBody`, `temperature` and `systemPrompt`) are refused: there is no endpoint.
 
 ### The auth modes
 
@@ -560,7 +571,7 @@ Not everything is off, and no flag of this list turns the rest off: an organizat
 
 ### The size of a Claude Code request
 
-The guard of [The size of a request](#the-size-of-a-request), with two differences. Claude Code adds its own context to every request, which 512 tokens do not cover: 953 tokens for a one-line prompt and 1463 with the schema tool's second turn, measured, so the reserve is 4096. And `maxTokens` is not an option, so the reply budget is 16000. A request is sent only when `text + 4096 + 16000 <= contextTokens`, so `contextTokens` must be more than 20096, or the provider is refused: `<id>.contextTokens: must be more than 20096, the 16000 tokens of the reply budget and 4096 for the chat template`. The text is counted as for an HTTP adapter, the reply schema's JSON included. A request that may not fit fails with `may need <n> tokens, more than contextTokens (<c>): <t> for its text at one token per byte, 4096 for the chat template and 16000 for the reply`.
+The guard of [The size of a request](#the-size-of-a-request), with two differences. Claude Code adds its own context to every request, which 512 tokens do not cover: 953 tokens for a one-line prompt and 1463 with the schema tool's second turn, measured, so the reserve is 4096. And the reply budget is `maxTokens`, 16000 by default, which is also the limit the run sets on Claude Code's replies. A request is sent only when `text + 4096 + reply <= contextTokens`, so `contextTokens` must be more than `maxTokens` and 4096, 20096 by default, or the provider is refused: `<id>.contextTokens: must be more than 20096, the 16000 tokens of the reply budget and 4096 for the chat template`. The text is counted as for an HTTP adapter, the reply schema's JSON included. A request that may not fit fails with `may need <n> tokens, more than contextTokens (<c>): <t> for its text at one token per byte, 4096 for the chat template and <r> for the reply`.
 
 - **The message is at most 10,000,000 bytes**, the smaller reading of the 10 MB that Claude Code reads on stdin, checked first: a larger one is `too-large` too.
 - **Claude Code's own refusal of a prompt is `too-large`** as well. When it reports `terminal_reason: "prompt_too_long"`, or an error result (`is_error`) whose text starts `Prompt is too long`, a prompt the guard let through and Claude refused is the same `request-too-large` gap, which `--allow-incomplete` does not lift.
@@ -568,12 +579,13 @@ The guard of [The size of a request](#the-size-of-a-request), with two differenc
 
 ### Claude Code replies and errors
 
-`claude -p --output-format=json` prints one JSON object. Only the unknown-model error and two success runs were observed live: the shapes of a refusal, a reply cut off by the token limit, a prompt too long and an auth failure follow Claude Code's documentation. Claude Code reports an API error as exit `1` with that object on stdout, `subtype: "success"` and `is_error: true`, so the object is read before the exit code, in this order:
+`claude -p --output-format=json` prints one JSON object. Only the unknown-model error and two success runs were observed live: the shapes of a refusal, a reply cut off by the token limit, a prompt too long and an auth failure follow Claude Code's documentation, and the `max_output_tokens` result below was read in the embedded code of Claude Code 2.1.311, never run. Claude Code reports an API error as exit `1` with that object on stdout, `subtype: "success"` and `is_error: true`, so the object is read before the exit code, in this order:
 
 | The result | Kind | Message |
 | --- | --- | --- |
 | `terminal_reason` `prompt_too_long`, or an error result that starts `Prompt is too long` | `too-large` | `Claude Code refused the prompt as too long for the model's context` |
 | `stop_reason` `refusal` | `refusal` | `model refused` |
+| An error result whose `api_error` is `max_output_tokens`: Claude Code continued a reply cut at its limit three times, then gave up | `truncated` | `reply was cut off by the token limit` |
 | An error (`is_error` is not `false`, or `subtype` is not `success`) with an `api_error_status` from 400 to 599 | `http`, retryable as that status would be, so 429 and 5xx are | `HTTP 404 from the model API: "<up to 200 characters>"` |
 | Any other error | `process`, with the exit code as `status` | `claude failed (error_max_structured_output_retries): "<up to 200 characters>"`, the subtype, or the `terminal_reason` of a `success` one, left out when it is not a short word |
 | A signal ended `claude` after a success result | `process` | `claude was stopped by SIGTERM after its result` |
@@ -619,8 +631,8 @@ Every message starts with the provider id. A quoted text is cut, written as a JS
 - **It runs inside a Claude Code session too.** `CLAUDECODE=1` in the environment does no harm, which was checked live, and the parent session's own variables are removed: [The isolation](#the-isolation).
 - **One process per call.** The review's concurrency limit, 4 by default, bounds the calls in flight across every provider, so it bounds the `claude` processes too.
 - **The provider states no retry to the core**, since Claude Code retries by itself, and one deadline for the whole run: `timeoutMs` times `retries` plus one, 1800000 ms by default and at most 518400000. It bounds every one of Claude Code's own attempts and the waits between them, `claude`'s start and the version check, and the time each reply takes after its headers. `API_TIMEOUT_MS`, which the run sets to `timeoutMs`, limits only each attempt's wait for its response headers, so the stated deadline is not the sum of those limits. At the deadline the call fails as a `timeout` and the child's group is stopped as an abort stops it: a voter's vote fails, and a gating profile's research ends the review with exit `3`.
-- **Raise `timeoutMs` for a long run.** Claude Code asks for up to 128000 output tokens, so one long reply at a high `--effort` can pass the default 30 minutes, and a run that passes its deadline fails.
-- **The provider's settings replace the environment's.** The run sets `API_TIMEOUT_MS` to `timeoutMs` and `CLAUDE_CODE_MAX_RETRIES` to `retries` over whatever the environment held, in any letter case, so exporting either has no effect: set `timeoutMs` and `retries` in the config, or with `QUORUM_<ROLE>_TIMEOUT_MS` and `QUORUM_<ROLE>_RETRIES`, instead. The default takes Claude Code from its own 10 retries to 2, and `retries` stops at 5.
+- **Raise `maxTokens` at a high `--effort`, and `timeoutMs` with it.** A reply at a high effort thinks longer, and its thinking counts inside `maxTokens`, 16000 by default: Claude Code continues a reply cut at its limit up to three times, then the call fails as `truncated`. A longer reply takes longer, so raise `timeoutMs` too: by default it bounds the whole run at 30 minutes.
+- **The provider's settings replace the environment's.** The run sets `API_TIMEOUT_MS` to `timeoutMs`, `CLAUDE_CODE_MAX_RETRIES` to `retries` and `CLAUDE_CODE_MAX_OUTPUT_TOKENS` to `maxTokens` over whatever the environment held, in any letter case, so exporting any of them has no effect: set `timeoutMs`, `retries` and `maxTokens` in the config, or `timeoutMs` and `retries` with `QUORUM_<ROLE>_TIMEOUT_MS` and `QUORUM_<ROLE>_RETRIES`, instead. The default takes Claude Code from its own 10 retries to 2, and `retries` stops at 5.
 - **The version: 2.1.311 or newer.** The isolation rests on environment variables that an older Claude Code does not know, and one it ignores is a file mention that is not turned off. So before its first request a provider runs `claude --version`, with the request's environment, from the request's empty directory and with the request's signal, and the result is kept for the life of the process, once per command. A version below 2.1.311, or an output that does not start with `<major>.<minor>.<patch>`, fails the request as `process`: `Claude Code 2.1.311 or newer is required, found 2.1.310`. The version is quoted only when each of its parts is at most four digits, else the message reads `found an unknown version`, so nothing else `claude` printed comes with it. It has 10 seconds to answer: past them its process group is stopped as an abort stops one (SIGTERM, then SIGKILL `2000` ms later), the request's directory is removed and the request fails with `claude --version did not answer within 10 s`. A check that failed is run again by the next request, and a request that waits for a check another request started aborts on its own signal, without stopping that check. A Claude Code that lacks one of the flags fails the run too, closed. `bun run live:claude-code` checks the adapter against the real `claude`. You run it by hand, with Claude Code installed and logged in, and neither `bun run test` nor CI does: it makes four calls on `haiku`, each capped by `--max-budget-usd 0.05`: structured output from a directory that holds a planted `CLAUDE.md`, which shows the child runs in an empty directory of its own and not in that one, one in `prompt` mode, one whose message names a canary file with a random token as `@<its absolute path>`, which fails if the token comes back, and one that names a model that does not exist. It passed against Claude Code 2.1.311, at under a tenth of a cent.
 
 ### Claude Code configuration errors
@@ -629,11 +641,12 @@ Every message starts with the provider id. A quoted text is cut, written as a JS
 
 | Path | Message |
 | --- | --- |
-| `<id>.baseUrl`, `<id>.headers`, `<id>.query`, `<id>.extraBody`, `<id>.temperature`, `<id>.maxTokens`, `<id>.systemPrompt` | `is not an option of the claude-code protocol` |
+| `<id>.baseUrl`, `<id>.headers`, `<id>.query`, `<id>.extraBody`, `<id>.temperature`, `<id>.systemPrompt` | `is not an option of the claude-code protocol` |
 | `<id>.model` | `must be a model id of visible ASCII characters, with no space, that does not start with -` |
+| `<id>.maxTokens` | `must be a whole number of at least 1` |
 | `<id>.contextTokens` | `is required: the model's context window in tokens, which quorum checks every request against` |
 | `<id>.contextTokens` | `must be a whole number of at least 1` |
-| `<id>.contextTokens` | `must be more than 20096, the 16000 tokens of the reply budget and 4096 for the chat template` |
+| `<id>.contextTokens` | `must be more than <n>, the <r> tokens of the reply budget and 4096 for the chat template` |
 | `<id>.auth` | `must be inherit, login or api-key` |
 | `<id>.apiKey` | `is set, but auth is not api-key, so it would never be sent` |
 | `<id>.apiKey` | `must only contain visible ASCII characters` |

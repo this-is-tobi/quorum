@@ -100,7 +100,7 @@ describe('gemini', () => {
     expect(headers).toEqual({ 'content-type': 'application/json', 'x-goog-api-key': 'AIza-k' })
     expect(body).toEqual({
       ...conversation,
-      generationConfig: { responseMimeType: 'application/json' },
+      generationConfig: { maxOutputTokens: 16_000, responseMimeType: 'application/json' },
     })
   })
 
@@ -109,6 +109,7 @@ describe('gemini', () => {
       'schema',
       {},
       {
+        maxOutputTokens: 16_000,
         responseMimeType: 'application/json',
         responseJsonSchema: { type: 'object' },
       },
@@ -128,10 +129,13 @@ describe('gemini', () => {
     expect(sent(fetchMock).body).toEqual({ ...conversation, generationConfig: config })
   })
 
-  it('sends no generationConfig when it would be empty', async () => {
+  it('sends maxOutputTokens 16000 alone when nothing else sets the generation config', async () => {
     const fetchMock = stubFetch(generateContentResponse)
     await gemini({ ...options, structuredOutput: 'prompt' }).complete(request)
-    expect(sent(fetchMock).body).toEqual(conversation)
+    expect(sent(fetchMock).body).toEqual({
+      ...conversation,
+      generationConfig: { maxOutputTokens: 16_000 },
+    })
   })
 
   it('sends an assistant message with the role model', async () => {

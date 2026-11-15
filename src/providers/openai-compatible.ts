@@ -158,7 +158,8 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
 /**
  * A provider for any OpenAI-compatible `/chat/completions` endpoint. The key, when there is one, travels
  * only in the header `auth` names, `Authorization: Bearer` by default (invariant I1). It refuses, before
- * any request, a request that may not fit `contextTokens`.
+ * any request, a request that may not fit `contextTokens`. It sends the reply's limit, `maxTokens` else the
+ * budget of the size guard, under `maxTokensField`, so the server bounds a reply's length.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
@@ -180,7 +181,7 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       checkFits(id, { system, messages }, request.output, budget)
-      // JSON.stringify drops the undefined fields: no response_format for `prompt`, no temperature for null, no limit unless set.
+      // JSON.stringify drops the undefined fields: no response_format for `prompt`, no temperature for null.
       const reply = await postJson<unknown>({
         providerId: id,
         url,
@@ -195,7 +196,7 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
               ],
           response_format: responseFormat(structuredOutput, request.output),
           temperature: temperature ?? undefined,
-          [maxTokensField]: maxTokens,
+          [maxTokensField]: budget.replyTokens,
         }, extraBody),
         signal: request.signal,
         redact,

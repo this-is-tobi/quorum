@@ -90,7 +90,7 @@ describe('ollama', () => {
       stream: false,
       truncate: false,
       shift: false,
-      options: { temperature: 0, num_ctx: 131072 },
+      options: { temperature: 0, num_predict: 16_000, num_ctx: 131072 },
       format: 'json',
     })
   })
@@ -206,7 +206,7 @@ describe('ollama', () => {
     ]))
   })
 
-  it('sends only num_ctx in options when the temperature is null and no limit is set', async () => {
+  it('sends num_predict 16000 and num_ctx in options when the temperature is null and no limit is set', async () => {
     const fetchMock = stubFetch(chatResponse)
     await ollama({ ...options, temperature: null }).complete(request)
     expect(sent(fetchMock).body).toEqual({
@@ -215,7 +215,7 @@ describe('ollama', () => {
       stream: false,
       truncate: false,
       shift: false,
-      options: { num_ctx: 131072 },
+      options: { num_predict: 16_000, num_ctx: 131072 },
       format: 'json',
     })
   })

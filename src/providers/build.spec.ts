@@ -993,6 +993,17 @@ describe('a claude-code provider', () => {
     }, { env: {} })).toMatchObject({ id: 'cc', model: 'sonnet' })
   })
 
+  it('hands a claude-code spec its maxTokens, which the adapter takes', () => {
+    expect(buildProvider({
+      id: 'c',
+      protocol: 'claude-code',
+      model: 'haiku',
+      contextTokens: 200_000,
+      command: '/usr/bin/claude',
+      maxTokens: 8000,
+    })).toMatchObject({ id: 'c', model: 'haiku' })
+  })
+
   it('is handed the spec\'s own fields and the context\'s environment, and none of the builder\'s', () => {
     const env = { PATH: '/usr/bin' }
     const fields = {
@@ -1181,7 +1192,6 @@ describe('a claude-code provider', () => {
       },
     ],
     ['temperature', 0],
-    ['maxTokens', 4096],
     ['systemPrompt', 'inline'],
   ])('refuses %s, which a CLI has no use for', (field, value) => {
     expect(issuesOf({ ...cc, [field]: value })).toEqual([
@@ -1200,17 +1210,17 @@ describe('a claude-code provider', () => {
       temperature: secret,
       maxTokens: secret,
       systemPrompt: secret,
-    })).toEqual(
-      [
+    })).toEqual([
+      ...[
         'baseUrl',
         'headers',
         'query',
         'extraBody',
         'temperature',
-        'maxTokens',
         'systemPrompt',
       ].map(field => ({ path: `p.${field}`, message: 'is not an option of the claude-code protocol' })),
-    )
+      { path: 'p.maxTokens', message: 'must be a whole number of at least 1' },
+    ])
   })
 
   it.each<[string, unknown]>([

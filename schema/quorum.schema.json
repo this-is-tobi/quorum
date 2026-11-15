@@ -153,7 +153,7 @@
             ]
           },
           "maxTokens": {
-            "description": "The most tokens the reply may hold",
+            "description": "The most tokens the reply may hold, thinking included, sent as the server's limit; 16000 when unset. On claude-code, Claude Code's own limit on each reply",
             "type": "integer",
             "minimum": 1,
             "maximum": 9007199254740991

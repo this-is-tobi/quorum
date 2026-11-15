@@ -10,8 +10,8 @@ import type { ShapedMessages } from './messages.ts'
 export const TEMPLATE_TOKENS = 512
 
 /**
- * Tokens kept for the reply when `maxTokens` is not set: the limit `anthropic` sends then, and room for a
- * thinking model's longest reply. Every other adapter sends no limit, so there it is room the guard keeps.
+ * Tokens kept for the reply when `maxTokens` is not set, and the limit every adapter sends as the server's
+ * then, so the budget the guard keeps is the one the server enforces.
  */
 export const DEFAULT_REPLY_TOKENS = 16_000
 

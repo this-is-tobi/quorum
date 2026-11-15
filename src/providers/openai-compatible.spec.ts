@@ -111,6 +111,7 @@ describe('openaiCompatible', () => {
       ],
       response_format: { type: 'json_object' },
       temperature: 0,
+      max_tokens: 16_000,
     })
   })
 
@@ -155,6 +156,23 @@ describe('openaiCompatible', () => {
     }).complete(request)
     expect(sent(fetchMock).body).toMatchObject({ max_completion_tokens: 900 })
     expect(sent(fetchMock).body).not.toHaveProperty('max_tokens')
+  })
+
+  it('sends the limit under the field maxTokensField names, and only there', async () => {
+    const base = {
+      id: 'x',
+      baseUrl: 'http://h/v1',
+      model: 'm',
+      contextTokens: 131072,
+      maxTokensField: 'max_completion_tokens' as const,
+    }
+    const fetchMock = stubFetch(ok)
+    await openaiCompatible(base).complete(request)
+    expect(sent(fetchMock).body).toMatchObject({ max_completion_tokens: 16_000 })
+    expect(sent(fetchMock).body).not.toHaveProperty('max_tokens')
+    await openaiCompatible({ ...base, maxTokens: 4096 }).complete(request)
+    expect(sent(fetchMock, 1).body).toMatchObject({ max_completion_tokens: 4096 })
+    expect(sent(fetchMock, 1).body).not.toHaveProperty('max_tokens')
   })
 
   it('refuses a token-limit field or a structured-output mode it does not know', () => {
