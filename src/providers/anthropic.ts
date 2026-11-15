@@ -5,7 +5,7 @@ import { shapeMessages } from './messages.ts'
 import { isRecord, mergeBody, prepareHttp } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions } from './options.ts'
 import { endedEarly, joinedText, replyFailure, tokenUsage } from './reply.ts'
-import { checkFits, contextBudget, DEFAULT_REPLY_TOKENS, worstCaseTokens } from './size.ts'
+import { checkFits, contextBudget, DEFAULT_REPLY_TOKENS, roomTokens, worstCaseTokens } from './size.ts'
 
 /** The options of an Anthropic Messages provider: the ones every HTTP adapter takes, and no other. */
 export type AnthropicOptions = HttpProviderOptions
@@ -83,7 +83,8 @@ function readReply(reply: unknown, { id, model }: Pick<AnthropicOptions, 'id' | 
  * I1). It never sends an assistant prefill, which current models reject. It refuses, before any request,
  * a request that may not fit `contextTokens`. It always sends a token limit, since the Messages API
  * requires one: `maxTokens`, else the reply budget of the size guard. It states its worst case from the
- * count its size guard keeps: the text it sends, the template reserve and that budget.
+ * count its size guard keeps: the text it sends, the template reserve and that budget, and the room its
+ * guard leaves from the same count: `contextTokens` less those three.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
@@ -100,6 +101,7 @@ export function anthropic(options: AnthropicOptions): Provider {
     timeoutMs,
     retries,
     worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budget),
+    room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budget),
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       checkFits(id, { system, messages }, request.output, budget)

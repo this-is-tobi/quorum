@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest, Provider } from '../core/ports.ts'
+import { researchRequest } from '../core/prompts.ts'
+import { tokenBound } from '../core/tokens.ts'
 import type { Usage } from '../core/types.ts'
 import type { HttpProviderOptions, StructuredOutput } from '../providers/options.ts'
 import { jsonReply, textReply } from './http.ts'
@@ -488,6 +490,40 @@ export function describeProviderContract(subject: ContractSubject): void {
       expect(provider.worstCase?.(request)).toBe(16_545)
       expect(subject.make({ ...base, systemPrompt: 'inline' }).worstCase?.(request)).toBe(16_547)
       expect(subject.make({ ...base, maxTokens: 100 }).worstCase?.(request)).toBe(645)
+    })
+
+    it('states the room its guard leaves as an own data property: a request fits at 0, is refused at -1, and loses the exact count of text added to its diff', async () => {
+      expect(typeof Object.getOwnPropertyDescriptor(subject.make(base), 'room')?.value).toBe('function')
+      expect(subject.make({ ...base, contextTokens: 645, maxTokens: 100 }).room?.(request)).toBe(0)
+      await send({ contextTokens: 645, maxTokens: 100 })
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      const refused = subject.make({ ...base, contextTokens: 644, maxTokens: 100 })
+      expect(refused.room?.(request)).toBe(-1)
+      await expect(refused.complete(request)).rejects.toMatchObject({ kind: 'too-large' })
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(subject.make({
+        ...base,
+        contextTokens: 647,
+        maxTokens: 100,
+        systemPrompt: 'inline',
+      }).room?.(request)).toBe(0)
+
+      const added = [
+        'abc',
+        String.fromCharCode(0x0F81),
+        String.fromCodePoint(0x1F600),
+        String.fromCharCode(0xD800),
+        'a\r\nb',
+        String.fromCharCode(0x65, 0x301),
+      ]
+      for (const systemPrompt of ['native', 'inline'] as const) {
+        const provider = subject.make({ ...base, systemPrompt })
+        const roomOf = (diff: string): number | undefined => provider.room?.(researchRequest('Review this.', diff))
+        for (const text of added) {
+          expect(roomOf(`d${text}`), `${systemPrompt} ${JSON.stringify(text)}`).toBe((roomOf('d') as number) - tokenBound(text))
+        }
+      }
     })
 
     it('refuses a deadline or retries out of range at its field, before any request', () => {

@@ -191,6 +191,15 @@ describe('fingerprint', () => {
     expect(same(stated, unstated)).toBe(true)
   })
 
+  it('never holds the room a provider object states: one that states it is the same configuration as one that does not', () => {
+    const stated = of({
+      ...object('m'),
+      room: () => 123456,
+    }, 'fake')
+    const unstated = of(object('m'), 'fake')
+    expect(same(stated, unstated)).toBe(true)
+  })
+
   it('changes with a provider\'s timeoutMs or retries', () => {
     expect(same(of({ ...PROVIDER, retries: 0 }), of(PROVIDER))).toBe(false)
     expect(same(of({ ...PROVIDER, timeoutMs: 120000 }), of(PROVIDER))).toBe(false)

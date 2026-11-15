@@ -1295,6 +1295,45 @@ describe('configCodeSchema', () => {
     expect(ran).toBe(false)
   })
 
+  it('keeps a provider object\'s stated room in its snapshot, calling it on the object, and refuses one that is no function', () => {
+    const snapshotOf = (object: unknown): Provider => parseConfig(configCodeSchema, {
+      providers: { mine: object },
+    }).providers?.mine as Provider
+    const request = {
+      system: '',
+      messages: [],
+      output: { name: 'x', schema: {} },
+    }
+    let calls = 0
+    const stated = snapshotOf({
+      ...fakeProvider,
+      room(this: { model: string }) {
+        calls += 1
+        return this.model.length + 99
+      },
+    })
+    expect(Object.keys(stated)).toEqual(['model', 'complete', 'room'])
+    expect(stated.room?.(request)).toBe(100)
+    expect(calls).toBe(1)
+    expect(issuesOf({
+      providers: {
+        mine: { ...fakeProvider, room: 5 },
+      },
+    }, configCodeSchema)).toEqual([
+      at('providers.mine.room', 'must be a function'),
+    ])
+    let ran = false
+    const read = snapshotOf({
+      ...fakeProvider,
+      get room() {
+        ran = true
+        return () => 5
+      },
+    })
+    expect(Object.keys(read)).toEqual(['model', 'complete'])
+    expect(ran).toBe(false)
+  })
+
   it('reads a provider object whose stated timeoutMs is refused once, never offering it to the settings form', () => {
     const reads = { model: 0, retries: 0, preset: 0 }
     const object = {

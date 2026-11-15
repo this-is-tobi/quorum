@@ -103,6 +103,16 @@ export interface Provider {
    */
   readonly worstCase?: (request: CompletionRequest) => number
   /**
+   * How many more tokens of text `request` could hold and still fit the provider's window, counted as its
+   * size guard counts: negative when it does not fit, 0 when it fits exactly, so a request at a room of 0
+   * is sent and one at -1 is refused, and text added to the request lowers the room by its count. It is
+   * called once per question, synchronously; a result that is no safe integer, a promise or a throw states
+   * nothing, and the core then reviews as it does when this is unset. It is read when the quorum is
+   * created, as an own data property, as `worstCase` is: a getter is never run and an inherited method
+   * states nothing, so a class sets it as an arrow-function field.
+   */
+  readonly room?: (request: CompletionRequest) => number
+  /**
    * Answer one request. It should honour `request.signal`, settling soon after the signal aborts:
    * the core settles the call at its deadline or at the review's abort without waiting for the
    * provider, and a provider that ignores the signal works on, outside the review, until it ends.

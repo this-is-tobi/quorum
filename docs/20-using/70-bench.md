@@ -304,7 +304,7 @@ That settles when a run can go on:
 - **A rotated credential in a header, a query parameter or the base path does not.** They are settings, so they are in it: start a new `--out`.
 - **A `claude-code` provider's resolved command path is in it.** The same run on another machine, or after `claude` moves, needs a new `--out`.
 
-What it cannot see is outside the configuration. A provider object, which a TS or JS config defines, is its config key, its model, and the `timeoutMs` and `retries` it states, since its code cannot be hashed, a `worstCase` it states included: change its implementation under the same key and model and the fingerprint stays. Nor does it see the environment a `claude-code` provider inherits. For either, start a new `--out`.
+What it cannot see is outside the configuration. A provider object, which a TS or JS config defines, is its config key, its model, and the `timeoutMs` and `retries` it states, since its code cannot be hashed, a `worstCase` or a `room` it states included: change its implementation under the same key and model and the fingerprint stays. Nor does it see the environment a `claude-code` provider inherits. For either, start a new `--out`.
 
 `run.json` holds the fingerprints, not the settings in the clear, and its salt keeps a short value from being looked up in a table made ahead of time. The salt is in the same file, though, so whoever reads `run.json` and knows the rest of a config can check a guess at a short value in it, a short credential in a header or a query, so the bench writes `run.json`, as it writes `results.jsonl`, readable by its owner only. A copy often loses that mode, as a commit or a CI artifact does, so keep `run.json` out of an artifact, an archive and a commit.
 

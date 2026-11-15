@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ProviderError } from '../core/errors.ts'
-import { checkFits, contextBudget, textTokens, utf8Length, worstCaseTokens } from './size.ts'
+import { checkFits, contextBudget, roomTokens, textTokens, utf8Length, worstCaseTokens } from './size.ts'
 
 const output = {
   name: 'panel_vote',
@@ -257,6 +257,15 @@ describe('checkFits', () => {
 
   it('lets a request through at the bound', () => {
     expect(() => checkFits('p', shaped, output, { contextTokens: 645, replyTokens: 100 })).not.toThrow()
+  })
+})
+
+describe('roomTokens', () => {
+  it('leaves the context less the text, the template reserve and the reply budget, and checkFits refuses exactly below 0', () => {
+    expect(roomTokens(shaped, output, contextBudget(645, 100))).toBe(0)
+    expect(() => checkFits('p', shaped, output, contextBudget(645, 100))).not.toThrow()
+    expect(roomTokens(shaped, output, contextBudget(644, 100))).toBe(-1)
+    expect(() => checkFits('p', shaped, output, contextBudget(644, 100))).toThrow('p: may need 645 tokens, more than contextTokens (644)')
   })
 })
 

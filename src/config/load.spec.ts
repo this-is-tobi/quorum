@@ -515,6 +515,13 @@ describe('readConfigFile on a TS or JS config', () => {
     expect(keyed.worstCase?.(REQUEST)).toBe(100)
   })
 
+  it('keeps the room a provider object states in its named snapshot, calling it on the object', async () => {
+    file('room.mts', 'export default { providers: { keyed: { model: "m", async complete() { return { text: "{}", model: "m" } }, room() { return this.model.length + 99 } } } }\n')
+    const keyed = ((await configOf('room.mts')).providers as Record<string, Provider>).keyed
+    expect(Object.keys(keyed)).toEqual(['id', 'model', 'complete', 'room'])
+    expect(keyed.room?.(REQUEST)).toBe(100)
+  })
+
   it('leaves a field set to undefined unset, as a spread of an unset value gives', async () => {
     file('unset.mts', 'export default { providers: { p: { preset: "ollama", model: undefined } } }\n')
     expect(await configOf('unset.mts')).toEqual({

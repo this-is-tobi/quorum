@@ -7,6 +7,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { ConfigError, ProviderError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { ChatMessage, CompletionRequest } from '../core/ports.ts'
+import { researchRequest } from '../core/prompts.ts'
+import { tokenBound } from '../core/tokens.ts'
 import { fakeClaudeEnv, isRunning, readFakeRecord, readFakeVersionRecords, writeFakeClaude } from '../testing/claude.ts'
 import * as fixtures from '../testing/fixtures/claude-code.ts'
 import { childEnv, claudeArgs, claudeCode, claudeCodeIssues, credentialValues, KILL_GRACE_MS, MAX_STDERR_BYTES, MAX_STDOUT_BYTES, MIN_CLAUDE_CODE_VERSION, prepareRun, readCapped, readResult, stopLiveRuns, trackRun, VERSION_CHECK_MS, versionProblem } from './claude-code.ts'
@@ -1227,6 +1229,65 @@ describe('claudeCode', () => {
     expect(stated({ structuredOutput: 'prompt' })).toBe(text + 4096 + 16_000)
     expect(stated({ maxTokens: 8000 })).toBe(2 * (text + 4096) + 24_000)
     expect(typeof Object.getOwnPropertyDescriptor(claudeCode(options), 'worstCase')?.value).toBe('function')
+  })
+
+  it.each(['schema', 'prompt'] as const)('states in %s mode a room that fits at 0, is refused at -1, and loses the exact count of added text', async (structuredOutput) => {
+    const asked = researchRequest('Review this.', 'd')
+    const withWindow = (contextTokens: number) => claudeCode({
+      ...options,
+      contextTokens,
+      structuredOutput,
+      command: missing,
+    })
+    const aborted = {
+      ...asked,
+      signal: AbortSignal.abort(),
+    }
+    const r = withWindow(1_000_000).room?.(asked) as number
+    const fits = withWindow(1_000_000 - r)
+    expect(fits.room?.(asked)).toBe(0)
+    await expect(fits.complete(aborted)).rejects.toMatchObject({ kind: 'aborted' })
+    const refused = withWindow(1_000_000 - r - 1)
+    expect(refused.room?.(asked)).toBe(-1)
+    await expect(refused.complete(aborted)).rejects.toMatchObject({ kind: 'too-large' })
+    const added = [
+      'abc',
+      String.fromCharCode(0x0F81),
+      String.fromCodePoint(0x1F600),
+      String.fromCharCode(0xD800),
+      'a\r\nb',
+      String.fromCharCode(0x65, 0x301),
+    ]
+    for (const text of added) {
+      expect(withWindow(1_000_000).room?.(researchRequest('Review this.', `d${text}`)), JSON.stringify(text)).toBe(r - tokenBound(text))
+    }
+  })
+
+  it('states the room its stdin cap leaves past any window, at one token per byte', async () => {
+    const provider = claudeCode({ ...options, contextTokens: Number.MAX_SAFE_INTEGER, command: missing })
+    const requestOf = (diff: string): CompletionRequest => ({
+      ...researchRequest('Review this.', diff),
+      signal: AbortSignal.abort(),
+    })
+    const s = 10_000_000 - tokenBound(requestOf('').messages[0].content)
+    expect(provider.room?.(requestOf(''))).toBe(s)
+    expect(provider.room?.(requestOf('x'.repeat(s)))).toBe(0)
+    await expect(provider.complete(requestOf('x'.repeat(s)))).rejects.toMatchObject({ kind: 'aborted' })
+    expect(provider.room?.(requestOf('x'.repeat(s + 1)))).toBe(-1)
+    await expect(provider.complete(requestOf('x'.repeat(s + 1)))).rejects.toMatchObject({ kind: 'too-large', message: 'cc: the message is 10000001 bytes, more than the 10000000 Claude Code reads on stdin' })
+    // The cap binds here, so text added to the diff lowers the room by its tokenBound, which exceeds its bytes for U+0F81.
+    const added = [
+      'abc',
+      String.fromCharCode(0x0F81),
+      String.fromCodePoint(0x1F600),
+      String.fromCharCode(0xD800),
+      'a\r\nb',
+      String.fromCharCode(0x65, 0x301),
+    ]
+    const base = provider.room?.(requestOf('d')) as number
+    for (const text of added) {
+      expect(provider.room?.(requestOf(`d${text}`)), JSON.stringify(text)).toBe(base - tokenBound(text))
+    }
   })
 
   it('rejects as aborted, and starts nothing, when the signal has already aborted', async () => {

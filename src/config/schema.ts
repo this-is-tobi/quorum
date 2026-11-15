@@ -191,13 +191,27 @@ export function statedWorstCase(provider: unknown): Provider['worstCase'] {
     : undefined
 }
 
-/** A provider object as a snapshot: its fields as plain data, frozen, with no prototype. A `worstCase` it states is kept as a field, and one it does not state leaves no field. */
-function snapshot({ worstCase, ...fields }: { readonly id?: string, readonly model: unknown, readonly complete: Provider['complete'], readonly worstCase?: Provider['worstCase'] } & StatedFacts): Provider {
+/**
+ * The `room` a provider states, as own data: a function, else undefined, as `statedWorstCase` reads the worst
+ * case. It is no fact of `FACTS` either, so the fingerprint and the printed config never see it.
+ */
+export function statedRoom(provider: unknown): Provider['room'] {
+  const room = ownData(provider, 'room')
+  return typeof room === 'function'
+    ? room as Provider['room']
+    : undefined
+}
+
+/** A provider object as a snapshot: its fields as plain data, frozen, with no prototype. A `worstCase` or a `room` it states is kept as a field, and one it does not state leaves no field. */
+function snapshot({ worstCase, room, ...fields }: { readonly id?: string, readonly model: unknown, readonly complete: Provider['complete'], readonly worstCase?: Provider['worstCase'], readonly room?: Provider['room'] } & StatedFacts): Provider {
   const made = Object.freeze(withoutPrototype<Provider>(Object.entries({
     ...fields,
     ...worstCase === undefined
       ? {}
       : { worstCase },
+    ...room === undefined
+      ? {}
+      : { room },
   })))
   SNAPSHOTS.add(made)
   return made
@@ -211,7 +225,8 @@ function snapshot({ worstCase, ...fields }: { readonly id?: string, readonly mod
  * `timeoutMs` and `retries` it states are read as own data, so no getter runs for them; the snapshot keeps
  * each that is in range, and a value out of range is an issue at its field. The `worstCase` it states is read
  * as own data too and kept as a function that calls it on the object, so the review's token cap counts
- * what the object says one call may cost; a value that is no function is an issue at its field.
+ * what the object says one call may cost; a value that is no function is an issue at its field. So is the
+ * `room` it states, which the review reads to know how much one request of the object may hold.
  */
 const providerObject = z.custom<Provider>(value => typeof value === 'object' && value !== null).transform((object, ctx) => {
   const { model, complete } = object
@@ -221,12 +236,18 @@ const providerObject = z.custom<Provider>(value => typeof value === 'object' && 
   }
   const { stated, problems } = statedFacts(object)
   const worstCase = ownData(object, 'worstCase')
+  const room = ownData(object, 'room')
   const issues = [
     ...problems,
     ...worstCase === undefined || typeof worstCase === 'function'
       ? []
       : [
           { field: 'worstCase', message: 'must be a function' },
+        ],
+    ...room === undefined || typeof room === 'function'
+      ? []
+      : [
+          { field: 'room', message: 'must be a function' },
         ],
   ]
   // `continue` keeps the union from setting this form aside as aborted: the object took its shape, so its issues are the ones reported.
@@ -249,13 +270,18 @@ const providerObject = z.custom<Provider>(value => typeof value === 'object' && 
           worstCase: (request: CompletionRequest) => Reflect.apply(worstCase, object, [request]) as number,
         }
       : {},
+    ...typeof room === 'function'
+      ? {
+          room: (request: CompletionRequest) => Reflect.apply(room, object, [request]) as number,
+        }
+      : {},
   })
 })
 
 /**
  * `entry` named `id`, the config's key for it, when it is a snapshot the schema made of a provider object: a
- * copy that holds `id` as well, built from the snapshot's own data, the facts and the `worstCase` it states
- * included. Anything else is returned as it is.
+ * copy that holds `id` as well, built from the snapshot's own data, the facts and the `worstCase` and the
+ * `room` it states included. Anything else is returned as it is.
  */
 export function nameSnapshot(id: string, entry: unknown): unknown {
   if (typeof entry !== 'object' || entry === null || !SNAPSHOTS.has(entry)) return entry
@@ -266,6 +292,7 @@ export function nameSnapshot(id: string, entry: unknown): unknown {
     complete,
     ...statedFacts(entry).stated,
     worstCase: statedWorstCase(entry),
+    room: statedRoom(entry),
   })
 }
 

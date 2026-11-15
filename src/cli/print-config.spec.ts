@@ -176,6 +176,21 @@ describe('printConfig', () => {
     }
   })
 
+  it('prints no room a provider object states', () => {
+    const complete: Provider['complete'] = async () => ({ text: '', model: 'm' })
+    const text = printConfig(config({
+      mine: {
+        id: 'mine',
+        model: 'm',
+        complete,
+        room: () => 123456,
+      },
+    }), undefined)
+    expect(text).toContain('  mine:\n    implements: Provider\n    model: m\nprofiles:\n')
+    expect(text).not.toContain('room')
+    expect(text).not.toContain('123456')
+  })
+
   it('prints a provider\'s own fields only, and nothing a polluted prototype holds', () => {
     const proto = Object.prototype as Record<string, unknown>
     proto.headers = { 'x-polluted': 'SECRET' }
