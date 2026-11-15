@@ -623,6 +623,7 @@ describe('the review\'s token cap', () => {
     expect(error).toMatchObject({ limit: 'token-cap', message: NO_ROOM })
     expect(sent).toBe(0)
     expect(spentOf(events)).toEqual([50])
+    expect(getEventListeners(ctx.stop, 'abort')).toHaveLength(0)
   })
 
   it('ends every wait for room on the review\'s abort, with its reason, and leaves no timer', async () => {
