@@ -920,6 +920,29 @@ describe('exitCodeFor', () => {
     ]), { allowIncomplete: true })).toBe(EXIT.ok)
   })
 
+  it('exits 4 for a review-deadline gap of a gating profile, even with --allow-incomplete', () => {
+    const gap = { profile: 'security', reason: 'review-deadline' }
+    for (const options of [
+      {},
+      { allowIncomplete: true },
+    ]) {
+      expect(exitCodeFor(withGaps(securityGates, [gap]), options)).toBe(EXIT.incomplete)
+      expect(exitCodeFor(withGaps(securityGates, [voteFailedGap, gap], [
+        voted('security', 'medium', [
+          { kind: 'network' },
+        ]),
+      ]), options)).toBe(EXIT.incomplete)
+    }
+    expect(exitCodeFor(withGaps(securityGates, [voteFailedGap], [
+      voted('security', 'medium', [
+        { kind: 'review-deadline' },
+      ]),
+    ]), { allowIncomplete: true })).toBe(EXIT.incomplete)
+    expect(exitCodeFor(withGaps({ security: true, style: false }, [
+      { profile: 'style', reason: 'review-deadline' },
+    ]), { allowIncomplete: true })).toBe(EXIT.ok)
+  })
+
   it('lifts an unreviewed finding whose failed votes all failed in passing, and not one beside a vote cut off', () => {
     const network = { kind: 'network' }
     expect(exitCodeFor(result([], securityGates, [], [

@@ -26,12 +26,14 @@ export interface FailureFacts {
   readonly retryAfterMs: unknown
 }
 
-/** Where a call stands: the retries it has made, the retries its provider states, and whether it timed out already. */
+/** Where a call stands: the retries it has made, the retries its provider states, whether it timed out already, and the time its review has left. */
 export interface CallState {
   /** Retries made so far: 0 once the first attempt has failed. */
   readonly retried: number
   readonly retries: number
   readonly timedOut: boolean
+  /** The milliseconds until the review's deadline: a server's hint longer than this ends the call, since the review would be over before the wait. */
+  readonly timeLeftMs: number
 }
 
 /** True for the deadline of the core's own, or a gateway's 504 or 524: a slow request is likely slow again, and may be billed each time. */
@@ -43,10 +45,10 @@ export function isTimeout(failure: FailureFacts): boolean {
  * How long to wait before the next attempt of a call, in milliseconds, or undefined when the call
  * ends with this failure. It ends, in this order, when the retries are spent, the failure is not a
  * `network`, `timeout` or `http` one, it does not say `retryable` is `true`, it is a second
- * timeout of the call, or the server asks for more than `MAX_HINT_MS`. Otherwise the wait is the
- * server's hint, when it is a finite number above 0, plus up to a second; else a random time from 0
- * to the lesser of 8 s and 0.5 s times 2 to the number of retries made. The review's abort is the
- * call path's to check, before this.
+ * timeout of the call, or the server asks for more than `MAX_HINT_MS` or for more than the time the
+ * review has left. Otherwise the wait is the server's hint, when it is a finite number above 0, plus
+ * up to a second; else a random time from 0 to the lesser of 8 s and 0.5 s times 2 to the number of
+ * retries made. The review's abort and its deadline are the call path's to check, before this.
  */
 export function retryWait(failure: FailureFacts, call: CallState, random: () => number): number | undefined {
   // Not `>=`: a retry count that is not a number compares false both ways, and must end the call.
@@ -55,7 +57,7 @@ export function retryWait(failure: FailureFacts, call: CallState, random: () => 
   if (call.timedOut && isTimeout(failure)) return undefined
   const hint = failure.retryAfterMs
   if (typeof hint === 'number' && Number.isFinite(hint) && hint > 0) {
-    return hint > MAX_HINT_MS
+    return hint > MAX_HINT_MS || hint > call.timeLeftMs
       ? undefined
       : hint + random() * HINT_JITTER_MS
   }

@@ -1,8 +1,8 @@
 /**
- * The limits of a review: the token cap's plain rules and its ledger, and the failure a limit ends a
- * call with. A limit stops part of a review without failing it: the call path reserves each attempt's
- * worst case here before it sends the attempt, and the gap a limit leaves is written from the votes and
- * the research it stopped.
+ * The limits of a review: the token cap's plain rules and its ledger, the review's deadline, and the failure
+ * a limit ends a call with. A limit stops part of a review without failing it: the call path reserves each
+ * attempt's worst case here before it sends the attempt, the deadline ends every wait and attempt at once, and
+ * the gap a limit leaves is written from the votes and the research it stopped.
  */
 
 import { QuorumError } from './errors.ts'
@@ -10,6 +10,9 @@ import type { IncompleteEntry, Usage, Verdict } from './types.ts'
 
 /** The most tokens, input and output, one review spends when `maxReviewTokens` is not set. */
 export const DEFAULT_MAX_REVIEW_TOKENS = 2_000_000
+
+/** How long one review runs when `reviewTimeoutMs` is not set: 30 minutes. */
+export const DEFAULT_REVIEW_TIMEOUT_MS = 1_800_000
 
 /** What `maxReviewTokens` is when it is out of range: a whole number of tokens up to the largest the ledger adds exactly. */
 const CAP_PROBLEM = `must be a whole number of tokens from 1 to ${Number.MAX_SAFE_INTEGER}`
@@ -21,8 +24,11 @@ export function maxReviewTokensProblem(value: unknown): string | undefined {
     : CAP_PROBLEM
 }
 
-/** The limits a review keeps to. */
-export type LimitName = 'token-cap'
+/** The limits a review keeps to, in the order their gaps are listed. */
+export type LimitName = 'token-cap' | 'review-deadline'
+
+/** Every limit, in the order `limitGaps` lists their gaps. */
+const LIMITS: readonly LimitName[] = ['token-cap', 'review-deadline']
 
 /**
  * What a call ends with when a limit stops it. It is recognised by `instanceof` only, and a provider
@@ -176,22 +182,31 @@ export function createLedger(cap: number): Ledger {
 }
 
 /**
- * The gap the token cap leaves in a profile, as a list of one entry or none: `research` names the limit that stopped
- * its research request, and every vote of `verdicts` whose failure is the cap's counts. The detail names the cap
- * with its setting, then what it stopped: `its research`, `<n> vote(s)`, or `its research and <n> vote(s)`.
+ * The gaps the limits leave in a profile, one entry per limit that stopped work, the token cap's first, or none:
+ * `research` names the limit that stopped its research request, and every vote of `verdicts` whose failure is a
+ * limit counts for it. Each detail names the limit with its setting, then what it stopped: `its research`,
+ * `<n> vote(s)`, or `its research and <n> vote(s)`.
  */
-export function limitGaps(profile: string, research: LimitName | undefined, verdicts: readonly Verdict[], limits: { readonly cap: number }): IncompleteEntry[] {
-  const votes = verdicts.flatMap(verdict => verdict.votes).filter(lensVote => lensVote.failure?.kind === 'token-cap').length
-  const stopped = [
-    ...research === 'token-cap'
-      ? ['its research']
-      : [],
-    ...votes > 0
-      ? [`${votes} vote(s)`]
-      : [],
-  ]
-  if (stopped.length === 0) return []
-  return [
-    { profile, reason: 'token-cap', detail: `the review's token cap of ${limits.cap} tokens stopped ${stopped.join(' and ')}` },
-  ]
+export function limitGaps(profile: string, research: LimitName | undefined, verdicts: readonly Verdict[], limits: { readonly cap: number, readonly deadlineMs: number }): IncompleteEntry[] {
+  const failures = verdicts.flatMap(verdict => verdict.votes).map(lensVote => lensVote.failure?.kind)
+  const which: Record<LimitName, string> = {
+    'token-cap': `the review's token cap of ${limits.cap} tokens`,
+    'review-deadline': `the review's deadline of ${limits.deadlineMs} ms`,
+  }
+  return LIMITS.flatMap((limit) => {
+    const votes = failures.filter(kind => kind === limit).length
+    const stopped = [
+      ...research === limit
+        ? ['its research']
+        : [],
+      ...votes > 0
+        ? [`${votes} vote(s)`]
+        : [],
+    ]
+    return stopped.length === 0
+      ? []
+      : [
+          { profile, reason: limit, detail: `${which[limit]} stopped ${stopped.join(' and ')}` },
+        ]
+  })
 }

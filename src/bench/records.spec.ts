@@ -353,6 +353,38 @@ describe('parseRecord, level by level', () => {
     expect(parseRecord(recordLine(capped).slice(0, -1))).toEqual(capped)
   })
 
+  it('reads a record with a review-deadline gap and a vote that failed with it', () => {
+    const late = record({
+      result: resultWith({
+        unreviewed: [
+          {
+            ...verdict('c.js', 9),
+            keptVotes: 1,
+            totalVotes: 2,
+            votes: [
+              {
+                angle: 'reachability',
+                vote: { keep: true, reasoning: 'It is reachable.' },
+                error: null,
+                failure: null,
+              },
+              {
+                angle: 'impact',
+                vote: null,
+                error: 'the review reached its deadline of 1800000 ms',
+                failure: { kind: 'review-deadline' },
+              },
+            ],
+          },
+        ],
+        incomplete: [
+          { profile: 'security', reason: 'review-deadline', detail: 'the review\'s deadline of 1800000 ms stopped 1 vote(s)' },
+        ],
+      }),
+    })
+    expect(parseRecord(recordLine(late).slice(0, -1))).toEqual(late)
+  })
+
   it('drops a __proto__ key of a record without letting it reach a prototype', () => {
     const line = recordLine(RECORD).replace('"profiles":{', '"profiles":{"__proto__":{"polluted":true},')
     const parsed = parseRecord(line.slice(0, -1)) as ResultRecord | undefined

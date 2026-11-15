@@ -66,9 +66,19 @@ export interface RunContext {
   /**
    * Aborted when the caller's signal is, when the event sink throws, when a gating profile's research fails
    * or when the profiles' run rejects: every stage and every call checks it, and every attempt
-   * carries a signal of its own, which this one and the attempt's deadline abort.
+   * carries a signal of its own, which `stop` and the attempt's own deadline abort.
    */
   readonly signal: AbortSignal
+  /**
+   * The review's signal joined to its deadline's: aborted by whichever comes first, with that one's reason, which
+   * is the deadline's `LimitError` when it is the deadline. The slot's entry, the ledger's wait, every attempt and
+   * every backoff read it, so the deadline ends them all at once and no queued call starts. It is no abort of the
+   * review: `emit`, `stage` and the stages' catches keep reading `signal`, so an interrupt still rejects with its
+   * reason and the events still flow after the deadline, and what the deadline stopped is a gap.
+   */
+  readonly stop: AbortSignal
+  /** When the review's deadline falls, `at` on the review's clock, and its length `ms`: the retry policy reads the time left from it. */
+  readonly deadline: { readonly at: number, readonly ms: number }
   /**
    * Aborts the review with `error`, unless it is already aborted, so a caller's abort reason or a
    * sink's error stays the reason. A gating profile's research failure, the call or its reply, calls
@@ -229,9 +239,9 @@ export function elapsed(started: number): number {
 
 /**
  * Call a provider inside the review's concurrency limit and return its reply text. The review's
- * signal is checked inside the slot, before the request is built, so a call still queued when the
- * review is aborted never starts. `buildRequest` runs inside the slot once that check passes: a
- * request holds the diff or a section of it, and building it only there keeps the requests a
+ * stop is checked inside the slot, before the request is built, so a call still queued when the review
+ * is aborted or reaches its deadline never starts. `buildRequest` runs inside the slot once that check
+ * passes: a request holds the diff or a section of it, and building it only there keeps the requests a
  * review holds at once to its concurrency, whatever the number of findings and lenses (ADR-0009).
  * The call runs its attempts inside its slot, retried as `retryWait` decides, the waits between
  * them holding the slot: the review's abort ends a wait at once, and no failure is retried once the
@@ -239,12 +249,21 @@ export function elapsed(started: number): number {
  * attempt's own signal, so it can stop a call in flight: the review's abort settles the attempt at
  * once, without waiting for the provider.
  *
+ * The review's deadline ends the call's attempt and its waits for room and between attempts at once, as an
+ * abort does, but with its own failure, a `LimitError` that is no attempt's `timeout`; a call still queued for
+ * its slot ends there when its turn comes, before it builds its request; and no failure is retried once the
+ * deadline has passed. A failure the retry policy would have retried, which the stop alone prevents, ends the
+ * call with the stop's reason, the deadline's `LimitError` or the interrupt's, never with the failure, so a
+ * deadline is not recorded as a failure it cut short; a failure the policy would not have retried keeps its own
+ * error. The retry policy is told the time the review has left, so a server's hint longer than it ends the
+ * call with its last failure.
+ *
  * Each attempt, the first and every retry, reserves the call's worst case (`reservationOf`, taken once
  * the request is built) in the review's ledger before it is sent, and settles it once it ends, inside the
  * slot: at the usage its reply or its failure reports, at nothing when the server refused it before any
  * work, else at the whole reservation. An attempt that does not fit beside what was settled is never
  * sent, and the call fails with the cap's `LimitError`; one that fits but not beside the attempts in
- * flight waits for them, holding its slot, and the review's abort ends that wait too. A call a limit
+ * flight waits for them, holding its slot, and the review's abort or deadline ends that wait too. A call a limit
  * stops before its first attempt sends no `call` event, since no provider was called; one it stops
  * after an attempt sends its failed event first, as any failed call does.
  *
@@ -264,7 +283,7 @@ export function elapsed(started: number): number {
  */
 export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest, onFailure?: (error: unknown, attempts: number) => void): Promise<string> {
   return ctx.limit(async () => {
-    ctx.signal.throwIfAborted()
+    ctx.stop.throwIfAborted()
     const request = buildRequest()
     const reservation = reservationOf(target, request)
     const started = ctx.clock.now()
@@ -298,7 +317,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     }
     while (response === undefined) {
       try {
-        await ctx.ledger.reserve(reservation, ctx.signal)
+        await ctx.ledger.reserve(reservation, ctx.stop)
       } catch (error) {
         throw end(error)
       }
@@ -315,10 +334,17 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
         usage = addUsage(usage, reported)
         const facts = failureFacts(error)
         settle(settlementOf(reservation, reported, facts))
-        const wait = ctx.signal.aborted
-          ? undefined
-          : retryWait(facts, { retried: attempts - 1, retries: target.retries, timedOut }, ctx.clock.random)
+        // A stopped review is asked as if it had time to spare, so a retry only the stop prevents is the stop's doing.
+        const wait = retryWait(facts, {
+          retried: attempts - 1,
+          retries: target.retries,
+          timedOut,
+          timeLeftMs: ctx.stop.aborted
+            ? Number.POSITIVE_INFINITY
+            : ctx.deadline.at - ctx.clock.now(),
+        }, ctx.clock.random)
         if (wait === undefined) throw end(error)
+        if (ctx.stop.aborted) throw end(ctx.stop.reason)
         timedOut ||= isTimeout(facts)
         try {
           await pause(ctx, wait)
@@ -364,36 +390,36 @@ function failureFacts(error: unknown): FailureFacts {
 
 /**
  * Wait `ms` milliseconds between two attempts of a call, which holds its slot meanwhile. The review's
- * abort ends the wait at once: it rejects with the abort's reason, and the timer is cancelled. Each of
- * the timer and the abort listener removes the other when it goes first.
+ * abort or deadline ends the wait at once: it rejects with the stop's reason, and the timer is cancelled.
+ * Each of the timer and the stop listener removes the other when it goes first.
  */
 function pause(ctx: RunContext, ms: number): Promise<void> {
-  if (ctx.signal.aborted) return Promise.reject(ctx.signal.reason)
+  if (ctx.stop.aborted) return Promise.reject(ctx.stop.reason)
   return new Promise<void>((resolve, reject) => {
     let cancel = (): void => {}
     function onAbort(): void {
       cancel()
-      reject(ctx.signal.reason)
+      reject(ctx.stop.reason)
     }
     cancel = ctx.clock.timer(ms, () => {
-      ctx.signal.removeEventListener('abort', onAbort)
+      ctx.stop.removeEventListener('abort', onAbort)
       resolve()
     })
-    ctx.signal.addEventListener('abort', onAbort, { once: true })
+    ctx.stop.addEventListener('abort', onAbort, { once: true })
   })
 }
 
 /**
- * One attempt of a call, settled once, by the first of: the provider's reply or failure; the
+ * One attempt of a call, settled once, by the first of: the provider's reply or failure; its own
  * deadline, as a `timeout` error of the core's own with the attempt's signal aborted with it as the
- * reason; the review's abort, with its reason. The deadline's timer and the join to the review's
- * signal go when it settles, on every path. A provider that throws before it returns a promise, or
- * returns a plain object, is handled; whatever it does once the attempt settled is caught and
- * ignored, and it is never an unhandled rejection. The join is one listener, not `AbortSignal.any`,
- * so nothing builds up on a signal that outlives thousands of attempts.
+ * reason; the review's stop, its abort or its deadline, with the stop's reason. The attempt's timer
+ * and the join to the review's stop go when it settles, on every path. A provider that throws before
+ * it returns a promise, or returns a plain object, is handled; whatever it does once the attempt
+ * settled is caught and ignored, and it is never an unhandled rejection. The join is one listener,
+ * not `AbortSignal.any`, so nothing builds up on a signal that outlives thousands of attempts.
  */
 function attempt(ctx: RunContext, target: Target, request: CompletionRequest): Promise<CompletionResponse> {
-  if (ctx.signal.aborted) return Promise.reject(ctx.signal.reason)
+  if (ctx.stop.aborted) return Promise.reject(ctx.stop.reason)
   const controller = new AbortController()
   return new Promise<CompletionResponse>((resolve, reject) => {
     let settled = false
@@ -403,13 +429,13 @@ function attempt(ctx: RunContext, target: Target, request: CompletionRequest): P
       if (settled) return false
       settled = true
       cancel()
-      ctx.signal.removeEventListener('abort', onAbort)
+      ctx.stop.removeEventListener('abort', onAbort)
       return true
     }
     function onAbort(): void {
       if (!done()) return
-      controller.abort(ctx.signal.reason)
-      reject(ctx.signal.reason)
+      controller.abort(ctx.stop.reason)
+      reject(ctx.stop.reason)
     }
     cancel = ctx.clock.timer(target.timeoutMs, () => {
       if (!done()) return
@@ -417,7 +443,7 @@ function attempt(ctx: RunContext, target: Target, request: CompletionRequest): P
       controller.abort(error)
       reject(error)
     })
-    ctx.signal.addEventListener('abort', onAbort, { once: true })
+    ctx.stop.addEventListener('abort', onAbort, { once: true })
     let call: Promise<CompletionResponse>
     try {
       call = Promise.resolve(target.provider.complete({ ...request, signal: controller.signal }))

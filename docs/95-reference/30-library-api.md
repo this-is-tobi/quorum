@@ -13,6 +13,7 @@ interface QuorumOptions {
   readonly maxFindings?: number
   readonly exclude?: readonly string[]
   readonly maxReviewTokens?: number
+  readonly reviewTimeoutMs?: number
 }
 
 interface QuorumPorts {
@@ -40,6 +41,7 @@ interface Quorum {
 | `maxFindings` | The most findings of a research reply each profile reads, the only ones that can reach its panel; a positive integer | `50` |
 | `exclude` | Path patterns of the files left out of every request ([Excludes](../20-using/20-configuration.md#excludes)). Each file excluded reaches no model and is listed in `meta.leftOut` as `excluded`, never as a gap. At most 100 patterns, each at most 256 characters | None |
 | `maxReviewTokens` | The most tokens, input and output, one review may spend: [The token cap](../20-using/20-configuration.md#the-token-cap). A whole number from 1 to 9007199254740991 | `2000000` |
+| `reviewTimeoutMs` | The deadline of one review, in milliseconds, from 1000 to 86400000: [The review's deadline](../20-using/20-configuration.md#the-reviews-deadline) | `1800000` |
 | `ports.profiles` | One entry per profile, keyed by profile id: `research`, its research provider, and `voters`, one provider per lens keyed by lens id. A provider may state its `timeoutMs`, its `retries` and its `worstCase`: [What a provider states](../20-using/30-providers.md#what-a-provider-states) | Required |
 | `ports.events` | The event sink: a function that receives every event of every review | None |
 
@@ -57,6 +59,7 @@ One provider object may fill several ports: the research provider of a profile c
 | `profiles.<index>.id` | `repeats the profile id "security"` |
 | `concurrency`, `maxFindings` | `must be a positive integer, got 0`, the value quoted when it is a number |
 | `maxReviewTokens` | `must be a whole number of tokens from 1 to 9007199254740991` |
+| `reviewTimeoutMs` | `must be a whole number of milliseconds from 1000 to 86400000` |
 | `exclude` | `must be an array`, or `must hold at most 100 patterns` |
 | `exclude.<index>` | `must be a string`, or what to write instead: `must not be empty`, `must be at most 256 characters long`, `ends with /, so it matches no file: end it with /** to leave out what the directory holds`, `holds ** inside a name: …`, `holds an empty, . or .. name, which no path in a diff has: …`, `holds \, which escapes nothing here: …`, `holds !, which negates nothing here: …` or `holds {, which lists no alternatives here: …` |
 | `ports.profiles` | `must be an object keyed by profile id` |
@@ -165,6 +168,7 @@ An aborted review never resolves, and never fails open:
 - **No event is delivered once the review is aborted.**
 - **One failed gating profile stops the others.** A gating profile whose research fails aborts the review with that error, and the review rejects with it. An advisory profile's failed research, the call or its reply, is its `research-failed` gap instead: it aborts nothing, and the other profiles go on. When the research call itself fails, the review is aborted before the call's concurrency slot is released, so no other profile starts a call after it. When the reply is not a valid envelope, the review is aborted when the reply is checked, which happens after the call has released its slot, so a call another profile had queued may already have started. Either way, no event arrives after the rejection.
 - **An abort after `run:end` has no effect**: the review is over, and resolves with its result.
+- **The review's deadline is no abort**: at `reviewTimeoutMs` the review resolves, its calls and waits stopped and recorded as `review-deadline` gaps, while an abort rejects. An abort that comes after the deadline still rejects, with its own reason: [The review's deadline](../20-using/20-configuration.md#the-reviews-deadline).
 - **The review never waits for a call it stopped.** Each attempt has a signal of its own, aborted with the review's or at its deadline, and the review settles the attempt at once; the shipped adapters stop their request or process on it, and a provider that ignores it works on, outside the review.
 
 ## Errors
