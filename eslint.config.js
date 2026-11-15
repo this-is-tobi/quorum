@@ -229,6 +229,40 @@ export default antfu(
     },
   },
   {
+    // The git runner is the one module that runs git: it starts a process, and reads neither files nor the
+    // environment (the caller hands it one), the config layer nor the sources.
+    files: ['src/git/**/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(errors|types|clock)\\.ts$|node:(child_process|path)$)', message: 'The git runner imports only its own modules, core/errors.ts, core/types.ts, core/clock.ts, node:child_process and node:path.' },
+          ],
+        },
+      ],
+      'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
+    },
+  },
+  {
+    // A source reads a repository through the git runner, and the files a review names; it never starts a
+    // process itself, and reads neither the environment nor the network.
+    files: ['src/sources/**/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./(core|git|config)/(?!.*\\.\\.)|node:(fs|fs/promises|path)$)', message: 'A source imports only source modules, the core, the git runner, the config layer, node:fs, node:fs/promises and node:path.' },
+          ],
+        },
+      ],
+      'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
+    },
+  },
+  {
     // src/testing/ holds the test helpers, which only spec files import. The blocks above keep it out
     // of the core, the profiles, the providers and the config layer; this one covers the rest.
     files: ['src/cli/**/*.ts', 'src/*.ts'],

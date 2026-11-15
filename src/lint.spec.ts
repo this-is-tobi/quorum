@@ -258,6 +258,78 @@ const CASES: Array<[string, string, string, string[]]> = [
     'import { jsonReply } from \'../testing/http.ts\'\n\nexport const probe = jsonReply\n',
     [],
   ],
+  [
+    'the git runner spawns a process',
+    'src/git/probe.ts',
+    'import { spawn } from \'node:child_process\'\n\nexport const probe = spawn\n',
+    [],
+  ],
+  [
+    'the git runner imports the core\'s errors, types and clock',
+    'src/git/probe.ts',
+    'import { systemClock } from \'../core/clock.ts\'\nimport { QuorumError } from \'../core/errors.ts\'\nimport type { ObjectFormat } from \'../core/types.ts\'\n\nexport const probe: [typeof systemClock, typeof QuorumError, ObjectFormat | undefined] = [systemClock, QuorumError, undefined]\n',
+    [],
+  ],
+  [
+    'the git runner refuses node:fs',
+    'src/git/probe.ts',
+    'import { readFileSync } from \'node:fs\'\n\nexport const probe = readFileSync\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'the git runner refuses the config layer',
+    'src/git/probe.ts',
+    'import { findExecutable } from \'../config/command.ts\'\n\nexport const probe = findExecutable\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'the git runner refuses process',
+    'src/git/probe.ts',
+    'export const probe = process.env\n',
+    ['no-restricted-globals'],
+  ],
+  [
+    'a source imports the git runner, the core and the config layer',
+    'src/sources/probe.ts',
+    'import { findExecutable } from \'../config/command.ts\'\nimport { splitDiff } from \'../core/diff.ts\'\nimport { runGit } from \'../git/run.ts\'\n\nexport const probe = [findExecutable, splitDiff, runGit]\n',
+    [],
+  ],
+  [
+    'a source reads files',
+    'src/sources/probe.ts',
+    'import { readFile } from \'node:fs/promises\'\n\nexport const probe = readFile\n',
+    [],
+  ],
+  [
+    'a source refuses node:child_process',
+    'src/sources/probe.ts',
+    'import { spawn } from \'node:child_process\'\n\nexport const probe = spawn\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'a source refuses the providers',
+    'src/sources/probe.ts',
+    'import { presets } from \'../providers/presets.ts\'\n\nexport const probe = presets\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'a source refuses process',
+    'src/sources/probe.ts',
+    'export const probe = process.env\n',
+    ['no-restricted-globals'],
+  ],
+  [
+    'the core refuses the git runner',
+    'src/core/probe.ts',
+    'import { runGit } from \'../git/run.ts\'\n\nexport const probe = runGit\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'the config layer refuses the sources',
+    'src/config/probe.ts',
+    'import { readSource } from \'../sources/read.ts\'\n\nexport const probe = readSource\n',
+    ['no-restricted-imports'],
+  ],
 ]
 
 describe('the layer boundaries of eslint.config.js', { timeout: 30_000 }, () => {
