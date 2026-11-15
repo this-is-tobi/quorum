@@ -209,32 +209,53 @@ describe('the gaps of a limit', () => {
       voted('token-cap', null, 'token-cap'),
       voted('network', 'token-cap'),
     ]
-    expect(limitGaps('security', 'token-cap', [], limits)).toEqual([
+    expect(limitGaps('security', ['token-cap'], [], limits)).toEqual([
       { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 100 tokens stopped its research' },
     ])
-    expect(limitGaps('security', undefined, verdicts, limits)).toEqual([
+    expect(limitGaps('security', ['reviewed'], verdicts, limits)).toEqual([
       { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 100 tokens stopped 3 vote(s)' },
     ])
-    expect(limitGaps('security', 'token-cap', verdicts, limits)).toEqual([
+    expect(limitGaps('security', ['token-cap'], verdicts, limits)).toEqual([
       { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 100 tokens stopped its research and 3 vote(s)' },
     ])
-    expect(limitGaps('security', undefined, [
+    expect(limitGaps('security', ['reviewed'], [
       voted('network', null),
     ], limits)).toEqual([])
-    expect(limitGaps('security', undefined, [], limits)).toEqual([])
-    expect(limitGaps('security', 'review-deadline', [], limits)).toEqual([
+    expect(limitGaps('security', ['reviewed'], [], limits)).toEqual([])
+    expect(limitGaps('security', ['review-deadline'], [], limits)).toEqual([
       { profile: 'security', reason: 'review-deadline', detail: 'the review\'s deadline of 1000 ms stopped its research' },
     ])
-    expect(limitGaps('security', undefined, [
+    expect(limitGaps('security', ['reviewed'], [
       voted('review-deadline', null, 'review-deadline', 'review-deadline'),
     ], limits)).toEqual([
       { profile: 'security', reason: 'review-deadline', detail: 'the review\'s deadline of 1000 ms stopped 3 vote(s)' },
     ])
-    expect(limitGaps('security', 'review-deadline', [
+    expect(limitGaps('security', ['review-deadline'], [
       voted('token-cap', 'review-deadline', null, 'token-cap'),
     ], limits)).toEqual([
       { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 100 tokens stopped 2 vote(s)' },
       { profile: 'security', reason: 'review-deadline', detail: 'the review\'s deadline of 1000 ms stopped its research and 1 vote(s)' },
     ])
+  })
+
+  it('counts the research parts each limit stopped, and calls a one-part research its research', () => {
+    const outcomes = [
+      'reviewed',
+      'token-cap',
+      'token-cap',
+      'review-deadline',
+    ]
+    expect(limitGaps('security', outcomes, [], limits)).toEqual([
+      { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 100 tokens stopped 2 of its 4 research parts' },
+      { profile: 'security', reason: 'review-deadline', detail: 'the review\'s deadline of 1000 ms stopped 1 of its 4 research parts' },
+    ])
+    expect(limitGaps('security', outcomes, [
+      voted('token-cap', 'token-cap', 'token-cap'),
+    ], limits)).toEqual([
+      { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 100 tokens stopped 2 of its 4 research parts and 3 vote(s)' },
+      { profile: 'security', reason: 'review-deadline', detail: 'the review\'s deadline of 1000 ms stopped 1 of its 4 research parts' },
+    ])
+    expect(limitGaps('security', ['request-too-large', 'research-failed', 'reviewed'], [], limits)).toEqual([])
+    expect(limitGaps('security', [], [], limits)).toEqual([])
   })
 })

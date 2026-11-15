@@ -4,13 +4,15 @@ import type { Clock } from './clock.ts'
 import { createLimiter, DEFAULT_CONCURRENCY } from './concurrency.ts'
 import { leftOutGaps, reviewScope } from './coverage.ts'
 import type { ReviewScope } from './coverage.ts'
-import { splitDiff } from './diff.ts'
+import { diffSections, splitDiff } from './diff.ts'
 import { ConfigError } from './errors.ts'
 import type { ConfigIssue } from './errors.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
 import { diffFlags } from './flags.ts'
 import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, LimitError, limitGaps, maxReviewTokensProblem } from './limits.ts'
 import { isRecord } from './output.ts'
+import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap } from './parts.ts'
+import type { PartOutcome } from './parts.ts'
 import { MAX_STATED_TIMEOUT_MS, retriesProblem, timeoutProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts } from './ports.ts'
 import { profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
@@ -20,8 +22,9 @@ import type { ProfileRun, RunContext } from './stages/context.ts'
 import { dedup } from './stages/dedup.ts'
 import { panel } from './stages/panel.ts'
 import type { PanelOutcome } from './stages/panel.ts'
-import { DEFAULT_MAX_FINDINGS, research } from './stages/research.ts'
-import type { Profile, ProfileMeta, ProfileProviders, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, Usage } from './types.ts'
+import { DEFAULT_MAX_FINDINGS, planResearch, research } from './stages/research.ts'
+import type { ResearchPlan } from './stages/research.ts'
+import type { CoverageEntry, Profile, ProfileMeta, ProfileProviders, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, Usage } from './types.ts'
 
 const PROVIDER_SHAPE = 'must be a provider: an object with a string id, a string model and a complete function'
 
@@ -37,6 +40,8 @@ interface Compiled {
   readonly maxReviewTokens: number
   /** How long one review runs, in milliseconds: each review arms a deadline of this length on `clock`. */
   readonly reviewTimeoutMs: number
+  /** The most tokens of diff text one research part holds. */
+  readonly partTokens: number
   /** The time and the randomness every review reads: the system's, unless a spec injects its own through `createQuorumWith`. */
   readonly clock: Clock
   /** Whether a file's path is left out of every request, built once from `exclude`. */
@@ -62,15 +67,17 @@ interface Tally {
  * profile's own issues, a repeated profile id, a `concurrency` or `maxFindings` that is not a
  * positive integer, a `maxReviewTokens` that is not a whole number of tokens from 1 to
  * 9007199254740991, a `reviewTimeoutMs` that is not a whole number of milliseconds from 1000 to
- * 86400000, an `exclude` that is not a list of at most 100 patterns that can be taken, a
- * missing or malformed research provider or voter, a provider's stated `timeoutMs` that is not a
+ * 86400000, a `partTokens` that is not a whole number of tokens from 1024 to 9007199254740991, an
+ * `exclude` that is not a list of at most 100 patterns that can be taken, a missing or malformed
+ * research provider or voter, a provider's stated `timeoutMs` that is not a
  * whole number of milliseconds from 1000 to 518400000, `retries` that is not a whole number from
  * 0 to 5 or `worstCase` or `room` that is not a function, ports for a profile or a lens the run does not have
  * (a likely typo), and an event sink that is not a function. Ports are checked only for the profiles
  * that have no issue of their own, and not at all when `profiles` is not an array. Every record keyed
  * by a caller's id is read as an own property, since `constructor` is a valid id. `maxReviewTokens`,
- * the most tokens one review spends, input and output, is 2000000 when unset, and `reviewTimeoutMs`,
- * how long one review runs, is 1800000 (30 minutes) when unset: see `review`.
+ * the most tokens one review spends, input and output, is 2000000 when unset, `reviewTimeoutMs`,
+ * how long one review runs, is 1800000 (30 minutes) when unset, and `partTokens`, the most tokens of
+ * diff text one research part holds, is 32768 when unset: see `review`.
  *
  * Each profile is compiled into a frozen `ProfileRun`, its instructions rendered, its thresholds
  * resolved and its providers captured, and `exclude` is compiled into a matcher, so later changes to
@@ -106,6 +113,7 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
     maxFindings: options.maxFindings ?? DEFAULT_MAX_FINDINGS,
     maxReviewTokens: options.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS,
     reviewTimeoutMs: options.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
+    partTokens: options.partTokens ?? DEFAULT_PART_TOKENS,
     clock,
     excluded: excludeMatcher(options.exclude ?? []),
     sink: ports.events,
@@ -130,8 +138,9 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
  * diff does not carry, binary files and submodules' commits, for each reason of which it records a
  * gap for every profile; their sections still reach the stages. Everything it knows before a call
  * is sent in this order: `run:start`, then a `left-out` event naming those files when it leaves one
- * out, then the gaps' `incomplete` events, then the `flag` events of the advisory flags, kept in
- * `meta.flags`, none of which changes a verdict, then the stages. Each event is handed to the sink
+ * out, then the gaps' `incomplete` events (each profile's `binary` and `submodule` gaps, then its
+ * `too-large` gap), then the `flag` events of the advisory flags, kept in `meta.flags`, none of which
+ * changes a verdict, then the stages. Each event is handed to the sink
  * as a copy, so a sink that changes one changes nothing else. The review reports itself through
  * events, from `run:start` to `run:end`, and its result merges the profiles' verdicts and gaps in
  * profile order. `meta.profiles[<id>].invalidFindings` and `meta.usage` are counted from the
@@ -150,18 +159,33 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
  *
  * A review ends at its deadline, `reviewTimeoutMs` after it starts, with an answer: at it every call in
  * flight and every wait is stopped at once, no call still queued starts, and what was not done is a
- * `review-deadline` gap of its profile, its research request or its votes, each a failed vote of the
- * deadline. The review then resolves with its findings so far, exiting `4` for a gating profile whatever
- * the flags; the deadline is no abort, so an interrupt still rejects with its reason, before the deadline
- * or after it, and a review that reaches its deadline is never a failed run. The deadline's timer is armed
- * once the input checks pass and cleared however the review ends: it resolves, it rejects, its sink throws
- * or it is aborted.
+ * `review-deadline` gap of its profile, its research request (the parts of it not yet answered) or its
+ * votes, each a failed vote of the deadline. The review then resolves with its findings so far, exiting
+ * `4` for a gating profile whatever the flags; the deadline is no abort, so an interrupt still rejects
+ * with its reason, before the deadline or after it, and a review that reaches its deadline is never a
+ * failed run. The deadline's timer is armed once the input checks pass and cleared however the review
+ * ends: it resolves, it rejects, its sink throws or it is aborted.
+ *
+ * A change larger than one research request is researched in parts, not refused. Each profile's research
+ * is planned once the scope is known, on its own research provider's stated room: a provider that
+ * states none, or a diff within `partTokens` and within the room, is sent the whole diff in one request,
+ * as it always was; else the filtered diff's sections, in order, are packed into parts of at most
+ * `partTokens` whose request fits the room, a section too large for a part split between its hunks and
+ * a hunk never cut. Each part is one research call, in order, that names its position and the change's
+ * files; the replies are read in order, up to `maxFindings` findings in all, each checked against the
+ * whole diff. A hunk, or a section with no hunk, that fits in no research part of the window is no part's:
+ * the profile records one `too-large` gap for them before any call is sent, which no flag lifts for a
+ * gating profile. `meta.profiles.<id>.coverage` lists every file of the input diff once, in its order,
+ * with how much of it the profile's research reviewed: reviewed, partly (with the ranges left), not
+ * (with the reason), or excluded by `exclude`; each profile has its own, since each has its own
+ * research model.
  *
  * A review spends at most `maxReviewTokens` tokens. Each review has its own ledger of that cap: every
  * attempt of every call reserves its worst case in it before it is sent and settles at what it spent,
  * so concurrent calls cannot overshoot it. A call the cap stops is no failed review: its profile's
  * research or vote is a `token-cap` gap, which exits 4 for a gating profile, and the other profiles
- * and votes run as far as the cap lets them.
+ * and votes run as far as the cap lets them. A research in parts spends up to the cap, each part reserved
+ * before it is sent: the parts the cap cannot fund are not sent, and one gap counts them.
  *
  * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, options that are not an object, a `signal` that is not an AbortSignal
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
@@ -214,10 +238,25 @@ async function reviewUntil(compiled: Compiled, input: { readonly diff: string },
     : scope.diff === input.diff
       ? whole
       : splitDiff(scope.diff)
-  const gaps = new Map(runs.map(run => [
-    run.id,
-    leftOutGaps(run.id, scope.leftOut),
-  ] as const))
+  // The same sections as the research packs them, and how each profile's research goes: none when no stage runs.
+  const filtered = sections === undefined
+    ? []
+    : diffSections(scope.diff)
+  const plans = sections === undefined
+    ? []
+    : runs.map(run => planResearch(run, scope.diff, filtered, compiled.partTokens))
+  const gaps = new Map(runs.map((run, index) => {
+    const tooLarge = tooLargeGap(run.id, filtered, plans[index]?.packing, scope.leftOut)
+    return [
+      run.id,
+      [
+        ...leftOutGaps(run.id, scope.leftOut),
+        ...tooLarge === undefined
+          ? []
+          : [tooLarge],
+      ],
+    ] as const
+  }))
   const tally: Tally = {
     invalidFindings: new Map(),
   }
@@ -242,6 +281,7 @@ async function reviewUntil(compiled: Compiled, input: { readonly diff: string },
     deadline,
     fail,
     maxFindings: compiled.maxFindings,
+    concurrency: compiled.concurrency,
     clock: compiled.clock,
   }
   emit({
@@ -257,7 +297,7 @@ async function reviewUntil(compiled: Compiled, input: { readonly diff: string },
     for (const entry of gaps.get(run.id) ?? []) emit({ type: 'incomplete', entry })
   }
   for (const flag of flags) emit({ type: 'flag', flag })
-  const outcomes = await reviewAll(ctx, runs, scope.diff, sections).catch((error: unknown) => {
+  const outcomes = await reviewAll(ctx, runs, plans, scope.diff, sections).catch((error: unknown) => {
     // A gating profile's research failure aborted the review where it failed; any other failure aborts it here. The first reason stays the reason.
     const reason: unknown = signal.aborted ? signal.reason : error
     internal.abort(reason)
@@ -276,9 +316,9 @@ async function reviewUntil(compiled: Compiled, input: { readonly diff: string },
     version: packageJson.version,
     startedAt,
     durationMs,
-    profiles: Object.fromEntries(runs.map(run => [
+    profiles: Object.fromEntries(runs.map((run, index) => [
       run.id,
-      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0),
+      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, coverageOf(scope, filtered, plans[index]?.packing, outcomes[index]?.parts ?? [])),
     ])),
     ...(tally.usage === undefined
       ? {}
@@ -298,21 +338,26 @@ async function reviewUntil(compiled: Compiled, input: { readonly diff: string },
   return { kept, discarded, unreviewed, meta }
 }
 
-/** Run every profile through its stages at once on the diff's sections; a blank diff, which has none, runs no stage. */
-async function reviewAll(ctx: RunContext, runs: readonly ProfileRun[], diff: string, sections: ReadonlyMap<string, string> | undefined): Promise<PanelOutcome[]> {
+/** What a profile's review comes to: its panel's outcome, and what became of each part of its research, for its coverage. */
+interface ProfileOutcome extends PanelOutcome {
+  readonly parts: readonly PartOutcome[]
+}
+
+/** Run every profile through its stages at once on the diff's sections, each on its own plan; a blank diff, which has none, runs no stage. */
+async function reviewAll(ctx: RunContext, runs: readonly ProfileRun[], plans: readonly ResearchPlan[], diff: string, sections: ReadonlyMap<string, string> | undefined): Promise<ProfileOutcome[]> {
   if (sections === undefined) return []
-  return Promise.all(runs.map(run => reviewProfile(ctx, run, diff, sections)))
+  return Promise.all(runs.map((run, index) => reviewProfile(ctx, run, plans[index], diff, sections)))
 }
 
 /**
  * One profile's review: its panel's outcome, with the research gaps before the panel's own, and last the
  * gap of each limit that stopped its work, reported by an `incomplete` event once the panel's stage has ended.
  */
-async function reviewProfile(ctx: RunContext, run: ProfileRun, diff: string, sections: ReadonlyMap<string, string>): Promise<PanelOutcome> {
-  const researched = await stage(ctx, run.id, 'research', () => research(ctx, run, diff, sections), outcome => outcome.findings.length)
+async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, diff: string, sections: ReadonlyMap<string, string>): Promise<ProfileOutcome> {
+  const researched = await stage(ctx, run.id, 'research', () => research(ctx, run, plan, diff, sections), outcome => outcome.findings.length)
   const candidates = await stage(ctx, run.id, 'dedup', () => dedup(researched.findings), found => found.length)
   const judged = await stage(ctx, run.id, 'panel', () => panel(ctx, run, candidates, sections, diff), outcome => outcome.kept.length + outcome.discarded.length + outcome.unreviewed.length)
-  const limits = limitGaps(run.id, researched.stopped, [
+  const limits = limitGaps(run.id, researched.parts, [
     ...judged.kept,
     ...judged.discarded,
     ...judged.unreviewed,
@@ -325,6 +370,7 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, diff: string, sec
       ...judged.incomplete,
       ...limits,
     ],
+    parts: researched.parts,
   }
 }
 
@@ -354,12 +400,13 @@ function providersOf(run: ProfileRun): ProfileProviders {
   }
 }
 
-function profileMeta(run: ProfileRun, invalidFindings: number): ProfileMeta {
+function profileMeta(run: ProfileRun, invalidFindings: number, coverage: CoverageEntry[]): ProfileMeta {
   return {
     providers: providersOf(run),
     policy: { ...run.thresholds },
     gating: run.gating,
     invalidFindings,
+    coverage,
   }
 }
 
@@ -442,8 +489,9 @@ function profileListIssues(profiles: readonly unknown[]): { issues: ConfigIssue[
 
 /**
  * `concurrency` and `maxFindings` are positive integers when set, `maxReviewTokens` a whole number of
- * tokens from 1 to 9007199254740991, and `reviewTimeoutMs` a whole number of milliseconds from 1000 to
- * 86400000. A number is quoted in the first two; anything else is described by the rule alone.
+ * tokens from 1 to 9007199254740991, `reviewTimeoutMs` a whole number of milliseconds from 1000 to
+ * 86400000, and `partTokens` a whole number of tokens from 1024 to 9007199254740991. A number is
+ * quoted in the first two; anything else is described by the rule alone.
  */
 function limitIssues(options: Record<string, unknown>): ConfigIssue[] {
   const issues: ConfigIssue[] = LIMITS.flatMap((path) => {
@@ -464,6 +512,10 @@ function limitIssues(options: Record<string, unknown>): ConfigIssue[] {
     ? undefined
     : timeoutProblem(options.reviewTimeoutMs)
   if (timeout !== undefined) issues.push({ path: 'reviewTimeoutMs', message: timeout })
+  const partTokens = options.partTokens === undefined
+    ? undefined
+    : partTokensProblem(options.partTokens)
+  if (partTokens !== undefined) issues.push({ path: 'partTokens', message: partTokens })
   return issues
 }
 

@@ -134,12 +134,17 @@ export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
  * envelope, so the profile reviewed nothing; a gating profile's ends the review instead.
  * `request-too-large`: a provider refused a request that may not fit its model's context, so it was
  * not sent. `binary` and `submodule`: the diff carries no content for a file, shown only as binary
- * or as a submodule's commit; `meta.leftOut` lists the files. `token-cap`: the review's token cap
- * stopped part of the profile's work, its research request or some of its votes, which were not sent;
- * `review-deadline`: the review reached its deadline, which stopped part of the profile's work, its
- * research request or some of its votes, in flight or not yet sent; one entry per limit and profile counts them.
+ * or as a submodule's commit; `meta.leftOut` lists the files. `too-large`: a hunk of a file, or a
+ * section with no hunk, fits in no research part of the profile's model's window, so no part holds it and no
+ * model read it; one entry per profile counts them, and `meta.profiles.<id>.coverage` lists their
+ * ranges. `token-cap`: the review's token cap stopped part of the profile's work, its research (some
+ * of its parts, for a large change) or some of its votes, which were not sent; `review-deadline`: the
+ * review reached its deadline, which stopped part of the profile's work, its research (some of its
+ * parts) or some of its votes, in flight or not yet sent; one entry per limit and profile counts them.
+ * For a large change researched in parts, `research-failed` and `request-too-large` count the parts that
+ * failed or were refused, and each of the other reasons its parts' share.
  */
-export type IncompleteReason = 'research-unusable' | 'research-failed' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'binary' | 'submodule'
+export type IncompleteReason = 'research-unusable' | 'research-failed' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'too-large' | 'token-cap' | 'review-deadline' | 'binary' | 'submodule'
 
 /**
  * Work the run could not review: a research reply with findings but none usable, an advisory
@@ -170,7 +175,7 @@ export interface LeftOutFile {
 
 /**
  * Why part of a file was not reviewed, as `CoverageEntry` records it: a `LeftOutReason`'s `binary` or
- * `submodule`, `too-large` for a hunk, or a section with no hunk, that fits in no research request
+ * `submodule`, `too-large` for a hunk, or a section with no hunk, that fits in no research part
  * of its model's window, or the `IncompleteReason` of the research part that held it and did not
  * read it: `request-too-large`, `token-cap`, `review-deadline` or `research-failed`.
  */
@@ -239,6 +244,13 @@ export interface ProfileMeta {
   gating: boolean
   /** How many findings it dropped for citing code outside the diff. */
   invalidFindings: number
+  /**
+   * Every file of the input diff once, in its order, with how much of it this profile's research
+   * reviewed: `reviewed` when a research request that carried all of the file's text was answered with a
+   * valid envelope, whatever it found; the other statuses, and the ranges a `partial` file left, say what
+   * was not. Each profile has its own, since each has its own research model.
+   */
+  coverage: CoverageEntry[]
 }
 
 /** What a review records about itself, besides its verdicts. */
@@ -292,6 +304,13 @@ export interface QuorumOptions {
    * done is a `review-deadline` gap of its profile: the review resolves with its findings so far. It is no abort.
    */
   readonly reviewTimeoutMs?: number
+  /**
+   * The most tokens of diff text, counted as the size guard counts, one research request of a large change
+   * holds: a whole number from 1024 to `Number.MAX_SAFE_INTEGER`, 32768 when unset. A diff over it, or over
+   * what the research model's window leaves, is researched in parts of at most this size; a provider that
+   * states no room is sent the whole diff in one request.
+   */
+  readonly partTokens?: number
 }
 
 /** A quorum built by createQuorum: its profiles compiled once, ready to review any number of diffs. */

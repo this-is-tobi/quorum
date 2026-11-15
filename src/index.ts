@@ -19,6 +19,9 @@ export { createQuorum } from './core/quorum.ts'
 export { inertJson, inertLine } from './core/sanitize.ts'
 export type {
   Confidence,
+  CoverageEntry,
+  CoverageReason,
+  CoverageStatus,
   Finding,
   Flag,
   FlagCode,
@@ -26,6 +29,7 @@ export type {
   IncompleteReason,
   LeftOutFile,
   LeftOutReason,
+  LeftRange,
   Lens,
   LensVote,
   Profile,

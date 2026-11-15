@@ -410,6 +410,7 @@ export function resultWith(parts: {
           policy: { high: 3, medium: 2, low: null },
           gating: true,
           invalidFindings: 0,
+          coverage: [],
         },
       },
       incomplete: [...incomplete],

@@ -52,7 +52,7 @@ A failed vote counts as a reject. Its `failure` holds only what the code read, n
 | `durationMs` | number | How long it took, in whole milliseconds |
 | `profiles` | object | One entry per profile, keyed by profile id, in the order of the review's profiles |
 | `usage` | object | Only when at least one call reported valid counts: `inputTokens` and `outputTokens` summed over those calls, then `costUsd`, summed over the calls that reported one, when any did |
-| `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's gaps for the files left out first, then its research gaps, then its panel's. A review is complete when this list and `unreviewed` are both empty |
+| `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's gaps for the files left out first, then its `too-large` gap, then its research gaps, then its panel's, then its limits'. A review is complete when this list and `unreviewed` are both empty |
 | `leftOut` | entry[] | Every file the review left out, in the diff's order, once per file and reason: [A file left out](#a-file-left-out). Empty when it left none out, a blank diff included |
 | `flags` | flag[] | The advisory flags read from the diff, file by file in its order: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
 
@@ -66,13 +66,50 @@ A usage count is valid when it is a finite number of at least 0. A failed call's
 | `policy` | object | `high`, `medium` and `low`: the kept votes each level needed, `null` for a level that is off |
 | `gating` | boolean | Whether its kept `high` findings set exit code `1`, and its gaps exit code `4` |
 | `invalidFindings` | number | How many findings it dropped for citing code outside the diff |
+| `coverage` | entry[] | Every file of the diff once, in its order, with how much of it the profile's research reviewed: [Coverage](#coverage) |
+
+### Coverage
+
+A review lists, for each profile, every file of the input diff once, in the diff's order, and how much of it that profile's research reviewed. A gap says that something was not reviewed and the coverage says what, so a reader can tell the files a model read from the lines it did not.
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `file` | string | The diff's own path of the file, decoded from git's quoting, as in [A file left out](#a-file-left-out): `""` for a part of the diff that no header names |
+| `status` | string | How much of the file was reviewed, below |
+| `reason` | string | Why the file is unreviewed, below. The key is absent for any other status |
+| `left` | range[] | The ranges of a partly reviewed file that were not reviewed, in the diff's order: `start` and `end`, new-file lines, both ends included, a hunk that only deletes lines at its start line, and the `reason` of each, below. The key is absent for any other status |
+
+| `status` | What the profile's research reviewed of the file |
+| --- | --- |
+| `reviewed` | All of it |
+| `partial` | Some of it: `left` lists the ranges that were not |
+| `unreviewed` | None of it: `reason` says why |
+| `excluded` | None of it, by choice: an `exclude` pattern leaves all of it out of every request, and it is no gap |
+
+| `reason` | Why the file, or the range, was not reviewed |
+| --- | --- |
+| `binary` | The diff carries no content for the file: [A file left out](#a-file-left-out). Its section is still sent, and the model reads nothing of the change |
+| `submodule` | The diff carries only a submodule's commit |
+| `too-large` | The hunk, or a section with no hunk, fits in no research part of the profile's model's window: no part holds it, so no model read it. It is the `too-large` gap's |
+| `request-too-large` | The provider refused the research part that held it as too large for its model, so it was not sent |
+| `token-cap` | The review's token cap stopped the research part that held it, so it was not sent |
+| `review-deadline` | The review's deadline stopped the research part that held it, in flight or not yet sent |
+| `research-failed` | An advisory profile's research part that held it failed after its retries, or its reply was no findings envelope |
+
+- **Reviewed means read by research.** A research request that carried the file's text was answered with a valid findings envelope, whatever it found. The votes read only what a finding cites.
+- **A `binary` or `submodule` file is unreviewed** with that reason, though its section is sent, whatever became of its part.
+- **A file is `excluded`** when `exclude` left all of it out of the diff the research read.
+- **Each profile has its own coverage**, since each has its own research model, with its own window and so its own parts.
+- **A range is one hunk's lines, as a finding can cite them**, one range for each hunk left, not merged with a neighbour. A piece with no hunk adds no range, so a file of several sections, as a `format-patch` series has, can be `partial` with `left: []` when its only unread piece is a section with no hunk: the `too-large` gap, which counts it, is then the pointer.
+
+A file name is the author's text, so print it as [Output handling](../30-security/30-output-handling.md#text-an-attacker-can-influence) says.
 
 ### An incomplete entry
 
 | Field | Type | Holds |
 | --- | --- | --- |
 | `profile` | string | The profile whose run has the gap |
-| `reason` | string | One of the ten [incomplete reasons](#incomplete-reasons) |
+| `reason` | string | One of the eleven [incomplete reasons](#incomplete-reasons) |
 | `file` | string | The file of the finding the gap is about, when it is about one finding the harness could read: `vote-failed` has it, and so does a vote's `request-too-large` |
 | `detail` | string | What is missing, in words |
 
@@ -114,18 +151,19 @@ A detail names at most eight code points or patterns, then `and N more`. [Adviso
 
 | Reason | Recorded when | `detail` |
 | --- | --- | --- |
-| `finding-unreadable` | A finding among the first `maxFindings` the research reply lists does not match the reply schema, names an empty file or a line below 1, or holds an object or array under a key the schema does not name | `findings[<index>]: ` and what is wrong: `findings[4]: quote: Invalid input: expected string, received undefined`, `findings[2]: file must be non-empty and line at least 1`, or `findings[3]: carries a nested object or array outside the reply schema` |
-| `findings-capped` | The reply lists more findings than `maxFindings`, 50 by default: the rest are counted, not read | `12 of 62 reported findings were not reviewed (the cap is 50)` |
-| `research-unusable` | The reply lists findings, and not one of those read is usable: each was unreadable or cited code outside the diff | `2 finding(s) reported, none usable`, or, when the cap applied, `62 finding(s) reported, the first 50 read, none usable` |
-| `research-failed` | An advisory profile's research call failed after its retries, or its reply was not one JSON object holding a `findings` array and nothing else: the profile reviews nothing, and the gap gates nothing. A gating profile's ends the review instead, exit `3` | `the research call failed (http 503) after 3 attempts`, or `the research reply could not be read: reply contains no JSON object` |
+| `finding-unreadable` | A finding among the first `maxFindings` the research reply lists does not match the reply schema, names an empty file or a line below 1, or holds an object or array under a key the schema does not name | `findings[<index>]: ` and what is wrong: `findings[4]: quote: Invalid input: expected string, received undefined`, `findings[2]: file must be non-empty and line at least 1`, or `findings[3]: carries a nested object or array outside the reply schema`. In a research in parts, `part <n>: ` comes first: `part 2: findings[4]: quote: Invalid input: expected string, received undefined` |
+| `findings-capped` | The reply lists more findings than `maxFindings`, 50 by default: the rest are counted, not read. The cap spans every part of a research in parts: the replies are read in the parts' order, up to the cap in all, and one gap counts the rest | `12 of 62 reported findings were not reviewed (the cap is 50)` |
+| `research-unusable` | The reply, or the replies of all the parts, list findings, and not one of those read is usable: each was unreadable or cited code outside the diff | `2 finding(s) reported, none usable`, or, when the cap applied, `62 finding(s) reported, the first 50 read, none usable` |
+| `research-failed` | An advisory profile's research call failed after its retries, or its reply was not one JSON object holding a `findings` array and nothing else: the profile reviews nothing, and the gap gates nothing. In a research in parts it is the parts that failed, the other parts going on: one gap counts them. A gating profile's ends the review instead, exit `3` | `the research call failed (http 503) after 3 attempts`, or `the research reply could not be read: reply contains no JSON object`; in parts, `2 of 6 research parts failed: the research call failed (http 503)`, the first failed part's words |
 | `vote-failed` | A kept finding's failed votes, had they been keeps, would have raised it to a higher level | `"src/a.js":12 is kept at medium, but 1 failed vote(s) could have made it high`, the file written as a JSON string |
-| `request-too-large` | A request may not fit its provider's context, so it was not sent: the profile's research request, which leaves the profile with no finding, or the vote requests of a finding, each a failed vote | `the research request was not sent: <the provider's message>`, or `"src/a.js":12: 2 of 3 vote requests were not sent: <the first provider's message>`, the file written as a JSON string |
-| `token-cap` | The review's token cap stopped part of the profile's work: its research request, which leaves it with no finding, or votes, each a failed vote whose `failure` is `token-cap`. One gap per profile, counting them | `the review's token cap of 2000000 tokens stopped 7 vote(s)`, or `... stopped its research`, or `... stopped its research and 7 vote(s)` |
-| `review-deadline` | The review reached its deadline, `reviewTimeoutMs`, which stopped part of the profile's work: its research request, which leaves it with no finding, or votes, in flight or not yet sent, each a failed vote whose `failure` is `review-deadline`. One gap per profile, counting them | `the review's deadline of 1800000 ms stopped 7 vote(s)`, or `... stopped its research`, or `... stopped its research and 7 vote(s)` |
+| `request-too-large` | A request may not fit its provider's context, so it was not sent: the profile's research request, which leaves the profile with no finding, or the vote requests of a finding, each a failed vote. In a research in parts, a part its provider refused: one gap counts them | `the research request was not sent: <the provider's message>`, or `"src/a.js":12: 2 of 3 vote requests were not sent: <the first provider's message>`, the file written as a JSON string; in parts, `1 of 6 research requests were not sent: <the first provider's message>` |
+| `too-large` | A hunk of a file, with its header, or a section with no hunk, is too large for any research part of the profile's model's window, even in a part whose request lists no file name: no part holds it, so no model read it. One gap per profile, counting hunks and files, recorded before any call is sent; `meta.profiles.<id>.coverage` lists the ranges. A file that `meta.leftOut` lists as `binary` or `submodule` is not counted, since its own gap stands and its coverage entry is `unreviewed` with that reason | `1 hunk(s) of 1 file(s) fit in no research part of its model's window, listed as too-large in meta.profiles.security.coverage` |
+| `token-cap` | The review's token cap stopped part of the profile's work: its research request, which leaves it with no finding, or the parts of its research that were not sent, or votes, each a failed vote whose `failure` is `token-cap`. One gap per profile, counting them | `the review's token cap of 2000000 tokens stopped 7 vote(s)`, or `... stopped its research`, or `... stopped its research and 7 vote(s)`; in parts, `... stopped 4 of its 6 research parts`, or `... stopped 4 of its 6 research parts and 7 vote(s)` |
+| `review-deadline` | The review reached its deadline, `reviewTimeoutMs`, which stopped part of the profile's work: its research request, which leaves it with no finding, or the parts of its research in flight or not yet sent, or votes, in flight or not yet sent, each a failed vote whose `failure` is `review-deadline`. One gap per profile, counting them | `the review's deadline of 1800000 ms stopped 7 vote(s)`, or `... stopped its research`, or `... stopped its research and 7 vote(s)`; in parts, `... stopped 5 of its 6 research parts` |
 | `binary` | `meta.leftOut` lists a file whose change the diff shows only as binary: one gap per profile, counting the files | `the diff carries no content for 2 binary file(s), listed in meta.leftOut` |
 | `submodule` | `meta.leftOut` lists a submodule whose change the diff shows only as a commit: one gap per profile, counting them | `the diff carries no content for 1 submodule(s), listed in meta.leftOut` |
 
-Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4` for a gap of a gating profile, unless a gating profile kept a `high` finding. `--allow-incomplete` lifts a gating profile's gaps only when each is an unreviewed finding or a `vote-failed` gap, and every failed vote behind them failed in passing: a dropped connection, a timeout of its own, or an HTTP 408, 409, 429 or 5xx, as the votes' `failure` says ([Exit codes](../20-using/10-cli.md#exit-codes)). Every other gap exits `4` whatever the flags, since a pull request causes it directly: a `request-too-large` gap by padding the diff, a `token-cap` gap by decoy findings and drawn-out replies that spend the review's tokens, a `review-deadline` gap by replies drawn out until the review's deadline, `binary` and `submodule` with one `.gitattributes` line, one NUL byte or a submodule's bump, `findings-capped` with decoy findings, and `finding-unreadable` and `research-unusable` with text that breaks the finder's reply. A `vote-failed` gap beside a vote that was refused, cut off at its token limit, stopped by a limit of the review or unusable exits `4` too. On a gating profile, do not use the flag for a pull request you do not trust.
+Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4` for a gap of a gating profile, unless a gating profile kept a `high` finding. `--allow-incomplete` lifts a gating profile's gaps only when each is an unreviewed finding or a `vote-failed` gap, and every failed vote behind them failed in passing: a dropped connection, a timeout of its own, or an HTTP 408, 409, 429 or 5xx, as the votes' `failure` says ([Exit codes](../20-using/10-cli.md#exit-codes)). Every other gap exits `4` whatever the flags, since a pull request causes it directly: a `too-large` gap by making one hunk larger than any window, a `request-too-large` gap by padding a request until its provider refuses it, a `token-cap` gap by decoy findings and drawn-out replies that spend the review's tokens, a `review-deadline` gap by replies drawn out until the review's deadline, `binary` and `submodule` with one `.gitattributes` line, one NUL byte or a submodule's bump, `findings-capped` with decoy findings, and `finding-unreadable` and `research-unusable` with text that breaks the finder's reply. A `vote-failed` gap beside a vote that was refused, cut off at its token limit, stopped by a limit of the review or unusable exits `4` too. On a gating profile, do not use the flag for a pull request you do not trust.
 
 ## An example
 
@@ -295,7 +333,21 @@ A review of a diff that touches three files, run on the one provider, named `def
           "low": null
         },
         "gating": true,
-        "invalidFindings": 1
+        "invalidFindings": 1,
+        "coverage": [
+          {
+            "file": "src/users.js",
+            "status": "reviewed"
+          },
+          {
+            "file": "src/upload.js",
+            "status": "reviewed"
+          },
+          {
+            "file": "src/session.js",
+            "status": "reviewed"
+          }
+        ]
       }
     },
     "usage": {

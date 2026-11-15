@@ -38,6 +38,7 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
       failures.push(error)
     },
     maxFindings: 50,
+    concurrency,
     clock,
   }
   return { ctx, events, failures }

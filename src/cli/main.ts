@@ -186,8 +186,8 @@ export function interruptSignal(source: SignalSource, exit: (code: number) => vo
  * A profile gates unless `meta.profiles` holds it with `gating: false`, so a profile missing from the
  * result counts as gating and a gap never hides.
  *
- * Why so narrow: a pull request causes the other gaps directly (ADR-0012). It pads the diff until a
- * request is refused as too large, floods the research with decoy findings past `maxFindings`, or
+ * Why so narrow: a pull request causes the other gaps directly (ADR-0012). It pads a hunk until no
+ * research request holds it (`too-large`), floods the research with decoy findings past `maxFindings`, or
  * plants text that a voter refuses or that cuts its reply off or leaves it unusable, and one
  * `.gitattributes` line, one NUL byte or a submodule's bump leaves a file's change out of the diff.
  * The flag lifts only what the code names, so a reason added later is out of its reach by default,

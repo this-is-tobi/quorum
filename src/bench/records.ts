@@ -155,6 +155,31 @@ const usage = z.strictObject({
   outputTokens: amount,
   costUsd: amount.optional(),
 })
+const coverageReason = z.enum([
+  'binary',
+  'submodule',
+  'too-large',
+  'request-too-large',
+  'token-cap',
+  'review-deadline',
+  'research-failed',
+])
+const leftRange = z.strictObject({
+  start: count,
+  end: count,
+  reason: coverageReason,
+})
+const coverageEntry = z.strictObject({
+  file: z.string(),
+  status: z.enum([
+    'reviewed',
+    'partial',
+    'unreviewed',
+    'excluded',
+  ]),
+  reason: coverageReason.optional(),
+  left: z.array(leftRange).optional(),
+})
 const profileMeta = z.strictObject({
   providers: z.strictObject({
     research: providerRef,
@@ -163,6 +188,7 @@ const profileMeta = z.strictObject({
   policy: thresholds,
   gating: z.boolean(),
   invalidFindings: count,
+  coverage: z.array(coverageEntry),
 })
 const incompleteEntry = z.strictObject({
   profile: z.string(),
@@ -173,6 +199,7 @@ const incompleteEntry = z.strictObject({
     'finding-unreadable',
     'vote-failed',
     'request-too-large',
+    'too-large',
     'token-cap',
     'review-deadline',
     'binary',

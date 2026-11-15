@@ -183,11 +183,12 @@ export function createLedger(cap: number): Ledger {
 
 /**
  * The gaps the limits leave in a profile, one entry per limit that stopped work, the token cap's first, or none:
- * `research` names the limit that stopped its research request, and every vote of `verdicts` whose failure is a
- * limit counts for it. Each detail names the limit with its setting, then what it stopped: `its research`,
- * `<n> vote(s)`, or `its research and <n> vote(s)`.
+ * `research` holds the outcome of each of the profile's research parts, in order, a limit's name for a part it
+ * stopped, and every vote of `verdicts` whose failure is a limit counts for it. Each detail names the limit with
+ * its setting, then what it stopped: `its research` when the research was one part, else `<n> of its <count>
+ * research parts`, then `<n> vote(s)`, joined with ` and `.
  */
-export function limitGaps(profile: string, research: LimitName | undefined, verdicts: readonly Verdict[], limits: { readonly cap: number, readonly deadlineMs: number }): IncompleteEntry[] {
+export function limitGaps(profile: string, research: readonly string[], verdicts: readonly Verdict[], limits: { readonly cap: number, readonly deadlineMs: number }): IncompleteEntry[] {
   const failures = verdicts.flatMap(verdict => verdict.votes).map(lensVote => lensVote.failure?.kind)
   const which: Record<LimitName, string> = {
     'token-cap': `the review's token cap of ${limits.cap} tokens`,
@@ -195,9 +196,14 @@ export function limitGaps(profile: string, research: LimitName | undefined, verd
   }
   return LIMITS.flatMap((limit) => {
     const votes = failures.filter(kind => kind === limit).length
+    const parts = research.filter(outcome => outcome === limit).length
     const stopped = [
-      ...research === limit
-        ? ['its research']
+      ...parts > 0
+        ? [
+            research.length === 1
+              ? 'its research'
+              : `${parts} of its ${research.length} research parts`,
+          ]
         : [],
       ...votes > 0
         ? [`${votes} vote(s)`]

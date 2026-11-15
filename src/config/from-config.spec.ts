@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError, ProviderError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
+import { researchRequest } from '../core/prompts.ts'
+import { requestTokens } from '../core/tokens.ts'
 import type { Quorum, QuorumEvent } from '../core/types.ts'
+import { securityProfile } from '../profiles/security.ts'
 import { isolateEnv } from '../testing/env.ts'
 import { chatReply, ollamaReply, sent } from '../testing/http.ts'
 import { fromConfig } from './from-config.ts'
@@ -348,6 +351,48 @@ describe('fromConfig', () => {
     expect(sent.meta.incomplete).toEqual([])
     expect(complete).toHaveBeenCalledTimes(1)
     expect(worstCase).toHaveBeenCalledTimes(2)
+  })
+
+  it('hands a code config\'s provider object\'s stated room to the review, which then researches in parts', async () => {
+    // Six files of 92 tokens each, which a request that leaves 500 tokens holds in six parts, not in one.
+    const six = [
+      'a.js',
+      'b.js',
+      'c.js',
+      'd.js',
+      'e.js',
+      'f.js',
+    ].map(file => [
+      `diff --git a/${file} b/${file}`,
+      `--- a/${file}`,
+      `+++ b/${file}`,
+      '@@ -1 +1 @@',
+      '-safe(input)',
+      `+exec(input) // ${file}`,
+    ].join('\n')).join('\n')
+    const base = requestTokens(researchRequest(securityProfile.prompts.research, ''))
+    const requests: CompletionRequest[] = []
+    const mine = {
+      model: 'm',
+      room: (request: CompletionRequest): number => base + 500 - requestTokens(request),
+      async complete(request: CompletionRequest): Promise<CompletionResponse> {
+        requests.push(request)
+        return { text: '{"findings":[]}', model: 'm' }
+      },
+    }
+    const result = await (await fromConfig({
+      providers: { mine },
+    }, { env: {} })).review({ diff: six })
+    expect(requests.map(request => /Part (\d+) of (\d+) of the change\./.exec(request.messages[0].content)?.slice(1))).toEqual([
+      ['1', '6'],
+      ['2', '6'],
+      ['3', '6'],
+      ['4', '6'],
+      ['5', '6'],
+      ['6', '6'],
+    ])
+    expect(result.meta.profiles.security.coverage.map(entry => entry.status)).toEqual(Array.from({ length: 6 }).fill('reviewed'))
+    expect(result.meta.incomplete).toEqual([])
   })
 
   it('hands exclude to the quorum it builds', async () => {

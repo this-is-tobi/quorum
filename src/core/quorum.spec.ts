@@ -5,7 +5,9 @@ import { fakeClock, settle } from '../testing/clock.ts'
 import * as git from '../testing/fixtures/git.ts'
 import { ConfigError, OutputError, ProviderError } from './errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts } from './ports.ts'
+import { researchRequest } from './prompts.ts'
 import { createQuorum, createQuorumWith } from './quorum.ts'
+import { requestTokens, tokenBound } from './tokens.ts'
 import type { Finding, IncompleteEntry, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, Usage, VoteFailure } from './types.ts'
 
 /** Replies, in call order, for the one fake provider that plays both roles. */
@@ -1063,6 +1065,10 @@ describe('meta and events', () => {
           policy: { high: 3, medium: 2, low: null },
           gating: true,
           invalidFindings: 1,
+          coverage: [
+            { file: 'a.js', status: 'reviewed' },
+            { file: 'other.js', status: 'reviewed' },
+          ],
         },
       },
       incomplete: [],
@@ -2748,5 +2754,581 @@ describe('the review\'s deadline', () => {
         'reviewTimeoutMs: must be a whole number of milliseconds from 1000 to 86400000',
       ])
     }
+  })
+})
+
+describe('a large change in parts', () => {
+  const FILES = [
+    'a.js',
+    'b.js',
+    'c.js',
+    'd.js',
+    'e.js',
+    'f.js',
+  ]
+  /** A file's section: one hunk, 92 tokens. */
+  const sectionOf = (file: string): string => [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    '@@ -1 +1 @@',
+    '-safe(input)',
+    `+exec(input) // ${file}`,
+  ].join('\n')
+  const partsDiff = FILES.map(sectionOf).join('\n')
+  /** A file whose one hunk holds a line of `length` characters. */
+  const wideSection = (file: string, length: number): string => [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    '@@ -1 +1 @@',
+    '-x',
+    `+${'y'.repeat(length)}`,
+  ].join('\n')
+  const base = requestTokens(researchRequest(securityProfile.prompts.research, ''))
+  const MESSAGE = 'may need 9 tokens, more than contextTokens (8)'
+
+  interface Finder extends Fake {
+    readonly signals: Array<AbortSignal | undefined>
+  }
+
+  /**
+   * A research provider whose request leaves `room` tokens for the diff when it holds none, as a size guard
+   * counts, answering each call from `answer` and its position, and recording each request and signal.
+   */
+  function partsFinder(room: number, answer: (request: CompletionRequest, call: number) => string | Promise<string> = () => findings(), extra: Partial<Provider> = {}): Finder {
+    const requests: CompletionRequest[] = []
+    const signals: Array<AbortSignal | undefined> = []
+    return {
+      id: 'finder',
+      model: 'finder-model',
+      requests,
+      signals,
+      timeoutMs: 600_000,
+      room: request => base + room - requestTokens(request),
+      async complete(request) {
+        requests.push(request)
+        signals.push(request.signal)
+        return { text: await answer(request, requests.length), model: 'finder-model' }
+      },
+      ...extra,
+    }
+  }
+
+  const keeps = (): Fake => fake('voter', () => vote(true))
+  const never = (): Promise<string> => new Promise<string>(() => {})
+  const turn = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
+  const partOf = (request: CompletionRequest): number => Number(/Part (\d+) of \d+ of the change\./.exec(request.messages[0].content)?.[1])
+  const hasParts = (request: CompletionRequest): boolean => request.messages[0].content.includes('untrusted-parts-')
+  /** A request with its nonces named alike, so two requests built apart compare equal. */
+  const plain = (request: CompletionRequest): unknown => JSON.parse(JSON.stringify({ system: request.system, messages: request.messages }).replaceAll(/(untrusted-[a-z]+)-[0-9a-f]{8}/g, '$1-N'))
+  const reviewedFiles = (files: readonly string[]): unknown[] => files.map(file => ({ file, status: 'reviewed' }))
+  const quorumOf = (finder: Provider, options: Omit<QuorumOptions, 'profiles'> = {}, profile: Profile = securityProfile, events?: QuorumEvent[]): Quorum => createQuorum({
+    ...options,
+    profiles: [profile],
+  }, {
+    ...portsFor(profile, finder, keeps()),
+    ...events === undefined
+      ? {}
+      : {
+          events: (event: QuorumEvent) => events.push(event),
+        },
+  })
+
+  it('reviews a diff within partTokens in one request, its system and messages those of a provider that states no room', async () => {
+    const stating = partsFinder(10_000)
+    const silent = fake('finder', () => findings())
+    await quorumOf(stating).review({ diff: partsDiff })
+    await quorumOf(silent).review({ diff: partsDiff })
+    expect(stating.requests).toHaveLength(1)
+    expect(silent.requests).toHaveLength(1)
+    expect(hasParts(stating.requests[0])).toBe(false)
+    expect(plain(stating.requests[0])).toEqual(plain(silent.requests[0]))
+  })
+
+  it('researches a larger diff in parts, in order, each naming its part and the change\'s files, and covers every file reviewed', async () => {
+    const finder = partsFinder(500)
+    const result = await quorumOf(finder).review({ diff: partsDiff })
+    expect(finder.requests.map(partOf)).toEqual([1, 2, 3, 4, 5, 6])
+    expect(finder.requests[0].messages[0].content).toMatch(/^<untrusted-parts-[0-9a-f]{8}>\nPart 1 of 6 of the change\.\nThe change's files, one per line:\na\.js\nb\.js\nc\.js\nd\.js\ne\.js\nf\.js\n<\/untrusted-parts-[0-9a-f]{8}>\n\n<untrusted-diff-/)
+    for (const [index, request] of finder.requests.entries()) {
+      expect(request.messages[0].content).toContain(`+exec(input) // ${FILES[index]}`)
+      expect(request.messages[0].content.match(/\+exec\(input\)/g)).toHaveLength(1)
+    }
+    expect(result.meta.profiles.security.coverage).toEqual(reviewedFiles(FILES))
+    expect(result.meta.incomplete).toEqual([])
+  })
+
+  it('reads the parts\' findings in order, checked against the whole diff, and keeps one of a finding two parts report', async () => {
+    const at = (file: string): unknown => ({ ...reported, file, quote: `exec(input) // ${file}` })
+    const finder = partsFinder(500, (request) => {
+      const part = partOf(request)
+      if (part === 1) return findings(at('f.js'))
+      return part === 2 || part === 5
+        ? findings(at('c.js'))
+        : findings()
+    })
+    const events: QuorumEvent[] = []
+    const result = await quorumOf(finder, {}, securityProfile, events).review({ diff: partsDiff })
+    expect(result.kept.map(verdict => [verdict.file, verdict.line, verdict.confidence])).toEqual([
+      ['f.js', 1, 'high'],
+      ['c.js', 1, 'high'],
+    ])
+    expect(events.filter(event => event.type === 'finding:invalid')).toEqual([])
+    expect(result.meta.profiles.security.invalidFindings).toBe(0)
+    expect(result.meta.incomplete).toEqual([])
+  })
+
+  it('rejects with the first reason when a gating part fails while others are in flight, starts no queued part, and leaves no timer', async () => {
+    const clock = fakeClock()
+    const failure = new ProviderError({
+      providerId: 'finder',
+      kind: 'http',
+      status: 500,
+      message: 'boom',
+    })
+    const finder = partsFinder(500, (_request, call) => {
+      if (call === 2) throw failure
+      return never()
+    })
+    const quorum = createQuorumWith({
+      profiles: [securityProfile],
+      concurrency: 3,
+    }, portsFor(securityProfile, finder, keeps()), clock)
+    const outcome = await settle(clock, quorum.review({ diff: partsDiff }).catch((error: unknown) => error))
+    expect(outcome).toBe(failure)
+    await turn()
+    expect(finder.requests.length).toBeLessThanOrEqual(3)
+    expect(finder.signals.filter((_, index) => index !== 1).every(signal => signal?.aborted === true)).toBe(true)
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('rejects with the OutputError of a gating part whose reply is no envelope', async () => {
+    const clock = fakeClock()
+    const finder = partsFinder(500, request => partOf(request) === 3
+      ? 'not json'
+      : never())
+    const quorum = createQuorumWith({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder, keeps()), clock)
+    const outcome = await settle(clock, quorum.review({ diff: partsDiff }).catch((error: unknown) => error))
+    expect(outcome).toBeInstanceOf(OutputError)
+    expect(outcome).toMatchObject({ stage: 'research' })
+    await turn()
+    expect(finder.requests.length).toBeLessThanOrEqual(4)
+    expect(finder.signals.filter((_, index) => index !== 2).every(signal => signal?.aborted === true)).toBe(true)
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('records an advisory profile\'s failed parts as one research-failed gap counting them, and its other parts go on', async () => {
+    const advisory: Profile = { ...securityProfile, gating: false }
+    const finder = partsFinder(500, (request) => {
+      const part = partOf(request)
+      if (part === 2) {
+        throw new ProviderError({
+          providerId: 'finder',
+          kind: 'http',
+          status: 503,
+          message: 'down',
+        })
+      }
+      if (part === 4) return 'not json'
+      return part === 1
+        ? findings(reported)
+        : findings()
+    })
+    const events: QuorumEvent[] = []
+    const result = await quorumOf(finder, {}, advisory, events).review({ diff: partsDiff })
+    const gap: IncompleteEntry = { profile: 'security', reason: 'research-failed', detail: '2 of 6 research parts failed: the research call failed (http 503)' }
+    expect(result.meta.incomplete).toEqual([gap])
+    expect(events.filter(event => event.type === 'incomplete')).toEqual([
+      { type: 'incomplete', entry: gap },
+    ])
+    expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js'])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: 'a.js', status: 'reviewed' },
+      { file: 'b.js', status: 'unreviewed', reason: 'research-failed' },
+      { file: 'c.js', status: 'reviewed' },
+      { file: 'd.js', status: 'unreviewed', reason: 'research-failed' },
+      { file: 'e.js', status: 'reviewed' },
+      { file: 'f.js', status: 'reviewed' },
+    ])
+  })
+
+  it('records the parts a provider refused as too large as one request-too-large gap counting them', async () => {
+    const refusal = new ProviderError({ providerId: 'finder', kind: 'too-large', message: MESSAGE })
+    const finder = partsFinder(500, (_request, call) => {
+      if (call === 2) throw refusal
+      return findings()
+    })
+    const result = await quorumOf(finder).review({ diff: partsDiff })
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'request-too-large', detail: `1 of 6 research requests were not sent: ${refusal.message}` },
+    ])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: 'a.js', status: 'reviewed' },
+      { file: 'b.js', status: 'unreviewed', reason: 'request-too-large' },
+      ...reviewedFiles(FILES.slice(2)),
+    ])
+  })
+
+  it('stops the last parts at the token cap without sending them, and counts them in its gap and in the coverage', async () => {
+    const finder = partsFinder(500, () => findings(), {
+      worstCase: () => 1000,
+    })
+    const events: QuorumEvent[] = []
+    const result = await quorumOf(finder, { maxReviewTokens: 2000, concurrency: 1 }, securityProfile, events).review({ diff: partsDiff })
+    expect(finder.requests).toHaveLength(2)
+    const gap: IncompleteEntry = { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 2000 tokens stopped 4 of its 6 research parts' }
+    expect(result.meta.incomplete).toEqual([gap])
+    expect(events.filter(event => event.type === 'incomplete')).toEqual([
+      { type: 'incomplete', entry: gap },
+    ])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      ...reviewedFiles(FILES.slice(0, 2)),
+      ...FILES.slice(2).map(file => ({ file, status: 'unreviewed', reason: 'token-cap' })),
+    ])
+  })
+
+  it('sends no later part once one was stopped by the cap, though its own worst case would still fit', async () => {
+    // Part 1 reserves little, part 2 more than the cap leaves, and parts 3 to 6 little again: only the stop after part 2 keeps them unsent.
+    const finder = partsFinder(500, () => findings(), {
+      worstCase: request => partOf(request) === 2
+        ? 5000
+        : 10,
+    })
+    const result = await quorumOf(finder, { maxReviewTokens: 1000, concurrency: 1 }).review({ diff: partsDiff })
+    expect(finder.requests.map(partOf)).toEqual([1])
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 1000 tokens stopped 5 of its 6 research parts' },
+    ])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: 'a.js', status: 'reviewed' },
+      ...FILES.slice(1).map(file => ({ file, status: 'unreviewed', reason: 'token-cap' })),
+    ])
+  })
+
+  it('stops the parts in flight and those queued at the deadline, and counts them in its gap and in the coverage', async () => {
+    const clock = fakeClock()
+    const finder = partsFinder(500, (_request, call) => call === 1
+      ? findings()
+      : never())
+    const quorum = createQuorumWith({
+      profiles: [securityProfile],
+      reviewTimeoutMs: 1000,
+    }, portsFor(securityProfile, finder, keeps()), clock)
+    const result = await settle(clock, quorum.review({ diff: partsDiff }))
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'review-deadline', detail: 'the review\'s deadline of 1000 ms stopped 5 of its 6 research parts' },
+    ])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: 'a.js', status: 'reviewed' },
+      ...FILES.slice(1).map(file => ({ file, status: 'unreviewed', reason: 'review-deadline' })),
+    ])
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('records a hunk no part can hold as a too-large gap before any call, and lists its range in the coverage', async () => {
+    const z = [
+      'diff --git a/z.js b/z.js',
+      '--- a/z.js',
+      '+++ b/z.js',
+      '@@ -1,2 +1,2 @@',
+      '-old',
+      `+${'y'.repeat(600)}`,
+      ' tail',
+      '@@ -10 +10 @@',
+      '-a',
+      '+b',
+    ].join('\n')
+    const finder = partsFinder(500)
+    const events: QuorumEvent[] = []
+    const result = await quorumOf(finder, {}, securityProfile, events).review({ diff: `${partsDiff}\n${z}` })
+    const gap: IncompleteEntry = {
+      profile: 'security',
+      reason: 'too-large',
+      detail: '1 hunk(s) of 1 file(s) fit in no research part of its model\'s window, listed as too-large in meta.profiles.security.coverage',
+    }
+    expect(result.meta.incomplete).toEqual([gap])
+    const types = events.map(event => event.type)
+    expect(events.findIndex(event => event.type === 'incomplete')).toBeLessThan(types.indexOf('call'))
+    expect(events.filter(event => event.type === 'incomplete')).toEqual([
+      { type: 'incomplete', entry: gap },
+    ])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      ...reviewedFiles(FILES),
+      {
+        file: 'z.js',
+        status: 'partial',
+        left: [
+          { start: 1, end: 2, reason: 'too-large' },
+        ],
+      },
+    ])
+    expect(finder.requests.length).toBeGreaterThan(1)
+    expect(finder.requests.every(hasParts)).toBe(true)
+  })
+
+  it('packs again without the files list when the list leaves a hunk out, so a hunk the window holds goes in a part of its own', async () => {
+    // At a room of 500 the parts block with its list of 7 names leaves 119 tokens for a part's diff, and with no name listed 145: the 140 tokens of this section.
+    const finder = partsFinder(500)
+    const diffWithBig = `${partsDiff}\n${wideSection('big.js', 69)}`
+    expect(tokenBound(wideSection('big.js', 69))).toBe(140)
+    const result = await quorumOf(finder).review({ diff: diffWithBig })
+    expect(finder.requests.map(partOf)).toEqual([1, 2, 3, 4, 5, 6, 7])
+    for (const request of finder.requests) {
+      expect(request.messages[0].content).toMatch(/^<untrusted-parts-[0-9a-f]{8}>\nPart \d of 7 of the change\.\nThe change's files, one per line:\nand 7 more\n<\/untrusted-parts-[0-9a-f]{8}>\n\n<untrusted-diff-/)
+    }
+    expect(finder.requests[6].messages[0].content).toContain('y'.repeat(69))
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.meta.profiles.security.coverage).toEqual(reviewedFiles([...FILES, 'big.js']))
+  })
+
+  it('keeps the first packing, its parts block listing the names, when packing again sets no fewer hunks aside', async () => {
+    const z = wideSection('z.js', 600)
+    const finder = partsFinder(500)
+    const result = await quorumOf(finder).review({ diff: `${partsDiff}\n${z}` })
+    expect(finder.requests.map(partOf)).toEqual([1, 2, 3, 4, 5, 6])
+    for (const request of finder.requests) {
+      expect(request.messages[0].content).toMatch(/^<untrusted-parts-[0-9a-f]{8}>\nPart \d of 6 of the change\.\nThe change's files, one per line:\na\.js\nb\.js\nc\.js\nd\.js\ne\.js\nf\.js\nz\.js\n<\/untrusted-parts-[0-9a-f]{8}>\n\n<untrusted-diff-/)
+    }
+    expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['too-large'])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      ...reviewedFiles(FILES),
+      { file: 'z.js', status: 'unreviewed', reason: 'too-large' },
+    ])
+  })
+
+  it('sends a packing of one part without the parts block, the hunk set aside being a too-large gap', async () => {
+    const finder = partsFinder(500)
+    const result = await quorumOf(finder).review({ diff: `${sectionOf('a.js')}\n${wideSection('big.js', 400)}` })
+    expect(finder.requests).toHaveLength(1)
+    expect(hasParts(finder.requests[0])).toBe(false)
+    expect(finder.requests[0].messages[0].content).toContain('+exec(input) // a.js')
+    expect(finder.requests[0].messages[0].content).not.toContain('yyyy')
+    expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['too-large'])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: 'a.js', status: 'reviewed' },
+      { file: 'big.js', status: 'unreviewed', reason: 'too-large' },
+    ])
+  })
+
+  it('reviews in one request what one request holds, rather than leave a hunk unread for the parts block', async () => {
+    const finder = partsFinder(1300)
+    const large = wideSection('big.js', 1130)
+    const result = await quorumOf(finder, { partTokens: 1024 }).review({ diff: large })
+    expect(finder.requests).toHaveLength(1)
+    expect(hasParts(finder.requests[0])).toBe(false)
+    expect(finder.requests[0].messages[0].content).toContain('y'.repeat(1130))
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.meta.profiles.security.coverage).toEqual(reviewedFiles(['big.js']))
+  })
+
+  it('reviews nothing, with one gap, when no part can hold a hunk', async () => {
+    const finder = partsFinder(400)
+    const voter = keeps()
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, finder, voter),
+      events: event => events.push(event),
+    }).review({ diff: partsDiff })
+    expect(finder.requests).toEqual([])
+    expect(voter.requests).toEqual([])
+    expect(result.meta.incomplete).toEqual([
+      {
+        profile: 'security',
+        reason: 'too-large',
+        detail: '6 hunk(s) of 6 file(s) fit in no research part of its model\'s window, listed as too-large in meta.profiles.security.coverage',
+      },
+    ])
+    expect(result.meta.profiles.security.coverage).toEqual(FILES.map(file => ({ file, status: 'unreviewed', reason: 'too-large' })))
+    expect(result).toMatchObject({ kept: [], discarded: [], unreviewed: [] })
+    expect(events.some(event => event.type === 'call')).toBe(false)
+  })
+
+  it('packs each profile on its own research provider\'s room', async () => {
+    const parted = partsFinder(500)
+    const whole = fake('whole', () => findings())
+    const voter = keeps()
+    const result = await createQuorum({
+      profiles: [securityProfile, style],
+    }, {
+      profiles: {
+        ...portsFor(securityProfile, parted, voter).profiles,
+        ...portsFor(style, whole, voter).profiles,
+      },
+    }).review({ diff: partsDiff })
+    expect(parted.requests).toHaveLength(6)
+    expect(parted.requests.every(hasParts)).toBe(true)
+    expect(whole.requests).toHaveLength(1)
+    expect(hasParts(whole.requests[0])).toBe(false)
+    expect(result.meta.profiles.security.coverage).toEqual(reviewedFiles(FILES))
+    expect(result.meta.profiles.style.coverage).toEqual(reviewedFiles(FILES))
+    expect(result.meta.incomplete).toEqual([])
+  })
+
+  it('lists every file of the diff in the coverage, an excluded and a binary one included', async () => {
+    const binary = [
+      'diff --git a/img.png b/img.png',
+      'index 1111111..2222222 100644',
+      'Binary files a/img.png and b/img.png differ',
+    ].join('\n')
+    const result = await quorumOf(fake('finder', () => findings()), {
+      exclude: ['a.js'],
+    }).review({ diff: `${partsDiff}\n${binary}` })
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: 'a.js', status: 'excluded' },
+      ...reviewedFiles(FILES.slice(1)),
+      { file: 'img.png', status: 'unreviewed', reason: 'binary' },
+    ])
+  })
+
+  it('leaves a binary patch too large for any part to its binary gap, with no too-large gap pointing at a coverage entry that is not there', async () => {
+    const binary = [
+      'diff --git a/img.png b/img.png',
+      'index 1111111..2222222 100644',
+      'GIT binary patch',
+      'literal 900',
+      ...Array.from({ length: 30 }, () => 'z'.repeat(60)),
+    ].join('\n')
+    const finder = partsFinder(500)
+    const result = await quorumOf(finder).review({
+      diff: [
+        sectionOf('a.js'),
+        binary,
+        sectionOf('c.js'),
+      ].join('\n'),
+    })
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'binary', detail: 'the diff carries no content for 1 binary file(s), listed in meta.leftOut' },
+    ])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: 'a.js', status: 'reviewed' },
+      { file: 'img.png', status: 'unreviewed', reason: 'binary' },
+      { file: 'c.js', status: 'reviewed' },
+    ])
+    expect(finder.requests.every(request => !request.messages[0].content.includes('zzzz'))).toBe(true)
+  })
+
+  it('counts in the too-large gap the hunks of the files that are no binary patch or submodule, beside one that is', async () => {
+    const binary = [
+      'diff --git a/img.png b/img.png',
+      'index 1111111..2222222 100644',
+      'GIT binary patch',
+      'literal 900',
+      ...Array.from({ length: 30 }, () => 'z'.repeat(60)),
+    ].join('\n')
+    const result = await quorumOf(partsFinder(500)).review({
+      diff: [
+        sectionOf('a.js'),
+        binary,
+        wideSection('z.js', 600),
+      ].join('\n'),
+    })
+    expect(result.meta.incomplete.map(entry => [entry.reason, entry.detail])).toEqual([
+      ['binary', 'the diff carries no content for 1 binary file(s), listed in meta.leftOut'],
+      ['too-large', '1 hunk(s) of 1 file(s) fit in no research part of its model\'s window, listed as too-large in meta.profiles.security.coverage'],
+    ])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: 'a.js', status: 'reviewed' },
+      { file: 'img.png', status: 'unreviewed', reason: 'binary' },
+      { file: 'z.js', status: 'unreviewed', reason: 'too-large' },
+    ])
+  })
+
+  it('makes no research call for a blank line before the first header when every other unit is set aside', async () => {
+    const finder = partsFinder(500)
+    const result = await quorumOf(finder).review({ diff: `\n${wideSection('a.js', 900)}` })
+    expect(finder.requests).toEqual([])
+    expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['too-large'])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: 'a.js', status: 'unreviewed', reason: 'too-large' },
+    ])
+  })
+
+  it('makes no call for a blank part among several, and reviews the others', async () => {
+    // A hunk of 1130 tokens fits the room of 5000 but not partTokens, so it goes alone into a part, after the blank line's part.
+    const finder = partsFinder(5000)
+    const result = await quorumOf(finder, { partTokens: 1024 }).review({ diff: `\n${wideSection('big.js', 1130)}` })
+    expect(finder.requests.map(partOf)).toEqual([2])
+    expect(finder.requests[0].messages[0].content).toContain('y'.repeat(1130))
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.meta.profiles.security.coverage).toEqual(reviewedFiles(['big.js']))
+  })
+
+  it('lists at most a quarter of partTokens in names in each part\'s request, whatever the window', async () => {
+    const names = Array.from({ length: 100 }, (_, index) => `dir-${String(index).padStart(3, '0')}/${'n'.repeat(380)}.js`)
+    const finder = partsFinder(1_000_000)
+    await quorumOf(finder).review({
+      diff: names.map(sectionOf).join('\n'),
+    })
+    expect(finder.requests.length).toBeGreaterThan(1)
+    for (const request of finder.requests) {
+      const block = /<untrusted-parts-[0-9a-f]{8}>\n([\s\S]*?)\n<\/untrusted-parts-/.exec(request.messages[0].content)?.[1] ?? ''
+      const [, ...lines] = block.split('\n')
+      const more = lines.pop()
+      const listed = lines.slice(1)
+      expect(listed.length).toBeGreaterThan(0)
+      expect(listed.length).toBeLessThan(100)
+      expect(more).toBe(`and ${100 - listed.length} more`)
+      expect(listed.reduce((sum, name) => sum + tokenBound(name) + 1, 0)).toBeLessThanOrEqual(32_768 / 4)
+    }
+  })
+
+  it('refuses a partTokens below 1024 or that is no whole number', () => {
+    for (const partTokens of [1023, 1.5]) {
+      expect(issuesOf(() => createQuorum({
+        profiles: [securityProfile],
+        reviewTimeoutMs: 999,
+        partTokens,
+      }, portsFor(securityProfile, provider)))).toEqual([
+        'reviewTimeoutMs: must be a whole number of milliseconds from 1000 to 86400000',
+        'partTokens: must be a whole number of tokens from 1024 to 9007199254740991',
+      ])
+    }
+    expect(() => createQuorum({
+      profiles: [securityProfile],
+      partTokens: 1024,
+    }, portsFor(securityProfile, provider))).not.toThrow()
+  })
+
+  it.each<[string, () => unknown]>([
+    [
+      'throws',
+      () => {
+        throw new Error('boom')
+      },
+    ],
+    [
+      'returns a rejected promise',
+      () => Promise.reject(new Error('later')),
+    ],
+    [
+      'returns NaN',
+      () => Number.NaN,
+    ],
+    [
+      'returns a string',
+      () => '100',
+    ],
+  ])('researches in one request when the stated room %s', async (_name, room) => {
+    const rejections: unknown[] = []
+    const record = (reason: unknown): void => {
+      rejections.push(reason)
+    }
+    process.on('unhandledRejection', record)
+    onTestFinished(() => {
+      process.off('unhandledRejection', record)
+    })
+    const finder = partsFinder(500, () => findings(), { room: room as Provider['room'] })
+    const result = await quorumOf(finder).review({ diff: partsDiff })
+    expect(finder.requests).toHaveLength(1)
+    expect(hasParts(finder.requests[0])).toBe(false)
+    expect(result.meta.incomplete).toEqual([])
+    await turn()
+    await turn()
+    expect(rejections).toEqual([])
   })
 })
