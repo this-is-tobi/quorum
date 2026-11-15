@@ -208,7 +208,7 @@ const SUBCOMMAND: Readonly<Record<GitOperation['op'], string>> = {
 }
 
 /** An id as it goes into a vector: 40 or 64 lowercase hexadecimal characters, else a `RangeError` that does not repeat it. */
-function checkedId(value: string): string {
+export function checkedId(value: string): string {
   if (!ID.test(value)) throw new RangeError('a git id must be 40 or 64 lowercase hexadecimal characters')
   return value
 }
@@ -295,7 +295,8 @@ function startFailure(name: string, error: unknown): GitError {
   return new GitError(`git could not start (${named})`, name)
 }
 
-function joined(chunks: readonly Uint8Array[], size: number): Uint8Array {
+/** `chunks` as one array of `size` bytes, their total. */
+export function joined(chunks: readonly Uint8Array[], size: number): Uint8Array {
   const bytes = new Uint8Array(size)
   let at = 0
   for (const chunk of chunks) {

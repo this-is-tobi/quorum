@@ -5,8 +5,10 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { findExecutable } from '../config/command.ts'
 import { ConfigError } from '../core/errors.ts'
-import { gitEnvironment, GLOBAL_PINS, openRepository } from './run.ts'
+import { gitEnvironment, GitError, GLOBAL_PINS, openRepository } from './run.ts'
 import type { GitContext, Repository, SpawnGit } from './run.ts'
+import { listTree, readBlobs } from './tree.ts'
+import type { TreeEntry } from './tree.ts'
 
 /** The tests of this block run the real git, so each one starts by expecting it: a machine without it fails them, never skips them. */
 const GIT = findExecutable('git', process.env, process.platform)
@@ -412,5 +414,80 @@ describe('the real git', { concurrent: false, timeout: 30_000 }, () => {
     expect(text(await repository.diffWorktree(base, base))).toContain(section)
     // The control: without `--` git cannot tell the file from the revision.
     expect(() => ws.git(repo, 'diff', base, head)).toThrow(/ambiguous argument/)
+  })
+
+  it('lists and reads a commit\'s blobs past a replace ref, at their real sizes', async () => {
+    const ws = workspace()
+    const repo = init(ws, 'replaced')
+    mkdirSync(join(repo, 'bin'))
+    writeFileSync(join(repo, 'bin', 'run'), '#!/bin/sh\n')
+    chmodSync(join(repo, 'bin', 'run'), 0o755)
+    const head = commit(ws, repo, { 'a.txt': 'real\n', 'dup.txt': 'real\n' }, 'head')
+    const real = ws.git(repo, 'rev-parse', 'HEAD:a.txt')
+    const fake = execFileSync(GIT as string, ['hash-object', '-w', '--stdin'], {
+      cwd: repo,
+      env: { ...ws.env },
+      input: 'fake and longer\n',
+      encoding: 'utf8',
+    }).trim()
+    ws.git(repo, 'replace', real, fake)
+    // The control: a plain git reads the replacement.
+    expect(ws.git(repo, 'cat-file', '-p', real)).toBe('fake and longer')
+
+    const repository = await openRepository(contextOf(ws, repo))
+    const entries = await listTree(repository, head, () => true) as TreeEntry[]
+
+    expect(entries.map(entry => ({
+      ...entry,
+      path: text(entry.path),
+    }))).toEqual([
+      {
+        mode: '100644',
+        type: 'blob',
+        id: real,
+        size: 5,
+        path: 'a.txt',
+      },
+      {
+        mode: '100755',
+        type: 'blob',
+        id: ws.git(repo, 'rev-parse', 'HEAD:bin/run'),
+        size: 10,
+        path: 'bin/run',
+      },
+      {
+        mode: '100644',
+        type: 'blob',
+        id: real,
+        size: 5,
+        path: 'dup.txt',
+      },
+    ])
+    expect((await readBlobs(repository, entries, 100)).map(text)).toEqual(['real\n', '#!/bin/sh\n', 'real\n'])
+  })
+
+  it('fetches nothing for a partial clone: its listing and its reads fail closed', async () => {
+    const ws = workspace()
+    const origin = init(ws, 'origin')
+    const head = commit(ws, origin, { 'a.txt': 'one\n', 'sub/b.txt': 'two\n' }, 'head')
+    ws.git(origin, 'config', 'uploadpack.allowFilter', 'true')
+    const clone = join(ws.root, 'clone')
+    ws.git(ws.root, 'clone', '-q', '--no-checkout', '--filter=blob:none', `file://${origin}`, clone)
+    const before = ws.git(clone, 'count-objects', '-v')
+    const ids = await listTree(await openRepository(contextOf(ws, origin)), head, () => true) as TreeEntry[]
+    expect(ids.map(entry => entry.size)).toEqual([4, 4])
+
+    const repository = await openRepository(contextOf(ws, clone))
+    const listed = await listTree(repository, head, () => true).then(() => undefined, (error: unknown) => error)
+    expect(listed).toBeInstanceOf(GitError)
+    expect((listed as GitError).message).toBe('git ls-tree could not size an object the commit names: the repository lacks it, as a partial clone does')
+    const read = await readBlobs(repository, ids, 100).then(() => undefined, (error: unknown) => error)
+    expect(read).toBeInstanceOf(GitError)
+    expect((read as GitError).message).toBe('git cat-file did not return each listed blob at its listed size')
+    expect(ws.git(clone, 'count-objects', '-v')).toBe(before)
+
+    // The control: a plain git fetches the blob it lacks.
+    ws.git(clone, 'cat-file', '-p', ids[0].id)
+    expect(ws.git(clone, 'count-objects', '-v')).not.toBe(before)
   })
 })

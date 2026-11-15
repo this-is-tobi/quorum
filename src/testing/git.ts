@@ -21,9 +21,9 @@ export interface GitCall {
   readonly stdin: string
 }
 
-/** What a fake git does with a call. `hang` leaves the child running, with whatever it printed, until it is killed. */
+/** What a fake git does with a call. `hang` leaves the child running, with whatever it printed, until it is killed. `stdout` is one read, or, as an array, one read per element, each on a turn of its own. */
 export interface GitReply {
-  readonly stdout?: string | Uint8Array
+  readonly stdout?: string | Uint8Array | readonly (string | Uint8Array)[]
   readonly stderr?: string
   readonly code?: number
   readonly hang?: boolean
@@ -46,6 +46,14 @@ function bytesOf(text: string | Uint8Array | undefined): Uint8Array {
   return typeof text === 'string'
     ? Buffer.from(text)
     : text
+}
+
+/** The reads a reply's stdout comes in: one for a string or bytes, one for each element of an array, none for an empty one. */
+function readsOf(stdout: GitReply['stdout']): Uint8Array[] {
+  const parts = stdout === undefined || typeof stdout === 'string' || stdout instanceof Uint8Array
+    ? [stdout]
+    : stdout
+  return parts.map(bytesOf).filter(bytes => bytes.length > 0)
 }
 
 /** What the arguments after the pins say, with a leading `-C <top>` taken off. */
@@ -80,9 +88,10 @@ function baseReply(command: readonly string[], base: GitBase): GitReply | undefi
  * A `spawn` for the git runner that starts nothing: each call is answered by `reply`, else by `base` (the
  * version `git version 2.50.1`, the top level `/repo`, an empty prefix, the git directory `/repo/.git` whichever
  * directory is asked, `sha1`), else it exits 128. A call is recorded once it is answered, which for a child with
- * a piped stdin is after the caller has ended it. A reply with `hang` leaves the child open until `kill`, which
- * closes it at once with no exit code and the signal, and leaves its pipes as they are, as a helper that held
- * them would: the caller destroys them or they stay open.
+ * a piped stdin is after the caller has ended it. A reply's stdout that is an array arrives in as many reads, the
+ * first at once and each next one on a turn of its own, so a consumer sees the chunk boundaries it names. A reply
+ * with `hang` leaves the child open until `kill`, which closes it at once with no exit code and the signal, and
+ * leaves its pipes as they are, as a helper that held them would: the caller destroys them or they stay open.
  */
 export function fakeGit(reply: (call: GitCall) => GitReply | undefined, base: GitBase = {}): { readonly spawn: SpawnGit, readonly calls: GitCall[] } {
   const calls: GitCall[] = []
@@ -116,21 +125,29 @@ export function fakeGit(reply: (call: GitCall) => GitReply | undefined, base: Gi
       }
       calls.push(call)
       const answered = reply(call) ?? baseReply(call.command, base) ?? NOT_ANSWERED
-      const out = bytesOf(answered.stdout)
+      const reads = readsOf(answered.stdout)
       const err = bytesOf(answered.stderr)
-      if (out.length > 0 && !closed) stdout.push(out)
-      if (err.length > 0 && !closed) stderr.push(err)
-      if (answered.hang === true || closed) return
-      stdout.push(null)
-      stderr.push(null)
-      const finished = (stream: Readable): Promise<void> => new Promise((resolve) => {
-        stream.once('end', resolve)
-        stream.once('close', resolve)
-      })
-      void Promise.all([
-        finished(stdout),
-        finished(stderr),
-      ]).then(() => closeWith(answered.code ?? 0, null))
+      const end = (): void => {
+        if (err.length > 0 && !closed) stderr.push(err)
+        if (answered.hang === true || closed) return
+        stdout.push(null)
+        stderr.push(null)
+        const finished = (stream: Readable): Promise<void> => new Promise((resolve) => {
+          stream.once('end', resolve)
+          stream.once('close', resolve)
+        })
+        void Promise.all([
+          finished(stdout),
+          finished(stderr),
+        ]).then(() => closeWith(answered.code ?? 0, null))
+      }
+      const deliver = (at: number): void => {
+        if (closed) return
+        if (at < reads.length) stdout.push(reads[at])
+        if (at + 1 < reads.length) setImmediate(() => deliver(at + 1))
+        else end()
+      }
+      deliver(0)
     }
     const stdin = piped
       ? new Writable({
