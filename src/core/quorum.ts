@@ -8,7 +8,7 @@ import { diffSections, splitDiff } from './diff.ts'
 import { ConfigError } from './errors.ts'
 import type { ConfigIssue } from './errors.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
-import { diffFlags } from './flags.ts'
+import { diffFlags, secretFlags } from './flags.ts'
 import { leftOutIssues, mergeLeftOut, sourceIssues, sourceOf } from './inputs.ts'
 import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, LimitError, limitGaps, maxReviewTokensProblem } from './limits.ts'
 import { isRecord } from './output.ts'
@@ -139,12 +139,13 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
  * diff does not carry, binary files and submodules' commits, for each reason of which it records a
  * gap for every profile; their sections still reach the stages. The input's own `leftOut`, the files its
  * source left out before it made the diff, comes first in the list, in the `left-out` event and in the gaps'
- * counts, each file and reason once; the input's `source` is checked, copied and recorded in `meta.source`,
- * `{ kind: 'diff' }` when it names none. Everything it knows before a call
- * is sent in this order: `run:start`, then a `left-out` event naming those files when it leaves one
+ * counts, each file, reason and rule once, and a skipped one is no gap; the input's `source` is checked,
+ * copied and recorded in `meta.source`, `{ kind: 'diff' }` when it names none. Its `skipped` files of the
+ * rule `secret` each raise one `secret-file` flag, as many as `meta.leftOut` lists, ahead of the diff's flags and whatever the diff is.
+ * Everything it knows before a call is sent in this order: `run:start`, then a `left-out` event naming those files when it leaves one
  * out, then the gaps' `incomplete` events (each profile's `binary` and `submodule` gaps, then its
- * `too-large` gap), then the `flag` events of the advisory flags, kept in `meta.flags`, none of which
- * changes a verdict, then the stages. Each event is handed to the sink
+ * `too-large` gap), then the `flag` events of the advisory flags, the source's `secret-file` flags first,
+ * kept in `meta.flags`, none of which changes a verdict, then the stages. Each event is handed to the sink
  * as a copy, so a sink that changes one changes nothing else. The review reports itself through
  * events, from `run:start` to `run:end`, and its result merges the profiles' verdicts and gaps in
  * profile order. `meta.profiles[<id>].invalidFindings` and `meta.usage` are counted from the
@@ -230,15 +231,19 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
   const whole = input.diff.trim() === ''
     ? undefined
     : splitDiff(input.diff)
-  const flags = whole === undefined
-    ? []
-    : diffFlags(whole)
   const scope: ReviewScope = whole === undefined
     ? { diff: input.diff, leftOut: [], files: [] }
     : reviewScope(input.diff, compiled.excluded)
   // Copied before the first await, so the caller's later changes to its input reach neither the result nor the events.
   const source = sourceOf(input.source)
   const leftOut = mergeLeftOut(input.leftOut ?? [], scope.leftOut)
+  // The source's secrets are read from the merged list, so a file it lists twice is flagged once, as `meta.leftOut` lists it once.
+  const flags = [
+    ...secretFlags(leftOut),
+    ...whole === undefined
+      ? []
+      : diffFlags(whole),
+  ]
   // What the stages read: none when the filtered diff is blank, else the sections the flags read when nothing was left out.
   const sections = scope.diff.trim() === ''
     ? undefined

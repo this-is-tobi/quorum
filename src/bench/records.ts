@@ -15,7 +15,7 @@
  */
 
 import { z } from 'zod'
-import { sourceIssues } from '../core/inputs.ts'
+import { SKIP_RULES, sourceIssues } from '../core/inputs.ts'
 import { inertJsonLine } from '../core/sanitize.ts'
 import type { QuorumResult, Usage } from '../core/types.ts'
 import { MAX_TRIALS, SUITE_ID } from './suite.ts'
@@ -209,10 +209,18 @@ const incompleteEntry = z.strictObject({
   file: z.string().optional(),
   detail: z.string(),
 })
-const leftOutFile = z.strictObject({
-  file: z.string(),
-  reason: z.enum(['excluded', 'binary', 'submodule']),
-})
+/** A file left out: a rule belongs to a skipped file, and to none else. */
+const leftOutFile = z.discriminatedUnion('reason', [
+  z.strictObject({
+    file: z.string(),
+    reason: z.enum(['excluded', 'binary', 'submodule']),
+  }),
+  z.strictObject({
+    file: z.string(),
+    reason: z.literal('skipped'),
+    rule: z.enum(SKIP_RULES),
+  }),
+])
 const objectFormat = z.enum(['sha1', 'sha256'])
 /**
  * Where a review's diff came from. The shapes are strict, one object per kind; the ids are checked as a
@@ -243,7 +251,7 @@ const reviewSource = z.discriminatedUnion('kind', [
   }),
 ]).refine(source => sourceIssues(source).length === 0)
 const flag = z.strictObject({
-  code: z.enum(['hidden-characters', 'ai-addressed-text']),
+  code: z.enum(['hidden-characters', 'ai-addressed-text', 'secret-file']),
   file: z.string().optional(),
   line: count.optional(),
   detail: z.string(),

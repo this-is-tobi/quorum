@@ -20,7 +20,7 @@ Nothing needs reading in order. Pick what you came to do: each track lists its p
 1. [Installation](./10-getting-started/10-installation.md) — Node and the npm package, a release binary, the container image, or Bun and the clone, a standalone binary on your `$PATH`, and a check that it works without a model.
 2. [Quick start](./10-getting-started/20-quickstart.md) — point it at a model, review a diff, and read the progress, the result and the exit code.
 3. [The CLI](./20-using/10-cli.md) — the invocation, what goes to stdout and stderr, every exit code, and what each should do to a CI job.
-4. [Sources](./20-using/15-sources.md) — a diff file or stdin, a range of commits, and how quorum runs git.
+4. [Sources](./20-using/15-sources.md) — a diff file or stdin, a range of commits, the local changes or the files at a commit, and how quorum runs git.
 5. [Configuration](./20-using/20-configuration.md) — the config file and the trust it needs in CI, the `QUORUM_*` variables, how the panel falls back to the finder's settings, the context size each provider states, the keys, `--print-config`, and the errors a bad setting causes.
 6. [Providers](./20-using/30-providers.md) — what a provider is, the shipped adapters, the presets, the options a config sets on each, and writing a provider of your own.
 7. [Local models](./90-recipes/10-local-models.md) — Ollama, vLLM and llama.cpp: the window each gives a request, choosing a model, and what reasoning mode does to a request.

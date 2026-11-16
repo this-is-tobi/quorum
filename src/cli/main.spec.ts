@@ -90,6 +90,7 @@ const USAGE = [
   '       git diff | quorum [options]',
   '       quorum --range <base>...<head> [options]',
   '       quorum --local | --staged [options]',
+  '       quorum --path <path> [--at <rev>] [options]',
   '       quorum bench [options] <suite>',
   '',
   'Options:',
@@ -99,6 +100,9 @@ const USAGE = [
   '      --local              Review the local changes: staged, unstaged and untracked',
   '      --staged             Review the staged changes: what the next commit holds',
   '      --trust-repo-config  Run --local or --staged where the repository\'s own config names a filter program',
+  '      --path <path>        Review the files under a path at a commit; repeat it to review several',
+  '      --at <rev>           The commit --path reads, HEAD by default',
+  '      --no-default-skips   Review in --path the vendored, lockfile, minified, secret and binary files too',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
@@ -1945,6 +1949,22 @@ describe('the sources', () => {
       '--trust-repo-config: needs --local or --staged',
     ],
     [
+      ['--at', 'HEAD'],
+      '--at: needs --path',
+    ],
+    [
+      ['--no-default-skips'],
+      '--no-default-skips: needs --path',
+    ],
+    [
+      ['--path', 'a', '--range', 'b...c'],
+      '--path: cannot be given with --range: give one source',
+    ],
+    [
+      ['--path', '.', '--at=-x'],
+      '--at: a revision may not start with -',
+    ],
+    [
       ['x.diff', 'y.diff'],
       'takes one diff file, and 1 more argument(s) were given',
     ],
@@ -1976,6 +1996,44 @@ describe('the sources', () => {
     expect(stdout()).toBe('')
     expect(stderr()).toBe(`Error: --range: must be written <base>...<head>: a single revision names no range\n${USAGE}`)
     expect(stderr()).not.toContain('no model configured')
+    expect(fake.calls).toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['', '--path: must name a path'],
+    ['/etc', '--path: must be relative to the working directory'],
+  ])('refuses --path %j with the usage before the config and before any git', async (value, message) => {
+    const fetchMock = stubChat()
+    const fake = git()
+    // No model is configured, so the config would fail first if it were read.
+    const { io, stdout, stderr } = harness({
+      argv: ['--path', 'src', '--path', value],
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe(`Error: ${message}\n${USAGE}`)
+    expect(stderr()).not.toContain('no model configured')
+    expect(fake.calls).toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('refuses an --at that starts with - with the usage before the config and before any git', async () => {
+    const fetchMock = stubChat()
+    const fake = git()
+    // No model is configured, so the config would fail first if it were read.
+    const { io, stdout, stderr } = harness({
+      argv: ['--path', '.', '--at=-x'],
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe(`Error: --at: a revision may not start with -\n${USAGE}`)
+    expect(stderr()).not.toContain('no model configured')
+    expect(stderr()).not.toContain('-x')
     expect(fake.calls).toEqual([])
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -2087,6 +2145,113 @@ describe('the sources', () => {
     expect(JSON.parse(trusted.stdout()).meta.source).toEqual({ kind: 'staged', head: HEAD, objectFormat: 'sha1' })
   })
 
+  /** A fake git for a path review: HEAD is `HEAD`, and its tree holds `src/.env` and `src/a.js`. */
+  function pathGit(): { seam: { executable: string, spawn: ReturnType<typeof fakeGit>['spawn'] }, calls: GitCall[] } {
+    const env = 'KEY=sk-live-1234\n'
+    const code = 'export const a = 1\n'
+    const ids = {
+      env: '1'.repeat(40),
+      code: '2'.repeat(40),
+    }
+    const fake = fakeGit(({ command, stdin }) => {
+      if (command[0] === 'rev-parse' && command[1] === '--verify') return { stdout: `${HEAD}\n` }
+      if (command[0] === 'ls-tree') {
+        return {
+          stdout: [
+            `100644 blob ${ids.env} ${String(env.length).padStart(7)}\tsrc/.env\0`,
+            `100644 blob ${ids.code} ${String(code.length).padStart(7)}\tsrc/a.js\0`,
+          ].join(''),
+        }
+      }
+      if (command[0] === 'cat-file') {
+        return {
+          stdout: stdin.split('\n').filter(id => id !== '').map(id => id === ids.env
+            ? `${id} blob ${env.length}\n${env}\n`
+            : `${id} blob ${code.length}\n${code}\n`).join(''),
+        }
+      }
+      return undefined
+    })
+    return {
+      seam: { executable: '/usr/bin/git', spawn: fake.spawn },
+      calls: fake.calls,
+    }
+  }
+
+  it('reviews --path with the git it is given, listing the skips and flagging the secret on stderr', async () => {
+    const fetchMock = stubChat(JSON.stringify({ findings: [] }))
+    const fake = pathGit()
+    const { io, stdout, stderr } = harness({
+      argv: ['--path', 'src', '--at', 'secret-rev'],
+      env: MODEL,
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+
+    const result = JSON.parse(stdout())
+    expect(result.meta.source).toEqual({
+      kind: 'paths',
+      commit: HEAD,
+      paths: ['src'],
+      skips: true,
+      objectFormat: 'sha1',
+    })
+    expect(result.meta.leftOut).toEqual([
+      { file: 'src/.env', reason: 'skipped', rule: 'secret' },
+    ])
+    expect(result.meta.flags).toEqual([
+      {
+        code: 'secret-file',
+        file: 'src/.env',
+        detail: 'named as a secret, so a path review sent none of it: check that it belongs in the repository',
+      },
+    ])
+    // A skip is no gap, and the secret reached no model.
+    expect(result.meta.incomplete).toEqual([])
+    const request = (sent(fetchMock).body.messages as Array<{ content: string }>)[1].content
+    expect(request).toContain('+export const a = 1')
+    expect(request).not.toContain('sk-live')
+    expect(stderr()).toContain('left out: 1 file(s): "src/.env" (skipped: secret)\n')
+    expect(stderr()).toContain('flag: secret-file at "src/.env" (named as a secret, so a path review sent none of it: check that it belongs in the repository)\n')
+    expect(stderr()).not.toContain('secret-rev')
+    expect(fake.calls.some(call => call.command[0] === 'cat-file' && call.stdin.includes('1'.repeat(40)))).toBe(false)
+    // The commit --at names is the one git is asked to resolve, after --end-of-options.
+    expect(fake.calls.find(call => call.command[0] === 'rev-parse' && call.command[1] === '--verify')?.command).toEqual([
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      '--end-of-options',
+      'secret-rev^{commit}',
+    ])
+  })
+
+  it('reviews --path with --no-default-skips, sending the secret to the models and flagging nothing', async () => {
+    const fetchMock = stubChat(JSON.stringify({ findings: [] }))
+    const fake = pathGit()
+    const { io, stdout, stderr } = harness({
+      argv: ['--path', 'src', '--no-default-skips'],
+      env: MODEL,
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+
+    const result = JSON.parse(stdout())
+    expect(result.meta.source).toEqual({
+      kind: 'paths',
+      commit: HEAD,
+      paths: ['src'],
+      skips: false,
+      objectFormat: 'sha1',
+    })
+    expect(result.meta.leftOut).toEqual([])
+    expect(result.meta.flags).toEqual([])
+    expect((sent(fetchMock).body.messages as Array<{ content: string }>)[1].content).toContain('+KEY=sk-live-1234')
+    expect(stderr()).not.toContain('secret-file')
+    expect(fake.calls.find(call => call.command[0] === 'rev-parse' && call.command[1] === '--verify')?.command[4]).toBe('HEAD^{commit}')
+  })
+
   it('prints the usage of the sources, every description at column 27', async () => {
     const { io, stdout, stderr } = harness({
       argv: ['--help'],
@@ -2100,10 +2265,11 @@ describe('the sources', () => {
       '       git diff | quorum [options]',
       '       quorum --range <base>...<head> [options]',
       '       quorum --local | --staged [options]',
+      '       quorum --path <path> [--at <rev>] [options]',
       '       quorum bench [options] <suite>',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
-    expect(options).toHaveLength(10)
+    expect(options).toHaveLength(13)
     for (const line of options) {
       expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line.slice(25, 27), line).toBe('  ')
