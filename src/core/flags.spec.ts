@@ -347,4 +347,112 @@ describe('secretFlags', () => {
     ])
     expect(secretFlags([])).toEqual([])
   })
+
+  const heldBy = (phrase: string): string => `holds what reads as ${phrase}, so no model was sent any of it: keep it out of the repository, and rotate it if it is real`
+  const deletedHolding = (phrase: string): string => `deletes a file that holds what reads as ${phrase}, so no model was sent any of it: the history still holds it, so rotate it`
+
+  it.each<[string, LeftOutFile, string]>([
+    [
+      'named-secret',
+      { file: '.env', reason: 'secret', rule: 'name' },
+      'named as a secret, so no model was sent any of it: check that it belongs in the change',
+    ],
+    [
+      'private-key',
+      { file: 'src/a.js', reason: 'secret', rule: 'private-key' },
+      heldBy('a private key'),
+    ],
+    [
+      'aws-key',
+      { file: 'src/a.js', reason: 'secret', rule: 'aws-key' },
+      heldBy('an AWS key'),
+    ],
+    [
+      'github-token',
+      { file: 'src/a.js', reason: 'secret', rule: 'github-token' },
+      heldBy('a GitHub token'),
+    ],
+    [
+      'slack-token',
+      { file: 'src/a.js', reason: 'secret', rule: 'slack-token' },
+      heldBy('a Slack token or webhook'),
+    ],
+    [
+      'google-key',
+      { file: 'src/a.js', reason: 'secret', rule: 'google-key' },
+      heldBy('a Google API key'),
+    ],
+    [
+      'stripe-key',
+      { file: 'src/a.js', reason: 'secret', rule: 'stripe-key' },
+      heldBy('a Stripe key'),
+    ],
+    [
+      'anthropic-key',
+      { file: 'src/a.js', reason: 'secret', rule: 'anthropic-key' },
+      heldBy('an Anthropic key'),
+    ],
+    [
+      'openai-key',
+      { file: 'src/a.js', reason: 'secret', rule: 'openai-key' },
+      heldBy('an OpenAI key'),
+    ],
+    [
+      'deleted named-secret',
+      { file: 'old/.env', reason: 'deleted-secret', rule: 'name' },
+      'deletes a file named as a secret, so no model was sent any of it: the history still holds the file, so rotate what it held',
+    ],
+    [
+      'deleted openai-key',
+      { file: 'old/a.js', reason: 'deleted-secret', rule: 'openai-key' },
+      deletedHolding('an OpenAI key'),
+    ],
+  ])('flags a %s file with its detail', (_name, entry, detail) => {
+    const flags = secretFlags([entry])
+    expect(flags).toEqual([
+      { code: 'secret-file', file: entry.file, detail },
+    ])
+    expect(flags.map(flag => Object.keys(flag))).toEqual([
+      ['code', 'file', 'detail'],
+    ])
+  })
+
+  it('flags a path review\'s secret skip by its name, or as a credential when its name is no secret\'s', () => {
+    expect(secretFlags([
+      { file: 'src/.env', reason: 'skipped', rule: 'secret' },
+      { file: 'src/config.ts', reason: 'skipped', rule: 'secret' },
+    ])).toEqual([
+      {
+        code: 'secret-file',
+        file: 'src/.env',
+        detail: 'named as a secret, so a path review sent none of it: check that it belongs in the repository',
+      },
+      {
+        code: 'secret-file',
+        file: 'src/config.ts',
+        detail: 'holds what reads as a credential, so a path review sent none of it: remove it from the repository, and rotate it if it is real',
+      },
+    ])
+  })
+
+  it('flags a held file of the empty name with no file', () => {
+    const flags = secretFlags([
+      { file: '', reason: 'secret', rule: 'aws-key' },
+      { file: '', reason: 'deleted-secret', rule: 'name' },
+    ])
+    expect(flags).toEqual([
+      {
+        code: 'secret-file',
+        detail: heldBy('an AWS key'),
+      },
+      {
+        code: 'secret-file',
+        detail: 'deletes a file named as a secret, so no model was sent any of it: the history still holds the file, so rotate what it held',
+      },
+    ])
+    expect(flags.map(flag => Object.keys(flag))).toEqual([
+      ['code', 'detail'],
+      ['code', 'detail'],
+    ])
+  })
 })

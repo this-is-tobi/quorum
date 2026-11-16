@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import packageJson from '../../package.json' with { type: 'json' }
 import { securityProfile } from '../profiles/security.ts'
 import { fakeClock, settle } from '../testing/clock.ts'
+import { fakeCredential } from '../testing/credentials.ts'
 import * as git from '../testing/fixtures/git.ts'
 import { ConfigError, OutputError, ProviderError } from './errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts } from './ports.ts'
@@ -901,7 +902,7 @@ describe('review', () => {
       name: 'ConfigError',
       issues: [
         { path: 'source.kind', message: 'must be diff, range, local, staged or paths' },
-        { path: 'leftOut.0.reason', message: 'must be excluded, binary, submodule or skipped' },
+        { path: 'leftOut.0.reason', message: 'must be excluded, binary, submodule, skipped, secret or deleted-secret' },
       ],
     })
     expect(events).toEqual([])
@@ -1896,6 +1897,189 @@ describe('content the diff does not carry', () => {
       events: event => events.push(event),
     }).review({ diff })
     expect(events.map(event => event.type)).not.toContain('left-out')
+  })
+})
+
+describe('files held back as secrets', () => {
+  const key = fakeCredential('openai-key')
+  const held = [
+    'diff --git a/.env b/.env',
+    'new file mode 100644',
+    '--- /dev/null',
+    '+++ b/.env',
+    '@@ -0,0 +1,2 @@',
+    '+MODE=production',
+    `+OPENAI=${key}`,
+  ].join('\n')
+  const gap = (profile: string): IncompleteEntry => ({ profile, reason: 'secret', detail: 'no model was sent 1 file(s) held as secrets, listed in meta.leftOut' })
+  const byName = {
+    code: 'secret-file',
+    file: '.env',
+    detail: 'named as a secret, so no model was sent any of it: check that it belongs in the change',
+  }
+  const requestTexts = (...providers: Fake[]): string[] => providers.flatMap(each => each.requests).map(request => JSON.stringify([request.system, request.messages]))
+
+  it('sends no model a held file\'s text, and lists, gaps and flags it', async () => {
+    const finder = fake('finder', () => findings(reported))
+    const voter = fake('voter', () => vote(true))
+    const styler = fake('styler', () => vote(true))
+    const result = await createQuorum({
+      profiles: [securityProfile, style],
+    }, {
+      profiles: {
+        ...portsFor(securityProfile, finder, voter).profiles,
+        ...portsFor(style, finder, styler).profiles,
+      },
+    }).review({ diff: `${held}\n${diff}` })
+
+    const texts = requestTexts(finder, voter, styler)
+    expect(texts.length).toBeGreaterThan(2)
+    expect(texts[0]).toContain('exec(cmd)')
+    const pieces = key.match(/.{1,8}/g) ?? []
+    expect(pieces.length).toBeGreaterThan(2)
+    for (const text of texts) {
+      for (const secret of [
+        'MODE=production',
+        'OPENAI=',
+        'a/.env',
+        ...pieces,
+      ]) expect(text).not.toContain(secret)
+    }
+    expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js', 'a.js'])
+    expect(result.meta.leftOut).toEqual([
+      { file: '.env', reason: 'secret', rule: 'name' },
+    ])
+    expect(result.meta.incomplete).toEqual([
+      gap('security'),
+      gap('style'),
+    ])
+    expect(result.meta.flags).toEqual([byName])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: '.env', status: 'unreviewed', reason: 'secret' },
+      { file: 'a.js', status: 'reviewed' },
+      { file: 'other.js', status: 'reviewed' },
+    ])
+  })
+
+  it('runs no stage for a diff whose every file is held, and still records the gap', async () => {
+    const finder = fake('finder', () => findings(reported))
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, finder),
+      events: event => events.push(event),
+    }).review({ diff: held })
+    expect(finder.requests).toEqual([])
+    expect(events.map(event => event.type)).toEqual([
+      'run:start',
+      'left-out',
+      'incomplete',
+      'flag',
+      'run:end',
+    ])
+    expect(events.at(-1)).toMatchObject({ type: 'run:end', incomplete: 1 })
+    expect(result.meta.incomplete).toEqual([
+      gap('security'),
+    ])
+    expect(result.meta.leftOut).toEqual([
+      { file: '.env', reason: 'secret', rule: 'name' },
+    ])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: '.env', status: 'unreviewed', reason: 'secret' },
+    ])
+  })
+
+  it('passes a change that deletes a secret whole: listed, flagged, no gap', async () => {
+    const finder = fake('finder', () => findings())
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder)).review({ diff: git.DELETED_SECRET })
+    expect(result.meta.leftOut).toEqual([
+      { file: '.env', reason: 'deleted-secret', rule: 'name' },
+    ])
+    expect(result.meta.flags).toEqual([
+      {
+        code: 'secret-file',
+        file: '.env',
+        detail: 'deletes a file named as a secret, so no model was sent any of it: the history still holds the file, so rotate what it held',
+      },
+    ])
+    expect(result.meta.incomplete).toEqual([])
+    expect(requestTexts(finder).join('')).not.toContain('A=1')
+  })
+
+  it('reviews a file the input sends though it is held', async () => {
+    const finder = fake('finder', () => findings())
+    const send = ['.env']
+    const pending = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder)).review({ diff: held, send })
+    // The input is copied before the first await, so a later change to the caller's array reaches nothing.
+    send.length = 0
+    const result = await pending
+    expect(finder.requests).toHaveLength(1)
+    expect(requestTexts(finder)[0]).toContain('MODE=production')
+    expect(result.meta.leftOut).toEqual([])
+    expect(result.meta.flags).toEqual([])
+    expect(result.meta.incomplete).toEqual([])
+  })
+
+  it('refuses a send that is not an array of file names, before any event', async () => {
+    const events: QuorumEvent[] = []
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, provider),
+      events: event => events.push(event),
+    })
+    await expect(quorum.review({
+      diff,
+      send: ['', 1] as never,
+    })).rejects.toMatchObject({
+      name: 'ConfigError',
+      issues: [
+        { path: 'send.0', message: 'must name a file' },
+        { path: 'send.1', message: 'must name a file' },
+      ],
+    })
+    await expect(quorum.review({ diff, send: '.env' as never })).rejects.toMatchObject({
+      name: 'ConfigError',
+      issues: [
+        { path: 'send', message: 'must be an array' },
+      ],
+    })
+    expect(() => quorum.estimate({
+      diff,
+      send: [''],
+    })).toThrow(ConfigError)
+    expect(events).toEqual([])
+    expect(complete).not.toHaveBeenCalled()
+  })
+
+  it('sends the held files\' gaps before the flags, the secret-file flags first', async () => {
+    const events: QuorumEvent[] = []
+    await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, fake('finder', () => findings())),
+      events: event => events.push(event),
+    }).review({ diff: `${held}\n${flaggedDiff}` })
+    expect(events.slice(0, 6).map(event => event.type)).toEqual([
+      'run:start',
+      'left-out',
+      'incomplete',
+      'flag',
+      'flag',
+      'stage:start',
+    ])
+    expect(events.flatMap(event => event.type === 'flag'
+      ? [event.flag.code]
+      : [])).toEqual(['secret-file', 'hidden-characters'])
+    expect(events[2]).toEqual({
+      type: 'incomplete',
+      entry: gap('security'),
+    })
   })
 })
 

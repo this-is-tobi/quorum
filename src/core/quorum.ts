@@ -10,7 +10,7 @@ import type { ConfigIssue } from './errors.ts'
 import { estimateReview } from './estimate.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
 import { diffFlags, secretFlags } from './flags.ts'
-import { leftOutIssues, mergeLeftOut, sourceIssues, sourceOf } from './inputs.ts'
+import { leftOutIssues, mergeLeftOut, sendIssues, sourceIssues, sourceOf } from './inputs.ts'
 import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, LimitError, limitGaps, maxReviewTokensProblem } from './limits.ts'
 import { isRecord } from './output.ts'
 import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap } from './parts.ts'
@@ -53,6 +53,9 @@ interface Compiled {
 
 /** What one review takes besides its input: the signal that stops it. */
 type ReviewOptions = NonNullable<Parameters<Quorum['review']>[1]>
+
+/** What an estimate takes of a review's input: the diff, and the files it sends though they are held back. */
+type EstimateInput = Parameters<Quorum['estimate']>[0]
 
 /** What a review counts from its own events, so its meta and its events cannot disagree. */
 interface Tally {
@@ -123,7 +126,7 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
   const warnings: readonly string[] = Object.freeze(options.profiles.flatMap(profile => profileWarnings(profile)))
   return Object.freeze({
     review: (input: ReviewInput, options?: ReviewOptions) => review(compiled, input, options),
-    estimate: (input: { readonly diff: string }) => estimate(compiled, input),
+    estimate: (input: EstimateInput) => estimate(compiled, input),
     warnings,
   })
 }
@@ -138,41 +141,58 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
  * and every vote at its bound, so the votes are in the worst case only. `inFlight` is what the calls that run
  * at once reserve, the `concurrency` largest bounds among all the profiles' calls, and `fits` is whether
  * `expected` and `inFlight` are within `maxReviewTokens`. A diff with nothing left to read, blank or whose every
- * file is excluded, makes no call and costs nothing. It is an estimate, not a limit: a review reserves each call
+ * file is excluded or held back as a secret, makes no call and costs nothing; a file `input.send` names is not
+ * held back, so it is counted, as `review` sends it. It is an estimate, not a limit: a review reserves each call
  * against the cap, which still holds whatever `fits` says.
  *
- * @throws ConfigError listing every issue of the input that `review` refuses: an input that is not an object, a `diff` that is not a string, a `source` or a `leftOut` it cannot take
+ * @throws ConfigError listing every issue of the input that `review` refuses: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take
  */
-function estimate(compiled: Compiled, input: { readonly diff: string }): Estimate {
+function estimate(compiled: Compiled, input: EstimateInput): Estimate {
   const issues = reviewIssues(input, {})
   if (issues.length > 0) throw new ConfigError(issues)
-  return estimateReview(compiled.runs, compiled, input.diff)
+  const sent = new Set(input.send)
+  return estimateReview(compiled.runs, compiled, input.diff, path => sent.has(path))
 }
 
 /**
  * One review of a diff by every profile of the quorum, concurrently, each through research, dedup
  * and panel under the review's one concurrency limit; a blank diff runs no stage. The diff is
- * filtered once: the sections the quorum's `exclude` patterns match leave every request, so
- * research, the check of each finding and the votes read the diff less those sections, split into
- * one section per file once for every profile, and a finding that cites an excluded file is dropped
- * as outside the diff. A filtered diff that is blank, with every file excluded and nothing before
- * the first header, runs no stage, as a blank diff does. The advisory flags are read before any
- * stage runs, from the whole diff, the excluded files included. The review lists the files it
- * leaves out in `meta.leftOut`: the excluded ones, which are no gap, and the files whose change the
- * diff does not carry, binary files and submodules' commits, for each reason of which it records a
- * gap for every profile; their sections still reach the stages. The input's own `leftOut`, the files its
+ * filtered once: the sections the quorum's `exclude` patterns match, and the files held back as secrets
+ * (below), leave every request, so research, the check of each finding and the votes read the diff less
+ * those sections, split into one section per file once for every profile, and a finding that cites an
+ * excluded or a held file is dropped as outside the diff. A filtered diff that is blank, with every file
+ * excluded or held and nothing before the first header, runs no stage, as a blank diff does, and still
+ * records the gaps its held files make. The advisory flags are read before any stage runs, from the
+ * whole diff, the excluded and the held files included. The review lists the files it leaves out in
+ * `meta.leftOut`: the excluded ones, which are no gap, the files whose change the diff does not carry,
+ * binary files and submodules' commits, and the files held back, for each reason of which it records a
+ * gap for every profile; the sections of a file whose change the diff does not carry still reach the
+ * stages. The input's own `leftOut`, the files its
  * source left out before it made the diff, comes first in the list, in the `left-out` event and in the gaps'
  * counts, each file, reason and rule once, and a skipped one is no gap; the input's `source` is checked,
  * copied and recorded in `meta.source`, `{ kind: 'diff' }` when it names none. Its `skipped` files of the
- * rule `secret` each raise one `secret-file` flag, as many as `meta.leftOut` lists, ahead of the diff's flags and whatever the diff is.
+ * rule `secret`, and the `secret` and `deleted-secret` files `meta.leftOut` lists, each raise one `secret-file`
+ * flag, as many as `meta.leftOut` lists, ahead of the diff's flags and whatever the diff is.
  * Everything it knows before a call is sent in this order: `run:start`, then a `left-out` event naming those files when it leaves one
- * out, then the gaps' `incomplete` events (each profile's `binary` and `submodule` gaps, then its
- * `too-large` gap), then the `flag` events of the advisory flags, the source's `secret-file` flags first,
+ * out, then the gaps' `incomplete` events (each profile's `binary`, `submodule` and `secret` gaps, then its
+ * `too-large` gap), then the `flag` events of the advisory flags, the `secret-file` flags first,
  * kept in `meta.flags`, none of which changes a verdict, then the stages. Each event is handed to the sink
  * as a copy, so a sink that changes one changes nothing else. The review reports itself through
  * events, from `run:start` to `run:end`, and its result merges the profiles' verdicts and gaps in
  * profile order. `meta.profiles[<id>].invalidFindings` and `meta.usage` are counted from the
  * events before the sink receives them.
+ *
+ * No model is sent a line of a file held back as a secret. A file is held when its name is a secret's
+ * (`.env`, `id_ed25519`, a `.pem` file) or a line of it, removed and context lines included, holds a credential
+ * quorum recognizes (a private key's armor and body, the keys of AWS, GitHub, Slack, Google, Stripe, Anthropic
+ * and OpenAI), by any path its section names; every section of it leaves the diff, and a credential in one
+ * holds all. It is listed in `meta.leftOut` as `secret` with its `rule` (`name`, or the kind of credential),
+ * raises a `secret-file` flag, and is a `secret` gap of every profile that no flag lifts; a change that deletes
+ * a file named as a secret whole lists it as `deleted-secret` with its flag and no gap, while a deletion of a
+ * file held for a credential in it, whose removed code would go unread, is a `secret` gap. The text no header names is one file
+ * of the empty name, held as any other. `input.send` names the files to send though held, each the path exactly
+ * as `meta.leftOut` lists it, never the empty name: such a file is sent, neither listed nor flagged, and one
+ * `exclude` matches is excluded first. `send` is copied before the review's first await.
  *
  * Abort never fails open. The review's signal joins the caller's `signal` to an internal one; every
  * stage and every call checks it, every attempt carries a signal of its own, which the review's
@@ -215,7 +235,7 @@ function estimate(compiled: Compiled, input: { readonly diff: string }): Estimat
  * and votes run as far as the cap lets them. A research in parts spends up to the cap, each part reserved
  * before it is sent: the parts the cap cannot fund are not sent, and one gap counts them.
  *
- * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source` or a `leftOut` it cannot take, options that are not an object, a `signal` that is not an AbortSignal
+ * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take, options that are not an object, a `signal` that is not an AbortSignal
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
  * @throws the error of a sink that throws, or of a gating profile that fails: a ProviderError from its research call, an OutputError for its reply
  */
@@ -254,11 +274,12 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
   const whole = input.diff.trim() === ''
     ? undefined
     : splitDiff(input.diff)
+  // Copied before the first await, so the caller's later changes to its input reach neither the result nor the events.
+  const sent = new Set(input.send)
+  const source = sourceOf(input.source)
   const scope: ReviewScope = whole === undefined
     ? { diff: input.diff, leftOut: [], files: [] }
-    : reviewScope(input.diff, compiled.excluded)
-  // Copied before the first await, so the caller's later changes to its input reach neither the result nor the events.
-  const source = sourceOf(input.source)
+    : reviewScope(input.diff, compiled.excluded, path => sent.has(path))
   const leftOut = mergeLeftOut(input.leftOut ?? [], scope.leftOut)
   // The source's secrets are read from the merged list, so a file it lists twice is flagged once, as `meta.leftOut` lists it once.
   const flags = [
@@ -413,8 +434,8 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPla
 /**
  * Every problem with one review's input and options, so an untyped caller gets issues, never a
  * TypeError. An input that is not an object is named as the input, not as its diff: the likely
- * mistake is the diff text passed on its own, as `runQuorum` takes it. The `source` and the `leftOut`,
- * when set, are checked after the diff, so a caller sees every issue of the input at once. The signal
+ * mistake is the diff text passed on its own, as `runQuorum` takes it. The `source`, the `leftOut` and the
+ * `send`, when set, are checked after the diff, so a caller sees every issue of the input at once. The signal
  * must be a real AbortSignal: `AbortSignal.any` accepts nothing else.
  */
 function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
@@ -423,7 +444,7 @@ function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
     issues.push({ path: 'input', message: 'must be an object holding the diff string' })
   } else {
     if (typeof input.diff !== 'string') issues.push({ path: 'diff', message: 'must be a string' })
-    issues.push(...sourceIssues(input.source), ...leftOutIssues(input.leftOut))
+    issues.push(...sourceIssues(input.source), ...leftOutIssues(input.leftOut), ...sendIssues(input.send))
   }
   if (!isRecord(options)) issues.push({ path: 'options', message: 'must be an object' })
   else if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) issues.push({ path: 'signal', message: 'must be an AbortSignal' })

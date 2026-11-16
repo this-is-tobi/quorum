@@ -777,6 +777,40 @@ describe('coverageOf', () => {
     ])
   })
 
+  it('judges a held file unreviewed with its reason, secret or deleted-secret, whatever became of its part', () => {
+    const deleted = [
+      'diff --git a/old/.env b/old/.env',
+      'deleted file mode 100644',
+      'index 1111111..0000000',
+      '--- a/old/.env',
+      '+++ /dev/null',
+      '@@ -1 +0,0 @@',
+      '-A=1',
+    ].join('\n')
+    const diff = [FILE_A, `${headerOf('.env')}\n@@ -1 +1 @@\n-a\n+b`, deleted].join('\n')
+    const scope = reviewScope(diff)
+    const sections = diffSections(scope.diff)
+    expect(coverageOf(scope, sections, undefined, ['reviewed'])).toEqual([
+      { file: 'a.js', status: 'reviewed' },
+      { file: '.env', status: 'unreviewed', reason: 'secret' },
+      { file: 'old/.env', status: 'unreviewed', reason: 'deleted-secret' },
+    ])
+    expect(coverageOf(scope, sections, undefined, ['review-deadline'])).toEqual([
+      { file: 'a.js', status: 'unreviewed', reason: 'review-deadline' },
+      { file: '.env', status: 'unreviewed', reason: 'secret' },
+      { file: 'old/.env', status: 'unreviewed', reason: 'deleted-secret' },
+    ])
+    // A section the diff still holds of a file the input lists as held is unreviewed as well.
+    expect(coverageOf({
+      files: ['a.js'],
+      leftOut: [
+        { file: 'a.js', reason: 'secret', rule: 'aws-key' },
+      ],
+    }, diffSections(FILE_A), undefined, ['reviewed'])).toEqual([
+      { file: 'a.js', status: 'unreviewed', reason: 'secret' },
+    ])
+  })
+
   it('lists a file of several sections once, partial when one was read and another was not, and the parts no header names under the empty name', () => {
     const diff = [
       'From 1111 Mon Sep 17 00:00:00 2001',

@@ -299,6 +299,30 @@ describe('estimate', () => {
     expect(parts).toEqual([requestTokens(researchRequest(securityProfile.prompts.research, DIFF)) + RESERVE])
   })
 
+  it('estimates the diff less its held files, and counts a file the input sends', () => {
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, silent(request => requestTokens(request) + RESERVE)))
+    const whole = `${addedFile('.env', 40)}\n${DIFF}`
+    const reservation = (diff: string): number => requestTokens(researchRequest(securityProfile.prompts.research, diff)) + RESERVE
+    expect(quorum.estimate({ diff: whole }).profiles.security.parts).toEqual([
+      reservation(DIFF),
+    ])
+    expect(quorum.estimate({ diff: whole })).toEqual(quorum.estimate({ diff: DIFF }))
+    expect(quorum.estimate({
+      diff: whole,
+      send: ['.env'],
+    }).profiles.security.parts).toEqual([
+      reservation(whole),
+    ])
+    expect(quorum.estimate({
+      diff: whole,
+      send: ['./.env'],
+    }).profiles.security.parts).toEqual([
+      reservation(DIFF),
+    ])
+  })
+
   it('fits exactly when the expected spend and what is in flight are at most the cap', () => {
     const finder = windowed(32_768, () => '{"findings":[]}')
     const estimateAt = (maxReviewTokens: number): Estimate => createQuorum({

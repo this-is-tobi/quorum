@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import { credentialPlaceholder, fakeCredential } from '../testing/credentials.ts'
 import * as git from '../testing/fixtures/git.ts'
 import { leftOutGaps, reviewScope } from './coverage.ts'
-import { splitDiff } from './diff.ts'
+import { diffSections, splitDiff } from './diff.ts'
 import { excludeMatcher } from './exclude.ts'
+import { isWholeDeletion } from './secrets.ts'
 import type { LeftOutReason } from './types.ts'
 
 const DONNEES = `donn${String.fromCharCode(0xE9)}es.bin`
@@ -258,6 +260,250 @@ describe('reviewScope, with excludes', () => {
   })
 })
 
+describe('reviewScope, holding secrets', () => {
+  /** A section that modifies `file`, its added rows after one context row. */
+  const edit = (file: string, ...added: string[]): string => [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    `@@ -1 +1,${added.length + 1} @@`,
+    ' context',
+    ...added.map(row => `+${row}`),
+  ].join('\n')
+  /** The section of `file` in the diff of a deletion that git writes: a lookup that fails throws, so no test passes on an empty section. */
+  const deletion = (file: string): string => {
+    const section = diffSections(git.DELETED_SECRET).find(candidate => candidate.path === file)
+    if (section === undefined) throw new Error(`the deletion fixture has no section of ${JSON.stringify(file)}`)
+    return section.text
+  }
+  const mail = (message: string): string => [
+    'From 1234 Mon Sep 17 00:00:00 2001',
+    'Subject: [PATCH] a',
+    '',
+    message,
+    '---',
+    edit('a.js', 'x'),
+  ].join('\n')
+
+  it('holds a file named as a secret: its section leaves the diff, listed as secret with the rule name', () => {
+    const scope = reviewScope([
+      edit('.env', 'A=1'),
+      edit('a.js', 'let a = 1'),
+    ].join('\n'))
+    expect(scope.diff).toBe(edit('a.js', 'let a = 1'))
+    expect(scope.leftOut).toEqual([
+      { file: '.env', reason: 'secret', rule: 'name' },
+    ])
+    expect(scope.files).toEqual(['.env', 'a.js'])
+  })
+
+  it('holds a file by a credential on any of its rows, listed with its kind', () => {
+    const scope = reviewScope([
+      edit('a.js', 'let a = 1'),
+      edit('src/app.js', `const k = '${fakeCredential('stripe-key')}'`),
+    ].join('\n'))
+    expect(scope.diff).toBe(edit('a.js', 'let a = 1'))
+    expect(scope.leftOut).toEqual([
+      { file: 'src/app.js', reason: 'secret', rule: 'stripe-key' },
+    ])
+  })
+
+  it('holds a file whose only hit is a removed line, a secret gap with the kind', () => {
+    const removal = [
+      'diff --git a/src/app.js b/src/app.js',
+      '--- a/src/app.js',
+      '+++ b/src/app.js',
+      '@@ -1,2 +1 @@',
+      `-const k = '${fakeCredential('aws-key')}'`,
+      ' keep',
+    ].join('\n')
+    const scope = reviewScope(removal)
+    expect(scope.diff).toBe('')
+    expect(scope.leftOut).toEqual([
+      { file: 'src/app.js', reason: 'secret', rule: 'aws-key' },
+    ])
+    expect(leftOutGaps('security', scope.leftOut)).toHaveLength(1)
+  })
+
+  it('lists a whole deletion as deleted-secret', () => {
+    const scope = reviewScope(git.DELETED_SECRET)
+    expect(scope.leftOut).toEqual([
+      { file: '.env', reason: 'deleted-secret', rule: 'name' },
+    ])
+    expect([
+      ...splitDiff(scope.diff).keys(),
+    ]).toEqual(['a.js'])
+    expect(scope.diff).not.toContain('A=1')
+    expect(scope.files).toEqual(['.env', 'a.js'])
+  })
+
+  it('holds a whole deletion of a file held for a credential as a secret gap, since its removed code goes unread', () => {
+    const removal = [
+      'diff --git a/src/authz.ts b/src/authz.ts',
+      'deleted file mode 100644',
+      'index 1111111..0000000',
+      '--- a/src/authz.ts',
+      '+++ /dev/null',
+      '@@ -1,2 +0,0 @@',
+      '-export const allowed = false',
+      `-const k = '${fakeCredential('openai-key')}'`,
+    ].join('\n')
+    expect(isWholeDeletion(removal)).toBe(true)
+    const scope = reviewScope(`${removal}\n${edit('a.js', 'x')}`)
+    expect(scope.leftOut).toEqual([
+      { file: 'src/authz.ts', reason: 'secret', rule: 'openai-key' },
+    ])
+    expect(scope.diff).toBe(edit('a.js', 'x'))
+    expect(leftOutGaps('security', scope.leftOut)).toEqual([
+      { profile: 'security', reason: 'secret', detail: 'no model was sent 1 file(s) held as secrets, listed in meta.leftOut' },
+    ])
+  })
+
+  it('holds a forged header that spells a secret name, read word by word, as a gap', () => {
+    const rows = ['@@ -0,0 +1 @@', '+A=1']
+    const nameless = reviewScope([
+      'diff --git a/.env',
+      ...rows,
+      edit('a.js', 'x'),
+    ].join('\n'))
+    expect(nameless.leftOut).toEqual([
+      { file: '', reason: 'secret', rule: 'name' },
+    ])
+    expect(nameless.diff).toBe(edit('a.js', 'x'))
+    const third = reviewScope([
+      'diff --git a/.env b/.env c',
+      ...rows,
+      edit('a.js', 'x'),
+    ].join('\n'))
+    expect(third.leftOut).toEqual([
+      { file: '.env c', reason: 'secret', rule: 'name' },
+    ])
+    expect(third.diff).toBe(edit('a.js', 'x'))
+    expect(leftOutGaps('security', third.leftOut)).toHaveLength(1)
+  })
+
+  it('holds a forged deletion whose --- line names another file as a secret gap, never as deleted-secret', () => {
+    const forged = git.DELETED_SECRET.replace('--- a/.env', '--- a/src/auth.ts')
+    expect(forged).not.toBe(git.DELETED_SECRET)
+    const scope = reviewScope(forged)
+    expect(scope.leftOut).toEqual([
+      { file: '.env', reason: 'secret', rule: 'name' },
+    ])
+    expect(leftOutGaps('security', scope.leftOut)).toHaveLength(1)
+  })
+
+  it('judges a format-patch series that edits then deletes .env as one secret file, a gap', () => {
+    const scope = reviewScope([
+      edit('.env', 'A=2'),
+      deletion('.env'),
+      edit('a.js', 'x'),
+    ].join('\n'))
+    expect(scope.leftOut).toEqual([
+      { file: '.env', reason: 'secret', rule: 'name' },
+    ])
+    expect(scope.diff).toBe(edit('a.js', 'x'))
+    expect(leftOutGaps('security', scope.leftOut)).toHaveLength(1)
+  })
+
+  it('holds every section of a held file, and a credential in one holds the others, the file listed once at its first section', () => {
+    const image = 'diff --git a/img.png b/img.png\nBinary files a/img.png and b/img.png differ'
+    const scope = reviewScope([
+      edit('a.js', 'let a = 1'),
+      image,
+      edit('b.js', 'let b = 1'),
+      edit('a.js', `const k = '${fakeCredential('github-token')}'`),
+    ].join('\n'))
+    expect(scope.diff).toBe([
+      image,
+      edit('b.js', 'let b = 1'),
+    ].join('\n'))
+    expect(scope.leftOut).toEqual([
+      { file: 'a.js', reason: 'secret', rule: 'github-token' },
+      { file: 'img.png', reason: 'binary' },
+    ])
+  })
+
+  it('holds the text no header names as the file of the empty name, a plain diff whole', () => {
+    const key = fakeCredential('openai-key')
+    const message = reviewScope(mail(`the key is ${key}`))
+    expect(message.leftOut).toEqual([
+      { file: '', reason: 'secret', rule: 'openai-key' },
+    ])
+    expect(message.diff).toBe(edit('a.js', 'x'))
+    const plain = reviewScope([
+      '--- a/.env\t2026-11-14 17:10:49',
+      '+++ b/.env\t2026-11-14 17:10:49',
+      '@@ -1 +1 @@',
+      '-A=1',
+      '+A=2',
+      '',
+    ].join('\n'))
+    expect(plain.diff).toBe('')
+    expect(plain.leftOut).toEqual([
+      { file: '', reason: 'secret', rule: 'name' },
+    ])
+  })
+
+  it('holds a renamed file by its old name under -M', () => {
+    const scope = reviewScope(git.RENAMED_FROM_SECRET)
+    expect(scope.leftOut).toEqual([
+      { file: 'moved.txt', reason: 'secret', rule: 'name' },
+    ])
+    expect(scope.diff).toBe('')
+  })
+
+  it('excludes before it holds: an excluded secret is listed excluded only', () => {
+    const diff = [
+      edit('.env', 'A=1'),
+      edit('a.js', `const k = '${fakeCredential('aws-key')}'`),
+    ].join('\n')
+    const scope = reviewScope(diff, path => path === '.env' || path === 'a.js')
+    expect(scope.leftOut).toEqual([
+      { file: '.env', reason: 'excluded' },
+      { file: 'a.js', reason: 'excluded' },
+    ])
+    expect(scope.diff).toBe('')
+  })
+
+  it('sends a file the override names by the diff\'s own path, and never the empty name', () => {
+    const diff = [
+      edit('.env', 'A=1'),
+      edit('a.js', 'let a = 1'),
+    ].join('\n')
+    const scope = reviewScope(diff, () => false, path => path === '.env')
+    expect(scope.diff).toBe(diff)
+    expect(scope.leftOut).toEqual([])
+    expect(reviewScope(diff, () => false, path => path === './.env').leftOut).toEqual([
+      { file: '.env', reason: 'secret', rule: 'name' },
+    ])
+    const message = mail(`the key is ${fakeCredential('openai-key')}`)
+    const answers: Array<(path: string) => boolean> = [
+      path => path === '',
+      () => true,
+    ]
+    for (const sent of answers) {
+      expect(reviewScope(message, () => false, sent).leftOut).toEqual([
+        { file: '', reason: 'secret', rule: 'openai-key' },
+      ])
+    }
+  })
+
+  it('reads no marker of a held section: a held binary file is listed secret only', () => {
+    const scope = reviewScope(['diff --git a/k.p12 b/k.p12', 'index 1a2b3c4..5d6e7f8 100644', 'Binary files a/k.p12 and b/k.p12 differ'].join('\n'))
+    expect(scope.leftOut).toEqual([
+      { file: 'k.p12', reason: 'secret', rule: 'name' },
+    ])
+    expect(scope.diff).toBe('')
+  })
+
+  it('returns the given string as its diff when nothing is held or excluded', () => {
+    const placeholder = edit('a.js', `const k = '${credentialPlaceholder('aws-key')}'`)
+    expect(reviewScope(placeholder).diff).toBe(placeholder)
+    expect(reviewScope(git.DELETED_SECRET, () => false, path => path === '.env').diff).toBe(git.DELETED_SECRET)
+    expect(reviewScope(edit('.env.example', 'A=')).diff).toBe(edit('.env.example', 'A='))
+  })
+})
+
 describe('leftOutGaps', () => {
   it('gives one gap per reason, binary then submodule, counting the files, and none for a list without them', () => {
     expect(leftOutGaps('security', [
@@ -274,6 +520,23 @@ describe('leftOutGaps', () => {
   it('gives no gap for an excluded file', () => {
     expect(leftOutGaps('security', [
       { file: 'lock.json', reason: 'excluded' },
+    ])).toEqual([])
+  })
+
+  it('records one secret gap per profile counting the files held as secrets, and none for a deleted one', () => {
+    expect(leftOutGaps('security', [
+      { file: '.env', reason: 'secret', rule: 'name' },
+      { file: 'a.png', reason: 'binary' },
+      { file: 'old/.env', reason: 'deleted-secret', rule: 'name' },
+      { file: 'src/app.js', reason: 'secret', rule: 'aws-key' },
+      { file: 'vendor/lib', reason: 'submodule' },
+    ])).toEqual([
+      { profile: 'security', reason: 'binary', detail: 'the diff carries no content for 1 binary file(s), listed in meta.leftOut' },
+      { profile: 'security', reason: 'submodule', detail: 'the diff carries no content for 1 submodule(s), listed in meta.leftOut' },
+      { profile: 'security', reason: 'secret', detail: 'no model was sent 2 file(s) held as secrets, listed in meta.leftOut' },
+    ])
+    expect(leftOutGaps('security', [
+      { file: 'old/.env', reason: 'deleted-secret', rule: 'name' },
     ])).toEqual([])
   })
 })

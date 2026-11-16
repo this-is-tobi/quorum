@@ -315,6 +315,16 @@ export type PartOutcome = 'reviewed' | 'request-too-large' | 'token-cap' | 'revi
 /** What became of a unit of the diff: its part's outcome, or `too-large` when no part holds it. */
 type Outcome = PartOutcome | 'too-large'
 
+/** The reasons `meta.leftOut` gives for a file no model read, whatever became of the part that held it, in the order that decides when a file has several. */
+const UNREVIEWED_REASONS = [
+  'binary',
+  'submodule',
+  'secret',
+  'deleted-secret',
+] as const
+
+type UnreviewedReason = typeof UNREVIEWED_REASONS[number]
+
 /** The share of a file the coverage judges alone: a section held whole, or one hunk of a section split between parts. */
 interface Piece {
   readonly outcome: Outcome
@@ -387,10 +397,11 @@ function leftRanges(piece: UnreadPiece, sections: readonly DiffSection[], packin
  *    file, and the sections no header names, the text before the first header and a header that
  *    names no path, are the file of the empty name.
  * 3. Each file of `scope.files`, in its order: `excluded` with no piece when `leftOut` excludes it;
- *    `unreviewed` for `binary`, else `submodule`, when `leftOut` lists it so, whatever became of its
- *    part; `reviewed` when every piece was read; `unreviewed` with its first piece's reason when none
- *    was; else `partial`, with the range of each hunk of each piece left, each with its reason, and
- *    none for a section with no hunk.
+ *    `unreviewed` for `binary`, else `submodule`, else `secret`, else `deleted-secret`, when `leftOut`
+ *    lists it so, whatever became of its part (a held file has no piece, and no model was sent it);
+ *    `reviewed` when every piece was read; `unreviewed` with its first piece's reason when none was; else
+ *    `partial`, with the range of each hunk of each piece left, each with its reason, and none for a
+ *    section with no hunk.
  * A file with no piece that nothing excludes is unreviewed, never reviewed.
  */
 export function coverageOf(scope: Pick<ReviewScope, 'files' | 'leftOut'>, sections: readonly DiffSection[], packing: Packing | undefined, outcomes: readonly PartOutcome[]): CoverageEntry[] {
@@ -415,20 +426,18 @@ export function coverageOf(scope: Pick<ReviewScope, 'files' | 'leftOut'>, sectio
   }
   const listed = (reason: LeftOutReason): Set<string> => new Set(scope.leftOut.filter(entry => entry.reason === reason).map(entry => entry.file))
   const excluded = listed('excluded')
-  const binary = listed('binary')
-  const submodule = listed('submodule')
+  // A file listed for several of the reasons is unreviewed for the first of them, in their order.
+  const unreviewed = new Map<string, UnreviewedReason>()
+  for (const reason of UNREVIEWED_REASONS) {
+    for (const file of listed(reason)) {
+      if (!unreviewed.has(file)) unreviewed.set(file, reason)
+    }
+  }
   return scope.files.map((file): CoverageEntry => {
     const own = pieces.get(file) ?? []
     if (own.length === 0 && excluded.has(file)) return { file, status: 'excluded' }
-    if (binary.has(file) || submodule.has(file)) {
-      return {
-        file,
-        status: 'unreviewed',
-        reason: binary.has(file)
-          ? 'binary'
-          : 'submodule',
-      }
-    }
+    const listedReason = unreviewed.get(file)
+    if (listedReason !== undefined) return { file, status: 'unreviewed', reason: listedReason }
     const unread = own.filter(isUnread)
     if (own.length > 0 && unread.length === 0) return { file, status: 'reviewed' }
     if (unread.length === own.length) {

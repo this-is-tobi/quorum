@@ -416,6 +416,71 @@ describe('parseRecord, level by level', () => {
     ]))).toBeDefined()
   })
 
+  it('reads a record holding a held file, a secret gap and a held file\'s coverage, and refuses a secret with a skip rule', () => {
+    const rules = [
+      'name',
+      'private-key',
+      'aws-key',
+      'github-token',
+      'slack-token',
+      'google-key',
+      'stripe-key',
+      'anthropic-key',
+      'openai-key',
+    ] as const
+    const held = record({
+      result: {
+        ...RESULT,
+        meta: {
+          ...RESULT.meta,
+          profiles: {
+            security: {
+              ...RESULT.meta.profiles.security,
+              coverage: [
+                { file: '.env', status: 'unreviewed', reason: 'secret' },
+                { file: 'old/.env', status: 'unreviewed', reason: 'deleted-secret' },
+              ],
+            },
+          },
+          incomplete: [
+            { profile: 'security', reason: 'secret', detail: 'no model was sent 1 file(s) held as secrets, listed in meta.leftOut' },
+          ],
+          leftOut: [
+            ...rules.map(rule => ({ file: `${rule}.x`, reason: 'secret' as const, rule })),
+            { file: 'old/.env', reason: 'deleted-secret', rule: 'name' },
+          ],
+          flags: [
+            {
+              code: 'secret-file',
+              file: 'name.x',
+              detail: 'named as a secret, so no model was sent any of it: check that it belongs in the change',
+            },
+          ],
+        },
+      },
+    })
+    expect(parseRecord(recordLine(held).slice(0, -1))).toEqual(held)
+
+    const refused = (leftOut: object[]): string => withMeta({ leftOut })
+    for (const entry of [
+      { file: 'a.x', reason: 'secret' },
+      { file: 'a.x', reason: 'secret', rule: 'lockfile' },
+      { file: 'a.x', reason: 'deleted-secret', rule: 'secret' },
+      { file: 'a.x', reason: 'skipped', rule: 'aws-key' },
+      {
+        file: 'a.x',
+        reason: 'secret',
+        rule: 'name',
+        extra: 1,
+      },
+    ]) {
+      expect(parseRecord(refused([entry]))).toBeUndefined()
+    }
+    expect(parseRecord(refused([
+      { file: 'a.x', reason: 'secret', rule: 'name' },
+    ]))).toBeDefined()
+  })
+
   it('reads a record whose result holds a research-failed gap', () => {
     const failed = record({
       result: resultWith({

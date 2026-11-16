@@ -45,9 +45,10 @@ interface Section {
 /**
  * What a review of `diff` by `runs` may cost, before any call: nothing is sent, and no provider's `complete` is
  * called, only the `room` and the `worstCase` it states, which are what the ledger reserves with. It reads the
- * diff as `review` does, less the sections `excluded` leaves out, and plans each profile's research the same
- * way, so the reservation it states for each research part is the one the ledger takes for it. A diff with
- * nothing left to read makes no call and costs nothing.
+ * diff as `review` does, less the sections `excluded` leaves out and the files held back as secrets, except the
+ * ones `sent` names, and plans each profile's research the same way, so the reservation it states for each
+ * research part is the one the ledger takes for it. A diff with nothing left to read makes no call and costs
+ * nothing.
  *
  * A vote's reservation depends on a finding that does not exist yet, so each lens's is a bound: the request for
  * a finding at the caps the harness cleans a finder's text to, citing the largest section of the filtered
@@ -61,8 +62,8 @@ interface Section {
  * between every profile. `fits` is `expected + inFlight <= maxReviewTokens`. It is an estimate: the ledger
  * still holds the cap at run time, whatever it says.
  */
-export function estimateReview(runs: readonly ProfileRun[], settings: EstimateSettings, diff: string): Estimate {
-  const scope = reviewScope(diff, settings.excluded)
+export function estimateReview(runs: readonly ProfileRun[], settings: EstimateSettings, diff: string, sent: (path: string) => boolean = () => false): Estimate {
+  const scope = reviewScope(diff, settings.excluded, sent)
   const filtered = diffSections(scope.diff)
   const largest = scope.diff.trim() === ''
     ? undefined

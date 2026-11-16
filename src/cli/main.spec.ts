@@ -8,7 +8,9 @@ import packageJson from '../../package.json' with { type: 'json' }
 import type { QuorumResult, Verdict } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { fakeClaudeEnv, readFakeRecord, writeFakeClaude } from '../testing/claude.ts'
+import { fakeCredential } from '../testing/credentials.ts'
 import * as fixtures from '../testing/fixtures/claude-code.ts'
+import * as diffs from '../testing/fixtures/git.ts'
 import { harness } from '../testing/cli.ts'
 import { fakeGit } from '../testing/git.ts'
 import type { GitCall, GitReply } from '../testing/git.ts'
@@ -1138,6 +1140,109 @@ describe('content the diff does not carry', () => {
   })
 })
 
+describe('files held back as secrets', () => {
+  const ENV = 'diff --git a/.env b/.env\nnew file mode 100644\n--- /dev/null\n+++ b/.env\n@@ -0,0 +1 @@\n+MODE=production\n'
+  const NOTHING = JSON.stringify({ findings: [] })
+  /** The text of every request the stub received, whole. */
+  const requests = (fetchMock: ReturnType<typeof stubChat>): string[] => fetchMock.mock.calls.map(call => String(call[1].body))
+
+  it('exits 4 for a piped diff holding .env, sending none of it, with the left out and flag lines', async () => {
+    const fetchMock = stubChat(NOTHING)
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: `${ENV}${DIFF}` })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    for (const body of requests(fetchMock)) expect(body).not.toContain('MODE=production')
+    expect(requests(fetchMock)[0]).toContain('exec(cmd)')
+    expect(JSON.parse(stdout()).meta.leftOut).toEqual([
+      { file: '.env', reason: 'secret', rule: 'name' },
+    ])
+    expect(stderr()).toContain('\nleft out: 1 file(s): ".env" (secret: name)\n')
+    expect(stderr()).toContain('\nflag: secret-file at ".env" (named as a secret, so no model was sent any of it: check that it belongs in the change)\n')
+    expect(stderr()).toContain('\nincomplete: secret (no model was sent 1 file(s) held as secrets, listed in meta.leftOut)\n')
+  })
+
+  it('exits 4 for a piped diff whose only file is held, with no call', async () => {
+    const fetchMock = stubChat()
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: ENV })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(JSON.parse(stdout()).meta.incomplete).toEqual([
+      { profile: 'security', reason: 'secret', detail: 'no model was sent 1 file(s) held as secrets, listed in meta.leftOut' },
+    ])
+    expect(stderr()).toContain('\nleft out: 1 file(s): ".env" (secret: name)\n')
+  })
+
+  it('exits 0 for a piped diff that deletes .env whole', async () => {
+    const fetchMock = stubChat(NOTHING)
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: diffs.DELETED_SECRET })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    for (const body of requests(fetchMock)) expect(body).not.toContain('A=1')
+    expect(JSON.parse(stdout()).meta.leftOut).toEqual([
+      { file: '.env', reason: 'deleted-secret', rule: 'name' },
+    ])
+    expect(JSON.parse(stdout()).meta.incomplete).toEqual([])
+    expect(stderr()).toContain('\nleft out: 1 file(s): ".env" (deleted-secret: name)\n')
+    expect(stderr()).toContain('\nflag: secret-file at ".env" (deletes a file named as a secret, so no model was sent any of it: the history still holds the file, so rotate what it held)\n')
+    expect(stderr()).not.toContain('incomplete:')
+  })
+
+  it('keeps exit 4 for a held file under --allow-incomplete', async () => {
+    const fetchMock = stubChat(NOTHING)
+    const { io, stdout } = harness({
+      argv: ['--allow-incomplete'],
+      env: MODEL,
+      stdin: `${ENV}${DIFF}`,
+    })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(stdout()).meta.incomplete.map((entry: { reason: string }) => entry.reason)).toEqual(['secret'])
+  })
+
+  it('exits 4 for a piped diff that deletes a code file holding a key, echoing no piece of it', async () => {
+    const key = fakeCredential('github-token')
+    const removal = `diff --git a/src/authz.ts b/src/authz.ts\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/src/authz.ts\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-export const allowed = false\n-const k = '${key}'\n`
+    const fetchMock = stubChat(NOTHING)
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: `${removal}${DIFF}` })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    expect(JSON.parse(stdout()).meta.leftOut).toEqual([
+      { file: 'src/authz.ts', reason: 'secret', rule: 'github-token' },
+    ])
+    expect(stderr()).toContain('\nleft out: 1 file(s): "src/authz.ts" (secret: github-token)\n')
+    expect(stderr()).toContain('\nincomplete: secret (no model was sent 1 file(s) held as secrets, listed in meta.leftOut)\n')
+    const pieces = key.match(/.{1,8}/g) ?? []
+    expect(pieces.length).toBeGreaterThan(2)
+    for (const text of [
+      stdout(),
+      stderr(),
+      ...requests(fetchMock),
+    ]) {
+      for (const piece of pieces) expect(text).not.toContain(piece)
+    }
+    expect(requests(fetchMock).join('')).not.toContain('export const allowed')
+  })
+
+  it('exits 4 for a key in an ordinary file, echoing no piece of it', async () => {
+    const key = fakeCredential('stripe-key')
+    const stripe = `diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1,2 @@\n const a = 1\n+const k = '${key}'\n`
+    const fetchMock = stubChat(NOTHING)
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: `${stripe}${DIFF}` })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    expect(JSON.parse(stdout()).meta.leftOut).toEqual([
+      { file: 'src/app.js', reason: 'secret', rule: 'stripe-key' },
+    ])
+    expect(stderr()).toContain('\nleft out: 1 file(s): "src/app.js" (secret: stripe-key)\n')
+    const pieces = key.match(/.{1,8}/g) ?? []
+    expect(pieces.length).toBeGreaterThan(2)
+    for (const text of [
+      stdout(),
+      stderr(),
+      ...requests(fetchMock),
+    ]) {
+      for (const piece of pieces) expect(text).not.toContain(piece)
+    }
+  })
+})
+
 describe('the files a named config excludes', () => {
   it('leaves out the files the named config excludes, lists them, and calls no model when it excludes every file', async () => {
     const fetchMock = stubChat()
@@ -2231,7 +2336,7 @@ describe('the sources', () => {
     ])
   })
 
-  it('reviews --path with --no-default-skips, sending the secret to the models and flagging nothing', async () => {
+  it('reviews --path with --no-default-skips, the review holding back the secret the source now reads', async () => {
     const fetchMock = stubChat(JSON.stringify({ findings: [] }))
     const fake = pathGit()
     const { io, stdout, stderr } = harness({
@@ -2240,7 +2345,7 @@ describe('the sources', () => {
       git: fake.seam,
       platform: 'linux',
     })
-    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(await runCli(io)).toBe(EXIT.incomplete)
 
     const result = JSON.parse(stdout())
     expect(result.meta.source).toEqual({
@@ -2250,10 +2355,21 @@ describe('the sources', () => {
       skips: false,
       objectFormat: 'sha1',
     })
-    expect(result.meta.leftOut).toEqual([])
-    expect(result.meta.flags).toEqual([])
-    expect((sent(fetchMock).body.messages as Array<{ content: string }>)[1].content).toContain('+KEY=sk-live-1234')
-    expect(stderr()).not.toContain('secret-file')
+    expect(result.meta.leftOut).toEqual([
+      { file: 'src/.env', reason: 'secret', rule: 'name' },
+    ])
+    expect(result.meta.flags).toEqual([
+      {
+        code: 'secret-file',
+        file: 'src/.env',
+        detail: 'named as a secret, so no model was sent any of it: check that it belongs in the change',
+      },
+    ])
+    expect(sent(fetchMock).body.messages as Array<{ content: string }>).not.toContainEqual(expect.objectContaining({
+      content: expect.stringContaining('sk-live-1234'),
+    }))
+    expect((sent(fetchMock).body.messages as Array<{ content: string }>)[1].content).toContain('+export const a = 1')
+    expect(stderr()).toContain('left out: 1 file(s): "src/.env" (secret: name)\n')
     expect(fake.calls.find(call => call.command[0] === 'rev-parse' && call.command[1] === '--verify')?.command[4]).toBe('HEAD^{commit}')
   })
 

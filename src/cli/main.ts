@@ -255,8 +255,9 @@ export function interruptSignal(source: SignalSource, exit: (code: number) => vo
  *
  * Why so narrow: a pull request causes the other gaps directly (ADR-0012). It pads a hunk until no
  * research request holds it (`too-large`), floods the research with decoy findings past `maxFindings`, or
- * plants text that a voter refuses or that cuts its reply off or leaves it unusable, and one
- * `.gitattributes` line, one NUL byte or a submodule's bump leaves a file's change out of the diff.
+ * plants text that a voter refuses or that cuts its reply off or leaves it unusable, one
+ * `.gitattributes` line, one NUL byte or a submodule's bump leaves a file's change out of the diff, and
+ * a file named as a secret, or one that holds a credential, is held back from every request (`secret`).
  * The flag lifts only what the code names, so a reason added later is out of its reach by default,
  * and so is what a result built by hand or by an older quorum leaves unsaid: a failed vote with no
  * `failure`, a verdict whose `votes` is no array, a reason no quorum writes. A gating profile's

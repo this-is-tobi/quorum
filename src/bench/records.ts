@@ -17,6 +17,7 @@
 import { z } from 'zod'
 import { SKIP_RULES, sourceIssues } from '../core/inputs.ts'
 import { inertJsonLine } from '../core/sanitize.ts'
+import { SECRET_RULES } from '../core/secrets.ts'
 import type { QuorumResult, Usage } from '../core/types.ts'
 import { MAX_TRIALS, SUITE_ID } from './suite.ts'
 
@@ -159,6 +160,8 @@ const usage = z.strictObject({
 const coverageReason = z.enum([
   'binary',
   'submodule',
+  'secret',
+  'deleted-secret',
   'too-large',
   'request-too-large',
   'token-cap',
@@ -205,11 +208,12 @@ const incompleteEntry = z.strictObject({
     'review-deadline',
     'binary',
     'submodule',
+    'secret',
   ]),
   file: z.string().optional(),
   detail: z.string(),
 })
-/** A file left out: a rule belongs to a skipped file, and to none else. */
+/** A file left out: a rule belongs to a skipped or a held file, and to none else. */
 const leftOutFile = z.discriminatedUnion('reason', [
   z.strictObject({
     file: z.string(),
@@ -219,6 +223,11 @@ const leftOutFile = z.discriminatedUnion('reason', [
     file: z.string(),
     reason: z.literal('skipped'),
     rule: z.enum(SKIP_RULES),
+  }),
+  z.strictObject({
+    file: z.string(),
+    reason: z.enum(['secret', 'deleted-secret']),
+    rule: z.enum(SECRET_RULES),
   }),
 ])
 const objectFormat = z.enum(['sha1', 'sha256'])
