@@ -32,11 +32,58 @@ describe('verifyFindings', () => {
           category: 'CWE-78',
           summary: 'command injection',
           evidence: '-safe()\n+exec(cmd)',
+          evidenceRow: 1,
           quoteMatched: true,
         },
       ],
       invalid: [],
     })
+  })
+
+  it('names the evidence row that shows the cited line', () => {
+    expect(verifyFindings([reported], sections).findings[0].evidenceRow).toBe(1)
+  })
+
+  it('names no row when the cap cut the cited row or cut inside it, and names it when the cap cut only rows after it', () => {
+    const citing = (rows: string[], line: number) => verifyFindings([
+      { ...reported, file: 'm.js', line },
+    ], splitDiff([
+      'diff --git a/m.js b/m.js',
+      `@@ -0,0 +1,${rows.length} @@`,
+      ...rows.map(row => `+${row}`),
+    ].join('\n'))).findings[0]
+    const cutBefore = citing([
+      'a'.repeat(1500),
+      'b'.repeat(1500),
+      'cited()',
+    ], 3)
+    const cutInside = citing([
+      'x',
+      'c'.repeat(2500),
+    ], 2)
+    const cutAfter = citing([
+      'short()',
+      'd'.repeat(2500),
+    ], 1)
+    expect(Object.hasOwn(cutBefore, 'evidenceRow')).toBe(false)
+    expect(Object.hasOwn(cutInside, 'evidenceRow')).toBe(false)
+    expect(cutAfter.evidence.endsWith('\u2026')).toBe(true)
+    expect(cutAfter.evidenceRow).toBe(0)
+  })
+
+  it('leaves the key out when no row shows the line, so the JSON holds none', () => {
+    const removed = splitDiff([
+      'diff --git a/a.js b/a.js',
+      '@@ -5,2 +4,0 @@',
+      '-one()',
+      '-two()',
+    ].join('\n'))
+    const [finding] = verifyFindings([
+      { ...reported, file: 'a.js', line: 4 },
+    ], removed).findings
+    expect(finding.evidence).toBe('-one()\n-two()')
+    expect(Object.hasOwn(finding, 'evidenceRow')).toBe(false)
+    expect(JSON.stringify(finding)).not.toContain('evidenceRow')
   })
 
   it('resolves a shortened path to the diff\'s own path', () => {

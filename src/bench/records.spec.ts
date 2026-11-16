@@ -71,6 +71,27 @@ describe('parseRecord', () => {
     expect(parseRecord(withFailure({ kind: 'http', status: 503 }))).toBeDefined()
   })
 
+  it('reads a verdict with an evidenceRow, and refuses one that is not a whole number of at least 0', () => {
+    const withRow = (evidenceRow: unknown): string => JSON.stringify({
+      ...RECORD,
+      result: {
+        ...RESULT,
+        kept: [
+          { ...RESULT.kept[0], evidenceRow },
+        ],
+      },
+    })
+    expect(parseRecord(withRow(2))).toMatchObject({
+      result: {
+        kept: [
+          { evidenceRow: 2 },
+        ],
+      },
+    })
+    expect(parseRecord(withRow(-1))).toBeUndefined()
+    expect(parseRecord(withRow(1.5))).toBeUndefined()
+  })
+
   it.each<[string, string]>([
     ['text that is not JSON', '{'],
     ['an array', '[]'],

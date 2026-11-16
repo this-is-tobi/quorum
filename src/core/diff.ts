@@ -381,15 +381,21 @@ export interface FindingLocation {
    * carriage return is removed, and `\ No newline at end of file` markers are left out.
    */
   evidence: string
+  /**
+   * The index, from 0, of the row of `evidence` that shows `line`. Absent when no row shows it: a
+   * hunk that only deletes lines (`+c,0`) holds `c` for the code removed before it, and its rows are
+   * all removed lines.
+   */
+  row?: number
 }
 
 /**
  * Locate a finding in the diff: the diff's own path for the file, and the lines within two lines of
- * `line` in the hunk whose new-file range holds it. Undefined when the file is not in the diff,
- * `line` is not an integer, or no hunk shows the line (a hunk cut off short of the range its
- * header promises does not hold the lines it never shows), so a finding cannot cite code that is
- * not there. For removed code the finder cites the nearest surviving line, which a deletion-only
- * hunk (`+c,0`) holds at `c`.
+ * `line` in the hunk whose new-file range holds it, with the index of the row that shows `line`.
+ * Undefined when the file is not in the diff, `line` is not an integer, or no hunk shows the line
+ * (a hunk cut off short of the range its header promises does not hold the lines it never shows),
+ * so a finding cannot cite code that is not there. For removed code the finder cites the nearest
+ * surviving line, which a deletion-only hunk (`+c,0`) holds at `c`.
  */
 export function locate(sections: ReadonlyMap<string, string>, file: string, line: number): FindingLocation | undefined {
   if (!Number.isInteger(line)) return undefined
@@ -397,11 +403,16 @@ export function locate(sections: ReadonlyMap<string, string>, file: string, line
   if (!section) return undefined
   for (const hunk of hunksOf(sections, section.path, section.text)) {
     if (!holds(hunk, line)) continue
-    const center = hunk.rowOfLine[line - hunk.start] ?? 0
-    const rows = hunk.rows.slice(Math.max(0, center - EVIDENCE_RADIUS), center + EVIDENCE_RADIUS + 1)
+    const shown = hunk.rowOfLine[line - hunk.start]
+    const center = shown ?? 0
+    const first = Math.max(0, center - EVIDENCE_RADIUS)
+    const rows = hunk.rows.slice(first, center + EVIDENCE_RADIUS + 1)
     return {
       path: section.path,
       evidence: rows.join('\n'),
+      ...(shown === undefined
+        ? {}
+        : { row: center - first }),
     }
   }
   return undefined

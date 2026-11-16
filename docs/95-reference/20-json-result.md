@@ -24,6 +24,7 @@ Each list keeps the order in which the finder listed its findings, the first pro
 | `category` | string | The finder's category, cleaned and capped at 80 characters; the security profile asks for a CWE |
 | `summary` | string | The finder's claim, cleaned and capped at 500 characters |
 | `evidence` | string | The diff's lines around `line`, up to two on each side within its hunk, each with its `+`, `-` or space marker, read from the diff by the harness and capped at 2,000 characters |
+| `evidenceRow` | number | The index, from 0, of the row of `evidence` that shows `line`: a reader marks it and numbers the rows around it, a `+` or space row counting a new-file line and a `-` row none. The key is absent when no row shows the line, as for a hunk that only deletes lines, or when the evidence's cap of 2,000 characters cut that row |
 | `quoteMatched` | boolean | Whether the code the finder quoted appears in the evidence, once each evidence line's marker is removed and whitespace is collapsed on both sides; a quote that keeps its own `+` or `-` does not match. A measure of hallucinated citations |
 | `keptVotes` | number | The votes that kept the finding |
 | `totalVotes` | number | The votes asked for, one per lens, failed ones included |
@@ -248,6 +249,7 @@ A review of a diff that touches three files, run on the one provider, named `def
       "category": "CWE-89",
       "summary": "The id from the query string is interpolated into the SQL text.",
       "evidence": "-  return db.query('SELECT * FROM users WHERE id = $1', [id])\n+  const sql = `SELECT * FROM users WHERE id = ${id}`\n+  return db.query(sql)\n }",
+      "evidenceRow": 2,
       "quoteMatched": true,
       "keptVotes": 3,
       "totalVotes": 3,
@@ -292,6 +294,7 @@ A review of a diff that touches three files, run on the one provider, named `def
       "category": "CWE-22",
       "summary": "A file name from the request is joined into the upload path.",
       "evidence": "   const name = path.basename(file.name)\n+  fs.writeFileSync(path.join(UPLOADS, name), file.data)\n }",
+      "evidenceRow": 1,
       "quoteMatched": true,
       "keptVotes": 1,
       "totalVotes": 3,
@@ -335,6 +338,7 @@ A review of a diff that touches three files, run on the one provider, named `def
       "category": "CWE-338",
       "summary": "Session tokens come from Math.random, which is not a cryptographic generator.",
       "evidence": "-  return crypto.randomBytes(32).toString('hex')\n+  return Math.random().toString(36).slice(2)\n }",
+      "evidenceRow": 1,
       "quoteMatched": true,
       "keptVotes": 1,
       "totalVotes": 3,

@@ -1,4 +1,5 @@
 import { locate } from './diff.ts'
+import type { FindingLocation } from './diff.ts'
 import { stripHidden } from './sanitize.ts'
 import type { Finding, FindingDetails } from './types.ts'
 
@@ -30,7 +31,9 @@ const SCAN_FACTOR = 4
  * and a line inside one of its hunks, otherwise it is dropped with a reason. What reaches the
  * voters is then taken from the diff, never from the finder: the path is the diff's own, the
  * evidence is the diff's lines around the cited one, and the finder's quote is only compared with
- * them. The summary and category are the only finder-written text left, cleaned and capped.
+ * them. The summary and category are the only finder-written text left, cleaned and capped. The
+ * row of the evidence that shows the cited line is kept only when the cap left that row as
+ * `locate` read it, so a row cut short is never marked.
  */
 export function verifyFindings(details: readonly FindingDetails[], sections: ReadonlyMap<string, string>): { findings: VerifiedFinding[], invalid: string[] } {
   const findings: VerifiedFinding[] = []
@@ -48,16 +51,33 @@ export function verifyFindings(details: readonly FindingDetails[], sections: Rea
       invalid.push(`line ${detail.line} names no file`)
       continue
     }
+    const evidence = cap(located.evidence, MAX_EVIDENCE)
+    const evidenceRow = citedRow(located, evidence)
     findings.push({
       file,
       line: detail.line,
       category: plainText(detail.category, MAX_CATEGORY),
       summary: plainText(detail.summary, MAX_SUMMARY),
-      evidence: cap(located.evidence, MAX_EVIDENCE),
+      evidence,
+      ...(evidenceRow === undefined
+        ? {}
+        : { evidenceRow }),
       quoteMatched: quoteAppearsIn(located.evidence, detail.quote),
     })
   }
   return { findings, invalid }
+}
+
+/**
+ * The index of the row that shows the cited line in the capped evidence: `located.row`, unless no
+ * row shows the line or the cap cut that row, so the capped evidence's row at that index is not the
+ * row `locate` read.
+ */
+function citedRow(located: FindingLocation, capped: string): number | undefined {
+  if (located.row === undefined) return undefined
+  return capped.split('\n')[located.row] === located.evidence.split('\n')[located.row]
+    ? located.row
+    : undefined
 }
 
 const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim()

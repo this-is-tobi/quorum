@@ -67,6 +67,7 @@ jq '.kept[0]' result.json
   "category": "CWE-89",
   "summary": "The id from the query string is interpolated into the SQL text.",
   "evidence": "-  return db.query('SELECT * FROM users WHERE id = $1', [id])\n+  const sql = `SELECT * FROM users WHERE id = ${id}`\n+  return db.query(sql)\n }",
+  "evidenceRow": 2,
   "quoteMatched": true,
   "keptVotes": 3,
   "totalVotes": 3,

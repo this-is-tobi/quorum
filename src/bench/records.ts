@@ -137,6 +137,7 @@ const verdict = z.strictObject({
   category: z.string(),
   summary: z.string(),
   evidence: z.string(),
+  evidenceRow: count.optional(),
   quoteMatched: z.boolean(),
   keptVotes: count,
   totalVotes: count,

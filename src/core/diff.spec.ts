@@ -87,7 +87,7 @@ describe('splitDiff', () => {
     expect([
       ...sections.keys(),
     ]).toEqual(['src/a.js', 'lib/b.js'])
-    expect(locate(sections, 'lib/b.js', 2)).toEqual({ path: 'lib/b.js', evidence: ' keep\n-old b\n+new b' })
+    expect(locate(sections, 'lib/b.js', 2)).toEqual({ path: 'lib/b.js', evidence: ' keep\n-old b\n+new b', row: 2 })
     expect(locate(sections, 'not/in/diff.js', 2)).toBeUndefined()
     expect(locate(sections, 'src/z.js', 2)).toBeUndefined()
   })
@@ -140,7 +140,7 @@ describe('splitDiff', () => {
     expect([
       ...sections.keys(),
     ]).toEqual(['donn\u00E9es.js'])
-    expect(locate(sections, 'donn\u00E9es.js', 1)).toEqual({ path: 'donn\u00E9es.js', evidence: '-old()\n+new()' })
+    expect(locate(sections, 'donn\u00E9es.js', 1)).toEqual({ path: 'donn\u00E9es.js', evidence: '-old()\n+new()', row: 1 })
   })
 
   it('decodes the escapes for a quote, a backslash and the control characters', () => {
@@ -222,7 +222,7 @@ describe('splitDiff', () => {
     expect([
       ...sections.keys(),
     ]).toEqual(['foo b/src/auth.js', 'src/auth.js'])
-    expect(locate(sections, 'src/auth.js', 40)).toEqual({ path: 'src/auth.js', evidence: '-check(user)\n+skipCheck(user)' })
+    expect(locate(sections, 'src/auth.js', 40)).toEqual({ path: 'src/auth.js', evidence: '-check(user)\n+skipCheck(user)', row: 1 })
     expect(sectionFor(sections, 'auth.js')).toBeUndefined()
   })
 
@@ -411,8 +411,8 @@ describe('sectionFor', () => {
     ]).toEqual(['b/src/auth.js', 'src/auth.js'])
     expect(sectionFor(both, 'b/src/auth.js')?.path).toBe('b/src/auth.js')
     expect(sectionFor(both, 'src/auth.js')?.path).toBe('src/auth.js')
-    expect(locate(both, ' b/src/auth.js ', 40)).toEqual({ path: 'b/src/auth.js', evidence: '-check(user)\n+skipCheck(user)' })
-    expect(locate(both, 'src/auth.js', 40)).toEqual({ path: 'src/auth.js', evidence: '-check(user)\n+stillChecks(user)' })
+    expect(locate(both, ' b/src/auth.js ', 40)).toEqual({ path: 'b/src/auth.js', evidence: '-check(user)\n+skipCheck(user)', row: 1 })
+    expect(locate(both, 'src/auth.js', 40)).toEqual({ path: 'src/auth.js', evidence: '-check(user)\n+stillChecks(user)', row: 1 })
     expect(locate(both, 'a/src/auth.js', 40)?.path).toBe('src/auth.js')
     expect(diffSectionFor(both, 'b/src/auth.js', lookalike)).toContain('+skipCheck(user)')
     expect(diffSectionFor(both, 'b/src/auth.js', lookalike)).not.toContain('+stillChecks(user)')
@@ -428,7 +428,7 @@ describe('sectionFor', () => {
     expect(sectionFor(accented, 'donn\\303\\251es.js')?.path).toBe('donn\u00E9es.js')
     expect(sectionFor(accented, 'b/donn\\303\\251es.js')?.path).toBe('donn\u00E9es.js')
     expect(sectionFor(accented, '"b/donn\\303\\251es.js"')?.path).toBe('donn\u00E9es.js')
-    expect(locate(accented, 'donn\\303\\251es.js', 1)).toEqual({ path: 'donn\u00E9es.js', evidence: '-old()\n+new()' })
+    expect(locate(accented, 'donn\\303\\251es.js', 1)).toEqual({ path: 'donn\u00E9es.js', evidence: '-old()\n+new()', row: 1 })
   })
 
   it('does not trim a decoded name, so a name that starts with a tab is still found', () => {
@@ -616,11 +616,12 @@ describe('locate', () => {
         '+log(b)',
         ' exec(b)',
       ].join('\n'),
+      row: 2,
     })
   })
 
   it('finds the line in a later hunk and skips the no-newline marker', () => {
-    expect(locate(sections, 'src/a.js', 41)).toEqual({ path: 'src/a.js', evidence: '-old()\n+fresh()' })
+    expect(locate(sections, 'src/a.js', 41)).toEqual({ path: 'src/a.js', evidence: '-old()\n+fresh()', row: 1 })
   })
 
   it('accepts a context line', () => {
@@ -629,6 +630,28 @@ describe('locate', () => {
 
   it('resolves a shortened path and reads a deletion-only hunk at the surviving line', () => {
     expect(locate(sections, 'b.js', 4)).toEqual({ path: 'lib/b.js', evidence: '-gone()\n-alsoGone()' })
+  })
+
+  it.each([
+    [1, 0],
+    [2, 1],
+    [3, 2],
+    [5, 2],
+  ])('names the row that shows line %i as row %i of the evidence', (line, row) => {
+    const added = splitDiff([
+      'diff --git a/n.js b/n.js',
+      '@@ -0,0 +1,5 @@',
+      '+l1',
+      '+l2',
+      '+l3',
+      '+l4',
+      '+l5',
+    ].join('\n'))
+    expect(locate(added, 'n.js', line)?.row).toBe(row)
+  })
+
+  it('leaves row out for a deletion-only hunk, whose rows are all removed lines', () => {
+    expect(Object.hasOwn(locate(sections, 'b.js', 4)!, 'row')).toBe(false)
   })
 
   it('returns undefined for a line outside every hunk', () => {
@@ -699,12 +722,12 @@ describe('locate', () => {
       '-x',
       '+y',
     ].join('\r\n')
-    expect(locate(splitDiff(crlf), 'a.js', 1)).toEqual({ path: 'a.js', evidence: '-x\n+y' })
+    expect(locate(splitDiff(crlf), 'a.js', 1)).toEqual({ path: 'a.js', evidence: '-x\n+y', row: 1 })
   })
 
   it('reads a plain unified diff through its single unkeyed section', () => {
     const plain = '--- a.js\n+++ a.js\n@@ -1 +1 @@\n-x\n+y'
-    expect(locate(splitDiff(plain), 'a.js', 1)).toEqual({ path: '', evidence: '-x\n+y' })
+    expect(locate(splitDiff(plain), 'a.js', 1)).toEqual({ path: '', evidence: '-x\n+y', row: 1 })
   })
 
   it('returns undefined for a line a cut-off hunk promised but never shows', () => {
@@ -732,7 +755,7 @@ describe('locate', () => {
     ].join('\n')
     const repeated = splitDiff(series)
     expect(locate(repeated, 'a.js', 2)).toBeUndefined()
-    expect(locate(repeated, 'a.js', 20)).toEqual({ path: 'a.js', evidence: '-old()\n+new()' })
+    expect(locate(repeated, 'a.js', 20)).toEqual({ path: 'a.js', evidence: '-old()\n+new()', row: 1 })
   })
 
   it('does not absorb the next file header into a cut-off hunk', () => {
@@ -743,7 +766,7 @@ describe('locate', () => {
       'diff --git a/b.js b/b.js',
       '+++ b/b.js',
     ].join('\n')
-    expect(locate(splitDiff(truncated), 'a.js', 1)).toEqual({ path: 'a.js', evidence: ' keep()' })
+    expect(locate(splitDiff(truncated), 'a.js', 1)).toEqual({ path: 'a.js', evidence: ' keep()', row: 0 })
   })
 
   it('locates a thousand findings in one large file in linear time', () => {
