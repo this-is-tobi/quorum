@@ -322,7 +322,7 @@ const { status, exitCode, lifted } = outcome(result, { allowIncomplete: true })
 ```ts
 declare function renderReport(result: QuorumResult, options: ReportOptions): string
 
-type ReportFormat = 'json' | 'brief'
+type ReportFormat = 'text' | 'json' | 'brief'
 
 interface ReportOptions {
   readonly format: ReportFormat
@@ -333,9 +333,9 @@ interface ReportOptions {
 
 `renderReport` writes a review's result as the report the CLI writes on stdout, a text that ends in a line feed: [The report](../20-using/10-cli.md#the-report). It reads the result, as `review` returns it, and the options, and nothing else: no terminal, no environment, no file.
 
-- **`format`** is `json`, the result as `inertJson` writes it, or `brief`, one line of counts and code words that holds no file name and no model text. Any other value throws a `ConfigError` at `format`: `format: must be json or brief`.
-- **`color`** is `false` unless it is `true`. Only a report made for a terminal colors, and neither `json` nor `brief` does, so for now it changes nothing.
-- **`outcome`** is what the report says the review came to, which `brief` states as its status and its exit code. Pass the one your program exits with: when it is absent, `renderReport` computes `outcome(result)`, which lifts nothing. A program that calls `outcome(result, { allowIncomplete: true })` for its exit code passes that, so the report and the code say the same.
+- **`format`** is `text`, the report for a person, `json`, the result as `inertJson` writes it, or `brief`, one line of counts and code words that holds no file name and no model text. Any other value throws a `ConfigError` at `format`: `format: must be text, json or brief`. `text` has the findings with their evidence, each profile's counts and coverage, what was left out, the gaps, the flags, the time and the tokens, and last the verdict, as [The text report](../20-using/10-cli.md#the-text-report) shows: every line is `inertLine` of its text, 80 columns wide but for a path, a category or a row of code.
+- **`color`** is `false` unless it is `true`. `text` is the one format that colors: with `true` it wraps the level, the location, the cited row's marker, a row's `+` or `-` and the verdict's status word in SGR sequences, never a word a model or the diff wrote, and a line whose text `inertLine` changes beyond its hidden characters is written uncolored. `json` and `brief` never color. The CLI colors on a terminal unless `NO_COLOR` is set, which `renderReport` does not read: it reads no environment, so the choice is yours.
+- **`outcome`** is what the report says the review came to, which `text` states as its last line and `brief` as its status and its exit code. Pass the one your program exits with: when it is absent, `renderReport` computes `outcome(result)`, which lifts nothing. A program that calls `outcome(result, { allowIncomplete: true })` for its exit code passes that, so the report and the code say the same.
 
 ```ts
 import { outcome, renderReport } from '@tobi-or-not/quorum'
@@ -615,7 +615,7 @@ The warnings, each but the first two starting at the path it is about:
 | `presets` | The presets, frozen: [Presets](../20-using/30-providers.md#presets) |
 | `readSource` | Read the diff, its source and the files it left out, from a diff, a range, the local changes or the files at a commit: [`readSource`](#readsource) |
 | `outcome` | What a review comes to, its status and the exit code that says it: [`outcome`](#outcome) |
-| `renderReport` | Write a result as the report the CLI writes, in the format `json` or `brief`: [`renderReport`](#renderreport) |
+| `renderReport` | Write a result as the report the CLI writes, in the format `text`, `json` or `brief`: [`renderReport`](#renderreport) |
 | `QuorumError`, `ConfigError`, `ProviderError`, `OutputError`, `GitError` | The error classes |
 | `inertLine`, `inertJson` | Render a line for a terminal or a log, and a value as JSON, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |

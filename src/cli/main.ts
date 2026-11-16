@@ -47,7 +47,8 @@ const USAGE = [
   '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
-  '  -f, --format <format>    Write the report on stdout in this format: json or brief; json by default',
+  '  -f, --format <format>    Write the report on stdout in this format: text, json or brief; text on a terminal, else json',
+  '      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
   '  -v, --version            Print the version and exit',
@@ -69,6 +70,7 @@ const OPTIONS = {
   'allow-incomplete': { type: 'boolean' },
   'fail-on': { type: 'string', multiple: true },
   format: { type: 'string', short: 'f', multiple: true },
+  color: { type: 'string', multiple: true },
   'print-config': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
   version: { type: 'boolean', short: 'v' },
@@ -106,7 +108,7 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * local changes print no estimate and are never gated, since their size is the change's.
  *
  * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`, `--path`,
- * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--fail-on`, `--format`, `--print-config`,
+ * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--fail-on`, `--format`, `--color`, `--print-config`,
  * `--help` and `--version`; a usage error prints the usage after its message. Its settings are the config file `--config` or `QUORUM_CONFIG`
  * names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the `QUORUM_*`
  * variables of `io.env` with their deprecated aliases. Each warning is printed once, before the banner, and
@@ -129,10 +131,13 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * refused with the configuration, before any call, so `--print-config` and `meta.profiles` show the levels the
  * run uses.
  *
- * `--format <format>` (`-f`) names the report stdout carries: `json`, the JSON result and the default, or `brief`, one
- * line of counts (see `renderReport`). It takes one format, is a usage error for any other and with `--print-config`,
- * which writes YAML, and is checked before the source and any config (`reportPlan`). Every format says what the exit
- * code says, from the one `outcome` the exit code is made of.
+ * `--format <format>` (`-f`) names the report stdout carries: `text`, the report for a person, `json`, the JSON result, or
+ * `brief`, one line of counts (see `renderReport`). With no `--format` it is `text` when stdout is a terminal and `json` when
+ * it is a pipe or a file, and stdin plays no part: a program that reads the result names `-f json`. `--color <when>` colors
+ * the text report, and no other: `auto`, the default, when stdout is a terminal and `NO_COLOR` is unset or empty, `always`
+ * or `never` alone (see `colorFor`). Each takes one value, is a usage error for any other, and `--format` is one with
+ * `--print-config`, which writes YAML; both are checked before the source and any config (`reportPlan`). Every format says
+ * what the exit code says, from the one `outcome` the exit code is made of.
  *
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
  * error ended the review, and writes no result. A review that has already resolved is complete.
@@ -141,7 +146,8 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * code is returned, before any review flag is read. A file named `bench` is reviewed as `quorum ./bench`.
  *
  * Everything the CLI writes is inert (invariant I3): each stderr line passes through `inertLine`, and
- * each report through its reporter, `json` through `inertJson` and `brief` through `inertLine`.
+ * each report through its reporter, `json` through `inertJson`, `brief` and `text` through `inertLine`, and `text`'s color
+ * around the words quorum wrote alone.
  */
 export async function runCli(io: CliIO): Promise<number> {
   if (io.argv[0] === 'bench') return runBench(io, io.argv.slice(1))

@@ -3,6 +3,8 @@ import { inertJson } from '../core/sanitize.ts'
 import { LIFTED, reportResult } from '../testing/report.ts'
 import { renderReport } from './registry.ts'
 
+const ESC = String.fromCharCode(0x1B)
+
 describe('renderReport', () => {
   it('renders json as inertJson writes the result, then a line feed', () => {
     const result = reportResult()
@@ -12,11 +14,19 @@ describe('renderReport', () => {
   it('refuses a format it does not know, naming the formats', () => {
     expect(() => renderReport(reportResult(), { format: 'xml' } as never)).toThrow(expect.objectContaining({
       name: 'ConfigError',
-      message: 'format: must be json or brief',
+      message: 'format: must be text, json or brief',
       issues: [
-        { path: 'format', message: 'must be json or brief' },
+        { path: 'format', message: 'must be text, json or brief' },
       ],
     }))
+  })
+
+  it('colors the text report when asked and no other format, and nothing unless asked', () => {
+    const result = reportResult()
+    expect(renderReport(result, { format: 'text' })).not.toContain(ESC)
+    expect(renderReport(result, { format: 'text', color: true })).toContain(`${ESC}[1;31mHIGH${ESC}[0m`)
+    expect(renderReport(result, { format: 'json', color: true })).toBe(renderReport(result, { format: 'json' }))
+    expect(renderReport(result, { format: 'brief', color: true })).toBe(renderReport(result, { format: 'brief' }))
   })
 
   it('computes the outcome when none is given, and renders the one given', () => {

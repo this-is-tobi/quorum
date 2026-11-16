@@ -85,7 +85,7 @@ The binary holds the Bun runtime, so it needs neither Bun nor Node, and, like th
 
 Each release also publishes an image for `linux/amd64` and `linux/arm64`, `ghcr.io/this-is-tobi/quorum`, tagged with the release's version without its `v`, `0.2.0` for `v0.2.0`, with its minor and major, `0.2` and `0`, and with `latest`. Pin a version rather than `latest`, and replace `<version>` below with it. The image holds a binary compiled the same way, from the same commit, and nothing else: no shell, no `claude` CLI, so a `claude-code` provider does not run in it. Its build stage compiles that binary again, for the image's architecture, so its bytes are not those of the release asset, and `SHA256SUMS` does not list it: check the image against its attestation, below. It runs as the distroless `nonroot` user, uid 65532, in the working directory `/work`, and, like the binary, reads no `.env` and no `bunfig.toml` from it.
 
-The diff arrives on stdin, which `docker run` forwards only with `-i`: without it the container gets an empty stdin, which quorum reviews as an empty diff and passes with exit `0`, so a CI job passes having reviewed nothing. Always pass `-i` when the diff comes on stdin. The result goes to stdout, and the settings are the `QUORUM_*` variables, passed with `-e`:
+The diff arrives on stdin, which `docker run` forwards only with `-i`: without it the container gets an empty stdin, which quorum reviews as an empty diff and passes with exit `0`, so a CI job passes having reviewed nothing. Always pass `-i` when the diff comes on stdin, and never `-t`: with `-t` Docker gives the container a terminal, so stdout is one inside it and quorum writes the text report where the redirection below expects the JSON result. If a terminal cannot be avoided, pass `-f json` after the image name. The report goes to stdout, JSON when stdout is no terminal, and the settings are the `QUORUM_*` variables, passed with `-e`:
 
 ```bash
 docker run --rm -i \
@@ -181,7 +181,8 @@ Options:
       --send <path>        Send a file held as a secret to the models all the same; repeat it to send several
       --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx
       --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile
-  -f, --format <format>    Write the report on stdout in this format: json or brief; json by default
+  -f, --format <format>    Write the report on stdout in this format: text, json or brief; text on a terminal, else json
+      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never
       --print-config       Print the resolved config, keys redacted, and exit
   -h, --help               Print this help and exit
   -v, --version            Print the version and exit

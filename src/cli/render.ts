@@ -3,10 +3,11 @@ import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider } from '../config/schema.ts'
 import type { EventSink, Provider } from '../core/ports.ts'
 import { inertLine } from '../core/sanitize.ts'
-import type { Estimate, Flag, LeftOutFile, QuorumEvent } from '../core/types.ts'
+import type { Estimate, LeftOutFile, QuorumEvent } from '../core/types.ts'
 import { isClaudeCode } from '../providers/build.ts'
 import { originOf } from '../providers/http.ts'
 import { presetOf } from '../providers/presets.ts'
+import { flagWhere, leftOutEntry } from '../report/lines.ts'
 
 /**
  * The progress line of an event, or undefined for the events the CLI keeps quiet about. These lines
@@ -44,7 +45,7 @@ function progressLine(event: QuorumEvent, prefixed: boolean): string | undefined
     case 'left-out':
       return leftOutLine(event.files)
     case 'flag':
-      return `flag: ${event.flag.code}${where(event.flag)} (${event.flag.detail})`
+      return `flag: ${event.flag.code}${flagWhere(event.flag)} (${event.flag.detail})`
     case 'run:end':
       return `${event.kept} kept, ${event.discarded} discarded, ${event.unreviewed} unreviewed by panel`
     default:
@@ -53,31 +54,15 @@ function progressLine(event: QuorumEvent, prefixed: boolean): string | undefined
 }
 
 /**
- * The line that names the files a review left out: their count, the first `LISTED_FILES` of them as
- * `<file> (<reason>)`, a skipped or a held one as `<file> (<reason>: <rule>)`, then how many more. A file is
- * a JSON string, as a flag's is; the empty name, which stands for a part of the diff no header names, is
- * `<no path>`.
+ * The line that names the files a review left out: their count, then the first `LISTED_FILES` of them as
+ * `leftOutEntry` writes them, then how many more.
  */
 function leftOutLine(files: readonly LeftOutFile[]): string {
-  const named = (file: string): string => file === ''
-    ? '<no path>'
-    : JSON.stringify(file)
-  const reasonOf = (entry: LeftOutFile): string => 'rule' in entry
-    ? `${entry.reason}: ${entry.rule}`
-    : entry.reason
-  const entries = files.slice(0, LISTED_FILES).map(entry => `${named(entry.file)} (${reasonOf(entry)})`)
+  const entries = files.slice(0, LISTED_FILES).map(leftOutEntry)
   const more = files.length > LISTED_FILES
     ? ` and ${files.length - LISTED_FILES} more`
     : ''
   return `left out: ${files.length} file(s): ${entries.join(', ')}${more}`
-}
-
-/** Where a flag points: the file as a JSON string, with the line when it has one, else the line alone. */
-function where({ file, line }: Flag): string {
-  if (file !== undefined && line !== undefined) return ` at ${JSON.stringify(file)}:${line}`
-  if (file !== undefined) return ` at ${JSON.stringify(file)}`
-  if (line !== undefined) return ` at line ${line}`
-  return ''
 }
 
 /**

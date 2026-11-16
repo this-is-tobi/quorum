@@ -29,7 +29,8 @@ export interface CliIO {
   /** Environment variables, e.g. `process.env`. */
   env: Env
   stdin: AsyncIterable<Uint8Array | string> & { isTTY?: boolean }
-  stdout: { write: (text: string) => unknown }
+  /** Where the report goes; `isTTY` is `true` on a terminal and absent on a pipe and a file, which is how the CLI chooses its format and its color. */
+  stdout: { write: (text: string) => unknown, readonly isTTY?: boolean }
   stderr: { write: (text: string) => unknown }
   /** The review's signal: once it is aborted, a run that ends without a result exits 130. */
   readonly signal?: AbortSignal
