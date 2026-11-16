@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -9,7 +9,7 @@ import { ConfigError } from '../core/errors.ts'
 import { addedDiff } from '../sources/added.ts'
 import { readSource } from '../sources/read.ts'
 import { gitEnvironment, GitError, GLOBAL_PINS, openRepository } from './run.ts'
-import type { GitContext, Repository, SpawnGit } from './run.ts'
+import type { GitContext, SpawnGit } from './run.ts'
 import { listTree, readBlobs } from './tree.ts'
 import type { TreeEntry } from './tree.ts'
 
@@ -196,7 +196,7 @@ function makeHostile(ws: Workspace, repo: string): void {
 
 const text = (bytes: Uint8Array | undefined): string => Buffer.from(bytes ?? []).toString('utf8')
 
-async function refusal(promise: Promise<Repository>): Promise<string> {
+async function refusal(promise: Promise<unknown>): Promise<string> {
   const error: unknown = await promise.then(() => undefined, (caught: unknown) => caught)
   expect(error).toBeInstanceOf(ConfigError)
   return (error as ConfigError).message
@@ -658,5 +658,101 @@ describe('the real git', { concurrent: false, timeout: 30_000 }, () => {
     }
     // Only the two files longer than a hunk differ, and by their hunk headers.
     expect(cut).toEqual(['zz-lines', 'zz-long'])
+  })
+
+  it('reads the filter keys\' scope through an include, and refuses the local source of a repository whose own config names one', async () => {
+    const ws = workspace()
+    const bin = join(ws.root, 'bin')
+    // The user's global config includes a file naming a filter: its keys are the user's own.
+    const globalFilters = join(ws.root, 'global-filters.config')
+    writeFileSync(globalFilters, `[filter "lfs"]\n\tclean = "${program(ws, bin, 'global-clean')}"\n`)
+    const globalConfig = join(ws.root, 'global.config')
+    writeFileSync(globalConfig, `[include]\n\tpath = ${globalFilters}\n`)
+    const env = { ...ws.env, GIT_CONFIG_GLOBAL: globalConfig }
+    const source = (cwd: string, trustRepoConfig?: boolean): ReturnType<typeof readSource> => readSource({ kind: 'local', trustRepoConfig }, {
+      cwd,
+      env,
+      platform: process.platform,
+    })
+
+    // The repository's own config includes one too, and its attributes send a tracked file to it.
+    const repo = init(ws, 'repo')
+    commit(ws, repo, { 'a.dat': 'one\n' }, 'base')
+    const localFilters = join(ws.root, 'local-filters.config')
+    writeFileSync(localFilters, `[filter "evil"]\n\tclean = "${program(ws, bin, 'clean')}"\n\tsmudge = "${program(ws, bin, 'smudge')}"\n`)
+    appendFileSync(join(repo, '.git', 'config'), `[include]\n\tpath = ${localFilters}\n`)
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '*.dat filter=evil\n')
+    writeFileSync(join(repo, 'a.dat'), 'two\n')
+
+    // The control: a plain git diff runs the filter.
+    spawnSync(GIT as string, ['--no-pager', 'diff'], { cwd: repo, env })
+    expect(new Set(ran(ws))).toEqual(new Set(['clean']))
+    rmSync(ws.log)
+
+    const repository = await openRepository(contextOf(ws, repo, { env, flag: '--local' }))
+    await expect(repository.filterConfig()).resolves.toEqual([
+      { scope: 'global', key: 'filter.lfs.clean' },
+      { scope: 'local', key: 'filter.evil.clean' },
+      { scope: 'local', key: 'filter.evil.smudge' },
+    ])
+    expect(await refusal(source(repo))).toBe('--local: the repository\'s own config names a filter program, which a working-tree diff runs: pass --trust-repo-config if the repository is yours, or review a range')
+    expect(await refusal(readSource({ kind: 'staged' }, { cwd: repo, env, platform: process.platform }))).toBe('--staged: the repository\'s own config names a filter program, which a working-tree diff runs: pass --trust-repo-config if the repository is yours, or review a range')
+    expect(ran(ws)).toEqual([])
+
+    // What the flag says: the repository is the user's, and its filter runs.
+    await expect(source(repo, true)).resolves.toMatchObject({
+      source: { kind: 'local' },
+    })
+    expect(new Set(ran(ws))).toEqual(new Set(['clean']))
+
+    // A filter of the user's own global config alone runs as with their git, with no flag.
+    const plain = init(ws, 'plain')
+    commit(ws, plain, { 'b.txt': 'b\n' }, 'base')
+    await expect(source(plain)).resolves.toMatchObject({
+      diff: '',
+      source: { kind: 'local' },
+    })
+  })
+
+  it('lists untracked links as single entries, never following them, and writes each as git add -A would', async () => {
+    const ws = workspace()
+    const repo = init(ws, 'links')
+    const head = commit(ws, repo, { 'tracked.txt': 'tracked\n' }, 'base')
+    writeFileSync(join(repo, 'real.txt'), 'x\n')
+    mkdirSync(join(repo, 'sub'))
+    writeFileSync(join(repo, 'sub', 'inner.txt'), 'inner\n')
+    symlinkSync('real.txt', join(repo, 'to-file'))
+    symlinkSync('/etc', join(repo, 'to-etc'))
+    symlinkSync('sub', join(repo, 'to-dir'))
+    symlinkSync('missing-target', join(repo, 'dangling'))
+
+    const repository = await openRepository(contextOf(ws, repo, { flag: '--local' }))
+    expect((await repository.untracked())?.map(name => text(name))).toEqual([
+      'dangling',
+      'real.txt',
+      'sub/inner.txt',
+      'to-dir',
+      'to-etc',
+      'to-file',
+    ])
+
+    const read = await readSource({ kind: 'local' }, { cwd: repo, env: ws.env, platform: process.platform })
+    expect(read.source).toEqual({ kind: 'local', head, objectFormat: 'sha1' })
+    expect(read.leftOut).toEqual([])
+    // Each link is a row of its target, and nothing of what it names is read: no line of /etc.
+    expect(read.diff.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++'))).toEqual([
+      '+missing-target',
+      '+x',
+      '+inner',
+      '+sub',
+      '+/etc',
+      '+real.txt',
+    ])
+    expect(read.diff).toContain('diff --git a/to-etc b/to-etc\nnew file mode 120000\n--- /dev/null\n+++ b/to-etc\n@@ -0,0 +1 @@\n+/etc\n\\ No newline at end of file\n')
+
+    // The control: git add -A commits the same sections, each with an index line more.
+    ws.git(repo, 'add', '-A')
+    const theirs = ws.git(repo, 'diff', '--cached', '--no-renames').split('\n').filter(line => !line.startsWith('index '))
+    expect(read.diff).toBe(`${theirs.join('\n')}\n`)
   })
 })
