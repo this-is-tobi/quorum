@@ -78,7 +78,7 @@ The summary is the text `-f markdown` writes, without its last line feed, whole:
 | `side` | `RIGHT` | Always the new file's side |
 | `body` | string | The text to post, below |
 
-A finding is a comment when its file is a non-empty path of its profile's coverage, a file of the diff. The comments go by file, then line, as the text report orders its findings.
+A finding is a comment when its file is a clean relative path of its profile's coverage, a file of the diff: no leading `/`, and no empty, `.` or `..` segment. The comments go by file, then line, as the text report orders its findings.
 
 **The body** is four lines, the third blank, with no line feed after the last:
 
@@ -98,7 +98,7 @@ A finding is a comment when its file is a non-empty path of its profile's covera
 
 ## `unplaced`
 
-`unplaced` counts the kept and unreviewed findings with no line comment, since their file is no file of the diff. A diff with no per-file headers, such as a plain `diff` of two trees, has findings that carry the finder's name for the file, not a path. The summary lists each of them, so none is lost; the count tells the Action how many comments it cannot post.
+`unplaced` counts the kept and unreviewed findings with no line comment, in two cases: their file is no file of the diff, or it is a path that is not a clean relative path (it starts with `/`, or has an empty, `.` or `..` segment, as `a//b.js` has), which a diff's author can write and which no comment's path may be. A diff with no per-file headers, such as a plain `diff` of two trees, has findings that carry the finder's name for the file, not a path. The summary lists each of them, so none is lost; the count tells the Action how many comments it cannot post.
 
 ## What `quorum-action` owns
 

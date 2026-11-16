@@ -5,7 +5,7 @@ import { PROFILE_ID_PATTERN } from '../core/profile.ts'
 import { FINGERPRINT_PATTERN } from '../core/stages/research.ts'
 import type { PublicView, QuorumResult, ReviewSource, Verdict } from '../core/types.ts'
 import { codeFree, expectCodeWritten, HOSTILE, RLO } from '../testing/markdown.ts'
-import { blankResult, FINDINGS, INCOMPLETE, LIFTED, PASS, RANGE, reportResult, SQL, TOKEN } from '../testing/report.ts'
+import { blankResult, cast, FINDINGS, INCOMPLETE, LIFTED, PASS, RANGE, reportResult, SQL, TOKEN } from '../testing/report.ts'
 import { summaryMarkdown } from './markdown.ts'
 import { commentBody, payload } from './payload.ts'
 import { publicView } from './view.ts'
@@ -119,6 +119,85 @@ describe('payload', () => {
     expect(comments).toEqual([])
     expect(unplaced).toBe(1)
     expect(summary).toContain('- **HIGH** security · `the finder\'s name` line 42')
+  })
+
+  it('counts a finding on a path that is not a clean relative path as unplaced, with no comment', () => {
+    const files = [
+      '/abs/x.js',
+      'a//b.js',
+      '../x.js',
+      'a/./b.js',
+    ]
+    const result = reportResult({
+      kept: files.map(file => ({ ...SQL, file })),
+      unreviewed: [],
+    })
+    result.meta.profiles.security.coverage = files.map(file => ({ file, status: 'reviewed' }))
+    const { comments, unplaced } = document(result)
+    expect(comments).toEqual([])
+    expect(unplaced).toBe(4)
+  })
+
+  it('counts a finding on an empty file, or on a file its profile has no coverage entry for, as unplaced', () => {
+    const result = reportResult({
+      kept: [
+        { ...SQL, file: '' },
+        { ...SQL, file: 'src/auth/login.ts', fingerprint: 'f1f1f1f1f1f1f1f1:1' },
+        { ...SQL, file: 'src/other.ts', fingerprint: 'f2f2f2f2f2f2f2f2:1' },
+      ],
+      unreviewed: [],
+    })
+    result.meta.profiles.security.coverage = [
+      { file: '', status: 'reviewed' },
+      { file: 'src/auth/login.ts', status: 'reviewed' },
+    ]
+    const { comments, unplaced } = document(result)
+    expect(comments.map(({ path, fingerprint }) => `${path} ${fingerprint}`)).toEqual(['src/auth/login.ts f1f1f1f1f1f1f1f1:1'])
+    expect(unplaced).toBe(2)
+  })
+
+  it('keeps line 0 as 0, and puts a kept finding before an unreviewed one at one file and line', () => {
+    const at = (verdict: Verdict, fingerprint: string): Verdict => ({
+      ...verdict,
+      file: 'src/a.ts',
+      line: 0,
+      fingerprint,
+    })
+    const result = reportResult({
+      kept: [
+        at(SQL, 'a1a1a1a1a1a1a1a1:1'),
+      ],
+      unreviewed: [
+        at(TOKEN, 'b2b2b2b2b2b2b2b2:1'),
+      ],
+    })
+    result.meta.profiles.security.coverage = [
+      { file: 'src/a.ts', status: 'reviewed' },
+    ]
+    const { comments } = document(result)
+    expect(comments.map(({ fingerprint, line, confidence }) => [fingerprint, line, confidence])).toEqual([
+      ['a1a1a1a1a1a1a1a1:1', 0, 'high'],
+      ['b2b2b2b2b2b2b2b2:1', 0, 'unreviewed'],
+    ])
+  })
+
+  it('writes the payload of a full result as that of its view, with no reasoning', () => {
+    const result = reportResult({
+      kept: [
+        {
+          ...SQL,
+          votes: [
+            {
+              ...cast(true),
+              vote: { keep: true, reasoning: 'REASONING-CANARY' },
+            },
+          ],
+        },
+      ],
+    })
+    const written = render(result)
+    expect(written).toBe(render(publicView(result)))
+    expect(written).not.toContain('REASONING-CANARY')
   })
 
   it.each<[string, ReviewSource, string | null]>([

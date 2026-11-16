@@ -6,10 +6,18 @@ import { json } from './json.ts'
 import { markdown } from './markdown.ts'
 import { payload } from './payload.ts'
 import type { Reporter, ReportInput } from './reporter.ts'
+import { sarif } from './sarif.ts'
 import { text } from './text.ts'
 
 /** The reporters by name, in the order the messages list them. A new one is a module and a line here. */
-export const REPORTERS = { text, json, brief, markdown, payload } as const satisfies Readonly<Record<string, Reporter>>
+export const REPORTERS = {
+  text,
+  json,
+  brief,
+  markdown,
+  payload,
+  sarif,
+} as const satisfies Readonly<Record<string, Reporter>>
 
 /** The name of a reporter: what `--format` takes and `renderReport` renders. */
 export type ReportFormat = keyof typeof REPORTERS
@@ -22,7 +30,7 @@ export function isReportFormat(name: unknown): name is ReportFormat {
   return typeof name === 'string' && Object.hasOwn(REPORTERS, name)
 }
 
-/** The formats as a message lists them: `, ` between them and ` or ` before the last, as `text, json, brief, markdown or payload`. */
+/** The formats as a message lists them: `, ` between them and ` or ` before the last, as `text, json, brief, markdown, payload or sarif`. */
 export function formatWords(): string {
   const last = REPORT_FORMATS.at(-1)
   return REPORT_FORMATS.length < 2

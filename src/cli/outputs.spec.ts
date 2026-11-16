@@ -139,13 +139,13 @@ describe('reportPlan', () => {
       {
         format: ['xml'],
       },
-      '--format: must be text, json, brief, markdown or payload',
+      '--format: must be text, json, brief, markdown, payload or sarif',
     ],
     [
       {
         format: ['toString'],
       },
-      '--format: must be text, json, brief, markdown or payload',
+      '--format: must be text, json, brief, markdown, payload or sarif',
     ],
     [
       {
@@ -205,31 +205,31 @@ describe('reportPlan', () => {
   it.each<[string[], string]>([
     [
       ['json'],
-      '--output: must be written <format>=<path>, the format text, json, brief, markdown or payload',
+      '--output: must be written <format>=<path>, the format text, json, brief, markdown, payload or sarif',
     ],
     [
       ['=a.json'],
-      '--output: must be written <format>=<path>, the format text, json, brief, markdown or payload',
+      '--output: must be written <format>=<path>, the format text, json, brief, markdown, payload or sarif',
     ],
     [
       ['xml=a.json'],
-      '--output: must be written <format>=<path>, the format text, json, brief, markdown or payload',
+      '--output: must be written <format>=<path>, the format text, json, brief, markdown, payload or sarif',
     ],
     [
       ['json='],
-      '--output: must be written <format>=<path>, the format text, json, brief, markdown or payload',
+      '--output: must be written <format>=<path>, the format text, json, brief, markdown, payload or sarif',
     ],
     [
       ['json=-'],
-      '--output: must be written <format>=<path>, the format text, json, brief, markdown or payload',
+      '--output: must be written <format>=<path>, the format text, json, brief, markdown, payload or sarif',
     ],
     [
       ['json=fresh/'],
-      '--output: must be written <format>=<path>, the format text, json, brief, markdown or payload',
+      '--output: must be written <format>=<path>, the format text, json, brief, markdown, payload or sarif',
     ],
     [
       ['brief=out/fresh\\'],
-      '--output: must be written <format>=<path>, the format text, json, brief, markdown or payload',
+      '--output: must be written <format>=<path>, the format text, json, brief, markdown, payload or sarif',
     ],
     [
       ['json=a.json', 'text=./a.json'],
