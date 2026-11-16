@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.6.0](https://github.com/this-is-tobi/quorum/compare/v0.5.0...v0.6.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* a diff holding such a file, which 0.5.0 sent whole, now ends incomplete, exit 4, even with --allow-incomplete, unless the change deletes a file named as a secret whole. A program names a file to send all the same in review's send, and the CLI in --send or the config's send.
+* meta.leftOut entries can have the reason skipped, with a rule, and meta.flags can hold the code secret-file, values a strict reader of the result must take.
+* a diff over partTokens (32768), or over the research model's window, is now reviewed in parts: more calls per review, and findings that one request missed, which can fail a run that passed. A large diff now spends up to the token cap, where 0.5.0 sent nothing and exited 4. Every profile of the JSON result now carries coverage, on every run, and meta.incomplete can hold the reason too-large, so a strict reader of the result must take both.
+* a provider object's own room field that is not a function is now refused when the quorum is created, where 0.5.0 ignored it, and one that is a function now states the provider's room to the core.
+
+### Features
+
+* estimate a review before any call, and hold a path review that may pass the cap ([dd2775b](https://github.com/this-is-tobi/quorum/commit/dd2775b759e298414083ef3bf13a48370f7114da))
+* give a vote the hunks nearest its cited line when its voter cannot hold the whole section ([fc22ed9](https://github.com/this-is-tobi/quorum/commit/fc22ed9d64b4df6f5ee41826dbeb2d7b5e112bc8))
+* let a provider state the room a request leaves in its window, as its size guard counts ([a3c3931](https://github.com/this-is-tobi/quorum/commit/a3c393146527e3cdcf77c1784737bca2c236d82c))
+* pack a diff's sections into parts within a token budget, never cutting a hunk ([0365d08](https://github.com/this-is-tobi/quorum/commit/0365d0845e2b8d0f882132a9fba8e387500ed85a))
+* read a commit's tree by id through ls-tree and one cat-file, every size known first ([0e313eb](https://github.com/this-is-tobi/quorum/commit/0e313eb8a2562400c0a1ba88837d097d501db3fe))
+* review a large change in parts, each a research request, with each profile's coverage ([0158b2e](https://github.com/this-is-tobi/quorum/commit/0158b2e977759198cc57702069eb7749260a391f))
+* review a range of commits with --range &lt;base&gt;...&lt;head&gt;, quorum running git itself ([7e11df9](https://github.com/this-is-tobi/quorum/commit/7e11df926b62a3e2977d96fb41587457bcc7f2bf))
+* review local and staged changes, refusing a repository whose own config names a filter ([2f86242](https://github.com/this-is-tobi/quorum/commit/2f8624269da69d98c723429dd63deebe65e607e1))
+* review the files under a path at a commit, with default skips listed and secrets flagged ([da33c7f](https://github.com/this-is-tobi/quorum/commit/da33c7feae2dfa746e711fe6252be91abe272a83))
+* run git through one hardened runner, with its pins, an environment allowlist and a floor ([dfca702](https://github.com/this-is-tobi/quorum/commit/dfca7023dade27849b95ca6759ed1cc024da4099))
+* set the research part size with partTokens in a config, printed and fingerprinted ([5198091](https://github.com/this-is-tobi/quorum/commit/51980913725a647ae85e1ef2f7cb3ff307f53cbc))
+* take a review's source and the files it left out, and record the source in meta.source ([203d42c](https://github.com/this-is-tobi/quorum/commit/203d42ccc119f1b35107428c98f5873f689dcf10))
+* write files as git's new-file diff, quoted as git quotes, in hunks of at most 4 KiB ([64fc635](https://github.com/this-is-tobi/quorum/commit/64fc635208ff13777d361068d8ee3118a1a26cf4))
+
+
+### Bug Fixes
+
+* hold back from every diff a file named as a secret or holding a credential, as a gap ([0b39e71](https://github.com/this-is-tobi/quorum/commit/0b39e71486e3c90ed08a9cbd3677a28cae7c4fba))
+* send a file held as a secret all the same, with --send or the config's send list ([b517e48](https://github.com/this-is-tobi/quorum/commit/b517e488fa9cb6ea35c1797446541dc483745a97))
+* share the secret rule with path reviews, which send a template once its content is clean ([aa14e10](https://github.com/this-is-tobi/quorum/commit/aa14e10a66cd980c04779a16adb88e67a92366e3))
+* tell a file held back as a secret, by its name or by a credential it holds ([816a4be](https://github.com/this-is-tobi/quorum/commit/816a4be6616ff267b233063cf916b6a70620ec96))
+
 ## [0.5.0](https://github.com/this-is-tobi/quorum/compare/v0.4.0...v0.5.0) (2026-11-15)
 
 
