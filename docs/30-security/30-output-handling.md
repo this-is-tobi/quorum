@@ -148,6 +148,9 @@ Quorum raises at most one flag per file, code and subject, so a file raises at m
 | --- | --- | --- |
 | `inertLine(text)` | A line of a terminal or a log | Shows every hidden character as `<U+XXXX>`, then breaks both forms of a GitHub Actions workflow command, as [above](#what-the-cli-writes) |
 | `inertJson(value)` | The result, or another value, as JSON | Writes `JSON.stringify(value, null, 2)` with each hidden character as an escape, as [above](#what-the-cli-writes). It throws a `TypeError` for a value with no JSON form, such as `undefined` |
+| `codeSpan(text)` | Text a model or the diff wrote, for one line of Markdown | Shows it literally, each hidden character a label, in a fence longer than any backtick run inside, so the span is one line and nothing in it is a mention, a reference, an emoji, a link or HTML |
+| `fencedBlock(rows, info)` | Rows of code, for Markdown | Each row a line, its hidden characters labels, in a fence longer than any backtick run inside, with `text` or `diff` as the info string and no other: it throws a `TypeError` for any other value |
+| `inertPlain(text, max)` | Plain text a viewer may link, such as a SARIF message | Shows hidden characters as labels, breaks an `@` that starts a word, a `#` before a digit and `://`, and cuts the text at `max` code points, 1,000 by default, with `…` |
 | `renderReport(result, { format })` | The result as the CLI writes it on stdout | Renders `text`, the report for a person with every line through `inertLine`, `json`, as `inertJson` and a line feed, or `brief`, one line of counts through `inertLine`, each as [above](#what-the-cli-writes): [`renderReport`](../95-reference/30-library-api.md#renderreport). `{ format: 'text', color: true }` colors what quorum wrote, as the CLI does on a terminal |
 
 An event sink that prints the gaps of a review on stderr, and a function that prints the result on stdout:
@@ -170,7 +173,7 @@ Pass `events` as `ports.events` of `createQuorum`: [Library API](../95-reference
 - **Apply `inertLine` to the whole line you print**, never to its pieces apart. Two inert pieces printed side by side can still meet as `::` or `##[`.
 - **To print the text report yourself, call `renderReport(result, { format: 'text' })`.** It renders the lines the CLI writes on a terminal, each one inert, and `color: true` colors what quorum wrote. Pass the `outcome` of your run when it lifted gaps with `allowIncomplete`, so the last line says what your exit code says.
 - **`inertLine` shows each line break as its own label**: LF as `<U+000A>`, CR as `<U+000D>`, and U+0085, U+2028 and U+2029 as `<U+0085>`, `<U+2028>` and `<U+2029>`. So a text of several lines, such as a vote's `reasoning`, prints as one long line. To keep its lines, split the text on LF and CRLF and apply `inertLine` to each line: `text.split(/\r?\n/).map(line => inertLine(line)).join('\n')`. The other breaks stay as labels.
-- **For Markdown, HTML or a pull request comment, escape for that format yourself.** Quorum has no Markdown renderer yet.
+- **For Markdown, put every text a model or the diff wrote in `codeSpan` or `fencedBlock`, and never in a table cell, where a `|` splits the cell even inside a code span.** A code span is the one Markdown construct that stops mentions, references, emoji, math, links, images and HTML at once, and a backslash does not stop a mention. A block nested in a list item needs each of its lines indented by you. For HTML, escape it yourself.
 - **URLs stay as they are.** `inertLine` leaves them alone, and GitHub's log viewer makes a raw URL clickable. Never follow a link, a mention or a command found in the result.
 
 ## Next

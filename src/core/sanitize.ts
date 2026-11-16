@@ -1,8 +1,9 @@
 /**
  * Renders the text that models, servers and diffs wrote for the places a person reads it: a
- * terminal, a CI log, the JSON result. The text is stored as it came, and each sink renders it
- * inert (invariant I3): nothing in it acts on a terminal or a GitHub Actions runner, and no
- * character of the hidden class below hides from the reader.
+ * terminal, a CI log, the JSON result, Markdown and the plain text a viewer may link. The text is
+ * stored as it came, and each sink renders it inert (invariant I3): nothing in it acts on a
+ * terminal or a GitHub Actions runner, and no character of the hidden class below hides from the
+ * reader.
  *
  * @see ../../docs/30-security/30-output-handling.md
  */
@@ -73,6 +74,96 @@ export function inertLine(text: string): string {
   return showHidden(text)
     .replace(COMMAND_START, '$1<U+003A>')
     .replace(LEGACY_COMMAND, '##<U+005B>')
+}
+
+/** A run of backticks. */
+const BACKTICK_RUN = /`+/g
+
+/**
+ * An `@` that no ASCII letter, digit or `_` precedes (`\B@`, `\w` being ASCII): where a viewer starts a mention. A viewer's
+ * word boundary may be ASCII only, so an `@` after `é` or `你` starts a mention there and is broken.
+ */
+const MENTION_START = /\B@/g
+
+/** A `#` before an ASCII digit: where a viewer starts an issue or pull request reference. */
+const REFERENCE_START = /#(?=\d)/g
+
+/** `://`: the end of a scheme, where a viewer starts an autolink. */
+const URL_SCHEME_END = /:\/\//g
+
+/** The length of the longest run of backticks in `text`, 0 when it holds none. */
+function longestBacktickRun(text: string): number {
+  let longest = 0
+  for (const [run] of text.matchAll(BACKTICK_RUN)) longest = Math.max(longest, run.length)
+  return longest
+}
+
+/**
+ * One line of Markdown that shows `text` literally: a code span, the one Markdown construct that
+ * stops mentions, references, emoji, math, links, images and HTML at once. A backslash would not
+ * stop a mention, so no escaping can stand in for it. Every hidden character and line break is shown
+ * as a label first, so the span is one line. Its fence is a run of backticks one longer than the
+ * longest run in the text, so no run in the text closes the span, and a space inside each end, which
+ * a reader strips back off, keeps a backtick or a space at either end of the text, or an empty text,
+ * from joining the fence. A text of only spaces gets none, since a reader strips no space from it. A
+ * `|` still splits a table cell, even inside a code span, so a table cell holds no text from a model
+ * or a diff.
+ */
+export function codeSpan(text: string): string {
+  const shown = showHidden(text)
+  const fence = '`'.repeat(longestBacktickRun(shown) + 1)
+  const pad = shown === '' || (/^[ `]|[ `]$/.test(shown) && /[^ ]/.test(shown))
+    ? ' '
+    : ''
+  return `${fence}${pad}${shown}${pad}${fence}`
+}
+
+/**
+ * Rows of code as a fenced block, a row a line: each row has its hidden characters and line breaks
+ * shown as labels, so no row adds a line, and the fence is at least three backticks and longer than
+ * any run in a row, so no row closes the block. The info string is a type, `text` or `diff`, so no
+ * caller can ask for a fence a viewer renders, such as `suggestion` or `mermaid`: the type says so
+ * to TypeScript, and a `TypeError` says so to a caller that is not typed. The lines are joined by
+ * line feeds, with none after the closing fence; a caller that nests the block, in a list item,
+ * indents each of its lines itself.
+ *
+ * @throws TypeError when `info` is anything but the string `text` or `diff`
+ */
+export function fencedBlock(rows: readonly string[], info: 'text' | 'diff'): string {
+  if (info !== 'text' && info !== 'diff') throw new TypeError('fencedBlock\'s info must be text or diff')
+  const shown = rows.map(showHidden)
+  const fence = '`'.repeat(Math.max(3, longestBacktickRun(shown.join('\n')) + 1))
+  return [`${fence}${info}`, ...shown, fence].join('\n')
+}
+
+/**
+ * Plain text a viewer may still link, such as a SARIF message: the first `max` code points of
+ * `text`, each hidden character shown as a label, and what a linker triggers on broken: an `@` that
+ * no ASCII letter, digit or `_` precedes (a mention, so an `@` after `é` or `你` is broken too), a
+ * `#` before a digit (an issue or pull request reference) and `://` (an autolink), each written as
+ * the label of its character. `…` follows when `text` held more. The cap is on the input, so no
+ * label and no surrogate pair is cut, and a `max` that is not a number caps everything.
+ */
+export function inertPlain(text: string, max = 1000): string {
+  let head = ''
+  let count = 0
+  let capped = false
+  for (const char of text) {
+    // Written so that a `max` that is not a number, which no comparison holds, caps everything.
+    if (!(count < max)) {
+      capped = true
+      break
+    }
+    head += char
+    count++
+  }
+  const shown = showHidden(head)
+    .replace(MENTION_START, '<U+0040>')
+    .replace(REFERENCE_START, '<U+0023>')
+    .replace(URL_SCHEME_END, '<U+003A>//')
+  return capped
+    ? `${shown}…`
+    : shown
 }
 
 /**
