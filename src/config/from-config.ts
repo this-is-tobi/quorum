@@ -117,6 +117,7 @@ export async function fromConfig(config: ConfigInput | ResolvedConfig, options: 
   }, { profiles: ports, events: options.events })
   return Object.freeze({
     review: quorum.review,
+    estimate: quorum.estimate,
     warnings: Object.freeze([
       ...resolved.warnings,
       ...quorum.warnings,

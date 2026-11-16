@@ -1,6 +1,6 @@
 # Library API
 
-The TypeScript API that `@tobi-or-not/quorum` exports, from `src/index.ts`: `createQuorum` and its ports, a review and its events, abort, the errors, the config types, and every export. Install the package with `npm install @tobi-or-not/quorum` and import from it: the examples on this page do, from a file of a project that has it installed. The package is ES modules with declarations, which a TypeScript project resolves with `moduleResolution` set to `node16`, `nodenext` or `bundler`; the older `node10` ignores `exports` and finds no types. Node 22.18 or later on the 22 line, or 23.6 or later, runs a `.mts` file of these examples as it is, since the code is erasable TypeScript only, and so does Bun. A clone's `src/index.ts` exports the same API.
+The TypeScript API that `@tobi-or-not/quorum` exports, from `src/index.ts`: `createQuorum` and its ports, a review and its events, an estimate of what a review may cost, reading a source, abort, the errors, the config types, and every export. Install the package with `npm install @tobi-or-not/quorum` and import from it: the examples on this page do, from a file of a project that has it installed. The package is ES modules with declarations, which a TypeScript project resolves with `moduleResolution` set to `node16`, `nodenext` or `bundler`; the older `node10` ignores `exports` and finds no types. Node 22.18 or later on the 22 line, or 23.6 or later, runs a `.mts` file of these examples as it is, since the code is erasable TypeScript only, and so does Bun. A clone's `src/index.ts` exports the same API.
 
 ## `createQuorum`
 
@@ -29,6 +29,7 @@ interface ProfilePorts {
 
 interface Quorum {
   readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal }) => Promise<QuorumResult>
+  readonly estimate: (input: { readonly diff: string }) => Estimate
   readonly warnings: readonly string[]
 }
 
@@ -183,6 +184,104 @@ An aborted review never resolves, and never fails open:
 - **The review's deadline is no abort**: at `reviewTimeoutMs` the review resolves, its calls and waits stopped and recorded as `review-deadline` gaps, while an abort rejects. An abort that comes after the deadline still rejects, with its own reason: [The review's deadline](../20-using/20-configuration.md#the-reviews-deadline).
 - **The review never waits for a call it stopped.** Each attempt has a signal of its own, aborted with the review's or at its deadline, and the review settles the attempt at once; the shipped adapters stop their request or process on it, and a provider that ignores it works on, outside the review.
 
+## `estimate`
+
+```ts
+const estimate = quorum.estimate({ diff })
+if (!estimate.fits) console.error('this review may not finish under its token cap')
+```
+
+```ts
+interface Estimate {
+  profiles: Record<string, ProfileEstimate>
+  expected: number
+  worst: number
+  inFlight: number
+  maxReviewTokens: number
+  reviewTimeoutMs: number
+  fits: boolean
+}
+
+interface ProfileEstimate {
+  parts: number[]
+  votes: number
+  vote: Record<string, number>
+  expected: number
+  worst: number
+}
+```
+
+`estimate` says what a review of the diff may cost, in tokens, before any call. It sends nothing and reads no file: it filters the diff and plans each profile's research as `review` does, then asks each provider for the `worstCase` and the `room` it states, on the requests the review would build. Every figure is what the review's token ledger reserves for a call, not what the call spends. It throws a `ConfigError` for an input `review` would refuse, such as a `diff` that is not a string.
+
+| Field | Holds |
+| --- | --- |
+| `profiles` | One entry per profile, keyed by its id, in the run's order |
+| `profiles.<id>.parts` | What the ledger reserves for each research request of the profile, in order: one for a diff researched whole, else one per part that holds more than white space, as [Research in parts](../20-using/20-configuration.md#research-in-parts) packs them. Empty when research makes no call |
+| `profiles.<id>.votes` | The most votes the panel casts: `maxFindings` times the profile's lenses. 0 when research makes no call |
+| `profiles.<id>.vote` | What the ledger reserves at most for one vote of each lens, keyed by lens id: the request for a finding at the longest the harness lets one be, citing the largest section of the diff. For a lens whose voter states a room that section exceeds, it is the partial request, filled to that room. Empty when research makes no call |
+| `profiles.<id>.expected` | The research parts alone, each at a third of its reservation, rounded up: the bound is one token per byte, and code takes about one per three. The votes are not in it, since how many findings research reports is not known before it runs |
+| `profiles.<id>.worst` | The parts in full, and `maxFindings` votes of every lens at its bound |
+| `expected`, `worst` | The sums over the profiles |
+| `inFlight` | What the calls that run at once reserve: the sum of the `concurrency` largest bounds among every research part and every vote of every profile, a lens's bound counted `maxFindings` times |
+| `maxReviewTokens`, `reviewTimeoutMs` | The quorum's limits, as `createQuorum` took them |
+| `fits` | `expected + inFlight <= maxReviewTokens`: whether the research may finish under the cap |
+
+A blank diff, and one whose every file `exclude` leaves out, make no call: every figure is 0, `parts` and `vote` are empty and `fits` is true. The CLI prints the estimate of a path review and refuses one that does not fit unless `--large` is given: [What a path review costs](../20-using/15-sources.md#what-a-path-review-costs). It is an estimate, not a limit: each call of a review still reserves its worst case against `maxReviewTokens`, whatever `fits` says, so a review that does not fit stops at the cap with a `token-cap` gap, and one that fits may stop there too, since the votes are in `worst` alone.
+
+## `readSource`
+
+```ts
+declare function readSource(spec: SourceSpec, context: {
+  readonly cwd: string
+  readonly env: Env
+  readonly signal?: AbortSignal
+  readonly exclude?: readonly string[]
+}): Promise<SourceRead>
+
+type SourceSpec
+  = | { readonly kind: 'diff', readonly text: string }
+    | { readonly kind: 'range', readonly range: string }
+    | { readonly kind: 'local' | 'staged', readonly trustRepoConfig?: boolean }
+    | { readonly kind: 'paths', readonly paths: readonly string[], readonly at?: string, readonly skips?: boolean }
+
+interface SourceRead {
+  readonly diff: string
+  readonly source: ReviewSource
+  readonly leftOut: LeftOutFile[]
+}
+```
+
+`readSource` makes the diff a review reads, as the CLI does, and answers with what `review` takes as its input: the `diff`, where it came from (`source`, which `review` records in `meta.source`) and the files the source left out before it made the diff (`leftOut`). It is the one entry to every source of [Sources](../20-using/15-sources.md), whose pages say what each does:
+
+| `kind` | Reads | Its fields |
+| --- | --- | --- |
+| `diff` | The text it holds, as it is | `text`: a diff over 16 MiB of UTF-8 is refused |
+| `range` | The commits `<base>...<head>`: the merge base diffed with the head | `range`, written `<base>...<head>`, as `--range` takes it |
+| `local` | What `git add -A` would commit: the staged, the unstaged and the untracked changes | `trustRepoConfig`: true when the repository is yours, so a filter its own config names may run: [Trust](../20-using/15-sources.md#trust) |
+| `staged` | What the next commit holds | `trustRepoConfig`, as `local` |
+| `paths` | The files under each path at a commit, each written as a new file | `paths`, relative to `cwd` as `--path` is; `at`, the commit, `HEAD` when unset; `skips`, whether the default skips apply, true when unset |
+
+- **The context** is where it reads. `cwd` is the directory a git source opens as its repository, and a path of `paths` is relative to; `env` is the environment, whose `PATH` git is looked up in (its absolute entries only) and from which the git child gets an allowlist and nothing else; `signal` stops a git command in flight; and `exclude` holds the patterns of [Excludes](../20-using/20-configuration.md#excludes), which a source that reads files applies before it reads them: the untracked files of `local`, and each file of `paths`. The package fills in the platform, and takes no other git than the system's: a git source runs Linux and macOS, and needs git 2.41 or later.
+- **It refuses with a `ConfigError`,** each issue naming the flag the CLI names for it as its path: `--range`, `--local`, `--staged` or `--path`, and `--at` for a commit that names nothing. A diff's issues have an empty path, and `kind` is the path of an unknown kind (`must be diff, range, local, staged or paths`), so a spec built without types never gets `undefined`. A git command that fails is a `GitError` instead: [Git errors](#git-errors).
+- **Nothing is cut or dropped in silence.** A source that cannot read all of what it was asked to refuses, or lists what it left out in `leftOut`: a skipped file with its rule, an excluded one, a binary file or a submodule. A reader that meets a `kind`, a `reason` or a `rule` it does not know takes it as a source it cannot describe, or a file left out, never as an error.
+
+```ts
+import { readSource } from '@tobi-or-not/quorum'
+
+// `quorum` comes from `createQuorum`, as in the complete example below.
+const spec = {
+  kind: 'paths',
+  paths: ['src']
+} as const
+const input = await readSource(spec, {
+  cwd: process.cwd(),
+  env: process.env,
+  exclude: ['**/*.spec.ts']
+})
+if (!quorum.estimate(input).fits) throw new Error('src may not finish under the token cap: name a narrower path')
+const result = await quorum.review(input)
+```
+
 ## Errors
 
 | Class | Extends | Fields | Thrown for |
@@ -191,8 +290,13 @@ An aborted review never resolves, and never fails open:
 | `ConfigError` | `QuorumError` | `issues`, each a `{ path, message }`, every one; the message holds one `path: message` line per issue for the first 50, then `and <n> more issues` | Invalid configuration or input, every issue at once. The CLI exits `2` on it |
 | `ProviderError` | `QuorumError` | `providerId`, `kind`, `status`, `retryable`, `retryAfterMs`, `usage` | A provider call that failed: [`ProviderError`](../20-using/30-providers.md#providererror) |
 | `OutputError` | `QuorumError` | `stage`, `reason`; `snippet`, the first 200 characters of the reply | A model reply that could not be read: `<stage> reply unusable: <reason> (reply starts: "<snippet>")` |
+| `GitError` | `QuorumError` | `operation`, the git subcommand (`diff`, `rev-parse`, `ls-tree`, and `version` for `--version`); `exitCode`, git's, or `null` when it did not start or did not finish | A git command a source ran that failed: [below](#git-errors). The CLI exits `3` on it |
 
 A gating profile's failed research call rejects the review with its `ProviderError`, and its unusable research reply with its `OutputError`. An advisory profile's is its `research-failed` gap instead, in words the code writes: `the research call failed (http 503) after 3 attempts`, or `the research reply could not be read: <reason>`, which quote nothing a server or a model wrote. The same errors from a vote are recorded in the vote's `error` and `failure` instead. A `ProviderError` of kind `too-large`, from research or from a vote, is a `request-too-large` gap instead: the review does not reject, and a provider of your own raises it to have its own refusal of an oversized request recorded so. Any object with an own `kind` property of `'too-large'` counts, whatever its class, so a refusal from a second copy of quorum is a gap too.
+
+### Git errors
+
+A `GitError` comes from `readSource`, never from `review`. Its message says the git subcommand and what happened, and holds git's stderr only cut to 500 characters and written as a JSON string, so a line of it is inert: `git diff failed (exit 128): "fatal: bad object"`. The others are `git could not start (ENOENT)`, `git diff did not finish within 120000 ms`, `git diff was stopped by SIGKILL`, `git rev-parse printed an object format quorum does not read`, `git ls-tree printed an entry quorum cannot read`, `git ls-tree could not size an object the commit names: the repository lacks it, as a partial clone does`, `git cat-file did not return each listed blob at its listed size`, `git <subcommand> printed more than quorum reads`, when a call prints over the cap it is held to, and `git <subcommand> printed something quorum cannot read`, when a call exits cleanly and prints what is no full id or list of filter keys. A revision as typed and a path are never in it: [How quorum runs git](../20-using/15-sources.md#how-quorum-runs-git). A source that refuses what it was given, git missing or older than 2.41 included, is a `ConfigError` instead.
 
 ## Config types
 
@@ -430,11 +534,12 @@ The warnings, each but the first two starting at the path it is about:
 | `ollama` | The Ollama native chat adapter: [Providers](../20-using/30-providers.md#ollama) |
 | `openaiCompatible` | The OpenAI-compatible adapter: [Providers](../20-using/30-providers.md#openaicompatible) |
 | `presets` | The presets, frozen: [Presets](../20-using/30-providers.md#presets) |
-| `QuorumError`, `ConfigError`, `ProviderError`, `OutputError` | The error classes |
+| `readSource` | Read the diff, its source and the files it left out, from a diff, a range, the local changes or the files at a commit: [`readSource`](#readsource) |
+| `QuorumError`, `ConfigError`, `ProviderError`, `OutputError`, `GitError` | The error classes |
 | `inertLine`, `inertJson` | Render a line for a terminal or a log, and a value as JSON, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |
 
-The types: `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `ObjectFormat`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `ReviewInput`, `ReviewSource`, `SkipRule`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
+The types: `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `Estimate`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `ObjectFormat`, `Profile`, `ProfileEstimate`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `ReviewInput`, `ReviewSource`, `SkipRule`, `SourceRead`, `SourceSpec`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
 
 The stages, the profile checks and the CLI's exit-code rule are not exported: a program reaches the stages through `createQuorum`, and applies the exit codes itself, as the example below does.
 

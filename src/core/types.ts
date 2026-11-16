@@ -364,6 +364,42 @@ export interface ReviewInput {
   readonly leftOut?: readonly LeftOutFile[]
 }
 
+/**
+ * What one profile's review may cost, in tokens, as `Quorum.estimate` counts it before any call. Each figure is
+ * what the review's token ledger reserves for a call, not what the call spends.
+ */
+export interface ProfileEstimate {
+  /** What the ledger reserves for each research request of the profile, in order: one for a diff researched whole, else one per part that holds more than white space. Empty when research makes no call. */
+  parts: number[]
+  /** The most votes the panel casts: `maxFindings` findings, each voted by every lens of the profile. 0 when research makes no call. */
+  votes: number
+  /** What the ledger reserves at most for one vote of each lens, keyed by lens id. Empty when research makes no call. */
+  vote: Record<string, number>
+  /** The research parts alone, each counted at a third of its reservation, rounded up: code takes about that many tokens, not one per byte. The votes are not in it, since how many findings research reports is not known before it runs. */
+  expected: number
+  /** The most the profile may reserve in all: the research parts in full, and `maxFindings` votes of every lens at its bound. */
+  worst: number
+}
+
+/**
+ * What a review of a diff may cost, as `Quorum.estimate` states it: no call is made. `profiles` is keyed by
+ * profile id, in the run's order; `expected` and `worst` sum the profiles'. `inFlight` is what the calls that
+ * run at once reserve, the `concurrency` largest bounds among every research part and vote, and `fits` is
+ * whether `expected` and `inFlight` together are within `maxReviewTokens`. It is an estimate: the review's
+ * ledger still holds the cap, whatever `fits` says.
+ */
+export interface Estimate {
+  profiles: Record<string, ProfileEstimate>
+  expected: number
+  worst: number
+  inFlight: number
+  /** The token cap of every review of the quorum, as `createQuorum` was given or defaulted it. */
+  maxReviewTokens: number
+  /** The deadline of every review of the quorum, in milliseconds. */
+  reviewTimeoutMs: number
+  fits: boolean
+}
+
 /** A quorum built by createQuorum: its profiles compiled once, ready to review any number of diffs. */
 export interface Quorum {
   /**
@@ -374,6 +410,15 @@ export interface Quorum {
    * review resolves with its result.
    */
   readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal }) => Promise<QuorumResult>
+  /**
+   * What a review of `input.diff` may cost, before any call: per profile, what the token ledger reserves for each
+   * research part, and a bound for every vote. It makes no call and reads no file. The research parts are counted
+   * at a third of their reservation in `expected`, code taking about three bytes a token, and the votes in the
+   * worst case only; `fits` says whether `expected` and what the calls in flight reserve are within
+   * `maxReviewTokens`. It is an estimate, not a promise: a review still reserves each call against the cap.
+   * Throws a `ConfigError` for an input `review` would refuse.
+   */
+  readonly estimate: (input: { readonly diff: string }) => Estimate
   /** Settings that cannot take full effect, such as a policy level that never applies; each starts at its profile id. */
   readonly warnings: readonly string[]
 }

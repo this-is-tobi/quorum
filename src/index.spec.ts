@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as api from './index.ts'
-import { runQuorum } from './index.ts'
+import { readSource, runQuorum } from './index.ts'
 import { isolateEnv } from './testing/env.ts'
 import { chatReply, ollamaReply } from './testing/http.ts'
 
@@ -24,9 +24,10 @@ afterEach(() => {
 })
 
 describe('the public API', () => {
-  it('exports createQuorum, defineConfig, fromConfig, loadConfig, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer and runQuorum', () => {
+  it('exports createQuorum, defineConfig, fromConfig, loadConfig, readSource, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer and runQuorum', () => {
     expect(Object.keys(api).sort()).toEqual([
       'ConfigError',
+      'GitError',
       'OutputError',
       'ProviderError',
       'QuorumError',
@@ -43,9 +44,49 @@ describe('the public API', () => {
       'ollama',
       'openaiCompatible',
       'presets',
+      'readSource',
       'runQuorum',
       'securityProfile',
     ])
+  })
+})
+
+describe('readSource', () => {
+  const context = {
+    cwd: process.cwd(),
+    env: {},
+  }
+
+  it('reads a source through the package\'s readSource, with the platform filled in', async () => {
+    await expect(readSource({ kind: 'diff', text: diff }, context)).resolves.toEqual({
+      diff,
+      source: { kind: 'diff' },
+      leftOut: [],
+    })
+
+    // The package takes no platform and no git: a git source refuses on the one of the process, before it spawns anything.
+    const original = Object.getOwnPropertyDescriptor(process, 'platform')!
+    Object.defineProperty(process, 'platform', { ...original, value: 'win32' })
+    try {
+      await expect(readSource({ kind: 'range', range: 'a...b' }, context)).rejects.toMatchObject({
+        name: 'ConfigError',
+        issues: [
+          { path: '--range', message: 'the git sources run on Linux and macOS: on Windows, pipe a diff in' },
+        ],
+      })
+    } finally {
+      Object.defineProperty(process, 'platform', original)
+    }
+  })
+
+  it('refuses a source of a kind it does not know, as a ConfigError', async () => {
+    const unknown = { kind: 'nope' } as unknown as Parameters<typeof readSource>[0]
+    await expect(readSource(unknown, context)).rejects.toMatchObject({
+      name: 'ConfigError',
+      issues: [
+        { path: 'kind', message: 'must be diff, range, local, staged or paths' },
+      ],
+    })
   })
 })
 

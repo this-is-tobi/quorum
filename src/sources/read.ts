@@ -1,5 +1,6 @@
 import type { Env } from '../config/env.ts'
 import type { Clock } from '../core/clock.ts'
+import { ConfigError } from '../core/errors.ts'
 import type { LeftOutFile, ReviewSource } from '../core/types.ts'
 import type { SpawnGit } from '../git/run.ts'
 import { diffSource } from './diff.ts'
@@ -54,7 +55,11 @@ export interface SourceRead {
  * (`paths`). Every source answers with the diff, where it came from (`meta.source`) and the files it left
  * out. No source cuts a diff, drops a file without listing it or reads outside the repository's top level:
  * a source that cannot read what it was asked to refuses with a `ConfigError` that names its flag, or fails
- * with a `GitError`.
+ * with a `GitError`. A `kind` it does not know is a `ConfigError` too, so a caller whose spec is untyped
+ * never gets `undefined`.
+ *
+ * @throws ConfigError for a source it refuses, as each source says, and for a `kind` that is none of the five
+ * @throws GitError when a git command a source runs fails
  *
  * @see ../../docs/20-using/15-sources.md for the sources and how quorum runs git.
  */
@@ -69,5 +74,10 @@ export async function readSource(spec: SourceSpec, context: SourceContext): Prom
       return localSource(spec.kind, spec.trustRepoConfig === true, context)
     case 'paths':
       return pathsSource(spec.paths, spec.at, spec.skips ?? true, context)
+    default:
+      // A library caller's spec is untyped: a kind it does not know fails closed, never as `undefined`.
+      throw new ConfigError([
+        { path: 'kind', message: 'must be diff, range, local, staged or paths' },
+      ])
   }
 }

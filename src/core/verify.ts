@@ -5,12 +5,15 @@ import type { Finding, FindingDetails } from './types.ts'
 /** A finding as the harness verified it, before the research stage names it and tags its profile. */
 export type VerifiedFinding = Omit<Finding, 'id' | 'profile'>
 
-const MAX_SUMMARY = 500
-const MAX_CATEGORY = 80
+/** The most characters of a finding's summary, which the finder writes, as the harness caps it. */
+export const MAX_SUMMARY = 500
+/** The most characters of a finding's category, which the finder writes, as the harness caps it. */
+export const MAX_CATEGORY = 80
 const MAX_FILE = 260
 /** The file name echoed in an `invalid` reason only has to identify the finding, so it is shorter than a stored one. */
 const MAX_REPORTED_FILE = 80
-const MAX_EVIDENCE = 2000
+/** The most characters of the evidence a finding carries, read from the diff and capped. */
+export const MAX_EVIDENCE = 2000
 /** A quote longer than this once whitespace is collapsed is no usable citation of a few diff lines: it never matches. */
 const MAX_QUOTE = 2000
 /**

@@ -427,6 +427,41 @@ describe('fromConfig', () => {
     expect(await research(1024)).toBe(2)
   })
 
+  it('hands the quorum it builds an estimate that reads its limits and its exclude, and calls no provider', async () => {
+    const complete = vi.fn<(request: CompletionRequest) => Promise<CompletionResponse>>()
+    const mine = {
+      model: 'm',
+      worstCase: () => 100,
+      complete,
+    }
+    const estimateOf = async (config: Omit<ConfigInput, 'providers'>): Promise<ReturnType<Quorum['estimate']>> => (await fromConfig({
+      providers: { mine },
+      ...config,
+    }, { env: {} })).estimate({ diff })
+
+    expect(await estimateOf({ maxReviewTokens: 5000 })).toMatchObject({
+      profiles: {
+        security: {
+          parts: [100],
+          expected: 34,
+        },
+      },
+      maxReviewTokens: 5000,
+      reviewTimeoutMs: 1_800_000,
+      fits: true,
+    })
+    expect(await estimateOf({ maxReviewTokens: 50 })).toMatchObject({ maxReviewTokens: 50, fits: false })
+    expect(await estimateOf({
+      exclude: ['a.js'],
+    })).toMatchObject({
+      profiles: {
+        security: { parts: [] },
+      },
+      expected: 0,
+    })
+    expect(complete).not.toHaveBeenCalled()
+  })
+
   it('hands exclude to the quorum it builds', async () => {
     const requests: CompletionRequest[] = []
     const mine = {

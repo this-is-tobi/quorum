@@ -7,6 +7,7 @@ import type { ReviewScope } from './coverage.ts'
 import { diffSections, splitDiff } from './diff.ts'
 import { ConfigError } from './errors.ts'
 import type { ConfigIssue } from './errors.ts'
+import { estimateReview } from './estimate.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
 import { diffFlags, secretFlags } from './flags.ts'
 import { leftOutIssues, mergeLeftOut, sourceIssues, sourceOf } from './inputs.ts'
@@ -25,7 +26,7 @@ import { panel } from './stages/panel.ts'
 import type { PanelOutcome } from './stages/panel.ts'
 import { DEFAULT_MAX_FINDINGS, planResearch, research } from './stages/research.ts'
 import type { ResearchPlan } from './stages/research.ts'
-import type { CoverageEntry, Profile, ProfileMeta, ProfileProviders, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ReviewInput, Usage } from './types.ts'
+import type { CoverageEntry, Estimate, Profile, ProfileMeta, ProfileProviders, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ReviewInput, Usage } from './types.ts'
 
 const PROVIDER_SHAPE = 'must be a provider: an object with a string id, a string model and a complete function'
 
@@ -122,8 +123,30 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
   const warnings: readonly string[] = Object.freeze(options.profiles.flatMap(profile => profileWarnings(profile)))
   return Object.freeze({
     review: (input: ReviewInput, options?: ReviewOptions) => review(compiled, input, options),
+    estimate: (input: { readonly diff: string }) => estimate(compiled, input),
     warnings,
   })
+}
+
+/**
+ * What one review of `input.diff` may cost, before any call: no provider is called and nothing is read or
+ * written. Per profile, it states what the review's ledger reserves for each research part, in order, exactly
+ * as `review` plans and builds them (the diff less the sections `exclude` leaves out, parted on each research
+ * provider's stated room), and a bound for the votes: `maxFindings` votes of each lens, each at the request for
+ * a finding at its longest citing the largest section of the filtered diff. `expected` counts the research
+ * parts alone, each at a third of its reservation, rounded up (`BOUND_OVER_CODE`), and `worst` the parts in full
+ * and every vote at its bound, so the votes are in the worst case only. `inFlight` is what the calls that run
+ * at once reserve, the `concurrency` largest bounds among all the profiles' calls, and `fits` is whether
+ * `expected` and `inFlight` are within `maxReviewTokens`. A diff with nothing left to read, blank or whose every
+ * file is excluded, makes no call and costs nothing. It is an estimate, not a limit: a review reserves each call
+ * against the cap, which still holds whatever `fits` says.
+ *
+ * @throws ConfigError listing every issue of the input that `review` refuses: an input that is not an object, a `diff` that is not a string, a `source` or a `leftOut` it cannot take
+ */
+function estimate(compiled: Compiled, input: { readonly diff: string }): Estimate {
+  const issues = reviewIssues(input, {})
+  if (issues.length > 0) throw new ConfigError(issues)
+  return estimateReview(compiled.runs, compiled, input.diff)
 }
 
 /**

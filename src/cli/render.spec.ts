@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { Provider } from '../core/ports.ts'
-import type { LeftOutFile, LeftOutReason, QuorumEvent } from '../core/types.ts'
+import type { Estimate, LeftOutFile, LeftOutReason, QuorumEvent } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { resolvedConfig } from '../testing/bench.ts'
-import { bannerLines, profileProviders, progressSink, providerOrigin, renderEvent } from './render.ts'
+import { bannerLines, estimateLines, profileProviders, progressSink, providerOrigin, renderEvent } from './render.ts'
 
 /** A right-to-left override, which the sanitizer writes as text. */
 const RLO = String.fromCharCode(0x202E)
@@ -175,6 +175,55 @@ describe('renderEvent', () => {
       incomplete: 0,
       durationMs: 5,
     }, true)).toBe('1 kept, 2 discarded, 3 unreviewed by panel')
+  })
+})
+
+describe('estimateLines', () => {
+  const estimate: Estimate = {
+    profiles: {
+      security: {
+        parts: [30_000, 20_000],
+        votes: 150,
+        vote: { reachability: 4000, impact: 4000, defenses: 4000 },
+        expected: 16_667,
+        worst: 1_850_000,
+      },
+    },
+    expected: 16_667,
+    worst: 1_850_000,
+    inFlight: 50_000,
+    maxReviewTokens: 2_000_000,
+    reviewTimeoutMs: 1_800_000,
+    fits: true,
+  }
+
+  it('writes the estimate\'s lines, a profile\'s prefixed when several run', () => {
+    const total = 'estimate: research about 16667 tokens expected, at most 1850000 with every vote, 50000 of them reserved at once; the review\'s token cap is 2000000 and its deadline 1800000 ms'
+    expect(estimateLines(estimate)).toEqual([
+      'estimate: 2 research part(s), about 16667 tokens expected for them; then up to 150 vote(s), at most 1850000 tokens in all',
+      total,
+    ])
+    const team = {
+      parts: [8000],
+      votes: 100,
+      vote: { naming: 3000, layout: 3000 },
+      expected: 2667,
+      worst: 608_000,
+    }
+    expect(estimateLines({
+      ...estimate,
+      profiles: { security: estimate.profiles.security, team },
+    })).toEqual([
+      '[security] estimate: 2 research part(s), about 16667 tokens expected for them; then up to 150 vote(s), at most 1850000 tokens in all',
+      '[team] estimate: 1 research part(s), about 2667 tokens expected for them; then up to 100 vote(s), at most 608000 tokens in all',
+      total,
+    ])
+    // A profile's id is a caller's text: it is shown inert.
+    const [first] = estimateLines({
+      ...estimate,
+      profiles: { [`a${RLO}b`]: estimate.profiles.security, team },
+    })
+    expect(first).toBe('[a<U+202E>b] estimate: 2 research part(s), about 16667 tokens expected for them; then up to 150 vote(s), at most 1850000 tokens in all')
   })
 })
 

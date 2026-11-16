@@ -5,7 +5,7 @@ import { loadConfig } from '../config/load.ts'
 import { ConfigError } from '../core/errors.ts'
 import { inertJson, inertLine } from '../core/sanitize.ts'
 import { ownData } from '../core/stages/context.ts'
-import type { Quorum, QuorumResult, Verdict } from '../core/types.ts'
+import type { Estimate, Quorum, QuorumResult, Verdict } from '../core/types.ts'
 import { readDiffInput } from '../sources/diff.ts'
 import { atProblem, pathProblem } from '../sources/paths.ts'
 import { parseRange } from '../sources/range.ts'
@@ -15,7 +15,7 @@ import { runBench } from './bench.ts'
 import { errorLines, errorMessage, EXIT, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
 import { printConfig } from './print-config.ts'
-import { bannerLines, progressSink } from './render.ts'
+import { bannerLines, estimateLines, progressSink } from './render.ts'
 
 export { errorMessage, EXIT }
 export type { CliIO }
@@ -38,6 +38,7 @@ const USAGE = [
   '      --path <path>        Review the files under a path at a commit; repeat it to review several',
   '      --at <rev>           The commit --path reads, HEAD by default',
   '      --no-default-skips   Review in --path the vendored, lockfile, minified, secret and binary files too',
+  '      --large              Run a --path review that may pass the token cap, reviewing what the cap allows',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
@@ -58,6 +59,7 @@ const OPTIONS = {
   path: { type: 'string', multiple: true },
   at: { type: 'string', multiple: true },
   'no-default-skips': { type: 'boolean' },
+  large: { type: 'boolean' },
   'allow-incomplete': { type: 'boolean' },
   'print-config': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
@@ -77,8 +79,8 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * `exitCodeFor` maps the result; advisory flags never change it.
  *
  * It reads at most 16 MiB of diff, from stdin, a file, a range of commits, the local changes or the files at
- * a commit, counted in bytes: a larger diff is a usage error, and reading stops at the chunk that crosses the
- * cap.
+ * a commit, counted in bytes: a larger diff is a usage error. A diff file or stdin stops at the chunk that
+ * crosses the cap, and the child of a git source is stopped at its own cap.
  *
  * The diff comes from one source: a diff file, stdin, `--range <base>...<head>`, `--local` (what `git add
  * -A` would commit), `--staged` (what the next commit holds) or `--path <path>` (the files under it at the
@@ -89,8 +91,14 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * source git refuses, or a repository whose own config names a filter without `--trust-repo-config`, exits 2
  * before the banner, a git command that fails exits 3.
  *
+ * A path review is a codebase and not a change, so its size is the tree's. After the banner and before any
+ * call it prints its estimate on stderr (see `Quorum.estimate`), and exits 2 when its research's expected
+ * spend and what the calls in flight reserve pass `maxReviewTokens`, unless `--large` is given: the review then
+ * reviews what the cap allows and ends incomplete, exit 4, where the cap stops it. A diff, a range and the
+ * local changes print no estimate and are never gated, since their size is the change's.
+ *
  * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`, `--path`,
- * `--at`, `--no-default-skips`, `--allow-incomplete`, `--print-config`, `--help` and `--version`; a usage
+ * `--at`, `--no-default-skips`, `--large`, `--allow-incomplete`, `--print-config`, `--help` and `--version`; a usage
  * error prints the usage after its message. Its settings are the config file `--config` or `QUORUM_CONFIG`
  * names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the `QUORUM_*`
  * variables of `io.env` with their deprecated aliases. Each warning is printed once, before the banner, and
@@ -171,6 +179,7 @@ export async function runCli(io: CliIO): Promise<number> {
     }
     writeWarnings(io, quorum.warnings)
     for (const line of bannerLines(config)) io.stderr.write(`${line}\n`)
+    if (spec?.kind === 'paths') holdLargeReview(io, quorum.estimate({ diff: read.diff }), values.large === true)
     if (read.diff.trim() === '') io.stderr.write('empty diff: nothing to review\n')
     const result = await quorum.review(read, { signal: io.signal })
     io.stdout.write(`${inertJson(result)}\n`)
@@ -186,6 +195,23 @@ export async function runCli(io: CliIO): Promise<number> {
       ? EXIT.usage
       : EXIT.runtime
   }
+}
+
+/**
+ * Print a path review's estimate on stderr, and refuse the review when it may not finish under the token cap:
+ * its research's expected spend and what the calls in flight reserve are over `maxReviewTokens`. The gate is
+ * a `ConfigError` that names `--path`, a narrower path, the cap and `--large`, which `large` lifts: the review
+ * then runs, spends no more than the cap and ends incomplete where the cap stops it. It runs before any call.
+ */
+function holdLargeReview(io: CliIO, estimate: Estimate, large: boolean): void {
+  for (const line of estimateLines(estimate)) io.stderr.write(`${line}\n`)
+  if (estimate.fits || large) return
+  throw new ConfigError([
+    {
+      path: '--path',
+      message: `may not finish under the review's token cap of ${estimate.maxReviewTokens} tokens: its research alone expects about ${estimate.expected}, with ${estimate.inFlight} reserved at once: name a narrower path, raise maxReviewTokens, or pass --large to review what the cap allows`,
+    },
+  ])
 }
 
 /** Write each warning as an inert `warning:` line. */
@@ -324,7 +350,7 @@ function usageError(io: CliIO, error: unknown): number {
  * is read, in this order: a source beside `--print-config`, which reads no diff, so it names none
  * (undefined); a second source, taken in the order diff file, `--range`, `--local`, `--staged`, `--path`,
  * which names the first it cannot be given with; `--trust-repo-config` without `--local` or `--staged`;
- * `--at` or `--no-default-skips` without `--path`; a second range, a second commit. A diff file, or stdin
+ * `--at`, `--large` or `--no-default-skips` without `--path`; a second range, a second commit. A diff file, or stdin
  * when no file is named, is read here, as the usage errors of its own come before the config's. A range
  * written wrongly is refused here too, in the words `rangeSource` refuses it with, and so is an empty or
  * absolute `--path` value (`pathProblem`) and an `--at` that starts with `-` (`atProblem`), so no config is
@@ -352,6 +378,7 @@ async function sourceSpec(io: CliIO, values: Flags['values'], positionals: reado
   if (values['trust-repo-config'] === true && !local && !staged) throw refuse('--trust-repo-config', 'needs --local or --staged')
   if (paths === undefined) {
     if (values.at !== undefined) throw refuse('--at', 'needs --path')
+    if (values.large === true) throw refuse('--large', 'needs --path')
     if (values['no-default-skips'] === true) throw refuse('--no-default-skips', 'needs --path')
   }
   if (values['print-config']) return undefined

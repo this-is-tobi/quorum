@@ -103,6 +103,7 @@ const USAGE = [
   '      --path <path>        Review the files under a path at a commit; repeat it to review several',
   '      --at <rev>           The commit --path reads, HEAD by default',
   '      --no-default-skips   Review in --path the vendored, lockfile, minified, secret and binary files too',
+  '      --large              Run a --path review that may pass the token cap, reviewing what the cap allows',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
@@ -1957,6 +1958,10 @@ describe('the sources', () => {
       '--no-default-skips: needs --path',
     ],
     [
+      ['--large'],
+      '--large: needs --path',
+    ],
+    [
       ['--path', 'a', '--range', 'b...c'],
       '--path: cannot be given with --range: give one source',
     ],
@@ -2252,6 +2257,145 @@ describe('the sources', () => {
     expect(fake.calls.find(call => call.command[0] === 'rev-parse' && call.command[1] === '--verify')?.command[4]).toBe('HEAD^{commit}')
   })
 
+  /** A fake git for a path review of one large file, `src/big.js`, which a research in parts spreads over several parts. */
+  function bigGit(): { seam: { executable: string, spawn: ReturnType<typeof fakeGit>['spawn'] }, calls: GitCall[] } {
+    const code = `${Array.from({ length: 3000 }, (_, index) => `export const value${index} = compute(${index}) // padding`).join('\n')}\n`
+    const id = '3'.repeat(40)
+    const fake = fakeGit(({ command }) => {
+      if (command[0] === 'rev-parse' && command[1] === '--verify') return { stdout: `${HEAD}\n` }
+      if (command[0] === 'ls-tree') return { stdout: `100644 blob ${id} ${String(Buffer.byteLength(code)).padStart(7)}\tsrc/big.js\0` }
+      if (command[0] === 'cat-file') return { stdout: `${id} blob ${Buffer.byteLength(code)}\n${code}\n` }
+      return undefined
+    })
+    return {
+      seam: { executable: '/usr/bin/git', spawn: fake.spawn },
+      calls: fake.calls,
+    }
+  }
+
+  /** The two lines of the estimate a run printed, and the numbers of the total's. */
+  function estimateOf(stderr: string): { lines: string[], parts: number, expected: number, inFlight: number } {
+    const lines = stderr.split('\n').filter(line => line.startsWith('estimate: '))
+    const total = /^estimate: research about (\d+) tokens expected, at most \d+ with every vote, (\d+) of them reserved at once; the review's token cap is \d+ and its deadline 1800000 ms$/.exec(lines[1] ?? '')
+    const parts = /^estimate: (\d+) research part\(s\), about \d+ tokens expected for them; then up to 150 vote\(s\), at most \d+ tokens in all$/.exec(lines[0] ?? '')
+    return {
+      lines,
+      parts: Number(parts?.[1]),
+      expected: Number(total?.[1]),
+      inFlight: Number(total?.[2]),
+    }
+  }
+
+  it('prints the estimate of a path review on stderr before any call', async () => {
+    const written: string[] = []
+    let beforeTheCall = ''
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => {
+      beforeTheCall ||= written.join('')
+      return chatReply(JSON.stringify({ findings: [] }))
+    }))
+    const { io, stderr } = harness({
+      argv: ['--path', 'src'],
+      env: MODEL,
+      git: pathGit().seam,
+      platform: 'linux',
+      onStderr: text => written.push(text),
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+
+    const estimate = estimateOf(beforeTheCall)
+    expect(estimate.lines).toHaveLength(2)
+    expect(estimate.parts).toBe(1)
+    expect(estimate.expected).toBeGreaterThan(0)
+    expect(estimate.inFlight).toBeGreaterThan(0)
+    // The banner, then the estimate, then whatever the review says: all before the first request.
+    const lines = beforeTheCall.split('\n')
+    expect(lines.slice(0, 2)).toEqual(['Research (m @ http://localhost:11434)...', 'Panel will use m @ http://localhost:11434'])
+    expect(lines.slice(2, 4)).toEqual(estimate.lines)
+    // Printed once, and no later line repeats it.
+    expect(estimateOf(stderr()).lines).toEqual(estimate.lines)
+  })
+
+  it('exits 2 for a path review that may not finish under the cap, naming --large, a narrower path and the cap', async () => {
+    const fetchMock = stubChat()
+    const fake = pathGit()
+    const { io, stdout, stderr } = harness({
+      argv: ['--path', 'src'],
+      env: { ...MODEL, QUORUM_MAX_REVIEW_TOKENS: '1000' },
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    const { lines, expected, inFlight } = estimateOf(stderr())
+    expect(lines).toHaveLength(2)
+    expect(stderr().split('\n').slice(2, 4)).toEqual(lines)
+    expect(stderr().split('\n').slice(4)).toEqual([
+      `Error: --path: may not finish under the review's token cap of 1000 tokens: its research alone expects about ${expected}, with ${inFlight} reserved at once: name a narrower path, raise maxReviewTokens, or pass --large to review what the cap allows`,
+      '',
+    ])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('runs it with --large, reviewing what the cap allows', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => chatReply(JSON.stringify({ findings: [] })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { io, stdout, stderr } = harness({
+      argv: ['--path', 'src', '--large'],
+      env: { ...MODEL, QUORUM_MAX_REVIEW_TOKENS: '120000' },
+      git: bigGit().seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+
+    const { lines, parts, expected, inFlight } = estimateOf(stderr())
+    expect(lines).toHaveLength(2)
+    // The estimate says the review may pass the cap, and it is printed all the same.
+    expect(parts).toBeGreaterThan(2)
+    expect(expected + inFlight).toBeGreaterThan(120_000)
+    expect(stderr()).not.toContain('Error:')
+    // What the cap funds is sent, and the parts it cannot fund are not, and are a gap.
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(0)
+    expect(fetchMock.mock.calls.length).toBeLessThan(parts)
+    const result = JSON.parse(stdout())
+    expect(result.meta.incomplete).toEqual([
+      {
+        profile: 'security',
+        reason: 'token-cap',
+        detail: `the review's token cap of 120000 tokens stopped ${parts - fetchMock.mock.calls.length} of its ${parts} research parts`,
+      },
+    ])
+    expect(JSON.stringify(result.meta.profiles.security.coverage)).toContain('"reason":"token-cap"')
+  })
+
+  it('prints no estimate for a diff, a range or local changes, and never gates them', async () => {
+    const env = { ...MODEL, QUORUM_MAX_REVIEW_TOKENS: '1000' }
+    const runs = [
+      harness({ argv: [], stdin: DIFF, env }),
+      harness({
+        argv: ['--range', 'secret-base...secret-head'],
+        env,
+        git: git().seam,
+        platform: 'linux',
+      }),
+      harness({
+        argv: ['--local'],
+        env,
+        git: localGit().seam,
+        platform: 'linux',
+      }),
+    ]
+    for (const { io, stdout, stderr } of runs) {
+      const fetchMock = stubChat()
+      // The cap leaves no room for the research request: the review ends at that, not at a gate.
+      expect(await runCli(io)).toBe(EXIT.incomplete)
+      expect(stderr()).not.toContain('estimate:')
+      expect(stderr()).not.toContain('Error:')
+      expect(JSON.parse(stdout()).meta.incomplete.map((entry: { reason: string }) => entry.reason)).toEqual(['token-cap'])
+      expect(fetchMock).not.toHaveBeenCalled()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('prints the usage of the sources, every description at column 27', async () => {
     const { io, stdout, stderr } = harness({
       argv: ['--help'],
@@ -2269,7 +2413,7 @@ describe('the sources', () => {
       '       quorum bench [options] <suite>',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
-    expect(options).toHaveLength(13)
+    expect(options).toHaveLength(14)
     for (const line of options) {
       expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line.slice(25, 27), line).toBe('  ')
