@@ -73,12 +73,13 @@ function grouped(): string[] {
   return groups.map(group => group.join(' '))
 }
 
+/** A finding on a clean relative path, so a reporter places it: the text's slashes are `|` in the file name, since a path with an empty, `.` or `..` segment is counted, not placed, and the text is whole in the other fields. */
 function hostileFinding(text: string, index: number): Verdict {
   return {
     id: index.toString(16).padStart(12, '0'),
     fingerprint: `${index.toString(16).padStart(16, '0')}:1`,
     profile: 'security',
-    file: `src/h${index}/${text}`,
+    file: `src/h${index}/${text.replaceAll('/', '|')}`,
     line: index + 1,
     category: text.slice(0, MAX_CATEGORY),
     summary: `claim ${index}: ${text}`,

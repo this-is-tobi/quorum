@@ -13,7 +13,7 @@
 import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
 import { codeSpan, inertJson, inertLine } from '../core/sanitize.ts'
 import type { Confidence, PublicVerdict, PublicView } from '../core/types.ts'
-import { byLocation, commitOf, levelWord, votesWords } from './lines.ts'
+import { commitOf, levelWord, placedFindings, votesWords } from './lines.ts'
 import { summaryMarkdown } from './markdown.ts'
 import type { Reporter } from './reporter.ts'
 import { publicView } from './view.ts'
@@ -61,24 +61,9 @@ export function commentBody(verdict: PublicVerdict): string {
   ].map(inertLine).join('\n')
 }
 
-/** The files of each profile's coverage, the diff's own files, built once. */
-function filesByProfile(view: PublicView): Map<string, ReadonlySet<string>> {
-  return new Map(Object.entries(view.meta.profiles).map(([id, profile]) => [
-    id,
-    new Set(profile.coverage.map(entry => entry.file)),
-  ]))
-}
-
-/** The document of a public view: a finding is a comment when its file is a non-empty path its profile's coverage lists, and counted in `unplaced` otherwise. */
+/** The document of a public view: a finding is a comment when `placedFindings` places it, and counted in `unplaced` otherwise. */
 function payloadOf(view: PublicView, outcome: Outcome): ActionPayload {
-  const files = filesByProfile(view)
-  const findings = [
-    ...view.kept,
-    ...view.unreviewed,
-  ]
-  const placed = findings
-    .filter(({ file, profile }) => file !== '' && files.get(profile)?.has(file) === true)
-    .sort(byLocation)
+  const { placed, unplaced } = placedFindings(view)
   return {
     version: 1,
     head: commitOf(view.meta.source),
@@ -93,7 +78,7 @@ function payloadOf(view: PublicView, outcome: Outcome): ActionPayload {
       side: 'RIGHT',
       body: commentBody(verdict),
     })),
-    unplaced: findings.length - placed.length,
+    unplaced,
   }
 }
 

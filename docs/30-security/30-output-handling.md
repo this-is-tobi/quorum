@@ -111,7 +111,7 @@ The text report of a public view is the report of the result but for two lines: 
 
 ### Public-only formats
 
-A format that writes for a stranger is marked public-only, and renders the public view of whatever it is given: a result, or a view. So a program that hands it the full result still publishes the view, and no path reaches it with the reasoning in it. `markdown` and `payload` are marked, and `text`, `json` and `brief` are not: they render what they are given, so `--view public` is what makes them the public view.
+A format that writes for a stranger is marked public-only, and renders the public view of whatever it is given: a result, or a view. So a program that hands it the full result still publishes the view, and no path reaches it with the reasoning in it. `markdown`, `payload` and `sarif` are marked, and `text`, `json` and `brief` are not: they render what they are given, so `--view public` is what makes them the public view.
 
 ## Markdown
 
@@ -134,6 +134,18 @@ The rule is checked on a hostile corpus: one kept finding for each text a viewer
 - **On GitHub,** `bun run live:github-markdown` posts each document to `POST https://api.github.com/markdown` in `gfm` mode, with this repository as the context. It checks the HTML that comes back for an image, a user or team mention, an issue or pull request link, a commit link, an emoji, math, an alert, a footnote, raw HTML (`script`, `iframe`, `object`, `embed`, `form`, `input`, `textarea`, `style`, `details`, `summary`) and a link that is not to a heading of the page. A **control**, raw Markdown of a mention, issue references, a commit id, an emoji, an image and math, must come back linked or rendered, each checked on its own, so a renderer that stopped would not pass quorum's documents for nothing.
 - **Only a person runs it.** No test and no CI job does. It sends the corpus, which holds no secret, and needs no token: one in `GITHUB_TOKEN` raises the rate limit, and no line prints it. It writes the fixture `src/testing/fixtures/github-markdown.json`, the HTML of each document and the hash of their Markdown, only when every check passes.
 - **The hash fails the suite when the Markdown changes.** A change to a reporter's output changes the corpus's documents, so the committed hash no longer matches, and the fixture is made again by hand. Until the fixture is committed, the suite checks the corpus by structure alone.
+
+## SARIF
+
+`-f sarif` writes a message for each finding that GitHub's code scanning shows in an alert, and the viewer may link what it shows. A SARIF message is plain text, not Markdown, and the text of a model or of the diff in it is an attacker's, so it follows one rule: **every such text passes `inertPlain`.**
+
+- **`inertPlain` writes the text for a viewer that may link it.** It keeps the first 1,000 code points and ends the text with `…` when it held more, shows each hidden character as its label, writes an `@` that no letter, digit or `_` precedes as `<U+0040>`, a `#` before a digit as `<U+0023>`, and `://` as `<U+003A>//`. So a mention, an issue reference and a URL that a message carries are text, not a notification or a link. Capping the input, not the output, never cuts a label or a surrogate pair.
+- **Why a plain message needs it.** GitHub may link a URL in an alert's message, and the message is the finding's claim, which the author of the change can steer: a link there is a path to a page the author chose, shown on a security alert. The message is the one text of a model in the file, since the evidence stays in the summary, so one function covers it. GitHub's documentation does not say whether it links a URL in a message, and the only evidence that it does is secondary, so the rule closes a possibility and quorum relies on no behavior of GitHub's.
+- **What the code writes** is the rest: a level word, how the lenses voted, a rule's three texts, the fixed words of a gap and the counts of a notification. The profile's id is in the rule's id and texts, and a config id matches `^[a-z][a-z0-9_-]*$`, so it holds nothing to break.
+- **No URL but two.** The run's `informationUri` and the `$schema`, which code writes, are the only URLs. A path is written as a relative URI, each segment percent-encoded after a lone surrogate becomes U+FFFD, so a file name never makes a URI that names another place or throws. A path that is not a clean relative path, one that starts with `/` or has an empty, `.` or `..` segment, which a diff's author can write, is counted in a notification and gets no result, and no line comment in the payload.
+- **The message is no Markdown.** The document sets no `message.markdown`, which GitHub ignores, so no text of a model is rendered as Markdown there.
+
+[Reports for GitHub](../20-using/80-reports.md#sarif) says what the file holds and how its levels are set.
 
 ## Advisory flags
 

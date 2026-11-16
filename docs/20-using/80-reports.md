@@ -1,6 +1,6 @@
 # Reports for GitHub
 
-One review's result is written for GitHub in a few ways, each a format of `--format` (`-f`) and each from the [public view](../30-security/30-output-handling.md#the-public-view), so no sink a stranger reads holds a model's reasoning, a discarded finding, a model's name or the usage: a summary for a pull request or the job summary, the payload that `quorum-action` posts, and SARIF for code scanning. This page lists the formats and describes the summary and the payload.
+One review's result is written for GitHub in a few ways, each a format of `--format` (`-f`) and each from the [public view](../30-security/30-output-handling.md#the-public-view), so no sink a stranger reads holds a model's reasoning, a discarded finding, a model's name or the usage: a summary for a pull request or the job summary, the payload that `quorum-action` posts, and SARIF for code scanning. This page lists the formats and describes the summary, the payload and SARIF.
 
 ## The formats
 
@@ -11,7 +11,7 @@ One review's result is written for GitHub in a few ways, each a format of `--for
 | `brief` | One line of counts and code words: [The report](./10-cli.md#the-report) | No |
 | `markdown` | The summary of the review, below | Yes |
 | `payload` | The payload `quorum-action` posts, below | Yes |
-| `sarif` | SARIF for code scanning. Not written yet | Yes |
+| `sarif` | SARIF for GitHub's code scanning, below | Yes |
 
 A format marked public only renders the public view of whatever it is given, a full result included, so no way of calling it publishes the reasoning: [Public-only formats](../30-security/30-output-handling.md#public-only-formats). `--view` does not change it. The three that are not marked write what they are given, so `--view public` is what makes them the public view.
 
@@ -112,6 +112,36 @@ quorum --range "$BASE...$HEAD" -f brief --output payload="$RUNNER_TEMP/payload.j
 ```
 
 Every field, the body and what the Action owns: [The Action's payload](../95-reference/50-action-payload.md).
+
+## SARIF
+
+`-f sarif` writes SARIF 2.1.0, the format GitHub's code scanning reads, as one run of the public view:
+
+- **The tool** is `quorum`, with its version, and a rule for each profile, `quorum/<profile>`, whose texts quorum's code writes and whose help says what each level means for that profile's `failOn`.
+- **A result** for each kept or unreviewed finding that sits on a file of the diff, at its path, its line and the columns of its cited row. Its message is the level, how the lenses voted, the category and the claim, so a reviewer sees what the summary says. Its `quorumFingerprint/v1` is the finding's fingerprint. A kept finding also gets its confidence as `precision`. A finding that names no file of the diff, as a review of a diff with no per-file headers has, or a path that is not a clean relative path (it starts with `/`, or has an empty, `.` or `..` segment), has no place for a result and is counted in a notification.
+- **The run's commit**, when the source has one: a range's head, a local or staged review's head, or a path review's commit.
+
+```bash
+quorum --range "$BASE...$HEAD" -f brief --output sarif="$RUNNER_TEMP/quorum.sarif"
+```
+
+### The levels
+
+A result's level agrees with the exit code. It is `error` exactly when the finding fails its profile, the rule that sets exit 1: a kept finding at or above the profile's `failOn`. Another kept `high` or `medium` finding and an unreviewed one are `warning`, a kept `low` one is `note`, and a profile at `none` writes no `error`. GitHub's check fails on an `error` alert, so it fails where quorum's gate does.
+
+A result sets no `security-severity`. GitHub reads that number before the level, so a number quorum chose would decide the check instead of the profile's `failOn`, which is what the owner configured.
+
+### The notifications
+
+The run's `executionSuccessful` is `false` whenever a gating profile has a gap or an unreviewed finding, even when a kept finding sets exit 1 or `--allow-incomplete` lifted the gaps, since a run that did not review everything is not complete. A gap's notification has the level `error` for a gating profile and `warning` for an advisory one, the gap's fixed words, and the files it is about, at most 100 with their count. Only a file that is a clean relative path, as for a result, gets a location: another is counted and never located, so no location names another place. A file left out with no gap, which is one that an `exclude` pattern or a path review's skip rule left out, or a deleted secret, is a `note`, and so is the count of the findings no result holds. They come in that order: the gaps, the files left out, the count.
+
+GitHub does not show notifications. They are in the file for the tools that read it and for the person who opens it, and the [summary](#the-summary) is where a gap is read.
+
+### What GitHub does with it
+
+- **Duplicate alerts.** GitHub matches an alert across uploads by `primaryLocationLineHash`, which `upload-sarif` computes from the code at the result's line, by reading the files under its checkout, when the file leaves it out. Without a checkout, as in the post job below, no line hash is computed, so each push can open new alerts. Quorum's own fingerprint is a different hash, so it sits under its own key, which GitHub ignores. A finding whose line moves in a later push can open a new alert beside the old one. This is the price of keeping an alert from being matched to a dismissed one by a reading quorum did not foresee.
+- **Private repositories.** Code scanning is free for a public repository, and a private one needs GitHub Code Security. A review is then never only SARIF: the summary and the exit code say the same, where code scanning is not there.
+- **Nothing uploads it.** quorum writes the file and uploads nothing; `github/codeql-action/upload-sarif` does.
 
 ## Next
 

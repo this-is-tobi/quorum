@@ -7,7 +7,7 @@
  */
 
 import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
-import type { CoverageEntry, CoverageStatus, Flag, IncompleteReason, LeftOutFile, PublicVerdict, ReviewSource, Verdict } from '../core/types.ts'
+import type { CoverageEntry, CoverageStatus, Flag, IncompleteReason, LeftOutFile, PublicVerdict, PublicView, ReviewSource, Verdict } from '../core/types.ts'
 import { voteFailed } from './view.ts'
 
 /** `1 gap`, `2 gaps`: the count, then the noun in the form the count takes. */
@@ -158,6 +158,37 @@ function byCodeUnits(a: string, b: string): number {
 /** `a` before `b` by file, in code-unit order, then by line. */
 export function byLocation(a: { readonly file: string, readonly line: number }, b: { readonly file: string, readonly line: number }): number {
   return byCodeUnits(a.file, b.file) || a.line - b.line
+}
+
+/**
+ * Whether `file` is a clean relative path: non-empty, with no leading `/`, and no empty, `.` or `..` segment
+ * (`a//b.js`, a trailing `/`). A SARIF location must be valid whatever the finding, and one invalid URI makes
+ * GitHub refuse the whole upload; the diff's author controls the path, so a path that is not clean is counted,
+ * not placed, as a comment's path is for the payload.
+ */
+export function isCleanRelativePath(file: string): boolean {
+  return !file.startsWith('/') && file.split('/').every(segment => segment !== '' && segment !== '.' && segment !== '..')
+}
+
+/**
+ * The kept and unreviewed findings of a public view that sit on a file of the diff, by file then line, and how
+ * many do not. A finding is placed when its `file` is a clean relative path and its profile's coverage lists it:
+ * the diff's own files. A finding of a diff with no per-file headers carries the finder's name, which no
+ * coverage lists.
+ */
+export function placedFindings(view: PublicView): { placed: PublicVerdict[], unplaced: number } {
+  const files = new Map(Object.entries(view.meta.profiles).map(([id, profile]) => [
+    id,
+    new Set(profile.coverage.map(entry => entry.file)),
+  ]))
+  const findings = [
+    ...view.kept,
+    ...view.unreviewed,
+  ]
+  const placed = findings
+    .filter(({ file, profile }) => isCleanRelativePath(file) && files.get(profile)?.has(file) === true)
+    .sort(byLocation)
+  return { placed, unplaced: findings.length - placed.length }
 }
 
 /** One row of a finding's evidence: whether it is the cited row, its line number in the new file (empty for a removed row, and for every row when none is cited), its marker and its code. */

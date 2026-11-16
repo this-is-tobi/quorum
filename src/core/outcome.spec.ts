@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { publicView } from '../report/view.ts'
-import { failsItsProfile, outcome } from './outcome.ts'
+import { failsItsProfile, isIncomplete, outcome } from './outcome.ts'
 import type { QuorumResult, Verdict } from './types.ts'
 
 describe('outcome', () => {
@@ -619,5 +619,51 @@ describe('outcome', () => {
     }
     expect(outcome(publicView(results[3]), { allowIncomplete: true })).toEqual({ status: 'pass', exitCode: 0, lifted: true })
     expect(outcome(publicView(results[4]), { allowIncomplete: true })).toEqual({ status: 'incomplete', exitCode: 4, lifted: false })
+  })
+
+  it('says a review is incomplete when a gating profile has a gap or an unreviewed finding, whatever a kept finding or the lift says', () => {
+    const security = {
+      security: { failOn: 'high' },
+      style: { failOn: 'none' },
+    }
+    const gap = { profile: 'security', reason: 'binary' }
+    expect(isIncomplete(recorded(security))).toBe(false)
+    expect(isIncomplete(recorded(security, {
+      gaps: [gap],
+    }))).toBe(true)
+    expect(isIncomplete(recorded(security, {
+      unreviewed: [
+        kept('security', undefined),
+      ],
+    }))).toBe(true)
+    expect(isIncomplete(recorded(security, {
+      kept: [
+        kept('security', 'high'),
+      ],
+      gaps: [gap],
+    }))).toBe(true)
+    expect(isIncomplete(withGaps({ security: true }, [voteFailedGap], [
+      voted('security', 'medium', [
+        { kind: 'network' },
+      ]),
+    ]))).toBe(true)
+    expect(outcome(withGaps({ security: true }, [voteFailedGap], [
+      voted('security', 'medium', [
+        { kind: 'network' },
+      ]),
+    ]), { allowIncomplete: true }).lifted).toBe(true)
+    expect(isIncomplete(recorded(security, {
+      gaps: [
+        { profile: 'style', reason: 'binary' },
+      ],
+    }))).toBe(false)
+    expect(isIncomplete(recorded(security, {
+      unreviewed: [
+        kept('style', undefined),
+      ],
+    }))).toBe(false)
+    expect(isIncomplete(publicView(recorded(security, {
+      gaps: [gap],
+    })))).toBe(true)
   })
 })

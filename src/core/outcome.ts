@@ -57,13 +57,27 @@ const INCOMPLETE: Outcome = Object.freeze({ status: 'incomplete', exitCode: 4, l
  * const { exitCode } = outcome(result, { allowIncomplete: true })
  */
 export function outcome(result: QuorumResult | PublicView, options: { readonly allowIncomplete?: boolean } = {}): Outcome {
-  const gates = (profile: unknown): boolean => profileFailOn(result, profile) !== 'none'
+  const gates = gatesOf(result)
   if (result.kept.some(verdict => failsItsProfile(result, verdict))) return FINDINGS
-  const incomplete = result.unreviewed.some(verdict => gates(verdict.profile)) || result.meta.incomplete.some(entry => gates(entry.profile))
-  if (!incomplete) return PASS
+  if (!isIncomplete(result)) return PASS
   return options.allowIncomplete === true && liftable(result, gates)
     ? LIFTED
     : INCOMPLETE
+}
+
+/** Whether a profile gates the review, as `result` records it: its level is not `none` (`profileFailOn`). */
+function gatesOf(result: QuorumResult | PublicView): (profile: unknown) => boolean {
+  return profile => profileFailOn(result, profile) !== 'none'
+}
+
+/**
+ * Whether a gating profile has a gap or an unreviewed finding, which is what makes a review `incomplete`
+ * before a kept finding takes precedence over it and before `allowIncomplete` lifts it. A report that says a
+ * run did not complete reads this, so a kept finding that sets exit 1 or a lifted gap never hides one.
+ */
+export function isIncomplete(result: QuorumResult | PublicView): boolean {
+  const gates = gatesOf(result)
+  return result.unreviewed.some(verdict => gates(verdict.profile)) || result.meta.incomplete.some(entry => gates(entry.profile))
 }
 
 /**
