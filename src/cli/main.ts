@@ -6,8 +6,9 @@ import { parseFailOn } from '../config/profiles.ts'
 import type { FailOnOverride } from '../config/profiles.ts'
 import { ConfigError } from '../core/errors.ts'
 import { outcome } from '../core/outcome.ts'
-import { inertJson, inertLine } from '../core/sanitize.ts'
+import { inertLine } from '../core/sanitize.ts'
 import type { Estimate, Quorum } from '../core/types.ts'
+import { renderReport } from '../report/registry.ts'
 import { readDiffInput } from '../sources/diff.ts'
 import { atProblem, pathProblem } from '../sources/paths.ts'
 import { parseRange } from '../sources/range.ts'
@@ -16,6 +17,8 @@ import type { SourceSpec } from '../sources/read.ts'
 import { runBench } from './bench.ts'
 import { errorLines, errorMessage, EXIT, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
+import { reportPlan } from './outputs.ts'
+import type { ReportPlan } from './outputs.ts'
 import { printConfig } from './print-config.ts'
 import { bannerLines, estimateLines, progressSink } from './render.ts'
 
@@ -44,6 +47,7 @@ const USAGE = [
   '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
+  '  -f, --format <format>    Write the report on stdout in this format: json or brief; json by default',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
   '  -v, --version            Print the version and exit',
@@ -64,6 +68,7 @@ const OPTIONS = {
   send: { type: 'string', multiple: true },
   'allow-incomplete': { type: 'boolean' },
   'fail-on': { type: 'string', multiple: true },
+  format: { type: 'string', short: 'f', multiple: true },
   'print-config': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
   version: { type: 'boolean', short: 'v' },
@@ -101,7 +106,7 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * local changes print no estimate and are never gated, since their size is the change's.
  *
  * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`, `--path`,
- * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--fail-on`, `--print-config`,
+ * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--fail-on`, `--format`, `--print-config`,
  * `--help` and `--version`; a usage error prints the usage after its message. Its settings are the config file `--config` or `QUORUM_CONFIG`
  * names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the `QUORUM_*`
  * variables of `io.env` with their deprecated aliases. Each warning is printed once, before the banner, and
@@ -124,6 +129,11 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * refused with the configuration, before any call, so `--print-config` and `meta.profiles` show the levels the
  * run uses.
  *
+ * `--format <format>` (`-f`) names the report stdout carries: `json`, the JSON result and the default, or `brief`, one
+ * line of counts (see `renderReport`). It takes one format, is a usage error for any other and with `--print-config`,
+ * which writes YAML, and is checked before the source and any config (`reportPlan`). Every format says what the exit
+ * code says, from the one `outcome` the exit code is made of.
+ *
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
  * error ended the review, and writes no result. A review that has already resolved is complete.
  *
@@ -131,7 +141,7 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * code is returned, before any review flag is read. A file named `bench` is reviewed as `quorum ./bench`.
  *
  * Everything the CLI writes is inert (invariant I3): each stderr line passes through `inertLine`, and
- * the JSON result through `inertJson`.
+ * each report through its reporter, `json` through `inertJson` and `brief` through `inertLine`.
  */
 export async function runCli(io: CliIO): Promise<number> {
   if (io.argv[0] === 'bench') return runBench(io, io.argv.slice(1))
@@ -153,6 +163,7 @@ export async function runCli(io: CliIO): Promise<number> {
 
   let spec: SourceSpec | undefined
   let failOn: FailOnOverride | undefined
+  let plan: ReportPlan
   try {
     if (values.config === '') {
       throw new ConfigError([
@@ -162,6 +173,7 @@ export async function runCli(io: CliIO): Promise<number> {
     failOn = values['fail-on'] === undefined
       ? undefined
       : parseFailOn(values['fail-on'], '--fail-on')
+    plan = reportPlan(values, io)
     spec = await sourceSpec(io, values, positionals)
   } catch (error) {
     return usageError(io, error)
@@ -207,8 +219,9 @@ export async function runCli(io: CliIO): Promise<number> {
     if (spec?.kind === 'paths') holdLargeReview(io, quorum.estimate({ diff: read.diff, send }), values.large === true)
     if (read.diff.trim() === '') io.stderr.write('empty diff: nothing to review\n')
     const result = await quorum.review({ ...read, send }, { signal: io.signal })
-    io.stdout.write(`${inertJson(result)}\n`)
-    return outcome(result, { allowIncomplete: values['allow-incomplete'] === true }).exitCode
+    const done = outcome(result, { allowIncomplete: values['allow-incomplete'] === true })
+    io.stdout.write(renderReport(result, { format: plan.format, color: plan.color, outcome: done }))
+    return done.exitCode
   } catch (error) {
     if (io.signal?.aborted) {
       io.stderr.write('interrupted\n')

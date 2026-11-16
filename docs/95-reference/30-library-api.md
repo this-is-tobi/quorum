@@ -317,6 +317,37 @@ import { outcome } from '@tobi-or-not/quorum'
 const { status, exitCode, lifted } = outcome(result, { allowIncomplete: true })
 ```
 
+## `renderReport`
+
+```ts
+declare function renderReport(result: QuorumResult, options: ReportOptions): string
+
+type ReportFormat = 'json' | 'brief'
+
+interface ReportOptions {
+  readonly format: ReportFormat
+  readonly color?: boolean
+  readonly outcome?: Outcome
+}
+```
+
+`renderReport` writes a review's result as the report the CLI writes on stdout, a text that ends in a line feed: [The report](../20-using/10-cli.md#the-report). It reads the result, as `review` returns it, and the options, and nothing else: no terminal, no environment, no file.
+
+- **`format`** is `json`, the result as `inertJson` writes it, or `brief`, one line of counts and code words that holds no file name and no model text. Any other value throws a `ConfigError` at `format`: `format: must be json or brief`.
+- **`color`** is `false` unless it is `true`. Only a report made for a terminal colors, and neither `json` nor `brief` does, so for now it changes nothing.
+- **`outcome`** is what the report says the review came to, which `brief` states as its status and its exit code. Pass the one your program exits with: when it is absent, `renderReport` computes `outcome(result)`, which lifts nothing. A program that calls `outcome(result, { allowIncomplete: true })` for its exit code passes that, so the report and the code say the same.
+
+```ts
+import { outcome, renderReport } from '@tobi-or-not/quorum'
+
+// `result` comes from `quorum.review`, as in the complete example below.
+const done = outcome(result, { allowIncomplete: true })
+process.stdout.write(renderReport(result, { format: 'brief', outcome: done }))
+process.exitCode = done.exitCode
+```
+
+Every part of the report that holds text from a model or from the diff passes `inertLine` or `inertJson`, so a program can print it as it is: [Printing a review yourself](../30-security/30-output-handling.md#printing-a-review-yourself).
+
 ## Errors
 
 | Class | Extends | Fields | Thrown for |
@@ -584,11 +615,12 @@ The warnings, each but the first two starting at the path it is about:
 | `presets` | The presets, frozen: [Presets](../20-using/30-providers.md#presets) |
 | `readSource` | Read the diff, its source and the files it left out, from a diff, a range, the local changes or the files at a commit: [`readSource`](#readsource) |
 | `outcome` | What a review comes to, its status and the exit code that says it: [`outcome`](#outcome) |
+| `renderReport` | Write a result as the report the CLI writes, in the format `json` or `brief`: [`renderReport`](#renderreport) |
 | `QuorumError`, `ConfigError`, `ProviderError`, `OutputError`, `GitError` | The error classes |
 | `inertLine`, `inertJson` | Render a line for a terminal or a log, and a value as JSON, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |
 
-The types: `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `CredentialKind`, `Estimate`, `FailOn`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `ObjectFormat`, `Outcome`, `OutcomeStatus`, `Profile`, `ProfileEstimate`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `ReviewInput`, `ReviewSource`, `SecretRule`, `SkipRule`, `SourceRead`, `SourceSpec`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `FailOnOverride`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
+The types: `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `CredentialKind`, `Estimate`, `FailOn`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `ObjectFormat`, `Outcome`, `OutcomeStatus`, `Profile`, `ProfileEstimate`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `ReportFormat`, `ReportOptions`, `ReviewInput`, `ReviewSource`, `SecretRule`, `SkipRule`, `SourceRead`, `SourceSpec`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `FailOnOverride`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
 
 The stages and the profile checks are not exported: a program reaches the stages through `createQuorum`. The exit-code rule is `outcome`.
 

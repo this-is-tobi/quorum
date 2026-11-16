@@ -80,6 +80,8 @@ export type { OpenAICompatibleOptions } from './providers/openai-compatible.ts'
 export type { Auth, HttpProviderOptions, StructuredOutput } from './providers/options.ts'
 export { presets } from './providers/presets.ts'
 export type { Preset, PresetName, Protocol } from './providers/presets.ts'
+export { renderReport } from './report/registry.ts'
+export type { ReportFormat, ReportOptions } from './report/registry.ts'
 export type { SourceRead, SourceSpec } from './sources/read.ts'
 
 /**
