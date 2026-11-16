@@ -89,12 +89,16 @@ const USAGE = [
   'Usage: quorum [options] [diff-file]',
   '       git diff | quorum [options]',
   '       quorum --range <base>...<head> [options]',
+  '       quorum --local | --staged [options]',
   '       quorum bench [options] <suite>',
   '',
   'Options:',
   '  -c, --config <path>      Read this config file, over QUORUM_CONFIG',
   '  -p, --profile <id>       Run only this profile; repeat it to run several',
   '      --range <range>      Review a range of commits, written <base>...<head>',
+  '      --local              Review the local changes: staged, unstaged and untracked',
+  '      --staged             Review the staged changes: what the next commit holds',
+  '      --trust-repo-config  Run --local or --staged where the repository\'s own config names a filter program',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
@@ -1933,6 +1937,14 @@ describe('the sources', () => {
       '--print-config: reads no diff, so it takes no --range, --local, --staged or --path',
     ],
     [
+      ['--local', '--staged'],
+      '--staged: cannot be given with --local: give one source',
+    ],
+    [
+      ['--trust-repo-config'],
+      '--trust-repo-config: needs --local or --staged',
+    ],
+    [
       ['x.diff', 'y.diff'],
       'takes one diff file, and 1 more argument(s) were given',
     ],
@@ -2014,6 +2026,67 @@ describe('the sources', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  /** A fake git for the local changes: HEAD is `HEAD`, no untracked file, `DIFF` for the changes, and `config` for what `config` prints of the filters. */
+  function localGit(config: GitReply = { code: 1 }): { seam: { executable: string, spawn: ReturnType<typeof fakeGit>['spawn'] }, calls: GitCall[] } {
+    const fake = fakeGit(({ command }) => {
+      if (command[0] === 'config') return config
+      if (command[0] === 'rev-parse' && command[1] === '--verify') return { stdout: `${HEAD}\n` }
+      if (command[1] === 'diff') return { stdout: DIFF }
+      if (command[0] === 'ls-files') return { stdout: '' }
+      return undefined
+    })
+    return {
+      seam: { executable: '/usr/bin/git', spawn: fake.spawn },
+      calls: fake.calls,
+    }
+  }
+
+  it('reviews --local and --staged with the git it is given, writing meta.source', async () => {
+    for (const kind of ['local', 'staged'] as const) {
+      const fetchMock = stubChat(JSON.stringify({ findings: [] }))
+      const fake = localGit()
+      const { io, stdout, stderr } = harness({
+        argv: [`--${kind}`],
+        env: MODEL,
+        git: fake.seam,
+        platform: 'linux',
+      })
+      expect(await runCli(io)).toBe(EXIT.ok)
+      expect((sent(fetchMock).body.messages as Array<{ content: string }>)[1].content).toContain(`>\n${DIFF}\n</untrusted-diff-`)
+      expect(JSON.parse(stdout()).meta.source).toEqual({ kind, head: HEAD, objectFormat: 'sha1' })
+      expect(stderr()).not.toContain(HEAD)
+      const diff = fake.calls.find(call => call.command[1] === 'diff')?.command ?? []
+      expect(diff.includes('--cached')).toBe(kind === 'staged')
+      expect(fake.calls.some(call => call.command[0] === 'ls-files')).toBe(kind === 'local')
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('exits 2 for a repository whose own config names a filter, naming --trust-repo-config', async () => {
+    const fetchMock = stubChat(JSON.stringify({ findings: [] }))
+    const fake = localGit({ stdout: 'local\0filter.evil.clean\n/bin/evil\0' })
+    const refused = harness({
+      argv: ['--local'],
+      env: MODEL,
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(refused.io)).toBe(EXIT.usage)
+    expect(refused.stdout()).toBe('')
+    expect(refused.stderr()).toBe('Error: --local: the repository\'s own config names a filter program, which a working-tree diff runs: pass --trust-repo-config if the repository is yours, or review a range\n')
+    expect(fake.calls.some(call => call.command[1] === 'diff')).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    const trusted = harness({
+      argv: ['--staged', '--trust-repo-config'],
+      env: MODEL,
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(trusted.io)).toBe(EXIT.ok)
+    expect(JSON.parse(trusted.stdout()).meta.source).toEqual({ kind: 'staged', head: HEAD, objectFormat: 'sha1' })
+  })
+
   it('prints the usage of the sources, every description at column 27', async () => {
     const { io, stdout, stderr } = harness({
       argv: ['--help'],
@@ -2026,10 +2099,11 @@ describe('the sources', () => {
       'Usage: quorum [options] [diff-file]',
       '       git diff | quorum [options]',
       '       quorum --range <base>...<head> [options]',
+      '       quorum --local | --staged [options]',
       '       quorum bench [options] <suite>',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
-    expect(options).toHaveLength(7)
+    expect(options).toHaveLength(10)
     for (const line of options) {
       expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line.slice(25, 27), line).toBe('  ')

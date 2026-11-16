@@ -3,16 +3,20 @@ import type { Clock } from '../core/clock.ts'
 import type { LeftOutFile, ReviewSource } from '../core/types.ts'
 import type { SpawnGit } from '../git/run.ts'
 import { diffSource } from './diff.ts'
+import { localSource } from './local.ts'
 import { rangeSource } from './range.ts'
 
 /**
- * What a review reads its diff from: `diff`, the text of a diff file or of standard input, or `range`, the
- * commits `<base>...<head>` as the user wrote them. The kinds of the local changes and of the files at a
- * commit join it with their sources.
+ * What a review reads its diff from: `diff`, the text of a diff file or of standard input; `range`, the
+ * commits `<base>...<head>` as the user wrote them; `local`, what `git add -A` would commit (staged, unstaged
+ * and untracked); or `staged`, what the next commit holds. `trustRepoConfig` says the repository is the
+ * user's, so a filter its own config names may run. The kind of the files at a commit joins them with its
+ * source.
  */
 export type SourceSpec
   = | { readonly kind: 'diff', readonly text: string }
     | { readonly kind: 'range', readonly range: string }
+    | { readonly kind: 'local' | 'staged', readonly trustRepoConfig?: boolean }
 
 /** The executable and the spawn of git, which a spec replaces: an absolute path, `spawn` and the clock a deadline runs on. */
 export interface GitSeam {
@@ -42,8 +46,8 @@ export interface SourceRead {
 
 /**
  * Reads the diff a review is about, from the source `spec` names: a diff file's or standard input's text
- * (`diff`) or the commits of a range (`range`). Every source answers with the diff, where it came from
- * (`meta.source`) and the files it left out. No source cuts a diff, drops a file without listing it or
+ * (`diff`), the commits of a range (`range`), or the local changes (`local`, `staged`). Every source answers
+ * with the diff, where it came from (`meta.source`) and the files it left out. No source cuts a diff, drops a file without listing it or
  * reads outside the repository's top level: a source that cannot read what it was asked to refuses
  * with a `ConfigError` that names its flag, or fails with a `GitError`.
  *
@@ -55,5 +59,8 @@ export async function readSource(spec: SourceSpec, context: SourceContext): Prom
       return diffSource(spec.text)
     case 'range':
       return rangeSource(spec.range, context)
+    case 'local':
+    case 'staged':
+      return localSource(spec.kind, spec.trustRepoConfig === true, context)
   }
 }

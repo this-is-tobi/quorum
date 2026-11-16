@@ -9,7 +9,7 @@ A TypeScript program that uses quorum as a library installs the same package and
 - **[Node.js](https://nodejs.org/) `^22.18.0 || >=23.6.0`, to run the npm package.** The `engines` field of [`package.json`](../../package.json) asks for it. From those versions Node strips TypeScript types without a flag, which loading a `.mts` config needs: [Configuration](../20-using/20-configuration.md).
 - **[Bun](https://bun.sh/) 1.3.0 or newer, to build from source.** The `engines` field asks for it too, and it installs the dependencies, runs the CLI from a clone and builds the binary.
 - **A container engine such as [Docker](https://docs.docker.com/get-started/get-docker/), to run the image.**
-- **git 2.41 or later, for the git sources only, on Linux and macOS.** `--range` runs the system's git, found on `PATH`: the npm package and the binary use it, and the container image holds none, so in a container pipe the diff in. A diff file or a pipe needs no git: [Sources](../20-using/15-sources.md).
+- **git 2.41 or later, for the git sources only, on Linux and macOS.** `--range`, `--local` and `--staged` run the system's git, found on `PATH`: the npm package and the binary use it, and the container image holds none, so in a container pipe the diff in. A diff file or a pipe needs no git: [Sources](../20-using/15-sources.md).
 - **A model endpoint**, for the reviews themselves. With no config file and no base URL, preset or protocol variable it is the [Ollama](https://ollama.com/) on your machine, through its native API at `http://localhost:11434`, the address Ollama listens on, on `127.0.0.1`, by default. `QUORUM_RESEARCH_BASE_URL` on its own points quorum at an OpenAI-compatible `/chat/completions` endpoint instead, a self-hosted vLLM, TGI or llama.cpp server or a hosted API, `QUORUM_RESEARCH_PRESET` names a vendor's preset, such as `anthropic` or `vllm`, and a config file can name an Anthropic, Gemini or Ollama endpoint as well: [Configuration](../20-using/20-configuration.md). The check at the end of this page needs none.
 - **[Claude Code](https://code.claude.com/docs), for a `claude-code` provider only.** It is the model's endpoint then: `claude` on your `PATH`, signed in or with a key, run once per request, headless and isolated: [`claudeCode`](../20-using/30-providers.md#claudecode). Quorum requires Claude Code 2.1.311 or newer.
 
@@ -163,12 +163,16 @@ Error: no diff given
 Usage: quorum [options] [diff-file]
        git diff | quorum [options]
        quorum --range <base>...<head> [options]
+       quorum --local | --staged [options]
        quorum bench [options] <suite>
 
 Options:
   -c, --config <path>      Read this config file, over QUORUM_CONFIG
   -p, --profile <id>       Run only this profile; repeat it to run several
       --range <range>      Review a range of commits, written <base>...<head>
+      --local              Review the local changes: staged, unstaged and untracked
+      --staged             Review the staged changes: what the next commit holds
+      --trust-repo-config  Run --local or --staged where the repository's own config names a filter program
       --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx
       --print-config       Print the resolved config, keys redacted, and exit
   -h, --help               Print this help and exit
