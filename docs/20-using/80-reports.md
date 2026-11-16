@@ -153,6 +153,111 @@ quorum report result.json -f payload --output markdown="$GITHUB_STEP_SUMMARY" --
 
 It reads the full result or the public view, a file or stdin, only from the same release, through a strict schema, and writes any format as the review command would have from the same result: the summary, the payload and the SARIF are the public view whatever `--view` says. It exits `0` whatever the review found, since the review job's exit code is the gate, and `2` for a result it refuses, which fails the post job: a result of another release, a truncated download and a public view with a field added are each one message that names the cause and holds no value, no text and no key but a code word of the file. Its flags, its refusals and its exit codes: [quorum report](./10-cli.md#quorum-report).
 
+## A GitHub workflow
+
+Two jobs keep the model key, the write token and the pull request's code apart: a review job that holds the key and a post job that holds the token. A fork's pull request runs neither.
+
+```yaml
+name: Quorum
+
+on:
+  pull_request:
+
+permissions: {}
+
+env:
+  QUORUM_VERSION: 0.7.0
+
+jobs:
+  review:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - name: Check out the base, with the history the range needs
+      uses: actions/checkout@v7
+      with:
+        ref: ${{ github.event.pull_request.base.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 24
+    - name: Install quorum
+      run: npm install -g "@tobi-or-not/quorum@$QUORUM_VERSION"
+    - name: Review the pull request's commits
+      env:
+        BASE: ${{ github.event.pull_request.base.sha }}
+        HEAD: ${{ github.event.pull_request.head.sha }}
+        QUORUM_RESEARCH_PRESET: anthropic
+        QUORUM_RESEARCH_MODEL: ${{ vars.QUORUM_MODEL }}
+        QUORUM_RESEARCH_CONTEXT_TOKENS: ${{ vars.QUORUM_CONTEXT_TOKENS }}
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      run: quorum --range "$BASE...$HEAD" --view public -f brief --output json="$RUNNER_TEMP/quorum-result.json"
+    - name: Keep the public view for the post job
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: quorum-result
+        path: ${{ runner.temp }}/quorum-result.json
+        retention-days: 1
+
+  post:
+    needs: review
+    if: ${{ !cancelled() && needs.review.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+    - uses: actions/download-artifact@v8
+      with:
+        name: quorum-result
+        path: ${{ runner.temp }}
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 24
+    - name: Install quorum
+      run: npm install -g "@tobi-or-not/quorum@$QUORUM_VERSION"
+    - name: Render the summary and SARIF from the saved result
+      run: |
+        quorum report "$RUNNER_TEMP/quorum-result.json" -f brief \
+          --output markdown="$RUNNER_TEMP/quorum-summary.md" --output sarif="$RUNNER_TEMP/quorum.sarif"
+        cat "$RUNNER_TEMP/quorum-summary.md" >> "$GITHUB_STEP_SUMMARY"
+    - uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ runner.temp }}/quorum.sarif
+        category: quorum
+        ref: refs/pull/${{ github.event.pull_request.number }}/head
+        sha: ${{ github.event.pull_request.head.sha }}
+```
+
+Set `QUORUM_VERSION` to the release you run. The model variables are the example's: use the provider, model and window of your own config, and a config file from the base checkout, as [Trust](./20-configuration.md#trust) says.
+
+### The review job
+
+- **It checks out the base, not the pull request.** `ref` is the base commit, so no checkout of the pull request's head exists in a job that holds a key, and a config file the job reads is the base's. `--range` reads the head's commits with plumbing alone, `rev-parse`, `merge-base` and `diff` of two commits, whose objects the fetch brought: [A pull request from a fork](./15-sources.md#a-pull-request-from-a-fork) explains the reading. `persist-credentials: false` leaves no token in the checkout's git config.
+- **`fetch-depth: 0`** brings the history where the two sides meet, which a shallow clone lacks: [A range of commits](./15-sources.md#a-range-of-commits).
+- **`--view public`** keeps the reasoning, the discarded findings, the models and the usage out of the artifact and the log, which anyone signed in can read on a public repository: [The public view](../30-security/30-output-handling.md#the-public-view).
+- **The result goes to `$RUNNER_TEMP`,** a directory of the runner that a pull request cannot plant a file in, as it can in the workspace. The step's exit code is the gate: `0`, `1`, `2`, `3` or `4`, as [Using it in CI](./10-cli.md#using-it-in-ci) lists. The upload runs whatever it was, and the post job renders a review that wrote a result: a review that found something (`1`) or left a gap (`4`) did. An exit `2` or `3` reviewed nothing and wrote none, so the post job fails at its download, and the review job's own failure is the cause to read.
+
+### The post job
+
+- **It holds no model key,** and it runs nothing a model wrote: it downloads the saved result and renders it with `quorum report`, which calls no model, reads no config and runs no git.
+- **It installs the same release,** since the reader takes only a result of its own release: [quorum report](#quorum-report).
+- **The summary** is appended to the job summary, and **the SARIF** goes to code scanning with `github/codeql-action/upload-sarif`. A private repository needs GitHub Code Security for that step: [What GitHub does with it](#what-github-does-with-it).
+- **The upload names the head.** `ref` and `sha` are the pull request's head, `refs/pull/<number>/head` and its commit, because quorum reviews the changes from the merge base to the head, so every line of a result is a line of the head. Without them `upload-sarif` on a `pull_request` uses the merge commit, which the post job has no checkout to correct, and an alert can land on another line, or outside the pull request's diff, when the base has changed the same file since the merge base.
+- **`actions: read` and `contents: read` stay.** On a private repository `upload-sarif` reads the run and the repository with them, so a job trimmed to `security-events: write` alone fails at the upload there. They grant no write.
+
+### What the workflow settles
+
+- **A fork's pull request runs neither job.** The review job's `if` compares the pull request's head repository with this one and skips a fork's, and the post job's `needs` skips with it. A fork's run gets no secret, and `pull_request_target`, which would give it one, runs the base's workflow beside the fork's code, so the workflow never uses it. A maintainer reviews a fork's pull request from a clone of their own: [A pull request from a fork](./15-sources.md#a-pull-request-from-a-fork).
+- **Every value reaches a script through `env:`.** No `run:` holds a `${{ }}` expression: the commit ids, the key and the variables are set in `env:` and read as `$BASE` and `$HEAD`, so none of them is parsed as shell code.
+- **Pin each action to a commit,** as this repository's workflows do, with the tag in a comment: `uses: actions/checkout@<commit> # v7.0.1`. The tags above keep the example short, and a tag can be moved.
+- **Line comments on the pull request** are `quorum-action`'s, from the payload: [The payload](#the-payload). The workflow above posts the summary and SARIF only.
+
 ## Next
 
 [Threat model](../30-security/10-threat-model.md) — the attacker, the assets, the residual risk stated plainly, the controls in place today, and what the panel's independence is worth.

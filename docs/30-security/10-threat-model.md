@@ -211,6 +211,21 @@ The post job of a two-job workflow renders a result another job wrote, and that 
 
 What remains is that the schema checks the form of a result, never that a review wrote it. A result a pull request's own job wrote proves nothing about the code: its author can write one with no finding, or with a verdict of its choosing, and the post job will render it. So the review job's exit code is the gate, and no decision rests on a rendered result alone. Sub-project 4, which acts on a review, takes no verdict from a saved result for the same reason.
 
+### The CI workflow
+
+The reference workflow of [Reports for GitHub](../20-using/80-reports.md#a-github-workflow) splits a pull request's review into two jobs, so no job holds both a secret and the pull request's code.
+
+| Job | Holds | Does not hold |
+| --- | --- | --- |
+| Review | The model key and `contents: read` | A checkout of the pull request's head, a write token, any other permission |
+| Post | `security-events: write`, `actions: read` and `contents: read` | The model key, a checkout, a model's call |
+
+- **The review job checks out the base commit,** with its history and without leaving a token in the checkout. No checkout of the head exists, so the config file and any file the job reads are the base's, and `--range` reads the head's commits with the plumbing set alone, which brings no config, hook or attribute of the pull request: [Git, run by quorum](#git-run-by-quorum). It writes the public view to `$RUNNER_TEMP`, a directory the pull request cannot plant a file in.
+- **The post job runs nothing a model wrote.** It reads the saved result through the strict reader and renders it, so a result that is not one quorum wrote fails the job: [A saved result as input](#a-saved-result-as-input). What it renders proves nothing about the code, so the review job's exit code is the gate.
+- **A fork's pull request runs neither job.** The review job's `if` skips it, so a fork's code never meets the model key, and the workflow does not use `pull_request_target`. A maintainer reviews a fork by hand: [A pull request from a fork](../20-using/15-sources.md#a-pull-request-from-a-fork).
+- **Every value reaches a script through `env:`,** never as a `${{ }}` expression inside a `run:`, so no ref, id or variable is parsed as shell code.
+- **Workflow commands.** The runner reads a line of a log that starts with `::`, or holds `##[`, as a command, which a claim copied into the log could use to add an annotation or mask text. Quorum writes none of its own, and every line it writes that carries text from outside passes `inertLine`, which breaks both forms, so the log, public on a public repository, holds no command an attacker started: [Inert output](#inert-output).
+
 ### The public view
 
 On a public repository, a pull request's comments and code scanning alerts are readable by anyone who can see it, and the job summary and the artifact of the review job by anyone signed in. The author of a change is a reader of all of them, and a review of an author's text that publishes its reasoning, its discarded findings or its model is an oracle the author tunes the next push against. So the review job writes the public view, `--view public`, and the other sinks render it: [The public view](./30-output-handling.md#the-public-view).

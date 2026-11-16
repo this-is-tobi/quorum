@@ -55,6 +55,7 @@ quorum --range origin/main...HEAD > result.json
 - **Attributes come from the base.** The diff is made with `--attr-source=<base>`, so the change's own `.gitattributes` cannot hide a file in it: [Content the diff does not carry](../30-security/10-threat-model.md#content-the-diff-does-not-carry). A file the base marks `-diff`, or one with a NUL byte near its start, is still listed as binary, a gap of every profile.
 - **A moved file is reviewed whole.** `--no-renames` shows a move as a deletion and an addition, so the models read the moved file's content and not only its new name. GitHub shows the same move as a rename with no changed line, so a line comment a tool posts for a finding in it may land as a comment on the file.
 - **`exclude` applies,** as it does to a piped diff: [Excludes](./20-configuration.md#excludes).
+- **In CI,** review the pull request's commits with `--range "$BASE...$HEAD"`, as the workflow of [Reports for GitHub](./80-reports.md#a-github-workflow) does.
 
 ### A pull request from a fork
 
