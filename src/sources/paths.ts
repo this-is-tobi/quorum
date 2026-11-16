@@ -27,8 +27,8 @@ const tooMany = (bytes: number): string => `the selected files hold ${bytes} byt
 function allLeftOut(skipped: number, excluded: number, skips: boolean): string {
   return `every selected file is left out (${skipped} skipped, ${excluded} excluded): ${
     skips
-      ? 'pass --no-default-skips to review the skipped ones, or narrow exclude'
-      : 'narrow exclude, or name a path that holds files other than gitlinks, Git LFS pointers and secrets'
+      ? 'pass --no-default-skips to review the skipped ones, narrow exclude, or pass --send to send one held as a secret'
+      : 'narrow exclude, pass --send to send one held as a secret, or name a path that holds files other than gitlinks, Git LFS pointers and secrets'
   }`
 }
 

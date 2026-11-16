@@ -178,6 +178,7 @@ Options:
       --at <rev>           The commit --path reads, HEAD by default
       --no-default-skips   Review in --path the vendored, lockfile, minified and binary files too
       --large              Run a --path review that may pass the token cap, reviewing what the cap allows
+      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several
       --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx
       --print-config       Print the resolved config, keys redacted, and exit
   -h, --help               Print this help and exit

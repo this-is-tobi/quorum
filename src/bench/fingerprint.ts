@@ -10,9 +10,10 @@
  * a provider object as its config key, its model and the `timeoutMs` and `retries` it states, so one that
  * states none keeps the form it had, and never the `worstCase` or the `room` it states, which are code like its
  * `complete`; `concurrency`, `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs` as the review applies
- * them, defaults filled in, and `exclude` when the config lists a pattern. It holds no config-file path, no
- * warning and no provider name, so the same settings under other names are one configuration, and a rotated
- * key keeps a run. A `claude-code` provider's resolved command path is one of its settings, so it is in the form.
+ * them, defaults filled in, `exclude` when the config lists a pattern, and `send` when it lists a file. It
+ * holds no config-file path, no warning and no provider name, so the same settings under other names are one
+ * configuration, and a rotated key keeps a run. A `claude-code` provider's resolved command path is one of its
+ * settings, so it is in the form.
  *
  * The form can hold a secret (a credential kept in a header, a query parameter or the base path), so it
  * never leaves this module: not written, not logged, not put in an error message. Only the HMAC does.
@@ -86,6 +87,9 @@ export function canonicalSettings(config: ResolvedConfig): string {
     ...config.exclude === undefined
       ? {}
       : { exclude: config.exclude },
+    ...config.send === undefined
+      ? {}
+      : { send: config.send },
     profiles,
   }, sortKeys)
 }

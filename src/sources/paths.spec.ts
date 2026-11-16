@@ -446,7 +446,7 @@ describe('the path source', () => {
     const { fake, context } = setup(TREE, {
       exclude: ['src/b.ts'],
     })
-    const message = (skipped: number, excluded: number): string => `--path: every selected file is left out (${skipped} skipped, ${excluded} excluded): pass --no-default-skips to review the skipped ones, or narrow exclude`
+    const message = (skipped: number, excluded: number): string => `--path: every selected file is left out (${skipped} skipped, ${excluded} excluded): pass --no-default-skips to review the skipped ones, narrow exclude, or pass --send to send one held as a secret`
 
     expect((await refusal(pathsSource(['node_modules'], undefined, true, context))).message).toBe(message(1, 0))
     expect((await refusal(pathsSource(['src'], undefined, true, context))).message).toBe(message(2, 1))
@@ -458,21 +458,21 @@ describe('the path source', () => {
     expect(fake.calls.filter(call => call.command[0] === 'cat-file')).toHaveLength(1)
   })
 
-  it('advises the flag only when the skips are on to pass it, for a selection whose every file is left out', async () => {
+  it('advises --no-default-skips only when the skips are on to pass it, and --send either way, for a selection whose every file is left out', async () => {
     const { context } = setup(TREE, {
       exclude: ['src/b.ts'],
     })
     // A gitlink and a Git LFS pointer are skipped whatever the flag says, and `exclude` takes the third.
     const paths = ['sm', 'lfs.bin', 'src/b.ts']
     const on = await refusal(pathsSource(paths, undefined, true, context))
-    expect(on.message).toBe('--path: every selected file is left out (2 skipped, 1 excluded): pass --no-default-skips to review the skipped ones, or narrow exclude')
+    expect(on.message).toBe('--path: every selected file is left out (2 skipped, 1 excluded): pass --no-default-skips to review the skipped ones, narrow exclude, or pass --send to send one held as a secret')
 
     const off = await refusal(pathsSource(paths, undefined, false, context))
-    expect(off.message).toBe('--path: every selected file is left out (2 skipped, 1 excluded): narrow exclude, or name a path that holds files other than gitlinks, Git LFS pointers and secrets')
+    expect(off.message).toBe('--path: every selected file is left out (2 skipped, 1 excluded): narrow exclude, pass --send to send one held as a secret, or name a path that holds files other than gitlinks, Git LFS pointers and secrets')
     expect(off.issues).toEqual([
       {
         path: '--path',
-        message: 'every selected file is left out (2 skipped, 1 excluded): narrow exclude, or name a path that holds files other than gitlinks, Git LFS pointers and secrets',
+        message: 'every selected file is left out (2 skipped, 1 excluded): narrow exclude, pass --send to send one held as a secret, or name a path that holds files other than gitlinks, Git LFS pointers and secrets',
       },
     ])
   })

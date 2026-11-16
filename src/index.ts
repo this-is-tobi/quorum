@@ -112,7 +112,8 @@ export async function readSource(spec: SourceSpec, context: Omit<SourceContext, 
 /**
  * Review a diff as the CLI does with no flag: with the file `QUORUM_CONFIG` names, if any (an absolute
  * path), and the `QUORUM_*` variables of `process.env` with their `RESEARCH_*` and `VOTER_*` aliases, on the profiles
- * they select, the security profile alone by default. `onProgress` receives the progress lines the CLI
+ * they select, the security profile alone by default, sending the files the config's `send` names though
+ * they are held as secrets. `onProgress` receives the progress lines the CLI
  * prints on stderr after its banner, never the banner or a warning. A configuration error, a missing
  * model included, rejects with a `ConfigError`, even for an empty diff.
  *
@@ -128,5 +129,5 @@ export async function runQuorum(diff: string, onProgress?: (message: string) => 
       ? undefined
       : progressSink(onProgress),
   })
-  return quorum.review({ diff })
+  return quorum.review({ diff, send: config.send })
 }

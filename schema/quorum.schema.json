@@ -253,6 +253,15 @@
         "description": "A path pattern: * and ? within a name, ** for whole directories, no / to match a file name in any directory, a leading / for the root"
       }
     },
+    "send": {
+      "description": "The files sent to the models though held as secrets, each the path as the diff writes it and meta.leftOut lists it; none by default",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "A file's path as the diff writes it, decoded"
+      }
+    },
     "profiles": {
       "description": "The review profiles, by id: a built-in profile, one that extends it, or one of your own. The ones --profile names run, else the ones QUORUM_PROFILES names, else every one listed here, else the security profile alone",
       "type": "object",

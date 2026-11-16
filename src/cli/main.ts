@@ -39,6 +39,7 @@ const USAGE = [
   '      --at <rev>           The commit --path reads, HEAD by default',
   '      --no-default-skips   Review in --path the vendored, lockfile, minified and binary files too',
   '      --large              Run a --path review that may pass the token cap, reviewing what the cap allows',
+  '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
@@ -60,6 +61,7 @@ const OPTIONS = {
   at: { type: 'string', multiple: true },
   'no-default-skips': { type: 'boolean' },
   large: { type: 'boolean' },
+  send: { type: 'string', multiple: true },
   'allow-incomplete': { type: 'boolean' },
   'print-config': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
@@ -87,8 +89,8 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * commit `--at` names, HEAD by default, skipping by default what `--no-default-skips` reviews), the last four
  * running git itself (see `rangeSource`, `localSource` and `pathsSource`). Every usage rule of the source is
  * checked first, before any git and any config, the form of a range included (`parseRange`), and a diff file
- * or stdin is read then. A git source is read once the config is: it needs the config's `exclude`, and a
- * source git refuses, or a repository whose own config names a filter without `--trust-repo-config`, exits 2
+ * or stdin is read then. A git source is read once the config is: it needs the config's `exclude` and `send`,
+ * and a source git refuses, or a repository whose own config names a filter without `--trust-repo-config`, exits 2
  * before the banner, a git command that fails exits 3.
  *
  * A path review is a codebase and not a change, so its size is the tree's. After the banner and before any
@@ -98,8 +100,8 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * local changes print no estimate and are never gated, since their size is the change's.
  *
  * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`, `--path`,
- * `--at`, `--no-default-skips`, `--large`, `--allow-incomplete`, `--print-config`, `--help` and `--version`; a usage
- * error prints the usage after its message. Its settings are the config file `--config` or `QUORUM_CONFIG`
+ * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--print-config`, `--help` and
+ * `--version`; a usage error prints the usage after its message. Its settings are the config file `--config` or `QUORUM_CONFIG`
  * names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the `QUORUM_*`
  * variables of `io.env` with their deprecated aliases. Each warning is printed once, before the banner, and
  * when the configuration is refused the environment's warnings come before the `Error:` lines, since a
@@ -108,6 +110,11 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * `--print-config` reads no diff and calls no model: it writes the resolved config as YAML on stdout
  * (see `printConfig`), warnings included, and returns 0; a diff argument or a git source with it is a usage error, and
  * a configuration the run refuses, one of its providers that cannot be built included, exits 2 as in a run.
+ *
+ * A file held back as a secret is sent all the same when `--send <path>` names it, repeatable, or the config's
+ * `send` lists it: the path is the one the diff writes and the `left out:` line prints, matched exactly. The
+ * CLI merges both lists, the config's first, and gives them to the source, the estimate and the review, so
+ * the operator alone, never the change, lifts the hold. An empty `--send` is a usage error, before any config.
  *
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
  * error ended the review, and writes no result. A review that has already resolved is complete.
@@ -159,6 +166,10 @@ export async function runCli(io: CliIO): Promise<number> {
       configPath: values.config,
       selection,
     })
+    const send = [
+      ...config.send ?? [],
+      ...values.send ?? [],
+    ]
     const read = spec === undefined
       ? undefined
       : await readSource(spec, {
@@ -167,6 +178,7 @@ export async function runCli(io: CliIO): Promise<number> {
           platform: io.platform ?? process.platform,
           signal: io.signal,
           exclude: config.exclude,
+          send,
           git: io.git,
         })
     quorum = await fromConfig(config, {
@@ -179,9 +191,9 @@ export async function runCli(io: CliIO): Promise<number> {
     }
     writeWarnings(io, quorum.warnings)
     for (const line of bannerLines(config)) io.stderr.write(`${line}\n`)
-    if (spec?.kind === 'paths') holdLargeReview(io, quorum.estimate({ diff: read.diff }), values.large === true)
+    if (spec?.kind === 'paths') holdLargeReview(io, quorum.estimate({ diff: read.diff, send }), values.large === true)
     if (read.diff.trim() === '') io.stderr.write('empty diff: nothing to review\n')
-    const result = await quorum.review(read, { signal: io.signal })
+    const result = await quorum.review({ ...read, send }, { signal: io.signal })
     io.stdout.write(`${inertJson(result)}\n`)
     return exitCodeFor(result, { allowIncomplete: values['allow-incomplete'] === true })
   } catch (error) {
@@ -351,8 +363,8 @@ function usageError(io: CliIO, error: unknown): number {
  * is read, in this order: a source beside `--print-config`, which reads no diff, so it names none
  * (undefined); a second source, taken in the order diff file, `--range`, `--local`, `--staged`, `--path`,
  * which names the first it cannot be given with; `--trust-repo-config` without `--local` or `--staged`;
- * `--at`, `--large` or `--no-default-skips` without `--path`; a second range, a second commit. A diff file, or stdin
- * when no file is named, is read here, as the usage errors of its own come before the config's. A range
+ * `--at`, `--large` or `--no-default-skips` without `--path`; an empty `--send`; a second range, a second commit. A
+ * diff file, or stdin when no file is named, is read here, as the usage errors of its own come before the config's. A range
  * written wrongly is refused here too, in the words `rangeSource` refuses it with, and so is an empty or
  * absolute `--path` value (`pathProblem`) and an `--at` that starts with `-` (`atProblem`), so no config is
  * read for any of them.
@@ -382,6 +394,7 @@ async function sourceSpec(io: CliIO, values: Flags['values'], positionals: reado
     if (values.large === true) throw refuse('--large', 'needs --path')
     if (values['no-default-skips'] === true) throw refuse('--no-default-skips', 'needs --path')
   }
+  if (values.send?.includes('')) throw refuse('--send', 'must name a file')
   if (values['print-config']) return undefined
   if (values.range !== undefined) {
     if (values.range.length > 1) throw refuse('--range', 'takes one range')

@@ -686,6 +686,7 @@ describe('resolveConfig', () => {
       reviewTimeoutMs: 99,
       partTokens: 99,
       exclude: ['*'],
+      send: ['.env'],
     }
     for (const [key, value] of Object.entries(planted)) proto[key] = value
     try {
@@ -703,6 +704,7 @@ describe('resolveConfig', () => {
         'reviewTimeoutMs',
         'partTokens',
         'exclude',
+        'send',
       ].some(field => Object.hasOwn(config, field))).toBe(false)
     } finally {
       for (const key of Object.keys(planted)) delete proto[key]
@@ -748,6 +750,20 @@ describe('resolveConfig', () => {
     expect(listed.exclude).toEqual(['*.lock'])
     expect(Object.isFrozen(listed.exclude)).toBe(true)
     expect(Object.hasOwn(resolve({ providers, exclude: [] }), 'exclude')).toBe(false)
+  })
+
+  it('resolves send, absent when the config lists none', () => {
+    const providers = {
+      local: { ...LOCAL, model: 'm' },
+    }
+    const listed = resolve({
+      providers,
+      send: ['src/.env', 'web/.env.production'],
+    })
+    expect(listed.send).toEqual(['src/.env', 'web/.env.production'])
+    expect(Object.isFrozen(listed.send)).toBe(true)
+    expect(Object.hasOwn(resolve({ providers, send: [] }), 'send')).toBe(false)
+    expect(Object.hasOwn(resolve({ providers }), 'send')).toBe(false)
   })
 
   it('returns a frozen copy it knows as resolved, and a resolved config as it is', () => {

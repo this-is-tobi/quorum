@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as api from './index.ts'
 import { readSource, runQuorum } from './index.ts'
@@ -115,6 +118,30 @@ describe('runQuorum', () => {
     await expect(runQuorum(diff)).rejects.toMatchObject({ name: 'ConfigError', message })
     await expect(runQuorum('  \n')).rejects.toMatchObject({ name: 'ConfigError', message })
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('sends the files the config\'s send names, held as secrets otherwise, as the CLI does with no flag', async () => {
+    const env = 'diff --git a/.env b/.env\nnew file mode 100644\n--- /dev/null\n+++ b/.env\n@@ -0,0 +1 @@\n+MODE=production\n'
+    const dir = mkdtempSync(join(tmpdir(), 'quorum-index-'))
+    try {
+      const bodiesOf = async (config: string | undefined): Promise<string> => {
+        const variables: Record<string, string> = { RESEARCH_MODEL: 'env-model', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }
+        if (config !== undefined) {
+          const file = join(dir, 'quorum.yaml')
+          writeFileSync(file, config)
+          variables.QUORUM_CONFIG = file
+        }
+        isolateEnv(variables)
+        const fetchMock = vi.fn().mockImplementation(async () => ollamaReply('{"findings":[]}'))
+        vi.stubGlobal('fetch', fetchMock)
+        await runQuorum(`${env}${diff}`)
+        return fetchMock.mock.calls.map(call => String(call[1].body)).join('\n')
+      }
+      expect(await bodiesOf(undefined)).not.toContain('MODE=production')
+      expect(await bodiesOf('send:\n  - .env\n')).toContain('+MODE=production')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('sends onProgress the progress lines the CLI prints', async () => {

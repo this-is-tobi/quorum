@@ -171,6 +171,29 @@ describe('fingerprint', () => {
     expect((JSON.parse(canonicalSettings(one)) as { exclude: unknown }).exclude).toEqual(['*.lock'])
   })
 
+  it('holds send in the form when the config lists a file, and keeps the form of a config that lists none', () => {
+    const plain = resolvedConfig({
+      providers: { p: PROVIDER },
+    })
+    const none = resolvedConfig({
+      providers: { p: PROVIDER },
+      send: [],
+    })
+    const one = resolvedConfig({
+      providers: { p: PROVIDER },
+      send: ['src/.env'],
+    })
+    const other = resolvedConfig({
+      providers: { p: PROVIDER },
+      send: ['src/.env.production'],
+    })
+    expect(canonicalSettings(none)).toBe(canonicalSettings(plain))
+    expect(Object.hasOwn(JSON.parse(canonicalSettings(plain)) as object, 'send')).toBe(false)
+    expect(same(one, plain)).toBe(false)
+    expect(same(one, other)).toBe(false)
+    expect((JSON.parse(canonicalSettings(one)) as { send: unknown }).send).toEqual(['src/.env'])
+  })
+
   it('reads a provider object by its config key and its model, never its code', () => {
     expect(same(of(object('m'), 'fake'), of(object('m'), 'fake'))).toBe(true)
     expect(same(of(object('m'), 'fake'), of(object('m'), 'other'))).toBe(false)
