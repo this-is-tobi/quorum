@@ -360,6 +360,48 @@ const CASES: Array<[string, string, string, string[]]> = [
     'import { REPORTERS } from \'../report/registry.ts\'\n\nexport const probe = REPORTERS\n',
     ['no-restricted-imports'],
   ],
+  [
+    'the CLI refuses the MCP SDK',
+    'src/cli/probe.ts',
+    'import { McpServer } from \'@modelcontextprotocol/server\'\n\nexport const probe = McpServer\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'the CLI refuses a static import of src/mcp/',
+    'src/cli/probe.ts',
+    'import { sdkProblem } from \'../mcp/sdk.ts\'\n\nexport const probe = sdkProblem\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'the CLI imports src/mcp/ through import()',
+    'src/cli/probe.ts',
+    'export const probe = async () => import(\'../mcp/sdk.ts\')\n',
+    [],
+  ],
+  [
+    'the library refuses src/mcp/',
+    'src/probe.ts',
+    'export { sdkProblem } from \'./mcp/sdk.ts\'\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'an MCP module imports the SDK and the config layer',
+    'src/mcp/probe.ts',
+    'import { McpServer } from \'@modelcontextprotocol/server\'\nimport { readBounded } from \'../config/load.ts\'\n\nexport const probe = [McpServer, readBounded]\n',
+    [],
+  ],
+  [
+    'an MCP module refuses node:child_process',
+    'src/mcp/probe.ts',
+    'import { spawn } from \'node:child_process\'\n\nexport const probe = spawn\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'an MCP module refuses process',
+    'src/mcp/probe.ts',
+    'export const probe = process.env\n',
+    ['no-restricted-globals'],
+  ],
 ]
 
 describe('the layer boundaries of eslint.config.js', { timeout: 30_000 }, () => {

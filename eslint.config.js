@@ -280,8 +280,30 @@ export default antfu(
     },
   },
   {
+    // The MCP server is the one place that imports the MCP SDK, and only on request: it reads files and the
+    // repository through the layers below it, and never the process, the network or another thread, nor the
+    // global object. The first segment of the pattern admits a module of its own, the layers it builds on
+    // (a link up and out of one is refused), the CLI's output helpers, package.json, the SDK's two entry
+    // points, zod and the file, path, URL and stream modules.
+    files: ['src/mcp/**/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./(core|report|sources|config|git)/(?!.*\\.\\.)|\\.\\./cli/io\\.ts$|\\.\\./\\.\\./package\\.json$|@modelcontextprotocol/server(?:/stdio)?$|zod$|node:(fs|fs/promises|path|url|stream)$)', message: 'An MCP module imports only its own modules, the core, the report layer, the sources, the config layer, the git runner, cli/io.ts, package.json, the MCP SDK, zod, node:fs, node:fs/promises, node:path, node:url and node:stream.' },
+          ],
+        },
+      ],
+      'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
+    },
+  },
+  {
     // src/testing/ holds the test helpers, which only spec files import. The blocks above keep it out
-    // of the core, the profiles, the providers and the config layer; this one covers the rest.
+    // of the core, the profiles, the providers and the config layer; this one covers the rest. The MCP SDK
+    // stays out of the CLI and the library, which load src/mcp/ with import() alone: this rule does not read
+    // an import(), so a quorum that does not run `quorum mcp` never loads the SDK.
     files: ['src/cli/**/*.ts', 'src/*.ts'],
     ignores: ['src/**/*.spec.ts'],
     rules: {
@@ -290,6 +312,8 @@ export default antfu(
         {
           patterns: [
             { regex: '(?:^|/)testing/', message: 'Only spec files import src/testing/.' },
+            { regex: '^@modelcontextprotocol/', message: 'Only src/mcp/ imports the MCP SDK.' },
+            { regex: '(?:^|/)mcp/', message: 'Only import() loads src/mcp/, so quorum and the library never load the MCP SDK.' },
           ],
         },
       ],
