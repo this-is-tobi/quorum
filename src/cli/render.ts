@@ -54,15 +54,16 @@ function progressLine(event: QuorumEvent, prefixed: boolean): string | undefined
 
 /**
  * The line that names the files a review left out: their count, the first `LISTED_FILES` of them as
- * `<file> (<reason>)`, a skipped one as `<file> (skipped: <rule>)`, then how many more. A file is a JSON
- * string, as a flag's is; the empty name, which stands for a part of the diff no header names, is `<no path>`.
+ * `<file> (<reason>)`, a skipped or a held one as `<file> (<reason>: <rule>)`, then how many more. A file is
+ * a JSON string, as a flag's is; the empty name, which stands for a part of the diff no header names, is
+ * `<no path>`.
  */
 function leftOutLine(files: readonly LeftOutFile[]): string {
   const named = (file: string): string => file === ''
     ? '<no path>'
     : JSON.stringify(file)
-  const reasonOf = (entry: LeftOutFile): string => entry.reason === 'skipped'
-    ? `skipped: ${entry.rule}`
+  const reasonOf = (entry: LeftOutFile): string => 'rule' in entry
+    ? `${entry.reason}: ${entry.rule}`
     : entry.reason
   const entries = files.slice(0, LISTED_FILES).map(entry => `${named(entry.file)} (${reasonOf(entry)})`)
   const more = files.length > LISTED_FILES

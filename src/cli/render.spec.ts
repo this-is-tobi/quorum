@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Provider } from '../core/ports.ts'
-import type { Estimate, LeftOutFile, LeftOutReason, QuorumEvent } from '../core/types.ts'
+import type { Estimate, LeftOutFile, QuorumEvent } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { resolvedConfig } from '../testing/bench.ts'
@@ -58,7 +58,7 @@ describe('renderEvent', () => {
   })
 
   it('renders the files left out in one line: five at most, each a JSON string with its reason, the empty name as <no path>, inert, never prefixed', () => {
-    const file = (name: string, reason: Exclude<LeftOutReason, 'skipped'> = 'binary'): LeftOutFile => ({ file: name, reason })
+    const file = (name: string, reason: 'excluded' | 'binary' | 'submodule' = 'binary'): LeftOutFile => ({ file: name, reason })
     expect(renderEvent({
       type: 'left-out',
       files: [
@@ -98,6 +98,24 @@ describe('renderEvent', () => {
       ],
     }))
       .toBe('left out: 1 file(s): ".env<U+202E>\\n" (skipped: secret)')
+  })
+
+  it('writes a held file with its reason and rule on the left out line', () => {
+    expect(renderEvent({
+      type: 'left-out',
+      files: [
+        { file: '.env', reason: 'secret', rule: 'name' },
+        { file: 'old/.env', reason: 'deleted-secret', rule: 'name' },
+      ],
+    }))
+      .toBe('left out: 2 file(s): ".env" (secret: name), "old/.env" (deleted-secret: name)')
+    expect(renderEvent({
+      type: 'left-out',
+      files: [
+        { file: '', reason: 'secret', rule: 'aws-key' },
+      ],
+    }))
+      .toBe('left out: 1 file(s): <no path> (secret: aws-key)')
   })
 
   it('renders the text a line carries inert', () => {

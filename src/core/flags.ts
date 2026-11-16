@@ -1,6 +1,7 @@
 import type { Flag, FlagCode, LeftOutFile } from './types.ts'
 import { addedLines } from './diff.ts'
 import { hiddenLabels, spaceHidden, stripHidden } from './sanitize.ts'
+import { CREDENTIAL_PHRASES, isSecretName } from './secrets.ts'
 
 /** How many code points or patterns a flag's detail names before it counts the rest. */
 const MAX_LISTED = 8
@@ -14,8 +15,15 @@ const TAB = 'U+0009'
  */
 const EMOJI = /\p{RGI_Emoji}/gv
 
-/** What a `secret-file` flag says: the code writes every word of it. */
-const SECRET_DETAIL = 'named as a secret, so a path review sent none of it: check that it belongs in the repository'
+/**
+ * What a `secret-file` flag says, in words the code writes: a file a path review skipped, by its name or by
+ * a credential it holds, and a file held back from the review of a diff, held or deleted whole, by its name
+ * or by a kind of credential. It names the kind and never a line of the file.
+ */
+const SKIPPED_BY_NAME = 'named as a secret, so a path review sent none of it: check that it belongs in the repository'
+const SKIPPED_BY_CONTENT = 'holds what reads as a credential, so a path review sent none of it: remove it from the repository, and rotate it if it is real'
+const HELD_BY_NAME = 'named as a secret, so no model was sent any of it: check that it belongs in the change'
+const DELETED_BY_NAME = 'deletes a file named as a secret, so no model was sent any of it: the history still holds the file, so rotate what it held'
 
 /** One kind of text addressed to an AI reviewer, and the name a flag's detail gives it. */
 interface Pattern {
@@ -156,17 +164,48 @@ export function diffFlags(sections: ReadonlyMap<string, string>): Flag[] {
   return flags
 }
 
+/** What a `secret-file` flag says of a file left out, or undefined when the file is no secret. */
+function secretDetail(entry: LeftOutFile): string | undefined {
+  switch (entry.reason) {
+    case 'skipped':
+      if (entry.rule !== 'secret') return undefined
+      return isSecretName(entry.file)
+        ? SKIPPED_BY_NAME
+        : SKIPPED_BY_CONTENT
+    case 'secret':
+      return entry.rule === 'name'
+        ? HELD_BY_NAME
+        : `holds what reads as ${CREDENTIAL_PHRASES[entry.rule]}, so no model was sent any of it: keep it out of the repository, and rotate it if it is real`
+    case 'deleted-secret':
+      return entry.rule === 'name'
+        ? DELETED_BY_NAME
+        : `deletes a file that holds what reads as ${CREDENTIAL_PHRASES[entry.rule]}, so no model was sent any of it: the history still holds it, so rotate it`
+    default:
+      return undefined
+  }
+}
+
 /**
- * The flags of the files a source skipped as secrets, in the order it listed them: one `secret-file` flag for
- * each `skipped` entry of the rule `secret`, at the file's own path and with no line, since no model and no
- * diff saw the file. A person should look at whether a file named as a secret belongs in the repository. An
- * entry an `exclude` pattern matched first is `excluded`, so it raises none: leaving it out was the
- * operator's choice. Like every flag, it changes no verdict and no exit code.
+ * The flags of the files left out as secrets, in the order they are listed: one `secret-file` flag for
+ * each `skipped` entry of the rule `secret` (a source skipped it, by its name or, when its name is no
+ * secret's, by a credential it holds), for each `secret` entry (held back from the diff, by its name or by
+ * the kind of credential it holds) and for each `deleted-secret` entry (the change deletes it whole: the
+ * history still holds it, so rotate what it held). Each is at the file's own path, absent for the empty
+ * name that stands for the text no header names, and with no line, since no model saw the file and the
+ * flag quotes none of it. A person should look at whether the file belongs in the change, or rotate what
+ * it held. An entry an `exclude` pattern matched first is `excluded`, so it raises none: leaving it out
+ * was the operator's choice, and a file the input sends is never held. Like every flag, it changes no
+ * verdict and no exit code.
  */
 export function secretFlags(leftOut: readonly LeftOutFile[]): Flag[] {
-  return leftOut.flatMap(entry => entry.reason === 'skipped' && entry.rule === 'secret'
-    ? [
-        { code: 'secret-file' as const, file: entry.file, detail: SECRET_DETAIL },
-      ]
-    : [])
+  return leftOut.flatMap((entry) => {
+    const detail = secretDetail(entry)
+    if (detail === undefined) return []
+    const where: Where = entry.file === ''
+      ? {}
+      : { file: entry.file }
+    return [
+      { code: 'secret-file' as const, ...where, detail },
+    ]
+  })
 }

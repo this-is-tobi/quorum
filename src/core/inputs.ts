@@ -1,5 +1,6 @@
 import type { ConfigIssue } from './errors.ts'
 import { isRecord } from './output.ts'
+import { SECRET_RULES } from './secrets.ts'
 import type { LeftOutFile, LeftOutReason, ObjectFormat, ReviewSource, SkipRule } from './types.ts'
 
 /** The kinds of source whose ids name a git repository's objects, each with the fields that hold a full commit id. */
@@ -24,7 +25,12 @@ const LEFT_OUT_REASONS: ReadonlySet<unknown> = new Set<LeftOutReason>([
   'binary',
   'submodule',
   'skipped',
+  'secret',
+  'deleted-secret',
 ])
+/** The reasons of a file held back as a secret, which carry the rule that held it. */
+const HELD_REASONS: ReadonlySet<unknown> = new Set<LeftOutReason>(['secret', 'deleted-secret'])
+const SECRET_RULE_SET: ReadonlySet<unknown> = new Set<string>(SECRET_RULES)
 
 /** The rules a path review skips a file by: the bench's schema takes the same list. */
 export const SKIP_RULES = [
@@ -95,8 +101,9 @@ export function sourceIssues(value: unknown): ConfigIssue[] {
 /**
  * Every problem with a value given as a review's `leftOut`: none when it is unset, `leftOut: must be an
  * array`, else for each entry `leftOut.<index>` when it is no object, its `file` that is not a string, its
- * `reason` that is none of `excluded`, `binary`, `submodule` and `skipped`, and its `rule`: one of the seven
- * a skipped file has, which no other reason has. A reason or a rule is a value of this release: a reader of
+ * `reason` that is none of `excluded`, `binary`, `submodule`, `skipped`, `secret` and `deleted-secret`, and
+ * its `rule`: one of the seven a skipped file has, one of the nine a held file has (`secret` and
+ * `deleted-secret`), which no other reason has. A reason or a rule is a value of this release: a reader of
  * a result takes one it does not know as a file left out, but a caller of `review` names ones it can.
  */
 export function leftOutIssues(value: unknown): ConfigIssue[] {
@@ -116,14 +123,36 @@ export function leftOutIssues(value: unknown): ConfigIssue[] {
     }
     if (typeof entry.file !== 'string') issues.push({ path: `${path}.file`, message: 'must be a string' })
     if (!LEFT_OUT_REASONS.has(entry.reason)) {
-      issues.push({ path: `${path}.reason`, message: 'must be excluded, binary, submodule or skipped' })
+      issues.push({ path: `${path}.reason`, message: 'must be excluded, binary, submodule, skipped, secret or deleted-secret' })
     } else if (entry.reason === 'skipped') {
       if (!SKIP_RULE_SET.has(entry.rule)) issues.push({ path: `${path}.rule`, message: 'must be vendored, lockfile, minified, secret, binary, submodule or lfs' })
+    } else if (HELD_REASONS.has(entry.reason)) {
+      if (!SECRET_RULE_SET.has(entry.rule)) issues.push({ path: `${path}.rule`, message: `must be ${SECRET_RULES.slice(0, -1).join(', ')} or ${SECRET_RULES.at(-1)}` })
     } else if (entry.rule !== undefined) {
-      issues.push({ path: `${path}.rule`, message: 'belongs to a skipped file only' })
+      issues.push({ path: `${path}.rule`, message: 'belongs to a skipped, secret or deleted-secret file only' })
     }
   }
   return issues
+}
+
+/**
+ * Every problem with a value given as a review's `send`: none when it is unset, `send: must be an array`,
+ * else `send.<index>: must name a file` for each entry that is not a non-empty string, a hole included. The
+ * empty name is the text no header names, which no file of the diff is, so it is no file to send.
+ */
+export function sendIssues(value: unknown): ConfigIssue[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) {
+    return [
+      { path: 'send', message: 'must be an array' },
+    ]
+  }
+  // `Array.from` reads a hole as `undefined`, so it is reported like any other entry that is no name.
+  return Array.from<unknown>(value).flatMap((entry, index) => typeof entry === 'string' && entry !== ''
+    ? []
+    : [
+        { path: `send.${index}`, message: 'must name a file' },
+      ])
 }
 
 /**
@@ -157,9 +186,22 @@ export function sourceOf(value: ReviewSource | undefined): ReviewSource {
   }
 }
 
+/** A copy of a file left out with its known fields: `rule` only for a skipped or a held file. */
+function copyOf(entry: LeftOutFile): LeftOutFile {
+  switch (entry.reason) {
+    case 'skipped':
+      return { file: entry.file, reason: entry.reason, rule: entry.rule }
+    case 'secret':
+    case 'deleted-secret':
+      return { file: entry.file, reason: entry.reason, rule: entry.rule }
+    default:
+      return { file: entry.file, reason: entry.reason }
+  }
+}
+
 /**
  * The files a review leaves out as one list: the source's first, then the diff's, each file, reason and rule
- * once, the first kept. Every entry is a copy of its known fields, `rule` only for a skipped file.
+ * once, the first kept. Every entry is a copy of its known fields, `rule` only for a skipped or a held file.
  */
 export function mergeLeftOut(source: readonly LeftOutFile[], diff: readonly LeftOutFile[]): LeftOutFile[] {
   const listed = new Set<string>()
@@ -168,13 +210,11 @@ export function mergeLeftOut(source: readonly LeftOutFile[], diff: readonly Left
     ...source,
     ...diff,
   ]) {
-    const copy: LeftOutFile = entry.reason === 'skipped'
-      ? { file: entry.file, reason: entry.reason, rule: entry.rule }
-      : { file: entry.file, reason: entry.reason }
+    const copy = copyOf(entry)
     const key = JSON.stringify([
       copy.reason,
       copy.file,
-      copy.reason === 'skipped'
+      'rule' in copy
         ? copy.rule
         : null,
     ])

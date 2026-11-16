@@ -134,25 +134,26 @@ export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
  * envelope, so the profile reviewed nothing; a gating profile's ends the review instead.
  * `request-too-large`: a provider refused a request that may not fit its model's context, so it was
  * not sent. `binary` and `submodule`: the diff carries no content for a file, shown only as binary
- * or as a submodule's commit; `meta.leftOut` lists the files. `too-large`: a hunk of a file, or a
- * section with no hunk, fits in no research part of the profile's model's window, so no part holds it and no
- * model read it; one entry per profile counts them, and `meta.profiles.<id>.coverage` lists their
- * ranges. `token-cap`: the review's token cap stopped part of the profile's work, its research (some
+ * or as a submodule's commit; `secret`: no model was sent a file, held back because its name is a
+ * secret's or it holds a credential quorum recognizes; `meta.leftOut` lists the files. `too-large`: a
+ * hunk of a file, or a section with no hunk, fits in no research part of the profile's model's window,
+ * so no part holds it and no model read it; one entry per profile counts them, and
+ * `meta.profiles.<id>.coverage` lists their ranges. `token-cap`: the review's token cap stopped part of the profile's work, its research (some
  * of its parts, for a large change) or some of its votes, which were not sent; `review-deadline`: the
  * review reached its deadline, which stopped part of the profile's work, its research (some of its
  * parts) or some of its votes, in flight or not yet sent; one entry per limit and profile counts them.
  * For a large change researched in parts, `research-failed` and `request-too-large` count the parts that
  * failed or were refused, and each of the other reasons its parts' share.
  */
-export type IncompleteReason = 'research-unusable' | 'research-failed' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'too-large' | 'token-cap' | 'review-deadline' | 'binary' | 'submodule'
+export type IncompleteReason = 'research-unusable' | 'research-failed' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'too-large' | 'token-cap' | 'review-deadline' | 'binary' | 'submodule' | 'secret'
 
 /**
  * Work the run could not review: a research reply with findings but none usable, an advisory
  * profile's research that failed (`research-failed`), findings beyond the cap, a finding the
  * harness could not read, a kept finding whose failed votes could have raised it to a higher
  * level, a request its provider refused as too large to send, work the review's token cap or deadline
- * stopped, or a file whose change the diff does not carry, binary or a submodule's commit. It is reported and
- * counted, never dropped silently (ADR-0012).
+ * stopped, a file whose change the diff does not carry, binary or a submodule's commit, or a file held back
+ * as a secret, which no model was sent. It is reported and counted, never dropped silently (ADR-0012).
  */
 export interface IncompleteEntry {
   /** The id of the profile whose run has the gap. */
@@ -165,9 +166,11 @@ export interface IncompleteEntry {
 
 /**
  * Why a file is in `meta.leftOut`: an `exclude` pattern matches it, its change reaches the models only as
- * binary or as a submodule's commit, or a path review skipped it (`skipped`, with its `rule`).
+ * binary or as a submodule's commit, a path review skipped it (`skipped`), or it was held back as a secret
+ * (`secret`, or `deleted-secret` when the change deletes a file named as one whole): a skipped or held file
+ * has its `rule`.
  */
-export type LeftOutReason = 'excluded' | 'binary' | 'submodule' | 'skipped'
+export type LeftOutReason = 'excluded' | 'binary' | 'submodule' | 'skipped' | 'secret' | 'deleted-secret'
 
 /**
  * Why a path review skips a file by default: `vendored`, `lockfile`, `minified`, `secret` and `binary`
@@ -188,9 +191,12 @@ export type SecretRule = 'name' | CredentialKind
 
 /**
  * A file the review left out: one an `exclude` pattern matches, which is no gap; one a path review
- * skipped, which is no gap either, and whose `rule` says which rule did; or one whose change the diff
- * does not carry, `binary` or `submodule`, which is a gap of every profile. `rule` is there exactly for a
- * skipped file. A reader takes a reason or a rule it does not know as a file left out, never as an error.
+ * skipped, which is no gap either, and whose `rule` says which rule did; one whose change the diff
+ * does not carry, `binary` or `submodule`, which is a gap of every profile; or one held back as a secret,
+ * which no model was sent: `secret` is a gap of every profile, `deleted-secret` (the change deletes a file
+ * named as a secret whole, so it adds no code a review would read) is none, and the `rule` of either says
+ * whether its name or a credential in it held it. `rule` is there exactly for a skipped or a held file. A
+ * reader takes a reason or a rule it does not know as a file left out, never as an error.
  */
 export type LeftOutFile
   = | {
@@ -204,14 +210,21 @@ export type LeftOutFile
     reason: 'skipped'
     rule: SkipRule
   }
+  | {
+    /** The diff's own path, decoded, by which no model was sent the file; '' for the text no `diff --git` header names. */
+    file: string
+    reason: 'secret' | 'deleted-secret'
+    /** What held it: `name` when its name is a secret's, else the kind of credential its text holds. */
+    rule: SecretRule
+  }
 
 /**
- * Why part of a file was not reviewed, as `CoverageEntry` records it: a `LeftOutReason`'s `binary` or
- * `submodule`, `too-large` for a hunk, or a section with no hunk, that fits in no research part
- * of its model's window, or the `IncompleteReason` of the research part that held it and did not
- * read it: `request-too-large`, `token-cap`, `review-deadline` or `research-failed`.
+ * Why part of a file was not reviewed, as `CoverageEntry` records it: a `LeftOutReason`'s `binary`,
+ * `submodule`, `secret` or `deleted-secret`, `too-large` for a hunk, or a section with no hunk, that fits in
+ * no research part of its model's window, or the `IncompleteReason` of the research part that held it and
+ * did not read it: `request-too-large`, `token-cap`, `review-deadline` or `research-failed`.
  */
-export type CoverageReason = 'binary' | 'submodule' | 'too-large' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'research-failed'
+export type CoverageReason = 'binary' | 'submodule' | 'secret' | 'deleted-secret' | 'too-large' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'research-failed'
 
 /**
  * How much of a file a profile's research reviewed: `reviewed` when every part that holds it was
@@ -238,7 +251,7 @@ export interface CoverageEntry {
   left?: LeftRange[]
 }
 
-/** What an advisory flag points at: hidden characters, text addressed to an AI reviewer, or a file a path review skipped for its name, as a secret's. */
+/** What an advisory flag points at: hidden characters, text addressed to an AI reviewer, or a file held back or skipped as a secret, by its name or a credential it holds. */
 export type FlagCode = 'hidden-characters' | 'ai-addressed-text' | 'secret-file'
 
 /**
@@ -248,7 +261,7 @@ export type FlagCode = 'hidden-characters' | 'ai-addressed-text' | 'secret-file'
  */
 export interface Flag {
   code: FlagCode
-  /** The diff's own path for the file, or the path a path review skipped as a secret; absent for a diff without per-file headers. */
+  /** The diff's own path for the file, or the path of a file held back or skipped as a secret; absent for a diff without per-file headers, and for the text no header names. */
   file?: string
   /** The first added line, in the new file, the flag is about; absent when it is about the file name, and for a `secret-file` flag. */
   line?: number
@@ -315,9 +328,9 @@ export interface QuorumMeta {
   usage?: Usage
   /** Gaps that are not findings. An entry here, or an unreviewed finding, makes the review incomplete. */
   incomplete: IncompleteEntry[]
-  /** The files the review left out, the input's own first, then the diff's, once per file, reason and rule. Each, but an excluded or a skipped one, is also a gap of every profile. */
+  /** The files the review left out, the input's own first, then the diff's, once per file, reason and rule. Each, but an excluded, a skipped or a `deleted-secret` one, is also a gap of every profile: a file held back as a secret is one no model was sent. */
   leftOut: LeftOutFile[]
-  /** Advisory signals the harness read from the diff, and from the files the input's source skipped as secrets: where a human should look. They change no verdict and no exit code. */
+  /** Advisory signals the harness read from the diff, and from the files left out as secrets, held back or skipped by a source, which come first: where a human should look. They change no verdict and no exit code. */
   flags: Flag[]
 }
 
@@ -361,17 +374,28 @@ export interface QuorumOptions {
   readonly partTokens?: number
 }
 
-/** What one review takes: the diff, and optionally where it came from and the files its source left out before it made the diff. */
+/**
+ * What one review takes: the diff, and optionally where it came from, the files its source left out before it
+ * made the diff, and the files to send though they are held back as secrets.
+ */
 export interface ReviewInput {
   readonly diff: string
   /** Where the diff came from, checked and recorded in `meta.source` as given; `{ kind: 'diff' }` when unset. */
   readonly source?: ReviewSource
   /**
    * The files the source left out before it made the diff, listed in `meta.leftOut` and in the `left-out`
-   * event ahead of the diff's own. A `binary` or `submodule` one is a gap of every profile, as the diff's are;
-   * an `excluded` or a `skipped` one is no gap, and a `skipped` one of the rule `secret` raises a `secret-file` flag.
+   * event ahead of the diff's own. A `binary`, `submodule` or `secret` one is a gap of every profile, as the
+   * diff's are; an `excluded`, a `skipped` or a `deleted-secret` one is no gap. A `skipped` one of the rule
+   * `secret`, a `secret` and a `deleted-secret` one each raise a `secret-file` flag.
    */
   readonly leftOut?: readonly LeftOutFile[]
+  /**
+   * The files of the diff to send the models though they are held back as secrets, each the path as the diff
+   * writes it, the one `meta.leftOut` lists, matched exactly: `./.env` names no file `.env`. A file named here
+   * is never held, so it is neither listed nor flagged as a secret; the text no header names, the file of the
+   * empty name, can never be named. None when unset.
+   */
+  readonly send?: readonly string[]
 }
 
 /**
@@ -426,9 +450,10 @@ export interface Quorum {
    * at a third of their reservation in `expected`, code taking about three bytes a token, and the votes in the
    * worst case only; `fits` says whether `expected` and what the calls in flight reserve are within
    * `maxReviewTokens`. It is an estimate, not a promise: a review still reserves each call against the cap.
+   * A file held back as a secret costs nothing, and one `input.send` names is counted, as `review` sends it.
    * Throws a `ConfigError` for an input `review` would refuse.
    */
-  readonly estimate: (input: { readonly diff: string }) => Estimate
+  readonly estimate: (input: { readonly diff: string, readonly send?: readonly string[] }) => Estimate
   /** Settings that cannot take full effect, such as a policy level that never applies; each starts at its profile id. */
   readonly warnings: readonly string[]
 }
@@ -446,7 +471,7 @@ export type QuorumEvent
   = | { type: 'run:start', profiles: string[], providers: Record<string, ProfileProviders> }
     /** The files the review leaves out, as `meta.leftOut` holds them, the input's first: sent once right after `run:start` when there is one. */
     | { type: 'left-out', files: LeftOutFile[] }
-    /** An advisory flag, read from the diff or from the files the input's source skipped, sent before any stage starts. */
+    /** An advisory flag, read from the diff or from the files left out as secrets, sent before any stage starts. */
     | { type: 'flag', flag: Flag }
     /** A stage of one profile starts. */
     | { type: 'stage:start', profile: string, stage: StageName }

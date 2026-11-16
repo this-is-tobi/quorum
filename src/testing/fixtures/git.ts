@@ -371,3 +371,37 @@ export const RENAMED_OUT_OF_DIST = [
   ' // 5',
   '',
 ].join('\n')
+
+/**
+ * `git diff --full-index --no-renames` of a change that deletes a three-line `.env` and adds a line to `a.js`: the
+ * deletion git writes for a file removed whole, then a section that modifies another file.
+ */
+export const DELETED_SECRET = [
+  'diff --git a/.env b/.env',
+  'deleted file mode 100644',
+  'index c241285f543067afc58b3606ffda618b9bb4e52d..0000000000000000000000000000000000000000',
+  '--- a/.env',
+  '+++ /dev/null',
+  '@@ -1,3 +0,0 @@',
+  '-A=1',
+  '-B=2',
+  '-C=3',
+  'diff --git a/a.js b/a.js',
+  'index c0d0fb45c382919737f8d0c20aaf57cf89b74af8..83db48f84ec878fbfb30b46d16630e944e34f205 100644',
+  '--- a/a.js',
+  '+++ b/a.js',
+  '@@ -1,2 +1,3 @@',
+  ' line1',
+  ' line2',
+  '+line3',
+  '',
+].join('\n')
+
+/** `git diff --full-index -M` of `.env` renamed, unchanged, to `moved.txt`: the old name is only on the `rename from` line */
+export const RENAMED_FROM_SECRET = [
+  'diff --git a/.env b/moved.txt',
+  'similarity index 100%',
+  'rename from .env',
+  'rename to moved.txt',
+  '',
+].join('\n')

@@ -54,7 +54,7 @@ The escape character and the bell arrive as `\u001b` and `\u0007` text, not as c
 
 ## Advisory flags
 
-The harness reads the diff by code, before any model sees it, and raises a flag for what a human should look at. A path review's files left out are read the same way. A flag is a hint and never a gate.
+The harness reads the diff by code, before any model sees it, and raises a flag for what a human should look at. The files a review left out as secrets are read the same way. A flag is a hint and never a gate.
 
 ### What they look for
 
@@ -62,9 +62,9 @@ The harness reads the diff by code, before any model sees it, and raises a flag 
 | --- | --- |
 | `hidden-characters` | A hidden character, as the class above defines it, in the name of a file or in an added line |
 | `ai-addressed-text` | In an added line, text that speaks to an AI reviewer instead of a person |
-| `secret-file` | A tracked file that a path review skipped because its name is a secret's, such as `.env` or `id_ed25519` |
+| `secret-file` | A file held back from the review as a secret, because its name is a secret's, such as `.env` or `id_ed25519`, or because a line of it reads as a credential; and a file a path review skipped for its name |
 
-The third code is raised by a [path review](../20-using/15-sources.md#what-a-path-review-skips) for a file whose name a secret scanner would look for, and whose content no model was sent: a person should look at whether the file belongs in the repository. It comes from the list of files the source left out, not from the diff. No template is exempt, `.env.example` included. A secret that `exclude` matched first is listed as `excluded` and raises no flag, since the operator chose to leave it out. A diff that adds such a file, by whatever source, is not flagged: its added lines are read as any others.
+The third code is raised for a file whose name a secret scanner would look for, or that holds a credential quorum recognizes, and that no model was sent: a person should look at whether the file belongs in the change. Every source holds such a file back: [Files held back as secrets](../20-using/15-sources.md#files-held-back-as-secrets). The flag comes from the list of files left out, not from the diff's lines, and it quotes none of them, nor the credential. A change that deletes a file named as a secret whole raises it too, and says that the history still holds the file. A [path review](../20-using/15-sources.md#what-a-path-review-skips) skips a file by its name before it reads it, and flags that: no template is exempt, `.env.example` included. A secret that `exclude` matched first is listed as `excluded` and raises no flag, since the operator chose to leave it out. A file a program sends with `send` is neither held nor flagged.
 
 The second code knows nine kinds of text, and a flag names each by these words:
 
@@ -82,9 +82,9 @@ Each kind is matched on one added line at a time, in two forms: with the line's 
 
 ### Where they look
 
-Added lines and file names only. That leaves out removed and context lines, and the commit message of a `git format-patch` series. A `secret-file` flag reads no line: it is about a file name the source gave, which is no part of the diff.
+Added lines and file names only. That leaves out removed and context lines, and the commit message of a `git format-patch` series. A `secret-file` flag reads no line: it is about a file the review left out, by its name or a credential in it, and names none of its lines.
 
-A diff section whose `diff --git` header quorum cannot read raises no flag. Today that means a renamed file under git's `--no-prefix` or `diff.mnemonicPrefix` settings. The model still reads those lines.
+A diff section whose `diff --git` header quorum cannot read raises no flag of its lines: a section of that kind that is held back as a secret still raises a `secret-file` flag, with no `file`. Today that means a renamed file under git's `--no-prefix` or `diff.mnemonicPrefix` settings. The model still reads those lines.
 
 ### What a hidden-characters flag leaves alone
 
@@ -106,13 +106,16 @@ Quorum raises at most one flag per file, code and subject, so a file raises at m
 | `hidden-characters` | The file name | `the file name holds U+202E` |
 | `hidden-characters` | The added lines | `U+202E, U+200B on 3 added line(s)` |
 | `ai-addressed-text` | The added lines | `a chat-template token, a tool-call tag on 2 added line(s)` |
+| `secret-file` | A file held back by its name | `named as a secret, so no model was sent any of it: check that it belongs in the change` |
+| `secret-file` | A file held back by a credential in it | `holds what reads as an AWS key, so no model was sent any of it: keep it out of the repository, and rotate it if it is real` |
+| `secret-file` | A file named as a secret that the change deletes whole | `deletes a file named as a secret, so no model was sent any of it: the history still holds the file, so rotate what it held` |
 | `secret-file` | A file a path review skipped | `named as a secret, so a path review sent none of it: check that it belongs in the repository` |
 
 ### Where they appear
 
 | Where | What it holds |
 | --- | --- |
-| `meta.flags` | Every flag, the `secret-file` flags of the files the source skipped first, then the diff's, file by file in its order: [A flag](../95-reference/20-json-result.md#a-flag) |
+| `meta.flags` | Every flag, the `secret-file` flags of the files left out first, then the diff's, file by file in its order: [A flag](../95-reference/20-json-result.md#a-flag) |
 | A `flag` event | One per flag, after `run:start` and before any stage: [Events](../95-reference/30-library-api.md#events) |
 | A `flag:` line on stderr | One per flag, before the research starts: [Progress lines](../20-using/10-cli.md#progress-lines) |
 
