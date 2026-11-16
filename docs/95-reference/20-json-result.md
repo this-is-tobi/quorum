@@ -236,6 +236,70 @@ A `secret-file` flag comes from `meta.leftOut`, not from the diff: one for each 
 
 Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4` for a gap of a gating profile, unless a gating profile kept a finding at or above its fail-on level, `high` by default. `--allow-incomplete` lifts a gating profile's gaps only when each is an unreviewed finding or a `vote-failed` gap, and every failed vote behind them failed in passing: a dropped connection, a timeout of its own, or an HTTP 408, 409, 429 or 5xx, as the votes' `failure` says ([Exit codes](../20-using/10-cli.md#exit-codes)). Every other gap exits `4` whatever the flags, since a pull request causes it directly: a `too-large` gap by making one hunk larger than any window, a `request-too-large` gap by padding a request until its provider refuses it, a `token-cap` gap by decoy findings and drawn-out replies that spend the review's tokens, a `review-deadline` gap by replies drawn out until the review's deadline, `binary` and `submodule` with one `.gitattributes` line, one NUL byte or a submodule's bump, `secret` with a file named `.env` or one line that reads as a key, `findings-capped` with decoy findings, and `finding-unreadable` and `research-unusable` with text that breaks the finder's reply. A `vote-failed` gap beside a vote that was refused, cut off at its token limit, stopped by a limit of the review or unusable exits `4` too. On a gating profile, do not use the flag for a pull request you do not trust.
 
+## The public view
+
+`--view public` writes, and `publicView(result)` makes, the result less what helps an attacker, for a sink a stranger can read: [The public view](../30-security/30-output-handling.md#the-public-view) says why. It keeps the shape above, with these differences:
+
+| Where | In the public view |
+| --- | --- |
+| `meta.view` | `"public"`, right after `version`. A full result has no `view` |
+| A vote | Three fields, in this order: `angle`, `keep`, a boolean, `null` when the vote failed, and `failure`, as in [A vote](#a-vote). There is no `vote`, no `reasoning` and no `error` |
+| `discarded` | Always `[]` |
+| `meta.profiles.<id>.discarded` | The number of findings of the profile that were discarded, after `gating` |
+| `meta.profiles.<id>.providers` | Absent: no provider and no model is named |
+| `meta.usage` | Absent |
+| An incomplete entry | `profile`, `reason`, then `file` when it has one, and no `detail`: a report describes a gap by its reason, in fixed words |
+
+Everything else is as in the full result: the findings with their evidence, the profiles' policy, `failOn`, `gating`, `invalidFindings` and coverage, the files left out, a held file's name, reason and rule included, and the flags with their details. `meta` is written in this order: `version`, `view`, `startedAt`, `durationMs`, `source`, `profiles`, `incomplete`, `leftOut`, `flags`; a profile in this one: `policy`, `failOn`, `gating`, `discarded`, `invalidFindings`, `coverage`.
+
+```json
+{
+  "kept": [
+    {
+      "id": "6f4bcc15476f",
+      "fingerprint": "30315391ee0ccee3:1",
+      "profile": "security",
+      "file": "src/users.js",
+      "line": 12,
+      "category": "CWE-89",
+      "summary": "The id from the query string is interpolated into the SQL text.",
+      "evidence": "+  return db.query(sql)",
+      "evidenceRow": 0,
+      "quoteMatched": true,
+      "keptVotes": 2,
+      "totalVotes": 3,
+      "confidence": "medium",
+      "votes": [
+        { "angle": "reachability", "keep": true, "failure": null },
+        { "angle": "impact", "keep": true, "failure": null },
+        { "angle": "defenses", "keep": null, "failure": { "kind": "http", "status": 503 } }
+      ]
+    }
+  ],
+  "discarded": [],
+  "unreviewed": [],
+  "meta": {
+    "version": "0.6.0",
+    "view": "public",
+    "profiles": {
+      "security": {
+        "policy": { "high": 3, "medium": 2, "low": null },
+        "failOn": "high",
+        "gating": true,
+        "discarded": 1,
+        "invalidFindings": 0,
+        "coverage": [{ "file": "src/users.js", "status": "reviewed" }]
+      }
+    },
+    "incomplete": [
+      { "profile": "security", "reason": "vote-failed", "file": "src/users.js" }
+    ]
+  }
+}
+```
+
+The example leaves out the fields of `meta` that do not change, `startedAt`, `durationMs`, `source`, `leftOut` and `flags`. `outcome` reads a view as the result it came from, so a program that holds only the view gets the review's exit code: [`outcome`](./30-library-api.md#outcome).
+
 ## An example
 
 A review of a diff that touches three files, run on the one provider, named `default`, that the CLI builds from `QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` alone, answering for the finder and every voter; its replies are fake. The finder listed five findings: one cited `src/auth.js`, which the diff does not touch, and was dropped (`invalidFindings` is 1); one had no `quote` and could not be read (the `finding-unreadable` gap). The three others went to the panel. The SQL injection was kept by all three lenses: `high`. The path traversal was kept by one: `discarded`. The session token got one keep, one reject and a vote whose endpoint answered 503: one more keep would have reached `medium`, so it is `unreviewed`. The CLI would exit `1` for this result.

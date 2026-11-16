@@ -8,6 +8,7 @@ import { isClaudeCode } from '../providers/build.ts'
 import { originOf } from '../providers/http.ts'
 import { presetOf } from '../providers/presets.ts'
 import { flagWhere, leftOutEntry } from '../report/lines.ts'
+import type { ReportView } from '../report/view.ts'
 
 /**
  * The progress line of an event, or undefined for the events the CLI keeps quiet about. These lines
@@ -16,9 +17,14 @@ import { flagWhere, leftOutEntry } from '../report/lines.ts'
  * from the finder or the diff, and nothing in them can act on a terminal or a CI log. When `prefixed`,
  * a line of an event that names a profile starts with `[<profile>] `: the `left out:`, `flag:` and totals
  * lines belong to the whole review and never do.
+ *
+ * Under the public view, whose log a stranger may read, two lines leave out the text of a finder or a server: a
+ * gap is `incomplete: <reason>`, then ` at <file as a JSON string>` when it has a file, with no detail, and a
+ * dropped finding is `invalid finding dropped`, with no reason, since the reason quotes the file name and the text
+ * of a finding the harness dropped, the oracle a discarded finding would be. Every other line is the full view's.
  */
-export function renderEvent(event: QuorumEvent, prefixed = false): string | undefined {
-  const line = progressLine(event, prefixed)
+export function renderEvent(event: QuorumEvent, prefixed = false, view: ReportView = 'full'): string | undefined {
+  const line = progressLine(event, prefixed, view)
   return line === undefined
     ? undefined
     : inertLine(line)
@@ -29,7 +35,7 @@ const profilePrefix = (profile: string): string => `[${profile}] `
 /** How many of the files left out the progress line names; the JSON result lists every one. */
 const LISTED_FILES = 5
 
-function progressLine(event: QuorumEvent, prefixed: boolean): string | undefined {
+function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): string | undefined {
   const of = (profile: string, line: string): string => prefixed
     ? `${profilePrefix(profile)}${line}`
     : line
@@ -39,9 +45,15 @@ function progressLine(event: QuorumEvent, prefixed: boolean): string | undefined
         ? of(event.profile, `${event.count} candidate(s) after dedup`)
         : undefined
     case 'finding:invalid':
-      return of(event.profile, `invalid finding dropped: ${event.reason}`)
+      return of(event.profile, view === 'public'
+        ? 'invalid finding dropped'
+        : `invalid finding dropped: ${event.reason}`)
     case 'incomplete':
-      return of(event.entry.profile, `incomplete: ${event.entry.reason} (${event.entry.detail})`)
+      return of(event.entry.profile, view === 'public'
+        ? `incomplete: ${event.entry.reason}${event.entry.file === undefined
+          ? ''
+          : ` at ${JSON.stringify(event.entry.file)}`}`
+        : `incomplete: ${event.entry.reason} (${event.entry.detail})`)
     case 'left-out':
       return leftOutLine(event.files)
     case 'flag':
@@ -68,13 +80,14 @@ function leftOutLine(files: readonly LeftOutFile[]): string {
 /**
  * The sink that writes the progress lines of a review: each event rendered by `renderEvent`, each line
  * that is defined handed to `write`. `run:start` says whether several profiles run, and then every
- * profile's line is prefixed. Rendering never throws, so the sink adds no failure of its own to a review.
+ * profile's line is prefixed. Rendering never throws, so the sink adds no failure of its own to a review. `view`
+ * is the one `renderEvent` takes.
  */
-export function progressSink(write: (line: string) => void): EventSink {
+export function progressSink(write: (line: string) => void, view: ReportView = 'full'): EventSink {
   let prefixed = false
   return (event) => {
     if (event.type === 'run:start') prefixed = event.profiles.length > 1
-    const line = renderEvent(event, prefixed)
+    const line = renderEvent(event, prefixed, view)
     if (line !== undefined) write(line)
   }
 }
@@ -126,10 +139,13 @@ function providerLabel(providers: ResolvedConfig['providers'], name: string): st
 /**
  * Who researches and who votes in each profile of a config, by profile in run order, as the banner names
  * them: `<model> @ <origin>` for a provider (see `bannerLines`), the panel as one provider when every lens
- * shares it, else each lens's. The labels are not yet inert: the caller makes each line it writes inert.
+ * shares it, else each lens's. Under the public view a provider is its config key alone, no model and no origin.
+ * The labels are not yet inert: the caller makes each line it writes inert.
  */
-export function profileProviders(config: ResolvedConfig): Array<{ readonly profile: string, readonly research: string, readonly panel: string }> {
-  const label = (name: string): string => providerLabel(config.providers, name)
+export function profileProviders(config: ResolvedConfig, view: ReportView = 'full'): Array<{ readonly profile: string, readonly research: string, readonly panel: string }> {
+  const label = (name: string): string => view === 'public'
+    ? name
+    : providerLabel(config.providers, name)
   return config.profiles.map(({ profile, research, voters }) => {
     const lenses = Object.entries(voters)
     return {
@@ -147,11 +163,13 @@ export function profileProviders(config: ResolvedConfig): Array<{ readonly profi
  * `<model> @ <origin>` (a provider object as `<model> @ the provider object <name>`, a `claude-code`
  * provider as `<model> @ claude-code`), never a path, a credential or a query. The panel line names one
  * provider when every lens shares it, else each lens's. Each line starts with `[<profile>] ` when several
- * profiles run, and is inert.
+ * profiles run, and is inert. Under the public view, which a stranger may read in a CI log, a provider is named
+ * by its config key alone, as `Research (default)...` and `Panel will use default`: no model, no origin, and
+ * no mention of a provider object or a claude-code one.
  */
-export function bannerLines(config: ResolvedConfig): string[] {
+export function bannerLines(config: ResolvedConfig, view: ReportView = 'full'): string[] {
   const prefixed = config.profiles.length > 1
-  return profileProviders(config).flatMap(({ profile, research, panel }) => {
+  return profileProviders(config, view).flatMap(({ profile, research, panel }) => {
     const prefix = prefixed
       ? profilePrefix(profile)
       : ''

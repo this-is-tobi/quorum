@@ -374,6 +374,41 @@ export interface QuorumResult {
   meta: QuorumMeta
 }
 
+/** A vote as the public view keeps it: the lens, whether it kept the finding (`null` when the vote failed) and its failure, never its reasoning or its error. */
+export interface PublicVote {
+  angle: string
+  keep: boolean | null
+  failure: VoteFailure | null
+}
+
+/** A verdict of the public view: the verdict with its votes reduced to `PublicVote`s. */
+export type PublicVerdict = Omit<Verdict, 'votes'> & { votes: PublicVote[] }
+
+/** What the public view records about a profile: no providers, and the count of its discarded findings, which the view does not list. */
+export interface PublicProfileMeta extends Omit<ProfileMeta, 'providers'> {
+  /** How many findings of the profile the panel discarded. */
+  discarded: number
+}
+
+/** A gap as the public view keeps it: the profile, the reason and the file, never the detail. */
+export type PublicGap = Omit<IncompleteEntry, 'detail'>
+
+/** The meta of the public view: no usage, no providers, no gap detail, and `view` to say so. */
+export interface PublicMeta extends Omit<QuorumMeta, 'profiles' | 'usage' | 'incomplete'> {
+  view: 'public'
+  profiles: Record<string, PublicProfileMeta>
+  incomplete: PublicGap[]
+}
+
+/** A result less what helps an attacker, which every public sink renders: see `publicView`. */
+export interface PublicView {
+  kept: PublicVerdict[]
+  /** Always empty: the discarded findings are counted in `meta.profiles.<id>.discarded`. */
+  discarded: []
+  unreviewed: PublicVerdict[]
+  meta: PublicMeta
+}
+
 /** What a quorum runs, and the limits every one of its reviews keeps to. */
 export interface QuorumOptions {
   /** At least one, ids unique: each runs research, dedup and panel on its own, concurrently with the others. */

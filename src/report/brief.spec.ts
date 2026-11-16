@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { blankResult, FINDINGS, INCOMPLETE, LIFTED, PASS, reportResult, SQL } from '../testing/report.ts'
 import { brief } from './brief.ts'
+import { publicView } from './view.ts'
 
 describe('brief', () => {
   it('counts the kept findings by level, the unreviewed ones, the gaps, the files left out and the flags, then the exit code', () => {
@@ -75,6 +76,24 @@ describe('brief', () => {
     ]) expect(line).not.toContain(text)
     expect(line).toBe(brief.render(reportResult(), { color: false, outcome: FINDINGS }))
     expect(line.split('\n')).toHaveLength(2)
+  })
+
+  it('counts a public view as the result it came from', () => {
+    const result = reportResult({
+      kept: [
+        SQL,
+        { ...SQL, id: 'i4', confidence: 'medium' as const },
+      ],
+      meta: {
+        leftOut: [
+          { file: 'assets/logo.png', reason: 'binary' },
+          { file: '.env', reason: 'secret', rule: 'name' },
+        ],
+      },
+    })
+    const line = brief.render(result, { color: false, outcome: FINDINGS })
+    expect(line).toBe('quorum: findings: 2 kept (1 high, 1 medium), 1 unreviewed, 1 gap, 2 left out (1 secret), 1 flag; exit 1\n')
+    expect(brief.render(publicView(result), { color: false, outcome: FINDINGS })).toBe(line)
   })
 
   it.each([

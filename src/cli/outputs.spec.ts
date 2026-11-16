@@ -23,50 +23,118 @@ describe('reportPlan', () => {
   const { io } = harness()
 
   it('writes json on stdout by default, and the format --format names', () => {
-    expect(reportPlan({}, io)).toEqual({ format: 'json', color: false, outputs: [] })
+    expect(reportPlan({}, io)).toEqual({
+      format: 'json',
+      color: false,
+      view: 'full',
+      outputs: [],
+    })
     expect(reportPlan({
       format: ['json'],
-    }, io)).toEqual({ format: 'json', color: false, outputs: [] })
+    }, io)).toEqual({
+      format: 'json',
+      color: false,
+      view: 'full',
+      outputs: [],
+    })
     expect(reportPlan({
       format: ['brief'],
-    }, io)).toEqual({ format: 'brief', color: false, outputs: [] })
+    }, io)).toEqual({
+      format: 'brief',
+      color: false,
+      view: 'full',
+      outputs: [],
+    })
+    expect(reportPlan({
+      view: ['public'],
+    }, io)).toEqual({
+      format: 'json',
+      color: false,
+      view: 'public',
+      outputs: [],
+    })
   })
 
   it('chooses text on a terminal and json elsewhere, unless --format names one, and colors only text', () => {
     const terminal = harness({ stdoutIsTTY: true }).io
     const pipe = harness({ stdoutIsTTY: false }).io
-    expect(reportPlan({}, terminal)).toEqual({ format: 'text', color: true, outputs: [] })
-    expect(reportPlan({}, pipe)).toEqual({ format: 'json', color: false, outputs: [] })
+    expect(reportPlan({}, terminal)).toEqual({
+      format: 'text',
+      color: true,
+      view: 'full',
+      outputs: [],
+    })
+    expect(reportPlan({}, pipe)).toEqual({
+      format: 'json',
+      color: false,
+      view: 'full',
+      outputs: [],
+    })
     expect(reportPlan({
       format: ['json'],
-    }, terminal)).toEqual({ format: 'json', color: false, outputs: [] })
+    }, terminal)).toEqual({
+      format: 'json',
+      color: false,
+      view: 'full',
+      outputs: [],
+    })
     expect(reportPlan({
       format: ['brief'],
       color: ['always'],
-    }, terminal)).toEqual({ format: 'brief', color: false, outputs: [] })
+    }, terminal)).toEqual({
+      format: 'brief',
+      color: false,
+      view: 'full',
+      outputs: [],
+    })
     expect(reportPlan({
       format: ['json'],
       color: ['always'],
-    }, terminal)).toEqual({ format: 'json', color: false, outputs: [] })
+    }, terminal)).toEqual({
+      format: 'json',
+      color: false,
+      view: 'full',
+      outputs: [],
+    })
     expect(reportPlan({
       format: ['text'],
-    }, pipe)).toEqual({ format: 'text', color: false, outputs: [] })
+    }, pipe)).toEqual({
+      format: 'text',
+      color: false,
+      view: 'full',
+      outputs: [],
+    })
     expect(reportPlan({
       format: ['text'],
       color: ['always'],
-    }, pipe)).toEqual({ format: 'text', color: true, outputs: [] })
+    }, pipe)).toEqual({
+      format: 'text',
+      color: true,
+      view: 'full',
+      outputs: [],
+    })
     expect(reportPlan({
       color: ['never'],
-    }, terminal)).toEqual({ format: 'text', color: false, outputs: [] })
+    }, terminal)).toEqual({
+      format: 'text',
+      color: false,
+      view: 'full',
+      outputs: [],
+    })
     expect(reportPlan({
       color: ['auto'],
     }, harness({
       stdoutIsTTY: true,
       env: { NO_COLOR: '1' },
-    }).io)).toEqual({ format: 'text', color: false, outputs: [] })
+    }).io)).toEqual({
+      format: 'text',
+      color: false,
+      view: 'full',
+      outputs: [],
+    })
   })
 
-  it.each<[{ format?: string[], color?: string[], output?: string[], 'print-config'?: boolean }, string]>([
+  it.each<[{ format?: string[], color?: string[], view?: string[], output?: string[], 'print-config'?: boolean }, string]>([
     [
       {
         format: ['xml'],
@@ -90,14 +158,33 @@ describe('reportPlan', () => {
         format: ['json'],
         'print-config': true,
       },
-      '--print-config: prints the config as YAML, so it takes no --format or --output',
+      '--print-config: prints the config as YAML, so it takes no --format, --output or --view',
     ],
     [
       {
         output: ['json=a.json'],
         'print-config': true,
       },
-      '--print-config: prints the config as YAML, so it takes no --format or --output',
+      '--print-config: prints the config as YAML, so it takes no --format, --output or --view',
+    ],
+    [
+      {
+        view: ['secret'],
+      },
+      '--view: must be full or public',
+    ],
+    [
+      {
+        view: ['full', 'public'],
+      },
+      '--view: takes one view',
+    ],
+    [
+      {
+        view: ['public'],
+        'print-config': true,
+      },
+      '--print-config: prints the config as YAML, so it takes no --format, --output or --view',
     ],
     [
       {

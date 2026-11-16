@@ -289,7 +289,7 @@ const result = await quorum.review(input)
 ## `outcome`
 
 ```ts
-declare function outcome(result: QuorumResult, options?: { readonly allowIncomplete?: boolean }): Outcome
+declare function outcome(result: QuorumResult | PublicView, options?: { readonly allowIncomplete?: boolean }): Outcome
 
 type OutcomeStatus = 'pass' | 'findings' | 'incomplete'
 
@@ -300,7 +300,7 @@ interface Outcome {
 }
 ```
 
-`outcome` says what a review comes to: the rule that decides the CLI's exit code, for a program that reads a result. `status` is `pass`, `findings` or `incomplete`, `exitCode` is the code that says it, and `lifted` is `true` when `allowIncomplete` turned an incomplete review into a pass, so a report never calls that run complete. It reads the result and calls nothing. What decides each, in this order:
+`outcome` says what a review comes to: the rule that decides the CLI's exit code, for a program that reads a result. `status` is `pass`, `findings` or `incomplete`, `exitCode` is the code that says it, and `lifted` is `true` when `allowIncomplete` turned an incomplete review into a pass, so a report never calls that run complete. It reads the result, or its [public view](#publicview), as the result it came from, and calls nothing. What decides each, in this order:
 
 - **`1`, `findings`.** A kept finding is at or above the level of its profile, `meta.profiles.<id>.failOn`: `high` fails a `high` finding, `medium` a `high` or `medium` one, `low` any, and `none` none ([Gating](../20-using/40-profiles.md#gating)). It wins over `4`, whatever else is missing.
 - **`4`, `incomplete`.** An unreviewed finding, or an entry of `meta.incomplete`, belongs to a gating profile: one whose level is not `none`. The gaps and findings of a profile at `none` change nothing.
@@ -308,7 +308,7 @@ interface Outcome {
 
 A result of an earlier release has no `failOn`, and `outcome` reads its `gating`: `false` is `none`, anything else `high`, and a `failOn` that is a level wins. A `failOn` that is no level, or that the entry only inherits, is unreadable, so `outcome` reads the `gating` beside it the same way: `gating: false` gives `none`. A profile with no readable field at all, one missing from `meta.profiles` or an entry that is `null`, gates at `high`, so a gap in a result never hides a finding.
 
-`allowIncomplete` lifts what the CLI's `--allow-incomplete` lifts, and nothing else: the `4` becomes `0`, `lifted` is `true`, only when every gap of a gating profile is a `vote-failed` one and every failed vote behind the gaps failed in passing, never when a `1` is due: [Exit codes](../20-using/10-cli.md#exit-codes). A `secret` gap, a `too-large` gap and every other reason stay `4`, since a pull request can cause them.
+`allowIncomplete` lifts what the CLI's `--allow-incomplete` lifts, and nothing else: the `4` becomes `0`, `lifted` is `true`, only when every gap of a gating profile is a `vote-failed` one and every failed vote behind the gaps failed in passing, never when a `1` is due: [Exit codes](../20-using/10-cli.md#exit-codes). A `secret` gap, a `too-large` gap and every other reason stay `4`, since a pull request can cause them. A public view has no vote's `vote`, so `outcome` reads a vote of a view by its `keep`: cast when it is a boolean and the vote's `failure` is `null` or absent, failed otherwise. A job that holds only the view, such as the post job of a review run with `--view public`, concludes what the review job's `--allow-incomplete` did.
 
 ```ts
 import { outcome } from '@tobi-or-not/quorum'
@@ -320,8 +320,9 @@ const { status, exitCode, lifted } = outcome(result, { allowIncomplete: true })
 ## `renderReport`
 
 ```ts
-declare function renderReport(result: QuorumResult, options: ReportOptions): string
+declare function renderReport(input: ReportInput, options: ReportOptions): string
 
+type ReportInput = QuorumResult | PublicView
 type ReportFormat = 'text' | 'json' | 'brief'
 
 interface ReportOptions {
@@ -331,7 +332,7 @@ interface ReportOptions {
 }
 ```
 
-`renderReport` writes a review's result as the report the CLI writes on stdout, a text that ends in a line feed: [The report](../20-using/10-cli.md#the-report). It reads the result, as `review` returns it, and the options, and nothing else: no terminal, no environment, no file.
+`renderReport` writes a review's result, or its [public view](#publicview), as the report the CLI writes on stdout, a text that ends in a line feed: [The report](../20-using/10-cli.md#the-report). It reads the input, as `review` returns it, and the options, and nothing else: no terminal, no environment, no file. It hands the input to the format as it is, so `json` of a view is the view, and `text` and `brief` of a view are the report of the result it came from, but for the two lines of `text` that the view has no detail or usage for: a gap is written in the fixed words of its reason, and the time has no token count.
 
 - **`format`** is `text`, the report for a person, `json`, the result as `inertJson` writes it, or `brief`, one line of counts and code words that holds no file name and no model text. Any other value throws a `ConfigError` at `format`: `format: must be text, json or brief`. `text` has the findings with their evidence, each profile's counts and coverage, what was left out, the gaps, the flags, the time and the tokens, and last the verdict, as [The text report](../20-using/10-cli.md#the-text-report) shows: every line is `inertLine` of its text, 80 columns wide but for a path, a category or a row of code.
 - **`color`** is `false` unless it is `true`. `text` is the one format that colors: with `true` it wraps the level, the location, the cited row's marker, a row's `+` or `-` and the verdict's status word in SGR sequences, never a word a model or the diff wrote, and a line whose text `inertLine` changes beyond its hidden characters is written uncolored. `json` and `brief` never color. The CLI colors on a terminal unless `NO_COLOR` is set, which `renderReport` does not read: it reads no environment, so the choice is yours.
@@ -347,6 +348,27 @@ process.exitCode = done.exitCode
 ```
 
 Every part of the report that holds text from a model or from the diff passes `inertLine` or `inertJson`, so a program can print it as it is: [Printing a review yourself](../30-security/30-output-handling.md#printing-a-review-yourself).
+
+## `publicView`
+
+```ts
+declare function publicView(input: QuorumResult | PublicView): PublicView
+```
+
+`publicView` makes the result less what helps an attacker, for a sink a stranger can read: a pull request comment, the job summary, an artifact, a CI log. It withholds each vote's `reasoning` and `error`, the discarded findings, which it counts in `meta.profiles.<id>.discarded`, the providers and models, `meta.usage` and each gap's `detail`, and keeps every other field, a held file's name, reason and rule and the flags with their details included. `meta.view` is `"public"`. Each field and why it goes: [The public view](../30-security/30-output-handling.md#the-public-view); the shape: [The JSON result](./20-json-result.md#the-public-view).
+
+- **The types** are `PublicView`, `PublicVerdict`, `PublicVote`, `PublicMeta`, `PublicProfileMeta` and `PublicGap`. A `PublicVerdict` is a `Verdict` whose `votes` are `PublicVote`s, `{ angle, keep, failure }`, and `PublicView['discarded']` is `[]`.
+- **It is pure and idempotent.** The view holds new arrays and objects and never a part of the result, the result is never changed, and `publicView(view)` is `view`.
+- **`renderReport` and `outcome` take either**, the result or its view, and the exit code and the conclusion are the same for both.
+
+```ts
+import { outcome, publicView, renderReport } from '@tobi-or-not/quorum'
+
+// `result` comes from `quorum.review`, as in the complete example below.
+const view = publicView(result)
+const done = outcome(view, { allowIncomplete: true })
+process.stdout.write(renderReport(view, { format: 'json', outcome: done }))
+```
 
 ## Errors
 
@@ -615,12 +637,13 @@ The warnings, each but the first two starting at the path it is about:
 | `presets` | The presets, frozen: [Presets](../20-using/30-providers.md#presets) |
 | `readSource` | Read the diff, its source and the files it left out, from a diff, a range, the local changes or the files at a commit: [`readSource`](#readsource) |
 | `outcome` | What a review comes to, its status and the exit code that says it: [`outcome`](#outcome) |
-| `renderReport` | Write a result as the report the CLI writes, in the format `text`, `json` or `brief`: [`renderReport`](#renderreport) |
+| `renderReport` | Write a result, or its public view, as the report the CLI writes, in the format `text`, `json` or `brief`: [`renderReport`](#renderreport) |
+| `publicView` | The result less each vote's reasoning and error, the discarded findings, the providers, the usage and each gap's detail, for a sink a stranger can read: [`publicView`](#publicview) |
 | `QuorumError`, `ConfigError`, `ProviderError`, `OutputError`, `GitError` | The error classes |
 | `inertLine`, `inertJson`, `codeSpan`, `fencedBlock`, `inertPlain` | Render a line for a terminal or a log, a value as JSON, text in Markdown and plain text a viewer may link, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |
 
-The types: `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `CredentialKind`, `Estimate`, `FailOn`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `ObjectFormat`, `Outcome`, `OutcomeStatus`, `Profile`, `ProfileEstimate`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `ReportFormat`, `ReportOptions`, `ReviewInput`, `ReviewSource`, `SecretRule`, `SkipRule`, `SourceRead`, `SourceSpec`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `FailOnOverride`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
+The types: `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `CredentialKind`, `Estimate`, `FailOn`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `ObjectFormat`, `Outcome`, `OutcomeStatus`, `Profile`, `ProfileEstimate`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `PublicGap`, `PublicMeta`, `PublicProfileMeta`, `PublicVerdict`, `PublicView`, `PublicVote`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `ReportFormat`, `ReportInput`, `ReportOptions`, `ReportView`, `ReviewInput`, `ReviewSource`, `SecretRule`, `SkipRule`, `SourceRead`, `SourceSpec`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `FailOnOverride`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
 
 The stages and the profile checks are not exported: a program reaches the stages through `createQuorum`. The exit-code rule is `outcome`.
 

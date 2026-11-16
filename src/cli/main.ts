@@ -9,6 +9,7 @@ import { outcome } from '../core/outcome.ts'
 import { inertLine } from '../core/sanitize.ts'
 import type { Estimate, Quorum } from '../core/types.ts'
 import { renderReport } from '../report/registry.ts'
+import { publicView } from '../report/view.ts'
 import { readDiffInput } from '../sources/diff.ts'
 import { atProblem, pathProblem } from '../sources/paths.ts'
 import { parseRange } from '../sources/range.ts'
@@ -50,6 +51,7 @@ const USAGE = [
   '  -f, --format <format>    Write the report on stdout in this format: text, json or brief; text on a terminal, else json',
   '  -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several',
   '      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never',
+  '      --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
   '  -v, --version            Print the version and exit',
@@ -73,6 +75,7 @@ const OPTIONS = {
   format: { type: 'string', short: 'f', multiple: true },
   output: { type: 'string', short: 'o', multiple: true },
   color: { type: 'string', multiple: true },
+  view: { type: 'string', multiple: true },
   'print-config': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
   version: { type: 'boolean', short: 'v' },
@@ -111,7 +114,7 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  *
  * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`, `--path`,
  * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--fail-on`, `--format`, `--output`,
- * `--color`, `--print-config`, `--help` and `--version`; a usage error prints the usage after its message. Its
+ * `--color`, `--view`, `--print-config`, `--help` and `--version`; a usage error prints the usage after its message. Its
  * settings are the config file `--config` or `QUORUM_CONFIG`
  * names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the `QUORUM_*`
  * variables of `io.env` with their deprecated aliases. Each warning is printed once, before the banner, and
@@ -148,6 +151,13 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * path that is no regular file and a missing directory exit 2, so a review never spends its tokens and then fails to
  * write). The files are written after the report on stdout, each through a new file and a rename (`writeOutputs`), and a
  * write that fails exits 3, never with the review's code.
+ *
+ * `--view <view>` is `full` by default, or `public` for a log or an artifact a stranger may read (see `publicView`). The
+ * public view is what stdout and every `--output` file render, and stderr writes less too: the banner names a
+ * provider by its config key (`bannerLines`), a gap and a dropped finding carry no detail or reason
+ * (`renderEvent`), and a failure after the config is read is written in fixed words (`errorLines`). It takes one
+ * value, is a usage error for any other, and is one with `--print-config`, all before the source and any config
+ * (`reportPlan`). The exit code is the same: `outcome` reads the result, not the view.
  *
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
  * error ended the review, and writes no result. A review that has already resolved is complete.
@@ -225,20 +235,23 @@ export async function runCli(io: CliIO): Promise<number> {
         })
     quorum = await fromConfig(config, {
       env: io.env,
-      events: progressSink(line => io.stderr.write(`${line}\n`)),
+      events: progressSink(line => io.stderr.write(`${line}\n`), plan.view),
     })
     if (read === undefined) {
       io.stdout.write(printConfig(config, source))
       return EXIT.ok
     }
     writeWarnings(io, quorum.warnings)
-    for (const line of bannerLines(config)) io.stderr.write(`${line}\n`)
+    for (const line of bannerLines(config, plan.view)) io.stderr.write(`${line}\n`)
     if (spec?.kind === 'paths') holdLargeReview(io, quorum.estimate({ diff: read.diff, send }), values.large === true)
     if (read.diff.trim() === '') io.stderr.write('empty diff: nothing to review\n')
     const result = await quorum.review({ ...read, send }, { signal: io.signal })
     const done = outcome(result, { allowIncomplete: values['allow-incomplete'] === true })
-    io.stdout.write(renderReport(result, { format: plan.format, color: plan.color, outcome: done }))
-    await writeOutputs(plan.outputs, result, done)
+    const input = plan.view === 'public'
+      ? publicView(result)
+      : result
+    io.stdout.write(renderReport(input, { format: plan.format, color: plan.color, outcome: done }))
+    await writeOutputs(plan.outputs, input, done)
     return done.exitCode
   } catch (error) {
     if (io.signal?.aborted) {
@@ -246,7 +259,7 @@ export async function runCli(io: CliIO): Promise<number> {
       return EXIT.interrupted
     }
     if (error instanceof ConfigError && quorum === undefined) writeWarnings(io, readEnv(io.env).warnings)
-    io.stderr.write(`${errorLines(error)}\n`)
+    io.stderr.write(`${errorLines(error, plan.view)}\n`)
     return error instanceof ConfigError
       ? EXIT.usage
       : EXIT.runtime

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { publicView } from '../report/view.ts'
 import { outcome } from './outcome.ts'
 import type { QuorumResult, Verdict } from './types.ts'
 
@@ -557,5 +558,41 @@ describe('outcome', () => {
         { kind: 'network' },
       ]),
     ]), { allowIncomplete: true })).toEqual({ status: 'pass', exitCode: 0, lifted: true })
+  })
+
+  it('reads a public view as the result it came from, a lifted gap included', () => {
+    const security = {
+      security: { failOn: 'high' },
+    }
+    const results = [
+      recorded(security),
+      recorded(security, {
+        kept: [
+          kept('security', 'high'),
+        ],
+      }),
+      recorded(security, {
+        gaps: [
+          { profile: 'security', reason: 'binary' },
+        ],
+      }),
+      withGaps({ security: true }, [voteFailedGap], [
+        voted('security', 'medium', [
+          { kind: 'network' },
+        ]),
+      ]),
+      withGaps({ security: true }, [voteFailedGap], [
+        voted('security', 'medium', [
+          { kind: 'refusal' },
+        ]),
+      ]),
+    ]
+    for (const input of results) {
+      for (const allowIncomplete of [false, true]) {
+        expect(outcome(publicView(input), { allowIncomplete })).toEqual(outcome(input, { allowIncomplete }))
+      }
+    }
+    expect(outcome(publicView(results[3]), { allowIncomplete: true })).toEqual({ status: 'pass', exitCode: 0, lifted: true })
+    expect(outcome(publicView(results[4]), { allowIncomplete: true })).toEqual({ status: 'incomplete', exitCode: 4, lifted: false })
   })
 })
