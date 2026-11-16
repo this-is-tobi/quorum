@@ -3,7 +3,7 @@ import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider } from '../config/schema.ts'
 import type { EventSink, Provider } from '../core/ports.ts'
 import { inertLine } from '../core/sanitize.ts'
-import type { Flag, LeftOutFile, QuorumEvent } from '../core/types.ts'
+import type { Estimate, Flag, LeftOutFile, QuorumEvent } from '../core/types.ts'
 import { isClaudeCode } from '../providers/build.ts'
 import { originOf } from '../providers/http.ts'
 import { presetOf } from '../providers/presets.ts'
@@ -91,6 +91,25 @@ export function progressSink(write: (line: string) => void): EventSink {
     const line = renderEvent(event, prefixed)
     if (line !== undefined) write(line)
   }
+}
+
+/**
+ * The lines a path review prints once its estimate is made, before any call: one per profile, starting with
+ * `[<id>] ` when several run, then the total, which belongs to the whole review and is never prefixed. The
+ * expected figure is the research's alone, as the votes are in the worst case only. Each line is inert.
+ */
+export function estimateLines(estimate: Estimate): string[] {
+  const entries = Object.entries(estimate.profiles)
+  const prefixed = entries.length > 1
+  return [
+    ...entries.map(([id, { parts, expected, votes, worst }]) => {
+      const prefix = prefixed
+        ? profilePrefix(id)
+        : ''
+      return `${prefix}estimate: ${parts.length} research part(s), about ${expected} tokens expected for them; then up to ${votes} vote(s), at most ${worst} tokens in all`
+    }),
+    `estimate: research about ${estimate.expected} tokens expected, at most ${estimate.worst} with every vote, ${estimate.inFlight} of them reserved at once; the review's token cap is ${estimate.maxReviewTokens} and its deadline ${estimate.reviewTimeoutMs} ms`,
+  ].map(inertLine)
 }
 
 /**

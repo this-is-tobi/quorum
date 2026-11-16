@@ -177,6 +177,7 @@ Options:
       --path <path>        Review the files under a path at a commit; repeat it to review several
       --at <rev>           The commit --path reads, HEAD by default
       --no-default-skips   Review in --path the vendored, lockfile, minified, secret and binary files too
+      --large              Run a --path review that may pass the token cap, reviewing what the cap allows
       --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx
       --print-config       Print the resolved config, keys redacted, and exit
   -h, --help               Print this help and exit
