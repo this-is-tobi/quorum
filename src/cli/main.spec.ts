@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -110,6 +110,7 @@ const USAGE = [
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
   '  -f, --format <format>    Write the report on stdout in this format: text, json or brief; text on a terminal, else json',
+  '  -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several',
   '      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
@@ -1398,6 +1399,81 @@ describe('flags', () => {
     expect(stdout().replace(SGR, '')).not.toContain(ESC)
   })
 
+  it('writes the --output files beside the report on stdout, and exits with the review\'s code', async () => {
+    const cwd = mkdtempSync(join(dir, 'outputs-'))
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true), vote(true))
+    const { io, stdout } = harness({
+      argv: [
+        '-f',
+        'brief',
+        '--output',
+        'json=r.json',
+        '--output',
+        'text=r.txt',
+      ],
+      cwd,
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    expect(stdout()).toBe('quorum: findings: 1 kept (1 high), 0 unreviewed, 0 gaps, 0 left out, 0 flags; exit 1\n')
+    expect(JSON.parse(readFileSync(join(cwd, 'r.json'), 'utf8'))).toMatchObject({
+      kept: [
+        { file: 'a.js', confidence: 'high' },
+      ],
+    })
+    expect(readFileSync(join(cwd, 'r.txt'), 'utf8').startsWith('quorum ')).toBe(true)
+  })
+
+  it('exits 2 before any call for an --output whose path is a symbolic link', async () => {
+    const cwd = mkdtempSync(join(dir, 'outputs-'))
+    writeFileSync(join(cwd, 'mine'), 'mine')
+    symlinkSync(join(cwd, 'mine'), join(cwd, 'r.json'))
+    const fetchMock = stubChat()
+    const { io, stdout, stderr } = harness({
+      argv: ['--output', 'json=r.json'],
+      cwd,
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe('Error: --output json: is a symbolic link\n')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(readFileSync(join(cwd, 'mine'), 'utf8')).toBe('mine')
+  })
+
+  it('exits 3 when an --output file cannot be written, after writing stdout', async () => {
+    const cwd = mkdtempSync(join(dir, 'outputs-'))
+    const gone = join(cwd, 'gone')
+    mkdirSync(gone)
+    const fetchMock = vi.fn()
+    fetchMock.mockImplementationOnce(async () => {
+      rmSync(gone, { recursive: true })
+      return chatReply(JSON.stringify({
+        findings: [FINDING],
+      }))
+    })
+    for (let calls = 0; calls < 3; calls += 1) fetchMock.mockImplementationOnce(async () => chatReply(vote(true)))
+    vi.stubGlobal('fetch', fetchMock)
+    const { io, stdout, stderr } = harness({
+      argv: ['--output', 'json=gone/r.json'],
+      cwd,
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.runtime)
+    expect(JSON.parse(stdout())).toMatchObject({
+      kept: [
+        { file: 'a.js', confidence: 'high' },
+      ],
+    })
+    expect(stderr().endsWith('Error: --output json: cannot be written (ENOENT)\n')).toBe(true)
+    expect(stderr()).not.toContain(cwd)
+  })
+
   it('refuses an unknown --format before any config, with the usage', async () => {
     const fetchMock = stubChat()
     const { io, stdout, stderr } = harness({
@@ -2513,7 +2589,7 @@ describe('the sources', () => {
       '       quorum bench [options] <suite>',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
-    expect(options).toHaveLength(18)
+    expect(options).toHaveLength(19)
     for (const line of options) {
       expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line.slice(25, 27), line).toBe('  ')

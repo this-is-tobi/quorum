@@ -17,7 +17,7 @@ import type { SourceSpec } from '../sources/read.ts'
 import { runBench } from './bench.ts'
 import { errorLines, errorMessage, EXIT, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
-import { reportPlan } from './outputs.ts'
+import { checkOutputs, reportPlan, writeOutputs } from './outputs.ts'
 import type { ReportPlan } from './outputs.ts'
 import { printConfig } from './print-config.ts'
 import { bannerLines, estimateLines, progressSink } from './render.ts'
@@ -48,6 +48,7 @@ const USAGE = [
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
   '  -f, --format <format>    Write the report on stdout in this format: text, json or brief; text on a terminal, else json',
+  '  -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several',
   '      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
@@ -70,6 +71,7 @@ const OPTIONS = {
   'allow-incomplete': { type: 'boolean' },
   'fail-on': { type: 'string', multiple: true },
   format: { type: 'string', short: 'f', multiple: true },
+  output: { type: 'string', short: 'o', multiple: true },
   color: { type: 'string', multiple: true },
   'print-config': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
@@ -108,8 +110,9 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * local changes print no estimate and are never gated, since their size is the change's.
  *
  * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`, `--path`,
- * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--fail-on`, `--format`, `--color`, `--print-config`,
- * `--help` and `--version`; a usage error prints the usage after its message. Its settings are the config file `--config` or `QUORUM_CONFIG`
+ * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--fail-on`, `--format`, `--output`,
+ * `--color`, `--print-config`, `--help` and `--version`; a usage error prints the usage after its message. Its
+ * settings are the config file `--config` or `QUORUM_CONFIG`
  * names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the `QUORUM_*`
  * variables of `io.env` with their deprecated aliases. Each warning is printed once, before the banner, and
  * when the configuration is refused the environment's warnings come before the `Error:` lines, since a
@@ -138,6 +141,13 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * or `never` alone (see `colorFor`). Each takes one value, is a usage error for any other, and `--format` is one with
  * `--print-config`, which writes YAML; both are checked before the source and any config (`reportPlan`). Every format says
  * what the exit code says, from the one `outcome` the exit code is made of.
+ *
+ * `--output <format>=<path>` (`-o`) also writes a report to a file, repeatable, each in its format and never colored.
+ * Its form and its paths are checked with the other flags (`reportPlan`: two outputs to one file are refused, and so is
+ * `--print-config` with one), and its files before any config is read or any call made (`checkOutputs`: a symbolic link, a
+ * path that is no regular file and a missing directory exit 2, so a review never spends its tokens and then fails to
+ * write). The files are written after the report on stdout, each through a new file and a rename (`writeOutputs`), and a
+ * write that fails exits 3, never with the review's code.
  *
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
  * error ended the review, and writes no result. A review that has already resolved is complete.
@@ -190,6 +200,7 @@ export async function runCli(io: CliIO): Promise<number> {
     const selection = values.profile === undefined
       ? undefined
       : { ids: values.profile, path: '--profile' }
+    await checkOutputs(plan.outputs)
     const { config, source } = await loadConfig({
       cwd: io.cwd,
       env: io.env,
@@ -227,6 +238,7 @@ export async function runCli(io: CliIO): Promise<number> {
     const result = await quorum.review({ ...read, send }, { signal: io.signal })
     const done = outcome(result, { allowIncomplete: values['allow-incomplete'] === true })
     io.stdout.write(renderReport(result, { format: plan.format, color: plan.color, outcome: done }))
+    await writeOutputs(plan.outputs, result, done)
     return done.exitCode
   } catch (error) {
     if (io.signal?.aborted) {
