@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { parse } from 'yaml'
 import { hiddenLabels } from './core/sanitize.ts'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
@@ -80,5 +81,55 @@ describe('the documentation', () => {
         : []
     }))
     expect(found).toEqual([])
+  })
+
+  it('holds a reference workflow that keeps the model key, the write token and the pull request\'s code apart', () => {
+    interface Step { uses?: string, with?: Record<string, unknown>, run?: string }
+    interface Job { if?: string, needs?: string, permissions: Record<string, string>, steps: Step[] }
+    const reports = text(join('docs', '20-using', '80-reports.md'))
+    const section = reports.split(/^## A GitHub workflow$/m)[1]?.split(/^## /m)[0] ?? ''
+    const blocks = [
+      ...section.matchAll(/^```yaml\n([\s\S]*?)^```/gm),
+    ]
+    expect(blocks).toHaveLength(1)
+    const workflow = parse(blocks[0][1]) as { on: Record<string, unknown>, permissions: unknown, jobs: Record<string, Job> }
+    const { review, post } = workflow.jobs
+    const runs = (job: Job): string[] => job.steps.flatMap(step => step.run === undefined
+      ? []
+      : [step.run])
+    const mentions = (job: Job, word: string): boolean => JSON.stringify(job).includes(word)
+
+    expect(Object.keys(workflow.on)).toEqual(['pull_request'])
+    expect(workflow.permissions).toEqual({})
+
+    expect(review.if).toContain('github.event.pull_request.head.repo.full_name')
+    expect(review.if).toContain('github.repository')
+    expect(review.permissions).toEqual({ contents: 'read' })
+    const checkout = review.steps.find(step => step.uses?.startsWith('actions/checkout@'))
+    expect(checkout?.with).toEqual({
+      ref: '$' + '{{ github.event.pull_request.base.sha }}',
+      'fetch-depth': 0,
+      'persist-credentials': false,
+    })
+    const reviewRun = runs(review).find(run => run.includes('quorum --range')) ?? ''
+    expect(reviewRun).toContain('--view public')
+    expect(reviewRun).toMatch(/--output json="\$RUNNER_TEMP\//)
+
+    expect(post.needs).toBe('review')
+    expect(post.permissions['security-events']).toBe('write')
+    const writes = Object.entries(post.permissions).filter(([, value]) => value === 'write')
+    expect(writes.map(([name]) => name)).toEqual(['security-events'])
+    expect(runs(post).some(run => run.includes('quorum report'))).toBe(true)
+    const upload = post.steps.find(step => step.uses?.startsWith('github/codeql-action/upload-sarif@'))
+    expect(upload?.with?.sha).toBe('$' + '{{ github.event.pull_request.head.sha }}')
+    expect(upload?.with?.ref).toBe('refs/pull/$' + '{{ github.event.pull_request.number }}/head')
+    expect(post.permissions).toMatchObject({ actions: 'read', contents: 'read' })
+
+    expect(mentions(review, 'secrets.')).toBe(true)
+    expect(mentions(post, 'secrets.')).toBe(false)
+    expect([
+      ...runs(review),
+      ...runs(post),
+    ].filter(run => run.includes('${{'))).toEqual([])
   })
 })
