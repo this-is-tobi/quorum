@@ -254,7 +254,7 @@ describe('payload', () => {
         at('src/b.ts', 1),
       ],
       unreviewed: [
-        at('src/a.ts', 2),
+        { ...TOKEN, file: 'src/a.ts', line: 2 },
       ],
     })
     result.meta.profiles.security.coverage = ['src/a.ts', 'src/b.ts'].map(file => ({ file, status: 'reviewed' }))

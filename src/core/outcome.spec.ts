@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { publicView } from '../report/view.ts'
+import { reportMeta, SQL } from '../testing/report.ts'
 import { failsItsProfile, isIncomplete, outcome } from './outcome.ts'
 import type { QuorumResult, Verdict } from './types.ts'
 
@@ -71,6 +72,36 @@ describe('outcome', () => {
       ...base,
       meta: { ...base.meta, incomplete: gaps },
     } as unknown as QuorumResult
+  }
+  /**
+   * `input` with every field a public view needs filled in from the report fixtures, so the view of a result this spec
+   * writes sparse passes the view's schema: the verdicts', profiles' and gaps' own fields win, and what the outcome
+   * reads is what the spec wrote.
+   */
+  const whole = (input: QuorumResult): QuorumResult => {
+    const base = reportMeta()
+    return {
+      kept: input.kept.map(verdict => ({
+        ...SQL,
+        ...verdict,
+      })),
+      discarded: [],
+      unreviewed: input.unreviewed.map(verdict => ({
+        ...SQL,
+        ...verdict,
+      })),
+      meta: {
+        ...base,
+        profiles: Object.fromEntries(Object.entries(input.meta.profiles).map(([id, entry]) => [
+          id,
+          {
+            ...base.profiles.security,
+            ...entry,
+          },
+        ])),
+        incomplete: input.meta.incomplete.map(gap => ({ ...gap, detail: 'd' })),
+      },
+    }
   }
   /** A verdict of `profile` and `confidence` with three votes: one failed vote per `failures` entry, the rest kept; an `undefined` entry is a failed vote with no `failure` key. */
   const voted = (profile: string, confidence: Verdict['confidence'], failures: readonly unknown[]): Verdict => ({
@@ -483,7 +514,8 @@ describe('outcome', () => {
       ],
     })
     expect(failsItsProfile(result, result.kept[0])).toBe(fails)
-    expect(failsItsProfile(publicView(result), publicView(result).kept[0])).toBe(fails)
+    const view = publicView(whole(result))
+    expect(failsItsProfile(view, view.kept[0])).toBe(fails)
   })
 
   it.each(['high', 'medium', 'low'])('exits 4 for a gap of a profile at fail-on %s, and 0 for one at none', (failOn) => {
@@ -614,11 +646,11 @@ describe('outcome', () => {
     ]
     for (const input of results) {
       for (const allowIncomplete of [false, true]) {
-        expect(outcome(publicView(input), { allowIncomplete })).toEqual(outcome(input, { allowIncomplete }))
+        expect(outcome(publicView(whole(input)), { allowIncomplete })).toEqual(outcome(input, { allowIncomplete }))
       }
     }
-    expect(outcome(publicView(results[3]), { allowIncomplete: true })).toEqual({ status: 'pass', exitCode: 0, lifted: true })
-    expect(outcome(publicView(results[4]), { allowIncomplete: true })).toEqual({ status: 'incomplete', exitCode: 4, lifted: false })
+    expect(outcome(publicView(whole(results[3])), { allowIncomplete: true })).toEqual({ status: 'pass', exitCode: 0, lifted: true })
+    expect(outcome(publicView(whole(results[4])), { allowIncomplete: true })).toEqual({ status: 'incomplete', exitCode: 4, lifted: false })
   })
 
   it('says a review is incomplete when a gating profile has a gap or an unreviewed finding, whatever a kept finding or the lift says', () => {
@@ -662,8 +694,8 @@ describe('outcome', () => {
         kept('style', undefined),
       ],
     }))).toBe(false)
-    expect(isIncomplete(publicView(recorded(security, {
+    expect(isIncomplete(publicView(whole(recorded(security, {
       gaps: [gap],
-    })))).toBe(true)
+    }))))).toBe(true)
   })
 })

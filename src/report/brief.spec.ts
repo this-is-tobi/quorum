@@ -8,8 +8,8 @@ describe('brief', () => {
     expect(brief.render(reportResult(), { color: false, outcome: FINDINGS })).toBe('quorum: findings: 1 kept (1 high), 1 unreviewed, 1 gap, 1 left out, 1 flag; exit 1\n')
     const kept = [
       SQL,
-      { ...SQL, id: 'i4', confidence: 'medium' as const },
-      { ...SQL, id: 'i5', confidence: 'medium' as const },
+      { ...SQL, id: 'a1b2c3d4e5f4', confidence: 'medium' as const },
+      { ...SQL, id: 'a1b2c3d4e5f5', confidence: 'medium' as const },
     ]
     expect(brief.render(reportResult({ kept }), { color: false, outcome: FINDINGS })).toBe('quorum: findings: 3 kept (1 high, 2 medium), 1 unreviewed, 1 gap, 1 left out, 1 flag; exit 1\n')
   })
@@ -82,7 +82,7 @@ describe('brief', () => {
     const result = reportResult({
       kept: [
         SQL,
-        { ...SQL, id: 'i4', confidence: 'medium' as const },
+        { ...SQL, id: 'a1b2c3d4e5f4', confidence: 'medium' as const },
       ],
       meta: {
         leftOut: [

@@ -359,6 +359,7 @@ declare function publicView(input: QuorumResult | PublicView): PublicView
 
 - **The types** are `PublicView`, `PublicVerdict`, `PublicVote`, `PublicMeta`, `PublicProfileMeta` and `PublicGap`. A `PublicVerdict` is a `Verdict` whose `votes` are `PublicVote`s, `{ angle, keep, failure }`, and `PublicView['discarded']` is `[]`.
 - **It is pure and idempotent.** The view holds new arrays and objects and never a part of the result, the result is never changed, and `publicView(view)` is `view`.
+- **It checks every view it returns,** the one it makes and the one it is given, against the strict schema [`readResult`](#readresult) reads a public view by. A view that fails it throws a `TypeError`: `the public view is not one quorum writes, at <path>`, the path of the first issue written as `readResult`'s is, and never a value. So a forged `meta.view` that keeps a vote's `reasoning`, a profile id or a fingerprint that holds Markdown, and a reason, a rule or a flag's code outside its closed list, are refused before a reporter writes them bare. A file is refused earlier, by `readResult`.
 - **`renderReport` and `outcome` take either**, the result or its view, and the exit code and the conclusion are the same for both.
 
 ```ts
@@ -368,6 +369,34 @@ import { outcome, publicView, renderReport } from '@tobi-or-not/quorum'
 const view = publicView(result)
 const done = outcome(view, { allowIncomplete: true })
 process.stdout.write(renderReport(view, { format: 'json', outcome: done }))
+```
+
+## `readResult`
+
+```ts
+declare function readResult(text: string): QuorumResult | PublicView
+```
+
+`readResult` reads a result a review saved, or its [public view](#publicview), back from its JSON text. It is the reader behind `quorum report` and takes text, since only the program reads a file: [quorum report](../20-using/10-cli.md#quorum-report). The text is untrusted, so it is checked in this order, and the first check that fails throws a `ConfigError` with one issue at the empty path, a message of quorum's own words that holds no value and no part of the text, and no key but a code word:
+
+| Check | Message |
+| --- | --- |
+| The size, in bytes of UTF-8, at most 256 MiB | `the result is over 256 MiB, the most quorum reads` |
+| `JSON.parse` | `the result is not JSON` |
+| `meta.version`, as own data, equals the `version` of this release | `the result was written by another release of quorum: render it with the release that wrote it` |
+| The strict schema: the public view's when `meta.view` is `public`, the result's otherwise | `the result is not one quorum writes, at <path>`, or without the path when the first issue has none |
+
+- **The cap** holds every result a review of the largest diff quorum reads can write, and stays under the longest string the engine makes.
+- **The same release only.** A result of another release is refused before its shape is read, since a release mismatch is the likeliest mistake of two jobs, and the schema is the release's own: render a result with the release that wrote it.
+- **The schema is strict at every level.** An unknown key anywhere is refused, and so is a value outside a closed list, a profile id that matches no `^[a-z][a-z0-9_-]*$`, a verdict or a gap of a profile the result does not hold, a fingerprint or a finding id of the wrong form, a text over its cap, a kept finding with no confidence and a discarded or an unreviewed one with one. A public view is refused when it still holds a vote's `reasoning` or `error`, a `usage`, a profile's `providers`, a gap's `detail`, or a discarded finding. The path of an issue names a key that is no code word as `*`, as a config error does.
+- **It runs nothing and reads nothing** but its text. What it returns is data a reporter may render: `renderReport` and `outcome` take it as they take a review's result.
+
+```ts
+import { readFile } from 'node:fs/promises'
+import { readResult, renderReport } from '@tobi-or-not/quorum'
+
+const result = readResult(await readFile('result.json', 'utf8'))
+process.stdout.write(renderReport(result, { format: 'markdown' }))
 ```
 
 ## Errors
@@ -639,6 +668,7 @@ The warnings, each but the first two starting at the path it is about:
 | `outcome` | What a review comes to, its status and the exit code that says it: [`outcome`](#outcome) |
 | `renderReport` | Write a result, or its public view, as the report the CLI writes, in the format `text`, `json`, `brief`, `markdown`, `payload` or `sarif`: [`renderReport`](#renderreport) |
 | `publicView` | The result less each vote's reasoning and error, the discarded findings, the providers, the usage and each gap's detail, for a sink a stranger can read: [`publicView`](#publicview) |
+| `readResult` | Read a saved result or public view back from its JSON text, of this release only, through a strict schema and a cap: [`readResult`](#readresult) |
 | `QuorumError`, `ConfigError`, `ProviderError`, `OutputError`, `GitError` | The error classes |
 | `inertLine`, `inertJson`, `codeSpan`, `fencedBlock`, `inertPlain` | Render a line for a terminal or a log, a value as JSON, text in Markdown and plain text a viewer may link, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |

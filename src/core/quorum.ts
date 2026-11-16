@@ -1,4 +1,4 @@
-import packageJson from '../../package.json' with { type: 'json' }
+import { VERSION } from './version.ts'
 import { systemClock } from './clock.ts'
 import type { Clock } from './clock.ts'
 import { createLimiter, DEFAULT_CONCURRENCY } from './concurrency.ts'
@@ -369,7 +369,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
   ])
   const durationMs = elapsed(started)
   const meta: QuorumMeta = {
-    version: packageJson.version,
+    version: VERSION,
     startedAt,
     durationMs,
     source,

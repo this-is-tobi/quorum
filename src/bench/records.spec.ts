@@ -1,18 +1,11 @@
-import { describe, expect, expectTypeOf, it } from 'vitest'
-import type { z } from 'zod'
+import { describe, expect, it } from 'vitest'
 import { hiddenLabels } from '../core/sanitize.ts'
-import type { CoverageEntry, QuorumResult, ReviewSource } from '../core/types.ts'
+import type { CoverageEntry, ReviewSource } from '../core/types.ts'
 import { record, RESULT, resultWith, RUN_SUITE, verdict } from '../testing/bench.ts'
 import { parseRecord, parseRunFile, recordLine, reviewKey } from './records.ts'
-import type { DeniedRecord, ResultRecord, resultSchema, RunFile } from './records.ts'
+import type { DeniedRecord, ResultRecord, RunFile } from './records.ts'
 
 const RECORD = record()
-/** `T` with no `readonly` at any depth, its optional fields still optional: the shape a JSON parse gives. */
-type Mutable<T> = T extends readonly (infer Item)[]
-  ? Mutable<Item>[]
-  : T extends object
-    ? { -readonly [Key in keyof T]: Mutable<T[Key]> }
-    : T
 const RUN: RunFile = {
   format: 2,
   quorum: '0.2.0',
@@ -845,11 +838,7 @@ describe('reviewKey', () => {
   })
 })
 
-describe('resultSchema', () => {
-  it('reads exactly the result the core returns, so a field the core adds or drops, optional or not, fails the typecheck', () => {
-    expectTypeOf<z.output<typeof resultSchema>>().toEqualTypeOf<Mutable<QuorumResult>>()
-  })
-
+describe('the result of a record', () => {
   it('drops a __proto__ key of the profiles or the lenses, value unread, and reads the rest of the record', () => {
     const line = recordLine(RECORD).slice(0, -1).replace('"profiles":{', '"profiles":{"__proto__":5,').replace('"lenses":{', '"lenses":{"__proto__":{"id":1},')
     const parsed = parseRecord(line) as ResultRecord | undefined

@@ -26,7 +26,7 @@ export const RANGE: ReviewSource = {
   objectFormat: 'sha1',
 }
 export const SQL: Verdict = {
-  id: 'i1',
+  id: 'a1b2c3d4e5f6',
   fingerprint: 'a1b2c3d4e5f60718:1',
   profile: 'security',
   file: 'src/auth/login.ts',
@@ -46,7 +46,7 @@ export const SQL: Verdict = {
   ],
 }
 export const TOKEN: Verdict = {
-  id: 'i2',
+  id: 'b1c2d3e4f506',
   fingerprint: 'b1c2d3e4f5061728:1',
   profile: 'security',
   file: 'src/session.js',
@@ -66,7 +66,7 @@ export const TOKEN: Verdict = {
 }
 export const UPLOAD: Verdict = {
   ...SQL,
-  id: 'i3',
+  id: 'c1d2e3f40516',
   fingerprint: 'c1d2e3f405162738:1',
   file: 'src/upload.js',
   line: 5,

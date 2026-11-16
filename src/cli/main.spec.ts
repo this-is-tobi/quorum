@@ -94,6 +94,7 @@ const USAGE = [
   '       quorum --local | --staged [options]',
   '       quorum --path <path> [--at <rev>] [options]',
   '       quorum bench [options] <suite>',
+  '       quorum report [options] [<result>|-]',
   '',
   'Options:',
   '  -c, --config <path>      Read this config file, over QUORUM_CONFIG',
@@ -2738,6 +2739,7 @@ describe('the sources', () => {
       '       quorum --local | --staged [options]',
       '       quorum --path <path> [--at <rev>] [options]',
       '       quorum bench [options] <suite>',
+      '       quorum report [options] [<result>|-]',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
     expect(options).toHaveLength(20)
@@ -2746,5 +2748,28 @@ describe('the sources', () => {
       expect(line.slice(25, 27), line).toBe('  ')
       expect(line[27], line).not.toBe(' ')
     }
+  })
+
+  it('hands the arguments after report to quorum report, and reviews a file named report as ./report', async () => {
+    const cwd = mkdtempSync(join(dir, 'report-'))
+    const fetchMock = stubChat()
+    const missing = harness({
+      argv: ['report', 'none.json'],
+      cwd,
+      env: MODEL,
+    })
+    expect(await runCli(missing.io)).toBe(EXIT.usage)
+    expect(missing.stderr()).toMatch(/^Error: the result file does not exist\nUsage: quorum report \[options\] \[<result>\|-\]\n/)
+    expect(missing.stdout()).toBe('')
+
+    writeFileSync(join(cwd, 'report'), '\n')
+    const reviewed = harness({
+      argv: ['./report'],
+      cwd,
+      env: MODEL,
+    })
+    expect(await runCli(reviewed.io)).toBe(EXIT.ok)
+    expect(reviewed.stderr()).toContain('empty diff: nothing to review')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

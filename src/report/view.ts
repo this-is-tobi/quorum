@@ -24,8 +24,15 @@
  * The functions are pure. A view is made of new arrays and objects, the parts kept whole copied with
  * `structuredClone`, so what holds the view never holds the result, and the result is never changed. The public
  * view of a public view is that view, so a reporter that must render the view renders it whatever it is given.
+ *
+ * **Every view `publicView` returns has passed `publicViewSchema`,** the strict schema `quorum report` reads a
+ * file by: the profile ids, the fingerprints, the gaps' reasons, the files' reasons and rules and the flags' codes
+ * are the code words quorum writes, which a reporter writes bare. So a library caller's hand-built object, or a
+ * forged `meta.view`, cannot put text of its own where a reporter trusts quorum's.
  */
 
+import { issuePath } from '../core/errors.ts'
+import { publicViewSchema } from '../core/result-schema.ts'
 import { ownData } from '../core/stages/context.ts'
 import type { LensVote, PublicGap, PublicMeta, PublicProfileMeta, PublicVerdict, PublicView, PublicVote, QuorumResult, Verdict } from '../core/types.ts'
 
@@ -119,17 +126,35 @@ function publicMeta(result: QuorumResult): PublicMeta {
  * usage and each gap's detail. See the module's comment for why each goes. The result is never changed, and
  * the view shares no array or object with it.
  *
+ * This is the check every public sink goes through, for a library caller too: the view, made here or given,
+ * must pass `publicViewSchema`, so a forged `meta.view` that keeps a vote's reasoning, a profile id that holds
+ * Markdown or a fingerprint that holds `-->` is refused here. A file is refused earlier, by `readResult`.
+ *
+ * @throws TypeError when the view fails `publicViewSchema`; its message names the path of the first issue, as
+ * `issuePath` prints it, and never a value
+ *
  * @example
  * const view = publicView(result)
  */
 export function publicView(input: QuorumResult | PublicView): PublicView {
-  if (isPublicView(input)) return input
-  return {
-    kept: input.kept.map(publicVerdict),
-    discarded: [],
-    unreviewed: input.unreviewed.map(publicVerdict),
-    meta: publicMeta(input),
-  }
+  return checked(isPublicView(input)
+    ? input
+    : {
+        kept: input.kept.map(publicVerdict),
+        discarded: [],
+        unreviewed: input.unreviewed.map(publicVerdict),
+        meta: publicMeta(input),
+      })
+}
+
+/** `view`, when it passes `publicViewSchema`. */
+function checked(view: PublicView): PublicView {
+  const read = publicViewSchema.safeParse(view)
+  if (read.success) return view
+  const path = read.error.issues[0]?.path ?? []
+  throw new TypeError(path.length === 0
+    ? 'the public view is not one quorum writes'
+    : `the public view is not one quorum writes, at ${issuePath(path)}`)
 }
 
 /** How many findings of `profile` the panel discarded: the count a public view records, else those a full result lists. */
