@@ -109,7 +109,8 @@ const USAGE = [
   '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
-  '  -f, --format <format>    Write the report on stdout in this format: json or brief; json by default',
+  '  -f, --format <format>    Write the report on stdout in this format: text, json or brief; text on a terminal, else json',
+  '      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
   '  -v, --version            Print the version and exit',
@@ -118,6 +119,10 @@ const USAGE = [
 
 /** The text a config prints for a prompt: `sha256:` and the lowercase hex SHA-256 of its UTF-8 text. */
 const sha256 = (text: string): string => `sha256:${createHash('sha256').update(text).digest('hex')}`
+
+const ESC = String.fromCharCode(0x1B)
+/** The sequences quorum colors with: ESC `[`, a code of the SGR table, `m`, and the reset. */
+const SGR = new RegExp(`${ESC}\\[(?:1;31|33|36|35|1|32|31|0)m`, 'g')
 
 /** Every hidden class the sanitizer knows, to check that the CLI writes none of them. */
 const ANY_HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}]/u
@@ -1304,6 +1309,95 @@ describe('flags', () => {
     expect(passing.stdout()).toBe('quorum: pass: 1 kept (1 medium), 0 unreviewed, 0 gaps, 0 left out, 0 flags; exit 0\n')
   })
 
+  it('chooses the format by stdout alone: text on a terminal whatever stdin is, json on a pipe though stdin is a terminal', async () => {
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true), vote(true))
+    const terminal = harness({
+      env: MODEL,
+      stdin: DIFF,
+      stdoutIsTTY: true,
+    })
+    expect(await runCli(terminal.io)).toBe(EXIT.finding)
+    expect(terminal.stdout().startsWith(`quorum ${packageJson.version} · diff · security · 1 file\n`)).toBe(true)
+
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true), vote(true))
+    const pipe = harness({
+      argv: [
+        write('chosen.diff', DIFF),
+      ],
+      env: MODEL,
+      isTTY: true,
+    })
+    expect(await runCli(pipe.io)).toBe(EXIT.finding)
+    expect(JSON.parse(pipe.stdout())).toMatchObject({
+      kept: [
+        { file: 'a.js', confidence: 'high' },
+      ],
+    })
+  })
+
+  it('colors the report on a terminal unless NO_COLOR is set, and keeps JSON there with -f json', async () => {
+    const stub = (): void => {
+      stubChat(JSON.stringify({
+        findings: [FINDING],
+      }), vote(true), vote(true), vote(true))
+    }
+    stub()
+    const colored = harness({
+      env: MODEL,
+      stdin: DIFF,
+      stdoutIsTTY: true,
+    })
+    expect(await runCli(colored.io)).toBe(EXIT.finding)
+    expect(colored.stdout()).toContain(`${ESC}[1;31mHIGH${ESC}[0m  security  ${ESC}[1ma.js:1${ESC}[0m  CWE-78\n`)
+    expect(colored.stdout()).toContain(`exit 1, ${ESC}[31mfindings${ESC}[0m: `)
+
+    stub()
+    const plain = harness({
+      env: { ...MODEL, NO_COLOR: '1' },
+      stdin: DIFF,
+      stdoutIsTTY: true,
+    })
+    expect(await runCli(plain.io)).toBe(EXIT.finding)
+    expect(plain.stdout()).toContain('HIGH  security  a.js:1  CWE-78\n')
+    expect(plain.stdout()).not.toContain(ESC)
+
+    stub()
+    const json = harness({
+      argv: ['-f', 'json'],
+      env: MODEL,
+      stdin: DIFF,
+      stdoutIsTTY: true,
+    })
+    expect(await runCli(json.io)).toBe(EXIT.finding)
+    expect(JSON.parse(json.stdout())).toMatchObject({
+      kept: [
+        { file: 'a.js' },
+      ],
+    })
+    expect(json.stdout()).not.toContain(ESC)
+  })
+
+  it('prints a hostile claim inert on a terminal, with color on', async () => {
+    stubChat(JSON.stringify({
+      findings: [
+        { ...FINDING, summary: '::error::x ##[add-mask]e' },
+      ],
+    }), vote(true), vote(true), vote(true))
+    const { io, stdout } = harness({
+      env: MODEL,
+      stdin: DIFF,
+      stdoutIsTTY: true,
+    })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    expect(stdout().split('\n')).toContain('  <U+003A>:error::x ##<U+005B>add-mask]e')
+    expect(stdout()).toContain(`${ESC}[1;31mHIGH${ESC}[0m`)
+    expect(stdout().replace(SGR, '')).not.toContain(ESC)
+  })
+
   it('refuses an unknown --format before any config, with the usage', async () => {
     const fetchMock = stubChat()
     const { io, stdout, stderr } = harness({
@@ -1313,7 +1407,7 @@ describe('flags', () => {
     })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stdout()).toBe('')
-    expect(stderr()).toBe(`Error: --format: must be json or brief\n${USAGE}`)
+    expect(stderr()).toBe(`Error: --format: must be text, json or brief\n${USAGE}`)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
@@ -2419,7 +2513,7 @@ describe('the sources', () => {
       '       quorum bench [options] <suite>',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
-    expect(options).toHaveLength(17)
+    expect(options).toHaveLength(18)
     for (const line of options) {
       expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line.slice(25, 27), line).toBe('  ')

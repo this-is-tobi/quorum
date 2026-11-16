@@ -1,15 +1,9 @@
 import { inertLine } from '../core/sanitize.ts'
 import type { Confidence, LeftOutFile, QuorumResult } from '../core/types.ts'
+import { plural } from './lines.ts'
 import type { Reporter } from './reporter.ts'
 
 const LEVELS = ['high', 'medium', 'low'] as const satisfies readonly Confidence[]
-
-/** `1 gap`, `2 gaps`: the count, then the noun in the form the count takes. */
-function plural(count: number, one: string, many = `${one}s`): string {
-  return `${count} ${count === 1
-    ? one
-    : many}`
-}
 
 /** Whether a file was left out as a secret: held back by name or by a credential in it (`secret`, `deleted-secret`), or skipped by a path review under the rule `secret`. */
 function isSecret(entry: LeftOutFile): boolean {

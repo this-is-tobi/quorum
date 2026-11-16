@@ -27,7 +27,7 @@ git diff origin/main...HEAD | quorum > result.json
 code=$?
 ```
 
-`code=$?` must come right after the `quorum` command, since every later command sets `$?` again. Quorum reads stdin when no file is given and stdin is not a terminal. The review makes one call to the finder, then one call per lens for each finding that reaches the panel, so three per finding with the security profile, and never more than four at once.
+`code=$?` must come right after the `quorum` command, since every later command sets `$?` again. Run without `> result.json` on a terminal, quorum prints the text report there instead of the JSON result: [The report](../20-using/10-cli.md#the-report) shows it. Quorum reads stdin when no file is given and stdin is not a terminal. The review makes one call to the finder, then one call per lens for each finding that reaches the panel, so three per finding with the security profile, and never more than four at once.
 
 ## 3. Read the progress
 
@@ -52,7 +52,7 @@ An empty diff prints `empty diff: nothing to review` after the two banner lines,
 
 ## 4. Read the result
 
-stdout holds only the JSON result: `kept`, `discarded` and `unreviewed`, three lists of verdicts, and `meta`, what the review records about itself. The finding that run kept:
+Redirected to a file, stdout holds only the JSON result: `kept`, `discarded` and `unreviewed`, three lists of verdicts, and `meta`, what the review records about itself. The finding that run kept:
 
 ```bash
 jq '.kept[0]' result.json

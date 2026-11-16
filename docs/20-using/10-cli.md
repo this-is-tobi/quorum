@@ -24,7 +24,8 @@ Options:
       --send <path>        Send a file held as a secret to the models all the same; repeat it to send several
       --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx
       --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile
-  -f, --format <format>    Write the report on stdout in this format: json or brief; json by default
+  -f, --format <format>    Write the report on stdout in this format: text, json or brief; text on a terminal, else json
+      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never
       --print-config       Print the resolved config, keys redacted, and exit
   -h, --help               Print this help and exit
   -v, --version            Print the version and exit
@@ -68,7 +69,8 @@ The flags go before or after the file:
 | `--send <path>` | Send a file held back as a secret to the models all the same, whatever the source. The path is the one the diff writes and the `left out:` line prints, matched exactly: `--send ./.env` names no file, and the file stays held. It is relative to the repository's top level, where `--path` is relative to the working directory. It repeats, to send several, and adds to the config's `send`. An empty path is a usage error, before any config. A file it names is neither held, listed nor flagged as a secret, and widens what a provider receives: [Sending a held file](./20-configuration.md#sending-a-held-file) |
 | `--allow-incomplete` | Exit `0` instead of `4` when every gap of a gating profile is a vote that failed in passing: a dropped connection, a timeout of its own, or an HTTP 408, 409, 429 or 5xx. That is an unreviewed finding, or a `vote-failed` gap, whose failed votes all failed so. Any other gap still exits `4`. A kept finding of a gating profile at or above its fail-on level, `high` by default, still exits `1` |
 | `--fail-on [<profile>=]<level>` | Set the fail-on level, the confidence at or above which a kept finding of a gating profile exits `1`: `high`, `medium` or `low`, or `none` to fail nothing ([Gating](./40-profiles.md#gating)). `--fail-on medium` sets the level of every profile that runs, and `--fail-on security=none` that of the one profile it names, which wins over the level for every profile. Both win over the config's `failOn`, and no variable sets one. It repeats, once for every profile and once for each profile named: `--fail-on low --fail-on team=none`. A value that is neither form, a second level for every profile, a profile named twice and a profile that does not run (a typo, which would leave a gate weaker or missing) are usage errors before any model call, and no message repeats the value given. `low` while the policy's `low` is off acts as `medium`, with a warning. [`--print-config`](#printing-the-resolved-config) and `meta.profiles` show the levels a run uses |
-| `-f, --format <format>` | Write the report on stdout in this format, `json` or `brief`: [The report](#the-report). It takes one format, `json` by default. Any other format, a second `--format` and `--format` with `--print-config`, which writes YAML, are usage errors before any config is read and any model call, and no message repeats the value given |
+| `-f, --format <format>` | Write the report on stdout in this format, `text`, `json` or `brief`: [The report](#the-report). It takes one format, `text` when stdout is a terminal and `json` when it is not, whatever stdin is. Any other format, a second `--format` and `--format` with `--print-config`, which writes YAML, are usage errors before any config is read and any model call, and no message repeats the value given |
+| `--color <when>` | Color the text report: `auto`, the default, colors when stdout is a terminal and `NO_COLOR` is unset or empty, `always` and `never` decide alone. Only `NO_COLOR` is read: `FORCE_COLOR` and the `CLICOLOR` variables are not. Only the text report is ever colored, never a JSON or a brief one, whatever `--color` says. It takes one value, and any other value or a second `--color` is a usage error before any config is read and any model call: [Colors](#colors) |
 | `--print-config` | Print the resolved config as YAML on stdout, every secret redacted, and exit `0`, reading no diff and calling no model: [Printing the resolved config](#printing-the-resolved-config). A diff file, `--range`, `--local`, `--staged` or `--path` with it is a usage error |
 | `-h, --help` | Print the usage on stdout and exit `0`, reading neither a diff nor a config. It wins over `--version` |
 | `-v, --version` | Print `quorum <version>` on stdout and exit `0`, reading neither a diff nor a config |
@@ -92,7 +94,7 @@ Besides the diff, it reads the environment: the `QUORUM_*` variables of [Configu
 
 ## stdout and stderr
 
-**stdout carries only the report**: the JSON result by default, or the format `--format` names, written once the review ends: [The report](#the-report). When the run exits `2`, `3` or `130`, nothing was reviewed and stdout stays empty. With `--print-config`, stdout carries the config's YAML instead, and nothing else.
+**stdout carries only the report**: the text report when stdout is a terminal, the JSON result when it is a pipe or a file, or the format `--format` names, written once the review ends: [The report](#the-report). When the run exits `2`, `3` or `130`, nothing was reviewed and stdout stays empty. With `--print-config`, stdout carries the config's YAML instead, and nothing else. On a terminal stdout carries the text report, and the lines of stderr, written as the review runs, still come before it.
 
 **stderr carries everything else**, in this order: the `warning:` lines, the banner, a path review's estimate, the progress lines while the review runs, and an `Error:` line when it fails. A run that fails on its configuration has no banner: its `Error:` lines come after the `warning:` lines of the environment, which often explain them. Every line is inert: a hidden character is shown as `<U+XXXX>`.
 
@@ -120,14 +122,15 @@ When several profiles run, the `invalid finding dropped`, `incomplete` and `cand
 
 ## The report
 
-`--format <format>` (`-f`) chooses what stdout carries once the review ends. There are two formats, and it takes one of them:
+`--format <format>` (`-f`) chooses what stdout carries once the review ends. There are three formats, and it takes one of them:
 
 | Format | What it writes | For |
 | --- | --- | --- |
-| `json` | The whole result as JSON, the default | A program, a CI job, `jq`: [The JSON result](../95-reference/20-json-result.md) has every field |
+| `text` | The review as a person reads it: each finding with its evidence, then the counts, what was left out and the verdict. The default on a terminal | You, at a terminal |
+| `json` | The whole result as JSON. The default when stdout is a pipe or a file | A program, a CI job, `jq`: [The JSON result](../95-reference/20-json-result.md) has every field |
 | `brief` | One line of counts and code words | A hook, a log, a status line |
 
-The CLI writes `json` unless `--format` names another. A mistyped format, a second `--format` and `--format` with `--print-config` are usage errors, exit `2`, before any config is read and any model call: no diff is read from stdin for them, and no message holds the value given.
+The default follows stdout alone: `text` when stdout is a terminal, `json` when it is a pipe or a file. Stdin plays no part, so a diff piped in does not make the report JSON, and a terminal on stdin does not make it text. A terminal is not always a person: `docker run -t`, and the pseudo-terminal that an IDE task or `script` allocates, make stdout a terminal where a program expected JSON. A script that reads the report names `-f json`, which keeps JSON there. A mistyped format, a second `--format` and `--format` with `--print-config` are usage errors, exit `2`, before any config is read and any model call: no diff is read from stdin for them, and no message holds the value given.
 
 **`json`** is indented by two spaces and followed by a newline. A hidden character in a string is written as a `\uXXXX` escape, which a JSON parser reads back: [Output handling](../30-security/30-output-handling.md#what-the-cli-writes).
 
@@ -147,7 +150,7 @@ quorum: findings: 1 kept (1 high), 1 unreviewed, 1 gap, 1 left out (1 secret), 1
 | `<n> flag` | The advisory flags |
 | `exit <code>` | The exit code the run returns |
 
-It holds no file name and no model text, only counts and words the code wrote, so a hook or a log can carry it where a name or a claim must not go. It says nothing of where a finding is: for that, read the JSON. A review whose gaps `--allow-incomplete` lifted says `pass`, as its exit code does. A hook can run it on the local changes, print the line and fail on the exit code:
+It holds no file name and no model text, only counts and words the code wrote, so a hook or a log can carry it where a name or a claim must not go. It says nothing of where a finding is: for that, read the text report or the JSON. A review whose gaps `--allow-incomplete` lifted says `pass`, as its exit code does. A hook can run it on the local changes, print the line and fail on the exit code:
 
 ```bash
 quorum --local --format brief
@@ -155,13 +158,94 @@ quorum --local --format brief
 
 Every format says what the exit code says, and from the same place: the run decides its outcome once, prints the report from it and returns its code. A format never states a status the exit code does not.
 
+### The text report
+
+**`text`** is what a person reads on a terminal. For a review of a range, with one kept finding, one unreviewed, one binary file left out and one flag:
+
+```text
+quorum 0.6.0 · range 1f3a9c2...7b2e4d0 · security · 3 files
+
+HIGH  security  src/auth/login.ts:42  CWE-89
+  SQL built from the request's id parameter reaches db.query
+      41   const sql = 'SELECT * FROM users WHERE id = ' + id
+   >  42 + db.query(sql)
+      43   return rows
+  kept by 3 of 3 lenses
+
+UNREVIEWED  security  src/session.js:20  CWE-338
+  Session tokens come from Math.random, which is not a cryptographic generator.
+         -   return crypto.randomBytes(32).toString('hex')
+   >  20 +   return Math.random().toString(36).slice(2)
+      21   }
+  kept by 1 of 3 lenses, 1 vote failed
+
+security (fail-on high): 1 kept, 1 unreviewed, 1 discarded
+  1 of 3 files reviewed, 1 in part, 1 not
+left out: 1 file
+  "assets/logo.png" (binary)
+gap: security binary, the diff carries no content for 1 binary file(s), listed
+  in meta.leftOut
+flag: hidden-characters at "src/session.js":20, U+202E on 1 added line(s)
+took 41 s, 48120 tokens in and 4190 out
+exit 1, findings: a gating profile kept a finding at or above its fail-on level
+```
+
+Its parts come in this order:
+
+| Part | What it holds |
+| --- | --- |
+| The header | `quorum <version> · <source> · <profiles> · <n> files`. The source is `diff`, `range <base>...<head>`, `local on <head>` or `staged on <head>` (`local, no commit yet` before a first commit) or `paths at <commit>`, each commit cut to its first seven characters. The files are those of the first profile's coverage |
+| Each finding | Its level, `HIGH`, `MEDIUM` or `LOW` for a kept finding and `UNREVIEWED` for one a failed vote left undecided, then its profile, `<file>:<line>` and its category; its claim; its evidence rows; and `kept by <k> of <n> lenses`, with `, 1 vote failed` or `, 2 votes failed` when a lens's vote failed. The findings are grouped by file, then by line, the kept and the unreviewed together. The discarded ones are only counted |
+| Its evidence rows | The diff's lines around the cited one, each as a marker, a number, the diff's `+`, `-` or space, and the code. The cited row is marked `>`, the added and context rows are numbered from the cited line, and a removed row, which is no line of the new file, has no number. When no row shows the cited line, as in a hunk that only deletes lines, the rows are shown unmarked and unnumbered |
+| Each profile | `<id> (fail-on <level>): <k> kept, <u> unreviewed, <d> discarded`, with `, <n> outside the diff` for the findings it dropped for citing code outside the diff. Then how many of the diff's files it reviewed, `, <p> in part`, `, <x> not` and `, <e> excluded` for the nonzero counts, or `the diff holds no file`. In the order the profiles ran, each at the level it ran with |
+| `left out:` | The files of `meta.leftOut` when there are some: their count, the first five, one a line as the [progress line](#progress-lines) writes each, then `and <n> more` |
+| `gap:` | One for each entry of `meta.incomplete`: its profile, its reason and its detail, a comma after the reason. A gap with no detail, or one of white space only, is `gap: <profile> <reason>`, with no comma |
+| `flag:` | One for each [advisory flag](../30-security/30-output-handling.md#advisory-flags): its code, where it points and its detail |
+| `took` | The time: `<n> ms` under a second, one decimal and ` s` from one second to ten, whole seconds and ` s` after. Then the tokens in and out, with the cost when the usage holds one, or `no token count reported` |
+| `exit` | The verdict |
+
+**The verdict is last**, because the end of the output is what stays on a terminal's screen, and it is the line to act on. It says what the exit code says, from the same outcome, in one of four lines:
+
+| Line | When |
+| --- | --- |
+| `exit 1, findings: a gating profile kept a finding at or above its fail-on level` | A gating profile kept a finding at or above its fail-on level |
+| `exit 4, incomplete: a gating profile has a gap or an unreviewed finding` | No finding reached a level, and a gating profile has a gap or an unreviewed finding |
+| `exit 0, pass: no gating profile kept a finding to fail on, and none has a gap` | Nothing to fail on, and no gap |
+| `exit 0, pass: incomplete, but --allow-incomplete lifted every gap` | `--allow-incomplete` turned an exit `4` into `0` |
+
+**It is 80 columns wide**, counted in code points. A claim, a gap's detail and a flag's detail wrap at spaces, each continuation indented by two spaces. Nothing else is cut or wrapped, and neither is a word longer than a line: a path, a category, a row of code or a URL stays whole, since a cut could hide code, and the terminal folds the line.
+
+**A path is bare or quoted.** A finding's path is written as it is when it holds ASCII letters, digits and `._/@+~=,-` only, so a terminal can link `path:line`. Any other path is a JSON string, as every other line of quorum quotes a file: `"src/my file.ts":42`. A space, a quote, a colon or a hidden character in a name can then never pass for the columns after it. **A tab in a row of code** is shown as four spaces.
+
+Each line is inert: every hidden character in a claim, a category, a row of code, a file name or a detail is shown as `<U+XXXX>`, and a line that starts with `::` or holds `##[` has it broken, as on stderr: [Output handling](../30-security/30-output-handling.md#what-the-cli-writes).
+
+### Colors
+
+With color on, the text report colors these pieces, and nothing else:
+
+| Piece | Color |
+| --- | --- |
+| `HIGH` | Bold red |
+| `MEDIUM` | Yellow |
+| `LOW` | Cyan |
+| `UNREVIEWED` | Magenta |
+| The location of a finding, `<file>:<line>` | Bold |
+| The `>` of the cited row | Bold |
+| The `+` of an added row | Green |
+| The `-` of a removed row | Red |
+| `findings`, `incomplete` and `pass` in the last line | Red, yellow and green |
+
+A claim, a row of code, a category and a file name are never colored, and no piece but the ones above is. A line is colored only if its text is exactly what it is uncolored: a line that `::` or `##[` changes is printed without color. So no escape sequence reaches the terminal but quorum's own, around words quorum wrote.
+
+`--color auto`, the default, colors when stdout is a terminal and `NO_COLOR` is unset or empty, as [no-color.org](https://no-color.org) says: any other value turns it off, `0` included. `--color always` and `--color never` decide alone, whatever stdout is and `NO_COLOR` says. `FORCE_COLOR` and the `CLICOLOR` variables are not read, so a variable a wrapper sets cannot put escape sequences in a log. Only the text report is colored, never a JSON or a brief one.
+
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | `0` | The review is complete, and no gating profile kept a finding at or above its fail-on level, `high` by default: nothing was found, every finding was discarded, or findings were kept below the level, at `medium` at most by default. What a profile at `failOn: none` finds, and its gaps, change no code. A blank diff exits `0` without calling a model, once the configuration is valid. `--allow-incomplete` also exits `0` where `4` would be the code, when every failed vote behind it failed in passing |
 | `1` | A gating profile kept at least one finding at or above its fail-on level, `high` by default: `medium` or `low` for a profile whose `failOn` says so ([Gating](./40-profiles.md#gating)). The security profile gates, and with its three lenses `high` means all three kept the finding |
-| `2` | A usage or configuration error, before any model call: an unknown flag, a flag without its value, an empty `--config` or `--send`, a `QUORUM_CONFIG` that is not an absolute path, a `--profile` that is repeated, malformed or unknown, a `--fail-on` that is malformed, repeated or names a profile that does not run, a `--format` that is unknown or given twice, or given with `--print-config`, a diff file or a git source given with `--print-config`, no diff given on a terminal, more than one argument, a diff file that cannot be read, a diff over 16 MiB, a source misuse (a second source, `--range` or `--at` twice, `--trust-repo-config` without `--local` or `--staged`, or `--at`, `--large` or `--no-default-skips` without `--path`), a range written wrongly or that the repository does not hold, whose two sides are one commit or that share no history in a shallow clone, git missing, older than 2.41 or on Windows, a working directory in no work tree, a repository another user owns or whose work tree is another repository's: [Sources](./15-sources.md), a repository whose own config names a filter program that `--local` or `--staged` would run, without `--trust-repo-config`, an untracked file that is a FIFO, a socket or a device, that cannot be read, whose name is not UTF-8, that leaves the top level, lies under a symbolic link or changed while quorum read it, or local changes over 16 MiB: [The local changes](./15-sources.md#the-local-changes), a `--path` that is empty, absolute, leaves the top level or names no file tracked at the commit, an `--at` that starts with `-` or names no commit, a `HEAD` that names none, a selection whose every file is left out, or one over 16 MiB: [The files at a commit](./15-sources.md#the-files-at-a-commit), a `--path` review whose research may not finish under the token cap, which exits before any call unless `--large` is given: [What a path review costs](./15-sources.md#what-a-path-review-costs), a research model that is not set, a provider without a context size, a `claude` that cannot be found or a `QUORUM_CLAUDE_CODE_COMMAND` that is relative, a voter on another endpoint without a model of its own, a base URL that is not an `http://` or `https://` URL with a host, or a key with a character an HTTP header cannot carry. The configuration is checked before the diff is reviewed, so a blank diff meets these errors too. [Configuration errors](./20-configuration.md#configuration-errors) lists the messages |
+| `2` | A usage or configuration error, before any model call: an unknown flag, a flag without its value, an empty `--config` or `--send`, a `QUORUM_CONFIG` that is not an absolute path, a `--profile` that is repeated, malformed or unknown, a `--fail-on` that is malformed, repeated or names a profile that does not run, a `--format` that is unknown or given twice, or given with `--print-config`, a `--color` that is none of `auto`, `always` and `never` or is given twice, a diff file or a git source given with `--print-config`, no diff given on a terminal, more than one argument, a diff file that cannot be read, a diff over 16 MiB, a source misuse (a second source, `--range` or `--at` twice, `--trust-repo-config` without `--local` or `--staged`, or `--at`, `--large` or `--no-default-skips` without `--path`), a range written wrongly or that the repository does not hold, whose two sides are one commit or that share no history in a shallow clone, git missing, older than 2.41 or on Windows, a working directory in no work tree, a repository another user owns or whose work tree is another repository's: [Sources](./15-sources.md), a repository whose own config names a filter program that `--local` or `--staged` would run, without `--trust-repo-config`, an untracked file that is a FIFO, a socket or a device, that cannot be read, whose name is not UTF-8, that leaves the top level, lies under a symbolic link or changed while quorum read it, or local changes over 16 MiB: [The local changes](./15-sources.md#the-local-changes), a `--path` that is empty, absolute, leaves the top level or names no file tracked at the commit, an `--at` that starts with `-` or names no commit, a `HEAD` that names none, a selection whose every file is left out, or one over 16 MiB: [The files at a commit](./15-sources.md#the-files-at-a-commit), a `--path` review whose research may not finish under the token cap, which exits before any call unless `--large` is given: [What a path review costs](./15-sources.md#what-a-path-review-costs), a research model that is not set, a provider without a context size, a `claude` that cannot be found or a `QUORUM_CLAUDE_CODE_COMMAND` that is relative, a voter on another endpoint without a model of its own, a base URL that is not an `http://` or `https://` URL with a host, or a key with a character an HTTP header cannot carry. The configuration is checked before the diff is reviewed, so a blank diff meets these errors too. [Configuration errors](./20-configuration.md#configuration-errors) lists the messages |
 | `3` | A gating profile's research call failed: its endpoint is unreachable, answers with an HTTP error, refuses, stops on its content filter, is cut off by its token limit, or sends a body or a reply quorum cannot use. Or a git command a source ran failed, as `Error: git diff failed (exit 128): "..."`, git's message cut and quoted as a JSON string. Or the run stopped with nothing left to wait for, as a config file whose code never finishes loading leaves it: `Error: the run stopped without a result`, and never `0`; a provider object whose call never settles fails at its deadline instead. An error that nothing caught, thrown by a provider object's own code, ends the run with `Error:` and its message on one line, never a stack. A failing voter does not fail the run: see `4` |
 | `4` | The review of a gating profile is incomplete, and no gating profile kept a finding at or above its fail-on level, `high` by default: a finding is `unreviewed` because a failed vote could still have kept it, or `meta.incomplete` holds a gap, which is a finding the harness could not read (`finding-unreadable`), a research reply whose findings were all unusable (`research-unusable`), findings beyond the cap of 50 (`findings-capped`), a kept finding whose failed votes could have raised it to a higher level (`vote-failed`), a request its provider refused as too large for its model (`request-too-large`), a hunk too large for any research request of its model (`too-large`), work the review's token cap or its deadline stopped, a research request or votes, which no flag lifts, and which a `--path` review run with `--large` ends with when the cap stops its parts (`token-cap`: [The token cap](./20-configuration.md#the-token-cap), `review-deadline`: [The review's deadline](./20-configuration.md#the-reviews-deadline)), a file whose change the diff does not carry, binary (`binary`) or a submodule's commit (`submodule`), or a file held back as a secret, named so or holding a credential, which no model was sent (`secret`: [Files held back as secrets](./15-sources.md#files-held-back-as-secrets)), each listed in `meta.leftOut`. `--send` or the config's `send` names a held file to send, and a file so named is no gap. A gap of a profile at `failOn: none`, an advisory profile's failed research (`research-failed`) included, is in the result and on stderr, and changes no code. `--allow-incomplete` turns this `4` into `0` only when each gap of a gating profile is an unreviewed finding or a `vote-failed` gap, and every failed vote behind them failed in passing: a dropped connection, a timeout of its own, or an HTTP 408, 409, 429 or 5xx. Every other gap still exits `4`, since a pull request causes it directly: by padding a hunk until no request holds it, with decoy findings that push a real one past `maxFindings`, with text that a voter refuses or that cuts its reply off or leaves it unusable, with replies drawn out until the review's deadline, by making a file binary, or by naming a file as a secret. Planted text can still draw out a reply that ends in a timeout of its own, so on a gating profile do not use the flag for a pull request you do not trust |
 | `130` | The CLI received SIGINT or SIGTERM and stopped the review: nothing is written on stdout, and `interrupted` on stderr. A second signal writes `interrupted` too and exits `130` at once, without waiting for what a provider that ignored the first still runs |
@@ -297,7 +381,7 @@ A step that keeps the result and says which case it hit:
 ```bash
 set -o pipefail
 code=0
-git --attr-source=origin/main diff --no-textconv --no-ext-diff --no-color --submodule=short --ignore-submodules=none origin/main...HEAD | quorum > result.json || code=$?
+git --attr-source=origin/main diff --no-textconv --no-ext-diff --no-color --submodule=short --ignore-submodules=none origin/main...HEAD | quorum -f json > result.json || code=$?
 case $code in
   0) echo "complete: no gating profile kept a finding at its fail-on level" ;;
   1) echo "a finding at or above a fail-on level was kept: read result.json" ;;
@@ -310,6 +394,7 @@ exit $code
 - **`set -o pipefail`** makes a failing `git diff` fail the step. Without it, a base branch the job never fetched leaves quorum an empty stdin, which it reviews as a blank diff and passes with `0`.
 - **Make the diff with the base branch's attributes, and pin its format.** `--attr-source=origin/main` reads `.gitattributes` from the base branch, where `git diff` would read the checkout's, which is the pull request's. A line the pull request adds, `src/a.js -diff`, would make git print `Binary files a/src/a.js and b/src/a.js differ` and none of the change. `--ignore-submodules=none` overrides the `ignore` setting of `.gitmodules`, which git also reads from the checkout: an `ignore = all` the pull request adds there would hide its submodule's bump from the diff altogether. `--no-textconv` and `--no-ext-diff` keep a text converter or an external diff program from rewriting what the diff shows, `--no-color` keeps a `color.ui = always` in the runner's config from wrapping git's lines in escape codes quorum does not read, and `--submodule=short` prints each submodule as a section of its own, whatever `diff.submodule` says. The command needs git 2.41 or later, the release that added `--attr-source`: an older git refuses the option, and `set -o pipefail` fails the step. A file the diff still shows as binary, because it holds a NUL byte near its start or the base branch marks it `-diff`, and a submodule's bump are listed in `meta.leftOut`, and exit `4` for a gating profile: [A file left out](../95-reference/20-json-result.md#a-file-left-out). `--range <base>...<head>` makes the same diff, with the pins of [How quorum runs git](./15-sources.md#how-quorum-runs-git) and the base's attributes as the command above reads them, but for two differences of form: the `index` lines hold full ids, and a moved file is a deletion and an addition. To review your own change on your own machine, `git diff` is enough. A branch someone else wrote brings its own `.gitattributes` and `.gitmodules`: review it with the command above.
 - **Give `docker run` `-i` when the image stands in for `quorum`.** Without `-i`, `docker run` gives the container an empty stdin, which quorum reviews as an empty diff and passes with `0`, so the gate passes having reviewed nothing. Always pass `-i` when the diff comes on stdin: [A container image](../10-getting-started/10-installation.md#a-container-image).
+- **Name `-f json` in a script that reads the result.** stdout is no terminal in a CI job, so the result is JSON unless `-f` names another format. A script that runs under `docker run -t`, in a pseudo-terminal or in an IDE task has a terminal for stdout, and would get the text report where it expects JSON: `-f json` keeps the result JSON there. A pipe and a file are JSON already, and `--color` colors the text report alone, so no log of a JSON result holds an escape sequence.
 - **Run the binary or the npm package's `quorum`, not `bun run start`.** The job's working directory is the pull request's checkout, and Bun reads a `bunfig.toml` and a `.env` from its working directory: the pull request could add one that runs its code first, or one that points the finder at its own endpoint. A `.env` can also set `QUORUM_CONFIG`, which names a config the pull request wrote (and a TS or JS one runs), and any `QUORUM_*` variable. The binary reads neither, and neither does Node, which runs the npm package's `quorum`: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory). Install the package with `npm install -g @tobi-or-not/quorum`, and never run it through `npx`, `npm exec` or `pnpm dlx` in that directory: they read the checkout's `.npmrc`, which can name another registry for the package to come from, where `npm install -g` does not read the project's `.npmrc`.
 - **Name a config from the base branch.** A config file loads only when `--config` or `QUORUM_CONFIG` names it, and in CI it must come from the base branch or another path the pull request cannot write, its prompt files included: [Trust](./20-configuration.md#trust). `QUORUM_CONFIG` must be an absolute path, since a relative one would name a file of the checkout, which is the pull request's; quorum refuses it with exit `2`.
 - **The base must be in the clone.** `origin/main...HEAD` needs `origin/main` and the commit where the branch left it, which a shallow clone may not have.

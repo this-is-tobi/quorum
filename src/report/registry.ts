@@ -5,9 +5,10 @@ import type { QuorumResult } from '../core/types.ts'
 import { brief } from './brief.ts'
 import { json } from './json.ts'
 import type { Reporter } from './reporter.ts'
+import { text } from './text.ts'
 
 /** The reporters by name, in the order the messages list them. A new one is a module and a line here. */
-export const REPORTERS = { json, brief } as const satisfies Readonly<Record<string, Reporter>>
+export const REPORTERS = { text, json, brief } as const satisfies Readonly<Record<string, Reporter>>
 
 /** The name of a reporter: what `--format` takes and `renderReport` renders. */
 export type ReportFormat = keyof typeof REPORTERS
@@ -20,7 +21,7 @@ export function isReportFormat(name: unknown): name is ReportFormat {
   return typeof name === 'string' && Object.hasOwn(REPORTERS, name)
 }
 
-/** The formats as a message lists them: `, ` between them and ` or ` before the last, as `json or brief`. */
+/** The formats as a message lists them: `, ` between them and ` or ` before the last, as `text, json or brief`. */
 export function formatWords(): string {
   const last = REPORT_FORMATS.at(-1)
   return REPORT_FORMATS.length < 2
@@ -32,7 +33,7 @@ export function formatWords(): string {
 export interface ReportOptions {
   /** The reporter to render with. */
   readonly format: ReportFormat
-  /** Whether the report may color what it writes; `false` when unset. `json` and `brief` never color. */
+  /** Whether the report may color what it writes; `false` when unset. `text` is the one format that colors, the words quorum wrote and nothing a model or a diff wrote; `json` and `brief` never do. */
   readonly color?: boolean
   /** What the review came to, which the report says; `outcome(result)` when unset. */
   readonly outcome?: Outcome
@@ -43,12 +44,13 @@ export interface ReportOptions {
  * writes it on stdout. It reads the result, as `review` returns it, and `options`, and nothing else, so it is
  * pure. The report says what the exit code says: it states the `outcome` it is given, else the one `outcome`
  * computes from the result, which has no `allowIncomplete`, so a caller whose run lifted gaps passes its own.
- * `color` is `false` unless asked.
+ * `color` is `false` unless asked, and only the `text` format takes it: it wraps the words quorum wrote in
+ * SGR sequences, and a line the workflow-command rules change is written without them.
  *
  * @throws ConfigError at `format` when it names no reporter
  *
  * @example
- * const report = renderReport(result, { format: 'brief', outcome: outcome(result, { allowIncomplete: true }) })
+ * const report = renderReport(result, { format: 'text', color: true, outcome: outcome(result, { allowIncomplete: true }) })
  */
 export function renderReport(result: QuorumResult, options: ReportOptions): string {
   const { format } = options
