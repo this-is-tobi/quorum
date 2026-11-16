@@ -17,6 +17,8 @@ describe('nameRule', () => {
     ['id_ed25519', 'secret'],
     ['prod.tfstate.backup', 'secret'],
     ['deploy/prod.tfstate', 'secret'],
+    ['config/CREDENTIALS.json', 'secret'],
+    ['secrets.toml', 'secret'],
     ['node_modules/x/a.js', 'vendored'],
     ['lib/vendor/b.go', 'vendored'],
     ['go.sum', 'lockfile'],
@@ -38,6 +40,10 @@ describe('nameRule', () => {
     'go.summary',
     'id_rsa.pub',
     'appmin.js',
+    // A template the core sends once its content is clean, a .env's and a Helm chart's, and code named secrets.
+    '.env.example',
+    'charts/x/templates/secrets.yaml',
+    'src/secrets.ts',
   ])('reviews %s', (path) => {
     expect(nameRule(path)).toBeUndefined()
   })
@@ -47,6 +53,11 @@ describe('nameRule', () => {
     expect(nameRule('node_modules/yarn.lock')).toBe('vendored')
     expect(nameRule('vendor/package-lock.json')).toBe('vendored')
     expect(nameRule('package-lock.json')).toBe('lockfile')
+  })
+
+  it('passes the secret rule over for a file the operator sends, to the next rule', () => {
+    expect(nameRule('vendor/.env', false)).toBe('vendored')
+    expect(nameRule('.env', false)).toBeUndefined()
   })
 })
 

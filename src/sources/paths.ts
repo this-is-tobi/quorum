@@ -2,11 +2,12 @@ import { posix } from 'node:path'
 import { MAX_DIFF_BYTES } from '../core/diff.ts'
 import { ConfigError } from '../core/errors.ts'
 import { excludeMatcher } from '../core/exclude.ts'
+import { credentialIn, isSecretName } from '../core/secrets.ts'
 import { utf8Length } from '../core/tokens.ts'
 import type { LeftOutFile } from '../core/types.ts'
 import { listTree, readBlobs } from '../git/tree.ts'
 import type { TreeEntry } from '../git/tree.ts'
-import { addedDiff, isBinary, pathName } from './added.ts'
+import { addedDiff, blobText, isBinary, pathName } from './added.ts'
 import type { AddedFile } from './added.ts'
 import type { SourceContext, SourceRead } from './read.ts'
 import { openSourceRepository } from './repository.ts'
@@ -27,7 +28,7 @@ function allLeftOut(skipped: number, excluded: number, skips: boolean): string {
   return `every selected file is left out (${skipped} skipped, ${excluded} excluded): ${
     skips
       ? 'pass --no-default-skips to review the skipped ones, or narrow exclude'
-      : 'narrow exclude, or name a path that holds files other than gitlinks and Git LFS pointers'
+      : 'narrow exclude, or name a path that holds files other than gitlinks, Git LFS pointers and secrets'
   }`
 }
 
@@ -99,24 +100,34 @@ interface Candidate {
   readonly name: string
 }
 
-/** The skip a name or a gitlink decides before any blob is read, or the exclusion that comes first: a gitlink, then `exclude`, then the name rules while the skips are on. */
-function leftOutBeforeReading({ entry, name }: Candidate, excluded: (path: string) => boolean, skips: boolean): LeftOutFile | undefined {
+/**
+ * The skip a name or a gitlink decides before any blob is read, or the exclusion that comes first: a gitlink,
+ * then `exclude`, then a secret's name (the core's) unless `sent` names the file, whatever the skips, then,
+ * while the skips are on, the other name rules.
+ */
+function leftOutBeforeReading({ entry, name }: Candidate, excluded: (path: string) => boolean, skips: boolean, sent: (path: string) => boolean): LeftOutFile | undefined {
   if (entry.type === 'commit') return { file: name, reason: 'skipped', rule: 'submodule' }
   if (excluded(name)) return { file: name, reason: 'excluded' }
+  if (!sent(name) && isSecretName(name)) return { file: name, reason: 'skipped', rule: 'secret' }
   const rule = skips
-    ? nameRule(name)
+    ? nameRule(name, false)
     : undefined
   return rule === undefined
     ? undefined
     : { file: name, reason: 'skipped', rule }
 }
 
-/** The skip the bytes of a file decide: a Git LFS pointer always, and while the skips are on a binary file, then a minified one. */
-function leftOutAfterReading(name: string, content: Uint8Array, skips: boolean): LeftOutFile | undefined {
+/**
+ * The skip the bytes of a file decide, in this order: a Git LFS pointer always; while the skips are on, a
+ * binary file; then, whatever the skips and unless `sent` names the file, one whose text holds a credential
+ * (the core's `credentialIn`, of the text as the writer reads it), skipped as `secret`; and while the skips
+ * are on, a minified one.
+ */
+function leftOutAfterReading(name: string, content: Uint8Array, skips: boolean, sent: (path: string) => boolean): LeftOutFile | undefined {
   if (isLfsPointer(content)) return { file: name, reason: 'skipped', rule: 'lfs' }
-  if (!skips) return undefined
-  if (isBinary(content)) return { file: name, reason: 'skipped', rule: 'binary' }
-  return isMinifiedContent(name, content)
+  if (skips && isBinary(content)) return { file: name, reason: 'skipped', rule: 'binary' }
+  if (!sent(name) && credentialIn(blobText(content)) !== undefined) return { file: name, reason: 'skipped', rule: 'secret' }
+  return skips && isMinifiedContent(name, content)
     ? { file: name, reason: 'skipped', rule: 'minified' }
     : undefined
 }
@@ -130,13 +141,19 @@ function leftOutAfterReading(name: string, content: Uint8Array, skips: boolean):
  * the revision of `--at`, resolved once and then known as a full id.
  *
  * Each selected entry, in git's order, is decided in this order: a gitlink is skipped as `submodule`,
- * always; a name `exclude` matches is listed `excluded`; and with the skips on a name is skipped by the
- * first rule it fits, `secret`, `vendored`, `lockfile` or `minified` (`nameRule`). The sizes of what is left
- * must then be within 16 MiB before any blob is read, and the blobs are read through one `cat-file`. Once
- * read, a Git LFS pointer is skipped as `lfs`, always, and with the skips on a binary file is skipped as
- * `binary` and one whose lines are long as `minified`; with them off a binary file is written as git's binary
- * line, a gap of every profile. Nothing is read from a `.gitattributes`: a tree can still shape a file to
- * match a rule, which is why each skip is listed in `leftOut` with its rule, and no skip is a gap.
+ * always; a name `exclude` matches is listed `excluded`; a name the core takes as a secret's is skipped as
+ * `secret`, whatever the skips, unless the context's `send` names the file; and with the skips on a name is
+ * skipped by the first other rule it fits, `vendored`, `lockfile` or `minified` (`nameRule`). The sizes of
+ * what is left must then be within 16 MiB before any blob is read, and the blobs are read through one
+ * `cat-file`. Once read, a Git LFS pointer is skipped as `lfs`, always; with the skips on a binary file is
+ * skipped as `binary`; a file whose text holds a credential is skipped as `secret`, whatever the skips,
+ * unless `send` names it; and with the skips on one whose lines are long is skipped as `minified`. With the
+ * skips off a binary file is written as git's binary line, a gap of every profile. So only `send` sends a
+ * secret, by its name and by its content, and `--no-default-skips` turns off the vendored, lockfile,
+ * minified and binary rules alone. `send` holds exact paths, as the diff writes them and `leftOut` lists
+ * them. A template (`.env.example`, a Helm chart's `secrets.yaml`) is no secret by name, so it is read and
+ * written unless it holds a credential. Nothing is read from a `.gitattributes`: a tree can still shape a
+ * file to match a rule, which is why each skip is listed in `leftOut` with its rule, and no skip is a gap.
  *
  * A `ConfigError` at `--path` or `--at` refuses a `--path` value that is empty or absolute and an `--at`
  * that starts with `-` (before any git), a `--path` that leaves the top level or names no tracked file, a
@@ -178,11 +195,13 @@ export async function pathsSource(paths: readonly string[], at: string | undefin
   if (unmatched !== undefined) throw refusal(FLAG, namesNothing(unmatched.place))
 
   const excluded = excludeMatcher(context.exclude ?? [])
+  const sendNames: ReadonlySet<string> = new Set(context.send ?? [])
+  const sent = (path: string): boolean => sendNames.has(path)
   const candidates: Candidate[] = entries.map(entry => ({
     entry,
     name: pathName(entry.path),
   }))
-  const decided = candidates.map(candidate => leftOutBeforeReading(candidate, excluded, skips))
+  const decided = candidates.map(candidate => leftOutBeforeReading(candidate, excluded, skips, sent))
   const toRead = candidates.filter((_, index) => decided[index] === undefined)
   const total = toRead.reduce((sum, { entry }) => sum + (entry.size ?? 0), 0)
   if (total > MAX_DIFF_BYTES) throw refusal(FLAG, tooMany(total))
@@ -200,7 +219,7 @@ export async function pathsSource(paths: readonly string[], at: string | undefin
       continue
     }
     const content = contents[next++]
-    const late = leftOutAfterReading(name, content, skips)
+    const late = leftOutAfterReading(name, content, skips, sent)
     if (late === undefined) files.push({ path: entry.path, mode: entry.mode, content })
     else leftOut.push(late)
   }

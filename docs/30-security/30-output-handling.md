@@ -62,9 +62,9 @@ The harness reads the diff by code, before any model sees it, and raises a flag 
 | --- | --- |
 | `hidden-characters` | A hidden character, as the class above defines it, in the name of a file or in an added line |
 | `ai-addressed-text` | In an added line, text that speaks to an AI reviewer instead of a person |
-| `secret-file` | A file held back from the review as a secret, because its name is a secret's, such as `.env` or `id_ed25519`, or because a line of it reads as a credential; and a file a path review skipped for its name |
+| `secret-file` | A file held back from the review as a secret, because its name is a secret's, such as `.env` or `id_ed25519`, or because a line of it reads as a credential; and a file a path review skipped, for its name or for a credential in its text |
 
-The third code is raised for a file whose name a secret scanner would look for, or that holds a credential quorum recognizes, and that no model was sent: a person should look at whether the file belongs in the change. Every source holds such a file back: [Files held back as secrets](../20-using/15-sources.md#files-held-back-as-secrets). The flag comes from the list of files left out, not from the diff's lines, and it quotes none of them, nor the credential. A change that deletes a file named as a secret whole raises it too, and says that the history still holds the file. A [path review](../20-using/15-sources.md#what-a-path-review-skips) skips a file by its name before it reads it, and flags that: no template is exempt, `.env.example` included. A secret that `exclude` matched first is listed as `excluded` and raises no flag, since the operator chose to leave it out. A file a program sends with `send` is neither held nor flagged.
+The third code is raised for a file whose name a secret scanner would look for, or that holds a credential quorum recognizes, and that no model was sent: a person should look at whether the file belongs in the change. Every source holds such a file back: [Files held back as secrets](../20-using/15-sources.md#files-held-back-as-secrets). The flag comes from the list of files left out, not from the diff's lines, and it quotes none of them, nor the credential. A change that deletes a file named as a secret whole raises it too, and says that the history still holds the file. A [path review](../20-using/15-sources.md#what-a-path-review-skips) skips a file by its name before it reads it, and by a credential in its text once it has, whatever `--no-default-skips` says, and flags either: a template is no secret by name, so a `.env.example` is read and sent unless its text holds a credential, which is flagged as one that holds a credential. A secret that `exclude` matched first is listed as `excluded` and raises no flag, since the operator chose to leave it out. A file a program sends with `send` is neither held nor flagged.
 
 The second code knows nine kinds of text, and a flag names each by these words:
 
@@ -109,7 +109,8 @@ Quorum raises at most one flag per file, code and subject, so a file raises at m
 | `secret-file` | A file held back by its name | `named as a secret, so no model was sent any of it: check that it belongs in the change` |
 | `secret-file` | A file held back by a credential in it | `holds what reads as an AWS key, so no model was sent any of it: keep it out of the repository, and rotate it if it is real` |
 | `secret-file` | A file named as a secret that the change deletes whole | `deletes a file named as a secret, so no model was sent any of it: the history still holds the file, so rotate what it held` |
-| `secret-file` | A file a path review skipped | `named as a secret, so a path review sent none of it: check that it belongs in the repository` |
+| `secret-file` | A file a path review skipped by its name | `named as a secret, so a path review sent none of it: check that it belongs in the repository` |
+| `secret-file` | A file a path review skipped by a credential in its text | `holds what reads as a credential, so a path review sent none of it: remove it from the repository, and rotate it if it is real` |
 
 ### Where they appear
 

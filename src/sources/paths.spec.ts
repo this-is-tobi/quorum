@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { reviewScope } from '../core/coverage.ts'
 import { ConfigError } from '../core/errors.ts'
 import { secretFlags } from '../core/flags.ts'
 import { MAX_GIT_OUTPUT_BYTES } from '../git/run.ts'
+import { fakeCredential } from '../testing/credentials.ts'
 import { fakeGit } from '../testing/git.ts'
 import type { GitBase, GitCall, GitReply } from '../testing/git.ts'
 import { pathsSource } from './paths.ts'
@@ -60,6 +62,33 @@ const TREE: readonly Spec[] = [
   { path: 'src/c.min.js', content: 'minified()\n' },
 ]
 
+/**
+ * A tree of files a path review reads for a credential, in git's order: two `.env` templates, one holding
+ * a key and one clean; a bundle with one line of 200 bytes, which the lines' rule calls minified, and the
+ * same line holding a key; a binary file that holds a key; a vendored file; a `.env`; plain code; and code
+ * that holds a key.
+ */
+const HOLDING: readonly Spec[] = [
+  { path: '.env.example', content: `TOKEN=${fakeCredential('github-token')}\n` },
+  { path: '.env.sample', content: 'TOKEN=\n' },
+  {
+    path: 'dist/app.js',
+    content: 'x'.repeat(200),
+  },
+  {
+    path: 'dist/bundle.js',
+    content: `${fakeCredential('stripe-key')};`.padEnd(200, 'x'),
+  },
+  {
+    path: 'logo.png',
+    content: Uint8Array.of(0, ...encode(fakeCredential('google-key'))),
+  },
+  { path: 'node_modules/m.js', content: 'module.exports = 1\n' },
+  { path: 'src/.env', content: 'KEY=secret\n' },
+  { path: 'src/b.ts', content: 'export const b = 2\n' },
+  { path: 'src/config.ts', content: `export const id = '${fakeCredential('aws-key')}'\n` },
+]
+
 /** What `ls-tree -r -z --long` prints for the entries: a record each, the size right-aligned in 7 columns. */
 function listing(entries: readonly Tracked[]): Uint8Array {
   return Buffer.concat(entries.map((entry) => {
@@ -112,6 +141,7 @@ interface Options {
   readonly base?: GitBase
   readonly commits?: Commits
   readonly exclude?: readonly string[]
+  readonly send?: readonly string[]
   readonly idLength?: number
 }
 
@@ -130,6 +160,7 @@ function setup(specs: readonly Spec[] = TREE, options: Options = {}): { fake: Re
       env: {},
       platform: 'linux',
       exclude: options.exclude,
+      send: options.send,
       git: { executable: '/usr/bin/git', spawn: fake.spawn },
     },
   }
@@ -271,27 +302,35 @@ describe('the path source', () => {
     ].map(match => match[1])).toEqual(['a.js', 'b.css', 'c.ts'])
   })
 
-  it('always skips a gitlink and an LFS pointer, even with the default skips off', async () => {
+  it('always skips a gitlink, an LFS pointer and a secret, even with the default skips off', async () => {
     const { fake, context, id } = setup()
     const read = await pathsSource(['.'], undefined, false, context)
 
     expect(read.leftOut).toEqual([
       { file: 'lfs.bin', reason: 'skipped', rule: 'lfs' },
       { file: 'sm', reason: 'skipped', rule: 'submodule' },
+      { file: 'src/.env', reason: 'skipped', rule: 'secret' },
     ])
     expect(read.diff).not.toContain('lfs.bin')
     expect(read.diff).not.toContain('diff --git a/sm ')
+    expect(read.diff).not.toContain('src/.env')
     expect(readIds(fake.calls)).not.toContain(id('sm'))
+    // A secret is skipped by its name, so it is never read.
+    expect(readIds(fake.calls)).not.toContain(id('src/.env'))
   })
 
-  it('writes a binary file as git\'s binary line with the default skips off, and reviews the secrets then', async () => {
+  it('writes a binary file as git\'s binary line with the default skips off, and still skips the secret', async () => {
     const { context } = setup()
     const read = await pathsSource(['.'], undefined, false, context)
 
     expect(read.diff).toContain('diff --git a/img.png b/img.png\nnew file mode 100644\nBinary files /dev/null and b/img.png differ\n')
-    expect(read.diff).toContain('diff --git a/src/.env b/src/.env\nnew file mode 100644\n--- /dev/null\n+++ b/src/.env\n@@ -0,0 +1 @@\n+KEY=secret\n')
+    expect(read.diff).not.toContain('src/.env')
     for (const file of ['node_modules/m.js', 'package-lock.json', 'src/c.min.js']) expect(read.diff).toContain(`diff --git a/${file} b/${file}\n`)
-    expect(read.leftOut.map(entry => entry.file)).toEqual(['lfs.bin', 'sm'])
+    expect(read.leftOut).toEqual([
+      { file: 'lfs.bin', reason: 'skipped', rule: 'lfs' },
+      { file: 'sm', reason: 'skipped', rule: 'submodule' },
+      { file: 'src/.env', reason: 'skipped', rule: 'secret' },
+    ])
   })
 
   it.each([
@@ -299,19 +338,19 @@ describe('the path source', () => {
       'src',
       '',
       'src',
-      ['src/.env', 'src/b.ts', 'src/c.min.js'],
+      ['src/b.ts', 'src/c.min.js'],
     ],
     [
       'src/',
       '',
       'src',
-      ['src/.env', 'src/b.ts', 'src/c.min.js'],
+      ['src/b.ts', 'src/c.min.js'],
     ],
     [
       './src',
       '',
       'src',
-      ['src/.env', 'src/b.ts', 'src/c.min.js'],
+      ['src/b.ts', 'src/c.min.js'],
     ],
     [
       'b.ts',
@@ -329,7 +368,7 @@ describe('the path source', () => {
       '.',
       'src/',
       'src',
-      ['src/.env', 'src/b.ts', 'src/c.min.js'],
+      ['src/b.ts', 'src/c.min.js'],
     ],
   ])('selects %j from the prefix %j as %j', async (value, prefix, selection, files) => {
     const { context } = setup(TREE, {
@@ -429,11 +468,11 @@ describe('the path source', () => {
     expect(on.message).toBe('--path: every selected file is left out (2 skipped, 1 excluded): pass --no-default-skips to review the skipped ones, or narrow exclude')
 
     const off = await refusal(pathsSource(paths, undefined, false, context))
-    expect(off.message).toBe('--path: every selected file is left out (2 skipped, 1 excluded): narrow exclude, or name a path that holds files other than gitlinks and Git LFS pointers')
+    expect(off.message).toBe('--path: every selected file is left out (2 skipped, 1 excluded): narrow exclude, or name a path that holds files other than gitlinks, Git LFS pointers and secrets')
     expect(off.issues).toEqual([
       {
         path: '--path',
-        message: 'every selected file is left out (2 skipped, 1 excluded): narrow exclude, or name a path that holds files other than gitlinks and Git LFS pointers',
+        message: 'every selected file is left out (2 skipped, 1 excluded): narrow exclude, or name a path that holds files other than gitlinks, Git LFS pointers and secrets',
       },
     ])
   })
@@ -597,6 +636,92 @@ describe('the path source', () => {
     expect(read.leftOut).toEqual([
       { file: `vendor/caf${accent}.go`, reason: 'skipped', rule: 'vendored' },
     ])
+  })
+
+  /** The paths a path review wrote, in order. */
+  const written = (diff: string): string[] => [
+    ...diff.matchAll(/^diff --git a\/(\S+) /gm),
+  ].map(match => match[1])
+
+  it('skips a file whose text holds a credential as secret, after a binary file and before a minified one', async () => {
+    const { context } = setup(HOLDING)
+    const read = await pathsSource(['.'], undefined, true, context)
+
+    // A bundle that holds no key is the minified one, so the key is what made the other a secret.
+    expect(read.leftOut).toEqual([
+      { file: '.env.example', reason: 'skipped', rule: 'secret' },
+      { file: 'dist/app.js', reason: 'skipped', rule: 'minified' },
+      { file: 'dist/bundle.js', reason: 'skipped', rule: 'secret' },
+      { file: 'logo.png', reason: 'skipped', rule: 'binary' },
+      { file: 'node_modules/m.js', reason: 'skipped', rule: 'vendored' },
+      { file: 'src/.env', reason: 'skipped', rule: 'secret' },
+      { file: 'src/config.ts', reason: 'skipped', rule: 'secret' },
+    ])
+    expect(written(read.diff)).toEqual(['.env.sample', 'src/b.ts'])
+    expect(read.diff).not.toContain(fakeCredential('stripe-key'))
+    expect(reviewScope(read.diff).leftOut).toEqual([])
+  })
+
+  it('writes a clean template, and skips one holding a credential', async () => {
+    const { context } = setup(HOLDING)
+    const read = await pathsSource(['.'], undefined, true, context)
+
+    expect(read.diff).toContain('diff --git a/.env.sample b/.env.sample\nnew file mode 100644\n--- /dev/null\n+++ b/.env.sample\n@@ -0,0 +1 @@\n+TOKEN=\n')
+    expect(read.diff).not.toContain('.env.example')
+    expect(read.leftOut).toContainEqual({ file: '.env.example', reason: 'skipped', rule: 'secret' })
+    expect(read.leftOut.map(entry => entry.file)).not.toContain('.env.sample')
+    // A template skipped for its content is no secret by name, so its flag says it holds a credential.
+    expect(secretFlags(read.leftOut).find(flag => flag.file === '.env.example')?.detail).toBe('holds what reads as a credential, so a path review sent none of it: remove it from the repository, and rotate it if it is real')
+  })
+
+  it('reads a file the operator sends, by its name and by its content', async () => {
+    const send = ['src/.env', 'src/config.ts']
+    const { fake, context, id } = setup(HOLDING, { send })
+    const read = await pathsSource(['.'], undefined, true, context)
+
+    expect(written(read.diff)).toEqual([
+      '.env.sample',
+      'src/.env',
+      'src/b.ts',
+      'src/config.ts',
+    ])
+    expect(read.diff).toContain(fakeCredential('aws-key'))
+    expect(readIds(fake.calls)).toEqual(expect.arrayContaining(send.map(id)))
+    // The rest is held as before, and nothing sent is listed or flagged.
+    expect(read.leftOut).toEqual([
+      { file: '.env.example', reason: 'skipped', rule: 'secret' },
+      { file: 'dist/app.js', reason: 'skipped', rule: 'minified' },
+      { file: 'dist/bundle.js', reason: 'skipped', rule: 'secret' },
+      { file: 'logo.png', reason: 'skipped', rule: 'binary' },
+      { file: 'node_modules/m.js', reason: 'skipped', rule: 'vendored' },
+    ])
+    expect(secretFlags(read.leftOut).map(flag => flag.file)).toEqual(['.env.example', 'dist/bundle.js'])
+    // The core holds them unless the review sends them too, as the CLI does with the same list.
+    expect(reviewScope(read.diff).leftOut.map(entry => entry.file)).toEqual(send)
+    expect(reviewScope(read.diff, undefined, path => send.includes(path)).leftOut).toEqual([])
+  })
+
+  it('skips a secret by its name and its content with the default skips off too', async () => {
+    const { context } = setup(HOLDING)
+    const read = await pathsSource(['.'], undefined, false, context)
+
+    // A secret stays skipped: only the vendored, lockfile, minified and binary rules are off. A binary file that holds a key is one, since no model reads it either way.
+    expect(read.leftOut).toEqual([
+      { file: '.env.example', reason: 'skipped', rule: 'secret' },
+      { file: 'dist/bundle.js', reason: 'skipped', rule: 'secret' },
+      { file: 'logo.png', reason: 'skipped', rule: 'secret' },
+      { file: 'src/.env', reason: 'skipped', rule: 'secret' },
+      { file: 'src/config.ts', reason: 'skipped', rule: 'secret' },
+    ])
+    expect(written(read.diff)).toEqual([
+      '.env.sample',
+      'dist/app.js',
+      'node_modules/m.js',
+      'src/b.ts',
+    ])
+    expect(read.diff).not.toContain(fakeCredential('aws-key'))
+    // The core finds nothing left to hold, so the review this feeds has no gap.
+    expect(reviewScope(read.diff).leftOut).toEqual([])
   })
 
   it('reads no attribute as a skip: a .gitattributes marking files vendored, generated or -diff changes nothing', async () => {

@@ -173,9 +173,10 @@ export interface IncompleteEntry {
 export type LeftOutReason = 'excluded' | 'binary' | 'submodule' | 'skipped' | 'secret' | 'deleted-secret'
 
 /**
- * Why a path review skips a file by default: `vendored`, `lockfile`, `minified`, `secret` and `binary`
- * only while the default skips are on, `submodule` (a gitlink) and `lfs` (a Git LFS pointer) always. A
- * skip is no gap: the file is listed with its rule, and `--no-default-skips` reviews all but the last two.
+ * Why a path review skips a file: `vendored`, `lockfile`, `minified` and `binary` only while the default
+ * skips are on, `secret` (a file named as a secret, or whose text holds a credential), `submodule` (a
+ * gitlink) and `lfs` (a Git LFS pointer) always, a secret unless the operator sends it. A skip is no gap:
+ * the file is listed with its rule, and `--no-default-skips` reviews the first four.
  */
 export type SkipRule = 'vendored' | 'lockfile' | 'minified' | 'secret' | 'binary' | 'submodule' | 'lfs'
 

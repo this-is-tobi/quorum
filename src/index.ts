@@ -81,9 +81,11 @@ export type { SourceRead, SourceSpec } from './sources/read.ts'
 
 /**
  * Read the diff a review is about from a source, as the CLI does for a diff, `--range`, `--local`, `--staged`
- * and `--path`: `spec` names the source and `context` the working directory, the environment, a `signal` and the
- * config's `exclude` patterns, which a source that reads files applies before it reads them. It answers with the
- * `diff`, where it came from (`source`) and the files it left out (`leftOut`), which `review` takes as its input.
+ * and `--path`: `spec` names the source and `context` the working directory, the environment, a `signal`, the
+ * config's `exclude` patterns, which a source that reads files applies before it reads them, and its `send`,
+ * the files a path review reads though it skips a secret otherwise, each a path as the diff writes it. It
+ * answers with the `diff`, where it came from (`source`) and the files it left out (`leftOut`), which `review`
+ * takes as its input.
  * A git source runs the system's git, found on the `PATH` of `context.env`, on the platform of this process: it
  * needs git 2.41 or later, and Linux or macOS. No source cuts a diff, drops a file without listing it or reads
  * outside the repository's top level.
@@ -102,6 +104,7 @@ export async function readSource(spec: SourceSpec, context: Omit<SourceContext, 
     env: context.env,
     signal: context.signal,
     exclude: context.exclude,
+    send: context.send,
     platform: process.platform,
   })
 }

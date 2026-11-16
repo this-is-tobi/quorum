@@ -1,11 +1,13 @@
+import { isSecretName } from '../core/secrets.ts'
 import type { SkipRule } from '../core/types.ts'
 
 /**
  * What a path review skips by default, as constants a source reads and no tree can change. The lists come
- * from linguist's `vendor.yml` and `generated.rb`, the ecosystems the bench covers (Python, JavaScript and
- * TypeScript, Go, Rust, PHP, Java and Kotlin, Ruby, C#) and the names secret scanners look for. Nothing here
- * reads a `.gitattributes`: a pull request writes it, and a tree can still shape a file to match a rule, which
- * is why each skip is listed and the flag reviews them all.
+ * from linguist's `vendor.yml` and `generated.rb` and the ecosystems the bench covers (Python, JavaScript and
+ * TypeScript, Go, Rust, PHP, Java and Kotlin, Ruby, C#). The names of secrets are the core's (`isSecretName`),
+ * the one rule every source and the hold on every diff share, and a path review skips one whatever its default
+ * skips say. Nothing here reads a `.gitattributes`: a pull request writes it, and a tree can still shape a file
+ * to match a rule, which is why each skip is listed and the flag reviews them all.
  *
  * @see ../../docs/20-using/15-sources.md#what-a-path-review-skips for what each rule takes and why.
  */
@@ -66,42 +68,8 @@ export const MINIFIED_SUFFIXES: readonly string[] = Object.freeze([
   '.css.map',
 ])
 
-/** The names of files that hold a secret, matched whole. */
-export const SECRET_NAMES: readonly string[] = Object.freeze([
-  '.env',
-  '.npmrc',
-  '.pypirc',
-  '.netrc',
-  '_netrc',
-  '.git-credentials',
-  '.pgpass',
-  '.htpasswd',
-  'id_rsa',
-  'id_dsa',
-  'id_ecdsa',
-  'id_ed25519',
-])
-
-/** A name that starts with this holds a secret: `.env.local`, and `.env.example` too, since a template can hold a key pasted in. */
-export const SECRET_PREFIX = '.env.'
-
-/** What the name of a file that holds a secret ends with, in any case. */
-export const SECRET_SUFFIXES: readonly string[] = Object.freeze([
-  '.pem',
-  '.key',
-  '.p12',
-  '.pfx',
-  '.jks',
-  '.keystore',
-  '.ppk',
-  '.kdbx',
-  '.tfstate',
-  '.tfstate.backup',
-])
-
 const VENDORED: ReadonlySet<string> = new Set(VENDORED_DIRECTORIES)
 const LOCKFILE_NAMES: ReadonlySet<string> = new Set(LOCKFILES)
-const SECRET_FILE_NAMES: ReadonlySet<string> = new Set(SECRET_NAMES)
 const MINIFIED_CONTENT_SUFFIXES: readonly string[] = ['.js', '.mjs', '.cjs', '.css']
 
 /** The last segment of a path. */
@@ -116,15 +84,16 @@ function endsWithAny(name: string, suffixes: readonly string[]): boolean {
 
 /**
  * The rule that skips a file by its path alone, or undefined when none does. The rules are taken in this
- * order, so a file that fits several is listed under the first: `secret` (the file's name is one of the
- * names, starts with `.env.` or ends in one of the suffixes, in any case), `vendored` (a directory of the
- * path, the file's own name aside, is one of the vendored ones: `vendor.go` is reviewed, and so is a file
- * named `vendor`), `lockfile` (the name is a lockfile's) and `minified` (the name ends in a minified
- * suffix, in any case). A secret is taken before anything, so a `vendor/.env` is still flagged.
+ * order, so a file that fits several is listed under the first: `secret` (the core's `isSecretName`: a
+ * secret's name, a template apart), `vendored` (a directory of the path, the file's own name aside, is one
+ * of the vendored ones: `vendor.go` is reviewed, and so is a file named `vendor`), `lockfile` (the name is
+ * a lockfile's) and `minified` (the name ends in a minified suffix, in any case). A secret is taken before
+ * anything, so a `vendor/.env` is still flagged. `secret` false passes the first rule over, for a file the
+ * operator sends: it goes to the next rule, so a sent `vendor/.env` is still vendored.
  */
-export function nameRule(path: string): SkipRule | undefined {
+export function nameRule(path: string, secret = true): SkipRule | undefined {
   const name = nameOf(path)
-  if (SECRET_FILE_NAMES.has(name) || name.startsWith(SECRET_PREFIX) || endsWithAny(name, SECRET_SUFFIXES)) return 'secret'
+  if (secret && isSecretName(path)) return 'secret'
   if (path.split('/').slice(0, -1).some(directory => VENDORED.has(directory))) return 'vendored'
   if (LOCKFILE_NAMES.has(name)) return 'lockfile'
   if (endsWithAny(name, MINIFIED_SUFFIXES)) return 'minified'
