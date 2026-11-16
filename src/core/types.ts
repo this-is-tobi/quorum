@@ -177,6 +177,16 @@ export type LeftOutReason = 'excluded' | 'binary' | 'submodule' | 'skipped'
 export type SkipRule = 'vendored' | 'lockfile' | 'minified' | 'secret' | 'binary' | 'submodule' | 'lfs'
 
 /**
+ * The kinds of credential the content check reads, one per provider and `private-key`: the rules of
+ * gitleaks 8.30.1 for AWS, GitHub, Slack, Google, Stripe, Anthropic and OpenAI, and the private-key
+ * markers of pre-commit-hooks v5.0.0, each followed by a key's body.
+ */
+export type CredentialKind = 'private-key' | 'aws-key' | 'github-token' | 'slack-token' | 'google-key' | 'stripe-key' | 'anthropic-key' | 'openai-key'
+
+/** Why a file is held back from every review: its name is a secret's (`name`), or it holds a credential of this kind. */
+export type SecretRule = 'name' | CredentialKind
+
+/**
  * A file the review left out: one an `exclude` pattern matches, which is no gap; one a path review
  * skipped, which is no gap either, and whose `rule` says which rule did; or one whose change the diff
  * does not carry, `binary` or `submodule`, which is a gap of every profile. `rule` is there exactly for a
