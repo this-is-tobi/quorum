@@ -39,6 +39,7 @@ describe('checkReply', () => {
         category: 'CWE-78',
         summary: 'command injection',
         evidence: '-safe()\n+exec(cmd)\n b()\n c()',
+        evidenceRow: 1,
         quoteMatched: true,
       },
     ])

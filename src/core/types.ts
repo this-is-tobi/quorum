@@ -25,6 +25,13 @@ export interface Finding {
   summary: string
   /** The diff lines around `line` with their +, - or space markers (a line's trailing carriage return removed), capped. */
   evidence: string
+  /**
+   * The index, from 0, of the row of `evidence` that shows `line`, which a reporter marks as the
+   * cited row and numbers the others from: a `+` or context row counts a new-file line and a `-`
+   * row none. Absent, never `undefined`, when no row shows the line (a hunk that only deletes lines)
+   * or when the evidence's cap cut that row.
+   */
+  evidenceRow?: number
   /** Whether the finder's quote appears in the evidence: a measure of hallucinated citations. */
   quoteMatched: boolean
 }

@@ -54,6 +54,7 @@ const finding: Finding = {
   category: 'CWE-78',
   summary: 'command injection',
   evidence: '-safe()\n+exec(cmd)',
+  evidenceRow: 1,
   quoteMatched: true,
 }
 
@@ -520,6 +521,12 @@ describe('review', () => {
     expect(verified.evidence).toBe('-safe()\n+exec(cmd)')
     expect(verified.quoteMatched).toBe(false)
     expect(JSON.stringify(verified)).not.toContain('IGNORE ALL')
+  })
+
+  it('carries the cited row of each verdict\'s evidence into the result', async () => {
+    complete.mockResolvedValueOnce(findings(reported)).mockResolvedValue(vote(true))
+    const [verdict] = (await run().review({ diff })).kept
+    expect(verdict.evidenceRow).toBe(1)
   })
 
   it('grants high confidence on a unanimous 3/3 keep and reports the vote count', async () => {
@@ -1118,6 +1125,7 @@ describe('meta and events', () => {
       'category',
       'summary',
       'evidence',
+      'evidenceRow',
       'quoteMatched',
       'keptVotes',
       'totalVotes',
