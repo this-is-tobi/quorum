@@ -11,7 +11,7 @@ import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { envValue } from './env.ts'
 import type { Env } from './env.ts'
-import type { ProfileSelection } from './profiles.ts'
+import type { FailOnOverride, ProfileSelection } from './profiles.ts'
 import { resolveConfig } from './resolve.ts'
 import type { ResolvedConfig } from './resolve.ts'
 import { checkConfig, configCodeSchema, configFileSchema, configPath, isProvider, nameSnapshot, parseConfig } from './schema.ts'
@@ -556,13 +556,14 @@ export async function readConfigFile(path: string, options: { readonly cwd?: str
  * absolute path, a path given or not: set once, a relative one would resolve inside whatever checkout
  * quorum runs in and load that checkout's file, which is the search ADR-0014 forbids. `options.configPath`
  * is named per call, so it may be relative. `options.env` defaults to `process.env`. `options.selection`
- * names the profiles that run, over `QUORUM_PROFILES`, as `resolveConfig` reads it. The resolved config
- * holds the keys it read: never print or log one.
+ * names the profiles that run, over `QUORUM_PROFILES`, as `resolveConfig` reads it, and `options.failOn`
+ * sets the fail-on level of the profiles that run, over the config's, as `resolveConfig` applies it (the levels
+ * `parseFailOn` read from the command line). The resolved config holds the keys it read: never print or log one.
  *
  * @returns the resolved config, the absolute path of the file it came from (none without a file) and its warnings
  * @throws ConfigError with every problem of the file or of the resolution, or the one issue of a `QUORUM_CONFIG` that is not absolute
  */
-export async function loadConfig(options: { readonly cwd?: string, readonly env?: Env, readonly configPath?: string, readonly selection?: ProfileSelection } = {}): Promise<{ readonly config: ResolvedConfig, readonly source: string | undefined, readonly warnings: readonly string[] }> {
+export async function loadConfig(options: { readonly cwd?: string, readonly env?: Env, readonly configPath?: string, readonly selection?: ProfileSelection, readonly failOn?: FailOnOverride } = {}): Promise<{ readonly config: ResolvedConfig, readonly source: string | undefined, readonly warnings: readonly string[] }> {
   const env = options.env ?? process.env
   const named = envValue(env, 'QUORUM_CONFIG')
   if (named !== undefined && !isAbsolute(named)) fail('QUORUM_CONFIG', 'must be an absolute path')
@@ -570,6 +571,6 @@ export async function loadConfig(options: { readonly cwd?: string, readonly env?
   const loaded = path === undefined
     ? undefined
     : await readConfigFile(path, { cwd: options.cwd })
-  const config = resolveConfig(loaded?.config ?? {}, { env, selection: options.selection })
+  const config = resolveConfig(loaded?.config ?? {}, { env, selection: options.selection, failOn: options.failOn })
   return { config, source: loaded?.source, warnings: config.warnings }
 }

@@ -376,6 +376,7 @@ declare function loadConfig(options?: {
   readonly env?: Env
   readonly configPath?: string
   readonly selection?: ProfileSelection
+  readonly failOn?: FailOnOverride
 }): Promise<{ readonly config: ResolvedConfig, readonly source: string | undefined, readonly warnings: readonly string[] }>
 
 declare function fromConfig(
@@ -387,6 +388,12 @@ type Env = Readonly<Record<string, string | undefined>>
 
 interface ProfileSelection {
   readonly ids: readonly string[]
+  readonly path: string
+}
+
+interface FailOnOverride {
+  readonly all?: FailOn
+  readonly profiles: ReadonlyMap<string, FailOn>
   readonly path: string
 }
 ```
@@ -407,6 +414,8 @@ const result = await quorum.review({ diff })
 - **`options.cwd`** is the directory a relative `configPath` resolves against, the working directory by default. `source` is the absolute path of the file read, and `undefined` when none was.
 - **`QUORUM_CONFIG` must be an absolute path.** A relative one is refused with a `ConfigError` holding the issue `QUORUM_CONFIG: must be an absolute path`, whether or not `configPath` is given: a variable set once would resolve inside whatever directory the process runs in, and in CI that is a pull request's checkout, which could plant the file. A `configPath` is named per call, so it may be relative.
 - **`options.selection`** names the profiles that run, over `QUORUM_PROFILES`, which is still read and checked: a malformed variable is refused even when a selection is given. `path` is what the selection's issues name, and the CLI passes `--profile`. Each id must match `^[a-z][a-z0-9_-]*$`, and none may repeat.
+- **`options.failOn`** sets the fail-on level of the profiles that run, over the config's. It is a `FailOnOverride`: `all` is the level of every profile that runs, `profiles` the level of each profile it names, which wins over `all`, and `path` what its issues name; the CLI passes `--fail-on`. Each profile that runs is then a new frozen `ResolvedProfile` with that level as its `failOn`, so `meta.profiles` records it. A name in `profiles` that is not among the profiles that run is refused with a `ConfigError` at `path`, `names the profile "<id>", which does not run`, or `names a profile that does not run` for an id that is not a safe name: a typo must not leave a gate weaker or missing. A level that is none of the four is refused when `fromConfig` builds the quorum: `<id>.failOn: must be one of high, medium, low or none`.
+- **The CLI reads each `--fail-on` value** with `parseFailOn`, which the package does not export, as `<level>` or `<profile>=<level>`: the level is `high`, `medium`, `low` or `none`, the profile matches `^[a-z][a-z0-9_-]*$`, and the value is split at its first `=`. It is checked before any config is read, and refused at `--fail-on`, each issue once and none repeating a value: `must be a level, high, medium, low or none, or <profile>=<level>` for a value that is neither form, `takes one level for every profile` for a second level for every profile, equal or not, and `names a profile more than once`.
 - **`options.events`** is the event sink of the quorum, as `createQuorum` takes it.
 - **`options.env` is also the environment a `claude-code` provider's child starts from**, less what the provider's auth mode removes: [The auth modes](../20-using/30-providers.md#the-auth-modes). Without an `env`, `fromConfig` hands `process.env` to the `claude` child, the whole of it, for a `ResolvedConfig` too. A program that holds secrets `claude` does not need passes an `env` of its own, with `PATH` and what `claude` authenticates with.
 - **A process imports a TS or JS config once.** A second `loadConfig` of the same file gets the module the first import cached, since Node and Bun cache a module by its URL.
@@ -579,7 +588,7 @@ The warnings, each but the first two starting at the path it is about:
 | `inertLine`, `inertJson` | Render a line for a terminal or a log, and a value as JSON, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |
 
-The types: `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `CredentialKind`, `Estimate`, `FailOn`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `ObjectFormat`, `Outcome`, `OutcomeStatus`, `Profile`, `ProfileEstimate`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `ReviewInput`, `ReviewSource`, `SecretRule`, `SkipRule`, `SourceRead`, `SourceSpec`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
+The types: `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `CredentialKind`, `Estimate`, `FailOn`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `ObjectFormat`, `Outcome`, `OutcomeStatus`, `Profile`, `ProfileEstimate`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `ReviewInput`, `ReviewSource`, `SecretRule`, `SkipRule`, `SourceRead`, `SourceSpec`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `FailOnOverride`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
 
 The stages and the profile checks are not exported: a program reaches the stages through `createQuorum`. The exit-code rule is `outcome`.
 

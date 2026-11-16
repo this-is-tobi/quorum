@@ -108,6 +108,7 @@ const USAGE = [
   '      --large              Run a --path review that may pass the token cap, reviewing what the cap allows',
   '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
+  '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
   '  -v, --version            Print the version and exit',
@@ -323,6 +324,34 @@ describe('runCli', () => {
     const result = JSON.parse(stdout())
     expect(result.kept[0]).toMatchObject({ confidence: 'high' })
     expect(result.meta.profiles.security).toMatchObject({ failOn: 'none', gating: false })
+  })
+
+  it('exits 1 for a kept medium finding with --fail-on medium, and 0 for a kept high one with --fail-on security=none', async () => {
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true), vote(false))
+    const strict = harness({
+      argv: ['--fail-on', 'medium'],
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(strict.io)).toBe(EXIT.finding)
+    const medium = JSON.parse(strict.stdout())
+    expect(medium.kept[0]).toMatchObject({ confidence: 'medium' })
+    expect(medium.meta.profiles.security).toMatchObject({ failOn: 'medium', gating: true })
+
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true), vote(true))
+    const advisory = harness({
+      argv: ['--fail-on', 'security=none'],
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(advisory.io)).toBe(EXIT.ok)
+    const high = JSON.parse(advisory.stdout())
+    expect(high.kept[0]).toMatchObject({ confidence: 'high' })
+    expect(high.meta.profiles.security).toMatchObject({ failOn: 'none', gating: false })
   })
 
   it('exits 0 when the panel discards every finding', async () => {
@@ -1201,6 +1230,53 @@ describe('flags', () => {
     expect(stderr()).toBe(error)
     expect(fetchMock).not.toHaveBeenCalled()
   })
+
+  it.each<[string[], string]>([
+    [
+      ['--fail-on', 'critical'],
+      'must be a level, high, medium, low or none, or <profile>=<level>',
+    ],
+    [
+      [
+        '--fail-on',
+        'high',
+        '--fail-on',
+        'low',
+      ],
+      'takes one level for every profile',
+    ],
+    [
+      ['--fail-on=team=x'],
+      'must be a level, high, medium, low or none, or <profile>=<level>',
+    ],
+  ])('refuses %j before any config, with the usage', async (argv, message) => {
+    const fetchMock = stubChat()
+    const { io, stdout, stderr } = harness({ argv, env: {}, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe(`Error: --fail-on: ${message}\n${USAGE}`)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('exits 2 for --fail-on naming a profile that does not run, before any call', async () => {
+    const two = write('two.yaml', TWO_YAML)
+    const fetchMock = stubChat()
+    const { io, stdout, stderr } = harness({
+      argv: [
+        '--profile',
+        'security',
+        '--fail-on',
+        'team=none',
+      ],
+      cwd: dir,
+      env: { QUORUM_CONFIG: two },
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe('Error: --fail-on: names the profile "team", which does not run\n')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })
 
 describe('--print-config', () => {
@@ -1352,6 +1428,17 @@ describe('--print-config', () => {
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(stdout()).toContain('\nprofiles:\n  team:\n    failOn: high\n    research: default\n    lenses:\n      a: default\n    thresholds:\n      high: 1\n      medium: 1\n      low: null\n    prompts:\n      research: sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n')
     expect(stdout()).not.toContain('security')
+  })
+
+  it('prints the levels --fail-on sets with --print-config', async () => {
+    const fetchMock = stubChat()
+    const { io, stdout } = harness({
+      argv: ['--print-config', '--fail-on', 'medium'],
+      env: MODEL,
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stdout()).toContain('\nprofiles:\n  security:\n    failOn: medium\n')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('reads no diff: a diff argument is a usage error', async () => {
@@ -2293,7 +2380,7 @@ describe('the sources', () => {
       '       quorum bench [options] <suite>',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
-    expect(options).toHaveLength(15)
+    expect(options).toHaveLength(16)
     for (const line of options) {
       expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line.slice(25, 27), line).toBe('  ')

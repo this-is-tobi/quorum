@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import { ConfigError } from '../core/errors.ts'
+import type { ConfigIssue } from '../core/errors.ts'
 import { defaultPolicy } from '../core/policy.ts'
 import { securityProfile } from '../profiles/security.ts'
-import { resolveProfiles } from './profiles.ts'
+import { parseFailOn, resolveProfiles } from './profiles.ts'
+import type { FailOnOverride } from './profiles.ts'
 import type { ConfigInput } from './schema.ts'
 
 const NEEDS_BASE = 'is required: the profile extends no built-in profile'
@@ -13,8 +16,19 @@ const TEAM = {
     { id: 'grounded', question: 'Is it backed by a stated convention?' },
   ],
 }
+const FORM = 'must be a level, high, medium, low or none, or <profile>=<level>'
 const all = (profile: string) => ({ reachability: profile, impact: profile, defenses: profile })
-function resolve(profiles: ConfigInput['profiles'], ids?: string[]): ReturnType<typeof resolveProfiles> {
+/** The issues of the ConfigError `parseFailOn` throws for `values`; none when it reads them. */
+function issuesOf(values: string[]): readonly ConfigIssue[] {
+  try {
+    parseFailOn(values, '--fail-on')
+  } catch (error) {
+    expect(error).toBeInstanceOf(ConfigError)
+    return (error as ConfigError).issues
+  }
+  return []
+}
+function resolve(profiles: ConfigInput['profiles'], ids?: string[], failOn?: FailOnOverride): ReturnType<typeof resolveProfiles> {
   return resolveProfiles({
     profiles,
     selection: ids === undefined
@@ -22,6 +36,7 @@ function resolve(profiles: ConfigInput['profiles'], ids?: string[]): ReturnType<
       : { ids, path: 'QUORUM_PROFILES' },
     roles,
     providers,
+    failOn,
   })
 }
 
@@ -315,6 +330,115 @@ describe('resolveProfiles', () => {
       },
     }).issues).toEqual([
       { path: 'profiles.*.policy', message: 'at least one confidence level must be enabled' },
+    ])
+  })
+})
+
+describe('parseFailOn', () => {
+  it.each([
+    [
+      ['medium'],
+      {
+        all: 'medium',
+        profiles: new Map(),
+        path: '--fail-on',
+      },
+    ],
+    [
+      ['security=none'],
+      {
+        profiles: new Map([
+          ['security', 'none'],
+        ]),
+        path: '--fail-on',
+      },
+    ],
+    [
+      ['low', 'team=high'],
+      {
+        all: 'low',
+        profiles: new Map([
+          ['team', 'high'],
+        ]),
+        path: '--fail-on',
+      },
+    ],
+  ])('reads %j', (values, override) => {
+    expect(parseFailOn(values, '--fail-on')).toStrictEqual(override)
+  })
+
+  it.each([
+    [
+      ['critical'],
+      FORM,
+    ],
+    [
+      ['security='],
+      FORM,
+    ],
+    [
+      ['=high'],
+      FORM,
+    ],
+    [
+      ['Security=high'],
+      FORM,
+    ],
+    [
+      ['team=high=low'],
+      FORM,
+    ],
+    [
+      ['high', 'low'],
+      'takes one level for every profile',
+    ],
+    [
+      ['team=high', 'team=low'],
+      'names a profile more than once',
+    ],
+  ])('refuses %j with %s', (values, message) => {
+    expect(issuesOf(values)).toEqual([
+      { path: '--fail-on', message },
+    ])
+  })
+
+  it('refuses every kind of problem once, and never prints a value', () => {
+    expect(issuesOf([
+      'SECRET',
+      'SECRET=high',
+      'high',
+      'low',
+      'team=high',
+      'team=low',
+      'team=none',
+    ])).toEqual([
+      { path: '--fail-on', message: FORM },
+      { path: '--fail-on', message: 'takes one level for every profile' },
+      { path: '--fail-on', message: 'names a profile more than once' },
+    ])
+  })
+})
+
+describe('resolveProfiles with a fail-on override', () => {
+  it('sets every profile\'s level, a named profile\'s over it, both over the config', () => {
+    const result = resolve({
+      team: { ...TEAM, failOn: 'none' },
+    }, ['security', 'team'], parseFailOn(['low', 'team=medium'], '--fail-on'))
+    expect(result.issues).toEqual([])
+    expect(result.profiles.map(({ profile }) => [profile.id, profile.failOn])).toEqual([
+      ['security', 'low'],
+      ['team', 'medium'],
+    ])
+    expect(result.profiles.every(resolved => Object.isFrozen(resolved) && Object.isFrozen(resolved.profile))).toBe(true)
+  })
+
+  it('refuses a level for a profile that does not run, by name when it is safe to print', () => {
+    expect(resolve({ team: TEAM }, ['security'], parseFailOn(['team=high'], '--fail-on')).issues).toEqual([
+      { path: '--fail-on', message: 'names the profile "team", which does not run' },
+    ])
+    const long = 'a'.repeat(65)
+    expect(resolve({ [long]: TEAM }, [long], parseFailOn([`${long}x=high`], '--fail-on')).issues).toEqual([
+      { path: '--fail-on', message: 'names a profile that does not run' },
     ])
   })
 })

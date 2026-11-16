@@ -2,6 +2,8 @@ import packageJson from '../../package.json' with { type: 'json' }
 import { readEnv } from '../config/env.ts'
 import { fromConfig } from '../config/from-config.ts'
 import { loadConfig } from '../config/load.ts'
+import { parseFailOn } from '../config/profiles.ts'
+import type { FailOnOverride } from '../config/profiles.ts'
 import { ConfigError } from '../core/errors.ts'
 import { outcome } from '../core/outcome.ts'
 import { inertJson, inertLine } from '../core/sanitize.ts'
@@ -41,6 +43,7 @@ const USAGE = [
   '      --large              Run a --path review that may pass the token cap, reviewing what the cap allows',
   '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
+  '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
   '  -v, --version            Print the version and exit',
@@ -60,6 +63,7 @@ const OPTIONS = {
   large: { type: 'boolean' },
   send: { type: 'string', multiple: true },
   'allow-incomplete': { type: 'boolean' },
+  'fail-on': { type: 'string', multiple: true },
   'print-config': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
   version: { type: 'boolean', short: 'v' },
@@ -97,8 +101,8 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * local changes print no estimate and are never gated, since their size is the change's.
  *
  * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`, `--path`,
- * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--print-config`, `--help` and
- * `--version`; a usage error prints the usage after its message. Its settings are the config file `--config` or `QUORUM_CONFIG`
+ * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--fail-on`, `--print-config`,
+ * `--help` and `--version`; a usage error prints the usage after its message. Its settings are the config file `--config` or `QUORUM_CONFIG`
  * names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the `QUORUM_*`
  * variables of `io.env` with their deprecated aliases. Each warning is printed once, before the banner, and
  * when the configuration is refused the environment's warnings come before the `Error:` lines, since a
@@ -112,6 +116,13 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * `send` lists it: the path is the one the diff writes and the `left out:` line prints, matched exactly. The
  * CLI merges both lists, the config's first, and gives them to the source, the estimate and the review, so
  * the operator alone, never the change, lifts the hold. An empty `--send` is a usage error, before any config.
+ *
+ * `--fail-on <level>` sets the fail-on level of every profile that runs, and `--fail-on <profile>=<level>` of one
+ * profile, which wins; both win over the config's `failOn`, and no variable sets one. The level is `high`,
+ * `medium`, `low` or `none`, and the flag repeats, once for every profile and once for each profile. The
+ * values are checked first, before the diff and any config (`parseFailOn`), and a profile that does not run is
+ * refused with the configuration, before any call, so `--print-config` and `meta.profiles` show the levels the
+ * run uses.
  *
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
  * error ended the review, and writes no result. A review that has already resolved is complete.
@@ -141,12 +152,16 @@ export async function runCli(io: CliIO): Promise<number> {
   }
 
   let spec: SourceSpec | undefined
+  let failOn: FailOnOverride | undefined
   try {
     if (values.config === '') {
       throw new ConfigError([
         { path: '--config', message: 'must name a file' },
       ])
     }
+    failOn = values['fail-on'] === undefined
+      ? undefined
+      : parseFailOn(values['fail-on'], '--fail-on')
     spec = await sourceSpec(io, values, positionals)
   } catch (error) {
     return usageError(io, error)
@@ -162,6 +177,7 @@ export async function runCli(io: CliIO): Promise<number> {
       env: io.env,
       configPath: values.config,
       selection,
+      failOn,
     })
     const send = [
       ...config.send ?? [],
