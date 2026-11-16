@@ -8,9 +8,9 @@
  * renamed over the name, which replaces a link there. `run.json` and `results.jsonl` are made readable by
  * their owner only; the reports are made as any new file.
  *
- * Every message is fixed text, the name of a file and, for an I/O failure, the error's code; never the
- * runtime's own message. A directory or a file this run cannot trust as its own is a `ConfigError`; an
- * I/O failure is an `Error`.
+ * Every message is fixed text, the name of a file (or the label a caller gives a file it writes) and, for an
+ * I/O failure, the error's code; never the runtime's own message. A directory or a file this run cannot
+ * trust as its own is a `ConfigError`; an I/O failure is an `Error`.
  */
 
 import { randomBytes } from 'node:crypto'
@@ -91,7 +91,7 @@ function refusal(path: string, message: string): ConfigError {
 }
 
 /** The code of a failed system call, when it is one worth printing. */
-function errorCode(error: unknown): string | undefined {
+export function errorCode(error: unknown): string | undefined {
   const code = (error as { code?: unknown } | null | undefined)?.code
   return typeof code === 'string' && ERROR_CODE.test(code)
     ? code
@@ -224,7 +224,7 @@ export function runDifferences(recorded: RunFile, current: Pick<RunFile, 'quorum
  * @throws Error `run.json: cannot be written (<code>)`
  */
 export async function writeRunFile(directory: string, run: RunFile): Promise<void> {
-  await writeAtomic(directory, RUN_FILE, `${inertJson(run)}\n`, OWNER_ONLY)
+  await writeAtomic(directory, RUN_FILE, `${inertJson(run)}\n`, { mode: OWNER_ONLY })
 }
 
 /**
@@ -444,12 +444,14 @@ export async function openRecords(directory: string, read: ReadSizes): Promise<R
  * Write `text` as `name` in `directory` whole or not at all: to a new file `.<name>.<8 hex digits>.tmp`
  * made with `O_EXCL` (which never follows a link), written, synced and closed, then renamed over `name`.
  * The rename replaces a symbolic link at `name`, and never writes through it. The temporary file is made
- * with `mode`, which the rename keeps: Node's own default unless a caller asks for another. A failure
- * removes the temporary file it made.
+ * with `options.mode`, which the rename keeps: Node's own default unless a caller asks for another. A
+ * failure removes the temporary file it made, and names `options.label` in place of `name` when the caller
+ * has one, so a message can say what was being written without the path it was written to.
  *
- * @throws Error `<name>: cannot be written (<code>)`
+ * @throws Error `<label or name>: cannot be written (<code>)`
  */
-export async function writeAtomic(directory: string, name: string, text: string, mode = 0o666): Promise<void> {
+export async function writeAtomic(directory: string, name: string, text: string, options: { readonly mode?: number, readonly label?: string } = {}): Promise<void> {
+  const { mode = 0o666, label = name } = options
   const temporary = join(directory, `.${name}.${randomBytes(4).toString('hex')}.tmp`)
   let made = false
   try {
@@ -464,6 +466,6 @@ export async function writeAtomic(directory: string, name: string, text: string,
     await rename(temporary, join(directory, name))
   } catch (error) {
     if (made) await unlink(temporary).catch(() => undefined)
-    throw writeFailure(name, error)
+    throw writeFailure(label, error)
   }
 }

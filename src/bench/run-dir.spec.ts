@@ -650,4 +650,8 @@ describe('writeAtomic', () => {
     await expect(writeAtomic(out, 'report.md', 'x')).rejects.toThrow(/^report\.md: cannot be written \(E[A-Z]+\)$/)
     expect(readdirSync(out)).toEqual(['report.md'])
   })
+
+  it('words a failure with the label it is given', async () => {
+    await expect(writeAtomic(join(root, 'missing'), 'r.json', 'x', { label: '--output json' })).rejects.toThrow(/^--output json: cannot be written \(ENOENT\)$/)
+  })
 })
