@@ -1,31 +1,37 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { readBounded } from '../config/load.ts'
+import type { Mock } from 'vitest'
 import { reviewScope } from '../core/coverage.ts'
 import { ConfigError } from '../core/errors.ts'
 import { DIFF_PINS, MAX_GIT_OUTPUT_BYTES } from '../git/run.ts'
 import type { FilterKey } from '../git/run.ts'
 import { fakeGit } from '../testing/git.ts'
 import type { GitCall, GitReply } from '../testing/git.ts'
+import { beneath } from './beneath.ts'
+import type { Beneath } from './beneath.ts'
 import { localSource, samePath, trustsConfig } from './local.ts'
 import type { SourceContext } from './read.ts'
 
-/** `readBounded` as a spy that calls through, so a test can read the limit each untracked file is read with. */
-vi.mock('../config/load.ts', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../config/load.ts')>()
+/** `beneath` as a spy that calls through, so a test can read the limit each untracked file is read with. */
+vi.mock('./beneath.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./beneath.ts')>()
   return {
     ...actual,
-    readBounded: vi.fn(actual.readBounded),
+    beneath: vi.fn(actual.beneath),
   }
 })
+
+const { beneath: realBeneath } = await vi.importActual<typeof import('./beneath.ts')>('./beneath.ts')
 
 const HEAD = 'a'.repeat(40)
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 const DIFF = 'diff --git a/a.js b/a.js\nindex 1111111111111111111111111111111111111111..2222222222222222222222222222222222222222 100644\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-safe()\n+exec(cmd)\n'
 const FILTER_TEXT = 'the repository\'s own config names a filter program, which a working-tree diff runs: pass --trust-repo-config if the repository is yours, or review a range'
+const UNSUPPORTED_TEXT = 'an untracked file can be read only on Linux and macOS, where quorum refuses a link anywhere in its path: add it and review --staged, or review a range'
+const CHECK_TEXT = 'quorum could not check that this system refuses a link in an untracked file\'s path: add the file and review --staged, or review a range'
 const OVER_TEXT = 'its diff is over 16 MiB, the most quorum reads: review fewer changes at once'
 const FILTERED: GitReply = { stdout: 'local\0filter.evil.clean\n/bin/evil\0' }
 const FILTER_VECTOR = [
@@ -90,11 +96,44 @@ async function refusal(promise: Promise<unknown>): Promise<ConfigError> {
 let top = ''
 beforeEach(() => {
   top = mkdtempSync(join(tmpdir(), 'quorum-local-'))
-  vi.mocked(readBounded).mockClear()
+  vi.mocked(beneath).mockClear()
 })
 afterEach(() => {
   rmSync(top, { recursive: true, force: true })
 })
+
+/**
+ * Makes the next reader `beneath` gives a pair of spies over the real one: `file` and `link` call through.
+ * `stage`, when given, runs once, before the first real read, as a process writing into the tree would.
+ */
+function spiedReader(stage?: () => void): { readonly file: Mock<Beneath['file']>, readonly link: Mock<Beneath['link']> } {
+  let staged = false
+  const before = (): void => {
+    if (staged) return
+    staged = true
+    stage?.()
+  }
+  let made: Beneath | undefined
+  const real = (): Beneath => {
+    if (made === undefined) throw new Error('the reader was never made')
+    return made
+  }
+  const spies = {
+    file: vi.fn<Beneath['file']>(async (name, limit, size) => {
+      before()
+      return real().file(name, limit, size)
+    }),
+    link: vi.fn<Beneath['link']>(async (name) => {
+      before()
+      return real().link(name)
+    }),
+  }
+  vi.mocked(beneath).mockImplementationOnce((realTop, platform) => {
+    made = realBeneath(realTop, platform)
+    return made && { ...spies, close: made.close }
+  })
+  return spies
+}
 
 function setup(replies: Replies = {}): { fake: ReturnType<typeof fakeGit>, context: SourceContext } {
   const fake = fakeGit(reply(replies), { top })
@@ -103,7 +142,7 @@ function setup(replies: Replies = {}): { fake: ReturnType<typeof fakeGit>, conte
     context: {
       cwd: top,
       env: {},
-      platform: 'linux',
+      platform: process.platform,
       git: { executable: '/usr/bin/git', spawn: fake.spawn },
     },
   }
@@ -378,6 +417,7 @@ describe('the local sources', () => {
     writeFileSync(join(top, 'three'), 'abc')
     writeFileSync(join(top, 'empty'), '')
     symlinkSync('ten', join(top, 'ln'))
+    const reader = spiedReader()
     const { context } = setup({
       diff: { stdout: '' },
       untracked: {
@@ -386,27 +426,19 @@ describe('the local sources', () => {
     })
     await localSource('local', false, context)
 
-    // The link is read by `readlink`, never by `readBounded`.
-    expect(vi.mocked(readBounded).mock.calls.map(([path, limit, , options]) => [path, limit, options])).toEqual([
-      [
-        join(top, 'ten'),
-        10,
-        { noFollow: true },
-      ],
-      [
-        join(top, 'three'),
-        3,
-        { noFollow: true },
-      ],
-      [
-        join(top, 'empty'),
-        0,
-        { noFollow: true },
-      ],
+    expect(reader.file.mock.calls.map(([name, limit]) => [name, limit])).toEqual([
+      ['ten', 10],
+      ['three', 3],
+      ['empty', 0],
+    ])
+    expect(reader.file.mock.calls.map(([,, size]) => size)).toEqual(['16 MiB', '16 MiB', '16 MiB'])
+    // The link is read by `link`, never by `file`.
+    expect(reader.link.mock.calls).toEqual([
+      ['ln'],
     ])
   })
 
-  it('refuses a name that is gone, or a file that outgrew its listed size, as changed while it was read', async () => {
+  it('refuses a name that is gone, a file that outgrew its listed size, or a link that changed, as the read says', async () => {
     const changed = (name: string): string => `--local: the untracked ${JSON.stringify(name)} changed while quorum read it: run quorum again`
     mkdirSync(join(top, 'dir'))
     writeFileSync(join(top, 'dir', 'file.txt'), 'abc')
@@ -441,13 +473,14 @@ describe('the local sources', () => {
       ])
     }
 
-    // A file the read finds larger than the size `lstat` gave, or gone, or a link by then.
+    // A file the read finds larger than the size `lstat` gave, or gone, or a link now, or moved.
     for (const problem of [
       { problem: 'is over 16 MiB', counted: 3 },
       { problem: 'does not exist' },
       { problem: 'is a symbolic link' },
+      { problem: 'was moved' },
     ]) {
-      vi.mocked(readBounded).mockResolvedValueOnce(problem)
+      spiedReader().file.mockResolvedValueOnce(problem)
       const { context } = setup({
         diff: { stdout: '' },
         untracked: {
@@ -457,7 +490,7 @@ describe('the local sources', () => {
       expect((await refusal(localSource('local', false, context))).message).toBe(changed('grown'))
     }
     // A file the read cannot open is not a changed one.
-    vi.mocked(readBounded).mockResolvedValueOnce({ problem: 'is not a file' })
+    spiedReader().file.mockResolvedValueOnce({ problem: 'is not a file' })
     const { context } = setup({
       diff: { stdout: '' },
       untracked: {
@@ -465,6 +498,29 @@ describe('the local sources', () => {
       },
     })
     expect((await refusal(localSource('local', false, context))).message).toBe('--local: the untracked "grown" is neither a regular file nor a link: remove it, or name it in .gitignore')
+
+    // A link whose read says each of these.
+    symlinkSync('ten', join(top, 'ln'))
+    for (const [problem, message] of [
+      ['does not exist', 'changed while quorum read it: run quorum again'],
+      ['is not a link', 'changed while quorum read it: run quorum again'],
+      ['is a symbolic link', 'changed while quorum read it: run quorum again'],
+      ['was moved', 'changed while quorum read it: run quorum again'],
+      ['cannot be read', 'cannot be read: check its permissions, or name it in .gitignore'],
+      ['cannot be checked', CHECK_TEXT],
+    ] as const) {
+      spiedReader().link.mockResolvedValueOnce({ problem })
+      const { context } = setup({
+        diff: { stdout: '' },
+        untracked: {
+          stdout: listing('ln'),
+        },
+      })
+      const error = await refusal(localSource('local', false, context))
+      expect(error.message).toBe(message === CHECK_TEXT
+        ? `--local: ${CHECK_TEXT}`
+        : `--local: the untracked "ln" ${message}`)
+    }
   })
 
   // The superuser reads a file of mode 000, and walks a directory of it.
@@ -501,7 +557,7 @@ describe('the local sources', () => {
   it('keeps a file of another kind that a read cannot open as neither a regular file nor a link', async () => {
     writeFileSync(join(top, 'swapped'), 'abc')
     // The read fails as an open of a socket does, after the file was swapped for a FIFO since the listing.
-    vi.mocked(readBounded).mockImplementationOnce(async () => {
+    spiedReader().file.mockImplementationOnce(async () => {
       rmSync(join(top, 'swapped'))
       execFileSync('mkfifo', [
         join(top, 'swapped'),
@@ -515,6 +571,111 @@ describe('the local sources', () => {
       },
     })
     expect((await refusal(localSource('local', false, context))).message).toBe('--local: the untracked "swapped" is neither a regular file nor a link: remove it, or name it in .gitignore')
+
+    // The same swap before a real read, which opens the FIFO without blocking and finds it no file.
+    writeFileSync(join(top, 'again'), 'abc')
+    spiedReader(() => {
+      rmSync(join(top, 'again'))
+      execFileSync('mkfifo', [
+        join(top, 'again'),
+      ])
+    })
+    const again = setup({
+      diff: { stdout: '' },
+      untracked: {
+        stdout: listing('again'),
+      },
+    })
+    expect((await refusal(localSource('local', false, again.context))).message).toBe('--local: the untracked "again" is neither a regular file nor a link: remove it, or name it in .gitignore')
+  })
+
+  it('refuses an untracked file whose parent became a link after quorum checked it, and reads nothing outside the top level', async () => {
+    const outside = join(realpathSync(top), '..', `${basename(top)}-outside`)
+    mkdirSync(join(outside, 'sub'), { recursive: true })
+    writeFileSync(join(outside, 'sub', 'a.txt'), 'OUTSIDE')
+    mkdirSync(join(top, 'sub'))
+    writeFileSync(join(top, 'sub', 'a.txt'), 'abc')
+    const reader = spiedReader(() => {
+      renameSync(join(top, 'sub'), join(top, 'sub.moved'))
+      symlinkSync(join(outside, 'sub'), join(top, 'sub'))
+    })
+    try {
+      const { context } = setup({
+        diff: { stdout: '' },
+        untracked: {
+          stdout: listing('sub/a.txt'),
+        },
+      })
+      const error = await refusal(localSource('local', false, context))
+      expect(error.message).toBe('--local: the untracked "sub/a.txt" changed while quorum read it: run quorum again')
+      expect(error.message).not.toContain('OUTSIDE')
+      expect(await Promise.all(reader.file.mock.results.map(result => result.value))).toEqual([
+        {
+          problem: expect.stringMatching(/^(is a symbolic link|was moved)$/),
+        },
+      ])
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses an untracked file on a platform with no way to read beneath the top level, before reading any', async () => {
+    writeFileSync(join(top, 'a.txt'), 'abc')
+    const { context } = setup({
+      diff: { stdout: '' },
+      untracked: {
+        stdout: listing('a.txt'),
+      },
+    })
+    const error = await refusal(localSource('local', false, {
+      ...context,
+      platform: 'freebsd',
+    }))
+    expect(error.message).toBe(`--local: ${UNSUPPORTED_TEXT}`)
+    expect(vi.mocked(beneath).mock.calls).toEqual([
+      [
+        realpathSync(top),
+        'freebsd',
+      ],
+    ])
+    expect(vi.mocked(beneath).mock.results.map(result => result.value)).toEqual([undefined])
+
+    // An excluded file and a nested repository need no reader: the run passes and writes the gitlink.
+    vi.mocked(beneath).mockClear()
+    const gitlink = setup({
+      diff: { stdout: '' },
+      untracked: {
+        stdout: listing('secret.key', 'nested/'),
+      },
+    })
+    const read = await localSource('local', false, {
+      ...gitlink.context,
+      platform: 'freebsd',
+      exclude: ['*.key'],
+    })
+    expect(read.diff).toBe('diff --git a/nested b/nested\nnew file mode 160000\n')
+    expect(read.leftOut).toEqual([
+      { file: 'secret.key', reason: 'excluded' },
+    ])
+    expect(vi.mocked(beneath)).not.toHaveBeenCalled()
+  })
+
+  it.runIf(process.platform === 'darwin')('refuses an untracked file on Linux when /proc/self/fd cannot show where its directory is', async () => {
+    writeFileSync(join(top, 'a.txt'), 'abc')
+    const { context } = setup({
+      diff: { stdout: '' },
+      untracked: {
+        stdout: listing('a.txt'),
+      },
+    })
+    const error = await refusal(localSource('local', false, {
+      ...context,
+      platform: 'linux',
+    }))
+    expect(error.message).toBe(`--local: ${CHECK_TEXT}`)
+    expect(error.issues).toEqual([
+      { path: '--local', message: CHECK_TEXT },
+    ])
   })
 
   it('refuses local changes over 16 MiB, the untracked files\' sizes counted before they are read', async () => {

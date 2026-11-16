@@ -120,6 +120,16 @@ export async function readBounded(absolute: string, limit: number, size: string,
       problem: openProblem(error, noFollow),
     }
   }
+  return readHandle(handle, limit, size)
+}
+
+/**
+ * The bytes of the file `handle` holds, a regular file of at most `limit` bytes: `is not a file` unless its
+ * `stat` says one, and at most one byte past the limit read, however large the file is or grows (`is over
+ * <size>`, counting `limit`). The runtime's own message is never kept. It closes the handle, whatever the
+ * outcome, so the caller keeps none.
+ */
+export async function readHandle(handle: FileHandle, limit: number, size: string): Promise<Read<Uint8Array>> {
   try {
     const stats = await handle.stat()
     if (!stats.isFile()) return { problem: 'is not a file' }

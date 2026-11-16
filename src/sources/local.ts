@@ -1,6 +1,5 @@
-import { lstat, readlink, realpath } from 'node:fs/promises'
+import { lstat, realpath } from 'node:fs/promises'
 import { join } from 'node:path'
-import { readBounded } from '../config/load.ts'
 import { decodeDiff, MAX_DIFF_BYTES } from '../core/diff.ts'
 import { ConfigError } from '../core/errors.ts'
 import { excludeMatcher } from '../core/exclude.ts'
@@ -9,6 +8,8 @@ import type { LeftOutFile } from '../core/types.ts'
 import type { FilterKey } from '../git/run.ts'
 import { addedDiff } from './added.ts'
 import type { AddedFile, AddedMode } from './added.ts'
+import { beneath } from './beneath.ts'
+import type { Beneath } from './beneath.ts'
 import type { SourceContext, SourceRead } from './read.ts'
 import { openSourceRepository } from './repository.ts'
 
@@ -18,6 +19,8 @@ const FILTER = 'the repository\'s own config names a filter program, which a wor
 const OVER = 'its diff is over 16 MiB, the most quorum reads: review fewer changes at once'
 const NOT_UTF8 = 'an untracked file\'s name is not UTF-8, which quorum cannot open: rename it, or name it in .gitignore'
 const LEAVES = 'an untracked file\'s name leaves the top level'
+const NO_READER = 'an untracked file can be read only on Linux and macOS, where quorum refuses a link anywhere in its path: add it and review --staged, or review a range'
+const CANNOT_CHECK = 'quorum could not check that this system refuses a link in an untracked file\'s path: add the file and review --staged, or review a range'
 const neither = (name: string): string => `the untracked ${JSON.stringify(name)} is neither a regular file nor a link: remove it, or name it in .gitignore`
 const underLink = (name: string): string => `the untracked ${JSON.stringify(name)} lies under a symbolic link`
 const unreadable = (name: string): string => `the untracked ${JSON.stringify(name)} cannot be read: check its permissions, or name it in .gitignore`
@@ -57,9 +60,9 @@ function isChanged(error: unknown): boolean {
   return code === 'ENOENT' || code === 'ENOTDIR' || code === 'EINVAL'
 }
 
-/** Whether a failed `readBounded` says the file is no longer the regular file `lstat` saw: it is gone, is a link now, or holds more than its size. */
+/** Whether a failed read says the file is no longer the regular file `lstat` saw: it is gone, is a link now, sits under a directory that is not the one it was in, or holds more than its size. */
 function vanished(read: { readonly problem: string, readonly counted?: number }): boolean {
-  return read.counted !== undefined || read.problem === 'does not exist' || read.problem === 'is a symbolic link'
+  return read.counted !== undefined || read.problem === 'does not exist' || read.problem === 'is a symbolic link' || read.problem === 'was moved'
 }
 
 /** What a failed `lstat`, `realpath` or `readlink` of the untracked `name` says: `changed` for a path that is gone or no longer what it was, `unreadable` for a permission, `neither` for any other failure. */
@@ -80,9 +83,9 @@ async function inspected<T>(name: string, call: () => Promise<T>): Promise<T> {
 }
 
 /**
- * What a `readBounded` that failed on the untracked `name` says: `changed` when the file is gone, a link now
- * or larger than its size; `unreadable` when it cannot be read and is still a regular file, which is a
- * permission; `neither` for anything else, a FIFO, a socket or a device swapped in included.
+ * What a read that failed on the untracked `name` says: `changed` when the file is gone, a link now, moved
+ * with its directory or larger than its size; `unreadable` when it cannot be read and is still a regular
+ * file, which is a permission; `neither` for anything else, a FIFO, a socket or a device swapped in included.
  */
 async function failedRead(name: string, absolute: string, read: { readonly problem: string, readonly counted?: number }): Promise<string> {
   if (vanished(read)) return changed(name)
@@ -114,9 +117,10 @@ interface Planned {
  * `lstat`ed once its parent directory's real path is known to be the real top level joined with that parent
  * (`samePath`), which no link in the chain would give, and is refused unless it is a regular file or a link;
  * the sizes sum, and a sum over `budget` is refused before any file is read. An entry or a parent that is
- * gone by then is refused as changed.
+ * gone by then is refused as changed. The real top level it computed comes back beside the plan, `undefined`
+ * when the plan holds no file or link, so a reader of untracked files needs it computed no second time.
  */
-async function planUntracked(top: string, names: readonly Uint8Array[], excluded: (path: string) => boolean, budget: number): Promise<{ readonly planned: Planned[], readonly leftOut: LeftOutFile[] }> {
+async function planUntracked(top: string, names: readonly Uint8Array[], excluded: (path: string) => boolean, budget: number): Promise<{ readonly planned: Planned[], readonly leftOut: LeftOutFile[], readonly realTop: string | undefined }> {
   const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
   const realParents = new Map<string, string>()
   let realTop: string | undefined
@@ -180,34 +184,58 @@ async function planUntracked(top: string, names: readonly Uint8Array[], excluded
       mode,
     })
   }
-  return { planned, leftOut }
+  return { planned, leftOut, realTop }
+}
+
+/** What a link's failed read says: `changed` when the link is gone, no longer one or under another directory, `unreadable` for a permission, `cannot be checked` for the refusal of the second text, `neither` for anything else. */
+function failedLink(name: string, problem: string): string {
+  if (problem === 'cannot be checked') return CANNOT_CHECK
+  if (problem === 'does not exist' || problem === 'is not a link' || problem === 'is a symbolic link' || problem === 'was moved') return changed(name)
+  return problem === 'cannot be read'
+    ? unreadable(name)
+    : neither(name)
 }
 
 /**
- * The files of `planned`, read in order: a link as the bytes of its target, read with `readlink` and never
- * followed; a regular file with `readBounded` without following a link, at most the size `lstat` gave it
- * (or what is left of `budget`, the whole 16 MiB less git's own diff, less what was read, when that is
- * less), so a buffer is a file's own size and a file that grew is caught; a gitlink as an empty file, which
- * the writer writes as its header and mode alone. An entry that is gone, or is no longer what it was, or has
- * outgrown its size, is refused as changed; a FIFO, a socket or a device swapped in as neither a file nor a
- * link; a file that cannot be read, for its permissions, as unreadable.
+ * The files of `planned`, read in order through `reader`: a link as the bytes of its target, never followed;
+ * a regular file at most the size `lstat` gave it (or what is left of `budget`, the whole 16 MiB less git's
+ * own diff, less what was read, when that is less), so a buffer is a file's own size and a file that grew is
+ * caught; a gitlink as an empty file, which the writer writes as its header and mode alone. An entry that is
+ * gone, or is no longer what it was, or sits under a directory that is no longer its own, or has outgrown its
+ * size, is refused as changed; a FIFO, a socket or a device swapped in as neither a file nor a link; a file
+ * that cannot be read, for its permissions, as unreadable; one the reader cannot check, with the second
+ * untracked text. The reader is closed, whatever happens. `reader` is `undefined` only where nothing planned
+ * is a file or a link.
  */
-async function readPlanned(planned: readonly Planned[], budget: number): Promise<AddedFile[]> {
-  let left = budget
-  const files: AddedFile[] = []
-  for (const { name, path, absolute, kind, size, mode } of planned) {
-    let content: Uint8Array = new Uint8Array(0)
-    if (kind === 'link') {
-      content = await inspected(name, () => readlink(absolute, { encoding: 'buffer' }))
-    } else if (kind === 'file') {
-      const read = await readBounded(absolute, Math.min(left, size), '16 MiB', { noFollow: true })
-      if ('problem' in read) throw refusal(UNTRACKED_FLAG, await failedRead(name, absolute, read))
-      content = read.value
+async function readPlanned(planned: readonly Planned[], budget: number, reader: Beneath | undefined): Promise<AddedFile[]> {
+  try {
+    let left = budget
+    const files: AddedFile[] = []
+    for (const { name, path, absolute, kind, size, mode } of planned) {
+      let content: Uint8Array = new Uint8Array(0)
+      if (kind !== 'gitlink') {
+        if (reader === undefined) throw refusal(UNTRACKED_FLAG, NO_READER)
+        if (kind === 'link') {
+          const read = await reader.link(name)
+          if ('problem' in read) throw refusal(UNTRACKED_FLAG, failedLink(name, read.problem))
+          content = read.value
+        } else {
+          const read = await reader.file(name, Math.min(left, size), '16 MiB')
+          if ('problem' in read) {
+            throw refusal(UNTRACKED_FLAG, read.problem === 'cannot be checked'
+              ? CANNOT_CHECK
+              : await failedRead(name, absolute, read))
+          }
+          content = read.value
+        }
+      }
+      left -= content.length
+      files.push({ path, mode, content })
     }
-    left -= content.length
-    files.push({ path, mode, content })
+    return files
+  } finally {
+    await reader?.close()
   }
-  return files
 }
 
 /**
@@ -227,8 +255,11 @@ async function readPlanned(planned: readonly Planned[], budget: number): Promise
  * target, a nested repository as a gitlink (the review lists it as a `submodule`), as `git add -A` would
  * commit them. A name that is not UTF-8, one that leaves the top level, one under a link, an entry that is
  * neither a regular file nor a link (a FIFO, a socket, a device) and a file that cannot be read are refused,
- * and so is one that is gone or has changed since the listing. An untracked file the config's `exclude` matches is listed `excluded` and
- * never read.
+ * and so is one that is gone or has changed since the listing. An untracked file the config's `exclude`
+ * matches is listed `excluded` and never read. The read decides, and the plan's checks word the common cases:
+ * a file is read beneath the real top level by {@link beneath}, which the kernel checks in the open itself, so
+ * a parent swapped for a link at any moment is refused as a change, and where the platform has no such reader,
+ * or it cannot check, an untracked file is refused before it is read.
  *
  * @see ../../docs/20-using/15-sources.md#the-local-changes for what each source reviews.
  */
@@ -253,7 +284,11 @@ export async function localSource(kind: 'local' | 'staged', trustRepoConfig: boo
     if (names === undefined) throw refusal(flag, OVER)
     const budget = MAX_DIFF_BYTES - bytes.length
     const plan = await planUntracked(repository.top, names, excludeMatcher(context.exclude ?? []), budget)
-    diff += addedDiff(await readPlanned(plan.planned, budget))
+    const reader = plan.realTop === undefined
+      ? undefined
+      : beneath(plan.realTop, context.platform)
+    if (plan.realTop !== undefined && reader === undefined) throw refusal(UNTRACKED_FLAG, NO_READER)
+    diff += addedDiff(await readPlanned(plan.planned, budget, reader))
     leftOut = plan.leftOut
   }
   if (utf8Length(diff) > MAX_DIFF_BYTES) throw refusal(flag, OVER)
