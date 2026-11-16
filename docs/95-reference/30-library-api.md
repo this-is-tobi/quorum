@@ -239,6 +239,7 @@ declare function readSource(spec: SourceSpec, context: {
   readonly env: Env
   readonly signal?: AbortSignal
   readonly exclude?: readonly string[]
+  readonly send?: readonly string[]
 }): Promise<SourceRead>
 
 type SourceSpec
@@ -262,9 +263,9 @@ interface SourceRead {
 | `range` | The commits `<base>...<head>`: the merge base diffed with the head | `range`, written `<base>...<head>`, as `--range` takes it |
 | `local` | What `git add -A` would commit: the staged, the unstaged and the untracked changes | `trustRepoConfig`: true when the repository is yours, so a filter its own config names may run: [Trust](../20-using/15-sources.md#trust) |
 | `staged` | What the next commit holds | `trustRepoConfig`, as `local` |
-| `paths` | The files under each path at a commit, each written as a new file | `paths`, relative to `cwd` as `--path` is; `at`, the commit, `HEAD` when unset; `skips`, whether the default skips apply, true when unset |
+| `paths` | The files under each path at a commit, each written as a new file | `paths`, relative to `cwd` as `--path` is; `at`, the commit, `HEAD` when unset; `skips`, whether the default skips (vendored, lockfile, minified and binary files) apply, true when unset: a secret is skipped whatever it says |
 
-- **The context** is where it reads. `cwd` is the directory a git source opens as its repository, and a path of `paths` is relative to; `env` is the environment, whose `PATH` git is looked up in (its absolute entries only) and from which the git child gets an allowlist and nothing else; `signal` stops a git command in flight; and `exclude` holds the patterns of [Excludes](../20-using/20-configuration.md#excludes), which a source that reads files applies before it reads them: the untracked files of `local`, and each file of `paths`. The package fills in the platform, and takes no other git than the system's: a git source runs Linux and macOS, and needs git 2.41 or later.
+- **The context** is where it reads. `cwd` is the directory a git source opens as its repository, and a path of `paths` is relative to; `env` is the environment, whose `PATH` git is looked up in (its absolute entries only) and from which the git child gets an allowlist and nothing else; `signal` stops a git command in flight; `exclude` holds the patterns of [Excludes](../20-using/20-configuration.md#excludes), which a source that reads files applies before it reads them: the untracked files of `local`, and each file of `paths`; and `send` holds the files `paths` reads though it skips a secret otherwise, by its name or by a credential in its text, each the path as the diff writes it and `meta.leftOut` lists it, an exact string. The same list goes to `review`'s `send`, since the review holds back what it is sent all the same. The package fills in the platform, and takes no other git than the system's: a git source runs Linux and macOS, and needs git 2.41 or later.
 - **It refuses with a `ConfigError`,** each issue naming the flag the CLI names for it as its path: `--range`, `--local`, `--staged` or `--path`, and `--at` for a commit that names nothing. A diff's issues have an empty path, and `kind` is the path of an unknown kind (`must be diff, range, local, staged or paths`), so a spec built without types never gets `undefined`. A git command that fails is a `GitError` instead: [Git errors](#git-errors).
 - **Nothing is cut or dropped in silence.** A source that cannot read all of what it was asked to refuses, or lists what it left out in `leftOut`: a skipped file with its rule, an excluded one, a binary file or a submodule. A reader that meets a `kind`, a `reason` or a `rule` it does not know takes it as a source it cannot describe, or a file left out, never as an error.
 

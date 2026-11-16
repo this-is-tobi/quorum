@@ -14,8 +14,9 @@ import { rangeSource } from './range.ts'
  * and untracked); `staged`, what the next commit holds; or `paths`, the files under `paths` at the commit
  * `at` names, HEAD when unset, as they are written in the user's working directory. `trustRepoConfig` says the
  * repository is the user's, so a filter its own config names may run. `skips` says whether a path review
- * skips what it skips by default, vendored, lockfile, minified, secret and binary files, and is true when
- * unset.
+ * skips what it skips by default, vendored, lockfile, minified and binary files, and is true when unset: a
+ * path review skips a secret, by its name or by what it holds, whatever `skips` says, and only the
+ * context's `send` sends one.
  */
 export type SourceSpec
   = | { readonly kind: 'diff', readonly text: string }
@@ -38,6 +39,8 @@ export interface SourceContext {
   readonly signal?: AbortSignal
   /** The config's `exclude` patterns, which a source that reads files applies before it reads them. */
   readonly exclude?: readonly string[]
+  /** The files the operator sends to the models though held as secrets, each a path as the diff writes it: a path review does not skip them as secrets. */
+  readonly send?: readonly string[]
   /** The git to run, for a spec; git is looked up on the environment's `PATH` when unset. */
   readonly git?: GitSeam
 }

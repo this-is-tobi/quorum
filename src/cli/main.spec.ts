@@ -104,7 +104,7 @@ const USAGE = [
   '      --trust-repo-config  Run --local or --staged where the repository\'s own config names a filter program',
   '      --path <path>        Review the files under a path at a commit; repeat it to review several',
   '      --at <rev>           The commit --path reads, HEAD by default',
-  '      --no-default-skips   Review in --path the vendored, lockfile, minified, secret and binary files too',
+  '      --no-default-skips   Review in --path the vendored, lockfile, minified and binary files too',
   '      --large              Run a --path review that may pass the token cap, reviewing what the cap allows',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --print-config       Print the resolved config, keys redacted, and exit',
@@ -2255,29 +2255,32 @@ describe('the sources', () => {
     expect(JSON.parse(trusted.stdout()).meta.source).toEqual({ kind: 'staged', head: HEAD, objectFormat: 'sha1' })
   })
 
-  /** A fake git for a path review: HEAD is `HEAD`, and its tree holds `src/.env` and `src/a.js`. */
-  function pathGit(): { seam: { executable: string, spawn: ReturnType<typeof fakeGit>['spawn'] }, calls: GitCall[] } {
-    const env = 'KEY=sk-live-1234\n'
-    const code = 'export const a = 1\n'
-    const ids = {
-      env: '1'.repeat(40),
-      code: '2'.repeat(40),
-    }
+  /** The tree of a path review of most tests: a `.env` and code. */
+  const PATH_TREE: Readonly<Record<string, string>> = {
+    'src/.env': 'KEY=sk-live-1234\n',
+    'src/a.js': 'export const a = 1\n',
+  }
+
+  /** A fake git for a path review: HEAD is `HEAD`, and its tree holds the files given, `src/.env` and `src/a.js` by default, with ids `1` repeated, `2` repeated, and so on. */
+  function pathGit(files: Readonly<Record<string, string>> = PATH_TREE): { seam: { executable: string, spawn: ReturnType<typeof fakeGit>['spawn'] }, calls: GitCall[] } {
+    const entries = Object.entries(files).map(([path, content], index) => ({
+      path,
+      content,
+      id: String(index + 1).repeat(40),
+    }))
     const fake = fakeGit(({ command, stdin }) => {
       if (command[0] === 'rev-parse' && command[1] === '--verify') return { stdout: `${HEAD}\n` }
       if (command[0] === 'ls-tree') {
         return {
-          stdout: [
-            `100644 blob ${ids.env} ${String(env.length).padStart(7)}\tsrc/.env\0`,
-            `100644 blob ${ids.code} ${String(code.length).padStart(7)}\tsrc/a.js\0`,
-          ].join(''),
+          stdout: entries.map(({ path, content, id }) => `100644 blob ${id} ${String(content.length).padStart(7)}\t${path}\0`).join(''),
         }
       }
       if (command[0] === 'cat-file') {
         return {
-          stdout: stdin.split('\n').filter(id => id !== '').map(id => id === ids.env
-            ? `${id} blob ${env.length}\n${env}\n`
-            : `${id} blob ${code.length}\n${code}\n`).join(''),
+          stdout: stdin.split('\n').filter(id => id !== '').map((id) => {
+            const content = entries.find(entry => entry.id === id)?.content ?? ''
+            return `${id} blob ${content.length}\n${content}\n`
+          }).join(''),
         }
       }
       return undefined
@@ -2336,7 +2339,41 @@ describe('the sources', () => {
     ])
   })
 
-  it('reviews --path with --no-default-skips, the review holding back the secret the source now reads', async () => {
+  it('lists a path review\'s content skip and flags it as a credential', async () => {
+    const credential = fakeCredential('aws-key')
+    const fetchMock = stubChat(JSON.stringify({ findings: [] }))
+    const { io, stdout, stderr } = harness({
+      argv: ['--path', 'src'],
+      env: MODEL,
+      git: pathGit({
+        'src/a.js': 'export const a = 1\n',
+        'src/config.ts': `export const id = '${credential}'\n`,
+      }).seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+
+    const result = JSON.parse(stdout())
+    expect(result.meta.leftOut).toEqual([
+      { file: 'src/config.ts', reason: 'skipped', rule: 'secret' },
+    ])
+    expect(result.meta.flags).toEqual([
+      {
+        code: 'secret-file',
+        file: 'src/config.ts',
+        detail: 'holds what reads as a credential, so a path review sent none of it: remove it from the repository, and rotate it if it is real',
+      },
+    ])
+    // A skip is no gap, and the key reached no model and no output.
+    expect(result.meta.incomplete).toEqual([])
+    expect((sent(fetchMock).body.messages as Array<{ content: string }>)[1].content).toContain('+export const a = 1')
+    expect(JSON.stringify(sent(fetchMock).body)).not.toContain(credential)
+    expect(stderr()).toContain('left out: 1 file(s): "src/config.ts" (skipped: secret)\n')
+    expect(stderr()).toContain('flag: secret-file at "src/config.ts" (holds what reads as a credential, so a path review sent none of it: remove it from the repository, and rotate it if it is real)\n')
+    expect(stderr() + stdout()).not.toContain(credential)
+  })
+
+  it('skips a .env under --path --no-default-skips, sending none of it, and exits 0', async () => {
     const fetchMock = stubChat(JSON.stringify({ findings: [] }))
     const fake = pathGit()
     const { io, stdout, stderr } = harness({
@@ -2345,7 +2382,7 @@ describe('the sources', () => {
       git: fake.seam,
       platform: 'linux',
     })
-    expect(await runCli(io)).toBe(EXIT.incomplete)
+    expect(await runCli(io)).toBe(EXIT.ok)
 
     const result = JSON.parse(stdout())
     expect(result.meta.source).toEqual({
@@ -2355,21 +2392,23 @@ describe('the sources', () => {
       skips: false,
       objectFormat: 'sha1',
     })
+    // Only the default skips are off: the secret stays skipped, a skip is no gap, and the core holds back nothing.
     expect(result.meta.leftOut).toEqual([
-      { file: 'src/.env', reason: 'secret', rule: 'name' },
+      { file: 'src/.env', reason: 'skipped', rule: 'secret' },
     ])
     expect(result.meta.flags).toEqual([
       {
         code: 'secret-file',
         file: 'src/.env',
-        detail: 'named as a secret, so no model was sent any of it: check that it belongs in the change',
+        detail: 'named as a secret, so a path review sent none of it: check that it belongs in the repository',
       },
     ])
-    expect(sent(fetchMock).body.messages as Array<{ content: string }>).not.toContainEqual(expect.objectContaining({
-      content: expect.stringContaining('sk-live-1234'),
-    }))
-    expect((sent(fetchMock).body.messages as Array<{ content: string }>)[1].content).toContain('+export const a = 1')
-    expect(stderr()).toContain('left out: 1 file(s): "src/.env" (secret: name)\n')
+    expect(result.meta.incomplete).toEqual([])
+    const request = (sent(fetchMock).body.messages as Array<{ content: string }>)[1].content
+    expect(request).toContain('+export const a = 1')
+    expect(JSON.stringify(sent(fetchMock).body)).not.toContain('sk-live-1234')
+    expect(stderr()).toContain('left out: 1 file(s): "src/.env" (skipped: secret)\n')
+    expect(fake.calls.some(call => call.command[0] === 'cat-file' && call.stdin.includes('1'.repeat(40)))).toBe(false)
     expect(fake.calls.find(call => call.command[0] === 'rev-parse' && call.command[1] === '--verify')?.command[4]).toBe('HEAD^{commit}')
   })
 

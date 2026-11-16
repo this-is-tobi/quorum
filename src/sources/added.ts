@@ -90,8 +90,12 @@ function labelOf(prefix: string, raw: Uint8Array): string {
     : `"${prefix}${quoted}"`
 }
 
-/** The text of a blob: a byte that is not UTF-8 becomes U+FFFD, as `decodeDiff` makes it of git's own output, and a leading byte-order mark stays. */
 const BLOB_DECODER = new TextDecoder('utf-8', { ignoreBOM: true })
+
+/** The text of a blob: a byte that is not UTF-8 becomes U+FFFD, as `decodeDiff` makes it of git's own output, and a leading byte-order mark stays. */
+export function blobText(content: Uint8Array): string {
+  return BLOB_DECODER.decode(content)
+}
 
 /** The lines of a text, split at line feeds, with no empty piece after a last one. */
 function linesOf(text: string): string[] {
@@ -139,7 +143,7 @@ export function addedSection(file: AddedFile): string {
   const lines = [`diff --git ${oldLabel} ${newLabel}`, `new file mode ${file.mode}`]
   if (file.content.length === 0) return lines.join('\n')
   if (isBinary(file.content)) return [...lines, `Binary files /dev/null and ${newLabel} differ`].join('\n')
-  const text = BLOB_DECODER.decode(file.content)
+  const text = blobText(file.content)
   const tab = newLabel.includes(' ')
     ? '\t'
     : ''
