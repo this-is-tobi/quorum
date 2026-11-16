@@ -565,4 +565,4 @@ Dry run: no review was run, and nothing was written.
 
 ## Next
 
-[Threat model](../30-security/10-threat-model.md) — the attacker, the assets, the residual risk stated plainly, the controls in place today, and what the panel's independence is worth.
+[Reports for GitHub](./80-reports.md) — the summary a pull request or a job summary shows, written from the public view, and the formats that follow it.

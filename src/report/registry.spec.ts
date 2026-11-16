@@ -22,9 +22,9 @@ describe('renderReport', () => {
   it('refuses a format it does not know, naming the formats', () => {
     expect(() => renderReport(reportResult(), { format: 'xml' } as never)).toThrow(expect.objectContaining({
       name: 'ConfigError',
-      message: 'format: must be text, json or brief',
+      message: 'format: must be text, json, brief or markdown',
       issues: [
-        { path: 'format', message: 'must be text, json or brief' },
+        { path: 'format', message: 'must be text, json, brief or markdown' },
       ],
     }))
   })

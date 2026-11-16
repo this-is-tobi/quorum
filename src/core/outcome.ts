@@ -58,7 +58,7 @@ const INCOMPLETE: Outcome = Object.freeze({ status: 'incomplete', exitCode: 4, l
  */
 export function outcome(result: QuorumResult | PublicView, options: { readonly allowIncomplete?: boolean } = {}): Outcome {
   const gates = (profile: unknown): boolean => profileFailOn(result, profile) !== 'none'
-  if (result.kept.some(verdict => reaches(verdict.confidence, profileFailOn(result, verdict.profile)))) return FINDINGS
+  if (result.kept.some(verdict => failsItsProfile(result, verdict))) return FINDINGS
   const incomplete = result.unreviewed.some(verdict => gates(verdict.profile)) || result.meta.incomplete.some(entry => gates(entry.profile))
   if (!incomplete) return PASS
   return options.allowIncomplete === true && liftable(result, gates)
@@ -81,6 +81,15 @@ export function profileFailOn(result: QuorumResult | PublicView, profile: unknow
   return ownData(entry, 'gating') === false
     ? 'none'
     : 'high'
+}
+
+/**
+ * Whether a kept finding fails its profile: its confidence is at or above the level `result` records for its
+ * profile (`profileFailOn`), and that level is not `none`. This is the rule `outcome` sets exit 1 by, so a
+ * report that marks the findings that fail the review marks the ones that make its exit code.
+ */
+export function failsItsProfile(result: QuorumResult | PublicView, verdict: Verdict | PublicVerdict): boolean {
+  return reaches(verdict.confidence, profileFailOn(result, verdict.profile))
 }
 
 /** Whether a kept finding of `confidence` fails a profile at `level`: it is at or above it, and the level is not `none`. `none` ranks last, so it is never at or above a level. */

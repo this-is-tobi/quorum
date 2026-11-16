@@ -1,0 +1,108 @@
+# Reports for GitHub
+
+One review's result is written for GitHub in a few ways, each a format of `--format` (`-f`) and each from the [public view](../30-security/30-output-handling.md#the-public-view), so no sink a stranger reads holds a model's reasoning, a discarded finding, a model's name or the usage: a summary for a pull request or the job summary, the payload that `quorum-action` posts, and SARIF for code scanning. This page lists the formats and describes the summary, the one that is written today.
+
+## The formats
+
+| Format | What it writes | Public view only |
+| --- | --- | --- |
+| `text` | The review as a person reads it: [The report](./10-cli.md#the-report) | No |
+| `json` | The whole result as JSON: [The report](./10-cli.md#the-report) | No |
+| `brief` | One line of counts and code words: [The report](./10-cli.md#the-report) | No |
+| `markdown` | The summary of the review, below | Yes |
+| `payload` | The payload `quorum-action` posts. Not written yet | Yes |
+| `sarif` | SARIF for code scanning. Not written yet | Yes |
+
+A format marked public only renders the public view of whatever it is given, a full result included, so no way of calling it publishes the reasoning: [Public-only formats](../30-security/30-output-handling.md#public-only-formats). `--view` does not change it. The three that are not marked write what they are given, so `--view public` is what makes them the public view.
+
+## The summary
+
+`-f markdown` writes the summary, which a CI job posts as a pull request comment or appends to its job summary. For a review of a range that kept one finding, left one unreviewed and had a gap, it is:
+
+````markdown
+<!-- quorum:summary:v1 -->
+### quorum review
+
+**exit 1, findings:** a gating profile kept a finding at or above its fail-on level
+
+| Profile | Fail-on | Kept | Unreviewed | Discarded | Outside the diff | Coverage |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| security | high | 1 | 1 | 1 | 0 | 1 of 3 files reviewed, 1 in part, 1 not |
+
+#### Findings
+
+- **HIGH** security · `src/auth/login.ts` line 42 · `CWE-89` · kept by 3 of 3 lenses
+
+  `SQL built from the request's id parameter reaches db.query`
+
+  ```text
+        41   const sql = 'SELECT * FROM users WHERE id = ' + id
+     >  42 + db.query(sql)
+        43   return rows
+  ```
+
+- **UNREVIEWED** security · `src/session.js` line 20 · `CWE-338` · kept by 1 of 3 lenses, 1 vote failed
+
+  `Session tokens come from Math.random, which is not a cryptographic generator.`
+
+  ```text
+           -   return crypto.randomBytes(32).toString('hex')
+     >  20 +   return Math.random().toString(36).slice(2)
+        21   }
+  ```
+
+#### Gaps
+
+- security, binary: the diff carries no content for a binary file
+
+#### Files left out
+
+- `assets/logo.png` (binary)
+
+#### Flags
+
+- hidden-characters at `src/session.js` line 20: `U+202E on 1 added line(s)`
+
+---
+
+quorum 0.6.0 · range `1f3a9c2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`...`7b2e4d0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`
+````
+
+- **The first line** is the marker, `<!-- quorum:summary:v1 -->`, the only raw HTML the summary holds. It names the summary and its version, so a program can find its own comment. It proves nothing without its author: anyone can write the marker, so check who wrote the comment too.
+- **The verdict** says what the exit code says, in the words of the last line of the text report: `exit 1, findings`, `exit 4, incomplete` or `exit 0, pass`.
+- **The table** has a row for each profile: the level it fails at (`none` for an advisory profile), how many findings it kept and left unreviewed, how many the panel discarded (counted, never listed), how many findings it dropped for citing code outside the diff, and how much of the diff it reviewed.
+- **The findings** are the kept and the unreviewed ones, each with its level, its profile, its file and line, its category, how its lenses voted, its claim and its evidence, numbered as the text report numbers it: the cited row is marked `>`. A finding that fails its profile comes first, then the high ones, the medium, the unreviewed and the low, each group by file and then by line, so the budget drops the least important last.
+- **The gaps** are one line for each profile and reason, in fixed words that say nothing of the diff, with a count in parentheses when a profile records a reason more than once.
+- **The files left out** and **the flags** list the first 20 each, then how many more. A file with no name, the part of a diff that no header names, is `(no path)`. A held file's line carries its reason and its rule: `(secret: name)`.
+- **The trailer** is the version and what was reviewed: a range's two commits, the commit a local or staged review sits on, the commit of a path review, or `diff`.
+
+A section with nothing to list is left out, so the review of a blank diff is a heading, a verdict, a table and a trailer.
+
+### Why every text is in a code span
+
+A claim, a category, a file name, a row of code and a flag's detail are text that a model or the diff wrote, and an attacker can influence it. Written bare, a name or a claim could mention a person, link an issue or a commit, load an image, become an emoji or math, or hold HTML. A code span is the one Markdown construct that stops all of that at once, and a backslash does not stop a mention, so the summary puts each such text in a span, whose fence quorum computes to be longer than any run of backticks inside, and the evidence in a fenced block that no row can close. No such text is in a table cell, since a `|` splits a cell even inside a span. Every line passes `inertLine`, so a log that echoes the summary starts no workflow command. The rule, and what the summary never writes, are in [Markdown](../30-security/30-output-handling.md#markdown).
+
+### The size
+
+A summary is at most 60,000 UTF-16 code units, inside GitHub's limit on a comment and the job summary's. A large review can hold more: 100 findings with their evidence are about 280,000 characters. The summary drops whole pieces until it fits, in this order, and counts what it dropped:
+
+1. the evidence of the findings, from the last one up, with a note that says how many findings lost theirs;
+2. the flags, last first;
+3. the files left out, last first;
+4. the findings, last first, so those that fail their profile go last;
+5. the gap lines;
+6. the profiles' rows.
+
+Each list that lost entries ends with a line that counts them, as `- and 5 more, listed in the review's JSON result`, and the findings' line names their levels. The marker, the heading, the verdict, the section headings, the count lines, the note and the trailer stay whatever the budget, since they hold only words quorum wrote, numbers, the version and commit ids. A string is never cut, so a code span or a block is whole or gone.
+
+### Writing it
+
+```bash
+quorum --range "$BASE...$HEAD" -f markdown >> "$GITHUB_STEP_SUMMARY"
+```
+
+`-f markdown` writes the summary on stdout, and `--output markdown=<path>` writes it to a file as well as the format on stdout: `--output markdown="$RUNNER_TEMP/summary.md"`. Either is the public view whatever `--view` says. The exit code is the review's, so the step fails on a finding as the review does; the summary is written first. A program calls `renderReport(result, { format: 'markdown' })`: [`renderReport`](../95-reference/30-library-api.md#renderreport).
+
+## Next
+
+[Threat model](../30-security/10-threat-model.md) — the attacker, the assets, the residual risk stated plainly, the controls in place today, and what the panel's independence is worth.

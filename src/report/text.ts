@@ -24,12 +24,12 @@
  */
 
 import { profileFailOn } from '../core/outcome.ts'
-import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
+import type { Outcome } from '../core/outcome.ts'
 import { inertLine, showHidden } from '../core/sanitize.ts'
-import type { CoverageEntry, CoverageStatus, IncompleteEntry, LeftOutFile, PublicGap, PublicMeta, PublicVerdict, QuorumMeta, ReviewSource, Verdict } from '../core/types.ts'
-import { flagWhere, GAP_WORDS, leftOutEntry, plural } from './lines.ts'
+import type { IncompleteEntry, LeftOutFile, PublicGap, PublicMeta, PublicVerdict, QuorumMeta, Verdict } from '../core/types.ts'
+import { byLocation, coverageWords, evidenceRows, flagWhere, GAP_WORDS, leftOutEntry, levelWord, plural, rowParts, sourcePhrase, verdictWhy, votesWords } from './lines.ts'
 import type { Reporter, ReportInput } from './reporter.ts'
-import { discardedOf, isPublicView, voteFailed } from './view.ts'
+import { discardedOf, isPublicView } from './view.ts'
 
 /** The width a line of prose wraps at, counted in code points. */
 const COLUMNS = 80
@@ -119,107 +119,39 @@ function pathText(path: string): string {
 /** The first characters of a commit's id, as the header names it. */
 const shortId = (id: string): string => id.slice(0, SHORT_ID)
 
-/** What was reviewed, as the header names it. */
-function sourceText(source: ReviewSource): string {
-  switch (source.kind) {
-    case 'diff':
-      return 'diff'
-    case 'range':
-      return `range ${shortId(source.base)}...${shortId(source.head)}`
-    case 'local':
-    case 'staged':
-      return source.head === null
-        ? `${source.kind}, no commit yet`
-        : `${source.kind} on ${shortId(source.head)}`
-    case 'paths':
-      return `paths at ${shortId(source.commit)}`
-    default:
-      return 'source unknown'
-  }
-}
-
 /** The header: the version, the source, the profiles that ran, and how many files the diff holds, by the first profile's coverage. */
 function headerLine(meta: QuorumMeta | PublicMeta): string {
   const profiles = Object.values(meta.profiles)
-  return inertLine(`quorum ${meta.version} · ${sourceText(meta.source)} · ${Object.keys(meta.profiles).join(', ')} · ${plural(profiles[0]?.coverage.length ?? 0, 'file')}`)
+  return inertLine(`quorum ${meta.version} · ${sourcePhrase(meta.source, shortId)} · ${Object.keys(meta.profiles).join(', ')} · ${plural(profiles[0]?.coverage.length ?? 0, 'file')}`)
 }
 
-/** The level word of a finding: its confidence when kept, `UNREVIEWED` when its failed votes left it undecided. */
+/** The level word of a finding: its confidence when kept, `UNREVIEWED` when its failed votes left it undecided, `KEPT` for a kept finding with no confidence. */
 function levelPiece(verdict: Verdict | PublicVerdict, kept: boolean): Piece {
   if (!kept) return { text: 'UNREVIEWED', style: 'unreviewed' }
-  switch (verdict.confidence) {
-    case 'high':
-      return { text: 'HIGH', style: 'high' }
-    case 'medium':
-      return { text: 'MEDIUM', style: 'medium' }
-    case 'low':
-      return { text: 'LOW', style: 'low' }
+  const word = levelWord(verdict)
+  switch (word) {
+    case 'HIGH':
+      return { text: word, style: 'high' }
+    case 'MEDIUM':
+      return { text: word, style: 'medium' }
+    case 'LOW':
+      return { text: word, style: 'low' }
     default:
       return { text: 'KEPT' }
   }
 }
 
-/** Whether a row is a line of the new file: an added row, a context row or an empty row. A removed row is not. */
-const isNewFileLine = (row: string): boolean => row === '' || row.startsWith('+') || row.startsWith(' ')
-
-/**
- * The index of the row that shows the cited line: `evidenceRow` when it is an integer that names a row of the
- * new file. Undefined otherwise, so no row is marked and none numbered.
- */
-function citedRow(rows: readonly string[], evidenceRow: unknown): number | undefined {
-  if (typeof evidenceRow !== 'number' || !Number.isInteger(evidenceRow) || evidenceRow < 0 || evidenceRow >= rows.length) return undefined
-  return isNewFileLine(rows[evidenceRow])
-    ? evidenceRow
-    : undefined
-}
-
-/** The new-file line of each row, counted from the cited one, which is `citedLine`: a row that is no line of the new file has none. */
-function numberRows(rows: readonly string[], cited: number, citedLine: number): Array<number | undefined> {
-  const numbers: Array<number | undefined> = rows.map(() => undefined)
-  let next = citedLine
-  for (let index = cited; index < rows.length; index += 1) {
-    if (!isNewFileLine(rows[index])) continue
-    numbers[index] = next
-    next += 1
-  }
-  let before = citedLine
-  for (let index = cited - 1; index >= 0; index -= 1) {
-    if (!isNewFileLine(rows[index])) continue
-    before -= 1
-    numbers[index] = before
-  }
-  return numbers
-}
-
-/** A row's marker, its first character, which is a space for an empty row, and the rest of it with each tab as four spaces. */
-function splitRow(row: string): { marker: string, code: string } {
-  const first = row.codePointAt(0)
-  if (first === undefined) return { marker: ' ', code: '' }
-  const marker = String.fromCodePoint(first)
-  return {
-    marker,
-    code: row.slice(marker.length).replaceAll('\t', '    '),
-  }
-}
-
 /** The lines of a finding's evidence: the cited row marked with `>`, and the added and context rows numbered from the cited line, a removed row with no number. */
 function evidenceLines(verdict: Verdict | PublicVerdict, color: boolean): string[] {
-  const rows = verdict.evidence === ''
-    ? []
-    : verdict.evidence.split('\n')
-  const cited = citedRow(rows, verdict.evidenceRow)
-  const numbers = cited === undefined
-    ? []
-    : numberRows(rows, cited, verdict.line)
-  const width = Math.max(0, ...numbers.map(number => String(number ?? '').length))
-  return rows.map((row, index) => {
-    const { marker, code } = splitRow(row)
+  const { rows, width } = evidenceRows(verdict)
+  return rows.map((row) => {
+    const [indent, mark, number, marker, code] = rowParts(row, width)
     return line([
-      { text: '   ' },
-      index === cited
-        ? { text: '>', style: 'bold' }
-        : { text: ' ' },
-      { text: `  ${String(numbers[index] ?? '').padStart(width)} ` },
+      { text: indent },
+      row.cited
+        ? { text: mark, style: 'bold' }
+        : { text: mark },
+      { text: number },
       marker === '+' || marker === '-'
         ? {
             text: marker,
@@ -228,18 +160,9 @@ function evidenceLines(verdict: Verdict | PublicVerdict, color: boolean): string
               : 'removed',
           }
         : { text: marker },
-      { text: ` ${code}` },
+      { text: code },
     ], color)
   })
-}
-
-/** How a finding's lenses voted: how many kept it, and how many votes failed. */
-function votesLine(verdict: Verdict | PublicVerdict): string {
-  const failed = verdict.votes.filter(voteFailed).length
-  const failures = failed === 0
-    ? ''
-    : `, ${plural(failed, 'vote')} failed`
-  return inertLine(`  kept by ${verdict.keptVotes} of ${plural(verdict.totalVotes, 'lens', 'lenses')}${failures}`)
 }
 
 /** A finding's block: its head, its claim, its evidence rows, its votes and a blank line. */
@@ -253,18 +176,9 @@ function findingLines(verdict: Verdict | PublicVerdict, kept: boolean, color: bo
     ], color),
     ...wrap('  ', verdict.summary).map(inertLine),
     ...evidenceLines(verdict, color),
-    votesLine(verdict),
+    inertLine(`  ${votesWords(verdict)}`),
     '',
   ]
-}
-
-/** `a` before `b` by the order of their UTF-16 code units, which no locale changes. */
-function byCodeUnits(a: string, b: string): number {
-  return a < b
-    ? -1
-    : a > b
-      ? 1
-      : 0
 }
 
 /** The kept findings and then the unreviewed ones, stable-sorted by file and then by line, so a kept one stays before an unreviewed one at the same place. */
@@ -272,21 +186,7 @@ function orderedFindings(input: ReportInput): Array<{ verdict: Verdict | PublicV
   return [
     ...(input.kept as ReadonlyArray<Verdict | PublicVerdict>).map(verdict => ({ verdict, kept: true })),
     ...(input.unreviewed as ReadonlyArray<Verdict | PublicVerdict>).map(verdict => ({ verdict, kept: false })),
-  ].sort((a, b) => byCodeUnits(a.verdict.file, b.verdict.file) || a.verdict.line - b.verdict.line)
-}
-
-/** How many of the files a profile's coverage lists are reviewed, in part, not, or excluded, as `  2 of 3 files reviewed, 1 not`. */
-function coverageLine(coverage: readonly CoverageEntry[]): string {
-  if (coverage.length === 0) return '  the diff holds no file'
-  const count = (status: CoverageStatus): number => coverage.filter(entry => entry.status === status).length
-  const others = ([
-    ['partial', 'in part'],
-    ['unreviewed', 'not'],
-    ['excluded', 'excluded'],
-  ] as const)
-    .filter(([status]) => count(status) > 0)
-    .map(([status, word]) => `${count(status)} ${word}`)
-  return `  ${[`${count('reviewed')} of ${plural(coverage.length, 'file')} reviewed`, ...others].join(', ')}`
+  ].sort((a, b) => byLocation(a.verdict, b.verdict))
 }
 
 /** Each profile in run order: its fail-on level and its counts, with the findings it dropped for citing code outside the diff, then its coverage. A public view's discarded count is the one it records. */
@@ -298,7 +198,7 @@ function profileLines(result: ReportInput): string[] {
       : ''
     return [
       inertLine(`${id} (fail-on ${profileFailOn(result, id)}): ${count(result.kept as ReadonlyArray<Verdict | PublicVerdict>)} kept, ${count(result.unreviewed as ReadonlyArray<Verdict | PublicVerdict>)} unreviewed, ${discardedOf(result, id)} discarded${outside}`),
-      inertLine(coverageLine(profile.coverage)),
+      inertLine(`  ${coverageWords(profile.coverage)}`),
     ]
   })
 }
@@ -339,12 +239,6 @@ function timeLine(input: ReportInput): string {
   return inertLine(`took ${durationText(meta.durationMs)}, ${used}`)
 }
 
-const WHY: Readonly<Record<OutcomeStatus, string>> = {
-  findings: 'a gating profile kept a finding at or above its fail-on level',
-  incomplete: 'a gating profile has a gap or an unreviewed finding',
-  pass: 'no gating profile kept a finding to fail on, and none has a gap',
-}
-
 /** A gap's lines: `gap: <profile> <reason>` and its detail wrapped after a comma, or the head alone, with no comma, when the detail is empty or only white space. */
 function gapLines(gap: IncompleteEntry): string[] {
   return gap.detail.trim() === ''
@@ -362,13 +256,10 @@ function publicGapLines(gap: PublicGap): string[] {
 
 /** The last line: the exit code, the status and why, from the one outcome the exit code is made of. */
 function verdictLine(outcome: Outcome, color: boolean): string {
-  const why = outcome.status === 'pass' && outcome.lifted
-    ? 'incomplete, but --allow-incomplete lifted every gap'
-    : WHY[outcome.status]
   return line([
     { text: `exit ${outcome.exitCode}, ` },
     { text: outcome.status, style: outcome.status },
-    { text: `: ${why}` },
+    { text: `: ${verdictWhy(outcome)}` },
   ], color)
 }
 
