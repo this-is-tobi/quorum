@@ -1,10 +1,11 @@
-import { issuePath } from '../core/errors.ts'
+import { ConfigError, isSafeSegment, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { defaultPolicy } from '../core/policy.ts'
 import type { PolicyRules, Rule } from '../core/policy.ts'
-import { profileIssues } from '../core/profile.ts'
+import { FAIL_ON_LEVELS, profileIssues } from '../core/profile.ts'
 import type { FailOn, Profile } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
+import { PROFILE_ID } from './env.ts'
 import type { RoleBinding } from './env.ts'
 import { unknownName } from './schema.ts'
 import type { ConfigInput } from './schema.ts'
@@ -23,6 +24,16 @@ export interface ResolvedProfile {
 /** The profiles a caller selects to run: `QUORUM_PROFILES`, or the flag of the CLI. `path` is what an issue with the ids names. */
 export interface ProfileSelection {
   readonly ids: readonly string[]
+  readonly path: string
+}
+
+/**
+ * The fail-on levels the command line sets, as `parseFailOn` read them: `all` for every profile that runs, and
+ * `profiles` for the ones it names, each over `all`. `path` is what an issue with a name that does not run names.
+ */
+export interface FailOnOverride {
+  readonly all?: FailOn
+  readonly profiles: ReadonlyMap<string, FailOn>
   readonly path: string
 }
 
@@ -54,6 +65,66 @@ function fromGating(gating: boolean | undefined): FailOn | undefined {
   return gating
     ? 'high'
     : 'none'
+}
+
+const FAIL_ON_FORM = 'must be a level, high, medium, low or none, or <profile>=<level>'
+
+function isFailOn(value: string): value is FailOn {
+  return (FAIL_ON_LEVELS as readonly string[]).includes(value)
+}
+
+/**
+ * The fail-on levels of the values a flag was given, each written `<level>` for every profile or
+ * `<profile>=<level>` for one: the level is `high`, `medium`, `low` or `none`, the profile matches `PROFILE_ID`,
+ * and a value is split at its first `=`. The values are checked before any config is read. The issues are at
+ * `path`, each at most once, and none holds a value: a value that is neither form, a second level for every
+ * profile (equal or not), and a profile named twice. That a profile named here runs is for `resolveProfiles`.
+ *
+ * @throws ConfigError with every issue
+ */
+export function parseFailOn(values: readonly string[], path: string): FailOnOverride {
+  const profiles = new Map<string, FailOn>()
+  let all: FailOn | undefined
+  let malformed = false
+  let repeatedAll = false
+  let repeatedProfile = false
+  for (const value of values) {
+    const split = value.indexOf('=')
+    const id = split === -1
+      ? undefined
+      : value.slice(0, split)
+    const level = split === -1
+      ? value
+      : value.slice(split + 1)
+    if (!isFailOn(level) || (id !== undefined && !PROFILE_ID.test(id))) {
+      malformed = true
+    } else if (id === undefined) {
+      repeatedAll ||= all !== undefined
+      all = level
+    } else {
+      repeatedProfile ||= profiles.has(id)
+      profiles.set(id, level)
+    }
+  }
+  const messages = [
+    ...malformed
+      ? [FAIL_ON_FORM]
+      : [],
+    ...repeatedAll
+      ? ['takes one level for every profile']
+      : [],
+    ...repeatedProfile
+      ? ['names a profile more than once']
+      : [],
+  ]
+  if (messages.length > 0) throw new ConfigError(messages.map(message => ({ path, message })))
+  return {
+    ...all === undefined
+      ? {}
+      : { all },
+    profiles,
+    path,
+  }
 }
 
 /** A rule as a new frozen value: the config's own objects stay out of a frozen profile. */
@@ -95,6 +166,30 @@ function lensesOf(entry: ProfileEntry['lenses'], base: Profile | undefined): Len
     }))
   }
   return base?.lenses.map(({ id, question }) => ({ id, question, provider: undefined }))
+}
+
+/** The profile with the level the command line sets for it, as a new frozen profile and binding; the profile itself when the override sets none. */
+function withFailOn(resolved: ResolvedProfile, failOn: FailOnOverride | undefined): ResolvedProfile {
+  const level = failOn?.profiles.get(resolved.profile.id) ?? failOn?.all
+  return level === undefined
+    ? resolved
+    : Object.freeze({
+        ...resolved,
+        profile: Object.freeze({ ...resolved.profile, failOn: level }),
+      })
+}
+
+/** The issue of each profile an override names that is not among the ones that run: a typo must not leave a gate weaker or missing. */
+function notRunIssues(failOn: FailOnOverride | undefined, selected: readonly string[]): ConfigIssue[] {
+  if (failOn === undefined) return []
+  return [
+    ...failOn.profiles.keys(),
+  ].filter(id => !selected.includes(id)).map(id => ({
+    path: failOn.path,
+    message: isSafeSegment(id)
+      ? `names the profile "${id}", which does not run`
+      : 'names a profile that does not run',
+  }))
 }
 
 /** What a profile is bound against: the roles, and the names of the providers that are defined, in order and as a set. */
@@ -201,8 +296,11 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
  * assigning a key of the input. A profile states its `failOn`, the entry's own, else what its deprecated
  * `gating` says (`true` is `high`, `false` is `none`), else the base's, else `high`, and never a `gating`: an
  * entry that sets both is an issue at its `gating`, and one that sets `gating` earns a deprecation warning,
- * returned in `warnings` in the order the entries are written. `research` is bound to `roles.research`, and
- * each lens to its own provider, else the profile's voter, else `roles.voter`; every provider a profile names
+ * returned in `warnings` in the order the entries are written. `failOn`, the levels `parseFailOn` read from the
+ * command line, then sets each selected profile's level over all of that: the level named for the profile, else
+ * the level for every profile, as a new frozen profile and binding. A profile it names that is not selected is
+ * an issue at its `path`: a typo must not leave a gate weaker or missing. `research` is bound to
+ * `roles.research`, and each lens to its own provider, else the profile's voter, else `roles.voter`; every provider a profile names
  * must be in `providers`. A selection that runs nothing is an issue, and a profile with an issue does not run.
  */
 export function resolveProfiles(inputs: {
@@ -210,6 +308,7 @@ export function resolveProfiles(inputs: {
   readonly selection?: ProfileSelection
   readonly roles: RoleBinding
   readonly providers: readonly string[]
+  readonly failOn?: FailOnOverride
 }): { readonly profiles: readonly ResolvedProfile[], readonly issues: readonly ConfigIssue[], readonly warnings: readonly string[] } {
   const configured = new Map(Object.entries(inputs.profiles ?? {}))
   const selected = inputs.selection?.ids ?? (inputs.profiles === undefined
@@ -245,12 +344,20 @@ export function resolveProfiles(inputs: {
     if (BUILT_IN.has(id)) resolutions.set(id, resolveEntry(id, {}, bindings))
     else issues.push(unknownName(inputs.selection?.path ?? 'profiles', 'profile', id, defined))
   }
+  issues.push(...notRunIssues(inputs.failOn, selected))
   const resolved = [
     ...resolutions.values(),
   ]
   issues.push(...resolved.flatMap(resolution => resolution.issues))
   return {
-    profiles: selected.flatMap(id => resolutions.get(id)?.resolved ?? []),
+    profiles: selected.flatMap((id) => {
+      const profile = resolutions.get(id)?.resolved
+      return profile === undefined
+        ? []
+        : [
+            withFailOn(profile, inputs.failOn),
+          ]
+    }),
     issues,
     warnings: resolved.flatMap(resolution => resolution.warnings),
   }

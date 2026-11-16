@@ -12,7 +12,7 @@ import type { CommandLookup } from './claude-code.ts'
 import { applyRoleOverrides, atVariables, baseUrlOf, envValue, namesModelOrEndpoint, PROFILE_ID, readEnv, setsContextSize, setsOnlyBaseUrl, VARIABLE_NAME } from './env.ts'
 import type { Env, EnvLayer, ProviderEntry, RoleBinding, RoleOverrides } from './env.ts'
 import { own, resolveProfiles } from './profiles.ts'
-import type { ProfileSelection, ResolvedProfile } from './profiles.ts'
+import type { FailOnOverride, ProfileSelection, ResolvedProfile } from './profiles.ts'
 import { configPath, isProvider, unknownName } from './schema.ts'
 import type { ConfigInput, ProviderSettings } from './schema.ts'
 
@@ -437,12 +437,14 @@ function bindRoles(roles: ConfigInput['roles'], names: readonly string[]): { rea
  * then the profiles' (an entry that sets the deprecated `gating`). A resolved config is returned as it is. The
  * input must already have passed a config schema. `options.selection`, when given, names the profiles that
  * run, over `QUORUM_PROFILES`, which is still checked; its ids are checked before anything is resolved.
+ * `options.failOn`, when given, sets the fail-on level of the profiles that run, over the config's (see
+ * `resolveProfiles`); a profile it names that does not run is an issue.
  *
  * @throws ConfigError with every issue at once, none of which repeats a value
  */
-export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { readonly env: Env, readonly selection?: ProfileSelection }): ResolvedConfig {
+export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { readonly env: Env, readonly selection?: ProfileSelection, readonly failOn?: FailOnOverride }): ResolvedConfig {
   if (isResolvedConfig(input)) return input
-  const { env, selection } = options
+  const { env, selection, failOn } = options
   const layer = readEnv(env)
   const defined = Object.entries(own(input, 'providers') ?? {})
   const builtIn = defined.length === 0
@@ -478,6 +480,7 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
       : { ids, path: 'QUORUM_PROFILES' }),
     roles: applied.roles,
     providers: Object.keys(applied.providers),
+    failOn,
   })
   const inUse = new Set(profiles.profiles.flatMap(({ research, voters }) => [
     research,

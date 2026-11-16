@@ -154,6 +154,11 @@ The cost grows with each profile: one more research call, and one call per lens 
 - **The gaps of a gating profile exit `4`.** An unreviewed finding, or an entry of `meta.incomplete`, of a gating profile makes the review incomplete, and the CLI exits `4` unless a kept finding exits `1` first. A review with neither exits `0`.
 - **`low` needs the policy's `low` on.** A finding reaches `low` only when the policy's `low` rule is not `off`, as in the default policy. With it off no kept finding is `low`, so `failOn: 'low'` fails what `medium` fails, and the profile warns of it ([Warnings](#warnings)).
 - **`gating` is deprecated.** `true` reads as `failOn: 'high'` and `false` as `'none'`, with the warning `<id>.gating is deprecated: set failOn instead, high for true and none for false`, which the CLI prints before its banner and a config prints as `profiles.<id>.gating is deprecated: ...`. A profile or a config entry that sets both is refused, at its `gating` ([The checks](#the-checks)). The security profile states neither, so a program's `{ ...securityProfile, gating: false }` still runs, with the warning.
+- **`--fail-on` sets the level from the command line.** `--fail-on medium` sets the level of every profile that runs, and `--fail-on security=none` that of one profile, which wins over the one for every profile. Both win over the config's `failOn`, and no variable sets one: the level a job runs with is in its command line, and [`--print-config`](./10-cli.md#printing-the-resolved-config) shows it. It repeats, once for every profile and once for each profile named, and it refuses a profile that does not run, so a typo never leaves a gate weaker or missing: [The flags](./10-cli.md#the-invocation).
+
+```bash
+quorum --range origin/main...HEAD --fail-on medium
+```
 
 A profile at `failOn: 'none'` reports every finding and every gap in full, and neither changes the exit code: its kept findings are in `kept`, its unreviewed findings and gaps in `unreviewed` and `meta.incomplete`, and the exit code follows the gating profiles alone. An advisory profile's failed research, the call or its reply, is its own gap, `research-failed`, and the other profiles go on; a gating profile's ends the review, exit `3`. The CLI runs the profiles its config selects, and by default the security profile alone, which gates.
 

@@ -10,6 +10,7 @@ import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, Provider } from '../core/ports.ts'
 import { loadConfig, readBounded, readConfigFile } from './load.ts'
+import { parseFailOn } from './profiles.ts'
 import { configFileSchema } from './schema.ts'
 
 /** `lstat` as a spy that calls through, so a test can make it miss a link, as a link swapped in after it would. */
@@ -896,6 +897,23 @@ describe('loadConfig', () => {
       },
     })
     expect(loaded.config.profiles.map(({ profile }) => profile.id)).toEqual(['security'])
+  })
+
+  it('hands --fail-on\'s levels to the profiles it resolves', async () => {
+    const env = { QUORUM_RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }
+    const loaded = await loadConfig({
+      env,
+      failOn: parseFailOn(['medium'], '--fail-on'),
+    })
+    expect(loaded.config.profiles.map(({ profile }) => profile.failOn)).toEqual(['medium'])
+    await expect(loadConfig({
+      env,
+      failOn: parseFailOn(['team=none'], '--fail-on'),
+    })).rejects.toMatchObject({
+      issues: [
+        { path: '--fail-on', message: 'names the profile "team", which does not run' },
+      ],
+    })
   })
 
   it('reports a config that Bun cannot build as a syntax error, never by its message', async () => {
