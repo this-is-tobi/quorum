@@ -139,13 +139,13 @@ describe('reportPlan', () => {
       {
         format: ['xml'],
       },
-      '--format: must be text, json or brief',
+      '--format: must be text, json, brief or markdown',
     ],
     [
       {
         format: ['toString'],
       },
-      '--format: must be text, json or brief',
+      '--format: must be text, json, brief or markdown',
     ],
     [
       {
@@ -205,31 +205,31 @@ describe('reportPlan', () => {
   it.each<[string[], string]>([
     [
       ['json'],
-      '--output: must be written <format>=<path>, the format text, json or brief',
+      '--output: must be written <format>=<path>, the format text, json, brief or markdown',
     ],
     [
       ['=a.json'],
-      '--output: must be written <format>=<path>, the format text, json or brief',
+      '--output: must be written <format>=<path>, the format text, json, brief or markdown',
     ],
     [
       ['xml=a.json'],
-      '--output: must be written <format>=<path>, the format text, json or brief',
+      '--output: must be written <format>=<path>, the format text, json, brief or markdown',
     ],
     [
       ['json='],
-      '--output: must be written <format>=<path>, the format text, json or brief',
+      '--output: must be written <format>=<path>, the format text, json, brief or markdown',
     ],
     [
       ['json=-'],
-      '--output: must be written <format>=<path>, the format text, json or brief',
+      '--output: must be written <format>=<path>, the format text, json, brief or markdown',
     ],
     [
       ['json=fresh/'],
-      '--output: must be written <format>=<path>, the format text, json or brief',
+      '--output: must be written <format>=<path>, the format text, json, brief or markdown',
     ],
     [
       ['brief=out/fresh\\'],
-      '--output: must be written <format>=<path>, the format text, json or brief',
+      '--output: must be written <format>=<path>, the format text, json, brief or markdown',
     ],
     [
       ['json=a.json', 'text=./a.json'],

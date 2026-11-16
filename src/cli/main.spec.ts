@@ -109,7 +109,7 @@ const USAGE = [
   '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
-  '  -f, --format <format>    Write the report on stdout in this format: text, json or brief; text on a terminal, else json',
+  '  -f, --format <format>    Write the report on stdout in this format: text, json, brief or markdown; text on a terminal, else json',
   '  -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several',
   '      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never',
   '      --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage',
@@ -1311,6 +1311,29 @@ describe('flags', () => {
     expect(passing.stdout()).toBe('quorum: pass: 1 kept (1 medium), 0 unreviewed, 0 gaps, 0 left out, 0 flags; exit 0\n')
   })
 
+  it('writes the summary with -f markdown, the public view whatever --view says', async () => {
+    const reasoning = JSON.stringify({ keep: true, reasoning: 'REASONING-CANARY' })
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), reasoning, reasoning, reasoning)
+    const { io, stdout } = harness({
+      argv: ['-f', 'markdown', '--view', 'full'],
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    const lines = stdout().split('\n')
+    expect(lines.slice(0, 4)).toEqual([
+      '<!-- quorum:summary:v1 -->',
+      '### quorum review',
+      '',
+      '**exit 1, findings:** a gating profile kept a finding at or above its fail-on level',
+    ])
+    expect(lines).toContain('- **HIGH** security · `a.js` line 1 · `CWE-78` · kept by 3 of 3 lenses')
+    expect(lines.at(-2)).toBe(`quorum ${packageJson.version} · diff`)
+    expect(stdout()).not.toContain('CANARY')
+  })
+
   it('chooses the format by stdout alone: text on a terminal whatever stdin is, json on a pipe though stdin is a terminal', async () => {
     stubChat(JSON.stringify({
       findings: [FINDING],
@@ -1513,7 +1536,7 @@ describe('flags', () => {
     })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stdout()).toBe('')
-    expect(stderr()).toBe(`Error: --format: must be text, json or brief\n${USAGE}`)
+    expect(stderr()).toBe(`Error: --format: must be text, json, brief or markdown\n${USAGE}`)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 

@@ -80,6 +80,7 @@ The report goes to stdout: the text report on a terminal, the JSON result on a p
 - [Lenses and policy](./docs/20-using/50-lenses-and-policy.md) *- The panel's questions, the rules that turn kept votes into a confidence, failed votes, and what a level means*
 - [Prompts](./docs/20-using/60-prompts.md) *- The layout of every request, the templates and their variables, the notices, and what is not configurable*
 - [Benchmarks](./docs/20-using/70-bench.md) *- quorum bench: measure configurations on a suite of real bugs, write a suite, resume a run, and read the report and its intervals*
+- [Reports for GitHub](./docs/20-using/80-reports.md) *- The summary, the Action's payload and SARIF, each from the public view, quorum report and a GitHub workflow*
 
 *Security*
 - [Threat model](./docs/30-security/10-threat-model.md) *- The attacker, the assets, the residual risk stated plainly, the controls in place, and what the panel's independence is worth*

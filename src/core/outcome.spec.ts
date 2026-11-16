@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { publicView } from '../report/view.ts'
-import { outcome } from './outcome.ts'
+import { failsItsProfile, outcome } from './outcome.ts'
 import type { QuorumResult, Verdict } from './types.ts'
 
 describe('outcome', () => {
@@ -459,6 +459,31 @@ describe('outcome', () => {
         kept('security', confidence),
       ],
     })).exitCode).toBe(exitCode)
+  })
+
+  it.each([
+    ['high', 'high', true],
+    ['high', 'medium', true],
+    ['high', 'low', true],
+    ['high', 'none', false],
+    ['medium', 'high', false],
+    ['medium', 'medium', true],
+    ['medium', 'low', true],
+    ['medium', 'none', false],
+    ['low', 'high', false],
+    ['low', 'medium', false],
+    ['low', 'low', true],
+    ['low', 'none', false],
+  ] as const)('says a kept %s finding fails its profile at fail-on %s: %s', (confidence, failOn, fails) => {
+    const result = recorded({
+      security: { failOn },
+    }, {
+      kept: [
+        kept('security', confidence),
+      ],
+    })
+    expect(failsItsProfile(result, result.kept[0])).toBe(fails)
+    expect(failsItsProfile(publicView(result), publicView(result).kept[0])).toBe(fails)
   })
 
   it.each(['high', 'medium', 'low'])('exits 4 for a gap of a profile at fail-on %s, and 0 for one at none', (failOn) => {
