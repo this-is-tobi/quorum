@@ -53,7 +53,7 @@ function withoutPrefix(path: string): string {
  * `JSON.stringify` writes the surrogate as an escape. One pass over the name and no pattern that
  * can backtrack.
  */
-function decodeQuoted(quoted: string): string {
+export function decodeQuoted(quoted: string): string {
   const bytes: number[] = []
   let name = ''
   const flush = (): void => {
