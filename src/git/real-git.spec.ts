@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { findExecutable } from '../config/command.ts'
+import { decodeDiff, diffSections } from '../core/diff.ts'
 import { ConfigError } from '../core/errors.ts'
+import { addedDiff } from '../sources/added.ts'
 import { gitEnvironment, GitError, GLOBAL_PINS, openRepository } from './run.ts'
 import type { GitContext, Repository, SpawnGit } from './run.ts'
 import { listTree, readBlobs } from './tree.ts'
@@ -489,5 +491,122 @@ describe('the real git', { concurrent: false, timeout: 30_000 }, () => {
     // The control: a plain git fetches the blob it lacks.
     ws.git(clone, 'cat-file', '-p', ids[0].id)
     expect(ws.git(clone, 'count-objects', '-v')).not.toBe(before)
+  })
+
+  it('writes each section as git writes a new file, but its index line, over every byte class of a name', async () => {
+    const ws = workspace()
+    const repo = init(ws, 'names')
+    const encoder = new TextEncoder()
+    const bytesOf = (hex: string): Uint8Array => Uint8Array.from(hex.split(' ').map(pair => Number.parseInt(pair, 16)))
+    const contents = [
+      encoder.encode('one\ntwo\n'),
+      encoder.encode('x'),
+      new Uint8Array(),
+      encoder.encode('a\r\nb\r\n'),
+      bytesOf('ef bb bf 61 0a'),
+      bytesOf('c3 0a'),
+      bytesOf('61 00 62 0a'),
+    ]
+    // Every byte but NUL and `/`, as `n<byte>x`, and runs of valid and invalid UTF-8.
+    const names = [
+      ...Array.from({ length: 255 }, (_, index) => index + 1).filter(byte => byte !== 0x2F).map(byte => Uint8Array.of(0x6E, byte, 0x78)),
+      ...[
+        'c3 a9',
+        'e2 82 ac',
+        'f0 9f 98 80',
+        '61 01 c3 a9',
+        '01 ff',
+        'c3 28',
+        'e2 82',
+        'c0 af',
+        'ed a0 80',
+        'ef bb bf 62',
+        '61 20 62',
+        '61 20 c3 a9',
+        '61 22 5c 62',
+        '74 09 6e 0a 72 0d',
+        '65 6e 64 20',
+        '80 41 80',
+      ].map(bytesOf),
+    ]
+    const entries = [
+      ...names.map((name, index) => ({ mode: '100644', name, content: contents[index % contents.length] })),
+      {
+        mode: '100644',
+        name: encoder.encode('zz-lines'),
+        content: encoder.encode(`${Array.from({ length: 900 }, (_, index) => `line ${index} of a file cut into hunks`).join('\n')}\n`),
+      },
+      {
+        mode: '100644',
+        name: encoder.encode('zz-long'),
+        content: encoder.encode(`${'b'.repeat(5000)}\nshort`),
+      },
+      {
+        mode: '100755',
+        name: encoder.encode('zz-exec'),
+        content: encoder.encode('#!/bin/sh\n'),
+      },
+      {
+        mode: '120000',
+        name: encoder.encode('zz-link'),
+        content: encoder.encode('target/dir'),
+      },
+      {
+        mode: '100644',
+        name: bytesOf('62 20 c3 a9 2e 62 69 6e'),
+        content: bytesOf('61 00 62 0a'),
+      },
+    ]
+    const ids = new Map<Uint8Array, string>()
+    for (const { content } of entries) {
+      if (ids.has(content)) continue
+      ids.set(content, execFileSync(GIT as string, ['hash-object', '-w', '--stdin'], {
+        cwd: repo,
+        env: { ...ws.env },
+        input: content,
+        encoding: 'utf8',
+      }).trim())
+    }
+    const records = entries.flatMap(({ mode, name, content }) => [
+      Buffer.from(`${mode} blob ${ids.get(content)}\t`),
+      name,
+      Buffer.alloc(1),
+    ])
+    const tree = execFileSync(GIT as string, ['mktree', '-z'], {
+      cwd: repo,
+      env: { ...ws.env },
+      input: Buffer.concat(records),
+      encoding: 'utf8',
+    }).trim()
+    const commitId = ws.git(repo, 'commit-tree', tree, '-m', 'names')
+
+    const repository = await openRepository(contextOf(ws, repo))
+    const listed = await listTree(repository, commitId, () => true) as TreeEntry[]
+    const blobs = await readBlobs(repository, listed, 16 * 1024 * 1024)
+    const written = diffSections(addedDiff(listed.map((entry, index) => ({ path: entry.path, mode: entry.mode, content: blobs[index] }))))
+    const pinned = await repository.diffCommits(await repository.emptyTree(), commitId, commitId)
+    const git = diffSections(await decodeDiff([pinned as Uint8Array]) as string)
+
+    expect(listed).toHaveLength(entries.length)
+    expect(written).toHaveLength(entries.length)
+    expect(git).toHaveLength(entries.length)
+    const cut: string[] = []
+    for (const [index, section] of written.entries()) {
+      const theirs = git[index].text.split('\n')
+      // The writer leaves the `index` line out: the third line of git's new-file form, whatever the file.
+      expect(theirs[2], `section ${index}`).toMatch(/^index 0+\.\.[0-9a-f]+$/)
+      theirs.splice(2, 1)
+      expect(section.path, `section ${index}`).toBe(git[index].path)
+      const withoutHunkHeaders = (lines: string[]): string[] => lines.filter(line => !line.startsWith('@@'))
+      const ours = section.text.split('\n')
+      if (ours.length - withoutHunkHeaders(ours).length > 1) {
+        cut.push(section.path as string)
+        expect(withoutHunkHeaders(ours), section.path).toEqual(withoutHunkHeaders(theirs))
+      } else {
+        expect(section.text, `section ${index}`).toBe(theirs.join('\n'))
+      }
+    }
+    // Only the two files longer than a hunk differ, and by their hunk headers.
+    expect(cut).toEqual(['zz-lines', 'zz-long'])
   })
 })
