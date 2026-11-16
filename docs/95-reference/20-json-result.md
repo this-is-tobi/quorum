@@ -84,6 +84,8 @@ A usage count is valid when it is a finite number of at least 0. A failed call's
 - **It never holds a revision as written, a local file name or a git version.**
 - **Later releases may add kinds**, a container image's say. A reader takes a kind it does not know as a source it cannot describe, never as an error, and goes on reading the rest of the result.
 
+[Sources](../20-using/15-sources.md) says how each source makes its diff.
+
 ### Coverage
 
 A review lists, for each profile, every file of the input diff once, in the diff's order, and how much of it that profile's research reviewed. A gap says that something was not reviewed and the coverage says what, so a reader can tell the files a model read from the lines it did not.

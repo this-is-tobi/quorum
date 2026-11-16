@@ -7,6 +7,7 @@ import { findExecutable } from '../config/command.ts'
 import { decodeDiff, diffSections } from '../core/diff.ts'
 import { ConfigError } from '../core/errors.ts'
 import { addedDiff } from '../sources/added.ts'
+import { readSource } from '../sources/read.ts'
 import { gitEnvironment, GitError, GLOBAL_PINS, openRepository } from './run.ts'
 import type { GitContext, Repository, SpawnGit } from './run.ts'
 import { listTree, readBlobs } from './tree.ts'
@@ -269,6 +270,55 @@ describe('the real git', { concurrent: false, timeout: 30_000 }, () => {
     expect(patch).toContain('@@ -2,7 +2,7 @@')
     expect(patch).toContain('diff --git "a/caf\\303\\251.txt" "b/caf\\303\\251.txt"')
     expect(patch).not.toContain(String.fromCharCode(0x1B))
+  })
+
+  it('reads a range of a hostile repository as a clean clone\'s bytes, with nothing run', async () => {
+    const ws = workspace()
+    const repo = init(ws, 'repo')
+    const root = commit(ws, repo, {
+      'a.dat': 'one\ntwo\n',
+      'b.dat': 'x\ny\n',
+      'sub/f.txt': LINES.join(''),
+    }, 'base')
+    ws.git(repo, 'checkout', '-q', '-b', 'feature')
+    const head = commit(ws, repo, {
+      'a.dat': 'one\nTWO\n',
+      'b.dat': 'x\nY\n',
+      'sub/f.txt': edited(4),
+      'copy.dat': 'one\ntwo\n',
+      [ACCENTED]: 'accent\n',
+    }, 'feature')
+    ws.git(repo, 'checkout', '-q', 'main')
+    const base = commit(ws, repo, { 'later.txt': 'main moved on\n' }, 'main moved on')
+    const clone = join(ws.root, 'clone')
+    ws.git(ws.root, 'clone', '-q', '--no-local', repo, clone)
+    ws.git(clone, 'branch', 'feature', 'origin/feature')
+    makeHostile(ws, repo)
+
+    const read = (cwd: string): ReturnType<typeof readSource> => readSource({ kind: 'range', range: 'main...feature' }, {
+      cwd,
+      env: ws.env,
+      platform: process.platform,
+    })
+    const hostile = await read(repo)
+    const clean = await read(clone)
+
+    expect(hostile).toEqual(clean)
+    expect(hostile.source).toEqual({
+      kind: 'range',
+      base,
+      mergeBase: root,
+      head,
+      objectFormat: 'sha1',
+    })
+    expect(hostile.leftOut).toEqual([])
+    expect(hostile.diff).toContain('diff --git a/a.dat b/a.dat\n')
+    expect(hostile.diff).toContain('diff --git a/copy.dat b/copy.dat\nnew file mode 100644\n')
+    expect(hostile.diff).toContain('diff --git "a/caf\\303\\251.txt" "b/caf\\303\\251.txt"\n')
+    expect(hostile.diff).toContain('@@ -2,7 +2,7 @@')
+    expect(hostile.diff).not.toContain('later.txt')
+    expect(hostile.diff).not.toContain(String.fromCharCode(0x1B))
+    expect(ran(ws)).toEqual([])
   })
 
   it('refuses a bare repository nested in the tree, entered from its directory', async () => {

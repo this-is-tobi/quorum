@@ -9,6 +9,7 @@ import type { ParseArgsOptionsConfig } from 'node:util'
 import type { Env } from '../config/env.ts'
 import { ConfigError } from '../core/errors.ts'
 import { inertLine } from '../core/sanitize.ts'
+import type { GitSeam } from '../sources/read.ts'
 
 /** Exit codes (ADR-0008, amended by ADR-0012). */
 export const EXIT = {
@@ -32,6 +33,10 @@ export interface CliIO {
   stderr: { write: (text: string) => unknown }
   /** The review's signal: once it is aborted, a run that ends without a result exits 130. */
   readonly signal?: AbortSignal
+  /** The git a source runs, for the specs: its executable and its spawn. A run looks git up on `PATH` when unset. */
+  readonly git?: GitSeam
+  /** The platform the git sources check, `process.platform` when unset: for the specs. */
+  readonly platform?: NodeJS.Platform
 }
 
 /**
