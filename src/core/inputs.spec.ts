@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { leftOutIssues, mergeLeftOut, sourceIssues, sourceOf } from './inputs.ts'
-import type { ReviewSource } from './types.ts'
+import type { LeftOutFile, ReviewSource } from './types.ts'
 
 const A = 'a'.repeat(40)
 const B = 'b'.repeat(40)
@@ -8,7 +8,17 @@ const S = 'c'.repeat(64)
 
 const ID = 'must be a full commit id of its object format: 40 lowercase hexadecimal characters for sha1, 64 for sha256'
 const KIND = 'must be diff, range, local, staged or paths'
-const REASON = 'must be excluded, binary or submodule'
+const REASON = 'must be excluded, binary, submodule or skipped'
+const RULE = 'must be vendored, lockfile, minified, secret, binary, submodule or lfs'
+const RULE_ALONE = 'belongs to a skipped file only'
+
+/** An array of `length` entries with a hole where `at` is not set: `[, 'b']` is one of 2 whose first is a hole. */
+function withHoles<T>(length: number, entries: Readonly<Record<number, T>>): T[] {
+  const holey: T[] = []
+  holey.length = length
+  for (const [at, entry] of Object.entries(entries)) holey[Number(at)] = entry
+  return holey
+}
 
 /** The issues as `path: message` lines. */
 const lines = (issues: readonly { path: string, message: string }[]): string[] => issues.map(issue => `${issue.path}: ${issue.message}`)
@@ -118,6 +128,16 @@ describe('sourceIssues', () => {
       },
       ['source.skips: must be a boolean'],
     ],
+    [
+      {
+        kind: 'paths',
+        commit: A,
+        paths: withHoles(3, { 0: 'a', 2: 'b' }),
+        skips: true,
+        objectFormat: 'sha1',
+      },
+      ['source.paths: must be an array of strings'],
+    ],
   ])('refuses the source %j with %s', (source, issues) => {
     expect(lines(sourceIssues(source))).toEqual(issues)
   })
@@ -145,12 +165,74 @@ describe('leftOutIssues', () => {
       ],
       [`leftOut.0.reason: ${REASON}`],
     ],
+    [
+      withHoles(2, {
+        1: { file: 'a', reason: 'excluded' },
+      }),
+      ['leftOut.0: must be an object with a file and a reason'],
+    ],
+    [
+      [
+        { file: 'a', reason: 'skipped', rule: 'huge' },
+      ],
+      [`leftOut.0.rule: ${RULE}`],
+    ],
+    [
+      [
+        { file: 'a', reason: 'skipped' },
+      ],
+      [`leftOut.0.rule: ${RULE}`],
+    ],
+    [
+      [
+        { file: 'a', reason: 'excluded', rule: 'secret' },
+      ],
+      [`leftOut.0.rule: ${RULE_ALONE}`],
+    ],
   ])('refuses the leftOut %j with %s', (leftOut, issues) => {
     expect(lines(leftOutIssues(leftOut))).toEqual(issues)
+  })
+
+  it('takes a skipped file of each of the seven rules, and every other reason with no rule', () => {
+    const rules = [
+      'vendored',
+      'lockfile',
+      'minified',
+      'secret',
+      'binary',
+      'submodule',
+      'lfs',
+    ]
+    expect(leftOutIssues([
+      ...rules.map(rule => ({ file: `${rule}.x`, reason: 'skipped', rule })),
+      { file: 'a', reason: 'excluded' },
+      { file: 'b', reason: 'binary' },
+      { file: 'c', reason: 'submodule', rule: undefined },
+    ])).toEqual([])
   })
 })
 
 describe('mergeLeftOut', () => {
+  it('keeps the rule of a skipped file in its copy, and takes two rules of one file for two entries', () => {
+    const given: LeftOutFile[] = [
+      { file: 'a', reason: 'skipped', rule: 'secret' },
+      { file: 'a', reason: 'skipped', rule: 'vendored' },
+      { file: 'a', reason: 'skipped', rule: 'secret' },
+      { file: 'a', reason: 'excluded' },
+    ]
+    const merged = mergeLeftOut(given, [
+      { file: 'a', reason: 'binary' },
+    ])
+    expect(merged).toEqual([
+      { file: 'a', reason: 'skipped', rule: 'secret' },
+      { file: 'a', reason: 'skipped', rule: 'vendored' },
+      { file: 'a', reason: 'excluded' },
+      { file: 'a', reason: 'binary' },
+    ])
+    expect(merged[0]).not.toBe(given[0])
+    expect(merged[3]).not.toHaveProperty('rule')
+  })
+
   it('merges the source\'s files left out before the diff\'s, each file and reason once', () => {
     expect(mergeLeftOut([
       { file: 'a', reason: 'excluded' },

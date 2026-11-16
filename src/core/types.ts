@@ -163,15 +163,37 @@ export interface IncompleteEntry {
   detail: string
 }
 
-/** Why a file is in `meta.leftOut`: an `exclude` pattern matches it, or its change reaches the models only as binary, or as a submodule's commit. */
-export type LeftOutReason = 'excluded' | 'binary' | 'submodule'
+/**
+ * Why a file is in `meta.leftOut`: an `exclude` pattern matches it, its change reaches the models only as
+ * binary or as a submodule's commit, or a path review skipped it (`skipped`, with its `rule`).
+ */
+export type LeftOutReason = 'excluded' | 'binary' | 'submodule' | 'skipped'
 
-/** A file the review left out: one an `exclude` pattern matches, which is no gap, or one whose change the diff does not carry, which is a gap of every profile. */
-export interface LeftOutFile {
-  /** The diff's own path, decoded; '' for a part of the diff that no `diff --git` header names. */
-  file: string
-  reason: LeftOutReason
-}
+/**
+ * Why a path review skips a file by default: `vendored`, `lockfile`, `minified`, `secret` and `binary`
+ * only while the default skips are on, `submodule` (a gitlink) and `lfs` (a Git LFS pointer) always. A
+ * skip is no gap: the file is listed with its rule, and `--no-default-skips` reviews all but the last two.
+ */
+export type SkipRule = 'vendored' | 'lockfile' | 'minified' | 'secret' | 'binary' | 'submodule' | 'lfs'
+
+/**
+ * A file the review left out: one an `exclude` pattern matches, which is no gap; one a path review
+ * skipped, which is no gap either, and whose `rule` says which rule did; or one whose change the diff
+ * does not carry, `binary` or `submodule`, which is a gap of every profile. `rule` is there exactly for a
+ * skipped file. A reader takes a reason or a rule it does not know as a file left out, never as an error.
+ */
+export type LeftOutFile
+  = | {
+    /** The diff's own path, decoded; '' for a part of the diff that no `diff --git` header names. */
+    file: string
+    reason: 'excluded' | 'binary' | 'submodule'
+  }
+  | {
+    /** The path as the source named it: a path review's, decoded as the diff would name it. */
+    file: string
+    reason: 'skipped'
+    rule: SkipRule
+  }
 
 /**
  * Why part of a file was not reviewed, as `CoverageEntry` records it: a `LeftOutReason`'s `binary` or
@@ -206,18 +228,19 @@ export interface CoverageEntry {
   left?: LeftRange[]
 }
 
-/** What an advisory flag points at. */
-export type FlagCode = 'hidden-characters' | 'ai-addressed-text'
+/** What an advisory flag points at: hidden characters, text addressed to an AI reviewer, or a file a path review skipped for its name, as a secret's. */
+export type FlagCode = 'hidden-characters' | 'ai-addressed-text' | 'secret-file'
 
 /**
- * An advisory signal the harness read from the diff by code, before any model saw it: it tells a
- * human where to look, and never changes a verdict, a confidence or an exit code.
+ * An advisory signal the harness read by code, before any model saw it, from the diff or from the files
+ * the input's source left out: it tells a human where to look, and never changes a verdict, a confidence
+ * or an exit code.
  */
 export interface Flag {
   code: FlagCode
-  /** The diff's own path for the file; absent for a diff without per-file headers. */
+  /** The diff's own path for the file, or the path a path review skipped as a secret; absent for a diff without per-file headers. */
   file?: string
-  /** The first added line, in the new file, the flag is about; absent when it is about the file name. */
+  /** The first added line, in the new file, the flag is about; absent when it is about the file name, and for a `secret-file` flag. */
   line?: number
   /** What was found, in words the code wrote: code points or the names of patterns, never text of the diff. */
   detail: string
@@ -282,9 +305,9 @@ export interface QuorumMeta {
   usage?: Usage
   /** Gaps that are not findings. An entry here, or an unreviewed finding, makes the review incomplete. */
   incomplete: IncompleteEntry[]
-  /** The files the review left out, the input's own first, then the diff's, once per file and reason. Each, but an excluded one, is also a gap of every profile. */
+  /** The files the review left out, the input's own first, then the diff's, once per file, reason and rule. Each, but an excluded or a skipped one, is also a gap of every profile. */
   leftOut: LeftOutFile[]
-  /** Advisory signals the harness read from the diff: where a human should look. They change no verdict and no exit code. */
+  /** Advisory signals the harness read from the diff, and from the files the input's source skipped as secrets: where a human should look. They change no verdict and no exit code. */
   flags: Flag[]
 }
 
@@ -335,7 +358,8 @@ export interface ReviewInput {
   readonly source?: ReviewSource
   /**
    * The files the source left out before it made the diff, listed in `meta.leftOut` and in the `left-out`
-   * event ahead of the diff's own. A `binary` or `submodule` one is a gap of every profile, as the diff's are.
+   * event ahead of the diff's own. A `binary` or `submodule` one is a gap of every profile, as the diff's are;
+   * an `excluded` or a `skipped` one is no gap, and a `skipped` one of the rule `secret` raises a `secret-file` flag.
    */
   readonly leftOut?: readonly LeftOutFile[]
 }
@@ -367,7 +391,7 @@ export type QuorumEvent
   = | { type: 'run:start', profiles: string[], providers: Record<string, ProfileProviders> }
     /** The files the review leaves out, as `meta.leftOut` holds them, the input's first: sent once right after `run:start` when there is one. */
     | { type: 'left-out', files: LeftOutFile[] }
-    /** An advisory flag read from the diff, sent before any stage starts. */
+    /** An advisory flag, read from the diff or from the files the input's source skipped, sent before any stage starts. */
     | { type: 'flag', flag: Flag }
     /** A stage of one profile starts. */
     | { type: 'stage:start', profile: string, stage: StageName }

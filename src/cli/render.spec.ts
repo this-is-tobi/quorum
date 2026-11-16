@@ -58,7 +58,7 @@ describe('renderEvent', () => {
   })
 
   it('renders the files left out in one line: five at most, each a JSON string with its reason, the empty name as <no path>, inert, never prefixed', () => {
-    const file = (name: string, reason: LeftOutReason = 'binary'): LeftOutFile => ({ file: name, reason })
+    const file = (name: string, reason: Exclude<LeftOutReason, 'skipped'> = 'binary'): LeftOutFile => ({ file: name, reason })
     expect(renderEvent({
       type: 'left-out',
       files: [
@@ -80,6 +80,24 @@ describe('renderEvent', () => {
       ],
     }, true))
       .toBe('left out: 1 file(s): "x<U+202E>\\n.png" (binary)')
+  })
+
+  it('writes a skipped file with its rule on the left out line', () => {
+    expect(renderEvent({
+      type: 'left-out',
+      files: [
+        { file: 'go.sum', reason: 'skipped', rule: 'lockfile' },
+        { file: 'img.png', reason: 'binary' },
+      ],
+    }))
+      .toBe('left out: 2 file(s): "go.sum" (skipped: lockfile), "img.png" (binary)')
+    expect(renderEvent({
+      type: 'left-out',
+      files: [
+        { file: `.env${String.fromCharCode(0x202E)}\n`, reason: 'skipped', rule: 'secret' },
+      ],
+    }))
+      .toBe('left out: 1 file(s): ".env<U+202E>\\n" (skipped: secret)')
   })
 
   it('renders the text a line carries inert', () => {

@@ -45,6 +45,7 @@ export type {
   QuorumResult,
   ReviewInput,
   ReviewSource,
+  SkipRule,
   StageName,
   Thresholds,
   Usage,

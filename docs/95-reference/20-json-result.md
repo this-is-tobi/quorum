@@ -54,8 +54,8 @@ A failed vote counts as a reject. Its `failure` holds only what the code read, n
 | `profiles` | object | One entry per profile, keyed by profile id, in the order of the review's profiles |
 | `usage` | object | Only when at least one call reported valid counts: `inputTokens` and `outputTokens` summed over those calls, then `costUsd`, summed over the calls that reported one, when any did |
 | `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's gaps for the files left out first, then its `too-large` gap, then its research gaps, then its panel's, then its limits'. A review is complete when this list and `unreviewed` are both empty |
-| `leftOut` | entry[] | Every file the review left out, once per file and reason: the files its source left out before it made the diff first, then the diff's own in its order: [A file left out](#a-file-left-out). Empty when it left none out, a blank diff included |
-| `flags` | flag[] | The advisory flags read from the diff, file by file in its order: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
+| `leftOut` | entry[] | Every file the review left out, once per file, reason and rule: the files its source left out before it made the diff first, then the diff's own in its order: [A file left out](#a-file-left-out). Empty when it left none out, a blank diff included |
+| `flags` | flag[] | The advisory flags, the `secret-file` flags of the files the source skipped first, then those read from the diff, file by file in its order: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
 
 A usage count is valid when it is a finite number of at least 0. A failed call's usage counts too, when its reply reported valid counts, as a reply refused or cut off at its token limit does. `meta.usage` and each `invalidFindings` are counted from the review's own events, so `meta` and the events cannot disagree.
 
@@ -106,8 +106,8 @@ A review lists, for each profile, every file of the input diff once, in the diff
 
 | `reason` | Why the file, or the range, was not reviewed |
 | --- | --- |
-| `binary` | The diff carries no content for the file: [A file left out](#a-file-left-out). Its section is still sent, and the model reads nothing of the change |
-| `submodule` | The diff carries only a submodule's commit |
+| `binary` | The diff carries no content for the file, or the input's `leftOut` lists it as binary: [A file left out](#a-file-left-out). Its section is still sent, and the model reads nothing of the change |
+| `submodule` | The diff carries only a submodule's commit, or the input's `leftOut` lists the file as one |
 | `too-large` | The hunk, or a section with no hunk, fits in no research part of the profile's model's window: no part holds it, so no model read it. It is the `too-large` gap's |
 | `request-too-large` | The provider refused the research part that held it as too large for its model, so it was not sent |
 | `token-cap` | The review's token cap stopped the research part that held it, so it was not sent |
@@ -135,24 +135,42 @@ A file name is the author's text, so print it as [Output handling](../30-securit
 
 | Field | Type | Holds |
 | --- | --- | --- |
-| `file` | string | The diff's own path of the file, as the `diff --git` header names it, decoded from git's quoting: the new path of a rename, the old one of a deletion. `""` for a part of the diff that no header names: the text before the first header, a diff without such headers, a section whose header names no path quorum reads, such as a rename under `--no-prefix`, and a submodule that git's `log` or `diff` format prints as a `Submodule` line. A readable header never names `""`, and no file of a change has an empty path, so the empty name is never a file's. A part of the diff with no path is never excluded |
+| `file` | string | The path of the file as the review names it. A file the diff lists is named by the diff's own path, as the `diff --git` header names it, decoded from git's quoting: the new path of a rename, the old one of a deletion. `""` for a part of the diff that no header names: the text before the first header, a diff without such headers, a section whose header names no path quorum reads, such as a rename under `--no-prefix`, and a submodule that git's `log` or `diff` format prints as a `Submodule` line. A readable header never names `""`, and no file of a change has an empty path, so the empty name is never a file's. A part of the diff with no path is never excluded. A file the input's `leftOut` lists, as a [path review](../20-using/15-sources.md#the-files-at-a-commit)'s skipped files are, is named as its source named it: for a path review, the path in the tree, decoded as a diff would name it |
 | `reason` | string | Why the review left it out, below |
+| `rule` | string | The rule that skipped the file, for `skipped` only: [below](#the-rules-of-a-skip). The key is absent for any other reason |
 
 | `reason` | Why the review left the file out |
 | --- | --- |
-| `excluded` | An `exclude` pattern of the review matches its path, so its section reached no model, the size guard did not count it, and a finding that cites it was dropped as outside the diff. It is no gap: leaving it out was the operator's choice |
-| `binary` | The diff shows its change only as `Binary files <a> and <b> differ`, or as a `GIT binary patch` block, with none of the content. Git prints it for a file that holds a NUL byte near its start, or that an attribute marks `-diff`: the change's own `.gitattributes` included, when the diff is made in its checkout |
-| `submodule` | The diff shows a submodule's change only as its commit: its `Subproject commit` lines, a header of mode `160000`, or a `Submodule` line, and none of its code |
+| `excluded` | An `exclude` pattern of the review matches its path, so its section reached no model, the size guard did not count it, and a finding that cites it was dropped as outside the diff. It is no gap: leaving it out was the operator's choice. A path review lists an excluded file and never reads it |
+| `binary` | The diff shows its change only as `Binary files <a> and <b> differ`, or as a `GIT binary patch` block, with none of the content. Git prints it for a file that holds a NUL byte near its start, or that an attribute marks `-diff`: the change's own `.gitattributes` included, when the diff is made in its checkout. A path review writes such a file the same way when its default skips are off, and the input's `leftOut` may list one |
+| `submodule` | The diff shows a submodule's change only as its commit: its `Subproject commit` lines, a header of mode `160000`, or a `Submodule` line, and none of its code. The input's `leftOut` may list one |
+| `skipped` | A [path review](../20-using/15-sources.md#what-a-path-review-skips) skipped the file, by the `rule` the entry names: it reached no model, and it is no gap, since the review listed it and nothing in the diff was left unread |
 
-A `binary` or `submodule` file makes the review incomplete: every profile records a gap of that reason that counts them, which no flag lifts for a gating profile ([Incomplete reasons](#incomplete-reasons)). To review a change that holds images, fonts or other assets, list them in the named config's `exclude`: [Excludes](../20-using/20-configuration.md#excludes). The section of such a file still reaches the models, which read nothing of the change. A line of the same form elsewhere, such as a line of a commit message in a `format-patch` series, lists the file whose section holds it: quorum counts it, since a gap it should not have stops a review for a person to look, where a missed one would pass a change unread. A file stored outside git, such as a Git LFS pointer, is not detected: [Content the diff does not carry](../30-security/10-threat-model.md#content-the-diff-does-not-carry).
+A `binary` or `submodule` file makes the review incomplete: every profile records a gap of that reason that counts them, which no flag lifts for a gating profile ([Incomplete reasons](#incomplete-reasons)). That holds for such a file the input's `leftOut` lists as for one the diff shows. An `excluded` file and a `skipped` one are no gap. To review a change that holds images, fonts or other assets, list them in the named config's `exclude`: [Excludes](../20-using/20-configuration.md#excludes). The section of such a file still reaches the models, which read nothing of the change. A line of the same form elsewhere, such as a line of a commit message in a `format-patch` series, lists the file whose section holds it: quorum counts it, since a gap it should not have stops a review for a person to look, where a missed one would pass a change unread. A file stored outside git, such as a Git LFS pointer, is not detected in a diff, where a path review skips a pointer and lists it as `lfs`: [Content the diff does not carry](../30-security/10-threat-model.md#content-the-diff-does-not-carry).
+
+#### The rules of a skip
+
+| `rule` | What it matches |
+| --- | --- |
+| `vendored` | A file under a directory named `node_modules`, `bower_components`, `jspm_packages`, `vendor`, `Vendor`, `vendors`, `third_party`, `third-party`, `thirdparty`, `Pods` or `Carthage`, at any depth. The file's own name is not looked at: `vendor.go` is reviewed |
+| `lockfile` | A file named `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`, `deno.lock`, `poetry.lock`, `Pipfile.lock`, `pdm.lock`, `uv.lock`, `go.sum`, `go.work.sum`, `Cargo.lock`, `composer.lock`, `gradle.lockfile`, `Gemfile.lock`, `packages.lock.json` or `paket.lock` |
+| `minified` | A file whose name ends, in any case, in `.min.js`, `.min.mjs`, `.min.cjs`, `.min.css`, `.js.map`, `.mjs.map`, `.cjs.map` or `.css.map`; or a `.js`, `.mjs`, `.cjs` or `.css` file whose lines average over 110 bytes, linguist's rule |
+| `secret` | A file named `.env`, `.npmrc`, `.pypirc`, `.netrc`, `_netrc`, `.git-credentials`, `.pgpass`, `.htpasswd`, `id_rsa`, `id_dsa`, `id_ecdsa` or `id_ed25519`, whose name starts with `.env.`, or ends, in any case, in `.pem`, `.key`, `.p12`, `.pfx`, `.jks`, `.keystore`, `.ppk`, `.kdbx`, `.tfstate` or `.tfstate.backup`. While it is skipped it also raises a `secret-file` [flag](#a-flag); with `--no-default-skips` the file is reviewed and raises none |
+| `binary` | A file with a NUL byte among its first 8000 bytes, as git reads one |
+| `submodule` | A gitlink: the commit of another repository, which a path review never enters. Always skipped |
+| `lfs` | A Git LFS pointer: under 1024 bytes of printable ASCII, exactly the `version`, optional `ext-` lines, `oid` and `size` lines of the spec. A pointer holds no code. Always skipped |
+
+The rules are tried in the order `submodule` (always), then `secret`, `vendored`, `lockfile` and `minified` by name, then `lfs` once the file is read, then `binary` and `minified` by content, so a file is listed under the first rule it fits. Only a path review skips, and only `--no-default-skips` turns the five default rules off: [What a path review skips](../20-using/15-sources.md#what-a-path-review-skips).
+
+**A later release may add reasons and rules.** A reader takes a `reason` or a `rule` it does not know as a file left out, never as an error, and goes on reading the rest of the result.
 
 ### A flag
 
 | Field | Type | Holds |
 | --- | --- | --- |
-| `code` | `"hidden-characters"` or `"ai-addressed-text"` | What the flag is about |
-| `file` | string | The diff's own path of the file the flag is about. The key is absent for a diff without per-file headers |
-| `line` | number | The first added line, in the new file, that the flag is about. The key is absent for a flag about the file name |
+| `code` | `"hidden-characters"`, `"ai-addressed-text"` or `"secret-file"` | What the flag is about |
+| `file` | string | The path of the file the flag is about: the diff's own path, or for `secret-file` the path the source skipped. The key is absent for a diff without per-file headers |
+| `line` | number | The first added line, in the new file, that the flag is about. The key is absent for a flag about the file name, and for `secret-file` |
 | `detail` | string | What was found, in words the code wrote, never text of the diff |
 
 A file raises at most one flag for each row of this table, in this order:
@@ -162,8 +180,9 @@ A file raises at most one flag for each row of this table, in this order:
 | `hidden-characters` | The file name | Absent | `the file name holds U+202E` |
 | `hidden-characters` | The added lines | The first added line that holds one | `U+202E, U+200B on 3 added line(s)` |
 | `ai-addressed-text` | The added lines | The first added line that matches | `a chat-template token, a tool-call tag on 2 added line(s)` |
+| `secret-file` | A file a path review skipped as a secret | Absent | `named as a secret, so a path review sent none of it: check that it belongs in the repository` |
 
-A detail names at most eight code points or patterns, then `and N more`. [Advisory flags](../30-security/30-output-handling.md#advisory-flags) says what each code looks for. A flag never changes a verdict, a gap or the exit code.
+A `secret-file` flag comes from `meta.leftOut`, not from the diff: one for each `skipped` file of the rule `secret`, in its order, ahead of the diff's flags. A secret that an `exclude` pattern matched first is listed as `excluded` and raises none. A detail names at most eight code points or patterns, then `and N more`. [Advisory flags](../30-security/30-output-handling.md#advisory-flags) says what each code looks for. A flag never changes a verdict, a gap or the exit code.
 
 ## Incomplete reasons
 
@@ -178,8 +197,8 @@ A detail names at most eight code points or patterns, then `and N more`. [Adviso
 | `too-large` | A hunk of a file, with its header, or a section with no hunk, is too large for any research part of the profile's model's window, even in a part whose request lists no file name: no part holds it, so no model read it. One gap per profile, counting hunks and files, recorded before any call is sent; `meta.profiles.<id>.coverage` lists the ranges. A file that `meta.leftOut` lists as `binary` or `submodule` is not counted, since its own gap stands and its coverage entry is `unreviewed` with that reason | `1 hunk(s) of 1 file(s) fit in no research part of its model's window, listed as too-large in meta.profiles.security.coverage` |
 | `token-cap` | The review's token cap stopped part of the profile's work: its research request, which leaves it with no finding, or the parts of its research that were not sent, or votes, each a failed vote whose `failure` is `token-cap`. One gap per profile, counting them | `the review's token cap of 2000000 tokens stopped 7 vote(s)`, or `... stopped its research`, or `... stopped its research and 7 vote(s)`; in parts, `... stopped 4 of its 6 research parts`, or `... stopped 4 of its 6 research parts and 7 vote(s)` |
 | `review-deadline` | The review reached its deadline, `reviewTimeoutMs`, which stopped part of the profile's work: its research request, which leaves it with no finding, or the parts of its research in flight or not yet sent, or votes, in flight or not yet sent, each a failed vote whose `failure` is `review-deadline`. One gap per profile, counting them | `the review's deadline of 1800000 ms stopped 7 vote(s)`, or `... stopped its research`, or `... stopped its research and 7 vote(s)`; in parts, `... stopped 5 of its 6 research parts` |
-| `binary` | `meta.leftOut` lists a file whose change the diff shows only as binary: one gap per profile, counting the files | `the diff carries no content for 2 binary file(s), listed in meta.leftOut` |
-| `submodule` | `meta.leftOut` lists a submodule whose change the diff shows only as a commit: one gap per profile, counting them | `the diff carries no content for 1 submodule(s), listed in meta.leftOut` |
+| `binary` | `meta.leftOut` lists a file whose change the diff shows only as binary, or one the input's `leftOut` names as `binary`: one gap per profile, counting the files. A file a path review skipped as `binary` is no such file: it is listed as `skipped` and is no gap | `the diff carries no content for 2 binary file(s), listed in meta.leftOut` |
+| `submodule` | `meta.leftOut` lists a submodule whose change the diff shows only as a commit, or one the input's `leftOut` names as `submodule`: one gap per profile, counting them. A gitlink a path review skipped is listed as `skipped` and is no gap | `the diff carries no content for 1 submodule(s), listed in meta.leftOut` |
 
 Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4` for a gap of a gating profile, unless a gating profile kept a `high` finding. `--allow-incomplete` lifts a gating profile's gaps only when each is an unreviewed finding or a `vote-failed` gap, and every failed vote behind them failed in passing: a dropped connection, a timeout of its own, or an HTTP 408, 409, 429 or 5xx, as the votes' `failure` says ([Exit codes](../20-using/10-cli.md#exit-codes)). Every other gap exits `4` whatever the flags, since a pull request causes it directly: a `too-large` gap by making one hunk larger than any window, a `request-too-large` gap by padding a request until its provider refuses it, a `token-cap` gap by decoy findings and drawn-out replies that spend the review's tokens, a `review-deadline` gap by replies drawn out until the review's deadline, `binary` and `submodule` with one `.gitattributes` line, one NUL byte or a submodule's bump, `findings-capped` with decoy findings, and `finding-unreadable` and `research-unusable` with text that breaks the finder's reply. A `vote-failed` gap beside a vote that was refused, cut off at its token limit, stopped by a limit of the review or unusable exits `4` too. On a gating profile, do not use the flag for a pull request you do not trust.
 

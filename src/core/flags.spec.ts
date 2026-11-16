@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { splitDiff } from './diff.ts'
-import { diffFlags } from './flags.ts'
-import type { Flag } from './types.ts'
+import { diffFlags, secretFlags } from './flags.ts'
+import type { Flag, LeftOutFile } from './types.ts'
 
 /** A diff that creates `path` with `lines`, so the added lines are numbered from 1. */
 function newFile(lines: readonly string[], path = 'src/a.js'): string {
@@ -315,5 +315,36 @@ describe('diffFlags', () => {
     expect(flagsOf(plain)).toEqual([
       { code: 'hidden-characters', line: 1, detail: 'U+200B on 1 added line(s)' },
     ])
+  })
+})
+
+describe('secretFlags', () => {
+  it('flags each skipped secret, with no line and the fixed detail, and nothing else', () => {
+    const leftOut: LeftOutFile[] = [
+      { file: 'a.png', reason: 'binary' },
+      { file: 'src/.env', reason: 'skipped', rule: 'secret' },
+      { file: '.env.example', reason: 'excluded' },
+      { file: 'package-lock.json', reason: 'skipped', rule: 'lockfile' },
+      { file: 'sm', reason: 'skipped', rule: 'submodule' },
+      { file: 'deploy/key.pem', reason: 'skipped', rule: 'secret' },
+    ]
+    const flags = secretFlags(leftOut)
+    expect(flags).toEqual([
+      {
+        code: 'secret-file',
+        file: 'src/.env',
+        detail: 'named as a secret, so a path review sent none of it: check that it belongs in the repository',
+      },
+      {
+        code: 'secret-file',
+        file: 'deploy/key.pem',
+        detail: 'named as a secret, so a path review sent none of it: check that it belongs in the repository',
+      },
+    ])
+    expect(flags.map(flag => Object.keys(flag))).toEqual([
+      ['code', 'file', 'detail'],
+      ['code', 'file', 'detail'],
+    ])
+    expect(secretFlags([])).toEqual([])
   })
 })

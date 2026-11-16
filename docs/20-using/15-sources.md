@@ -1,6 +1,6 @@
 # Sources
 
-Quorum reviews a diff, and a source makes one: a diff file or stdin, a range of commits, or the local changes. One source runs at a time, and the result records which one in [`meta.source`](#provenance). A source that reads a git repository runs git itself, in one hardened place, so that nothing the repository holds can run a program: [How quorum runs git](#how-quorum-runs-git).
+Quorum reviews a diff, and a source makes one: a diff file or stdin, a range of commits, the local changes, or the files at a commit. One source runs at a time, and the result records which one in [`meta.source`](#provenance). A source that reads a git repository runs git itself, in one hardened place, so that nothing the repository holds can run a program: [How quorum runs git](#how-quorum-runs-git).
 
 ## Choosing a source
 
@@ -10,10 +10,11 @@ Quorum reviews a diff, and a source makes one: a diff file or stdin, a range of 
 | A range of commits | `--range <base>...<head>` | What `<head>` changed since it left `<base>` | Yes |
 | The local changes | `--local` | What `git add -A` would commit: the staged, the unstaged and the untracked changes | Yes |
 | The staged changes | `--staged` | What the next commit holds | Yes |
+| The files at a commit | `--path <path>`, with `--at <rev>` | The files under one or more paths at a commit, each written as a new file: a whole codebase, or a directory of it | Yes |
 
-Two sources in one command are a usage error, exit `2`, before any git and any config: `Error: --range: cannot be given with a diff file: give one source`. The sources are taken in the order diff file, `--range`, `--local`, `--staged`, and the second one present is refused, naming the first: `--staged: cannot be given with --local: give one source`. So is `--range` twice (`--range: takes one range`), `--range`, `--local` or `--staged` with `--print-config`, which reads no diff, and `--trust-repo-config` without `--local` or `--staged` (`--trust-repo-config: needs --local or --staged`).
+Two sources in one command are a usage error, exit `2`, before any git and any config: `Error: --range: cannot be given with a diff file: give one source`. The sources are taken in the order diff file, `--range`, `--local`, `--staged`, `--path`, and the second one present is refused, naming the first: `--staged: cannot be given with --local: give one source`. So is `--range` twice (`--range: takes one range`), `--at` twice (`--at: takes one commit`), `--range`, `--local`, `--staged` or `--path` with `--print-config`, which reads no diff, `--trust-repo-config` without `--local` or `--staged` (`--trust-repo-config: needs --local or --staged`), and `--at` or `--no-default-skips` without `--path` (`--at: needs --path`, `--no-default-skips: needs --path`).
 
-A git source reads no stdin: a diff piped in beside `--range`, `--local` or `--staged` is ignored. A pipe cannot be told apart from no diff in CI, where stdin is rarely a terminal, so quorum does not refuse it.
+A git source reads no stdin: a diff piped in beside `--range`, `--local`, `--staged` or `--path` is ignored. A pipe cannot be told apart from no diff in CI, where stdin is rarely a terminal, so quorum does not refuse it.
 
 ## A diff file or stdin
 
@@ -82,6 +83,42 @@ A diff of the working tree runs the clean and process filters an attribute names
 
 What is left once the check passes: [Git, run by quorum](../30-security/10-threat-model.md#git-run-by-quorum).
 
+## The files at a commit
+
+```bash
+quorum --path src --path docs > result.json
+quorum --path . --at v1.2.0 > result.json
+```
+
+`--path <path>` reviews the files under a path at a commit, written as a diff that adds each of them: the review of a codebase, or of a directory of it, where the other sources review a change. The flag repeats, and `--at <rev>` names the commit, `HEAD` by default. Quorum reads the commit's tree by id and never the working tree, so an edit that is not committed is not in the review: [The local changes](#the-local-changes) reviews those.
+
+- **The selection.** Each value is a path from the working directory, read as a path of the tree: from `src/`, `b.ts` is `src/b.ts`, `../a.ts` is `a.ts` and `.` is `src`. `src`, `src/` and `./src` name one path, and `.` at the top of the repository is the whole tree. A file is selected when its name is the path or starts with it and `/`, as the diff reads the name back (a name git quotes is decoded). The result records the normalized selections, each once, in [`meta.source.paths`](#provenance).
+- **Quorum hands git no path.** It lists the commit's tree once, filters the listing in code and reads each blob it keeps by id, so no pathspec magic and no link applies: [Paths, never handed to git](../30-security/10-threat-model.md#paths-never-handed-to-git). The one string git is given is the commit, resolved once like a revision of `--range`.
+- **A path that selects nothing exits `2`.** A value that is empty (`--path: must name a path`) or absolute (`--path: must be relative to the working directory`) is refused before any config and any git. Two more refusals come once the repository is open, as they need where the working directory sits in it and the commit's listing: a value that leaves the top level of the repository (`--path: path <n> leaves the repository's top level`), and one that names no file tracked at the commit (`--path: path <n> names no file tracked at the commit`), `<n>` counted from 1 among the values given and the value never repeated. A `HEAD` that names no commit is refused with what to do (`--path: needs a commit, and HEAD names none: commit first, or name one with --at`), and so is an `--at` that names none (`--at: names no commit of this repository`). An `--at` that starts with `-` is refused before any config and any git, as a revision of `--range` is (`--at: a revision may not start with -`).
+- **A selection whose every file is left out exits `2`**, an empty review never passing: `--path: every selected file is left out (<n> skipped, <m> excluded): pass --no-default-skips to review the skipped ones, or narrow exclude`. With `--no-default-skips` given, only a gitlink and a Git LFS pointer are still skipped, so it advises otherwise: `--path: every selected file is left out (<n> skipped, <m> excluded): narrow exclude, or name a path that holds files other than gitlinks and Git LFS pointers`.
+- **A selection over 16 MiB exits `2`.** The listed sizes of the files to read must be within 16 MiB before any blob is read (`--path: the selected files hold <bytes> bytes, over the 16 MiB (16777216 bytes) a review reads: name a narrower path`), as must the names (`--path: the selected files' names are over 16 MiB: name a narrower path`) and the diff quorum writes (`--path: its diff is over 16 MiB, the most quorum reads: name a narrower path`). A file a rule skips by its name, and one `exclude` leaves out, is not read and not counted.
+- **The form.** The diff is an all-added one in git's new-file form, written by quorum: each file is `new file mode <mode>`, `--- /dev/null`, `+++ b/<path>` and its hunks, with a link as mode `120000` and its target, and an empty file as its header and mode alone. A file with a NUL byte among its first 8000 bytes is git's `Binary files /dev/null and b/<path> differ` line. Hunks are cut at 4 KiB, so research in parts can spread a large file: it is a form to read, and no patch that `git apply` takes.
+- **`exclude` applies** before any blob is read: an excluded file is listed in `meta.leftOut` as `excluded` and never read: [Excludes](./20-configuration.md#excludes).
+
+### What a path review skips
+
+A review of a whole codebase should not spend its tokens on what no one reads or what no model should be sent. So a path review skips the files below by default, and lists each in `meta.leftOut` as `skipped`, with the `rule` that took it. A skip is no gap: the review is not incomplete for it, and nothing is dropped in silence.
+
+| Rule | What it skips | By default |
+| --- | --- | --- |
+| `secret` | A file named `.env`, `.npmrc`, `.pypirc`, `.netrc`, `_netrc`, `.git-credentials`, `.pgpass`, `.htpasswd`, `id_rsa`, `id_dsa`, `id_ecdsa` or `id_ed25519`; a name that starts with `.env.`; a name that ends, in any case, in `.pem`, `.key`, `.p12`, `.pfx`, `.jks`, `.keystore`, `.ppk`, `.kdbx`, `.tfstate` or `.tfstate.backup` | Skipped, and flagged |
+| `vendored` | A file under a directory named `node_modules`, `bower_components`, `jspm_packages`, `vendor`, `Vendor`, `vendors`, `third_party`, `third-party`, `thirdparty`, `Pods` or `Carthage`. Only a directory counts, never the file's own name: `vendor.go` is reviewed | Skipped |
+| `lockfile` | A file named `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`, `deno.lock`, `poetry.lock`, `Pipfile.lock`, `pdm.lock`, `uv.lock`, `go.sum`, `go.work.sum`, `Cargo.lock`, `composer.lock`, `gradle.lockfile`, `Gemfile.lock`, `packages.lock.json` or `paket.lock` | Skipped |
+| `minified` | A name that ends, in any case, in `.min.js`, `.min.mjs`, `.min.cjs`, `.min.css`, `.js.map`, `.mjs.map`, `.cjs.map` or `.css.map`; and a `.js`, `.mjs`, `.cjs` or `.css` file whose lines average over 110 bytes, linguist's rule, line feeds not counted | Skipped |
+| `binary` | A file with a NUL byte among its first 8000 bytes, as git reads one | Skipped |
+| `submodule` | A gitlink: the commit of another repository, which quorum never enters | Always skipped |
+| `lfs` | A Git LFS pointer: under 1024 bytes of printable ASCII and line feeds, exactly the `version` line, any `ext-` lines, `oid` and `size` of the spec, and nothing else, so it holds no code | Always skipped |
+
+- **The order.** Each selected file, in git's order, is a gitlink first (`submodule`), then matched by `exclude` (`excluded`), then, with the skips on, by its name: `secret`, `vendored`, `lockfile`, `minified`, the first that fits. A file that is left is read, and then a pointer is skipped (`lfs`), and with the skips on a binary file (`binary`) and a minified one by its lines (`minified`).
+- **`--no-default-skips` reviews them.** It turns off the five rules of the table that are skipped by default, so a secret, a vendored file, a lockfile and a minified file are written like any other. A binary file is then written as git's binary line, which makes the review incomplete as any binary file in a diff does: [A file left out](../95-reference/20-json-result.md#a-file-left-out). A gitlink and a pointer are skipped all the same, since the first is another repository's commit and the second holds no code to read.
+- **Nothing is read from `.gitattributes`.** A `linguist-vendored`, `linguist-generated` or `-diff` line skips nothing here, and a file the tree marks so is written as text. The tree is the author's, and a rule that took its word would let a change choose what goes unread. A tree can still shape a file to match a rule, a name under `vendor/` or lines long enough to read as minified, which is why each skip is listed and the flag reviews them all.
+- **A skipped secret is flagged.** A file skipped as `secret` also raises a `secret-file` flag, on stderr and in `meta.flags`, so that a person looks at whether it belongs in the repository: [Advisory flags](../30-security/30-output-handling.md#advisory-flags). No template is exempt: a `.env.example` can hold a real key pasted in, and skipping it costs the review of a template where sending it could cost the key. A secret that `exclude` matched first is listed as `excluded` and raises no flag, since the operator chose to leave it out. With `--no-default-skips` a secret is skipped no more, so it is sent to the models like any file and raises no flag.
+
 ## How quorum runs git
 
 The git sources run git through one runner, `src/git/run.ts`. It is the only code that starts git:
@@ -128,6 +165,20 @@ The result records the source in [`meta.source`](../95-reference/20-json-result.
 ```
 
 `--local` and `--staged` record `{ "kind": "local", "head": "<40 hexadecimal digits>", "objectFormat": "sha1" }` and the same with `"kind": "staged"`: `head` is the commit the diff is against, and `null` before a first commit. No file name is recorded.
+
+A path review records the commit and what it selected:
+
+```json
+{
+  "kind": "paths",
+  "commit": "<40 hexadecimal digits>",
+  "paths": ["src", "docs"],
+  "skips": true,
+  "objectFormat": "sha1"
+}
+```
+
+`commit` is the full id `--at` resolved, `paths` the normalized selections in order, each once, `.` for the whole tree, and `skips` whether the default skips applied. The result lists each file left out, with its rule, in `meta.leftOut`.
 
 ## Next
 

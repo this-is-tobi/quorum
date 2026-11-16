@@ -1,4 +1,4 @@
-import type { Flag, FlagCode } from './types.ts'
+import type { Flag, FlagCode, LeftOutFile } from './types.ts'
 import { addedLines } from './diff.ts'
 import { hiddenLabels, spaceHidden, stripHidden } from './sanitize.ts'
 
@@ -13,6 +13,9 @@ const TAB = 'U+0009'
  * characters belong to the emoji, so they are not flagged. Outside such a sequence they are.
  */
 const EMOJI = /\p{RGI_Emoji}/gv
+
+/** What a `secret-file` flag says: the code writes every word of it. */
+const SECRET_DETAIL = 'named as a secret, so a path review sent none of it: check that it belongs in the repository'
 
 /** One kind of text addressed to an AI reviewer, and the name a flag's detail gives it. */
 interface Pattern {
@@ -151,4 +154,19 @@ export function diffFlags(sections: ReadonlyMap<string, string>): Flag[] {
     flags.push(...flagOf('hidden-characters', where, hidden), ...flagOf('ai-addressed-text', where, addressed))
   }
   return flags
+}
+
+/**
+ * The flags of the files a source skipped as secrets, in the order it listed them: one `secret-file` flag for
+ * each `skipped` entry of the rule `secret`, at the file's own path and with no line, since no model and no
+ * diff saw the file. A person should look at whether a file named as a secret belongs in the repository. An
+ * entry an `exclude` pattern matched first is `excluded`, so it raises none: leaving it out was the
+ * operator's choice. Like every flag, it changes no verdict and no exit code.
+ */
+export function secretFlags(leftOut: readonly LeftOutFile[]): Flag[] {
+  return leftOut.flatMap(entry => entry.reason === 'skipped' && entry.rule === 'secret'
+    ? [
+        { code: 'secret-file' as const, file: entry.file, detail: SECRET_DETAIL },
+      ]
+    : [])
 }

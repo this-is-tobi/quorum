@@ -7,6 +7,7 @@ import { inertJson, inertLine } from '../core/sanitize.ts'
 import { ownData } from '../core/stages/context.ts'
 import type { Quorum, QuorumResult, Verdict } from '../core/types.ts'
 import { readDiffInput } from '../sources/diff.ts'
+import { atProblem, pathProblem } from '../sources/paths.ts'
 import { parseRange } from '../sources/range.ts'
 import { readSource } from '../sources/read.ts'
 import type { SourceSpec } from '../sources/read.ts'
@@ -24,6 +25,7 @@ const USAGE = [
   '       git diff | quorum [options]',
   '       quorum --range <base>...<head> [options]',
   '       quorum --local | --staged [options]',
+  '       quorum --path <path> [--at <rev>] [options]',
   '       quorum bench [options] <suite>',
   '',
   'Options:',
@@ -33,6 +35,9 @@ const USAGE = [
   '      --local              Review the local changes: staged, unstaged and untracked',
   '      --staged             Review the staged changes: what the next commit holds',
   '      --trust-repo-config  Run --local or --staged where the repository\'s own config names a filter program',
+  '      --path <path>        Review the files under a path at a commit; repeat it to review several',
+  '      --at <rev>           The commit --path reads, HEAD by default',
+  '      --no-default-skips   Review in --path the vendored, lockfile, minified, secret and binary files too',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
@@ -50,6 +55,9 @@ const OPTIONS = {
   local: { type: 'boolean' },
   staged: { type: 'boolean' },
   'trust-repo-config': { type: 'boolean' },
+  path: { type: 'string', multiple: true },
+  at: { type: 'string', multiple: true },
+  'no-default-skips': { type: 'boolean' },
   'allow-incomplete': { type: 'boolean' },
   'print-config': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
@@ -68,24 +76,26 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * turns that exit 4 into 0 only when every failed vote behind it failed in passing (see `exitCodeFor`).
  * `exitCodeFor` maps the result; advisory flags never change it.
  *
- * It reads at most 16 MiB of diff, from stdin, a file, a range of commits or the local changes, counted in
- * bytes: a larger diff is a usage error, and reading stops at the chunk that crosses the cap.
+ * It reads at most 16 MiB of diff, from stdin, a file, a range of commits, the local changes or the files at
+ * a commit, counted in bytes: a larger diff is a usage error, and reading stops at the chunk that crosses the
+ * cap.
  *
  * The diff comes from one source: a diff file, stdin, `--range <base>...<head>`, `--local` (what `git add
- * -A` would commit) or `--staged` (what the next commit holds), the last three running git itself (see
- * `rangeSource` and `localSource`). Every usage rule of the source is checked first, before any git and
- * any config, the form of a range included (`parseRange`), and a diff file or stdin is read then. A git
- * source is read once the config is: it needs the config's `exclude`, and a source git refuses, or a
- * repository whose own config names a filter without `--trust-repo-config`, exits 2 before the banner, a
- * git command that fails exits 3.
+ * -A` would commit), `--staged` (what the next commit holds) or `--path <path>` (the files under it at the
+ * commit `--at` names, HEAD by default, skipping by default what `--no-default-skips` reviews), the last four
+ * running git itself (see `rangeSource`, `localSource` and `pathsSource`). Every usage rule of the source is
+ * checked first, before any git and any config, the form of a range included (`parseRange`), and a diff file
+ * or stdin is read then. A git source is read once the config is: it needs the config's `exclude`, and a
+ * source git refuses, or a repository whose own config names a filter without `--trust-repo-config`, exits 2
+ * before the banner, a git command that fails exits 3.
  *
- * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`,
- * `--allow-incomplete`, `--print-config`, `--help` and `--version`; a usage error prints the usage after its
- * message. Its settings are the config file `--config` or `QUORUM_CONFIG` names (`--config` resolved against
- * `io.cwd`, `QUORUM_CONFIG` an absolute path), and the `QUORUM_*` variables of `io.env` with their deprecated
- * aliases. Each warning is printed once, before the banner, and when the configuration is refused the
- * environment's warnings come before the `Error:` lines, since a deprecated or mistyped variable is often
- * what caused the error.
+ * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`, `--path`,
+ * `--at`, `--no-default-skips`, `--allow-incomplete`, `--print-config`, `--help` and `--version`; a usage
+ * error prints the usage after its message. Its settings are the config file `--config` or `QUORUM_CONFIG`
+ * names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the `QUORUM_*`
+ * variables of `io.env` with their deprecated aliases. Each warning is printed once, before the banner, and
+ * when the configuration is refused the environment's warnings come before the `Error:` lines, since a
+ * deprecated or mistyped variable is often what caused the error.
  *
  * `--print-config` reads no diff and calls no model: it writes the resolved config as YAML on stdout
  * (see `printConfig`), warnings included, and returns 0; a diff argument or a git source with it is a usage error, and
@@ -312,11 +322,13 @@ function usageError(io: CliIO, error: unknown): number {
 /**
  * The one source the flags and the positional arguments name, with its usage rules checked before anything
  * is read, in this order: a source beside `--print-config`, which reads no diff, so it names none
- * (undefined); a second source, taken in the order diff file, `--range`, `--local`, `--staged`, which
- * names the first it cannot be given with; `--trust-repo-config` without `--local` or `--staged`; a second
- * range. A diff file, or stdin when no file is named, is read here, as the usage errors of its own come
- * before the config's. A range written wrongly is refused here too, in the words `rangeSource` refuses it
- * with, so no config is read for it.
+ * (undefined); a second source, taken in the order diff file, `--range`, `--local`, `--staged`, `--path`,
+ * which names the first it cannot be given with; `--trust-repo-config` without `--local` or `--staged`;
+ * `--at` or `--no-default-skips` without `--path`; a second range, a second commit. A diff file, or stdin
+ * when no file is named, is read here, as the usage errors of its own come before the config's. A range
+ * written wrongly is refused here too, in the words `rangeSource` refuses it with, and so is an empty or
+ * absolute `--path` value (`pathProblem`) and an `--at` that starts with `-` (`atProblem`), so no config is
+ * read for any of them.
  */
 async function sourceSpec(io: CliIO, values: Flags['values'], positionals: readonly string[]): Promise<SourceSpec | undefined> {
   const refuse = (path: string, message: string): ConfigError => new ConfigError([
@@ -324,8 +336,9 @@ async function sourceSpec(io: CliIO, values: Flags['values'], positionals: reado
   ])
   const local = values.local === true
   const staged = values.staged === true
+  const paths = values.path
   if (values['print-config']) {
-    if (values.range !== undefined || local || staged) throw refuse('--print-config', 'reads no diff, so it takes no --range, --local, --staged or --path')
+    if (values.range !== undefined || local || staged || paths !== undefined) throw refuse('--print-config', 'reads no diff, so it takes no --range, --local, --staged or --path')
     if (positionals.length > 0) throw new Error('--print-config takes no diff file')
   }
   const [first, second] = [
@@ -333,9 +346,14 @@ async function sourceSpec(io: CliIO, values: Flags['values'], positionals: reado
     { flag: '--range', given: values.range !== undefined },
     { flag: '--local', given: local },
     { flag: '--staged', given: staged },
+    { flag: '--path', given: paths !== undefined },
   ].filter(({ given }) => given)
   if (second !== undefined) throw refuse(second.flag, `cannot be given with ${first.flag}: give one source`)
   if (values['trust-repo-config'] === true && !local && !staged) throw refuse('--trust-repo-config', 'needs --local or --staged')
+  if (paths === undefined) {
+    if (values.at !== undefined) throw refuse('--at', 'needs --path')
+    if (values['no-default-skips'] === true) throw refuse('--no-default-skips', 'needs --path')
+  }
   if (values['print-config']) return undefined
   if (values.range !== undefined) {
     if (values.range.length > 1) throw refuse('--range', 'takes one range')
@@ -350,6 +368,22 @@ async function sourceSpec(io: CliIO, values: Flags['values'], positionals: reado
         ? 'local'
         : 'staged',
       trustRepoConfig: values['trust-repo-config'] === true,
+    }
+  }
+  if (paths !== undefined) {
+    for (const value of paths) {
+      const problem = pathProblem(value)
+      if (problem !== undefined) throw refuse('--path', problem)
+    }
+    if (values.at !== undefined && values.at.length > 1) throw refuse('--at', 'takes one commit')
+    const at = values.at?.[0]
+    const atIssue = atProblem(at)
+    if (atIssue !== undefined) throw refuse('--at', atIssue)
+    return {
+      kind: 'paths',
+      paths,
+      at,
+      skips: values['no-default-skips'] !== true,
     }
   }
   const [file, ...extra] = positionals

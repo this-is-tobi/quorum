@@ -227,7 +227,7 @@ describe('parseRecord, level by level', () => {
       'a file left out for a reason the core has none of',
       withMeta({
         leftOut: [
-          { file: 'a.png', reason: 'skipped' },
+          { file: 'a.png', reason: 'ignored' },
         ],
       }),
     ],
@@ -240,7 +240,7 @@ describe('parseRecord, level by level', () => {
       }),
     ],
     [
-      'a flag with a code outside the two',
+      'a flag with a code outside the three',
       withMeta({
         flags: [
           { code: 'other', detail: 'x' },
@@ -360,6 +360,60 @@ describe('parseRecord, level by level', () => {
         objectFormat: 'sha1',
       },
     }))).toBeUndefined()
+  })
+
+  it('reads a record holding a skipped file and a secret-file flag, and refuses a skip with no rule', () => {
+    const rules = [
+      'vendored',
+      'lockfile',
+      'minified',
+      'secret',
+      'binary',
+      'submodule',
+      'lfs',
+    ] as const
+    const skipped = record({
+      result: {
+        ...RESULT,
+        meta: {
+          ...RESULT.meta,
+          leftOut: [
+            ...rules.map(rule => ({ file: `${rule}.x`, reason: 'skipped' as const, rule })),
+            { file: 'a.png', reason: 'binary' },
+          ],
+          flags: [
+            {
+              code: 'secret-file',
+              file: 'secret.x',
+              detail: 'named as a secret, so a path review sent none of it: check that it belongs in the repository',
+            },
+          ],
+        },
+      },
+    })
+    expect(parseRecord(recordLine(skipped).slice(0, -1))).toEqual(skipped)
+
+    const refused = (leftOut: object[]): string => withMeta({ leftOut })
+    expect(parseRecord(refused([
+      { file: 'a.x', reason: 'skipped' },
+    ]))).toBeUndefined()
+    expect(parseRecord(refused([
+      { file: 'a.x', reason: 'skipped', rule: 'huge' },
+    ]))).toBeUndefined()
+    expect(parseRecord(refused([
+      { file: 'a.x', reason: 'excluded', rule: 'secret' },
+    ]))).toBeUndefined()
+    expect(parseRecord(refused([
+      {
+        file: 'a.x',
+        reason: 'skipped',
+        rule: 'secret',
+        extra: 1,
+      },
+    ]))).toBeUndefined()
+    expect(parseRecord(refused([
+      { file: 'a.x', reason: 'skipped', rule: 'secret' },
+    ]))).toBeDefined()
   })
 
   it('reads a record whose result holds a research-failed gap', () => {

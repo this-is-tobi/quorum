@@ -1,6 +1,9 @@
 import { diffSections, movedTo } from './diff.ts'
 import type { IncompleteEntry, LeftOutFile, LeftOutReason } from './types.ts'
 
+/** The reasons a diff itself lists a file for: a path review's `skipped` is a source's, never a diff's. */
+type DiffReason = Exclude<LeftOutReason, 'skipped'>
+
 const BINARY_FILES_START = 'Binary files '
 const BINARY_FILES_END = ' differ'
 const BINARY_PATCH = 'GIT binary patch'
@@ -103,12 +106,12 @@ function markersOf(text: string): Markers {
  */
 export function reviewScope(diff: string, excluded: (path: string) => boolean = () => false): ReviewScope {
   const leftOut: LeftOutFile[] = []
-  const listed: Record<LeftOutReason, Set<string>> = {
+  const listed: Record<DiffReason, Set<string>> = {
     excluded: new Set(),
     binary: new Set(),
     submodule: new Set(),
   }
-  const list = (file: string, reason: LeftOutReason): void => {
+  const list = (file: string, reason: DiffReason): void => {
     if (listed[reason].has(file)) return
     listed[reason].add(file)
     leftOut.push({ file, reason })
@@ -149,8 +152,8 @@ export function reviewScope(diff: string, excluded: (path: string) => boolean = 
   }
 }
 
-/** How a gap's detail names what it counts. An excluded file is no gap, so `excluded` has no entry. */
-const GAP_THINGS: Readonly<Record<Exclude<LeftOutReason, 'excluded'>, string>> = {
+/** How a gap's detail names what it counts. An excluded file is no gap, nor is a skipped one, so neither has an entry. */
+const GAP_THINGS: Readonly<Record<Exclude<DiffReason, 'excluded'>, string>> = {
   binary: 'binary file(s)',
   submodule: 'submodule(s)',
 }

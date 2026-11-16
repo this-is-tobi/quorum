@@ -901,7 +901,7 @@ describe('review', () => {
       name: 'ConfigError',
       issues: [
         { path: 'source.kind', message: 'must be diff, range, local, staged or paths' },
-        { path: 'leftOut.0.reason', message: 'must be excluded, binary or submodule' },
+        { path: 'leftOut.0.reason', message: 'must be excluded, binary, submodule or skipped' },
       ],
     })
     expect(events).toEqual([])
@@ -1664,6 +1664,77 @@ describe('advisory flags', () => {
     expect(flagged.unreviewed).toEqual(clean.unreviewed)
     expect(flagged.kept[0]?.confidence).toBe('high')
     expect(flagged.meta.incomplete).toEqual(clean.meta.incomplete)
+  })
+
+  it('raises the source\'s secret-file flags before the diff\'s flags, in meta.flags and as flag events', async () => {
+    const secret = (file: string): LeftOutFile => ({ file, reason: 'skipped', rule: 'secret' })
+    const leftOut: LeftOutFile[] = [
+      secret('src/.env'),
+      { file: 'package-lock.json', reason: 'skipped', rule: 'lockfile' },
+      { file: 'img.png', reason: 'binary' },
+      secret('deploy/key.pem'),
+    ]
+    const flags = [
+      {
+        code: 'secret-file',
+        file: 'src/.env',
+        detail: 'named as a secret, so a path review sent none of it: check that it belongs in the repository',
+      },
+      {
+        code: 'secret-file',
+        file: 'deploy/key.pem',
+        detail: 'named as a secret, so a path review sent none of it: check that it belongs in the repository',
+      },
+    ]
+    const events: QuorumEvent[] = []
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, fake('both', answer)),
+      events: event => events.push(event),
+    })
+    const result = await quorum.review({ diff: flaggedDiff, leftOut })
+
+    expect(result.meta.flags).toEqual([...flags, flag])
+    expect(events.filter(event => event.type === 'flag')).toEqual([...flags, flag].map(each => ({ type: 'flag', flag: each })))
+    // After run:start and the left-out files, and before any stage; a skip is no gap.
+    expect(events.slice(0, 7).map(event => event.type)).toEqual([
+      'run:start',
+      'left-out',
+      'incomplete',
+      'flag',
+      'flag',
+      'flag',
+      'stage:start',
+    ])
+    expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['binary'])
+
+    // The flag is about the source's file, so a blank diff raises it too.
+    const blank = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, fake('both', answer))).review({ diff: '', leftOut })
+    expect(blank.meta.flags).toEqual(flags)
+  })
+
+  it('raises one secret-file flag for a skipped secret the input lists twice, as meta.leftOut lists it once', async () => {
+    const secret: LeftOutFile = { file: 'src/.env', reason: 'skipped', rule: 'secret' }
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, fake('both', answer)),
+      events: event => events.push(event),
+    }).review({
+      diff: flaggedDiff,
+      leftOut: [
+        secret,
+        { ...secret },
+      ],
+    })
+
+    expect(result.meta.leftOut).toEqual([secret])
+    expect(result.meta.flags.map(each => each.code)).toEqual(['secret-file', 'hidden-characters'])
+    expect(events.filter(event => event.type === 'flag')).toHaveLength(2)
   })
 
   it('records none for a blank diff, and sends no flag event', async () => {
