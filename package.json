@@ -36,6 +36,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "schema": "bun run ./scripts/schema.ts",
     "live:claude-code": "bun run ./scripts/live-claude-code.ts",
+    "live:github-markdown": "bun run ./scripts/github-markdown.ts",
     "typecheck": "tsc --noEmit",
     "format": "eslint . --fix",
     "lint": "eslint .",
