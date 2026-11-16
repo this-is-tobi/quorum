@@ -37,6 +37,8 @@ export interface ResolvedConfig {
   readonly reviewTimeoutMs?: number
   /** The path patterns of the files every review leaves out; absent when the config lists none. */
   readonly exclude?: readonly string[]
+  /** The files sent to the models though held as secrets, each the path as the diff writes it; the CLI merges them with `--send`. Absent when the config lists none. */
+  readonly send?: readonly string[]
   readonly warnings: readonly string[]
 }
 
@@ -510,6 +512,7 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
   const maxReviewTokens = own(layer, 'maxReviewTokens') ?? own(input, 'maxReviewTokens')
   const reviewTimeoutMs = own(layer, 'reviewTimeoutMs') ?? own(input, 'reviewTimeoutMs')
   const exclude = own(input, 'exclude')
+  const send = own(input, 'send')
   const resolved: ResolvedConfig = Object.freeze({
     providers: deepFreeze(Object.fromEntries(checked.providers)),
     profiles: Object.freeze([...profiles.profiles]),
@@ -532,6 +535,11 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
       ? {}
       : {
           exclude: Object.freeze([...exclude]),
+        },
+    ...send === undefined || send.length === 0
+      ? {}
+      : {
+          send: Object.freeze([...send]),
         },
     warnings: Object.freeze([
       ...layer.warnings,

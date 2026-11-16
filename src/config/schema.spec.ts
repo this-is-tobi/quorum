@@ -75,6 +75,10 @@ const FULL: QuorumConfigFile = {
     'vendor/**',
     '/docs/images/**',
   ],
+  send: [
+    'config/firebase.ts',
+    'web/.env.production',
+  ],
   profiles: {
     security: {},
     'security-strict': {
@@ -141,6 +145,28 @@ describe('configFileSchema', () => {
       at('exclude.2', 'must be a string'),
       at('exclude.3', 'must be at most 256 characters long'),
     ])
+  })
+
+  it('takes send as a list of file paths, and refuses an empty one', () => {
+    expect(issuesOf({
+      send: ['src/.env', 'config/firebase.ts'],
+    })).toEqual([])
+    expect(issuesOf({ send: [] })).toEqual([])
+    for (const schema of [configFileSchema, configCodeSchema, configInputSchema]) {
+      expect(issuesOf({
+        send: [
+          'src/.env',
+          '',
+          7,
+        ],
+      }, schema)).toEqual([
+        at('send.1', 'must name a file'),
+        at('send.2', 'must name a file'),
+      ])
+      expect(issuesOf({ send: '.env' }, schema)).toEqual([
+        at('send', 'must be an array'),
+      ])
+    }
   })
 
   it('refuses more than 100 patterns in the core\'s words', () => {
@@ -1570,6 +1596,13 @@ describe('configJsonSchema', () => {
 
   it('advertises the bounds of contextTokens, 1 to 999999999, as the variable takes them', () => {
     expect(node('properties', 'providers', 'additionalProperties', 'properties', 'contextTokens')).toMatchObject({ type: 'integer', minimum: 1, maximum: 999_999_999 })
+  })
+
+  it('advertises send as a list of described, non-empty strings', () => {
+    expect(node('properties', 'send')).toMatchObject({
+      type: 'array',
+      items: { type: 'string', minLength: 1 },
+    })
   })
 
   it('advertises exclude as at most 100 described strings', () => {

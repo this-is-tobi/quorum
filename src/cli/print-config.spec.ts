@@ -107,7 +107,7 @@ describe('printConfig', () => {
   })
 
   it('prints the values the review applies when the config sets none', () => {
-    expect(printed(SPEC)).toContain('\nconcurrency: 4\nmaxFindings: 50\npartTokens: 32768\nmaxReviewTokens: 2000000\nreviewTimeoutMs: 1800000\nexclude: []\nwarnings: []\n')
+    expect(printed(SPEC)).toContain('\nconcurrency: 4\nmaxFindings: 50\npartTokens: 32768\nmaxReviewTokens: 2000000\nreviewTimeoutMs: 1800000\nexclude: []\nsend: []\nwarnings: []\n')
     expect(printConfig(config({ a: SPEC }, { concurrency: 2, maxFindings: 5 }), undefined)).toContain('\nconcurrency: 2\nmaxFindings: 5\n')
   })
 
@@ -122,7 +122,15 @@ describe('printConfig', () => {
   it('prints exclude as the config lists it, every pattern as written', () => {
     expect(printConfig(config({ a: SPEC }, {
       exclude: ['*.min.js', 'vendor/**'],
-    }), undefined)).toContain('\nexclude:\n  - "*.min.js"\n  - vendor/**\nwarnings: []\n')
+    }), undefined)).toContain('\nexclude:\n  - "*.min.js"\n  - vendor/**\nsend: []\nwarnings: []\n')
+  })
+
+  it('prints send after exclude, [] when the config lists none', () => {
+    expect(printConfig(config({ a: SPEC }, {
+      exclude: ['*.min.js'],
+      send: ['src/.env', 'web/.env.production'],
+    }), undefined)).toContain('\nexclude:\n  - "*.min.js"\nsend:\n  - src/.env\n  - web/.env.production\nwarnings: []\n')
+    expect(printed(SPEC)).toContain('\nexclude: []\nsend: []\nwarnings: []\n')
   })
 
   it('prints source null when no file was read, and the warnings it lists', () => {

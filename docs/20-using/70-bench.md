@@ -227,7 +227,7 @@ A commit can change files that should not go into a patch that is sent to a mode
 git show --format= --no-color <commit> -- . ':(exclude)package-lock.json' ':(exclude)tests/fixtures/id_rsa' > cases/<id>.patch
 ```
 
-The patch is then a diff of the rest.
+The patch is then a diff of the rest. A review of the bench holds back a file named as a secret, or holding a credential, as every review does ([Files held back as secrets](./15-sources.md#files-held-back-as-secrets)), and a patch that holds one is reviewed without it, which makes its review incomplete. A configuration applies its own `send`, as it applies its `exclude`, so a suite that keeps such a file on purpose names it in each config's `send`: [Sending a held file](./20-configuration.md#sending-a-held-file).
 
 ## The run directory
 
@@ -296,7 +296,7 @@ Scoring: suite.yaml changed since the run began; its recorded reviews are scored
 
 ### The fingerprint
 
-A configuration is known by its fingerprint, not by its file name: the HMAC-SHA-256, under the run's salt, of the settings a review uses. In plain words, it holds **every setting a review uses, except the key**: the profiles that run, with their prompts, lenses, policy and gating; each provider's every field, the base URL, `timeoutMs`, `retries` and the values of `headers`, `query` and `extraBody` among them; `concurrency`, `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs`, defaults filled in; and `exclude`, when the config lists a pattern, so a configuration without one keeps the fingerprint it had. It is taken of the resolved configuration, so a `QUORUM_*` variable that changes a setting changes it, and it holds no config-file path, no warning and no provider name, so the same settings in another file, or under other names, are one configuration. Every fingerprint holds `partTokens`, its default filled in, so a run directory begun with a quorum that did not read `partTokens` holds fingerprints of the form without it, and a run of this quorum starts a new `--out`.
+A configuration is known by its fingerprint, not by its file name: the HMAC-SHA-256, under the run's salt, of the settings a review uses. In plain words, it holds **every setting a review uses, except the key**: the profiles that run, with their prompts, lenses, policy and gating; each provider's every field, the base URL, `timeoutMs`, `retries` and the values of `headers`, `query` and `extraBody` among them; `concurrency`, `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs`, defaults filled in; `exclude`, when the config lists a pattern; and `send`, when it lists a file, so a configuration without either keeps the fingerprint it had. It is taken of the resolved configuration, so a `QUORUM_*` variable that changes a setting changes it, and it holds no config-file path, no warning and no provider name, so the same settings in another file, or under other names, are one configuration. Every fingerprint holds `partTokens`, its default filled in, so a run directory begun with a quorum that did not read `partTokens` holds fingerprints of the form without it, and a run of this quorum starts a new `--out`.
 
 That settles when a run can go on:
 

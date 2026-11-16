@@ -1,6 +1,6 @@
 # Configuration
 
-The CLI reads its settings from three sources, each laid over the one before: the built-in defaults, a config file the CLI is named, and the environment. The flags come last: `--config` names the file and `--profile` chooses which profiles run. With no file named, `QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` set, the defaults and those two variables are enough: the CLI reviews against Ollama on this machine, through its native API. This page covers the config file, how to name it, how the layers combine, the `QUORUM_*` variables, the voter's fallback, the context size, the files to exclude, the limits of a review, running Claude Code, the keys, the trust a named config needs in CI, and the errors a bad setting causes.
+The CLI reads its settings from three sources, each laid over the one before: the built-in defaults, a config file the CLI is named, and the environment. The flags come last: `--config` names the file and `--profile` chooses which profiles run. With no file named, `QUORUM_RESEARCH_MODEL` and `QUORUM_RESEARCH_CONTEXT_TOKENS` set, the defaults and those two variables are enough: the CLI reviews against Ollama on this machine, through its native API. This page covers the config file, how to name it, how the layers combine, the `QUORUM_*` variables, the voter's fallback, the context size, the files to exclude, the held files to send, the limits of a review, running Claude Code, the keys, the trust a named config needs in CI, and the errors a bad setting causes.
 
 A program that uses quorum as a library builds its providers itself, as [Providers](./30-providers.md) shows, or has `loadConfig` and `fromConfig` read the same settings: [`loadConfig` and `fromConfig`](../95-reference/30-library-api.md#loadconfig-and-fromconfig).
 
@@ -60,6 +60,7 @@ profiles:
 - **`roles`** says which provider researches and which votes. A profile's own `roles`, and a lens's `provider`, override them.
 - **`profiles`** defines the review profiles: [Profiles](./40-profiles.md), [Lenses and policy](./50-lenses-and-policy.md) and [Prompts](./60-prompts.md) say what each field means. A prompt is a string, or `{ file }`: the file's text. A prompt file resolves against the directory of the config file, whatever the working directory is, and holds at most 64 KiB, and the prompt files of a config 1 MiB in all.
 - **`exclude`** lists the files every review leaves out, as path patterns: [Excludes](#excludes).
+- **`send`** lists the files to send the models though they are held back as secrets, each a path as the diff writes it: [Sending a held file](#sending-a-held-file).
 - **`partTokens`** bounds the diff text one research request of a large change holds, 32768 when unset: [Research in parts](#research-in-parts).
 - **`maxReviewTokens`** and **`reviewTimeoutMs`** bound one review: the most tokens it spends, 2000000 when unset, and its deadline in milliseconds, 1800000 when unset. `QUORUM_MAX_REVIEW_TOKENS` and `QUORUM_REVIEW_TIMEOUT_MS` set them over the file's: [The limits of a review](#the-limits-of-a-review).
 
@@ -285,6 +286,23 @@ exclude:
 
 quorum matches a pattern with code of its own, segment by segment, never turning it into a regular expression, so a long path in the diff cannot make it slow. [A file left out](../95-reference/20-json-result.md#a-file-left-out) says what the result lists.
 
+## Sending a held file
+
+Every source holds back a file named as a secret or holding a credential, so a repository that commits one on purpose exits `4` on every change to it: [Files held back as secrets](./15-sources.md#files-held-back-as-secrets). `send` lists the files to send the models all the same. Nothing is sent by default, and `--send <path>` on the command line adds to the config's list:
+
+```yaml
+send:
+- web/.env.production
+- src/firebase.ts
+```
+
+- **What it sends.** A file named is not held: its lines go to the models like any other file's, it is not listed as `secret` in `meta.leftOut`, and it raises no `secret-file` flag. That holds for a diff file, stdin, a range, the local changes and a path review alike, and for the estimate a path review prints.
+- **Exact paths.** Each entry is the path as the diff writes it and the `left out:` line prints it, a name git quotes decoded, compared as text and never normalized: `./web/.env.production` and a path relative to a subdirectory name no file, and the file stays held, exit `4`, with the path to write on the `left out:` line. In a path review the path is relative to the repository's top level, where `--path` is relative to the working directory. The text no header names has the empty name, which no entry can be. An empty entry, or one that is no string, is refused: `quorum.yaml: send.0: must name a file`.
+- **`exclude` first.** A file `exclude` matches is listed as `excluded` and never sent, `send` or not.
+- **It widens what a provider receives.** A file sent is read by every model of the review, and a hosted provider keeps what it is sent: [Secrets held back](../30-security/10-threat-model.md#secrets-held-back). Name a file only when what it holds is meant to be public or is no secret of yours. A `send` entry covers every future change to that path, a key added to the file included.
+- **The cases it is for.** A Next.js project commits its `.env`, `.env.development` and `.env.production`, which hold defaults and nothing private, so every change to one exits `4` until its path is in `send`. A Firebase web config holds a Google API key, which Google calls public and quorum holds as a key: `send` names the file that holds it.
+- **The config's and the command line's alone.** No `QUORUM_*` variable sets it, and nothing of the change is read as a `send`: no file, no attribute, no commit message, since it widens what leaves your machine. In CI it belongs in the config a reviewer reads, which [`--print-config`](./10-cli.md#printing-the-resolved-config) prints, or in the job's command line. The CLI sends the config's list and every `--send`, merged, to the source, the estimate and the review.
+
 ## The limits of a review
 
 A review is bounded, so that nothing a pull request holds can make it run away. Each limit stops part of the work and says so in a gap of its own, never as a failed run. Both are set by the operator alone, in the config a run names or in the environment, and [`--print-config`](./10-cli.md#printing-the-resolved-config) prints the values a run applies.
@@ -441,6 +459,7 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | Message | Cause |
 | --- | --- |
 | `--config: must name a file` | `--config=`, with no path |
+| `--send: must name a file` | `--send=`, with no path. It is a usage error before any config is read |
 | `QUORUM_CONFIG: must be an absolute path` | A relative `QUORUM_CONFIG`: set once, it would resolve inside whatever checkout quorum runs in. `--config` may be relative |
 | `--profile: must be a profile id matching ^[a-z][a-z0-9_-]*$` | An empty `--profile`, or an id of another form |
 | `--profile: names a profile more than once` | `-p security -p security` |
@@ -473,6 +492,7 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `quorum.yaml: profiles.naming.prompts.research.file: does not exist` | A prompt file that cannot be read: it does not exist, is not a file, is over 64 KiB, is not UTF-8, or takes the prompt files over 1 MiB in all |
 | `quorum.yaml: exclude.2: ends with /, so it matches no file: end it with /** to leave out what the directory holds` | A pattern that can mislead; [Excludes](#excludes) lists what each message refuses |
 | `quorum.yaml: exclude: must hold at most 100 patterns` | More than 100 patterns |
+| `quorum.yaml: send.1: must name a file` | An entry of `send` that is empty or is no string: [Sending a held file](#sending-a-held-file) |
 | `quorum.yaml: maxReviewTokens: must be at least 1`, `must be an integer`, `must be a number` or `must be at most 9007199254740991` | A `maxReviewTokens` that is not a whole number of tokens from 1 to 9007199254740991: `0`, `1.5`, `'5'` and `9007199254740992` are refused |
 | `quorum.yaml: partTokens: must be at least 1024`, `must be an integer`, `must be a number` or `must be at most 9007199254740991` | A `partTokens` that is not a whole number of tokens from 1024 to 9007199254740991: `1023`, `1.5`, `'32768'` and a value written in thousands, `32`, are refused, never raised |
 | `quorum.yaml: reviewTimeoutMs: must be at least 1000` or `must be at most 86400000` | A `reviewTimeoutMs` outside 1000 to 86400000 ms: `999` and `86400001` are refused; a value that is no whole number is `must be an integer` or `must be a number`, as every number of a config is |

@@ -280,6 +280,62 @@ describe('runReviews', () => {
     })
   })
 
+  it('reviews each case with its configuration\'s send', async () => {
+    const patch = [
+      'diff --git a/.env b/.env',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/.env',
+      '@@ -0,0 +1 @@',
+      '+MODE=production',
+      '',
+    ].join('\n')
+    writeSuite(join(root, 'held'), undefined, { 'docs.patch': patch })
+    suite = await loadSuite(join(root, 'held'), 'demo')
+    const requests: string[][] = [[], []]
+    const providerFor = (index: number) => fakeProvider({
+      onCall: (request) => {
+        if (isResearch(request)) requests[index].push(request.messages[0].content)
+      },
+    })
+    const { outcome, lines } = await run([], [
+      review('docs', 0),
+      review('docs', 1),
+    ], {
+      configurations: [
+        {
+          config: resolvedConfig({
+            providers: {
+              fake: providerFor(0),
+            },
+          }),
+          fingerprint: A,
+        },
+        {
+          config: resolvedConfig({
+            providers: {
+              fake: providerFor(1),
+            },
+            send: ['.env'],
+          }),
+          fingerprint: B,
+        },
+      ],
+    })
+    expect(outcome).toEqual(outcomeOf({
+      recorded: 2,
+      spent: expect.any(Number),
+    }))
+    const [held, sent] = lines.map(line => parseRecord(line.slice(0, -1)) as ResultRecord)
+    expect(held.result.meta.leftOut).toEqual([
+      { file: '.env', reason: 'secret', rule: 'name' },
+    ])
+    expect(requests[0]).toEqual([])
+    expect(sent.result.meta.leftOut).toEqual([])
+    expect(requests[1]).toHaveLength(1)
+    expect(requests[1][0]).toContain('+MODE=production')
+  })
+
   it('records a review whose research reply cannot be used as denied, with its calls and its usage, and runs the others', async () => {
     const { outcome, lines, events } = await run([
       { researchText: 'I cannot help with that.' },

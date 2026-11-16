@@ -115,10 +115,10 @@ function profileView({ profile, research, voters }: ResolvedProfile): Record<str
  * The resolved config as the YAML `--print-config` writes, for a CI log that anyone can read: the file it
  * came from (`null` for none), the providers, the profiles that run, the limits the review applies
  * (`concurrency`, `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs`, defaults filled in), the
- * patterns it excludes, and the warnings. A key and every value of `headers`, `query` and `extraBody`
- * print as `[redacted]`, a base URL as its origin, and a prompt as its SHA-256. A provider's `timeoutMs` and
- * `retries` print when it sets them, a provider object's when it states them. A `claude-code` provider
- * prints its protocol, command, model, context size, key (redacted), auth mode and args, and no origin:
+ * patterns it excludes, the files it sends though held as secrets, and the warnings. A key and every value of
+ * `headers`, `query` and `extraBody` print as `[redacted]`, a base URL as its origin, and a prompt as its
+ * SHA-256. A provider's `timeoutMs` and `retries` print when it sets them, a provider object's when it states
+ * them. A `claude-code` provider prints its protocol, command, model, context size, key (redacted), auth mode and args, and no origin:
  * the command and the args are the user's own config. The view is an allowlist, so a field added to the
  * config prints nothing until it is added here on purpose.
  *
@@ -145,6 +145,9 @@ export function printConfig(config: ResolvedConfig, source: string | undefined):
     reviewTimeoutMs: config.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
     exclude: [
       ...config.exclude ?? [],
+    ],
+    send: [
+      ...config.send ?? [],
     ],
     warnings: [...config.warnings],
   }

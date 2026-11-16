@@ -212,7 +212,7 @@ export async function runReviews(options: RunReviewsOptions): Promise<RunReviews
     })
     let result: QuorumResult
     try {
-      result = await quorum.review({ diff }, { signal })
+      result = await quorum.review({ diff, send: configuration.config.send }, { signal })
     } catch (error) {
       const denied = signal.aborted
         ? undefined

@@ -39,6 +39,9 @@ const pattern = z.string().check((ctx) => {
   if (problem !== undefined) ctx.issues.push({ code: 'custom', message: problem, input: ctx.value })
 })
 
+/** A path of `send`: a non-empty string, in the words `review` refuses it with, since the empty name is no file of a diff. */
+const file = z.string({ error: 'must name a file' }).min(1, { error: 'must name a file' })
+
 const roles = z.strictObject({
   research: name.optional().describe('The provider that looks for candidate findings'),
   voter: name.optional().describe('The provider every lens votes with, unless the lens names its own'),
@@ -135,6 +138,7 @@ function configSchema<P extends z.ZodType, R extends z.ZodType>(provider: P, pro
     maxReviewTokens: z.int().min(1).optional().describe('The most tokens, input and output, one review may spend; 2000000 when unset. Set here or in QUORUM_MAX_REVIEW_TOKENS'),
     reviewTimeoutMs: z.int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe('The deadline of one review, in milliseconds; 1800000 when unset. Set here or in QUORUM_REVIEW_TIMEOUT_MS'),
     exclude: z.array(pattern.describe('A path pattern: * and ? within a name, ** for whole directories, no / to match a file name in any directory, a leading / for the root')).max(MAX_PATTERNS, { error: TOO_MANY_PATTERNS }).optional().describe('The files left out of every request, by path pattern, each listed as excluded in meta.leftOut; nothing is excluded by default'),
+    send: z.array(file.describe('A file\'s path as the diff writes it, decoded')).optional().describe('The files sent to the models though held as secrets, each the path as the diff writes it and meta.leftOut lists it; none by default'),
     profiles: z.record(name, profileSchema(promptForm)).optional().describe('The review profiles, by id: a built-in profile, one that extends it, or one of your own. The ones --profile names run, else the ones QUORUM_PROFILES names, else every one listed here, else the security profile alone'),
   })
 }

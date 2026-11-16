@@ -106,6 +106,7 @@ const USAGE = [
   '      --at <rev>           The commit --path reads, HEAD by default',
   '      --no-default-skips   Review in --path the vendored, lockfile, minified and binary files too',
   '      --large              Run a --path review that may pass the token cap, reviewing what the cap allows',
+  '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
@@ -1241,6 +1242,48 @@ describe('files held back as secrets', () => {
       for (const piece of pieces) expect(text).not.toContain(piece)
     }
   })
+
+  it('sends a held file that --send names, by the path the left out line prints', async () => {
+    const fetchMock = stubChat(NOTHING)
+    const { io, stdout, stderr } = harness({
+      argv: ['--send', '.env'],
+      env: MODEL,
+      stdin: ENV,
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(requests(fetchMock)[0]).toContain('+MODE=production')
+    expect(JSON.parse(stdout()).meta.leftOut).toEqual([])
+    expect(stderr()).not.toContain('left out:')
+    expect(stderr()).not.toContain('secret-file')
+  })
+
+  it('keeps a file held when --send names it otherwise than the diff does', async () => {
+    const nested = ENV.replaceAll('.env', 'src/.env')
+    // The diff's header writes the name as git quotes it, and the file's path is the decoded one: a `--send` in git's quoted spelling, as typed, names no file.
+    const quotedName = String.raw`caf\303\251/.env`
+    const quoted = ENV.replaceAll('a/.env', `"a/${quotedName}"`).replaceAll('b/.env', `"b/${quotedName}"`)
+    const decoded = `caf${String.fromCharCode(0xE9)}/.env`
+    for (const [send, stdin, file] of [
+      ['./.env', ENV, '.env'],
+      ['.env', nested, 'src/.env'],
+      [`"${quotedName}"`, quoted, decoded],
+    ]) {
+      const fetchMock = stubChat(NOTHING)
+      const { io, stdout, stderr } = harness({
+        argv: ['--send', send],
+        env: MODEL,
+        stdin,
+      })
+      expect(await runCli(io)).toBe(EXIT.incomplete)
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(JSON.parse(stdout()).meta.leftOut).toEqual([
+        { file, reason: 'secret', rule: 'name' },
+      ])
+      expect(stderr()).toContain(`\nleft out: 1 file(s): "${file}" (secret: name)\n`)
+      vi.unstubAllGlobals()
+    }
+  })
 })
 
 describe('the files a named config excludes', () => {
@@ -1624,6 +1667,7 @@ describe('--print-config', () => {
       'maxReviewTokens: 2000000',
       'reviewTimeoutMs: 1800000',
       'exclude: []',
+      'send: []',
       'warnings: []',
       '',
     ].join('\n'))
@@ -2130,6 +2174,28 @@ describe('the sources', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it.each([
+    [
+      ['--send='],
+      '--send: must name a file',
+    ],
+  ])('refuses %j before any config', async (argv, message) => {
+    const fetchMock = stubChat()
+    const fake = git()
+    // No model is configured, so the config would fail first if it were read.
+    const { io, stdout, stderr } = harness({
+      argv,
+      stdin: DIFF,
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe(`Error: ${message}\n${USAGE}`)
+    expect(fake.calls).toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('refuses an --at that starts with - with the usage before the config and before any git', async () => {
     const fetchMock = stubChat()
     const fake = git()
@@ -2412,6 +2478,56 @@ describe('the sources', () => {
     expect(fake.calls.find(call => call.command[0] === 'rev-parse' && call.command[1] === '--verify')?.command[4]).toBe('HEAD^{commit}')
   })
 
+  it('merges the config\'s send with --send, for a path review, its estimate and its review', async () => {
+    const credential = fakeCredential('aws-key')
+    const tree = {
+      'src/.env': 'MODE=production\n',
+      'src/a.js': 'export const a = 1\n',
+      'src/config.ts': `export const id = '${credential}'\n`,
+    }
+    const listing = write('send.yaml', `${TEAM_YAML}send:\n  - src/.env\n`)
+    const plain = write('plain.yaml', TEAM_YAML)
+    /** A path review under `config` with `send` on the command line: what it sent, its left out files and the research part of its estimate. */
+    async function review(config: string, send: readonly string[]) {
+      const fetchMock = stubChat(JSON.stringify({ findings: [] }))
+      const { io, stdout, stderr } = harness({
+        argv: [
+          '--config',
+          config,
+          '--path',
+          'src',
+          ...send.flatMap(path => ['--send', path]),
+        ],
+        git: pathGit(tree).seam,
+        platform: 'linux',
+      })
+      expect(await runCli(io)).toBe(EXIT.ok)
+      vi.unstubAllGlobals()
+      return {
+        request: (sent(fetchMock).body.messages as Array<{ content: string }>)[1].content,
+        leftOut: JSON.parse(stdout()).meta.leftOut as unknown[],
+        expected: estimateOf(stderr()).expected,
+      }
+    }
+
+    const merged = await review(listing, ['src/config.ts'])
+    expect(merged.request).toContain('+MODE=production')
+    expect(merged.request).toContain(`+export const id = '${credential}'`)
+    expect(merged.leftOut).toEqual([])
+
+    // Every file the diff holds is counted: as much as when the command line names both, and more than when nothing is sent.
+    const flags = await review(plain, ['src/.env', 'src/config.ts'])
+    expect(flags.leftOut).toEqual([])
+    expect(merged.expected).toBe(flags.expected)
+    const none = await review(plain, [])
+    expect(none.request).not.toContain('MODE=production')
+    expect(none.leftOut).toEqual([
+      { file: 'src/.env', reason: 'skipped', rule: 'secret' },
+      { file: 'src/config.ts', reason: 'skipped', rule: 'secret' },
+    ])
+    expect(merged.expected).toBeGreaterThan(none.expected)
+  })
+
   /** A fake git for a path review of one large file, `src/big.js`, which a research in parts spreads over several parts. */
   function bigGit(): { seam: { executable: string, spawn: ReturnType<typeof fakeGit>['spawn'] }, calls: GitCall[] } {
     const code = `${Array.from({ length: 3000 }, (_, index) => `export const value${index} = compute(${index}) // padding`).join('\n')}\n`
@@ -2568,7 +2684,7 @@ describe('the sources', () => {
       '       quorum bench [options] <suite>',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
-    expect(options).toHaveLength(14)
+    expect(options).toHaveLength(15)
     for (const line of options) {
       expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line.slice(25, 27), line).toBe('  ')
