@@ -1,10 +1,10 @@
-import packageJson from '../../package.json' with { type: 'json' }
 import { readEnv } from '../config/env.ts'
 import { fromConfig } from '../config/from-config.ts'
 import { loadConfig } from '../config/load.ts'
 import { parseFailOn } from '../config/profiles.ts'
 import type { FailOnOverride } from '../config/profiles.ts'
 import { ConfigError } from '../core/errors.ts'
+import { VERSION } from '../core/version.ts'
 import { outcome } from '../core/outcome.ts'
 import { inertLine } from '../core/sanitize.ts'
 import type { Estimate, Quorum } from '../core/types.ts'
@@ -22,6 +22,7 @@ import { checkOutputs, reportPlan, writeOutputs } from './outputs.ts'
 import type { ReportPlan } from './outputs.ts'
 import { printConfig } from './print-config.ts'
 import { bannerLines, estimateLines, progressSink } from './render.ts'
+import { runReport } from './report.ts'
 
 export { errorMessage, EXIT }
 export type { CliIO }
@@ -33,6 +34,7 @@ const USAGE = [
   '       quorum --local | --staged [options]',
   '       quorum --path <path> [--at <rev>] [options]',
   '       quorum bench [options] <suite>',
+  '       quorum report [options] [<result>|-]',
   '',
   'Options:',
   '  -c, --config <path>      Read this config file, over QUORUM_CONFIG',
@@ -162,8 +164,9 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
  * error ended the review, and writes no result. A review that has already resolved is complete.
  *
- * The one subcommand is `bench`: when the first argument is `bench`, the rest goes to `runBench` and its exit
- * code is returned, before any review flag is read. A file named `bench` is reviewed as `quorum ./bench`.
+ * The subcommands are `bench` and `report`: when the first argument is one of them, the rest goes to `runBench` or
+ * `runReport` and its exit code is returned, before any review flag is read. A file named `bench` or `report` is
+ * reviewed as `quorum ./bench` or `quorum ./report`.
  *
  * Everything the CLI writes is inert (invariant I3): each stderr line passes through `inertLine`, and
  * each report through its reporter, `json` through `inertJson`, `brief` and `text` through `inertLine`, and `text`'s color
@@ -171,6 +174,7 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  */
 export async function runCli(io: CliIO): Promise<number> {
   if (io.argv[0] === 'bench') return runBench(io, io.argv.slice(1))
+  if (io.argv[0] === 'report') return runReport(io, io.argv.slice(1))
   let flags: Flags
   try {
     flags = parseFlags(io.argv, OPTIONS)
@@ -183,7 +187,7 @@ export async function runCli(io: CliIO): Promise<number> {
     return EXIT.ok
   }
   if (values.version) {
-    io.stdout.write(`quorum ${packageJson.version}\n`)
+    io.stdout.write(`quorum ${VERSION}\n`)
     return EXIT.ok
   }
 

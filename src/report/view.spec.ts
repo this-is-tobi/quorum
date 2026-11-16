@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { inertJson } from '../core/sanitize.ts'
-import type { LensVote, QuorumResult, Verdict } from '../core/types.ts'
+import type { LensVote, PublicView, QuorumResult, Verdict } from '../core/types.ts'
 import { blankResult, RANGE, reportMeta, reportResult, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
 import { discardedOf, isPublicView, publicView, voteFailed } from './view.ts'
 
@@ -276,5 +276,127 @@ describe('publicView', () => {
     expect(view.meta.profiles.security.policy).not.toBe(result.meta.profiles.security.policy)
     expect(view.meta.incomplete[0]).not.toBe(result.meta.incomplete[0])
     expect(view.unreviewed[0].votes[1].failure).not.toBe(failed.failure)
+  })
+})
+
+describe('publicView of an object that is not one quorum writes', () => {
+  const MARKDOWN = '@octocat [x](https://e.example) <img src=x>'
+
+  /** A public view that passes the schema, as a mutable copy. */
+  function view(): Record<string, any> {
+    return structuredClone(publicView(canaried())) as unknown as Record<string, any>
+  }
+
+  /** The same fields forged in a full result, which `publicView` reduces before it checks. */
+  function full(): Record<string, any> {
+    return canaried() as unknown as Record<string, any>
+  }
+
+  it.each<[string, (view: Record<string, any>) => void, string]>([
+    [
+      'a vote that keeps its reasoning, under a forged meta.view',
+      (input) => { input.kept[0].votes[0] = cast(true) },
+      'kept.0.votes.0',
+    ],
+    [
+      'a profile id that holds Markdown',
+      (input) => { input.meta.profiles[MARKDOWN] = input.meta.profiles.security },
+      'meta.profiles',
+    ],
+    [
+      'a verdict\'s profile that holds Markdown',
+      (input) => { input.kept[0].profile = MARKDOWN },
+      'kept.0.profile',
+    ],
+    [
+      'a fingerprint that holds a comment\'s end',
+      (input) => { input.kept[0].fingerprint = '--> <img src=x> <!--' },
+      'kept.0.fingerprint',
+    ],
+    [
+      'a gap\'s reason outside the closed list',
+      (input) => { input.meta.incomplete[0].reason = MARKDOWN },
+      'meta.incomplete.0.reason',
+    ],
+    [
+      'a gap\'s profile that holds Markdown',
+      (input) => { input.meta.incomplete[0].profile = MARKDOWN },
+      'meta.incomplete.0.profile',
+    ],
+    [
+      'a left-out file\'s reason outside the closed list',
+      (input) => { input.meta.leftOut[0].reason = MARKDOWN },
+      'meta.leftOut.0',
+    ],
+    [
+      'a left-out file\'s rule outside the closed list',
+      (input) => {
+        input.meta.leftOut = [
+          { file: 'a', reason: 'skipped', rule: MARKDOWN },
+        ]
+      },
+      'meta.leftOut.0.rule',
+    ],
+    [
+      'a flag\'s code outside the closed list',
+      (input) => { input.meta.flags[0].code = MARKDOWN },
+      'meta.flags.0.code',
+    ],
+  ])('refuses %s, naming the path and no value', (_name, forge, path) => {
+    const forged = view()
+    forge(forged)
+    expect(() => publicView(forged as unknown as PublicView)).toThrow(TypeError)
+    expect(() => publicView(forged as unknown as PublicView)).toThrow(new RegExp(`^the public view is not one quorum writes, at ${path.replaceAll('.', '\\.')}`))
+    for (const text of [
+      MARKDOWN,
+      '@octocat',
+      'REASONING-CANARY',
+      '-->',
+    ]) {
+      expect(() => publicView(forged as unknown as PublicView)).not.toThrow(new RegExp(text.replace(/[$()*+.?[\\\]^{|}]/g, '\\$&')))
+    }
+  })
+
+  it.each([
+    [
+      'a profile id that holds Markdown',
+      (input: Record<string, any>) => { input.meta.profiles[MARKDOWN] = input.meta.profiles.security },
+    ],
+    [
+      'a fingerprint that holds a comment\'s end',
+      (input: Record<string, any>) => { input.kept[0].fingerprint = '--> <img src=x> <!--' },
+    ],
+    [
+      'a gap\'s reason outside the closed list',
+      (input: Record<string, any>) => { input.meta.incomplete[0].reason = MARKDOWN },
+    ],
+    [
+      'a left-out file\'s rule outside the closed list',
+      (input: Record<string, any>) => {
+        input.meta.leftOut = [
+          { file: 'a', reason: 'skipped', rule: MARKDOWN },
+        ]
+      },
+    ],
+    [
+      'a flag\'s code outside the closed list',
+      (input: Record<string, any>) => { input.meta.flags[0].code = MARKDOWN },
+    ],
+  ])('refuses a full result with %s, which the view would otherwise carry', (_name, forge) => {
+    const forged = full()
+    forge(forged)
+    expect(() => publicView(forged as unknown as QuorumResult)).toThrow(TypeError)
+    expect(() => publicView(forged as unknown as QuorumResult)).not.toThrow(/octocat/)
+  })
+
+  it('passes every view quorum writes, and returns a view it was given', () => {
+    for (const result of [
+      reportResult(),
+      canaried(),
+      blankResult(),
+    ]) {
+      const made = publicView(result)
+      expect(publicView(made)).toBe(made)
+    }
   })
 })

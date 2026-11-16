@@ -166,6 +166,7 @@ Usage: quorum [options] [diff-file]
        quorum --local | --staged [options]
        quorum --path <path> [--at <rev>] [options]
        quorum bench [options] <suite>
+       quorum report [options] [<result>|-]
 
 Options:
   -c, --config <path>      Read this config file, over QUORUM_CONFIG

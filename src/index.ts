@@ -87,6 +87,7 @@ export type { Auth, HttpProviderOptions, StructuredOutput } from './providers/op
 export { presets } from './providers/presets.ts'
 export type { Preset, PresetName, Protocol } from './providers/presets.ts'
 export type { ActionComment, ActionPayload } from './report/payload.ts'
+export { readResult } from './report/read.ts'
 export { renderReport } from './report/registry.ts'
 export type { ReportFormat, ReportOptions } from './report/registry.ts'
 export type { ReportInput } from './report/reporter.ts'

@@ -143,6 +143,16 @@ GitHub does not show notifications. They are in the file for the tools that read
 - **Private repositories.** Code scanning is free for a public repository, and a private one needs GitHub Code Security. A review is then never only SARIF: the summary and the exit code say the same, where code scanning is not there.
 - **Nothing uploads it.** quorum writes the file and uploads nothing; `github/codeql-action/upload-sarif` does.
 
+## quorum report
+
+The post job of a two-job workflow holds no model key and no checkout of the pull request: it downloads the result the review job saved and renders it with `quorum report`, which calls no model, reads no config and runs no git.
+
+```bash
+quorum report result.json -f payload --output markdown="$GITHUB_STEP_SUMMARY" --output sarif=quorum.sarif
+```
+
+It reads the full result or the public view, a file or stdin, only from the same release, through a strict schema, and writes any format as the review command would have from the same result: the summary, the payload and the SARIF are the public view whatever `--view` says. It exits `0` whatever the review found, since the review job's exit code is the gate, and `2` for a result it refuses, which fails the post job: a result of another release, a truncated download and a public view with a field added are each one message that names the cause and holds no value, no text and no key but a code word of the file. Its flags, its refusals and its exit codes: [quorum report](./10-cli.md#quorum-report).
+
 ## Next
 
 [Threat model](../30-security/10-threat-model.md) — the attacker, the assets, the residual risk stated plainly, the controls in place today, and what the panel's independence is worth.

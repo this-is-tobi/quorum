@@ -500,7 +500,7 @@ describe('the records, other cases', () => {
     result: {
       ...RESULT,
       kept: [
-        { ...RESULT.kept[0], summary: text },
+        { ...RESULT.kept[0], file: text },
       ],
     },
   }))
@@ -510,12 +510,12 @@ describe('the records, other cases', () => {
     const accent = String.fromCharCode(0xE9)
     const long = big(accent.repeat(100_000))
     writeFileSync(results(), `${long}${LINE_1}${'x'.repeat(150_000)}`)
-    const summaries: number[] = []
+    const fileLengths: number[] = []
     const read = await readRecords(out, (entry) => {
-      summaries.push((entry as ResultRecord).result.kept[0].summary.length)
+      fileLengths.push((entry as ResultRecord).result.kept[0].file.length)
       return undefined
     })
-    expect(summaries).toEqual([100_000, RESULT.kept[0].summary.length])
+    expect(fileLengths).toEqual([100_000, RESULT.kept[0].file.length])
     expect(read).toEqual({
       lines: 2,
       validBytes: Buffer.byteLength(long + LINE_1),

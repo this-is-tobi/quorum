@@ -5,7 +5,6 @@
  */
 
 import { resolve } from 'node:path'
-import packageJson from '../../package.json' with { type: 'json' }
 import { flaggedCases } from '../bench/attacks.ts'
 import { fingerprint, newSalt } from '../bench/fingerprint.ts'
 import { MAX_CONFIGURATIONS, reviewKey, RUN_FORMAT } from '../bench/records.ts'
@@ -26,6 +25,7 @@ import type { ResolvedConfig } from '../config/resolve.ts'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { inertLine } from '../core/sanitize.ts'
+import { VERSION } from '../core/version.ts'
 import { errorLines, errorMessage, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
 import { profileProviders } from './render.ts'
@@ -325,7 +325,7 @@ async function check(io: CliIO, options: BenchOptions): Promise<Checked> {
   if (duplicates.length > 0) throw new ConfigError(duplicates)
   const runFile: RunFile = {
     format: RUN_FORMAT,
-    quorum: packageJson.version,
+    quorum: VERSION,
     suite: {
       name: suite.name,
       reviewHash: suite.reviewHash,
@@ -467,7 +467,7 @@ async function execute(io: CliIO, { checked, scores, records, toRun, jobs, maxRu
 async function writeReports(io: CliIO, { suite, selected, out, runFile }: Checked, trials: number, scores: ReadonlyMap<string, ReviewScore>): Promise<void> {
   const report = buildReport({
     suite: { ...runFile.suite, window: suite.window },
-    quorum: packageJson.version,
+    quorum: VERSION,
     cases: selected,
     trials,
     configurations: runFile.configurations,

@@ -3,11 +3,8 @@
  * (the quorum version, the suite's name and two hashes, the salt, and the fingerprints of its configurations),
  * and `results.jsonl`, which holds one line per review. Both are read as untrusted: another run or a
  * person may have written them, so each is parsed with `JSON.parse` and a strict schema at every level,
- * and anything the schema does not describe is refused. One thing is dropped, not refused: a `__proto__`
- * key of the result's `profiles` or of a profile's `lenses`, which zod's records skip, its value unread.
- * A record is scored, never merged into another object, so the key changes nothing, and refusing it as
- * the config loader does would walk every line again on each resume. A repeated key is not looked for:
- * the tree that finds one costs ten times the parse on a line of 16 MiB.
+ * and anything the schema does not describe is refused. The result's schema is the core's (`resultSchema`),
+ * shared with `readResult`; its comment says what it drops and why.
  *
  * A record keeps the facts of a review, not its scores: the report scores every record with the suite's
  * locations when it is built, so a score never goes stale. It keeps the review's result or, for a review
@@ -15,11 +12,8 @@
  */
 
 import { z } from 'zod'
-import { SKIP_RULES, sourceIssues } from '../core/inputs.ts'
-import { FAIL_ON_LEVELS } from '../core/profile.ts'
+import { resultSchema, usageSchema } from '../core/result-schema.ts'
 import { inertJsonLine } from '../core/sanitize.ts'
-import { SECRET_RULES } from '../core/secrets.ts'
-import { FINGERPRINT_PATTERN } from '../core/stages/research.ts'
 import type { QuorumResult, Usage } from '../core/types.ts'
 import { MAX_TRIALS, SUITE_ID } from './suite.ts'
 
@@ -99,199 +93,6 @@ export type ReviewRecord = ResultRecord | DeniedRecord
 const digest = z.string().regex(/^[0-9a-f]{64}$/)
 const identifier = z.string().max(MAX_ID).regex(SUITE_ID)
 const count = z.int().min(0)
-const amount = z.number().min(0)
-const confidence = z.enum(['high', 'medium', 'low'])
-
-const vote = z.strictObject({
-  keep: z.boolean(),
-  reasoning: z.string(),
-})
-const voteFailure = z.strictObject({
-  kind: z.enum([
-    'http',
-    'network',
-    'process',
-    'timeout',
-    'aborted',
-    'refusal',
-    'truncated',
-    'invalid-response',
-    'unsupported',
-    'too-large',
-    'token-cap',
-    'review-deadline',
-    'unusable-reply',
-    'unknown',
-  ]),
-  status: z.int().min(100).max(599).optional(),
-})
-const lensVote = z.strictObject({
-  angle: z.string(),
-  vote: vote.nullable(),
-  error: z.string().nullable(),
-  failure: voteFailure.nullable(),
-})
-const verdict = z.strictObject({
-  id: z.string(),
-  fingerprint: z.string().regex(FINGERPRINT_PATTERN),
-  profile: z.string(),
-  file: z.string(),
-  line: count,
-  category: z.string(),
-  summary: z.string(),
-  evidence: z.string(),
-  evidenceRow: count.optional(),
-  quoteMatched: z.boolean(),
-  keptVotes: count,
-  totalVotes: count,
-  confidence: confidence.optional(),
-  votes: z.array(lensVote),
-})
-const providerRef = z.strictObject({
-  id: z.string(),
-  model: z.string(),
-})
-const thresholds = z.strictObject({
-  high: count.nullable(),
-  medium: count.nullable(),
-  low: count.nullable(),
-})
-const usage = z.strictObject({
-  inputTokens: amount,
-  outputTokens: amount,
-  costUsd: amount.optional(),
-})
-const coverageReason = z.enum([
-  'binary',
-  'submodule',
-  'secret',
-  'deleted-secret',
-  'too-large',
-  'request-too-large',
-  'token-cap',
-  'review-deadline',
-  'research-failed',
-])
-const leftRange = z.strictObject({
-  start: count,
-  end: count,
-  reason: coverageReason,
-})
-const coverageEntry = z.strictObject({
-  file: z.string(),
-  status: z.enum([
-    'reviewed',
-    'partial',
-    'unreviewed',
-    'excluded',
-  ]),
-  reason: coverageReason.optional(),
-  left: z.array(leftRange).optional(),
-})
-const profileMeta = z.strictObject({
-  providers: z.strictObject({
-    research: providerRef,
-    lenses: z.record(z.string(), providerRef),
-  }),
-  policy: thresholds,
-  failOn: z.enum(FAIL_ON_LEVELS),
-  gating: z.boolean(),
-  invalidFindings: count,
-  coverage: z.array(coverageEntry),
-})
-const incompleteEntry = z.strictObject({
-  profile: z.string(),
-  reason: z.enum([
-    'research-unusable',
-    'research-failed',
-    'findings-capped',
-    'finding-unreadable',
-    'vote-failed',
-    'request-too-large',
-    'too-large',
-    'token-cap',
-    'review-deadline',
-    'binary',
-    'submodule',
-    'secret',
-  ]),
-  file: z.string().optional(),
-  detail: z.string(),
-})
-/** A file left out: a rule belongs to a skipped or a held file, and to none else. */
-const leftOutFile = z.discriminatedUnion('reason', [
-  z.strictObject({
-    file: z.string(),
-    reason: z.enum(['excluded', 'binary', 'submodule']),
-  }),
-  z.strictObject({
-    file: z.string(),
-    reason: z.literal('skipped'),
-    rule: z.enum(SKIP_RULES),
-  }),
-  z.strictObject({
-    file: z.string(),
-    reason: z.enum(['secret', 'deleted-secret']),
-    rule: z.enum(SECRET_RULES),
-  }),
-])
-const objectFormat = z.enum(['sha1', 'sha256'])
-/**
- * Where a review's diff came from. The shapes are strict, one object per kind; the ids are checked as a
- * review checks its input's, by `sourceIssues`, so a record holds a full commit id of its object format.
- */
-const reviewSource = z.discriminatedUnion('kind', [
-  z.strictObject({
-    kind: z.literal('diff'),
-  }),
-  z.strictObject({
-    kind: z.literal('range'),
-    base: z.string(),
-    mergeBase: z.string(),
-    head: z.string(),
-    objectFormat,
-  }),
-  z.strictObject({
-    kind: z.enum(['local', 'staged']),
-    head: z.string().nullable(),
-    objectFormat,
-  }),
-  z.strictObject({
-    kind: z.literal('paths'),
-    commit: z.string(),
-    paths: z.array(z.string()),
-    skips: z.boolean(),
-    objectFormat,
-  }),
-]).refine(source => sourceIssues(source).length === 0)
-const flag = z.strictObject({
-  code: z.enum(['hidden-characters', 'ai-addressed-text', 'secret-file']),
-  file: z.string().optional(),
-  line: count.optional(),
-  detail: z.string(),
-})
-
-/**
- * The schema of a result, strict at every level. `records.spec.ts` holds its output type equal to
- * `QuorumResult`, `readonly` aside, so a field the core adds, drops or retypes, optional or not, fails the
- * typecheck.
- */
-export const resultSchema = z.strictObject({
-  kept: z.array(verdict),
-  discarded: z.array(verdict),
-  unreviewed: z.array(verdict),
-  meta: z.strictObject({
-    version: z.string(),
-    startedAt: z.string(),
-    durationMs: count,
-    source: reviewSource,
-    profiles: z.record(z.string(), profileMeta),
-    usage: usage.optional(),
-    incomplete: z.array(incompleteEntry),
-    leftOut: z.array(leftOutFile),
-    flags: z.array(flag),
-  }),
-})
 
 const facts = {
   fingerprint: digest,
@@ -300,7 +101,7 @@ const facts = {
   latencyMs: count,
   calls: count,
   failedCalls: count,
-  usage: usage.optional(),
+  usage: usageSchema.optional(),
   costComplete: z.boolean(),
 }
 

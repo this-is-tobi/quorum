@@ -2,6 +2,8 @@
 
 What a review returns: the JSON the CLI prints on stdout when stdout is no terminal, or with `-f json`, and writes to a file with `--output json=<path>`, and the object `review` resolves with. It holds three lists of verdicts and `meta`. Every field below is listed in the order it is written, which is the order of its keys in the JSON. The CLI writes it with `inertJson`: a hidden character in a string is written as a `\uXXXX` escape, which a JSON parser reads back as the character. `quorum bench` keeps a result in each line of its `results.jsonl`, written with `inertJsonLine`, which escapes the same characters on one line.
 
+A program reads a saved result, or a public view, back with [`readResult`](./30-library-api.md#readresult), which takes only a result of its own release and refuses any other with one message that names the cause and nothing of the text.
+
 ## The top level
 
 | Field | Type | Holds |

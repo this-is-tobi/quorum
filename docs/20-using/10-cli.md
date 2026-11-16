@@ -1,6 +1,6 @@
 # The CLI
 
-The `quorum` command reviews one diff with the profiles its config selects, the security profile alone by default, writes the report on stdout and exits with a code that says what to do with it. This page is its whole surface: the invocation, what it reads, what goes to stdout and stderr, the report, every exit code, and how a CI job should read them. Its settings are a config file that `--config` or `QUORUM_CONFIG` names and the environment variables, on [Configuration](./20-configuration.md). Its one subcommand, `quorum bench`, measures configurations on a suite of bugs: [quorum bench](#quorum-bench).
+The `quorum` command reviews one diff with the profiles its config selects, the security profile alone by default, writes the report on stdout and exits with a code that says what to do with it. This page is its whole surface: the invocation, what it reads, what goes to stdout and stderr, the report, every exit code, and how a CI job should read them. Its settings are a config file that `--config` or `QUORUM_CONFIG` names and the environment variables, on [Configuration](./20-configuration.md). Its two subcommands are `quorum report`, which renders a result a review saved, and `quorum bench`, which measures configurations on a suite of bugs: [quorum report](#quorum-report) and [quorum bench](#quorum-bench).
 
 ```text
 Usage: quorum [options] [diff-file]
@@ -9,6 +9,7 @@ Usage: quorum [options] [diff-file]
        quorum --local | --staged [options]
        quorum --path <path> [--at <rev>] [options]
        quorum bench [options] <suite>
+       quorum report [options] [<result>|-]
 
 Options:
   -c, --config <path>      Read this config file, over QUORUM_CONFIG
@@ -52,7 +53,7 @@ quorum --path src --at v1.2.0
 - **`--local` and `--staged`** are sources too, for what is not committed yet: `--local` is what `git add -A` would commit, untracked files included, and `--staged` what the next commit holds. A second source is refused as `--range` is: `Error: --staged: cannot be given with --local: give one source`. A repository whose own config names a filter program exits `2` unless `--trust-repo-config` says the repository is yours: [Trust](./15-sources.md#trust). `--trust-repo-config` alone is `Error: --trust-repo-config: needs --local or --staged`.
 - **`--path <path>`** is a source too, for the files under a path at a commit rather than a change: `--at <rev>` names the commit, `HEAD` by default, and the tree is read by id, never the working tree. It repeats, to review several paths. By default it skips vendored, lockfile, minified and binary files, each listed in `meta.leftOut`, and `--no-default-skips` reviews them; it always skips a file named as a secret, or whose text holds a credential, listed and flagged the same way, unless `--send` names it: [The files at a commit](./15-sources.md#the-files-at-a-commit). Quorum prints what a path review may cost before it calls a model, and stops with exit `2` when that may pass the token cap, unless `--large` is given: [What a path review costs](./15-sources.md#what-a-path-review-costs). `--at`, `--large` and `--no-default-skips` without `--path` are `Error: --at: needs --path`, `Error: --large: needs --path` and `Error: --no-default-skips: needs --path`, and a second `--at` is `Error: --at: takes one commit`.
 - **A diff over 16 MiB**, on stdin or in a file, is an error: `Error: the diff is over 16 MiB, the most quorum reads`, then the usage, exit `2`. The bytes are counted as they arrive, and quorum stops reading there.
-- **`bench` as the first argument** runs [the bench](#quorum-bench), with the arguments after it, before any flag of a review is read. A diff file named `bench` is reviewed as `quorum ./bench`.
+- **`bench` or `report` as the first argument** runs [the bench](#quorum-bench) or [`quorum report`](#quorum-report), with the arguments after it, before any flag of a review is read. A diff file named `bench` or `report` is reviewed as `quorum ./bench` or `quorum ./report`.
 
 The flags go before or after the file:
 
@@ -430,6 +431,42 @@ exit $code
 - **The base must be in the clone.** `origin/main...HEAD` needs `origin/main` and the commit where the branch left it, which a shallow clone may not have.
 - **A clean exit covers what the harness can detect.** Quorum refuses a request that may not fit the context size you state, but it trusts that number: an endpoint that loaded a smaller window than you stated cuts an oversized prompt in silence and can still give a clean review of what was left. Ollama's native API, the default, is sent the size you state and loads it, clamped to the model's trained context, so keep the number at most what `ollama show <model>` reports. State the window the server really gives: [What the harness cannot detect](../30-security/10-threat-model.md#what-the-harness-cannot-detect).
 - **The result is untrusted text.** It holds what models wrote about a change an attacker may have written: [Output handling](../30-security/30-output-handling.md#text-an-attacker-can-influence) says how to treat it before you render it anywhere.
+
+## quorum report
+
+`quorum report` renders a result a review saved, from a file or stdin, in any of the formats a review writes, as the review command would have from the same run. It calls no model, reads no config and runs no git, so a job that holds no key, and no checkout, can write the summary and the SARIF of what another job reviewed: [Reports for GitHub](./80-reports.md#quorum-report).
+
+```text
+Usage: quorum report [options] [<result>|-]
+
+Write a saved result, read from a file or stdin, in a format: no model, config or git is used.
+
+Options:
+  -f, --format <format>    Write the report on stdout in this format: text, json, brief, markdown, payload or sarif; text on a terminal, else json
+  -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several
+      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never
+      --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage
+      --allow-incomplete   Conclude pass, as the review would with it, when every gap is a vote that failed in passing
+  -h, --help               Print this help and exit
+```
+
+```bash
+quorum report result.json -f payload --output markdown=summary.md --output sarif=quorum.sarif
+```
+
+- **What it reads** is the result of a review, the full result or its public view, in a file, or on stdin for `-` or no argument; stdin that is a terminal is `Error: no result given`. At most 256 MiB is read, counted in bytes, and a larger result is `Error: the result is over 256 MiB, the most quorum reads`.
+- **Only a result of the same release.** The version in `meta.version` must be the one of the `quorum` that reads it: another release's is `Error: the result was written by another release of quorum: render it with the release that wrote it`, so the job that renders installs the version that reviewed.
+- **Through the strict schema.** The result is untrusted text, since a pull request's own job may have written it. Every object is checked, an unknown key anywhere is refused, and so is a profile id that is no code word, a finding that names a profile the result does not hold, and a public view that still carries what the view withholds. The refusal is `Error: the result is not one quorum writes, at <path>`, the path written with `*` for a key that is no code word, and it holds no value, no text and no key but a code word of the file. [`readResult`](../95-reference/30-library-api.md#readresult) is the same reader.
+- **The flags** are the review command's `--format`, `--output`, `--color` and `--view`, checked as it checks them, and `--allow-incomplete`, which concludes as the review's own would. It has no `--fail-on`: the summary and the payload conclude by the thresholds the review recorded. A public view given with `--view full` stays the view, since the withheld fields are not in it.
+- **A file named `report`** is reviewed as `quorum ./report`.
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The report is written, whatever the review found: the review's own exit code is the gate |
+| `2` | A usage error, an input it refuses, or an `--output` file it cannot use. The message and the usage are on stderr, and nothing is on stdout |
+| `3` | An `--output` file could not be written, after the report on stdout |
+
+The refusals are checked before anything is written: the flags, then the input, then the `--output` files.
 
 ## quorum bench
 
