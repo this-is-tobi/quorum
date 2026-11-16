@@ -16,6 +16,7 @@
 
 import { z } from 'zod'
 import { SKIP_RULES, sourceIssues } from '../core/inputs.ts'
+import { FAIL_ON_LEVELS } from '../core/profile.ts'
 import { inertJsonLine } from '../core/sanitize.ts'
 import { SECRET_RULES } from '../core/secrets.ts'
 import type { QuorumResult, Usage } from '../core/types.ts'
@@ -191,6 +192,7 @@ const profileMeta = z.strictObject({
     lenses: z.record(z.string(), providerRef),
   }),
   policy: thresholds,
+  failOn: z.enum(FAIL_ON_LEVELS),
   gating: z.boolean(),
   invalidFindings: count,
   coverage: z.array(coverageEntry),

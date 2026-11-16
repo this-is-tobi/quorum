@@ -40,7 +40,7 @@ profiles:
       research:
         file: ./prompts/payments.md
   naming:
-    gating: false
+    failOn: none
     prompts:
       research:
         file: ./prompts/naming.md
@@ -58,7 +58,7 @@ profiles:
 
 - **`providers`** names each endpoint, by a name of lower-case letters, digits, `_` and `-`, which starts with a letter. A provider starts from a [preset](./30-providers.md#presets), or from a `protocol` and a `baseUrl`, and sets the [options](./30-providers.md#options) of its adapter: its `contextTokens` ([The context size](#the-context-size)), `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField`, `systemPrompt`, `timeoutMs` and `retries` ([Deadlines and retries](./30-providers.md#deadlines-and-retries)). One with `protocol: claude-code` runs your Claude Code CLI instead, has no base URL, and sets `args` besides: [Claude Code](#claude-code).
 - **`roles`** says which provider researches and which votes. A profile's own `roles`, and a lens's `provider`, override them.
-- **`profiles`** defines the review profiles: [Profiles](./40-profiles.md), [Lenses and policy](./50-lenses-and-policy.md) and [Prompts](./60-prompts.md) say what each field means. A prompt is a string, or `{ file }`: the file's text. A prompt file resolves against the directory of the config file, whatever the working directory is, and holds at most 64 KiB, and the prompt files of a config 1 MiB in all.
+- **`profiles`** defines the review profiles: [Profiles](./40-profiles.md), [Lenses and policy](./50-lenses-and-policy.md) and [Prompts](./60-prompts.md) say what each field means. A prompt is a string, or `{ file }`: the file's text. A prompt file resolves against the directory of the config file, whatever the working directory is, and holds at most 64 KiB, and the prompt files of a config 1 MiB in all. A profile's `failOn` is the confidence at or above which its kept findings fail the review with exit `1`, `high` when unset, and `none` for a profile that reports and fails nothing; the deprecated `gating` reads as `high` for `true` and `none` for `false`, with a warning: [Gating](./40-profiles.md#gating).
 - **`exclude`** lists the files every review leaves out, as path patterns: [Excludes](#excludes).
 - **`send`** lists the files to send the models though they are held back as secrets, each a path as the diff writes it: [Sending a held file](#sending-a-held-file).
 - **`partTokens`** bounds the diff text one research request of a large change holds, 32768 when unset: [Research in parts](#research-in-parts).
@@ -247,7 +247,7 @@ Neither of these is done today. Counting with a vendor's own tokenizer would shr
 
 ### What happens
 
-A research request is split into parts first, so its profile records a `request-too-large` gap, counting the parts, only for a part its provider refused all the same, and a `too-large` gap for a hunk no part can hold, and the other profiles run. A refused vote is a failed vote ([Failed votes](./50-lenses-and-policy.md#failed-votes)), and its finding records a `request-too-large` gap as well, whatever its status: kept, discarded or `unreviewed`, the gap stays. A gating profile with such a gap exits `4`, even with `--allow-incomplete`, unless it also kept a `high` finding, which exits `1`; the gap of an advisory profile changes no code. The result says what was not sent: [Incomplete reasons](../95-reference/20-json-result.md#incomplete-reasons). A provider with no context size is a configuration error, exit `2`, before any request.
+A research request is split into parts first, so its profile records a `request-too-large` gap, counting the parts, only for a part its provider refused all the same, and a `too-large` gap for a hunk no part can hold, and the other profiles run. A refused vote is a failed vote ([Failed votes](./50-lenses-and-policy.md#failed-votes)), and its finding records a `request-too-large` gap as well, whatever its status: kept, discarded or `unreviewed`, the gap stays. A gating profile with such a gap exits `4`, even with `--allow-incomplete`, unless it also kept a finding at or above its fail-on level, `high` by default, which exits `1`; the gap of an advisory profile changes no code. The result says what was not sent: [Incomplete reasons](../95-reference/20-json-result.md#incomplete-reasons). A provider with no context size is a configuration error, exit `2`, before any request.
 
 ## Research in parts
 
@@ -490,6 +490,8 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `quorum.yaml: providers.a.modl: is not a known field` | A field quorum does not know, `apiKey` in a YAML or JSON file included. Every issue of the file is reported at once, one per line |
 | `quorum.yaml: version: must be 1, the only config version this quorum reads: upgrade quorum to read a later one` | A `version` other than `1` |
 | `quorum.yaml: profiles.naming.prompts.research.file: does not exist` | A prompt file that cannot be read: it does not exist, is not a file, is over 64 KiB, is not UTF-8, or takes the prompt files over 1 MiB in all |
+| `quorum.yaml: profiles.naming.failOn: must be one of high, medium, low or none` | A `failOn` that is none of the four levels |
+| `profiles.naming.gating: is deprecated and cannot be set with failOn: remove it` | A profile that sets both `failOn` and the deprecated `gating`: set `failOn` alone |
 | `quorum.yaml: exclude.2: ends with /, so it matches no file: end it with /** to leave out what the directory holds` | A pattern that can mislead; [Excludes](#excludes) lists what each message refuses |
 | `quorum.yaml: exclude: must hold at most 100 patterns` | More than 100 patterns |
 | `quorum.yaml: send.1: must name a file` | An entry of `send` that is empty or is no string: [Sending a held file](#sending-a-held-file) |

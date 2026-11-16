@@ -1,6 +1,6 @@
 # Library API
 
-The TypeScript API that `@tobi-or-not/quorum` exports, from `src/index.ts`: `createQuorum` and its ports, a review and its events, an estimate of what a review may cost, reading a source, abort, the errors, the config types, and every export. Install the package with `npm install @tobi-or-not/quorum` and import from it: the examples on this page do, from a file of a project that has it installed. The package is ES modules with declarations, which a TypeScript project resolves with `moduleResolution` set to `node16`, `nodenext` or `bundler`; the older `node10` ignores `exports` and finds no types. Node 22.18 or later on the 22 line, or 23.6 or later, runs a `.mts` file of these examples as it is, since the code is erasable TypeScript only, and so does Bun. A clone's `src/index.ts` exports the same API.
+The TypeScript API that `@tobi-or-not/quorum` exports, from `src/index.ts`: `createQuorum` and its ports, a review and its events, an estimate of what a review may cost, reading a source, what a review comes to, abort, the errors, the config types, and every export. Install the package with `npm install @tobi-or-not/quorum` and import from it: the examples on this page do, from a file of a project that has it installed. The package is ES modules with declarations, which a TypeScript project resolves with `moduleResolution` set to `node16`, `nodenext` or `bundler`; the older `node10` ignores `exports` and finds no types. Node 22.18 or later on the 22 line, or 23.6 or later, runs a `.mts` file of these examples as it is, since the code is erasable TypeScript only, and so does Bun. A clone's `src/index.ts` exports the same API.
 
 ## `createQuorum`
 
@@ -102,7 +102,7 @@ Each profile is compiled once, when the quorum is created: its vote template ren
 
 ### `warnings`
 
-The settings of the profiles that cannot take full effect, each starting at its profile id, such as a policy level that is never reached: [Warnings](../20-using/40-profiles.md#warnings). A quorum with warnings still runs.
+The settings of the profiles that cannot take full effect, each starting at its profile id, such as a policy level that is never reached, the deprecated `gating`, or a `failOn` of `low` while the policy's `low` is off: [Warnings](../20-using/40-profiles.md#warnings). A quorum with warnings still runs.
 
 ## `review`
 
@@ -286,6 +286,37 @@ if (!quorum.estimate(input).fits) throw new Error('src may not finish under the 
 const result = await quorum.review(input)
 ```
 
+## `outcome`
+
+```ts
+declare function outcome(result: QuorumResult, options?: { readonly allowIncomplete?: boolean }): Outcome
+
+type OutcomeStatus = 'pass' | 'findings' | 'incomplete'
+
+interface Outcome {
+  readonly status: OutcomeStatus
+  readonly exitCode: 0 | 1 | 4
+  readonly lifted: boolean
+}
+```
+
+`outcome` says what a review comes to: the rule that decides the CLI's exit code, for a program that reads a result. `status` is `pass`, `findings` or `incomplete`, `exitCode` is the code that says it, and `lifted` is `true` when `allowIncomplete` turned an incomplete review into a pass, so a report never calls that run complete. It reads the result and calls nothing. What decides each, in this order:
+
+- **`1`, `findings`.** A kept finding is at or above the level of its profile, `meta.profiles.<id>.failOn`: `high` fails a `high` finding, `medium` a `high` or `medium` one, `low` any, and `none` none ([Gating](../20-using/40-profiles.md#gating)). It wins over `4`, whatever else is missing.
+- **`4`, `incomplete`.** An unreviewed finding, or an entry of `meta.incomplete`, belongs to a gating profile: one whose level is not `none`. The gaps and findings of a profile at `none` change nothing.
+- **`0`, `pass`.** Neither of the two.
+
+A result of an earlier release has no `failOn`, and `outcome` reads its `gating`: `false` is `none`, anything else `high`, and a `failOn` that is a level wins. A `failOn` that is no level, or that the entry only inherits, is unreadable, so `outcome` reads the `gating` beside it the same way: `gating: false` gives `none`. A profile with no readable field at all, one missing from `meta.profiles` or an entry that is `null`, gates at `high`, so a gap in a result never hides a finding.
+
+`allowIncomplete` lifts what the CLI's `--allow-incomplete` lifts, and nothing else: the `4` becomes `0`, `lifted` is `true`, only when every gap of a gating profile is a `vote-failed` one and every failed vote behind the gaps failed in passing, never when a `1` is due: [Exit codes](../20-using/10-cli.md#exit-codes). A `secret` gap, a `too-large` gap and every other reason stay `4`, since a pull request can cause them.
+
+```ts
+import { outcome } from '@tobi-or-not/quorum'
+
+// `result` comes from `quorum.review`, as in the complete example below.
+const { status, exitCode, lifted } = outcome(result, { allowIncomplete: true })
+```
+
 ## Errors
 
 | Class | Extends | Fields | Thrown for |
@@ -444,7 +475,7 @@ The origin is compared as the voter's fallback compares it: the scheme, the host
 
 - **The role defaults.** One provider binds both roles. Several need `roles.research`, or the config is refused; `roles.voter` is `roles.research` when unset. A profile's own `roles` override the top-level ones, and a lens's `provider` overrides both.
 - **Which profiles run.** The ones `selection` names, else the ones `QUORUM_PROFILES` names, else the ones `profiles` defines, else `security`. `profiles: {}` with no selection is refused: a run that reviews nothing never passes.
-- **A profile's base.** A profile named after a built-in profile starts from it, so `profiles: { security: { gating: false } }` is the security profile without gating; so does one with `extends`. A profile of its own needs both prompts and its lenses. Its `gating` is the base's, else `true`.
+- **A profile's base.** A profile named after a built-in profile starts from it, so `profiles: { security: { failOn: 'none' } }` is the security profile without gating; so does one with `extends`. A profile of its own needs both prompts and its lenses. Its `failOn` is the entry's own, else what its deprecated `gating` says (`true` is `high`, `false` is `none`), else the base's, else `high`; a profile never keeps a `gating`, and an entry that sets both is refused.
 - **Every defined profile and provider is checked**, whether or not a run selects or uses it, so a broken definition fails every run, as an unknown field does.
 
 ### Keys
@@ -466,7 +497,7 @@ A provider's key is the first of:
 
 ### Warnings and errors
 
-`loadConfig` returns the config's `warnings`: the deprecation line, the line naming the `QUORUM_` variables that nothing reads, a preset's key that is not sent, a key sent over plain `http`, and a key that Claude Code would bill. The `warnings` of the quorum `fromConfig` returns hold those first, then the core's: a profile setting that cannot take full effect, [Warnings](../20-using/40-profiles.md#warnings). A provider object is read only while its config is checked, inside the guard that keeps what it throws to the error's name: its `model` once and its `complete` twice (the check of plain data, then the snapshot), into a frozen snapshot with no prototype that calls the object as it is, and that snapshot is named by its config key in events and in `meta`, whatever `id` the object holds. Its `timeoutMs` and `retries` are read there too, as own data and never through a getter, into the snapshot, which keeps each that is in range; one out of range is refused at `providers.<name>.timeoutMs` or `providers.<name>.retries`, and a getter or an inherited property states nothing. So is its `worstCase`: read as own data into a function of the snapshot that calls it on the object, so the review's token cap reserves what the object says one call may cost, and refused at `providers.<name>.worstCase` when it is no function; the fingerprint and `--print-config` never see it, as they never see its `complete`. So is its `room`, read into a function of the snapshot that calls it on the object and refused at `providers.<name>.room` when it is no function; the fingerprint and `--print-config` never see it either.
+`loadConfig` returns the config's `warnings`: the deprecation line, the line naming the `QUORUM_` variables that nothing reads, a preset's key that is not sent, a key sent over plain `http`, a key that Claude Code would bill, and a profile entry's deprecated `gating`. The `warnings` of the quorum `fromConfig` returns hold those first, then the core's: a profile setting that cannot take full effect, [Warnings](../20-using/40-profiles.md#warnings). A provider object is read only while its config is checked, inside the guard that keeps what it throws to the error's name: its `model` once and its `complete` twice (the check of plain data, then the snapshot), into a frozen snapshot with no prototype that calls the object as it is, and that snapshot is named by its config key in events and in `meta`, whatever `id` the object holds. Its `timeoutMs` and `retries` are read there too, as own data and never through a getter, into the snapshot, which keeps each that is in range; one out of range is refused at `providers.<name>.timeoutMs` or `providers.<name>.retries`, and a getter or an inherited property states nothing. So is its `worstCase`: read as own data into a function of the snapshot that calls it on the object, so the review's token cap reserves what the object says one call may cost, and refused at `providers.<name>.worstCase` when it is no function; the fingerprint and `--print-config` never see it, as they never see its `complete`. So is its `room`, read into a function of the snapshot that calls it on the object and refused at `providers.<name>.room` when it is no function; the fingerprint and `--print-config` never see it either.
 
 | Path | Message | Cause |
 | --- | --- | --- |
@@ -495,6 +526,8 @@ A provider's key is the first of:
 | `profiles.<id>.prompts.research`, `profiles.<id>.prompts.vote`, `profiles.<id>.lenses` | `is required: the profile extends no built-in profile` | A profile of its own without prompts or lenses |
 | `roles.research`, `roles.voter`, `profiles.<id>.roles.research`, `profiles.<id>.roles.voter`, `profiles.<id>.lenses.<index>.provider` | `unknown provider "claud" (did you mean "claude"?)`, or `unknown provider "x": the providers are a and b` | A reference to a provider that is not defined: the defined name one or two edits away, else the names. A name that is not a safe name is not repeated: `names an unknown provider` |
 | `roles.research` | `is required when several providers are defined` | Several providers, and no research role |
+| `profiles.<id>.failOn` | `must be one of high, medium, low or none` | A `failOn` that is none of the four levels |
+| `profiles.<id>.gating` | `is deprecated and cannot be set with failOn: remove it` | An entry that sets both `failOn` and the deprecated `gating` |
 | `profiles.<id>` and below | The profile's own issues: [The checks](../20-using/40-profiles.md#the-checks) | A profile that fails a check |
 | No path | `no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one` | The built-in provider has no model |
 | No path | `no context size configured: set QUORUM_RESEARCH_CONTEXT_TOKENS, or name a config file that sets contextTokens` | The built-in provider has no context size. A missing model is reported first, and alone |
@@ -522,6 +555,7 @@ The warnings, each but the first two starting at the path it is about:
 | `providers.voter.baseUrl: is not the endpoint of the research provider, so OPENAI_API_KEY is not sent: set QUORUM_VOTER_API_KEY to send a key` | A derived voter on another origin than research's, whose provider keeps a preset that has a key variable |
 | `providers.gpu.baseUrl: sends the key over plain http to a host other than this machine` | A key that would travel in cleartext |
 | `providers.default: ANTHROPIC_API_KEY is set, so Claude Code bills that key rather than its login: unset it, or set auth to login or api-key` | A `claude-code` provider a profile uses, under `inherit` or with no `auth`, while `ANTHROPIC_API_KEY` is set |
+| `profiles.team.gating is deprecated: set failOn instead, high for true and none for false` | A profile entry that sets `gating`, which still reads: `true` as `high`, `false` as `none` |
 
 ## Exports
 
@@ -540,13 +574,14 @@ The warnings, each but the first two starting at the path it is about:
 | `openaiCompatible` | The OpenAI-compatible adapter: [Providers](../20-using/30-providers.md#openaicompatible) |
 | `presets` | The presets, frozen: [Presets](../20-using/30-providers.md#presets) |
 | `readSource` | Read the diff, its source and the files it left out, from a diff, a range, the local changes or the files at a commit: [`readSource`](#readsource) |
+| `outcome` | What a review comes to, its status and the exit code that says it: [`outcome`](#outcome) |
 | `QuorumError`, `ConfigError`, `ProviderError`, `OutputError`, `GitError` | The error classes |
 | `inertLine`, `inertJson` | Render a line for a terminal or a log, and a value as JSON, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |
 
-The types: `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `CredentialKind`, `Estimate`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `ObjectFormat`, `Profile`, `ProfileEstimate`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `ReviewInput`, `ReviewSource`, `SecretRule`, `SkipRule`, `SourceRead`, `SourceSpec`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
+The types: `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `CredentialKind`, `Estimate`, `FailOn`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `ObjectFormat`, `Outcome`, `OutcomeStatus`, `Profile`, `ProfileEstimate`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `ReviewInput`, `ReviewSource`, `SecretRule`, `SkipRule`, `SourceRead`, `SourceSpec`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
 
-The stages, the profile checks and the CLI's exit-code rule are not exported: a program reaches the stages through `createQuorum`, and applies the exit codes itself, as the example below does.
+The stages and the profile checks are not exported: a program reaches the stages through `createQuorum`. The exit-code rule is `outcome`.
 
 ## `runQuorum`
 
@@ -562,8 +597,8 @@ Deprecated: use `loadConfig` and `fromConfig`. `runQuorum` reviews `diff` as the
 
 ```ts
 import { readFile } from 'node:fs/promises'
-import { ConfigError, createQuorum, inertJson, inertLine, ollama, openaiCompatible, securityProfile } from '@tobi-or-not/quorum'
-import type { QuorumEvent, QuorumResult } from '@tobi-or-not/quorum'
+import { ConfigError, createQuorum, inertJson, inertLine, ollama, openaiCompatible, outcome, securityProfile } from '@tobi-or-not/quorum'
+import type { QuorumEvent } from '@tobi-or-not/quorum'
 
 const USAGE = 'Usage: node ./review.mts <diff-file>'
 
@@ -583,15 +618,6 @@ function errorLine(error: unknown): string {
     message = 'an error with no text form'
   }
   return inertLine(`Error: ${message}`)
-}
-
-/** The CLI's rule: 1 for a kept high finding of a gating profile, 4 for an incomplete review, else 0. */
-function exitCode(result: QuorumResult): number {
-  const gates = (profile: string): boolean => !Object.hasOwn(result.meta.profiles, profile) || result.meta.profiles[profile].gating !== false
-  if (result.kept.some(verdict => verdict.confidence === 'high' && gates(verdict.profile))) return 1
-  return result.unreviewed.length > 0 || result.meta.incomplete.length > 0
-    ? 4
-    : 0
 }
 
 /** Review the diff file at `path`, with the CLI's exit codes: 2 for usage or configuration, 3 for a review that failed. */
@@ -634,7 +660,7 @@ async function main(path: string | undefined): Promise<number> {
       signal: AbortSignal.timeout(10 * 60_000)
     })
     console.log(inertJson(result))
-    return exitCode(result)
+    return outcome(result).exitCode
   } catch (error) {
     console.error(errorLine(error))
     return error instanceof ConfigError
@@ -650,7 +676,7 @@ process.exitCode = await main(process.argv[2])
 OPENAI_API_KEY=sk-... node ./review.mts ./my.diff > result.json
 ```
 
-It exits as the CLI does: `0`, `1` or `4` by the result; `2` when no file is given, the file cannot be read, or a setting is invalid, such as a key with a space inside it once trimmed; and `3` when the review fails, its ten-minute limit included.
+It exits as the CLI does: `0`, `1` or `4` by [`outcome`](#outcome) of the result; `2` when no file is given, the file cannot be read, or a setting is invalid, such as a key with a space inside it once trimmed; and `3` when the review fails, its ten-minute limit included.
 
 ## Related
 

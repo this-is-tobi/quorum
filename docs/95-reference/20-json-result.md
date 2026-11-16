@@ -66,7 +66,8 @@ A usage count is valid when it is a finite number of at least 0. A failed call's
 | --- | --- | --- |
 | `providers` | object | `research`, the `{ id, model }` of the research provider, then `lenses`, the `{ id, model }` of each lens's provider, keyed by lens id |
 | `policy` | object | `high`, `medium` and `low`: the kept votes each level needed, `null` for a level that is off |
-| `gating` | boolean | Whether its kept `high` findings set exit code `1`, and its gaps exit code `4` |
+| `failOn` | string | The level at or above which its kept findings exit `1`: `high`, `medium` or `low`; `none` for an advisory profile: [Gating](../20-using/40-profiles.md#gating) |
+| `gating` | boolean | `true` unless `failOn` is `none`. A result of an earlier release has no `failOn`, and a reader takes `gating: false` as `none` and anything else as `high` |
 | `invalidFindings` | number | How many findings it dropped for citing code outside the diff |
 | `coverage` | entry[] | Every file of the diff once, in its order, with how much of it the profile's research reviewed: [Coverage](#coverage) |
 
@@ -232,7 +233,7 @@ A `secret-file` flag comes from `meta.leftOut`, not from the diff: one for each 
 | `submodule` | `meta.leftOut` lists a submodule whose change the diff shows only as a commit, or one the input's `leftOut` names as `submodule`: one gap per profile, counting them. A gitlink a path review skipped is listed as `skipped` and is no gap | `the diff carries no content for 1 submodule(s), listed in meta.leftOut` |
 | `secret` | `meta.leftOut` lists a file held back as a secret, or one the input's `leftOut` names as `secret`: one gap per profile, counting the files. A `deleted-secret` file and a file a path review skipped as a secret are no such file, and no gap | `no model was sent 2 file(s) held as secrets, listed in meta.leftOut` |
 
-Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4` for a gap of a gating profile, unless a gating profile kept a `high` finding. `--allow-incomplete` lifts a gating profile's gaps only when each is an unreviewed finding or a `vote-failed` gap, and every failed vote behind them failed in passing: a dropped connection, a timeout of its own, or an HTTP 408, 409, 429 or 5xx, as the votes' `failure` says ([Exit codes](../20-using/10-cli.md#exit-codes)). Every other gap exits `4` whatever the flags, since a pull request causes it directly: a `too-large` gap by making one hunk larger than any window, a `request-too-large` gap by padding a request until its provider refuses it, a `token-cap` gap by decoy findings and drawn-out replies that spend the review's tokens, a `review-deadline` gap by replies drawn out until the review's deadline, `binary` and `submodule` with one `.gitattributes` line, one NUL byte or a submodule's bump, `secret` with a file named `.env` or one line that reads as a key, `findings-capped` with decoy findings, and `finding-unreadable` and `research-unusable` with text that breaks the finder's reply. A `vote-failed` gap beside a vote that was refused, cut off at its token limit, stopped by a limit of the review or unusable exits `4` too. On a gating profile, do not use the flag for a pull request you do not trust.
+Each gap makes the review incomplete, as an unreviewed finding does: the CLI exits `4` for a gap of a gating profile, unless a gating profile kept a finding at or above its fail-on level, `high` by default. `--allow-incomplete` lifts a gating profile's gaps only when each is an unreviewed finding or a `vote-failed` gap, and every failed vote behind them failed in passing: a dropped connection, a timeout of its own, or an HTTP 408, 409, 429 or 5xx, as the votes' `failure` says ([Exit codes](../20-using/10-cli.md#exit-codes)). Every other gap exits `4` whatever the flags, since a pull request causes it directly: a `too-large` gap by making one hunk larger than any window, a `request-too-large` gap by padding a request until its provider refuses it, a `token-cap` gap by decoy findings and drawn-out replies that spend the review's tokens, a `review-deadline` gap by replies drawn out until the review's deadline, `binary` and `submodule` with one `.gitattributes` line, one NUL byte or a submodule's bump, `secret` with a file named `.env` or one line that reads as a key, `findings-capped` with decoy findings, and `finding-unreadable` and `research-unusable` with text that breaks the finder's reply. A `vote-failed` gap beside a vote that was refused, cut off at its token limit, stopped by a limit of the review or unusable exits `4` too. On a gating profile, do not use the flag for a pull request you do not trust.
 
 ## An example
 
@@ -407,6 +408,7 @@ A review of a diff that touches three files, run on the one provider, named `def
           "medium": 2,
           "low": null
         },
+        "failOn": "high",
         "gating": true,
         "invalidFindings": 1,
         "coverage": [

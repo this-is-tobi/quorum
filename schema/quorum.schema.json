@@ -279,8 +279,18 @@
               "security"
             ]
           },
+          "failOn": {
+            "description": "The confidence at or above which a kept finding fails the review with exit 1: high, medium or low; none for an advisory profile, whose findings and gaps change no exit code. high when unset",
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low",
+              "none"
+            ]
+          },
           "gating": {
-            "description": "Whether it gates the exit code: a gating profile's kept high findings exit 1 and its gaps exit 4, an advisory profile's do neither",
+            "description": "Deprecated: set failOn. true reads as failOn high and false as none, with a warning; setting both is refused",
             "type": "boolean"
           },
           "roles": {

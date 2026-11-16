@@ -184,6 +184,27 @@ describe('profileIssues', () => {
     ])
   })
 
+  it.each([
+    [
+      { failOn: 'critical' },
+      { path: 'loose.failOn', message: 'must be one of high, medium, low or none' },
+    ],
+    [
+      { failOn: 1 },
+      { path: 'loose.failOn', message: 'must be one of high, medium, low or none' },
+    ],
+    [
+      { gating: true, failOn: 'high' },
+      { path: 'loose.gating', message: 'is deprecated and cannot be set with failOn: remove it' },
+    ],
+  ])('refuses %j', (fields, issue) => {
+    expect(profileIssues({
+      ...valid,
+      id: 'loose',
+      ...fields,
+    } as unknown as Profile)).toEqual([issue])
+  })
+
   it('reports missing prompts and lenses as issues', () => {
     expect(profileIssues({ id: 'bare' } as unknown as Profile)).toEqual([
       { path: 'bare.lenses', message: 'must be an array of lenses' },
@@ -243,6 +264,20 @@ describe('profileWarnings', () => {
     })).toEqual([
       'p.prompts.vote uses neither {{lens.id}} nor {{lens.question}}, so every lens gets the same instructions',
     ])
+  })
+
+  it('warns that gating is deprecated, and that failOn low with policy.low off acts as medium', () => {
+    expect(profileWarnings({ ...securityProfile, gating: false })).toEqual([
+      'security.gating is deprecated: set failOn instead, high for true and none for false',
+    ])
+    expect(profileWarnings({ ...securityProfile, failOn: 'low' })).toEqual([
+      'security.failOn is low, but policy.low is off, so it acts as medium',
+    ])
+    expect(profileWarnings({
+      ...securityProfile,
+      failOn: 'low',
+      policy: { high: 'unanimous', medium: 'majority', low: 'any' },
+    })).toEqual([])
   })
 
   it('has nothing to say about the security profile, or about one lens without lens variables', () => {

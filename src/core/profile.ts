@@ -2,19 +2,23 @@ import type { ConfigIssue } from './errors.ts'
 import { isRecord } from './output.ts'
 import { defaultPolicy, resolvePolicy } from './policy.ts'
 import { PLACEHOLDER } from './prompts.ts'
-import type { Profile, Thresholds } from './types.ts'
+import type { FailOn, Profile, Thresholds } from './types.ts'
 
 const ID_PATTERN = /^[a-z][a-z0-9_-]*$/
+
+/** The fail-on levels, strictest first: `high`, `medium` and `low` are the confidences a kept finding reaches, and `none` is the advisory profile. */
+export const FAIL_ON_LEVELS = ['high', 'medium', 'low', 'none'] as const satisfies readonly FailOn[]
 
 const VOTE_VARIABLES: ReadonlySet<string> = new Set(['lens.id', 'lens.question', 'panel.size'])
 
 /**
  * Every problem that keeps a profile from running, all at once. Each field is checked by shape
  * first, because an untyped caller can hand over anything and a `TypeError` is no report: the
- * profile itself, the id, the lenses (and each lens), the policy, both prompts, `gating` and
+ * profile itself, the id, the lenses (and each lens), the policy, both prompts, `failOn`, `gating` and
  * `guidelines`. The rules follow the shape: the policy for the lens count and both templates, so a
  * library caller gets the checks a config file gets, and a typo in a template is refused here
- * instead of reaching a model as literal text. Paths start at the profile id, or at `fallbackRoot`
+ * instead of reaching a model as literal text. A profile that sets both `failOn` and the deprecated `gating`
+ * is refused at `gating`, since each says what the other does. Paths start at the profile id, or at `fallbackRoot`
  * (the profile's place in a larger input, `profile` by default) while the id is invalid.
  */
 export function profileIssues(profile: Profile, fallbackRoot = 'profile'): ConfigIssue[] {
@@ -33,24 +37,41 @@ export function profileIssues(profile: Profile, fallbackRoot = 'profile'): Confi
   issues.push(...lensIssues(profile.lenses, root))
   issues.push(...policyIssues(profile, root))
   issues.push(...promptIssues(profile.prompts, root))
+  if (profile.failOn !== undefined && !FAIL_ON_LEVELS.includes(profile.failOn)) issues.push({ path: `${root}.failOn`, message: 'must be one of high, medium, low or none' })
   if (profile.gating !== undefined && typeof profile.gating !== 'boolean') issues.push({ path: `${root}.gating`, message: 'must be true or false' })
+  else if (profile.gating !== undefined && profile.failOn !== undefined) issues.push({ path: `${root}.gating`, message: 'is deprecated and cannot be set with failOn: remove it' })
   if (profile.guidelines !== undefined && typeof profile.guidelines !== 'string') issues.push({ path: `${root}.guidelines`, message: 'must be a string' })
   return issues
 }
 
 /**
  * What a profile `profileIssues` accepts still cannot take full effect: a policy level that never
- * applies with its lens count, and a vote template that gives every lens the same instructions.
- * The profile must be one `profileIssues` accepts: nothing is re-validated here. Each warning
- * starts at the profile id.
+ * applies with its lens count, a vote template that gives every lens the same instructions, the
+ * deprecated `gating`, and a `failOn` of `low` while the policy's `low` is off, which then acts as
+ * `medium`: no kept finding is `low`. The profile must be one `profileIssues` accepts: nothing is
+ * re-validated here. Each warning starts at the profile id.
  */
 export function profileWarnings(profile: Profile): string[] {
-  const warnings = resolvePolicy(profile.policy ?? defaultPolicy, profile.lenses.length).warnings.map(warning => `${profile.id}.${warning}`)
+  const resolved = resolvePolicy(profile.policy ?? defaultPolicy, profile.lenses.length)
+  const warnings = resolved.warnings.map(warning => `${profile.id}.${warning}`)
   const usesLensVariable = placeholderNames(profile.prompts.vote).some(name => name === 'lens.id' || name === 'lens.question')
   if (profile.lenses.length > 1 && !usesLensVariable) {
     warnings.push(`${profile.id}.prompts.vote uses neither {{lens.id}} nor {{lens.question}}, so every lens gets the same instructions`)
   }
+  if (profile.gating !== undefined) warnings.push(`${profile.id}.gating is deprecated: set failOn instead, high for true and none for false`)
+  if (profile.failOn === 'low' && resolved.thresholds.low === null) warnings.push(`${profile.id}.failOn is low, but policy.low is off, so it acts as medium`)
   return warnings
+}
+
+/**
+ * The level at or above which a profile's kept findings fail the review: its `failOn`, else `none` for the
+ * deprecated `gating: false`, else `high`. The profile must be one `profileIssues` accepts.
+ */
+export function failOnOf(profile: Profile): FailOn {
+  if (profile.failOn !== undefined) return profile.failOn
+  return profile.gating === false
+    ? 'none'
+    : 'high'
 }
 
 /**

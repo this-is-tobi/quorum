@@ -412,6 +412,13 @@ describe('createQuorum', () => {
     ])
   })
 
+  it('refuses a profile that sets both gating and failOn, before any call', () => {
+    expect(issuesOf(() => run({ ...style, gating: true, failOn: 'high' }))).toEqual([
+      'style.gating: is deprecated and cannot be set with failOn: remove it',
+    ])
+    expect(complete).not.toHaveBeenCalled()
+  })
+
   it('lists the warnings of every profile', () => {
     const duo: Profile = {
       ...style,
@@ -944,7 +951,7 @@ describe('review', () => {
     const styled = fake('styled', request => isVote(request)
       ? vote(false)
       : findings({ ...reported, category: 'naming' }))
-    const quiet = { ...style, gating: false }
+    const quiet: Profile = { ...style, failOn: 'none' }
     const ports = {
       profiles: {
         ...portsFor(securityProfile, security).profiles,
@@ -1099,6 +1106,7 @@ describe('meta and events', () => {
             lenses: { reachability: lens, impact: lens, defenses: lens },
           },
           policy: { high: 3, medium: 2, low: null },
+          failOn: 'high',
           gating: true,
           invalidFindings: 1,
           coverage: [
@@ -1112,6 +1120,41 @@ describe('meta and events', () => {
       flags: [],
     })
     expect(result.meta).not.toHaveProperty('usage')
+  })
+
+  it('records failOn and gating per profile: high by default, gating true unless none', async () => {
+    const metaOf = async (profile: Profile): Promise<Pick<QuorumResult['meta']['profiles'][string], 'failOn' | 'gating'>> => {
+      const { failOn, gating } = (await createQuorum({
+        profiles: [profile],
+      }, portsFor(profile, fake('finder', () => findings()))).review({ diff })).meta.profiles[profile.id]
+      return { failOn, gating }
+    }
+    expect(await metaOf(securityProfile)).toEqual({ failOn: 'high', gating: true })
+    expect(await metaOf({ ...style, failOn: 'medium' })).toEqual({ failOn: 'medium', gating: true })
+    expect(await metaOf({ ...style, failOn: 'none' })).toEqual({ failOn: 'none', gating: false })
+
+    const deprecated: Profile = { ...style, gating: false }
+    const quorum = createQuorum({
+      profiles: [deprecated],
+    }, portsFor(deprecated, fake('finder', () => findings())))
+    expect((await quorum.review({ diff })).meta.profiles.style).toMatchObject({ failOn: 'none', gating: false })
+    expect(quorum.warnings).toEqual([
+      'style.gating is deprecated: set failOn instead, high for true and none for false',
+    ])
+  })
+
+  it('writes a profile\'s meta with its keys in a stable order', async () => {
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, fake('finder', () => findings()))).review({ diff })
+    expect(Object.keys(result.meta.profiles.security)).toEqual([
+      'providers',
+      'policy',
+      'failOn',
+      'gating',
+      'invalidFindings',
+      'coverage',
+    ])
   })
 
   it('serializes a verdict and the meta with their keys in a stable order', async () => {
@@ -2537,7 +2580,7 @@ describe('failure', () => {
 })
 
 describe('an advisory profile\'s failed research', () => {
-  const quiet: Profile = { ...style, gating: false }
+  const quiet: Profile = { ...style, failOn: 'none' }
 
   /** A provider that fails every call with `error`, and states `retries` when it is given. */
   const failing = (error: unknown, retries?: number): Provider => ({
@@ -2669,6 +2712,25 @@ describe('an advisory profile\'s failed research', () => {
       },
     }
     await expect(reviewWith(research, { signal: controller.signal })).rejects.toBe(reason)
+  })
+
+  it('runs a profile at fail-on none as advisory: its failed research is a research-failed gap, and at medium it ends the review', async () => {
+    const down = new ProviderError({
+      providerId: 'styled',
+      kind: 'http',
+      status: 503,
+      message: 'busy',
+    })
+    const reviewAt = async (failOn: Profile['failOn']): Promise<QuorumResult> => {
+      const profile: Profile = { ...style, failOn }
+      return createQuorum({
+        profiles: [profile],
+      }, portsFor(profile, failing(down))).review({ diff })
+    }
+    expect((await reviewAt('none')).meta.incomplete).toEqual([
+      { profile: 'style', reason: 'research-failed', detail: 'the research call failed (http 503)' },
+    ])
+    await expect(reviewAt('medium')).rejects.toBeInstanceOf(ProviderError)
   })
 
   it('keeps an advisory profile\'s research refused as too large a request-too-large gap', async () => {
@@ -3326,7 +3388,7 @@ describe('a large change in parts', () => {
   })
 
   it('records an advisory profile\'s failed parts as one research-failed gap counting them, and its other parts go on', async () => {
-    const advisory: Profile = { ...securityProfile, gating: false }
+    const advisory: Profile = { ...securityProfile, failOn: 'none' }
     const finder = partsFinder(500, (request) => {
       const part = partOf(request)
       if (part === 2) {

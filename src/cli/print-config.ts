@@ -97,10 +97,10 @@ function objectView(provider: Readonly<Provider>): Record<string, unknown> {
   }
 }
 
-/** A profile that runs: its providers, the votes its policy needs, and each prompt as its hash. */
+/** A profile that runs: the level its kept findings fail the review at (`none` for an advisory profile), its providers, the votes its policy needs, and each prompt as its hash. */
 function profileView({ profile, research, voters }: ResolvedProfile): Record<string, unknown> {
   return {
-    gating: profile.gating ?? true,
+    failOn: profile.failOn ?? 'high',
     research,
     lenses: { ...voters },
     thresholds: thresholdsFor(profile),

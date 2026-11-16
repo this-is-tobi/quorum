@@ -30,25 +30,26 @@ describe('resolveProfiles', () => {
     expect(resolve(undefined)).toEqual({
       profiles: [
         {
-          profile: securityProfile,
+          profile: { ...securityProfile, failOn: 'high' },
           research: 'main',
           voters: all('main'),
         },
       ],
       issues: [],
+      warnings: [],
     })
   })
 
   it('runs a built-in profile for an entry under its id, with the entry\'s fields over it', () => {
     const [security] = resolve({
       security: {
-        gating: false,
+        failOn: 'none',
         policy: { medium: 'unanimous' },
       },
     }).profiles
     expect(security.profile).toEqual({
       ...securityProfile,
-      gating: false,
+      failOn: 'none',
       policy: { high: 'unanimous', medium: 'unanimous', low: 'off' },
     })
   })
@@ -74,13 +75,14 @@ describe('resolveProfiles', () => {
               { id: 'reach', question: 'Reachable?' },
             ],
             policy: { high: 'unanimous', medium: 'unanimous', low: 'off' },
-            gating: true,
+            failOn: 'high',
           },
           research: 'main',
           voters: { reach: 'claude' },
         },
       ],
       issues: [],
+      warnings: [],
     })
   })
 
@@ -91,7 +93,7 @@ describe('resolveProfiles', () => {
           id: 'team',
           ...TEAM,
           policy: defaultPolicy,
-          gating: true,
+          failOn: 'high',
         },
         research: 'main',
         voters: { grounded: 'main' },
@@ -99,9 +101,52 @@ describe('resolveProfiles', () => {
     ])
   })
 
+  it.each([
+    [
+      { failOn: 'medium' },
+      'medium',
+    ],
+    [
+      { gating: true },
+      'high',
+    ],
+    [
+      { gating: false },
+      'none',
+    ],
+    [{}, 'high'],
+    [
+      { extends: 'security' },
+      'high',
+    ],
+  ] as const)('resolves %j to fail-on %s', (entry, failOn) => {
+    const { profile } = resolve({ security: entry }).profiles[0]
+    expect(profile.failOn).toBe(failOn)
+    expect(Object.hasOwn(profile, 'gating')).toBe(false)
+  })
+
+  it('refuses an entry that sets both gating and failOn', () => {
+    expect(resolve({
+      team: { ...TEAM, gating: true, failOn: 'high' },
+    }).issues).toEqual([
+      { path: 'profiles.team.gating', message: 'is deprecated and cannot be set with failOn: remove it' },
+    ])
+  })
+
+  it('warns once for each entry that sets gating', () => {
+    expect(resolve({
+      first: { ...TEAM, gating: false },
+      second: { ...TEAM, gating: true },
+      third: { ...TEAM, failOn: 'none' },
+    }).warnings).toEqual([
+      'profiles.first.gating is deprecated: set failOn instead, high for true and none for false',
+      'profiles.second.gating is deprecated: set failOn instead, high for true and none for false',
+    ])
+  })
+
   it('requires prompts and lenses of a profile that extends no built-in profile', () => {
     expect(resolve({
-      team: { gating: false },
+      team: { failOn: 'none' },
     }).issues).toEqual([
       { path: 'profiles.team.prompts.research', message: NEEDS_BASE },
       { path: 'profiles.team.prompts.vote', message: NEEDS_BASE },
@@ -154,7 +199,7 @@ describe('resolveProfiles', () => {
   it('checks every profile it is given, and runs only the selected ones, in their order', () => {
     expect(resolve({
       team: TEAM,
-      broken: { gating: false },
+      broken: { failOn: 'none' },
     }, ['security', 'team']).issues).toHaveLength(3)
     expect(resolve({
       team: TEAM,
@@ -177,6 +222,7 @@ describe('resolveProfiles', () => {
       issues: [
         { path: 'profiles', message: 'must hold at least one profile, or be left out' },
       ],
+      warnings: [],
     })
     expect(resolve({}, ['security']).profiles.map(({ profile }) => profile.id)).toEqual(['security'])
   })
@@ -187,6 +233,7 @@ describe('resolveProfiles', () => {
       issues: [
         { path: 'QUORUM_PROFILES', message: 'must name at least one profile' },
       ],
+      warnings: [],
     })
     expect(resolve(undefined, []).profiles).toEqual([])
   })
@@ -243,20 +290,23 @@ describe('resolveProfiles', () => {
     const inherited = Object.create({
       extends: 'security',
       gating: false,
+      failOn: 'none',
       prompts: TEAM.prompts,
       lenses: TEAM.lenses,
       roles: { research: 'claude' },
     }) as NonNullable<ConfigInput['profiles']>[string]
     expect(resolve({ team: inherited }).issues.map(({ path }) => path)).toEqual(['profiles.team.prompts.research', 'profiles.team.prompts.vote', 'profiles.team.lenses'])
-    expect(resolve({
-      security: Object.create({ gating: false }) as NonNullable<ConfigInput['profiles']>[string],
-    }).profiles[0].profile.gating).toBe(true)
+    const resolved = resolve({
+      security: Object.create({ gating: false, failOn: 'none' }) as NonNullable<ConfigInput['profiles']>[string],
+    })
+    expect(resolved.profiles[0].profile.failOn).toBe('high')
+    expect(resolved.warnings).toEqual([])
   })
 
   it('prints a profile id that is not a safe name as *, in every path', () => {
     const long = 'a'.repeat(65)
     expect(resolve({
-      [long]: { gating: false },
+      [long]: { failOn: 'none' },
     }).issues.map(({ path }) => path)).toEqual(['profiles.*.prompts.research', 'profiles.*.prompts.vote', 'profiles.*.lenses'])
     expect(resolve({
       [long]: {

@@ -17,7 +17,7 @@ import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap } from 
 import type { PartOutcome } from './parts.ts'
 import { MAX_STATED_TIMEOUT_MS, retriesProblem, timeoutProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts } from './ports.ts'
-import { profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
+import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
 import { renderTemplate } from './prompts.ts'
 import { addUsage, elapsed, ownData, stage, targetOf } from './stages/context.ts'
 import type { ProfileRun, RunContext } from './stages/context.ts'
@@ -466,6 +466,7 @@ function profileMeta(run: ProfileRun, invalidFindings: number, coverage: Coverag
   return {
     providers: providersOf(run),
     policy: { ...run.thresholds },
+    failOn: run.failOn,
     gating: run.gating,
     invalidFindings,
     coverage,
@@ -474,11 +475,13 @@ function profileMeta(run: ProfileRun, invalidFindings: number, coverage: Coverag
 
 /**
  * Compile a checked profile and its checked ports into the frozen run every review reads: the vote
- * template rendered once per lens, the thresholds resolved, `gating` true unless the profile says
- * otherwise, and each provider captured beside the `{ id, model }` ref events and meta report and
- * the deadline of its attempts.
+ * template rendered once per lens, the thresholds resolved, `failOn` (`high` unless the profile says
+ * otherwise, `none` for its deprecated `gating: false`) and `gating` (true unless `failOn` is `none`), and
+ * each provider captured beside the `{ id, model }` ref events and meta report and the deadline of its
+ * attempts.
  */
 function compile(profile: Profile, ports: ProfilePorts): ProfileRun {
+  const failOn = failOnOf(profile)
   const panelSize = String(profile.lenses.length)
   const lenses = profile.lenses.map(lens => Object.freeze({
     id: lens.id,
@@ -493,7 +496,8 @@ function compile(profile: Profile, ports: ProfilePorts): ProfileRun {
     }),
     lenses: Object.freeze(lenses),
     thresholds: Object.freeze(thresholdsFor(profile)),
-    gating: profile.gating ?? true,
+    failOn,
+    gating: failOn !== 'none',
     guidelines: profile.guidelines,
   })
 }

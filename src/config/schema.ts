@@ -5,6 +5,7 @@ import { MAX_PATTERNS, patternProblem, TOO_MANY_PATTERNS } from '../core/exclude
 import { MIN_PART_TOKENS } from '../core/parts.ts'
 import type { CompletionRequest, CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
 import { MAX_RETRIES, MAX_STATED_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, retriesProblem, timeoutProblem } from '../core/ports.ts'
+import { FAIL_ON_LEVELS } from '../core/profile.ts'
 import { ownData } from '../core/stages/context.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { ProviderProtocol } from '../providers/build.ts'
@@ -106,7 +107,8 @@ const rule = z.union([
 function profileSchema<R extends z.ZodType>(promptForm: R) {
   return z.strictObject({
     extends: z.enum([securityProfile.id]).optional().describe('The built-in profile this one starts from'),
-    gating: z.boolean().optional().describe('Whether it gates the exit code: a gating profile\'s kept high findings exit 1 and its gaps exit 4, an advisory profile\'s do neither'),
+    failOn: z.enum(FAIL_ON_LEVELS).optional().describe('The confidence at or above which a kept finding fails the review with exit 1: high, medium or low; none for an advisory profile, whose findings and gaps change no exit code. high when unset'),
+    gating: z.boolean().optional().describe('Deprecated: set failOn. true reads as failOn high and false as none, with a warning; setting both is refused'),
     roles: roles.optional().describe('The providers of this profile, over the top-level roles'),
     prompts: z.strictObject({
       research: promptForm.optional().describe('The research instructions: a template, or { file }'),

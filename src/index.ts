@@ -14,6 +14,8 @@ export type { ResolvedConfig, ResolvedProvider } from './config/resolve.ts'
 export type { ConfigInput, QuorumConfig, QuorumConfigFile } from './config/schema.ts'
 export { ConfigError, OutputError, ProviderError, QuorumError } from './core/errors.ts'
 export type { ConfigIssue, ProviderErrorKind } from './core/errors.ts'
+export { outcome } from './core/outcome.ts'
+export type { Outcome, OutcomeStatus } from './core/outcome.ts'
 export { defaultPolicy } from './core/policy.ts'
 export type { PolicyRules, Rule } from './core/policy.ts'
 export type { ChatMessage, CompletionRequest, CompletionResponse, EventSink, JsonSchema, ProfilePorts, Provider, QuorumPorts } from './core/ports.ts'
@@ -26,6 +28,7 @@ export type {
   CoverageStatus,
   CredentialKind,
   Estimate,
+  FailOn,
   Finding,
   Flag,
   FlagCode,

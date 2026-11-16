@@ -83,10 +83,11 @@ const FULL: QuorumConfigFile = {
     security: {},
     'security-strict': {
       extends: 'security',
+      gating: true,
       policy: { high: 'unanimous', medium: 'unanimous', low: 'off' },
     },
     'team-style': {
-      gating: false,
+      failOn: 'none',
       roles: { research: 'local', voter: 'local' },
       prompts: {
         research: { file: './prompts/research.md' },
@@ -560,6 +561,13 @@ describe('configFileSchema', () => {
       profile({ gating: 'yes' }),
       [
         at('profiles.team.gating', 'must be true or false'),
+      ],
+    ],
+    [
+      'failOn',
+      profile({ failOn: 'critical' }),
+      [
+        at('profiles.team.failOn', 'must be one of high, medium, low or none'),
       ],
     ],
     [
@@ -1129,6 +1137,7 @@ describe('configFileSchema', () => {
       profile({
         extends: secret,
         gating: secret,
+        failOn: secret,
         prompts: {
           research: [secret],
         },
@@ -1596,6 +1605,13 @@ describe('configJsonSchema', () => {
 
   it('advertises the bounds of contextTokens, 1 to 999999999, as the variable takes them', () => {
     expect(node('properties', 'providers', 'additionalProperties', 'properties', 'contextTokens')).toMatchObject({ type: 'integer', minimum: 1, maximum: 999_999_999 })
+  })
+
+  it('advertises failOn as one of four levels', () => {
+    expect(node('properties', 'profiles', 'additionalProperties', 'properties', 'failOn')).toMatchObject({
+      type: 'string',
+      enum: ['high', 'medium', 'low', 'none'],
+    })
   })
 
   it('advertises send as a list of described, non-empty strings', () => {

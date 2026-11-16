@@ -1,6 +1,6 @@
 # Profiles
 
-A profile is what a review looks for, as data: the finder's instructions, the panel's lenses and how their votes are graded, whether its findings gate, and optional guidelines. The CLI runs the `security` profile by default, and the profiles its config selects. A program can run it, change it, write a profile of its own, and run several in one review. This page covers the security profile, writing a profile and the checks it must pass, several profiles at once, gating, and guidelines.
+A profile is what a review looks for, as data: the finder's instructions, the panel's lenses and how their votes are graded, the level at which its findings fail the review, and optional guidelines. The CLI runs the `security` profile by default, and the profiles its config selects. A program can run it, change it, write a profile of its own, and run several in one review. This page covers the security profile, writing a profile and the checks it must pass, several profiles at once, gating, and guidelines.
 
 ## The security profile
 
@@ -12,7 +12,7 @@ A profile is what a review looks for, as data: the finder's instructions, the pa
 | `prompts` | The finder's instructions and the vote template, quoted on [Prompts](./60-prompts.md#the-security-profiles-templates) |
 | `lenses` | `reachability`, `impact` and `defenses`, below |
 | `policy` | `{ high: 'unanimous', medium: 'majority', low: 'off' }`: 3 of 3 kept votes is `high`, 2 of 3 is `medium` |
-| `gating` | `true` |
+| `failOn` | Unset: `high` |
 | `guidelines` | None |
 
 | Lens | Question |
@@ -40,7 +40,8 @@ const security = { ...securityProfile, guidelines: 'Queries go through db.query 
 | `prompts.vote` | `string` | Not blank, and takes `{{lens.id}}`, `{{lens.question}}` and `{{panel.size}}` only |
 | `lenses` | `{ id: string, question: string }[]` | At least one. Each `id` matches the same pattern and is unique in the profile; each `question` is a string that is not blank |
 | `policy` | `{ high, medium, low }` | Optional, `defaultPolicy` when unset. Each level is a rule: [Policy rules](./50-lenses-and-policy.md#policy-rules) |
-| `gating` | `boolean` | Optional, `true` when unset |
+| `failOn` | `'high' \| 'medium' \| 'low' \| 'none'` | Optional, `high` when unset: [Gating](#gating) |
+| `gating` | `boolean` | Deprecated: `true` is `failOn: 'high'`, `false` is `'none'`; not with `failOn` |
 | `guidelines` | `string` | Optional: [Guidelines](#guidelines) |
 
 The reply the finder must give is fixed, whatever the profile: a `findings` array whose every entry holds `file`, `line` (a line of the new file), `category`, `quote` (the code, copied verbatim from the diff) and `summary`. The system message carries that schema, but your research instructions should say what each field means for what you review, as the security profile's do.
@@ -66,7 +67,7 @@ export const naming: Profile = {
     { id: 'reader', question: 'Would someone reading only the calling code be misled by it?' },
   ],
   policy: { high: 'unanimous', medium: 'any', low: 'off' },
-  gating: false,
+  failOn: 'none',
 }
 ```
 
@@ -90,7 +91,8 @@ With two lenses, that policy makes 2 of 2 kept votes `high` and 1 of 2 `medium`.
 | `<id>.prompts.research`, `<id>.prompts.vote` | `must be a string`, or `must not be empty` |
 | `<id>.prompts.research` | `{{diff}} is not allowed: the diff is appended automatically as fenced data`, or `{{file}} is not allowed: the research template takes no variables` |
 | `<id>.prompts.vote` | `{{lens.name}} is not allowed: the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}` |
-| `<id>.gating` | `must be true or false` |
+| `<id>.failOn` | `must be one of high, medium, low or none` |
+| `<id>.gating` | `must be true or false`, or `is deprecated and cannot be set with failOn: remove it` |
 | `<id>.guidelines` | `must be a string` |
 
 A template gets one line per distinct variable it may not use, in the order they first appear, and a blank one gets `must not be empty` alone. The checks read the shape first, so a program without types that passes a malformed profile gets these lines, never a `TypeError`.
@@ -103,6 +105,8 @@ A profile the checks accept may still set something that cannot take full effect
 | --- | --- |
 | `<id>.policy.<level> needs the same <n> vote(s) as policy.<higher level> with <k> lens(es), so it never applies` | Two enabled levels need the same number of kept votes, so the lower one is never reached |
 | `<id>.prompts.vote uses neither {{lens.id}} nor {{lens.question}}, so every lens gets the same instructions` | With more than one lens, a vote template that names neither asks every voter the same thing |
+| `<id>.gating is deprecated: set failOn instead, high for true and none for false` | The profile sets `gating`, which still reads: [Gating](#gating) |
+| `<id>.failOn is low, but policy.low is off, so it acts as medium` | No kept finding is `low` while the policy's `low` is off, so `low` fails what `medium` fails |
 
 The default policy meets the first with one or two lenses: the `naming` profile above, with its policy left unset, would get `naming.policy.medium needs the same 2 vote(s) as policy.high with 2 lens(es), so it never applies`. The CLI prints each one as a `warning:` line before its banner, and the security profile has none.
 
@@ -144,9 +148,16 @@ The cost grows with each profile: one more research call, and one call per lens 
 
 ## Gating
 
-`gating`, `true` when unset, says whether a profile's kept `high` findings set exit code `1`, and its gaps exit code `4`. The CLI exits `1` when a kept finding is `high` and its profile's `meta.profiles.<id>.gating` is not `false`; a profile missing from `meta` counts as gating, so a gap in a result never hides a finding. Otherwise it exits `4` when a gating profile's review is incomplete, and `0` when it is not.
+`failOn` is the confidence at or above which a profile's kept findings fail the review: `high`, `medium` or `low`, or `none` for an advisory profile. It is `high` when unset. A profile gates unless its `failOn` is `none`.
 
-A profile with `gating: false` reports every finding and every gap in full, and neither changes the exit code: its kept findings are in `kept`, its unreviewed findings and gaps in `unreviewed` and `meta.incomplete`, and the exit code follows the gating profiles alone. An advisory profile's failed research, the call or its reply, is its own gap, `research-failed`, and the other profiles go on; a gating profile's ends the review, exit `3`. The CLI runs the profiles its config selects, and by default the security profile alone, which gates. A program that runs other profiles reads each one's `gating` in `meta` to apply the same rule.
+- **A kept finding at or above the level exits `1`.** The levels run `high`, then `medium`, then `low`: `failOn: 'medium'` fails a kept finding at `high` or `medium`, and `failOn: 'high'` one at `high` only. The finding counts for its own profile's level, so one review can fail one profile at `medium` and another at `high`.
+- **The gaps of a gating profile exit `4`.** An unreviewed finding, or an entry of `meta.incomplete`, of a gating profile makes the review incomplete, and the CLI exits `4` unless a kept finding exits `1` first. A review with neither exits `0`.
+- **`low` needs the policy's `low` on.** A finding reaches `low` only when the policy's `low` rule is not `off`, as in the default policy. With it off no kept finding is `low`, so `failOn: 'low'` fails what `medium` fails, and the profile warns of it ([Warnings](#warnings)).
+- **`gating` is deprecated.** `true` reads as `failOn: 'high'` and `false` as `'none'`, with the warning `<id>.gating is deprecated: set failOn instead, high for true and none for false`, which the CLI prints before its banner and a config prints as `profiles.<id>.gating is deprecated: ...`. A profile or a config entry that sets both is refused, at its `gating` ([The checks](#the-checks)). The security profile states neither, so a program's `{ ...securityProfile, gating: false }` still runs, with the warning.
+
+A profile at `failOn: 'none'` reports every finding and every gap in full, and neither changes the exit code: its kept findings are in `kept`, its unreviewed findings and gaps in `unreviewed` and `meta.incomplete`, and the exit code follows the gating profiles alone. An advisory profile's failed research, the call or its reply, is its own gap, `research-failed`, and the other profiles go on; a gating profile's ends the review, exit `3`. The CLI runs the profiles its config selects, and by default the security profile alone, which gates.
+
+A result records each profile's level in `meta.profiles.<id>.failOn`, and `gating` beside it, true unless the level is `none`. A program that runs other profiles reads `failOn` there, or calls `outcome`, which applies the rule of the CLI's exit code: [`outcome`](../95-reference/30-library-api.md#outcome).
 
 ## Guidelines
 

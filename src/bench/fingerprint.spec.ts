@@ -126,6 +126,19 @@ describe('fingerprint', () => {
     }), of(PROVIDER))).toBe(false)
   })
 
+  it('holds failOn in the form, so gating false and failOn none fingerprint alike', () => {
+    const security = (fields: Record<string, unknown>): ResolvedConfig => resolvedConfig({
+      providers: { p: PROVIDER },
+      profiles: { security: fields },
+    } as ConfigInput)
+    expect(same(security({ gating: false }), security({ failOn: 'none' }))).toBe(true)
+    expect(same(security({ gating: true }), security({ failOn: 'high' }))).toBe(true)
+    expect(same(security({ failOn: 'high' }), of(PROVIDER))).toBe(true)
+    expect(same(security({ failOn: 'medium' }), of(PROVIDER))).toBe(false)
+    expect(same(security({ failOn: 'none' }), of(PROVIDER))).toBe(false)
+    expect(canonicalSettings(security({ gating: false }))).toContain('"failOn":"none"')
+  })
+
   it('fills the defaults, so an unset limit and its default are alike', () => {
     expect(same(resolvedConfig({
       providers: { p: PROVIDER },

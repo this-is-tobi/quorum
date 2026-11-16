@@ -1,0 +1,152 @@
+import { FAIL_ON_LEVELS } from './profile.ts'
+import { ownData } from './stages/context.ts'
+import type { FailOn, QuorumResult, Verdict } from './types.ts'
+
+/** The HTTP statuses, besides 5xx, that a call fails with in passing: a request timeout, a conflict and a rate limit. */
+const PASSING_STATUSES: ReadonlySet<number> = new Set([408, 409, 429])
+
+/** What a review comes to: `pass` (nothing to fail on), `findings` (a kept finding reached its profile's level) or `incomplete` (a gap or an unreviewed finding of a gating profile). */
+export type OutcomeStatus = 'pass' | 'findings' | 'incomplete'
+
+/**
+ * What a review comes to, as `outcome` reads it from a result: the `status`, the process exit code that says it
+ * (`0`, `1` or `4`), and whether `allowIncomplete` lifted an incomplete review into a pass, so a report never
+ * calls that run complete.
+ */
+export interface Outcome {
+  readonly status: OutcomeStatus
+  readonly exitCode: 0 | 1 | 4
+  readonly lifted: boolean
+}
+
+const PASS: Outcome = Object.freeze({ status: 'pass', exitCode: 0, lifted: false })
+const LIFTED: Outcome = Object.freeze({ status: 'pass', exitCode: 0, lifted: true })
+const FINDINGS: Outcome = Object.freeze({ status: 'findings', exitCode: 1, lifted: false })
+const INCOMPLETE: Outcome = Object.freeze({ status: 'incomplete', exitCode: 4, lifted: false })
+
+/**
+ * What a finished review comes to: `findings`, exit 1, when a kept finding is at or above the level of its
+ * profile (`failOn`: `high`, `medium` or `low`), `incomplete`, exit 4, when an unreviewed finding or a gap
+ * belongs to a gating profile, and `pass`, exit 0, otherwise. A profile gates unless its level is `none`. The
+ * exit 1 comes first: a kept finding that reached its level is reported whatever else is missing.
+ * `allowIncomplete` turns that 4 into 0, `lifted`, only when every gap of a gating profile is a `vote-failed`
+ * one (an unreviewed finding is no gap) and, for each gating profile that has a gap, every failed vote of its
+ * own kept and unreviewed findings failed in passing, as `failedInPassing` says: a dropped connection, a
+ * timeout, or an HTTP 408, 409, 429 or 5xx. A gating profile with no gap blocks no other profile's lift. A gap
+ * with no failed vote behind it lifts nothing: an unreviewed finding whose votes hold none, or a
+ * `vote-failed` gap beside kept findings that hold none, which no review writes. Advisory flags never change it.
+ * The level of a profile is the one the result records (`profileFailOn`), so a profile missing from
+ * `meta.profiles` gates at `high` and a gap never hides.
+ *
+ * Why so narrow: a pull request causes the other gaps directly (ADR-0012). It pads a hunk until no
+ * research request holds it (`too-large`), floods the research with decoy findings past `maxFindings`, or
+ * plants text that a voter refuses or that cuts its reply off or leaves it unusable, one
+ * `.gitattributes` line, one NUL byte or a submodule's bump leaves a file's change out of the diff, and
+ * a file named as a secret, or one that holds a credential, is held back from every request (`secret`).
+ * The flag lifts only what the code names, so a reason added later is out of its reach by default,
+ * and so is what a result built by hand or by an older quorum leaves unsaid: a failed vote with no
+ * `failure`, a verdict whose `votes` is no array, a reason no quorum writes. A gating profile's
+ * `research-failed` gap, which no review records, is out too: a review that read nothing is never
+ * turned into exit 0. Planted text can still draw out a reply that ends in a lifted failure, a
+ * timeout of its own, so on a gating profile do not use the flag for a pull request you do not trust.
+ *
+ * @example
+ * const { exitCode } = outcome(result, { allowIncomplete: true })
+ */
+export function outcome(result: QuorumResult, options: { readonly allowIncomplete?: boolean } = {}): Outcome {
+  const gates = (profile: unknown): boolean => profileFailOn(result, profile) !== 'none'
+  if (result.kept.some(verdict => reaches(verdict.confidence, profileFailOn(result, verdict.profile)))) return FINDINGS
+  const incomplete = result.unreviewed.some(verdict => gates(verdict.profile)) || result.meta.incomplete.some(entry => gates(entry.profile))
+  if (!incomplete) return PASS
+  return options.allowIncomplete === true && liftable(result, gates)
+    ? LIFTED
+    : INCOMPLETE
+}
+
+/**
+ * The level at or above which `profile`'s kept findings fail the review, as `result` records it: its own
+ * `failOn` when that is one of the four levels, else `none` when its own `gating` is `false`, as a result
+ * recorded before `failOn` says it, else `high`. So a profile missing from `meta.profiles`, a profile that is
+ * no string, or an entry that says nothing readable gates at `high`. It reads own data only and never throws.
+ */
+export function profileFailOn(result: QuorumResult, profile: unknown): FailOn {
+  const entry = typeof profile === 'string'
+    ? ownData(result.meta.profiles, profile)
+    : undefined
+  const failOn = ownData(entry, 'failOn')
+  if (typeof failOn === 'string' && FAIL_ON_LEVELS.includes(failOn as FailOn)) return failOn as FailOn
+  return ownData(entry, 'gating') === false
+    ? 'none'
+    : 'high'
+}
+
+/** Whether a kept finding of `confidence` fails a profile at `level`: it is at or above it, and the level is not `none`. `none` ranks last, so it is never at or above a level. */
+function reaches(confidence: unknown, level: FailOn): boolean {
+  const rank = FAIL_ON_LEVELS.indexOf(confidence as FailOn)
+  return level !== 'none' && rank !== -1 && rank <= FAIL_ON_LEVELS.indexOf(level)
+}
+
+/** True when every gap of a gating profile is a `vote-failed` one, and each gating profile that has a gap passes `liftsProfile`. */
+function liftable(result: QuorumResult, gates: (profile: unknown) => boolean): boolean {
+  const gaps = result.meta.incomplete.filter(entry => gates(entry.profile))
+  if (gaps.some(entry => entry.reason !== 'vote-failed')) return false
+  const unreviewed = result.unreviewed.filter(verdict => gates(verdict.profile))
+  const profiles = new Set([
+    ...gaps,
+    ...unreviewed,
+  ].map(({ profile }) => profile))
+  return [...profiles].every(profile => liftsProfile(result, profile, gaps.some(entry => entry.profile === profile)))
+}
+
+/**
+ * True when the failed votes behind `profile`'s gaps all failed in passing: those of its own kept and
+ * unreviewed findings, each finding's `votes` an array. Every unreviewed finding holds a failed vote, and
+ * so do the kept findings when the profile has a `vote-failed` gap (`gap`): a gap with no failed vote behind
+ * it lifts nothing.
+ */
+function liftsProfile(result: QuorumResult, profile: string, gap: boolean): boolean {
+  const kept = failedVotesOf(result.kept.filter(verdict => verdict.profile === profile))
+  const unreviewed = failedVotesOf(result.unreviewed.filter(verdict => verdict.profile === profile))
+  if (kept === undefined || unreviewed === undefined) return false
+  return [
+    ...kept,
+    ...unreviewed,
+  ].every(failed => failed.every(lensVote => failedInPassing(ownData(lensVote, 'failure'))))
+  && unreviewed.every(failed => failed.length > 0)
+  && (!gap || kept.some(failed => failed.length > 0))
+}
+
+/**
+ * The failed votes of each verdict, in order, or undefined when the `votes` of one is no array. A vote is
+ * cast only when its own data `vote` is an object and its own data `failure` is `null` or absent: any other
+ * entry is failed, so a vote that records a failure never counts as cast.
+ */
+function failedVotesOf(verdicts: readonly Verdict[]): unknown[][] | undefined {
+  const lists = verdicts.map((verdict) => {
+    const votes: unknown = verdict.votes
+    return Array.isArray(votes)
+      ? votes.filter((lensVote) => {
+          const cast = ownData(lensVote, 'vote')
+          const failure = ownData(lensVote, 'failure')
+          return typeof cast !== 'object' || cast === null || (failure !== null && failure !== undefined)
+        })
+      : undefined
+  })
+  return lists.every(list => list !== undefined)
+    ? lists
+    : undefined
+}
+
+/**
+ * True for a vote's failure that is infrastructure's: its own data `kind` is `network` or `timeout`, or
+ * `http` with an own data `status` of 408, 409, 429 or an integer from 500 to 599. Anything else is false:
+ * a refusal, a reply cut off or unusable, a request too large, any other status, a status that is no
+ * number, a kind no provider has, `null` and a value that is no object. It reads own data only, never
+ * runs a getter and never throws.
+ */
+export function failedInPassing(failure: unknown): boolean {
+  const kind = ownData(failure, 'kind')
+  if (kind === 'network' || kind === 'timeout') return true
+  const status = ownData(failure, 'status')
+  return kind === 'http' && typeof status === 'number' && Number.isInteger(status) && (PASSING_STATUSES.has(status) || (status >= 500 && status <= 599))
+}
