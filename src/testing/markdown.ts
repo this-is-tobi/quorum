@@ -1,5 +1,22 @@
 /** What the specs of the Markdown reporters read a document through: the text a reporter wrote itself, with the text a model or a diff wrote taken out. */
 
+import { expect } from 'vitest'
+import type { Verdict } from '../core/types.ts'
+import { SQL } from './report.ts'
+
+/** A right-to-left override, built from its code point so no file holds it raw. */
+export const RLO = String.fromCharCode(0x202E)
+
+/** A kept finding whose every text holds what a viewer would act on: a mention, a reference, an emoji, math, an image, a workflow command, a marker, a fence and a `|`. */
+export const HOSTILE: Verdict = {
+  ...SQL,
+  file: 'src/`x`|y.js',
+  category: '@octocat #1 :smile: `',
+  summary: `<!-- quorum:summary:v1 --> ![x](https://e.example/x.png) $x$\n${RLO} ##[add-mask]e`,
+  evidence: ' a()\n+::error::x ~~~ ``` \n b()',
+  evidenceRow: 1,
+}
+
 /** The run of backticks that starts at `from`: its length. */
 function runLength(line: string, from: number): number {
   let end = from
@@ -78,4 +95,11 @@ export function codeFree(markdown: string): string[] {
     if (fence === 0) lines.push(withoutSpans(line))
   }
   return lines
+}
+
+/** The check of a document no text of a model or a diff is in outside a span or a block: `marker` first, then only the words, numbers and Markdown quorum writes. */
+export function expectCodeWritten(document: string, marker: string): void {
+  expect(document.split('\n')[0]).toBe(marker)
+  const written = codeFree(document).slice(1)
+  expect(written.filter(line => !/^(?:#{3,4} )?[\w .,:;()'·*|-]*$/u.test(line) || /:[\w+-]+:/.test(line))).toEqual([])
 }

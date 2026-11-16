@@ -95,6 +95,7 @@ The report goes to stdout: the text report on a terminal, the JSON result on a p
 - [The JSON result](./docs/95-reference/20-json-result.md) *- Every field of a result in the order it is written, the incomplete reasons, and an example*
 - [Library API](./docs/95-reference/30-library-api.md) *- `createQuorum`, its ports, the events, abort, the errors and every export*
 - [Architecture](./docs/95-reference/40-architecture.md) *- The modules, the dependency rule, the stages of a review, and how the suite runs*
+- [The Action's payload](./docs/95-reference/50-action-payload.md) *- The document quorum-action posts: the commit, the conclusion, the summary and the line comments*
 
 ## License
 
