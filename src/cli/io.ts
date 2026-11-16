@@ -7,8 +7,11 @@
 import { parseArgs } from 'node:util'
 import type { ParseArgsOptionsConfig } from 'node:util'
 import type { Env } from '../config/env.ts'
-import { ConfigError } from '../core/errors.ts'
+import { WriteFailure } from '../bench/run-dir.ts'
+import { ConfigError, OutputError, ProviderError } from '../core/errors.ts'
 import { inertLine } from '../core/sanitize.ts'
+import { GitError } from '../git/run.ts'
+import type { ReportView } from '../report/view.ts'
 import type { GitSeam } from '../sources/read.ts'
 
 /** Exit codes (ADR-0008, amended by ADR-0012). */
@@ -44,16 +47,48 @@ export interface CliIO {
  * The `Error:` lines of a failure, each inert: a ConfigError's issues one per line, as its message
  * lists them, and any other failure's message on one line, so a line break in a file name or in text
  * a server sent cannot start a line of its own.
+ *
+ * Three failures hold text from outside quorum: an `OutputError` quotes the first 200 characters of a model's
+ * reply, a `ProviderError` quotes what its server sent and can name its origin, and a `GitError` quotes what
+ * git printed. Under the public view, whose log a stranger may read, each is written in fixed words instead,
+ * after `Error: `: `<stage> reply unusable: <reason>` (the reason is quorum's), `<provider>: the call failed
+ * (<kind>[ <status>])`, `git <operation> failed[ (exit <code>)]`, and `the review failed` for any other. A
+ * `ConfigError` is written as the full view writes it: it holds config paths and words quorum wrote, and a
+ * `WriteFailure` too: its message names a file's label and an error code, never a path.
  */
-export function errorLines(error: unknown): string {
-  const lines = error instanceof ConfigError
-    ? error.message.split('\n')
+export function errorLines(error: unknown, view: ReportView = 'full'): string {
+  const lines = error instanceof ConfigError || error instanceof WriteFailure || view === 'full'
+    ? fullLines(error)
     : [
-        errorMessage(error),
+        publicMessage(error),
       ]
   return lines.map((line, index) => inertLine(index === 0
     ? `Error: ${line}`
     : line)).join('\n')
+}
+
+function fullLines(error: unknown): string[] {
+  return error instanceof ConfigError
+    ? error.message.split('\n')
+    : [
+        errorMessage(error),
+      ]
+}
+
+/** A failure other than a `ConfigError` or a `WriteFailure` in the fixed words of the public view. */
+function publicMessage(error: unknown): string {
+  if (error instanceof OutputError) return `${error.stage} reply unusable: ${error.reason}`
+  if (error instanceof ProviderError) {
+    return `${error.providerId}: the call failed (${error.kind}${error.status === undefined
+      ? ''
+      : ` ${error.status}`})`
+  }
+  if (error instanceof GitError) {
+    return `git ${error.operation} failed${error.exitCode === null
+      ? ''
+      : ` (exit ${error.exitCode})`}`
+  }
+  return 'the review failed'
 }
 
 /**

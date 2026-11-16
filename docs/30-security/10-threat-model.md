@@ -200,6 +200,17 @@ The CLI writes nothing that a terminal or a GitHub Actions runner would act on, 
 
 Markdown, which GitHub renders, follows one rule: text a model or the diff wrote appears in it only in a code span or a fenced block whose fence code computes, longer than any backtick run inside, so no mention, reference, link, image, HTML or line break of that text acts. Plain text a viewer may link, such as a SARIF message, passes `inertPlain`, which breaks an `@` that starts a word, a `#` before a digit and `://`, and caps the text. `codeSpan`, `fencedBlock` and `inertPlain` do this, and the library exports them: [Printing a review yourself](./30-output-handling.md#printing-a-review-yourself).
 
+### The public view
+
+On a public repository, a pull request's comments and code scanning alerts are readable by anyone who can see it, and the job summary and the artifact of the review job by anyone signed in. The author of a change is a reader of all of them, and a review of an author's text that publishes its reasoning, its discarded findings or its model is an oracle the author tunes the next push against. So the review job writes the public view, `--view public`, and the other sinks render it: [The public view](./30-output-handling.md#the-public-view).
+
+| Sink | Who reads it | What it holds |
+| --- | --- | --- |
+| Artifact, job summary | Anyone signed in, on a public repository | The public view; the artifact holds the full result only on a private repository |
+| The review's stderr | The log, public on a public repository | Under `--view public`, the banner names each provider by its config key with no model or origin, a gap's line gives its profile, reason and file with no detail, a dropped finding has no reason, and a failure is in fixed words |
+
+The view withholds each vote's reasoning and error, the discarded findings (it counts them), the providers and models, the usage and each gap's detail, and keeps the rest. A format that writes for a stranger renders the public view of whatever it is given, so no call reaches it with the reasoning in it. `outcome` reads a view as the result it came from, so a job that holds only the view concludes what the review's exit code said, a lifted gap included.
+
 ## What the harness cannot detect
 
 Quorum cannot tell what a model read: it checks what the model answered, never what it saw of the prompt. An endpoint that truncates an oversized prompt answers all the same. Ollama's `/v1` cuts a prompt past the model's context length and still returns HTTP 200, so a review of what was left can come back clean, with exit `0`. So the CLI's built-in default speaks Ollama's native API, which is told the context size and, from Ollama 0.12.6, refuses an overflow, and quorum refuses to send what may not fit, by [the size guard](#the-size-guard), a bound that holds for the open tokenizers checked. What the guard cannot know remains:

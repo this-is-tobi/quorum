@@ -1,5 +1,5 @@
 import type { Outcome } from '../core/outcome.ts'
-import type { QuorumResult } from '../core/types.ts'
+import type { PublicView, QuorumResult } from '../core/types.ts'
 
 /**
  * What a reporter is told besides the result: whether it may color what it writes, and what the review
@@ -10,10 +10,15 @@ export interface ReportContext {
   readonly outcome: Outcome
 }
 
+/** What a reporter renders: a result, or its public view (see `publicView`), which every reporter reads as the result it came from. */
+export type ReportInput = QuorumResult | PublicView
+
 /**
  * One way to write a result for a person or a program. It renders the whole report as one text, ending in a
- * line feed, and is pure: it reads what it is given and nothing else.
+ * line feed, and is pure: it reads what it is given and nothing else. A reporter marked `publicOnly` writes
+ * what a stranger may read, so it renders `publicView(input)` itself, whatever it is given.
  */
 export interface Reporter {
-  readonly render: (result: QuorumResult, context: ReportContext) => string
+  readonly render: (input: ReportInput, context: ReportContext) => string
+  readonly publicOnly?: true
 }

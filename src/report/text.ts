@@ -11,6 +11,9 @@
  * 7. the time and the tokens;
  * 8. the verdict, which says what the exit code says.
  *
+ * The report of a public view (`publicView`) is the same but for two lines: a gap is written in the fixed words of
+ * its reason, as it has no detail, and the time has no token count, as the view has no usage.
+ *
  * The verdict is last because the end of the output is what stays on a terminal's screen, and it is the line
  * a person acts on.
  *
@@ -23,9 +26,10 @@
 import { profileFailOn } from '../core/outcome.ts'
 import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
 import { inertLine, showHidden } from '../core/sanitize.ts'
-import type { CoverageEntry, CoverageStatus, IncompleteEntry, LeftOutFile, QuorumMeta, QuorumResult, ReviewSource, Verdict } from '../core/types.ts'
-import { flagWhere, leftOutEntry, plural } from './lines.ts'
-import type { Reporter } from './reporter.ts'
+import type { CoverageEntry, CoverageStatus, IncompleteEntry, LeftOutFile, PublicGap, PublicMeta, PublicVerdict, QuorumMeta, ReviewSource, Verdict } from '../core/types.ts'
+import { flagWhere, GAP_WORDS, leftOutEntry, plural } from './lines.ts'
+import type { Reporter, ReportInput } from './reporter.ts'
+import { discardedOf, isPublicView, voteFailed } from './view.ts'
 
 /** The width a line of prose wraps at, counted in code points. */
 const COLUMNS = 80
@@ -135,13 +139,13 @@ function sourceText(source: ReviewSource): string {
 }
 
 /** The header: the version, the source, the profiles that ran, and how many files the diff holds, by the first profile's coverage. */
-function headerLine(meta: QuorumMeta): string {
+function headerLine(meta: QuorumMeta | PublicMeta): string {
   const profiles = Object.values(meta.profiles)
   return inertLine(`quorum ${meta.version} · ${sourceText(meta.source)} · ${Object.keys(meta.profiles).join(', ')} · ${plural(profiles[0]?.coverage.length ?? 0, 'file')}`)
 }
 
 /** The level word of a finding: its confidence when kept, `UNREVIEWED` when its failed votes left it undecided. */
-function levelPiece(verdict: Verdict, kept: boolean): Piece {
+function levelPiece(verdict: Verdict | PublicVerdict, kept: boolean): Piece {
   if (!kept) return { text: 'UNREVIEWED', style: 'unreviewed' }
   switch (verdict.confidence) {
     case 'high':
@@ -199,7 +203,7 @@ function splitRow(row: string): { marker: string, code: string } {
 }
 
 /** The lines of a finding's evidence: the cited row marked with `>`, and the added and context rows numbered from the cited line, a removed row with no number. */
-function evidenceLines(verdict: Verdict, color: boolean): string[] {
+function evidenceLines(verdict: Verdict | PublicVerdict, color: boolean): string[] {
   const rows = verdict.evidence === ''
     ? []
     : verdict.evidence.split('\n')
@@ -230,8 +234,8 @@ function evidenceLines(verdict: Verdict, color: boolean): string[] {
 }
 
 /** How a finding's lenses voted: how many kept it, and how many votes failed. */
-function votesLine(verdict: Verdict): string {
-  const failed = verdict.votes.filter(({ vote }) => vote === null).length
+function votesLine(verdict: Verdict | PublicVerdict): string {
+  const failed = verdict.votes.filter(voteFailed).length
   const failures = failed === 0
     ? ''
     : `, ${plural(failed, 'vote')} failed`
@@ -239,7 +243,7 @@ function votesLine(verdict: Verdict): string {
 }
 
 /** A finding's block: its head, its claim, its evidence rows, its votes and a blank line. */
-function findingLines(verdict: Verdict, kept: boolean, color: boolean): string[] {
+function findingLines(verdict: Verdict | PublicVerdict, kept: boolean, color: boolean): string[] {
   return [
     line([
       levelPiece(verdict, kept),
@@ -264,10 +268,10 @@ function byCodeUnits(a: string, b: string): number {
 }
 
 /** The kept findings and then the unreviewed ones, stable-sorted by file and then by line, so a kept one stays before an unreviewed one at the same place. */
-function orderedFindings(result: QuorumResult): Array<{ verdict: Verdict, kept: boolean }> {
+function orderedFindings(input: ReportInput): Array<{ verdict: Verdict | PublicVerdict, kept: boolean }> {
   return [
-    ...result.kept.map(verdict => ({ verdict, kept: true })),
-    ...result.unreviewed.map(verdict => ({ verdict, kept: false })),
+    ...(input.kept as ReadonlyArray<Verdict | PublicVerdict>).map(verdict => ({ verdict, kept: true })),
+    ...(input.unreviewed as ReadonlyArray<Verdict | PublicVerdict>).map(verdict => ({ verdict, kept: false })),
   ].sort((a, b) => byCodeUnits(a.verdict.file, b.verdict.file) || a.verdict.line - b.verdict.line)
 }
 
@@ -285,15 +289,15 @@ function coverageLine(coverage: readonly CoverageEntry[]): string {
   return `  ${[`${count('reviewed')} of ${plural(coverage.length, 'file')} reviewed`, ...others].join(', ')}`
 }
 
-/** Each profile in run order: its fail-on level and its counts, with the findings it dropped for citing code outside the diff, then its coverage. */
-function profileLines(result: QuorumResult): string[] {
+/** Each profile in run order: its fail-on level and its counts, with the findings it dropped for citing code outside the diff, then its coverage. A public view's discarded count is the one it records. */
+function profileLines(result: ReportInput): string[] {
   return Object.entries(result.meta.profiles).flatMap(([id, profile]) => {
-    const count = (verdicts: readonly Verdict[]): number => verdicts.filter(verdict => verdict.profile === id).length
+    const count = (verdicts: ReadonlyArray<Verdict | PublicVerdict>): number => verdicts.filter(verdict => verdict.profile === id).length
     const outside = profile.invalidFindings > 0
       ? `, ${profile.invalidFindings} outside the diff`
       : ''
     return [
-      inertLine(`${id} (fail-on ${profileFailOn(result, id)}): ${count(result.kept)} kept, ${count(result.unreviewed)} unreviewed, ${count(result.discarded)} discarded${outside}`),
+      inertLine(`${id} (fail-on ${profileFailOn(result, id)}): ${count(result.kept as ReadonlyArray<Verdict | PublicVerdict>)} kept, ${count(result.unreviewed as ReadonlyArray<Verdict | PublicVerdict>)} unreviewed, ${discardedOf(result, id)} discarded${outside}`),
       inertLine(coverageLine(profile.coverage)),
     ]
   })
@@ -321,9 +325,11 @@ function durationText(ms: number): string {
     : `${Math.round(ms / 1000)} s`
 }
 
-/** How long the review took and what it used: the tokens in and out, and the cost when the usage holds one, or that none was reported. */
-function timeLine(meta: QuorumMeta): string {
-  const { usage } = meta
+/** How long the review took and what it used: the tokens in and out, and the cost when the usage holds one, or that none was reported. A public view has no usage, so its line is the time alone. */
+function timeLine(input: ReportInput): string {
+  const { meta } = input
+  if (isPublicView(input)) return inertLine(`took ${durationText(meta.durationMs)}`)
+  const { usage } = input.meta
   const cost = usage?.costUsd === undefined
     ? ''
     : `, $${usage.costUsd.toFixed(4)}`
@@ -346,6 +352,14 @@ function gapLines(gap: IncompleteEntry): string[] {
     : wrap(`gap: ${gap.profile} ${gap.reason},`, gap.detail)
 }
 
+/** A public view's gap lines: `gap: <profile> <reason>`, then ` at <file>` when it has one, and the fixed words of its reason wrapped after a comma. */
+function publicGapLines(gap: PublicGap): string[] {
+  const at = gap.file === undefined
+    ? ''
+    : ` at ${JSON.stringify(gap.file)}`
+  return wrap(`gap: ${gap.profile} ${gap.reason}${at},`, GAP_WORDS[gap.reason])
+}
+
 /** The last line: the exit code, the status and why, from the one outcome the exit code is made of. */
 function verdictLine(outcome: Outcome, color: boolean): string {
   const why = outcome.status === 'pass' && outcome.lifted
@@ -362,20 +376,24 @@ function verdictLine(outcome: Outcome, color: boolean): string {
  * The review as a person reads it on a terminal: the header, the findings with their evidence, the profiles'
  * counts and coverage, what was left out, the gaps, the flags, the time and the tokens, and last the verdict. See
  * the module's comment for the order. With `color`, only the words quorum wrote are colored: the level, the
- * location, the marker of the cited row, a row's `+` or `-`, and the status word of the verdict.
+ * location, the marker of the cited row, a row's `+` or `-`, and the status word of the verdict. It reads a public
+ * view as the result it came from, but for the two lines the module's comment names.
  */
 export const text: Reporter = {
   render: (result, { color, outcome }) => {
     const { meta } = result
+    const gaps = isPublicView(result)
+      ? result.meta.incomplete.flatMap(publicGapLines)
+      : result.meta.incomplete.flatMap(gapLines)
     const lines = [
       headerLine(meta),
       '',
       ...orderedFindings(result).flatMap(({ verdict, kept }) => findingLines(verdict, kept, color)),
       ...profileLines(result),
       ...leftOutLines(meta.leftOut),
-      ...meta.incomplete.flatMap(gapLines).map(inertLine),
+      ...gaps.map(inertLine),
       ...meta.flags.flatMap(flag => wrap(`flag: ${flag.code}${flagWhere(flag)},`, flag.detail)).map(inertLine),
-      timeLine(meta),
+      timeLine(result),
       verdictLine(outcome, color),
     ]
     return `${lines.join('\n')}\n`

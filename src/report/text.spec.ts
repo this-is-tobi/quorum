@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
-import type { Flag, IncompleteEntry, LeftOutFile, QuorumResult, ReviewSource, Verdict } from '../core/types.ts'
+import type { Flag, IncompleteEntry, LeftOutFile, PublicView, QuorumResult, ReviewSource, Verdict } from '../core/types.ts'
 import { blankResult, FINDINGS, INCOMPLETE, LIFTED, PASS, reportResult, SQL, TOKEN } from '../testing/report.ts'
 import { text } from './text.ts'
+import { publicView } from './view.ts'
 
 const ESC = String.fromCharCode(0x1B)
 const RLO = String.fromCharCode(0x202E)
@@ -15,7 +16,7 @@ const HEAD = '7b2e4d0'.padEnd(40, 'a')
 const QUORUM_SEQUENCE = new RegExp(`${ESC}\\[(?:1;31|33|36|35|1|32|31|0)m`, 'g')
 
 /** The text report of a result as its lines, the last one the empty text after the final line feed. */
-function render(result: QuorumResult, outcome: Outcome = FINDINGS, color = false): string[] {
+function render(result: QuorumResult | PublicView, outcome: Outcome = FINDINGS, color = false): string[] {
   return text.render(result, { color, outcome }).split('\n')
 }
 
@@ -128,6 +129,30 @@ function secrets(): QuorumResult {
 describe('text', () => {
   it('renders a review for a person: the header, each finding with its numbered evidence, the profiles, what was left out, the gaps, the flags, the time and the outcome', () => {
     expect(render(reportResult())).toEqual(MAIN)
+  })
+
+  it('renders a public view as the result, but each gap in fixed words and the time with no token count', () => {
+    const lines = render(publicView(reportResult()))
+    expect(lines).toEqual(MAIN.filter(line => line !== '  in meta.leftOut').map(line => line.startsWith('gap: ')
+      ? 'gap: security binary, the diff carries no content for a binary file'
+      : line.startsWith('took ')
+        ? 'took 41 s'
+        : line))
+
+    const held = blankResult({
+      incomplete: [
+        {
+          profile: 'security',
+          reason: 'vote-failed',
+          file: 'a b.js',
+          detail: 'DETAIL-CANARY',
+        },
+      ],
+    })
+    expect(render(publicView(held)).filter(line => line.startsWith('gap: ') || line.startsWith('  finding'))).toEqual([
+      'gap: security vote-failed at "a b.js", a failed vote could have raised a kept',
+      '  finding\'s level',
+    ])
   })
 
   it('marks the cited row and numbers the + and context rows from the cited line, never a - row', () => {

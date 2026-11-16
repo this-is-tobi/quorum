@@ -349,8 +349,14 @@ export async function readRecords(directory: string, visit: (record: ReviewRecor
   }
 }
 
-function writeFailure(file: string, error: unknown): Error {
-  return ioFailure(file, 'cannot be written', error)
+/**
+ * A file quorum writes that could not be written. Its message is `<file>: cannot be written (<code>)`: it names
+ * the file's label and the error's code, never a path, so a log a stranger may read can hold it.
+ */
+export class WriteFailure extends Error {}
+
+function writeFailure(file: string, error: unknown): WriteFailure {
+  return new WriteFailure(`${file}: cannot be written${codeSuffix(error)}`)
 }
 
 /**
@@ -448,7 +454,7 @@ export async function openRecords(directory: string, read: ReadSizes): Promise<R
  * failure removes the temporary file it made, and names `options.label` in place of `name` when the caller
  * has one, so a message can say what was being written without the path it was written to.
  *
- * @throws Error `<label or name>: cannot be written (<code>)`
+ * @throws WriteFailure `<label or name>: cannot be written (<code>)`
  */
 export async function writeAtomic(directory: string, name: string, text: string, options: { readonly mode?: number, readonly label?: string } = {}): Promise<void> {
   const { mode = 0o666, label = name } = options

@@ -1,10 +1,10 @@
 /**
  * The pieces of a line that the text report and the progress lines of the CLI write one way: how many of a
- * thing, a file left out, and where a flag points. None makes its text inert: a file name is a diff's and a
+ * thing, a file left out, where a flag points, and the words of a gap. None makes its text inert: a file name is a diff's and a
  * flag's detail a diff's too, so the line that holds them passes through `inertLine` whole.
  */
 
-import type { Flag, LeftOutFile } from '../core/types.ts'
+import type { Flag, IncompleteReason, LeftOutFile } from '../core/types.ts'
 
 /** `1 gap`, `2 gaps`: the count, then the noun in the form the count takes. */
 export function plural(count: number, word: string, many = `${word}s`): string {
@@ -34,4 +34,23 @@ export function flagWhere({ file, line }: Flag): string {
   if (file !== undefined) return ` at ${JSON.stringify(file)}`
   if (line !== undefined) return ` at line ${line}`
   return ''
+}
+
+/**
+ * What each reason of a gap says, in words quorum wrote: the public view has no detail, since a detail quotes a
+ * file, a finder or a server, so a report of it writes these. Each line that holds them passes `inertLine`.
+ */
+export const GAP_WORDS: Readonly<Record<IncompleteReason, string>> = {
+  'research-unusable': 'the research reply listed findings, but none could be read',
+  'research-failed': 'the profile\'s research failed, so it reviewed nothing',
+  'findings-capped': 'research reported more findings than the panel reviews',
+  'finding-unreadable': 'the harness could not read a finding',
+  'vote-failed': 'a failed vote could have raised a kept finding\'s level',
+  'request-too-large': 'a request was refused as too large for its model',
+  'too-large': 'a hunk fits in no research request of its model',
+  'token-cap': 'the review\'s token cap stopped part of the work',
+  'review-deadline': 'the review\'s deadline stopped part of the work',
+  binary: 'the diff carries no content for a binary file',
+  submodule: 'the diff carries only a submodule\'s commit',
+  secret: 'a file held back as a secret was sent to no model',
 }

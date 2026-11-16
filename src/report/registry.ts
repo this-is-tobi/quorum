@@ -1,10 +1,9 @@
 import { ConfigError } from '../core/errors.ts'
 import { outcome } from '../core/outcome.ts'
 import type { Outcome } from '../core/outcome.ts'
-import type { QuorumResult } from '../core/types.ts'
 import { brief } from './brief.ts'
 import { json } from './json.ts'
-import type { Reporter } from './reporter.ts'
+import type { Reporter, ReportInput } from './reporter.ts'
 import { text } from './text.ts'
 
 /** The reporters by name, in the order the messages list them. A new one is a module and a line here. */
@@ -40,10 +39,12 @@ export interface ReportOptions {
 }
 
 /**
- * Render a review's result as the report `options.format` names, a text that ends in a line feed, as the CLI
- * writes it on stdout. It reads the result, as `review` returns it, and `options`, and nothing else, so it is
- * pure. The report says what the exit code says: it states the `outcome` it is given, else the one `outcome`
- * computes from the result, which has no `allowIncomplete`, so a caller whose run lifted gaps passes its own.
+ * Render a review's result, or its public view (`publicView`), as the report `options.format` names, a text that
+ * ends in a line feed, as the CLI writes it on stdout. It hands the input to the reporter as it is, so `json` of
+ * a public view is the view, and a reporter marked `publicOnly` renders the public view of whatever it is given.
+ * It reads the input, as `review` returns it, and `options`, and nothing else, so it is pure. The report says
+ * what the exit code says: it states the `outcome` it is given, else the one `outcome` computes from the input,
+ * which has no `allowIncomplete`, so a caller whose run lifted gaps passes its own.
  * `color` is `false` unless asked, and only the `text` format takes it: it wraps the words quorum wrote in
  * SGR sequences, and a line the workflow-command rules change is written without them.
  *
@@ -52,15 +53,15 @@ export interface ReportOptions {
  * @example
  * const report = renderReport(result, { format: 'text', color: true, outcome: outcome(result, { allowIncomplete: true }) })
  */
-export function renderReport(result: QuorumResult, options: ReportOptions): string {
+export function renderReport(input: ReportInput, options: ReportOptions): string {
   const { format } = options
   if (!isReportFormat(format)) {
     throw new ConfigError([
       { path: 'format', message: `must be ${formatWords()}` },
     ])
   }
-  return REPORTERS[format].render(result, {
+  return REPORTERS[format].render(input, {
     color: options.color ?? false,
-    outcome: options.outcome ?? outcome(result),
+    outcome: options.outcome ?? outcome(input),
   })
 }

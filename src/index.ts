@@ -46,6 +46,12 @@ export type {
   ProfileProviders,
   Prompts,
   ProviderRef,
+  PublicGap,
+  PublicMeta,
+  PublicProfileMeta,
+  PublicVerdict,
+  PublicView,
+  PublicVote,
   Quorum,
   QuorumEvent,
   QuorumMeta,
@@ -82,6 +88,9 @@ export { presets } from './providers/presets.ts'
 export type { Preset, PresetName, Protocol } from './providers/presets.ts'
 export { renderReport } from './report/registry.ts'
 export type { ReportFormat, ReportOptions } from './report/registry.ts'
+export type { ReportInput } from './report/reporter.ts'
+export { publicView } from './report/view.ts'
+export type { ReportView } from './report/view.ts'
 export type { SourceRead, SourceSpec } from './sources/read.ts'
 
 /**

@@ -135,6 +135,77 @@ describe('renderEvent', () => {
     })).toBe('incomplete: finding-unreadable (findings[0]: x<U+000A>::error::y)')
   })
 
+  it('writes a gap with no detail and a dropped finding with no reason in the public view, and every other line as the full view does', () => {
+    const detail = 'DETAIL-CANARY'
+    expect(renderEvent({
+      type: 'incomplete',
+      entry: { profile: 'security', reason: 'binary', detail },
+    }, false, 'public')).toBe('incomplete: binary')
+    expect(renderEvent({
+      type: 'incomplete',
+      entry: {
+        profile: 'security',
+        reason: 'vote-failed',
+        file: 'a.js',
+        detail,
+      },
+    }, false, 'public')).toBe('incomplete: vote-failed at "a.js"')
+    expect(renderEvent({ type: 'finding:invalid', profile: 'security', reason: 'REASON-CANARY.js:1 is not in the diff' }, false, 'public')).toBe('invalid finding dropped')
+    expect(renderEvent({
+      type: 'incomplete',
+      entry: { profile: 'security', reason: 'binary', detail },
+    }, true, 'public')).toBe('[security] incomplete: binary')
+    expect(renderEvent({ type: 'finding:invalid', profile: 'team', reason: 'x' }, true, 'public')).toBe('[team] invalid finding dropped')
+
+    const same: QuorumEvent[] = [
+      {
+        type: 'left-out',
+        files: [
+          { file: '.env', reason: 'secret', rule: 'name' },
+          { file: 'a.png', reason: 'binary' },
+        ],
+      },
+      {
+        type: 'flag',
+        flag: {
+          code: 'hidden-characters',
+          file: 'src/a.js',
+          line: 3,
+          detail: 'U+202E on 1 added line(s)',
+        },
+      },
+      {
+        type: 'run:end',
+        kept: 1,
+        discarded: 2,
+        unreviewed: 3,
+        incomplete: 0,
+        durationMs: 5,
+      },
+      {
+        type: 'stage:end',
+        profile: 'team',
+        stage: 'dedup',
+        durationMs: 1,
+        count: 2,
+      },
+    ]
+    for (const event of same) expect(renderEvent(event, true, 'public')).toBe(renderEvent(event, true, 'full'))
+
+    const lines: string[] = []
+    const sink = progressSink(line => lines.push(line), 'public')
+    sink({
+      type: 'run:start',
+      profiles: ['security'],
+      providers: {},
+    })
+    sink({
+      type: 'incomplete',
+      entry: { profile: 'security', reason: 'binary', detail },
+    })
+    expect(lines).toEqual(['incomplete: binary'])
+  })
+
   it('prints nothing for the other events', () => {
     expect(renderEvent({
       type: 'stage:end',
@@ -390,6 +461,46 @@ describe('bannerLines', () => {
     ]))
     expect(lines[0]).toBe('Research (m<U+202E> @ the provider object mine)...')
     expect(lines[1]).toBe('Panel will use m<U+202E> @ the provider object mine')
+  })
+
+  it('names each provider by its config key alone in the public banner', () => {
+    const providers = { default: local, voter: mistral }
+    const lines = bannerLines(config(providers, [
+      {
+        research: 'default',
+        voters: sharing('voter'),
+      },
+    ]), 'public')
+    expect(lines).toEqual(['Research (default)...', 'Panel will use voter'])
+    const split = bannerLines(config(providers, [
+      {
+        research: 'default',
+        voters: { grounded: 'default', significant: 'voter' },
+      },
+    ]), 'public')
+    expect(split[1]).toBe('Panel will use grounded (default), significant (voter)')
+    const several = bannerLines(config(providers, [
+      {
+        research: 'default',
+        voters: sharing('default'),
+      },
+      {
+        id: 'team',
+        research: 'voter',
+        voters: sharing('voter'),
+      },
+    ]), 'public')
+    expect(several).toEqual([
+      '[security] Research (default)...',
+      '[security] Panel will use default',
+      '[team] Research (voter)...',
+      '[team] Panel will use voter',
+    ])
+    expect([
+      ...lines,
+      ...split,
+      ...several,
+    ].join('\n')).not.toMatch(/qwen|mistral-small|localhost|11434|https?:|@/)
   })
 
   it('reads a base URL as an own field, never the one a polluted prototype holds', () => {

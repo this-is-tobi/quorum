@@ -1,6 +1,6 @@
 import { FAIL_ON_LEVELS } from './profile.ts'
 import { ownData } from './stages/context.ts'
-import type { FailOn, QuorumResult, Verdict } from './types.ts'
+import type { FailOn, PublicVerdict, PublicView, QuorumResult, Verdict } from './types.ts'
 
 /** The HTTP statuses, besides 5xx, that a call fails with in passing: a request timeout, a conflict and a rate limit. */
 const PASSING_STATUSES: ReadonlySet<number> = new Set([408, 409, 429])
@@ -38,6 +38,9 @@ const INCOMPLETE: Outcome = Object.freeze({ status: 'incomplete', exitCode: 4, l
  * The level of a profile is the one the result records (`profileFailOn`), so a profile missing from
  * `meta.profiles` gates at `high` and a gap never hides.
  *
+ * It reads a public view (`publicView`) as the result it came from: a vote of a view is cast when its `keep` is a
+ * boolean, so a job that holds only the view concludes what the review's own run did, a lifted gap included.
+ *
  * Why so narrow: a pull request causes the other gaps directly (ADR-0012). It pads a hunk until no
  * research request holds it (`too-large`), floods the research with decoy findings past `maxFindings`, or
  * plants text that a voter refuses or that cuts its reply off or leaves it unusable, one
@@ -53,7 +56,7 @@ const INCOMPLETE: Outcome = Object.freeze({ status: 'incomplete', exitCode: 4, l
  * @example
  * const { exitCode } = outcome(result, { allowIncomplete: true })
  */
-export function outcome(result: QuorumResult, options: { readonly allowIncomplete?: boolean } = {}): Outcome {
+export function outcome(result: QuorumResult | PublicView, options: { readonly allowIncomplete?: boolean } = {}): Outcome {
   const gates = (profile: unknown): boolean => profileFailOn(result, profile) !== 'none'
   if (result.kept.some(verdict => reaches(verdict.confidence, profileFailOn(result, verdict.profile)))) return FINDINGS
   const incomplete = result.unreviewed.some(verdict => gates(verdict.profile)) || result.meta.incomplete.some(entry => gates(entry.profile))
@@ -69,7 +72,7 @@ export function outcome(result: QuorumResult, options: { readonly allowIncomplet
  * recorded before `failOn` says it, else `high`. So a profile missing from `meta.profiles`, a profile that is
  * no string, or an entry that says nothing readable gates at `high`. It reads own data only and never throws.
  */
-export function profileFailOn(result: QuorumResult, profile: unknown): FailOn {
+export function profileFailOn(result: QuorumResult | PublicView, profile: unknown): FailOn {
   const entry = typeof profile === 'string'
     ? ownData(result.meta.profiles, profile)
     : undefined
@@ -87,10 +90,10 @@ function reaches(confidence: unknown, level: FailOn): boolean {
 }
 
 /** True when every gap of a gating profile is a `vote-failed` one, and each gating profile that has a gap passes `liftsProfile`. */
-function liftable(result: QuorumResult, gates: (profile: unknown) => boolean): boolean {
+function liftable(result: QuorumResult | PublicView, gates: (profile: unknown) => boolean): boolean {
   const gaps = result.meta.incomplete.filter(entry => gates(entry.profile))
   if (gaps.some(entry => entry.reason !== 'vote-failed')) return false
-  const unreviewed = result.unreviewed.filter(verdict => gates(verdict.profile))
+  const unreviewed = (result.unreviewed as ReadonlyArray<Verdict | PublicVerdict>).filter(verdict => gates(verdict.profile))
   const profiles = new Set([
     ...gaps,
     ...unreviewed,
@@ -104,9 +107,9 @@ function liftable(result: QuorumResult, gates: (profile: unknown) => boolean): b
  * so do the kept findings when the profile has a `vote-failed` gap (`gap`): a gap with no failed vote behind
  * it lifts nothing.
  */
-function liftsProfile(result: QuorumResult, profile: string, gap: boolean): boolean {
-  const kept = failedVotesOf(result.kept.filter(verdict => verdict.profile === profile))
-  const unreviewed = failedVotesOf(result.unreviewed.filter(verdict => verdict.profile === profile))
+function liftsProfile(result: QuorumResult | PublicView, profile: string, gap: boolean): boolean {
+  const kept = failedVotesOf(of(result.kept, profile))
+  const unreviewed = failedVotesOf(of(result.unreviewed, profile))
   if (kept === undefined || unreviewed === undefined) return false
   return [
     ...kept,
@@ -116,20 +119,47 @@ function liftsProfile(result: QuorumResult, profile: string, gap: boolean): bool
   && (!gap || kept.some(failed => failed.length > 0))
 }
 
+/** The verdicts of `profile`, from the list of either view. */
+function of(verdicts: ReadonlyArray<Verdict | PublicVerdict>, profile: string): ReadonlyArray<Verdict | PublicVerdict> {
+  return verdicts.filter(verdict => verdict.profile === profile)
+}
+
+/** Whether `value` has `key` as an own property, a getter or a throwing proxy included. */
+function ownsKey(value: unknown, key: string): boolean {
+  try {
+    return typeof value === 'object' && value !== null && Object.hasOwn(value, key)
+  } catch {
+    return false
+  }
+}
+
 /**
- * The failed votes of each verdict, in order, or undefined when the `votes` of one is no array. A vote is
- * cast only when its own data `vote` is an object and its own data `failure` is `null` or absent: any other
- * entry is failed, so a vote that records a failure never counts as cast.
+ * Whether a vote of either view was cast. A vote with an own `vote` key is a full result's: cast only when its
+ * own data `vote` is an object. A vote without one is a public view's: cast only when its own data `keep` is a
+ * boolean. Either is cast only when its own data `failure` is `null` or absent, so a vote that records a
+ * failure never counts as cast, and any other entry is failed.
  */
-function failedVotesOf(verdicts: readonly Verdict[]): unknown[][] | undefined {
+function isCast(lensVote: unknown): boolean {
+  const failure = ownData(lensVote, 'failure')
+  if (failure !== null && failure !== undefined) return false
+  if (ownsKey(lensVote, 'vote')) {
+    const cast = ownData(lensVote, 'vote')
+    return typeof cast === 'object' && cast !== null
+  }
+  return typeof ownData(lensVote, 'keep') === 'boolean'
+}
+
+/**
+ * The failed votes of each verdict, in order, or undefined when the `votes` of one is no array. A vote of the
+ * full result is cast when its own data `vote` is an object and its own data `failure` is `null` or absent,
+ * one of the public view when its own data `keep` is a boolean and its `failure` is `null` or absent (see
+ * `isCast`): any other entry is failed, so the lift reads a public view as it reads the result it came from.
+ */
+function failedVotesOf(verdicts: ReadonlyArray<Verdict | PublicVerdict>): unknown[][] | undefined {
   const lists = verdicts.map((verdict) => {
     const votes: unknown = verdict.votes
     return Array.isArray(votes)
-      ? votes.filter((lensVote) => {
-          const cast = ownData(lensVote, 'vote')
-          const failure = ownData(lensVote, 'failure')
-          return typeof cast !== 'object' || cast === null || (failure !== null && failure !== undefined)
-        })
+      ? votes.filter(lensVote => !isCast(lensVote))
       : undefined
   })
   return lists.every(list => list !== undefined)

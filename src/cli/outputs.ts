@@ -4,9 +4,11 @@ import { basename, dirname, resolve } from 'node:path'
 import { errorCode, writeAtomic } from '../bench/run-dir.ts'
 import { ConfigError } from '../core/errors.ts'
 import type { Outcome } from '../core/outcome.ts'
-import type { QuorumResult } from '../core/types.ts'
 import { formatWords, isReportFormat, renderReport } from '../report/registry.ts'
 import type { ReportFormat } from '../report/registry.ts'
+import type { ReportInput } from '../report/reporter.ts'
+import { REPORT_VIEWS } from '../report/view.ts'
+import type { ReportView } from '../report/view.ts'
 import type { CliIO } from './io.ts'
 
 /** What `--color` takes: color when stdout is a terminal and `NO_COLOR` allows it (`auto`), always, or never. */
@@ -20,10 +22,11 @@ export interface OutputFile {
   readonly path: string
 }
 
-/** What a run writes: the report on stdout, its format and whether it is colored, and the files it also writes. */
+/** What a run writes: the report on stdout, its format and whether it is colored, the view every report is written in, and the files it also writes. */
 export interface ReportPlan {
   readonly format: ReportFormat
   readonly color: boolean
+  readonly view: ReportView
   readonly outputs: readonly OutputFile[]
 }
 
@@ -45,17 +48,19 @@ export function colorFor(when: ColorWhen, isTTY: boolean | undefined, noColor: s
  * `colorFor`). Each `--output` is written `<format>=<path>`, split at the first `=`, and its path is resolved
  * against the working directory, so two outputs that name one file are refused. The checks run in this order,
  * the first that fails refused as a `ConfigError` before any config is read, and no message holds the value
- * given: `--format` or `--output` with `--print-config`, which writes YAML; a second `--format`; a format that
- * is none of the reporters; a second `--color`; a `--color` that is none of the three; an `--output` that is
- * not written `<format>=<path>` with a reporter's format and a path; two outputs to one file. What the files
+ * given: `--format`, `--output` or `--view` with `--print-config`, which writes YAML; a second `--format`; a
+ * format that is none of the reporters; a second `--color`; a `--color` that is none of the three; a second
+ * `--view`; a `--view` that is neither `full` nor `public`; an `--output` that is not written `<format>=<path>`
+ * with a reporter's format and a path; two outputs to one file. `--view` is `full` by default: it is the view
+ * of stdout and of every file, and of the banner and the progress lines too. What the files
  * are is `checkOutputs`' to check, and the write `writeOutputs`'.
  */
-export function reportPlan(values: { readonly format?: readonly string[], readonly color?: readonly string[], readonly output?: readonly string[], readonly 'print-config'?: boolean }, io: Pick<CliIO, 'cwd' | 'env' | 'stdout'>): ReportPlan {
+export function reportPlan(values: { readonly format?: readonly string[], readonly color?: readonly string[], readonly view?: readonly string[], readonly output?: readonly string[], readonly 'print-config'?: boolean }, io: Pick<CliIO, 'cwd' | 'env' | 'stdout'>): ReportPlan {
   const refuse = (path: string, message: string): ConfigError => new ConfigError([
     { path, message },
   ])
-  const { format: formats, color: whens, output: outputs } = values
-  if ((formats !== undefined || outputs !== undefined) && values['print-config'] === true) throw refuse('--print-config', 'prints the config as YAML, so it takes no --format or --output')
+  const { format: formats, color: whens, view: views, output: outputs } = values
+  if ((formats !== undefined || outputs !== undefined || views !== undefined) && values['print-config'] === true) throw refuse('--print-config', 'prints the config as YAML, so it takes no --format, --output or --view')
   if (formats !== undefined && formats.length > 1) throw refuse('--format', 'takes one format')
   const format = formats?.[0] ?? (io.stdout.isTTY === true
     ? 'text'
@@ -64,9 +69,13 @@ export function reportPlan(values: { readonly format?: readonly string[], readon
   if (whens !== undefined && whens.length > 1) throw refuse('--color', 'takes one value')
   const when = whens?.[0] ?? 'auto'
   if (!(COLOR_WHENS as readonly string[]).includes(when)) throw refuse('--color', 'must be auto, always or never')
+  if (views !== undefined && views.length > 1) throw refuse('--view', 'takes one view')
+  const view = views?.[0] ?? 'full'
+  if (!(REPORT_VIEWS as readonly string[]).includes(view)) throw refuse('--view', 'must be full or public')
   return {
     format,
     color: format === 'text' && colorFor(when as ColorWhen, io.stdout.isTTY, io.env.NO_COLOR),
+    view: view as ReportView,
     outputs: outputFiles(outputs ?? [], io.cwd),
   }
 }
@@ -143,15 +152,15 @@ async function checkOutput(format: ReportFormat, path: string): Promise<void> {
 
 /**
  * Write each output file after the report on stdout, in order, and stop at the first that fails. Each file is
- * its format's report of the same result and outcome stdout's was made from, and is never colored: a file
+ * its format's report of the same input (the result, or its public view) and outcome stdout's was made from, and is never colored: a file
  * ends up in a CI artifact or a log, where an escape sequence is noise at best. It is written whole through
  * `writeAtomic`, a new file in the file's directory and a rename, with the process's file mode, so the rename
  * replaces a link made since `checkOutputs` and never writes through it.
  *
  * @throws Error `--output <format>: cannot be written (<code>)`, which names the format and never the path
  */
-export async function writeOutputs(outputs: readonly OutputFile[], result: QuorumResult, outcome: Outcome): Promise<void> {
+export async function writeOutputs(outputs: readonly OutputFile[], input: ReportInput, outcome: Outcome): Promise<void> {
   for (const { format, path } of outputs) {
-    await writeAtomic(dirname(path), basename(path), renderReport(result, { format, color: false, outcome }), { label: `--output ${format}` })
+    await writeAtomic(dirname(path), basename(path), renderReport(input, { format, color: false, outcome }), { label: `--output ${format}` })
   }
 }

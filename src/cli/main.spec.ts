@@ -112,6 +112,7 @@ const USAGE = [
   '  -f, --format <format>    Write the report on stdout in this format: text, json or brief; text on a terminal, else json',
   '  -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several',
   '      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never',
+  '      --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
   '  -v, --version            Print the version and exit',
@@ -1474,6 +1475,35 @@ describe('flags', () => {
     expect(stderr()).not.toContain(cwd)
   })
 
+  it('keeps the message of an --output file that cannot be written under --view public', async () => {
+    const cwd = mkdtempSync(join(dir, 'outputs-'))
+    const gone = join(cwd, 'gone')
+    mkdirSync(gone)
+    const fetchMock = vi.fn()
+    fetchMock.mockImplementationOnce(async () => {
+      rmSync(gone, { recursive: true })
+      return chatReply(JSON.stringify({
+        findings: [FINDING],
+      }))
+    })
+    for (let calls = 0; calls < 3; calls += 1) fetchMock.mockImplementationOnce(async () => chatReply(vote(true)))
+    vi.stubGlobal('fetch', fetchMock)
+    const { io, stderr } = harness({
+      argv: [
+        '--view',
+        'public',
+        '--output',
+        'json=gone/r.json',
+      ],
+      cwd,
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.runtime)
+    expect(stderr().endsWith('Error: --output json: cannot be written (ENOENT)\n')).toBe(true)
+    expect(stderr()).not.toContain(cwd)
+  })
+
   it('refuses an unknown --format before any config, with the usage', async () => {
     const fetchMock = stubChat()
     const { io, stdout, stderr } = harness({
@@ -1484,6 +1514,104 @@ describe('flags', () => {
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stdout()).toBe('')
     expect(stderr()).toBe(`Error: --format: must be text, json or brief\n${USAGE}`)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('writes the public view on stdout and in an --output file under --view public, with the public banner', async () => {
+    const cwd = mkdtempSync(join(dir, 'public-'))
+    const reasoning = JSON.stringify({ keep: true, reasoning: 'REASONING-CANARY' })
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), reasoning, reasoning, reasoning)
+    const { io, stdout, stderr } = harness({
+      argv: [
+        '--view',
+        'public',
+        '--output',
+        'json=r.json',
+      ],
+      cwd,
+      env: { ...MODEL, QUORUM_RESEARCH_MODEL: 'MODEL-CANARY' },
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    const result = JSON.parse(stdout())
+    expect(result.meta.view).toBe('public')
+    expect(result.kept[0].votes).toEqual([
+      { angle: 'reachability', keep: true, failure: null },
+      { angle: 'impact', keep: true, failure: null },
+      { angle: 'defenses', keep: true, failure: null },
+    ])
+    expect(stdout()).not.toContain('reasoning')
+    expect(stdout()).not.toContain('CANARY')
+    expect(readFileSync(join(cwd, 'r.json'), 'utf8')).toBe(stdout())
+    expect(stderr().startsWith('Research (default)...\nPanel will use default\n')).toBe(true)
+    expect(stderr()).not.toMatch(/CANARY|localhost/)
+  })
+
+  it('writes a failing research reply, a provider\'s error, a gap and a dropped finding in fixed words under --view public, holding none of their text', async () => {
+    const run = async (env: Record<string, string>, stdin = DIFF): Promise<{ code: number, stderr: string, stdout: string }> => {
+      const { io, stderr, stdout } = harness({
+        argv: ['--view', 'public'],
+        cwd: dir,
+        env,
+        stdin,
+      })
+      return {
+        code: await runCli(io),
+        stderr: stderr(),
+        stdout: stdout(),
+      }
+    }
+
+    stubChat('SNIPPET-CANARY this reply holds no object')
+    const unusable = await run(MODEL)
+    expect(unusable.code).toBe(EXIT.runtime)
+    expect(unusable.stderr.trimEnd().split('\n').at(-1)).toBe('Error: research reply unusable: reply contains no JSON object')
+    expect(unusable.stderr).not.toMatch(/SNIPPET|CANARY|holds no object/)
+
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => failed('SERVER-CANARY')))
+    const refused = await run(MODEL)
+    expect(refused.code).toBe(EXIT.runtime)
+    expect(refused.stderr.trimEnd().split('\n').at(-1)).toBe('Error: default: the call failed (http 500)')
+    expect(refused.stderr).not.toMatch(/SERVER|CANARY|localhost/)
+
+    const advisory = write('advisory-public.yaml', 'profiles:\n  security: {failOn: none}\n')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => failed('SERVER-CANARY')))
+    const gap = await run({ ...MODEL, QUORUM_CONFIG: advisory })
+    expect(gap.code).toBe(EXIT.ok)
+    expect(gap.stderr).toContain('incomplete: research-failed\n')
+    expect(gap.stderr).not.toMatch(/SERVER|CANARY|attempts|http 500/)
+    expect(gap.stdout).not.toMatch(/SERVER|CANARY|attempts|"detail"/)
+
+    stubChat(JSON.stringify({
+      findings: [
+        { ...FINDING, file: 'FILE-CANARY.js' },
+      ],
+    }))
+    const dropped = await run(MODEL)
+    expect(dropped.stderr).toContain('invalid finding dropped\n')
+    expect(dropped.stderr).not.toMatch(/CANARY|is not in the diff/)
+    expect(dropped.stdout).not.toContain('CANARY')
+  })
+
+  it('refuses --view twice, with another value, or with --print-config, before any config', async () => {
+    const fetchMock = stubChat()
+    const refused = async (argv: string[]): Promise<{ code: number, stdout: string, stderr: string }> => {
+      const { io, stdout, stderr } = harness({ argv, env: {}, stdin: DIFF })
+      return {
+        code: await runCli(io),
+        stdout: stdout(),
+        stderr: stderr(),
+      }
+    }
+    expect(await refused(['--view', 'full', '--view', 'public'])).toEqual({ code: EXIT.usage, stdout: '', stderr: `Error: --view: takes one view\n${USAGE}` })
+    expect(await refused(['--view', 'secret'])).toEqual({ code: EXIT.usage, stdout: '', stderr: `Error: --view: must be full or public\n${USAGE}` })
+    expect(await refused(['--view', 'public', '--print-config'])).toEqual({
+      code: EXIT.usage,
+      stdout: '',
+      stderr: `Error: --print-config: prints the config as YAML, so it takes no --format, --output or --view\n${USAGE}`,
+    })
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
@@ -2589,7 +2717,7 @@ describe('the sources', () => {
       '       quorum bench [options] <suite>',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
-    expect(options).toHaveLength(19)
+    expect(options).toHaveLength(20)
     for (const line of options) {
       expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line.slice(25, 27), line).toBe('  ')
