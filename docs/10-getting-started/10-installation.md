@@ -22,6 +22,8 @@ quorum --version
 
 `npm install -g` puts a `quorum` command on your `$PATH`, and `quorum --version` prints `quorum` and the installed version. To use the package as a library, install it in your project instead, with `npm install @tobi-or-not/quorum`.
 
+The package names the MCP SDK, `@modelcontextprotocol/server`, as an optional peer dependency, so `npm install -g` does not install it.
+
 The installed `quorum` command runs on Node, not on `bun`: the file the package's `bin` names starts with `#!/usr/bin/env node`. Bun reads a `.env` and a `bunfig.toml` from its working directory before quorum's own code runs, and Node reads neither, so this `quorum` is the simple way to review in a directory you do not control, such as a pull request's checkout: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory). Install it with `npm install -g`, and never run the package through `npx`, `npm exec` or `pnpm dlx` inside such a checkout: they read the checkout's `.npmrc`, which can name another registry for the package to come from, where `npm install -g` does not read the project's `.npmrc`.
 
 Each version that this repository's CD publishes, from 0.2.0 on, carries npm's provenance, a signed record of the repository, the workflow file, the commit and the run that built it. There are two ways to see it:
@@ -130,7 +132,7 @@ cd quorum
 bun install
 ```
 
-`bun install` installs quorum's two runtime dependencies, [zod](https://zod.dev), which validates every model reply, and [yaml](https://eemeli.org/yaml/), which parses a YAML config file that `loadConfig` reads, and the development tools.
+`bun install` installs quorum's two runtime dependencies, [zod](https://zod.dev), which validates every model reply, and [yaml](https://eemeli.org/yaml/), which parses a YAML config file that `loadConfig` reads, the MCP SDK (`@modelcontextprotocol/server` 2.4.0, pinned), which only the MCP server loads, and the development tools.
 
 From the root of the clone, `bun run start` runs the CLI: `bun run start ./my.diff`. Bun first prints the script it runs, `$ bun run ./src/cli/bin.ts`, on stderr, and `bun run --silent start` leaves that line out.
 

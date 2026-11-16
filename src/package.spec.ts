@@ -1,7 +1,9 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { MCP_SDK_VERSION } from './mcp/sdk.ts'
 
+const SDK = '@modelcontextprotocol/server'
 const read = (path: string): string => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 
 interface PackageJson {
@@ -13,6 +15,11 @@ interface PackageJson {
   publishConfig: Record<string, string>
   engines: Record<string, string>
   scripts: Record<string, string>
+  dependencies: Record<string, string>
+  optionalDependencies?: Record<string, string>
+  devDependencies: Record<string, string>
+  peerDependencies: Record<string, string>
+  peerDependenciesMeta: Record<string, { optional?: boolean }>
 }
 
 const pkg = JSON.parse(read('package.json')) as PackageJson
@@ -71,6 +78,53 @@ describe('package.json', () => {
   it('installs the git hooks only where husky and a git checkout exist, so a tarball or an image build installs', () => {
     // `npm pack` and `npm publish` run `prepare`, as does an install from a tarball or in a build stage.
     expect(scripts.prepare).toBe('husky || true')
+  })
+})
+
+describe('the MCP SDK\'s packaging', () => {
+  it('pins the MCP SDK exactly, as an optional peer and a development dependency, and never installs it for a user', () => {
+    // npm installs no optional peer, so no npm install grows by the SDK; the build, the suite and the binaries have it.
+    expect(pkg.devDependencies[SDK]).toBe(MCP_SDK_VERSION)
+    expect(pkg.peerDependencies[SDK]).toBe(MCP_SDK_VERSION)
+    expect(MCP_SDK_VERSION).toMatch(/^\d+\.\d+\.\d+$/)
+    expect(pkg.peerDependenciesMeta[SDK]).toEqual({ optional: true })
+    expect(Object.keys(pkg.dependencies)).not.toContain(SDK)
+    expect(Object.keys(pkg.optionalDependencies ?? {})).not.toContain(SDK)
+  })
+
+  it('keeps the runtime dependencies to zod and yaml', () => {
+    expect(Object.keys(pkg.dependencies)).toEqual(['yaml', 'zod'])
+  })
+
+  it('locks the SDK and its core at the pin, sharing the one zod the package pins', () => {
+    const lock = read('bun.lock')
+    expect(lock).toContain(`"${SDK}@${MCP_SDK_VERSION}"`)
+    expect(lock).toContain(`"@modelcontextprotocol/core@${MCP_SDK_VERSION}"`)
+    expect(lock.match(/^ {4}"zod": \[/gm)).toHaveLength(1)
+    expect(lock).toContain(`"zod": ["zod@${pkg.dependencies.zod}"`)
+    expect(lock).not.toContain(`"${SDK}/zod"`)
+  })
+
+  it('has Renovate bump the SDK\'s two pins together, exactly, as a build commit, once a release is 14 days old', () => {
+    const { packageRules } = JSON.parse(read('renovate.json')) as { packageRules: Array<Record<string, unknown>> }
+    const rule = packageRules.find(candidate => JSON.stringify(candidate.matchPackageNames) === JSON.stringify([SDK]))
+    expect(rule).toMatchObject({
+      matchPackageNames: [SDK],
+      matchDepTypes: ['devDependencies', 'peerDependencies'],
+      rangeStrategy: 'bump',
+      groupName: 'mcp sdk',
+      semanticCommitType: 'build',
+      minimumReleaseAge: '14 days',
+    })
+    expect(Object.keys(rule ?? {}).sort()).toEqual([
+      'description',
+      'groupName',
+      'matchDepTypes',
+      'matchPackageNames',
+      'minimumReleaseAge',
+      'rangeStrategy',
+      'semanticCommitType',
+    ])
   })
 })
 
