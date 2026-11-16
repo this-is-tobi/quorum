@@ -382,7 +382,7 @@ export function verdict(file: string, line: number, confidence?: Confidence): Ve
 
 /**
  * A result holding `parts` (each list empty when left out), with the meta a review of the security
- * profile writes: three lenses on one fake provider, the profile's policy and gating, no invalid
+ * profile writes: three lenses on one fake provider, the profile's policy, fail-on level and gating, no invalid
  * finding, no flag and no usage.
  */
 export function resultWith(parts: {
@@ -409,6 +409,7 @@ export function resultWith(parts: {
             lenses: { reachability: provider, impact: provider, defenses: provider },
           },
           policy: { high: 3, medium: 2, low: null },
+          failOn: 'high',
           gating: true,
           invalidFindings: 0,
           coverage: [],

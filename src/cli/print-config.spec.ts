@@ -106,6 +106,32 @@ describe('printConfig', () => {
     expect(text).toContain('##<U+005B>group]forged')
   })
 
+  it('prints each profile\'s failOn in place of gating, and the warning of a config that sets gating', () => {
+    const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, 'a']))
+    const warning = 'profiles.quiet.gating is deprecated: set failOn instead, high for true and none for false'
+    const text = printConfig(config({ a: SPEC }, {
+      profiles: [
+        { profile: securityProfile, research: 'a', voters },
+        {
+          profile: { ...securityProfile, id: 'quiet', failOn: 'none' },
+          research: 'a',
+          voters,
+        },
+        {
+          profile: { ...securityProfile, id: 'strict', failOn: 'low' },
+          research: 'a',
+          voters,
+        },
+      ],
+      warnings: [warning],
+    }), undefined)
+    expect(text).toContain('\nprofiles:\n  security:\n    failOn: high\n    research: a\n')
+    expect(text).toContain('\n  quiet:\n    failOn: none\n    research: a\n')
+    expect(text).toContain('\n  strict:\n    failOn: low\n    research: a\n')
+    expect(text).not.toContain('gating:')
+    expect(text).toContain(`\nwarnings:\n  - "${warning}"\n`)
+  })
+
   it('prints the values the review applies when the config sets none', () => {
     expect(printed(SPEC)).toContain('\nconcurrency: 4\nmaxFindings: 50\npartTokens: 32768\nmaxReviewTokens: 2000000\nreviewTimeoutMs: 1800000\nexclude: []\nsend: []\nwarnings: []\n')
     expect(printConfig(config({ a: SPEC }, { concurrency: 2, maxFindings: 5 }), undefined)).toContain('\nconcurrency: 2\nmaxFindings: 5\n')

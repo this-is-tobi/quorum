@@ -138,14 +138,14 @@ echo $code
 
 | Code | Means | In CI |
 | --- | --- | --- |
-| `0` | The review is complete, and no gating profile kept a `high` finding | Pass |
-| `1` | A gating profile kept a `high` finding; the security profile gates | Fail: read the kept findings |
+| `0` | The review is complete, and no gating profile kept a finding at or above its fail-on level, `high` by default | Pass |
+| `1` | A gating profile kept a finding at or above its fail-on level, `high` by default; the security profile gates | Fail: read the kept findings |
 | `2` | A usage or configuration error: nothing was reviewed | Fail: fix the command or the variables |
 | `3` | A gating profile's research call failed: nothing was reviewed | Fail: fix the endpoint, or run again |
-| `4` | The review is incomplete, and no gating profile kept a `high` finding | Fail: read the unreviewed findings and `meta.incomplete`; run again only for a failed vote |
+| `4` | The review is incomplete, and no gating profile kept a finding at or above its fail-on level, `high` by default | Fail: read the unreviewed findings and `meta.incomplete`; run again only for a failed vote |
 | `130` | The run was interrupted by SIGINT or SIGTERM: nothing was reviewed | Fail: the job was cancelled, run it again |
 
-This run exits `1`: it kept a `high` finding, and `1` wins over the `4` that its unreviewed finding and its unreadable one would otherwise give.
+This run exits `1`: it kept a finding at `high`, the level the security profile fails on, and `1` wins over the `4` that its unreviewed finding and its unreadable one would otherwise give.
 
 A longer branch is reviewed in parts: with the 32768 above, a research request holds about 14.7 KB (14,759 bytes) of diff, so a larger diff takes several requests ([Research in parts](../20-using/20-configuration.md#research-in-parts)). Running again does not fix a `too-large` or `request-too-large` gap, which the same diff on the same model repeats, and a model with a larger window does: [What it counts, and what it costs](../20-using/20-configuration.md#what-it-counts-and-what-it-costs).
 

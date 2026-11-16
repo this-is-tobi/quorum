@@ -143,7 +143,7 @@ Each fence is `<untrusted-<label>-<nonce>>` before the block and the same tag cl
 
 ## What is not configurable
 
-A profile sets its instructions, its lenses, its policy, `gating` and its guidelines. It cannot change these:
+A profile sets its instructions, its lenses, its policy, its `failOn` and its guidelines. It cannot change these:
 
 | Fixed | Why |
 | --- | --- |

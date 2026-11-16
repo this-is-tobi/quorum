@@ -10,7 +10,7 @@ import type { CompletionRequest, CompletionResponse, EventSink, Provider } from 
 import { isTimeout, retryWait } from '../retry.ts'
 import type { FailureFacts } from '../retry.ts'
 import { DEFAULT_REPLY_TOKENS, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
-import type { ProviderRef, StageName, Thresholds, Usage } from '../types.ts'
+import type { FailOn, ProviderRef, StageName, Thresholds, Usage } from '../types.ts'
 
 /**
  * A provider as a compiled profile holds it: the object it calls, the ref captured at creation that
@@ -48,7 +48,9 @@ export interface ProfileRun {
   readonly lenses: readonly LensRun[]
   /** The profile's policy resolved for its lens count. */
   readonly thresholds: Readonly<Thresholds>
-  /** Whether its kept high findings set exit code 1; true when the profile does not say. */
+  /** The confidence at or above which its kept findings exit 1, `none` for an advisory profile; `high` when the profile does not say. */
+  readonly failOn: FailOn
+  /** Whether the profile gates: `failOn` is not `none`. A gating profile's failed research ends the review; an advisory profile's is a gap. */
   readonly gating: boolean
   readonly guidelines?: string
 }

@@ -100,7 +100,18 @@ export interface Profile {
   readonly lenses: readonly Lens[]
   /** How many kept votes each confidence level needs; `defaultPolicy` when unset. */
   readonly policy?: PolicyRules
-  /** Whether its kept high findings set exit code 1; true when unset. */
+  /**
+   * The confidence at or above which a kept finding of this profile fails the review with exit code 1: `high`,
+   * `medium` or `low`, and `none` for an advisory profile, whose findings and gaps change no exit code. `high`
+   * when unset, and when `gating` is `true`; `none` when `gating` is `false`. Setting both is refused.
+   */
+  readonly failOn?: FailOn
+  /**
+   * Whether the profile gates the exit code: `true` reads as `failOn: 'high'` and `false` as `'none'`, with a
+   * warning in `Quorum.warnings`.
+   *
+   * @deprecated Set `failOn`.
+   */
   readonly gating?: boolean
   /** Reference text the caller already loaded; the core never reads files. */
   readonly guidelines?: string
@@ -108,6 +119,9 @@ export interface Profile {
 
 /** A confidence level a kept finding reaches; 'low' only when the policy enables it. */
 export type Confidence = 'high' | 'medium' | 'low'
+
+/** The confidence at or above which a profile's kept findings fail the review, or `none` for a profile that never does. */
+export type FailOn = Confidence | 'none'
 
 /** The kept votes each level needs once the policy is resolved for a lens count; null for a disabled level. */
 export interface Thresholds {
@@ -294,7 +308,12 @@ export interface ProfileMeta {
   providers: ProfileProviders
   /** The kept votes each confidence level needed: the profile's policy resolved for its lens count. */
   policy: Thresholds
-  /** Whether its kept high findings set exit code 1. */
+  /**
+   * The confidence at or above which its kept findings exit 1, `none` for an advisory profile. A result of an
+   * earlier release has none: a reader takes its `gating: false` as `none`, and anything else as `high`.
+   */
+  failOn: FailOn
+  /** Whether it gates the exit code: true unless `failOn` is `none`. */
   gating: boolean
   /** How many findings it dropped for citing code outside the diff. */
   invalidFindings: number

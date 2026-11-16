@@ -92,6 +92,32 @@ describe('parseRecord', () => {
     expect(parseRecord(withRow(1.5))).toBeUndefined()
   })
 
+  it('reads a profile\'s failOn, and refuses a record whose profile has none', () => {
+    const recorded = RESULT.meta.profiles.security
+    const withProfile = (profile: Record<string, unknown>): string => JSON.stringify({
+      ...RECORD,
+      result: {
+        ...RESULT,
+        meta: {
+          ...RESULT.meta,
+          profiles: { security: profile },
+        },
+      },
+    })
+    const older = Object.fromEntries(Object.entries(recorded).filter(([key]) => key !== 'failOn'))
+    expect(parseRecord(withProfile({ ...recorded, failOn: 'none', gating: false }))).toMatchObject({
+      result: {
+        meta: {
+          profiles: {
+            security: { failOn: 'none', gating: false },
+          },
+        },
+      },
+    })
+    expect(parseRecord(withProfile(older))).toBeUndefined()
+    expect(parseRecord(withProfile({ ...older, failOn: 'critical' }))).toBeUndefined()
+  })
+
   it.each<[string, string]>([
     ['text that is not JSON', '{'],
     ['an array', '[]'],

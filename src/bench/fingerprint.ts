@@ -4,7 +4,7 @@
  * configurations that resolve alike.
  *
  * The form holds every setting a review uses but the key: the profiles that run, in run order, each with
- * its id, prompts, lenses, policy and gating, and its research provider and each lens's provider written
+ * its id, prompts, lenses, policy and failOn, and its research provider and each lens's provider written
  * out in place of their names; every field of a provider defined as data but its key, the values of
  * `headers`, `query` and `extraBody` and the whole base URL included, `timeoutMs` and `retries` among them;
  * a provider object as its config key, its model and the `timeoutMs` and `retries` it states, so one that

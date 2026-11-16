@@ -433,7 +433,8 @@ function bindRoles(roles: ConfigInput['roles'], names: readonly string[]): { rea
  * command as it gets its key: `QUORUM_CLAUDE_CODE_COMMAND`, else the config's, else `claude` in an absolute
  * entry of `PATH`, found or refused here, and its billing warning. The review's limits, `maxReviewTokens` and
  * `reviewTimeoutMs`, come from `QUORUM_MAX_REVIEW_TOKENS` and `QUORUM_REVIEW_TIMEOUT_MS`, else from the config,
- * and are kept only when one of them sets them. A resolved config is returned as it is. The
+ * and are kept only when one of them sets them. Its `warnings` are the environment layer's, then the providers',
+ * then the profiles' (an entry that sets the deprecated `gating`). A resolved config is returned as it is. The
  * input must already have passed a config schema. `options.selection`, when given, names the profiles that
  * run, over `QUORUM_PROFILES`, which is still checked; its ids are checked before anything is resolved.
  *
@@ -544,6 +545,7 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
     warnings: Object.freeze([
       ...layer.warnings,
       ...checked.warnings,
+      ...profiles.warnings,
     ]),
   })
   RESOLVED.add(resolved)

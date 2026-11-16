@@ -3,7 +3,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import { defaultPolicy } from '../core/policy.ts'
 import type { PolicyRules, Rule } from '../core/policy.ts'
 import { profileIssues } from '../core/profile.ts'
-import type { Profile } from '../core/types.ts'
+import type { FailOn, Profile } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { RoleBinding } from './env.ts'
 import { unknownName } from './schema.ts'
@@ -46,6 +46,14 @@ export function own<T extends object, K extends keyof T>(record: T | undefined, 
   return record !== undefined && Object.hasOwn(record, key)
     ? record[key]
     : undefined
+}
+
+/** The level the deprecated `gating` says: `true` is `high` and `false` is `none`. */
+function fromGating(gating: boolean | undefined): FailOn | undefined {
+  if (gating === undefined) return undefined
+  return gating
+    ? 'high'
+    : 'none'
 }
 
 /** A rule as a new frozen value: the config's own objects stay out of a frozen profile. */
@@ -96,9 +104,24 @@ interface Bindings {
   readonly known: ReadonlySet<string>
 }
 
-/** What one profile of the config resolves to, or every issue that keeps it from running. */
-function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known }: Bindings): { readonly resolved?: ResolvedProfile, readonly issues: ConfigIssue[] } {
+/** What one profile of the config resolves to, or every issue that keeps it from running, and the warnings its fields earn. */
+function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known }: Bindings): { readonly resolved?: ResolvedProfile, readonly issues: ConfigIssue[], readonly warnings: string[] } {
   const at = (...segments: PropertyKey[]): string => issuePath(['profiles', id, ...segments])
+  const gating = own(entry, 'gating')
+  const failOn = own(entry, 'failOn')
+  const warnings = gating === undefined
+    ? []
+    : [
+        `${at('gating')} is deprecated: set failOn instead, high for true and none for false`,
+      ]
+  const both: ConfigIssue[] = gating !== undefined && failOn !== undefined
+    ? [
+        {
+          path: at('gating'),
+          message: 'is deprecated and cannot be set with failOn: remove it',
+        },
+      ]
+    : []
   const base = BUILT_IN.get(own(entry, 'extends') ?? id)
   const entryPrompts = own(entry, 'prompts')
   const research = own(entryPrompts, 'research') ?? base?.prompts.research
@@ -112,10 +135,14 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
       [lenses, 'lenses'],
     ]
     return {
-      issues: needed.filter(([value]) => value === undefined).map(([, ...segments]) => ({
-        path: at(...segments),
-        message: NEEDS_BASE,
-      })),
+      issues: [
+        ...both,
+        ...needed.filter(([value]) => value === undefined).map(([, ...segments]) => ({
+          path: at(...segments),
+          message: NEEDS_BASE,
+        })),
+      ],
+      warnings,
     }
   }
 
@@ -124,10 +151,13 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
     prompts: Object.freeze({ research, vote }),
     lenses: Object.freeze(lenses.map(lens => Object.freeze({ id: lens.id, question: lens.question }))),
     policy: policyOf(base, own(entry, 'policy')),
-    gating: own(entry, 'gating') ?? base?.gating ?? true,
+    failOn: failOn ?? fromGating(gating) ?? base?.failOn ?? 'high',
   })
   // `profileIssues` starts its paths at the id given as the fallback root, which is the profile's own id here.
-  const issues = profileIssues(profile, id).map(issue => ({ path: `${at()}${issue.path.slice(id.length)}`, message: issue.message }))
+  const issues = [
+    ...both,
+    ...profileIssues(profile, id).map(issue => ({ path: `${at()}${issue.path.slice(id.length)}`, message: issue.message })),
+  ]
 
   const entryRoles = own(entry, 'roles')
   const references = [
@@ -147,7 +177,7 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
   for (const { path, name } of references) {
     if (name !== undefined && !known.has(name)) issues.push(unknownName(path, 'provider', name, providers))
   }
-  if (issues.length > 0) return { issues }
+  if (issues.length > 0) return { issues, warnings }
 
   const voter = own(entryRoles, 'voter') ?? roles.voter
   return {
@@ -157,6 +187,7 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
       voters: Object.freeze(Object.fromEntries(lenses.map(lens => [lens.id, lens.provider ?? voter]))),
     }),
     issues,
+    warnings,
   }
 }
 
@@ -167,16 +198,19 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
  * it is. A profile starts from the built-in profile it `extends`, else the one of its id, else from nothing,
  * and then needs prompts and lenses of its own: prompts and policy levels merge field by field over the
  * base's, lenses replace its lenses. Each profile is a new frozen value, built field by field, never by
- * assigning a key of the input. `research` is bound to `roles.research`, and each lens to its own provider,
- * else the profile's voter, else `roles.voter`; every provider a profile names must be in `providers`.
- * A selection that runs nothing is an issue, and a profile with an issue does not run.
+ * assigning a key of the input. A profile states its `failOn`, the entry's own, else what its deprecated
+ * `gating` says (`true` is `high`, `false` is `none`), else the base's, else `high`, and never a `gating`: an
+ * entry that sets both is an issue at its `gating`, and one that sets `gating` earns a deprecation warning,
+ * returned in `warnings` in the order the entries are written. `research` is bound to `roles.research`, and
+ * each lens to its own provider, else the profile's voter, else `roles.voter`; every provider a profile names
+ * must be in `providers`. A selection that runs nothing is an issue, and a profile with an issue does not run.
  */
 export function resolveProfiles(inputs: {
   readonly profiles: ConfigInput['profiles']
   readonly selection?: ProfileSelection
   readonly roles: RoleBinding
   readonly providers: readonly string[]
-}): { readonly profiles: readonly ResolvedProfile[], readonly issues: readonly ConfigIssue[] } {
+}): { readonly profiles: readonly ResolvedProfile[], readonly issues: readonly ConfigIssue[], readonly warnings: readonly string[] } {
   const configured = new Map(Object.entries(inputs.profiles ?? {}))
   const selected = inputs.selection?.ids ?? (inputs.profiles === undefined
     ? [securityProfile.id]
@@ -211,11 +245,13 @@ export function resolveProfiles(inputs: {
     if (BUILT_IN.has(id)) resolutions.set(id, resolveEntry(id, {}, bindings))
     else issues.push(unknownName(inputs.selection?.path ?? 'profiles', 'profile', id, defined))
   }
-  issues.push(...[
+  const resolved = [
     ...resolutions.values(),
-  ].flatMap(resolution => resolution.issues))
+  ]
+  issues.push(...resolved.flatMap(resolution => resolution.issues))
   return {
     profiles: selected.flatMap(id => resolutions.get(id)?.resolved ?? []),
     issues,
+    warnings: resolved.flatMap(resolution => resolution.warnings),
   }
 }

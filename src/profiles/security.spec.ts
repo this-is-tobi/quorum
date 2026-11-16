@@ -24,7 +24,11 @@ describe('securityProfile', () => {
       { id: 'defenses', question: 'Do existing checks elsewhere already neutralize this?' },
     ])
     expect(securityProfile.policy).toEqual({ high: 'unanimous', medium: 'majority', low: 'off' })
-    expect(securityProfile.gating).toBe(true)
+  })
+
+  it('states neither failOn nor gating, so it fails on high by default', () => {
+    expect(Object.hasOwn(securityProfile, 'failOn')).toBe(false)
+    expect(Object.hasOwn(securityProfile, 'gating')).toBe(false)
   })
 
   it('cannot be changed in place, so one run cannot leak into the next', () => {

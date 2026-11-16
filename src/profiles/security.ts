@@ -3,7 +3,9 @@ import type { Profile } from '../core/types.ts'
 /**
  * The default profile: the security review quorum has always run. Its policy is spelled out here
  * rather than read from `defaultPolicy`, so a later change to that default cannot re-tune this
- * review silently. It is deep-frozen (the object, its prompts, its lens array, each lens and its
+ * review silently. It states neither `failOn` nor the deprecated `gating`, so it fails on `high` by default
+ * and a caller's `{ ...securityProfile, failOn: 'none' }`, or its older `{ ...securityProfile, gating: false }`,
+ * is never refused as setting both. It is deep-frozen (the object, its prompts, its lens array, each lens and its
  * policy), so a caller that sets `guidelines` on it cannot leak them into later runs of the same
  * process: callers spread it into a new object instead.
  *
@@ -39,5 +41,4 @@ export const securityProfile: Profile = Object.freeze({
     }),
   ]),
   policy: Object.freeze({ high: 'unanimous', medium: 'majority', low: 'off' }),
-  gating: true,
 })
