@@ -10,6 +10,8 @@ import { securityProfile } from '../profiles/security.ts'
 import { fakeClaudeEnv, readFakeRecord, writeFakeClaude } from '../testing/claude.ts'
 import * as fixtures from '../testing/fixtures/claude-code.ts'
 import { harness } from '../testing/cli.ts'
+import { fakeGit } from '../testing/git.ts'
+import type { GitCall, GitReply } from '../testing/git.ts'
 import { chatReply, jsonReply, sent, stubChat, stubFetch, stubOllamaChat, textReply } from '../testing/http.ts'
 import { EXIT, exitCodeFor, interruptSignal, runCli } from './main.ts'
 import type { CliIO } from './main.ts'
@@ -86,15 +88,17 @@ const TEAM_YAML = 'providers:\n  team: {protocol: openai-compatible, baseUrl: "h
 const USAGE = [
   'Usage: quorum [options] [diff-file]',
   '       git diff | quorum [options]',
+  '       quorum --range <base>...<head> [options]',
   '       quorum bench [options] <suite>',
   '',
   'Options:',
-  '  -c, --config <path>     Read this config file, over QUORUM_CONFIG',
-  '  -p, --profile <id>      Run only this profile; repeat it to run several',
-  '      --allow-incomplete  Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
-  '      --print-config      Print the resolved config, keys redacted, and exit',
-  '  -h, --help              Print this help and exit',
-  '  -v, --version           Print the version and exit',
+  '  -c, --config <path>      Read this config file, over QUORUM_CONFIG',
+  '  -p, --profile <id>       Run only this profile; repeat it to run several',
+  '      --range <range>      Review a range of commits, written <base>...<head>',
+  '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
+  '      --print-config       Print the resolved config, keys redacted, and exit',
+  '  -h, --help               Print this help and exit',
+  '  -v, --version            Print the version and exit',
   '',
 ].join('\n')
 
@@ -1320,7 +1324,7 @@ describe('flags', () => {
       env: MODEL,
     })
     expect(await runCli(io)).toBe(EXIT.usage)
-    expect(stderr()).toMatch(/^Error: ENOENT: no such file or directory, open '.*--help'\nUsage:/)
+    expect(stderr()).toBe(`Error: the diff file does not exist\n${USAGE}`)
   })
 
   it('exits 2 for an unknown flag, naming it and never a value given with it', async () => {
@@ -1350,7 +1354,7 @@ describe('flags', () => {
       env: MODEL,
     })
     expect(await runCli(io)).toBe(EXIT.usage)
-    expect(stderr()).toBe(`Error: unexpected arguments: b.diff\n${USAGE}`)
+    expect(stderr()).toBe(`Error: takes one diff file, and 1 more argument(s) were given\n${USAGE}`)
   })
 
   it('exits 2 for an empty --config instead of reading the working directory', async () => {
@@ -1740,7 +1744,7 @@ describe('inert output', () => {
     expect(stderr().replaceAll('\n', '')).not.toMatch(ANY_HIDDEN)
   })
 
-  it('keeps a configuration error to one issue per line, and any other error to one line', async () => {
+  it('keeps a configuration error to one issue per line, and a diff file\'s failure to a text that holds no part of its path', async () => {
     const config = harness({
       env: { ...MODEL, QUORUM_RESEARCH_BASE_URL: 'localhost:11434/v1', QUORUM_RESEARCH_API_KEY: 'sk bad' },
       stdin: DIFF,
@@ -1752,7 +1756,7 @@ describe('inert output', () => {
       env: MODEL,
     })
     expect(await runCli(missing.io)).toBe(EXIT.usage)
-    expect(missing.stderr()).toMatch(/^Error: ENOENT: no such file or directory, open '.*no<U\+000A>such\.diff'\nUsage:/)
+    expect(missing.stderr()).toBe(`Error: the diff file does not exist\n${USAGE}`)
   })
 
   it('writes the JSON result inert: it parses back to the text the servers sent', async () => {
@@ -1867,5 +1871,169 @@ describe('a claude-code provider', () => {
     })
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stderr()).toBe('Error: providers.default: claude CLI not found; install Claude Code or set QUORUM_CLAUDE_CODE_COMMAND\n')
+  })
+})
+
+describe('the sources', () => {
+  const BASE = 'a'.repeat(40)
+  const HEAD = 'b'.repeat(40)
+  const MERGE = 'c'.repeat(40)
+
+  /** A fake git that knows `secret-base`, `secret-head` and their merge base, and prints `DIFF` for them; `replies` replaces any of its answers. */
+  function git(replies: { readonly base?: GitReply, readonly diff?: GitReply } = {}): { seam: { executable: string, spawn: ReturnType<typeof fakeGit>['spawn'] }, calls: GitCall[] } {
+    const fake = fakeGit(({ command }) => {
+      if (command[0] === 'rev-parse' && command[1] === '--verify') {
+        return command[4] === 'secret-base^{commit}'
+          ? replies.base ?? { stdout: `${BASE}\n` }
+          : { stdout: `${HEAD}\n` }
+      }
+      if (command[0] === 'merge-base') return { stdout: `${MERGE}\n` }
+      if (command[1] === 'diff') return replies.diff ?? { stdout: DIFF }
+      return undefined
+    })
+    return {
+      seam: { executable: '/usr/bin/git', spawn: fake.spawn },
+      calls: fake.calls,
+    }
+  }
+
+  it('reviews --range base...head with the git it is given, and writes the range in meta.source', async () => {
+    const fetchMock = stubChat(JSON.stringify({ findings: [] }))
+    const fake = git()
+    const { io, stdout, stderr } = harness({
+      argv: ['--range', 'secret-base...secret-head'],
+      env: MODEL,
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect((sent(fetchMock).body.messages as Array<{ content: string }>)[1].content).toContain(`>\n${DIFF}\n</untrusted-diff-`)
+    expect(JSON.parse(stdout()).meta.source).toEqual({
+      kind: 'range',
+      base: BASE,
+      mergeBase: MERGE,
+      head: HEAD,
+      objectFormat: 'sha1',
+    })
+    expect(stderr()).not.toMatch(/secret-base|secret-head/)
+    expect(fake.calls.at(-1)?.command.slice(0, 2)).toEqual([`--attr-source=${BASE}`, 'diff'])
+  })
+
+  it.each([
+    [
+      ['--range', 'a...b', 'x.diff'],
+      '--range: cannot be given with a diff file: give one source',
+    ],
+    [
+      ['--range', 'a...b', '--range', 'c...d'],
+      '--range: takes one range',
+    ],
+    [
+      ['--print-config', '--range', 'a...b'],
+      '--print-config: reads no diff, so it takes no --range, --local, --staged or --path',
+    ],
+    [
+      ['x.diff', 'y.diff'],
+      'takes one diff file, and 1 more argument(s) were given',
+    ],
+  ])('refuses %j before any git runs', async (argv, message) => {
+    const fetchMock = stubChat()
+    const fake = git()
+    const { io, stdout, stderr } = harness({
+      argv,
+      env: MODEL,
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe(`Error: ${message}\n${USAGE}`)
+    expect(fake.calls).toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('refuses a range written wrongly with the usage, before the config and before any git', async () => {
+    const fetchMock = stubChat()
+    const fake = git()
+    const { io, stdout, stderr } = harness({
+      argv: ['--range', 'main'],
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe(`Error: --range: must be written <base>...<head>: a single revision names no range\n${USAGE}`)
+    expect(stderr()).not.toContain('no model configured')
+    expect(fake.calls).toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('exits 2 for a range git refuses, after the config and before the banner', async () => {
+    const fetchMock = stubChat()
+    const fake = git({
+      base: { code: 1 },
+    })
+    const refused = harness({
+      argv: ['--range', 'secret-base...secret-head'],
+      env: MODEL,
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(refused.io)).toBe(EXIT.usage)
+    expect(refused.stdout()).toBe('')
+    expect(refused.stderr()).toBe('Error: --range: its base names no commit of this repository: fetch it first, as actions/checkout does with fetch-depth: 0\n')
+
+    // The config is read first: a run with no model never reaches git.
+    const calls = fake.calls.length
+    const unconfigured = harness({
+      argv: ['--range', 'secret-base...secret-head'],
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(unconfigured.io)).toBe(EXIT.usage)
+    expect(unconfigured.stderr()).toBe('Error: no model configured: set QUORUM_RESEARCH_MODEL, or name a config file that sets one\n')
+    expect(fake.calls).toHaveLength(calls)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('exits 3 for a GitError, with its message on one inert line', async () => {
+    const fetchMock = stubChat()
+    const hidden = String.fromCharCode(0x202E)
+    const fake = git({
+      diff: { code: 128, stderr: `fatal: bad\nnext${hidden}line\n` },
+    })
+    const { io, stdout, stderr } = harness({
+      argv: ['--range', 'secret-base...secret-head'],
+      env: MODEL,
+      git: fake.seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.runtime)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe('Error: git diff failed (exit 128): "fatal: bad\\nnext<U+202E>line"\n')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('prints the usage of the sources, every description at column 27', async () => {
+    const { io, stdout, stderr } = harness({
+      argv: ['--help'],
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stderr()).toBe('')
+    expect(stdout()).toBe(USAGE)
+    const lines = stdout().split('\n')
+    expect(lines.filter(line => line.startsWith('Usage:') || line.startsWith('       '))).toEqual([
+      'Usage: quorum [options] [diff-file]',
+      '       git diff | quorum [options]',
+      '       quorum --range <base>...<head> [options]',
+      '       quorum bench [options] <suite>',
+    ])
+    const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
+    expect(options).toHaveLength(7)
+    for (const line of options) {
+      expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
+      expect(line.slice(25, 27), line).toBe('  ')
+      expect(line[27], line).not.toBe(' ')
+    }
   })
 })

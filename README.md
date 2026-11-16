@@ -43,6 +43,7 @@ export QUORUM_RESEARCH_MODEL=qwen3.6:27b      # a model your local Ollama serves
 export QUORUM_RESEARCH_CONTEXT_TOKENS=32768   # its context window, in tokens
 quorum ./my.diff > result.json                # review a diff file
 git diff origin/main...HEAD | quorum > result.json   # or what your branch changes
+quorum --range origin/main...HEAD > result.json   # what your branch changes, git run by quorum
 ```
 
 `QUORUM_RESEARCH_CONTEXT_TOKENS` is the model's context window in tokens, which quorum checks every request against, and without it the run exits `2` with a message that names it. With no provider configured and no base URL, preset or protocol variable, quorum talks to the Ollama on this machine through its native API, `http://localhost:11434`, which Ollama listens on, on `127.0.0.1`, by default. That API takes `num_ctx`, `truncate: false` and `shift: false`, so quorum tells the server the context size and the server refuses an overflow, where Ollama's OpenAI-compatible `/v1` would cut the prompt in silence. Refusing needs Ollama 0.12.6 or later: an older server ignores `truncate` and `shift`. A base URL variable set on its own means an OpenAI-compatible server, as before. Keep the number at most what `ollama show <model>` reports for the model, since Ollama clamps a larger `num_ctx` to it, and read the context a running model loaded in the `CONTEXT` column of `ollama ps`.
@@ -72,6 +73,7 @@ The JSON result goes to stdout, and the exit code says what to do with it: `0` f
 
 *Using it*
 - [The CLI](./docs/20-using/10-cli.md) *- The invocation, stdout and stderr, every exit code and its causes, and gating a CI job on them*
+- [Sources](./docs/20-using/15-sources.md) *- A diff file or stdin, a range of commits, the local changes or the files at a commit, and how quorum runs git*
 - [Configuration](./docs/20-using/20-configuration.md) *- The config file and its trust model in CI, the `QUORUM_*` variables and the voter's fallback, the context size each provider states, running Claude Code, the keys, `--print-config`, and the errors a bad setting causes*
 - [Providers](./docs/20-using/30-providers.md) *- The provider port, the shipped adapters and their options, Claude Code run isolated as a provider, the presets, `ProviderError`, and writing a provider of your own*
 - [Profiles](./docs/20-using/40-profiles.md) *- The security profile, writing your own, several in one review, gating and guidelines*

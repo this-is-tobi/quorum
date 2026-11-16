@@ -10,7 +10,7 @@ Nothing needs reading in order. Pick what you came to do: each track lists its p
 
 | Track | You want to | Read | Afterwards you can |
 | --- | --- | --- | --- |
-| **A. Review a diff** | Run quorum on your own changes, at a terminal or in CI | Six pages: Installation, Quick start, The CLI, Configuration, Providers, Local models | Review a diff from a file or a pipe, read its result and its exit code, gate a CI job on that code, and point the finder and the panel at the models you choose, on a server of your own included |
+| **A. Review a diff** | Run quorum on your own changes, at a terminal or in CI | Seven pages: Installation, Quick start, The CLI, Sources, Configuration, Providers, Local models | Review a diff from a file, a pipe or a range of commits, read its result and its exit code, gate a CI job on that code, and point the finder and the panel at the models you choose, on a server of your own included |
 | **B. Use it from code, or review something else** | Call quorum from a TypeScript program, or review for something other than security | Five pages: Profiles, Lenses and policy, Prompts, Library API, The JSON result | Write a profile of your own, choose its lenses and how their votes are graded, run it through `createQuorum` with your providers, and follow a review through its events |
 | **C. Know what it protects against** | Decide what quorum can be trusted with before you run it on changes you did not write | Three pages: Threat model, Output handling, Measurement | Say what an attacker who opens a pull request controls, which controls stand in their way today and what remains, print a review without letting its text act on your terminal, and read what the corpus measures of an attack |
 | **D. Measure configurations** | Choose a model or a config by measurement, or see what a change of prompt, lens or policy did | One page: Benchmarks | Run a suite of known bugs with several configs, write a suite from your own history, resume a stopped run, and read its rates, intervals and comparisons |
@@ -20,9 +20,10 @@ Nothing needs reading in order. Pick what you came to do: each track lists its p
 1. [Installation](./10-getting-started/10-installation.md) — Node and the npm package, a release binary, the container image, or Bun and the clone, a standalone binary on your `$PATH`, and a check that it works without a model.
 2. [Quick start](./10-getting-started/20-quickstart.md) — point it at a model, review a diff, and read the progress, the result and the exit code.
 3. [The CLI](./20-using/10-cli.md) — the invocation, what goes to stdout and stderr, every exit code, and what each should do to a CI job.
-4. [Configuration](./20-using/20-configuration.md) — the config file and the trust it needs in CI, the `QUORUM_*` variables, how the panel falls back to the finder's settings, the context size each provider states, the keys, `--print-config`, and the errors a bad setting causes.
-5. [Providers](./20-using/30-providers.md) — what a provider is, the shipped adapters, the presets, the options a config sets on each, and writing a provider of your own.
-6. [Local models](./90-recipes/10-local-models.md) — Ollama, vLLM and llama.cpp: the window each gives a request, choosing a model, and what reasoning mode does to a request.
+4. [Sources](./20-using/15-sources.md) — a diff file or stdin, a range of commits, and how quorum runs git.
+5. [Configuration](./20-using/20-configuration.md) — the config file and the trust it needs in CI, the `QUORUM_*` variables, how the panel falls back to the finder's settings, the context size each provider states, the keys, `--print-config`, and the errors a bad setting causes.
+6. [Providers](./20-using/30-providers.md) — what a provider is, the shipped adapters, the presets, the options a config sets on each, and writing a provider of your own.
+7. [Local models](./90-recipes/10-local-models.md) — Ollama, vLLM and llama.cpp: the window each gives a request, choosing a model, and what reasoning mode does to a request.
 
 ### B. Use it from code, or review something else
 

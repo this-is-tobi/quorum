@@ -1,14 +1,15 @@
-import { createReadStream } from 'node:fs'
-import { resolve } from 'node:path'
 import packageJson from '../../package.json' with { type: 'json' }
 import { readEnv } from '../config/env.ts'
 import { fromConfig } from '../config/from-config.ts'
 import { loadConfig } from '../config/load.ts'
-import { decodeDiff } from '../core/diff.ts'
 import { ConfigError } from '../core/errors.ts'
 import { inertJson, inertLine } from '../core/sanitize.ts'
 import { ownData } from '../core/stages/context.ts'
 import type { Quorum, QuorumResult, Verdict } from '../core/types.ts'
+import { readDiffInput } from '../sources/diff.ts'
+import { parseRange } from '../sources/range.ts'
+import { readSource } from '../sources/read.ts'
+import type { SourceSpec } from '../sources/read.ts'
 import { runBench } from './bench.ts'
 import { errorLines, errorMessage, EXIT, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
@@ -21,15 +22,17 @@ export type { CliIO }
 const USAGE = [
   'Usage: quorum [options] [diff-file]',
   '       git diff | quorum [options]',
+  '       quorum --range <base>...<head> [options]',
   '       quorum bench [options] <suite>',
   '',
   'Options:',
-  '  -c, --config <path>     Read this config file, over QUORUM_CONFIG',
-  '  -p, --profile <id>      Run only this profile; repeat it to run several',
-  '      --allow-incomplete  Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
-  '      --print-config      Print the resolved config, keys redacted, and exit',
-  '  -h, --help              Print this help and exit',
-  '  -v, --version           Print the version and exit',
+  '  -c, --config <path>      Read this config file, over QUORUM_CONFIG',
+  '  -p, --profile <id>       Run only this profile; repeat it to run several',
+  '      --range <range>      Review a range of commits, written <base>...<head>',
+  '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
+  '      --print-config       Print the resolved config, keys redacted, and exit',
+  '  -h, --help               Print this help and exit',
+  '  -v, --version            Print the version and exit',
   '',
 ].join('\n')
 
@@ -39,11 +42,15 @@ const PASSING_STATUSES: ReadonlySet<number> = new Set([408, 409, 429])
 const OPTIONS = {
   config: { type: 'string', short: 'c' },
   profile: { type: 'string', short: 'p', multiple: true },
+  range: { type: 'string', multiple: true },
   'allow-incomplete': { type: 'boolean' },
   'print-config': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
   version: { type: 'boolean', short: 'v' },
 } as const
+
+/** What `parseFlags` makes of the arguments of a review. */
+type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
 
 /**
  * Run one review and return the process exit code. Never throws: usage and configuration problems
@@ -54,18 +61,24 @@ const OPTIONS = {
  * turns that exit 4 into 0 only when every failed vote behind it failed in passing (see `exitCodeFor`).
  * `exitCodeFor` maps the result; advisory flags never change it.
  *
- * It reads at most 16 MiB of diff, from stdin or a file, counted in bytes: a larger diff is a usage error,
- * and reading stops at the chunk that crosses the cap.
+ * It reads at most 16 MiB of diff, from stdin, a file or a range of commits, counted in bytes: a larger
+ * diff is a usage error, and reading stops at the chunk that crosses the cap.
  *
- * Its flags are `--config`, `--profile`, `--allow-incomplete`, `--print-config`, `--help` and `--version`;
- * a usage error prints the usage after its message. Its settings are the config file `--config` or
+ * The diff comes from one source: a diff file, stdin, or `--range <base>...<head>`, which runs git itself
+ * (see `rangeSource`). Every usage rule of the source is checked first, before any git and any config, the
+ * form of a range included (`parseRange`), and a diff file or stdin is read then. A range is read once the
+ * config is: it needs the config's `exclude`, and a range git refuses exits 2 before the banner, a git
+ * command that fails exits 3.
+ *
+ * Its flags are `--config`, `--profile`, `--range`, `--allow-incomplete`, `--print-config`, `--help` and
+ * `--version`; a usage error prints the usage after its message. Its settings are the config file `--config` or
  * `QUORUM_CONFIG` names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the
  * `QUORUM_*` variables of `io.env` with their deprecated aliases. Each warning is printed once, before the
  * banner, and when the configuration is refused the environment's warnings come before the `Error:` lines,
  * since a deprecated or mistyped variable is often what caused the error.
  *
  * `--print-config` reads no diff and calls no model: it writes the resolved config as YAML on stdout
- * (see `printConfig`), warnings included, and returns 0; a diff argument with it is a usage error, and
+ * (see `printConfig`), warnings included, and returns 0; a diff argument or `--range` with it is a usage error, and
  * a configuration the run refuses, one of its providers that cannot be built included, exits 2 as in a run.
  *
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
@@ -79,7 +92,7 @@ const OPTIONS = {
  */
 export async function runCli(io: CliIO): Promise<number> {
   if (io.argv[0] === 'bench') return runBench(io, io.argv.slice(1))
-  let flags: ReturnType<typeof parseFlags<typeof OPTIONS>>
+  let flags: Flags
   try {
     flags = parseFlags(io.argv, OPTIONS)
   } catch (error) {
@@ -95,16 +108,14 @@ export async function runCli(io: CliIO): Promise<number> {
     return EXIT.ok
   }
 
-  const printing = values['print-config'] === true
-  let diff = ''
+  let spec: SourceSpec | undefined
   try {
     if (values.config === '') {
       throw new ConfigError([
         { path: '--config', message: 'must name a file' },
       ])
     }
-    if (printing && positionals.length > 0) throw new Error('--print-config takes no diff file')
-    if (!printing) diff = await readDiff(io, positionals)
+    spec = await sourceSpec(io, values, positionals)
   } catch (error) {
     return usageError(io, error)
   }
@@ -120,18 +131,28 @@ export async function runCli(io: CliIO): Promise<number> {
       configPath: values.config,
       selection,
     })
+    const read = spec === undefined
+      ? undefined
+      : await readSource(spec, {
+          cwd: io.cwd,
+          env: io.env,
+          platform: io.platform ?? process.platform,
+          signal: io.signal,
+          exclude: config.exclude,
+          git: io.git,
+        })
     quorum = await fromConfig(config, {
       env: io.env,
       events: progressSink(line => io.stderr.write(`${line}\n`)),
     })
-    if (printing) {
+    if (read === undefined) {
       io.stdout.write(printConfig(config, source))
       return EXIT.ok
     }
     writeWarnings(io, quorum.warnings)
     for (const line of bannerLines(config)) io.stderr.write(`${line}\n`)
-    if (diff.trim() === '') io.stderr.write('empty diff: nothing to review\n')
-    const result = await quorum.review({ diff }, { signal: io.signal })
+    if (read.diff.trim() === '') io.stderr.write('empty diff: nothing to review\n')
+    const result = await quorum.review(read, { signal: io.signal })
     io.stdout.write(`${inertJson(result)}\n`)
     return exitCodeFor(result, { allowIncomplete: values['allow-incomplete'] === true })
   } catch (error) {
@@ -278,14 +299,48 @@ function usageError(io: CliIO, error: unknown): number {
   return EXIT.usage
 }
 
-/** Read the diff from the file argument, or from stdin unless stdin is an interactive terminal. */
-async function readDiff(io: CliIO, positionals: readonly string[]): Promise<string> {
-  const [path, ...extra] = positionals
-  if (extra.length > 0) throw new Error(`unexpected arguments: ${extra.join(' ')}`)
-  if (!path && io.stdin.isTTY) throw new Error('no diff given')
-  const diff = await decodeDiff(path
-    ? createReadStream(resolve(io.cwd, path))
-    : io.stdin)
-  if (diff === undefined) throw new Error('the diff is over 16 MiB, the most quorum reads')
-  return diff
+/**
+ * The one source the flags and the positional arguments name, with its usage rules checked before anything
+ * is read: a second source, a second range and a second diff file are refused, and so is a source beside
+ * `--print-config`, which reads no diff, so it names none (undefined). A diff file, or stdin when no file is
+ * named, is read here, as the usage errors of its own come before the config's. A range written wrongly is
+ * refused here too, in the words `rangeSource` refuses it with, so no config is read for it.
+ */
+async function sourceSpec(io: CliIO, values: Flags['values'], positionals: readonly string[]): Promise<SourceSpec | undefined> {
+  if (values['print-config']) {
+    if (values.range !== undefined) {
+      throw new ConfigError([
+        { path: '--print-config', message: 'reads no diff, so it takes no --range, --local, --staged or --path' },
+      ])
+    }
+    if (positionals.length > 0) throw new Error('--print-config takes no diff file')
+    return undefined
+  }
+  if (values.range !== undefined) {
+    if (positionals.length > 0) {
+      throw new ConfigError([
+        { path: '--range', message: 'cannot be given with a diff file: give one source' },
+      ])
+    }
+    if (values.range.length > 1) {
+      throw new ConfigError([
+        { path: '--range', message: 'takes one range' },
+      ])
+    }
+    const [range] = values.range
+    const problem = parseRange(range)
+    if (typeof problem === 'string') {
+      throw new ConfigError([
+        { path: '--range', message: problem },
+      ])
+    }
+    return { kind: 'range', range }
+  }
+  const [file, ...extra] = positionals
+  if (extra.length > 0) {
+    throw new ConfigError([
+      { path: '', message: `takes one diff file, and ${extra.length} more argument(s) were given` },
+    ])
+  }
+  return { kind: 'diff', text: await readDiffInput(io.cwd, file, io.stdin) }
 }

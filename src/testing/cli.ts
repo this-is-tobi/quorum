@@ -1,14 +1,16 @@
 /** Test helper for the CLI: the I/O of a run, with its output kept in memory. */
 
 import type { CliIO } from '../cli/io.ts'
+import type { GitSeam } from '../sources/read.ts'
 
 /**
  * The I/O of one `runCli` call: `argv`, a working directory (the process's by default), an environment
  * (empty by default), `stdin` as one chunk (none by default, and a terminal when `isTTY`), and the
- * `signal` it is given. What the run writes is read back with `stdout()` and `stderr()`; `onStderr` is
- * called with each text written to stderr, as the run writes it.
+ * `signal` it is given, and the `git` seam and `platform` of its git sources, which a run takes from the
+ * process when a spec gives none. What the run writes is read back with `stdout()` and `stderr()`;
+ * `onStderr` is called with each text written to stderr, as the run writes it.
  */
-export function harness(options: { argv?: string[], cwd?: string, stdin?: string, isTTY?: boolean, env?: Record<string, string>, signal?: AbortSignal, onStderr?: (text: string) => void } = {}): { io: CliIO, stdout: () => string, stderr: () => string } {
+export function harness(options: { argv?: string[], cwd?: string, stdin?: string, isTTY?: boolean, env?: Record<string, string>, signal?: AbortSignal, git?: GitSeam, platform?: NodeJS.Platform, onStderr?: (text: string) => void } = {}): { io: CliIO, stdout: () => string, stderr: () => string } {
   const out: string[] = []
   const err: string[] = []
   async function* chunks(): AsyncGenerator<string> {
@@ -29,6 +31,8 @@ export function harness(options: { argv?: string[], cwd?: string, stdin?: string
       },
     },
     signal: options.signal,
+    git: options.git,
+    platform: options.platform,
   }
   return {
     io,
