@@ -15,6 +15,7 @@
  */
 
 import { z } from 'zod'
+import { sourceIssues } from '../core/inputs.ts'
 import { inertJsonLine } from '../core/sanitize.ts'
 import type { QuorumResult, Usage } from '../core/types.ts'
 import { MAX_TRIALS, SUITE_ID } from './suite.ts'
@@ -212,6 +213,35 @@ const leftOutFile = z.strictObject({
   file: z.string(),
   reason: z.enum(['excluded', 'binary', 'submodule']),
 })
+const objectFormat = z.enum(['sha1', 'sha256'])
+/**
+ * Where a review's diff came from. The shapes are strict, one object per kind; the ids are checked as a
+ * review checks its input's, by `sourceIssues`, so a record holds a full commit id of its object format.
+ */
+const reviewSource = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('diff'),
+  }),
+  z.strictObject({
+    kind: z.literal('range'),
+    base: z.string(),
+    mergeBase: z.string(),
+    head: z.string(),
+    objectFormat,
+  }),
+  z.strictObject({
+    kind: z.enum(['local', 'staged']),
+    head: z.string().nullable(),
+    objectFormat,
+  }),
+  z.strictObject({
+    kind: z.literal('paths'),
+    commit: z.string(),
+    paths: z.array(z.string()),
+    skips: z.boolean(),
+    objectFormat,
+  }),
+]).refine(source => sourceIssues(source).length === 0)
 const flag = z.strictObject({
   code: z.enum(['hidden-characters', 'ai-addressed-text']),
   file: z.string().optional(),
@@ -232,6 +262,7 @@ export const resultSchema = z.strictObject({
     version: z.string(),
     startedAt: z.string(),
     durationMs: count,
+    source: reviewSource,
     profiles: z.record(z.string(), profileMeta),
     usage: usage.optional(),
     incomplete: z.array(incompleteEntry),

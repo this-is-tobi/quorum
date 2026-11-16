@@ -28,8 +28,14 @@ interface ProfilePorts {
 }
 
 interface Quorum {
-  readonly review: (input: { readonly diff: string }, options?: { readonly signal?: AbortSignal }) => Promise<QuorumResult>
+  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal }) => Promise<QuorumResult>
   readonly warnings: readonly string[]
+}
+
+interface ReviewInput {
+  readonly diff: string
+  readonly source?: ReviewSource
+  readonly leftOut?: readonly LeftOutFile[]
 }
 ```
 
@@ -99,12 +105,14 @@ The settings of the profiles that cannot take full effect, each starting at its 
 ## `review`
 
 ```ts
-const result = await quorum.review({ diff }, {
+const result = await quorum.review({ diff, source, leftOut }, {
   signal: AbortSignal.timeout(10 * 60_000)
 })
 ```
 
 - **`diff`** is the unified diff, as a string. A blank one runs no stage, calls no model and resolves with empty lists, the review still sending `run:start` and `run:end`. One whose every file `exclude` leaves out does the same, except that its `meta.leftOut` lists the files, a `left-out` event is sent, and the text before the first header, a mail's message say, is still researched.
+- **`source`**, optional, is where the diff came from: it is checked and recorded in `meta.source` as given, with its known fields only, and `{ kind: 'diff' }` when it is unset. [The source](./20-json-result.md#the-source) lists its five kinds.
+- **`leftOut`**, optional, lists the files a source left out before it made the diff. They come first in `meta.leftOut` and in the `left-out` event, before the diff's own, each file and reason once, and a `binary` or `submodule` one is a gap of every profile, as the diff's are.
 - **`signal`**, optional, stops the review: [Abort](#abort).
 - **A quorum reviews any number of diffs**, one per call. Each review has its own concurrency limit and its own signal, and several may run at once.
 
@@ -112,7 +120,7 @@ It resolves with the [result](./20-json-result.md), or rejects:
 
 | With | When |
 | --- | --- |
-| A `ConfigError` | The input is malformed, before any event: `input: must be an object holding the diff string` when the input is not an object, such as the diff text passed on its own; `diff: must be a string`; `options: must be an object`; or `signal: must be an AbortSignal` |
+| A `ConfigError` | The input is malformed, before any event: `input: must be an object holding the diff string` when the input is not an object, such as the diff text passed on its own; `diff: must be a string`; `source: must be an object`, `source.kind: must be diff, range, local, staged or paths`, `source.objectFormat: must be sha1 or sha256`, `source.<field>: must be a full commit id of its object format: 40 lowercase hexadecimal characters for sha1, 64 for sha256` (and, for the `head` of a `local` or `staged` source, `, or null when nothing is committed`), `source.paths: must be an array of strings` or `source.skips: must be a boolean`; `leftOut: must be an array`, `leftOut.<index>: must be an object with a file and a reason`, `leftOut.<index>.file: must be a string` or `leftOut.<index>.reason: must be excluded, binary or submodule`; `options: must be an object`; or `signal: must be an AbortSignal` |
 | The signal's reason | The signal aborted, before the review or while it ran |
 | The sink's error | The event sink threw |
 | A `ProviderError`, or what a provider of your own throws | A gating profile's research call failed, or the call of one part of its research in parts, unless it was a refusal of kind `too-large`, which is a gap |
@@ -127,13 +135,13 @@ The sink receives every event of a review, synchronously and in order, as each t
 | Event | Fields | Sent |
 | --- | --- | --- |
 | `run:start` | `profiles`, the ids in order; `providers`, who reviews for each profile: `research` and `lenses`, each a `{ id, model }` | First, when the review starts |
-| `left-out` | `files`, as `meta.leftOut` holds them: [A file left out](./20-json-result.md#a-file-left-out) | Once, right after `run:start`, when the review leaves a file out |
+| `left-out` | `files`, as `meta.leftOut` holds them, the input's own first: [A file left out](./20-json-result.md#a-file-left-out) | Once, right after `run:start`, when the review leaves a file out |
 | `flag` | `flag`, as `meta.flags` holds it: [A flag](./20-json-result.md#a-flag) | Once per flag, after `run:start`, the `left-out` event and the gaps, before any stage |
 | `stage:start` | `profile`; `stage`: `research`, `dedup` or `panel` | When a stage of a profile starts |
 | `stage:end` | `profile`, `stage`; `durationMs`, the stage's wall-clock time, waits for a concurrency slot included; `count`, the findings it produced, or the verdicts for `panel` | When that stage ends |
 | `call` | `profile`; `role`: `research` or `vote`; `lens`, for a vote; `provider`, its `{ id, model }`; `durationMs`, from the call's first attempt to its end, inside its slot, the waits between attempts included; `ok`; `attempts`, the number of attempts, only when the call made more than one; `usage`, summed over its attempts, when the counts they reported are valid: a call that succeeded, or one that failed on a reply its provider read and refused, whose error carries them in an own `usage` property ([`ProviderError`](../20-using/30-providers.md#providererror)); `spent`, the tokens the review's cap counted for the call: each attempt's reported usage, nothing for one the server refused before any work, else its reservation ([The token cap](../20-using/20-configuration.md#the-token-cap)) | Once per provider call, failed ones included; a research in parts makes one call per part, in order; none for a call that the cap, the deadline or the review's abort stopped before its first attempt |
 | `finding:invalid` | `profile`; `reason`, such as `src/auth.js:3 is not in the diff` | Once per finding dropped for citing code outside the diff |
-| `incomplete` | `entry`, as `meta.incomplete` will hold it | Once per gap, as it is recorded: the gaps of the diff's binary and submodule files first, then the profile's `too-large` gap, right after `run:start` and the `left-out` event and before any call; the gaps of a research in parts once every part has answered, after the `finding:invalid` events; a limit's gap last for its profile, after the `stage:end` of its `panel` |
+| `incomplete` | `entry`, as `meta.incomplete` will hold it | Once per gap, as it is recorded: the gaps of the binary and submodule files left out first, then the profile's `too-large` gap, right after `run:start` and the `left-out` event and before any call; the gaps of a research in parts once every part has answered, after the `finding:invalid` events; a limit's gap last for its profile, after the `stage:end` of its `panel` |
 | `vote` | `profile`, `findingId`, `lens`; `keep`: `true`, `false`, or `null` when the vote failed; `error`, then `failure`, for a failed vote: its `kind` and, for an `http` failure, its `status`, as the result's vote holds them ([A vote](./20-json-result.md#a-vote)) | Once per vote |
 | `verdict` | `profile`, `findingId`, `keptVotes`, `totalVotes`; `confidence`, when it reached one; `status`: `kept`, `discarded` or `unreviewed` | Once per finding, when all its votes are in |
 | `run:end` | `kept`, `discarded`, `unreviewed` and `incomplete`, the counts; `durationMs` | Last, when the review ends |
@@ -150,7 +158,7 @@ The first events of the review on [The JSON result](./20-json-result.md#an-examp
 ```
 
 - **The sink runs inside the review.** Each event is delivered before the review goes on, so a slow sink slows the review.
-- **Events carry no model text beyond `error` strings**, the file name a `finding:invalid` reason quotes, which is the finder's, cleaned and capped at 80 characters, and, for a diff without per-file headers, the `file` and `detail` of a `vote-failed` entry or of a vote's `request-too-large` entry, which hold the finder's name for the file, cleaned and capped at 260. The `file` of a `flag` event is the diff's own path, and absent for a diff without per-file headers. The `file` of a `left-out` event's files is the diff's own path, or `""`.
+- **Events carry no model text beyond `error` strings**, the file name a `finding:invalid` reason quotes, which is the finder's, cleaned and capped at 80 characters, and, for a diff without per-file headers, the `file` and `detail` of a `vote-failed` entry or of a vote's `request-too-large` entry, which hold the finder's name for the file, cleaned and capped at 260. The `file` of a `flag` event is the diff's own path, and absent for a diff without per-file headers. The `file` of a `left-out` event's files is the diff's own path, or `""`, and for a file the input's `leftOut` lists, the name the caller gave.
 - **The sink gets a copy of each event.** Changing one changes neither the review nor its result.
 - **`meta` agrees with the events.** `meta.usage` and each `invalidFindings` are counted from them.
 - **A sink that throws aborts the review** with its error, so the bug surfaces instead of being swallowed: no profile starts another call, no further event is delivered, and the review rejects with that error, even when it threw on `run:end`.
@@ -426,7 +434,7 @@ The warnings, each but the first two starting at the path it is about:
 | `inertLine`, `inertJson` | Render a line for a terminal or a log, and a value as JSON, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
 | `runQuorum` | Deprecated: [below](#runquorum) |
 
-The types: `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
+The types: `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `ObjectFormat`, `Profile`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `ReviewInput`, `ReviewSource`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider` and `QuorumPorts`; `ConfigIssue` and `ProviderErrorKind`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
 
 The stages, the profile checks and the CLI's exit-code rule are not exported: a program reaches the stages through `createQuorum`, and applies the exit codes itself, as the example below does.
 

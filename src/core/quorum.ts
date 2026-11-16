@@ -9,6 +9,7 @@ import { ConfigError } from './errors.ts'
 import type { ConfigIssue } from './errors.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
 import { diffFlags } from './flags.ts'
+import { leftOutIssues, mergeLeftOut, sourceIssues, sourceOf } from './inputs.ts'
 import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, LimitError, limitGaps, maxReviewTokensProblem } from './limits.ts'
 import { isRecord } from './output.ts'
 import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap } from './parts.ts'
@@ -24,7 +25,7 @@ import { panel } from './stages/panel.ts'
 import type { PanelOutcome } from './stages/panel.ts'
 import { DEFAULT_MAX_FINDINGS, planResearch, research } from './stages/research.ts'
 import type { ResearchPlan } from './stages/research.ts'
-import type { CoverageEntry, Profile, ProfileMeta, ProfileProviders, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, Usage } from './types.ts'
+import type { CoverageEntry, Profile, ProfileMeta, ProfileProviders, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ReviewInput, Usage } from './types.ts'
 
 const PROVIDER_SHAPE = 'must be a provider: an object with a string id, a string model and a complete function'
 
@@ -120,7 +121,7 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
   }
   const warnings: readonly string[] = Object.freeze(options.profiles.flatMap(profile => profileWarnings(profile)))
   return Object.freeze({
-    review: (input: { readonly diff: string }, options?: ReviewOptions) => review(compiled, input, options),
+    review: (input: ReviewInput, options?: ReviewOptions) => review(compiled, input, options),
     warnings,
   })
 }
@@ -136,7 +137,10 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
  * stage runs, from the whole diff, the excluded files included. The review lists the files it
  * leaves out in `meta.leftOut`: the excluded ones, which are no gap, and the files whose change the
  * diff does not carry, binary files and submodules' commits, for each reason of which it records a
- * gap for every profile; their sections still reach the stages. Everything it knows before a call
+ * gap for every profile; their sections still reach the stages. The input's own `leftOut`, the files its
+ * source left out before it made the diff, comes first in the list, in the `left-out` event and in the gaps'
+ * counts, each file and reason once; the input's `source` is checked, copied and recorded in `meta.source`,
+ * `{ kind: 'diff' }` when it names none. Everything it knows before a call
  * is sent in this order: `run:start`, then a `left-out` event naming those files when it leaves one
  * out, then the gaps' `incomplete` events (each profile's `binary` and `submodule` gaps, then its
  * `too-large` gap), then the `flag` events of the advisory flags, kept in `meta.flags`, none of which
@@ -187,11 +191,11 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
  * and votes run as far as the cap lets them. A research in parts spends up to the cap, each part reserved
  * before it is sent: the parts the cap cannot fund are not sent, and one gap counts them.
  *
- * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, options that are not an object, a `signal` that is not an AbortSignal
+ * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source` or a `leftOut` it cannot take, options that are not an object, a `signal` that is not an AbortSignal
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
  * @throws the error of a sink that throws, or of a gating profile that fails: a ProviderError from its research call, an OutputError for its reply
  */
-async function review(compiled: Compiled, input: { readonly diff: string }, options: ReviewOptions = {}): Promise<QuorumResult> {
+async function review(compiled: Compiled, input: ReviewInput, options: ReviewOptions = {}): Promise<QuorumResult> {
   const issues = reviewIssues(input, options)
   if (issues.length > 0) throw new ConfigError(issues)
   options.signal?.throwIfAborted()
@@ -212,7 +216,7 @@ async function review(compiled: Compiled, input: { readonly diff: string }, opti
  * What `review` does once its deadline is armed: everything from its signals to its result, with `expired`, the
  * deadline's own signal, joined to the review's into the one `stop` the call path reads.
  */
-async function reviewUntil(compiled: Compiled, input: { readonly diff: string }, options: ReviewOptions, deadline: RunContext['deadline'], expired: AbortSignal): Promise<QuorumResult> {
+async function reviewUntil(compiled: Compiled, input: ReviewInput, options: ReviewOptions, deadline: RunContext['deadline'], expired: AbortSignal): Promise<QuorumResult> {
   const internal = new AbortController()
   const signal = options.signal === undefined
     ? internal.signal
@@ -232,6 +236,9 @@ async function reviewUntil(compiled: Compiled, input: { readonly diff: string },
   const scope: ReviewScope = whole === undefined
     ? { diff: input.diff, leftOut: [], files: [] }
     : reviewScope(input.diff, compiled.excluded)
+  // Copied before the first await, so the caller's later changes to its input reach neither the result nor the events.
+  const source = sourceOf(input.source)
+  const leftOut = mergeLeftOut(input.leftOut ?? [], scope.leftOut)
   // What the stages read: none when the filtered diff is blank, else the sections the flags read when nothing was left out.
   const sections = scope.diff.trim() === ''
     ? undefined
@@ -250,7 +257,7 @@ async function reviewUntil(compiled: Compiled, input: { readonly diff: string },
     return [
       run.id,
       [
-        ...leftOutGaps(run.id, scope.leftOut),
+        ...leftOutGaps(run.id, leftOut),
         ...tooLarge === undefined
           ? []
           : [tooLarge],
@@ -292,7 +299,7 @@ async function reviewUntil(compiled: Compiled, input: { readonly diff: string },
       providersOf(run),
     ])),
   })
-  if (scope.leftOut.length > 0) emit({ type: 'left-out', files: scope.leftOut })
+  if (leftOut.length > 0) emit({ type: 'left-out', files: leftOut })
   for (const run of runs) {
     for (const entry of gaps.get(run.id) ?? []) emit({ type: 'incomplete', entry })
   }
@@ -316,6 +323,7 @@ async function reviewUntil(compiled: Compiled, input: { readonly diff: string },
     version: packageJson.version,
     startedAt,
     durationMs,
+    source,
     profiles: Object.fromEntries(runs.map((run, index) => [
       run.id,
       profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, coverageOf(scope, filtered, plans[index]?.packing, outcomes[index]?.parts ?? [])),
@@ -324,7 +332,7 @@ async function reviewUntil(compiled: Compiled, input: { readonly diff: string },
       ? {}
       : { usage: tally.usage }),
     incomplete,
-    leftOut: scope.leftOut,
+    leftOut,
     flags,
   }
   emit({
@@ -377,13 +385,18 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPla
 /**
  * Every problem with one review's input and options, so an untyped caller gets issues, never a
  * TypeError. An input that is not an object is named as the input, not as its diff: the likely
- * mistake is the diff text passed on its own, as `runQuorum` takes it. The signal must be a real
- * AbortSignal: `AbortSignal.any` accepts nothing else.
+ * mistake is the diff text passed on its own, as `runQuorum` takes it. The `source` and the `leftOut`,
+ * when set, are checked after the diff, so a caller sees every issue of the input at once. The signal
+ * must be a real AbortSignal: `AbortSignal.any` accepts nothing else.
  */
 function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
   const issues: ConfigIssue[] = []
-  if (!isRecord(input)) issues.push({ path: 'input', message: 'must be an object holding the diff string' })
-  else if (typeof input.diff !== 'string') issues.push({ path: 'diff', message: 'must be a string' })
+  if (!isRecord(input)) {
+    issues.push({ path: 'input', message: 'must be an object holding the diff string' })
+  } else {
+    if (typeof input.diff !== 'string') issues.push({ path: 'diff', message: 'must be a string' })
+    issues.push(...sourceIssues(input.source), ...leftOutIssues(input.leftOut))
+  }
   if (!isRecord(options)) issues.push({ path: 'options', message: 'must be an object' })
   else if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) issues.push({ path: 'signal', message: 'must be an AbortSignal' })
   return issues
