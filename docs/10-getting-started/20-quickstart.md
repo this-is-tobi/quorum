@@ -61,6 +61,7 @@ jq '.kept[0]' result.json
 ```json
 {
   "id": "6f4bcc15476f",
+  "fingerprint": "30315391ee0ccee3:1",
   "profile": "security",
   "file": "src/users.js",
   "line": 12,

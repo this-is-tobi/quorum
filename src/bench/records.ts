@@ -19,6 +19,7 @@ import { SKIP_RULES, sourceIssues } from '../core/inputs.ts'
 import { FAIL_ON_LEVELS } from '../core/profile.ts'
 import { inertJsonLine } from '../core/sanitize.ts'
 import { SECRET_RULES } from '../core/secrets.ts'
+import { FINGERPRINT_PATTERN } from '../core/stages/research.ts'
 import type { QuorumResult, Usage } from '../core/types.ts'
 import { MAX_TRIALS, SUITE_ID } from './suite.ts'
 
@@ -132,6 +133,7 @@ const lensVote = z.strictObject({
 })
 const verdict = z.strictObject({
   id: z.string(),
+  fingerprint: z.string().regex(FINGERPRINT_PATTERN),
   profile: z.string(),
   file: z.string(),
   line: count,

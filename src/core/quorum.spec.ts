@@ -8,6 +8,7 @@ import { ConfigError, OutputError, ProviderError } from './errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts } from './ports.ts'
 import { researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum, createQuorumWith } from './quorum.ts'
+import { FINGERPRINT_PATTERN } from './stages/research.ts'
 import { requestTokens, tokenBound } from './tokens.ts'
 import type { Finding, IncompleteEntry, LeftOutFile, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, ReviewSource, Usage, VoteFailure } from './types.ts'
 
@@ -48,6 +49,7 @@ const reported = {
 /** The same finding once the harness has verified it against `diff`. */
 const finding: Finding = {
   id: '235f5feb3565',
+  fingerprint: '7e14f27a57f3c349:1',
   profile: 'security',
   file: 'a.js',
   line: 1,
@@ -534,6 +536,12 @@ describe('review', () => {
     complete.mockResolvedValueOnce(findings(reported)).mockResolvedValue(vote(true))
     const [verdict] = (await run().review({ diff })).kept
     expect(verdict.evidenceRow).toBe(1)
+  })
+
+  it('carries each finding\'s fingerprint into its verdict', async () => {
+    complete.mockResolvedValueOnce(findings(reported)).mockResolvedValue(vote(true))
+    const [verdict] = (await run().review({ diff })).kept
+    expect(verdict.fingerprint).toMatch(FINGERPRINT_PATTERN)
   })
 
   it('grants high confidence on a unanimous 3/3 keep and reports the vote count', async () => {
@@ -1162,6 +1170,7 @@ describe('meta and events', () => {
     const result = await run().review({ diff })
     expect(Object.keys(result.kept[0])).toEqual([
       'id',
+      'fingerprint',
       'profile',
       'file',
       'line',

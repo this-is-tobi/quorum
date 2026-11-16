@@ -18,6 +18,7 @@ Each list keeps the order in which the finder listed its findings, the first pro
 | Field | Type | Holds |
 | --- | --- | --- |
 | `id` | string | Names the finding, stable across runs: the first 12 hexadecimal characters of the SHA-256 of the JSON array `[profile, file, line, category]` |
+| `fingerprint` | string | Names the finding across pushes: the first 16 hexadecimal characters of the SHA-256 of the JSON array `[profile, file, category, row]`, the category in Unicode's composed form (NFC), in lower case with each run of other characters than letters and digits written `-`, and the cited row's code with its white space collapsed, then `:` and the finding's rank, from 1, among the profile's findings with that hash. It holds no line number, so a push that moves the code keeps it; the line comments and the SARIF results of a review carry it |
 | `profile` | string | The id of the profile that found it |
 | `file` | string | The diff's own path for the cited file. For a diff without per-file headers, the finder's name for it, cleaned and capped at 260 characters |
 | `line` | number | The cited line of the new file, inside a hunk of the diff |
@@ -244,6 +245,7 @@ A review of a diff that touches three files, run on the one provider, named `def
   "kept": [
     {
       "id": "6f4bcc15476f",
+      "fingerprint": "30315391ee0ccee3:1",
       "profile": "security",
       "file": "src/users.js",
       "line": 12,
@@ -289,6 +291,7 @@ A review of a diff that touches three files, run on the one provider, named `def
   "discarded": [
     {
       "id": "31c4f568c9be",
+      "fingerprint": "4af424c8bf4b8fd1:1",
       "profile": "security",
       "file": "src/upload.js",
       "line": 5,
@@ -333,6 +336,7 @@ A review of a diff that touches three files, run on the one provider, named `def
   "unreviewed": [
     {
       "id": "ea9ff1bf2f29",
+      "fingerprint": "b279c4bcd79869ca:1",
       "profile": "security",
       "file": "src/session.js",
       "line": 20,

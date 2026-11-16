@@ -5,6 +5,7 @@ import { dedup } from './dedup.ts'
 /** A finding as the research stage hands it on; the tests vary its location. */
 const finding: Finding = {
   id: '235f5feb3565',
+  fingerprint: '7e14f27a57f3c349:1',
   profile: 'security',
   file: 'a.js',
   line: 1,

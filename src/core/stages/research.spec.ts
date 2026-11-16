@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { splitDiff } from '../diff.ts'
 import { OutputError } from '../errors.ts'
-import { checkReplies, checkReply, DEFAULT_MAX_FINDINGS, findingId } from './research.ts'
+import { checkReplies, checkReply, DEFAULT_MAX_FINDINGS, findingFingerprint, findingId, FINGERPRINT_PATTERN } from './research.ts'
 
 const diff = [
   'diff --git a/a.js b/a.js',
@@ -33,6 +33,7 @@ describe('checkReply', () => {
     expect(outcome.findings).toEqual([
       {
         id: '235f5feb3565',
+        fingerprint: '7e14f27a57f3c349:1',
         profile: 'security',
         file: 'a.js',
         line: 1,
@@ -194,6 +195,27 @@ describe('checkReply', () => {
   })
 })
 
+describe('findingFingerprint', () => {
+  it('fingerprints a finding by its profile, file, folded category and cited row, never its line', () => {
+    const fingerprint = findingFingerprint('security', 'a.js', 'sql-injection', ' q( x )')
+    expect(findingFingerprint('security', 'a.js', 'SQL Injection!', '+  q( x )  ')).toBe(fingerprint)
+    expect(fingerprint).toMatch(/^[0-9a-f]{16}$/)
+    expect(findingFingerprint('style', 'a.js', 'sql-injection', ' q( x )')).not.toBe(fingerprint)
+    expect(findingFingerprint('security', 'b.js', 'sql-injection', ' q( x )')).not.toBe(fingerprint)
+    expect(findingFingerprint('security', 'a.js', 'xss', ' q( x )')).not.toBe(fingerprint)
+    expect(findingFingerprint('security', 'a.js', 'sql-injection', ' q( y )')).not.toBe(fingerprint)
+    expect(findingFingerprint('security', 'a.js', 'sql-injection', '')).not.toBe(fingerprint)
+  })
+
+  it('gives the composed and the decomposed form of a category one fingerprint', () => {
+    const composed = 'café'
+    const decomposed = `cafe${String.fromCharCode(0x301)}`
+    expect(decomposed).not.toBe(composed)
+    expect(findingFingerprint('security', 'a.js', decomposed, ' q( x )')).toBe(findingFingerprint('security', 'a.js', composed, ' q( x )'))
+    expect(findingFingerprint('security', 'a.js', composed, ' q( x )')).not.toBe(findingFingerprint('security', 'a.js', 'cafe', ' q( x )'))
+  })
+})
+
 describe('checkReplies', () => {
   const named = (prefix: string, count: number): unknown[] => Array.from({ length: count }, (_, index) => ({ ...reported, category: `${prefix}${index}` }))
 
@@ -317,5 +339,115 @@ describe('checkReplies', () => {
 
   it('reads no reply as a complete result', () => {
     expect(checkReplies([], sections, 'security')).toEqual({ findings: [], invalid: [], incomplete: [] })
+  })
+
+  it('keeps the fingerprint when a push shifts the finding\'s line', () => {
+    const before = splitDiff([
+      'diff --git a/a.js b/a.js',
+      '--- a/a.js',
+      '+++ b/a.js',
+      '@@ -1,4 +1,4 @@',
+      ' a()',
+      ' b()',
+      ' c()',
+      '-safe()',
+      '+exec(cmd)',
+    ].join('\n'))
+    const after = splitDiff([
+      'diff --git a/a.js b/a.js',
+      '--- a/a.js',
+      '+++ b/a.js',
+      '@@ -1,4 +1,7 @@',
+      '+x()',
+      '+y()',
+      '+z()',
+      ' a()',
+      ' b()',
+      ' c()',
+      '-safe()',
+      '+exec(cmd)',
+    ].join('\n'))
+    const [first] = checkReplies([
+      {
+        text: reply([
+          { ...reported, line: 4 },
+        ]),
+      },
+    ], before, 'security').findings
+    const [second] = checkReplies([
+      {
+        text: reply([
+          { ...reported, line: 7 },
+        ]),
+      },
+    ], after, 'security').findings
+    expect(first.fingerprint).toMatch(FINGERPRINT_PATTERN)
+    expect(second.fingerprint).toBe(first.fingerprint)
+    expect(second.id).not.toBe(first.id)
+  })
+
+  it('ranks the findings that share a hash in research order, a repeat of one taking its rank', () => {
+    const twice = splitDiff([
+      'diff --git a/a.js b/a.js',
+      '--- a/a.js',
+      '+++ b/a.js',
+      '@@ -0,0 +1,6 @@',
+      '+a()',
+      '+q(x)',
+      '+b()',
+      '+c()',
+      '+q(x)',
+      '+d()',
+    ].join('\n'))
+    const { findings } = checkReplies([
+      {
+        text: reply([
+          { ...reported, line: 2 },
+          { ...reported, line: 5 },
+          { ...reported, line: 2 },
+        ]),
+      },
+    ], twice, 'security')
+    const hash = findingFingerprint('security', 'a.js', 'CWE-78', '+q(x)')
+    expect(findings.map(found => found.fingerprint)).toEqual([`${hash}:1`, `${hash}:2`, `${hash}:1`])
+  })
+
+  it('ranks two findings at one line whose categories differ raw and fold alike, one and two', () => {
+    const one = splitDiff([
+      'diff --git a/a.js b/a.js',
+      '--- a/a.js',
+      '+++ b/a.js',
+      '@@ -0,0 +1,2 @@',
+      '+a()',
+      '+q(x)',
+    ].join('\n'))
+    const { findings } = checkReplies([
+      {
+        text: reply([
+          { ...reported, line: 2, category: 'SQL Injection' },
+          { ...reported, line: 2, category: 'sql-injection' },
+        ]),
+      },
+    ], one, 'security')
+    const hash = findingFingerprint('security', 'a.js', 'sql-injection', '+q(x)')
+    expect(findings.map(found => found.fingerprint)).toEqual([`${hash}:1`, `${hash}:2`])
+  })
+
+  it('fingerprints a finding with no cited row by the empty row', () => {
+    const removed = splitDiff([
+      'diff --git a/a.js b/a.js',
+      '@@ -5,2 +4,0 @@',
+      '-one()',
+      '-two()',
+    ].join('\n'))
+    const [finding] = checkReplies([
+      {
+        text: reply([
+          { ...reported, line: 4 },
+        ]),
+      },
+    ], removed, 'security').findings
+    expect(Object.hasOwn(finding, 'evidenceRow')).toBe(false)
+    expect(finding.fingerprint).toBe(`${findingFingerprint('security', 'a.js', 'CWE-78', '')}:1`)
   })
 })

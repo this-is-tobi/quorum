@@ -4,6 +4,7 @@ import { fence, renderTemplate, researchRequest, UNTRUSTED_CONTENT_NOTICE, voteR
 
 const finding = {
   id: '0123456789ab',
+  fingerprint: '7e14f27a57f3c349:1',
   profile: 'security',
   file: 'a.js',
   line: 3,

@@ -10,9 +10,11 @@ import type { CompletionRequest } from '../ports.ts'
 import { researchRequest } from '../prompts.ts'
 import { tokenBound } from '../tokens.ts'
 import type { Finding, FindingDetails, IncompleteEntry } from '../types.ts'
-import { verifyFindings } from '../verify.ts'
+import { collapse, verifyFindings } from '../verify.ts'
+import type { VerifiedFinding } from '../verify.ts'
 import { callProvider, isTooLarge, providerFailure, refusalMessage, roomOf } from './context.ts'
 import type { ProfileRun, RunContext } from './context.ts'
+import { dedupKey } from './dedup.ts'
 
 /** How many reported findings a research reply may send to the panel; the rest is reported as incomplete. */
 export const DEFAULT_MAX_FINDINGS = 50
@@ -43,6 +45,49 @@ export interface ResearchOutcome {
  */
 export function findingId(profile: string, file: string, line: number, category: string): string {
   return createHash('sha256').update(JSON.stringify([profile, file, line, category])).digest('hex').slice(0, 12)
+}
+
+/** What a fingerprint looks like: 16 hexadecimal characters, a colon and a rank from 1. */
+export const FINGERPRINT_PATTERN = /^[0-9a-f]{16}:[1-9]\d*$/
+
+/**
+ * The hash a finding's fingerprint starts with, which names it across pushes: the first 16 hex characters
+ * of SHA-256 over the JSON array `[profile, file, category, code]`. The category is folded, in Unicode's
+ * composed form (NFC), so a model's `café` is one whatever way it composes the `é`, in lower case
+ * with each run of characters that are neither letters nor digits written `-` and none left at either end,
+ * so a model's `SQL Injection!` and its `sql-injection` are one. `row` is the cited row of the evidence
+ * with its leading +, - or space marker, or empty when no row shows the line, and `code` is that row
+ * without its marker and with each run of white space one space and both ends trimmed, the rule a quote is
+ * matched by, so re-indenting a block keeps its findings' names. The line number is left out on purpose: a
+ * push that adds lines above the code moves it and must not rename its finding, while the cited row's code
+ * moves with it. The category stays in, so two findings on one line keep their own comment and alert.
+ */
+export function findingFingerprint(profile: string, file: string, category: string, row: string): string {
+  const folded = category.normalize('NFC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '')
+  return createHash('sha256').update(JSON.stringify([
+    profile,
+    file,
+    folded,
+    collapse(row.slice(1)),
+  ])).digest('hex').slice(0, 16)
+}
+
+/**
+ * The fingerprint of `finding`: its hash and its rank, from 1, among the distinct findings of the profile
+ * that share the hash, in the order `ranks` has seen them. A repeat of a finding's file, line and category,
+ * which `dedup` drops, takes that finding's rank, so the findings dedup keeps are ranked 1, 2, ....
+ */
+function rankedFingerprint(ranks: Map<string, Map<string, number>>, profile: string, finding: VerifiedFinding): string {
+  const row = finding.evidenceRow === undefined
+    ? ''
+    : finding.evidence.split('\n')[finding.evidenceRow]
+  const hash = findingFingerprint(profile, finding.file, finding.category, row)
+  const known = ranks.get(hash) ?? new Map<string, number>()
+  ranks.set(hash, known)
+  const key = dedupKey(finding)
+  const rank = known.get(key) ?? known.size + 1
+  known.set(key, rank)
+  return `${hash}:${rank}`
 }
 
 /**
@@ -146,8 +191,8 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
  * the whole diff of every part, is only dropped with its reason: it was read, and it is wrong. `invalid`
  * holds only the reasons of the findings the check against the diff dropped, so an unreadable finding is
  * reported once, in `incomplete`, with its reply's `label` before the reason when it has one. Every
- * finding it keeps is named by `findingId` and tagged with `profile`, and every incomplete entry it
- * records is tagged with `profile` too.
+ * finding it keeps is named by `findingId` and `findingFingerprint` and tagged with `profile`, and every
+ * incomplete entry it records is tagged with `profile` too.
  *
  * @throws OutputError when a reply is not one JSON object holding a `findings` array and nothing else
  * @throws RangeError when `maxFindings` is not a positive integer
@@ -171,8 +216,10 @@ export function checkReplies(replies: ReadonlyArray<{ readonly text: string, rea
       : `${label}: ${reason}`))
   }
   const checked = verifyFindings(details, sections)
+  const ranks = new Map<string, Map<string, number>>()
   const findings = checked.findings.map((finding): Finding => ({
     id: findingId(profile, finding.file, finding.line, finding.category),
+    fingerprint: rankedFingerprint(ranks, profile, finding),
     profile,
     ...finding,
   }))

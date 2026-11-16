@@ -92,6 +92,37 @@ describe('parseRecord', () => {
     expect(parseRecord(withRow(1.5))).toBeUndefined()
   })
 
+  it('reads a verdict with a fingerprint, and refuses one without or of another form', () => {
+    const withFingerprint = (fingerprint: unknown): string => JSON.stringify({
+      ...RECORD,
+      result: {
+        ...RESULT,
+        kept: [
+          { ...RESULT.kept[0], fingerprint },
+        ],
+      },
+    })
+    const { fingerprint: _fingerprint, ...unnamed } = RESULT.kept[0]
+    expect(parseRecord(withFingerprint('a1b2c3d4e5f60718:2'))).toMatchObject({
+      result: {
+        kept: [
+          { fingerprint: 'a1b2c3d4e5f60718:2' },
+        ],
+      },
+    })
+    expect(parseRecord(JSON.stringify({
+      ...RECORD,
+      result: {
+        ...RESULT,
+        kept: [unnamed],
+      },
+    }))).toBeUndefined()
+    expect(parseRecord(withFingerprint('a1b2:1'))).toBeUndefined()
+    expect(parseRecord(withFingerprint('a1b2c3d4e5f60718:0'))).toBeUndefined()
+    expect(parseRecord(withFingerprint('A1B2C3D4E5F60718:2'))).toBeUndefined()
+    expect(parseRecord(withFingerprint('a1b2c3d4e5f60718:01'))).toBeUndefined()
+  })
+
   it('reads a profile\'s failOn, and refuses a record whose profile has none', () => {
     const recorded = RESULT.meta.profiles.security
     const withProfile = (profile: Record<string, unknown>): string => JSON.stringify({
