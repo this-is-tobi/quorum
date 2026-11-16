@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import type { z } from 'zod'
 import { hiddenLabels } from '../core/sanitize.ts'
-import type { CoverageEntry, QuorumResult } from '../core/types.ts'
+import type { CoverageEntry, QuorumResult, ReviewSource } from '../core/types.ts'
 import { record, RESULT, resultWith, RUN_SUITE, verdict } from '../testing/bench.ts'
 import { parseRecord, parseRunFile, recordLine, reviewKey } from './records.ts'
 import type { DeniedRecord, ResultRecord, resultSchema, RunFile } from './records.ts'
@@ -217,6 +217,13 @@ describe('parseRecord, level by level', () => {
       }),
     ],
     [
+      'a meta without source',
+      withResult({
+        ...RESULT,
+        meta: Object.fromEntries(Object.entries(RESULT.meta).filter(([key]) => key !== 'source')),
+      }),
+    ],
+    [
       'a file left out for a reason the core has none of',
       withMeta({
         leftOut: [
@@ -308,6 +315,51 @@ describe('parseRecord, level by level', () => {
       },
     })
     expect(parseRecord(recordLine(bare).slice(0, -1))).toEqual(bare)
+  })
+
+  it('reads a record whose meta holds each kind of source, and refuses an unknown kind or a short id', () => {
+    const sha1 = 'a'.repeat(40)
+    const sha256 = 'b'.repeat(64)
+    const sources: ReviewSource[] = [
+      { kind: 'diff' },
+      {
+        kind: 'range',
+        base: sha1,
+        mergeBase: sha1,
+        head: sha1,
+        objectFormat: 'sha1',
+      },
+      { kind: 'local', head: null, objectFormat: 'sha256' },
+      { kind: 'staged', head: sha256, objectFormat: 'sha256' },
+      {
+        kind: 'paths',
+        commit: sha1,
+        paths: ['src', 'docs'],
+        skips: false,
+        objectFormat: 'sha1',
+      },
+    ]
+    for (const source of sources) {
+      const stored = record({
+        result: {
+          ...RESULT,
+          meta: { ...RESULT.meta, source },
+        },
+      })
+      expect(parseRecord(recordLine(stored).slice(0, -1))).toEqual(stored)
+    }
+    expect(parseRecord(withMeta({
+      source: { kind: 'tree' },
+    }))).toBeUndefined()
+    expect(parseRecord(withMeta({
+      source: {
+        kind: 'range',
+        base: sha1,
+        mergeBase: sha1,
+        head: 'a'.repeat(39),
+        objectFormat: 'sha1',
+      },
+    }))).toBeUndefined()
   })
 
   it('reads a record whose result holds a research-failed gap', () => {

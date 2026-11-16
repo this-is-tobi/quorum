@@ -253,6 +253,19 @@ export interface ProfileMeta {
   coverage: CoverageEntry[]
 }
 
+/**
+ * Where a review's diff came from, as `meta.source` records it: `diff` for a diff file or standard input,
+ * `range` for the commits `base...head` (`mergeBase` the commit the diff starts from), `local` and `staged`
+ * for the local changes (`head` null before a first commit), and `paths` for the files under `paths` at
+ * `commit`, with `skips` whether the default skips applied. Every id is a full commit id of the repository's
+ * `objectFormat`. It never holds a revision as written, a local file name or a git version.
+ */
+export type ReviewSource
+  = | { kind: 'diff' }
+    | { kind: 'range', base: string, mergeBase: string, head: string, objectFormat: ObjectFormat }
+    | { kind: 'local' | 'staged', head: string | null, objectFormat: ObjectFormat }
+    | { kind: 'paths', commit: string, paths: string[], skips: boolean, objectFormat: ObjectFormat }
+
 /** What a review records about itself, besides its verdicts. */
 export interface QuorumMeta {
   /** The version of quorum that ran the review, read from package.json. */
@@ -261,13 +274,15 @@ export interface QuorumMeta {
   startedAt: string
   /** How long the review took, in whole milliseconds. */
   durationMs: number
+  /** Where the diff came from: `{ kind: 'diff' }` when the input names no source. It never holds a revision as written, a local file name or a git version. */
+  source: ReviewSource
   /** One entry per profile, keyed by profile id, in the run's profile order. */
   profiles: Record<string, ProfileMeta>
   /** The usage summed over the calls that reported valid counts; absent when none did. */
   usage?: Usage
   /** Gaps that are not findings. An entry here, or an unreviewed finding, makes the review incomplete. */
   incomplete: IncompleteEntry[]
-  /** The files the review left out, in the diff's order, once per file and reason. Each, but an excluded one, is also a gap of every profile. */
+  /** The files the review left out, the input's own first, then the diff's, once per file and reason. Each, but an excluded one, is also a gap of every profile. */
   leftOut: LeftOutFile[]
   /** Advisory signals the harness read from the diff: where a human should look. They change no verdict and no exit code. */
   flags: Flag[]
@@ -313,15 +328,28 @@ export interface QuorumOptions {
   readonly partTokens?: number
 }
 
+/** What one review takes: the diff, and optionally where it came from and the files its source left out before it made the diff. */
+export interface ReviewInput {
+  readonly diff: string
+  /** Where the diff came from, checked and recorded in `meta.source` as given; `{ kind: 'diff' }` when unset. */
+  readonly source?: ReviewSource
+  /**
+   * The files the source left out before it made the diff, listed in `meta.leftOut` and in the `left-out`
+   * event ahead of the diff's own. A `binary` or `submodule` one is a gap of every profile, as the diff's are.
+   */
+  readonly leftOut?: readonly LeftOutFile[]
+}
+
 /** A quorum built by createQuorum: its profiles compiled once, ready to review any number of diffs. */
 export interface Quorum {
   /**
-   * Review one diff with every profile of the quorum. Once `signal` aborts, the review stops and
-   * rejects with the signal's reason; an aborted review never resolves. The review is over once it
-   * has sent `run:end`: an abort from that event's handler, or later, has no effect, and the review
-   * resolves with its result.
+   * Review one diff with every profile of the quorum, recording its `source` in `meta.source` and
+   * listing the files its source left out (`leftOut`) before the diff's own. Once `signal` aborts, the
+   * review stops and rejects with the signal's reason; an aborted review never resolves. The review is
+   * over once it has sent `run:end`: an abort from that event's handler, or later, has no effect, and the
+   * review resolves with its result.
    */
-  readonly review: (input: { readonly diff: string }, options?: { readonly signal?: AbortSignal }) => Promise<QuorumResult>
+  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal }) => Promise<QuorumResult>
   /** Settings that cannot take full effect, such as a policy level that never applies; each starts at its profile id. */
   readonly warnings: readonly string[]
 }
@@ -337,7 +365,7 @@ export type StageName = 'research' | 'dedup' | 'panel'
 export type QuorumEvent
   /** The review starts: the profiles it runs, and who reviews for each. */
   = | { type: 'run:start', profiles: string[], providers: Record<string, ProfileProviders> }
-    /** The files the review leaves out, as `meta.leftOut` holds them: sent once right after `run:start` when there is one. */
+    /** The files the review leaves out, as `meta.leftOut` holds them, the input's first: sent once right after `run:start` when there is one. */
     | { type: 'left-out', files: LeftOutFile[] }
     /** An advisory flag read from the diff, sent before any stage starts. */
     | { type: 'flag', flag: Flag }

@@ -8,7 +8,7 @@ import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts } fro
 import { researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum, createQuorumWith } from './quorum.ts'
 import { requestTokens, tokenBound } from './tokens.ts'
-import type { Finding, IncompleteEntry, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, Usage, VoteFailure } from './types.ts'
+import type { Finding, IncompleteEntry, LeftOutFile, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, ReviewSource, Usage, VoteFailure } from './types.ts'
 
 /** Replies, in call order, for the one fake provider that plays both roles. */
 const complete = vi.fn<(request: CompletionRequest) => Promise<string>>()
@@ -883,6 +883,31 @@ describe('review', () => {
     expect(complete).not.toHaveBeenCalled()
   })
 
+  it('refuses a source or a leftOut it cannot take, with every issue, before any event', async () => {
+    const events: QuorumEvent[] = []
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, provider),
+      events: event => events.push(event),
+    })
+    await expect(quorum.review({
+      diff,
+      source: { kind: 'tree' } as never,
+      leftOut: [
+        { file: 'a', reason: 'gone' },
+      ] as never,
+    })).rejects.toMatchObject({
+      name: 'ConfigError',
+      issues: [
+        { path: 'source.kind', message: 'must be diff, range, local, staged or paths' },
+        { path: 'leftOut.0.reason', message: 'must be excluded, binary or submodule' },
+      ],
+    })
+    expect(events).toEqual([])
+    expect(complete).not.toHaveBeenCalled()
+  })
+
   it('sends each lens to its own provider', async () => {
     const finder = fake('finder', () => findings(reported))
     const voters = Object.fromEntries(securityProfile.lenses.map(lens => [
@@ -1058,6 +1083,7 @@ describe('meta and events', () => {
       version: packageJson.version,
       startedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
       durationMs: expect.any(Number),
+      source: { kind: 'diff' },
       profiles: {
         security: {
           providers: {
@@ -1101,10 +1127,73 @@ describe('meta and events', () => {
       'version',
       'startedAt',
       'durationMs',
+      'source',
       'profiles',
       'incomplete',
       'leftOut',
       'flags',
+    ])
+  })
+
+  it('records where the diff came from in meta.source, { kind: \'diff\' } when the input names none', async () => {
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, fake('finder', () => findings())))
+    const range: ReviewSource = {
+      kind: 'range',
+      base: 'a'.repeat(40),
+      mergeBase: 'b'.repeat(40),
+      head: 'c'.repeat(40),
+      objectFormat: 'sha1',
+    }
+    expect((await quorum.review({ diff })).meta.source).toEqual({ kind: 'diff' })
+    expect((await quorum.review({ diff, source: range })).meta.source).toEqual(range)
+  })
+
+  it('writes meta\'s keys in their order, source after durationMs', async () => {
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, fake('finder', () => findings()))).review({ diff })
+    expect(Object.keys(result.meta)).toEqual([
+      'version',
+      'startedAt',
+      'durationMs',
+      'source',
+      'profiles',
+      'incomplete',
+      'leftOut',
+      'flags',
+    ])
+  })
+
+  it('keeps the source it recorded when the caller changes its input after the review starts', async () => {
+    const source = {
+      kind: 'paths' as const,
+      commit: 'a'.repeat(40),
+      paths: ['src'],
+      skips: true,
+      objectFormat: 'sha1' as const,
+    }
+    const leftOut: LeftOutFile[] = [
+      { file: 'x.js', reason: 'excluded' },
+    ]
+    const pending = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, fake('finder', () => findings()))).review({ diff, source, leftOut })
+    source.paths.push('lib')
+    source.commit = 'b'.repeat(40)
+    leftOut[0].file = 'changed.js'
+    leftOut.push({ file: 'later.js', reason: 'excluded' })
+    const result = await pending
+    expect(result.meta.source).toEqual({
+      kind: 'paths',
+      commit: 'a'.repeat(40),
+      paths: ['src'],
+      skips: true,
+      objectFormat: 'sha1',
+    })
+    expect(result.meta.leftOut).toEqual([
+      { file: 'x.js', reason: 'excluded' },
     ])
   })
 
@@ -1139,6 +1228,7 @@ describe('meta and events', () => {
       'version',
       'startedAt',
       'durationMs',
+      'source',
       'profiles',
       'usage',
       'incomplete',
@@ -1662,6 +1752,58 @@ describe('content the diff does not carry', () => {
     expect(result.meta.incomplete).toEqual([
       { profile: 'security', reason: 'binary', detail: 'the diff carries no content for 1000 binary file(s), listed in meta.leftOut' },
     ])
+  })
+
+  it('lists the source\'s files left out first, then the diff\'s, in one list and one left-out event', async () => {
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, fake('finder', () => findings())),
+      events: event => events.push(event),
+    }).review({
+      diff: `${diff}\n${image}`,
+      leftOut: [
+        { file: 'x.js', reason: 'excluded' },
+      ],
+    })
+    const files = [
+      { file: 'x.js', reason: 'excluded' },
+      { file: 'img.png', reason: 'binary' },
+    ]
+    expect(result.meta.leftOut).toEqual(files)
+    expect(events.filter(event => event.type === 'left-out')).toEqual([
+      { type: 'left-out', files },
+    ])
+  })
+
+  it('counts a binary or submodule file the input lists as a gap of every profile, once per file and reason', async () => {
+    const finder = fake('finder', () => findings())
+    const result = await createQuorum({
+      profiles: [securityProfile, style],
+    }, {
+      profiles: {
+        ...portsFor(securityProfile, finder).profiles,
+        ...portsFor(style, finder).profiles,
+      },
+    }).review({
+      diff,
+      leftOut: [
+        { file: 'a', reason: 'binary' },
+        { file: 'a', reason: 'binary' },
+        { file: 'a', reason: 'submodule' },
+        { file: 'b', reason: 'binary' },
+      ],
+    })
+    expect(result.meta.leftOut).toEqual([
+      { file: 'a', reason: 'binary' },
+      { file: 'a', reason: 'submodule' },
+      { file: 'b', reason: 'binary' },
+    ])
+    expect(result.meta.incomplete).toEqual(['security', 'style'].flatMap(profile => [
+      { profile, reason: 'binary', detail: 'the diff carries no content for 2 binary file(s), listed in meta.leftOut' },
+      { profile, reason: 'submodule', detail: 'the diff carries no content for 1 submodule(s), listed in meta.leftOut' },
+    ]))
   })
 
   it('lists nothing and records no gap for a text diff or a blank one', async () => {

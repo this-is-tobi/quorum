@@ -50,10 +50,11 @@ A failed vote counts as a reject. Its `failure` holds only what the code read, n
 | `version` | string | The version of quorum that ran the review, from `package.json` |
 | `startedAt` | string | When the review started, in ISO 8601 and UTC: `2026-11-08T02:04:20.361Z` |
 | `durationMs` | number | How long it took, in whole milliseconds |
+| `source` | object | Where the diff came from: [The source](#the-source) |
 | `profiles` | object | One entry per profile, keyed by profile id, in the order of the review's profiles |
 | `usage` | object | Only when at least one call reported valid counts: `inputTokens` and `outputTokens` summed over those calls, then `costUsd`, summed over the calls that reported one, when any did |
 | `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's gaps for the files left out first, then its `too-large` gap, then its research gaps, then its panel's, then its limits'. A review is complete when this list and `unreviewed` are both empty |
-| `leftOut` | entry[] | Every file the review left out, in the diff's order, once per file and reason: [A file left out](#a-file-left-out). Empty when it left none out, a blank diff included |
+| `leftOut` | entry[] | Every file the review left out, once per file and reason: the files its source left out before it made the diff first, then the diff's own in its order: [A file left out](#a-file-left-out). Empty when it left none out, a blank diff included |
 | `flags` | flag[] | The advisory flags read from the diff, file by file in its order: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
 
 A usage count is valid when it is a finite number of at least 0. A failed call's usage counts too, when its reply reported valid counts, as a reply refused or cut off at its token limit does. `meta.usage` and each `invalidFindings` are counted from the review's own events, so `meta` and the events cannot disagree.
@@ -67,6 +68,21 @@ A usage count is valid when it is a finite number of at least 0. A failed call's
 | `gating` | boolean | Whether its kept `high` findings set exit code `1`, and its gaps exit code `4` |
 | `invalidFindings` | number | How many findings it dropped for citing code outside the diff |
 | `coverage` | entry[] | Every file of the diff once, in its order, with how much of it the profile's research reviewed: [Coverage](#coverage) |
+
+### The source
+
+`meta.source` says where the diff came from. A program that calls [`review`](./30-library-api.md#review) names the source it made the diff from, and a review given none records `{ "kind": "diff" }`. Its `kind` is one of five, and the other fields depend on it:
+
+| `kind` | Other fields | Where the diff came from |
+| --- | --- | --- |
+| `diff` | None | A diff file or standard input, about which nothing more is known |
+| `range` | `base`, `mergeBase`, `head`, `objectFormat` | The commits `base...head` of a git repository: `mergeBase` is the commit where their histories meet, which the diff starts from |
+| `local`, `staged` | `head`, `objectFormat` | The local changes of a git repository, or only its staged ones, over the commit `head`; `head` is `null` before a first commit |
+| `paths` | `commit`, `paths`, `skips`, `objectFormat` | The files under `paths` at `commit`: `paths` holds the normalized selections, `.` for the whole tree, and `skips` whether the default skips applied |
+
+- **Every id is a full commit id**, never a revision as written: `base`, `mergeBase`, `head` and `commit` are 40 lowercase hexadecimal characters when `objectFormat` is `sha1`, and 64 when it is `sha256`.
+- **It never holds a revision as written, a local file name or a git version.**
+- **Later releases may add kinds**, a container image's say. A reader takes a kind it does not know as a source it cannot describe, never as an error, and goes on reading the rest of the result.
 
 ### Coverage
 
@@ -305,6 +321,9 @@ A review of a diff that touches three files, run on the one provider, named `def
     "version": "0.1.0",
     "startedAt": "2026-11-08T02:04:20.361Z",
     "durationMs": 12,
+    "source": {
+      "kind": "diff"
+    },
     "profiles": {
       "security": {
         "providers": {
