@@ -20,7 +20,7 @@ import type { ConfigInput } from '../config/schema.ts'
 import { splitDiff } from '../core/diff.ts'
 import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
 import { renderTemplate, researchRequest, voteRequest } from '../core/prompts.ts'
-import { findingId } from '../core/stages/research.ts'
+import { findingFingerprint, findingId } from '../core/stages/research.ts'
 import type { Confidence, Finding, FindingDetails, IncompleteEntry, QuorumResult, Verdict } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { shapeMessages } from '../providers/messages.ts'
@@ -358,6 +358,7 @@ const CATEGORY = 'CWE-78'
 export function verdict(file: string, line: number, confidence?: Confidence): Verdict {
   const made: Verdict = {
     id: findingId('security', file, line, CATEGORY),
+    fingerprint: `${findingFingerprint('security', file, CATEGORY, '')}:1`,
     profile: 'security',
     file,
     line,
@@ -747,6 +748,7 @@ export function largestVote(patch: string): number {
   for (const [file, section] of splitDiff(patch)) {
     const finding: Finding = {
       id: 'x',
+      fingerprint: 'a1b2c3d4e5f60718:1',
       profile: securityProfile.id,
       file,
       line: 1,

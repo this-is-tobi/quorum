@@ -272,6 +272,7 @@ describe('estimate', () => {
     })
     const cited: Finding = {
       id: 'finding',
+      fingerprint: 'a1b2c3d4e5f60718:1',
       profile: 'style',
       file: 'big.js',
       line: Number.MAX_SAFE_INTEGER,

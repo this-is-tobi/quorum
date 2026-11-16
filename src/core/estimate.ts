@@ -168,6 +168,7 @@ function researchReservations(run: ProfileRun, plan: ResearchPlan, diff: string)
 function longestFinding(file: string): Finding {
   return {
     id: '',
+    fingerprint: '',
     profile: '',
     file,
     line: Number.MAX_SAFE_INTEGER,

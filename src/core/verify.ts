@@ -4,7 +4,7 @@ import { stripHidden } from './sanitize.ts'
 import type { Finding, FindingDetails } from './types.ts'
 
 /** A finding as the harness verified it, before the research stage names it and tags its profile. */
-export type VerifiedFinding = Omit<Finding, 'id' | 'profile'>
+export type VerifiedFinding = Omit<Finding, 'id' | 'fingerprint' | 'profile'>
 
 /** The most characters of a finding's summary, which the finder writes, as the harness caps it. */
 export const MAX_SUMMARY = 500
@@ -80,7 +80,8 @@ function citedRow(located: FindingLocation, capped: string): number | undefined 
     : undefined
 }
 
-const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim()
+/** `text` with each run of white space one space and both ends trimmed. */
+export const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
 /**
  * Whether the quote appears in the evidence's code: the leading +, - or space marker is removed

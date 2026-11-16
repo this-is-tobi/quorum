@@ -27,6 +27,7 @@ export const RANGE: ReviewSource = {
 }
 export const SQL: Verdict = {
   id: 'i1',
+  fingerprint: 'a1b2c3d4e5f60718:1',
   profile: 'security',
   file: 'src/auth/login.ts',
   line: 42,
@@ -46,6 +47,7 @@ export const SQL: Verdict = {
 }
 export const TOKEN: Verdict = {
   id: 'i2',
+  fingerprint: 'b1c2d3e4f5061728:1',
   profile: 'security',
   file: 'src/session.js',
   line: 20,
@@ -65,6 +67,7 @@ export const TOKEN: Verdict = {
 export const UPLOAD: Verdict = {
   ...SQL,
   id: 'i3',
+  fingerprint: 'c1d2e3f405162738:1',
   file: 'src/upload.js',
   line: 5,
   keptVotes: 1,

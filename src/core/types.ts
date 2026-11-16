@@ -14,6 +14,10 @@ import type { PolicyRules } from './policy.ts'
 export interface Finding {
   /** Names the finding, stable across runs: the first 12 hex characters of SHA-256 over the JSON array `[profile, file, line, category]`. */
   id: string
+  /**
+   * Names the finding across pushes: the first 16 hex characters of SHA-256 over the JSON array `[profile, file, category, row]`, the category in Unicode's composed form (NFC), in lower case with each run of other characters than letters and digits written `-`, and the cited row's code with its white space collapsed (empty when no row is cited), then `:` and the finding's rank, from 1, among the profile's findings with that hash, a repeat of one finding's file, line and category taking its rank. It holds no line number, so a push that moves the code keeps it, and it holds the category, so two findings on one line keep their own.
+   */
+  fingerprint: string
   /** The id of the profile whose run found it. */
   profile: string
   /** The diff's own path; for a diff without per-file headers, the finder's name for it, cleaned. */
