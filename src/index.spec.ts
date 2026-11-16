@@ -27,7 +27,7 @@ afterEach(() => {
 })
 
 describe('the public API', () => {
-  it('exports createQuorum, defineConfig, fromConfig, loadConfig, outcome, readSource, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer and runQuorum', () => {
+  it('exports createQuorum, defineConfig, fromConfig, loadConfig, outcome, readSource, renderReport, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer and runQuorum', () => {
     expect(Object.keys(api).sort()).toEqual([
       'ConfigError',
       'GitError',
@@ -49,6 +49,7 @@ describe('the public API', () => {
       'outcome',
       'presets',
       'readSource',
+      'renderReport',
       'runQuorum',
       'securityProfile',
     ])

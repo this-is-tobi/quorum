@@ -109,6 +109,7 @@ const USAGE = [
   '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
+  '  -f, --format <format>    Write the report on stdout in this format: json or brief; json by default',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
   '  -v, --version            Print the version and exit',
@@ -1277,6 +1278,44 @@ describe('flags', () => {
     expect(stderr()).toBe('Error: --fail-on: names the profile "team", which does not run\n')
     expect(fetchMock).not.toHaveBeenCalled()
   })
+
+  it('writes the brief line on stdout with -f brief, and exits with the code it names', async () => {
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true), vote(true))
+    const failing = harness({
+      argv: ['-f', 'brief'],
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(failing.io)).toBe(EXIT.finding)
+    expect(failing.stdout()).toBe('quorum: findings: 1 kept (1 high), 0 unreviewed, 0 gaps, 0 left out, 0 flags; exit 1\n')
+    expect(failing.stderr()).toContain('Research (m @ http://localhost:11434)...\n')
+
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true), vote(false))
+    const passing = harness({
+      argv: ['--format=brief'],
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(passing.io)).toBe(EXIT.ok)
+    expect(passing.stdout()).toBe('quorum: pass: 1 kept (1 medium), 0 unreviewed, 0 gaps, 0 left out, 0 flags; exit 0\n')
+  })
+
+  it('refuses an unknown --format before any config, with the usage', async () => {
+    const fetchMock = stubChat()
+    const { io, stdout, stderr } = harness({
+      argv: ['--format', 'xml'],
+      env: {},
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe(`Error: --format: must be json or brief\n${USAGE}`)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })
 
 describe('--print-config', () => {
@@ -2380,7 +2419,7 @@ describe('the sources', () => {
       '       quorum bench [options] <suite>',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
-    expect(options).toHaveLength(16)
+    expect(options).toHaveLength(17)
     for (const line of options) {
       expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line.slice(25, 27), line).toBe('  ')

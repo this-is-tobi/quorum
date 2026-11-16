@@ -1,6 +1,6 @@
 import antfu from '@antfu/eslint-config'
 
-// The globals neither the core nor a profile may use: the process, the runtime, the network
+// The globals neither the core, a profile nor a reporter may use: the process, the runtime, the network
 // (`fetch`, `WebSocket`, `EventSource`), another thread (`Worker`), and the global object itself.
 const ENVIRONMENT_GLOBALS = [
   'process',
@@ -222,6 +222,23 @@ export default antfu(
         {
           patterns: [
             { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./(core|config)/(?!.*\\.\\.)|zod$|yaml$|node:(fs|fs/promises|path|crypto)$)', message: 'A bench module imports only bench modules, the core, the config layer, zod, yaml, node:fs, node:fs/promises, node:path and node:crypto.' },
+          ],
+        },
+      ],
+      'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
+    },
+  },
+  {
+    // A reporter renders a result it is given: it imports only report modules, the core and zod, and reads no
+    // global of the environment.
+    files: ['src/report/**/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(?!.*\\.\\.)|zod$)', message: 'A reporter imports only report modules, the core and zod.' },
           ],
         },
       ],

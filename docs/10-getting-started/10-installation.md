@@ -181,6 +181,7 @@ Options:
       --send <path>        Send a file held as a secret to the models all the same; repeat it to send several
       --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx
       --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile
+  -f, --format <format>    Write the report on stdout in this format: json or brief; json by default
       --print-config       Print the resolved config, keys redacted, and exit
   -h, --help               Print this help and exit
   -v, --version            Print the version and exit

@@ -330,6 +330,36 @@ const CASES: Array<[string, string, string, string[]]> = [
     'import { readSource } from \'../sources/read.ts\'\n\nexport const probe = readSource\n',
     ['no-restricted-imports'],
   ],
+  [
+    'a reporter imports the core',
+    'src/report/probe.ts',
+    'import { inertLine } from \'../core/sanitize.ts\'\n\nexport const probe = inertLine\n',
+    [],
+  ],
+  [
+    'a reporter refuses node:fs',
+    'src/report/probe.ts',
+    'import { readFileSync } from \'node:fs\'\n\nexport const probe = readFileSync\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'a reporter refuses the config layer',
+    'src/report/probe.ts',
+    'import { loadConfig } from \'../config/load.ts\'\n\nexport const probe = loadConfig\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'a reporter refuses process',
+    'src/report/probe.ts',
+    'export const probe = process.env\n',
+    ['no-restricted-globals'],
+  ],
+  [
+    'the core refuses the report layer',
+    'src/core/probe.ts',
+    'import { REPORTERS } from \'../report/registry.ts\'\n\nexport const probe = REPORTERS\n',
+    ['no-restricted-imports'],
+  ],
 ]
 
 describe('the layer boundaries of eslint.config.js', { timeout: 30_000 }, () => {
