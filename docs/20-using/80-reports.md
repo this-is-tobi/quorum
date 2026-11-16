@@ -1,6 +1,6 @@
 # Reports for GitHub
 
-One review's result is written for GitHub in a few ways, each a format of `--format` (`-f`) and each from the [public view](../30-security/30-output-handling.md#the-public-view), so no sink a stranger reads holds a model's reasoning, a discarded finding, a model's name or the usage: a summary for a pull request or the job summary, the payload that `quorum-action` posts, and SARIF for code scanning. This page lists the formats and describes the summary, the one that is written today.
+One review's result is written for GitHub in a few ways, each a format of `--format` (`-f`) and each from the [public view](../30-security/30-output-handling.md#the-public-view), so no sink a stranger reads holds a model's reasoning, a discarded finding, a model's name or the usage: a summary for a pull request or the job summary, the payload that `quorum-action` posts, and SARIF for code scanning. This page lists the formats and describes the summary and the payload.
 
 ## The formats
 
@@ -10,7 +10,7 @@ One review's result is written for GitHub in a few ways, each a format of `--for
 | `json` | The whole result as JSON: [The report](./10-cli.md#the-report) | No |
 | `brief` | One line of counts and code words: [The report](./10-cli.md#the-report) | No |
 | `markdown` | The summary of the review, below | Yes |
-| `payload` | The payload `quorum-action` posts. Not written yet | Yes |
+| `payload` | The payload `quorum-action` posts, below | Yes |
 | `sarif` | SARIF for code scanning. Not written yet | Yes |
 
 A format marked public only renders the public view of whatever it is given, a full result included, so no way of calling it publishes the reasoning: [Public-only formats](../30-security/30-output-handling.md#public-only-formats). `--view` does not change it. The three that are not marked write what they are given, so `--view public` is what makes them the public view.
@@ -102,6 +102,16 @@ quorum --range "$BASE...$HEAD" -f markdown >> "$GITHUB_STEP_SUMMARY"
 ```
 
 `-f markdown` writes the summary on stdout, and `--output markdown=<path>` writes it to a file as well as the format on stdout: `--output markdown="$RUNNER_TEMP/summary.md"`. Either is the public view whatever `--view` says. The exit code is the review's, so the step fails on a finding as the review does; the summary is written first. A program calls `renderReport(result, { format: 'markdown' })`: [`renderReport`](../95-reference/30-library-api.md#renderreport).
+
+## The payload
+
+`-f payload` writes the document that `quorum-action` posts as it is: one versioned JSON object that holds the commit the review is about (`head`), what it concluded (`conclusion`: `pass`, `findings` or `incomplete`, the exit code's meaning), the summary above, and a line comment for each kept or unreviewed finding that sits on a file of the diff, with the count of the findings no line can hold (`unplaced`). Each comment's body starts with a marker that holds the finding's fingerprint, then the level, the profile, the category, how the lenses voted and the claim, the category and the claim in code spans. The JSON is written by `inertJson`, so every text in it is inert and the Action composes none of its own. It is the public view whatever `--view` says.
+
+```bash
+quorum --range "$BASE...$HEAD" -f brief --output payload="$RUNNER_TEMP/payload.json"
+```
+
+Every field, the body and what the Action owns: [The Action's payload](../95-reference/50-action-payload.md).
 
 ## Next
 

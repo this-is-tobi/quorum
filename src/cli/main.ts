@@ -48,7 +48,7 @@ const USAGE = [
   '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
-  '  -f, --format <format>    Write the report on stdout in this format: text, json, brief or markdown; text on a terminal, else json',
+  '  -f, --format <format>    Write the report on stdout in this format: text, json, brief, markdown or payload; text on a terminal, else json',
   '  -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several',
   '      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never',
   '      --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage',

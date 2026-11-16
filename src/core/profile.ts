@@ -4,7 +4,8 @@ import { defaultPolicy, resolvePolicy } from './policy.ts'
 import { PLACEHOLDER } from './prompts.ts'
 import type { FailOn, Profile, Thresholds } from './types.ts'
 
-const ID_PATTERN = /^[a-z][a-z0-9_-]*$/
+/** What a profile id matches: the core's own pattern. */
+export const PROFILE_ID_PATTERN = /^[a-z][a-z0-9_-]*$/
 
 /** The fail-on levels, strictest first: `high`, `medium` and `low` are the confidences a kept finding reaches, and `none` is the advisory profile. */
 export const FAIL_ON_LEVELS = ['high', 'medium', 'low', 'none'] as const satisfies readonly FailOn[]
@@ -86,14 +87,14 @@ export function thresholdsFor(profile: Profile): Thresholds {
 }
 
 function isValidId(id: unknown): id is string {
-  return typeof id === 'string' && ID_PATTERN.test(id)
+  return typeof id === 'string' && PROFILE_ID_PATTERN.test(id)
 }
 
 /** `unknown` on purpose: an untyped caller can hand over a missing id, and `RegExp.test` would read it as the text "undefined". */
 function idProblem(id: unknown): string | undefined {
   return isValidId(id)
     ? undefined
-    : `must match ${ID_PATTERN.source}, got ${JSON.stringify(id)}`
+    : `must match ${PROFILE_ID_PATTERN.source}, got ${JSON.stringify(id)}`
 }
 
 /** `Array.from` reads a hole in an untyped array as `undefined`, so it is reported like any other lens that is not an object. */

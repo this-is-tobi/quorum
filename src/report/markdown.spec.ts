@@ -1,13 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
 import type { Flag, LeftOutFile, PublicView, QuorumResult, Verdict } from '../core/types.ts'
-import { codeFree } from '../testing/markdown.ts'
+import { expectCodeWritten as expectWritten, HOSTILE, RLO } from '../testing/markdown.ts'
 import { blankResult, cast, FINDINGS, INCOMPLETE, PASS, reportResult, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
 import { LISTED, markdown, SUMMARY_BUDGET, summaryMarkdown } from './markdown.ts'
 import { renderReport } from './registry.ts'
 import { publicView } from './view.ts'
-
-const RLO = String.fromCharCode(0x202E)
 
 const MARKER = '<!-- quorum:summary:v1 -->'
 const TABLE_HEAD = '| Profile | Fail-on | Kept | Unreviewed | Discarded | Outside the diff | Coverage |'
@@ -102,13 +100,8 @@ function secrets(): QuorumResult {
   })
 }
 
-/** The check of a document no text of a model or a diff is in outside a span or a block: the marker first, then only the words, numbers and Markdown quorum writes. */
-function expectCodeWritten(summary: string): void {
-  const lines = summary.split('\n')
-  expect(lines[0]).toBe(MARKER)
-  const written = codeFree(summary).slice(1)
-  expect(written.filter(line => !/^(?:#{3,4} )?[\w .,:;()'·*|-]*$/u.test(line) || /:[\w+-]+:/.test(line))).toEqual([])
-}
+/** The check of a summary: the marker first, then only what quorum wrote. */
+const expectCodeWritten = (summary: string): void => expectWritten(summary, MARKER)
 
 /** The line of each finding's head, as `<level> <profile> <file>:<line>`, in the order the summary lists them. */
 function heads(lines: readonly string[]): string[] {
@@ -226,14 +219,6 @@ describe('markdown', () => {
   })
 
   it('puts every text a model or the diff wrote in a code span or a fenced block, and gives every line the command rules', () => {
-    const hostile: Verdict = {
-      ...SQL,
-      file: 'src/`x`|y.js',
-      category: '@octocat #1 :smile: `',
-      summary: `${MARKER} ![x](https://e.example/x.png) $x$\n${RLO} ##[add-mask]e`,
-      evidence: ' a()\n+::error::x ~~~ ``` \n b()',
-      evidenceRow: 1,
-    }
     const leftOut: LeftOutFile[] = [
       { file: 'a | `b`', reason: 'binary' },
     ]
@@ -246,7 +231,7 @@ describe('markdown', () => {
       },
     ]
     const summary = markdown.render(reportResult({
-      kept: [hostile],
+      kept: [HOSTILE],
       unreviewed: [],
       meta: { leftOut, flags },
     }), { color: false, outcome: FINDINGS })
