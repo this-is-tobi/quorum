@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeDiff, diffSectionFor, diffSections, firstLineOutside, holds, locate, movedTo, parseHunks, sectionFor, splitDiff } from './diff.ts'
+import { decodeDiff, diffSectionFor, diffSections, firstLineOutside, headerNames, holds, locate, movedTo, namedPaths, namesOldSide, parseHunks, sectionFor, splitDiff } from './diff.ts'
 
 const gitDiff = [
   'diff --git a/src/a.js b/src/a.js',
@@ -302,6 +302,64 @@ describe('movedTo', () => {
   it('gives none for a section without such a line, and for a context row that holds the words', () => {
     expect(movedTo('diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-a\n+b')).toEqual([])
     expect(movedTo('diff --git a/a b/a\n rename to x\n+rename to y\n-copy to z')).toEqual([])
+  })
+})
+
+describe('namedPaths', () => {
+  it('lists the paths of the ---, +++, rename and copy lines in order, decoded, up to a tab, less /dev/null', () => {
+    const section = [
+      'diff --git a/old b/old',
+      '--- a/old',
+      '+++ /dev/null',
+      'rename from "a\\tb"',
+      'copy to c d\t',
+    ].join('\n')
+    expect(namedPaths(section)).toEqual(['a/old', 'a\tb', 'c d'])
+  })
+
+  it('reads a hunk row that looks like a +++ line as one', () => {
+    const section = [
+      'diff --git a/x b/x',
+      '--- a/x',
+      '+++ b/x',
+      '@@ -0,0 +1 @@',
+      '+++ b/.env',
+    ].join('\n')
+    expect(namedPaths(section)).toEqual(['a/x', 'b/x', 'b/.env'])
+  })
+})
+
+describe('headerNames', () => {
+  it('lists each name of the header line, quoted ones decoded, none empty, whatever the header reads as', () => {
+    expect(headerNames('diff --git a/.env b/.env c\n--- a/x\n+++ b/x')).toEqual(['a/.env', 'b/.env', 'c'])
+    expect(headerNames('diff --git  a/x   "b/caf\\303\\251/y"\r\n+row')).toEqual(['a/x', `b/caf${String.fromCharCode(0xE9)}/y`])
+    expect(headerNames('diff --git a/.env')).toEqual(['a/.env'])
+  })
+
+  it('gives none for a section that opens with another line, and for a header without a name', () => {
+    expect(headerNames('From x\ndiff --git a/.env b/.env')).toEqual([])
+    expect(headerNames('--- a/.env\n+++ b/.env')).toEqual([])
+    expect(headerNames('diff --git ')).toEqual([])
+    expect(headerNames('')).toEqual([])
+  })
+})
+
+describe('namesOldSide', () => {
+  const header = 'diff --git a/my dir/.env b/my dir/.env'
+
+  it('holds when the --- line writes the old side of a header that names one path on both sides', () => {
+    expect(namesOldSide(header, '--- a/my dir/.env\t')).toBe(true)
+    expect(namesOldSide(`${header}\r`, '--- a/my dir/.env\r')).toBe(true)
+    expect(namesOldSide('diff --git .env .env', '--- .env')).toBe(true)
+    expect(namesOldSide('diff --git "a/caf\\303\\251/.env" "b/caf\\303\\251/.env"', '--- "a/caf\\303\\251/.env"')).toBe(true)
+  })
+
+  it('fails for another name, the new side, no name, and a header whose sides differ', () => {
+    expect(namesOldSide(header, '--- a/src/auth.ts')).toBe(false)
+    expect(namesOldSide(header, '--- b/my dir/.env')).toBe(false)
+    expect(namesOldSide(header, '--- ')).toBe(false)
+    expect(namesOldSide('diff --git a/.env b/.env c', '--- a/.env')).toBe(false)
+    expect(namesOldSide('diff --git a/.env b/src/auth.ts', '--- a/.env')).toBe(false)
   })
 })
 

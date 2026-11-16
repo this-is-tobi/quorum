@@ -2,6 +2,17 @@ const GIT_HEADER = 'diff --git '
 const QUOTED_NEW_SIDE = ' "b/'
 const NEW_SIDE_MARKERS = [QUOTED_NEW_SIDE, ' b/']
 const MOVED_TO_PREFIXES = ['rename to ', 'copy to ']
+/** The lines, outside a header, that name a path: a file's two sides, and where git moved or copied it from and to. */
+const NAMING_PREFIXES = [
+  '--- ',
+  '+++ ',
+  'rename from ',
+  'rename to ',
+  'copy from ',
+  'copy to ',
+]
+/** What git writes for the side of a file that does not exist: no path. */
+const NO_FILE = '/dev/null'
 const PATH_PREFIX = /^(?:[ab]\/|\.\/)/
 const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 /** How many diff lines of a hunk, either side of the cited one, make up a finding's evidence. */
@@ -30,6 +41,13 @@ const NAME_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 const SURROGATE_ESCAPE = 0xDC00
 
 const isQuoted = (name: string): boolean => name.startsWith('"') && name.endsWith('"')
+
+/** A line less the carriage return a Windows-made diff ends it with. */
+function withoutCarriageReturn(line: string): string {
+  return line.endsWith('\r')
+    ? line.slice(0, -1)
+    : line
+}
 
 /** A name without the double quotes git puts around one with special characters, escapes untouched. */
 function unquote(name: string): string {
@@ -139,10 +157,7 @@ function renamedPath(names: string): string {
 
 /** The path a `diff --git` header names, or undefined when it names none. */
 function headerPath(header: string): string | undefined {
-  const line = header.endsWith('\r')
-    ? header.slice(0, -1)
-    : header
-  const names = line.slice(GIT_HEADER.length)
+  const names = withoutCarriageReturn(header).slice(GIT_HEADER.length)
   return sharedPath(names) || renamedPath(names) || undefined
 }
 
@@ -157,17 +172,77 @@ function headerPath(header: string): string | undefined {
 export function movedTo(text: string): string[] {
   const paths: string[] = []
   for (const raw of text.split('\n')) {
-    const line = raw.endsWith('\r')
-      ? raw.slice(0, -1)
-      : raw
+    const line = withoutCarriageReturn(raw)
     const prefix = MOVED_TO_PREFIXES.find(start => line.startsWith(start))
     if (prefix === undefined) continue
-    const name = line.slice(prefix.length)
-    paths.push(isQuoted(name)
-      ? decodeQuoted(name.slice(1, -1))
-      : name)
+    paths.push(decodedName(line.slice(prefix.length)))
   }
   return paths
+}
+
+/** A name as a line writes it, decoded when git quoted it. */
+function decodedName(name: string): string {
+  return isQuoted(name)
+    ? decodeQuoted(name.slice(1, -1))
+    : name
+}
+
+/**
+ * The paths a section's own lines name, in the order of the lines, each as its line writes it (an
+ * `a/` or `b/` prefix included) and decoded when git quoted it: the path of each `--- `, `+++ `,
+ * `rename from `, `rename to `, `copy from ` and `copy to ` line, less a trailing `\r` and cut at a
+ * tab (git ends a `---` or `+++` line with one when the name holds a space, and `diff -u` writes a
+ * timestamp after one). `/dev/null` and an empty name are no path. The header's own path is the
+ * section's `path`, and is not read again. A hunk row that reads like one of these lines (an added
+ * `++ b/.env` shows as `+++ b/.env`) names a path too: the lines are read with no hunk parsing, so
+ * the answer is generous and fails closed.
+ */
+export function namedPaths(text: string): string[] {
+  const paths: string[] = []
+  for (const raw of text.split('\n')) {
+    const prefix = NAMING_PREFIXES.find(start => raw.startsWith(start))
+    if (prefix === undefined) continue
+    const path = pathOfLine(raw, prefix)
+    if (path !== '' && path !== NO_FILE) paths.push(path)
+  }
+  return paths
+}
+
+/** The path a naming line writes after its prefix: less a trailing `\r`, cut at a tab, decoded when git quoted it. */
+function pathOfLine(raw: string, prefix: string): string {
+  const line = withoutCarriageReturn(raw)
+  return decodedName(line.slice(prefix.length).split('\t', 1)[0] ?? '')
+}
+
+/**
+ * The names the first line of a section holds when it is a `diff --git` header: each space-separated
+ * word after the keyword, none empty, less a trailing `\r` and decoded when quoted, as `namedPaths`
+ * decodes. The header's own path (`path` of the section) is one reading of these words, and a header
+ * that is forged or cannot be read gives the words and no path, so the hold reads each of them: a
+ * header such as `diff --git a/.env` or `diff --git a/.env b/.env c` names `.env` to a reader that
+ * splits it on its spaces. A path that holds a space is cut, so this is generous and fails closed.
+ * None for a section that opens with another line.
+ */
+export function headerNames(text: string): string[] {
+  const end = text.indexOf('\n')
+  const first = withoutCarriageReturn(end === -1
+    ? text
+    : text.slice(0, end))
+  if (!first.startsWith(GIT_HEADER)) return []
+  return first.slice(GIT_HEADER.length).split(' ').filter(name => name !== '').map(decodedName)
+}
+
+/**
+ * Whether a `--- ` line writes the old side of a `diff --git` header that names one path on both
+ * sides, as the header of a file git deletes whole does: the header's first half, cut at the middle
+ * space as `sharedPath` cuts it, and the line's path (up to a tab), are one name once decoded. A
+ * header whose two sides differ, or that holds a third name, has no such old side, so no line agrees
+ * with it.
+ */
+export function namesOldSide(header: string, minusLine: string): boolean {
+  const names = withoutCarriageReturn(header).slice(GIT_HEADER.length)
+  if (sharedPath(names) === '') return false
+  return decodedName(names.slice(0, (names.length - 1) / 2)) === pathOfLine(minusLine, '--- ')
 }
 
 /** One section of a diff: the text from a `diff --git` header to the next, or the text before the first one. */
