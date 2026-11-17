@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.7.0](https://github.com/this-is-tobi/quorum/compare/v0.6.0...v0.7.0) (2026-11-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* on a terminal, quorum now writes the text report on stdout instead of the JSON result. A pipe, a file and CI keep JSON, and -f json keeps it on a terminal.
+* --print-config prints a profile's failOn where it printed gating, the type ProfileMeta.failOn is required, and securityProfile no longer states gating.
+
+### Features
+
+* add recipes for Claude Code and git: a review skill, a commit hook and two git hooks ([6dda814](https://github.com/this-is-tobi/quorum/commit/6dda8146c3e3c7031d1605221b9573e07326142f))
+* bound what quorum mcp spends over its life, and let the operator narrow what an agent reads ([aac9ac8](https://github.com/this-is-tobi/quorum/commit/aac9ac846cdd77a8c7f2e50dc1380e7fde2606c4))
+* decide the exit code in the core with outcome, and gate each profile at its failOn level ([37b0fe7](https://github.com/this-is-tobi/quorum/commit/37b0fe7d274af0983465c7f66253a848b817d01b))
+* fingerprint each finding so a comment or an alert survives a push that moves its line ([1e3703a](https://github.com/this-is-tobi/quorum/commit/1e3703ae98fe61c262d27cf95abf48dbd6cb860e))
+* name the row of a finding's evidence that shows its cited line, as evidenceRow ([4336237](https://github.com/this-is-tobi/quorum/commit/43362371dd17a27f7bd2825f9a0218ffdc156d7f))
+* print a text report for a person on a terminal, colored unless NO_COLOR says not ([d5ca80a](https://github.com/this-is-tobi/quorum/commit/d5ca80afa2e400caeed77d5506257696b87a8243))
+* render a review through reporters, json and brief, chosen with --format ([fd6c152](https://github.com/this-is-tobi/quorum/commit/fd6c152f296d4e3877cde831c09f0fdc13f04372))
+* render a saved result with quorum report, through a strict reader with a cap ([487a8ab](https://github.com/this-is-tobi/quorum/commit/487a8ab27c500c6c2702d398d9fb53b65913013f))
+* render model and diff text inert in Markdown and in plain text a viewer may link ([fc1491e](https://github.com/this-is-tobi/quorum/commit/fc1491e2841a46be59d5a7fd0d7ce9f4179b529e))
+* serve quorum's review tool over MCP with quorum mcp ([471ff03](https://github.com/this-is-tobi/quorum/commit/471ff0359e34787eca82d4d2a2b8a9f4c4568753))
+* set a profile's fail-on level from the command line with --fail-on ([ff82f8b](https://github.com/this-is-tobi/quorum/commit/ff82f8be16067851b0332b99bfea426ecd128cdc))
+* shape what a calling agent receives of a review: code-checked fields first, capped claims ([eff4ba9](https://github.com/this-is-tobi/quorum/commit/eff4ba995815eb1e58074c0ce0b8370af33f40b5))
+* withhold what helps an attacker from public outputs with --view public, the public view ([2fc54b7](https://github.com/this-is-tobi/quorum/commit/2fc54b7ea33fa10e438036df5597f71c9683de70))
+* write a Markdown summary of a review for a pull request or a job summary, with -f markdown ([368d8cb](https://github.com/this-is-tobi/quorum/commit/368d8cb8206051025a8ec147e6b6dbc4f95fb7c2))
+* write more reports to files with --output, whole and never through a link ([6b8cf82](https://github.com/this-is-tobi/quorum/commit/6b8cf827e6787b843ae71f37f7ce8f662b4675d0))
+* write SARIF for GitHub code scanning, with levels that agree with the exit code ([f7a4d18](https://github.com/this-is-tobi/quorum/commit/f7a4d1846ef4c55564c81f65180d17d745c5682c))
+* write the payload quorum-action posts, with the summary and a line comment per finding ([bbb194f](https://github.com/this-is-tobi/quorum/commit/bbb194f48a437e0992b4ada3255b6777487f5728))
+
+
+### Bug Fixes
+
+* build the release binaries and the image with the MCP SDK they bundle ([aad36b9](https://github.com/this-is-tobi/quorum/commit/aad36b9895150e1673f8081ec9ac80db51a84358))
+* read untracked files beneath the top level, so no link swapped into a path is followed ([dc99947](https://github.com/this-is-tobi/quorum/commit/dc999470526d2262112e289ff038afeb0f6a2fa2))
+
+
+### Dependencies
+
+* add the MCP SDK, pinned exactly, as an optional peer that npm does not install ([c433244](https://github.com/this-is-tobi/quorum/commit/c4332446f3fce4a516032976652504fba4b3a08b))
+
 ## [0.6.0](https://github.com/this-is-tobi/quorum/compare/v0.5.0...v0.6.0) (2026-11-16)
 
 
