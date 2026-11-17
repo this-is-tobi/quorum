@@ -7,7 +7,9 @@ FROM ${BUN_IMAGE} AS build
 
 WORKDIR /app
 COPY package.json bun.lock ./
-RUN --mount=type=cache,id=bun,target=/root/.bun/install/cache bun install --frozen-lockfile --production --ignore-scripts
+# Every locked dependency: the binary bundles the MCP SDK, a development dependency that a production
+# install leaves out, and holds only what the code imports, so the development tools never reach it
+RUN --mount=type=cache,id=bun,target=/root/.bun/install/cache bun install --frozen-lockfile --ignore-scripts
 COPY src ./src
 # The compile script holds the flags that keep the binary from reading a .env or a bunfig.toml
 RUN bun run compile

@@ -157,9 +157,9 @@ describe('the binaries', () => {
     expect(step('build-binaries', 'oven-sh/setup-bun').with?.['bun-version']).toBe(expr('needs.expose-vars.outputs.BUN_VERSION'))
   })
 
-  it('install the production dependencies from the frozen lockfile, running no lifecycle script, then compile the release', () => {
+  it('install every dependency from the frozen lockfile, running no lifecycle script, then compile the release: the binaries bundle the MCP SDK, a development dependency', () => {
     const runs = (job('build-binaries').steps ?? []).map(({ run }) => run).filter(run => run !== undefined)
-    expect(runs).toEqual(['bun install --frozen-lockfile --production --ignore-scripts', 'bun run compile:release'])
+    expect(runs).toEqual(['bun install --frozen-lockfile --ignore-scripts', 'bun run compile:release'])
   })
 
   it('are uploaded flat, as the one artifact the release attaches, which must hold files and expires soon', () => {
