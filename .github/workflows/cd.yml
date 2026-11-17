@@ -52,8 +52,11 @@ jobs:
       with:
         bun-version: ${{ needs.expose-vars.outputs.BUN_VERSION }}
 
-    - name: Install production dependencies
-      run: bun install --frozen-lockfile --production --ignore-scripts
+    # Every dependency of the frozen lockfile, running no script: the binaries bundle the MCP SDK, a
+    # development dependency and an optional peer, which a production install leaves out. A compiled
+    # binary holds only what the code imports, so the development tools never reach it.
+    - name: Install the dependencies
+      run: bun install --frozen-lockfile --ignore-scripts
 
     - name: Compile the release binaries
       run: bun run compile:release

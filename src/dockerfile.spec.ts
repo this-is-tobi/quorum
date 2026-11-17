@@ -39,8 +39,8 @@ describe('the base images', () => {
 describe('the build stage', () => {
   const build = stage(/AS build$/)
 
-  it('installs the production dependencies from the frozen lockfile, running no lifecycle script', () => {
-    expect(build).toContain('RUN --mount=type=cache,id=bun,target=/root/.bun/install/cache bun install --frozen-lockfile --production --ignore-scripts')
+  it('installs every dependency from the frozen lockfile, running no lifecycle script: the binary bundles the MCP SDK, a development dependency', () => {
+    expect(build).toContain('RUN --mount=type=cache,id=bun,target=/root/.bun/install/cache bun install --frozen-lockfile --ignore-scripts')
   })
 
   it('compiles with the compile script, whose flags package.spec.ts holds, and not with a command of its own', () => {
