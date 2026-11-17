@@ -81,6 +81,7 @@ describe('quorum mcp', () => {
     expect(stderr()).toBe('')
     expect(fetchMock).not.toHaveBeenCalled()
     expect(git.calls).toEqual([])
+    expect(MCP_USAGE).toContain('      --max-session-tokens <n>    Spend at most this many tokens over the server\'s life; four times maxReviewTokens by default\n      --code-fields-only          Leave each finding\'s category and summary out of what the agent receives\n      --require-approval          Have Claude Code ask before every call\n  -h, --help')
     for (const line of MCP_USAGE.split('\n').filter(entry => entry.startsWith('  '))) {
       expect(line.slice(0, 34).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line[34], line).not.toBe(' ')
@@ -121,6 +122,79 @@ describe('quorum mcp', () => {
     expect(stderr().endsWith(`\n${MCP_USAGE}`)).toBe(true)
     expect(fetchMock).not.toHaveBeenCalled()
     expect(git.calls).toEqual([])
+  })
+
+  it.each([
+    [
+      ['0'],
+      'must be a whole number of tokens, from 1',
+      true,
+    ],
+    [
+      ['1.5'],
+      'must be a whole number of tokens, from 1',
+      true,
+    ],
+    [
+      ['x'],
+      'must be a whole number of tokens, from 1',
+      true,
+    ],
+    [
+      ['5', '6'],
+      'takes one number',
+      true,
+    ],
+    [
+      ['10'],
+      'is below the config\'s maxReviewTokens of 100, so no review could start: raise it, or name a config with a lower cap',
+      false,
+    ],
+  ] as const)('refuses --max-session-tokens %j', async (values, text, withUsage) => {
+    const fetchMock = stubModels({})
+    const root = directory()
+    const git = fakeRepository(root)
+    const config = write(directory(), 'q.yaml', `${CONFIG}maxReviewTokens: 100\n`)
+    const { io, stdout, stderr } = harness({ cwd: root, git: git.seam })
+    expect(await runMcp(io, [
+      '--config',
+      config,
+      ...values.flatMap(value => ['--max-session-tokens', value]),
+    ])).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe(`Error: --max-session-tokens: ${text}\n${withUsage
+      ? MCP_USAGE
+      : ''}`)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(git.calls).toEqual([])
+  })
+
+  it('sets the session budget to four times the config\'s maxReviewTokens unless told otherwise', async () => {
+    stubModels({
+      m: {
+        findings: [CHANGE_FINDING],
+      },
+    })
+    const outside = directory()
+    for (const { config, flags, total } of [
+      { config: CONFIG, flags: [], total: 8_000_000 },
+      { config: `${CONFIG}maxReviewTokens: 1000000\n`, flags: [], total: 4_000_000 },
+      {
+        config: `${CONFIG}maxReviewTokens: 1000000\n`,
+        flags: ['--max-session-tokens', '3000000'],
+        total: 3_000_000,
+      },
+    ]) {
+      const root = directory()
+      const streams = streamIO({ cwd: root, git: fakeRepository(root).seam })
+      const run = runMcp(streams.io, [
+        '--config',
+        write(outside, 'q.yaml', config),
+        ...flags,
+      ])
+      expect(await converse(streams, run)).toBe(EXIT.ok)
+      expect(streams.stderr()).toMatch(new RegExp(`quorum mcp: the session has spent \\d+ of ${total} tokens\\n`))
+    }
   })
 
   it('refuses a CLAUDE_PROJECT_DIR that is not an absolute path to a directory', async () => {

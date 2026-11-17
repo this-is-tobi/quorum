@@ -131,6 +131,8 @@ An AI agent that calls quorum, such as Claude Code through `quorum mcp`, reads t
 
 The findings come in the order of the summary: the ones that fail their profile first, then high, medium, unreviewed and low, each group by file and line, so what the budget drops is the least.
 
+Under `--code-fields-only`, a launch flag of `quorum mcp`, each finding holds its `profile`, `file`, `line`, `confidence`, `votes` and `fingerprint` and leaves its `category` and `summary` out, so the result carries no text a model wrote: [Limits](../20-using/90-mcp.md#limits).
+
 ### What it withholds besides the view
 
 - **The evidence.** The agent has the repository, and a finding names its file and line, so it can open the code. The evidence is the largest block of the change's own text that a finding carries.

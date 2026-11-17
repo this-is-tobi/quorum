@@ -11,6 +11,7 @@ import { envValue } from '../config/env.ts'
 import { readNamedConfig } from '../config/load.ts'
 import { resolveConfig } from '../config/resolve.ts'
 import { ConfigError } from '../core/errors.ts'
+import { DEFAULT_MAX_REVIEW_TOKENS } from '../core/limits.ts'
 import { errorLines, EXIT, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
 import { bannerLines, progressSink } from './render.ts'
@@ -26,6 +27,9 @@ export const MCP_USAGE = [
   '      --large                     Run a review of paths that may pass the token cap, reviewing what the cap allows',
   '      --trust-repo-config         Review local or staged changes where the repository\'s own config names a filter program',
   '      --send <path>               Send a file held as a secret to the models all the same; repeat it to send several',
+  '      --max-session-tokens <n>    Spend at most this many tokens over the server\'s life; four times maxReviewTokens by default',
+  '      --code-fields-only          Leave each finding\'s category and summary out of what the agent receives',
+  '      --require-approval          Have Claude Code ask before every call',
   '  -h, --help                      Print this help and exit',
   '',
 ].join('\n')
@@ -36,18 +40,38 @@ const OPTIONS = {
   large: { type: 'boolean' },
   'trust-repo-config': { type: 'boolean' },
   send: { type: 'string', multiple: true },
+  // Repeatable only so that a second one is refused, with its own words.
+  'max-session-tokens': { type: 'string', multiple: true },
+  'code-fields-only': { type: 'boolean' },
+  'require-approval': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
 } as const
 
 const ROOT_MESSAGE = 'must be an absolute path to a directory'
 const TERMINAL_MESSAGE = 'reads MCP messages on standard input, which is a terminal here: let an MCP client start it, as claude mcp add quorum -- quorum mcp does'
 const INSIDE_MESSAGE = 'names a file inside the project, which the calling agent can change: keep the server\'s config outside the project'
+const TOKENS_FLAG = '--max-session-tokens'
+const TOKENS_MESSAGE = 'must be a whole number of tokens, from 1'
 const NOT_STREAMS = 'needs standard input and output as streams'
 
 function refusal(path: string, message: string): ConfigError {
   return new ConfigError([
     { path, message },
   ])
+}
+
+/**
+ * The session budget `--max-session-tokens` names, or `undefined` when it is not given: digits only, from 1 to
+ * `Number.MAX_SAFE_INTEGER`, and given once.
+ */
+function sessionTokensFlag(given: readonly string[] | undefined): number | undefined {
+  if (given === undefined) return undefined
+  if (given.length > 1) throw refusal(TOKENS_FLAG, 'takes one number')
+  const tokens = /^\d+$/.test(given[0])
+    ? Number(given[0])
+    : Number.NaN
+  if (!Number.isSafeInteger(tokens) || tokens < 1) throw refusal(TOKENS_FLAG, TOKENS_MESSAGE)
+  return tokens
 }
 
 /** Whether `path` is `directory` or lies under it: a path-segment prefix, so `/work/app-two` is not inside `/work/app`. */
@@ -116,11 +140,13 @@ function streamOf<T extends Readable | Writable>(value: unknown): T {
 
 /**
  * Run `quorum mcp` and return the process exit code. Its flags are `--config`, `--profile`, `--large`,
- * `--trust-repo-config`, `--send` and `--help`, and it takes no argument. The steps run in this order, and
+ * `--trust-repo-config`, `--send`, `--max-session-tokens`, `--code-fields-only`, `--require-approval` and
+ * `--help`, and it takes no argument. The steps run in this order, and
  * nothing is read before the last two:
  *
  * 1. the flags: a usage error prints its lines and `MCP_USAGE` on stderr, exit 2; `-h` prints it on stdout;
- * 2. an empty `--config` or `--send`, and a positional argument, each a usage error too;
+ * 2. an empty `--config` or `--send`, a `--max-session-tokens` that is not one whole number of tokens, and a
+ *    positional argument, each a usage error too;
  * 3. a terminal on stdin, which no client is, refused;
  * 4. the root, `CLAUDE_PROJECT_DIR` else the launch directory;
  * 5. the SDK's version (`sdkProblem`), checked before the SDK is imported, so another version never loads;
@@ -129,7 +155,9 @@ function streamOf<T extends Readable | Writable>(value: unknown): T {
  *    and only then is the file read. The check comes first because reading a config can run it as code, with the
  *    operator's keys in the environment, and a config inside the root is one the calling agent could have written;
  * 8. the profiles' resolution, `--profile` the selection, so a config whose provider cannot be built, or whose
- *    selection runs nothing, is refused before the client is served;
+ *    selection runs nothing, is refused before the client is served, and the session budget, which
+ *    `--max-session-tokens` sets and which may not be below the config's `maxReviewTokens`, since no review
+ *    could start: four times that cap when it is not given;
  * 9. the banner on stderr, as the review command prints it;
  * 10. the server, over standard input and output, with the review's progress lines on stderr.
  *
@@ -138,6 +166,7 @@ function streamOf<T extends Readable | Writable>(value: unknown): T {
  */
 export async function runMcp(io: CliIO, argv: readonly string[]): Promise<number> {
   let values: ReturnType<typeof parseFlags<typeof OPTIONS>>['values']
+  let requestedTokens: number | undefined
   try {
     const flags = parseFlags(argv, OPTIONS)
     values = flags.values
@@ -147,6 +176,7 @@ export async function runMcp(io: CliIO, argv: readonly string[]): Promise<number
     }
     if (values.config === '') throw refusal('--config', 'must name a file')
     if (values.send?.includes('')) throw refusal('--send', 'must name a file')
+    requestedTokens = sessionTokensFlag(values['max-session-tokens'])
     if (flags.positionals.length > 0) throw refusal('', `takes no argument, and ${flags.positionals.length} were given`)
   } catch (error) {
     io.stderr.write(`${errorLines(error)}\n${MCP_USAGE}`)
@@ -170,6 +200,11 @@ export async function runMcp(io: CliIO, argv: readonly string[]): Promise<number
       ? undefined
       : { ids: values.profile, path: '--profile' }
     const config = resolveConfig(input, { env: io.env, selection })
+    const cap = config.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS
+    if (requestedTokens !== undefined && requestedTokens < cap) {
+      throw refusal(TOKENS_FLAG, `is below the config's maxReviewTokens of ${cap}, so no review could start: raise it, or name a config with a lower cap`)
+    }
+    const { SESSION_FACTOR } = await import('../mcp/budget.ts')
     for (const line of bannerLines(config)) io.stderr.write(`${line}\n`)
     return await serve.serveMcp({
       root: root.real,
@@ -183,6 +218,9 @@ export async function runMcp(io: CliIO, argv: readonly string[]): Promise<number
         ...config.send ?? [],
         ...values.send ?? [],
       ],
+      sessionTokens: requestedTokens ?? Math.min(Number.MAX_SAFE_INTEGER, SESSION_FACTOR * cap),
+      codeFieldsOnly: values['code-fields-only'] === true,
+      requireApproval: values['require-approval'] === true,
       observe: progressSink(line => io.stderr.write(`${line}\n`)),
       git: io.git,
     }, {

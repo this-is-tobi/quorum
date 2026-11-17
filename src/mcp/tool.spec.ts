@@ -9,13 +9,16 @@ import { atProblem, pathProblem } from '../sources/paths.ts'
 import { parseRange } from '../sources/range.ts'
 import { fakeProvider, stubModels } from '../testing/bench.ts'
 import type { FakeModel } from '../testing/bench.ts'
+import { fakeClock } from '../testing/clock.ts'
 import { fakeRepository, CHANGE_FINDING as FINDING, launchConfig, launchFor, removeRoots } from '../testing/mcp.ts'
 import type { Repository } from '../testing/mcp.ts'
+import type { ProgressNote } from './progress.ts'
 import { agentResultSchema } from './result.ts'
-import { BUSY, GIT, LARGE, openSession, PATHS_ONLY, RANGE_ONLY, REPEATED_PROFILE, REVIEW, reviewCall, SOURCE, TRUST, UNKNOWN_PROFILE } from './tool.ts'
+import { BUSY, GIT, LARGE, openSession, PATHS_ONLY, RANGE_ONLY, REPEATED_PROFILE, REVIEW, reviewCall, SOURCE, SPENT, TRUST, UNKNOWN_PROFILE } from './tool.ts'
 import type { CallOutcome, McpLaunch, ReviewArguments, ReviewSession } from './tool.ts'
 
 const ERROR_LINE = /^Error: /m
+const SPEND_LINE = expect.stringMatching(/^quorum mcp: the session has spent \d+ of \d+ tokens$/)
 
 /** The directories these tests made, besides the launches' roots. */
 const made: string[] = []
@@ -394,13 +397,69 @@ describe('reviewCall', () => {
     // The review has not settled yet: no turn of the event loop has run since the abort.
     expect(await reviewCall(session, { source: 'local' }, call())).toEqual(failure(BUSY))
     expect((await first).isError).toBe(true)
-    expect(logged).toEqual(['quorum mcp: a review was cancelled'])
+    expect(logged).toEqual(['quorum mcp: a review was cancelled', SPEND_LINE])
     expect(session.running).toBe(false)
 
     gate.resolve()
     const next = await reviewCall(session, { source: 'local' }, call())
     expect(next.isError).toBeUndefined()
     expect(next.structuredContent?.status).toBeDefined()
+  })
+
+  it('sends no progress note once the call is cancelled, and leaves no heartbeat armed', async () => {
+    const clock = fakeClock()
+    const gate = deferred()
+    const started = deferred()
+    const { session } = await sessionOf({
+      fake: { gate: gate.promise, onCall: started.resolve },
+      fields: { clock },
+    })
+    const notes: ProgressNote[] = []
+    const controller = new AbortController()
+    const first = reviewCall(session, { source: 'local' }, {
+      signal: controller.signal,
+      notify: note => notes.push(note),
+    })
+    await started.promise
+    expect(notes.length).toBeGreaterThan(0)
+    expect(clock.pending()).toBe(1)
+
+    const before = notes.length
+    controller.abort()
+    // The heartbeat is gone as soon as the call is cancelled, though the review has not settled yet.
+    expect(clock.pending()).toBe(0)
+    expect(clock.fireNext()).toBe(false)
+    gate.resolve()
+    expect((await first).isError).toBe(true)
+    expect(notes).toHaveLength(before)
+    expect(session.running).toBe(false)
+  })
+
+  it('answers in fixed text and frees the lock when the progress reporter cannot be set up', async () => {
+    const clock = {
+      ...fakeClock(),
+      timer: (): never => {
+        throw new Error('IGNORE-ALL the timer failed')
+      },
+    }
+    const { session, logged } = await sessionOf({
+      fields: { clock },
+    })
+    const notes: ProgressNote[] = []
+    const outcome = await reviewCall(session, { source: 'local' }, {
+      signal: new AbortController().signal,
+      notify: note => notes.push(note),
+    })
+    expect(outcome).toEqual(failure(REVIEW))
+    expect(JSON.stringify(outcome)).not.toContain('IGNORE')
+    expect(logged).toHaveLength(1)
+    expect(logged[0]).toMatch(ERROR_LINE)
+    expect(session.running).toBe(false)
+    expect(session.listener).toBeUndefined()
+    expect(session.budget.spent()).toBe(0)
+
+    const next = await reviewCall(session, { source: 'local' }, call())
+    expect(next.isError).toBeUndefined()
   })
 
   it('words each failure in fixed text, and writes its reason to the log alone', async () => {
@@ -433,8 +492,9 @@ describe('reviewCall', () => {
     })
     const review = await reviewCall(failing.session, { source: 'local' }, call())
     expect(review).toEqual(failure(REVIEW))
-    expect(failing.logged).toHaveLength(1)
+    expect(failing.logged).toHaveLength(2)
     expect(failing.logged[0]).toMatch(ERROR_LINE)
+    expect(failing.logged[1]).toEqual(SPEND_LINE)
 
     for (const outcome of [untracked, git, review]) expect(JSON.stringify(outcome)).not.toMatch(/IGNORE|leaked|research failed|\\n/)
     for (const { session } of [linked, broken, failing]) expect(session.running).toBe(false)
@@ -470,6 +530,111 @@ describe('reviewCall', () => {
     expect(await reviewCall(session, { source: 'local' }, call())).toEqual(failure(SOURCE))
     expect(logged).toHaveLength(4)
     expect(logged.every(line => ERROR_LINE.test(line))).toBe(true)
+  })
+
+  describe('the session budget', () => {
+    const CAP = 1_000_000
+    const TOTAL = 1_500_000
+    const spentLine = (spent: number, total = TOTAL): string => `quorum mcp: the session has spent ${spent} of ${total} tokens`
+
+    /** A session whose reviews are capped at `CAP` tokens and whose budget is `TOTAL`, on the model `fake`. */
+    function budgeted(fake: FakeModel, repository?: Repository): ReturnType<typeof sessionOf> {
+      return sessionOf({
+        fake,
+        repository,
+        fields: {
+          ...launchConfig({
+            providers: {
+              fake: fakeProvider(fake),
+            },
+            maxReviewTokens: CAP,
+          }),
+          sessionTokens: TOTAL,
+        },
+      })
+    }
+
+    it('counts each call\'s spent tokens, charges a cancelled review its whole cap, and answers spent once what is left cannot hold the cap', async () => {
+      const controller = new AbortController()
+      let calls = 0
+      const { session, git, logged } = await budgeted({
+        onCall: () => {
+          calls += 1
+          // The second review's research call is cut while it waits: the core reports no call for it.
+          if (calls === 2) controller.abort()
+        },
+      })
+
+      const first = await reviewCall(session, { source: 'local' }, call())
+      expect(first.isError).toBeUndefined()
+      expect(calls).toBe(1)
+      expect(logged).toEqual([
+        spentLine(15),
+      ])
+
+      expect(await reviewCall(session, { source: 'local' }, { signal: controller.signal })).toEqual(failure(REVIEW))
+      expect(calls).toBe(2)
+      expect(logged).toEqual([
+        spentLine(15),
+        'quorum mcp: a review was cancelled',
+        spentLine(CAP + 15),
+      ])
+
+      // What is left, 499 985 tokens, cannot hold the cap: no git, no model.
+      const gitCalls = git.calls.length
+      expect(await reviewCall(session, { source: 'local' }, call())).toEqual(failure(SPENT))
+      expect(git.calls).toHaveLength(gitCalls)
+      expect(calls).toBe(2)
+      expect(logged).toHaveLength(3)
+      expect(session.running).toBe(false)
+    })
+
+    it('charges a review that fails its whole cap, as a gating profile\'s unreadable research reply makes it', async () => {
+      let calls = 0
+      const { session, git, logged } = await budgeted({
+        researchText: 'not the findings',
+        onCall: () => {
+          calls += 1
+        },
+      })
+
+      expect(await reviewCall(session, { source: 'local' }, call())).toEqual(failure(REVIEW))
+      expect(logged.at(-1)).toBe(spentLine(CAP))
+      const modelCalls = calls
+      const gitCalls = git.calls.length
+
+      expect(await reviewCall(session, { source: 'local' }, call())).toEqual(failure(SPENT))
+      expect(calls).toBe(modelCalls)
+      expect(git.calls).toHaveLength(gitCalls)
+      expect(session.running).toBe(false)
+    })
+
+    it('writes what the session has spent to the log after each review', async () => {
+      const { session, logged } = await sessionOf({
+        fake: {
+          findings: [FINDING],
+        },
+        fields: { sessionTokens: 10_000_000 },
+      })
+      const results = [
+        await reviewCall(session, { source: 'local' }, call()),
+        await reviewCall(session, { source: 'local' }, call()),
+      ]
+      expect(results.every(result => result.isError === undefined)).toBe(true)
+      const [first, second] = logged.map((line) => {
+        const [, spent] = /^quorum mcp: the session has spent (\d+) of 10000000 tokens$/.exec(line) ?? []
+        return Number(spent)
+      })
+      expect(logged).toHaveLength(2)
+      expect(first).toBeGreaterThan(15)
+      expect(second).toBe(first * 2)
+      // The line is the operator's: nothing of it reaches the agent.
+      for (const result of results) expect(JSON.stringify(result)).not.toContain('session has spent')
+
+      // A call refused before its review spends nothing and writes no line.
+      expect((await reviewCall(session, { source: 'range' }, call())).isError).toBe(true)
+      expect(logged).toHaveLength(2)
+    })
   })
 
   it('returns the agent\'s result as structured content and as the same JSON in one text block', async () => {

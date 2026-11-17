@@ -22,6 +22,9 @@ import type { McpLaunch, ReviewSession } from './tool.ts'
 /** The most code points of the SDK's own error text the log keeps. */
 const ERROR_CAP = 300
 
+/** The key under which Claude Code asks the person before every call of the tool, even in its auto modes, and offers no "don't ask again". A client that does not read it ignores it. */
+const REQUIRES_APPROVAL = { 'anthropic/requiresUserInteraction': true }
+
 /** What `serveMcp` runs on: the streams the protocol travels on, the log, the signal that stops it, and for the specs a transport of its own. */
 export interface McpIO {
   readonly input: Readable
@@ -39,8 +42,9 @@ export interface McpIO {
  * builds a progress notifier only for a call that sent a `progressToken` (a string or a number), through
  * `notifications/progress` whose failures it ignores, and hands `reviewCall` the call's signal, which the SDK
  * aborts when the client cancels the call and when the connection closes. The description, the schemas and the
- * annotations are the release's constants, whatever the config. The heartbeat of the progress runs on the
- * launch's clock (`reviewCall`).
+ * annotations are the release's constants, whatever the config; under `--require-approval` the tool's `_meta`
+ * asks Claude Code to have the person approve every call, and holds nothing otherwise. The heartbeat of the
+ * progress runs on the launch's clock (`reviewCall`).
  */
 export function reviewServer(session: ReviewSession): McpServer {
   const server = new McpServer({ name: 'quorum', version: VERSION }, {
@@ -53,6 +57,9 @@ export function reviewServer(session: ReviewSession): McpServer {
     inputSchema: REVIEW_ARGUMENTS,
     outputSchema: agentResultSchema,
     annotations: TOOL_ANNOTATIONS,
+    _meta: session.launch.requireApproval
+      ? REQUIRES_APPROVAL
+      : undefined,
   }, async (args, ctx) => {
     const token = ctx.mcpReq._meta?.progressToken
     const notify = typeof token === 'string' || typeof token === 'number'
