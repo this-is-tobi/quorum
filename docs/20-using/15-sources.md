@@ -89,7 +89,7 @@ Two flags review what is not committed yet. Both diff against `HEAD`, or against
   - **A file that changes while quorum reads it exits `2`** too: one that is gone by then, whose directory is gone or was swapped for a link, or that has outgrown the size it had when quorum listed it (`--local: the untracked "<name>" changed while quorum read it: run quorum again`). Run quorum again once what writes into the tree has stopped.
 - **What git hides.** A file that a `.gitignore` names is not listed, so the review never sees it, and neither does the commit. A `.gitignore` the change itself edits hides a file from the review and from the commit alike.
 - **An untracked `.env`** that no `.gitignore` names is held back as a secret, a gap of every profile and exit `4`: name it in `.gitignore`, so that git never lists it and the commit never holds it. [Files held back as secrets](#files-held-back-as-secrets) says what else is held.
-- **A hook.** In a pre-commit hook, `quorum --staged` reviews the index git is about to commit. Where git points the hook at another index through `GIT_INDEX_FILE`, as it does for some forms of `git commit`, quorum passes that variable on to its git, so it reads that index.
+- **A hook.** [Git hooks](../90-recipes/30-git-hooks.md) gives a pre-commit hook. In a pre-commit hook, `quorum --staged` reviews the index git is about to commit. Where git points the hook at another index through `GIT_INDEX_FILE`, as it does for some forms of `git commit`, quorum passes that variable on to its git, so it reads that index.
 
 ### Trust
 

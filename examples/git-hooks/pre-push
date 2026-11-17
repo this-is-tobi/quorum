@@ -1,0 +1,34 @@
+#!/bin/sh
+# quorum's pre-push hook: reviews each pushed range with quorum --range <remote>...<local>, a new
+# branch against the remote's default branch, and stops the push when a review finds, has a gap or
+# fails. It prints quorum's brief line and fixed text alone, and never the remote's name or URL,
+# which can hold a credential. git push --no-verify skips it, so the CI review is the control.
+nl='
+'
+stop() {
+  printf '%s\n' "$@" >&2
+  exit 1
+}
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  case $local_sha in *[!0]*) ;; *) continue ;; esac
+  case $local_sha$remote_sha in
+    *[!0-9a-f]*) stop 'quorum stopped the push: git gave a commit id quorum cannot read.' ;;
+  esac
+  case $remote_sha in
+    *[!0]*) base=$remote_sha ;;
+    *) base=$(git symbolic-ref --quiet "refs/remotes/$1/HEAD" 2>/dev/null) ||
+         stop "quorum stopped the push: the remote's default branch is unknown here. Run git remote set-head <remote> --auto, then push again; a first push to an empty remote has no base to review against: push it with --no-verify and let CI review it." ;;
+  esac
+  # A commit the base already holds adds nothing to review: a new branch at its tip, or a tag on it.
+  git merge-base --is-ancestor "$local_sha" "$base" </dev/null 2>/dev/null && continue
+  brief=$(quorum --range "$base...$local_sha" --format brief </dev/null 2>/dev/null)
+  code=$?
+  [ "$code" -eq 0 ] && continue
+  brief=${brief%%"$nl"*}
+  case $brief in
+    'quorum: '*) ;;
+    *) brief='quorum: no brief line' ;;
+  esac
+  stop "$brief" "quorum stopped the push (exit $code): review the pushed commits with quorum --range in a terminal."
+done
+exit 0

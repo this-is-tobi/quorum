@@ -1,0 +1,17 @@
+#!/bin/sh
+# quorum's pre-commit hook: reviews what the commit holds with quorum --staged, and stops the commit
+# when the review finds, has a gap or fails. It prints quorum's brief line and fixed text alone:
+# quorum's stderr names files and quotes what a model wrote, and an agent running git reads it.
+# git commit --no-verify skips it, so the CI review is the control.
+nl='
+'
+brief=$(quorum --staged --format brief </dev/null 2>/dev/null)
+code=$?
+[ "$code" -eq 0 ] && exit 0
+brief=${brief%%"$nl"*}
+case $brief in
+  'quorum: '*) ;;
+  *) brief='quorum: no brief line' ;;
+esac
+printf '%s\n' "$brief" "quorum stopped the commit (exit $code): run quorum --staged in a terminal to read the review." >&2
+exit 1

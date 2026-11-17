@@ -90,6 +90,8 @@ The report goes to stdout: the text report on a terminal, the JSON result on a p
 
 *Recipes*
 - [Local models](./docs/90-recipes/10-local-models.md) *- Ollama, vLLM and llama.cpp: the window each gives a request, choosing a model, and what reasoning mode does to a request*
+- [Claude Code](./docs/90-recipes/20-claude-code.md) *- The MCP server, the /quorum-review skill and a hook that reviews a commit before Claude makes it*
+- [Git hooks](./docs/90-recipes/30-git-hooks.md) *- A pre-commit hook on the staged changes and a pre-push hook on each pushed range*
 
 *Reference*
 - [Glossary](./docs/95-reference/10-glossary.md) *- The words these pages use in one particular way, and the acronyms they assume*
