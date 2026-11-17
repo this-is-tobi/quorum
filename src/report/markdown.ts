@@ -26,11 +26,11 @@
  * - a table cell that holds the text of a model or of a diff.
  */
 
-import { failsItsProfile, profileFailOn } from '../core/outcome.ts'
+import { profileFailOn } from '../core/outcome.ts'
 import type { Outcome } from '../core/outcome.ts'
 import { codeSpan, fencedBlock, inertLine } from '../core/sanitize.ts'
 import type { Flag, IncompleteReason, LeftOutFile, PublicVerdict, PublicView } from '../core/types.ts'
-import { byLocation, coverageWords, evidenceRows, GAP_WORDS, levelWord, plural, rowText, sourcePhrase, verdictWhy, votesWords } from './lines.ts'
+import { coverageWords, evidenceRows, GAP_WORDS, levelWord, plural, rankedFindings, rowText, sourcePhrase, verdictWhy, votesWords } from './lines.ts'
 import type { Reporter } from './reporter.ts'
 import { discardedOf, publicView } from './view.ts'
 
@@ -50,15 +50,9 @@ const MORE = 'listed in the review\'s JSON result'
 /** A line of the summary: `inertLine` of it, so no line holds a hidden character, starts a workflow command or holds `##[`. */
 const written = inertLine
 
-/** The levels in the order a count line names them, and the rank a finding that does not fail its profile is listed by: high, medium, unreviewed, low. */
+/** The levels in the order a count line names them. */
 type Level = ReturnType<typeof levelWord>
 const COUNTED: readonly Level[] = ['HIGH', 'MEDIUM', 'LOW', 'UNREVIEWED']
-const RANK: Readonly<Record<Level, number>> = {
-  HIGH: 1,
-  MEDIUM: 2,
-  UNREVIEWED: 3,
-  LOW: 4,
-}
 
 /** An item of a list: its lines, and the evidence of a finding that goes first when the budget is short. */
 interface Item {
@@ -187,17 +181,7 @@ function evidenceBlock(verdict: PublicVerdict): string {
 
 /** The findings, the ones that fail their profile first, then high, medium, unreviewed and low, each group by file and then by line. */
 function findingsListing(view: PublicView): Listing {
-  const ranked = [
-    ...view.kept.map(verdict => ({
-      verdict,
-      rank: failsItsProfile(view, verdict)
-        ? 0
-        : RANK[levelWord(verdict)],
-    })),
-    ...view.unreviewed.map(verdict => ({ verdict, rank: RANK[levelWord(verdict)] })),
-  ]
-  ranked.sort((a, b) => a.rank - b.rank || byLocation(a.verdict, b.verdict))
-  const items = ranked.map(({ verdict }): Item => {
+  const items = rankedFindings(view).map((verdict): Item => {
     const level = levelWord(verdict)
     const head = `- **${level}** ${verdict.profile} · ${codeSpan(verdict.file)} line ${verdict.line} · ${codeSpan(verdict.category)} · ${votesWords(verdict)}`
     const evidence = evidenceBlock(verdict)

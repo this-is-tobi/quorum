@@ -1,14 +1,9 @@
 import { inertLine } from '../core/sanitize.ts'
-import type { Confidence, LeftOutFile } from '../core/types.ts'
-import { plural } from './lines.ts'
+import type { Confidence } from '../core/types.ts'
+import { isSecret, plural } from './lines.ts'
 import type { Reporter, ReportInput } from './reporter.ts'
 
 const LEVELS = ['high', 'medium', 'low'] as const satisfies readonly Confidence[]
-
-/** Whether a file was left out as a secret: held back by name or by a credential in it (`secret`, `deleted-secret`), or skipped by a path review under the rule `secret`. */
-function isSecret(entry: LeftOutFile): boolean {
-  return entry.reason === 'secret' || entry.reason === 'deleted-secret' || (entry.reason === 'skipped' && entry.rule === 'secret')
-}
 
 /** ` (1 high, 2 medium)`: the kept findings of each level that has some, highest first; empty when none has a level. */
 function levelsOf(result: ReportInput): string {

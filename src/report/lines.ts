@@ -7,6 +7,7 @@
  */
 
 import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
+import { failsItsProfile } from '../core/outcome.ts'
 import type { CoverageEntry, CoverageStatus, Flag, IncompleteReason, LeftOutFile, PublicVerdict, PublicView, ReviewSource, Verdict } from '../core/types.ts'
 import { voteFailed } from './view.ts'
 
@@ -153,6 +154,35 @@ function byCodeUnits(a: string, b: string): number {
     : a > b
       ? 1
       : 0
+}
+
+/** The rank a finding that does not fail its profile is listed by: high, medium, unreviewed, low. */
+const RANK: Readonly<Record<ReturnType<typeof levelWord>, number>> = {
+  HIGH: 1,
+  MEDIUM: 2,
+  UNREVIEWED: 3,
+  LOW: 4,
+}
+
+/** The kept and unreviewed findings of a public view in the order every report lists them: the ones that fail their profile first, then high, medium, unreviewed and low, each group by file and then by line. */
+export function rankedFindings(view: PublicView): PublicVerdict[] {
+  const ranked = [
+    ...view.kept.map(verdict => ({
+      verdict,
+      rank: failsItsProfile(view, verdict)
+        ? 0
+        : RANK[levelWord(verdict)],
+    })),
+    ...view.unreviewed.map(verdict => ({ verdict, rank: RANK[levelWord(verdict)] })),
+  ]
+  return ranked
+    .sort((a, b) => a.rank - b.rank || byLocation(a.verdict, b.verdict))
+    .map(({ verdict }) => verdict)
+}
+
+/** Whether a file was left out as a secret: held back by name or by a credential in it (`secret`, `deleted-secret`), or skipped by a path review under the rule `secret`. */
+export function isSecret(entry: LeftOutFile): boolean {
+  return entry.reason === 'secret' || entry.reason === 'deleted-secret' || (entry.reason === 'skipped' && entry.rule === 'secret')
 }
 
 /** `a` before `b` by file, in code-unit order, then by line. */

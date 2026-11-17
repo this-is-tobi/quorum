@@ -151,7 +151,8 @@ const publicProfileMeta = z.strictObject({
   invalidFindings: count,
   coverage: z.array(coverageEntry),
 })
-const gapReason = z.enum([
+/** Why part of a review is missing: the closed list of `IncompleteReason`. */
+export const gapReason = z.enum([
   'research-unusable',
   'research-failed',
   'findings-capped',
@@ -178,7 +179,7 @@ const publicGap = z.strictObject({
   file: z.string().optional(),
 })
 /** A file left out: a rule belongs to a skipped or a held file, and to none else. */
-const leftOutFile = z.discriminatedUnion('reason', [
+export const leftOutFile = z.discriminatedUnion('reason', [
   z.strictObject({
     file: z.string(),
     reason: z.enum(['excluded', 'binary', 'submodule']),
@@ -223,8 +224,10 @@ const reviewSource = z.discriminatedUnion('kind', [
     objectFormat,
   }),
 ]).refine(source => sourceIssues(source).length === 0)
+/** What an advisory flag points at: the closed list of `FlagCode`. */
+export const flagCode = z.enum(['hidden-characters', 'ai-addressed-text', 'secret-file'])
 const flag = z.strictObject({
-  code: z.enum(['hidden-characters', 'ai-addressed-text', 'secret-file']),
+  code: flagCode,
   file: z.string().optional(),
   line: count.optional(),
   detail: z.string(),
