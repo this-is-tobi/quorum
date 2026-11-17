@@ -1,6 +1,6 @@
 # The CLI
 
-The `quorum` command reviews one diff with the profiles its config selects, the security profile alone by default, writes the report on stdout and exits with a code that says what to do with it. This page is its whole surface: the invocation, what it reads, what goes to stdout and stderr, the report, every exit code, and how a CI job should read them. Its settings are a config file that `--config` or `QUORUM_CONFIG` names and the environment variables, on [Configuration](./20-configuration.md). Its two subcommands are `quorum report`, which renders a result a review saved, and `quorum bench`, which measures configurations on a suite of bugs: [quorum report](#quorum-report) and [quorum bench](#quorum-bench).
+The `quorum` command reviews one diff with the profiles its config selects, the security profile alone by default, writes the report on stdout and exits with a code that says what to do with it. This page is its whole surface: the invocation, what it reads, what goes to stdout and stderr, the report, every exit code, and how a CI job should read them. Its settings are a config file that `--config` or `QUORUM_CONFIG` names and the environment variables, on [Configuration](./20-configuration.md). Its three subcommands are `quorum report`, which renders a result a review saved, `quorum bench`, which measures configurations on a suite of bugs, and `quorum mcp`, which serves the review as a tool to an agent: [quorum report](#quorum-report), [quorum bench](#quorum-bench) and [quorum mcp](#quorum-mcp).
 
 ```text
 Usage: quorum [options] [diff-file]
@@ -10,6 +10,7 @@ Usage: quorum [options] [diff-file]
        quorum --path <path> [--at <rev>] [options]
        quorum bench [options] <suite>
        quorum report [options] [<result>|-]
+       quorum mcp [options]
 
 Options:
   -c, --config <path>      Read this config file, over QUORUM_CONFIG
@@ -53,7 +54,7 @@ quorum --path src --at v1.2.0
 - **`--local` and `--staged`** are sources too, for what is not committed yet: `--local` is what `git add -A` would commit, untracked files included, and `--staged` what the next commit holds. A second source is refused as `--range` is: `Error: --staged: cannot be given with --local: give one source`. A repository whose own config names a filter program exits `2` unless `--trust-repo-config` says the repository is yours: [Trust](./15-sources.md#trust). `--trust-repo-config` alone is `Error: --trust-repo-config: needs --local or --staged`.
 - **`--path <path>`** is a source too, for the files under a path at a commit rather than a change: `--at <rev>` names the commit, `HEAD` by default, and the tree is read by id, never the working tree. It repeats, to review several paths. By default it skips vendored, lockfile, minified and binary files, each listed in `meta.leftOut`, and `--no-default-skips` reviews them; it always skips a file named as a secret, or whose text holds a credential, listed and flagged the same way, unless `--send` names it: [The files at a commit](./15-sources.md#the-files-at-a-commit). Quorum prints what a path review may cost before it calls a model, and stops with exit `2` when that may pass the token cap, unless `--large` is given: [What a path review costs](./15-sources.md#what-a-path-review-costs). `--at`, `--large` and `--no-default-skips` without `--path` are `Error: --at: needs --path`, `Error: --large: needs --path` and `Error: --no-default-skips: needs --path`, and a second `--at` is `Error: --at: takes one commit`.
 - **A diff over 16 MiB**, on stdin or in a file, is an error: `Error: the diff is over 16 MiB, the most quorum reads`, then the usage, exit `2`. The bytes are counted as they arrive, and quorum stops reading there.
-- **`bench` or `report` as the first argument** runs [the bench](#quorum-bench) or [`quorum report`](#quorum-report), with the arguments after it, before any flag of a review is read. A diff file named `bench` or `report` is reviewed as `quorum ./bench` or `quorum ./report`.
+- **`bench`, `report` or `mcp` as the first argument** runs [the bench](#quorum-bench), [`quorum report`](#quorum-report) or [`quorum mcp`](#quorum-mcp), with the arguments after it, before any flag of a review is read. A diff file named `bench`, `report` or `mcp` is reviewed as `quorum ./bench`, `quorum ./report` or `quorum ./mcp`.
 
 The flags go before or after the file:
 
@@ -485,6 +486,24 @@ quorum report result.json -f payload --output markdown=summary.md --output sarif
 | `3` | An `--output` file could not be written, after the report on stdout |
 
 The refusals are checked before anything is written: the flags, then the input, then the `--output` files.
+
+## quorum mcp
+
+`quorum mcp` serves one tool, `review`, over MCP on standard input and output, to one client such as Claude Code. The calling agent names a source and never a diff, and the launch flags are the gates: [The MCP server](./90-mcp.md). It is started by the client, not by a person, and refuses a terminal on standard input.
+
+```text
+Usage: quorum mcp [options]
+
+Serve quorum's review tool over MCP, on standard input and output, to one client such as Claude Code.
+
+Options:
+  -c, --config <path>             Read this config file, which must lie outside the project; over QUORUM_CONFIG
+  -p, --profile <id>              Serve only this profile; repeat it to serve several
+      --large                     Run a review of paths that may pass the token cap, reviewing what the cap allows
+      --trust-repo-config         Review local or staged changes where the repository's own config names a filter program
+      --send <path>               Send a file held as a secret to the models all the same; repeat it to send several
+  -h, --help                      Print this help and exit
+```
 
 ## quorum bench
 

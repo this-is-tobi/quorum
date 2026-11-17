@@ -15,7 +15,8 @@ import { openSourceRepository } from './repository.ts'
 
 const UNTRACKED_FLAG = '--local'
 
-const FILTER = 'the repository\'s own config names a filter program, which a working-tree diff runs: pass --trust-repo-config if the repository is yours, or review a range'
+/** What a working-tree source refuses with when the repository's own config names a filter program and `--trust-repo-config` is not given. */
+export const TRUST_REFUSAL = 'the repository\'s own config names a filter program, which a working-tree diff runs: pass --trust-repo-config if the repository is yours, or review a range'
 const OVER = 'its diff is over 16 MiB, the most quorum reads: review fewer changes at once'
 const NOT_UTF8 = 'an untracked file\'s name is not UTF-8, which quorum cannot open: rename it, or name it in .gitignore'
 const LEAVES = 'an untracked file\'s name leaves the top level'
@@ -266,7 +267,7 @@ async function readPlanned(planned: readonly Planned[], budget: number, reader: 
 export async function localSource(kind: 'local' | 'staged', trustRepoConfig: boolean, context: SourceContext): Promise<SourceRead> {
   const flag = `--${kind}`
   const repository = await openSourceRepository(context, flag)
-  if (!trustRepoConfig && !trustsConfig(await repository.filterConfig())) throw refusal(flag, FILTER)
+  if (!trustRepoConfig && !trustsConfig(await repository.filterConfig())) throw refusal(flag, TRUST_REFUSAL)
   const head = await repository.resolveCommit('HEAD')
   const base = head ?? await repository.emptyTree()
   const bytes = kind === 'staged'

@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, Provider } from '../core/ports.ts'
-import { loadConfig, readBounded, readConfigFile } from './load.ts'
+import { loadConfig, readBounded, readConfigFile, readNamedConfig } from './load.ts'
 import { parseFailOn } from './profiles.ts'
 import { configFileSchema } from './schema.ts'
 
@@ -810,6 +810,38 @@ describe('readBounded', () => {
     } as Stats)
     expect(await readBounded(join(dir, 'link.txt'), 10, '10 bytes', { noFollow: true })).toEqual({ problem: 'is a symbolic link' })
     expect(lstat).toHaveBeenCalledWith(join(dir, 'link.txt'))
+  })
+})
+
+describe('readNamedConfig', () => {
+  it('reads the named config as loadConfig does, without resolving it', async () => {
+    const name = file('q.yaml', 'providers:\n  local: {preset: ollama, model: q, contextTokens: 131072}\nsend: [.env]\n')
+    const named = await readNamedConfig({ cwd: dir, env: {}, configPath: name })
+    expect(named.source).toBe(join(dir, name))
+    expect(named.input).toMatchObject({
+      providers: {
+        local: { preset: 'ollama', model: 'q' },
+      },
+      send: ['.env'],
+    })
+    expect(named.input).not.toHaveProperty('warnings')
+
+    const byEnv = await readNamedConfig({
+      cwd: dir,
+      env: {
+        QUORUM_CONFIG: join(dir, name),
+      },
+    })
+    expect(byEnv.source).toBe(join(dir, name))
+    await expect(readNamedConfig({
+      cwd: dir,
+      env: { QUORUM_CONFIG: name },
+    })).rejects.toMatchObject({
+      issues: [
+        { path: 'QUORUM_CONFIG', message: 'must be an absolute path' },
+      ],
+    })
+    expect(await readNamedConfig({ cwd: dir, env: {} })).toEqual({ input: {}, source: undefined })
   })
 })
 

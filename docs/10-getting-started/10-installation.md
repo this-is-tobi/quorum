@@ -22,7 +22,7 @@ quorum --version
 
 `npm install -g` puts a `quorum` command on your `$PATH`, and `quorum --version` prints `quorum` and the installed version. To use the package as a library, install it in your project instead, with `npm install @tobi-or-not/quorum`.
 
-The package names the MCP SDK, `@modelcontextprotocol/server`, as an optional peer dependency, so `npm install -g` does not install it.
+The package names the MCP SDK, `@modelcontextprotocol/server`, as an optional peer dependency, so `npm install -g` does not install it. Only `quorum mcp` needs it: install it beside quorum with `npm install -g @modelcontextprotocol/server@2.4.0`, the one version `quorum mcp` runs. It refuses any other version, before it loads it, and names that command. The SDK brings its own copy of zod, which reads the protocol's schemas and never quorum's. Run `quorum mcp` from a global install or the release binary, never from a project's `node_modules`, where the calling agent could change the code it runs: [The MCP server](../20-using/90-mcp.md#starting-it). The library's own use inside a project is unaffected.
 
 The installed `quorum` command runs on Node, not on `bun`: the file the package's `bin` names starts with `#!/usr/bin/env node`. Bun reads a `.env` and a `bunfig.toml` from its working directory before quorum's own code runs, and Node reads neither, so this `quorum` is the simple way to review in a directory you do not control, such as a pull request's checkout: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory). Install it with `npm install -g`, and never run the package through `npx`, `npm exec` or `pnpm dlx` inside such a checkout: they read the checkout's `.npmrc`, which can name another registry for the package to come from, where `npm install -g` does not read the project's `.npmrc`.
 
@@ -81,11 +81,11 @@ install -m 0755 quorum-<target> /usr/local/bin/quorum
 
 The last line needs `sudo` where `/usr/local/bin` is not yours; any directory on your `$PATH` will do.
 
-The binary holds the Bun runtime, so it needs neither Bun nor Node, and, like the one `bun run compile` builds below, it reads no `.env` and no `bunfig.toml` from the directory it runs in. The Linux binaries are linked against glibc: they run on Debian, Ubuntu and the like, not on Alpine, which uses musl. On macOS, download with `gh` or `curl` as above: a download in a browser marks the file with the `com.apple.quarantine` attribute, which `gh` and `curl` do not add.
+The binary holds the Bun runtime and the MCP SDK `quorum mcp` serves with, so it needs neither Bun, Node nor an npm install, and, like the one `bun run compile` builds below, it reads no `.env` and no `bunfig.toml` from the directory it runs in. The Linux binaries are linked against glibc: they run on Debian, Ubuntu and the like, not on Alpine, which uses musl. On macOS, download with `gh` or `curl` as above: a download in a browser marks the file with the `com.apple.quarantine` attribute, which `gh` and `curl` do not add.
 
 ## A container image
 
-Each release also publishes an image for `linux/amd64` and `linux/arm64`, `ghcr.io/this-is-tobi/quorum`, tagged with the release's version without its `v`, `0.2.0` for `v0.2.0`, with its minor and major, `0.2` and `0`, and with `latest`. Pin a version rather than `latest`, and replace `<version>` below with it. The image holds a binary compiled the same way, from the same commit, and nothing else: no shell, no `claude` CLI, so a `claude-code` provider does not run in it. Its build stage compiles that binary again, for the image's architecture, so its bytes are not those of the release asset, and `SHA256SUMS` does not list it: check the image against its attestation, below. It runs as the distroless `nonroot` user, uid 65532, in the working directory `/work`, and, like the binary, reads no `.env` and no `bunfig.toml` from it.
+Each release also publishes an image for `linux/amd64` and `linux/arm64`, `ghcr.io/this-is-tobi/quorum`, tagged with the release's version without its `v`, `0.2.0` for `v0.2.0`, with its minor and major, `0.2` and `0`, and with `latest`. Pin a version rather than `latest`, and replace `<version>` below with it. The image holds a binary compiled the same way, from the same commit, and so the MCP SDK too, and nothing else: no shell, no `claude` CLI, so a `claude-code` provider does not run in it. Its build stage compiles that binary again, for the image's architecture, so its bytes are not those of the release asset, and `SHA256SUMS` does not list it: check the image against its attestation, below. It runs as the distroless `nonroot` user, uid 65532, in the working directory `/work`, and, like the binary, reads no `.env` and no `bunfig.toml` from it.
 
 The diff arrives on stdin, which `docker run` forwards only with `-i`: without it the container gets an empty stdin, which quorum reviews as an empty diff and passes with exit `0`, so a CI job passes having reviewed nothing. Always pass `-i` when the diff comes on stdin, and never `-t`: with `-t` Docker gives the container a terminal, so stdout is one inside it and quorum writes the text report where the redirection below expects the JSON result. If a terminal cannot be avoided, pass `-f json` after the image name. The report goes to stdout, JSON when stdout is no terminal, and the settings are the `QUORUM_*` variables, passed with `-e`:
 
@@ -169,6 +169,7 @@ Usage: quorum [options] [diff-file]
        quorum --path <path> [--at <rev>] [options]
        quorum bench [options] <suite>
        quorum report [options] [<result>|-]
+       quorum mcp [options]
 
 Options:
   -c, --config <path>      Read this config file, over QUORUM_CONFIG
