@@ -18,6 +18,7 @@ import type { SourceSpec } from '../sources/read.ts'
 import { runBench } from './bench.ts'
 import { errorLines, errorMessage, EXIT, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
+import { runMcp } from './mcp.ts'
 import { checkOutputs, reportPlan, writeOutputs } from './outputs.ts'
 import type { ReportPlan } from './outputs.ts'
 import { printConfig } from './print-config.ts'
@@ -35,6 +36,7 @@ const USAGE = [
   '       quorum --path <path> [--at <rev>] [options]',
   '       quorum bench [options] <suite>',
   '       quorum report [options] [<result>|-]',
+  '       quorum mcp [options]',
   '',
   'Options:',
   '  -c, --config <path>      Read this config file, over QUORUM_CONFIG',
@@ -164,9 +166,9 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
  * error ended the review, and writes no result. A review that has already resolved is complete.
  *
- * The subcommands are `bench` and `report`: when the first argument is one of them, the rest goes to `runBench` or
- * `runReport` and its exit code is returned, before any review flag is read. A file named `bench` or `report` is
- * reviewed as `quorum ./bench` or `quorum ./report`.
+ * The subcommands are `bench`, `report` and `mcp`: when the first argument is one of them, the rest goes to
+ * `runBench`, `runReport` or `runMcp` and its exit code is returned, before any review flag is read. A file named
+ * `bench`, `report` or `mcp` is reviewed as `quorum ./bench`, `quorum ./report` or `quorum ./mcp`.
  *
  * Everything the CLI writes is inert (invariant I3): each stderr line passes through `inertLine`, and
  * each report through its reporter, `json` through `inertJson`, `brief` and `text` through `inertLine`, and `text`'s color
@@ -175,6 +177,7 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
 export async function runCli(io: CliIO): Promise<number> {
   if (io.argv[0] === 'bench') return runBench(io, io.argv.slice(1))
   if (io.argv[0] === 'report') return runReport(io, io.argv.slice(1))
+  if (io.argv[0] === 'mcp') return runMcp(io, io.argv.slice(1))
   let flags: Flags
   try {
     flags = parseFlags(io.argv, OPTIONS)

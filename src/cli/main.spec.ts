@@ -95,6 +95,7 @@ const USAGE = [
   '       quorum --path <path> [--at <rev>] [options]',
   '       quorum bench [options] <suite>',
   '       quorum report [options] [<result>|-]',
+  '       quorum mcp [options]',
   '',
   'Options:',
   '  -c, --config <path>      Read this config file, over QUORUM_CONFIG',
@@ -2740,6 +2741,7 @@ describe('the sources', () => {
       '       quorum --path <path> [--at <rev>] [options]',
       '       quorum bench [options] <suite>',
       '       quorum report [options] [<result>|-]',
+      '       quorum mcp [options]',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
     expect(options).toHaveLength(20)
@@ -2765,6 +2767,29 @@ describe('the sources', () => {
     writeFileSync(join(cwd, 'report'), '\n')
     const reviewed = harness({
       argv: ['./report'],
+      cwd,
+      env: MODEL,
+    })
+    expect(await runCli(reviewed.io)).toBe(EXIT.ok)
+    expect(reviewed.stderr()).toContain('empty diff: nothing to review')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('hands the arguments after mcp to quorum mcp, and reviews a file named mcp as ./mcp', async () => {
+    const cwd = mkdtempSync(join(dir, 'mcp-'))
+    const fetchMock = stubChat()
+    const refused = harness({
+      argv: ['mcp', '--watch'],
+      cwd,
+      env: MODEL,
+    })
+    expect(await runCli(refused.io)).toBe(EXIT.usage)
+    expect(refused.stderr()).toMatch(/^Error: Unknown option '--watch'.*\nUsage: quorum mcp \[options\]\n/)
+    expect(refused.stdout()).toBe('')
+
+    writeFileSync(join(cwd, 'mcp'), '\n')
+    const reviewed = harness({
+      argv: ['./mcp'],
       cwd,
       env: MODEL,
     })

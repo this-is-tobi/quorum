@@ -559,13 +559,31 @@ export async function readConfigFile(path: string, options: { readonly cwd?: str
 }
 
 /**
- * Load the config a run uses: the file `options.configPath` names, else the one `QUORUM_CONFIG` names, read
- * as `readConfigFile` reads it, or none, and then the layers of the environment over it, resolved as
- * `resolveConfig` resolves them. No file is ever searched for, whatever the working directory holds: a
- * checkout can plant one, so a file loads only when it is named (ADR-0014). `QUORUM_CONFIG` must be an
- * absolute path, a path given or not: set once, a relative one would resolve inside whatever checkout
- * quorum runs in and load that checkout's file, which is the search ADR-0014 forbids. `options.configPath`
- * is named per call, so it may be relative. `options.env` defaults to `process.env`. `options.selection`
+ * The config file a run names, read and checked but not resolved: the file `options.configPath` names, else the
+ * one `QUORUM_CONFIG` names, read as `readConfigFile` reads it, or none (`{ input: {}, source: undefined }`).
+ * No file is ever searched for, whatever the working directory holds: a checkout can plant one, so a file
+ * loads only when it is named (ADR-0014). `QUORUM_CONFIG` must be an absolute path, a path given or not: set
+ * once, a relative one would resolve inside whatever checkout quorum runs in and load that checkout's file,
+ * which is the search ADR-0014 forbids. `options.configPath` is named per call, so it may be relative.
+ * `options.env` defaults to `process.env`. The input holds the file's data and its prompt files' text, and no
+ * key: the caller resolves it, as often as it needs, with `resolveConfig`.
+ *
+ * @throws ConfigError with every problem of the file, or the one issue of a `QUORUM_CONFIG` that is not absolute
+ */
+export async function readNamedConfig(options: { readonly cwd?: string, readonly env?: Env, readonly configPath?: string } = {}): Promise<{ readonly input: ConfigInput, readonly source: string | undefined }> {
+  const env = options.env ?? process.env
+  const named = envValue(env, 'QUORUM_CONFIG')
+  if (named !== undefined && !isAbsolute(named)) fail('QUORUM_CONFIG', 'must be an absolute path')
+  const path = options.configPath ?? named
+  const loaded = path === undefined
+    ? undefined
+    : await readConfigFile(path, { cwd: options.cwd })
+  return { input: loaded?.config ?? {}, source: loaded?.source }
+}
+
+/**
+ * Load the config a run uses: the file `readNamedConfig` reads, and then the layers of the environment over
+ * it, resolved as `resolveConfig` resolves them. `options.env` defaults to `process.env`. `options.selection`
  * names the profiles that run, over `QUORUM_PROFILES`, as `resolveConfig` reads it, and `options.failOn`
  * sets the fail-on level of the profiles that run, over the config's, as `resolveConfig` applies it (the levels
  * `parseFailOn` read from the command line). The resolved config holds the keys it read: never print or log one.
@@ -575,12 +593,7 @@ export async function readConfigFile(path: string, options: { readonly cwd?: str
  */
 export async function loadConfig(options: { readonly cwd?: string, readonly env?: Env, readonly configPath?: string, readonly selection?: ProfileSelection, readonly failOn?: FailOnOverride } = {}): Promise<{ readonly config: ResolvedConfig, readonly source: string | undefined, readonly warnings: readonly string[] }> {
   const env = options.env ?? process.env
-  const named = envValue(env, 'QUORUM_CONFIG')
-  if (named !== undefined && !isAbsolute(named)) fail('QUORUM_CONFIG', 'must be an absolute path')
-  const path = options.configPath ?? named
-  const loaded = path === undefined
-    ? undefined
-    : await readConfigFile(path, { cwd: options.cwd })
-  const config = resolveConfig(loaded?.config ?? {}, { env, selection: options.selection, failOn: options.failOn })
-  return { config, source: loaded?.source, warnings: config.warnings }
+  const { input, source } = await readNamedConfig({ cwd: options.cwd, env, configPath: options.configPath })
+  const config = resolveConfig(input, { env, selection: options.selection, failOn: options.failOn })
+  return { config, source, warnings: config.warnings }
 }
