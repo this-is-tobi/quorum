@@ -101,4 +101,4 @@ The reason for each of the others is written to the server's log, on stderr, as 
 
 ## Next
 
-[Output handling](../30-security/30-output-handling.md) — what the CLI writes and how it is made inert, the advisory flags, printing a review yourself, and what a calling agent receives.
+[Claude Code](../90-recipes/20-claude-code.md) — the MCP server, the /quorum-review skill and a hook that reviews a commit before Claude makes it.
