@@ -502,6 +502,9 @@ Options:
       --large                     Run a review of paths that may pass the token cap, reviewing what the cap allows
       --trust-repo-config         Review local or staged changes where the repository's own config names a filter program
       --send <path>               Send a file held as a secret to the models all the same; repeat it to send several
+      --max-session-tokens <n>    Spend at most this many tokens over the server's life; four times maxReviewTokens by default
+      --code-fields-only          Leave each finding's category and summary out of what the agent receives
+      --require-approval          Have Claude Code ask before every call
   -h, --help                      Print this help and exit
 ```
 

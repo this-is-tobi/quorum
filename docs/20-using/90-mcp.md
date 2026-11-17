@@ -28,6 +28,9 @@ Options:
       --large                     Run a review of paths that may pass the token cap, reviewing what the cap allows
       --trust-repo-config         Review local or staged changes where the repository's own config names a filter program
       --send <path>               Send a file held as a secret to the models all the same; repeat it to send several
+      --max-session-tokens <n>    Spend at most this many tokens over the server's life; four times maxReviewTokens by default
+      --code-fields-only          Leave each finding's category and summary out of what the agent receives
+      --require-approval          Have Claude Code ask before every call
   -h, --help                      Print this help and exit
 ```
 
@@ -59,6 +62,17 @@ An argument of another name is refused, `large`, `send` and `diff` included. The
 - `--trust-repo-config` lets `local` and `staged` run where the repository's own config names a filter program, which git then runs: [Trust](./15-sources.md#trust).
 - `--send` names files held as secrets that are sent to the models all the same, added to the config's `send` list.
 
+## Limits
+
+The review's token cap and its deadline are the config's, `maxReviewTokens` (2,000,000 by default) and `reviewTimeoutMs`, and the server runs every review under them: to have the agent's reviews bounded tighter, name a config with lower limits. Three flags of the launch bound or narrow what an agent can do beyond that, and no argument of a call changes one:
+
+- **`--max-session-tokens <n>`** bounds the tokens the server spends over its life, four times `maxReviewTokens` by default, so a looping or steered agent stops. It takes one whole number of tokens, from 1, and not below the config's `maxReviewTokens`, since no review could start; either is a usage error, exit `2`.
+  - **What counts** is each provider call's spent tokens while a review runs, the usage the call reported or, for a call that reported none, what the review's cap reserved for it. A review that ends without a result, cancelled, aborted or failed, is charged its whole cap, less what its calls already counted, since quorum reports no call once a review is aborted: what its calls in flight spent is never seen, and a review spends no more than its cap, so the cap bounds it whatever was lost.
+  - **A call starts only while a review's whole cap fits** in what is left. The server therefore passes the budget by no more than what a provider reports above a call's reservation. Once what is left cannot hold the cap, every call is answered `this server has spent its session's tokens: start it again, or launch it with a larger --max-session-tokens`, and no git command or model is run.
+  - The log says `quorum mcp: the session has spent <n> of <total> tokens` after each review, whether it returned, failed or was cancelled. The agent is never told the number.
+- **`--code-fields-only`** leaves each finding's `category` and `summary` out of the result, so the agent receives only what quorum's code checked: the file, the line, the confidence, the votes and the fingerprint. It is the strongest control a tool has against a claim that steers the agent, since no model text is left to carry one, and it costs the agent the claim, which it must then read from the code: [What a calling agent receives](../30-security/30-output-handling.md#what-a-calling-agent-receives).
+- **`--require-approval`** has Claude Code ask the person before every call of `review`, even in its auto modes, with no "don't ask again". It marks the tool with `anthropic/requiresUserInteraction` in its `_meta`, a hint that a client other than Claude Code may ignore.
+
 ## The result
 
 The agent receives the result in a fixed shape, in a structured form and as the same JSON in a text block, within 10,000 bytes each: code-checked fields first, a model's category and summary last, each capped and made inert, and a notice that says they are claims: [What a calling agent receives](../30-security/30-output-handling.md#what-a-calling-agent-receives).
@@ -79,6 +93,7 @@ A call that gives no result answers with `isError` and one text, which holds not
 | `quorum could not read the change: the server's log says why` | The source refused: an untracked file quorum will not read, for one, whose name the text leaves out |
 | `git failed: the server's log says why` | A git command failed |
 | `the review failed: the server's log says why` | The review failed: a gating profile's research, for one |
+| `this server has spent its session's tokens: start it again, or launch it with a larger --max-session-tokens` | What is left of the session budget cannot hold a review's cap: [Limits](#limits) |
 
 A refusal of the range, a path or `at` is the one exception, since those texts repeat nothing of what was written and tell the agent how to correct the call. It is passed through under the argument's name, as `range: its base names no commit of this repository: fetch it first, as actions/checkout does with fetch-depth: 0`, `paths: path 1 names no file tracked at the commit` or `at: names no commit of this repository`. They are the command line's own texts, so they can name its flags, such as `--at` or `--send`, which a call has no way to give, and count paths from 1, where the argument's own errors write `paths.0` for the first.
 

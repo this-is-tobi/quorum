@@ -9,6 +9,7 @@ import { systemClock } from '../core/clock.ts'
 import type { Clock } from '../core/clock.ts'
 import { ConfigError } from '../core/errors.ts'
 import { outcome } from '../core/outcome.ts'
+import { DEFAULT_MAX_REVIEW_TOKENS } from '../core/limits.ts'
 import type { EventSink } from '../core/ports.ts'
 import { PROFILE_ID_PATTERN } from '../core/profile.ts'
 import type { Quorum } from '../core/types.ts'
@@ -20,6 +21,8 @@ import { atProblem, pathProblem } from '../sources/paths.ts'
 import { parseRange } from '../sources/range.ts'
 import { readSource } from '../sources/read.ts'
 import type { GitSeam, SourceRead, SourceSpec } from '../sources/read.ts'
+import { sessionBudget } from './budget.ts'
+import type { SessionBudget } from './budget.ts'
 import { agentResult } from './result.ts'
 import type { AgentResult } from './result.ts'
 import { progressReporter } from './progress.ts'
@@ -54,6 +57,7 @@ export const TRUST = 'the repository\'s own config names a filter program, which
 export const SOURCE = 'quorum could not read the change: the server\'s log says why'
 export const GIT = 'git failed: the server\'s log says why'
 export const REVIEW = 'the review failed: the server\'s log says why'
+export const SPENT = 'this server has spent its session\'s tokens: start it again, or launch it with a larger --max-session-tokens'
 
 /** The handler's usage texts. */
 export const RANGE_ONLY = 'source range takes range, and no other source does'
@@ -116,6 +120,12 @@ export interface McpLaunch {
   readonly trustRepoConfig: boolean
   /** The files sent to the models though held as secrets: the config's, then `--send`'s. */
   readonly send: readonly string[]
+  /** The most tokens the server spends over its life: `--max-session-tokens`, else four times the review's cap. */
+  readonly sessionTokens: number
+  /** Whether a finding leaves its category and summary, a model's claims, out of what the agent receives. */
+  readonly codeFieldsOnly: boolean
+  /** Whether the tool asks Claude Code to have the person approve every call. */
+  readonly requireApproval: boolean
   /** The operator's progress lines, which every review's events are handed to. */
   readonly observe?: EventSink
   /** The git a source runs, for the specs. */
@@ -200,15 +210,27 @@ export interface ReviewSession {
   readonly events: EventSink
   /** Where the server writes what the agent never sees: each failure's reason, one inert text. */
   readonly log: (text: string) => void
+  /** What the server may still spend: counted at each call's `spent` and at a review's whole cap when it ends without a result. */
+  readonly budget: SessionBudget
   /** Whether a review runs. */
   running: boolean
+  /** The tokens the events of the current call's review reported, which a review that ends without a result is charged the rest of its cap beyond. */
+  counted: number
   /** The current call's event listener, while its review runs. */
   listener: EventSink | undefined
 }
 
+/** The tokens one review may spend, which a review's start and its charge are both counted by. */
+function reviewCap(launch: McpLaunch): number {
+  return launch.config.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS
+}
+
 /**
  * The session of a launch: its quorum, built from the launch's resolved config, which reports each event to
- * `launch.observe`, then to the listener of the call that runs.
+ * `launch.observe`, to the session's budget, then to the listener of the call that runs. A `call` event adds
+ * its `spent` to the budget and to the current call's count: the tokens the review's own cap counted for the
+ * call, the reported usage or, for a call that reported none, its reservation, which is what bounds a review
+ * and so the session. The result's usage would miss a call the review gave up on, and the cap never does.
  *
  * @throws ConfigError as `fromConfig` does, when a provider of the config cannot be built
  */
@@ -216,6 +238,10 @@ export async function openSession(launch: McpLaunch, log: (text: string) => void
   let session: ReviewSession | undefined
   const events: EventSink = (event) => {
     launch.observe?.(event)
+    if (session !== undefined && event.type === 'call') {
+      session.budget.add(event.spent)
+      session.counted += event.spent
+    }
     session?.listener?.(event)
   }
   const quorum = await fromConfig(launch.config, { env: launch.env, events })
@@ -225,7 +251,9 @@ export async function openSession(launch: McpLaunch, log: (text: string) => void
     served: launch.config.profiles.map(({ profile }) => profile.id),
     events,
     log,
+    budget: sessionBudget(launch.sessionTokens),
     running: false,
+    counted: 0,
     listener: undefined,
   }
   return session
@@ -323,20 +351,42 @@ async function readChange(session: ReviewSession, spec: SourceSpec, signal: Abor
 }
 
 /**
+ * Charges what a review's events never reported and logs the session's spend, once the review's promise has
+ * settled. A review that ended without a result (`unresolved`: a cancel, an abort, a failure or a sink error) is
+ * charged the rest of its whole cap, `cap` less what its events counted, and never less than nothing: the core
+ * reports no call once a review is aborted, and the panel rejects without waiting for its votes in flight, so
+ * what those spent is never seen, and a review never spends more than its cap. Counting the cap bounds the
+ * session whatever was lost, where a count of what was reported would let a loop of cancelled reviews spend
+ * unseen.
+ */
+function settleSpend(session: ReviewSession, cap: number, unresolved: boolean): void {
+  if (unresolved) session.budget.add(Math.max(0, cap - session.counted))
+  note(session, `quorum mcp: the session has spent ${session.budget.spent()} of ${session.budget.total} tokens`)
+}
+
+/**
  * Review the change a call names and return what the agent receives. It never throws: every failure is one fixed
  * text with `isError`, and its reason, the failure's own lines, goes to the session's log alone. In this order:
  *
  * 1. `BUSY` at once when a review runs: one runs at a time, and the tokens are the operator's;
- * 2. the usage check (`checkedCall`), whose text is returned as it is;
- * 3. the lock, taken before anything is awaited, and a progress reporter when the call asked for progress;
- * 4. the quorum: the session's, or for `profiles` one built from the launch's checked config;
- * 5. the source, read from the root with the launch's `exclude`, `send` and platform;
- * 6. for `paths`, the estimate: `LARGE` unless it fits the token cap or the launch was `--large`;
- * 7. the review, under the call's signal;
- * 8. the result: `agentResult` of the public view, as `structuredContent` and as its JSON in one text block.
+ * 2. `SPENT` at once when what the session's budget has left cannot hold one review's whole cap, which a
+ *    review that is started may spend;
+ * 3. the usage check (`checkedCall`), whose text is returned as it is;
+ * 4. the lock, taken before anything is awaited, and then, inside the `try`, a progress reporter when the call
+ *    asked for progress, stopped as soon as the call is cancelled;
+ * 5. the quorum: the session's, or for `profiles` one built from the launch's checked config;
+ * 6. the source, read from the root with the launch's `exclude`, `send` and platform;
+ * 7. for `paths`, the estimate: `LARGE` unless it fits the token cap or the launch was `--large`;
+ * 8. the review, under the call's signal;
+ * 9. the result: `agentResult` of the public view, as `structuredContent` and as its JSON in one text block,
+ *    without each finding's category and summary under `--code-fields-only`.
  *
- * The reporter is stopped and the lock released in a `finally`, after the review's promise has settled, so a
- * call made right after a cancelled one is `BUSY` until the review has stopped spending.
+ * The listener is cleared, the reporter stopped and the lock released in a `finally`, after the review's promise
+ * has settled, so a call made right after a cancelled one is `BUSY` until the review has stopped spending. A review that ends
+ * without a result, a cancel, an abort, a failure or a sink error, is charged its whole cap, less what its
+ * events counted, there: the core reports no call once a review is aborted, so what its calls in flight spent
+ * is never seen, and a review spends no more than its cap. A call refused before its review, or whose source
+ * fails, spends nothing and is charged nothing. After each review the session's spend goes to the log.
  *
  * A failure's text: `TRUST` for a repository whose own config names a filter program, where the launch did not
  * trust it; `SOURCE` for any other refusal of the source, an untracked file's among them, whose message quotes a
@@ -348,15 +398,24 @@ async function readChange(session: ReviewSession, spec: SourceSpec, signal: Abor
  */
 export async function reviewCall(session: ReviewSession, args: ReviewArguments, call: { readonly signal: AbortSignal, readonly notify?: (note: ProgressNote) => void }): Promise<CallOutcome> {
   if (session.running) return failure(BUSY)
+  const { launch } = session
+  const cap = reviewCap(launch)
+  if (!session.budget.holds(cap)) return failure(SPENT)
   const checked = checkedCall(args, session.served)
   if (typeof checked === 'string') return failure(checked)
   session.running = true
-  const { launch } = session
-  const reporter = call.notify === undefined
-    ? undefined
-    : progressReporter(call.notify, launch.clock ?? systemClock)
-  session.listener = reporter?.onEvent
+  session.counted = 0
+  let reporter: ReturnType<typeof progressReporter> | undefined
+  const stopReporter = (): void => reporter?.stop()
+  // Where the call is: before its review is called, while it runs, and once it has resolved with a result.
+  let stage: 'before' | 'reviewing' | 'resolved' = 'before'
   try {
+    // Set up inside the `try`, so a throw here is an answer and never leaves the lock held. A cancel stops the
+    // reporter at once, so no heartbeat follows it.
+    if (call.notify !== undefined) reporter = progressReporter(call.notify, launch.clock ?? systemClock)
+    session.listener = reporter?.onEvent
+    if (call.signal.aborted) stopReporter()
+    else call.signal.addEventListener('abort', stopReporter, { once: true })
     const quorum = checked.profiles === undefined
       ? session.quorum
       : await narrowed(session, checked.profiles)
@@ -365,8 +424,10 @@ export async function reviewCall(session: ReviewSession, args: ReviewArguments, 
       : checked.spec
     const read = await readChange(session, spec, call.signal)
     if (spec.kind === 'paths' && !launch.large && !quorum.estimate({ diff: read.diff, send: launch.send }).fits) return failure(LARGE)
+    stage = 'reviewing'
     const result = await quorum.review({ ...read, send: launch.send }, { signal: call.signal })
-    const agent = agentResult(publicView(result), outcome(result))
+    stage = 'resolved'
+    const agent = agentResult(publicView(result), outcome(result), { codeFieldsOnly: launch.codeFieldsOnly })
     return {
       content: [
         {
@@ -388,8 +449,14 @@ export async function reviewCall(session: ReviewSession, args: ReviewArguments, 
       ? error.text
       : REVIEW)
   } finally {
-    reporter?.stop()
-    session.listener = undefined
-    session.running = false
+    try {
+      // The charge comes first, so nothing after it can leave a review's spend uncounted.
+      if (stage !== 'before') settleSpend(session, cap, stage === 'reviewing')
+    } finally {
+      session.listener = undefined
+      call.signal.removeEventListener('abort', stopReporter)
+      stopReporter()
+      session.running = false
+    }
   }
 }

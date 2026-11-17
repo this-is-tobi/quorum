@@ -189,6 +189,43 @@ describe('serveMcp', () => {
     expect(clock.pending()).toBe(0)
   })
 
+  it('has Claude Code ask before every call under --require-approval, and only then', async () => {
+    const asking = await serving('legacy', {
+      fields: { requireApproval: true },
+    })
+    const plain = await serving('legacy')
+    const [asked] = ((await asking.client.request('tools/list')).result as { tools: Array<{ _meta?: unknown }> }).tools
+    const [unasked] = ((await plain.client.request('tools/list')).result as { tools: Array<{ _meta?: unknown }> }).tools
+    expect(asked._meta).toEqual({ 'anthropic/requiresUserInteraction': true })
+    expect(unasked._meta).toBeUndefined()
+  })
+
+  it('leaves each finding\'s category and summary out under --code-fields-only', async () => {
+    const whole = await serving('legacy', {
+      fake: {
+        findings: [CHANGE_FINDING],
+      },
+    })
+    const bare = await serving('legacy', {
+      fake: {
+        findings: [CHANGE_FINDING],
+      },
+      fields: { codeFieldsOnly: true },
+    })
+    const full = (await review(whole.client, { source: 'local' })).result
+    const narrowed = (await review(bare.client, { source: 'local' })).result
+    expect(Object.keys((full?.structuredContent as { findings: Array<object> }).findings[0])).toContain('summary')
+
+    expect(narrowed?.isError).toBeUndefined()
+    expect(agentResultSchema.safeParse(narrowed?.structuredContent).success).toBe(true)
+    const [finding] = (narrowed?.structuredContent as { findings: Array<Record<string, unknown>> }).findings
+    expect(finding).toMatchObject({ file: 'a.js', line: 1 })
+    expect(Object.keys(finding)).not.toContain('category')
+    expect(Object.keys(finding)).not.toContain('summary')
+    expect(textOf(narrowed)).toBe(JSON.stringify(narrowed?.structuredContent))
+    expect(textOf(narrowed)).not.toMatch(/CWE-78|command injection/)
+  })
+
   it('aborts the review when the client cancels the call, and never answers it', async () => {
     const started = deferred()
     const gate = deferred()
@@ -210,8 +247,11 @@ describe('serveMcp', () => {
     await client.send('notifications/cancelled', { requestId: id, reason: 'the person pressed escape' })
     await vi.waitFor(() => expect(signal?.aborted).toBe(true))
     await vi.waitFor(() => expect(logged()).toContain('quorum mcp: a review was cancelled\n'))
-    expect(client.replies.some(reply => reply.id === id)).toBe(false)
+    // The review settles only now, so a reply that came late would come after this.
     gate.resolve()
+    await vi.waitFor(() => expect(logged()).toMatch(/the session has spent \d+ of \d+ tokens\n/))
+    await new Promise(done => setTimeout(done, 20))
+    expect(client.replies.some(reply => reply.id === id)).toBe(false)
   })
 
   it.each([

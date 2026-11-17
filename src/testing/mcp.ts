@@ -163,8 +163,8 @@ export function launchConfig(input: ConfigInput, env: Record<string, string> = {
 
 /**
  * A launch of the server on one fake provider, `fakeProvider(fake)`, that every profile uses: a temporary root
- * (a real path, removed by `removeRoots`), no environment, no `--send`, no gate lifted, this platform and a fake
- * clock. `fields` replace any of it.
+ * (a real path, removed by `removeRoots`), no environment, no `--send`, no gate lifted, this platform, a fake
+ * clock, a session budget no review reaches, and the agent's whole result. `fields` replace any of it.
  */
 export function launchFor(fake: FakeModel = {}, fields: Partial<McpLaunch> = {}): McpLaunch {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'quorum-mcp-')))
@@ -181,6 +181,9 @@ export function launchFor(fake: FakeModel = {}, fields: Partial<McpLaunch> = {})
     large: false,
     trustRepoConfig: false,
     send: [],
+    sessionTokens: Number.MAX_SAFE_INTEGER,
+    codeFieldsOnly: false,
+    requireApproval: false,
     clock: fakeClock(),
     ...fields,
   }
