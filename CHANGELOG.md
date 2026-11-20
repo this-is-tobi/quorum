@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/this-is-tobi/quorum/compare/v0.7.0...v0.7.1) (2026-11-20)
+
+
+### Dependencies
+
+* **deps:** update bun to v1.4.5 ([dbf815f](https://github.com/this-is-tobi/quorum/commit/dbf815f3ff349fa4c3edcd4896c30499f15d930f))
+
 ## [0.7.0](https://github.com/this-is-tobi/quorum/compare/v0.6.0...v0.7.0) (2026-11-17)
 
 
