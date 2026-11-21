@@ -11,6 +11,7 @@ import type { ReportView } from '../../report/view.ts'
 import { heartbeatLine, logLines } from './lines.ts'
 import { DEFAULT_FACTS, fold, startState } from './model.ts'
 import type { ViewFacts } from './model.ts'
+import { summaryLines } from './summary.ts'
 import type { ViewWriter } from './writer.ts'
 
 /** The quiet that earns a heartbeat. */
@@ -29,6 +30,7 @@ export function plainWriter(options: { readonly write: (line: string) => void, r
   let state = startState(options.facts ?? DEFAULT_FACTS)
   let running = false
   let stopped = false
+  let summarized = false
   let cancel: (() => void) | undefined
 
   const disarm = (): void => {
@@ -62,6 +64,12 @@ export function plainWriter(options: { readonly write: (line: string) => void, r
     },
     begin: (facts) => {
       state = startState(facts)
+      summarized = false
+    },
+    summary: (facts) => {
+      if (summarized) return
+      summarized = true
+      for (const text of summaryLines(state, facts, view, '-')) write(text)
     },
     close: () => {
       stopped = true

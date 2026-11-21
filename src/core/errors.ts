@@ -209,7 +209,7 @@ export function lackWords(kind: 'truncated' | 'no-answer', lack: ReplyLack): str
 export const QUOTA_FIX = 'add credit or raise the limit at the provider, or wait until it resets'
 
 /** What to do about a provider whose calls ended with `kind`, and for an `http` failure its `status`: one imperative phrase, never a word a server wrote. */
-function downFix(kind: ProviderErrorKind, status: number | undefined): string {
+export function failureFix(kind: ProviderErrorKind, status: number | undefined): string {
   switch (kind) {
     case 'network':
       return 'check that the server at its origin is running'
@@ -275,7 +275,7 @@ export function downWords(facts: DownFacts): string {
   const failure = facts.status === undefined
     ? facts.kind
     : `${facts.kind} ${facts.status}`
-  const fix = downFix(facts.kind, facts.status)
+  const fix = failureFix(facts.kind, facts.status)
   if (facts.streak) return `${facts.providerId}: ${facts.count} calls in a row failed (${failure}): no more calls go to it in this review: ${fix}`
   return `${facts.providerId}: its ${facts.count === 1
     ? 'one call'

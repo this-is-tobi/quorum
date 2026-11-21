@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -757,7 +757,7 @@ describe('runCli', () => {
     })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(sent(fetchMock).url).toBe('https://team.example/v1/chat/completions')
-    expect(stderr()).toMatch(/^Research \(t @ https:\/\/team\.example\)\.\.\.\nPanel will use t @ https:\/\/team\.example\npart 1 of 1: answered in \d+(\.\d)?s, \d+ tokens, 0 finding\(s\) listed\n0 candidate\(s\) after dedup\n0 kept, 0 discarded, 0 unreviewed by panel\n$/)
+    expect(stderr()).toMatch(/^Research \(t @ https:\/\/team\.example\)\.\.\.\nPanel will use t @ https:\/\/team\.example\npart 1 of 1: answered in \d+(\.\d)?s, \d+ tokens, 0 finding\(s\) listed\n0 candidate\(s\) after dedup\n0 kept, 0 discarded, 0 unreviewed by panel\ntime: research \d+(\.\d)?s, dedup \d+(\.\d)?s, panel \d+(\.\d)?s; done in \d+s\ntokens: \d+ percent of the cap of 2000000, the default\ncalls: 1 research; 4 at once\nresult: json on stdout\n$/)
   })
 
   it('exits 2 when the file QUORUM_CONFIG names does not exist, naming it as given', async () => {
@@ -834,8 +834,16 @@ describe('runCli', () => {
         `[${profile}] 0 candidate(s) after dedup`,
       ])
     }
-    expect(lines.slice(5)).toHaveLength(6)
-    expect(lines.slice(-2)).toEqual(['0 kept, 0 discarded, 0 unreviewed by panel', ''])
+    expect(lines.slice(5)).toHaveLength(10)
+    // The summary ends the review, after the totals line.
+    expect(lines.slice(-6)).toEqual([
+      '0 kept, 0 discarded, 0 unreviewed by panel',
+      expect.stringMatching(/^time: research \d+(\.\d)?s, dedup \d+(\.\d)?s, panel \d+(\.\d)?s; done in \d+s$/),
+      expect.stringMatching(/^tokens: \d+ percent of the cap of 2000000, the default$/),
+      'calls: 2 research; 4 at once',
+      'result: json on stdout',
+      '',
+    ])
   })
 })
 
@@ -1614,6 +1622,38 @@ describe('flags', () => {
       ],
     })
     expect(readFileSync(join(cwd, 'r.txt'), 'utf8').startsWith('quorum ')).toBe(true)
+  })
+
+  it('writes the summary on stderr after the report on stdout and the --output files', async () => {
+    const cwd = mkdtempSync(join(dir, 'outputs-'))
+    stubChat('{"findings":[]}')
+    const order: string[] = []
+    let fileThen: boolean | undefined
+    const { io, stderr } = harness({
+      argv: ['--output', 'json=r.json'],
+      cwd,
+      env: MODEL,
+      stdin: DIFF,
+      onStderr: (text) => {
+        order.push(`stderr: ${text.trimEnd()}`)
+        if (text.startsWith('time: ')) fileThen = existsSync(join(cwd, 'r.json'))
+      },
+    })
+    const base = io.stdout.write
+    io.stdout.write = (text) => {
+      order.push('stdout')
+      base(text)
+    }
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const report = order.indexOf('stdout')
+    const summary = order.findIndex(entry => entry.startsWith('stderr: time: '))
+    expect(report).toBeGreaterThan(-1)
+    expect(summary).toBeGreaterThan(report)
+    expect(order.slice(summary).every(entry => entry.startsWith('stderr: '))).toBe(true)
+    expect(fileThen).toBe(true)
+    expect(order.at(-1)).toBe('stderr: result: json on stdout; --output json written')
+    expect(stderr()).not.toContain(cwd)
+    expect(stderr()).not.toContain('r.json')
   })
 
   it('exits 2 before any call for an --output whose path is a symbolic link', async () => {
