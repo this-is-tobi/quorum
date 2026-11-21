@@ -2,7 +2,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 import type { z } from 'zod'
 import { publicView } from '../report/view.ts'
 import { corpusResult } from '../testing/github-corpus.ts'
-import { blankResult, reportResult } from '../testing/report.ts'
+import { blankResult, cast, reportResult, SQL, TOKEN } from '../testing/report.ts'
 import { publicViewSchema, resultSchema } from './result-schema.ts'
 import type { PublicView, QuorumResult } from './types.ts'
 
@@ -47,6 +47,64 @@ describe('the schemas of a result', () => {
       expect(publicViewSchema.parse(view)).toEqual(view)
       expect(JSON.stringify(publicViewSchema.parse(view))).toBe(JSON.stringify(view))
     }
+  })
+
+  it('reads a result holding provider-down as a gap, a coverage reason and a vote failure', () => {
+    const down = {
+      angle: 'b',
+      vote: null,
+      error: 'x',
+      failure: { kind: 'provider-down' },
+    } as const
+    const result = reportResult({
+      kept: [
+        {
+          ...SQL,
+          keptVotes: 2,
+          confidence: 'medium',
+          votes: [
+            cast(true),
+            cast(true),
+            down,
+          ],
+        },
+      ],
+      unreviewed: [
+        {
+          ...TOKEN,
+          votes: [down, down, down],
+        },
+      ],
+      meta: {
+        ...reportResult().meta,
+        incomplete: [
+          { profile: 'security', reason: 'provider-down', detail: '1 of 6 research parts were not sent, since their provider was down' },
+        ],
+        profiles: {
+          security: {
+            ...reportResult().meta.profiles.security,
+            coverage: [
+              { file: 'src/auth/login.ts', status: 'reviewed' },
+              {
+                file: 'src/session.js',
+                status: 'partial',
+                left: [
+                  { start: 30, end: 34, reason: 'provider-down' },
+                ],
+              },
+              { file: 'src/upload.js', status: 'unreviewed', reason: 'provider-down' },
+            ],
+          },
+        },
+      },
+    })
+    const full = saved(result)
+    expect(resultSchema.parse(full)).toEqual(full)
+    const view = saved(publicView(result))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(view.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'provider-down' },
+    ])
   })
 
   it.each<[string, 'full' | 'public', (value: Forged) => void]>([

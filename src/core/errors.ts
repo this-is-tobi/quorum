@@ -125,3 +125,79 @@ export class ProviderError extends QuorumError {
     this.usage = details.usage
   }
 }
+
+/** What to do about a provider whose calls ended with `kind`, and for an `http` failure its `status`: one imperative phrase, never a word a server wrote. */
+function downFix(kind: ProviderErrorKind, status: number | undefined): string {
+  switch (kind) {
+    case 'network':
+      return 'check that the server at its origin is running'
+    case 'timeout':
+      return 'raise timeoutMs'
+    case 'invalid-response':
+      return 'check protocol and baseUrl'
+    case 'process':
+      return 'check command'
+    case 'http':
+      if (status === 401 || status === 403) return 'check apiKey'
+      if (status === 404) return 'check baseUrl and model'
+      return status === 429 || (status !== undefined && status >= 500 && status <= 599)
+        ? 'lower concurrency or wait'
+        : 'check the provider\'s settings'
+    default:
+      return 'check the provider\'s settings'
+  }
+}
+
+/** What the words of a provider that is down are made of: facts the code read, never a message a server or a provider wrote. */
+export interface DownFacts {
+  readonly providerId: string
+  readonly kind: ProviderErrorKind
+  /** An `http` failure's HTTP status, when it states one. */
+  readonly status?: number
+  /** How many calls failed: three in a row for a provider found down, fewer for one found spent at the review's end. */
+  readonly count: number
+  /** True for the calls in a row that found the provider down, false for the calls of a provider spent at the end. */
+  readonly streak: boolean
+}
+
+/**
+ * The words of a provider that is down, so the CLI's progress line and a `ProviderDownError`'s message share
+ * one copy: `<id>: <n> calls in a row failed (<kind>[ <status>]): no more calls go to it in this review:
+ * <fix>` for the calls in a row, else `<id>: its one call failed (...): <fix>` or `its <n> calls failed`.
+ */
+export function downWords(facts: DownFacts): string {
+  const failure = facts.status === undefined
+    ? facts.kind
+    : `${facts.kind} ${facts.status}`
+  const fix = downFix(facts.kind, facts.status)
+  if (facts.streak) return `${facts.providerId}: ${facts.count} calls in a row failed (${failure}): no more calls go to it in this review: ${fix}`
+  return `${facts.providerId}: its ${facts.count === 1
+    ? 'one call'
+    : `${facts.count} calls`} failed (${failure}): ${fix}`
+}
+
+/**
+ * A provider's calls stopped: three of its calls in a row failed for a reason of its own, so it is called no
+ * more in the review, or, when no research call of any profile answered, every call of its few failed for a
+ * reason of its own. The `cause` is the last failure. It is recognised by `instanceof` alone, as `LimitError`
+ * is, so a provider cannot raise one, and it is no `ProviderError`: its `kind` and `status` are the facts of
+ * the failures it counts, which the message words through `downWords`.
+ */
+export class ProviderDownError extends QuorumError {
+  readonly providerId: string
+  readonly kind: ProviderErrorKind
+  readonly status: number | undefined
+  readonly count: number
+  readonly streak: boolean
+
+  constructor(facts: DownFacts & { readonly cause?: unknown }) {
+    super(downWords(facts), facts.cause === undefined
+      ? undefined
+      : { cause: facts.cause })
+    this.providerId = facts.providerId
+    this.kind = facts.kind
+    this.status = facts.status
+    this.count = facts.count
+    this.streak = facts.streak
+  }
+}

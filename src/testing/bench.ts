@@ -18,6 +18,7 @@ import type { ResolvedConfig } from '../config/resolve.ts'
 import { configInputSchema } from '../config/schema.ts'
 import type { ConfigInput } from '../config/schema.ts'
 import { splitDiff } from '../core/diff.ts'
+import { ProviderError } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
 import { renderTemplate, researchRequest, voteRequest } from '../core/prompts.ts'
 import { findingFingerprint, findingId } from '../core/stages/research.ts'
@@ -625,7 +626,8 @@ function waitFor(gate: Promise<void>, signal: AbortSignal | undefined): Promise<
 
 /**
  * A provider that answers from `fake` and calls no model: a research request (`research_findings`) gets
- * the findings, or `researchText` when it is set, or an `Error` under `failResearch`; a vote gets `keep`
+ * the findings, or `researchText` when it is set, or an `http` 500 `ProviderError` under `failResearch`, which a
+ * review whose every research call fails rejects with as a `ProviderDownError`; a vote gets `keep`
  * and a reason. Each answer reports 10 input and 5 output tokens, and a cost of 0.001 unless `cost` is
  * false.
  */
@@ -637,7 +639,14 @@ export function fakeProvider(fake: FakeModel = {}): { readonly model: string, re
       fake.onCall?.(request)
       if (fake.gate !== undefined) await waitFor(fake.gate, request.signal)
       const research = request.output.name === 'research_findings'
-      if (research && fake.failResearch === true) throw new Error('research failed')
+      if (research && fake.failResearch === true) {
+        throw new ProviderError({
+          providerId: 'fake',
+          kind: 'http',
+          status: 500,
+          message: 'research failed',
+        })
+      }
       return {
         text: research && fake.researchText !== undefined
           ? fake.researchText

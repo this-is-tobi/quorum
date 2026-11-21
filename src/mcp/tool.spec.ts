@@ -589,10 +589,10 @@ describe('reviewCall', () => {
       expect(session.running).toBe(false)
     })
 
-    it('charges a review that fails its whole cap, as a gating profile\'s unreadable research reply makes it', async () => {
+    it('charges a review that fails its whole cap, as a research provider that answered no call makes it', async () => {
       let calls = 0
       const { session, git, logged } = await budgeted({
-        researchText: 'not the findings',
+        failResearch: true,
         onCall: () => {
           calls += 1
         },

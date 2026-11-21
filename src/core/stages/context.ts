@@ -1,5 +1,6 @@
 import type { Clock } from '../clock.ts'
 import type { Limiter } from '../concurrency.ts'
+import type { Health } from '../down.ts'
 import { PROVIDER_ERROR_KINDS, ProviderError } from '../errors.ts'
 import type { ProviderErrorKind } from '../errors.ts'
 import { settlementOf } from '../limits.ts'
@@ -50,7 +51,7 @@ export interface ProfileRun {
   readonly thresholds: Readonly<Thresholds>
   /** The confidence at or above which its kept findings exit 1, `none` for an advisory profile; `high` when the profile does not say. */
   readonly failOn: FailOn
-  /** Whether the profile gates: `failOn` is not `none`. A gating profile's failed research ends the review; an advisory profile's is a gap. */
+  /** Whether the profile gates: `failOn` is not `none`. A failed research part is its profile's gap, gating or not; a gating profile's gap exits 4. */
   readonly gating: boolean
   readonly guidelines?: string
 }
@@ -68,9 +69,9 @@ export interface RunContext {
   /** Delivers one event of the review to the sink, as a copy; it delivers nothing once the review is aborted. */
   readonly emit: EventSink
   /**
-   * Aborted when the caller's signal is, when the event sink throws, when a gating profile's research fails
-   * or when the profiles' run rejects: every stage and every call checks it, and every attempt
-   * carries a signal of its own, which `stop` and the attempt's own deadline abort.
+   * Aborted when the caller's signal is, when the event sink throws or when the profiles' run rejects: every
+   * stage and every call checks it, and every attempt carries a signal of its own, which `stop` and the
+   * attempt's own deadline abort.
    */
   readonly signal: AbortSignal
   /**
@@ -83,13 +84,8 @@ export interface RunContext {
   readonly stop: AbortSignal
   /** When the review's deadline falls, `at` on the review's clock, and its length `ms`: the retry policy reads the time left from it. */
   readonly deadline: { readonly at: number, readonly ms: number }
-  /**
-   * Aborts the review with `error`, unless it is already aborted, so a caller's abort reason or a
-   * sink's error stays the reason. A gating profile's research failure, the call or its reply, calls
-   * it where it fails, so no other profile starts a call after it; an advisory profile's research
-   * failure is a gap, like a research request refused as too large, and does not.
-   */
-  readonly fail: (error: unknown) => void
+  /** Which providers are down in this review: one count per provider object, across every profile and role that shares it. */
+  readonly health: Health
   /** How many findings of a research reply each profile sends to the panel. */
   readonly maxFindings: number
   /** The review's concurrency: how many parts of its research one profile has in flight at once. */
@@ -302,13 +298,20 @@ export function elapsed(started: number): number {
  * stops before its first attempt sends no `call` event, since no provider was called; one it stops
  * after an attempt sends its failed event first, as any failed call does.
  *
+ * A provider found down (`ctx.health`) is called no more: its call fails inside the slot, after the stop
+ * check and before its request is built, with the provider's `ProviderDownError`, sending no `call` event
+ * and no attempt and calling no `onFailure`; the error is no failure of the provider and counts nowhere.
+ * Every other call tells the health what became of it: a reply is `answered`, whatever it holds, and a
+ * call that ends in a failure is `failed` once, after its retries, which sends one `provider-down` event
+ * when that failure is the third in a row.
+ *
  * A call that fails once its request is built, for any reason, ends through one place: it sends its
- * failed `call` event when an attempt was made, then hands that failure and the attempts made, 0 when
- * none, to `onFailure`, once, inside its slot, and rethrows. The research stage aborts the review there
- * for a gating profile, so the queued call the slot goes to next never starts; a failed vote has no
- * `onFailure`: the panel records it. The duration is measured inside the slot, from the first attempt,
- * once the request is built, to the call's end, the waits included: the provider's latency, not the time
- * the call waited for a slot or for room, or took to build its request. A reply whose text is not a string
+ * failed `call` event when an attempt was made, tells the health, then hands that failure and the
+ * attempts made, 0 when none, to `onFailure`, once, inside its slot, and rethrows. The research stage
+ * reads the attempts there; a failed vote has no `onFailure`: the panel records it. The duration is
+ * measured inside the slot, from the first attempt, once the request is built, to the call's end, the waits
+ * included: the provider's latency, not the time the call waited for a slot or for room, or took to build
+ * its request. A reply whose text is not a string
  * is a `ProviderError`. Each call emits one `call` event, which names the provider by the ref captured at
  * creation, never by the live object, and counts its attempts when it made more than one: failed, before
  * the error is rethrown, with the usage summed over its attempts when their counts are valid, or ok, with
@@ -319,6 +322,8 @@ export function elapsed(started: number): number {
 export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest, onFailure?: (error: unknown, attempts: number) => void): Promise<string> {
   return ctx.limit(async () => {
     ctx.stop.throwIfAborted()
+    const down = ctx.health.refused(target.provider)
+    if (down !== undefined) throw down
     const request = buildRequest()
     const reservation = reservationOf(target, request)
     const started = ctx.clock.now()
@@ -346,6 +351,18 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           ...counted(attempts, usage, spent),
         })
       }
+      const found = ctx.health.failed(target.provider, target.ref.id, error)
+      if (found !== undefined) {
+        ctx.emit({
+          type: 'provider-down',
+          provider: target.ref.id,
+          kind: found.kind,
+          ...(found.status === undefined
+            ? {}
+            : { status: found.status }),
+          calls: found.count,
+        })
+      }
       // Still inside the slot: a review aborted here never starts the queued call the slot goes to next.
       onFailure?.(error, attempts)
       return error
@@ -363,6 +380,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
         // The reply's usage is read once, so its settlement and its event cannot disagree.
         replied = checkedUsage(reply.usage)
         settle(settlementOf(reservation, replied))
+        ctx.health.answered(target.provider)
         response = reply
       } catch (error) {
         const reported = failureUsage(error)

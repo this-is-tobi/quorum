@@ -2,6 +2,7 @@ import { own } from '../config/profiles.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider } from '../config/schema.ts'
 import type { EventSink, Provider } from '../core/ports.ts'
+import { downWords } from '../core/errors.ts'
 import { inertLine } from '../core/sanitize.ts'
 import type { Estimate, LeftOutFile, QuorumEvent } from '../core/types.ts'
 import { isClaudeCode } from '../providers/build.ts'
@@ -54,6 +55,14 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
           ? ''
           : ` at ${JSON.stringify(event.entry.file)}`}`
         : `incomplete: ${event.entry.reason} (${event.entry.detail})`)
+    case 'provider-down':
+      return downWords({
+        providerId: event.provider,
+        kind: event.kind,
+        status: event.status,
+        count: event.calls,
+        streak: true,
+      })
     case 'left-out':
       return leftOutLine(event.files)
     case 'flag':

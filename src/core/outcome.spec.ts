@@ -216,6 +216,9 @@ describe('outcome', () => {
     [
       { kind: 'unsupported' },
     ],
+    [
+      { kind: 'provider-down' },
+    ],
     [null],
     [undefined],
   ])('never lifts a gap whose failed vote failed with %j', (failure) => {
@@ -233,6 +236,7 @@ describe('outcome', () => {
     'submodule',
     'secret',
     'research-failed',
+    'provider-down',
     'a-reason-no-quorum-writes',
   ])('never lifts a gating profile\'s %s gap', (reason) => {
     const gap = { profile: 'security', reason }
@@ -431,7 +435,7 @@ describe('outcome', () => {
     }
   })
 
-  it('never lifts a research-failed gap of a gating profile, which only a result built by hand holds', () => {
+  it('never lifts a research-failed gap of a gating profile, which no flag lifts', () => {
     expect(outcome(withGaps({ security: true }, [
       { profile: 'security', reason: 'research-failed' },
     ]), { allowIncomplete: true }).exitCode).toBe(4)

@@ -557,7 +557,7 @@ describe('quorum bench', () => {
     })
     expect(failed.code).toBe(4)
     expect(lines()).toHaveLength(3)
-    expect(failed.stderr).toMatch(/^\[2\/6\] trial 1, case exec, configuration 2: failed: local: HTTP 500/m)
+    expect(failed.stderr).toMatch(/^\[2\/6\] trial 1, case exec, configuration 2: failed: local: its one call failed \(http 500\): lower concurrency or wait/m)
     expect(failed.stdout).toBe(readFileSync(join(out(), 'report.md'), 'utf8'))
     const next = await bench(TWO)
     expect(next.code).toBe(0)
@@ -576,7 +576,7 @@ describe('quorum bench', () => {
     expect(next.stderr).not.toContain('--max-run-tokens')
   })
 
-  it('records a review whose research reply cannot be used as denied, quotes nothing of it, and runs it again with --retry-incomplete', async () => {
+  it('records a review whose research reply cannot be used with the research-failed gap, quotes nothing of it, and runs it again with --retry-incomplete', async () => {
     const first = await bench(TWO, {
       models: {
         m1: { researchText: 'I will not answer in JSON.' },
@@ -585,21 +585,20 @@ describe('quorum bench', () => {
     })
     expect(first.code).toBe(0)
     expect(lines()).toHaveLength(6)
-    expect(first.stderr).toMatch(/^\[1\/6\] trial 1, case exec, configuration 1: denied, the research reply could not be used; \d+\.\d s$/m)
+    expect(first.stderr).toMatch(/^\[1\/6\] trial 1, case exec, configuration 1: missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps; \d+\.\d s$/m)
     expect(first.stderr).not.toContain('answer in JSON')
-    expect(first.stdout).toContain(' | 3 (3 denied) | ')
+    expect(first.stdout).toContain(' | 0.00 / 0.00 | 3 | ')
     expect((await bench([...TWO, '--retry-incomplete', '--dry-run'])).stdout).toContain('Reviews: 6 planned, 6 recorded, 3 to run (3 of them again), at most 1 at a time\n')
   })
 
-  it.each<[string, object, string, string]>([
+  it.each<[string, object, string]>([
     [
       'a reply the content filter stopped',
       {
         finish_reason: 'content_filter',
         message: { content: '' },
       },
-      'refusal',
-      'the model refused the research request',
+      'the research call failed (refusal)',
     ],
     [
       'a refusal the model wrote',
@@ -607,8 +606,7 @@ describe('quorum bench', () => {
         finish_reason: 'stop',
         message: { content: '', refusal: 'I will not help with that.' },
       },
-      'refusal',
-      'the model refused the research request',
+      'the research call failed (refusal)',
     ],
     [
       'a reply cut off at the token limit',
@@ -616,10 +614,9 @@ describe('quorum bench', () => {
         finish_reason: 'length',
         message: { content: '' },
       },
-      'truncated',
-      'the research reply was cut off at its token limit',
+      'the research call failed (truncated)',
     ],
-  ])('records %s as denied, in words the bench wrote', async (_name, choice, denied, words) => {
+  ])('records %s with the research-failed gap, in words the bench wrote', async (_name, choice, detail) => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonReply({
       choices: [choice],
     })))
@@ -631,22 +628,41 @@ describe('quorum bench', () => {
     expect(await runCli(run.io)).toBe(0)
     const progress = run.stderr().split('\n').filter(line => line.startsWith('['))
     expect(progress.map(line => line.replace(/; \d+\.\d s$/, ''))).toEqual([
-      `[1/3] trial 1, case exec, configuration 1: denied, ${words}`,
-      `[2/3] trial 1, case sql, configuration 1: denied, ${words}`,
-      `[3/3] trial 1, case docs, configuration 1: denied, ${words}`,
+      '[1/3] trial 1, case exec, configuration 1: missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps',
+      '[2/3] trial 1, case sql, configuration 1: missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps',
+      '[3/3] trial 1, case docs, configuration 1: control; 0 kept, 0 discarded, 0 unreviewed, 1 gaps',
     ])
     expect(run.stderr()).not.toContain('will not help')
     expect(readFileSync(join(out(), 'results.jsonl'), 'utf8')).not.toContain('will not help')
+    const gap = { profile: 'security', reason: 'research-failed', detail }
     expect(lines().map(line => JSON.parse(line))).toMatchObject([
-      { denied },
-      { denied },
-      { denied },
+      {
+        result: {
+          meta: {
+            incomplete: [gap],
+          },
+        },
+      },
+      {
+        result: {
+          meta: {
+            incomplete: [gap],
+          },
+        },
+      },
+      {
+        result: {
+          meta: {
+            incomplete: [gap],
+          },
+        },
+      },
     ])
-    expect(lines().every(line => !('result' in JSON.parse(line)))).toBe(true)
-    expect(run.stdout()).toContain(' | 3 (3 denied) | ')
+    expect(lines().every(line => !('denied' in JSON.parse(line)))).toBe(true)
+    expect(run.stdout()).toContain(' | 0.00 / 0.00 | 3 | ')
   })
 
-  it('counts a cut-off research reply\'s usage: in its record, the tokens column and the cost line', async () => {
+  it('counts a cut-off research reply\'s usage, beside its research-failed gap: in its record, the tokens column and the cost line', async () => {
     writeSuite(join(root, 'demo'), {
       ...SUITE,
       cases: [
@@ -683,13 +699,20 @@ describe('quorum bench', () => {
       env: {},
     })
     expect(await runCli(run.io)).toBe(0)
-    expect(run.stderr()).toMatch(/^\[4\/4\] trial 1, case exec-comment, configuration 1: denied, the research reply was cut off at its token limit; \d+\.\d s$/m)
+    expect(run.stderr()).toMatch(/^\[4\/4\] trial 1, case exec-comment, configuration 1: missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps; \d+\.\d s$/m)
     const attack = lines().map(line => JSON.parse(line)).find(({ case: id }) => id === 'exec-comment')
     expect(attack).toMatchObject({
       case: 'exec-comment',
-      denied: 'truncated',
       usage: { inputTokens: 900, outputTokens: 16000 },
+      result: {
+        meta: {
+          incomplete: [
+            { profile: 'security', reason: 'research-failed', detail: 'the research call failed (truncated)' },
+          ],
+        },
+      },
     })
+    expect(attack).not.toHaveProperty('denied')
     const report = JSON.parse(readFileSync(join(out(), 'report.json'), 'utf8'))
     expect(report.configurations[0].tokens).toEqual({ median: 1100, total: 20200 })
     expect(report.attacks.configurations[0].lines.find(({ measure }: { measure: string }) => measure === 'cost-bloat')).toMatchObject({

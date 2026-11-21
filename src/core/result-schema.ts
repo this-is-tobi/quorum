@@ -51,6 +51,7 @@ const voteFailure = z.strictObject({
     'too-large',
     'token-cap',
     'review-deadline',
+    'provider-down',
     'unusable-reply',
     'unknown',
   ]),
@@ -112,6 +113,7 @@ const coverageReason = z.enum([
   'token-cap',
   'review-deadline',
   'research-failed',
+  'provider-down',
 ])
 const leftRange = z.strictObject({
   start: count,
@@ -155,6 +157,7 @@ const publicProfileMeta = z.strictObject({
 export const gapReason = z.enum([
   'research-unusable',
   'research-failed',
+  'provider-down',
   'findings-capped',
   'finding-unreadable',
   'vote-failed',

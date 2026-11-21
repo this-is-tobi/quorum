@@ -33,6 +33,28 @@ describe('renderEvent', () => {
     })).toBe('1 kept, 2 discarded, 3 unreviewed by panel')
   })
 
+  it('writes a provider-down event as the line that names its fix', () => {
+    expect(renderEvent({
+      type: 'provider-down',
+      provider: 'finder',
+      kind: 'http',
+      status: 503,
+      calls: 3,
+    })).toBe('finder: 3 calls in a row failed (http 503): no more calls go to it in this review: lower concurrency or wait')
+    expect(renderEvent({
+      type: 'provider-down',
+      provider: 'finder',
+      kind: 'network',
+      calls: 3,
+    })).toBe('finder: 3 calls in a row failed (network): no more calls go to it in this review: check that the server at its origin is running')
+    expect(renderEvent({
+      type: 'provider-down',
+      provider: `f${RLO}x`,
+      kind: 'timeout',
+      calls: 3,
+    }, true, 'public')).toBe('f<U+202E>x: 3 calls in a row failed (timeout): no more calls go to it in this review: raise timeoutMs')
+  })
+
   it('renders a flag with where it points', () => {
     expect(renderEvent({
       type: 'flag',

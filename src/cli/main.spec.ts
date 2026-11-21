@@ -266,16 +266,46 @@ describe('runCli', () => {
     expect(await runCli(io)).toBe(EXIT.runtime)
   })
 
-  it('exits 3 with a fixed text, instead of throwing, for a failure that has no text form', async () => {
+  it('exits 4 with a research-failed gap, instead of throwing, for a failure that has no text form', async () => {
     const reply = {
       get ok(): boolean {
         throw Object.create(null)
       },
     }
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply))
-    const { io, stderr } = harness({ env: MODEL, stdin: DIFF })
+    const { io, stdout } = harness({ env: MODEL, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    expect(JSON.parse(stdout()).meta.incomplete.map((entry: { reason: string }) => entry.reason)).toEqual(['research-failed'])
+  })
+
+  it('exits 4 with a research-failed gap when a gating profile\'s research reply is cut off', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply({
+      choices: [
+        {
+          finish_reason: 'length',
+          message: { content: '{"findings":[' },
+        },
+      ],
+    })))
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    const result = JSON.parse(stdout())
+    expect(result.kept).toEqual([])
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'research-failed', detail: 'the research call failed (truncated)' },
+    ])
+    expect(stderr()).toContain('incomplete: research-failed (the research call failed (truncated))')
+  })
+
+  it('exits 3 with the provider-down line, then the server\'s own words, when the endpoint answers 500 to every call', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => failed('busy now')))
+    const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.runtime)
-    expect(stderr()).toContain('Error: an error with no text form\n')
+    expect(stdout()).toBe('')
+    expect(stderr().trimEnd().split('\n').slice(-2)).toEqual([
+      'Error: default: its one call failed (http 500): lower concurrency or wait',
+      'default: HTTP 500: "busy now"',
+    ])
   })
 
   it('exits 1 on a unanimous finding and prints the result as JSON', async () => {
@@ -437,16 +467,16 @@ describe('runCli', () => {
     expect(result.meta.profiles.security.gating).toBe(false)
   })
 
-  it('exits 0 with a research-failed gap when the one profile is advisory and its research fails', async () => {
+  it('exits 0 with a research-failed gap when the one profile is advisory and its research reply cannot be read', async () => {
     const advisory = write('advisory.yaml', 'profiles:\n  security: {failOn: none}\n')
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')))
+    stubChat('No issues found.')
     const { io, stdout, stderr } = harness({
       cwd: dir,
       env: { ...MODEL, QUORUM_CONFIG: advisory },
       stdin: DIFF,
     })
     expect(await runCli(io)).toBe(EXIT.ok)
-    const gap = { profile: 'security', reason: 'research-failed', detail: 'the research call failed (network) after 3 attempts' }
+    const gap = { profile: 'security', reason: 'research-failed', detail: 'the research reply could not be read: reply contains no JSON object' }
     expect(JSON.parse(stdout()).meta.incomplete).toEqual([gap])
     expect(stderr()).toContain(`incomplete: research-failed (${gap.detail})`)
   })
@@ -1591,23 +1621,24 @@ describe('flags', () => {
 
     stubChat('SNIPPET-CANARY this reply holds no object')
     const unusable = await run(MODEL)
-    expect(unusable.code).toBe(EXIT.runtime)
-    expect(unusable.stderr.trimEnd().split('\n').at(-1)).toBe('Error: research reply unusable: reply contains no JSON object')
+    expect(unusable.code).toBe(EXIT.incomplete)
+    expect(unusable.stderr.trimEnd().split('\n')).toContain('incomplete: research-failed')
     expect(unusable.stderr).not.toMatch(/SNIPPET|CANARY|holds no object/)
+    expect(unusable.stdout).not.toMatch(/SNIPPET|CANARY|holds no object|"detail"/)
 
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => failed('SERVER-CANARY')))
     const refused = await run(MODEL)
     expect(refused.code).toBe(EXIT.runtime)
-    expect(refused.stderr.trimEnd().split('\n').at(-1)).toBe('Error: default: the call failed (http 500)')
+    expect(refused.stderr.trimEnd().split('\n').at(-1)).toBe('Error: default: its one call failed (http 500): lower concurrency or wait')
     expect(refused.stderr).not.toMatch(/SERVER|CANARY|localhost/)
 
     const advisory = write('advisory-public.yaml', 'profiles:\n  security: {failOn: none}\n')
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => failed('SERVER-CANARY')))
+    stubChat('SNIPPET-CANARY this reply holds no object')
     const gap = await run({ ...MODEL, QUORUM_CONFIG: advisory })
     expect(gap.code).toBe(EXIT.ok)
     expect(gap.stderr).toContain('incomplete: research-failed\n')
-    expect(gap.stderr).not.toMatch(/SERVER|CANARY|attempts|http 500/)
-    expect(gap.stdout).not.toMatch(/SERVER|CANARY|attempts|"detail"/)
+    expect(gap.stderr).not.toMatch(/SNIPPET|CANARY|holds no object/)
+    expect(gap.stdout).not.toMatch(/SNIPPET|CANARY|holds no object|"detail"/)
 
     stubChat(JSON.stringify({
       findings: [
@@ -1618,6 +1649,19 @@ describe('flags', () => {
     expect(dropped.stderr).toContain('invalid finding dropped\n')
     expect(dropped.stderr).not.toMatch(/CANARY|is not in the diff/)
     expect(dropped.stdout).not.toContain('CANARY')
+  })
+
+  it('writes a provider down in its fixed words alone under --view public', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => failed('SERVER-CANARY')))
+    const { io, stderr, stdout } = harness({
+      argv: ['--view', 'public'],
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.runtime)
+    expect(stdout()).toBe('')
+    expect(stderr().trimEnd().split('\n').at(-1)).toBe('Error: default: its one call failed (http 500): lower concurrency or wait')
+    expect(stderr()).not.toMatch(/SERVER|CANARY|HTTP 500|localhost/)
   })
 
   it('refuses --view twice, with another value, or with --print-config, before any config', async () => {
@@ -1903,13 +1947,17 @@ describe('interrupts', () => {
   })
 
   it('exits 3, never 130, when the review rejects with an AbortError its own signal did not raise', async () => {
-    const rejects = write('rejects.mjs', 'export default { providers: { mine: { model: \'m\', complete: () => Promise.reject(undefined) } } }\n')
+    const answers = write('answers.mjs', 'export default { providers: { mine: { model: \'m\', complete: async () => ({ text: \'{"findings":[]}\', model: \'m\' }) } } }\n')
     const controller = new AbortController()
     const { io, stdout, stderr } = harness({
       cwd: dir,
-      env: { QUORUM_CONFIG: rejects },
+      env: { QUORUM_CONFIG: answers },
       stdin: DIFF,
       signal: controller.signal,
+      // The progress line the review writes throws, and the review ends with that error: an AbortError its own signal never raised.
+      onStderr: (text) => {
+        if (text.includes('candidate(s)')) throw new DOMException('The operation was aborted', 'AbortError')
+      },
     })
     expect(await runCli(io)).toBe(EXIT.runtime)
     expect(controller.signal.aborted).toBe(false)
@@ -1940,11 +1988,11 @@ describe('interruptSignal', () => {
 })
 
 describe('inert output', () => {
-  it('writes the server text an error quotes inert, on one line', async () => {
+  it('writes the server text an error quotes inert, on one line, as the line after the provider-down line', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => failed('\u009B2J\u202Eboom\n::error::x')))
     const { io, stderr } = harness({ env: MODEL, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.runtime)
-    expect(stderr()).toContain('Error: default: HTTP 500: "<U+009B>2J<U+202E>boom\\n::error::x"\n')
+    expect(stderr()).toContain('Error: default: its one call failed (http 500): lower concurrency or wait\ndefault: HTTP 500: "<U+009B>2J<U+202E>boom\\n::error::x"\n')
     expect(stderr().replaceAll('\n', '')).not.toMatch(ANY_HIDDEN)
   })
 

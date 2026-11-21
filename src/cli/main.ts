@@ -90,10 +90,10 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
 
 /**
  * Run one review and return the process exit code. Never throws: usage and configuration problems
- * exit 2, a gating profile's failed research and other runtime failures exit 3, an interrupt exits
- * 130, and an incomplete review (a finding its failed votes left undecided, or a gap) of a gating
- * profile exits 4 unless a kept finding reached its profile's fail-on level (`high` by default), so CI can
- * tell a broken run and a partial review from a real finding (exit 1) and from a clean one (exit 0).
+ * exit 2, a review in which no research call answered (a provider found down) and other runtime failures
+ * exit 3, an interrupt exits 130, and an incomplete review (a finding its failed votes left undecided, or a
+ * gap, a failed research part included) of a gating profile exits 4 unless a kept finding reached its
+ * profile's fail-on level (`high` by default), so CI can tell a broken run and a partial review from a real finding (exit 1) and from a clean one (exit 0).
  * `--allow-incomplete` turns that exit 4 into 0 only when every failed vote behind it failed in passing
  * (see `outcome`). `outcome` maps the result to its exit code; advisory flags never change it.
  *

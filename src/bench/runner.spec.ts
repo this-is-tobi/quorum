@@ -242,7 +242,7 @@ describe('runReviews', () => {
     expect(events[0]).toEqual({
       type: 'failed',
       review: review('exec', 0),
-      error: expect.objectContaining({ message: 'research failed' }),
+      error: expect.objectContaining({ message: 'fake: its one call failed (http 500): lower concurrency or wait' }),
     })
   })
 
@@ -254,7 +254,11 @@ describe('runReviews', () => {
         {
           config: resolvedConfig({
             providers: {
-              fake: fakeProvider({ failResearch: true }),
+              fake: fakeProvider({
+                onCall: (request) => {
+                  if (isResearch(request)) throw new Error('research failed')
+                },
+              }),
             },
             profiles: {
               security: { gating: false },
@@ -336,7 +340,7 @@ describe('runReviews', () => {
     expect(requests[1][0]).toContain('+MODE=production')
   })
 
-  it('records a review whose research reply cannot be used as denied, with its calls and its usage, and runs the others', async () => {
+  it('records a review whose research reply cannot be used as a result with the research-failed gap, with its calls and its usage, and runs the others', async () => {
     const { outcome, lines, events } = await run([
       { researchText: 'I cannot help with that.' },
       {},
@@ -345,21 +349,31 @@ describe('runReviews', () => {
       review('exec', 1),
     ])
     expect(outcome).toEqual(outcomeOf({ recorded: 2, spent: 30 }))
-    const denied = parseRecord(lines[0].slice(0, -1))
-    expect(denied).toMatchObject({
+    const recorded = parseRecord(lines[0].slice(0, -1))
+    expect(recorded).toMatchObject({
       fingerprint: A,
       case: 'exec',
-      denied: 'unusable-reply',
       calls: 1,
       failedCalls: 0,
       usage: { inputTokens: 10, outputTokens: 5 },
+      result: {
+        meta: {
+          incomplete: [
+            {
+              profile: 'security',
+              reason: 'research-failed',
+              detail: expect.stringContaining('the research reply could not be read: '),
+            },
+          ],
+        },
+      },
     })
-    expect(denied).not.toHaveProperty('result')
+    expect(recorded).not.toHaveProperty('denied')
     expect(lines[0]).not.toContain('help with that')
     expect(events.map(({ type }) => type)).toEqual(['recorded', 'recorded'])
   })
 
-  it('records a review whose research reply was cut off with the usage its error carries', async () => {
+  it('records a review whose research reply was cut off as a result with the research-failed gap, with the usage its error carries', async () => {
     const { lines } = await run([
       {
         onCall: (request) => {
@@ -376,11 +390,17 @@ describe('runReviews', () => {
       review('exec'),
     ])
     expect(parseRecord(lines[0].slice(0, -1))).toMatchObject({
-      denied: 'truncated',
       calls: 1,
       failedCalls: 1,
       usage: { inputTokens: 900, outputTokens: 16000, costUsd: 0.02 },
       costComplete: true,
+      result: {
+        meta: {
+          incomplete: [
+            { profile: 'security', reason: 'research-failed', detail: 'the research call failed (truncated)' },
+          ],
+        },
+      },
     })
   })
 

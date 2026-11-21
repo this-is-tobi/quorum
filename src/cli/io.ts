@@ -8,7 +8,7 @@ import { parseArgs } from 'node:util'
 import type { ParseArgsOptionsConfig } from 'node:util'
 import type { Env } from '../config/env.ts'
 import { WriteFailure } from '../bench/run-dir.ts'
-import { ConfigError, OutputError, ProviderError } from '../core/errors.ts'
+import { ConfigError, OutputError, ProviderDownError, ProviderError } from '../core/errors.ts'
 import { inertLine } from '../core/sanitize.ts'
 import { GitError } from '../git/run.ts'
 import type { ReportView } from '../report/view.ts'
@@ -48,11 +48,14 @@ export interface CliIO {
  * lists them, and any other failure's message on one line, so a line break in a file name or in text
  * a server sent cannot start a line of its own.
  *
- * Three failures hold text from outside quorum: an `OutputError` quotes the first 200 characters of a model's
- * reply, a `ProviderError` quotes what its server sent and can name its origin, and a `GitError` quotes what
- * git printed. Under the public view, whose log a stranger may read, each is written in fixed words instead,
- * after `Error: `: `<stage> reply unusable: <reason>` (the reason is quorum's), `<provider>: the call failed
- * (<kind>[ <status>])`, `git <operation> failed[ (exit <code>)]`, and `the review failed` for any other. A
+ * Four failures hold text from outside quorum: an `OutputError` quotes the first 200 characters of a model's
+ * reply, a `ProviderError` quotes what its server sent and can name its origin, a `ProviderDownError` carries
+ * the last such error as its cause, and a `GitError` quotes what git printed. A `ProviderDownError` is written
+ * as its message, which holds code words, numbers and the provider's id alone, then the cause's message on a
+ * line of its own, the server's own words. Under the public view, whose log a stranger may read, the others
+ * are written in fixed words instead, after `Error: `: `<stage> reply unusable: <reason>` (the reason is
+ * quorum's), `<provider>: the call failed (<kind>[ <status>])`, `git <operation> failed[ (exit <code>)]`, and
+ * `the review failed` for any other, and a `ProviderDownError` in its message alone. A
  * `ConfigError` is written as the full view writes it: it holds config paths and words quorum wrote, and a
  * `WriteFailure` too: its message names a file's label and an error code, never a path.
  */
@@ -68,15 +71,21 @@ export function errorLines(error: unknown, view: ReportView = 'full'): string {
 }
 
 function fullLines(error: unknown): string[] {
-  return error instanceof ConfigError
-    ? error.message.split('\n')
-    : [
-        errorMessage(error),
-      ]
+  if (error instanceof ConfigError) return error.message.split('\n')
+  if (error instanceof ProviderDownError && error.cause !== undefined) {
+    return [
+      error.message,
+      errorMessage(error.cause),
+    ]
+  }
+  return [
+    errorMessage(error),
+  ]
 }
 
 /** A failure other than a `ConfigError` or a `WriteFailure` in the fixed words of the public view. */
 function publicMessage(error: unknown): string {
+  if (error instanceof ProviderDownError) return error.message
   if (error instanceof OutputError) return `${error.stage} reply unusable: ${error.reason}`
   if (error instanceof ProviderError) {
     return `${error.providerId}: the call failed (${error.kind}${error.status === undefined

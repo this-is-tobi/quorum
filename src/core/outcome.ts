@@ -49,8 +49,8 @@ const INCOMPLETE: Outcome = Object.freeze({ status: 'incomplete', exitCode: 4, l
  * The flag lifts only what the code names, so a reason added later is out of its reach by default,
  * and so is what a result built by hand or by an older quorum leaves unsaid: a failed vote with no
  * `failure`, a verdict whose `votes` is no array, a reason no quorum writes. A gating profile's
- * `research-failed` gap, which no review records, is out too: a review that read nothing is never
- * turned into exit 0. Planted text can still draw out a reply that ends in a lifted failure, a
+ * `research-failed` and `provider-down` gaps are out too, and so is a failed vote of kind `provider-down`:
+ * a part the review never read is never turned into exit 0. Planted text can still draw out a reply that ends in a lifted failure, a
  * timeout of its own, so on a gating profile do not use the flag for a pull request you do not trust.
  *
  * @example
