@@ -14,13 +14,16 @@ export type LineLevel = 'warning' | 'banner' | 'estimate' | 'notice' | 'error'
 /**
  * What the CLI knows once the report is written, which no event says: where the report went, the formats of the
  * `--output` files (never their paths), and the result, whose `meta` gives the totals. The text report is above the
- * summary only when stdout and stderr are both terminals: with stderr in a log, nothing is above its lines.
+ * summary only when stdout and stderr are both terminals: with stderr in a log, nothing is above its lines. The state
+ * is what the resume line says of a rerun: the count of calls the store kept, never the directory's name.
  */
 export interface SummaryFacts {
   readonly stdout: { readonly format: ReportFormat, readonly terminal: boolean }
   readonly stderr: { readonly terminal: boolean }
   readonly outputs: readonly ReportFormat[]
   readonly result: Pick<QuorumResult, 'unreviewed' | 'meta'>
+  /** Whether the review kept its answered calls in a state directory (`flag`: `--state`) or not (`none`), and how many it kept: the entries it wrote or read back. */
+  readonly state: { readonly kind: 'flag' | 'none', readonly kept: number }
 }
 
 /**

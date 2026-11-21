@@ -203,16 +203,25 @@ async function prepare(location: string, options: FileStoreOptions): Promise<voi
   })
 }
 
+/** A `ReplyStore` that also says how many calls it kept: the distinct entries it wrote, or read back as a stored call, since it was opened. */
+export interface FileStore extends ReplyStore {
+  readonly kept: () => number
+}
+
 /**
- * Opens the state directory `directory` as a `ReplyStore`, making and checking it as the module's comment says: a
- * relative path is resolved against the working directory of the process.
+ * Opens the state directory `directory` as a `FileStore`, making and checking it as the module's comment says: a
+ * relative path is resolved against the working directory of the process. `kept()` counts the entries this run wrote
+ * or read back as a stored call, each once, by its file: a count, never a name or the directory. A read-back entry is
+ * counted when it is read, before the core checks it, so a stored reply the review then refuses is counted too, which
+ * only a tampered directory shows.
  *
  * @throws ConfigError at `--state` for a directory that is refused, and never a message that holds its path
  */
-export async function openFileStore(directory: string, options: FileStoreOptions): Promise<ReplyStore> {
+export async function openFileStore(directory: string, options: FileStoreOptions): Promise<FileStore> {
   const location = resolve(directory)
   await prepare(location, options)
   const said = new Set<string>()
+  const kept = new Set<string>()
   const warn = (reason: string, line: string): void => {
     if (said.has(reason)) return
     said.add(reason)
@@ -247,7 +256,9 @@ export async function openFileStore(directory: string, options: FileStoreOptions
           unread('holds another key')
           return undefined
         }
-        return callOf(entry)
+        const call = callOf(entry)
+        kept.add(name)
+        return call
       } catch {
         unread('cannot be read')
         return undefined
@@ -264,10 +275,12 @@ export async function openFileStore(directory: string, options: FileStoreOptions
           return
         }
         await writeAtomic(location, name, `${JSON.stringify(entry)}\n`, { mode: FILE_MODE, label: FLAG })
+        kept.add(name)
       } catch (error) {
         unsaved(codeOf(error) ?? 'unknown')
       }
     },
+    kept: () => kept.size,
   }
 }
 

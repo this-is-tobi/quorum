@@ -810,6 +810,30 @@ describe('logLines', () => {
     ])
   })
 
+  it('writes the interrupt\'s stopping line, and a part the interrupt stopped', () => {
+    const event: QuorumEvent = {
+      type: 'run:stopping',
+      cause: 'interrupt',
+      inFlight: 3,
+      graceMs: 5000,
+    }
+    expect(textsOf(event)).toEqual(['stopping: no new calls; the 3 call(s) in flight have 5 s to end; press Ctrl-C again to quit at once, without the result'])
+    const state = fold(startState(DEFAULT_FACTS), started(['a', 'b']), 0)
+    expect(logLines(event, fold(state, event, 5), 'full')).toEqual([
+      { text: 'stopping: no new calls; the 3 call(s) in flight have 5 s to end; press Ctrl-C again to quit at once, without the result' },
+    ])
+    expect(textsOf({ ...event, inFlight: 1, graceMs: 2500 })).toEqual(['stopping: no new calls; the 1 call(s) in flight have 2.5 s to end; press Ctrl-C again to quit at once, without the result'])
+    expect(textsOf(partEvent({ outcome: 'interrupted' }))).toEqual(['part 7 of 44: stopped by the interrupt'])
+    expect(textsOf(partEvent({
+      outcome: 'interrupted',
+      pieces: {
+        count: 4,
+        read: 1,
+        unread: { 'review-deadline': 1, interrupted: 2 },
+      },
+    }))).toEqual(['part 7 of 44: split into 4 pieces, 1 read, 1 stopped by the deadline, 2 stopped by the interrupt'])
+  })
+
   it('glyphs each line by what it says', () => {
     const glyphOf = (event: QuorumEvent, before?: Array<[number, QuorumEvent]>): string | undefined => {
       const state = folded(...before ?? [

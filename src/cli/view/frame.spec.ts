@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { HIDDEN_CLASS } from '../../core/sanitize.ts'
 import type { QuorumEvent } from '../../core/types.ts'
-import { longReview, replay, twoProfiles } from '../../testing/events.ts'
+import { interrupted, longReview, replay, twoProfiles } from '../../testing/events.ts'
 import type { Timed } from '../../testing/events.ts'
 import { timeLeft } from './eta.ts'
 import { frameLines, tokenWords } from './frame.ts'
@@ -93,6 +93,7 @@ describe('frameLines', () => {
       '          +29 to go',
       'tokens    405k of 2.00M   ▁▁▁▁█▄▁▁▁▃▆▄▄▃▆▁▁▄▁▁',
       'time      about 15–22m left for research, then up to 150 votes',
+      'Ctrl-C stops the review and keeps what it read',
     ])
     // none before run:start, and none after run:end
     expect(frameLines(startState(DEFAULT_FACTS), 0, {
@@ -211,7 +212,7 @@ describe('frameLines', () => {
     expect(cells(narrow[1])).toBe(10)
     expect(narrow.find(line => line.startsWith('tokens'))).not.toMatch(spark)
     expect(narrow.find(line => line.startsWith('tokens'))).toBe('tokens    405k of 2.00M')
-    expect(frameOf(events, 600_000, { columns: 40 })).toHaveLength(6)
+    expect(frameOf(events, 600_000, { columns: 40 })).toHaveLength(7)
     expect(frameOf(events, 600_000, { columns: 39 })).toEqual(['research 11/44 · 4 calls · 10m00s'])
     expect(frameOf(events, 1_900_000, { columns: 39 })).toEqual(['panel 1/18 · 4 calls · 31m40s'])
     // a line that does not fit is cut with the ellipsis, one column short of the terminal's
@@ -221,7 +222,8 @@ describe('frameLines', () => {
   it('keeps to the rows less two, dropping the second calls line and the profile lines past the first, and draws nothing under 4 rows', () => {
     const one = longReview()
     const heads = (lines: string[]): string[] => lines.map(line => line.split(' ')[0])
-    expect(heads(frameOf(one, 600_000, { rows: 50 }))).toHaveLength(6)
+    expect(heads(frameOf(one, 600_000, { rows: 50 }))).toHaveLength(7)
+    expect(heads(frameOf(one, 600_000, { rows: 9 }))).toHaveLength(7)
     expect(heads(frameOf(one, 600_000, { rows: 8 }))).toHaveLength(6)
     // the second calls line goes first: its items are held by `+n more`
     const short = frameOf(one, 600_000, { rows: 7 })
@@ -472,7 +474,7 @@ describe('frameLines', () => {
     const lines = frameOf(events, 1_900_000)
     expect(lines[1]).toBe('security  panel    █░░░░░░░░░░░░░░░░░░░  1/18 votes · 0 kept')
     expect(lines[2]).toMatch(/^calls {5}4 at once {3}f1 1m28s {3}f1 1m28s {3}f2 1m28s {3}f2 3s {3}\+13 to go$/)
-    expect(lines.at(-1)).toBe('time      about 7m left for votes')
+    expect(lines.at(-2)).toBe('time      about 7m left for votes')
   })
 
   it('draws ASCII glyphs from the ASCII set, each one column', () => {
@@ -484,6 +486,7 @@ describe('frameLines', () => {
       '          +29 to go',
       'tokens    405k of 2.00M   ____#=___-+==-*__=__',
       'time      about 15-22m left for research, then up to 150 votes',
+      'Ctrl-C stops the review and keeps what it read',
     ])
     for (const line of lines) {
       expect(line).toMatch(/^[\x20-\x7E]+$/)
@@ -491,6 +494,44 @@ describe('frameLines', () => {
     }
     // the ellipsis is the three columns it is
     expect(frameOf(longReview(), 600_000, { glyphs: ASCII_GLYPHS, columns: 50 })[1]).toBe('security  research ##--------  11/44 parts - 2...')
+  })
+
+  it('ends the block with the hint, then with the stopping hint counting the grace down, the first line to go when rows are short', () => {
+    const hint = 'Ctrl-C stops the review and keeps what it read'
+    const events = interrupted()
+    const stopping = events.find(({ event }) => event.type === 'run:stopping')!
+    expect(stopping.event).toMatchObject({ cause: 'interrupt', graceMs: 5000 })
+    const flying = replay(events, stopping.at).calls.size
+    expect(flying).toBeGreaterThan(0)
+    // before the interrupt the block ends with the hint, under the full and the public view
+    expect(frameOf(events, stopping.at - 1).at(-1)).toBe(hint)
+    expect(frameOf(events, stopping.at - 1, { view: 'public' }).at(-1)).toBe(hint)
+    // after it the hint is the stopping hint, with the calls in flight and the seconds of the grace left, rounded up
+    expect(frameOf(events, stopping.at).at(-1)).toBe(`stopping: ${flying} call(s) end within 5 s; Ctrl-C again quits without the result`)
+    expect(frameOf(events, stopping.at + 1000)).toHaveLength(frameOf(events, stopping.at).length)
+    expect(frameOf(events, stopping.at + 1000).at(-1)).toBe(`stopping: ${flying} call(s) end within 4 s; Ctrl-C again quits without the result`)
+    expect(frameOf(events, stopping.at + 4500).at(-1)).toBe(`stopping: ${flying} call(s) end within 1 s; Ctrl-C again quits without the result`)
+    // the deadline's stopping keeps the plain hint, and a line cut to the terminal ends in the ellipsis
+    const deadline = [
+      ...events.slice(0, events.indexOf(stopping)),
+      {
+        at: stopping.at,
+        event: { type: 'run:stopping', cause: 'review-deadline', inFlight: flying } as QuorumEvent,
+      },
+    ]
+    expect(frameOf(deadline, stopping.at).at(-1)).toBe(hint)
+    expect(frameOf(events, stopping.at, { columns: 60 }).at(-1)).toBe(`stopping: ${flying} call(s) end within 5 s; Ctrl-C again quits wit${UNICODE_GLYPHS.ellipsis}`)
+    // the hint is the first line to go: the rows less two hold the six lines of this block, and one row fewer holds all but the hint
+    for (const at of [stopping.at - 1, stopping.at]) {
+      const full = frameOf(events, at, { rows: 50 })
+      expect(full).toHaveLength(6)
+      expect(frameOf(events, at, { rows: 8 })).toEqual(full)
+      expect(frameOf(events, at, { rows: 7 })).toEqual(full.slice(0, -1))
+      expect(frameOf(events, at, { rows: 5 })).toEqual(full.slice(0, 3))
+      expect(frameOf(events, at, { rows: 4 })).toEqual(full.slice(0, 2))
+    }
+    // below 40 columns the block is one line, which holds no hint
+    expect(frameOf(events, stopping.at, { columns: 39 })).toHaveLength(1)
   })
 
   it('tells the rate over the seconds the last two buckets cover, not over a fixed minute', () => {

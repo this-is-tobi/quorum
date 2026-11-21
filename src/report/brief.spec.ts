@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { blankResult, FINDINGS, INCOMPLETE, LIFTED, PASS, reportResult, SQL } from '../testing/report.ts'
+import { blankResult, FINDINGS, INCOMPLETE, INTERRUPTED, LIFTED, PASS, reportResult, SQL } from '../testing/report.ts'
 import { brief } from './brief.ts'
 import { publicView } from './view.ts'
 
@@ -12,6 +12,20 @@ describe('brief', () => {
       { ...SQL, id: 'a1b2c3d4e5f5', confidence: 'medium' as const },
     ]
     expect(brief.render(reportResult({ kept }), { color: false, outcome: FINDINGS })).toBe('quorum: findings: 3 kept (1 high, 2 medium), 1 unreviewed, 1 gap, 1 left out, 1 flag; exit 1\n')
+  })
+
+  it('writes interrupted and exit 130 for an interrupted review', () => {
+    const result = reportResult({
+      unreviewed: [],
+      meta: {
+        incomplete: [
+          { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 2 of its 3 research parts' },
+        ],
+        leftOut: [],
+        flags: [],
+      },
+    })
+    expect(brief.render(result, { color: false, outcome: INTERRUPTED })).toBe('quorum: interrupted: 1 kept (1 high), 0 unreviewed, 1 gap, 0 left out, 0 flags; exit 130\n')
   })
 
   it('counts the files left out as secrets, as the secrets fix records them', () => {

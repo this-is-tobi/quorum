@@ -87,13 +87,19 @@ export interface RunContext {
    */
   readonly signal: AbortSignal
   /**
-   * The review's signal joined to its deadline's: aborted by whichever comes first, with that one's reason, which
-   * is the deadline's `LimitError` when it is the deadline. The slot's entry, the ledger's wait, every attempt and
-   * every backoff read it, so the deadline ends them all at once and no queued call starts. It is no abort of the
-   * review: `emit`, `stage` and the stages' catches keep reading `signal`, so an interrupt still rejects with its
-   * reason and the events still flow after the deadline, and what the deadline stopped is a gap.
+   * The review's signal joined to its deadline's and its interrupt's: aborted by whichever comes first, with that one's
+   * reason, which is the limit's `LimitError` when it is the deadline or the interrupt. The slot's entry, the ledger's
+   * wait, every backoff and every new call read it, so the deadline and the interrupt end them all at once and no
+   * queued call starts. It is no abort of the review: `emit`, `stage` and the stages' catches keep reading `signal`, so
+   * an abort still rejects with its reason and the events still flow after a limit, and what a limit stopped is a gap.
    */
   readonly stop: AbortSignal
+  /**
+   * The review's signal joined to its deadline's and to the end of the interrupt's grace: what the attempts in flight and
+   * the store's reads and writes read, so a call that ends within the grace is read and saved. It is aborted with `stop`
+   * by an abort and by the deadline, and by an interrupt only once its grace has run out.
+   */
+  readonly halt: AbortSignal
   /** When the review's deadline falls, `at` on the review's clock, and its length `ms`: the retry policy reads the time left from it. */
   readonly deadline: { readonly at: number, readonly ms: number }
   /** Which providers are down in this review: one count per provider object, across every profile and role that shares it. */
@@ -440,6 +446,11 @@ export function elapsed(started: number): number {
  * flight waits for them, holding its slot, and the review's abort or deadline ends that wait too. A call a limit
  * stops before its first attempt sends no `call` event, since no provider was called; one it stops
  * after an attempt sends its failed event first, as any failed call does.
+ *
+ * The review's interrupt ends every wait and starts no call, as the deadline does, but spares the attempts in flight:
+ * they read `ctx.halt`, which only the end of the interrupt's grace aborts, so a reply that comes within the grace is
+ * read, checked and saved. A failure of an attempt that the retry policy would retry ends the call with the
+ * interrupt's `LimitError`, as it does for the deadline. The store's reads and writes read `ctx.halt` too.
  *
  * A provider found down (`ctx.health`) is called no more: its call fails inside the slot, after the stop
  * check and before its request is built, with the provider's `ProviderDownError`, sending no `call` event
@@ -868,7 +879,7 @@ function storeKey(ctx: RunContext, requester: Requester, built: CompletionReques
       ])).digest('hex')
 }
 
-/** `work`, or undefined once `stop` has fired: a store that never answers holds no review past its abort or its deadline. */
+/** `work`, or undefined once `stop` has fired: a store that never answers holds no review past its abort, its deadline or its grace. */
 function unlessStopped<T>(work: Promise<T>, stop: AbortSignal): Promise<T | undefined> {
   if (stop.aborted) return Promise.resolve(undefined)
   return new Promise<T | undefined>((resolve, reject) => {
@@ -892,7 +903,7 @@ function unlessStopped<T>(work: Promise<T>, stop: AbortSignal): Promise<T | unde
 async function stored(ctx: RunContext, target: Target, key: string): Promise<StoredCall | undefined> {
   if (ctx.store === undefined) return undefined
   try {
-    return storedCallOf(await unlessStopped(Promise.resolve(ctx.store.get({ key, provider: target.ref.id })), ctx.stop))
+    return storedCallOf(await unlessStopped(Promise.resolve(ctx.store.get({ key, provider: target.ref.id })), ctx.halt))
   } catch {
     return undefined
   }
@@ -973,7 +984,7 @@ async function reuse(ctx: RunContext, requester: Requester, target: Target, key:
 async function keep(ctx: RunContext, target: Target, key: string, call: StoredCall): Promise<void> {
   if (ctx.store === undefined) return
   try {
-    await unlessStopped(Promise.resolve(ctx.store.put({ key, provider: target.ref.id }, call)), ctx.stop)
+    await unlessStopped(Promise.resolve(ctx.store.put({ key, provider: target.ref.id }, call)), ctx.halt)
   } catch {
     // A write that failed leaves the review as it was: its verdict owes nothing to the store.
   }
@@ -1110,14 +1121,14 @@ function pause(ctx: RunContext, ms: number): Promise<void> {
 /**
  * One attempt of a call, settled once, by the first of: the provider's reply or failure; its own
  * deadline, as a `timeout` error of the core's own with the attempt's signal aborted with it as the
- * reason; the review's stop, its abort or its deadline, with the stop's reason. The attempt's timer
- * and the join to the review's stop go when it settles, on every path. A provider that throws before
+ * reason; the review's halt (its abort, its deadline or the end of the interrupt's grace), with the halt's reason.
+ * The attempt's timer and the join to the review's halt go when it settles, on every path. A provider that throws before
  * it returns a promise, or returns a plain object, is handled; whatever it does once the attempt
  * settled is caught and ignored, and it is never an unhandled rejection. The join is one listener,
  * not `AbortSignal.any`, so nothing builds up on a signal that outlives thousands of attempts.
  */
 function attempt(ctx: RunContext, target: Target, request: CompletionRequest): Promise<CompletionResponse> {
-  if (ctx.stop.aborted) return Promise.reject(ctx.stop.reason)
+  if (ctx.halt.aborted) return Promise.reject(ctx.halt.reason)
   const controller = new AbortController()
   return new Promise<CompletionResponse>((resolve, reject) => {
     let settled = false
@@ -1127,13 +1138,13 @@ function attempt(ctx: RunContext, target: Target, request: CompletionRequest): P
       if (settled) return false
       settled = true
       cancel()
-      ctx.stop.removeEventListener('abort', onAbort)
+      ctx.halt.removeEventListener('abort', onAbort)
       return true
     }
     function onAbort(): void {
       if (!done()) return
-      controller.abort(ctx.stop.reason)
-      reject(ctx.stop.reason)
+      controller.abort(ctx.halt.reason)
+      reject(ctx.halt.reason)
     }
     cancel = ctx.clock.timer(target.timeoutMs, () => {
       if (!done()) return
@@ -1141,7 +1152,7 @@ function attempt(ctx: RunContext, target: Target, request: CompletionRequest): P
       controller.abort(error)
       reject(error)
     })
-    ctx.stop.addEventListener('abort', onAbort, { once: true })
+    ctx.halt.addEventListener('abort', onAbort, { once: true })
     let call: Promise<CompletionResponse>
     try {
       call = Promise.resolve(target.provider.complete({ ...request, signal: controller.signal }))

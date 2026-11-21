@@ -15,7 +15,9 @@ function restoreTerminal(): void {
   }
 }
 
-// The first SIGINT or SIGTERM aborts the review; the second restores the terminal, says so and exits 130 at once, for a provider that ignores it.
+// The first SIGINT or SIGTERM is the review's interrupt once the review runs (it keeps what it read, gives the calls in flight their
+// grace and exits 130 with the report) and the setup's abort before; the second restores the terminal, says so and exits 130 at once, with
+// no result, for a provider that ignores the first.
 const signal = interruptSignal(process, (code) => {
   restoreTerminal()
   process.stderr.write('interrupted\n')

@@ -121,6 +121,52 @@ describe('the schemas of a result', () => {
     ])
   })
 
+  it('reads a result holding interrupted as a gap, a coverage reason and a vote failure', () => {
+    const stopped = {
+      angle: 'b',
+      vote: null,
+      error: 'the review was interrupted',
+      failure: { kind: 'interrupted' },
+    } as const
+    const result = reportResult({
+      unreviewed: [
+        {
+          ...TOKEN,
+          votes: [stopped, stopped, stopped],
+        },
+      ],
+      meta: {
+        ...reportResult().meta,
+        incomplete: [
+          { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 2 of its 3 research parts and 3 vote(s)' },
+        ],
+        profiles: {
+          security: {
+            ...reportResult().meta.profiles.security,
+            coverage: [
+              { file: 'src/auth/login.ts', status: 'reviewed' },
+              {
+                file: 'src/session.js',
+                status: 'partial',
+                left: [
+                  { start: 30, end: 34, reason: 'interrupted' },
+                ],
+              },
+              { file: 'src/upload.js', status: 'unreviewed', reason: 'interrupted' },
+            ],
+          },
+        },
+      },
+    })
+    const full = saved(result)
+    expect(resultSchema.parse(full)).toEqual(full)
+    const view = saved(publicView(result))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(view.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'interrupted' },
+    ])
+  })
+
   it('reads meta.adaptations strictly, refusing a cause no quorum writes', () => {
     const adapted = {
       provider: 'api',

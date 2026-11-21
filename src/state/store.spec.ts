@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
-import type { ReplyStore, StoredCall } from '../core/ports.ts'
+import type { StoredCall } from '../core/ports.ts'
 import { openFileStore } from './store.ts'
+import type { FileStore } from './store.ts'
 
 const VERSION = '1.2.3'
 const IDENTITIES = new Map([
@@ -41,7 +42,7 @@ afterEach(() => {
 })
 
 /** A file store on `directory` that Linux would accept, its warnings kept in `warnings`. */
-function open(directory: string, options: Partial<Parameters<typeof openFileStore>[1]> = {}): Promise<ReplyStore> {
+function open(directory: string, options: Partial<Parameters<typeof openFileStore>[1]> = {}): Promise<FileStore> {
   return openFileStore(directory, {
     identities: IDENTITIES,
     version: VERSION,
@@ -299,6 +300,44 @@ describe('openFileStore', () => {
     expect(await store.get(entry('k8'))).toBeUndefined()
     expect(await store.get(entry('k9'))).toBeUndefined()
     expect(warnings).toHaveLength(5)
+  })
+
+  it('counts in kept() the entries the run wrote or read back, each once', async () => {
+    const directory = join(root, 'state')
+    const store = await open(directory)
+    expect(store.kept()).toBe(0)
+    await store.put(entry('k1'), REPLY)
+    await store.put(entry('k2'), CUT_OFF)
+    expect(store.kept()).toBe(2)
+    // The same entry written again, or read back, is the same call.
+    await store.put(entry('k1'), REPLY)
+    await store.get(entry('k1'))
+    await store.get(entry('k1'))
+    expect(store.kept()).toBe(2)
+    // A provider's entry of the same key is another entry; a miss, a provider no identity names and a reply that is not saved count for nothing.
+    await store.put(entry('k1', 'other'), CUT_OFF)
+    expect(store.kept()).toBe(3)
+    await store.get(entry('k9'))
+    await store.put(entry('k1', 'ghost'), REPLY)
+    await store.get(entry('k1', 'ghost'))
+    await store.put(entry('k5'), {
+      reply: {
+        text: 'x'.repeat(1_000_001),
+        model: 'm',
+      },
+    })
+    expect(store.kept()).toBe(3)
+    // A store opened on the directory afterwards starts at none, and counts what it reads back.
+    const reopened = await open(directory)
+    expect(reopened.kept()).toBe(0)
+    expect(await reopened.get(entry('k2'))).toEqual(CUT_OFF)
+    expect(await reopened.get(entry('k2'))).toEqual(CUT_OFF)
+    await reopened.get(entry('k7'))
+    expect(reopened.kept()).toBe(1)
+    // A write that fails is not kept.
+    rmSync(directory, { recursive: true })
+    await store.put(entry('k8'), REPLY)
+    expect(store.kept()).toBe(3)
   })
 
   it('misses a provider the identities do not name, and writes nothing for it', async () => {

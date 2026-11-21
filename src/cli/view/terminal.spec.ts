@@ -308,7 +308,9 @@ describe('liveWriter', () => {
       stdout: { format: 'text', terminal: true },
       stderr: { terminal: true },
       outputs: [],
+      state: { kind: 'none', kept: 0 },
       result: reportResult({
+        unreviewed: [],
         meta: { durationMs: 200_000 },
       }),
     })
@@ -683,6 +685,7 @@ describe('liveWriter', () => {
         stdout: { format: 'json', terminal: false },
         stderr: { terminal: false },
         outputs: [],
+        state: { kind: 'none', kept: 0 },
         result: reportResult({}),
       })
     }).not.toThrow()

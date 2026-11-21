@@ -61,13 +61,13 @@ export interface Lens {
 }
 
 /**
- * What a vote failed with: a provider's kind of failure, the limit that stopped it (`token-cap` or
- * `review-deadline`), `provider-down` for a vote never sent because its provider was found down, `unusable-reply` for a reply the panel could not read as a vote, or `unknown` for
+ * What a vote failed with: a provider's kind of failure, the limit that stopped it (`token-cap`,
+ * `review-deadline` or `interrupted`), `provider-down` for a vote never sent because its provider was found down, `unusable-reply` for a reply the panel could not read as a vote, or `unknown` for
  * anything else thrown.
  * The kinds a gating profile's `--allow-incomplete` lifts are `network`, `timeout` and an `http` failure of
  * status 408, 409, 429 or 5xx.
  */
-export type VoteFailureKind = 'http' | 'network' | 'process' | 'timeout' | 'aborted' | 'refusal' | 'truncated' | 'no-answer' | 'invalid-response' | 'unsupported' | 'too-large' | 'token-cap' | 'review-deadline' | 'provider-down' | 'unusable-reply' | 'unknown'
+export type VoteFailureKind = 'http' | 'network' | 'process' | 'timeout' | 'aborted' | 'refusal' | 'truncated' | 'no-answer' | 'invalid-response' | 'unsupported' | 'too-large' | 'token-cap' | 'review-deadline' | 'interrupted' | 'provider-down' | 'unusable-reply' | 'unknown'
 
 /** The facts of a failed vote the code read, never a word a server or a model wrote. */
 export interface VoteFailure {
@@ -172,14 +172,17 @@ export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
  * `meta.profiles.<id>.coverage` lists their ranges. `token-cap`: the review's token cap stopped part of the profile's work, its research (some
  * of its parts, for a large change) or some of its votes, which were not sent; `review-deadline`: the
  * review reached its deadline, which stopped part of the profile's work, its research (some of its
- * parts) or some of its votes, in flight or not yet sent; one entry per limit and profile counts them.
+ * parts) or some of its votes, in flight or not yet sent; `interrupted`: the review was interrupted (its first SIGINT or
+ * SIGTERM, as `review`'s `interrupt` carries it), which stopped part of the profile's work, its research (some of its
+ * parts) or some of its votes, the calls in flight at the end of the grace included, and no flag lifts it; one entry per
+ * limit and profile counts them.
  * `reply-cut-off`: a research reply was cut off at its limit even for the hunks it held after recovery split
  * its part as far as it goes (three splits deep, or one hunk), so those hunks went unreviewed; one entry per
  * profile counts them, `meta.profiles.<id>.coverage` lists their ranges, and no flag lifts it.
  * For a large change researched in parts, `research-failed`, `provider-down` and `request-too-large` count the
  * parts that failed, were not sent or were refused, and each of the other reasons its parts' share.
  */
-export type IncompleteReason = 'research-unusable' | 'research-failed' | 'provider-down' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'too-large' | 'token-cap' | 'review-deadline' | 'reply-cut-off' | 'binary' | 'submodule' | 'secret'
+export type IncompleteReason = 'research-unusable' | 'research-failed' | 'provider-down' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'too-large' | 'token-cap' | 'review-deadline' | 'interrupted' | 'reply-cut-off' | 'binary' | 'submodule' | 'secret'
 
 /**
  * Work the run could not review: a research reply with findings but none usable, a research part that
@@ -257,10 +260,10 @@ export type LeftOutFile
  * Why part of a file was not reviewed, as `CoverageEntry` records it: a `LeftOutReason`'s `binary`,
  * `submodule`, `secret` or `deleted-secret`, `too-large` for a hunk, or a section with no hunk, that fits in
  * no research part of its model's window, or the `IncompleteReason` of the research part that held it and
- * did not read it: `request-too-large`, `token-cap`, `review-deadline`, `research-failed`, `provider-down` or, for a
+ * did not read it: `request-too-large`, `token-cap`, `review-deadline`, `interrupted`, `research-failed`, `provider-down` or, for a
  * hunk still cut off when recovery had split it as far as it goes, `reply-cut-off`.
  */
-export type CoverageReason = 'binary' | 'submodule' | 'secret' | 'deleted-secret' | 'too-large' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'research-failed' | 'provider-down' | 'reply-cut-off'
+export type CoverageReason = 'binary' | 'submodule' | 'secret' | 'deleted-secret' | 'too-large' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'interrupted' | 'research-failed' | 'provider-down' | 'reply-cut-off'
 
 /**
  * How much of a file a profile's research reviewed: `reviewed` when every part that holds it was
@@ -552,12 +555,14 @@ export interface Quorum {
   /**
    * Review one diff with every profile of the quorum, recording its `source` in `meta.source` and
    * listing the files its source left out (`leftOut`) before the diff's own. Once `signal` aborts, the
-   * review stops and rejects with the signal's reason; an aborted review never resolves. The review is
+   * review stops and rejects with the signal's reason; an aborted review never resolves. Once `interrupt` aborts, the
+   * review stops more gently: no new call starts, every wait ends, the calls in flight have `INTERRUPT_GRACE_MS` to end
+   * and are read when they do, and the review resolves with what it read, the rest an `interrupted` gap. The review is
    * over once it has sent `run:end`: an abort from that event's handler, or later, has no effect, and the
    * review resolves with its result. With a `store`, the review saves each call that passed its check and reuses what
    * the store holds for a request sent as it was, checked as a fresh reply, spending nothing on it (`meta.reused`).
    */
-  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal, readonly store?: ReplyStore }) => Promise<QuorumResult>
+  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal, readonly interrupt?: AbortSignal, readonly store?: ReplyStore }) => Promise<QuorumResult>
   /**
    * What a review of `input.diff` may cost, before any call: per profile, what the token ledger reserves for each
    * research part, and a bound for every vote. It makes no call and reads no file. The research parts are counted
@@ -707,11 +712,12 @@ export type QuorumEvent
      */
     | { type: 'part', profile: string, part: { index: number, count: number }, outcome: PartOutcome, durationMs: number, spent: number, listed?: number, failure?: CallFailure, pieces?: { count: number, read: number, unread: Partial<Record<Exclude<PartOutcome, 'reviewed'>, number>> } }
     /**
-     * The review's deadline fell while its stages ran: every call in flight is stopped and no new call starts, and
-     * what is left undone is a `review-deadline` gap. Sent once. `cause` is the deadline; `inFlight` counts the
-     * attempts sent and not settled when it fell.
+     * The review began to stop while its stages ran, sent once. The deadline (`cause` `review-deadline`) stops every call
+     * in flight and starts no new one, and what is left undone is a `review-deadline` gap. The interrupt (`cause`
+     * `interrupt`) starts no new call and ends every wait, gives the calls in flight `graceMs` to end, and leaves what is
+     * undone an `interrupted` gap. `inFlight` counts the attempts sent and not settled when it began.
      */
-    | { type: 'run:stopping', cause: 'review-deadline', inFlight: number }
+    | { type: 'run:stopping', cause: 'interrupt' | 'review-deadline', inFlight: number, graceMs?: number }
     /** One lens voted on one finding; `keep` is null, with the error and the failure's kind and status, when the vote failed. */
     | { type: 'vote', profile: string, findingId: string, lens: string, keep: boolean | null, error?: string, failure?: VoteFailure }
     /** The panel decided one finding: its vote split, the confidence it earned and where it lands. */

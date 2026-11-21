@@ -28,7 +28,7 @@ interface ProfilePorts {
 }
 
 interface Quorum {
-  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal, readonly store?: ReplyStore }) => Promise<QuorumResult>
+  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal, readonly interrupt?: AbortSignal, readonly store?: ReplyStore }) => Promise<QuorumResult>
   readonly estimate: (input: { readonly diff: string, readonly send?: readonly string[] }) => Estimate
   readonly warnings: readonly string[]
   readonly budgets: Readonly<Record<string, ProfileBudgets>>
@@ -127,7 +127,8 @@ const result = await quorum.review({ diff, source, leftOut }, {
 - **`leftOut`**, optional, lists the files a source left out before it made the diff. They come first in `meta.leftOut` and in the `left-out` event, before the diff's own, each file, reason and rule once, and a `binary`, `submodule` or `secret` one is a gap of every profile, as the diff's are. A `skipped` one, with its `rule`, and a `deleted-secret` one are no gap, and one of the rule `secret`, or of the reason `secret` or `deleted-secret`, raises a `secret-file` flag ahead of the diff's flags: [A file left out](./20-json-result.md#a-file-left-out).
 - **`send`**, optional, names the files to send the models though they are held back as secrets: each is the path as the diff writes it, the one `meta.leftOut` lists, matched exactly, so `./.env` names no file `.env`. A file named here is not held, so it is neither listed nor flagged as a secret, and an `exclude` pattern still leaves it out first. The text no header names, which has the empty name, can never be named, and neither can a file by a changed spelling: such a file stays held, with its path in `meta.leftOut` to write. The array is copied before the review's first `await`. A program that reads a config's `send` passes it here itself, as it passes `exclude` to `readSource`, and as the CLI does with the config's `send` and `--send` merged.
 - **A file held back as a secret** is no part of any request: a file whose name is a secret's, or that holds a credential quorum recognizes, leaves the diff whole, is listed in `meta.leftOut` as `secret` with its `rule`, raises a `secret-file` flag and is a `secret` gap of every profile, which no flag lifts for a gating profile (`--fail-on none` makes a profile advisory, and its gaps then change no code). A change that deletes a file named as a secret whole lists it as `deleted-secret`, with its flag and no gap; a deletion of a file held for a credential in it, whose removed code would go unread, is a `secret` gap. A diff whose every file is held runs no stage and still records the gaps: [Files held back as secrets](../20-using/15-sources.md#files-held-back-as-secrets).
-- **`signal`**, optional, stops the review: [Abort](#abort).
+- **`signal`**, optional, stops the review: [Abort](#abort). Its meaning is unchanged.
+- **`interrupt`**, optional, stops the review gently, and the review resolves with what it read: [Interrupt](#interrupt). `INTERRUPT_GRACE_MS`, exported, is the 5000 ms it gives the calls in flight.
 - **`store`**, optional, is a [`ReplyStore`](#replystore): where the review keeps the calls it paid for and finds them again on a rerun, which reuses every call the store holds for a request sent as it was, and still pays the calls that failed, about `concurrency` more, and every call of a provider whose settings changed. Each research call whose reply passed its envelope check and each vote that parsed is put as it completes, and a research reply that was cut off or listed as many findings as it was asked for at most is put as a marker that sends its part straight to recovery; a failed call is never put. Each send is looked up under a key of the request as it is sent, never of its bytes, so a changed diff, prompt, budget, thinking level or mode is a miss. A stored reply is checked as a fresh one and reused only if it passes, and spends nothing: no reservation, no usage, a `call` event that says `reused`, and the count in `meta.reused`. A `get` or a `put` that throws, rejects or never settles in a review that is stopped is a miss or a write that did not happen, and a stored call that is no `StoredCall` is a miss: the review is as if it had no store. [`fileStore`](#filestore) is the CLI's own: [Saved state](../20-using/20-configuration.md#saved-state).
 - **A quorum reviews any number of diffs**, one per call. Each review has its own concurrency limit and its own signal, and several may run at once.
 
@@ -135,7 +136,7 @@ It resolves with the [result](./20-json-result.md), or rejects:
 
 | With | When |
 | --- | --- |
-| A `ConfigError` | The input is malformed, before any event: `input: must be an object holding the diff string` when the input is not an object, such as the diff text passed on its own; `diff: must be a string`; `source: must be an object`, `source.kind: must be diff, range, local, staged or paths`, `source.objectFormat: must be sha1 or sha256`, `source.<field>: must be a full commit id of its object format: 40 lowercase hexadecimal characters for sha1, 64 for sha256` (and, for the `head` of a `local` or `staged` source, `, or null when nothing is committed`), `source.paths: must be an array of strings` or `source.skips: must be a boolean`; `leftOut: must be an array`, `leftOut.<index>: must be an object with a file and a reason`, `leftOut.<index>.file: must be a string`, `leftOut.<index>.reason: must be excluded, binary, submodule, skipped, secret or deleted-secret`, `leftOut.<index>.rule: must be vendored, lockfile, minified, test, secret, binary, submodule or lfs` (for a `skipped` file, which has one), `leftOut.<index>.rule: must be name, private-key, aws-key, github-token, slack-token, google-key, stripe-key, anthropic-key or openai-key` (for a `secret` or `deleted-secret` file, which has one) or `leftOut.<index>.rule: belongs to a skipped, secret or deleted-secret file only`; `send: must be an array` or `send.<index>: must name a file` (an entry that is not a non-empty string, a hole included); `options: must be an object`; `signal: must be an AbortSignal`, or `store: must be a reply store: an object with get and put functions` |
+| A `ConfigError` | The input is malformed, before any event: `input: must be an object holding the diff string` when the input is not an object, such as the diff text passed on its own; `diff: must be a string`; `source: must be an object`, `source.kind: must be diff, range, local, staged or paths`, `source.objectFormat: must be sha1 or sha256`, `source.<field>: must be a full commit id of its object format: 40 lowercase hexadecimal characters for sha1, 64 for sha256` (and, for the `head` of a `local` or `staged` source, `, or null when nothing is committed`), `source.paths: must be an array of strings` or `source.skips: must be a boolean`; `leftOut: must be an array`, `leftOut.<index>: must be an object with a file and a reason`, `leftOut.<index>.file: must be a string`, `leftOut.<index>.reason: must be excluded, binary, submodule, skipped, secret or deleted-secret`, `leftOut.<index>.rule: must be vendored, lockfile, minified, test, secret, binary, submodule or lfs` (for a `skipped` file, which has one), `leftOut.<index>.rule: must be name, private-key, aws-key, github-token, slack-token, google-key, stripe-key, anthropic-key or openai-key` (for a `secret` or `deleted-secret` file, which has one) or `leftOut.<index>.rule: belongs to a skipped, secret or deleted-secret file only`; `send: must be an array` or `send.<index>: must name a file` (an entry that is not a non-empty string, a hole included); `options: must be an object`; `signal: must be an AbortSignal`, `interrupt: must be an AbortSignal`, or `store: must be a reply store: an object with get and put functions` |
 | The signal's reason | The signal aborted, before the review or while it ran |
 | The sink's error | The event sink threw |
 | A `ProviderDownError` | No research call of any profile answered, and a research provider was found down, or each of whose calls failed for a reason of its own, though fewer than three did: [`ProviderDownError`](#errors). It is the only error a model's failure rejects a review with |
@@ -166,7 +167,7 @@ The sink receives every event of a review, synchronously and in order, as each t
 | `incomplete` | `entry`, as `meta.incomplete` will hold it | Once per gap, as it is recorded: the gaps of the binary, submodule and held files left out first, in that order, then the profile's `too-large` gap, right after `run:start` and the `left-out` event and before any call; the gaps of a research in parts once every part has answered, after the `finding:invalid` events; a limit's gap last for its profile, after the `stage:end` of its `panel` |
 | `vote` | `profile`, `findingId`, `lens`; `keep`: `true`, `false`, or `null` when the vote failed; `error`, then `failure`, for a failed vote: its `kind` and, for an `http` failure, its `status`, as the result's vote holds them ([A vote](./20-json-result.md#a-vote)) | Once per vote |
 | `verdict` | `profile`, `findingId`, `keptVotes`, `totalVotes`; `confidence`, when it reached one; `status`: `kept`, `discarded` or `unreviewed` | Once per finding, when all its votes are in |
-| `run:stopping` | `cause`: `review-deadline`; `inFlight`, the attempts sent and not settled | Once, when the review's deadline falls while its stages run, before the calls it stops end: no call in flight is waited for and no new call starts, and what is left undone is a `review-deadline` gap. None for a review that ends before its deadline |
+| `run:stopping` | `cause`: `review-deadline` or `interrupt`; `inFlight`, the attempts sent and not settled; `graceMs`, for the interrupt, the time they have to end | Once, when the review's deadline falls or its `interrupt` aborts while its stages run, before the calls it stops end. At the deadline no call in flight is waited for and no new call starts, and what is left undone is a `review-deadline` gap. At the interrupt no new call starts and every wait ends, the calls in flight have `graceMs` (`INTERRUPT_GRACE_MS`, 5000) to end, and what is left undone is an `interrupted` gap. None for a review that ends before either |
 | `run:end` | `kept`, `discarded`, `unreviewed` and `incomplete`, the counts; `durationMs` | Last, when the review ends |
 
 The first events of the review on [The JSON result](./20-json-result.md#an-example), as the sink received them:
@@ -231,6 +232,23 @@ An aborted review never resolves, and never fails open:
 - **An abort after `run:end` has no effect**: the review is over, and resolves with its result.
 - **The review's deadline is no abort**: at `reviewTimeoutMs` the review resolves, its calls and waits stopped and recorded as `review-deadline` gaps, while an abort rejects. An abort that comes after the deadline still rejects, with its own reason: [The review's deadline](../20-using/20-configuration.md#the-reviews-deadline).
 - **The review never waits for a call it stopped.** Each attempt has a signal of its own, aborted with the review's or at its deadline, and the review settles the attempt at once; the shipped adapters stop their request or process on it, and a provider that ignores it works on, outside the review.
+
+## Interrupt
+
+```ts
+const controller = new AbortController()
+process.once('SIGINT', () => controller.abort())
+const result = await quorum.review({ diff }, { interrupt: controller.signal })
+// result.meta.incomplete holds the interrupted gaps; outcome(result) is { status: 'interrupted', exitCode: 130, lifted: false }
+```
+
+`interrupt` is what the CLI's first Ctrl-C or SIGTERM is. An abort rejects at once. An interrupt rejects as any review does, on an abort, on a sink's error, or with `ProviderDownError` when nothing was read and a provider was found down, and otherwise resolves, and never fails open:
+
+- **No new call starts and every wait ends at once**, when it aborts or at once when it was aborted already: a call queued behind a call in flight, waiting for room under the token cap or backing off after a failure ends where it is, sending nothing. One `run:stopping` event, with `cause` `interrupt`, says how many calls are in flight and the grace.
+- **The calls in flight have `INTERRUPT_GRACE_MS`, 5000 ms on the review's clock, to end.** A reply that comes within it is read, checked and put in the `store` as in any review, and the review asks no vote on what it reads. A call still in flight at the end is cancelled, its attempt's signal aborted.
+- **It resolves with what it read.** What it stopped, the research parts not read and the votes not asked, is an `interrupted` gap of each profile, `interrupted` in the files' coverage, and a failed vote of kind `interrupted` on each finding left `unreviewed`. No option lifts it.
+- **An abort still rejects.** `signal` aborting during the grace, or before the interrupt, rejects with its reason; so does an interrupt that is not an `AbortSignal`, with a `ConfigError` (`interrupt: must be an AbortSignal`).
+- **The timer and the listener go however the review ends.** None is left armed when it resolves or rejects.
 
 ## `estimate`
 
@@ -342,17 +360,18 @@ const result = await quorum.review(input)
 ```ts
 declare function outcome(result: QuorumResult | PublicView, options?: { readonly allowIncomplete?: boolean }): Outcome
 
-type OutcomeStatus = 'pass' | 'findings' | 'incomplete'
+type OutcomeStatus = 'pass' | 'findings' | 'incomplete' | 'interrupted'
 
 interface Outcome {
   readonly status: OutcomeStatus
-  readonly exitCode: 0 | 1 | 4
+  readonly exitCode: 0 | 1 | 4 | 130
   readonly lifted: boolean
 }
 ```
 
-`outcome` says what a review comes to: the rule that decides the CLI's exit code, for a program that reads a result. `status` is `pass`, `findings` or `incomplete`, `exitCode` is the code that says it, and `lifted` is `true` when `allowIncomplete` turned an incomplete review into a pass, so a report never calls that run complete. It reads the result, or its [public view](#publicview), as the result it came from, and calls nothing. What decides each, in this order:
+`outcome` says what a review comes to: the rule that decides the CLI's exit code, for a program that reads a result. `status` is `pass`, `findings`, `incomplete` or `interrupted`, `exitCode` is the code that says it, and `lifted` is `true` when `allowIncomplete` turned an incomplete review into a pass, so a report never calls that run complete. It reads the result, or its [public view](#publicview), as the result it came from, and calls nothing. What decides each, in this order:
 
+- **`130`, `interrupted`.** An entry of `meta.incomplete` is an `interrupted` gap, of any profile, an advisory one's included. It wins over everything else, and `allowIncomplete` never lifts it.
 - **`1`, `findings`.** A kept finding is at or above the level of its profile, `meta.profiles.<id>.failOn`: `high` fails a `high` finding, `medium` a `high` or `medium` one, `low` any, and `none` none ([Gating](../20-using/40-profiles.md#gating)). It wins over `4`, whatever else is missing.
 - **`4`, `incomplete`.** An unreviewed finding, or an entry of `meta.incomplete`, belongs to a gating profile: one whose level is not `none`. The gaps and findings of a profile at `none` change nothing.
 - **`0`, `pass`.** Neither of the two.
@@ -710,6 +729,7 @@ The warnings, each but the first two starting at the path it is about:
 | --- | --- |
 | `createQuorum` | Build a quorum |
 | `defineConfig` | Type a TS config: [Config types](#config-types) |
+| `INTERRUPT_GRACE_MS` | How long the calls in flight have to end once a review's `interrupt` aborts, 5000 ms: [Interrupt](#interrupt) |
 | `fileStore` | The CLI's `--state` store, as a `ReplyStore` for `review`'s `store`: [`fileStore`](#filestore) |
 | `fromConfig` | Build a quorum from a config: [`loadConfig` and `fromConfig`](#loadconfig-and-fromconfig) |
 | `loadConfig` | Read a named config file and resolve it with the environment: [`loadConfig` and `fromConfig`](#loadconfig-and-fromconfig) |

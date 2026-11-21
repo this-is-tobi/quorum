@@ -24,11 +24,19 @@ export function maxReviewTokensProblem(value: unknown): string | undefined {
     : CAP_PROBLEM
 }
 
+/** How long the calls in flight have to end once the review is interrupted, in milliseconds. */
+export const INTERRUPT_GRACE_MS = 5000
+
 /** The limits a review keeps to, in the order their gaps are listed. */
-export type LimitName = 'token-cap' | 'review-deadline'
+export type LimitName = 'token-cap' | 'review-deadline' | 'interrupted'
 
 /** Every limit, in the order `limitGaps` lists their gaps. */
-const LIMITS: readonly LimitName[] = ['token-cap', 'review-deadline']
+export const LIMITS: readonly LimitName[] = ['token-cap', 'review-deadline', 'interrupted']
+
+/** True for the name of a limit: what a part's outcome or a vote's failure kind says when a limit stopped it. */
+export function isLimitName(value: unknown): value is LimitName {
+  return (LIMITS as readonly unknown[]).includes(value)
+}
 
 /**
  * What a call ends with when a limit stops it. It is recognised by `instanceof` only, and a provider
@@ -193,6 +201,7 @@ export function limitGaps(profile: string, research: readonly string[], verdicts
   const which: Record<LimitName, string> = {
     'token-cap': `the review's token cap of ${limits.cap} tokens`,
     'review-deadline': `the review's deadline of ${limits.deadlineMs} ms`,
+    interrupted: 'the interrupt',
   }
   return LIMITS.flatMap((limit) => {
     const votes = failures.filter(kind => kind === limit).length

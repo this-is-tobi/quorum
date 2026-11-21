@@ -27,7 +27,7 @@
  * @see ../../docs/20-using/80-reports.md
  */
 
-import { failsItsProfile, isIncomplete, profileFailOn } from '../core/outcome.ts'
+import { failsItsProfile, isIncomplete, isInterrupted, profileFailOn } from '../core/outcome.ts'
 import { inertJson, inertPlain } from '../core/sanitize.ts'
 import { ownData } from '../core/stages/context.ts'
 import type { Confidence, FailOn, PublicGap, PublicProfileMeta, PublicVerdict, PublicView } from '../core/types.ts'
@@ -279,7 +279,7 @@ function logOf(view: PublicView): object {
         },
         invocations: [
           {
-            executionSuccessful: !isIncomplete(view),
+            executionSuccessful: !isIncomplete(view) && !isInterrupted(view),
             toolExecutionNotifications: notificationsOf(view, unplaced),
           },
         ],

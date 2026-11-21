@@ -1,5 +1,5 @@
 /**
- * The block the live view redraws under the log: 4 to 8 lines of where a review stands, pure, from the view's
+ * The block the live view redraws under the log: at most 8 lines of where a review stands, pure, from the view's
  * state, the time, the terminal's size and the glyphs, so the whole sweep of sizes is tested with no terminal.
  *
  * Every line is made in three steps, in this order and for this reason. A name from a config (a profile's id) is
@@ -11,12 +11,12 @@
  * line is wider than the terminal less one column, which a terminal would wrap.
  *
  * The block narrows, then shortens, then goes with the terminal: 20-cell bars and the sparkline from 80 columns, 10
- * cells below, the one line alone below 40; at most 8 lines and at most two fewer than the rows, none under 4 rows.
+ * cells below, the one line alone below 40; at most 8 lines, the hint last, and at most two fewer than the rows, none under 4 rows.
  */
 
 import { inertLine } from '../../core/sanitize.ts'
 import type { ReportView } from '../../report/view.ts'
-import { partsOf, rangeWords } from './eta.ts'
+import { partsOf, rangeWords, researchRuns } from './eta.ts'
 import type { TimeLeft } from './eta.ts'
 import type { Glyphs } from './glyphs.ts'
 import { elapsedWords, kindWords } from './lines.ts'
@@ -150,17 +150,9 @@ function labelOf(id: string, glyphs: Glyphs): string {
 /** The research is over for a profile: its parts are all answered or ended. */
 const researchOver = ({ parts, done }: ProfileState): boolean => parts !== undefined && done >= parts
 
-/** Whether any profile still researches: the profiles of the heartbeat's research, which the time left reads as well. */
-function researching(state: ViewState): boolean {
-  for (const profile of state.profiles.values()) {
-    if (profile.stage === 'waiting' || (profile.stage === 'research' && !researchOver(profile))) return true
-  }
-  return false
-}
-
 /** Whether the review is in its panel: research is over everywhere and a panel has started. */
 function inPanel(state: ViewState): boolean {
-  return !researching(state) && [
+  return !researchRuns(state) && [
     ...state.profiles.values(),
   ].some(profile => profile.votes !== undefined)
 }
@@ -376,11 +368,23 @@ function timeRow(state: ViewState, left: TimeLeft, glyphs: Glyphs): Row | undefi
     : `time      about ${range} left for research${votes}`)
 }
 
+/** What the block's last line says of the keys: how to stop the review. */
+const HINT = 'Ctrl-C stops the review and keeps what it read'
+
+/** The block's last line: the hint, or after an interrupt the calls still in flight and the seconds of the grace left, rounded up. */
+function hintRow(state: ViewState, now: number): Row {
+  const { stopping } = state
+  if (stopping?.cause !== 'interrupt') return words(HINT)
+  const seconds = Math.max(0, Math.ceil((stopping.at + (stopping.graceMs ?? 0) - now) / 1000))
+  return words(`stopping: ${state.calls.size} call(s) end within ${seconds} s; Ctrl-C again quits without the result`)
+}
+
 /**
  * The lines of the block for `state` as of `now`, none before `run:start` and after `run:end`, none under 4 rows.
- * In the order: the rule, the profile lines, the calls lines, the tokens line (the full view's), the time line. When
- * the rows are short, the second calls line goes first, then the profile lines past the first, the tokens line, the
- * time line and the calls line, so a terminal of 4 rows keeps the rule and the first profile alone.
+ * In the order: the rule, the profile lines, the calls lines, the tokens line (the full view's), the time line, the hint
+ * (or, once the review is interrupted, the stopping hint, which counts the grace down). When the rows are short, the hint
+ * goes first, then the second calls line, then the profile lines past the first, the tokens line, the time line and the
+ * calls line, so a terminal of 4 rows keeps the rule and the first profile alone.
  */
 export function frameLines(state: ViewState, now: number, options: FrameOptions): string[] {
   const { columns, rows, glyphs } = options
@@ -416,6 +420,10 @@ export function frameLines(state: ViewState, now: number, options: FrameOptions)
         ? 2
         : 1)
     : []
+  if (calls.length > 1) free -= calls.length - 1
+  const hint = take(1)
+    ? hintRow(state, now)
+    : undefined
   const block: Row[] = [
     ruleRow(now - state.startedAt, columns, glyphs),
     ...profiles.length > 0
@@ -433,6 +441,9 @@ export function frameLines(state: ViewState, now: number, options: FrameOptions)
     ...time === undefined
       ? []
       : [time],
+    ...hint === undefined
+      ? []
+      : [hint],
   ]
   return block.map(row => finish(row, options))
 }

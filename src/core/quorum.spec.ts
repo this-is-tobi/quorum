@@ -3947,6 +3947,449 @@ describe('a large change in parts', () => {
     expect(rejections).toEqual([])
   })
 
+  describe('an interrupt', () => {
+    const at = (file: string): unknown => ({ ...reported, file, quote: `exec(input) // ${file}` })
+    /** Lets what the review has queued run, a few turns of the macrotask queue over. */
+    const turns = async (): Promise<void> => {
+      for (let count = 0; count < 3; count++) await turn()
+    }
+    const GRACE = 5000
+    const stopping = (events: readonly QuorumEvent[]): QuorumEvent[] => events.filter(event => event.type === 'run:stopping')
+
+    /** A research provider whose first request is answered by `release`, which a timer of the test's gives. */
+    function held(): { readonly finder: Finder, readonly release: (text: string) => void } {
+      let release: (text: string) => void = () => {}
+      const finder = partsFinder(500, (_request, call) => call === 1
+        ? new Promise<string>((resolve) => {
+            release = resolve
+          })
+        : findings())
+      return {
+        finder,
+        release: text => release(text),
+      }
+    }
+
+    it('lets a call in flight end within the grace, reads it, asks no vote, and resolves with interrupted gaps', async () => {
+      const clock = fakeClock()
+      const controller = new AbortController()
+      const { finder, release } = held()
+      const voter = keeps()
+      const events: QuorumEvent[] = []
+      const quorum = createQuorumWith({
+        profiles: [securityProfile],
+        concurrency: 1,
+      }, {
+        ...portsFor(securityProfile, finder, voter),
+        events: event => events.push(event),
+      }, clock)
+      const running = quorum.review({ diff: partsDiff }, { interrupt: controller.signal })
+      await turns()
+      expect(finder.requests).toHaveLength(1)
+      controller.abort()
+      clock.timer(2000, () => release(findings(at('a.js'))))
+      const result = await settle(clock, running)
+      expect(finder.requests).toHaveLength(1)
+      expect(voter.requests).toEqual([])
+      expect(result.kept).toEqual([])
+      expect(result.unreviewed).toHaveLength(1)
+      expect(result.unreviewed[0]).toMatchObject({ file: 'a.js' })
+      expect(result.unreviewed[0].votes.map(lensVote => lensVote.failure)).toEqual(Array.from({ length: 3 }).fill({ kind: 'interrupted' }))
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 5 of its 6 research parts and 3 vote(s)' },
+      ])
+      expect(result.meta.profiles.security.coverage).toEqual([
+        { file: 'a.js', status: 'reviewed' },
+        ...FILES.slice(1).map(file => ({ file, status: 'unreviewed', reason: 'interrupted' })),
+      ])
+      expect(stopping(events)).toEqual([
+        {
+          type: 'run:stopping',
+          cause: 'interrupt',
+          inFlight: 1,
+          graceMs: GRACE,
+        },
+      ])
+      expect(outcome(result)).toEqual({ status: 'interrupted', exitCode: 130, lifted: false })
+      expect(clock.now()).toBe(2000)
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('cancels a call still in flight at the end of the grace, its part interrupted, its signal aborted', async () => {
+      const clock = fakeClock()
+      const controller = new AbortController()
+      const finder = partsFinder(500, never)
+      const quorum = createQuorumWith({
+        profiles: [securityProfile],
+        concurrency: 1,
+      }, portsFor(securityProfile, finder, keeps()), clock)
+      const running = quorum.review({ diff: partsDiff }, { interrupt: controller.signal })
+      await turns()
+      controller.abort()
+      await turns()
+      // the call is still in flight: nothing is cancelled before the grace has run out
+      expect(finder.signals[0]?.aborted).toBe(false)
+      const result = await settle(clock, running)
+      expect(clock.now()).toBe(GRACE)
+      expect(finder.signals[0]?.aborted).toBe(true)
+      expect(finder.requests).toHaveLength(1)
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 6 of its 6 research parts' },
+      ])
+      expect(result.meta.profiles.security.coverage.every(entry => entry.status === 'unreviewed' && entry.reason === 'interrupted')).toBe(true)
+      expect(outcome(result).exitCode).toBe(130)
+      expect(clock.pending()).toBe(0)
+    })
+
+    it.each<[string, Omit<QuorumOptions, 'profiles'>, Partial<Provider>, boolean, number]>([
+      [
+        'queued behind a call in flight',
+        { concurrency: 1 },
+        {},
+        true,
+        1000,
+      ],
+      [
+        'waiting for room under the cap',
+        { concurrency: 3, maxReviewTokens: 1000 },
+        {
+          worstCase: () => 600,
+        },
+        false,
+        1000,
+      ],
+      [
+        'backing off after a 503',
+        { concurrency: 1 },
+        { retries: 2 },
+        false,
+        0,
+      ],
+    ])('ends a call %s at once, sending none of it', async (name, options, extra, twoProfiles, movedTo) => {
+      const clock = fakeClock(0.99)
+      const controller = new AbortController()
+      const down = name.startsWith('backing')
+      const finder = partsFinder(500, (_request, call) => {
+        if (down) {
+          throw new ProviderError({
+            providerId: 'finder',
+            kind: 'http',
+            status: 503,
+            message: 'down',
+          })
+        }
+        return call === 1
+          ? new Promise<string>(resolve => clock.timer(1000, () => resolve(findings())))
+          : findings()
+      }, extra)
+      const profiles = twoProfiles
+        ? [securityProfile, style]
+        : [securityProfile]
+      const quorum = createQuorumWith({ ...options, profiles }, {
+        profiles: Object.fromEntries(profiles.map(profile => [profile.id, portsFor(profile, finder, keeps()).profiles[profile.id]])),
+      }, clock)
+      const running = quorum.review({ diff: partsDiff }, { interrupt: controller.signal })
+      await turns()
+      controller.abort()
+      const result = await settle(clock, running)
+      expect(finder.requests).toHaveLength(1)
+      expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(profiles.map(() => 'interrupted'))
+      expect(clock.now()).toBe(movedTo)
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('ends a call that fails retryably within the grace with the interrupt, sending no retry', async () => {
+      const clock = fakeClock()
+      const controller = new AbortController()
+      // The attempt settles with its 503 two seconds in: `halt` is not aborted yet, but `stop` is, so no wait may follow.
+      const finder = partsFinder(500, (_request, call) => call === 1
+        ? new Promise<string>((_resolve, reject) => clock.timer(2000, () => reject(new ProviderError({
+            providerId: 'finder',
+            kind: 'http',
+            status: 503,
+            message: 'down',
+          }))))
+        : findings(), { retries: 2 })
+      const events: QuorumEvent[] = []
+      const quorum = createQuorumWith({
+        profiles: [securityProfile],
+        concurrency: 1,
+      }, {
+        ...portsFor(securityProfile, finder, keeps()),
+        events: event => events.push(event),
+      }, clock)
+      const running = quorum.review({ diff: partsDiff }, { interrupt: controller.signal })
+      await turns()
+      controller.abort()
+      const result = await settle(clock, running)
+      expect(finder.requests).toHaveLength(1)
+      expect(events.filter(event => event.type === 'call:retry')).toEqual([])
+      const calls = events.filter(event => event.type === 'call')
+      expect(calls).toMatchObject([
+        { ok: false },
+      ])
+      expect(calls[0]).not.toHaveProperty('attempts')
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 6 of its 6 research parts' },
+      ])
+      expect(clock.now()).toBe(2000)
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('sends no re-send and no recovery piece for a reply that is cut off within the grace', async () => {
+      const clock = fakeClock()
+      const controller = new AbortController()
+      // a.js holds two hunks, so a cut-off part would be split, and the provider states the thinking lowering an adaptation would try.
+      const twoHunks = [
+        'diff --git a/a.js b/a.js',
+        '--- a/a.js',
+        '+++ b/a.js',
+        '@@ -1 +1 @@',
+        '-safe(input)',
+        '+exec(input) // a.js',
+        '@@ -9 +9 @@',
+        '-x',
+        '+y',
+      ].join('\n')
+      const diff = [
+        twoHunks,
+        ...FILES.slice(1).map(sectionOf),
+      ].join('\n')
+      const events: QuorumEvent[] = []
+      const finder = partsFinder(500, (_request, call) => call === 1
+        ? new Promise<string>((_resolve, reject) => clock.timer(2000, () => reject(new ProviderError({
+            providerId: 'finder',
+            kind: 'truncated',
+            noAnswer: 'thinking',
+            message: 'cut off',
+          }))))
+        : findings(), {
+        adapts: { thinking: 'low' },
+      })
+      const quorum = createQuorumWith({
+        profiles: [securityProfile],
+        concurrency: 1,
+      }, {
+        ...portsFor(securityProfile, finder, keeps()),
+        events: event => events.push(event),
+      }, clock)
+      const running = quorum.review({ diff }, { interrupt: controller.signal })
+      await turns()
+      controller.abort()
+      const result = await settle(clock, running)
+      // one request: no re-send at a lowered thinking, no piece of the part
+      expect(finder.requests).toHaveLength(1)
+      expect(events.filter(event => event.type === 'adapted')).toEqual([])
+      expect(events.filter(event => event.type === 'part')[0]).toMatchObject({
+        part: { index: 1, count: 6 },
+        outcome: 'interrupted',
+      })
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 6 of its 6 research parts' },
+      ])
+      expect(result.meta.adaptations).toEqual([])
+      // the part is not split on paper either: no `recovered` event, and no recovery in the meta
+      expect(events.filter(event => event.type === 'recovered')).toEqual([])
+      expect(result.meta.profiles.security).not.toHaveProperty('recovery')
+      expect(result.meta.profiles.security.coverage.every(entry => entry.status === 'unreviewed' && entry.reason === 'interrupted')).toBe(true)
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('splits no part on paper for a reply that is saturated within the grace, its pieces never asked', async () => {
+      const clock = fakeClock()
+      const controller = new AbortController()
+      const twoHunks = [
+        'diff --git a/a.js b/a.js',
+        '--- a/a.js',
+        '+++ b/a.js',
+        '@@ -1 +1 @@',
+        '-safe(input)',
+        '+exec(input) // a.js',
+        '@@ -9 +9 @@',
+        '-x',
+        '+y',
+      ].join('\n')
+      const diff = [
+        twoHunks,
+        ...FILES.slice(1).map(sectionOf),
+      ].join('\n')
+      // A window of 16384 asks a reply for at most 7 findings of the 50 `maxFindings` allows: a reply of 7 is saturated.
+      const seven = Array.from({ length: 7 }, (_, index) => ({ ...reported, line: index + 1 }))
+      const events: QuorumEvent[] = []
+      const finder = partsFinder(5000, (_request, call) => call === 1
+        ? new Promise<string>(resolve => clock.timer(2000, () => resolve(findings(...seven))))
+        : findings(), { window: 16_384 })
+      const quorum = createQuorumWith({
+        profiles: [securityProfile],
+        concurrency: 1,
+      }, {
+        ...portsFor(securityProfile, finder, keeps()),
+        events: event => events.push(event),
+      }, clock)
+      const running = quorum.review({ diff }, { interrupt: controller.signal })
+      await turns()
+      controller.abort()
+      const result = await settle(clock, running)
+      expect(finder.requests).toHaveLength(1)
+      expect(events.filter(event => event.type === 'recovered')).toEqual([])
+      expect(result.meta.profiles.security).not.toHaveProperty('recovery')
+      expect(events.filter(event => event.type === 'part')[0]).toMatchObject({
+        part: { index: 1, count: 1 },
+        outcome: 'interrupted',
+      })
+      expect(events.filter(event => event.type === 'part')[0]).not.toHaveProperty('pieces')
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped its research' },
+      ])
+      expect(result.meta.profiles.security.coverage.every(entry => entry.status === 'unreviewed' && entry.reason === 'interrupted')).toBe(true)
+      expect(outcome(result).exitCode).toBe(130)
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('counts the vote in flight when the interrupt comes while the panel runs, and fails the votes not yet asked', async () => {
+      const clock = fakeClock()
+      const controller = new AbortController()
+      const finder = partsFinder(500, (_request, call) => call === 1
+        ? findings(at('a.js'))
+        : findings())
+      let release: (text: string) => void = () => {}
+      const voter = fake('voter', request => isVote(request) && voter.requests.length === 1
+        ? new Promise<string>((resolve) => {
+            release = resolve
+          })
+        : vote(true))
+      const events: QuorumEvent[] = []
+      const quorum = createQuorumWith({
+        profiles: [securityProfile],
+        concurrency: 1,
+      }, {
+        ...portsFor(securityProfile, finder, voter),
+        events: event => events.push(event),
+      }, clock)
+      const running = quorum.review({ diff: partsDiff }, { interrupt: controller.signal })
+      // The research ends in turns of the queue alone, then the panel sends its first vote, which the voter holds.
+      for (let waited = 0; voter.requests.length === 0 && waited < 50; waited++) await turn()
+      expect(finder.requests).toHaveLength(6)
+      expect(voter.requests).toHaveLength(1)
+      controller.abort()
+      clock.timer(2000, () => release(vote(true)))
+      const result = await settle(clock, running)
+      // the vote in flight counts, and the two not yet asked were never sent
+      expect(voter.requests).toHaveLength(1)
+      expect(result.kept).toEqual([])
+      expect(result.discarded).toEqual([])
+      expect(result.unreviewed).toHaveLength(1)
+      const { votes } = result.unreviewed[0]
+      expect(votes.map(({ angle }) => angle)).toEqual(securityProfile.lenses.map(lens => lens.id))
+      expect(votes.filter(({ vote: cast }) => cast !== null)).toEqual([
+        {
+          angle: 'reachability',
+          vote: { keep: true, reasoning: 'r' },
+          error: null,
+          failure: null,
+        },
+      ])
+      expect(votes.filter(({ vote: cast }) => cast === null).map(({ failure }) => failure)).toEqual([
+        { kind: 'interrupted' },
+        { kind: 'interrupted' },
+      ])
+      // one keep of three, the rest never asked: a unanimous panel cannot be settled, so the finding is unreviewed
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 2 vote(s)' },
+      ])
+      expect(stopping(events)).toEqual([
+        {
+          type: 'run:stopping',
+          cause: 'interrupt',
+          inFlight: 1,
+          graceMs: GRACE,
+        },
+      ])
+      expect(outcome(result)).toEqual({ status: 'interrupted', exitCode: 130, lifted: false })
+      expect(clock.now()).toBe(2000)
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('resolves at once, asking nothing, when the interrupt came before the review started', async () => {
+      const clock = fakeClock()
+      const finder = partsFinder(500)
+      const voter = keeps()
+      const events: QuorumEvent[] = []
+      const quorum = createQuorumWith({
+        profiles: [securityProfile],
+      }, {
+        ...portsFor(securityProfile, finder, voter),
+        events: event => events.push(event),
+      }, clock)
+      const result = await quorum.review({ diff: partsDiff }, {
+        interrupt: AbortSignal.abort(),
+      })
+      expect(finder.requests).toEqual([])
+      expect(voter.requests).toEqual([])
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 6 of its 6 research parts' },
+      ])
+      expect(stopping(events)).toEqual([
+        {
+          type: 'run:stopping',
+          cause: 'interrupt',
+          inFlight: 0,
+          graceMs: GRACE,
+        },
+      ])
+      expect(events.at(-1)).toMatchObject({ type: 'run:end', incomplete: 1 })
+      expect(clock.now()).toBe(0)
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('saves a call that ended within the grace in the review\'s store', async () => {
+      const clock = fakeClock()
+      const controller = new AbortController()
+      const { finder, release } = held()
+      const put = vi.fn<(key: unknown, call: unknown) => Promise<void>>(() => Promise.resolve())
+      const store: ReplyStore = {
+        get: () => Promise.resolve(undefined),
+        put,
+      }
+      const quorum = createQuorumWith({
+        profiles: [securityProfile],
+        concurrency: 1,
+      }, portsFor(securityProfile, finder, keeps()), clock)
+      const running = quorum.review({ diff: partsDiff }, { interrupt: controller.signal, store })
+      await turns()
+      controller.abort()
+      const reply = findings(at('a.js'))
+      clock.timer(2000, () => release(reply))
+      await settle(clock, running)
+      expect(put).toHaveBeenCalledTimes(1)
+      expect(put.mock.calls[0][1]).toEqual({
+        reply: { text: reply, model: 'finder-model' },
+      })
+    })
+
+    it('refuses an interrupt that is no AbortSignal', async () => {
+      await expect(run().review({ diff }, { interrupt: 'stop' as unknown as AbortSignal })).rejects.toThrow('interrupt: must be an AbortSignal')
+    })
+
+    it('rejects with the abort\'s reason when its signal aborts during the grace', async () => {
+      const clock = fakeClock()
+      const interrupt = new AbortController()
+      const abort = new AbortController()
+      const reason = new Error('stop')
+      const quorum = createQuorumWith({
+        profiles: [securityProfile],
+        concurrency: 1,
+      }, portsFor(securityProfile, partsFinder(500, never), keeps()), clock)
+      const running = quorum.review({ diff: partsDiff }, { interrupt: interrupt.signal, signal: abort.signal }).catch((error: unknown) => error)
+      await turns()
+      interrupt.abort()
+      await turns()
+      abort.abort(reason)
+      expect(await running).toBe(reason)
+      expect(clock.pending()).toBe(0)
+    })
+  })
+
   describe('a failed research part', () => {
     const at = (file: string): unknown => ({ ...reported, file, quote: `exec(input) // ${file}` })
     /** b.js holds two hunks, so a part that holds it is two units; every file is still one part at a room of 500. */
@@ -6606,7 +7049,7 @@ describe('a reply store', () => {
       null,
       [],
     ]) {
-      await expect(quorum.review({ diff }, { store: store as never })).rejects.toThrow(new ConfigError([
+      await expect(quorum.review({ diff }, { store: store as unknown as ReplyStore })).rejects.toThrow(new ConfigError([
         { path: 'store', message: 'must be a reply store: an object with get and put functions' },
       ]))
     }

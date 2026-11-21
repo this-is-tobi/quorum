@@ -15,7 +15,7 @@ import { estimateReview } from './estimate.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
 import { diffFlags, secretFlags } from './flags.ts'
 import { leftOutIssues, mergeLeftOut, sendIssues, sourceIssues, sourceOf } from './inputs.ts'
-import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, LimitError, limitGaps, maxReviewTokensProblem } from './limits.ts'
+import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, INTERRUPT_GRACE_MS, isLimitName, LimitError, limitGaps, maxReviewTokensProblem } from './limits.ts'
 import { isRecord } from './output.ts'
 import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap } from './parts.ts'
 import type { Packing, PartResult } from './parts.ts'
@@ -57,7 +57,7 @@ interface Compiled {
   readonly sink: EventSink | undefined
 }
 
-/** What one review takes besides its input: the signal that stops it. */
+/** What one review takes besides its input: the signal that aborts it, the one that interrupts it and the store it keeps its calls in. */
 type ReviewOptions = NonNullable<Parameters<Quorum['review']>[1]>
 
 /** What an estimate takes of a review's input: the diff, and the files it sends though they are held back. */
@@ -257,10 +257,22 @@ function estimate(compiled: Compiled, input: EstimateInput): Estimate {
  * flight and every wait is stopped at once, no call still queued starts, and what was not done is a
  * `review-deadline` gap of its profile, its research request (the parts of it not yet answered) or its
  * votes, each a failed vote of the deadline. The review then resolves with its findings so far, exiting
- * `4` for a gating profile whatever the flags; the deadline is no abort, so an interrupt still rejects
+ * `4` for a gating profile whatever the flags; the deadline is no abort, so an abort still rejects
  * with its reason, before the deadline or after it, and a review that reaches its deadline is never a
  * failed run. The deadline's timer is armed once the input checks pass and cleared however the review
  * ends: it resolves, it rejects, its sink throws or it is aborted.
+ *
+ * `options.interrupt` is the first Ctrl-C or SIGTERM of a person, a gentler stop than the abort, which it leaves as it
+ * is: once it aborts, or at once when it was aborted already, no new call starts and every wait ends (a call queued
+ * behind a call in flight, waiting for room under the cap or backing off after a failure ends at once, sending none
+ * of it), one `run:stopping` event with the cause `interrupt` says how many calls are in flight and the grace
+ * (`INTERRUPT_GRACE_MS`, 5000 ms on the review's clock) they have to end, and a call that ends within it is read and
+ * saved as in any review. At the end of the grace the calls still in flight are cancelled. The review then rejects as
+ * any review does, on an abort, on a sink's error, or with `ProviderDownError` when nothing was read and a provider was
+ * found down, and otherwise resolves with what it read: the research parts and the votes the interrupt stopped are an
+ * `interrupted` gap of their profile, its files unreviewed and its findings unreviewed with `interrupted` votes, which
+ * `allowIncomplete` never lifts and `outcome` reads as exit 130. The timer and the listener go however the review ends,
+ * and an abort during the grace still rejects with its reason.
  *
  * A change larger than one research request is researched in parts, not refused. Each profile's research
  * is planned once the scope is known, on its own research provider's stated room: a provider that
@@ -298,18 +310,58 @@ async function review(compiled: Compiled, input: ReviewInput, options: ReviewOpt
   const cancel = clock.timer(reviewTimeoutMs, () => {
     expired.abort(new LimitError('review-deadline', `the review reached its deadline of ${reviewTimeoutMs} ms`))
   })
+  const interrupt = armInterrupt(options.interrupt, clock)
   try {
-    return await reviewUntil(compiled, input, options, deadline, expired.signal)
+    return await reviewUntil(compiled, input, options, deadline, expired.signal, interrupt)
   } finally {
     cancel()
+    interrupt.release()
+  }
+}
+
+/** What the interrupt of a review comes to: the signal that stops new calls and waits, the one that ends the calls in flight once the grace has run out, and the way to let both go. */
+interface Interrupt {
+  readonly stop: AbortSignal
+  readonly halt: AbortSignal
+  readonly release: () => void
+}
+
+/**
+ * Arm the interrupt of a review on `source`, the caller's `interrupt`: at its abort, or at once when it is aborted
+ * already, `stop` aborts with a `LimitError` of the limit `interrupted`, and a timer of `INTERRUPT_GRACE_MS` on the
+ * review's clock aborts `halt` with the same one. `release` removes the listener and cancels the timer, whichever
+ * way the review ends, and is safe to call more than once.
+ */
+function armInterrupt(source: AbortSignal | undefined, clock: Clock): Interrupt {
+  const stop = new AbortController()
+  const halt = new AbortController()
+  let cancel = (): void => {}
+  const fire = (): void => {
+    const reason = new LimitError('interrupted', 'the review was interrupted')
+    stop.abort(reason)
+    cancel = clock.timer(INTERRUPT_GRACE_MS, () => halt.abort(reason))
+  }
+  if (source?.aborted === true) {
+    fire()
+  } else {
+    source?.addEventListener('abort', fire, { once: true })
+  }
+  return {
+    stop: stop.signal,
+    halt: halt.signal,
+    release: () => {
+      source?.removeEventListener('abort', fire)
+      cancel()
+    },
   }
 }
 
 /**
- * What `review` does once its deadline is armed: everything from its signals to its result, with `expired`, the
- * deadline's own signal, joined to the review's into the one `stop` the call path reads.
+ * What `review` does once its deadline and its interrupt are armed: everything from its signals to its result, with
+ * `expired`, the deadline's own signal, and the interrupt's joined to the review's into the `stop` and the `halt` the
+ * call path reads.
  */
-async function reviewUntil(compiled: Compiled, input: ReviewInput, options: ReviewOptions, deadline: RunContext['deadline'], expired: AbortSignal): Promise<QuorumResult> {
+async function reviewUntil(compiled: Compiled, input: ReviewInput, options: ReviewOptions, deadline: RunContext['deadline'], expired: AbortSignal, interrupt: Interrupt): Promise<QuorumResult> {
   const internal = new AbortController()
   const signal = options.signal === undefined
     ? internal.signal
@@ -385,7 +437,8 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     ledger: createLedger(compiled.maxReviewTokens),
     emit,
     signal,
-    stop: AbortSignal.any([signal, expired]),
+    stop: AbortSignal.any([signal, expired, interrupt.stop]),
+    halt: AbortSignal.any([signal, expired, interrupt.halt]),
     deadline,
     health: createHealth(),
     lacked: new Set(),
@@ -414,22 +467,38 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     for (const entry of gaps.get(run.id) ?? []) emit({ type: 'incomplete', entry })
   }
   for (const flag of flags) emit({ type: 'flag', flag })
-  const stopping = (): void => {
+  let stopped = false
+  const stopping = (cause: 'interrupt' | 'review-deadline'): void => {
+    if (stopped) return
+    stopped = true
     try {
-      emit({ type: 'run:stopping', cause: 'review-deadline', inFlight: ctx.flying.count })
+      emit({
+        type: 'run:stopping',
+        cause,
+        inFlight: ctx.flying.count,
+        ...cause === 'interrupt'
+          ? { graceMs: INTERRUPT_GRACE_MS }
+          : {},
+      })
     } catch {
       // A sink that throws has aborted the review, which rejects with its error: a listener must not throw it a second time.
     }
   }
-  // Only while the stages run: the deadline's own signal fires first, so the attempts it stops are still counted in flight.
-  expired.addEventListener('abort', stopping, { once: true })
+  const onExpired = (): void => stopping('review-deadline')
+  const onInterrupt = (): void => stopping('interrupt')
+  // Only while the stages run: neither limit's signal ends the attempts at once (the deadline's own fires first, the interrupt's grace follows), so the attempts they stop are still counted in flight.
+  expired.addEventListener('abort', onExpired, { once: true })
+  interrupt.stop.addEventListener('abort', onInterrupt, { once: true })
+  // An interrupt that came before the stages ran stops nothing in flight, and is said all the same.
+  if (interrupt.stop.aborted) onInterrupt()
   const outcomes = await reviewAll(ctx, runs, plans, scope.diff, sections).catch((error: unknown) => {
     // A failure that is no gap (a sink's error, a bug) aborts the review here. The first reason stays the reason.
     const reason: unknown = signal.aborted ? signal.reason : error
     internal.abort(reason)
     throw reason
   }).finally(() => {
-    expired.removeEventListener('abort', stopping)
+    expired.removeEventListener('abort', onExpired)
+    interrupt.stop.removeEventListener('abort', onInterrupt)
   })
   signal.throwIfAborted()
   const down = nothingAnswered(ctx, runs, outcomes)
@@ -501,7 +570,7 @@ function isReviewed(part: PartResult): boolean {
 /** The limit that stopped a part, for `limitGaps`: its own outcome, or the first limit among its pieces' (the part's later pieces were stopped by it), else what it was read as. */
 function limitOf(part: PartResult): string {
   if (typeof part === 'string') return part
-  return part.pieces.find(({ outcome }) => outcome === 'token-cap' || outcome === 'review-deadline')?.outcome ?? 'reviewed'
+  return part.pieces.find(({ outcome }) => isLimitName(outcome))?.outcome ?? 'reviewed'
 }
 
 /** What a profile's review comes to: its panel's outcome, and what became of each part of its research and the packing and recovery counts the coverage and the meta read. */
@@ -553,7 +622,7 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPla
  * TypeError. An input that is not an object is named as the input, not as its diff: the likely
  * mistake is the diff text passed on its own, as `runQuorum` takes it. The `source`, the `leftOut` and the
  * `send`, when set, are checked after the diff, so a caller sees every issue of the input at once. The signal
- * must be a real AbortSignal: `AbortSignal.any` accepts nothing else.
+ * and the interrupt must be real AbortSignals: `AbortSignal.any` accepts nothing else.
  */
 function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
   const issues: ConfigIssue[] = []
@@ -567,6 +636,7 @@ function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
     issues.push({ path: 'options', message: 'must be an object' })
   } else {
     if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) issues.push({ path: 'signal', message: 'must be an AbortSignal' })
+    if (options.interrupt !== undefined && !(options.interrupt instanceof AbortSignal)) issues.push({ path: 'interrupt', message: 'must be an AbortSignal' })
     if (options.store !== undefined && !isReplyStore(options.store)) issues.push({ path: 'store', message: 'must be a reply store: an object with get and put functions' })
   }
   return issues

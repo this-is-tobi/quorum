@@ -323,7 +323,7 @@ export function tooLargeGap(profile: string, sections: readonly DiffSection[], p
 }
 
 /** What became of the research part, or the piece of one, that held a unit: it was read, or the reason it was not. */
-export type PartOutcome = 'reviewed' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'research-failed' | 'provider-down' | 'reply-cut-off'
+export type PartOutcome = 'reviewed' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'interrupted' | 'research-failed' | 'provider-down' | 'reply-cut-off'
 
 /**
  * What became of one research part: one outcome when it was read or lost whole, or, when recovery split it

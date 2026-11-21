@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
 import type { Flag, LeftOutFile, PublicView, QuorumResult, Verdict } from '../core/types.ts'
 import { expectCodeWritten as expectWritten, HOSTILE, RLO } from '../testing/markdown.ts'
-import { blankResult, cast, FINDINGS, INCOMPLETE, PASS, reportResult, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
+import { blankResult, cast, FINDINGS, INCOMPLETE, INTERRUPTED, PASS, reportResult, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
 import { LISTED, markdown, SUMMARY_BUDGET, summaryMarkdown } from './markdown.ts'
 import { renderReport } from './registry.ts'
 import { publicView } from './view.ts'
@@ -122,6 +122,21 @@ function listUnder(lines: readonly string[], heading: string): string[] {
 describe('markdown', () => {
   it('renders a review for a pull request: the verdict, the profiles, each finding with its evidence, the gaps, what was left out, the flags and the source', () => {
     expect(render(reportResult())).toEqual(MAIN)
+  })
+
+  it('writes the verdict of an interrupted review', () => {
+    const lines = render(blankResult({
+      incomplete: [
+        { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 2 of its 3 research parts' },
+      ],
+    }), INTERRUPTED)
+    expect(lines.slice(0, 4)).toEqual([
+      MARKER,
+      '### quorum review',
+      '',
+      '**exit 130, interrupted:** the review was stopped before its end; what it read is above',
+    ])
+    expect(listUnder(lines, '#### Gaps')).toEqual(['- security, interrupted: the review was stopped before its end, so part of the work was never read'])
   })
 
   it('renders the review of a blank diff', () => {

@@ -90,6 +90,7 @@ describe('jsonWriter', () => {
       stdout: { format: 'json', terminal: false },
       stderr: { terminal: false },
       outputs: [],
+      state: { kind: 'none', kept: 0 },
       result: reportResult({}),
     })
     await writer.close()
@@ -111,6 +112,7 @@ describe('jsonWriter', () => {
       stdout: { format: 'json', terminal: false },
       stderr: { terminal: false },
       outputs: [],
+      state: { kind: 'none', kept: 0 },
       result: reportResult({}),
     })
     await none.close()

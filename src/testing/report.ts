@@ -160,5 +160,6 @@ export function blankResult(meta: Partial<QuorumMeta> = {}): QuorumResult {
 
 export const FINDINGS: Outcome = { status: 'findings', exitCode: 1, lifted: false }
 export const INCOMPLETE: Outcome = { status: 'incomplete', exitCode: 4, lifted: false }
+export const INTERRUPTED: Outcome = { status: 'interrupted', exitCode: 130, lifted: false }
 export const PASS: Outcome = { status: 'pass', exitCode: 0, lifted: false }
 export const LIFTED: Outcome = { status: 'pass', exitCode: 0, lifted: true }

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { DEFAULT_MAX_FINDINGS } from '../budgets.ts'
 import type { DiffSection } from '../diff.ts'
 import { cutOf, OutputError, ProviderDownError } from '../errors.ts'
-import { isLimit } from '../limits.ts'
+import { isLimit, isLimitName } from '../limits.ts'
 import type { LimitName } from '../limits.ts'
 import { parseResearchReply } from '../output.ts'
 import { cutSection, listedFiles, packParts, partText } from '../parts.ts'
@@ -33,7 +33,7 @@ export interface ResearchOutcome {
   incomplete: IncompleteEntry[]
   /**
    * What became of each research part, in the parts' order: `reviewed` when its reply was a valid findings
-   * envelope, the limit's name when the token cap or the deadline stopped it (its gap is written once the
+   * envelope, the limit's name when the token cap, the deadline or the interrupt stopped it (its gap is written once the
    * profile's panel has run, with the votes the limit stopped), else why it was not read; for a part recovery split,
    * what became of each of its pieces. One entry for a research of one request, none when no part holds any of the
    * diff.
@@ -291,7 +291,7 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
  * profile's own `research-failed` gap, in words the code writes, gating or not: nothing aborts the review
  * for it, and the other profiles run. A request a provider found down was never sent is a `provider-down`
  * gap (see `createHealth`). A research request a limit stopped (the token cap refused it
- * or left no room for it, or the review's deadline ended it) is no failure of either kind: the outcome holds
+ * or left no room for it, or the review's deadline or interrupt ended it) is no failure of either kind: the outcome holds
  * no finding and names the limit in `parts`, which the review turns into the profile's one gap for that
  * limit, a gating profile's included. A packing of none, where no part holds any of the diff, makes no call, and
  * neither does a part whose text is blank (white space only, as the text before a diff's first header can be,
@@ -571,6 +571,18 @@ async function researchPart(ctx: RunContext, run: ProfileRun, scope: Scope, root
     }
     const split = halves(scope.sections, scope.cuts, piece)
     const asked = await askResearch(ctx, run, callPosition(position.part, position.parts, piece), spend, ask => requestOf(piece, text, ask), split !== undefined)
+    // A reply that comes within the interrupt's grace, cut off or saturated, is not split on paper: no piece would be asked, so the
+    // piece is stopped by the limit, with no `recovered` event and no recovery in the meta. A rerun's cut-off marker is a reply no
+    // call made, which the stop does not touch: it was read before the stop and goes to recovery as it always did.
+    const stopped = ctx.stop.aborted && isLimit(ctx.stop.reason)
+      ? ctx.stop.reason.limit
+      : undefined
+    const splits = split !== undefined && (asked.outcome === 'cut-off' || asked.outcome === 'saturated' || (asked.outcome === 'request-too-large' && piece.depth > 0))
+    if (stopped !== undefined && splits) {
+      leaves.push({ piece, outcome: stopped })
+      scope.stop.by ??= stopped
+      return
+    }
     // The planner sized a part's room, not a piece's, which adds a position and, for a one-request research, a parts block: a piece
     // its provider refuses as too large is split as a cut-off is, an inner node of the tree and no leaf, with its part's own `recovered`.
     if (asked.outcome === 'request-too-large' && piece.depth > 0 && split !== undefined) {
@@ -602,7 +614,7 @@ async function researchPart(ctx: RunContext, run: ProfileRun, scope: Scope, root
       for (const half of split.pieces) await visit(half)
       return
     }
-    if (asked.outcome === 'token-cap' || asked.outcome === 'review-deadline') scope.stop.by ??= asked.outcome
+    if (isLimitName(asked.outcome)) scope.stop.by ??= asked.outcome
     leaves.push({ piece, ...asked })
   }
   await visit(root)

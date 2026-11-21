@@ -105,11 +105,13 @@ describe('bin', () => {
     expect(stderr).toBe('Research (m @ the provider object mine)...\nPanel will use m @ the provider object mine\nError: boom<U+001B>[31m<U+000A>::error::x\n')
   })
 
-  it('exits 130 on SIGTERM, and writes no result', async () => {
-    writeFileSync(join(dir, 'slow.mjs'), `export default { providers: { mine: { model: 'm', complete: ({ signal }) => new Promise((_resolve, reject) => {
-  const timer = setTimeout(() => {}, 60_000)
-  signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason) })
-}) } } }\n`)
+  it('exits 130 on SIGTERM with the report of what it read, its call in flight ending within the grace', async () => {
+    // Each call is answered 500 ms after it starts, the research with one finding: the SIGTERM comes while it is in flight.
+    writeFileSync(join(dir, 'slow.mjs'), `const finding = { file: 'a.js', line: 1, category: 'CWE-78', quote: 'exec(cmd)', summary: 'command injection' }
+export default { providers: { mine: { model: 'm', complete: ({ output }) => new Promise(resolve => setTimeout(() => resolve({
+  text: output.name === 'panel_vote' ? JSON.stringify({ keep: true, reasoning: 'r' }) : JSON.stringify({ findings: [finding] }),
+  model: 'm',
+}), 500)) } } }\n`)
     writeFileSync(join(dir, 'x.diff'), DIFF)
     const { child, stdout, stderr, exited } = start(['x.diff'], {
       QUORUM_CONFIG: join(dir, 'slow.mjs'),
@@ -118,8 +120,13 @@ describe('bin', () => {
       await vi.waitFor(() => expect(stderr()).toContain('Research ('), { timeout: 10_000 })
       child.kill('SIGTERM')
       expect(await exited).toBe(130)
-      expect(stdout()).toBe('')
-      expect(stderr().endsWith('interrupted\n')).toBe(true)
+      const result = JSON.parse(stdout())
+      expect(result.unreviewed).toHaveLength(1)
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 3 vote(s)' },
+      ])
+      expect(stderr()).toContain('stopping: no new calls; the 1 call(s) in flight have 5 s to end; press Ctrl-C again to quit at once, without the result\n')
+      expect(stderr().endsWith('interrupted\n')).toBe(false)
     } finally {
       child.kill('SIGKILL')
     }

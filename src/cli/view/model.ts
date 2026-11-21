@@ -121,7 +121,8 @@ export interface ViewState {
   readonly gaps: ReadonlyMap<IncompleteReason, GapCount>
   readonly causes: ReadonlyMap<'research-failed' | 'provider-down', readonly Cause[]>
   readonly usage: ReadonlyMap<string, Usage>
-  readonly stopping?: { readonly cause: 'review-deadline', readonly at: number, readonly inFlight: number }
+  /** The review began to stop: why, when, how many calls were in flight, and for an interrupt the grace they were given. */
+  readonly stopping?: { readonly cause: 'interrupt' | 'review-deadline', readonly at: number, readonly inFlight: number, readonly graceMs?: number }
   /** The time left as it first read, at the answered part that passed the threshold. */
   readonly firstEstimate?: { readonly at: number, readonly lowMs: number, readonly highMs: number }
 }
@@ -226,8 +227,38 @@ const PART_COUNT = /^(\d+) of \d+ research (?:parts|requests) /
 /** A vote gap's detail starts with its finding's file as a JSON string, which holds no unescaped quote, so what follows it is the core's own words. */
 const VOTE_COUNT = /^"(?:[^"\\]|\\.)*":\d+(?:: (\d+) of \d+ vote requests were not sent: | is kept at \S+, but (\d+) failed vote\(s\) could have made it \S+$)/
 
+/** What a limit's gap detail says it stopped, as `limitGaps` writes it: the limit's own words, then `stopped`, then the rest. */
+const LIMIT_STOPPED = /^(?:the review's token cap of \d+ tokens|the review's deadline of \d+ ms|the interrupt) stopped (.+)$/
+/** The research a limit stopped, `its research` (one part) or `<p> of its <m> research parts`, and the votes after it. */
+const LIMIT_RESEARCH = /^(?:(its research)|(\d+) of its \d+ research parts)(?: and (\d+) vote\(s\))?$/
+const LIMIT_VOTES = /^(\d+) vote\(s\)$/
+
+/** The research parts and votes a limit's gap detail says it stopped, and nothing for any other detail. */
+function limitCount(detail: string): { readonly parts?: number, readonly votes?: number } {
+  const rest = LIMIT_STOPPED.exec(detail)?.[1]
+  if (rest === undefined) return {}
+  const research = LIMIT_RESEARCH.exec(rest)
+  if (research !== null) {
+    const parts = research[1] === undefined
+      ? Number(research[2])
+      : 1
+    if (!Number.isSafeInteger(parts)) return {}
+    if (research[3] === undefined) return { parts }
+    const votes = Number(research[3])
+    return Number.isSafeInteger(votes)
+      ? { parts, votes }
+      : {}
+  }
+  const votes = Number(LIMIT_VOTES.exec(rest)?.[1])
+  return Number.isSafeInteger(votes)
+    ? { votes }
+    : {}
+}
+
 /** The research parts or votes a gap's detail says it counts, as the core writes it, and nothing for any other detail. */
 function countOf(detail: string): { readonly parts?: number, readonly votes?: number } {
+  const limited = limitCount(detail)
+  if (limited.parts !== undefined || limited.votes !== undefined) return limited
   const parts = Number(PART_COUNT.exec(detail)?.[1])
   if (Number.isSafeInteger(parts)) return { parts }
   const match = VOTE_COUNT.exec(detail)
@@ -504,7 +535,14 @@ export function fold(state: ViewState, event: QuorumEvent, now: number): ViewSta
     case 'run:stopping':
       return {
         ...state,
-        stopping: { cause: event.cause, at: now, inFlight: event.inFlight },
+        stopping: {
+          cause: event.cause,
+          at: now,
+          inFlight: event.inFlight,
+          ...event.graceMs === undefined
+            ? {}
+            : { graceMs: event.graceMs },
+        },
       }
     case 'run:end':
       return { ...state, ended: true }

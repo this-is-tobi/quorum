@@ -68,8 +68,8 @@ function percentile(sorted: readonly number[], p: number): number {
 
 const ascending = (a: number, b: number): number => a - b
 
-/** Whether any profile still has research parts to answer: one not started, or one whose parts are not all done. */
-function researchRuns(state: ViewState): boolean {
+/** Whether any profile still has research parts to answer: one not started, or one whose parts are not all done. The heartbeat, the block and the time left all read it. */
+export function researchRuns(state: ViewState): boolean {
   for (const profile of state.profiles.values()) {
     if (profile.stage === 'waiting') return true
     if (profile.stage === 'research' && (profile.parts === undefined || profile.done < profile.parts)) return true

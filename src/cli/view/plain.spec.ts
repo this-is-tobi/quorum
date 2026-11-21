@@ -241,19 +241,21 @@ describe('plainWriter', () => {
       stdout: { format: 'text' as const, terminal: true },
       stderr: { terminal: true },
       outputs: ['json' as const],
+      state: { kind: 'none' as const, kept: 0 },
       result: reportResult({
         meta: { durationMs: 2_285_000 },
       }),
     }
     view.summary(facts)
     view.summary(facts)
-    expect(lines).toHaveLength(before + 5)
+    expect(lines).toHaveLength(before + 6)
     expect(lines.slice(before)).toEqual([
       'time: research 30m12s, dedup 0.0s, panel 7m40s; the first estimate, 5m10s in, put research at 30-31m',
       'tokens: 74 percent of the cap of 2000000, the default',
       'calls: 46 research (2 retried, 1 recovered into 2 pieces), 18 vote(s); 4 at once',
       'gaps: 1 part(s) research-failed (timeout): raise timeoutMs',
       'result: the text report above; --output json written',
+      'resume: to keep the answered calls for a rerun, pass --state <dir>; this review kept none',
     ])
 
     // A review that ran no stage writes none, and a new review writes its own.
