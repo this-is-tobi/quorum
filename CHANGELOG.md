@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.8.0](https://github.com/this-is-tobi/quorum/compare/v0.7.0...v0.8.0) (2026-11-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* a profile whose fixed text leaves a provider less than 1024 tokens of diff is refused at startup, exit 2, where 0.7.0 ran it into gaps.
+* a path review reviews no test file by default.
+* reply-cut-off is a new gap and coverage reason; a reply that lists every finding it was asked for, read at the floor or at maxFindings, is now a findings-capped gap; and a profile's meta gains recovery.
+* meta.adaptations is a new required field of the result, and structuredOutput unset now moves to prompt mode on an empty reply.
+* with maxTokens unset, a research request sends about 21000 tokens on a large window and a quarter of a small one, and a vote at most 1024 plus the thinking allowance, where both sent 16000; every research request gains the line that asks for at most N findings.
+* no-answer is a new failure kind of a provider error and of a vote.
+* results.jsonl holds no denied record, and report.json and report.md no denied count.
+* a gating profile's failed research part exits 4 where it exited 3, and provider-down is a new gap reason, coverage reason and vote failure kind.
+
+### Features
+
+* expect a research reply at its usual size, and bound recovery in the estimate's worst case ([badfea1](https://github.com/this-is-tobi/quorum/commit/badfea198642b607525d5219a886109061faadd4))
+* give each request kind a reply budget, and ask research for as many findings as it holds ([7e35332](https://github.com/this-is-tobi/quorum/commit/7e3533298dda9c56630854820443fd6c8da650c4))
+* keep every answered call with --state, and reuse it on a rerun ([c7e5861](https://github.com/this-is-tobi/quorum/commit/c7e58615b35d4cccc2b215bc33d5b7f5f19e3de8))
+* lower thinking and move to prompt mode by itself for the rest of a review, and say so ([c78e08d](https://github.com/this-is-tobi/quorum/commit/c78e08d6c0e5d21b0efedd67d5925978bf26ecbb))
+* recover a cut-off or saturated research part by splitting it, to a floor of one hunk ([ccb11a3](https://github.com/this-is-tobi/quorum/commit/ccb11a31b7eb3ee321719ff41ab9244dc114b461))
+* refuse before any call a profile whose fixed text leaves a provider no room for a diff ([5637a0f](https://github.com/this-is-tobi/quorum/commit/5637a0f6d66874e5863f0af6701456188c2c390f))
+* set a provider's thinking to off or low, mapped to each protocol's own control ([d22ad35](https://github.com/this-is-tobi/quorum/commit/d22ad3560da8ea6f262eb783f1a47e2c82c201d2))
+* skip test files in a path review by default, listed with the rule test ([9c80c51](https://github.com/this-is-tobi/quorum/commit/9c80c51b4bb8ad8128097645b33fbdc6ead6ba9e))
+
+
+### Bug Fixes
+
+* keep reviewing when a research part fails, and stop calling a provider that is down ([d7912eb](https://github.com/this-is-tobi/quorum/commit/d7912ebb600ee967f06a1f9fdb11e6a099f320ba))
+* read what a reply lacked in every adapter, and say how to fix it ([92a6159](https://github.com/this-is-tobi/quorum/commit/92a615982423b4451e5eb06b457ad834156e87f4))
+
+
+### Code Refactoring
+
+* record every bench review with its result, now that no reply denies a review ([ec97dac](https://github.com/this-is-tobi/quorum/commit/ec97dacbf009c03ea4f99dfff0bcdd404238cd07))
+
+
+### Dependencies
+
+* **deps:** update bun to v1.4.5 ([dbf815f](https://github.com/this-is-tobi/quorum/commit/dbf815f3ff349fa4c3edcd4896c30499f15d930f))
+
 ## [0.7.0](https://github.com/this-is-tobi/quorum/compare/v0.6.0...v0.7.0) (2026-11-17)
 
 
