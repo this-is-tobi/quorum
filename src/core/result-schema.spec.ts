@@ -176,6 +176,82 @@ describe('the schemas of a result', () => {
     }
   })
 
+  it('reads reply-cut-off as a gap and a coverage reason, and meta.profiles.<id>.recovery strictly, in the public view too', () => {
+    const base = reportResult()
+    const recovery = {
+      parts: 2,
+      pieces: 5,
+      saturated: 1,
+      unreadHunks: 3,
+    }
+    const result = reportResult({
+      meta: {
+        ...base.meta,
+        incomplete: [
+          { profile: 'security', reason: 'reply-cut-off', detail: '3 hunk(s) of 1 file(s) were cut off' },
+        ],
+        profiles: {
+          security: {
+            ...base.meta.profiles.security,
+            coverage: [
+              {
+                file: 'a.js',
+                status: 'partial',
+                left: [
+                  { start: 3, end: 4, reason: 'reply-cut-off' },
+                ],
+              },
+              { file: 'b.js', status: 'unreviewed', reason: 'reply-cut-off' },
+            ],
+            recovery,
+          },
+        },
+      },
+    })
+    const full = saved(result)
+    expect(resultSchema.parse(full)).toEqual(full)
+    const view = saved(publicView(result))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(view.meta.profiles.security.recovery).toEqual(recovery)
+    expect(view.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'reply-cut-off' },
+    ])
+    // It is optional, and each count is a count: nothing else is read.
+    const { recovery: _none, ...without } = full.meta.profiles.security
+    expect(resultSchema.safeParse({
+      ...full,
+      meta: {
+        ...full.meta,
+        profiles: { security: without },
+      },
+    }).success).toBe(true)
+    for (const forged of [
+      { ...recovery, parts: -1 },
+      { ...recovery, extra: 1 },
+      { parts: 1, pieces: 1, saturated: 0 },
+      { ...recovery, pieces: 1.5 },
+    ] as Forged[]) {
+      expect(resultSchema.safeParse({
+        ...full,
+        meta: {
+          ...full.meta,
+          profiles: {
+            security: { ...full.meta.profiles.security, recovery: forged },
+          },
+        },
+      }).success, JSON.stringify(forged)).toBe(false)
+      expect(publicViewSchema.safeParse({
+        ...view,
+        meta: {
+          ...view.meta,
+          profiles: {
+            security: { ...view.meta.profiles.security, recovery: forged },
+          },
+        },
+      }).success, JSON.stringify(forged)).toBe(false)
+    }
+  })
+
   it('reads a result holding no-answer as a vote failure', () => {
     const empty = {
       angle: 'b',

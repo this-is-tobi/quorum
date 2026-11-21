@@ -309,7 +309,7 @@ describe('runReviews', () => {
     expect(events.map(({ type }) => type)).toEqual(['recorded', 'recorded'])
   })
 
-  it('records a review whose research reply was cut off as a result with the research-failed gap, with the usage its error carries', async () => {
+  it('records a review whose research reply was cut off as a result with the reply-cut-off gap, with the usage its error carries', async () => {
     const { lines } = await run([
       {
         onCall: (request) => {
@@ -333,7 +333,7 @@ describe('runReviews', () => {
       result: {
         meta: {
           incomplete: [
-            { profile: 'security', reason: 'research-failed', detail: 'the research call failed (truncated)' },
+            { profile: 'security', reason: 'reply-cut-off', detail: '1 hunk(s) of 1 file(s) were cut off at their reply\'s limit even alone, listed as reply-cut-off in meta.profiles.security.coverage: raise maxTokens, set thinking: low, or lower partTokens' },
           ],
         },
       },

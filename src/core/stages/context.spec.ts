@@ -163,7 +163,7 @@ describe('the deadline of an attempt', () => {
   it('clears the deadline\'s timer when an attempt succeeds, fails, or throws before it returns a promise', async () => {
     const clock = fakeClock()
     const { ctx } = context(clock)
-    await expect(callProvider(ctx, requester, target(async () => ({ text: 'ok', model: 'm' })), () => request)).resolves.toBe('ok')
+    await expect(callProvider(ctx, requester, target(async () => ({ text: 'ok', model: 'm' })), () => request)).resolves.toEqual({ text: 'ok' })
     expect(clock.pending()).toBe(0)
     const refusal = new ProviderError({ providerId: 'p', kind: 'refusal', message: 'no' })
     await expect(callProvider(ctx, requester, target(async () => {
@@ -182,7 +182,7 @@ describe('the deadline of an attempt', () => {
     const clock = fakeClock()
     const { ctx } = context(clock)
     const plain = (() => ({ text: 'plain', model: 'm' })) as unknown as Provider['complete']
-    await expect(callProvider(ctx, requester, target(plain), () => request)).resolves.toBe('plain')
+    await expect(callProvider(ctx, requester, target(plain), () => request)).resolves.toEqual({ text: 'plain' })
     expect(clock.pending()).toBe(0)
   })
 
@@ -349,7 +349,7 @@ describe('the retries of a call', () => {
     })
     const call = callProvider(ctx, requester, flaky, () => request)
     const queued = callProvider(ctx, { ...requester, lens: 'defenses' }, behind, () => request)
-    await expect(settle(clock, call)).resolves.toBe('second')
+    await expect(settle(clock, call)).resolves.toEqual({ text: 'second' })
     expect(clock.armed.slice(0, 3)).toEqual([1000, 250, 1000])
     expect(events[0]).toEqual({
       type: 'call',
@@ -363,7 +363,7 @@ describe('the retries of a call', () => {
       usage: { inputTokens: 4, outputTokens: 6 },
       spent: 10,
     })
-    await expect(settle(clock, queued)).resolves.toBe('queued')
+    await expect(settle(clock, queued)).resolves.toEqual({ text: 'queued' })
     expect(order).toEqual(['first', 'first', 'queued'])
     expect(getEventListeners(ctx.stop, 'abort')).toHaveLength(0)
   })
@@ -384,7 +384,7 @@ describe('the retries of a call', () => {
       }
       return { text: 'after the hint', model: 'm' }
     }, { retries: 2 })
-    await expect(settle(clock, callProvider(ctx, requester, limited, () => request))).resolves.toBe('after the hint')
+    await expect(settle(clock, callProvider(ctx, requester, limited, () => request))).resolves.toEqual({ text: 'after the hint' })
     expect(clock.armed).toEqual([1000, 2500, 1000])
 
     const longer = fakeClock(0.5)
@@ -499,8 +499,10 @@ describe('the retries of a call', () => {
       return { text: 'queued', model: 'm' }
     })
     const researcher: Requester = { profile: 'security', role: 'research' }
-    const first = settle(clock, callProvider(ctx, researcher, down, () => request, (error, attempts) => {
-      order.push(`failed ${attempts} ${error === thrown}`)
+    const first = settle(clock, callProvider(ctx, researcher, down, () => request, {
+      onFailure: (error, attempts) => {
+        order.push(`failed ${attempts} ${error === thrown}`)
+      },
     })).catch(() => {
       order.push('first settled')
     })
@@ -742,7 +744,7 @@ describe('the review\'s token cap', () => {
         ...used(50, 10),
       }
     }, worst(60))
-    await expect(callProvider(ctx, requester, metered, () => request)).resolves.toBe('ok')
+    await expect(callProvider(ctx, requester, metered, () => request)).resolves.toEqual({ text: 'ok' })
     expect(spentOf(events)).toEqual([60])
     const error = await callProvider(ctx, requester, metered, () => request).catch((caught: unknown) => caught)
     expect(error).toBeInstanceOf(LimitError)
@@ -790,8 +792,8 @@ describe('the review\'s token cap', () => {
       model: 'm',
       ...used(12, 8),
     })
-    await expect(one).resolves.toBe('first')
-    await expect(two).resolves.toBe('second')
+    await expect(one).resolves.toEqual({ text: 'first' })
+    await expect(two).resolves.toEqual({ text: 'second' })
     expect(sent).toEqual(['first', 'second'])
     expect(spentOf(events)).toEqual([20, 10])
     expect(clock.pending()).toBe(0)
@@ -821,7 +823,7 @@ describe('the review\'s token cap', () => {
       model: 'm',
       ...used(30, 20),
     })
-    await expect(one).resolves.toBe('first')
+    await expect(one).resolves.toEqual({ text: 'first' })
     const error = await two
     expect(error).toBeInstanceOf(LimitError)
     expect(error).toMatchObject({ limit: 'token-cap', message: NO_ROOM })
@@ -1213,7 +1215,7 @@ describe('the adaptations of a call', () => {
       if (asked.thinking === undefined) throw cutOff()
       return answered('done')
     }, lowers)
-    await expect(settle(clock, callProvider(ctx, requester, lowering, () => request))).resolves.toBe('done')
+    await expect(settle(clock, callProvider(ctx, requester, lowering, () => request))).resolves.toEqual({ text: 'done' })
     expect(sent).toEqual([undefined, 'low'])
     expect(events.map(event => event.type)).toEqual(['adapted', 'call'])
     expect(events[0]).toEqual({
@@ -1437,7 +1439,7 @@ describe('the adaptations of a call', () => {
     // The second call waits in ready for the probe: it has sent nothing.
     expect(sent).toEqual([undefined, 'low'])
     release()
-    await expect(first).resolves.toBe('{}')
+    await expect(first).resolves.toEqual({ text: '{}' })
     // It then went at the settled level, failed for the setting the review has moved, and was sent no second time.
     expect(await second).toBeInstanceOf(ProviderError)
     expect(sent).toEqual([undefined, 'low', 'low'])
@@ -1459,8 +1461,10 @@ describe('the adaptations of a call', () => {
       }
       throw cutOff()
     }, lowers)
-    const error = await settle(clock, callProvider(ctx, requester, down, () => request, (failure) => {
-      failures.push(failure)
+    const error = await settle(clock, callProvider(ctx, requester, down, () => request, {
+      onFailure: (failure) => {
+        failures.push(failure)
+      },
     })).catch((caught: unknown) => caught)
     expect(error).toBe(ctx.health.refused(down.provider))
     expect(failures).toEqual([error])
@@ -1503,5 +1507,60 @@ describe('the adaptations of a call', () => {
       noAnswer: 'thinking',
       message: 'x',
     }))).toBeUndefined()
+  })
+})
+
+describe('a stage\'s check of a reply', () => {
+  const reply = (text: string, usage = { inputTokens: 10, outputTokens: 5 }): Provider['complete'] => async () => ({ text, model: 'm', usage })
+
+  it('fails a call whose check throws with that error, and returns saturated when the check says so', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const unreadable = new Error('no envelope')
+    const heard: Array<[unknown, number]> = []
+    const error = await callProvider(ctx, requester, target(reply('x')), () => request, {
+      check: () => {
+        throw unreadable
+      },
+      onFailure: (failure, attempts) => {
+        heard.push([failure, attempts])
+      },
+    }).catch((caught: unknown) => caught)
+    expect(error).toBe(unreadable)
+    expect(heard).toEqual([
+      [unreadable, 1],
+    ])
+    // The call answered before its check ran: its one event says so, counts its usage, and no second event follows; the health was told it answered.
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'call',
+        ok: true,
+        usage: { inputTokens: 10, outputTokens: 5 },
+      }),
+    ])
+    expect(ctx.health.refused(target(reply('x')).provider)).toBeUndefined()
+    // A check that calls the reply saturated returns it with no text, and a check that calls it an answer returns the text.
+    await expect(callProvider(ctx, requester, target(reply('{"findings":[]}')), () => request, {
+      check: () => 'saturated',
+    })).resolves.toEqual({ saturated: true })
+    await expect(callProvider(ctx, requester, target(reply('{"findings":[]}')), () => request, {
+      check: () => 'answer',
+    })).resolves.toEqual({ text: '{"findings":[]}' })
+    expect(events.filter(event => event.type === 'call' && event.ok)).toHaveLength(3)
+  })
+
+  it('counts the replies a check refuses as answers to the provider-down rule, so three of them never mark the provider down', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const live = target(reply('not json'))
+    for (let call = 0; call < 4; call++) {
+      await callProvider(ctx, requester, live, () => request, {
+        check: () => {
+          throw new Error('unreadable')
+        },
+      }).catch(() => undefined)
+    }
+    expect(ctx.health.refused(live.provider)).toBeUndefined()
+    expect(events.some(event => event.type === 'provider-down')).toBe(false)
   })
 })

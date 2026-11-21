@@ -195,6 +195,68 @@ describe('renderEvent', () => {
     expect(renderEvent(hostile, true, 'public')).toBe(line.replace('api:', 'a<U+202E>b:'))
   })
 
+  const recoveredEvent = (fields: Partial<Extract<QuorumEvent, { type: 'recovered' }>>): QuorumEvent => ({
+    type: 'recovered',
+    profile: 'security',
+    part: 7,
+    parts: 44,
+    noAnswer: 'reply',
+    limit: 21_024,
+    thinkingLowered: false,
+    pieces: 4,
+    read: 4,
+    unreadHunks: 0,
+    unreadFiles: 0,
+    ...fields,
+  })
+
+  it.each<[string, QuorumEvent, string]>([
+    [
+      'a cut-off part whose pieces were all read',
+      recoveredEvent({}),
+      'part 7 of 44: reply cut off at its limit of 21024 tokens (reply): split into 4 pieces, all read',
+    ],
+    [
+      'a cut-off part with no known limit, whose floor left hunks unread',
+      recoveredEvent({
+        noAnswer: 'thinking',
+        limit: undefined,
+        pieces: 8,
+        read: 6,
+        unreadHunks: 2,
+        unreadFiles: 1,
+      }),
+      'part 7 of 44: reply cut off at its limit (thinking): split into 8 pieces; 2 hunk(s) of 1 file(s) left unread, cut off even alone: raise maxTokens, set thinking: low, or lower partTokens',
+    ],
+    [
+      'a part cut off at the server\'s window, with a piece that failed',
+      recoveredEvent({
+        noAnswer: 'window',
+        limit: undefined,
+        pieces: 2,
+        read: 1,
+      }),
+      'part 7 of 44: reply cut off at the server\'s window (window): split into 2 pieces; 1 not read, see the gaps',
+    ],
+    [
+      'a saturated part',
+      recoveredEvent({
+        part: 9,
+        noAnswer: 'saturated',
+        limit: undefined,
+        findings: 15,
+        pieces: 2,
+        read: 2,
+      }),
+      'part 9 of 44: its reply listed the 15 findings it was asked for at most: split into 2 pieces, all read',
+    ],
+  ])('writes a recovered event as %s, one inert line, prefixed with its profile when several run', (_name, event, line) => {
+    expect(renderEvent(event)).toBe(line)
+    expect(renderEvent(event, true)).toBe(`[security] ${line}`)
+    expect(renderEvent(event, true, 'public')).toBe(`[security] ${line}`)
+    expect(renderEvent({ ...event, profile: `a${RLO}b` } as QuorumEvent, true)).toBe(`[a<U+202E>b] ${line}`)
+  })
+
   it('renders a flag with where it points', () => {
     expect(renderEvent({
       type: 'flag',

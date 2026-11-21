@@ -18,7 +18,7 @@ import { leftOutIssues, mergeLeftOut, sendIssues, sourceIssues, sourceOf } from 
 import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, LimitError, limitGaps, maxReviewTokensProblem } from './limits.ts'
 import { isRecord } from './output.ts'
 import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap } from './parts.ts'
-import type { PartOutcome } from './parts.ts'
+import type { Packing, PartResult } from './parts.ts'
 import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts } from './ports.ts'
 import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
@@ -253,7 +253,7 @@ function estimate(compiled: Compiled, input: EstimateInput): Estimate {
  * states none, or a diff within `partTokens` and within the room, is sent the whole diff in one request,
  * as it always was; else the filtered diff's sections, in order, are packed into parts of at most
  * `partTokens` whose request fits the room, a section too large for a part split between its hunks and
- * a hunk never cut. Each part is one research call, in order, that names its position and the change's
+ * a hunk never cut. Each part is a research call, in order, up to 15 when recovery splits it, that names its position and the change's
  * files; the replies are read in order, up to `maxFindings` findings in all, each checked against the
  * whole diff. A hunk, or a section with no hunk, that fits in no research part of the window is no part's:
  * the profile records one `too-large` gap for them before any call is sent, which no flag lifts for a
@@ -412,7 +412,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     source,
     profiles: Object.fromEntries(runs.map((run, index) => [
       run.id,
-      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, coverageOf(scope, filtered, plans[index]?.packing, outcomes[index]?.parts ?? [])),
+      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, coverageOf(scope, filtered, outcomes[index]?.packing ?? plans[index]?.packing, outcomes[index]?.parts ?? []), outcomes[index]?.recovery),
     ])),
     ...(tally.usage === undefined
       ? {}
@@ -443,15 +443,30 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
  * research, resolves with its gaps.
  */
 function nothingAnswered(ctx: RunContext, runs: readonly ProfileRun[], outcomes: readonly ProfileOutcome[]): ProviderDownError | undefined {
-  if (outcomes.length === 0 || outcomes.some(outcome => outcome.parts.includes('reviewed'))) return undefined
+  if (outcomes.length === 0 || outcomes.some(outcome => outcome.parts.some(isReviewed))) return undefined
   const { health } = ctx
   const down = runs.map(run => health.refused(run.research.provider)).find(error => error !== undefined)
   return down ?? runs.map(run => health.spent(run.research.provider, run.research.ref.id)).find(error => error !== undefined)
 }
 
-/** What a profile's review comes to: its panel's outcome, and what became of each part of its research, for its coverage. */
+/** Whether a part was answered: it was `reviewed`, or one of the pieces recovery split it into was. */
+function isReviewed(part: PartResult): boolean {
+  return typeof part === 'string'
+    ? part === 'reviewed'
+    : part.pieces.some(({ outcome }) => outcome === 'reviewed')
+}
+
+/** The limit that stopped a part, for `limitGaps`: its own outcome, or the first limit among its pieces' (the part's later pieces were stopped by it), else what it was read as. */
+function limitOf(part: PartResult): string {
+  if (typeof part === 'string') return part
+  return part.pieces.find(({ outcome }) => outcome === 'token-cap' || outcome === 'review-deadline')?.outcome ?? 'reviewed'
+}
+
+/** What a profile's review comes to: its panel's outcome, and what became of each part of its research and the packing and recovery counts the coverage and the meta read. */
 interface ProfileOutcome extends PanelOutcome {
-  readonly parts: readonly PartOutcome[]
+  readonly parts: readonly PartResult[]
+  readonly packing?: Packing
+  readonly recovery?: ProfileMeta['recovery']
 }
 
 /** Run every profile through its stages at once on the diff's sections, each on its own plan; a blank diff, which has none, runs no stage. */
@@ -468,7 +483,7 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPla
   const researched = await stage(ctx, run.id, 'research', () => research(ctx, run, plan, diff, sections), outcome => outcome.findings.length)
   const candidates = await stage(ctx, run.id, 'dedup', () => dedup(researched.findings), found => found.length)
   const judged = await stage(ctx, run.id, 'panel', () => panel(ctx, run, candidates, sections, diff), outcome => outcome.kept.length + outcome.discarded.length + outcome.unreviewed.length)
-  const limits = limitGaps(run.id, researched.parts, [
+  const limits = limitGaps(run.id, researched.parts.map(limitOf), [
     ...judged.kept,
     ...judged.discarded,
     ...judged.unreviewed,
@@ -482,6 +497,12 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPla
       ...limits,
     ],
     parts: researched.parts,
+    ...researched.packing === undefined
+      ? {}
+      : { packing: researched.packing },
+    ...researched.recovery === undefined
+      ? {}
+      : { recovery: researched.recovery },
   }
 }
 
@@ -516,7 +537,7 @@ function providersOf(run: ProfileRun): ProfileProviders {
   }
 }
 
-function profileMeta(run: ProfileRun, invalidFindings: number, coverage: CoverageEntry[]): ProfileMeta {
+function profileMeta(run: ProfileRun, invalidFindings: number, coverage: CoverageEntry[], recovery: ProfileMeta['recovery']): ProfileMeta {
   return {
     providers: providersOf(run),
     policy: { ...run.thresholds },
@@ -524,6 +545,11 @@ function profileMeta(run: ProfileRun, invalidFindings: number, coverage: Coverag
     gating: run.gating,
     invalidFindings,
     coverage,
+    ...recovery === undefined
+      ? {}
+      : {
+          recovery: { ...recovery },
+        },
   }
 }
 

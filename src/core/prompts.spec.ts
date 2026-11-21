@@ -106,6 +106,27 @@ describe('researchRequest of a part', () => {
     expect(content).toBe('Part 1 of 2 of the change.')
   })
 
+  it('names the piece in the parts block, and gives a one-request research\'s pieces a block with the position line alone', () => {
+    const piece = researchRequest('R', 'diff', undefined, {
+      index: 7,
+      count: 44,
+      piece: { index: 3, count: 4 },
+      files: ['a.js'],
+      unlisted: 2,
+    })
+    expect(firstBlock(piece).content).toBe('Part 7 of 44 of the change, piece 3 of 4.\nThe change\'s files, one per line:\na.js\nand 2 more')
+    // A one-request research has no part: its pieces have a position of their own, and no list of files.
+    const one = researchRequest('R', 'diff', undefined, {
+      piece: { index: 1, count: 2 },
+      files: [],
+      unlisted: 0,
+    })
+    const { tag, content } = firstBlock(one)
+    expect(tag).toMatch(/^untrusted-parts-[0-9a-f]{8}$/)
+    expect(content).toBe('Piece 1 of 2 of the change.')
+    expect(one.system).toContain(`- <${tag}>: which part of the change this request holds, and the files of the whole change, one per line, as the diff names them.`)
+  })
+
   it('keeps the guidelines last, after the part\'s diff', () => {
     const request = researchRequest('R', 'diff', 'Use parameters.', {
       index: 1,

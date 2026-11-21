@@ -155,6 +155,37 @@ describe('publicView', () => {
     expect(Object.keys(view.kept[0])).toEqual(Object.keys(SQL))
   })
 
+  it('keeps meta.profiles.<id>.recovery in the public view, as a copy, and leaves it out of a profile that has none', () => {
+    const recovery = {
+      parts: 2,
+      pieces: 5,
+      saturated: 1,
+      unreadHunks: 3,
+    }
+    const base = reportMeta()
+    const result = reportResult({
+      meta: {
+        ...base,
+        profiles: {
+          security: { ...base.profiles.security, recovery },
+        },
+      },
+    })
+    const view = publicView(result)
+    expect(view.meta.profiles.security.recovery).toEqual(recovery)
+    expect(view.meta.profiles.security.recovery).not.toBe(recovery)
+    expect(Object.keys(view.meta.profiles.security)).toEqual([
+      'policy',
+      'failOn',
+      'gating',
+      'discarded',
+      'invalidFindings',
+      'coverage',
+      'recovery',
+    ])
+    expect(publicView(reportResult()).meta.profiles.security).not.toHaveProperty('recovery')
+  })
+
   it('keeps meta.adaptations in the public view, as a copy', () => {
     const adaptations = [
       {

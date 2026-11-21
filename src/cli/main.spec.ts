@@ -278,7 +278,7 @@ describe('runCli', () => {
     expect(JSON.parse(stdout()).meta.incomplete.map((entry: { reason: string }) => entry.reason)).toEqual(['research-failed'])
   })
 
-  it('exits 4 with a research-failed gap when a gating profile\'s research reply is cut off', async () => {
+  it('exits 4 with a reply-cut-off gap when a gating profile\'s research reply is cut off, its one-hunk diff being at the floor at once', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply({
       choices: [
         {
@@ -291,10 +291,11 @@ describe('runCli', () => {
     expect(await runCli(io)).toBe(EXIT.incomplete)
     const result = JSON.parse(stdout())
     expect(result.kept).toEqual([])
+    const gapWords = '1 hunk(s) of 1 file(s) were cut off at their reply\'s limit even alone, listed as reply-cut-off in meta.profiles.security.coverage: raise maxTokens, set thinking: low, or lower partTokens'
     expect(result.meta.incomplete).toEqual([
-      { profile: 'security', reason: 'research-failed', detail: 'the research call failed (truncated)' },
+      { profile: 'security', reason: 'reply-cut-off', detail: gapWords },
     ])
-    expect(stderr()).toContain('incomplete: research-failed (the research call failed (truncated))')
+    expect(stderr()).toContain(`incomplete: reply-cut-off (${gapWords})`)
   })
 
   it('exits 3 with the provider-down line, then the server\'s own words, when the endpoint answers 500 to every call', async () => {

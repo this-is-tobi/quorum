@@ -385,7 +385,7 @@ export function elapsed(started: number): number {
 }
 
 /**
- * Call a provider inside the review's concurrency limit and return its reply text. The review's
+ * Call a provider inside the review's concurrency limit and return its reply, as `Answered`. The review's
  * stop is checked inside the slot, before the request is built, so a call still queued when the review
  * is aborted or reaches its deadline never starts. `buildRequest` runs inside the slot once that check
  * passes: a request holds the diff or a section of it, and building it only there keeps the requests a
@@ -448,8 +448,15 @@ export function elapsed(started: number): number {
  * `ProviderDownError`, which counts nowhere. A call meets each setting's probe at most once. The call is told to
  * the health once, after its last send, and a probe's 400 or 422 counts toward nothing: a refused probe ends the
  * call with its first failure. A research reply goes through `ctx.adapt.reasoned`.
+ *
+ * The stage's `check`, when it passes one, reads the reply once the call is over as a call that answered: after
+ * its usage is settled, its `call` event is sent as `ok` and the down rule has seen the reply. It says whether the
+ * reply is an answer or is saturated (a research reply that listed as many findings as it was asked for at most,
+ * which the stage splits and does not read), and the call returns `saturated` for such a reply, with no text. A
+ * throw from it, an `OutputError` the stage tells as a gap, ends the call with that error: no second event is
+ * sent, the health is told nothing more, and `onFailure` hears it.
  */
-export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest, onFailure?: (error: unknown, attempts: number) => void): Promise<string> {
+export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest, options: CallOptions = {}): Promise<Answered> {
   return ctx.limit(async () => {
     await ctx.adapt.ready(target, ctx.stop)
     ctx.stop.throwIfAborted()
@@ -511,7 +518,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
         }
       }
       // Still inside the slot: a review aborted here never starts the queued call the slot goes to next.
-      onFailure?.(error, attempts)
+      options.onFailure?.(error, attempts)
       return error
     }
     /**
@@ -627,8 +634,34 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       ok: true,
       ...counted(attempts, addUsage(usage, replied), spent),
     })
-    return reply.text
+    return answeredBy(reply.text, options, attempts)
   })
+}
+
+/** What a reply is read as: its text, or a saturated reply, which the stage does not read. */
+export type Answered = { readonly text: string } | { readonly saturated: true }
+
+/** What a stage hands a call besides its request. */
+export interface CallOptions {
+  /** Reads a reply that came back: whether it is an answer or is saturated; a throw ends the call with that error. */
+  readonly check?: (text: string) => 'answer' | 'saturated'
+  /** Hears a call's failure, with the attempts it made, once, inside the call's slot, before the call rethrows. */
+  readonly onFailure?: (error: unknown, attempts: number) => void
+}
+
+/** The reply's reading by the stage's `check`, which is an answer when the stage passes none; a throw from it is heard by `onFailure` and rethrown. */
+function answeredBy(text: string, { check, onFailure }: CallOptions, attempts: number): Answered {
+  if (check === undefined) return { text }
+  let verdict: 'answer' | 'saturated'
+  try {
+    verdict = check(text)
+  } catch (error) {
+    onFailure?.(error, attempts)
+    throw error
+  }
+  return verdict === 'saturated'
+    ? { saturated: true }
+    : { text }
 }
 
 /**

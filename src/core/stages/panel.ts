@@ -7,7 +7,7 @@ import { confidenceFor, undecidedLevel, verdictStatus } from '../policy.ts'
 import type { CompletionRequest } from '../ports.ts'
 import { voteRequest } from '../prompts.ts'
 import { tokenBound } from '../tokens.ts'
-import type { Confidence, Finding, IncompleteEntry, LensVote, Verdict, VerdictStatus, VoteFailure } from '../types.ts'
+import type { Confidence, Finding, IncompleteEntry, LensVote, Verdict, VerdictStatus, Vote, VoteFailure } from '../types.ts'
 import { callProvider, isTooLarge, providerFailure, refusalMessage, roomOf } from './context.ts'
 import type { LensRun, ProfileRun, RunContext } from './context.ts'
 
@@ -137,13 +137,24 @@ async function judge(ctx: RunContext, run: ProfileRun, finding: Finding, context
 async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens: LensRun, context: VoteContext): Promise<Cast> {
   let lensVote: LensVote
   let refusal: string | undefined
-  let replied = false
+  let unreadable = false
   try {
-    const text = await callProvider(ctx, { profile: run.id, role: 'vote', lens: lens.id }, lens, () => requestFor(ctx, run, finding, lens, context))
-    replied = true
+    // The vote is read inside the call, once it has answered, so a reply that is no vote is the voter's `unusable-reply`.
+    const read: { vote?: Vote } = {}
+    await callProvider(ctx, { profile: run.id, role: 'vote', lens: lens.id }, lens, () => requestFor(ctx, run, finding, lens, context), {
+      check: (text) => {
+        try {
+          read.vote = parseVoteReply(text)
+        } catch (error) {
+          unreadable = true
+          throw error
+        }
+        return 'answer'
+      },
+    })
     lensVote = {
       angle: lens.id,
-      vote: parseVoteReply(text),
+      vote: read.vote!,
       error: null,
       failure: null,
     }
@@ -156,7 +167,7 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
       error: error instanceof Error
         ? error.message
         : String(error),
-      failure: replied
+      failure: unreadable
         ? { kind: 'unusable-reply' }
         : voteFailureOf(error),
     }

@@ -115,6 +115,7 @@ const coverageReason = z.enum([
   'review-deadline',
   'research-failed',
   'provider-down',
+  'reply-cut-off',
 ])
 const leftRange = z.strictObject({
   start: count,
@@ -133,6 +134,13 @@ const coverageEntry = z.strictObject({
   left: z.array(leftRange).optional(),
 })
 const failOn = z.enum(FAIL_ON_LEVELS)
+/** What recovery did for a profile's research, which its meta holds only when it split a part. */
+const recovery = z.strictObject({
+  parts: count,
+  pieces: count,
+  saturated: count,
+  unreadHunks: count,
+})
 /** What a profile's meta records of a review. The keys of each shape are in the order the core writes them, so a result read back is written as it was. */
 const profileMeta = z.strictObject({
   providers: z.strictObject({
@@ -144,6 +152,7 @@ const profileMeta = z.strictObject({
   gating: z.boolean(),
   invalidFindings: count,
   coverage: z.array(coverageEntry),
+  recovery: recovery.optional(),
 })
 /** A profile's meta in the public view: no providers, and the count of its discarded findings. */
 const publicProfileMeta = z.strictObject({
@@ -153,6 +162,7 @@ const publicProfileMeta = z.strictObject({
   discarded: count,
   invalidFindings: count,
   coverage: z.array(coverageEntry),
+  recovery: recovery.optional(),
 })
 /** Why part of a review is missing: the closed list of `IncompleteReason`. */
 export const gapReason = z.enum([
@@ -166,6 +176,7 @@ export const gapReason = z.enum([
   'too-large',
   'token-cap',
   'review-deadline',
+  'reply-cut-off',
   'binary',
   'submodule',
   'secret',
