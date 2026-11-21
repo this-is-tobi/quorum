@@ -1,0 +1,438 @@
+/**
+ * The block the live view redraws under the log: 4 to 8 lines of where a review stands, pure, from the view's
+ * state, the time, the terminal's size and the glyphs, so the whole sweep of sizes is tested with no terminal.
+ *
+ * Every line is made in three steps, in this order and for this reason. A name from a config (a profile's id) is
+ * first made inert, so a control, an escape or a bidi override in it is shown as `<U+XXXX>` and no terminal acts on
+ * it. The line's plain text is then measured and cut to the columns less one, with the ellipsis: measuring before
+ * the colour is added means an escape sequence is never counted as a column, and cutting before it means one is never
+ * cut in half. Only then is colour put around quorum's own glyphs and a bar's finished cells, from the 16-colour
+ * palette. So the sequences a terminal receives from the block are quorum's alone, whatever the names hold, and no
+ * line is wider than the terminal less one column, which a terminal would wrap.
+ *
+ * The block narrows, then shortens, then goes with the terminal: 20-cell bars and the sparkline from 80 columns, 10
+ * cells below, the one line alone below 40; at most 8 lines and at most two fewer than the rows, none under 4 rows.
+ */
+
+import { inertLine } from '../../core/sanitize.ts'
+import type { ReportView } from '../../report/view.ts'
+import { partsOf, rangeWords } from './eta.ts'
+import type { TimeLeft } from './eta.ts'
+import type { Glyphs } from './glyphs.ts'
+import { elapsedWords, kindWords } from './lines.ts'
+import { BUCKET_MS, BUCKETS } from './model.ts'
+import type { CallState, ProfileState, ViewState } from './model.ts'
+import { cut, widthOf } from './width.ts'
+
+export interface FrameOptions {
+  readonly columns: number
+  readonly rows: number
+  readonly glyphs: Glyphs
+  readonly color: boolean
+  readonly view: ReportView
+  readonly timeLeft: TimeLeft
+}
+
+/** The most lines the block takes, the hint of a stopping review included. */
+const MAX_LINES = 8
+/** The fewest rows a block is drawn in: its rule and a profile line, and two rows of the screen left to the log. */
+const MIN_ROWS = 4
+/** The rows of the terminal the block leaves to the log. */
+const LOG_ROWS = 2
+/** The columns from which the bars are wide and the tokens line has its sparkline, and below which the block is one line. */
+const WIDE_COLUMNS = 80
+const ONE_LINE_COLUMNS = 40
+const WIDE_CELLS = 20
+const NARROW_CELLS = 10
+/** The width of the labels that start the lines, and of the profile's id in them: one column less, for the space after it. */
+const LABEL = 10
+
+const ESC = String.fromCharCode(0x1B)
+
+/** The colours the block has, with the code of each: its bars' finished cells and its retry glyph. */
+const TINTS = { cyan: 36, yellow: 33 } as const
+type Tint = keyof typeof TINTS
+
+/** A stretch of a line: its text, and the colour of its glyphs when it is one. */
+interface Piece {
+  readonly text: string
+  readonly tint?: Tint
+}
+
+type Row = readonly Piece[]
+
+const plain = (row: Row): string => row.map(piece => piece.text).join('')
+
+/** `text` as a row of one uncoloured piece. */
+function words(text: string): Row {
+  return [
+    { text },
+  ]
+}
+
+/** A token count told in three significant digits at most, floored: `999`, `1.23k`, `12.3k`, `812k`, `9.86M`. */
+export function tokenWords(tokens: number): string {
+  const count = Math.max(0, Math.floor(tokens))
+  if (count < 1000) return String(count)
+  const units = ['k', 'M', 'B', 'T']
+  let scale = 1000
+  let unit = 0
+  while (unit < units.length - 1 && count >= scale * 1000) {
+    scale *= 1000
+    unit += 1
+  }
+  const whole = Math.floor(count / scale)
+  const decimals = whole < 10
+    ? 2
+    : whole < 100
+      ? 1
+      : 0
+  const steps = 10 ** decimals
+  return `${(Math.floor(count / (scale / steps)) / steps).toFixed(decimals)}${units[unit]}`
+}
+
+/** `row` as a terminal line: its text cut to `columns - 1`, then its glyphs coloured when `color` is set. */
+function finish(row: Row, options: FrameOptions): string {
+  const { glyphs, color } = options
+  const whole = plain(row)
+  const cutText = cut(whole, options.columns - 1, glyphs.ellipsis)
+  const kept = cutText === whole
+    ? whole.length
+    : cutText.endsWith(glyphs.ellipsis)
+      ? cutText.length - glyphs.ellipsis.length
+      : 0
+  let left = kept
+  let line = ''
+  for (const { text, tint } of row) {
+    const shown = text.slice(0, left)
+    left -= shown.length
+    line += shown !== '' && color && tint !== undefined
+      ? `${ESC}[${TINTS[tint]}m${shown}${ESC}[0m`
+      : shown
+  }
+  return cutText === whole
+    ? line
+    : `${line}${cutText.endsWith(glyphs.ellipsis)
+      ? glyphs.ellipsis
+      : ''}`
+}
+
+/** The rule, as wide as the line may be, ending with the time in. */
+function ruleRow(elapsed: number, columns: number, glyphs: Glyphs): Row {
+  const tail = ` ${elapsedWords(elapsed)} ${glyphs.rule}${glyphs.rule}`
+  return words(`${glyphs.rule.repeat(Math.max(0, columns - 1 - tail.length))}${tail}`)
+}
+
+/** A bar of `cells` cells, `done` of `total` of them finished, whole only when `done` has reached `total`. */
+function bar(done: number, total: number, cells: number, finished: boolean, glyphs: Glyphs): Row {
+  const filled = total > 0
+    ? Math.min(cells, Math.floor(done / total * cells))
+    : finished
+      ? cells
+      : 0
+  return [
+    {
+      text: glyphs.done.repeat(filled),
+      tint: 'cyan',
+    },
+    {
+      text: glyphs.todo.repeat(cells - filled),
+    },
+  ]
+}
+
+/** A profile's id for the label column: inert, then cut to the column less one and padded to it. */
+function labelOf(id: string, glyphs: Glyphs): string {
+  const name = cut(inertLine(id), LABEL - 1, glyphs.ellipsis)
+  return `${name}${' '.repeat(LABEL - widthOf(name))}`
+}
+
+/** The research is over for a profile: its parts are all answered or ended. */
+const researchOver = ({ parts, done }: ProfileState): boolean => parts !== undefined && done >= parts
+
+/** Whether any profile still researches: the profiles of the heartbeat's research, which the time left reads as well. */
+function researching(state: ViewState): boolean {
+  for (const profile of state.profiles.values()) {
+    if (profile.stage === 'waiting' || (profile.stage === 'research' && !researchOver(profile))) return true
+  }
+  return false
+}
+
+/** Whether the review is in its panel: research is over everywhere and a panel has started. */
+function inPanel(state: ViewState): boolean {
+  return !researching(state) && [
+    ...state.profiles.values(),
+  ].some(profile => profile.votes !== undefined)
+}
+
+function profileRow(id: string, profile: ProfileState, state: ViewState, cells: number, options: FrameOptions): Row {
+  const { glyphs } = options
+  const label = labelOf(id, glyphs)
+  if (profile.votes !== undefined) {
+    return [
+      { text: `${label}panel    ` },
+      ...bar(profile.cast, profile.votes, cells, profile.stage === 'done', glyphs),
+      { text: `  ${profile.cast}/${profile.votes} votes ${glyphs.dot} ${profile.kept} kept` },
+    ]
+  }
+  const parts = partsOf(state, id)
+  // what a reply listed is left out of the public view, as the part's log line leaves it out
+  const listed = options.view === 'public'
+    ? ''
+    : ` ${glyphs.dot} ${profile.listed} finding(s) listed`
+  return [
+    { text: `${label}research ` },
+    ...bar(profile.done, parts, cells, researchOver(profile), glyphs),
+    { text: `  ${profile.done}/${parts} parts${listed}` },
+  ]
+}
+
+/** The profile lines: one each for at most two profiles, else the first and a line for the rest. */
+function profileRows(state: ViewState, cells: number, options: FrameOptions): Row[] {
+  const entries = [...state.profiles]
+  if (entries.length <= 2) return entries.map(([id, profile]) => profileRow(id, profile, state, cells, options))
+  const [[firstId, first], ...rest] = entries
+  const sum = (pick: (id: string, profile: ProfileState) => number): number => rest.reduce((total, [id, profile]) => total + pick(id, profile), 0)
+  return [
+    profileRow(firstId, first, state, cells, options),
+    words(`and ${rest.length} more profile(s): ${sum((_, profile) => profile.done)}/${sum(id => partsOf(state, id))} parts, ${sum((_, profile) => profile.cast)}/${sum((_, profile) => profile.votes ?? 0)} votes`),
+  ]
+}
+
+/** The one line of a narrow terminal: where research or the panel stands, the calls in flight and the time in. */
+function oneRow(state: ViewState, now: number, options: FrameOptions): Row {
+  const profiles = [...state.profiles]
+  const sum = (pick: (id: string, profile: ProfileState) => number): number => profiles.reduce((total, [id, profile]) => total + pick(id, profile), 0)
+  const { dot } = options.glyphs
+  const progress = inPanel(state)
+    ? `panel ${sum((_, profile) => profile.cast)}/${sum((_, profile) => profile.votes ?? 0)}`
+    : `research ${sum((_, profile) => profile.done)}/${sum(id => partsOf(state, id))}`
+  return words(`${progress} ${dot} ${state.calls.size} calls ${dot} ${elapsedWords(now - (state.startedAt ?? now))}`)
+}
+
+/** The label of a call in the calls line: `p20`, `p8.2` for a piece of a part, `f12` for a vote of a finding. */
+function callLabel(state: ViewState, call: CallState): string {
+  if (call.part !== undefined) {
+    return call.part.piece === undefined
+      ? `p${call.part.index}`
+      : `p${call.part.index}.${call.part.piece.index}`
+  }
+  return `f${state.findings.get(call.finding ?? '') ?? '?'}`
+}
+
+/** One call in flight as an item of the calls line: its label and its time, or while it waits to retry, its failure and the seconds left. */
+function callItem(state: ViewState, call: CallState, now: number, glyphs: Glyphs): Row {
+  const label = callLabel(state, call)
+  if (call.waitingUntil !== undefined && call.waitingUntil > now && call.failure !== undefined) {
+    return [
+      { text: glyphs.retry, tint: 'yellow' },
+      { text: ` ${label} ${kindWords(call.failure)}, ${Math.ceil((call.waitingUntil - now) / 1000)}s` },
+    ]
+  }
+  return words(`${label} ${elapsedWords(now - call.startedAt)}`)
+}
+
+/** The research parts not yet started, and the votes not yet started of the panels that began. */
+function toGo(state: ViewState): number {
+  const started = new Set([
+    ...state.planned.keys(),
+    ...state.partsEnded,
+  ])
+  let parts = 0
+  let votes = 0
+  for (const [id, profile] of state.profiles) {
+    parts += partsOf(state, id)
+    if (profile.votes !== undefined) votes += profile.votes - profile.cast
+  }
+  let flying = 0
+  for (const call of state.calls.values()) {
+    if (call.role === 'vote') flying += 1
+  }
+  return Math.max(0, parts - started.size) + Math.max(0, votes - flying)
+}
+
+/** Rows of `header` and then the pieces, three spaces apart, a row after the first indented under the header's text; undefined when they need more than `maxRows`. */
+function place(pieces: readonly Row[], header: string, width: number, maxRows: number): Row[] | undefined {
+  const gap = '   '
+  const rows: Piece[][] = [
+    [
+      { text: header },
+    ],
+  ]
+  let used = widthOf(header)
+  for (const piece of pieces) {
+    const size = widthOf(plain(piece))
+    if (used + gap.length + size <= width) {
+      rows.at(-1)!.push({ text: gap }, ...piece)
+      used += gap.length + size
+      continue
+    }
+    if (rows.length >= maxRows) return undefined
+    rows.push([
+      {
+        text: ' '.repeat(LABEL),
+      },
+      ...piece,
+    ])
+    used = LABEL + size
+  }
+  return rows
+}
+
+/**
+ * The calls lines, in at most `maxRows` rows: the calls in flight by start, as many as the rows hold, then `+<n> more`
+ * for those no row held and `+<n> to go` for the parts or votes not yet started.
+ */
+function callRows(state: ViewState, now: number, options: FrameOptions, maxRows: number): Row[] {
+  const items = [
+    ...state.calls.values(),
+  ]
+    .sort((a, b) => a.startedAt - b.startedAt)
+    .map(call => callItem(state, call, now, options.glyphs))
+  const header = `calls     ${state.facts.concurrency} at once`
+  const left = toGo(state)
+  const tailOf = (held: number): Row[] => [
+    ...held < items.length
+      ? [
+          words(`+${items.length - held} more`),
+        ]
+      : [],
+    ...left > 0
+      ? [
+          words(`+${left} to go`),
+        ]
+      : [],
+  ]
+  for (let held = items.length; held >= 0; held--) {
+    const rows = place([
+      ...items.slice(0, held),
+      ...tailOf(held),
+    ], header, options.columns - 1, maxRows)
+    if (rows !== undefined) return rows
+  }
+  // not even the tail fits: one row, which the cut shortens
+  return [
+    [
+      { text: header },
+      ...tailOf(0).flatMap(piece => [
+        { text: '   ' },
+        ...piece,
+      ]),
+    ],
+  ]
+}
+
+/**
+ * The output tokens of the buckets, as the sparkline's cells and the rate of the last two, as of `now`. The two
+ * cover one whole bucket and the part of the current one that has passed, or the time since the review began when
+ * that is shorter, so the rate divides by those seconds; none while no time is covered, and none while the two hold no
+ * tokens, since calls of minutes end rarely and a rate of 0 would be said most of the time.
+ */
+function sparkline(state: ViewState, now: number, glyphs: Glyphs): { readonly spark: string, readonly rate?: number } {
+  const { start, tokens } = state.buckets
+  const last = Math.max(0, Math.floor((now - start) / BUCKET_MS))
+  const cells = Array.from({ length: BUCKETS }, (_, at) => tokens[last - (BUCKETS - 1) + at] ?? 0)
+  const peak = Math.max(...cells)
+  const top = glyphs.spark.length - 1
+  const spark = cells
+    .map(cell => cell <= 0
+      ? glyphs.spark[0]
+      : glyphs.spark[Math.min(top, Math.max(1, Math.ceil(cell / peak * top)))])
+    .join('')
+  const coveredMs = now - (start + Math.max(0, last - 1) * BUCKET_MS)
+  const recent = cells[BUCKETS - 1] + cells[BUCKETS - 2]
+  return coveredMs > 0 && recent > 0
+    ? {
+        spark,
+        rate: Math.round(recent / (coveredMs / 1000)),
+      }
+    : { spark }
+}
+
+function tokensRow(state: ViewState, now: number, wide: boolean, glyphs: Glyphs): Row {
+  const { spark, rate } = sparkline(state, now, glyphs)
+  const spent = `${tokenWords(state.spent)} of ${tokenWords(state.facts.cap.tokens)}`
+  const speed = rate === undefined
+    ? ''
+    : `${rate} tok/s`
+  return words((wide
+    ? `tokens    ${spent}   ${spark}  ${speed}`
+    : `tokens    ${spent}   ${speed}`).trimEnd())
+}
+
+function timeRow(state: ViewState, left: TimeLeft, glyphs: Glyphs): Row | undefined {
+  if (left.kind === 'none') return undefined
+  const votes = left.then === undefined || left.then <= 0
+    ? ''
+    : `, then up to ${left.then} votes`
+  if (left.kind === 'estimating') {
+    return words(inPanel(state)
+      ? 'time      estimating the time left for votes'
+      : `time      estimating the time left for research${votes}`)
+  }
+  const range = rangeWords(left.lowMs, left.highMs, glyphs.range)
+  return words(left.stage === 'panel'
+    ? `time      about ${range} left for votes`
+    : `time      about ${range} left for research${votes}`)
+}
+
+/**
+ * The lines of the block for `state` as of `now`, none before `run:start` and after `run:end`, none under 4 rows.
+ * In the order: the rule, the profile lines, the calls lines, the tokens line (the full view's), the time line. When
+ * the rows are short, the second calls line goes first, then the profile lines past the first, the tokens line, the
+ * time line and the calls line, so a terminal of 4 rows keeps the rule and the first profile alone.
+ */
+export function frameLines(state: ViewState, now: number, options: FrameOptions): string[] {
+  const { columns, rows, glyphs } = options
+  if (state.startedAt === undefined || state.ended || rows < MIN_ROWS) return []
+  const limit = Math.min(MAX_LINES, rows - LOG_ROWS)
+  if (columns < ONE_LINE_COLUMNS) {
+    return [
+      finish(oneRow(state, now, options), options),
+    ]
+  }
+  const wide = columns >= WIDE_COLUMNS
+  const profiles = profileRows(state, wide
+    ? WIDE_CELLS
+    : NARROW_CELLS, options)
+  const [first = [], ...more] = profiles
+  let free = limit - 1 - (profiles.length > 0
+    ? 1
+    : 0)
+  const take = (count: number): boolean => {
+    if (count > free) return false
+    free -= count
+    return true
+  }
+  const withCalls = take(1)
+  const timeLine = timeRow(state, options.timeLeft, glyphs)
+  const time = timeLine !== undefined && take(1)
+    ? timeLine
+    : undefined
+  const withTokens = options.view === 'full' && take(1)
+  const withMore = more.length > 0 && take(more.length)
+  const calls = withCalls
+    ? callRows(state, now, options, free > 0
+        ? 2
+        : 1)
+    : []
+  const block: Row[] = [
+    ruleRow(now - state.startedAt, columns, glyphs),
+    ...profiles.length > 0
+      ? [first]
+      : [],
+    ...withMore
+      ? more
+      : [],
+    ...calls,
+    ...withTokens
+      ? [
+          tokensRow(state, now, wide, glyphs),
+        ]
+      : [],
+    ...time === undefined
+      ? []
+      : [time],
+  ]
+  return block.map(row => finish(row, options))
+}

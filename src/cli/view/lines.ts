@@ -142,7 +142,7 @@ const PIECE_WORDS: ReadonlyArray<readonly [Unread, string]> = [
 ]
 
 /** A failure as the part's line words it: its kind, then its status when it has one. */
-function kindWords({ kind, status }: CallFailure): string {
+export function kindWords({ kind, status }: CallFailure): string {
   return status === undefined
     ? kind
     : `${kind} ${status}`
