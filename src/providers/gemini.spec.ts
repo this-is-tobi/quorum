@@ -662,6 +662,69 @@ describe('gemini', () => {
     }, 402)
     await expect(provider.complete(request)).rejects.toMatchObject({ kind: 'http', status: 402, retryable: false })
   })
+
+  it.each([
+    [
+      'a per-day QuotaFailure',
+      429,
+      {
+        error: {
+          code: 429,
+          message: 'Resource exhausted',
+          status: 'RESOURCE_EXHAUSTED',
+          details: [
+            {
+              '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+              violations: [
+                { quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests', quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+    [
+      'the code quota_exceeded',
+      429,
+      {
+        error: { code: 'quota_exceeded', message: 'You have exceeded your daily quota' },
+      },
+    ],
+    [
+      'the code payment_required',
+      402,
+      {
+        error: { code: 'payment_required', message: 'credits' },
+      },
+    ],
+  ])('marks %s as a used-up quota, never retried', async (_name, status, body) => {
+    stubFetch(body, status)
+    await expect(provider.complete(request)).rejects.toMatchObject({ status, retryable: false, exhausted: true })
+  })
+
+  it('leaves a per-minute quota, and a 402 whose code is its status, to the status', async () => {
+    stubFetch({
+      error: {
+        code: 429,
+        message: 'Resource exhausted',
+        status: 'RESOURCE_EXHAUSTED',
+        details: [
+          {
+            '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+            violations: [
+              { quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests', quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier' },
+            ],
+          },
+          { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '7s' },
+        ],
+      },
+    }, 429)
+    await expect(provider.complete(request)).rejects.toMatchObject({ retryable: true, retryAfterMs: 7000, exhausted: false })
+    stubFetch({
+      error: { code: 402, message: 'x', status: 'FAILED_PRECONDITION' },
+    }, 402)
+    await expect(provider.complete(request)).rejects.toMatchObject({ retryable: false, exhausted: false })
+  })
 })
 
 describe('gemini on a 400 that names its structured-output field', () => {

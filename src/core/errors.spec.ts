@@ -218,6 +218,45 @@ describe('a provider that is down', () => {
       streak: false,
     })).toBe(false)
   })
+
+  it('words a used-up quota with its fix, whatever the count', () => {
+    const line = (status: number): string => `api: the account's credit, quota or spend limit is used up (http ${status}): no more calls go to it in this review: add credit or raise the limit at the provider, or wait until it resets`
+    for (const count of [1, 3]) {
+      expect(downWords({
+        providerId: 'api',
+        kind: 'http',
+        status: 429,
+        count,
+        streak: true,
+        exhausted: true,
+      })).toBe(line(429))
+    }
+    expect(downWords({
+      providerId: 'api',
+      kind: 'http',
+      status: 402,
+      count: 1,
+      streak: true,
+      exhausted: true,
+    })).toBe(line(402))
+  })
+
+  it('never makes an exhausted ProviderError retryable', () => {
+    expect(new ProviderError({
+      providerId: 'p',
+      kind: 'http',
+      status: 429,
+      retryable: true,
+      exhausted: true,
+      message: 'm',
+    })).toMatchObject({ retryable: false, exhausted: true })
+    expect(new ProviderError({
+      providerId: 'p',
+      kind: 'http',
+      status: 503,
+      message: 'm',
+    })).toMatchObject({ retryable: true, exhausted: false })
+  })
 })
 
 describe('what a reply lacked', () => {

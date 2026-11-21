@@ -147,15 +147,23 @@ export function isTooLarge(error: unknown): boolean {
  * What a failed call says of itself, as facts: the own data `kind` when it is one of `PROVIDER_ERROR_KINDS`,
  * and for an `http` failure its own data `status` when that is an integer from 100 to 599. A message, which can
  * quote a server, is never read. It is matched by those properties, not by class, as `isTooLarge` is, and it
- * never runs a getter and never throws: any other value, a kind of no provider's included, is undefined.
+ * never runs a getter and never throws: any other value, a kind of no provider's included, is undefined. An
+ * `http` failure whose own data `exhausted` is `true` says so, as `exhausted: true`; any other kind never does.
  */
-export function providerFailure(error: unknown): { readonly kind: ProviderErrorKind, readonly status?: number } | undefined {
+export function providerFailure(error: unknown): { readonly kind: ProviderErrorKind, readonly status?: number, readonly exhausted?: true } | undefined {
   const kind = PROVIDER_ERROR_KINDS.find(known => known === ownData(error, 'kind'))
   if (kind === undefined) return undefined
+  if (kind !== 'http') return { kind }
   const status = ownData(error, 'status')
-  return kind === 'http' && typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
-    ? { kind, status }
-    : { kind }
+  return {
+    kind,
+    ...(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
+      ? { status }
+      : {}),
+    ...(ownData(error, 'exhausted') === true
+      ? { exhausted: true as const }
+      : {}),
+  }
 }
 
 /**
@@ -535,6 +543,9 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
               ? {}
               : { status: found.status }),
             calls: found.count,
+            ...(found.exhausted
+              ? { exhausted: true as const }
+              : {}),
             ...(found.noAnswer === undefined
               ? {}
               : { noAnswer: found.noAnswer }),
@@ -951,12 +962,19 @@ function counted(attempts: number, usage: Usage | undefined, spent: number): { a
   }
 }
 
-/** What the retry policy reads of a thrown value: its `kind`, `status`, `retryable` and `retryAfterMs` as own data, so a getter decides nothing and never runs. */
+/**
+ * What the retry policy reads of a thrown value: its `kind`, `status`, `retryable` and `retryAfterMs` as own data, so a
+ * getter decides nothing and never runs. An `http` failure whose own data `exhausted` is `true` is never retryable,
+ * whatever it says of `retryable`, as a `ProviderError`'s own `exhausted` makes it.
+ */
 function failureFacts(error: unknown): FailureFacts {
+  const exhausted = ownData(error, 'kind') === 'http' && ownData(error, 'exhausted') === true
   return {
     kind: ownData(error, 'kind'),
     status: ownData(error, 'status'),
-    retryable: ownData(error, 'retryable'),
+    retryable: exhausted
+      ? false
+      : ownData(error, 'retryable'),
     retryAfterMs: ownData(error, 'retryAfterMs'),
   }
 }

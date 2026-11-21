@@ -24,6 +24,37 @@ function failure(kind: ProviderErrorKind, status?: number, noAnswer?: NoAnswer):
 }
 
 describe('a provider being down', () => {
+  it('finds a provider down at its first used-up quota, its error exhausted', () => {
+    const health = createHealth()
+    const api = provider()
+    const error = new ProviderError({
+      providerId: 'p',
+      kind: 'http',
+      status: 429,
+      exhausted: true,
+      message: 'x',
+    })
+    const down = health.failed(api, 'api', error)
+    expect(down).toBeInstanceOf(ProviderDownError)
+    expect(down).toMatchObject({
+      count: 1,
+      streak: true,
+      exhausted: true,
+      status: 429,
+    })
+    expect(health.refused(api)).toBe(down)
+    expect(health.failed(api, 'api', error)).toBeUndefined()
+  })
+
+  it('reads exhausted on an http failure alone', () => {
+    const health = createHealth()
+    const api = provider()
+    const error = { kind: 'network', exhausted: true }
+    expect(health.failed(api, 'api', error)).toBeUndefined()
+    expect(health.failed(api, 'api', error)).toBeUndefined()
+    expect(health.failed(api, 'api', error)).toMatchObject({ count: 3, exhausted: false })
+  })
+
   it('states the streak that finds a provider down and the kinds of failure that count toward it', () => {
     expect(DOWN_AFTER).toBe(3)
     expect([...DOWN_KINDS].sort()).toEqual([

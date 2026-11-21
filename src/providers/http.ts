@@ -22,9 +22,21 @@ const DECIMAL = /^\d+(?:\.\d+)?$/
 /** The one date form read: an IMF-fixdate. Both engines read the others as local time, or `1` as a year. */
 const IMF_FIXDATE = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/
 /** The codes of OpenAI that say a credit or a spend limit is used up: a retry cannot succeed, and would be billed. */
-const SPEND_CODES: ReadonlySet<string> = new Set(['credit_balance_exhausted', 'organization_usage_limit_exceeded', 'insufficient_quota'])
+const SPEND_CODES: ReadonlySet<string> = new Set([
+  'billing_hard_limit_reached',
+  'credit_balance_exhausted',
+  'organization_usage_limit_exceeded',
+  'insufficient_quota',
+])
 const SPEND_LIMIT_SUFFIX = '_spend_limit_exceeded'
 const ANTHROPIC_SPEND_CODE = 'enforced_spend_limit_reached'
+/** The starts of the message of Anthropic's 400 for a usage limit its user set: a code word of the account, never copied. */
+const ANTHROPIC_USAGE_LIMITS: readonly string[] = [
+  'You have reached your specified API usage limits',
+  'You have reached your specified workspace API usage limits',
+]
+/** The `limit_source` values of OpenRouter's 402 that say its credit or a key's limit is used up. */
+const OPENROUTER_EXHAUSTED: ReadonlySet<unknown> = new Set(['openrouter_credits', 'openrouter_key_limit'])
 const OPENROUTER_IN_FLIGHT = 'openrouter_in_flight_budget'
 /** A character a word is made of: a letter, a digit or an underscore. */
 const WORD_CHARACTER = /^\w$/
@@ -33,11 +45,14 @@ const ESCAPED_PRINTABLE_ASCII = /\\u00(2[0-9a-fA-F]|[3-6][0-9a-fA-F]|7[0-9a-eA-E
 
 /**
  * What an adapter reads of a failed reply's body that `postJson` cannot: a wait the server asks for, in
- * milliseconds, and a reason never to retry. A hook can add a hint and turn a retry off, never on.
+ * milliseconds, a reason never to retry, and that the account's credit, quota or spend limit is used up. A hook
+ * can add a hint, turn a retry off and say a quota is used up, never undo any of them: the vendor's own
+ * verdict (`vendorExhausted`) is kept whatever a hook says.
  */
 export interface ErrorHints {
   readonly retryAfterMs?: number
   readonly retryable?: false
+  readonly exhausted?: true
 }
 
 export interface PostJsonOptions {
@@ -300,16 +315,38 @@ function isSpendCode(code: unknown): boolean {
 }
 
 /**
+ * Whether the body of a failed reply says the account's credit, quota or spend limit is used up, which no retry
+ * lifts and every retry would bill: the code decides, never the status, since a gateway forwards its upstream's
+ * body under a status of its own. Each vendor's codes, read for every adapter as a gateway forwards them:
+ * - OpenAI's `error.code` `insufficient_quota`, `billing_hard_limit_reached`, `credit_balance_exhausted`,
+ *   `organization_usage_limit_exceeded` or any `*_spend_limit_exceeded`, and its `error.type`
+ *   `insufficient_quota`, at any status;
+ * - Anthropic's `error.details.error_code` `enforced_spend_limit_reached`, at any status, and the usage limit
+ *   its user set, a 400 whose `error.type` is `invalid_request_error` and whose `error.message` starts with
+ *   `You have reached your specified API usage limits` or `You have reached your specified workspace API usage
+ *   limits`;
+ * - OpenRouter's 402 whose `error.metadata.limit_source` is `openrouter_credits` or `openrouter_key_limit`.
+ * Not exhausted, and still retried: Anthropic's `ramp_limit_exceeded`, OpenAI's `slow_down` and OpenRouter's
+ * `openrouter_in_flight_budget` with a wait. Gemini's codes are its adapter's `errorHints`, since its body
+ * has its own form. A code is only compared, with `===` and `startsWith`, never copied. This checks objects
+ * with a local test, since `options.ts` imports this module.
+ */
+export function vendorExhausted(body: unknown, status: number): boolean {
+  const error = member(body, 'error')
+  if (isSpendCode(member(error, 'code')) || member(error, 'type') === 'insufficient_quota' || member(member(error, 'details'), 'error_code') === ANTHROPIC_SPEND_CODE) return true
+  const message = member(error, 'message')
+  if (status === 400 && member(error, 'type') === 'invalid_request_error' && typeof message === 'string' && ANTHROPIC_USAGE_LIMITS.some(start => message.startsWith(start))) return true
+  return status === 402 && OPENROUTER_EXHAUSTED.has(member(member(error, 'metadata'), 'limit_source'))
+}
+
+/**
  * What the body of a failed reply says of a retry that the vendors' own codes settle: `false` for a used-up
- * credit, spend limit or quota (OpenAI's `error.code`, or its `error.type` for `insufficient_quota`, and
- * Anthropic's `error.details.error_code`), `true` for OpenRouter's 402 of its in-flight budget when the
- * reply is `hinted` with a wait, else `undefined`, and the status decides. A code is only compared, never
- * copied. This checks objects with a local test, since `options.ts` imports this module.
+ * credit, spend limit or quota (`vendorExhausted`), `true` for OpenRouter's 402 of its in-flight budget when the
+ * reply is `hinted` with a wait, else `undefined`, and the status decides.
  */
 export function vendorRetryable(body: unknown, status: number, hinted: boolean): boolean | undefined {
-  const error = member(body, 'error')
-  if (isSpendCode(member(error, 'code')) || member(error, 'type') === 'insufficient_quota' || member(member(error, 'details'), 'error_code') === ANTHROPIC_SPEND_CODE) return false
-  if (status === 402 && hinted && member(member(error, 'metadata'), 'limit_source') === OPENROUTER_IN_FLIGHT) return true
+  if (vendorExhausted(body, status)) return false
+  if (status === 402 && hinted && member(member(member(body, 'error'), 'metadata'), 'limit_source') === OPENROUTER_IN_FLIGHT) return true
   return undefined
 }
 
@@ -358,6 +395,7 @@ function httpFailure(options: PostJsonOptions, response: Response, text: string)
     ? ' (redirects are not followed)'
     : ''
   const refused = (status === 400 || status === 422) && options.formatFields?.some(field => namesWord(text, field)) === true
+  const exhausted = vendorExhausted(body, status) || extra.exhausted === true
   return new ProviderError({
     providerId,
     kind: 'http',
@@ -365,6 +403,9 @@ function httpFailure(options: PostJsonOptions, response: Response, text: string)
     status,
     retryAfterMs,
     retryable,
+    ...exhausted
+      ? { exhausted: true as const }
+      : {},
     ...refused
       ? { refused: 'structuredOutput' as const }
       : {},
@@ -383,7 +424,9 @@ function httpFailure(options: PostJsonOptions, response: Response, text: string)
  * says of a retry as a number and a boolean, never as text: `retryAfterMs` from `retry-after-ms` or
  * `retry-after`, else from `errorHints`, and `retryable` when the reply settles it, which a "never" wins:
  * `x-should-retry: false`, a used-up credit, spend limit or quota, or a hook's, else `x-should-retry: true`
- * or OpenRouter's in-flight 402 with a hint, else the status decides.
+ * or OpenRouter's in-flight 402 with a hint, else the status decides. A used-up credit, spend limit or quota
+ * also marks the error `exhausted`, by the vendor's codes or a hook's `exhausted`, so the review stops calling
+ * its provider at once.
  */
 export async function postJson<T>(options: PostJsonOptions): Promise<T> {
   const { providerId, url, headers, body, signal } = options

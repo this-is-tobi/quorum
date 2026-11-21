@@ -4099,6 +4099,40 @@ describe('a large change in parts', () => {
       expect(events.filter(event => event.type === 'call' && !event.ok)).toHaveLength(3)
     })
 
+    it('calls a provider whose quota is used up once, retries none of it, and records its unsent parts as provider-down', async () => {
+      const events: QuorumEvent[] = []
+      const finder = partsFinder(500, (request) => {
+        const part = partOf(request)
+        if (part === 2) {
+          throw new ProviderError({
+            providerId: 'finder',
+            kind: 'http',
+            status: 429,
+            exhausted: true,
+            message: 'HTTP 429',
+          })
+        }
+        return findings()
+      }, { retries: 2 })
+      const result = await quorumOf(finder, { concurrency: 1 }, securityProfile, events).review({ diff: partsDiff })
+      expect(finder.requests.map(partOf)).toEqual([1, 2])
+      expect(downEvents(events)).toEqual([
+        {
+          type: 'provider-down',
+          provider: 'finder',
+          kind: 'http',
+          status: 429,
+          calls: 1,
+          exhausted: true,
+        },
+      ])
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'research-failed', detail: '1 of 6 research parts failed: the research call failed (http 429)' },
+        { profile: 'security', reason: 'provider-down', detail: '4 of 6 research parts were not sent, since their provider was down' },
+      ])
+      expect(outcome(result).exitCode).toBe(4)
+    })
+
     it('reads the calls in flight when a provider goes down, sends no other, and keeps what it read', async () => {
       const clock = fakeClock()
       const events: QuorumEvent[] = []

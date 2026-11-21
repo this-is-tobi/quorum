@@ -610,9 +610,11 @@ export type QuorumEvent
     /**
      * A provider was found down: three of its calls in a row failed for a reason of its own (`kind`, and for an
      * `http` failure its `status`), so no call goes to it for the rest of the review. Sent once per provider, at the
-     * moment the third call ends; the calls in flight run to their end.
+     * moment the third call ends; the calls in flight run to their end. `exhausted` is true when the failure said
+     * the account's credit, quota or spend limit is used up: the provider is then found down at its first call
+     * that failed so, `calls` is 1, and no retry was made.
      */
-    | { type: 'provider-down', provider: string, kind: ProviderErrorKind, status?: number, calls: number, noAnswer?: NoAnswer }
+    | { type: 'provider-down', provider: string, kind: ProviderErrorKind, status?: number, calls: number, noAnswer?: NoAnswer, exhausted?: true }
     /**
      * A reply lacked what a review needs, said once per provider and line in a review: `truncated` with
      * `noAnswer` `window` (the server's window ended it) or `reply` or `thinking` with `outputTokens` below the

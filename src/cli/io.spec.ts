@@ -78,6 +78,27 @@ describe('errorLines', () => {
     }))).toBe('Error: default: its one call failed (network): check that the server at its origin is running')
   })
 
+  it('writes a ProviderDownError of a used-up quota in fixed words under the public view, and with its cause under the full one', () => {
+    const cause = new ProviderError({
+      providerId: 'default',
+      kind: 'http',
+      status: 429,
+      exhausted: true,
+      message: 'HTTP 429: "SERVER-CANARY"',
+    })
+    const down = new ProviderDownError({
+      providerId: 'default',
+      kind: 'http',
+      status: 429,
+      count: 1,
+      streak: true,
+      exhausted: true,
+      cause,
+    })
+    expect(errorLines(down)).toBe('Error: default: the account\'s credit, quota or spend limit is used up (http 429): no more calls go to it in this review: add credit or raise the limit at the provider, or wait until it resets\ndefault: HTTP 429: "SERVER-CANARY"')
+    expect(errorLines(down, 'public')).toBe('Error: default: the call failed (http 429)')
+  })
+
   it('writes a failure that has no text form as a fixed text', () => {
     expect(errorLines(Object.create(null))).toBe('Error: an error with no text form')
   })

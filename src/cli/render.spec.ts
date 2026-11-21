@@ -62,6 +62,19 @@ describe('renderEvent', () => {
     })).toBe('finder: 3 calls in a row had no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt')
   })
 
+  it('writes a used-up quota\'s provider-down as its line, and as the call failed under the public view', () => {
+    const event: QuorumEvent = {
+      type: 'provider-down',
+      provider: 'api',
+      kind: 'http',
+      status: 429,
+      calls: 1,
+      exhausted: true,
+    }
+    expect(renderEvent(event)).toBe('api: the account\'s credit, quota or spend limit is used up (http 429): no more calls go to it in this review: add credit or raise the limit at the provider, or wait until it resets')
+    expect(renderEvent(event, false, 'public')).toBe('api: the call failed (http 429)')
+  })
+
   it.each<[string, QuorumEvent, string]>([
     [
       'the server\'s lower cap',

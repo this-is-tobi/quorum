@@ -55,7 +55,8 @@ export interface CliIO {
  * line of its own, the server's own words. Under the public view, whose log a stranger may read, the others
  * are written in fixed words instead, after `Error: `: `<stage> reply unusable: <reason>` (the reason is
  * quorum's), `<provider>: the call failed (<kind>[ <status>])`, `git <operation> failed[ (exit <code>)]`, and
- * `the review failed` for any other, and a `ProviderDownError` in its message alone. A
+ * `the review failed` for any other, and a `ProviderDownError` in its message alone, but for one of a used-up
+ * quota, which is `<provider>: the call failed (<kind>[ <status>])` too. A
  * `ConfigError` is written as the full view writes it: it holds config paths and words quorum wrote, and a
  * `WriteFailure` too: its message names a file's label and an error code, never a path.
  */
@@ -85,7 +86,13 @@ function fullLines(error: unknown): string[] {
 
 /** A failure other than a `ConfigError` or a `WriteFailure` in the fixed words of the public view. */
 function publicMessage(error: unknown): string {
-  if (error instanceof ProviderDownError) return error.message
+  if (error instanceof ProviderDownError) {
+    return error.exhausted
+      ? `${error.providerId}: the call failed (${error.kind}${error.status === undefined
+        ? ''
+        : ` ${error.status}`})`
+      : error.message
+  }
   if (error instanceof OutputError) return `${error.stage} reply unusable: ${error.reason}`
   if (error instanceof ProviderError) {
     return `${error.providerId}: the call failed (${error.kind}${error.status === undefined

@@ -309,6 +309,29 @@ describe('runCli', () => {
     ])
   })
 
+  it('calls an endpoint that answers billing_hard_limit_reached once, and records the votes it was never sent as provider-down', async () => {
+    const config = write('quota.yaml', 'concurrency: 1\n')
+    const fetchMock = stubChat(JSON.stringify({
+      findings: [FINDING],
+    }))
+    fetchMock.mockImplementationOnce(async () => textReply(JSON.stringify({
+      error: { code: 'billing_hard_limit_reached', message: 'hard limit' },
+    }), 429))
+    const { io, stdout, stderr } = harness({
+      env: { ...MODEL, QUORUM_CONFIG: config },
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.incomplete)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(stderr()).toContain('default: the account\'s credit, quota or spend limit is used up (http 429): no more calls go to it in this review: add credit or raise the limit at the provider, or wait until it resets')
+    const result = JSON.parse(stdout())
+    expect(result.unreviewed[0].votes.map((lensVote: { failure: unknown }) => lensVote.failure)).toEqual([
+      { kind: 'http', status: 429 },
+      { kind: 'provider-down' },
+      { kind: 'provider-down' },
+    ])
+  })
+
   it('exits 1 on a unanimous finding and prints the result as JSON', async () => {
     stubChat(JSON.stringify({
       findings: [FINDING],
