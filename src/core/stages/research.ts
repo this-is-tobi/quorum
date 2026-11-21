@@ -373,10 +373,16 @@ async function askResearch(ctx: RunContext, run: ProfileRun, request: (ask: Ask)
   return { outcome: 'reviewed', text }
 }
 
-/** What a research request of `run` asks: the findings its budget holds and the reply budget it carries, from the review's budgets. */
+/**
+ * What a research request of `run` asks: the findings its budget holds, which are more once a reply of its provider
+ * showed that the model does not reason (`ctx.adapt.findings`), and the reply budget it carries, from the review's budgets.
+ */
 function askOf(ctx: RunContext, run: ProfileRun): Ask {
-  const { findings, replyTokens } = ctx.budgets[run.id].research
-  return { findings, replyTokens }
+  const budget = ctx.budgets[run.id].research
+  return {
+    findings: ctx.adapt.findings(run.research, budget),
+    replyTokens: budget.replyTokens,
+  }
 }
 
 /** One research request holding `diff`, its outcome's `parts` the one part's, and its failure told as a gap in today's words. */

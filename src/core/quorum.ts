@@ -1,3 +1,4 @@
+import { createAdaptations } from './adapt.ts'
 import { VERSION } from './version.ts'
 import { DEFAULT_MAX_FINDINGS, profileBudgets } from './budgets.ts'
 import type { ProfileBudgets } from './budgets.ts'
@@ -18,7 +19,7 @@ import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, Lim
 import { isRecord } from './output.ts'
 import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap } from './parts.ts'
 import type { PartOutcome } from './parts.ts'
-import { MAX_STATED_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
+import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts } from './ports.ts'
 import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
 import { renderTemplate } from './prompts.ts'
@@ -224,6 +225,20 @@ function estimate(compiled: Compiled, input: EstimateInput): Estimate {
  * error of the first research provider, in profile order, that was found down, else of the first whose every
  * call failed for a reason of its own, though fewer than three did.
  *
+ * A provider that states it can (`Provider.adapts`, which the shipped adapters state unless an option sets the
+ * setting or `extraBody` sets its control) has two settings quorum moves by itself, once per review, so every
+ * review starts from the provider's own: `thinking` is lowered when a reply ran out of room while reasoning or held
+ * only reasoning, and `structuredOutput` moves from `json` to `prompt` when a reply in JSON mode was empty or the
+ * server refused the mode. The first call whose failure a setting answers is its probe (see `createAdaptations`):
+ * it is sent once more with the new setting while the provider's other calls in flight keep the old one and its
+ * new calls wait, and each call in flight that fails the same way is then sent once more at the settled setting,
+ * so no vote fails and no research part splits for a setting the review has already moved. Each move is one
+ * `adapted` event and one entry of `meta.adaptations`; a lowering the server refuses is recorded as
+ * `lowering-refused` and thinking stays as the server sets it. A lowering that fails after a cut-off in a way that
+ * shows nothing of the server's level (a network failure, a 429, a 401, a 500, 502 or 503) moves nothing and
+ * records nothing, and the part splits. A research reply that shows no reasoning makes
+ * that provider's later research requests ask for more findings.
+ *
  * A review ends at its deadline, `reviewTimeoutMs` after it starts, with an answer: at it every call in
  * flight and every wait is stopped at once, no call still queued starts, and what was not done is a
  * `review-deadline` gap of its profile, its research request (the parts of it not yet answered) or its
@@ -354,6 +369,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     deadline,
     health: createHealth(),
     lacked: new Set(),
+    adapt: createAdaptations(),
     maxFindings: compiled.maxFindings,
     budgets: compiled.budgets,
     concurrency: compiled.concurrency,
@@ -404,6 +420,9 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     incomplete,
     leftOut,
     flags,
+    adaptations: [
+      ...ctx.adapt.record(),
+    ],
   }
   emit({
     type: 'run:end',
@@ -675,7 +694,8 @@ function profilePortIssues(entries: Record<string, unknown>, profile: Profile): 
 /**
  * The issues of one provider: it is missing, it is not one, the `timeoutMs` or the `retries` it
  * states, as own data, is out of range, the `window` or the `maxTokens` it states is not a whole number of
- * tokens of at least 1, its `thinking` is not `default`, `low` or `off`, or the `worstCase` or the `room` it
+ * tokens of at least 1, its `thinking` is not `default`, `low` or `off`, its `adapts` is not an object whose
+ * `thinking` is `low` or `off` and whose `prompt` is `true`, or the `worstCase` or the `room` it
  * states, as own data, is not a function.
  */
 function providerIssues(path: string, value: unknown): ConfigIssue[] {
@@ -712,6 +732,11 @@ function providerIssues(path: string, value: unknown): ConfigIssue[] {
     ? undefined
     : thinkingProblem(thinking)
   if (thinkingIssue !== undefined) issues.push({ path: `${path}.thinking`, message: thinkingIssue })
+  const adapts = ownData(value, 'adapts')
+  const adaptsIssue = adapts === undefined
+    ? undefined
+    : adaptsProblem(adapts)
+  if (adaptsIssue !== undefined) issues.push({ path: `${path}.adapts`, message: adaptsIssue })
   const worstCase = ownData(value, 'worstCase')
   if (worstCase !== undefined && typeof worstCase !== 'function') issues.push({ path: `${path}.worstCase`, message: 'must be a function' })
   const room = ownData(value, 'room')

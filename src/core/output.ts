@@ -182,6 +182,11 @@ export function parseVoteReply(text: string): Vote {
   return result.data
 }
 
+/** Whether `text` holds a reasoning block's opener (`<think>`): the reply showed reasoning, whatever the server reports. Only the fact is read. */
+export function holdsReasoning(text: string): boolean {
+  return /<think>/i.test(text)
+}
+
 /**
  * Drop closed reasoning blocks in one linear pass (a lazy pattern over the whole reply would rescan
  * it from every unclosed opener) and report where a block that never closes opens, as an index into

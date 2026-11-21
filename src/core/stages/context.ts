@@ -1,14 +1,15 @@
+import type { Adaptations, Fields, Probe, ProbeOutcome } from '../adapt.ts'
 import type { ProfileBudgets } from '../budgets.ts'
 import type { Clock } from '../clock.ts'
 import type { Limiter } from '../concurrency.ts'
 import type { Health } from '../down.ts'
-import { NO_ANSWERS, PROVIDER_ERROR_KINDS, ProviderError } from '../errors.ts'
+import { NO_ANSWERS, PROVIDER_ERROR_KINDS, ProviderDownError, ProviderError } from '../errors.ts'
 import type { NoAnswer, ProviderErrorKind } from '../errors.ts'
-import { settlementOf } from '../limits.ts'
+import { isLimit, settlementOf } from '../limits.ts'
 import type { Ledger } from '../limits.ts'
 import { isRecord } from '../output.ts'
-import { DEFAULT_TIMEOUT_MS, MAX_STATED_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../ports.ts'
-import type { CompletionRequest, CompletionResponse, EventSink, Provider } from '../ports.ts'
+import { adaptsProblem, DEFAULT_TIMEOUT_MS, MAX_STATED_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../ports.ts'
+import type { Adapts, CompletionRequest, CompletionResponse, EventSink, Provider } from '../ports.ts'
 import { isTimeout, retryWait } from '../retry.ts'
 import type { FailureFacts } from '../retry.ts'
 import { DEFAULT_REPLY_TOKENS, replyLimit, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
@@ -17,7 +18,7 @@ import type { FailOn, ProviderRef, QuorumEvent, StageName, Thresholds, Usage } f
 /**
  * A provider as a compiled profile holds it: the object it calls, the ref captured at creation that
  * events and meta report, the deadline of each of its attempts, the retries of a call, the worst case and the
- * room it states, and the window, the `maxTokens` and the thinking level it states.
+ * room it states, and the window, the `maxTokens`, the thinking level and what it lets the core adapt that it states.
  */
 export interface Target {
   readonly provider: Provider
@@ -36,6 +37,8 @@ export interface Target {
   readonly maxTokens: number | undefined
   /** The thinking level the provider stated when the quorum was created, `default` when it states none or one that fails its check. */
   readonly thinking: NonNullable<Provider['thinking']>
+  /** What the provider lets the core change by itself, stated when the quorum was created, as own data, when it passes its check: a copy; none otherwise. */
+  readonly adapts: Adapts | undefined
 }
 
 /** One lens of a compiled profile: its vote instructions, rendered once, and its own provider. */
@@ -95,6 +98,8 @@ export interface RunContext {
   readonly health: Health
   /** The `reply-lacked` lines this review has said, one per provider and line (`provider|line`): each is said once. */
   readonly lacked: Set<string>
+  /** What this review moved by itself, and the probes that find out whether a move helps: one per review, so nothing carries to the next. */
+  readonly adapt: Adaptations
   /** How many findings of a research reply each profile sends to the panel. */
   readonly maxFindings: number
   /** The reply budgets of each profile, by profile id: what its research and vote requests carry and ask for. */
@@ -268,7 +273,8 @@ export interface Requester {
  * deadline and no retry, never an unbounded one. The worst case it states is its own data value when
  * that is a function, else none, and so is the room it states: a getter is never run, and an inherited method
  * states nothing. Its window and its `maxTokens` are taken as own data when each is a whole number of tokens of at
- * least 1, else it states none, and its thinking when it is `default`, `low` or `off`, else `default`.
+ * least 1, else it states none, its thinking when it is `default`, `low` or `off`, else `default`, and its `adapts` as
+ * a copy of the own data it holds when it passes its check, else none.
  */
 export function targetOf(provider: Provider): Target {
   const timeoutMs = ownData(provider, 'timeoutMs')
@@ -278,6 +284,7 @@ export function targetOf(provider: Provider): Target {
   const window = ownData(provider, 'window')
   const maxTokens = ownData(provider, 'maxTokens')
   const thinking = ownData(provider, 'thinking')
+  const adapts = ownData(provider, 'adapts')
   return {
     provider,
     ref: Object.freeze({ id: provider.id, model: provider.model }),
@@ -302,6 +309,24 @@ export function targetOf(provider: Provider): Target {
     thinking: thinkingProblem(thinking) === undefined
       ? thinking as Target['thinking']
       : 'default',
+    adapts: adapts !== undefined && adaptsProblem(adapts) === undefined
+      ? adaptsOf(adapts)
+      : undefined,
+  }
+}
+
+/** The `adapts` a provider states, copied once from its own data: a getter never ran, and the copy holds the stated fields alone. */
+function adaptsOf(stated: unknown): Adapts | undefined {
+  const thinking = ownData(stated, 'thinking')
+  const prompt = ownData(stated, 'prompt')
+  if (thinking === undefined && prompt === undefined) return undefined
+  return {
+    ...thinking === undefined
+      ? {}
+      : { thinking: thinking as 'low' | 'off' },
+    ...prompt === undefined
+      ? {}
+      : { prompt: true },
   }
 }
 
@@ -411,27 +436,42 @@ export function elapsed(started: number): number {
  * that usage; both carry `spent`, the sum of what its attempts settled at. The ok event is emitted outside
  * the `try` that catches the provider's failure, so a sink that throws on it is never reported as a failed
  * call.
+ *
+ * A call waits, inside its slot and before it checks the stop and the down rule, until no probe of its provider is
+ * pending (`ctx.adapt.ready`), so it is built and sent at the settings the review has settled on, and each request
+ * carries them (`ctx.adapt.sent`). A call's final failure that a setting answers (see `createAdaptations`) is
+ * sent once more, inside the same call, the same slot and the same deadline: the first such failure of a
+ * provider becomes its setting's probe, sent with the new setting, and a call that was in flight at the old
+ * setting waits for the probe, then is sent at the settled one when the setting moved. A re-send reserves its
+ * worst case and is retried by the same policy as any attempt, and counts in the call's one `call` event, its
+ * attempts and its usage; it checks the down rule first, and a provider found down ends the call with its
+ * `ProviderDownError`, which counts nowhere. A call meets each setting's probe at most once. The call is told to
+ * the health once, after its last send, and a probe's 400 or 422 counts toward nothing: a refused probe ends the
+ * call with its first failure. A research reply goes through `ctx.adapt.reasoned`.
  */
 export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest, onFailure?: (error: unknown, attempts: number) => void): Promise<string> {
   return ctx.limit(async () => {
+    await ctx.adapt.ready(target, ctx.stop)
     ctx.stop.throwIfAborted()
     const down = ctx.health.refused(target.provider)
     if (down !== undefined) throw down
-    const request = buildRequest()
-    const reservation = reservationOf(target, request)
+    const built = buildRequest()
+    /** The request with the settings the review has settled on, which a request that needs none is left as it was built. */
+    const withSettings = (fields: Fields): CompletionRequest => Object.keys(fields).length === 0
+      ? built
+      : {
+          ...built,
+          ...fields,
+        }
+    let sentWith = ctx.adapt.sent(target)
+    let request = withSettings(sentWith)
     const started = ctx.clock.now()
     const took = (): number => Math.round(ctx.clock.now() - started)
     let attempts = 0
     let usage: Usage | undefined
     let spent = 0
     let timedOut = false
-    let response: CompletionResponse | undefined
     let replied: Usage | undefined
-    /** Settles the attempt's reservation at `tokens`, which the call's `spent` adds. */
-    const settle = (tokens: number): void => {
-      ctx.ledger.settle(reservation, tokens)
-      spent += tokens
-    }
     /** Ends the call with `error`: its failed event when an attempt was made, then `onFailure`; the error to throw. */
     const end = (error: unknown): unknown => {
       if (attempts > 0) {
@@ -444,72 +484,141 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           ...counted(attempts, usage, spent),
         })
       }
-      const found = ctx.health.failed(target.provider, target.ref.id, error)
-      if (found !== undefined) {
-        ctx.emit({
-          type: 'provider-down',
-          provider: target.ref.id,
-          kind: found.kind,
-          ...(found.status === undefined
-            ? {}
-            : { status: found.status }),
-          calls: found.count,
-          ...(found.noAnswer === undefined
-            ? {}
-            : { noAnswer: found.noAnswer }),
+      // A refusal by the down rule is no failure of the provider: it counts nowhere and says nothing of a reply.
+      if (!(error instanceof ProviderDownError)) {
+        const found = ctx.health.failed(target.provider, target.ref.id, error)
+        if (found !== undefined) {
+          ctx.emit({
+            type: 'provider-down',
+            provider: target.ref.id,
+            kind: found.kind,
+            ...(found.status === undefined
+              ? {}
+              : { status: found.status }),
+            calls: found.count,
+            ...(found.noAnswer === undefined
+              ? {}
+              : { noAnswer: found.noAnswer }),
+          })
+        }
+        const lacked = lackedEvent(target.ref.id, error, {
+          limit: replyLimit(request, target.maxTokens),
+          window: target.window,
         })
-      }
-      const lacked = lackedEvent(target.ref.id, error, {
-        limit: replyLimit(request, target.maxTokens),
-        window: target.window,
-      })
-      if (lacked !== undefined && !ctx.lacked.has(lacked.key)) {
-        ctx.lacked.add(lacked.key)
-        ctx.emit(lacked.event)
+        if (lacked !== undefined && !ctx.lacked.has(lacked.key)) {
+          ctx.lacked.add(lacked.key)
+          ctx.emit(lacked.event)
+        }
       }
       // Still inside the slot: a review aborted here never starts the queued call the slot goes to next.
       onFailure?.(error, attempts)
       return error
     }
-    while (response === undefined) {
-      try {
+    /**
+     * One request sent with its retries: its reply, or its failure after the retries. Each attempt reserves the
+     * request's worst case in the ledger, before it is sent, and settles after.
+     */
+    const send = async (asked: CompletionRequest): Promise<CompletionResponse> => {
+      const reservation = reservationOf(target, asked)
+      let retried = 0
+      for (;;) {
         await ctx.ledger.reserve(reservation, ctx.stop)
-      } catch (error) {
-        throw end(error)
-      }
-      attempts += 1
-      try {
-        const reply = await attempt(ctx, target, request)
-        if (typeof reply?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
-        // The reply's usage is read once, so its settlement and its event cannot disagree.
-        replied = checkedUsage(reply.usage)
-        settle(settlementOf(reservation, replied))
-        ctx.health.answered(target.provider)
-        response = reply
-      } catch (error) {
-        const reported = failureUsage(error)
-        usage = addUsage(usage, reported)
-        const facts = failureFacts(error)
-        settle(settlementOf(reservation, reported, facts))
-        // A stopped review is asked as if it had time to spare, so a retry only the stop prevents is the stop's doing.
-        const wait = retryWait(facts, {
-          retried: attempts - 1,
-          retries: target.retries,
-          timedOut,
-          timeLeftMs: ctx.stop.aborted
-            ? Number.POSITIVE_INFINITY
-            : ctx.deadline.at - ctx.clock.now(),
-        }, ctx.clock.random)
-        if (wait === undefined) throw end(error)
-        if (ctx.stop.aborted) throw end(ctx.stop.reason)
-        timedOut ||= isTimeout(facts)
+        attempts += 1
+        /** Settles the attempt's reservation at `tokens`, which the call's `spent` adds. */
+        const settle = (tokens: number): void => {
+          ctx.ledger.settle(reservation, tokens)
+          spent += tokens
+        }
         try {
+          const reply = await attempt(ctx, target, asked)
+          if (typeof reply?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
+          // The reply's usage is read once, so its settlement and its event cannot disagree.
+          replied = checkedUsage(reply.usage)
+          settle(settlementOf(reservation, replied))
+          ctx.health.answered(target.provider)
+          return reply
+        } catch (error) {
+          const reported = failureUsage(error)
+          usage = addUsage(usage, reported)
+          const facts = failureFacts(error)
+          settle(settlementOf(reservation, reported, facts))
+          // A stopped review is asked as if it had time to spare, so a retry only the stop prevents is the stop's doing.
+          const wait = retryWait(facts, {
+            retried,
+            retries: target.retries,
+            timedOut,
+            timeLeftMs: ctx.stop.aborted
+              ? Number.POSITIVE_INFINITY
+              : ctx.deadline.at - ctx.clock.now(),
+          }, ctx.clock.random)
+          if (wait === undefined) throw error
+          if (ctx.stop.aborted) throw ctx.stop.reason
+          timedOut ||= isTimeout(facts)
+          retried += 1
           await pause(ctx, wait)
-        } catch (stopped) {
-          throw end(stopped)
         }
       }
     }
+    /** The result of a send: its reply, or its failure. */
+    const sendNow = async (asked: CompletionRequest): Promise<{ readonly reply: CompletionResponse } | { readonly failure: unknown }> => {
+      request = asked
+      try {
+        return { reply: await send(asked) }
+      } catch (failure) {
+        return { failure }
+      }
+    }
+
+    let result = await sendNow(request)
+    while ('failure' in result && !ctx.stop.aborted) {
+      const { failure } = result
+      const plan = ctx.adapt.probe(target, failure)
+      let again: Fields | undefined
+      if (plan === undefined) {
+        try {
+          again = await ctx.adapt.after(target, sentWith, failure, ctx.stop)
+        } catch (stopped) {
+          result = { failure: stopped }
+          break
+        }
+        if (again === undefined) break
+      } else {
+        again = {
+          ...sentWith,
+          ...plan.with,
+        }
+      }
+      // A provider found down since is called no more, by the call's own re-send either.
+      const refused = ctx.health.refused(target.provider)
+      if (refused !== undefined) {
+        if (plan !== undefined) ctx.adapt.settle(target, plan.setting, 'unsent')
+        result = { failure: refused }
+        break
+      }
+      sentWith = again
+      if (plan === undefined) {
+        result = await sendNow(withSettings(sentWith))
+        continue
+      }
+      let outcome: ProbeOutcome = 'unsent'
+      let first = false
+      try {
+        result = await sendNow(withSettings(sentWith))
+        if ('reply' in result) {
+          outcome = 'answered'
+        } else {
+          ({ outcome, first } = probeEnd(ctx, result.failure, plan))
+        }
+      } finally {
+        const adaptation = ctx.adapt.settle(target, plan.setting, outcome)
+        if (adaptation !== undefined) ctx.emit({ type: 'adapted', adaptation })
+      }
+      // A refused lowering, a prompt mode that did not answer and a lowering the server showed no sign of taking end the call with the failure that began the probe.
+      if ('failure' in result && first) result = { failure }
+    }
+    if ('failure' in result) throw end(result.failure)
+    const { reply } = result
+    if (requester.role === 'research') ctx.adapt.reasoned(target, reply)
     ctx.emit({
       type: 'call',
       ...requester,
@@ -518,8 +627,46 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       ok: true,
       ...counted(attempts, addUsage(usage, replied), spent),
     })
-    return response.text
+    return reply.text
   })
+}
+
+/**
+ * How a probe's re-send ended, from the failure it ended with: a limit, the review's stop, a refusal as too large
+ * or the down rule ended it before the server could answer (`unsent`, and the re-send's failure stands); a 400 or
+ * 422 refused the value (`refused`), and the call ends with the failure that began the probe (`first`). Any other
+ * failure is the server's or the network's. Prompt mode moves only on an answer, so its failed probe is `failed`
+ * and ends with `first`. A thinking probe moves the level only on evidence (ruling R5): after a reply of only
+ * reasoning, whose own level answered nothing, any failure is `failed`; after a cut-off, `failed` only when the
+ * server showed it took the request, else `unsent` and `first`: tried, nothing moved and nothing recorded, so the
+ * part splits.
+ */
+function probeEnd(ctx: RunContext, failure: unknown, plan: Probe): { readonly outcome: ProbeOutcome, readonly first: boolean } {
+  if (ctx.stop.aborted || isLimit(failure) || isTooLarge(failure) || failure instanceof ProviderDownError) return { outcome: 'unsent', first: false }
+  if (isRefusal(failure)) return { outcome: 'refused', first: true }
+  if (plan.setting === 'structuredOutput') return { outcome: 'failed', first: true }
+  if (plan.cause === 'cut-off-thinking' && !tookTheRequest(failure)) return { outcome: 'unsent', first: true }
+  return { outcome: 'failed', first: false }
+}
+
+/** Whether `error` is a failure of kind `http` with status 400 or 422, as own data: the server read the request and refused its value. */
+export function isRefusal(error: unknown): boolean {
+  const read = providerFailure(error)
+  return read?.kind === 'http' && (read.status === 400 || read.status === 422)
+}
+
+/** The kinds of failure that show the server took the request and read it: its reply was cut off, empty, only reasoning, unreadable or refused by the model. */
+const TOOK_THE_REQUEST: ReadonlySet<ProviderErrorKind> = new Set([
+  'truncated',
+  'no-answer',
+  'invalid-response',
+  'refusal',
+])
+
+/** Whether `failure` shows the server took the request: a reply of one of those kinds, or a timeout, a gateway's 504 and 524 included. */
+function tookTheRequest(failure: unknown): boolean {
+  const read = providerFailure(failure)
+  return (read !== undefined && TOOK_THE_REQUEST.has(read.kind)) || isTimeout(failureFacts(failure))
 }
 
 /** The fields of a `call` event that hold what the call's attempts add up to: their number when above one, their summed usage when valid, and the tokens the cap counted. */

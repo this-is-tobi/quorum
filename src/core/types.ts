@@ -346,6 +346,23 @@ export type ReviewSource
     | { kind: 'local' | 'staged', head: string | null, objectFormat: ObjectFormat }
     | { kind: 'paths', commit: string, paths: string[], skips: boolean, objectFormat: ObjectFormat }
 
+/**
+ * A setting quorum moved by itself for the rest of one review, as `meta.adaptations` records it and an `adapted`
+ * event reports it: the provider's id, the `setting` and what it moved `from` and `to`, and the `cause`, a code
+ * word. `thinking` is lowered when a reply ran out of room while reasoning (`cut-off-thinking`) or held only
+ * reasoning (`no-answer-thinking`), and put back to the server's default when the server refused the lowered value
+ * (`lowering-refused`, `from` the level tried); `structuredOutput` moves from `json` to `prompt` when a reply in JSON
+ * mode was empty (`empty-reply`) or the server refused the mode (`format-refused`). The causes `byte-bound-refused`
+ * and `loaded-window` belong to the settings `tokenCount` and `window`, which a later release moves.
+ */
+export interface Adaptation {
+  provider: string
+  setting: 'thinking' | 'structuredOutput' | 'tokenCount' | 'window'
+  from: string
+  to: string
+  cause: 'cut-off-thinking' | 'no-answer-thinking' | 'empty-reply' | 'format-refused' | 'byte-bound-refused' | 'loaded-window' | 'lowering-refused'
+}
+
 /** What a review records about itself, besides its verdicts. */
 export interface QuorumMeta {
   /** The version of quorum that ran the review, read from package.json. */
@@ -366,6 +383,8 @@ export interface QuorumMeta {
   leftOut: LeftOutFile[]
   /** Advisory signals the harness read from the diff, and from the files left out as secrets, held back or skipped by a source, which come first: where a human should look. They change no verdict and no exit code. */
   flags: Flag[]
+  /** What the review moved by itself, in the order it happened: empty when nothing moved. A setting an explicit option holds is never moved. */
+  adaptations: Adaptation[]
 }
 
 /** Final review output. */
@@ -569,6 +588,11 @@ export type QuorumEvent
      * read, never a word a provider's error or a reply held.
      */
     | { type: 'reply-lacked', provider: string, kind: 'truncated' | 'no-answer', noAnswer: NoAnswer, limit?: number, outputTokens?: number, inputTokens?: number, window?: number }
+    /**
+     * Quorum moved a setting of a provider by itself for the rest of the review, said once per provider and
+     * setting: the same record `meta.adaptations` holds. Every field is a provider's id or a code word.
+     */
+    | { type: 'adapted', adaptation: Adaptation }
     /** A finding was dropped for citing code outside the diff, with the reason. */
     | { type: 'finding:invalid', profile: string, reason: string }
     /** A gap was recorded, as `meta.incomplete` will hold it. */

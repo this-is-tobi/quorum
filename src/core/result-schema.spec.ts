@@ -107,6 +107,75 @@ describe('the schemas of a result', () => {
     ])
   })
 
+  it('reads meta.adaptations strictly, refusing a cause no quorum writes', () => {
+    const adapted = {
+      provider: 'api',
+      setting: 'thinking',
+      from: 'default',
+      to: 'low',
+      cause: 'cut-off-thinking',
+    } as const
+    const result = reportResult({
+      meta: {
+        ...reportResult().meta,
+        adaptations: [adapted],
+      },
+    })
+    const full = saved(result)
+    expect(resultSchema.parse(full)).toEqual(full)
+    const view = saved(publicView(result))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(view.meta.adaptations).toEqual([adapted])
+    // The field is required, each entry is strict, and a setting or a cause outside the closed lists is refused.
+    const { adaptations: _none, ...without } = full.meta
+    expect(resultSchema.safeParse({ ...full, meta: without }).success).toBe(false)
+    for (const forged of [
+      { ...adapted, cause: 'because' },
+      { ...adapted, setting: 'temperature' },
+      { ...adapted, extra: 1 },
+      {
+        provider: 'api',
+        setting: 'thinking',
+        from: 'default',
+        to: 'low',
+      },
+    ] as Forged[]) {
+      expect(resultSchema.safeParse({
+        ...full,
+        meta: {
+          ...full.meta,
+          adaptations: [forged],
+        },
+      }).success, JSON.stringify(forged)).toBe(false)
+      expect(publicViewSchema.safeParse({
+        ...view,
+        meta: {
+          ...view.meta,
+          adaptations: [forged],
+        },
+      }).success, JSON.stringify(forged)).toBe(false)
+    }
+    for (const cause of [
+      'cut-off-thinking',
+      'no-answer-thinking',
+      'empty-reply',
+      'format-refused',
+      'byte-bound-refused',
+      'loaded-window',
+      'lowering-refused',
+    ]) {
+      expect(resultSchema.safeParse({
+        ...full,
+        meta: {
+          ...full.meta,
+          adaptations: [
+            { ...adapted, cause },
+          ],
+        },
+      }).success, cause).toBe(true)
+    }
+  })
+
   it('reads a result holding no-answer as a vote failure', () => {
     const empty = {
       angle: 'b',

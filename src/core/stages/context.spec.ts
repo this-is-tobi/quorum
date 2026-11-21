@@ -2,6 +2,7 @@ import { getEventListeners } from 'node:events'
 import { describe, expect, it, onTestFinished } from 'vitest'
 import { fakeClock, settle } from '../../testing/clock.ts'
 import type { FakeClock } from '../../testing/clock.ts'
+import { createAdaptations } from '../adapt.ts'
 import { createLimiter } from '../concurrency.ts'
 import { createHealth } from '../down.ts'
 import { ProviderError } from '../errors.ts'
@@ -36,6 +37,7 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
     deadline: { at: clock.now() + deadlineMs, ms: deadlineMs },
     health: createHealth(),
     lacked: new Set(),
+    adapt: createAdaptations(),
     maxFindings: 50,
     budgets: {},
     concurrency,
@@ -45,7 +47,7 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
 }
 
 /** A target whose provider's own id is not the id of its ref, which is the one an error and an event name. */
-function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'retries' | 'worstCase' | 'room' | 'window' | 'maxTokens' | 'thinking'>> = {}): Target {
+function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'retries' | 'worstCase' | 'room' | 'window' | 'maxTokens' | 'thinking' | 'adapts'>> = {}): Target {
   return {
     provider: { id: 'live-id', model: 'm', complete },
     ref: { id: 'p', model: 'm' },
@@ -56,6 +58,7 @@ function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'tim
     window: undefined,
     maxTokens: undefined,
     thinking: 'default',
+    adapts: undefined,
     ...facts,
   }
 }
@@ -1185,5 +1188,320 @@ describe('the review\'s deadline', () => {
       limit: 'review-deadline',
       message: REACHED(500),
     })
+  })
+})
+
+describe('the adaptations of a call', () => {
+  const cutOff = (): ProviderError => new ProviderError({
+    providerId: 'p',
+    kind: 'truncated',
+    noAnswer: 'thinking',
+    message: 'cut off',
+    usage: { inputTokens: 100, outputTokens: 300 },
+  })
+  const answered = (text = '{}'): CompletionResponse => ({ text, model: 'm' })
+  const lowers = {
+    adapts: { thinking: 'low' as const },
+  }
+
+  it('sends a call once more at the lowered thinking inside the same call: one call event with both attempts, then the adapted event', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const sent: Array<CompletionRequest['thinking']> = []
+    const lowering = target(async (asked) => {
+      sent.push(asked.thinking)
+      if (asked.thinking === undefined) throw cutOff()
+      return answered('done')
+    }, lowers)
+    await expect(settle(clock, callProvider(ctx, requester, lowering, () => request))).resolves.toBe('done')
+    expect(sent).toEqual([undefined, 'low'])
+    expect(events.map(event => event.type)).toEqual(['adapted', 'call'])
+    expect(events[0]).toEqual({
+      type: 'adapted',
+      adaptation: {
+        provider: 'p',
+        setting: 'thinking',
+        from: 'default',
+        to: 'low',
+        cause: 'cut-off-thinking',
+      },
+    })
+    expect(events[1]).toMatchObject({
+      type: 'call',
+      ok: true,
+      attempts: 2,
+      usage: { inputTokens: 100, outputTokens: 300 },
+    })
+    // The next call of the provider is built at the settled level, and meets no re-send.
+    await settle(clock, callProvider(ctx, requester, lowering, () => request))
+    expect(sent).toEqual([undefined, 'low', 'low'])
+    expect(ctx.adapt.record()).toHaveLength(1)
+  })
+
+  /** A call whose first attempt fails with `first` and whose re-sends fail with `second`, at a provider that lowers thinking. */
+  async function probed(first: unknown, second: unknown): Promise<{ readonly ctx: RunContext, readonly events: QuorumEvent[], readonly sent: Array<CompletionRequest['thinking']>, readonly error: unknown, readonly lowering: Target }> {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const sent: Array<CompletionRequest['thinking']> = []
+    const lowering = target(async (asked) => {
+      sent.push(asked.thinking)
+      throw asked.thinking === undefined
+        ? first
+        : second
+    }, lowers)
+    const error = await settle(clock, callProvider(ctx, requester, lowering, () => request)).catch((caught: unknown) => caught)
+    return { ctx, events, sent, error, lowering }
+  }
+  const http = (status: number): ProviderError => new ProviderError({
+    providerId: 'p',
+    kind: 'http',
+    status,
+    message: 'x',
+  })
+  const reasoningOnly = (): ProviderError => new ProviderError({
+    providerId: 'p',
+    kind: 'no-answer',
+    noAnswer: 'thinking',
+    message: 'only reasoning',
+  })
+
+  it('moves nothing when a cut-off probe fails with a 503: it ends with the cut-off, and the setting is tried', async () => {
+    const first = cutOff()
+    const { ctx, events, sent, error, lowering } = await probed(first, http(503))
+    expect(error).toBe(first)
+    expect(sent).toEqual([undefined, 'low'])
+    expect(events.some(event => event.type === 'adapted')).toBe(false)
+    expect(ctx.adapt.record()).toEqual([])
+    expect(ctx.adapt.sent(lowering)).toEqual({})
+    // Tried: nobody waits on it and no call probes it again.
+    await ctx.adapt.ready(lowering, ctx.stop)
+    expect(ctx.adapt.probe(lowering, cutOff())).toBeUndefined()
+  })
+
+  it.each([
+    [
+      'a network failure',
+      new ProviderError({ providerId: 'p', kind: 'network', message: 'x' }),
+    ],
+    [
+      'a 429',
+      http(429),
+    ],
+    [
+      'a 401',
+      http(401),
+    ],
+    [
+      'a 500',
+      http(500),
+    ],
+    [
+      'a 502',
+      http(502),
+    ],
+  ])('moves nothing when a cut-off probe fails with %s, and ends with the cut-off', async (_, second) => {
+    const first = cutOff()
+    const { ctx, error } = await probed(first, second)
+    expect(error).toBe(first)
+    expect(ctx.adapt.record()).toEqual([])
+  })
+
+  it.each([
+    [
+      'a reply cut off again',
+      new ProviderError({
+        providerId: 'p',
+        kind: 'truncated',
+        noAnswer: 'reply',
+        message: 'x',
+      }),
+    ],
+    [
+      'a reply of only reasoning',
+      reasoningOnly(),
+    ],
+    [
+      'an unreadable reply',
+      new ProviderError({ providerId: 'p', kind: 'invalid-response', message: 'x' }),
+    ],
+    [
+      'a refusal of the model',
+      new ProviderError({ providerId: 'p', kind: 'refusal', message: 'x' }),
+    ],
+    [
+      'the attempt\'s own deadline',
+      new ProviderError({ providerId: 'p', kind: 'timeout', message: 'x' }),
+    ],
+  ])('lowers thinking when a cut-off probe ends with %s, since the server took the request', async (_, second) => {
+    const { ctx, events, error, lowering } = await probed(cutOff(), second)
+    expect(error).toBe(second)
+    expect(events.filter(event => event.type === 'adapted')).toHaveLength(1)
+    expect(ctx.adapt.sent(lowering)).toEqual({ thinking: 'low' })
+  })
+
+  it('lowers thinking when a reasoning-only probe fails with a 503, as its own level answers nothing', async () => {
+    const second = http(503)
+    const { ctx, events, sent, error, lowering } = await probed(reasoningOnly(), second)
+    expect(error).toBe(second)
+    expect(sent).toEqual([undefined, 'low'])
+    expect(events.filter(event => event.type === 'adapted')).toEqual([
+      {
+        type: 'adapted',
+        adaptation: {
+          provider: 'p',
+          setting: 'thinking',
+          from: 'default',
+          to: 'low',
+          cause: 'no-answer-thinking',
+        },
+      },
+    ])
+    expect(ctx.adapt.sent(lowering)).toEqual({ thinking: 'low' })
+  })
+
+  it('lowers thinking when a cut-off probe times out at the gateway (504)', async () => {
+    const second = http(504)
+    const { ctx, events, error, lowering } = await probed(cutOff(), second)
+    expect(error).toBe(second)
+    expect(events.filter(event => event.type === 'adapted')).toHaveLength(1)
+    expect(ctx.adapt.record()).toEqual([
+      {
+        provider: 'p',
+        setting: 'thinking',
+        from: 'default',
+        to: 'low',
+        cause: 'cut-off-thinking',
+      },
+    ])
+    expect(ctx.adapt.sent(lowering)).toEqual({ thinking: 'low' })
+  })
+
+  it('sends a call that meets both settings\' probes at most three times, once more per setting', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const sent: Array<[CompletionRequest['thinking'], CompletionRequest['structuredOutput']]> = []
+    const both = target(async (asked) => {
+      sent.push([asked.thinking, asked.structuredOutput])
+      if (asked.thinking === undefined) throw cutOff()
+      if (asked.structuredOutput === undefined) {
+        throw new ProviderError({
+          providerId: 'p',
+          kind: 'no-answer',
+          noAnswer: 'empty',
+          message: 'empty',
+        })
+      }
+      // Both settings are moved and tried: this failure answers each, and no fourth send follows.
+      throw cutOff()
+    }, {
+      adapts: { thinking: 'low', prompt: true },
+    })
+    const error = await settle(clock, callProvider(ctx, requester, both, () => request)).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(ProviderError)
+    expect(sent).toEqual([
+      [undefined, undefined],
+      ['low', undefined],
+      ['low', 'prompt'],
+    ])
+    // The thinking probe's re-send was empty, a sign the server took it; the prompt probe's failed and moved nothing.
+    expect(ctx.adapt.record().map(record => record.setting)).toEqual(['thinking'])
+    expect(events.filter(event => event.type === 'adapted')).toHaveLength(1)
+  })
+
+  it('ends a call that waited in ready and then fails for the same setting with no second send', async () => {
+    const clock = fakeClock()
+    const { ctx } = context(clock, new AbortController(), 2)
+    const sent: Array<CompletionRequest['thinking']> = []
+    let release = (): void => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let probing = false
+    const lowering = target(async (asked) => {
+      sent.push(asked.thinking)
+      if (asked.thinking === undefined) throw cutOff()
+      // The probe's re-send holds until the second call has started and waits.
+      if (!probing) {
+        probing = true
+        await gate
+        return answered()
+      }
+      throw cutOff()
+    }, lowers)
+    // No `settle` here: it fires timers while it waits, and the probe's attempt must hold its deadline.
+    const first = callProvider(ctx, requester, lowering, () => request)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(sent).toEqual([undefined, 'low'])
+    const second = callProvider(ctx, requester, lowering, () => request).catch((caught: unknown) => caught)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    // The second call waits in ready for the probe: it has sent nothing.
+    expect(sent).toEqual([undefined, 'low'])
+    release()
+    await expect(first).resolves.toBe('{}')
+    // It then went at the settled level, failed for the setting the review has moved, and was sent no second time.
+    expect(await second).toBeInstanceOf(ProviderError)
+    expect(sent).toEqual([undefined, 'low', 'low'])
+  })
+
+  it('ends a re-send of a provider found down with its ProviderDownError, counted nowhere, and records nothing', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const failures: unknown[] = []
+    const down = target(async () => {
+      // The provider is found down by other calls while this one is in flight.
+      for (let call = 0; call < 3; call++) {
+        ctx.health.failed(down.provider, 'p', new ProviderError({
+          providerId: 'p',
+          kind: 'http',
+          status: 503,
+          message: 'down',
+        }))
+      }
+      throw cutOff()
+    }, lowers)
+    const error = await settle(clock, callProvider(ctx, requester, down, () => request, (failure) => {
+      failures.push(failure)
+    })).catch((caught: unknown) => caught)
+    expect(error).toBe(ctx.health.refused(down.provider))
+    expect(failures).toEqual([error])
+    // One attempt was made, no re-send, and the call's end told the health nothing: its failed event is the only one.
+    expect(events.map(event => event.type)).toEqual(['call'])
+    expect(events[0]).toMatchObject({ ok: false })
+    expect(events[0]).not.toHaveProperty('attempts')
+    expect(ctx.adapt.record()).toEqual([])
+    expect(ctx.health.spent(down.provider, 'p')).toBeUndefined()
+    // The probe settled: the setting is tried and nobody waits on it.
+    await ctx.adapt.ready(down, ctx.stop)
+    expect(ctx.adapt.probe(down, cutOff())).toBeUndefined()
+  })
+
+  it('settles a probe the token cap refused, moves nothing, and lets the provider\'s calls meet the cap themselves', async () => {
+    const clock = fakeClock()
+    // The first attempt fits, and its failure settles it at its whole reservation: the re-send has no room left.
+    const { ctx, events } = context(clock, new AbortController(), 1, { cap: 20_000 })
+    const sent: Array<CompletionRequest['thinking']> = []
+    const capped = target(async (asked) => {
+      sent.push(asked.thinking)
+      throw new ProviderError({
+        providerId: 'p',
+        kind: 'truncated',
+        noAnswer: 'thinking',
+        message: 'cut off',
+      })
+    }, lowers)
+    const error = await settle(clock, callProvider(ctx, requester, capped, () => request)).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(LimitError)
+    expect(error).toMatchObject({ limit: 'token-cap' })
+    expect(sent).toEqual([undefined])
+    expect(ctx.adapt.record()).toEqual([])
+    expect(ctx.adapt.sent(capped)).toEqual({})
+    expect(events.some(event => event.type === 'adapted')).toBe(false)
+    await ctx.adapt.ready(capped, ctx.stop)
+    expect(ctx.adapt.probe(capped, new ProviderError({
+      providerId: 'p',
+      kind: 'truncated',
+      noAnswer: 'thinking',
+      message: 'x',
+    }))).toBeUndefined()
   })
 })

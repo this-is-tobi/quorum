@@ -51,6 +51,7 @@ describeProviderContract({
     extraBody: {
       output_config: { effort: 'high' },
     },
+    lowersTo: 'low',
   },
   reservedBodyKeys: [
     'model',

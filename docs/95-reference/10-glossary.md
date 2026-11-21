@@ -4,6 +4,7 @@ The words these pages use in one particular way, and the acronyms they assume yo
 
 ## Terms
 
+- **adaptation** — a setting quorum moves by itself for the rest of one review when a reply shows it must: a provider's thinking lowered, or its structured output moved from `json` to `prompt`. Each is found out by a probe, one call sent once more with the new setting, and is one line, one `adapted` event and one entry of `meta.adaptations`. A setting you set is never moved. [What quorum adapts by itself](../20-using/20-configuration.md#what-quorum-adapts-by-itself)
 - **attack case** — a case of a bench suite whose patch is the patch of a bug case, its twin, with text planted in it to turn the review: to hide the bug, to keep a decoy, to bloat the output or to deny the review. It is scored against its twin's review of the same trial. [Benchmarks](../20-using/70-bench.md#attack-suites)
 - **attempt** — one try of a call: the provider is asked once, with a signal of its own and a deadline of its own. [Deadlines and retries](../20-using/30-providers.md#deadlines-and-retries)
 - **carrier** — where an attack case plants its text: a comment, a string literal, a file name, a documentation file or a guideline file. [Measurement](../30-security/40-measurement.md#the-injection-corpus)

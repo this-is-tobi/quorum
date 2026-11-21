@@ -26,6 +26,8 @@ const SPEND_CODES: ReadonlySet<string> = new Set(['credit_balance_exhausted', 'o
 const SPEND_LIMIT_SUFFIX = '_spend_limit_exceeded'
 const ANTHROPIC_SPEND_CODE = 'enforced_spend_limit_reached'
 const OPENROUTER_IN_FLIGHT = 'openrouter_in_flight_budget'
+/** A character a word is made of: a letter, a digit or an underscore. */
+const WORD_CHARACTER = /^\w$/
 /** A JSON unicode escape (a backslash, then u00 and two hex digits) for printable ASCII, U+0020 to U+007E. */
 const ESCAPED_PRINTABLE_ASCII = /\\u00(2[0-9a-fA-F]|[3-6][0-9a-fA-F]|7[0-9a-eA-E])/g
 
@@ -48,6 +50,12 @@ export interface PostJsonOptions {
   redact?: readonly string[]
   /** What the adapter reads of a failed reply's body, handed the body parsed as JSON, or `undefined` when it is none. */
   errorHints?: (body: unknown) => ErrorHints
+  /**
+   * The names of the structured-output fields the request sent. A 400 or 422 whose body names one of them as a
+   * whole word is marked `refused: 'structuredOutput'`, which lets the core move the provider to prompt mode. The
+   * body is only matched, never copied: the mark is a code word.
+   */
+  formatFields?: readonly string[]
 }
 
 /** Every form in which a server may echo the secret. */
@@ -314,6 +322,16 @@ function jsonOrUndefined(text: string): unknown {
   }
 }
 
+/** Whether `text` holds `word` as a whole word: no letter, digit or underscore beside it. */
+function namesWord(text: string, word: string): boolean {
+  for (let at = text.indexOf(word); at !== -1; at = text.indexOf(word, at + 1)) {
+    const before = text[at - 1]
+    const after = text[at + word.length]
+    if (!WORD_CHARACTER.test(before ?? '') && !WORD_CHARACTER.test(after ?? '')) return true
+  }
+  return false
+}
+
 /** A failed reply's error: its message quotes the body, and its hint and verdict are numbers and booleans, never text. */
 function httpFailure(options: PostJsonOptions, response: Response, text: string): ProviderError {
   const { providerId, redact } = options
@@ -339,6 +357,7 @@ function httpFailure(options: PostJsonOptions, response: Response, text: string)
   const redirect = status >= 300 && status < 400
     ? ' (redirects are not followed)'
     : ''
+  const refused = (status === 400 || status === 422) && options.formatFields?.some(field => namesWord(text, field)) === true
   return new ProviderError({
     providerId,
     kind: 'http',
@@ -346,6 +365,9 @@ function httpFailure(options: PostJsonOptions, response: Response, text: string)
     status,
     retryAfterMs,
     retryable,
+    ...refused
+      ? { refused: 'structuredOutput' as const }
+      : {},
   })
 }
 

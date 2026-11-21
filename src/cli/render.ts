@@ -4,7 +4,7 @@ import { isProvider } from '../config/schema.ts'
 import type { EventSink, Provider } from '../core/ports.ts'
 import { downWords, lackWords } from '../core/errors.ts'
 import { inertLine } from '../core/sanitize.ts'
-import type { Estimate, LeftOutFile, QuorumEvent } from '../core/types.ts'
+import type { Adaptation, Estimate, LeftOutFile, QuorumEvent } from '../core/types.ts'
 import { isClaudeCode } from '../providers/build.ts'
 import { originOf } from '../providers/http.ts'
 import { presetOf } from '../providers/presets.ts'
@@ -66,6 +66,8 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
       })
     case 'reply-lacked':
       return `${event.provider}: ${lackWords(event.kind, event)}`
+    case 'adapted':
+      return adaptedWords(event.adaptation)
     case 'left-out':
       return leftOutLine(event.files)
     case 'flag':
@@ -75,6 +77,29 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
     default:
       return undefined
   }
+}
+
+/** What each cause of a setting moved says, in words the code writes: the reason the review gives for it. */
+const ADAPTED_BECAUSE: Readonly<Partial<Record<Adaptation['cause'], string>>> = {
+  'cut-off-thinking': 'a reply ran out of room while reasoning',
+  'no-answer-thinking': 'a reply held only reasoning',
+  'empty-reply': 'a reply in JSON mode was empty',
+  'format-refused': 'the server refused the request\'s JSON mode',
+}
+
+/**
+ * The line of a setting quorum moved by itself, which names the provider, the new setting, that it holds for the
+ * rest of the review and how to choose it instead, or, for a lowering the server refused, that thinking stays as
+ * the server sets it. It holds a provider's id and code words only. A move no release of the 3e kind writes (the server's
+ * count, a loaded window) has no line yet.
+ */
+function adaptedWords({ provider, setting, from, to, cause }: Adaptation): string | undefined {
+  if (cause === 'lowering-refused') return `${provider}: the server refused thinking lowered to ${from}: thinking stays as the server sets it for the rest of the review; set thinking to choose it yourself`
+  const because = ADAPTED_BECAUSE[cause]
+  if (because === undefined) return undefined
+  return setting === 'thinking'
+    ? `${provider}: thinking lowered to ${to} for the rest of the review: ${because}; set thinking to choose it yourself`
+    : `${provider}: structuredOutput moved to ${to} for the rest of the review: ${because}; set structuredOutput to choose it yourself`
 }
 
 /**

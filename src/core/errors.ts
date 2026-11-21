@@ -125,8 +125,14 @@ export class ProviderError extends QuorumError {
   readonly usage: Usage | undefined
   /** What a `truncated` or `no-answer` reply lacked, when the adapter read it. */
   readonly noAnswer: NoAnswer | undefined
+  /**
+   * `structuredOutput` when the server refused the request's structured-output field: an HTTP 400 or 422 whose
+   * body names it as a whole word, which the adapter matched and never quoted. The core moves a provider in
+   * automatic JSON mode to prompt mode on it.
+   */
+  readonly refused: 'structuredOutput' | undefined
 
-  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, retryAfterMs?: number, usage?: Usage, noAnswer?: NoAnswer, cause?: unknown }) {
+  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, retryAfterMs?: number, usage?: Usage, noAnswer?: NoAnswer, refused?: 'structuredOutput', cause?: unknown }) {
     super(`${details.providerId}: ${details.message}`, details.cause === undefined
       ? undefined
       : { cause: details.cause })
@@ -137,6 +143,7 @@ export class ProviderError extends QuorumError {
     this.retryAfterMs = details.retryAfterMs
     this.usage = details.usage
     this.noAnswer = details.noAnswer
+    this.refused = details.refused
   }
 }
 

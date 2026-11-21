@@ -2,7 +2,7 @@ import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { isRecord, mergeBody, prepareHttp, thinkingIssues } from './options.ts'
+import { adaptsOf, isRecord, mergeBody, prepareHttp, requestSettings, thinkingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput, Thinking, ThinkingControl } from './options.ts'
 import { endedEarly, joinedText, readAnswer, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
@@ -131,7 +131,9 @@ function outputConfig(structuredOutput: StructuredOutput, thinking: Thinking | u
  * (`replyBudgetOf`). It states its worst case from the count its size guard keeps: the text it sends, the
  * template reserve and that budget, and the room its guard leaves from the same count: `contextTokens` less
  * those three. It also states its window, its `maxTokens` when set, and its thinking: `low` when the option sets it,
- * which it sends as `output_config.effort`, else `default`; `off` is refused.
+ * which it sends as `output_config.effort`, else `default`; `off` is refused. Unless the options set `thinking`, or
+ * `extraBody` sets `output_config.effort`, it states that the core may lower thinking to `low`, and honours the
+ * request's `thinking`. Its structured output is `prompt` by default, which never moves, so it states no `prompt`.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
@@ -141,6 +143,7 @@ export function anthropic(options: AnthropicOptions): Provider {
   // The version goes last, so no header can replace it.
   const sent = { ...headers, 'anthropic-version': ANTHROPIC_VERSION }
   const budgetOf = (request: CompletionRequest): ContextBudget => contextBudget(contextTokens, replyBudgetOf(request, maxTokens))
+  const adapting = adaptsOf(options, { level: 'low', control: THINKING })
 
   return {
     id,
@@ -148,12 +151,14 @@ export function anthropic(options: AnthropicOptions): Provider {
     timeoutMs,
     retries,
     ...statedReply(contextTokens, maxTokens, thinking),
+    ...adapting,
     worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       const budget = budgetOf(request)
       checkFits(id, { system, messages }, request.output, budget)
+      const settings = requestSettings({ thinking, structuredOutput }, adapting.adapts, request)
       // JSON.stringify drops the undefined fields: no system inline, no temperature unless set, no output_config outside schema mode.
       const reply = await postJson<unknown>({
         providerId: id,
@@ -165,7 +170,7 @@ export function anthropic(options: AnthropicOptions): Provider {
           system,
           messages,
           temperature: temperature ?? undefined,
-          output_config: outputConfig(structuredOutput, thinking, request.output),
+          output_config: outputConfig(settings.structuredOutput, settings.thinking, request.output),
         }, extraBody),
         signal: request.signal,
         redact,

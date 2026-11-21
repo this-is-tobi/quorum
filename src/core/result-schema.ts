@@ -237,6 +237,31 @@ const flag = z.strictObject({
   detail: z.string(),
 })
 
+/**
+ * What a review moved by itself: a provider's id, the setting, what it moved from and to, and the cause, each setting
+ * and cause one of the closed lists of `Adaptation`, the ones a later release moves included.
+ */
+const adaptation = z.strictObject({
+  provider: z.string(),
+  setting: z.enum([
+    'thinking',
+    'structuredOutput',
+    'tokenCount',
+    'window',
+  ]),
+  from: z.string(),
+  to: z.string(),
+  cause: z.enum([
+    'cut-off-thinking',
+    'no-answer-thinking',
+    'empty-reply',
+    'format-refused',
+    'byte-bound-refused',
+    'loaded-window',
+    'lowering-refused',
+  ]),
+})
+
 /** The profiles of a result, keyed by id: at least one, since a review runs at least one. */
 function profilesOf<Meta extends z.ZodType>(meta: Meta) {
   return z.record(profileId, meta).refine(profiles => Object.keys(profiles).length > 0)
@@ -311,6 +336,7 @@ export const resultSchema = z.strictObject({
     incomplete: z.array(incompleteEntry),
     leftOut: z.array(leftOutFile),
     flags: z.array(flag),
+    adaptations: z.array(adaptation),
   }),
 }).superRefine(checkResult)
 
@@ -334,5 +360,6 @@ export const publicViewSchema = z.strictObject({
     incomplete: z.array(publicGap),
     leftOut: z.array(leftOutFile),
     flags: z.array(flag),
+    adaptations: z.array(adaptation),
   }),
 }).superRefine(checkResult)

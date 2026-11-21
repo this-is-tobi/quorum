@@ -119,6 +119,8 @@ A thinking model writes its reasoning before the answer, and the reasoning count
 
 A reply with no answer is a failed call, never a clean review: a research part is a `research-failed` gap, a vote a failed vote. Three of them in a row from one provider find it down (`<provider>: 3 calls in a row had no answer, only reasoning: ...`), and it is called no more in the review: [What a reply lacked](../20-using/30-providers.md#what-a-reply-lacked).
 
+**Quorum acts on the first two by itself.** With `thinking` and `structuredOutput` unset, a reply that held only reasoning, or ran out of room while reasoning, lowers the provider's thinking once for the rest of the review (to `off` on Ollama and under the `vllm` and `llamacpp` presets, to `low` elsewhere), and a reply in JSON mode that came back empty, or a server that answers a 400 naming `response_format` (`format` on Ollama), moves it to prompt mode once that mode answers: each with one line saying so, and each asked again, so the review goes on. A server that refuses the lowered value, a template that raises on `none`, keeps its own level, with a line. [What quorum adapts by itself](../20-using/20-configuration.md#what-quorum-adapts-by-itself) has the rules. Set `thinking` or `structuredOutput` to choose them yourself, and nothing moves.
+
 To turn thinking off, set `thinking: off` on the provider, or `QUORUM_RESEARCH_THINKING=off` for the finder and `QUORUM_VOTER_THINKING=off` for the panel. Quorum sends the control each protocol documents, so no server needs its own field written:
 
 | Server | `thinking: off` sends | Where the reasoning goes |

@@ -117,6 +117,7 @@ function publicMeta(result: QuorumResult): PublicMeta {
     incomplete: meta.incomplete.map(publicGap),
     leftOut: structuredClone(meta.leftOut),
     flags: structuredClone(meta.flags),
+    adaptations: structuredClone(meta.adaptations),
   }
 }
 
