@@ -170,10 +170,13 @@ export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
  * of its parts, for a large change) or some of its votes, which were not sent; `review-deadline`: the
  * review reached its deadline, which stopped part of the profile's work, its research (some of its
  * parts) or some of its votes, in flight or not yet sent; one entry per limit and profile counts them.
+ * `reply-cut-off`: a research reply was cut off at its limit even for the hunks it held after recovery split
+ * its part as far as it goes (three splits deep, or one hunk), so those hunks went unreviewed; one entry per
+ * profile counts them, `meta.profiles.<id>.coverage` lists their ranges, and no flag lifts it.
  * For a large change researched in parts, `research-failed`, `provider-down` and `request-too-large` count the
  * parts that failed, were not sent or were refused, and each of the other reasons its parts' share.
  */
-export type IncompleteReason = 'research-unusable' | 'research-failed' | 'provider-down' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'too-large' | 'token-cap' | 'review-deadline' | 'binary' | 'submodule' | 'secret'
+export type IncompleteReason = 'research-unusable' | 'research-failed' | 'provider-down' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'too-large' | 'token-cap' | 'review-deadline' | 'reply-cut-off' | 'binary' | 'submodule' | 'secret'
 
 /**
  * Work the run could not review: a research reply with findings but none usable, a research part that
@@ -251,9 +254,10 @@ export type LeftOutFile
  * Why part of a file was not reviewed, as `CoverageEntry` records it: a `LeftOutReason`'s `binary`,
  * `submodule`, `secret` or `deleted-secret`, `too-large` for a hunk, or a section with no hunk, that fits in
  * no research part of its model's window, or the `IncompleteReason` of the research part that held it and
- * did not read it: `request-too-large`, `token-cap`, `review-deadline`, `research-failed` or `provider-down`.
+ * did not read it: `request-too-large`, `token-cap`, `review-deadline`, `research-failed`, `provider-down` or, for a
+ * hunk still cut off when recovery had split it as far as it goes, `reply-cut-off`.
  */
-export type CoverageReason = 'binary' | 'submodule' | 'secret' | 'deleted-secret' | 'too-large' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'research-failed' | 'provider-down'
+export type CoverageReason = 'binary' | 'submodule' | 'secret' | 'deleted-secret' | 'too-large' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'research-failed' | 'provider-down' | 'reply-cut-off'
 
 /**
  * How much of a file a profile's research reviewed: `reviewed` when every part that holds it was
@@ -331,6 +335,14 @@ export interface ProfileMeta {
    * was not. Each profile has its own, since each has its own research model.
    */
   coverage: CoverageEntry[]
+  /**
+   * What recovery did for this profile's research, present when it split a part (and absent when it split none):
+   * `parts` the parts it split, `pieces` the final pieces they ended with, each read or left at the floor, not every
+   * piece asked on the way, `saturated` the replies that listed as many findings as they were asked for at most and
+   * were split for it, and `unreadHunks` the hunks the floor left unread in those parts, cut off even alone. A part cut
+   * off at the floor at once was not split: it has no entry here, and its hunks are in the `reply-cut-off` gap.
+   */
+  recovery?: { parts: number, pieces: number, saturated: number, unreadHunks: number }
 }
 
 /**
@@ -588,6 +600,16 @@ export type QuorumEvent
      * read, never a word a provider's error or a reply held.
      */
     | { type: 'reply-lacked', provider: string, kind: 'truncated' | 'no-answer', noAnswer: NoAnswer, limit?: number, outputTokens?: number, inputTokens?: number, window?: number }
+    /**
+     * A research part was recovered: its reply was cut off at its limit, or listed as many findings as it was asked
+     * for at most, so it was split in two, each half researched as a part, to a floor of one hunk and three splits.
+     * Sent once the part's pieces have answered. `noAnswer` is what the first reply lacked (`saturated` for a
+     * saturated one), `limit` the reply limit it was cut at when the request carried one, `findings` the findings a
+     * saturated reply was asked for, `thinkingLowered` whether the provider's thinking had been lowered when recovery
+     * began, `pieces` the final pieces the part ended with, each read or left at the floor, and `read` how many of them were read, and `unreadHunks` and
+     * `unreadFiles` what the floor left unread. Every field is a count or a code word.
+     */
+    | { type: 'recovered', profile: string, part: number, parts: number, noAnswer: Exclude<NoAnswer, 'empty'> | 'saturated', limit?: number, findings?: number, thinkingLowered: boolean, pieces: number, read: number, unreadHunks: number, unreadFiles: number }
     /**
      * Quorum moved a setting of a provider by itself for the rest of the review, said once per provider and
      * setting: the same record `meta.adaptations` holds. Every field is a provider's id or a code word.

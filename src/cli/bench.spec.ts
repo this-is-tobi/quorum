@@ -614,9 +614,9 @@ describe('quorum bench', () => {
         finish_reason: 'length',
         message: { content: '' },
       },
-      'the research call failed (truncated)',
+      '1 hunk(s) of 1 file(s) were cut off at their reply\'s limit even alone, listed as reply-cut-off in meta.profiles.security.coverage: raise maxTokens, set thinking: low, or lower partTokens',
     ],
-  ])('records %s with the research-failed gap, in words the bench wrote', async (_name, choice, detail) => {
+  ])('records %s as a gap, in words the bench wrote', async (_name, choice, detail) => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonReply({
       choices: [choice],
     })))
@@ -634,7 +634,14 @@ describe('quorum bench', () => {
     ])
     expect(run.stderr()).not.toContain('will not help')
     expect(readFileSync(join(out(), 'results.jsonl'), 'utf8')).not.toContain('will not help')
-    const gap = { profile: 'security', reason: 'research-failed', detail }
+    // A reply cut off at its limit, for a one-hunk diff at the floor at once, is `reply-cut-off`; every other end is `research-failed`.
+    const gap = {
+      profile: 'security',
+      reason: detail.includes('cut off at their reply')
+        ? 'reply-cut-off'
+        : 'research-failed',
+      detail,
+    }
     expect(lines().map(line => JSON.parse(line))).toMatchObject([
       {
         result: {
@@ -662,7 +669,7 @@ describe('quorum bench', () => {
     expect(run.stdout()).toContain(' | 0.00 / 0.00 | 3 | ')
   })
 
-  it('counts a cut-off research reply\'s usage, beside its research-failed gap: in its record, the tokens column and the cost line', async () => {
+  it('counts a cut-off research reply\'s usage, beside its reply-cut-off gap: in its record, the tokens column and the cost line', async () => {
     writeSuite(join(root, 'demo'), {
       ...SUITE,
       cases: [
@@ -707,7 +714,7 @@ describe('quorum bench', () => {
       result: {
         meta: {
           incomplete: [
-            { profile: 'security', reason: 'research-failed', detail: 'the research call failed (truncated)' },
+            { profile: 'security', reason: 'reply-cut-off', detail: '1 hunk(s) of 1 file(s) were cut off at their reply\'s limit even alone, listed as reply-cut-off in meta.profiles.security.coverage: raise maxTokens, set thinking: low, or lower partTokens' },
           ],
         },
       },

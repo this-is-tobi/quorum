@@ -5,16 +5,18 @@ import { OutputError, ProviderDownError } from '../errors.ts'
 import { isLimit } from '../limits.ts'
 import type { LimitName } from '../limits.ts'
 import { parseResearchReply } from '../output.ts'
-import { listedFiles, packParts, partText } from '../parts.ts'
-import type { Packing, PartOutcome } from '../parts.ts'
+import { cutSection, listedFiles, packParts, partText } from '../parts.ts'
+import type { Cut, Packing, PartOutcome, PartResult, Slice } from '../parts.ts'
 import type { CompletionRequest } from '../ports.ts'
 import { researchRequest } from '../prompts.ts'
 import type { Ask } from '../prompts.ts'
-import { tokenBound } from '../tokens.ts'
-import type { Finding, FindingDetails, IncompleteEntry } from '../types.ts'
+import { halves, unitsOf } from '../recovery.ts'
+import type { Piece } from '../recovery.ts'
+import { replyLimit, tokenBound } from '../tokens.ts'
+import type { Finding, FindingDetails, IncompleteEntry, ProfileMeta, QuorumEvent } from '../types.ts'
 import { collapse, verifyFindings } from '../verify.ts'
 import type { VerifiedFinding } from '../verify.ts'
-import { callProvider, isTooLarge, providerFailure, refusalMessage, roomOf } from './context.ts'
+import { callProvider, isTooLarge, lackOf, ownData, providerFailure, refusalMessage, roomOf } from './context.ts'
 import type { ProfileRun, RunContext } from './context.ts'
 import { dedupKey } from './dedup.ts'
 
@@ -32,10 +34,19 @@ export interface ResearchOutcome {
   /**
    * What became of each research part, in the parts' order: `reviewed` when its reply was a valid findings
    * envelope, the limit's name when the token cap or the deadline stopped it (its gap is written once the
-   * profile's panel has run, with the votes the limit stopped), else why it was not read. One entry for a
-   * research of one request, none when no part holds any of the diff.
+   * profile's panel has run, with the votes the limit stopped), else why it was not read; for a part recovery split,
+   * what became of each of its pieces. One entry for a research of one request, none when no part holds any of the
+   * diff.
    */
-  parts: PartOutcome[]
+  parts: PartResult[]
+  /**
+   * The packing the coverage reads, when recovery changed it: the plan's with the cuts recovery made between the hunks
+   * of sections the packing held whole, or, for a research of one request that recovery split, one part holding every
+   * section. Absent when recovery split nothing: the plan's packing, or none, is read.
+   */
+  packing?: Packing
+  /** What recovery did, when it split a part: what `meta.profiles.<id>.recovery` holds. */
+  recovery?: ProfileMeta['recovery']
 }
 
 /**
@@ -171,6 +182,16 @@ export function planResearch(run: ProfileRun, diff: string, sections: readonly D
   return { sections, packing, listed }
 }
 
+/** A research reply to read: its text, the label its unreadable findings are reported under, and the findings its request asked for at most. */
+interface Reply {
+  readonly text: string
+  readonly label?: string
+  readonly asked?: number
+}
+
+/** What reading research replies comes to: what the panel receives, and the gaps of the reading. */
+type Reading = Omit<ResearchOutcome, 'parts' | 'packing' | 'recovery'>
+
 /**
  * Turn one research reply into what the panel receives: `checkReplies` of that reply alone, unlabelled, so
  * its gaps and its errors are the ones `checkReplies` states.
@@ -178,7 +199,7 @@ export function planResearch(run: ProfileRun, diff: string, sections: readonly D
  * @throws OutputError when the reply is not one JSON object holding a `findings` array and nothing else
  * @throws RangeError when `maxFindings` is not a positive integer
  */
-export function checkReply(text: string, sections: ReadonlyMap<string, string>, profile: string, maxFindings = DEFAULT_MAX_FINDINGS): Omit<ResearchOutcome, 'parts'> {
+export function checkReply(text: string, sections: ReadonlyMap<string, string>, profile: string, maxFindings = DEFAULT_MAX_FINDINGS): Reading {
   return checkReplies([
     { text },
   ], sections, profile, maxFindings)
@@ -199,21 +220,30 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
  * finding it keeps is named by `findingId` and `findingFingerprint` and tagged with `profile`, and every
  * incomplete entry it records is tagged with `profile` too.
  *
+ * A reply that lists at least the `asked` findings its request asked for at most is saturated: it may have stopped
+ * at the ask, so the profile records one `findings-capped` gap that counts such replies and names the largest ask
+ * (`<k> research reply(ies) listed the <n> findings they were asked for at most, so they may have left some out`).
+ * Where the replies list more than `maxFindings` too, the same gap goes on with the cap's count after a colon, so a
+ * profile never has two of one reason. A saturated reply below `maxFindings` is split and never gets here, unless
+ * its piece is at the floor.
+ *
  * @throws OutputError when a reply is not one JSON object holding a `findings` array and nothing else
  * @throws RangeError when `maxFindings` is not a positive integer
  */
-export function checkReplies(replies: ReadonlyArray<{ readonly text: string, readonly label?: string }>, sections: ReadonlyMap<string, string>, profile: string, maxFindings = DEFAULT_MAX_FINDINGS): Omit<ResearchOutcome, 'parts'> {
+export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMap<string, string>, profile: string, maxFindings = DEFAULT_MAX_FINDINGS): Reading {
   if (!Number.isInteger(maxFindings) || maxFindings < 1) {
     throw new RangeError(`maxFindings must be a positive integer, got ${maxFindings}`)
   }
   const details: FindingDetails[] = []
   const unreadable: string[] = []
   let listed = 0
-  for (const { text, label } of replies) {
+  const saturated: number[] = []
+  for (const { text, label, asked } of replies) {
     // A reply past the cap is parsed for its envelope and its count alone: its entries are not read.
     const left = maxFindings - details.length - unreadable.length
     const parsed = parseResearchReply(text, Math.max(left, 1))
     listed += parsed.listed
+    if (asked !== undefined && parsed.listed >= asked) saturated.push(asked)
     if (left < 1) continue
     details.push(...parsed.findings)
     unreadable.push(...parsed.invalid.map(reason => label === undefined
@@ -229,13 +259,14 @@ export function checkReplies(replies: ReadonlyArray<{ readonly text: string, rea
     ...finding,
   }))
   const incomplete = unreadable.map((detail): IncompleteEntry => ({ profile, reason: 'finding-unreadable', detail }))
-  if (listed > maxFindings) {
-    incomplete.push({
-      profile,
-      reason: 'findings-capped',
-      detail: `${listed - maxFindings} of ${listed} reported findings were not reviewed (the cap is ${maxFindings})`,
-    })
-  }
+  const asks = saturated.length === 0
+    ? undefined
+    : `${saturated.length} research reply(ies) listed the ${Math.max(...saturated)} findings they were asked for at most, so they may have left some out`
+  const cap = listed > maxFindings
+    ? `${listed - maxFindings} of ${listed} reported findings were not reviewed (the cap is ${maxFindings})`
+    : undefined
+  const capped = [asks, cap].filter(words => words !== undefined).join(': ')
+  if (capped !== '') incomplete.push({ profile, reason: 'findings-capped', detail: capped })
   if (listed > 0 && findings.length === 0) {
     const reported = `${listed} finding(s) reported`
     const detail = listed > maxFindings
@@ -271,12 +302,26 @@ export function checkReplies(replies: ReadonlyArray<{ readonly text: string, rea
  * holds across profiles. Each part fails as a one-request research does, and a reply's envelope is checked
  * as it arrives: a failed call or an unreadable envelope is that part's `research-failed`, while the profile's
  * other parts go on, and the replies that were read are kept. Once a part ends with a limit, the profile's parts
- * not yet taken are stopped by the same limit without a call: each would be built and counted only to be
- * refused, and the gap counts them, failing closed. Once every part has answered, the replies are read in
- * the parts' order, up to `maxFindings` findings in all, each checked against the whole diff, and a finding
- * two parts report is dropped by the dedup stage. The gaps come in this order, each counting parts: the
- * requests refused as too large, then the parts that failed, then the parts a provider that was down never
- * got, then the reading's. The events follow: the `finding:invalid` ones, then the `incomplete` ones.
+ * not yet taken, and the pieces of the part not yet asked, are stopped by the same limit without a call: each
+ * would be built and counted only to be refused, and the gap counts them, failing closed. Once every part has
+ * answered, the replies are read in the parts' order, up to `maxFindings` findings in all, each checked against
+ * the whole diff, and a finding two parts report is dropped by the dedup stage. The gaps come in this order,
+ * each counting parts: the requests refused as too large, then the parts that failed, then the parts a provider
+ * that was down never got, then the hunks cut off even alone, then the reading's. The events follow: the
+ * `finding:invalid` ones, then the `incomplete` ones.
+ *
+ * A part whose reply was cut off at its limit, or saturated, is recovered in its worker, by code, in this
+ * order. The thinking step is the call path's (`callProvider`): by the time this stage sees a cut-off, the
+ * adaptation has had its one try, was refused or does not apply. Then the part is split in two (see `halves`):
+ * the first half is asked as a part is, and recovered by the same rules if its reply is cut off or saturated, to the
+ * floor (three splits deep, or one hunk); then the second, so the pieces run depth first in the diff's order, one
+ * at a time, and a recovered part never takes more of the concurrency than its own slot. A piece's request is its
+ * part's, with the piece's text and a position line that names the piece (a research of one request, split, gains a
+ * parts block of the position line alone). No text of a cut reply reaches a piece, and no finding of one is read,
+ * its closed ones included: the pieces' replies stand in its place, read in the diff's order. A piece cut off
+ * at the floor is lost, its hunks a `reply-cut-off` gap and range in the coverage; a saturated reply at the
+ * floor, or at `maxFindings`, is read and counted for the profile's one `findings-capped` gap. A part makes at
+ * most 1 + 2 + 4 + 8 = 15 calls. Each part recovered is one `recovered` event, once its pieces have answered.
  *
  * A review that is aborted rejects with its reason, never with a gap.
  *
@@ -284,13 +329,13 @@ export function checkReplies(replies: ReadonlyArray<{ readonly text: string, rea
  */
 export async function research(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, diff: string, sections: ReadonlyMap<string, string>): Promise<ResearchOutcome> {
   const { packing } = plan
-  if (packing === undefined) return researchInOne(ctx, run, diff, sections)
+  if (packing === undefined) return researchInOne(ctx, run, plan, diff, sections)
   if (packing.parts.length === 0) return nothingRead([])
   if (packing.parts.length === 1) {
     const text = partText(plan.sections, packing, packing.parts[0])
     return isBlank(text)
       ? nothingRead(['reviewed'])
-      : researchInOne(ctx, run, text, sections)
+      : researchInOne(ctx, run, plan, text, sections)
   }
   return researchInParts(ctx, run, plan, packing, sections)
 }
@@ -310,41 +355,81 @@ function nothingRead(parts: PartOutcome[]): ResearchOutcome {
   }
 }
 
-/** What became of one research request: its reply to read, the words of a failure to tell, or the limit that stopped it. */
-type PartResult
-  = | { readonly outcome: 'reviewed', readonly text: string }
+/** What became of one research request: its reply to read, the words of a failure to tell, the limit that stopped it, or the reply that recovery splits the request for. */
+type Asked
+  = | { readonly outcome: 'reviewed', readonly text: string, readonly asked: number }
     | { readonly outcome: 'request-too-large' | 'research-failed' | 'provider-down', readonly words: string }
     | { readonly outcome: LimitName }
+    | { readonly outcome: 'cut-off', readonly lacked: 'reply' | 'thinking' | 'window', readonly limit?: number }
+    | { readonly outcome: 'saturated', readonly asked: number }
 
-type SpokenResult = Extract<PartResult, { readonly words: string }>
+/** What became of one piece of a part, once recovery is done with it: the piece, and its request's end as `Asked` tells it, but for a cut-off at the floor. */
+type Leaf = { readonly piece: Piece } & (
+  | { readonly outcome: 'reviewed', readonly text: string, readonly asked?: number }
+  | { readonly outcome: 'request-too-large' | 'research-failed' | 'provider-down', readonly words: string }
+  | { readonly outcome: LimitName | 'reply-cut-off' }
+)
 
-const isSpoken = (result: PartResult): result is SpokenResult => 'words' in result
+type SpokenLeaf = Extract<Leaf, { readonly words: string }>
 
-const isStopped = (result: PartResult): result is Extract<PartResult, { readonly outcome: LimitName }> => result.outcome === 'token-cap' || result.outcome === 'review-deadline'
+const isSpoken = (leaf: Leaf): leaf is SpokenLeaf => 'words' in leaf
+
+/** What a part that holds nothing but white space is read as, since no model is asked about it: a reply with no finding. */
+const NO_FINDINGS_TEXT = '{"findings":[]}'
 
 /**
  * One research request, sent and its reply's envelope checked, and what became of it: the one place where a
- * failure is told from a gap, for a research of one request and for each part of a research in parts alike,
- * a gating profile's included. In this order:
+ * failure is told from a gap, for a research of one request, each part of a research in parts and each piece of
+ * a recovered one alike, a gating profile's included. In this order:
  * - a limit that stopped the call is the limit's name;
- * - a refusal as too large is `request-too-large` with the refusal's message;
+ * - a refusal as too large is `request-too-large` with the refusal's message (the stage splits a piece so refused, never a part);
  * - a call the provider-down rule refused (a `ProviderDownError`) is `provider-down`;
+ * - a reply cut off at its limit (a `truncated` failure, which the call path's adaptation has already had its try at)
+ *   is a cut-off, with what it lacked and the limit it was sent with: the stage splits the request, or loses it at the floor;
  * - any other failure of the call is `research-failed` with the words `researchFailed` writes;
- * - a reply that is no findings envelope (an `OutputError`) is `research-failed` with the reason; any other
+ * - a reply that is no findings envelope (an `OutputError` of the check) is `research-failed` with the reason; any other
  *   error the parser throws rethrows, a bug and not a reply;
- * - else `reviewed`, with the reply's text.
+ * - a reply that lists at least the findings it was asked for at most, when `splittable` and below `maxFindings`, is saturated
+ *   and is not returned: the stage splits the request;
+ * - else `reviewed`, with the reply's text and the findings it was asked for at most.
  * Each failure is told only after the review's abort check, so a review that is aborted rejects with its
  * reason, never with a gap.
  */
-async function askResearch(ctx: RunContext, run: ProfileRun, request: (ask: Ask) => CompletionRequest): Promise<PartResult> {
-  let attempts = 1
-  let text: string
+async function askResearch(ctx: RunContext, run: ProfileRun, request: (ask: Ask) => CompletionRequest, splittable: boolean): Promise<Asked> {
+  const state: { attempts: number, findings: number, limit?: number, parsed?: unknown } = { attempts: 1, findings: 0 }
   try {
-    text = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, () => request(askOf(ctx, run)), (_error, made) => {
-      attempts = made
+    const answered = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, () => {
+      const ask = askOf(ctx, run)
+      const built = request(ask)
+      state.findings = ask.findings
+      state.limit = replyLimit(built, run.research.maxTokens)
+      return built
+    }, {
+      check: (text) => {
+        let listed: number
+        try {
+          listed = parseResearchReply(text, 1).listed
+        } catch (error) {
+          state.parsed = error
+          throw error
+        }
+        return splittable && state.findings < ctx.maxFindings && listed >= state.findings
+          ? 'saturated'
+          : 'answer'
+      },
+      onFailure: (_error, made) => {
+        state.attempts = made
+      },
     })
+    return 'saturated' in answered
+      ? { outcome: 'saturated', asked: state.findings }
+      : { outcome: 'reviewed', text: answered.text, asked: state.findings }
   } catch (error) {
     ctx.signal.throwIfAborted()
+    if (state.parsed !== undefined && error === state.parsed) {
+      if (!(error instanceof OutputError)) throw error
+      return { outcome: 'research-failed', words: `the research reply could not be read: ${error.reason}` }
+    }
     if (isLimit(error)) return { outcome: error.limit }
     if (isTooLarge(error)) {
       return {
@@ -358,26 +443,30 @@ async function askResearch(ctx: RunContext, run: ProfileRun, request: (ask: Ask)
         words: 'the research request was not sent, since its provider was down',
       }
     }
+    if (ownData(error, 'kind') === 'truncated') {
+      const lack = lackOf(error)?.noAnswer
+      return {
+        outcome: 'cut-off',
+        lacked: lack === 'thinking' || lack === 'window'
+          ? lack
+          : 'reply',
+        ...state.limit === undefined
+          ? {}
+          : { limit: state.limit },
+      }
+    }
     return {
       outcome: 'research-failed',
-      words: researchFailed(error, attempts),
+      words: researchFailed(error, state.attempts),
     }
   }
-  try {
-    parseResearchReply(text, 1)
-  } catch (error) {
-    if (!(error instanceof OutputError)) throw error
-    ctx.signal.throwIfAborted()
-    return { outcome: 'research-failed', words: `the research reply could not be read: ${error.reason}` }
-  }
-  return { outcome: 'reviewed', text }
 }
 
 /**
  * What a research request of `run` asks: the findings its budget holds, which are more once a reply of its provider
  * showed that the model does not reason (`ctx.adapt.findings`), and the reply budget it carries, from the review's budgets.
  */
-function askOf(ctx: RunContext, run: ProfileRun): Ask {
+function askOf(ctx: RunContext, run: ProfileRun): Ask & { readonly findings: number } {
   const budget = ctx.budgets[run.id].research
   return {
     findings: ctx.adapt.findings(run.research, budget),
@@ -385,21 +474,183 @@ function askOf(ctx: RunContext, run: ProfileRun): Ask {
   }
 }
 
-/** One research request holding `diff`, its outcome's `parts` the one part's, and its failure told as a gap in today's words. */
-async function researchInOne(ctx: RunContext, run: ProfileRun, diff: string, sections: ReadonlyMap<string, string>): Promise<ResearchOutcome> {
-  const result = await askResearch(ctx, run, ask => researchRequest(run.research.instructions, diff, run.guidelines, undefined, ask))
-  if (isSpoken(result)) {
+/** What a research's workers share as recovery goes: the diff's sections, the cuts between hunks (the packer's, then recovery's), and the limit that stopped the profile's work, once one has. */
+interface Scope {
+  readonly sections: readonly DiffSection[]
+  readonly cuts: Map<number, Cut>
+  readonly stop: { by?: LimitName }
+}
+
+/** Why a part was recovered, as the first reply that was split lacked it, for its `recovered` event. */
+interface Recovered {
+  readonly noAnswer: Extract<QuorumEvent, { type: 'recovered' }>['noAnswer']
+  readonly limit?: number
+  readonly findings?: number
+  readonly thinkingLowered: boolean
+  /** The replies of the part that were saturated and split. */
+  saturated: number
+}
+
+/** What became of one part: its pieces' ends, in the diff's order (one for a part that was not split), the result the coverage reads, and why it was recovered, when it was. */
+interface PartRun {
+  readonly leaves: readonly Leaf[]
+  readonly result: PartResult
+  readonly recovered?: Recovered
+}
+
+/** The position of a piece in its request: its index among the `2^depth` pieces of its depth. */
+const positionOf = (piece: Piece): { readonly index: number, readonly count: number } => ({ index: piece.index, count: 2 ** piece.depth })
+
+/**
+ * One part, asked and, if its reply is cut off or saturated, recovered in the part's own worker: the piece is split
+ * in two (`halves`) and each half asked as a piece in turn, depth first in the diff's order, to the floor; a limit that
+ * stopped the profile's work ends every piece not yet asked without a call. A piece (never the part, which the planner sized)
+ * that its provider refuses as too large is split the same way when it can be, and is a `request-too-large` leaf at the floor.
+ * Each node of the tree makes at most one request, so a part still makes at most 15. `rootText` is the part's text when the
+ * caller has it. A part that was split is one `recovered` event, sent once its pieces have answered.
+ */
+async function researchPart(ctx: RunContext, run: ProfileRun, scope: Scope, root: Piece, rootText: string | undefined, position: { readonly part: number, readonly parts: number }, requestOf: (piece: Piece, text: string, ask: Ask) => CompletionRequest): Promise<PartRun> {
+  const leaves: Leaf[] = []
+  let recovered: Recovered | undefined
+  const visit = async (piece: Piece): Promise<void> => {
+    if (scope.stop.by !== undefined) {
+      leaves.push({ piece, outcome: scope.stop.by })
+      return
+    }
+    const text = piece === root && rootText !== undefined
+      ? rootText
+      : partText(scope.sections, scope, piece)
+    if (isBlank(text)) {
+      leaves.push({ piece, outcome: 'reviewed', text: NO_FINDINGS_TEXT })
+      return
+    }
+    const split = halves(scope.sections, scope.cuts, piece)
+    const asked = await askResearch(ctx, run, ask => requestOf(piece, text, ask), split !== undefined)
+    // The planner sized a part's room, not a piece's, which adds a position and, for a one-request research, a parts block: a piece
+    // its provider refuses as too large is split as a cut-off is, an inner node of the tree and no leaf, with its part's own `recovered`.
+    if (asked.outcome === 'request-too-large' && piece.depth > 0 && split !== undefined) {
+      if (split.cut !== undefined) scope.cuts.set(...split.cut)
+      for (const half of split.pieces) await visit(half)
+      return
+    }
+    if (asked.outcome === 'cut-off' || asked.outcome === 'saturated') {
+      // The floor: a reply cut off even for the least a piece can hold is lost, whatever it listed, and no text of it is read.
+      if (split === undefined) {
+        leaves.push({ piece, outcome: 'reply-cut-off' })
+        return
+      }
+      if (split.cut !== undefined) scope.cuts.set(...split.cut)
+      recovered ??= {
+        noAnswer: asked.outcome === 'saturated'
+          ? 'saturated'
+          : asked.lacked,
+        ...asked.outcome === 'cut-off' && asked.limit !== undefined
+          ? { limit: asked.limit }
+          : {},
+        ...asked.outcome === 'saturated'
+          ? { findings: asked.asked }
+          : {},
+        thinkingLowered: ctx.adapt.sent(run.research).thinking !== undefined,
+        saturated: 0,
+      }
+      if (asked.outcome === 'saturated') recovered.saturated++
+      for (const half of split.pieces) await visit(half)
+      return
+    }
+    if (asked.outcome === 'token-cap' || asked.outcome === 'review-deadline') scope.stop.by ??= asked.outcome
+    leaves.push({ piece, ...asked })
+  }
+  await visit(root)
+  const result: PartResult = recovered === undefined
+    ? leaves[0].outcome
+    : {
+        pieces: leaves.map(({ piece, outcome }) => ({ slices: piece.slices, outcome })),
+      }
+  if (recovered !== undefined) {
+    const floor = floorOf(scope, leaves)
+    ctx.emit({
+      type: 'recovered',
+      profile: run.id,
+      part: position.part,
+      parts: position.parts,
+      noAnswer: recovered.noAnswer,
+      ...recovered.limit === undefined
+        ? {}
+        : { limit: recovered.limit },
+      ...recovered.findings === undefined
+        ? {}
+        : { findings: recovered.findings },
+      thinkingLowered: recovered.thinkingLowered,
+      pieces: leaves.length,
+      read: leaves.filter(leaf => leaf.outcome === 'reviewed').length,
+      unreadHunks: floor.hunks,
+      unreadFiles: floor.files.size,
+    })
+  }
+  return recovered === undefined
+    ? { leaves, result }
+    : { leaves, result, recovered }
+}
+
+/** The hunks the floor left unread in `leaves`, a section with no hunk or held whole counting as it holds hunks (at least one), and the files they belong to. */
+function floorOf(scope: Scope, leaves: readonly Leaf[]): { readonly hunks: number, readonly files: ReadonlySet<string> } {
+  const units = leaves.filter(leaf => leaf.outcome === 'reply-cut-off').flatMap(({ piece }) => unitsOf(scope.cuts, piece))
+  return {
+    hunks: units.reduce((sum, { section, hunk }) => sum + (hunk === undefined
+      ? Math.max(1, cutSection(scope.sections[section].text).hunks.length)
+      : 1), 0),
+    files: new Set(units.map(({ section }) => scope.sections[section].path ?? '')),
+  }
+}
+
+/**
+ * One research request holding `text`, the whole of the change or the one part its packing has, and its end told as
+ * a gap in today's words when it is not read; a request recovery splits is a research in pieces, concluded as parts are.
+ * Its outcome's `parts` hold the one part's.
+ */
+async function researchInOne(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, text: string, sections: ReadonlyMap<string, string>): Promise<ResearchOutcome> {
+  const { packing } = plan
+  const root: Piece = { slices: packing?.parts[0].slices ?? plan.sections.map((_, section): Slice => ({ section })), depth: 0, index: 1 }
+  const scope: Scope = {
+    sections: plan.sections,
+    cuts: new Map(packing?.cuts),
+    stop: {},
+  }
+  const part = await researchPart(ctx, run, scope, root, text, { part: 1, parts: 1 }, (piece, diff, ask) => researchRequest(run.research.instructions, diff, run.guidelines, piece.depth === 0
+    ? undefined
+    : {
+        piece: positionOf(piece),
+        files: [],
+        unlisted: 0,
+      }, ask))
+  if (part.recovered !== undefined) {
+    return concluded(ctx, run, scope, {
+      parts: packing?.parts ?? [
+        {
+          slices: root.slices,
+          tokens: tokenBound(text),
+        },
+      ],
+      tooLarge: packing?.tooLarge ?? [],
+      cuts: scope.cuts,
+    }, sections, [part], false)
+  }
+  const [leaf] = part.leaves
+  if (isSpoken(leaf)) {
     return gap(ctx, {
       profile: run.id,
-      reason: result.outcome,
-      detail: result.outcome === 'request-too-large'
-        ? `the research request was not sent: ${result.words}`
-        : result.words,
-    }, result.outcome)
+      reason: leaf.outcome,
+      detail: leaf.outcome === 'request-too-large'
+        ? `the research request was not sent: ${leaf.words}`
+        : leaf.words,
+    }, leaf.outcome)
   }
-  if (result.outcome !== 'reviewed') return nothingRead([result.outcome])
+  if (leaf.outcome === 'reply-cut-off') return gap(ctx, cutOffGap(run.id, scope, [leaf])!, leaf.outcome)
+  if (leaf.outcome !== 'reviewed') return nothingRead([leaf.outcome])
   return reported(ctx, run, {
-    ...checkReply(result.text, sections, run.id, ctx.maxFindings),
+    ...checkReplies([
+      { text: leaf.text, asked: leaf.asked },
+    ], sections, run.id, ctx.maxFindings),
     parts: ['reviewed'],
   })
 }
@@ -407,71 +658,122 @@ async function researchInOne(ctx: RunContext, run: ProfileRun, diff: string, sec
 /** A research in parts: its workers, then its replies read in order, as `research` says. */
 async function researchInParts(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, packing: Packing, sections: ReadonlyMap<string, string>): Promise<ResearchOutcome> {
   const count = packing.parts.length
-  const results: PartResult[] = []
+  const scope: Scope = {
+    sections: plan.sections,
+    cuts: new Map(packing.cuts),
+    stop: {},
+  }
+  const { files, unlisted } = plan.listed ?? { files: [], unlisted: 0 }
+  const runs: PartRun[] = []
   let next = 0
-  let stoppedBy: LimitName | undefined
   const work = async (): Promise<void> => {
     while (next < count) {
       const index = next++
-      const result = stoppedBy === undefined
-        ? await askPart(ctx, run, plan, packing, index)
-        : { outcome: stoppedBy }
-      results[index] = result
-      if (isStopped(result)) stoppedBy ??= result.outcome
+      runs[index] = await researchPart(ctx, run, scope, { slices: packing.parts[index].slices, depth: 0, index: 1 }, undefined, { part: index + 1, parts: count }, (piece, text, ask) => researchRequest(run.research.instructions, text, run.guidelines, {
+        index: index + 1,
+        count,
+        ...piece.depth === 0
+          ? {}
+          : {
+              piece: positionOf(piece),
+            },
+        files,
+        unlisted,
+      }, ask))
     }
   }
   await Promise.all(Array.from({
     length: Math.min(ctx.concurrency, count),
   }, work))
-  const replies = results.flatMap((result, index) => result.outcome === 'reviewed'
+  return concluded(ctx, run, scope, packing, sections, runs, true)
+}
+
+/**
+ * The end of a research of parts, or of one request that recovery split: the replies of every piece that was read, in
+ * the diff's order, up to `maxFindings` findings in all, the gaps of the pieces that were not, and the packing and
+ * counts the coverage and the meta read once a part was recovered.
+ */
+function concluded(ctx: RunContext, run: ProfileRun, scope: Scope, packing: Packing, sections: ReadonlyMap<string, string>, runs: readonly PartRun[], inParts: boolean): ResearchOutcome {
+  const split = runs.filter(({ recovered }) => recovered !== undefined)
+  const replies = runs.flatMap(({ leaves, recovered }, index) => leaves.flatMap(leaf => leaf.outcome === 'reviewed'
     ? [
-        { text: result.text, label: `part ${index + 1}` },
+        {
+          text: leaf.text,
+          asked: leaf.asked,
+          label: labelOf(inParts
+            ? index
+            : undefined, recovered !== undefined, leaf.piece),
+        },
       ]
-    : [])
+    : []))
   const read = checkReplies(replies, sections, run.id, ctx.maxFindings)
+  const cutOff = cutOffGap(run.id, scope, runs.flatMap(({ leaves }) => leaves))
   return reported(ctx, run, {
     ...read,
     incomplete: [
-      ...partGaps(run.id, results),
+      ...partGaps(run.id, runs),
+      ...cutOff === undefined
+        ? []
+        : [cutOff],
       ...read.incomplete,
     ],
-    parts: results.map(result => result.outcome),
+    parts: runs.map(({ result }) => result),
+    ...split.length === 0
+      ? {}
+      : {
+          packing: { ...packing, cuts: scope.cuts },
+          recovery: {
+            parts: split.length,
+            pieces: split.reduce((sum, { leaves }) => sum + leaves.length, 0),
+            saturated: split.reduce((sum, { recovered }) => sum + (recovered?.saturated ?? 0), 0),
+            unreadHunks: floorOf(scope, split.flatMap(({ leaves }) => leaves)).hunks,
+          },
+        },
   })
 }
 
-/** What a part that holds nothing but white space is read as, since no model is asked about it: a reply with no finding. */
-const NO_FINDINGS: PartResult = { outcome: 'reviewed', text: '{"findings":[]}' }
-
-/** One part of a research in parts, asked as a request of its own, unless its text is blank. */
-function askPart(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, packing: Packing, index: number): Promise<PartResult> {
-  const text = partText(plan.sections, packing, packing.parts[index])
-  if (isBlank(text)) return Promise.resolve(NO_FINDINGS)
-  const { files, unlisted } = plan.listed ?? { files: [], unlisted: 0 }
-  return askResearch(ctx, run, ask => researchRequest(run.research.instructions, text, run.guidelines, {
-    index: index + 1,
-    count: packing.parts.length,
-    files,
-    unlisted,
-  }, ask))
+/** What a reply is called where it is reported unreadable: its part, then its piece when recovery split the part; a one-request research has no part. */
+function labelOf(part: number | undefined, split: boolean, piece: Piece): string | undefined {
+  const named = part === undefined
+    ? undefined
+    : `part ${part + 1}`
+  if (!split) return named
+  const where = `piece ${piece.index} of ${2 ** piece.depth}`
+  return named === undefined
+    ? where
+    : `${named}, ${where}`
 }
 
-/** The gaps of the parts that were not read, one per reason and profile counting its parts: the refused requests, then the failed parts, each naming the first one's words, then the parts a provider that was down never got. */
-function partGaps(profile: string, results: readonly PartResult[]): IncompleteEntry[] {
-  const spoken = results.filter(result => isSpoken(result))
+/** The gaps of the parts that were not read, one per reason and profile counting its parts (a part with several pieces that failed counts once): the refused requests, then the failed parts, each naming the first one's words, then the parts a provider that was down never got. */
+function partGaps(profile: string, runs: readonly PartRun[]): IncompleteEntry[] {
   const gaps: IncompleteEntry[] = []
-  const refused = spoken.filter(result => result.outcome === 'request-too-large')
+  /** The words of the first piece of each part that ended as `reason`. */
+  const wordsOf = (reason: SpokenLeaf['outcome']): string[] => runs.flatMap(({ leaves }) => leaves.filter(isSpoken).filter(leaf => leaf.outcome === reason).slice(0, 1).map(leaf => leaf.words))
+  const refused = wordsOf('request-too-large')
   if (refused.length > 0) {
-    gaps.push({ profile, reason: 'request-too-large', detail: `${refused.length} of ${results.length} research requests were not sent: ${refused[0].words}` })
+    gaps.push({ profile, reason: 'request-too-large', detail: `${refused.length} of ${runs.length} research requests were not sent: ${refused[0]}` })
   }
-  const failed = spoken.filter(result => result.outcome === 'research-failed')
+  const failed = wordsOf('research-failed')
   if (failed.length > 0) {
-    gaps.push({ profile, reason: 'research-failed', detail: `${failed.length} of ${results.length} research parts failed: ${failed[0].words}` })
+    gaps.push({ profile, reason: 'research-failed', detail: `${failed.length} of ${runs.length} research parts failed: ${failed[0]}` })
   }
-  const down = spoken.filter(result => result.outcome === 'provider-down')
+  const down = wordsOf('provider-down')
   if (down.length > 0) {
-    gaps.push({ profile, reason: 'provider-down', detail: `${down.length} of ${results.length} research parts were not sent, since their provider was down` })
+    gaps.push({ profile, reason: 'provider-down', detail: `${down.length} of ${runs.length} research parts were not sent, since their provider was down` })
   }
   return gaps
+}
+
+/** The one gap of the hunks the floor left unread, counting hunks and files; none when `leaves` has no piece cut off at the floor. */
+function cutOffGap(profile: string, scope: Scope, leaves: readonly Leaf[]): IncompleteEntry | undefined {
+  const { hunks, files } = floorOf(scope, leaves)
+  return hunks === 0
+    ? undefined
+    : {
+        profile,
+        reason: 'reply-cut-off',
+        detail: `${hunks} hunk(s) of ${files.size} file(s) were cut off at their reply's limit even alone, listed as reply-cut-off in meta.profiles.${profile}.coverage: raise maxTokens, set thinking: low, or lower partTokens`,
+      }
 }
 
 /** Sends the events of a finished research, the `finding:invalid` ones then the `incomplete` ones, and returns its outcome. */

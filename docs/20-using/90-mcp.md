@@ -75,7 +75,7 @@ The review's token cap and its deadline are the config's, `maxReviewTokens` (2,0
 
 ## The result
 
-The agent receives the result in a fixed shape, in a structured form and as the same JSON in a text block, within 10,000 bytes each: code-checked fields first, a model's category and summary last, each capped and made inert, and a notice that says they are claims: [What a calling agent receives](../30-security/30-output-handling.md#what-a-calling-agent-receives). A review that read less than the change says so in `gaps`, each with its `reason`, one of [the incomplete reasons](../95-reference/20-json-result.md#incomplete-reasons): a research part that failed (`research-failed`) and the parts and votes a provider found down was never sent (`provider-down`) are among them, and the review's status is `incomplete` for either.
+The agent receives the result in a fixed shape, in a structured form and as the same JSON in a text block, within 10,000 bytes each: code-checked fields first, a model's category and summary last, each capped and made inert, and a notice that says they are claims: [What a calling agent receives](../30-security/30-output-handling.md#what-a-calling-agent-receives). A review that read less than the change says so in `gaps`, each with its `reason`, one of [the incomplete reasons](../95-reference/20-json-result.md#incomplete-reasons): a research part that failed (`research-failed`), hunks whose reply was cut off at its limit even after recovery split their part as far as it goes (`reply-cut-off`: [Recovering a cut-off part](./20-configuration.md#recovering-a-cut-off-part)) and the parts and votes a provider found down was never sent (`provider-down`) are among them, and the review's status is `incomplete` for either.
 
 ## Errors
 

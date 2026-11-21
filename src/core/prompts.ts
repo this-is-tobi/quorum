@@ -66,12 +66,18 @@ interface Block {
   description: string
 }
 
-/** Where one research request of a large change stands: its position among the parts, and the files of the whole change. */
+/**
+ * Where one research request of a large change stands: its position among the parts, the piece of the part it holds
+ * when recovery split it, and the files of the whole change. A one-request research that recovery split has no
+ * parts: its pieces carry a position of their own and no list.
+ */
 export interface PartOf {
-  /** The part's position, from 1. */
-  readonly index: number
-  /** How many parts the change is researched in. */
-  readonly count: number
+  /** The part's position, from 1; absent for a piece of a one-request research. */
+  readonly index?: number
+  /** How many parts the change is researched in; absent with `index`. */
+  readonly count?: number
+  /** Which piece of the part, or of the one request, this is, among the `count` pieces of its depth, from 1: set for a request recovery made. */
+  readonly piece?: { readonly index: number, readonly count: number }
   /** The names of the change's files the request lists, as the diff writes them, in the diff's order. */
   readonly files: readonly string[]
   /** How many names the list leaves out. */
@@ -101,8 +107,9 @@ export function findingsLine(findings: number): string {
  * caller loaded, treated as data like the diff and never part of the system message. The system
  * message names the block the request carries.
  *
- * With `part`, the request is one of a change researched in parts: a block of its own comes first, the
- * `parts` block, which says which part this is and lists the change's files, one per line, each name
+ * With `part`, the request is one of a change researched in parts, or a piece recovery made of one request or of a
+ * part: a block of its own comes first, the `parts` block, which says which part (and piece) this is and lists the
+ * change's files, one per line, each name
  * with its hidden characters shown as `<U+XXXX>` (a name is the author's text, so it stays one line and
  * never closes a fence), then `and <n> more` when names are left out; the `diff` block holds the part's
  * diff and is described as one part of it. Without `part`, the request is the whole change's.
@@ -135,9 +142,23 @@ export function researchRequest(instructions: string, diff: string, guidelines?:
   )
 }
 
-/** What the parts block holds: the part's position, then the change's files when a name is listed or counted. */
+/**
+ * The position line of the parts block, which code owns: `Part <i> of <n> of the change.`, with `, piece <p> of <q>`
+ * before its full stop when the request is a piece of the part, and `Piece <p> of <q> of the change.` for a piece of
+ * a one-request research, which has no part.
+ */
+function positionLine({ index, count, piece }: PartOf): string {
+  if (index === undefined || count === undefined) return `Piece ${piece?.index} of ${piece?.count} of the change.`
+  return piece === undefined
+    ? `Part ${index} of ${count} of the change.`
+    : `Part ${index} of ${count} of the change, piece ${piece.index} of ${piece.count}.`
+}
+
+/** What the parts block holds: the position line, then the change's files when a name is listed or counted. */
 function partsBlock(part: PartOf): string {
-  const lines = [`Part ${part.index} of ${part.count} of the change.`]
+  const lines = [
+    positionLine(part),
+  ]
   if (part.files.length > 0 || part.unlisted > 0) {
     lines.push('The change\'s files, one per line:', ...part.files.map(name => showHidden(name)))
     if (part.unlisted > 0) lines.push(`and ${part.unlisted} more`)

@@ -94,8 +94,21 @@ function lineStarts(text: string, hunks: readonly Hunk[]): number[] {
   return starts
 }
 
+/**
+ * A section as the packer reads it: its hunks, as `parseHunks` opens them, and where each one's `@@` line
+ * starts. It is the one reading of a section's hunks, which recovery shares when it cuts a section the
+ * packer held whole.
+ */
+export function cutSection(text: string): Cut {
+  const hunks = parseHunks(text)
+  return {
+    hunks,
+    starts: lineStarts(text, hunks),
+  }
+}
+
 /** The text of the hunks `from` to `to` of a cut section, to the section's end when `to` is past the last hunk. */
-function hunksText(text: string, starts: readonly number[], from: number, to: number): string {
+export function hunksText(text: string, starts: readonly number[], from: number, to: number): string {
   return text.slice(starts[from], to < starts.length
     ? starts[to] - 1
     : undefined)
@@ -153,13 +166,13 @@ export function packParts(sections: readonly DiffSection[], budget: { readonly p
       place({ section }, whole)
       continue
     }
-    const hunks = parseHunks(text)
+    const cut = cutSection(text)
+    const { hunks, starts } = cut
     if (hunks.length === 0) {
       alone({ section }, whole, { section })
       continue
     }
-    const starts = lineStarts(text, hunks)
-    cuts.set(section, { hunks, starts })
+    cuts.set(section, cut)
     const header = starts[0] === 0
       ? 0
       : tokenBound(text.slice(0, starts[0] - 1)) + 1
@@ -190,7 +203,7 @@ export function packParts(sections: readonly DiffSection[], budget: { readonly p
  * a final line feed as the end of the text, so a slice that ends on an empty row, which is a blank
  * context row, parses one row short.
  */
-export function sliceText(sections: readonly DiffSection[], packing: Packing, slice: Slice): string {
+export function sliceText(sections: readonly DiffSection[], packing: Pick<Packing, 'cuts'>, slice: Slice): string {
   const { text } = sections[slice.section]
   if (slice.from === undefined || slice.to === undefined) return text
   // A slice of a hunk range is always of a section the packing cut.
@@ -261,7 +274,7 @@ export function nearestHunks(text: string, hunks: readonly Hunk[], line: number,
 }
 
 /** The text of a part: its slices joined by line feeds. */
-export function partText(sections: readonly DiffSection[], packing: Packing, part: Part): string {
+export function partText(sections: readonly DiffSection[], packing: Pick<Packing, 'cuts'>, part: Pick<Part, 'slices'>): string {
   return part.slices.map(slice => sliceText(sections, packing, slice)).join('\n')
 }
 
@@ -309,8 +322,15 @@ export function tooLargeGap(profile: string, sections: readonly DiffSection[], p
   }
 }
 
-/** What became of the research part that held a unit: it was read, or the reason it was not. */
-export type PartOutcome = 'reviewed' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'research-failed' | 'provider-down'
+/** What became of the research part, or the piece of one, that held a unit: it was read, or the reason it was not. */
+export type PartOutcome = 'reviewed' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'research-failed' | 'provider-down' | 'reply-cut-off'
+
+/**
+ * What became of one research part: one outcome when it was read or lost whole, or, when recovery split it
+ * (see `recovery.ts`), what became of each piece that was asked, in the diff's order, with the slices it held.
+ * The pieces' slices hold every unit of the part once.
+ */
+export type PartResult = PartOutcome | { readonly pieces: ReadonlyArray<{ readonly slices: readonly Slice[], readonly outcome: PartOutcome }> }
 
 /** What became of a unit of the diff: its part's outcome, or `too-large` when no part holds it. */
 type Outcome = PartOutcome | 'too-large'
@@ -325,25 +345,26 @@ const UNREVIEWED_REASONS = [
 
 type UnreviewedReason = typeof UNREVIEWED_REASONS[number]
 
-/** The share of a file the coverage judges alone: a section held whole, or one hunk of a section split between parts. */
-interface Piece {
+/** The share of a file the coverage judges alone: a section held whole, or one hunk of a section split between parts or pieces. */
+interface Unit {
   readonly outcome: Outcome
   readonly section: number
   /** The index of the hunk; absent for a whole section. */
   readonly hunk?: number
 }
 
-/** A piece that was not read, whose outcome is the reason. */
-type UnreadPiece = Piece & { readonly outcome: Exclude<Outcome, 'reviewed'> }
+/** A unit that was not read, whose outcome is the reason. */
+type UnreadUnit = Unit & { readonly outcome: Exclude<Outcome, 'reviewed'> }
 
-const isUnread = (piece: Piece): piece is UnreadPiece => piece.outcome !== 'reviewed'
+const isUnread = (unit: Unit): unit is UnreadUnit => unit.outcome !== 'reviewed'
 
 /**
  * The outcome of each unit, as a lookup: one per section held whole or set aside whole, else one per
  * hunk of a split section. A part with no outcome, and a unit that no part holds and the packing
- * does not set aside, count as a failed read, never as a reviewed one.
+ * does not set aside, count as a failed read, never as a reviewed one. A part that recovery split is read
+ * by its pieces: each piece's slices carry the piece's own outcome.
  */
-function outcomesOfUnits(sectionCount: number, packing: Packing | undefined, outcomes: readonly PartOutcome[]): (section: number, hunk?: number) => Outcome {
+function outcomesOfUnits(sectionCount: number, packing: Packing | undefined, outcomes: readonly PartResult[]): (section: number, hunk?: number) => Outcome {
   const whole = new Map<number, Outcome>()
   const byHunk = new Map<number, Outcome[]>()
   const record = (section: number, from: number | undefined, to: number | undefined, outcome: Outcome): void => {
@@ -355,12 +376,25 @@ function outcomesOfUnits(sectionCount: number, packing: Packing | undefined, out
     byHunk.set(section, hunks)
     for (let hunk = from; hunk < to; hunk++) hunks[hunk] = outcome
   }
-  if (packing === undefined) {
-    for (let section = 0; section < sectionCount; section++) record(section, undefined, undefined, outcomes[0] ?? 'research-failed')
-  } else {
-    for (const [index, part] of packing.parts.entries()) {
-      for (const { section, from, to } of part.slices) record(section, from, to, outcomes[index] ?? 'research-failed')
+  const recordSlices = (slices: readonly Slice[], outcome: Outcome): void => {
+    for (const { section, from, to } of slices) record(section, from, to, outcome)
+  }
+  const recordResult = (slices: readonly Slice[], result: PartResult | undefined): void => {
+    if (typeof result === 'object') {
+      for (const piece of result.pieces) recordSlices(piece.slices, piece.outcome)
+    } else {
+      recordSlices(slices, result ?? 'research-failed')
     }
+  }
+  if (packing === undefined) {
+    const result = outcomes[0]
+    if (typeof result === 'object') {
+      recordResult([], result)
+    } else {
+      for (let section = 0; section < sectionCount; section++) record(section, undefined, undefined, result ?? 'research-failed')
+    }
+  } else {
+    for (const [index, part] of packing.parts.entries()) recordResult(part.slices, outcomes[index])
     for (const { section, hunk } of packing.tooLarge) {
       record(section, hunk, hunk === undefined
         ? undefined
@@ -372,44 +406,47 @@ function outcomesOfUnits(sectionCount: number, packing: Packing | undefined, out
     : byHunk.get(section)?.[hunk]) ?? 'research-failed'
 }
 
-/** The ranges a piece left unread: the lines of each hunk it holds, a hunk that holds no line at its start line alone, none for a section with no hunk. */
-function leftRanges(piece: UnreadPiece, sections: readonly DiffSection[], packing: Packing | undefined): LeftRange[] {
-  const hunks = packing?.cuts.get(piece.section)?.hunks ?? parseHunks(sections[piece.section].text)
-  const left = piece.hunk === undefined
+/** The ranges a unit left unread: the lines of each hunk it holds, a hunk that holds no line at its start line alone, none for a section with no hunk. */
+function leftRanges(unit: UnreadUnit, sections: readonly DiffSection[], packing: Packing | undefined): LeftRange[] {
+  const hunks = packing?.cuts.get(unit.section)?.hunks ?? parseHunks(sections[unit.section].text)
+  const left = unit.hunk === undefined
     ? hunks
-    : [hunks[piece.hunk]]
+    : [hunks[unit.hunk]]
   return left.map(hunk => ({
     ...(heldSpan(hunk) ?? { start: hunk.start, end: hunk.start }),
-    reason: piece.outcome,
+    reason: unit.outcome,
   }))
 }
 
 /**
  * How much of each file of the diff a profile's research reviewed, in the diff's order, once per
  * file. `packing` is how `sections`, the ones the research read, were packed into the parts `outcomes`
- * tells the fate of, one outcome per part; undefined is one part that holds every section whole, whose outcome is
- * `outcomes[0]`, `'research-failed'` when there is none. In this order:
+ * tells the fate of, one result per part (a part recovery split has a result per piece); undefined is one part
+ * that holds every section whole, whose outcome is `outcomes[0]`, `'research-failed'` when there is none. In
+ * this order:
  * 1. Each section's outcome: one when it is whole in a part, set aside whole, or in a one-part plan;
- *    else one per hunk, `too-large` for the units the packing set aside.
- * 2. Each file's pieces, in the diff's order: a section held whole is one piece, whose ranges are
+ *    else one per hunk, `too-large` for the units the packing set aside. A part's pieces give their own
+ *    slices their own outcomes, so a section recovery cut between its hunks has one per hunk too: `packing`
+ *    then holds the cuts recovery made.
+ * 2. Each file's units, in the diff's order: a section held whole is one unit, whose ranges are
  *    all its hunks' (parsed only when a range is asked for, which a file of one section never needs),
- *    a split one a piece per hunk. A file of several sections, as a `format-patch` series has, is one
+ *    a split one a unit per hunk. A file of several sections, as a `format-patch` series has, is one
  *    file, and the sections no header names, the text before the first header and a header that
  *    names no path, are the file of the empty name.
- * 3. Each file of `scope.files`, in its order: `excluded` with no piece when `leftOut` excludes it;
+ * 3. Each file of `scope.files`, in its order: `excluded` with no unit when `leftOut` excludes it;
  *    `unreviewed` for `binary`, else `submodule`, else `secret`, else `deleted-secret`, when `leftOut`
- *    lists it so, whatever became of its part (a held file has no piece, and no model was sent it);
- *    `reviewed` when every piece was read; `unreviewed` with its first piece's reason when none was; else
- *    `partial`, with the range of each hunk of each piece left, each with its reason, and none for a
+ *    lists it so, whatever became of its part (a held file has no unit, and no model was sent it);
+ *    `reviewed` when every unit was read; `unreviewed` with its first unit's reason when none was; else
+ *    `partial`, with the range of each hunk of each unit left, each with its reason, and none for a
  *    section with no hunk.
- * A file with no piece that nothing excludes is unreviewed, never reviewed.
+ * A file with no unit that nothing excludes is unreviewed, never reviewed.
  */
-export function coverageOf(scope: Pick<ReviewScope, 'files' | 'leftOut'>, sections: readonly DiffSection[], packing: Packing | undefined, outcomes: readonly PartOutcome[]): CoverageEntry[] {
+export function coverageOf(scope: Pick<ReviewScope, 'files' | 'leftOut'>, sections: readonly DiffSection[], packing: Packing | undefined, outcomes: readonly PartResult[]): CoverageEntry[] {
   const outcomeOf = outcomesOfUnits(sections.length, packing, outcomes)
-  const pieces = new Map<string, Piece[]>()
+  const units = new Map<string, Unit[]>()
   for (const [section, { path }] of sections.entries()) {
-    const own = pieces.get(path ?? '') ?? []
-    pieces.set(path ?? '', own)
+    const own = units.get(path ?? '') ?? []
+    units.set(path ?? '', own)
     const cut = packing?.cuts.get(section)
     if (cut === undefined) {
       own.push({
@@ -434,7 +471,7 @@ export function coverageOf(scope: Pick<ReviewScope, 'files' | 'leftOut'>, sectio
     }
   }
   return scope.files.map((file): CoverageEntry => {
-    const own = pieces.get(file) ?? []
+    const own = units.get(file) ?? []
     if (own.length === 0 && excluded.has(file)) return { file, status: 'excluded' }
     const listedReason = unreviewed.get(file)
     if (listedReason !== undefined) return { file, status: 'unreviewed', reason: listedReason }
@@ -447,7 +484,7 @@ export function coverageOf(scope: Pick<ReviewScope, 'files' | 'leftOut'>, sectio
     return {
       file,
       status: 'partial',
-      left: unread.flatMap(piece => leftRanges(piece, sections, packing)),
+      left: unread.flatMap(unit => leftRanges(unit, sections, packing)),
     }
   })
 }

@@ -61,6 +61,9 @@ const finding: Finding = {
   quoteMatched: true,
 }
 
+/** What the `reply-cut-off` gap says after its counts. */
+const CUT_OFF_WORDS = 'were cut off at their reply\'s limit even alone, listed as reply-cut-off in meta.profiles.security.coverage: raise maxTokens, set thinking: low, or lower partTokens'
+
 const vote = (keep: boolean, reasoning = 'r'): string => JSON.stringify({ keep, reasoning })
 const findings = (...items: unknown[]): string => JSON.stringify({ findings: items })
 const isVote = (request: CompletionRequest): boolean => request.output.name === 'panel_vote'
@@ -1137,7 +1140,7 @@ describe('review', () => {
     const result = await run(securityProfile, { maxFindings: 1 }).review({ diff })
     expect(complete).toHaveBeenCalledTimes(4)
     expect(result.meta.incomplete).toEqual([
-      { profile: 'security', reason: 'findings-capped', detail: '1 of 2 reported findings were not reviewed (the cap is 1)' },
+      { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 1 findings they were asked for at most, so they may have left some out: 1 of 2 reported findings were not reviewed (the cap is 1)' },
     ])
   })
 
@@ -1423,7 +1426,7 @@ describe('meta and events', () => {
     expect(result.meta.incomplete).toEqual([])
   })
 
-  it('reports a failed research call\'s usage on its call event, and still resolves with the profile\'s research-failed gap', async () => {
+  it('reports a cut-off research call\'s usage on its call event, and still resolves with the profile\'s reply-cut-off gap', async () => {
     const cutOff = new ProviderError({
       providerId: 'metered',
       kind: 'truncated',
@@ -1440,14 +1443,20 @@ describe('meta and events', () => {
       events: event => events.push(event),
     }).review({ diff })
     const result = await review
-    expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['research-failed'])
+    // The diff's two files are two pieces, each cut off at the floor too: three calls, each one's usage counted.
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'reply-cut-off', detail: `2 hunk(s) of 2 file(s) ${CUT_OFF_WORDS}` },
+    ])
     const calls = events.filter(event => event.type === 'call')
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatchObject({
-      role: 'research',
-      ok: false,
-      usage: { inputTokens: 900, outputTokens: 16000 },
-    })
+    expect(calls).toHaveLength(3)
+    for (const call of calls) {
+      expect(call).toMatchObject({
+        role: 'research',
+        ok: false,
+        usage: { inputTokens: 900, outputTokens: 16000 },
+      })
+    }
+    expect(result.meta.usage).toEqual({ inputTokens: 2700, outputTokens: 48_000 })
   })
 
   describe('a failed call\'s usage', () => {
@@ -3393,7 +3402,17 @@ describe('a large change in parts', () => {
   const keeps = (): Fake => fake('voter', () => vote(true))
   const never = (): Promise<string> => new Promise<string>(() => {})
   const turn = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
-  const partOf = (request: CompletionRequest): number => Number(/Part (\d+) of \d+ of the change\./.exec(request.messages[0].content)?.[1])
+  const partOf = (request: CompletionRequest): number => Number(/Part (\d+) of \d+ of the change[.,]/.exec(request.messages[0].content)?.[1])
+  /** The piece a request names, as `[index, count]`, or undefined for a request of a whole part. */
+  const pieceOf = (request: CompletionRequest): [number, number] | undefined => {
+    const found = /piece (\d+) of (\d+)\./i.exec(request.messages[0].content)
+    return found === null
+      ? undefined
+      : [
+          Number(found[1]),
+          Number(found[2]),
+        ]
+  }
   const hasParts = (request: CompletionRequest): boolean => request.messages[0].content.includes('untrusted-parts-')
   const reviewedFiles = (files: readonly string[]): unknown[] => files.map(file => ({ file, status: 'reviewed' }))
   const quorumOf = (finder: Provider, options: Omit<QuorumOptions, 'profiles'> = {}, profile: Profile = securityProfile, events?: QuorumEvent[]): Quorum => createQuorum({
@@ -3949,27 +3968,56 @@ describe('a large change in parts', () => {
       },
     })
 
-    it('keeps the findings of the parts that answered when one part\'s reply is cut off, and records that part as research-failed', async () => {
+    it('recovers the part whose reply is cut off by reading its pieces, keeps their finding, and records no gap', async () => {
+      const events: QuorumEvent[] = []
       const finder = partsFinder(500, (request) => {
         const part = partOf(request)
-        if (part === 2) throw new ProviderError({ providerId: 'finder', kind: 'truncated', message: 'reply was cut off by the token limit' })
+        const piece = pieceOf(request)
+        if (part === 2 && piece === undefined) throw new ProviderError({ providerId: 'finder', kind: 'truncated', message: 'reply was cut off by the token limit' })
+        if (part === 2) {
+          return piece![0] === 1
+            ? findings(at('b.js'))
+            : findings()
+        }
         return findings(at(FILES[part - 1]))
       })
       const result = await createQuorum({
         profiles: [securityProfile],
         concurrency: 1,
-      }, splitVoters(finder)).review({ diff: ownerDiff })
-      expect(finder.requests.map(partOf)).toEqual([1, 2, 3, 4, 5, 6])
-      expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js', 'c.js', 'd.js', 'e.js', 'f.js'])
-      expect(result.meta.incomplete).toEqual([
-        { profile: 'security', reason: 'research-failed', detail: '1 of 6 research parts failed: the research call failed (truncated)' },
+      }, {
+        ...splitVoters(finder),
+        events: event => events.push(event),
+      }).review({ diff: ownerDiff })
+      expect(finder.requests.map(partOf)).toEqual([1, 2, 2, 2, 3, 4, 5, 6])
+      expect(finder.requests.slice(1, 4).map(pieceOf)).toEqual([
+        undefined,
+        [1, 2],
+        [2, 2],
       ])
-      expect(result.meta.profiles.security.coverage).toEqual([
-        { file: 'a.js', status: 'reviewed' },
-        { file: 'b.js', status: 'unreviewed', reason: 'research-failed' },
-        ...reviewedFiles(FILES.slice(2)),
+      expect(result.kept.map(verdict => verdict.file)).toEqual(FILES)
+      expect(result.meta.incomplete).toEqual([])
+      expect(result.meta.profiles.security.coverage).toEqual(reviewedFiles(FILES))
+      expect(events.filter(event => event.type === 'recovered')).toEqual([
+        {
+          type: 'recovered',
+          profile: 'security',
+          part: 2,
+          parts: 6,
+          noAnswer: 'reply',
+          thinkingLowered: false,
+          pieces: 2,
+          read: 2,
+          unreadHunks: 0,
+          unreadFiles: 0,
+        },
       ])
-      expect(outcome(result).exitCode).toBe(4)
+      expect(result.meta.profiles.security.recovery).toEqual({
+        parts: 1,
+        pieces: 2,
+        saturated: 0,
+        unreadHunks: 0,
+      })
+      expect(outcome(result).exitCode).toBe(0)
     })
 
     it('records a gating profile\'s one-request research that failed as research-failed, and resolves', async () => {
@@ -4266,8 +4314,10 @@ describe('a large change in parts', () => {
       const result = await quorumOf(finder, { concurrency: 1 }, securityProfile, events).review({ diff: partsDiff })
       expect(finder.requests).toHaveLength(6)
       expect(downEvents(events)).toEqual([])
+      // The cut-off parts are one hunk each, at the floor at once: lost, as `reply-cut-off`, and no reason to call the provider down.
       expect(result.meta.incomplete.map(entry => [entry.reason, entry.detail])).toEqual([
-        ['research-failed', '6 of 6 research parts failed: the research call failed (refusal)'],
+        ['research-failed', '4 of 6 research parts failed: the research call failed (refusal)'],
+        ['reply-cut-off', `2 hunk(s) of 2 file(s) ${CUT_OFF_WORDS}`],
       ])
     })
 
@@ -4759,6 +4809,8 @@ describe('adaptations', () => {
     ])
     expect(adaptedEvents(events)).toHaveLength(1)
     expect(events.filter(event => event.type === 'reply-lacked')).toEqual([])
+    // Neither part was split: the lowered level answered.
+    expect(events.filter(event => event.type === 'recovered')).toEqual([])
   })
 
   it('lowers thinking once on a reply that held only reasoning, and asks that part again', async () => {
@@ -4898,8 +4950,43 @@ describe('adaptations', () => {
     ])
     expect(adaptedEvents(events)).toHaveLength(1)
     expect(events.filter(event => event.type === 'provider-down')).toEqual([])
-    expect(result.meta.incomplete.map(gap => gap.reason)).toEqual(['research-failed'])
-    expect(result.meta.incomplete[0].detail).toBe('3 of 3 research parts failed: the research call failed (truncated) after 2 attempts')
+    // Each part is one hunk, at the floor at once: its cut-off is lost, as `reply-cut-off`.
+    expect(result.meta.incomplete.map(gap => gap.reason)).toEqual(['reply-cut-off'])
+    expect(result.meta.incomplete[0].detail).toBe(`3 hunk(s) of 3 file(s) ${CUT_OFF_WORDS}`)
+  })
+
+  it('moves nothing when a cut-off probe fails with a 503, and the part is split', async () => {
+    const filesIn = (request: CompletionRequest): number => request.messages[0].content.match(/exec\(input\) \/\/ \w+\.js/g)?.length ?? 0
+    const finder = providerOf('finder', { thinking: 'low' }, (request) => {
+      if (request.thinking === 'low') {
+        throw new ProviderError({
+          providerId: 'finder',
+          kind: 'http',
+          status: 503,
+          message: 'unavailable',
+        })
+      }
+      if (filesIn(request) > 1) throw fail('truncated', 'thinking')
+      return findings(at(fileOf(request)))
+    })
+    const { events, review } = reviewOn(finder, keeps(), { concurrency: 1 })
+    const result = await review(`${bigSection('a.js')}\n${bigSection('b.js')}`)
+    // The 503 shows nothing of the server's level: the call ends with its cut-off, which splits the part, and the pieces go at the level the server sets.
+    expect(finder.requests.map(request => [
+      filesIn(request),
+      request.thinking,
+    ])).toEqual([
+      [2, undefined],
+      [2, 'low'],
+      [1, undefined],
+      [1, undefined],
+    ])
+    expect(result.meta.adaptations).toEqual([])
+    expect(adaptedEvents(events)).toEqual([])
+    expect(events.filter(event => event.type === 'recovered')).toHaveLength(1)
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js', 'b.js'])
+    expect(events.filter(event => event.type === 'provider-down')).toEqual([])
   })
 
   it('never adapts a provider whose thinking and structuredOutput are explicit', async () => {
@@ -4970,5 +5057,568 @@ describe('adaptations', () => {
     expect(adaptedEvents(events)).toEqual([])
     expect(clock.pending()).toBe(0)
     await turn()
+  })
+})
+
+describe('recovery', () => {
+  const FILES = [
+    'a.js',
+    'b.js',
+    'c.js',
+    'd.js',
+    'e.js',
+    'f.js',
+  ]
+  /** A file's section of one hunk, whose added line starts with the quote a finding of it cites and is padded to about 300 tokens. */
+  const heavy = (file: string): string => [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    '@@ -1 +1 @@',
+    '-safe(input)',
+    `+exec(input) // ${file} ${'y'.repeat(200)}`,
+  ].join('\n')
+  const heavyDiff = FILES.map(heavy).join('\n')
+  /** A file's section of one small hunk, which quotes as `heavy`'s does. */
+  const small = (file: string): string => heavy(file).replace(/ y+$/, '')
+  /** Two files of one small hunk each: a change within one request. */
+  const twoFiles = ['a.js', 'b.js'].map(small).join('\n')
+  const at = (file: string): unknown => ({ ...reported, file, quote: `exec(input) // ${file}` })
+  /** The files a request holds, in the order its diff block shows them. */
+  const filesOf = (request: CompletionRequest): string[] => [
+    ...request.messages[0].content.matchAll(/exec\(input\) \/\/ (\w+\.js)/g),
+  ].map(found => found[1])
+  const pieceOf = (request: CompletionRequest): string | undefined => /Part \d+ of \d+ of the change, piece \d+ of \d+\.|Piece \d+ of \d+ of the change\./.exec(request.messages[0].content)?.[0]
+  const asks = (request: CompletionRequest): number => Number(/List at most (\d+) findings/.exec(request.system)?.[1])
+  const cutOff = (usage?: Usage, message = 'cut'): ProviderError => new ProviderError({
+    providerId: 'finder',
+    kind: 'truncated',
+    noAnswer: 'reply',
+    message,
+    ...usage === undefined
+      ? {}
+      : { usage },
+  })
+  const keeps = (): Fake => fake('voter', () => vote(true))
+
+  /** A research provider that asks for no room of its own and answers each request from its files, recording every request. */
+  function finderOf(answer: (request: CompletionRequest, files: string[]) => string, extra: Partial<Provider> = {}): Fake {
+    return {
+      ...fake('finder', request => answer(request, filesOf(request))),
+      ...extra,
+    }
+  }
+
+  function reviewing(finder: Provider, options: Omit<QuorumOptions, 'profiles'> = {}, profile: Profile = securityProfile): { readonly events: QuorumEvent[], readonly quorum: Quorum } {
+    const events: QuorumEvent[] = []
+    return {
+      events,
+      quorum: createQuorum({
+        ...options,
+        profiles: [profile],
+      }, {
+        ...portsFor(profile, finder, keeps()),
+        events: event => events.push(event),
+      }),
+    }
+  }
+
+  const recovered = (events: readonly QuorumEvent[]): QuorumEvent[] => events.filter(event => event.type === 'recovered')
+
+  it('recovers every part a gateway cuts below the limit, and says once that it caps replies', async () => {
+    // The gateway cuts a reply at 8192 tokens whatever was asked, and does so for any request that holds more than one file.
+    const finder = finderOf((_, files) => {
+      if (files.length > 1) throw cutOff({ inputTokens: 100, outputTokens: 8192 })
+      return findings(at(files[0]))
+    }, {
+      room: () => 100_000,
+      window: 200_000,
+    })
+    const { events, quorum } = reviewing(finder, { partTokens: 1024, concurrency: 1 })
+    const result = await quorum.review({ diff: heavyDiff })
+    expect(result.kept.map(verdict => verdict.file)).toEqual(FILES)
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.meta.profiles.security.coverage).toEqual(FILES.map(file => ({ file, status: 'reviewed' })))
+    // Two parts of three files: each is cut off, split into one file and two, and the two cut off again and split.
+    expect(finder.requests.map(request => filesOf(request).length)).toEqual([3, 1, 2, 1, 1, 3, 1, 2, 1, 1])
+    expect(events.filter(event => event.type === 'reply-lacked')).toEqual([
+      {
+        type: 'reply-lacked',
+        provider: 'finder',
+        kind: 'truncated',
+        noAnswer: 'reply',
+        limit: 21_024,
+        outputTokens: 8192,
+        inputTokens: 100,
+        window: 200_000,
+      },
+    ])
+    expect(recovered(events)).toEqual([1, 2].map(part => ({
+      type: 'recovered',
+      profile: 'security',
+      part,
+      parts: 2,
+      noAnswer: 'reply',
+      limit: 21_024,
+      thinkingLowered: false,
+      pieces: 3,
+      read: 3,
+      unreadHunks: 0,
+      unreadFiles: 0,
+    })))
+    expect(result.meta.profiles.security.recovery).toEqual({
+      parts: 2,
+      pieces: 6,
+      saturated: 0,
+      unreadHunks: 0,
+    })
+  })
+
+  it('makes at most 15 research calls a part whose every reply is cut off, and records its hunks as reply-cut-off', async () => {
+    const eight = Array.from({ length: 8 }, (_, index) => `f${index}.js`)
+    const sections = eight.map(small).join('\n')
+    const finder = fake('finder', () => {
+      throw cutOff()
+    })
+    const { events, quorum } = reviewing(finder)
+    const result = await quorum.review({ diff: sections })
+    // 1, then 2, 4 and 8 pieces: the floor of three splits, and one file at the floor.
+    expect(finder.requests).toHaveLength(15)
+    expect(finder.requests.map(request => filesOf(request).length)).toEqual([
+      8,
+      4,
+      2,
+      1,
+      1,
+      2,
+      1,
+      1,
+      4,
+      2,
+      1,
+      1,
+      2,
+      1,
+      1,
+    ])
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'reply-cut-off', detail: `8 hunk(s) of 8 file(s) ${CUT_OFF_WORDS}` },
+    ])
+    expect(result.meta.profiles.security.coverage).toEqual(eight.map(file => ({ file, status: 'unreviewed', reason: 'reply-cut-off' })))
+    expect(recovered(events)).toEqual([
+      {
+        type: 'recovered',
+        profile: 'security',
+        part: 1,
+        parts: 1,
+        noAnswer: 'reply',
+        thinkingLowered: false,
+        pieces: 8,
+        read: 0,
+        unreadHunks: 8,
+        unreadFiles: 8,
+      },
+    ])
+    expect(result.meta.profiles.security.recovery).toEqual({
+      parts: 1,
+      pieces: 8,
+      saturated: 0,
+      unreadHunks: 8,
+    })
+    // No flag lifts it.
+    expect(outcome(result, { allowIncomplete: true }).exitCode).toBe(4)
+  })
+
+  it('counts every hunk of a whole multi-hunk section left uncut at the depth floor as unread', async () => {
+    const eight = Array.from({ length: 8 }, (_, index) => `f${index}.js`)
+    // f3 holds three hunks: the three splits end with one slice of each file, so its section stays whole at depth 3.
+    const threeHunks = (file: string): string => [
+      `diff --git a/${file} b/${file}`,
+      `--- a/${file}`,
+      `+++ b/${file}`,
+      ...[1, 11, 21].flatMap(line => [
+        `@@ -${line} +${line} @@`,
+        '-safe(input)',
+        `+exec(input) // ${file}`,
+      ]),
+    ].join('\n')
+    const sections = eight.map(file => file === 'f3.js'
+      ? threeHunks(file)
+      : small(file)).join('\n')
+    const finder = fake('finder', () => {
+      throw cutOff()
+    })
+    const { events, quorum } = reviewing(finder)
+    const result = await quorum.review({ diff: sections })
+    expect(finder.requests).toHaveLength(15)
+    // Seven files of one hunk and one of three: ten hunks of eight files, in the gap's words and the recovery's counts.
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'reply-cut-off', detail: `10 hunk(s) of 8 file(s) ${CUT_OFF_WORDS}` },
+    ])
+    expect(result.meta.profiles.security.coverage).toEqual(eight.map(file => ({ file, status: 'unreviewed', reason: 'reply-cut-off' })))
+    expect(recovered(events)).toMatchObject([
+      {
+        pieces: 8,
+        read: 0,
+        unreadHunks: 10,
+        unreadFiles: 8,
+      },
+    ])
+    expect(result.meta.profiles.security.recovery).toEqual({
+      parts: 1,
+      pieces: 8,
+      saturated: 0,
+      unreadHunks: 10,
+    })
+  })
+
+  it('keeps a piece at the floor that its provider refuses as too large as a request-too-large leaf', async () => {
+    const refused = new ProviderError({ providerId: 'finder', kind: 'too-large', message: 'may need 9 tokens, more than contextTokens (8)' })
+    const finder = finderOf((_, files) => {
+      if (files.length === 2) throw cutOff()
+      if (files[0] === 'a.js') throw refused
+      return findings(at('b.js'))
+    })
+    const { events, quorum } = reviewing(finder)
+    const result = await quorum.review({ diff: twoFiles })
+    // The part is cut off and split into one file each; a.js is a hunk of its own, at the floor, and is refused: no split, no retry.
+    expect(finder.requests.map(request => filesOf(request))).toEqual([
+      ['a.js', 'b.js'],
+      ['a.js'],
+      ['b.js'],
+    ])
+    expect(result.kept.map(verdict => verdict.file)).toEqual(['b.js'])
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'request-too-large', detail: '1 of 1 research requests were not sent: finder: may need 9 tokens, more than contextTokens (8)' },
+    ])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: 'a.js', status: 'unreviewed', reason: 'request-too-large' },
+      { file: 'b.js', status: 'reviewed' },
+    ])
+    // A refusal is no cut-off at the floor: it counts no unread hunk.
+    expect(recovered(events)).toEqual([
+      {
+        type: 'recovered',
+        profile: 'security',
+        part: 1,
+        parts: 1,
+        noAnswer: 'reply',
+        thinkingLowered: false,
+        pieces: 2,
+        read: 1,
+        unreadHunks: 0,
+        unreadFiles: 0,
+      },
+    ])
+    expect(result.meta.profiles.security.recovery).toEqual({
+      parts: 1,
+      pieces: 2,
+      saturated: 0,
+      unreadHunks: 0,
+    })
+  })
+
+  describe('saturation', () => {
+    /** A provider stating a window of 16384, so a research reply is asked for at most 7 findings of the 50 `maxFindings` allows. */
+    const WINDOW = 16_384
+    const seven = Array.from({ length: 7 }, (_, index) => ({ ...reported, line: index + 1 }))
+
+    it('splits a saturated reply when N is below maxFindings, reading only its pieces', async () => {
+      const finder = finderOf((_, files) => {
+        if (files.length === 2) return findings(...seven)
+        return files[0] === 'a.js'
+          ? findings(at('a.js'))
+          : findings()
+      }, { window: WINDOW })
+      const { events, quorum } = reviewing(finder)
+      const result = await quorum.review({ diff: twoFiles })
+      expect(finder.requests.map(asks)).toEqual([7, 7, 7])
+      expect(finder.requests.slice(1).map(pieceOf)).toEqual(['Piece 1 of 2 of the change.', 'Piece 2 of 2 of the change.'])
+      expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js'])
+      // The saturated reply's findings, which cite lines the diff does not hold, were never read.
+      expect(events.filter(event => event.type === 'finding:invalid')).toEqual([])
+      expect(result.meta.incomplete).toEqual([])
+      expect(recovered(events)).toEqual([
+        {
+          type: 'recovered',
+          profile: 'security',
+          part: 1,
+          parts: 1,
+          noAnswer: 'saturated',
+          findings: 7,
+          thinkingLowered: false,
+          pieces: 2,
+          read: 2,
+          unreadHunks: 0,
+          unreadFiles: 0,
+        },
+      ])
+      expect(result.meta.profiles.security.recovery).toEqual({
+        parts: 1,
+        pieces: 2,
+        saturated: 1,
+        unreadHunks: 0,
+      })
+    })
+
+    it('reads a saturated reply at the floor and records findings-capped', async () => {
+      const single = diff.split('\n').slice(0, 6).join('\n')
+      const finder = finderOf(() => findings(...seven), { window: WINDOW })
+      const { events, quorum } = reviewing(finder)
+      const result = await quorum.review({ diff: single })
+      expect(finder.requests).toHaveLength(1)
+      expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js'])
+      expect(result.meta.incomplete.map(entry => [entry.reason, entry.detail])).toEqual([
+        ['findings-capped', '1 research reply(ies) listed the 7 findings they were asked for at most, so they may have left some out'],
+      ])
+      expect(recovered(events)).toEqual([])
+      expect(result.meta.profiles.security).not.toHaveProperty('recovery')
+    })
+
+    it('reads a reply that lists maxFindings findings and records findings-capped, as 0.7.0 recorded one over the cap', async () => {
+      const [first, second, third] = [1, 2, 3].map(line => ({ ...reported, line }))
+      const over = await reviewing(finderOf(() => findings(first, second, third)), { maxFindings: 2 }).quorum.review({ diff })
+      const exact = await reviewing(finderOf(() => findings(first, second)), { maxFindings: 2 }).quorum.review({ diff })
+      // One gap, the saturation words first and, when the reply lists more than the cap, the cap's count after them.
+      expect(over.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: 1 of 3 reported findings were not reviewed (the cap is 2)' },
+      ])
+      expect(exact.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out' },
+      ])
+    })
+  })
+
+  it('reads the pieces\' findings in the diff\'s order, checked against the whole diff, deduplicated', async () => {
+    const finder = finderOf((request, files) => {
+      // The first part, three files of one size, is cut off and split after its first file.
+      if (files.length === 3 && files[0] === 'a.js') throw cutOff()
+      const own = files.map(at)
+      // The first piece cites a file of the other part, which the whole diff holds, and the second part cites one of the first.
+      if (pieceOf(request)?.includes('piece 1')) return findings(...own, at('f.js'))
+      return files[0] === 'd.js'
+        ? findings(...own, at('a.js'))
+        : findings(...own)
+    }, {
+      room: () => 100_000,
+    })
+    const result = await reviewing(finder, { partTokens: 1024, concurrency: 1 }).quorum.review({ diff: heavyDiff })
+    expect(finder.requests.map(request => [
+      pieceOf(request),
+      filesOf(request),
+    ])).toEqual([
+      [
+        undefined,
+        ['a.js', 'b.js', 'c.js'],
+      ],
+      [
+        'Part 1 of 2 of the change, piece 1 of 2.',
+        ['a.js'],
+      ],
+      [
+        'Part 1 of 2 of the change, piece 2 of 2.',
+        ['b.js', 'c.js'],
+      ],
+      [
+        undefined,
+        ['d.js', 'e.js', 'f.js'],
+      ],
+    ])
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.meta.profiles.security.invalidFindings).toBe(0)
+    expect(result.kept.map(verdict => verdict.file)).toEqual([
+      'a.js',
+      'f.js',
+      'b.js',
+      'c.js',
+      'd.js',
+      'e.js',
+    ])
+  })
+
+  it('sends no text of a cut reply to its pieces', async () => {
+    const closed = JSON.stringify({
+      findings: [
+        { ...reported, summary: 'CUT-CANARY' },
+      ],
+    })
+    const finder = finderOf((_, files) => {
+      if (files.length > 1) throw cutOff(undefined, `cut: ${closed.slice(0, -2)} CUT-CANARY`)
+      return findings()
+    })
+    const { events, quorum } = reviewing(finder)
+    const result = await quorum.review({ diff: twoFiles })
+    expect(finder.requests).toHaveLength(3)
+    for (const request of finder.requests) expect(JSON.stringify(request)).not.toContain('CUT-CANARY')
+    // Nor is it kept, whatever it closed, and nothing of it reaches an event or the result.
+    expect(result.kept).toEqual([])
+    expect(JSON.stringify(events)).not.toContain('CUT-CANARY')
+    expect(JSON.stringify(result)).not.toContain('CUT-CANARY')
+  })
+
+  it('splits a one-request research that was cut off, its pieces gaining a parts block', async () => {
+    const finder = finderOf((_, files) => {
+      if (files.length > 1) throw cutOff()
+      return findings(...files.map(at).filter(found => (found as { file: string }).file === 'a.js'))
+    })
+    const result = await reviewing(finder).quorum.review({ diff: twoFiles })
+    expect(finder.requests).toHaveLength(3)
+    const blocks = finder.requests.map(request => /<untrusted-parts-[0-9a-f]{8}>\n([\s\S]*?)\n<\/untrusted-parts-/.exec(request.messages[0].content)?.[1])
+    expect(blocks).toEqual([undefined, 'Piece 1 of 2 of the change.', 'Piece 2 of 2 of the change.'])
+    expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js'])
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: 'a.js', status: 'reviewed' },
+      { file: 'b.js', status: 'reviewed' },
+    ])
+  })
+
+  it('stops the part\'s later pieces and the profile\'s later parts at the token cap', async () => {
+    const finder = finderOf((_, files) => {
+      if (files.length > 1) throw cutOff()
+      return findings()
+    }, {
+      room: () => 100_000,
+    })
+    // Each call reserves about 17 000 tokens, a failure with no count settling it whole: the third does not fit beside the first two.
+    const { events, quorum } = reviewing(finder, { partTokens: 1024, concurrency: 1, maxReviewTokens: 40_000 })
+    const result = await quorum.review({ diff: heavyDiff })
+    expect(finder.requests).toHaveLength(2)
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 40000 tokens stopped 2 of its 2 research parts' },
+    ])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: 'a.js', status: 'reviewed' },
+      ...FILES.slice(1).map(file => ({ file, status: 'unreviewed', reason: 'token-cap' })),
+    ])
+    expect(recovered(events)).toMatchObject([
+      { part: 1, pieces: 2, read: 1 },
+    ])
+  })
+
+  it('splits a piece its provider refuses as too large, which the planner sized only as a part', async () => {
+    // One dominant file of two hunks, and a tiny one: the whole change just fits the guard in one request.
+    const dominant = [
+      'diff --git a/d.js b/d.js',
+      '--- a/d.js',
+      '+++ b/d.js',
+      '@@ -1 +1 @@',
+      '-safe(input)',
+      `+exec(input) // d.js ${'y'.repeat(300)}`,
+      '@@ -9 +9 @@',
+      '-x',
+      `+z ${'y'.repeat(300)}`,
+    ].join('\n')
+    const change = [
+      dominant,
+      small('t.js'),
+    ].join('\n')
+    const limit = requestTokens(researchRequest(securityProfile.prompts.research, '')) + tokenBound(change)
+    const sent: CompletionRequest[] = []
+    const finder: Provider = {
+      id: 'finder',
+      model: 'finder-model',
+      room: request => limit - requestTokens(request),
+      async complete(request) {
+        // The guard refuses before any send, as an adapter's does.
+        if (requestTokens(request) > limit) throw new ProviderError({ providerId: 'finder', kind: 'too-large', message: 'may need more tokens than contextTokens' })
+        sent.push(request)
+        if (pieceOf(request) === undefined) throw cutOff()
+        return {
+          text: request.messages[0].content.includes('exec(input) // d.js')
+            ? findings(at('d.js'))
+            : findings(),
+          model: 'finder-model',
+        }
+      },
+    }
+    const { events, quorum } = reviewing(finder)
+    const result = await quorum.review({ diff: change })
+    // The whole change, cut off; the dominant file's piece was refused unsent and split by hunk; then the tiny file's piece.
+    expect(sent.map(pieceOf)).toEqual([
+      undefined,
+      'Piece 1 of 4 of the change.',
+      'Piece 2 of 4 of the change.',
+      'Piece 2 of 2 of the change.',
+    ])
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.meta.profiles.security.coverage).toEqual([
+      { file: 'd.js', status: 'reviewed' },
+      { file: 't.js', status: 'reviewed' },
+    ])
+    expect(result.kept.map(verdict => verdict.file)).toEqual(['d.js'])
+    // The refused piece is an inner node: the event counts the three pieces that were asked and read.
+    expect(recovered(events)).toEqual([
+      {
+        type: 'recovered',
+        profile: 'security',
+        part: 1,
+        parts: 1,
+        noAnswer: 'reply',
+        thinkingLowered: false,
+        pieces: 3,
+        read: 3,
+        unreadHunks: 0,
+        unreadFiles: 0,
+      },
+    ])
+  })
+
+  it('reports the thinking as lowered when the provider\'s had been when recovery began', async () => {
+    const finder = finderOf((request, files) => {
+      if (request.thinking === undefined) {
+        throw new ProviderError({
+          providerId: 'finder',
+          kind: 'truncated',
+          noAnswer: 'thinking',
+          message: 'cut',
+        })
+      }
+      if (files.length > 1) throw cutOff()
+      return findings(at(files[0]))
+    }, {
+      adapts: { thinking: 'low' },
+      room: () => 100_000,
+    })
+    const { events, quorum } = reviewing(finder, { partTokens: 1024, concurrency: 1 })
+    const result = await quorum.review({
+      diff: FILES.slice(0, 3).map(heavy).join('\n'),
+    })
+    expect(result.meta.adaptations.map(adaptation => adaptation.cause)).toEqual(['cut-off-thinking'])
+    // The first call's cut-off while reasoning lowered thinking, and its re-send was cut off at its answer still, so the part was split.
+    expect(recovered(events)).toMatchObject([
+      {
+        part: 1,
+        noAnswer: 'reply',
+        thinkingLowered: true,
+        pieces: 3,
+        read: 3,
+      },
+    ])
+    expect(result.meta.incomplete).toEqual([])
+  })
+
+  it('writes meta.profiles.<id>.recovery when a part was recovered, and leaves it out when none was', async () => {
+    const cutting = finderOf((_, files) => {
+      if (files.length > 1) throw cutOff()
+      return findings()
+    })
+    const recoveredResult = await reviewing(cutting).quorum.review({ diff: twoFiles })
+    expect(recoveredResult.meta.profiles.security.recovery).toEqual({
+      parts: 1,
+      pieces: 2,
+      saturated: 0,
+      unreadHunks: 0,
+    })
+    const plain = await reviewing(finderOf(() => findings())).quorum.review({ diff: twoFiles })
+    expect(plain.meta.profiles.security).not.toHaveProperty('recovery')
+    expect(Object.keys(plain.meta.profiles.security)).toEqual([
+      'providers',
+      'policy',
+      'failOn',
+      'gating',
+      'invalidFindings',
+      'coverage',
+    ])
   })
 })

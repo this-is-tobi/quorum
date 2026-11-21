@@ -1,10 +1,10 @@
 import type { DiffSection, Hunk } from './diff.ts'
-import type { Packing, PartOutcome, Slice } from './parts.ts'
+import type { Packing, PartOutcome, PartResult, Slice } from './parts.ts'
 import { describe, expect, it } from 'vitest'
 import { reviewScope } from './coverage.ts'
 import { diffSections, heldSpan, parseHunks } from './diff.ts'
 import { excludeMatcher } from './exclude.ts'
-import { coverageOf, listedFiles, nearestHunks, packParts, partText, partTokensProblem, sliceText } from './parts.ts'
+import { coverageOf, cutSection, listedFiles, nearestHunks, packParts, partText, partTokensProblem, sliceText } from './parts.ts'
 import { tokenBound } from './tokens.ts'
 
 const t = tokenBound
@@ -974,6 +974,148 @@ describe('coverageOf', () => {
     }, ['reviewed'])).toEqual([
       { file: 'a.js', status: 'partial', left: [] },
     ])
+  })
+
+  describe('a part recovery split into pieces', () => {
+    /** a.js holds four hunks of two rows each, b.js one: two parts, each file whole in its own. */
+    const sections = sectionsOf(
+      [
+        'a.js',
+        [
+          hunkOf(2, 'a', 1),
+          hunkOf(2, 'b', 11),
+          hunkOf(2, 'c', 21),
+          hunkOf(2, 'd', 31),
+        ],
+      ],
+      [
+        'b.js',
+        [
+          hunkOf(2, 'e', 1),
+        ],
+      ],
+    )
+    const whole: Packing = {
+      parts: [
+        {
+          slices: [
+            { section: 0 },
+          ],
+          tokens: 0,
+        },
+        {
+          slices: [
+            { section: 1 },
+          ],
+          tokens: 0,
+        },
+      ],
+      tooLarge: [],
+      cuts: new Map(),
+    }
+    /** What recovery makes of the packing when it cuts a.js between its hunks. */
+    const cut: Packing = {
+      ...whole,
+      cuts: new Map([
+        [
+          0,
+          cutSection(sections[0].text),
+        ],
+      ]),
+    }
+    const scope = reviewScope(sections.map(({ text }) => text).join('\n'))
+    const pieces = (...outcomes: PartOutcome[]): PartResult => ({
+      pieces: outcomes.map((outcome, index) => ({
+        slices: [
+          { section: 0, from: index, to: index + 1 },
+        ],
+        outcome,
+      })),
+    })
+
+    it('covers a part split into pieces by each piece\'s outcome, a section recovery cut by hunk', () => {
+      expect(coverageOf(scope, sections, cut, [
+        pieces('reviewed', 'reviewed', 'token-cap', 'research-failed'),
+        'reviewed',
+      ])).toEqual([
+        {
+          file: 'a.js',
+          status: 'partial',
+          left: [
+            { start: 21, end: 22, reason: 'token-cap' },
+            { start: 31, end: 32, reason: 'research-failed' },
+          ],
+        },
+        { file: 'b.js', status: 'reviewed' },
+      ])
+      // A part is read when every piece of it was, and not before: one piece not read leaves its file partial.
+      expect(coverageOf(scope, sections, cut, [
+        pieces('reviewed', 'reviewed', 'reviewed', 'reviewed'),
+        'reviewed',
+      ]).map(entry => entry.status)).toEqual(['reviewed', 'reviewed'])
+      expect(coverageOf(scope, sections, cut, [
+        pieces('provider-down', 'provider-down', 'provider-down', 'provider-down'),
+        'reviewed',
+      ])[0]).toEqual({ file: 'a.js', status: 'unreviewed', reason: 'provider-down' })
+      // A piece that holds a slice of the other part's file leaves that part's outcome alone.
+      expect(coverageOf(scope, sections, cut, [
+        pieces('reviewed', 'reviewed', 'reviewed', 'reviewed'),
+        'token-cap',
+      ])[1]).toEqual({ file: 'b.js', status: 'unreviewed', reason: 'token-cap' })
+    })
+
+    it('lists the hunks of a piece at the floor as reply-cut-off ranges', () => {
+      expect(coverageOf(scope, sections, cut, [
+        pieces('reviewed', 'reply-cut-off', 'reviewed', 'reviewed'),
+        'reply-cut-off',
+      ])).toEqual([
+        {
+          file: 'a.js',
+          status: 'partial',
+          left: [
+            { start: 11, end: 12, reason: 'reply-cut-off' },
+          ],
+        },
+        { file: 'b.js', status: 'unreviewed', reason: 'reply-cut-off' },
+      ])
+      // A part held whole and cut off at the floor lists every hunk of its section.
+      expect(coverageOf(scope, sections, whole, ['reply-cut-off', 'reviewed'])[0]).toEqual({ file: 'a.js', status: 'unreviewed', reason: 'reply-cut-off' })
+      // A research of one request split into pieces has one part holding every section.
+      const one: Packing = {
+        parts: [
+          {
+            slices: [
+              { section: 0 },
+              { section: 1 },
+            ],
+            tokens: 0,
+          },
+        ],
+        tooLarge: [],
+        cuts: cut.cuts,
+      }
+      expect(coverageOf(scope, sections, one, [
+        {
+          pieces: [
+            {
+              slices: [
+                { section: 0, from: 0, to: 4 },
+              ],
+              outcome: 'reviewed',
+            },
+            {
+              slices: [
+                { section: 1 },
+              ],
+              outcome: 'reply-cut-off',
+            },
+          ],
+        },
+      ])).toEqual([
+        { file: 'a.js', status: 'reviewed' },
+        { file: 'b.js', status: 'unreviewed', reason: 'reply-cut-off' },
+      ])
+    })
   })
 })
 

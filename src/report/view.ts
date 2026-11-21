@@ -91,6 +91,7 @@ function discardedByProfile(discarded: readonly Verdict[]): Map<unknown, number>
 
 /** A profile's meta as the view keeps it, read as own data only: no providers, and the count of its discarded findings. */
 function publicProfile(entry: unknown, discarded: number): PublicProfileMeta {
+  const recovery = ownData(entry, 'recovery')
   return {
     policy: structuredClone(ownData(entry, 'policy')) as PublicProfileMeta['policy'],
     failOn: ownData(entry, 'failOn') as PublicProfileMeta['failOn'],
@@ -98,6 +99,11 @@ function publicProfile(entry: unknown, discarded: number): PublicProfileMeta {
     discarded,
     invalidFindings: ownData(entry, 'invalidFindings') as number,
     coverage: structuredClone(ownData(entry, 'coverage')) as PublicProfileMeta['coverage'],
+    ...recovery === undefined
+      ? {}
+      : {
+          recovery: structuredClone(recovery) as PublicProfileMeta['recovery'],
+        },
   }
 }
 

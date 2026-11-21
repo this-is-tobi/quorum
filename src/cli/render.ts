@@ -68,6 +68,8 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
       return `${event.provider}: ${lackWords(event.kind, event)}`
     case 'adapted':
       return adaptedWords(event.adaptation)
+    case 'recovered':
+      return of(event.profile, recoveredWords(event))
     case 'left-out':
       return leftOutLine(event.files)
     case 'flag':
@@ -77,6 +79,28 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
     default:
       return undefined
   }
+}
+
+/**
+ * The line of a research part recovery split: which part, what its reply lacked, how many pieces it was split into, and
+ * whether every piece was read; else the hunks the floor left unread, cut off even alone, and what to change, or how many
+ * pieces were not read, for the gaps to say why. It holds numbers and code words only.
+ */
+function recoveredWords(event: Extract<QuorumEvent, { type: 'recovered' }>): string {
+  const { part, parts, noAnswer, limit, findings, pieces, read, unreadHunks, unreadFiles } = event
+  const lacked = noAnswer === 'saturated'
+    ? `its reply listed the ${findings} findings it was asked for at most`
+    : noAnswer === 'window'
+      ? 'reply cut off at the server\'s window (window)'
+      : limit === undefined
+        ? `reply cut off at its limit (${noAnswer})`
+        : `reply cut off at its limit of ${limit} tokens (${noAnswer})`
+  const end = read === pieces
+    ? ', all read'
+    : unreadHunks > 0
+      ? `; ${unreadHunks} hunk(s) of ${unreadFiles} file(s) left unread, cut off even alone: raise maxTokens, set thinking: low, or lower partTokens`
+      : `; ${pieces - read} not read, see the gaps`
+  return `part ${part} of ${parts}: ${lacked}: split into ${pieces} pieces${end}`
 }
 
 /** What each cause of a setting moved says, in words the code writes: the reason the review gives for it. */
