@@ -1,4 +1,4 @@
-import { ProviderDownError } from './errors.ts'
+import { cutOf, ProviderDownError } from './errors.ts'
 import type { NoAnswer, ProviderErrorKind } from './errors.ts'
 import type { Provider } from './ports.ts'
 import { lackOf, providerFailure } from './stages/context.ts'
@@ -47,6 +47,8 @@ interface Counts {
   failures: number
   /** Calls that ended in any way: a reply, a counted failure or a neutral one. */
   ended: number
+  /** What `cutOf` made of each failure of the streak, in the order they ended: the attempt's length for a cut, else undefined. */
+  cuts: Array<number | undefined>
   /** The last counted failure: its kind, status, whether it was a used-up quota, and thrown value. */
   last?: { readonly kind: ProviderErrorKind, readonly status?: number, readonly exhausted?: true, readonly noAnswer?: NoAnswer, readonly error: unknown }
   /** The error of the provider once it is found down. */
@@ -59,8 +61,11 @@ export interface Health {
   readonly refused: (provider: Provider) => ProviderDownError | undefined
   /** A call returned a reply: the count of calls in a row starts again. */
   readonly answered: (provider: Provider) => void
-  /** A call ended with `error`: the provider's error the first time the failure finds it down, `undefined` otherwise. */
-  readonly failed: (provider: Provider, id: string, error: unknown) => ProviderDownError | undefined
+  /**
+   * A call ended with `error`, whose last attempt ran `attemptMs`: the provider's error the first time the failure
+   * finds it down, `undefined` otherwise. The error names a cut (`cutAfterMs`) when each failure of the streak was one.
+   */
+  readonly failed: (provider: Provider, id: string, error: unknown, attemptMs?: number) => ProviderDownError | undefined
   /**
    * The end's rule: the provider's error when each of its calls failed for a reason of its own, and fewer than
    * three did, so it was never found down; else `undefined`, a provider that was never called included. The
@@ -79,13 +84,28 @@ function lackFacts(kind: ProviderErrorKind, error: unknown): { readonly noAnswer
     : { noAnswer: lack.noAnswer }
 }
 
+/** The cut of a record's streak as a fact for the provider's error: the shortest attempt, unless a failure of the streak was no cut. */
+function cutFacts({ cuts }: Counts): { readonly cutAfterMs?: number } {
+  const lengths = cuts.filter(length => length !== undefined)
+  return lengths.length === cuts.length && lengths.length > 0
+    ? {
+        cutAfterMs: Math.min(...lengths),
+      }
+    : {}
+}
+
 /** A review's own record of its providers' health. */
 export function createHealth(): Health {
   const records = new Map<Provider, Counts>()
   const recordOf = (provider: Provider): Counts => {
     const known = records.get(provider)
     if (known !== undefined) return known
-    const fresh: Counts = { streak: 0, failures: 0, ended: 0 }
+    const fresh: Counts = {
+      streak: 0,
+      failures: 0,
+      ended: 0,
+      cuts: [],
+    }
     records.set(provider, fresh)
     return fresh
   }
@@ -96,13 +116,15 @@ export function createHealth(): Health {
       record.ended += 1
       record.streak = 0
     },
-    failed: (provider, id, error) => {
+    failed: (provider, id, error, attemptMs) => {
       const record = recordOf(provider)
       record.ended += 1
       const failure = providerFailure(error)
       if (failure === undefined || !DOWN_KINDS.has(failure.kind)) return undefined
       record.streak += 1
       record.failures += 1
+      if (record.streak === 1) record.cuts = []
+      record.cuts.push(cutOf(failure, attemptMs))
       const facts = {
         ...failure,
         ...lackFacts(failure.kind, error),
@@ -112,6 +134,7 @@ export function createHealth(): Health {
       record.down = new ProviderDownError({
         providerId: id,
         ...facts,
+        ...cutFacts(record),
         count: record.streak,
         streak: true,
         cause: error,
@@ -125,6 +148,7 @@ export function createHealth(): Health {
       return new ProviderDownError({
         providerId: id,
         ...failure,
+        ...cutFacts(record),
         count: record.failures,
         streak: false,
         cause: error,

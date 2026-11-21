@@ -152,6 +152,7 @@ describe('progressReporter', () => {
         attempt: 1,
         retries: 2,
         failure: { kind: 'network' },
+        attemptMs: 1000,
         waitMs: 250,
       },
       { type: 'run:stopping', cause: 'review-deadline', inFlight: 1 },

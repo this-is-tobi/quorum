@@ -4193,6 +4193,77 @@ describe('a large change in parts', () => {
       expect(clock.pending()).toBe(0)
     })
 
+    it('tells a call cut on the way from a server that is down', async () => {
+      const clock = fakeClock()
+      const events: QuorumEvent[] = []
+      // Each attempt is cut by a gateway 600 s after it was sent: the provider's own deadline is longer.
+      const cut = (): Promise<string> => new Promise((_resolve, reject) => {
+        clock.timer(600_000, () => reject(new ProviderError({ providerId: 'finder', kind: 'network', message: 'fetch failed' })))
+      })
+      const finder = partsFinder(5000, cut, { retries: 2, timeoutMs: 1_000_000 })
+      const quorum = createQuorumWith({
+        profiles: [securityProfile],
+        concurrency: 3,
+        partTokens: 1024,
+        reviewTimeoutMs: 86_400_000,
+      }, {
+        ...portsFor(securityProfile, finder, keeps()),
+        events: event => events.push(event),
+      }, clock)
+      const thrown = await settle(clock, quorum.review({ diff: threeFiles }).catch((error: unknown) => error), 200)
+      expect(finder.requests).toHaveLength(9)
+      const retries = events.filter(event => event.type === 'call:retry')
+      expect(retries).toHaveLength(6)
+      for (const retry of retries) {
+        expect(retry).toMatchObject({
+          failure: { kind: 'network' },
+          attemptMs: 600_000,
+        })
+      }
+      expect(events.filter(event => event.type === 'part').map(event => event.failure)).toEqual(Array.from({ length: 3 }).fill({ kind: 'network', cutAfterMs: 600_000 }))
+      expect(downEvents(events)).toEqual([
+        {
+          type: 'provider-down',
+          provider: 'finder',
+          kind: 'network',
+          calls: 3,
+          cutAfterMs: 600_000,
+        },
+      ])
+      expect(thrown).toMatchObject({ cutAfterMs: 600_000 })
+      expect(thrown).toBeInstanceOf(ProviderDownError)
+      expect((thrown as ProviderDownError).message).toContain('each call was cut after about 10m00s')
+    })
+
+    it('tells a call that failed at once from one cut on the way', async () => {
+      const clock = fakeClock()
+      const events: QuorumEvent[] = []
+      const quick = (): Promise<string> => Promise.reject(new ProviderError({ providerId: 'finder', kind: 'network', message: 'fetch failed' }))
+      const finder = partsFinder(5000, quick, { retries: 1 })
+      const quorum = createQuorumWith({
+        profiles: [securityProfile],
+        concurrency: 1,
+        partTokens: 1024,
+      }, {
+        ...portsFor(securityProfile, finder, keeps()),
+        events: event => events.push(event),
+      }, clock)
+      const thrown = await settle(clock, quorum.review({ diff: threeFiles }).catch((error: unknown) => error))
+      expect(events.filter(event => event.type === 'call:retry')).toEqual(expect.arrayContaining([
+        expect.objectContaining({ attemptMs: 0 }),
+      ]))
+      expect(events.filter(event => event.type === 'part').map(event => event.failure)).toEqual(Array.from({ length: 3 }).fill({ kind: 'network' }))
+      expect(downEvents(events)).toEqual([
+        {
+          type: 'provider-down',
+          provider: 'finder',
+          kind: 'network',
+          calls: 3,
+        },
+      ])
+      expect(thrown).toMatchObject({ cutAfterMs: undefined })
+    })
+
     it('records the votes of a voter that is down as failed votes of kind provider-down', async () => {
       const voter = fake('voter', () => {
         throw new ProviderError({ providerId: 'voter', kind: 'network', message: 'fetch failed' })

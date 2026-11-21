@@ -252,4 +252,79 @@ describe('a provider being down', () => {
       cause: last,
     })
   })
+
+  it.each<[string, ProviderErrorKind, number | undefined]>([
+    ['network', 'network', undefined],
+    ['http 502', 'http', 502],
+    ['http 504', 'http', 504],
+    ['http 524', 'http', 524],
+  ])('finds a streak of cuts and keeps its shortest attempt, for %s', (_name, kind, status) => {
+    const health = createHealth()
+    const api = provider()
+    expect(health.failed(api, 'api', failure(kind, status), 600_000)).toBeUndefined()
+    expect(health.failed(api, 'api', failure(kind, status), 601_000)).toBeUndefined()
+    expect(health.failed(api, 'api', failure(kind, status), 600_500)).toMatchObject({
+      count: 3,
+      streak: true,
+      cutAfterMs: 600_000,
+    })
+  })
+
+  it('names the cut of a provider spent at the end, when each of its calls was one', () => {
+    const health = createHealth()
+    const api = provider()
+    health.failed(api, 'api', failure('network'), 600_000)
+    health.failed(api, 'api', failure('network'), 601_000)
+    expect(health.spent(api, 'api')).toMatchObject({ count: 2, streak: false, cutAfterMs: 600_000 })
+  })
+
+  it('counts the cut again after a call that answered', () => {
+    const health = createHealth()
+    const api = provider()
+    health.failed(api, 'api', failure('network'), 1000)
+    health.answered(api)
+    health.failed(api, 'api', failure('network'), 600_000)
+    health.failed(api, 'api', failure('network'), 600_000)
+    expect(health.failed(api, 'api', failure('network'), 600_000)).toMatchObject({ cutAfterMs: 600_000 })
+  })
+
+  it.each<[string, Array<[ProviderErrorKind, number | undefined, number | undefined]>]>([
+    [
+      'one failure of the streak ran 1 000 ms',
+      [
+        ['network', undefined, 600_000],
+        ['network', undefined, 1000],
+        ['network', undefined, 600_000],
+      ],
+    ],
+    [
+      'a network failure ran 59 999 ms',
+      [
+        ['network', undefined, 600_000],
+        ['network', undefined, 600_000],
+        ['network', undefined, 59_999],
+      ],
+    ],
+    [
+      'an http 503 ran 600 000 ms',
+      [
+        ['http', 503, 600_000],
+        ['http', 503, 600_000],
+        ['http', 503, 600_000],
+      ],
+    ],
+    [
+      'no attempt length was told',
+      [
+        ['network', undefined, undefined],
+        ['network', undefined, undefined],
+        ['network', undefined, undefined],
+      ],
+    ],
+  ])('names no cut when %s', (_name, streak) => {
+    const health = createHealth()
+    const api = provider()
+    const found = streak.map(([kind, status, ran]) => health.failed(api, 'api', failure(kind, status), ran)).at(-1)
+    expect(found).toMatchObject({ count: 3, cutAfterMs: undefined })
+  })
 })

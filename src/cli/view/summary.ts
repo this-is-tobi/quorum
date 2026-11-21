@@ -6,14 +6,14 @@
  * `inertLine` whole.
  */
 
-import { failureFix, QUOTA_FIX } from '../../core/errors.ts'
+import { CUT_ADVICE, failureFix, QUOTA_FIX } from '../../core/errors.ts'
 import { inertLine } from '../../core/sanitize.ts'
 import type { IncompleteReason, StageName } from '../../core/types.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords } from './eta.ts'
 import { durationWords, elapsedWords } from './lines.ts'
 import { stageStart, stageTime } from './model.ts'
-import type { Cause, ViewState } from './model.ts'
+import type { Cause, GapCount, ViewState } from './model.ts'
 import type { SummaryFacts } from './writer.ts'
 
 /** The fix of a gap with no better advice: the report holds its detail. */
@@ -42,13 +42,16 @@ function causeWords({ kind, status }: Cause): string {
 /**
  * What to do about a gap of `reason`, or undefined when there is nothing to say: a fixed phrase for most reasons,
  * and for `research-failed` and `provider-down` the fix of each cause the events gave, joined by `, or ` (a used-up
- * quota's is `QUOTA_FIX`), `research-failed` with no cause pointing to the report.
+ * quota's is `QUOTA_FIX`, a call cut on the way's `CUT_ADVICE`), `research-failed` with no cause pointing to the report.
  */
 export function gapFix(reason: IncompleteReason, causes: readonly Cause[]): string | undefined {
   if (reason !== 'research-failed' && reason !== 'provider-down') return FIXES[reason]
-  const fixes = new Set(causes.map(cause => cause.exhausted === true
-    ? QUOTA_FIX
-    : failureFix(cause.kind, cause.status)))
+  const fixes = new Set(causes.map((cause) => {
+    if (cause.exhausted === true) return QUOTA_FIX
+    return cause.cutAfterMs === undefined
+      ? failureFix(cause.kind, cause.status)
+      : CUT_ADVICE
+  }))
   if (fixes.size === 0) {
     return reason === 'research-failed'
       ? SEE_REPORT
@@ -124,6 +127,21 @@ function callsLine(state: ViewState): string | undefined {
   return `calls: ${parts.join(', ')}; ${state.facts.concurrency} at once`
 }
 
+/** What a reason's entries count, each unit named: `5 part(s)`, `3 vote(s)`, and `2 gap(s)` for entries that count neither. */
+function quantityWords({ parts, votes, other }: GapCount): string {
+  return [
+    ...parts > 0
+      ? [`${parts} part(s)`]
+      : [],
+    ...votes > 0
+      ? [`${votes} vote(s)`]
+      : [],
+    ...other > 0
+      ? [`${other} gap(s)`]
+      : [],
+  ].join(' and ')
+}
+
 function gapsLine(state: ViewState, view: ReportView): string | undefined {
   if (state.gaps.size === 0) return undefined
   const entries = [...state.gaps].map(([reason, count]) => {
@@ -138,10 +156,11 @@ function gapsLine(state: ViewState, view: ReportView): string | undefined {
     const fix = quota && fixed.length === 0
       ? undefined
       : gapFix(reason, fixed)
-    const causes = known
-    return `${count} ${reason}${causes.length === 0
+    return `${quantityWords(count)} ${reason}${known.length === 0
       ? ''
-      : ` (${causes.map(causeWords).join(', ')})`}${fix === undefined
+      : ` (${[
+        ...new Set(known.map(causeWords)),
+      ].join(', ')})`}${fix === undefined
       ? ''
       : `: ${fix}`}`
   })

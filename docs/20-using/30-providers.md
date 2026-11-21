@@ -79,6 +79,16 @@ The core runs each call's attempts inside the call's concurrency slot, and gives
 - **A hint comes from the reply.** The HTTP adapters read `retry-after-ms` in milliseconds, then `retry-after` in seconds or as an HTTP date, and `gemini` also the body's `RetryInfo.retryDelay`, such as `34s`. A malformed one, 0 or a date in the past is none, and only the IMF date form, `Sat, 14 Nov 2026 12:00:30 GMT`, is read: the runtimes read other forms as local time, or `1` as a year.
 - **The wait holds the call's slot**, and an interrupt ends it at once.
 
+### A gateway that cuts long calls
+
+A gateway or proxy between quorum and the server can cut a whole reply after a fixed time, however long the model still has to write: some answer with an HTTP/2 framing error and no status, which quorum reads as `network`, others with a 502, 504 or 524. quorum cannot tell it from a server that is down by the failure alone, so it reads how long the attempt ran.
+
+- **A call cut on the way** is one whose attempt failed with `network`, or an HTTP 502, 504 or 524, after at least a minute, the shortest idle limit of the common proxies (nginx's and an AWS load balancer's). A server that is refused or unreachable fails within seconds.
+- **Each retry says how long its attempt ran**: `part 7 of 51: network after 10m00s, retry 1 of 2 in 2s`. Ten minutes, again and again, is a cut, and a `timeout` line keeps its own words, the deadline.
+- **A provider found down by cuts alone** gets the cut fix in place of the server's: `each call was cut after about 10m00s, likely by a proxy or load balancer on the way: make replies shorter, with a lower maxTokens or partTokens`, the shortest of the three calls' lengths. The summary's fix for its gaps is the same advice. A provider that failed any call of the streak quickly gets the fix of its kind, as before. A used-up quota keeps its own line, ahead of a cut.
+- **Streaming passes such a cut**, since the connection carries bytes all the while: replies are not streamed yet, and a later release will stream them.
+- **Until then, make replies shorter** so that each call ends under the gateway's limit: set a lower `maxTokens` or leave it unset, or a lower `partTokens`, which makes more, smaller parts: [The reply's limit](#the-replys-limit) and [Research in parts](./20-configuration.md#research-in-parts).
+
 ### What a provider states
 
 - **`timeoutMs`** is a whole number of milliseconds from 1000 to 518400000, an own data field of the provider object, read when the quorum is created. A getter is never run and an inherited field states nothing, so a class sets it as a field. A provider that states none has 600000 ms.

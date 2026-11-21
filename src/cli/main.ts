@@ -206,10 +206,9 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * `runBench`, `runReport` or `runMcp` and its exit code is returned, before any review flag is read. A file named
  * `bench`, `report` or `mcp` is reviewed as `quorum ./bench`, `quorum ./report` or `quorum ./mcp`.
  *
- * Everything the CLI writes is inert (invariant I3): each stderr line after the flags goes through one view writer (`viewWriter`),
- * which passes it through `inertLine` or `inertJsonLine`, and
- * each report through its reporter, `json` through `inertJson`, `brief` and `text` through `inertLine`, and `text`'s color
- * around the words quorum wrote alone.
+ * Everything the CLI writes is inert (invariant I3): each stderr line after the flags goes through one view writer
+ * (`viewWriter`), which passes it through `inertLine` or `inertJsonLine`, and each report through its reporter, `json`
+ * through `inertJson`, `brief` and `text` through `inertLine`, and `text`'s color around the words quorum wrote alone.
  */
 export async function runCli(io: CliIO): Promise<number> {
   if (io.argv[0] === 'bench') return runBench(io, io.argv.slice(1))

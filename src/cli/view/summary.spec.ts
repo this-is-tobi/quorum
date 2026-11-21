@@ -56,14 +56,32 @@ function reviewed(...events: QuorumEvent[]): ViewState {
   ].reduce((state, event) => fold(state, event, 1000), startState(DEFAULT_FACTS))
 }
 
-function incomplete(reason: IncompleteReason): QuorumEvent {
-  return {
-    type: 'incomplete',
-    entry: { profile: 'security', reason, detail: 'a detail' },
+/** The detail the core writes for a gap of `reason`, counting `count` research parts for the three reasons that count them. */
+function detailOf(reason: IncompleteReason, count: number): string {
+  switch (reason) {
+    case 'research-failed':
+      return `${count} of 51 research parts failed: the research call failed (http 503)`
+    case 'provider-down':
+      return `${count} of 51 research parts were not sent, since their provider was down`
+    case 'request-too-large':
+      return `${count} of 51 research requests were not sent: a detail`
+    default:
+      return 'a detail'
   }
 }
 
-function failedPart(index: number, failure?: { kind: 'http' | 'timeout' | 'network', status?: number, exhausted?: true }): QuorumEvent {
+function incomplete(reason: IncompleteReason, count = 1, profile = 'security'): QuorumEvent {
+  return {
+    type: 'incomplete',
+    entry: {
+      profile,
+      reason,
+      detail: detailOf(reason, count),
+    },
+  }
+}
+
+function failedPart(index: number, failure?: { kind: 'http' | 'timeout' | 'network', status?: number, exhausted?: true, cutAfterMs?: number }): QuorumEvent {
   return {
     type: 'part',
     profile: 'security',
@@ -138,11 +156,11 @@ describe('summaryLines', () => {
     expect(shown[0]).toBe('time: research 30m12s, dedup 0.0s, panel 7m40s; the first estimate, 5m10s in, put research at 30-31m; done in 38m05s')
 
     const quota = reviewed(failedPart(1, { kind: 'http', status: 429, exhausted: true }), incomplete('research-failed'))
-    expect(lines(quota).at(-2)).toBe('gaps: 1 research-failed (http 429): add credit or raise the limit at the provider, or wait until it resets')
+    expect(lines(quota).at(-2)).toBe('gaps: 1 part(s) research-failed (http 429): add credit or raise the limit at the provider, or wait until it resets')
     // A stranger is not told the account is out of money: the public view shows the cause and no fix, and every other gap keeps its fix.
-    expect(lines(quota, factsOf(), 'public').at(-2)).toBe('gaps: 1 research-failed (http 429)')
+    expect(lines(quota, factsOf(), 'public').at(-2)).toBe('gaps: 1 part(s) research-failed (http 429)')
     const mixed = reviewed(failedPart(1, { kind: 'timeout' }), failedPart(2, { kind: 'http', status: 429, exhausted: true }), incomplete('research-failed'), incomplete('token-cap'))
-    expect(lines(mixed, factsOf(), 'public').at(-2)).toBe('gaps: 1 research-failed (timeout, http 429): raise timeoutMs; 1 token-cap: raise maxReviewTokens')
+    expect(lines(mixed, factsOf(), 'public').at(-2)).toBe('gaps: 1 part(s) research-failed (timeout, http 429): raise timeoutMs; 1 gap(s) token-cap: raise maxReviewTokens')
   })
 
   it('writes the time of each stage as the time some profile was in it, with several profiles', () => {
@@ -271,14 +289,14 @@ describe('summaryLines', () => {
       [
         incomplete('token-cap'),
       ],
-      '1 token-cap: raise maxReviewTokens',
+      '1 gap(s) token-cap: raise maxReviewTokens',
     ],
     [
       'review-deadline',
       [
         incomplete('review-deadline'),
       ],
-      '1 review-deadline: raise reviewTimeoutMs',
+      '1 gap(s) review-deadline: raise reviewTimeoutMs',
     ],
     [
       'research-failed (timeout)',
@@ -286,7 +304,7 @@ describe('summaryLines', () => {
         failedPart(1, { kind: 'timeout' }),
         incomplete('research-failed'),
       ],
-      '1 research-failed (timeout): raise timeoutMs',
+      '1 part(s) research-failed (timeout): raise timeoutMs',
     ],
     [
       'research-failed of two causes',
@@ -295,7 +313,7 @@ describe('summaryLines', () => {
         failedPart(2, { kind: 'http', status: 503 }),
         incomplete('research-failed'),
       ],
-      '1 research-failed (timeout, http 503): raise timeoutMs, or lower concurrency or wait',
+      '1 part(s) research-failed (timeout, http 503): raise timeoutMs, or lower concurrency or wait',
     ],
     [
       'research-failed with no cause',
@@ -303,7 +321,7 @@ describe('summaryLines', () => {
         failedPart(1),
         incomplete('research-failed'),
       ],
-      '1 research-failed: see the gap in the report',
+      '1 part(s) research-failed: see the gap in the report',
     ],
     [
       'research-failed of a used-up quota',
@@ -311,7 +329,7 @@ describe('summaryLines', () => {
         failedPart(1, { kind: 'http', status: 429, exhausted: true }),
         incomplete('research-failed'),
       ],
-      '1 research-failed (http 429): add credit or raise the limit at the provider, or wait until it resets',
+      '1 part(s) research-failed (http 429): add credit or raise the limit at the provider, or wait until it resets',
     ],
     [
       'provider-down of a used-up quota',
@@ -326,7 +344,7 @@ describe('summaryLines', () => {
         },
         incomplete('provider-down'),
       ],
-      '1 provider-down (http 429): add credit or raise the limit at the provider, or wait until it resets',
+      '1 part(s) provider-down (http 429): add credit or raise the limit at the provider, or wait until it resets',
     ],
     [
       'provider-down (network)',
@@ -339,35 +357,128 @@ describe('summaryLines', () => {
         },
         incomplete('provider-down'),
       ],
-      '1 provider-down (network): check that the server at its origin is running',
+      '1 part(s) provider-down (network): check that the server at its origin is running',
+    ],
+    [
+      'research-failed of a cut',
+      [
+        failedPart(1, { kind: 'network', cutAfterMs: 600_000 }),
+        failedPart(2, { kind: 'network', cutAfterMs: 601_000 }),
+        incomplete('research-failed'),
+      ],
+      '1 part(s) research-failed (network): make replies shorter, with a lower maxTokens or partTokens',
+    ],
+    [
+      'research-failed of a cut and a failure at once',
+      [
+        failedPart(1, { kind: 'network', cutAfterMs: 600_000 }),
+        failedPart(2, { kind: 'network' }),
+        incomplete('research-failed'),
+      ],
+      '1 part(s) research-failed (network): make replies shorter, with a lower maxTokens or partTokens, or check that the server at its origin is running',
+    ],
+    [
+      'provider-down of a cut',
+      [
+        {
+          type: 'provider-down',
+          provider: 'api',
+          kind: 'network',
+          calls: 3,
+          cutAfterMs: 600_000,
+        },
+        incomplete('provider-down'),
+      ],
+      '1 part(s) provider-down (network): make replies shorter, with a lower maxTokens or partTokens',
+    ],
+    [
+      'research-failed of a fast network failure',
+      [
+        failedPart(1, { kind: 'network' }),
+        incomplete('research-failed'),
+      ],
+      '1 part(s) research-failed (network): check that the server at its origin is running',
+    ],
+    [
+      'research-failed and provider-down of a run that lost 46 of 51 parts',
+      [
+        failedPart(1, { kind: 'network' }),
+        {
+          type: 'provider-down',
+          provider: 'api',
+          kind: 'network',
+          calls: 3,
+        },
+        incomplete('research-failed', 5),
+        incomplete('provider-down', 41),
+      ],
+      '5 part(s) research-failed (network): check that the server at its origin is running; 41 part(s) provider-down (network): check that the server at its origin is running',
+    ],
+    [
+      'research-failed of two profiles, summed',
+      [
+        failedPart(1, { kind: 'timeout' }),
+        incomplete('research-failed', 5),
+        incomplete('research-failed', 2, 'style'),
+      ],
+      '7 part(s) research-failed (timeout): raise timeoutMs',
+    ],
+    [
+      'vote-failed, counting votes',
+      [
+        {
+          type: 'incomplete',
+          entry: { profile: 'security', reason: 'vote-failed', detail: `${JSON.stringify('a.js')}:3 is kept at medium, but 2 failed vote(s) could have made it undecided` },
+        },
+        {
+          type: 'incomplete',
+          entry: { profile: 'security', reason: 'vote-failed', detail: `${JSON.stringify('b.js')}:9 is kept at low, but 1 failed vote(s) could have made it undecided` },
+        },
+      ],
+      '3 vote(s) vote-failed: rerun the review',
+    ],
+    [
+      'request-too-large of parts, votes and an entry that counts neither',
+      [
+        incomplete('request-too-large', 3),
+        {
+          type: 'incomplete',
+          entry: { profile: 'security', reason: 'request-too-large', detail: `${JSON.stringify('a.js')}:3: 2 of 3 vote requests were not sent: refused` },
+        },
+        {
+          type: 'incomplete',
+          entry: { profile: 'style', reason: 'request-too-large', detail: 'the research request was not sent: refused' },
+        },
+      ],
+      '3 part(s) and 2 vote(s) and 1 gap(s) request-too-large: raise contextTokens, or lower partTokens',
     ],
     [
       'reply-cut-off',
       [
         incomplete('reply-cut-off'),
       ],
-      '1 reply-cut-off: raise maxTokens, set thinking: low, or lower partTokens',
+      '1 gap(s) reply-cut-off: raise maxTokens, set thinking: low, or lower partTokens',
     ],
     [
       'findings-capped',
       [
         incomplete('findings-capped'),
       ],
-      '1 findings-capped: raise maxFindings',
+      '1 gap(s) findings-capped: raise maxFindings',
     ],
     [
       'request-too-large',
       [
         incomplete('request-too-large'),
       ],
-      '1 request-too-large: raise contextTokens, or lower partTokens',
+      '1 part(s) request-too-large: raise contextTokens, or lower partTokens',
     ],
     [
       'binary',
       [
         incomplete('binary'),
       ],
-      '1 binary',
+      '1 gap(s) binary',
     ],
   ])('writes a %s gap with its fix', (_name, events, entry) => {
     expect(lines(reviewed(...events))).toContain(`gaps: ${entry}`)
@@ -484,10 +595,10 @@ describe('summaryLines', () => {
     ]) {
       expect(shown).not.toContain(text)
     }
-    expect(shown).toContain('gaps: 1 research-failed (timeout): raise timeoutMs')
+    expect(shown).toContain('gaps: 1 part(s) research-failed (timeout): raise timeoutMs')
     // The gaps come in the order they were first seen, once each.
     const seen = reviewed(incomplete('binary'), incomplete('token-cap'), incomplete('binary'))
-    expect(lines(seen)).toContain('gaps: 2 binary; 1 token-cap: raise maxReviewTokens')
+    expect(lines(seen)).toContain('gaps: 2 gap(s) binary; 1 gap(s) token-cap: raise maxReviewTokens')
   })
 
   it('writes every line inert', () => {

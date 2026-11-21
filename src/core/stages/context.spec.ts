@@ -1732,6 +1732,7 @@ describe('the events of a call', () => {
         attempt: 1,
         retries: 2,
         failure: { kind: 'http', status: 503 },
+        attemptMs: 0,
         waitMs: 250,
       },
       {
@@ -1740,10 +1741,53 @@ describe('the events of a call', () => {
         attempt: 2,
         retries: 2,
         failure: { kind: 'http', status: 503 },
+        attemptMs: 0,
         waitMs: 500,
       },
     ])
     expect(progress.filter(event => event.type === 'call:start')).toHaveLength(1)
+  })
+
+  it('says how long each failed attempt ran, from its send to its failure, the wait before it left out, and tells onFailure the last one', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, progress } = context(clock)
+    const lasting = (ms: number): Promise<void> => new Promise((resolve) => {
+      clock.timer(ms, resolve)
+    })
+    let ran = 0
+    const slow = target(async () => {
+      ran += 1
+      await lasting(ran === 1
+        ? 600
+        : 70)
+      throw failure({
+        kind: ran === 1
+          ? 'network'
+          : 'http',
+        status: ran === 1
+          ? undefined
+          : 503,
+        retryable: true,
+      })
+    }, { retries: 1, timeoutMs: 10_000 })
+    const ended: Array<[number, number | undefined]> = []
+    await expect(settle(clock, callProvider(ctx, requester, slow, () => request, {
+      onFailure: (_error, attempts, attemptMs) => ended.push([attempts, attemptMs]),
+    }))).rejects.toMatchObject({ kind: 'http', status: 503 })
+    expect(progress.filter(event => event.type === 'call:retry')).toEqual([
+      {
+        type: 'call:retry',
+        call: 1,
+        attempt: 1,
+        retries: 1,
+        failure: { kind: 'network' },
+        attemptMs: 600,
+        waitMs: 250,
+      },
+    ])
+    expect(ended).toEqual([
+      [2, 70],
+    ])
   })
 
   it('sends no call:retry for a failure the stop ends instead of a retry', async () => {
