@@ -1,169 +1,18 @@
 import { own } from '../config/profiles.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider } from '../config/schema.ts'
-import type { EventSink, Provider } from '../core/ports.ts'
-import { downWords, lackWords } from '../core/errors.ts'
+import { DEFAULT_CONCURRENCY } from '../core/concurrency.ts'
+import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../core/limits.ts'
+import type { Provider } from '../core/ports.ts'
+import { DEFAULT_MAX_FINDINGS } from '../core/prompts.ts'
 import { inertLine } from '../core/sanitize.ts'
-import type { Adaptation, Estimate, LeftOutFile, QuorumEvent } from '../core/types.ts'
+import type { Estimate } from '../core/types.ts'
 import { isClaudeCode } from '../providers/build.ts'
 import { originOf } from '../providers/http.ts'
 import { presetOf } from '../providers/presets.ts'
-import { flagWhere, leftOutEntry } from '../report/lines.ts'
 import type { ReportView } from '../report/view.ts'
-
-/**
- * The progress line of an event, or undefined for the events the CLI keeps quiet about. These lines
- * are the CLI's progress output on stderr, so a person follows a run without the full event stream.
- * Each line passes through `inertLine` whole: the reasons, details and file names it carries come
- * from the finder or the diff, and nothing in them can act on a terminal or a CI log. When `prefixed`,
- * a line of an event that names a profile starts with `[<profile>] `: the `left out:`, `flag:` and totals
- * lines belong to the whole review and never do.
- *
- * Under the public view, whose log a stranger may read, two lines leave out the text of a finder or a server: a
- * gap is `incomplete: <reason>`, then ` at <file as a JSON string>` when it has a file, with no detail, and a
- * dropped finding is `invalid finding dropped`, with no reason, since the reason quotes the file name and the text
- * of a finding the harness dropped, the oracle a discarded finding would be. A provider-down line of a used-up
- * quota is `<id>: the call failed (<kind>[ <status>])`, since it tells a stranger the account is out of money.
- * Every other line is the full view's.
- */
-export function renderEvent(event: QuorumEvent, prefixed = false, view: ReportView = 'full'): string | undefined {
-  const line = progressLine(event, prefixed, view)
-  return line === undefined
-    ? undefined
-    : inertLine(line)
-}
-
-const profilePrefix = (profile: string): string => `[${profile}] `
-
-/** How many of the files left out the progress line names; the JSON result lists every one. */
-const LISTED_FILES = 5
-
-function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): string | undefined {
-  const of = (profile: string, line: string): string => prefixed
-    ? `${profilePrefix(profile)}${line}`
-    : line
-  switch (event.type) {
-    case 'stage:end':
-      return event.stage === 'dedup'
-        ? of(event.profile, `${event.count} candidate(s) after dedup`)
-        : undefined
-    case 'finding:invalid':
-      return of(event.profile, view === 'public'
-        ? 'invalid finding dropped'
-        : `invalid finding dropped: ${event.reason}`)
-    case 'incomplete':
-      return of(event.entry.profile, view === 'public'
-        ? `incomplete: ${event.entry.reason}${event.entry.file === undefined
-          ? ''
-          : ` at ${JSON.stringify(event.entry.file)}`}`
-        : `incomplete: ${event.entry.reason} (${event.entry.detail})`)
-    case 'provider-down':
-      if (event.exhausted === true && view === 'public') {
-        return `${event.provider}: the call failed (${event.kind}${event.status === undefined
-          ? ''
-          : ` ${event.status}`})`
-      }
-      return downWords({
-        providerId: event.provider,
-        kind: event.kind,
-        status: event.status,
-        count: event.calls,
-        streak: true,
-        noAnswer: event.noAnswer,
-        ...(event.exhausted === true
-          ? { exhausted: true as const }
-          : {}),
-      })
-    case 'reply-lacked':
-      return `${event.provider}: ${lackWords(event.kind, event)}`
-    case 'adapted':
-      return adaptedWords(event.adaptation)
-    case 'stored-refused':
-      return '--state: a stored reply failed its check: the call is made again'
-    case 'recovered':
-      return of(event.profile, recoveredWords(event))
-    case 'left-out':
-      return leftOutLine(event.files)
-    case 'flag':
-      return `flag: ${event.flag.code}${flagWhere(event.flag)} (${event.flag.detail})`
-    case 'run:end':
-      return `${event.kept} kept, ${event.discarded} discarded, ${event.unreviewed} unreviewed by panel`
-    default:
-      return undefined
-  }
-}
-
-/**
- * The line of a research part recovery split: which part, what its reply lacked, how many pieces it was split into, and
- * whether every piece was read; else the hunks the floor left unread, cut off even alone, and what to change, or how many
- * pieces were not read, for the gaps to say why. It holds numbers and code words only.
- */
-function recoveredWords(event: Extract<QuorumEvent, { type: 'recovered' }>): string {
-  const { part, parts, noAnswer, limit, findings, pieces, read, unreadHunks, unreadFiles } = event
-  const lacked = noAnswer === 'saturated'
-    ? `its reply listed the ${findings} findings it was asked for at most`
-    : noAnswer === 'window'
-      ? 'reply cut off at the server\'s window (window)'
-      : limit === undefined
-        ? `reply cut off at its limit (${noAnswer})`
-        : `reply cut off at its limit of ${limit} tokens (${noAnswer})`
-  const end = read === pieces
-    ? ', all read'
-    : unreadHunks > 0
-      ? `; ${unreadHunks} hunk(s) of ${unreadFiles} file(s) left unread, cut off even alone: raise maxTokens, set thinking: low, or lower partTokens`
-      : `; ${pieces - read} not read, see the gaps`
-  return `part ${part} of ${parts}: ${lacked}: split into ${pieces} pieces${end}`
-}
-
-/** What each cause of a setting moved says, in words the code writes: the reason the review gives for it. */
-const ADAPTED_BECAUSE: Readonly<Partial<Record<Adaptation['cause'], string>>> = {
-  'cut-off-thinking': 'a reply ran out of room while reasoning',
-  'no-answer-thinking': 'a reply held only reasoning',
-  'empty-reply': 'a reply in JSON mode was empty',
-  'format-refused': 'the server refused the request\'s JSON mode',
-}
-
-/**
- * The line of a setting quorum moved by itself, which names the provider, the new setting, that it holds for the
- * rest of the review and how to choose it instead, or, for a lowering the server refused, that thinking stays as
- * the server sets it. It holds a provider's id and code words only. A move no release of the 3e kind writes (the server's
- * count, a loaded window) has no line yet.
- */
-function adaptedWords({ provider, setting, from, to, cause }: Adaptation): string | undefined {
-  if (cause === 'lowering-refused') return `${provider}: the server refused thinking lowered to ${from}: thinking stays as the server sets it for the rest of the review; set thinking to choose it yourself`
-  const because = ADAPTED_BECAUSE[cause]
-  if (because === undefined) return undefined
-  return setting === 'thinking'
-    ? `${provider}: thinking lowered to ${to} for the rest of the review: ${because}; set thinking to choose it yourself`
-    : `${provider}: structuredOutput moved to ${to} for the rest of the review: ${because}; set structuredOutput to choose it yourself`
-}
-
-/**
- * The line that names the files a review left out: their count, then the first `LISTED_FILES` of them as
- * `leftOutEntry` writes them, then how many more.
- */
-function leftOutLine(files: readonly LeftOutFile[]): string {
-  const entries = files.slice(0, LISTED_FILES).map(leftOutEntry)
-  const more = files.length > LISTED_FILES
-    ? ` and ${files.length - LISTED_FILES} more`
-    : ''
-  return `left out: ${files.length} file(s): ${entries.join(', ')}${more}`
-}
-
-/**
- * The sink that writes the progress lines of a review: each event rendered by `renderEvent`, each line
- * that is defined handed to `write`. `run:start` says whether several profiles run, and then every
- * profile's line is prefixed. Rendering never throws, so the sink adds no failure of its own to a review. `view`
- * is the one `renderEvent` takes.
- */
-export function progressSink(write: (line: string) => void, view: ReportView = 'full'): EventSink {
-  let prefixed = false
-  return (event) => {
-    if (event.type === 'run:start') prefixed = event.profiles.length > 1
-    const line = renderEvent(event, prefixed, view)
-    if (line !== undefined) write(line)
-  }
-}
+import { profilePrefix } from './view/lines.ts'
+import type { ViewFacts } from './view/model.ts'
 
 /**
  * The lines a path review prints once its estimate is made, before any call: one per profile, starting with
@@ -288,4 +137,23 @@ export function bannerLines(config: ResolvedConfig, view: ReportView = 'full'): 
       : ''
     return [`Research (${research})...`, `Panel will use ${panel}`].map(line => inertLine(`${prefix}${line}`))
   })
+}
+
+/**
+ * What the view knows of a review before it runs, from its resolved config: the calls at once, the token cap and
+ * where it came from, the deadline, `maxFindings`, and for a path review its estimate. The view reads the config's
+ * numbers only through these facts.
+ */
+export function viewFacts(config: ResolvedConfig, estimate?: Estimate): ViewFacts {
+  return {
+    concurrency: config.concurrency ?? DEFAULT_CONCURRENCY,
+    cap: config.maxReviewTokens === undefined
+      ? { tokens: DEFAULT_MAX_REVIEW_TOKENS, origin: 'default' }
+      : { tokens: config.maxReviewTokens, origin: 'config' },
+    deadlineMs: config.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
+    maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,
+    ...estimate === undefined
+      ? {}
+      : { estimate },
+  }
 }

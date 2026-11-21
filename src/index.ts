@@ -1,5 +1,6 @@
 import { providerIdentity } from './bench/fingerprint.ts'
-import { progressSink } from './cli/render.ts'
+import { viewFacts } from './cli/render.ts'
+import { plainWriter } from './cli/view/plain.ts'
 import { fromConfig } from './config/from-config.ts'
 import { loadConfig } from './config/load.ts'
 import type { ResolvedConfig } from './config/resolve.ts'
@@ -185,7 +186,10 @@ export async function runQuorum(diff: string, onProgress?: (message: string) => 
   const quorum = await fromConfig(config, {
     events: onProgress === undefined
       ? undefined
-      : progressSink(onProgress),
+      : plainWriter({
+        write: onProgress,
+        facts: viewFacts(config),
+      }).sink,
   })
   return quorum.review({ diff, send: config.send })
 }

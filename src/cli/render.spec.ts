@@ -1,517 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { Provider } from '../core/ports.ts'
-import type { Estimate, LeftOutFile, QuorumEvent } from '../core/types.ts'
+import type { Estimate } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { resolvedConfig } from '../testing/bench.ts'
-import { bannerLines, estimateLines, profileProviders, progressSink, providerOrigin, renderEvent } from './render.ts'
+import { bannerLines, estimateLines, profileProviders, providerOrigin, viewFacts } from './render.ts'
 
 /** A right-to-left override, which the sanitizer writes as text. */
 const RLO = String.fromCharCode(0x202E)
-
-describe('renderEvent', () => {
-  it('turns the events a person follows into progress lines', () => {
-    expect(renderEvent({
-      type: 'stage:end',
-      profile: 'security',
-      stage: 'dedup',
-      durationMs: 1,
-      count: 2,
-    })).toBe('2 candidate(s) after dedup')
-    expect(renderEvent({ type: 'finding:invalid', profile: 'security', reason: 'missing.js:1 is not in the diff' })).toBe('invalid finding dropped: missing.js:1 is not in the diff')
-    expect(renderEvent({
-      type: 'incomplete',
-      entry: { profile: 'security', reason: 'research-unusable', detail: '1 finding(s) reported, none usable' },
-    })).toBe('incomplete: research-unusable (1 finding(s) reported, none usable)')
-    expect(renderEvent({
-      type: 'run:end',
-      kept: 1,
-      discarded: 2,
-      unreviewed: 3,
-      incomplete: 0,
-      durationMs: 5,
-    })).toBe('1 kept, 2 discarded, 3 unreviewed by panel')
-  })
-
-  it('writes a provider-down event as the line that names its fix', () => {
-    expect(renderEvent({
-      type: 'provider-down',
-      provider: 'finder',
-      kind: 'http',
-      status: 503,
-      calls: 3,
-    })).toBe('finder: 3 calls in a row failed (http 503): no more calls go to it in this review: lower concurrency or wait')
-    expect(renderEvent({
-      type: 'provider-down',
-      provider: 'finder',
-      kind: 'network',
-      calls: 3,
-    })).toBe('finder: 3 calls in a row failed (network): no more calls go to it in this review: check that the server at its origin is running')
-    expect(renderEvent({
-      type: 'provider-down',
-      provider: `f${RLO}x`,
-      kind: 'timeout',
-      calls: 3,
-    }, true, 'public')).toBe('f<U+202E>x: 3 calls in a row failed (timeout): no more calls go to it in this review: raise timeoutMs')
-    expect(renderEvent({
-      type: 'provider-down',
-      provider: 'finder',
-      kind: 'no-answer',
-      calls: 3,
-      noAnswer: 'thinking',
-    })).toBe('finder: 3 calls in a row had no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt')
-  })
-
-  it('writes a used-up quota\'s provider-down as its line, and as the call failed under the public view', () => {
-    const event: QuorumEvent = {
-      type: 'provider-down',
-      provider: 'api',
-      kind: 'http',
-      status: 429,
-      calls: 1,
-      exhausted: true,
-    }
-    expect(renderEvent(event)).toBe('api: the account\'s credit, quota or spend limit is used up (http 429): no more calls go to it in this review: add credit or raise the limit at the provider, or wait until it resets')
-    expect(renderEvent(event, false, 'public')).toBe('api: the call failed (http 429)')
-  })
-
-  it.each<[string, QuorumEvent, string]>([
-    [
-      'the server\'s lower cap',
-      {
-        type: 'reply-lacked',
-        provider: 'api',
-        kind: 'truncated',
-        noAnswer: 'reply',
-        limit: 21_024,
-        outputTokens: 8192,
-        inputTokens: 9000,
-      },
-      'api: a reply was cut off at 8192 tokens, below the 21024 quorum asked for: the server caps replies near 8192: set maxTokens: 8192',
-    ],
-    [
-      'a smaller window',
-      {
-        type: 'reply-lacked',
-        provider: 'api',
-        kind: 'truncated',
-        noAnswer: 'window',
-        inputTokens: 30_100,
-        outputTokens: 2668,
-        window: 200_000,
-      },
-      'api: a reply ended at the server\'s window after 30100 input and 2668 output tokens, below contextTokens 200000: set contextTokens to at most 32768',
-    ],
-    [
-      'only reasoning',
-      {
-        type: 'reply-lacked',
-        provider: 'api',
-        kind: 'no-answer',
-        noAnswer: 'thinking',
-      },
-      'api: reply has no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt',
-    ],
-    [
-      'nothing',
-      {
-        type: 'reply-lacked',
-        provider: 'api',
-        kind: 'no-answer',
-        noAnswer: 'empty',
-      },
-      'api: reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt',
-    ],
-  ])('writes a reply-lacked event as %s', (_name, event, line) => {
-    expect(renderEvent(event)).toBe(line)
-    expect(renderEvent({ ...event, provider: `a${RLO}b` } as QuorumEvent, true, 'public')).toBe(line.replace('api:', 'a<U+202E>b:'))
-  })
-
-  it.each<[string, QuorumEvent, string]>([
-    [
-      'thinking lowered after a cut-off',
-      {
-        type: 'adapted',
-        adaptation: {
-          provider: 'api',
-          setting: 'thinking',
-          from: 'default',
-          to: 'low',
-          cause: 'cut-off-thinking',
-        },
-      },
-      'api: thinking lowered to low for the rest of the review: a reply ran out of room while reasoning; set thinking to choose it yourself',
-    ],
-    [
-      'thinking lowered after a reply with only reasoning',
-      {
-        type: 'adapted',
-        adaptation: {
-          provider: 'api',
-          setting: 'thinking',
-          from: 'default',
-          to: 'off',
-          cause: 'no-answer-thinking',
-        },
-      },
-      'api: thinking lowered to off for the rest of the review: a reply held only reasoning; set thinking to choose it yourself',
-    ],
-    [
-      'structured output moved to prompt after an empty reply',
-      {
-        type: 'adapted',
-        adaptation: {
-          provider: 'api',
-          setting: 'structuredOutput',
-          from: 'json',
-          to: 'prompt',
-          cause: 'empty-reply',
-        },
-      },
-      'api: structuredOutput moved to prompt for the rest of the review: a reply in JSON mode was empty; set structuredOutput to choose it yourself',
-    ],
-    [
-      'structured output moved to prompt after a refused field',
-      {
-        type: 'adapted',
-        adaptation: {
-          provider: 'api',
-          setting: 'structuredOutput',
-          from: 'json',
-          to: 'prompt',
-          cause: 'format-refused',
-        },
-      },
-      'api: structuredOutput moved to prompt for the rest of the review: the server refused the request\'s JSON mode; set structuredOutput to choose it yourself',
-    ],
-    [
-      'a lowering the server refused',
-      {
-        type: 'adapted',
-        adaptation: {
-          provider: 'api',
-          setting: 'thinking',
-          from: 'low',
-          to: 'default',
-          cause: 'lowering-refused',
-        },
-      },
-      'api: the server refused thinking lowered to low: thinking stays as the server sets it for the rest of the review; set thinking to choose it yourself',
-    ],
-  ])('writes an adapted event as %s, one inert line whatever the view', (_name, event, line) => {
-    expect(renderEvent(event)).toBe(line)
-    expect(renderEvent(event, true, 'public')).toBe(line)
-    const hostile = {
-      ...event,
-      adaptation: { ...(event as Extract<QuorumEvent, { type: 'adapted' }>).adaptation, provider: `a${RLO}b` },
-    } as QuorumEvent
-    expect(renderEvent(hostile, true, 'public')).toBe(line.replace('api:', 'a<U+202E>b:'))
-  })
-
-  it('writes a stored-refused event as one fixed line, whatever the view and the provider\'s name', () => {
-    const line = '--state: a stored reply failed its check: the call is made again'
-    for (const role of ['research', 'vote'] as const) {
-      const event: QuorumEvent = { type: 'stored-refused', provider: `a${RLO}b`, role }
-      expect(renderEvent(event)).toBe(line)
-      expect(renderEvent(event, true, 'public')).toBe(line)
-    }
-  })
-
-  const recoveredEvent = (fields: Partial<Extract<QuorumEvent, { type: 'recovered' }>>): QuorumEvent => ({
-    type: 'recovered',
-    profile: 'security',
-    part: 7,
-    parts: 44,
-    noAnswer: 'reply',
-    limit: 21_024,
-    thinkingLowered: false,
-    pieces: 4,
-    read: 4,
-    unreadHunks: 0,
-    unreadFiles: 0,
-    ...fields,
-  })
-
-  it.each<[string, QuorumEvent, string]>([
-    [
-      'a cut-off part whose pieces were all read',
-      recoveredEvent({}),
-      'part 7 of 44: reply cut off at its limit of 21024 tokens (reply): split into 4 pieces, all read',
-    ],
-    [
-      'a cut-off part with no known limit, whose floor left hunks unread',
-      recoveredEvent({
-        noAnswer: 'thinking',
-        limit: undefined,
-        pieces: 8,
-        read: 6,
-        unreadHunks: 2,
-        unreadFiles: 1,
-      }),
-      'part 7 of 44: reply cut off at its limit (thinking): split into 8 pieces; 2 hunk(s) of 1 file(s) left unread, cut off even alone: raise maxTokens, set thinking: low, or lower partTokens',
-    ],
-    [
-      'a part cut off at the server\'s window, with a piece that failed',
-      recoveredEvent({
-        noAnswer: 'window',
-        limit: undefined,
-        pieces: 2,
-        read: 1,
-      }),
-      'part 7 of 44: reply cut off at the server\'s window (window): split into 2 pieces; 1 not read, see the gaps',
-    ],
-    [
-      'a saturated part',
-      recoveredEvent({
-        part: 9,
-        noAnswer: 'saturated',
-        limit: undefined,
-        findings: 15,
-        pieces: 2,
-        read: 2,
-      }),
-      'part 9 of 44: its reply listed the 15 findings it was asked for at most: split into 2 pieces, all read',
-    ],
-  ])('writes a recovered event as %s, one inert line, prefixed with its profile when several run', (_name, event, line) => {
-    expect(renderEvent(event)).toBe(line)
-    expect(renderEvent(event, true)).toBe(`[security] ${line}`)
-    expect(renderEvent(event, true, 'public')).toBe(`[security] ${line}`)
-    expect(renderEvent({ ...event, profile: `a${RLO}b` } as QuorumEvent, true)).toBe(`[a<U+202E>b] ${line}`)
-  })
-
-  it('renders a flag with where it points', () => {
-    expect(renderEvent({
-      type: 'flag',
-      flag: {
-        code: 'hidden-characters',
-        file: 'src/a.js',
-        line: 3,
-        detail: 'U+202E on 1 added line(s)',
-      },
-    })).toBe('flag: hidden-characters at "src/a.js":3 (U+202E on 1 added line(s))')
-    expect(renderEvent({
-      type: 'flag',
-      flag: { code: 'hidden-characters', file: `src/${RLO}gnp.js`, detail: 'the file name holds U+202E' },
-    })).toBe('flag: hidden-characters at "src/<U+202E>gnp.js" (the file name holds U+202E)')
-    expect(renderEvent({
-      type: 'flag',
-      flag: { code: 'ai-addressed-text', line: 2, detail: 'a tool-call tag on 1 added line(s)' },
-    })).toBe('flag: ai-addressed-text at line 2 (a tool-call tag on 1 added line(s))')
-    expect(renderEvent({
-      type: 'flag',
-      flag: { code: 'hidden-characters', file: 'a\nb.js', detail: 'the file name holds U+000A' },
-    })).toBe('flag: hidden-characters at "a\\nb.js" (the file name holds U+000A)')
-  })
-
-  it('renders the files left out in one line: five at most, each a JSON string with its reason, the empty name as <no path>, inert, never prefixed', () => {
-    const file = (name: string, reason: 'excluded' | 'binary' | 'submodule' = 'binary'): LeftOutFile => ({ file: name, reason })
-    expect(renderEvent({
-      type: 'left-out',
-      files: [
-        file('a.png'),
-        file(''),
-        file('vendor/lib', 'submodule'),
-      ],
-    }))
-      .toBe('left out: 3 file(s): "a.png" (binary), <no path> (binary), "vendor/lib" (submodule)')
-    expect(renderEvent({
-      type: 'left-out',
-      files: ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map(name => file(`${name}.png`)),
-    }))
-      .toBe('left out: 7 file(s): "a.png" (binary), "b.png" (binary), "c.png" (binary), "d.png" (binary), "e.png" (binary) and 2 more')
-    expect(renderEvent({
-      type: 'left-out',
-      files: [
-        file(`x${String.fromCharCode(0x202E)}\n.png`),
-      ],
-    }, true))
-      .toBe('left out: 1 file(s): "x<U+202E>\\n.png" (binary)')
-  })
-
-  it('writes a skipped file with its rule on the left out line', () => {
-    expect(renderEvent({
-      type: 'left-out',
-      files: [
-        { file: 'go.sum', reason: 'skipped', rule: 'lockfile' },
-        { file: 'img.png', reason: 'binary' },
-      ],
-    }))
-      .toBe('left out: 2 file(s): "go.sum" (skipped: lockfile), "img.png" (binary)')
-    expect(renderEvent({
-      type: 'left-out',
-      files: [
-        { file: `.env${String.fromCharCode(0x202E)}\n`, reason: 'skipped', rule: 'secret' },
-      ],
-    }))
-      .toBe('left out: 1 file(s): ".env<U+202E>\\n" (skipped: secret)')
-  })
-
-  it('writes a held file with its reason and rule on the left out line', () => {
-    expect(renderEvent({
-      type: 'left-out',
-      files: [
-        { file: '.env', reason: 'secret', rule: 'name' },
-        { file: 'old/.env', reason: 'deleted-secret', rule: 'name' },
-      ],
-    }))
-      .toBe('left out: 2 file(s): ".env" (secret: name), "old/.env" (deleted-secret: name)')
-    expect(renderEvent({
-      type: 'left-out',
-      files: [
-        { file: '', reason: 'secret', rule: 'aws-key' },
-      ],
-    }))
-      .toBe('left out: 1 file(s): <no path> (secret: aws-key)')
-  })
-
-  it('renders the text a line carries inert', () => {
-    expect(renderEvent({ type: 'finding:invalid', profile: 'security', reason: 'a\u001B[2J.js:1 is not in the diff' })).toBe('invalid finding dropped: a<U+001B>[2J.js:1 is not in the diff')
-    expect(renderEvent({
-      type: 'incomplete',
-      entry: {
-        profile: 'security',
-        reason: 'vote-failed',
-        file: `a${RLO}.js`,
-        detail: `"a${RLO}.js":1 is kept at medium, but 1 failed vote(s) could have made it high`,
-      },
-    })).toBe('incomplete: vote-failed ("a<U+202E>.js":1 is kept at medium, but 1 failed vote(s) could have made it high)')
-    expect(renderEvent({
-      type: 'incomplete',
-      entry: { profile: 'security', reason: 'finding-unreadable', detail: 'findings[0]: x\n::error::y' },
-    })).toBe('incomplete: finding-unreadable (findings[0]: x<U+000A>::error::y)')
-  })
-
-  it('writes a gap with no detail and a dropped finding with no reason in the public view, and every other line as the full view does', () => {
-    const detail = 'DETAIL-CANARY'
-    expect(renderEvent({
-      type: 'incomplete',
-      entry: { profile: 'security', reason: 'binary', detail },
-    }, false, 'public')).toBe('incomplete: binary')
-    expect(renderEvent({
-      type: 'incomplete',
-      entry: {
-        profile: 'security',
-        reason: 'vote-failed',
-        file: 'a.js',
-        detail,
-      },
-    }, false, 'public')).toBe('incomplete: vote-failed at "a.js"')
-    expect(renderEvent({ type: 'finding:invalid', profile: 'security', reason: 'REASON-CANARY.js:1 is not in the diff' }, false, 'public')).toBe('invalid finding dropped')
-    expect(renderEvent({
-      type: 'incomplete',
-      entry: { profile: 'security', reason: 'binary', detail },
-    }, true, 'public')).toBe('[security] incomplete: binary')
-    expect(renderEvent({ type: 'finding:invalid', profile: 'team', reason: 'x' }, true, 'public')).toBe('[team] invalid finding dropped')
-
-    const same: QuorumEvent[] = [
-      {
-        type: 'left-out',
-        files: [
-          { file: '.env', reason: 'secret', rule: 'name' },
-          { file: 'a.png', reason: 'binary' },
-        ],
-      },
-      {
-        type: 'flag',
-        flag: {
-          code: 'hidden-characters',
-          file: 'src/a.js',
-          line: 3,
-          detail: 'U+202E on 1 added line(s)',
-        },
-      },
-      {
-        type: 'run:end',
-        kept: 1,
-        discarded: 2,
-        unreviewed: 3,
-        incomplete: 0,
-        durationMs: 5,
-      },
-      {
-        type: 'stage:end',
-        profile: 'team',
-        stage: 'dedup',
-        durationMs: 1,
-        count: 2,
-      },
-    ]
-    for (const event of same) expect(renderEvent(event, true, 'public')).toBe(renderEvent(event, true, 'full'))
-
-    const lines: string[] = []
-    const sink = progressSink(line => lines.push(line), 'public')
-    sink({
-      type: 'run:start',
-      profiles: ['security'],
-      providers: {},
-    })
-    sink({
-      type: 'incomplete',
-      entry: { profile: 'security', reason: 'binary', detail },
-    })
-    expect(lines).toEqual(['incomplete: binary'])
-  })
-
-  it('prints nothing for the other events', () => {
-    expect(renderEvent({
-      type: 'stage:end',
-      profile: 'security',
-      stage: 'research',
-      durationMs: 1,
-      count: 2,
-    })).toBeUndefined()
-    expect(renderEvent({ type: 'stage:start', profile: 'security', stage: 'panel' })).toBeUndefined()
-    expect(renderEvent({
-      type: 'vote',
-      profile: 'security',
-      findingId: 'f',
-      lens: 'impact',
-      keep: null,
-      error: 'endpoint down',
-    })).toBeUndefined()
-    expect(renderEvent({
-      type: 'verdict',
-      profile: 'security',
-      findingId: 'f',
-      keptVotes: 3,
-      totalVotes: 3,
-      confidence: 'high',
-      status: 'kept',
-    })).toBeUndefined()
-  })
-
-  it('prefixes a profile\'s lines, and never the flag or totals lines', () => {
-    expect(renderEvent({
-      type: 'stage:end',
-      profile: 'team',
-      stage: 'dedup',
-      durationMs: 1,
-      count: 2,
-    }, true)).toBe('[team] 2 candidate(s) after dedup')
-    expect(renderEvent({ type: 'finding:invalid', profile: 'security', reason: 'missing.js:1 is not in the diff' }, true)).toBe('[security] invalid finding dropped: missing.js:1 is not in the diff')
-    expect(renderEvent({
-      type: 'incomplete',
-      entry: { profile: 'security', reason: 'research-unusable', detail: '1 finding(s) reported, none usable' },
-    }, true)).toBe('[security] incomplete: research-unusable (1 finding(s) reported, none usable)')
-    expect(renderEvent({
-      type: 'flag',
-      flag: {
-        code: 'hidden-characters',
-        file: 'src/a.js',
-        line: 3,
-        detail: 'U+202E on 1 added line(s)',
-      },
-    }, true)).toBe('flag: hidden-characters at "src/a.js":3 (U+202E on 1 added line(s))')
-    expect(renderEvent({
-      type: 'run:end',
-      kept: 1,
-      discarded: 2,
-      unreviewed: 3,
-      incomplete: 0,
-      durationMs: 5,
-    }, true)).toBe('1 kept, 2 discarded, 3 unreviewed by panel')
-  })
-})
 
 describe('estimateLines', () => {
   const estimate: Estimate = {
@@ -649,49 +145,6 @@ describe('estimateLines', () => {
     }).slice(3)).toEqual([
       line('x<U+202E>y', 7),
     ])
-  })
-})
-
-describe('progressSink', () => {
-  const dedup: QuorumEvent = {
-    type: 'stage:end',
-    profile: 'team',
-    stage: 'dedup',
-    durationMs: 1,
-    count: 2,
-  }
-  const started = (profiles: string[]): QuorumEvent => ({
-    type: 'run:start',
-    profiles,
-    providers: Object.fromEntries(profiles.map(id => [
-      id,
-      {
-        research: { id: 'default', model: 'm' },
-        lenses: {},
-      },
-    ])),
-  })
-
-  it('learns from run:start whether to prefix, and writes only the lines it renders', () => {
-    const lines: string[] = []
-    const sink = progressSink(line => lines.push(line))
-    sink(started(['security', 'team']))
-    sink(dedup)
-    sink({
-      type: 'vote',
-      profile: 'team',
-      findingId: 'f',
-      lens: 'impact',
-      keep: null,
-      error: 'endpoint down',
-    })
-    expect(lines).toEqual(['[team] 2 candidate(s) after dedup'])
-
-    const single: string[] = []
-    const alone = progressSink(line => single.push(line))
-    alone(started(['team']))
-    alone(dedup)
-    expect(single).toEqual(['2 candidate(s) after dedup'])
   })
 })
 
@@ -871,5 +324,48 @@ describe('profileProviders', () => {
     expect(profileProviders(config)).toEqual([
       { profile: 'security', research: 'm @ the provider object fake', panel: 'm @ the provider object fake' },
     ])
+  })
+})
+
+describe('viewFacts', () => {
+  it('reads the view\'s facts from the config, with the defaults the review uses, and a path review\'s estimate', () => {
+    const config = resolvedConfig({
+      providers: {
+        fake: {
+          model: 'm',
+          complete: async () => ({ text: '{}', model: 'm' }),
+        },
+      },
+    })
+    expect(viewFacts(config)).toEqual({
+      concurrency: 4,
+      cap: { tokens: 2_000_000, origin: 'default' },
+      deadlineMs: 1_800_000,
+      maxFindings: 50,
+    })
+    const set = {
+      ...config,
+      concurrency: 2,
+      maxFindings: 9,
+      maxReviewTokens: 300_000,
+      reviewTimeoutMs: 60_000,
+    }
+    const estimate = {
+      profiles: {},
+      expected: 0,
+      worst: 0,
+      inFlight: 0,
+      maxFindings: 9,
+      maxReviewTokens: 300_000,
+      reviewTimeoutMs: 60_000,
+      fits: true,
+    } satisfies Estimate
+    expect(viewFacts(set, estimate)).toEqual({
+      concurrency: 2,
+      cap: { tokens: 300_000, origin: 'config' },
+      deadlineMs: 60_000,
+      maxFindings: 9,
+      estimate,
+    })
   })
 })

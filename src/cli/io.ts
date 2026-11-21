@@ -8,6 +8,7 @@ import { parseArgs } from 'node:util'
 import type { ParseArgsOptionsConfig } from 'node:util'
 import type { Env } from '../config/env.ts'
 import { WriteFailure } from '../config/load.ts'
+import type { Clock } from '../core/clock.ts'
 import { ConfigError, OutputError, ProviderDownError, ProviderError } from '../core/errors.ts'
 import { inertLine } from '../core/sanitize.ts'
 import { GitError } from '../git/run.ts'
@@ -41,6 +42,8 @@ export interface CliIO {
   readonly git?: GitSeam
   /** The platform the git sources check, `process.platform` when unset: for the specs. */
   readonly platform?: NodeJS.Platform
+  /** The view's time, the system's when unset: for the specs, which then move it themselves. */
+  readonly clock?: Clock
 }
 
 /**

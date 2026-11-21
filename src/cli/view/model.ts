@@ -1,0 +1,415 @@
+/**
+ * What the view knows of a review: a fold of its events into a state, pure and bounded. `fold` takes the state, an
+ * event and the time it arrived (the view's own clock, never the review's) and returns a new state, sharing what
+ * did not change; no event is kept, so the state never grows with the review's length but by what the time left
+ * needs, one duration per answered part and vote and one entry per research part. It holds counts, ids and code
+ * words only. An event of a type it does not know leaves the state as it was, so a later release's events fold in
+ * with no change of shape. Times are the view's clock's: `startedAt`, a call's `startedAt` and `waitingUntil`,
+ * `stopping.at` and `firstEstimate.at` are readings of it, and only their differences mean anything.
+ */
+
+import { DEFAULT_CONCURRENCY } from '../../core/concurrency.ts'
+import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../../core/limits.ts'
+import { DEFAULT_MAX_FINDINGS } from '../../core/prompts.ts'
+import type { CallFailure, Estimate, IncompleteReason, Position, QuorumEvent, StageName, Usage } from '../../core/types.ts'
+import { plannedOf, researchTotal, sampleNeeded, timeLeft } from './eta.ts'
+
+/** How wide one cell of the token buckets is, and how many cells they keep. */
+export const BUCKET_MS = 30_000
+export const BUCKETS = 20
+
+/** Where the review's token cap came from: its default, or the config. */
+export type CapOrigin = 'default' | 'config'
+
+/** What the CLI knows of the review before it starts, which no event says. */
+export interface ViewFacts {
+  /** The calls the review holds at once. */
+  readonly concurrency: number
+  readonly cap: { readonly tokens: number, readonly origin: CapOrigin }
+  readonly deadlineMs: number
+  /** The findings a research reply sends the panel at most, which sizes the votes to come. */
+  readonly maxFindings: number
+  /** A path review's estimate, which weighs the parts not yet started. */
+  readonly estimate?: Estimate
+}
+
+export const DEFAULT_FACTS: ViewFacts = {
+  concurrency: DEFAULT_CONCURRENCY,
+  cap: { tokens: DEFAULT_MAX_REVIEW_TOKENS, origin: 'default' },
+  deadlineMs: DEFAULT_REVIEW_TIMEOUT_MS,
+  maxFindings: DEFAULT_MAX_FINDINGS,
+}
+
+/** The cause of a gap: what a failed call said of itself. */
+export type Cause = CallFailure & { readonly exhausted?: true }
+
+/** A provider call in flight. */
+export interface CallState {
+  readonly role: 'research' | 'vote'
+  readonly profile: string
+  readonly provider: string
+  readonly part?: Position
+  readonly finding?: string
+  readonly startedAt: number
+  readonly reserved: number
+  readonly timeoutMs: number
+  /** Whether an attempt of it failed and was retried. */
+  readonly retried: boolean
+  /** When its wait before the next attempt ends, while it waits. */
+  readonly waitingUntil?: number
+  /** What its last failed attempt said of itself. */
+  readonly failure?: CallFailure
+}
+
+/** Where one profile's review stands. */
+export interface ProfileState {
+  readonly stage: StageName | 'waiting' | 'done'
+  /** The research's part count, once its stage started. */
+  readonly parts?: number
+  /** The research parts ended, read or not. */
+  readonly done: number
+  /** The findings the research replies listed. */
+  readonly listed: number
+  /** The panel's vote count, once its stage started. */
+  readonly votes?: number
+  readonly cast: number
+  readonly kept: number
+}
+
+export interface ViewState {
+  readonly facts: ViewFacts
+  readonly startedAt?: number
+  readonly ended: boolean
+  /** Whether several profiles run, so every profile's line starts with its id. */
+  readonly prefixed: boolean
+  readonly profiles: ReadonlyMap<string, ProfileState>
+  /** The lenses of each profile's panel, from `run:start`. */
+  readonly lenses: ReadonlyMap<string, number>
+  readonly calls: ReadonlyMap<number, CallState>
+  /** Each finding a vote asked about, numbered from 1 in the order first seen. */
+  readonly findings: ReadonlyMap<string, number>
+  readonly spent: number
+  /** The output tokens of the calls that ended, in the last `BUCKETS` cells of `BUCKET_MS` from `start`. */
+  readonly buckets: { readonly start: number, readonly tokens: readonly number[] }
+  /** One entry per research part answered fresh and per vote answered fresh. */
+  readonly sample: { readonly parts: ReadonlyArray<{ readonly planned: number, readonly durationMs: number }>, readonly votes: readonly number[] }
+  /** Each research part's first reservation, by `<profile>|<part>`. */
+  readonly planned: ReadonlyMap<string, number>
+  /** The research parts ended, by `<profile>|<part>`. */
+  readonly partsEnded: ReadonlySet<string>
+  readonly made: { readonly research: number, readonly votes: number }
+  readonly retried: { readonly research: number, readonly votes: number }
+  readonly recovered: { readonly parts: number, readonly pieces: number }
+  readonly stages: ReadonlyMap<StageName, { readonly first: number, readonly last?: number }>
+  readonly gaps: ReadonlyMap<IncompleteReason, number>
+  readonly causes: ReadonlyMap<'research-failed' | 'provider-down', readonly Cause[]>
+  readonly usage: ReadonlyMap<string, Usage>
+  readonly stopping?: { readonly cause: 'review-deadline', readonly at: number, readonly inFlight: number }
+  /** The time left as it first read, at the answered part that passed the threshold. */
+  readonly firstEstimate?: { readonly at: number, readonly lowMs: number, readonly highMs: number }
+}
+
+const NO_BUCKETS: readonly number[] = Array.from<number>({ length: BUCKETS }).fill(0)
+
+const NEW_PROFILE: ProfileState = {
+  stage: 'waiting',
+  done: 0,
+  listed: 0,
+  cast: 0,
+  kept: 0,
+}
+
+/** The state before any event: no review has started. */
+export function startState(facts: ViewFacts): ViewState {
+  return {
+    facts,
+    ended: false,
+    prefixed: false,
+    profiles: new Map(),
+    lenses: new Map(),
+    calls: new Map(),
+    findings: new Map(),
+    spent: 0,
+    buckets: { start: 0, tokens: NO_BUCKETS },
+    sample: { parts: [], votes: [] },
+    planned: new Map(),
+    partsEnded: new Set(),
+    made: { research: 0, votes: 0 },
+    retried: { research: 0, votes: 0 },
+    recovered: { parts: 0, pieces: 0 },
+    stages: new Map(),
+    gaps: new Map(),
+    causes: new Map(),
+    usage: new Map(),
+  }
+}
+
+/** `map` with `key` set to `value`. */
+function set<K, V>(map: ReadonlyMap<K, V>, key: K, value: V): ReadonlyMap<K, V> {
+  return new Map(map).set(key, value)
+}
+
+/** `state` with `patch` made to one profile's state. */
+function withProfile(state: ViewState, id: string, patch: (profile: ProfileState) => ProfileState): ViewState {
+  return {
+    ...state,
+    profiles: set(state.profiles, id, patch(state.profiles.get(id) ?? NEW_PROFILE)),
+  }
+}
+
+function sameCause(a: Cause, b: Cause): boolean {
+  return a.kind === b.kind && a.status === b.status && a.exhausted === b.exhausted
+}
+
+/** `state` with `cause` among the causes of `reason`, once. */
+function withCause(state: ViewState, reason: 'research-failed' | 'provider-down', cause: Cause): ViewState {
+  const known = state.causes.get(reason) ?? []
+  if (known.some(other => sameCause(other, cause))) return state
+  return {
+    ...state,
+    causes: set(state.causes, reason, [...known, cause]),
+  }
+}
+
+/** `failure` as a cause: its kind, its status and its quota, each when it has one. */
+function causeOf(failure: CallFailure): Cause {
+  return {
+    kind: failure.kind,
+    ...failure.status === undefined
+      ? {}
+      : { status: failure.status },
+    ...failure.exhausted === true
+      ? { exhausted: true as const }
+      : {},
+  }
+}
+
+/** `buckets` with `tokens` added to the cell of `now`, the cells moved on when `now` passes the last. */
+function bucketed(buckets: ViewState['buckets'], now: number, tokens: number): ViewState['buckets'] {
+  if (tokens <= 0) return buckets
+  let index = Math.max(0, Math.floor((now - buckets.start) / BUCKET_MS))
+  let { start } = buckets
+  let cells = [...buckets.tokens]
+  if (index >= BUCKETS) {
+    const shift = index - BUCKETS + 1
+    cells = shift >= BUCKETS
+      ? cells.map(() => 0)
+      : [
+          ...cells.slice(shift),
+          ...Array.from<number>({ length: shift }).fill(0),
+        ]
+    start += shift * BUCKET_MS
+    index = BUCKETS - 1
+  }
+  cells[index] += tokens
+  return { start, tokens: cells }
+}
+
+function started(state: ViewState, event: Extract<QuorumEvent, { type: 'run:start' }>, now: number): ViewState {
+  const fresh = startState(state.facts)
+  return {
+    ...fresh,
+    startedAt: now,
+    prefixed: event.profiles.length > 1,
+    profiles: new Map(event.profiles.map(id => [id, NEW_PROFILE])),
+    lenses: new Map(event.profiles.map(id => [id, Object.keys(event.providers[id]?.lenses ?? {}).length])),
+    buckets: { start: now, tokens: NO_BUCKETS },
+  }
+}
+
+function callStarted(state: ViewState, event: Extract<QuorumEvent, { type: 'call:start' }>, now: number): ViewState {
+  const { part, finding } = event
+  const key = part === undefined
+    ? undefined
+    : `${event.profile}|${part.index}`
+  return {
+    ...state,
+    calls: set(state.calls, event.call, {
+      role: event.role,
+      profile: event.profile,
+      provider: event.provider.id,
+      ...part === undefined
+        ? {}
+        : { part },
+      ...finding === undefined
+        ? {}
+        : { finding },
+      startedAt: now,
+      reserved: event.reserved,
+      timeoutMs: event.timeoutMs,
+      retried: false,
+    }),
+    findings: finding === undefined || state.findings.has(finding)
+      ? state.findings
+      : set(state.findings, finding, state.findings.size + 1),
+    planned: event.role === 'research' && key !== undefined && !state.planned.has(key)
+      ? set(state.planned, key, event.reserved)
+      : state.planned,
+  }
+}
+
+function callRetried(state: ViewState, event: Extract<QuorumEvent, { type: 'call:retry' }>, now: number): ViewState {
+  const call = state.calls.get(event.call)
+  if (call === undefined) return state
+  const counts = call.retried
+    ? state.retried
+    : call.role === 'research'
+      ? { ...state.retried, research: state.retried.research + 1 }
+      : { ...state.retried, votes: state.retried.votes + 1 }
+  return {
+    ...state,
+    retried: counts,
+    calls: set(state.calls, event.call, {
+      ...call,
+      retried: true,
+      waitingUntil: now + event.waitMs,
+      failure: event.failure,
+    }),
+  }
+}
+
+function callEnded(state: ViewState, event: Extract<QuorumEvent, { type: 'call' }>, now: number): ViewState {
+  let calls = state.calls
+  if (event.call !== undefined && calls.has(event.call)) {
+    const rest = new Map(calls)
+    rest.delete(event.call)
+    calls = rest
+  }
+  if (event.reused === true) return { ...state, calls }
+  const made = event.role === 'research'
+    ? { ...state.made, research: state.made.research + 1 }
+    : { ...state.made, votes: state.made.votes + 1 }
+  const { usage } = event
+  const known = state.usage.get(event.provider.id)
+  return {
+    ...state,
+    calls,
+    made,
+    spent: state.spent + event.spent,
+    usage: usage === undefined
+      ? state.usage
+      : set(state.usage, event.provider.id, {
+          inputTokens: (known?.inputTokens ?? 0) + usage.inputTokens,
+          outputTokens: (known?.outputTokens ?? 0) + usage.outputTokens,
+          ...known?.costUsd === undefined && usage.costUsd === undefined
+            ? {}
+            : { costUsd: (known?.costUsd ?? 0) + (usage.costUsd ?? 0) },
+        }),
+    buckets: bucketed(state.buckets, now, usage?.outputTokens ?? 0),
+    sample: event.role === 'vote' && event.ok
+      ? {
+          ...state.sample,
+          votes: [...state.sample.votes, event.durationMs],
+        }
+      : state.sample,
+  }
+}
+
+function partEnded(state: ViewState, event: Extract<QuorumEvent, { type: 'part' }>, now: number): ViewState {
+  const key = `${event.profile}|${event.part.index}`
+  const planned = event.outcome === 'reviewed' && event.spent > 0
+    ? plannedOf(state, event.profile, event.part.index)
+    : undefined
+  let next: ViewState = {
+    ...withProfile(state, event.profile, profile => ({ ...profile, done: profile.done + 1, listed: profile.listed + (event.listed ?? 0) })),
+    partsEnded: new Set(state.partsEnded).add(key),
+    sample: planned === undefined || planned <= 0
+      ? state.sample
+      : {
+          ...state.sample,
+          parts: [
+            ...state.sample.parts,
+            { planned, durationMs: event.durationMs },
+          ],
+        },
+  }
+  if (event.outcome === 'research-failed' && event.failure !== undefined) next = withCause(next, 'research-failed', causeOf(event.failure))
+  if (next.firstEstimate === undefined && next.sample.parts.length > state.sample.parts.length && next.sample.parts.length >= sampleNeeded(researchTotal(next))) {
+    const left = timeLeft(next, now)
+    if (left.kind === 'range') {
+      next = {
+        ...next,
+        firstEstimate: { at: now, lowMs: left.lowMs, highMs: left.highMs },
+      }
+    }
+  }
+  return next
+}
+
+/** The state after `event`, which arrived at `now`: a new state sharing what did not change, or `state` itself for an event it holds nothing of. */
+export function fold(state: ViewState, event: QuorumEvent, now: number): ViewState {
+  switch (event.type) {
+    case 'run:start':
+      return started(state, event, now)
+    case 'stage:start': {
+      const known = state.stages.get(event.stage)
+      return {
+        ...withProfile(state, event.profile, profile => ({
+          ...profile,
+          stage: event.stage,
+          ...event.parts === undefined
+            ? {}
+            : { parts: event.parts },
+          ...event.votes === undefined
+            ? {}
+            : { votes: event.votes },
+        })),
+        stages: known === undefined
+          ? set(state.stages, event.stage, { first: now })
+          : state.stages,
+      }
+    }
+    case 'stage:end': {
+      const known = state.stages.get(event.stage)
+      return {
+        ...withProfile(state, event.profile, profile => event.stage === 'panel'
+          ? { ...profile, stage: 'done' }
+          : profile),
+        stages: set(state.stages, event.stage, { first: known?.first ?? now, last: now }),
+      }
+    }
+    case 'call:start':
+      return callStarted(state, event, now)
+    case 'call:retry':
+      return callRetried(state, event, now)
+    case 'call':
+      return callEnded(state, event, now)
+    case 'part':
+      return partEnded(state, event, now)
+    case 'recovered':
+      return {
+        ...state,
+        recovered: { parts: state.recovered.parts + 1, pieces: state.recovered.pieces + event.pieces },
+      }
+    case 'provider-down':
+      return withCause(state, 'provider-down', causeOf({
+        kind: event.kind,
+        ...event.status === undefined
+          ? {}
+          : { status: event.status },
+        ...event.exhausted === true
+          ? { exhausted: true as const }
+          : {},
+      }))
+    case 'incomplete':
+      return {
+        ...state,
+        gaps: set(state.gaps, event.entry.reason, (state.gaps.get(event.entry.reason) ?? 0) + 1),
+      }
+    case 'vote':
+      return withProfile(state, event.profile, profile => ({ ...profile, cast: profile.cast + 1 }))
+    case 'verdict':
+      return event.status === 'kept'
+        ? withProfile(state, event.profile, profile => ({ ...profile, kept: profile.kept + 1 }))
+        : state
+    case 'run:stopping':
+      return {
+        ...state,
+        stopping: { cause: event.cause, at: now, inFlight: event.inFlight },
+      }
+    case 'run:end':
+      return { ...state, ended: true }
+    default:
+      return state
+  }
+}

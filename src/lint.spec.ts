@@ -421,6 +421,24 @@ const CASES: Array<[string, string, string, string[]]> = [
     ['no-restricted-globals'],
   ],
   [
+    'a view module imports the core and the report layer',
+    'src/cli/view/probe.ts',
+    'import { inertLine } from \'../../core/sanitize.ts\'\nimport { GAP_WORDS } from \'../../report/lines.ts\'\n\nexport const probe = [inertLine, GAP_WORDS]\n',
+    [],
+  ],
+  [
+    'a view module refuses the config layer',
+    'src/cli/view/probe.ts',
+    'import { readEnv } from \'../../config/env.ts\'\n\nexport const probe = readEnv\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'a view module refuses process',
+    'src/cli/view/probe.ts',
+    'export const probe = process.env\n',
+    ['no-restricted-globals'],
+  ],
+  [
     'the core refuses the state layer',
     'src/core/probe.ts',
     'import { openFileStore } from \'../state/store.ts\'\n\nexport const probe = openFileStore\n',

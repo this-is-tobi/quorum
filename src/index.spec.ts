@@ -209,6 +209,10 @@ describe('runQuorum', () => {
       .mockImplementation(async () => ollamaReply(JSON.stringify({ keep: true, reasoning: 'r' }))))
     const lines: string[] = []
     await runQuorum(diff, line => lines.push(line))
-    expect(lines).toEqual(['1 candidate(s) after dedup', '1 kept, 0 discarded, 0 unreviewed by panel'])
+    expect(lines).toEqual([
+      expect.stringMatching(/^part 1 of 1: answered in \d+(\.\d)?s, \d+ tokens, 1 finding\(s\) listed$/),
+      '1 candidate(s) after dedup',
+      '1 kept, 0 discarded, 0 unreviewed by panel',
+    ])
   })
 })
