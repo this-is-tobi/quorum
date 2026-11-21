@@ -291,7 +291,7 @@ describe('fold', () => {
       ],
       [
         'token-cap',
-        { parts: 0, votes: 0, other: 1 },
+        { parts: 5, votes: 3, other: 0 },
       ],
       [
         'research-unusable',
@@ -305,6 +305,69 @@ describe('fold', () => {
       [
         'vote-failed',
         { parts: 0, votes: 9, other: 0 },
+      ],
+    ])
+  })
+
+  it('reads the parts and votes a limit\'s gap says it stopped, as limitGaps writes them, and counts any other words as one gap', () => {
+    const gap = (profile: string, reason: IncompleteReason, detail: string): [number, QuorumEvent] => [
+      0,
+      {
+        type: 'incomplete',
+        entry: { profile, reason, detail },
+      },
+    ]
+    const counted = (reason: 'token-cap' | 'review-deadline' | 'interrupted', detail: string): unknown => [
+      ...folded(gap('security', reason, detail)).gaps.values(),
+    ]
+    const cap = 'the review\'s token cap of 2000000 tokens stopped '
+    const deadline = 'the review\'s deadline of 1800000 ms stopped '
+    const interrupt = 'the interrupt stopped '
+    expect(counted('token-cap', `${cap}its research`)).toEqual([
+      { parts: 1, votes: 0, other: 0 },
+    ])
+    expect(counted('token-cap', `${cap}its research and 7 vote(s)`)).toEqual([
+      { parts: 1, votes: 7, other: 0 },
+    ])
+    expect(counted('token-cap', `${cap}4 of its 6 research parts`)).toEqual([
+      { parts: 4, votes: 0, other: 0 },
+    ])
+    expect(counted('token-cap', `${cap}7 vote(s)`)).toEqual([
+      { parts: 0, votes: 7, other: 0 },
+    ])
+    expect(counted('review-deadline', `${deadline}5 of its 6 research parts and 2 vote(s)`)).toEqual([
+      { parts: 5, votes: 2, other: 0 },
+    ])
+    expect(counted('review-deadline', `${deadline}its research`)).toEqual([
+      { parts: 1, votes: 0, other: 0 },
+    ])
+    expect(counted('interrupted', `${interrupt}5 of its 6 research parts and 3 vote(s)`)).toEqual([
+      { parts: 5, votes: 3, other: 0 },
+    ])
+    expect(counted('interrupted', `${interrupt}3 vote(s)`)).toEqual([
+      { parts: 0, votes: 3, other: 0 },
+    ])
+    // Words that do not match are one gap, never a wrong number.
+    expect(counted('interrupted', `${interrupt}5 of its 6 research parts and some`)).toEqual([
+      { parts: 0, votes: 0, other: 1 },
+    ])
+    expect(counted('interrupted', 'the interrupt stopped 99999999999999999999 vote(s)')).toEqual([
+      { parts: 0, votes: 0, other: 1 },
+    ])
+    expect(counted('token-cap', 'a detail')).toEqual([
+      { parts: 0, votes: 0, other: 1 },
+    ])
+    expect(counted('interrupted', `an interrupt stopped 3 vote(s)`)).toEqual([
+      { parts: 0, votes: 0, other: 1 },
+    ])
+    // A file name that mimics a limit's words, in a vote gap's detail, is read as that gap's own words only.
+    const file = `${JSON.stringify('the interrupt stopped 9 vote(s)')}:1 is kept at low, but 2 failed vote(s) could have made it high`
+    expect([
+      ...folded(gap('security', 'vote-failed', file)).gaps,
+    ]).toEqual([
+      [
+        'vote-failed',
+        { parts: 0, votes: 2, other: 0 },
       ],
     ])
   })

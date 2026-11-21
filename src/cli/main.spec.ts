@@ -2126,39 +2126,145 @@ describe('--print-config', () => {
 })
 
 describe('interrupts', () => {
-  it('exits 130 when its signal aborts the review, and writes no result', async () => {
-    const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
-      init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
-    }))
+  /** A fetch whose first call waits for `release`, the way a research reply in flight does, and whose later calls answer the votes. */
+  function heldReply(): { readonly fetchMock: ReturnType<typeof vi.fn>, readonly release: (content: string) => void } {
+    let release: (content: string) => void = () => {}
+    const fetchMock = vi.fn().mockImplementationOnce(() => new Promise<Response>((resolve) => {
+      release = content => resolve(chatReply(content))
+    })).mockImplementation(async () => chatReply(vote(true)))
     vi.stubGlobal('fetch', fetchMock)
+    return {
+      fetchMock,
+      release: content => release(content),
+    }
+  }
+
+  it('writes the report of what it read and exits 130 on an interrupt during the review, its calls in flight ending within the grace', async () => {
+    const { fetchMock, release } = heldReply()
     const controller = new AbortController()
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF, signal: controller.signal })
     const exit = runCli(io)
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
     controller.abort()
-    expect(await exit).toBe(130)
-    expect(stdout()).toBe('')
-    expect(stderr()).toBe('Research (m @ http://localhost:11434)...\nPanel will use m @ http://localhost:11434\ninterrupted\n')
+    release(JSON.stringify({
+      findings: [FINDING],
+    }))
+    expect(await exit).toBe(EXIT.interrupted)
+    // The call in flight ended within the grace and was read, and no vote was asked.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const result = JSON.parse(stdout())
+    expect(result.kept).toEqual([])
+    expect(result.unreviewed).toHaveLength(1)
+    expect(result.unreviewed[0]).toMatchObject({ file: 'a.js' })
+    expect(result.unreviewed[0].votes.map((cast: { failure: unknown }) => cast.failure)).toEqual(Array.from({ length: 3 }).fill({ kind: 'interrupted' }))
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 3 vote(s)' },
+    ])
+    const lines = stderr().split('\n')
+    const stopping = lines.indexOf('stopping: no new calls; the 1 call(s) in flight have 5 s to end; press Ctrl-C again to quit at once, without the result')
+    const resume = lines.indexOf('resume: to keep the answered calls for a rerun, pass --state <dir>; this review kept none')
+    expect(stopping).toBeGreaterThan(-1)
+    expect(resume).toBeGreaterThan(stopping)
+    expect(lines).toContain('gaps: 3 vote(s) interrupted: see resume')
+    // The run is over: no line says it was interrupted, the report and the summary say what was read.
+    expect(lines).not.toContain('interrupted')
   })
 
-  it('stops the view\'s timers when the review is aborted, which sends no run:end', async () => {
-    const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
-      init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
-    }))
-    vi.stubGlobal('fetch', fetchMock)
-    const clock = fakeClock()
+  it('writes the resume line naming --state and the calls it kept, never its path', async () => {
+    const directory = join(realpathSync(mkdtempSync(join(dir, 'state-'))), 'calls')
+    const { fetchMock, release } = heldReply()
     const controller = new AbortController()
-    const { io } = harness({
+    const { io, stderr } = harness({
       env: MODEL,
       stdin: DIFF,
       signal: controller.signal,
+      argv: ['--state', directory],
+    })
+    const exit = runCli(io)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    controller.abort()
+    release(JSON.stringify({
+      findings: [FINDING],
+    }))
+    expect(await exit).toBe(EXIT.interrupted)
+    // The one reply that ended within the grace was saved, and a rerun reuses it.
+    expect(readdirSync(directory)).toHaveLength(2)
+    expect(stderr().split('\n')).toContain('resume: rerun with the same --state: its 1 answered call(s) are reused')
+    expect(stderr()).not.toContain(directory)
+    expect(stderr()).not.toContain('pass --state <dir>')
+  })
+
+  it('writes interrupted and no result for an interrupt during the setup, before the review starts', async () => {
+    const fetchMock = stubChat()
+    const fake = fakeGit(({ command }) => {
+      if (command[0] === 'rev-parse' && command[1] === '--verify') {
+        return { stdout: `${(command[4] === 'a^{commit}'
+          ? 'a'
+          : 'b').repeat(40)}\n` }
+      }
+      if (command[0] === 'merge-base') return { stdout: `${'c'.repeat(40)}\n` }
+      return command[1] === 'diff'
+        ? { hang: true }
+        : undefined
+    })
+    const controller = new AbortController()
+    const { io, stdout, stderr } = harness({
+      argv: ['--range', 'a...b'],
+      env: MODEL,
+      git: { executable: '/usr/bin/git', spawn: fake.spawn },
+      platform: 'linux',
+      signal: controller.signal,
+    })
+    const exit = runCli(io)
+    await vi.waitFor(() => expect(fake.calls.some(call => call.command[1] === 'diff')).toBe(true))
+    controller.abort()
+    expect(await exit).toBe(EXIT.interrupted)
+    expect(stdout()).toBe('')
+    expect(stderr().endsWith('interrupted\n')).toBe(true)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps an --output write\'s failure its own error and exit 3 once an interrupted review has resolved', async () => {
+    const { fetchMock, release } = heldReply()
+    const controller = new AbortController()
+    const out = realpathSync(mkdtempSync(join(dir, 'out-')))
+    const { io, stderr } = harness({
+      env: MODEL,
+      stdin: DIFF,
+      signal: controller.signal,
+      argv: ['--output', `json=${join(out, 'result.json')}`],
+    })
+    const exit = runCli(io)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    // The directory checked before the review is gone when its files are written, after the signal came and the review resolved.
+    rmSync(out, { recursive: true })
+    controller.abort()
+    release(JSON.stringify({
+      findings: [FINDING],
+    }))
+    expect(await exit).toBe(EXIT.runtime)
+    expect(stderr()).toContain('Error: --output json: cannot be written (ENOENT)')
+    expect(stderr().endsWith('interrupted\n')).toBe(false)
+  })
+
+  it('stops the view\'s timers when the review fails, which sends no run:end', async () => {
+    let fail: (error: Error) => void = () => {}
+    const fetchMock = vi.fn().mockImplementationOnce(() => new Promise<Response>((_resolve, reject) => {
+      fail = reject
+    })).mockRejectedValue(new TypeError('fetch failed'))
+    vi.stubGlobal('fetch', fetchMock)
+    const clock = fakeClock()
+    const { io, stderr } = harness({
+      env: MODEL,
+      stdin: DIFF,
       clock,
     })
     const exit = runCli(io)
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled())
     expect(clock.pending()).toBe(1)
-    controller.abort()
-    expect(await exit).toBe(130)
+    fail(new TypeError('fetch failed'))
+    expect(await exit).toBe(EXIT.runtime)
+    expect(stderr()).toContain('\nError: ')
     expect(clock.pending()).toBe(0)
   })
 

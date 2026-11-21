@@ -290,6 +290,27 @@ describe('sarif', () => {
     expect(notificationsOf(advisory).map(({ level }) => level)).toEqual(['warning'])
   })
 
+  it('says an interrupted run did not succeed, an advisory profile\'s gap included', () => {
+    const successful = (result: QuorumResult): boolean => runOf(result).invocations[0].executionSuccessful
+    const gap = { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 2 of its 3 research parts' } as const
+    expect(successful(blankResult({
+      incomplete: [gap],
+    }))).toBe(false)
+    const advisory = blankResult({
+      incomplete: [gap],
+      profiles: {
+        security: {
+          ...reportMeta().profiles.security,
+          failOn: 'none',
+          gating: false,
+        },
+      },
+    })
+    expect(successful(advisory)).toBe(false)
+    expect(successful(blankResult())).toBe(true)
+    expect(notificationsOf(advisory).map(({ level }) => level)).toEqual(['warning'])
+  })
+
   it('lists each gap with at most 100 of its files and their count, and the files left out with no gap as notes', () => {
     const files = Array.from({ length: 150 }, (_, index) => `img/${index}.png`)
     const many = blankResult({

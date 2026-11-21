@@ -122,7 +122,12 @@ const flag = z.strictObject({
 
 /** The result the agent receives, strict at every level: its keys are in the order a reader meets them, the code-checked fields first. */
 export const agentResultSchema = z.strictObject({
-  status: z.enum(['pass', 'findings', 'incomplete']),
+  status: z.enum([
+    'pass',
+    'findings',
+    'incomplete',
+    'interrupted',
+  ]),
   source,
   profiles: z.array(profile),
   findings: z.array(finding),

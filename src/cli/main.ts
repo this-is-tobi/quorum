@@ -10,7 +10,6 @@ import { systemClock } from '../core/clock.ts'
 import { ConfigError } from '../core/errors.ts'
 import { VERSION } from '../core/version.ts'
 import { outcome } from '../core/outcome.ts'
-import type { ReplyStore } from '../core/ports.ts'
 import type { Estimate, Quorum } from '../core/types.ts'
 import { renderReport } from '../report/registry.ts'
 import { publicView } from '../report/view.ts'
@@ -20,6 +19,7 @@ import { parseRange } from '../sources/range.ts'
 import { readSource } from '../sources/read.ts'
 import type { SourceSpec } from '../sources/read.ts'
 import { openFileStore } from '../state/store.ts'
+import type { FileStore } from '../state/store.ts'
 import { runBench } from './bench.ts'
 import { errorLines, errorMessage, EXIT, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
@@ -199,8 +199,15 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * stage, the tokens against the cap, the calls, each gap with its fix, and where the report went, by format and never by
  * path (`summaryLines`). A run that fails writes none.
  *
- * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
- * error ended the review, and writes no result. A review that has already resolved is complete.
+ * The first SIGINT or SIGTERM, which aborts `io.signal`, means two things. Before the review is called it aborts the setup, as
+ * it always did: the run writes `interrupted` and returns 130, whatever error ended the setup, with no review and no result;
+ * a signal that came after the setup's last await finds the signal aborted just before the review and ends the same way.
+ * From the review's call on it is the review's interrupt (`review`'s `interrupt`, never its `signal`): no new call starts,
+ * the calls in flight have the grace to end, the view says so, and the review resolves with what it read, its gaps
+ * `interrupted`. The report and the `--output` files are written, the summary says how a rerun resumes, and the exit code is
+ * 130 (`outcome`). A review that fails for another reason while the signal is aborted is the same interruption, with no result.
+ * A failure after the review resolved, an `--output` write, keeps its own line and exit code. The second signal is `bin.ts`'s: it
+ * quits at once, with no result.
  *
  * The subcommands are `bench`, `report` and `mcp`: when the first argument is one of them, the rest goes to
  * `runBench`, `runReport` or `runMcp` and its exit code is returned, before any review flag is read. A file named
@@ -268,6 +275,8 @@ export async function runCli(io: CliIO): Promise<number> {
   })
   io.exitHooks?.add(view.restore)
   let quorum: Quorum | undefined
+  /** Whether the review has resolved: from then on an abort of the signal is no interruption of it. */
+  let reviewed = false
   try {
     const selection = values.profile === undefined
       ? undefined
@@ -317,7 +326,15 @@ export async function runCli(io: CliIO): Promise<number> {
     if (estimate !== undefined) holdLargeReview(view, estimate, values.large === true)
     if (read.diff.trim() === '') view.line('notice', 'empty diff: nothing to review')
     view.begin(viewFacts(config, estimate))
-    const result = await quorum.review({ ...read, send }, { signal: io.signal, store })
+    // The setup's last await is behind: a signal that came before the review is called starts none, and leaves no result.
+    if (io.signal?.aborted) {
+      await view.close()
+      view.line('notice', 'interrupted')
+      return EXIT.interrupted
+    }
+    // From here the first signal is the review's interrupt, which resolves it with what it read, never its abort.
+    const result = await quorum.review({ ...read, send }, { interrupt: io.signal, store })
+    reviewed = true
     const { reused } = result.meta
     if (reused !== undefined && reused.research + reused.votes > 0) view.line('notice', `reused from --state: ${reused.research} research call(s), ${reused.votes} vote(s)`)
     await view.close()
@@ -332,11 +349,17 @@ export async function runCli(io: CliIO): Promise<number> {
       stderr: { terminal: io.stderr.isTTY === true },
       outputs: plan.outputs.map(output => output.format),
       result,
+      state: store === undefined
+        ? { kind: 'none', kept: 0 }
+        : {
+            kind: 'flag',
+            kept: store.kept(),
+          },
     })
     return done.exitCode
   } catch (error) {
     await view.close()
-    if (io.signal?.aborted) {
+    if (io.signal?.aborted && !reviewed) {
       view.line('notice', 'interrupted')
       return EXIT.interrupted
     }
@@ -389,7 +412,7 @@ function stateDirectory(values: Flags['values']): string | undefined {
  * The file store `--state` opens, in `directory`: its providers' identities are the config's, so a changed provider is a miss,
  * and its warnings are inert `--state:` lines on stderr. A directory it refuses is a `ConfigError` at `--state`, exit 2.
  */
-function openStore(io: CliIO, view: ViewWriter, directory: string, providers: ResolvedConfig['providers']): Promise<ReplyStore> {
+function openStore(io: CliIO, view: ViewWriter, directory: string, providers: ResolvedConfig['providers']): Promise<FileStore> {
   return openFileStore(directory, {
     identities: new Map(Object.entries(providers).map(([id, provider]) => [
       id,
@@ -413,8 +436,9 @@ export interface SignalSource {
 }
 
 /**
- * The signal of one review, aborted by the first SIGINT or SIGTERM. The next one calls `exit(130)`: the
- * way out when what a provider still runs, after the review settled its call, keeps the process alive.
+ * The signal of one run, aborted by the first SIGINT or SIGTERM: the setup's abort before the review runs, and the review's
+ * interrupt from then on (see `runCli`). The next one calls `exit(130)`: the way out when what a provider still runs, after
+ * the review settled its call, keeps the process alive.
  */
 export function interruptSignal(source: SignalSource, exit: (code: number) => void): AbortSignal {
   const controller = new AbortController()

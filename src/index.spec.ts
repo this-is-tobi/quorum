@@ -31,6 +31,7 @@ describe('the public API', () => {
     expect(Object.keys(api).sort()).toEqual([
       'ConfigError',
       'GitError',
+      'INTERRUPT_GRACE_MS',
       'OutputError',
       'ProviderDownError',
       'ProviderError',

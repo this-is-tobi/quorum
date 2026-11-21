@@ -69,7 +69,7 @@ quorum 0.6.0 · range `1f3a9c2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`...`7b2e4d0aaaaa
 ````
 
 - **The first line** is the marker, `<!-- quorum:summary:v1 -->`, the only raw HTML the summary holds. It names the summary and its version, so a program can find its own comment. It proves nothing without its author: anyone can write the marker, so check who wrote the comment too.
-- **The verdict** says what the exit code says, in the words of the last line of the text report: `exit 1, findings`, `exit 4, incomplete` or `exit 0, pass`.
+- **The verdict** says what the exit code says, in the words of the last line of the text report: `exit 1, findings`, `exit 4, incomplete`, `exit 130, interrupted` or `exit 0, pass`. An interrupted review says `the review was stopped before its end; what it read is above`: its gaps are `interrupted`, which no flag lifts.
 - **The table** has a row for each profile: the level it fails at (`none` for an advisory profile), how many findings it kept and left unreviewed, how many the panel discarded (counted, never listed), how many findings it dropped for citing code outside the diff, and how much of the diff it reviewed.
 - **The findings** are the kept and the unreviewed ones, each with its level, its profile, its file and line, its category, how its lenses voted, its claim and its evidence, numbered as the text report numbers it: the cited row is marked `>`. A finding that fails its profile comes first, then the high ones, the medium, the unreviewed and the low, each group by file and then by line, so the budget drops the least important last.
 - **The gaps** are one line for each profile and reason, in fixed words that say nothing of the diff, with a count in parentheses when a profile records a reason more than once.
@@ -105,7 +105,7 @@ quorum --range "$BASE...$HEAD" -f markdown >> "$GITHUB_STEP_SUMMARY"
 
 ## The payload
 
-`-f payload` writes the document that `quorum-action` posts as it is: one versioned JSON object that holds the commit the review is about (`head`), what it concluded (`conclusion`: `pass`, `findings` or `incomplete`, the exit code's meaning), the summary above, and a line comment for each kept or unreviewed finding that sits on a file of the diff, with the count of the findings no line can hold (`unplaced`). Each comment's body starts with a marker that holds the finding's fingerprint, then the level, the profile, the category, how the lenses voted and the claim, the category and the claim in code spans. The JSON is written by `inertJson`, so every text in it is inert and the Action composes none of its own. It is the public view whatever `--view` says.
+`-f payload` writes the document that `quorum-action` posts as it is: one versioned JSON object that holds the commit the review is about (`head`), what it concluded (`conclusion`: `pass`, `findings`, `incomplete` or `interrupted`, the exit code's meaning), the summary above, and a line comment for each kept or unreviewed finding that sits on a file of the diff, with the count of the findings no line can hold (`unplaced`). Each comment's body starts with a marker that holds the finding's fingerprint, then the level, the profile, the category, how the lenses voted and the claim, the category and the claim in code spans. The JSON is written by `inertJson`, so every text in it is inert and the Action composes none of its own. It is the public view whatever `--view` says.
 
 ```bash
 quorum --range "$BASE...$HEAD" -f brief --output payload="$RUNNER_TEMP/payload.json"
@@ -133,7 +133,7 @@ A result sets no `security-severity`. GitHub reads that number before the level,
 
 ### The notifications
 
-The run's `executionSuccessful` is `false` whenever a gating profile has a gap or an unreviewed finding, even when a kept finding sets exit 1 or `--allow-incomplete` lifted the gaps, since a run that did not review everything is not complete. A gap's notification has the level `error` for a gating profile and `warning` for an advisory one, the gap's fixed words, and the files it is about, at most 100 with their count. Only a file that is a clean relative path, as for a result, gets a location: another is counted and never located, so no location names another place. A file left out with no gap, which is one that an `exclude` pattern or a path review's skip rule left out, or a deleted secret, is a `note`, and so is the count of the findings no result holds. They come in that order: the gaps, the files left out, the count.
+The run's `executionSuccessful` is `false` whenever a gating profile has a gap or an unreviewed finding, or any profile, an advisory one included, has an `interrupted` gap, even when a kept finding sets exit 1 or `--allow-incomplete` lifted the gaps, since a run that did not review everything is not complete. A gap's notification has the level `error` for a gating profile and `warning` for an advisory one, the gap's fixed words, and the files it is about, at most 100 with their count. Only a file that is a clean relative path, as for a result, gets a location: another is counted and never located, so no location names another place. A file left out with no gap, which is one that an `exclude` pattern or a path review's skip rule left out, or a deleted secret, is a `note`, and so is the count of the findings no result holds. They come in that order: the gaps, the files left out, the count.
 
 GitHub does not show notifications. They are in the file for the tools that read it and for the person who opens it, and the [summary](#the-summary) is where a gap is read.
 
@@ -194,7 +194,7 @@ jobs:
         QUORUM_RESEARCH_MODEL: ${{ vars.QUORUM_MODEL }}
         QUORUM_RESEARCH_CONTEXT_TOKENS: ${{ vars.QUORUM_CONTEXT_TOKENS }}
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      run: quorum --range "$BASE...$HEAD" --view public -f brief --output json="$RUNNER_TEMP/quorum-result.json"
+      run: exec quorum --range "$BASE...$HEAD" --view public -f brief --output json="$RUNNER_TEMP/quorum-result.json"
     - name: Keep the public view for the post job
       if: ${{ !cancelled() }}
       uses: actions/upload-artifact@v7
@@ -241,6 +241,7 @@ Set `QUORUM_VERSION` to the release you run. The model variables are the example
 - **It checks out the base, not the pull request.** `ref` is the base commit, so no checkout of the pull request's head exists in a job that holds a key, and a config file the job reads is the base's. `--range` reads the head's commits with plumbing alone, `rev-parse`, `merge-base` and `diff` of two commits, whose objects the fetch brought: [A pull request from a fork](./15-sources.md#a-pull-request-from-a-fork) explains the reading. `persist-credentials: false` leaves no token in the checkout's git config.
 - **`fetch-depth: 0`** brings the history where the two sides meet, which a shallow clone lacks: [A range of commits](./15-sources.md#a-range-of-commits).
 - **`--view public`** keeps the reasoning, the discarded findings, the models and the usage out of the artifact and the log, which anyone signed in can read on a public repository: [The public view](../30-security/30-output-handling.md#the-public-view).
+- **`exec` starts quorum as the step's own process.** GitHub's runner signals the step's shell and not its children, so a cancelled job's SIGINT or SIGTERM reaches quorum only once `exec` has replaced the shell with it. It then stops the review as [Interrupting a review](./10-cli.md#interrupting-a-review) says: what it read is written to the result, with an `interrupted` gap, and the step exits `130`. A step that runs commands after quorum cannot use `exec`: put quorum last.
 - **The result goes to `$RUNNER_TEMP`,** a directory of the runner that a pull request cannot plant a file in, as it can in the workspace. The step's exit code is the gate: `0`, `1`, `2`, `3` or `4`, as [Using it in CI](./10-cli.md#using-it-in-ci) lists. The upload runs whatever it was, and the post job renders a review that wrote a result: a review that found something (`1`) or left a gap (`4`) did. An exit `2` or `3` reviewed nothing and wrote none, so the post job fails at its download, and the review job's own failure is the cause to read.
 
 ### The post job

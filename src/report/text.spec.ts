@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
 import type { Flag, IncompleteEntry, LeftOutFile, PublicView, QuorumResult, ReviewSource, Verdict } from '../core/types.ts'
-import { blankResult, FINDINGS, INCOMPLETE, LIFTED, PASS, reportResult, SQL, TOKEN } from '../testing/report.ts'
+import { blankResult, FINDINGS, INCOMPLETE, INTERRUPTED, LIFTED, PASS, reportResult, SQL, TOKEN } from '../testing/report.ts'
 import { text } from './text.ts'
 import { publicView } from './view.ts'
 
@@ -384,6 +384,20 @@ describe('text', () => {
   it('names a source it does not know without repeating it', () => {
     const source = { kind: 'tarball' } as unknown as ReviewSource
     expect(render(blankResult({ source }), PASS)[0]).toBe('quorum 0.6.0 · source unknown · security · 0 files')
+  })
+
+  it('ends an interrupted review with its verdict, coloured as an incomplete one', () => {
+    const gap = { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 2 of its 3 research parts' } as const
+    const stopped = reportResult({
+      meta: {
+        incomplete: [gap],
+      },
+    })
+    expect(render(stopped, INTERRUPTED).at(-2)).toBe('exit 130, interrupted: the review was stopped before its end; what it read is above')
+    expect(render(stopped, INTERRUPTED, true).at(-2)).toBe(`exit 130, ${ESC}[33minterrupted${ESC}[0m: the review was stopped before its end; what it read is above`)
+    expect(render(stopped, INTERRUPTED)).toContain('gap: security interrupted, the interrupt stopped 2 of its 3 research parts')
+    // the public view says the gap in fixed words
+    expect(render(publicView(stopped), INTERRUPTED).join(' ').replaceAll(/ +/g, ' ')).toContain('gap: security interrupted, the review was stopped before its end, so part of the work was never read')
   })
 
   it.each<[string, Outcome, string]>([

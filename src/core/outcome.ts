@@ -5,17 +5,17 @@ import type { FailOn, PublicVerdict, PublicView, QuorumResult, Verdict } from '.
 /** The HTTP statuses, besides 5xx, that a call fails with in passing: a request timeout, a conflict and a rate limit. */
 const PASSING_STATUSES: ReadonlySet<number> = new Set([408, 409, 429])
 
-/** What a review comes to: `pass` (nothing to fail on), `findings` (a kept finding reached its profile's level) or `incomplete` (a gap or an unreviewed finding of a gating profile). */
-export type OutcomeStatus = 'pass' | 'findings' | 'incomplete'
+/** What a review comes to: `pass` (nothing to fail on), `findings` (a kept finding reached its profile's level), `incomplete` (a gap or an unreviewed finding of a gating profile) or `interrupted` (the review was stopped before its end). */
+export type OutcomeStatus = 'pass' | 'findings' | 'incomplete' | 'interrupted'
 
 /**
  * What a review comes to, as `outcome` reads it from a result: the `status`, the process exit code that says it
- * (`0`, `1` or `4`), and whether `allowIncomplete` lifted an incomplete review into a pass, so a report never
+ * (`0`, `1`, `4` or `130`), and whether `allowIncomplete` lifted an incomplete review into a pass, so a report never
  * calls that run complete.
  */
 export interface Outcome {
   readonly status: OutcomeStatus
-  readonly exitCode: 0 | 1 | 4
+  readonly exitCode: 0 | 1 | 4 | 130
   readonly lifted: boolean
 }
 
@@ -23,12 +23,15 @@ const PASS: Outcome = Object.freeze({ status: 'pass', exitCode: 0, lifted: false
 const LIFTED: Outcome = Object.freeze({ status: 'pass', exitCode: 0, lifted: true })
 const FINDINGS: Outcome = Object.freeze({ status: 'findings', exitCode: 1, lifted: false })
 const INCOMPLETE: Outcome = Object.freeze({ status: 'incomplete', exitCode: 4, lifted: false })
+const INTERRUPTED: Outcome = Object.freeze({ status: 'interrupted', exitCode: 130, lifted: false })
 
 /**
- * What a finished review comes to: `findings`, exit 1, when a kept finding is at or above the level of its
+ * What a finished review comes to: `interrupted`, exit 130, when any gap is an `interrupted` one, an advisory profile's
+ * included, ahead of everything else and never lifted: the review was stopped before its end, whatever it kept.
+ * Otherwise `findings`, exit 1, when a kept finding is at or above the level of its
  * profile (`failOn`: `high`, `medium` or `low`), `incomplete`, exit 4, when an unreviewed finding or a gap
  * belongs to a gating profile, and `pass`, exit 0, otherwise. A profile gates unless its level is `none`. The
- * exit 1 comes first: a kept finding that reached its level is reported whatever else is missing.
+ * exit 1 comes before the other two: a kept finding that reached its level is reported whatever else is missing.
  * `allowIncomplete` turns that 4 into 0, `lifted`, only when every gap of a gating profile is a `vote-failed`
  * one (an unreviewed finding is no gap) and, for each gating profile that has a gap, every failed vote of its
  * own kept and unreviewed findings failed in passing, as `failedInPassing` says: a dropped connection, a
@@ -57,6 +60,7 @@ const INCOMPLETE: Outcome = Object.freeze({ status: 'incomplete', exitCode: 4, l
  * const { exitCode } = outcome(result, { allowIncomplete: true })
  */
 export function outcome(result: QuorumResult | PublicView, options: { readonly allowIncomplete?: boolean } = {}): Outcome {
+  if (isInterrupted(result)) return INTERRUPTED
   const gates = gatesOf(result)
   if (result.kept.some(verdict => failsItsProfile(result, verdict))) return FINDINGS
   if (!isIncomplete(result)) return PASS
@@ -68,6 +72,11 @@ export function outcome(result: QuorumResult | PublicView, options: { readonly a
 /** Whether a profile gates the review, as `result` records it: its level is not `none` (`profileFailOn`). */
 function gatesOf(result: QuorumResult | PublicView): (profile: unknown) => boolean {
   return profile => profileFailOn(result, profile) !== 'none'
+}
+
+/** Whether any gap of the review is an `interrupted` one, of any profile, an advisory one included: the review was stopped before its end. */
+export function isInterrupted(result: QuorumResult | PublicView): boolean {
+  return result.meta.incomplete.some(entry => entry.reason === 'interrupted')
 }
 
 /**

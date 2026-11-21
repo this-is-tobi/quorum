@@ -10,7 +10,7 @@ import { inertLine } from '../../core/sanitize.ts'
 import type { Adaptation, CallFailure, LeftOutFile, QuorumEvent } from '../../core/types.ts'
 import { flagWhere, leftOutEntry } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
-import { rangeWords, timeLeft } from './eta.ts'
+import { rangeWords, researchRuns, timeLeft } from './eta.ts'
 import type { ViewState } from './model.ts'
 
 export { elapsedWords }
@@ -132,6 +132,7 @@ type Unread = Exclude<PartOutcome, 'reviewed'>
 const OUTCOME_WORDS: Readonly<Record<Exclude<Unread, 'research-failed'>, string>> = {
   'token-cap': 'stopped by the token cap',
   'review-deadline': 'stopped by the deadline',
+  interrupted: 'stopped by the interrupt',
   'provider-down': 'not sent: provider-down',
   'request-too-large': 'not sent: too large for its model',
   'reply-cut-off': 'cut off at its limit even alone: its hunks are a reply-cut-off gap',
@@ -142,6 +143,7 @@ const PIECE_WORDS: ReadonlyArray<readonly [Unread, string]> = [
   ['request-too-large', 'too large for its model'],
   ['token-cap', 'stopped by the token cap'],
   ['review-deadline', 'stopped by the deadline'],
+  ['interrupted', 'stopped by the interrupt'],
   ['research-failed', 'failed'],
   ['provider-down', 'not sent, its provider down'],
   ['reply-cut-off', 'cut off even alone'],
@@ -280,15 +282,17 @@ function retryLines(event: Extract<QuorumEvent, { type: 'call:retry' }>, state: 
 
 /**
  * The lines of `event`, read against the state that folded it: `renderEvent`'s line with its glyph, a research
- * retry's line, with its position from the call the state holds, and the deadline's stopping line, which has no
- * glyph. Each text is inert, and starts with `[<profile>] ` when several profiles run.
+ * retry's line, with its position from the call the state holds, and the stopping line of the deadline or of the
+ * interrupt, which has no glyph. Each text is inert, and starts with `[<profile>] ` when several profiles run.
  */
 export function logLines(event: QuorumEvent, state: ViewState, view: ReportView): Line[] {
   if (event.type === 'call:retry') return retryLines(event, state)
   if (event.type === 'run:stopping') {
     return [
       {
-        text: inertLine(`stopping: the review reached its deadline of ${state.facts.deadlineMs} ms: the calls in flight are stopped, and what is left is a review-deadline gap`),
+        text: inertLine(event.cause === 'interrupt'
+          ? `stopping: no new calls; the ${event.inFlight} call(s) in flight have ${(event.graceMs ?? 0) / 1000} s to end; press Ctrl-C again to quit at once, without the result`
+          : `stopping: the review reached its deadline of ${state.facts.deadlineMs} ms: the calls in flight are stopped, and what is left is a review-deadline gap`),
       },
     ]
   }
@@ -320,7 +324,7 @@ export function heartbeatLine(state: ViewState, now: number, view: ReportView): 
   const profiles = [
     ...state.profiles.values(),
   ]
-  const researching = profiles.some(profile => profile.stage === 'waiting' || (profile.stage === 'research' && (profile.parts === undefined || profile.done < profile.parts)))
+  const researching = researchRuns(state)
   const sum = (pick: (profile: (typeof profiles)[number]) => number): number => profiles.reduce((total, profile) => total + pick(profile), 0)
   const progress = researching
     ? `research ${sum(profile => profile.done)} of ${sum(profile => profile.parts ?? 0)} part(s)`

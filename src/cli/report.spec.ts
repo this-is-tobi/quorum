@@ -369,6 +369,42 @@ describe('quorum report', () => {
     }
   })
 
+  it('renders a saved interrupted result with its verdict, and exits 0 once its report is written', async () => {
+    write('interrupted.json', inertJson(reportResult({
+      kept: [],
+      meta: {
+        version: VERSION,
+        incomplete: [
+          { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 2 of its 3 research parts' },
+        ],
+      },
+    })))
+    const brief = await quorum([
+      'report',
+      'interrupted.json',
+      '-f',
+      'brief',
+    ])
+    expect(brief.code).toBe(EXIT.ok)
+    expect(brief.stdout).toContain('quorum: interrupted: ')
+    expect(brief.stdout).toContain('exit 130')
+    const text = await quorum([
+      'report',
+      'interrupted.json',
+      '-f',
+      'text',
+    ])
+    expect(text.code).toBe(EXIT.ok)
+    expect(text.stdout).toContain('exit 130, interrupted: the review was stopped before its end; what it read is above')
+    expect((await quorum([
+      'report',
+      'interrupted.json',
+      '-f',
+      'payload',
+    ])).stdout).toMatch(/"conclusion": "interrupted"/)
+    expect(text.fetch).not.toHaveBeenCalled()
+  })
+
   it('prints its usage with -h, and calls no model and no git', async () => {
     write('r.json', inertJson(reportResult({
       meta: { version: VERSION },

@@ -1,6 +1,6 @@
 import { getEventListeners } from 'node:events'
 import { describe, expect, it } from 'vitest'
-import { createLedger, fitOf, isLimit, LimitError, limitGaps, maxReviewTokensProblem, settlementOf } from './limits.ts'
+import { createLedger, fitOf, INTERRUPT_GRACE_MS, isLimit, isLimitName, LimitError, limitGaps, LIMITS, maxReviewTokensProblem, settlementOf } from './limits.ts'
 import type { Fit, SettledFailure } from './limits.ts'
 import type { Usage, Verdict, VoteFailure } from './types.ts'
 
@@ -257,5 +257,36 @@ describe('the gaps of a limit', () => {
     ])
     expect(limitGaps('security', ['request-too-large', 'research-failed', 'reviewed'], [], limits)).toEqual([])
     expect(limitGaps('security', [], [], limits)).toEqual([])
+  })
+
+  it('writes the interrupt\'s gap after the cap\'s and the deadline\'s, counting its parts and votes', () => {
+    const outcomes = [
+      'reviewed',
+      'interrupted',
+      'interrupted',
+      'review-deadline',
+      'token-cap',
+      'interrupted',
+    ]
+    expect(limitGaps('security', outcomes, [
+      voted('interrupted', 'interrupted', null, 'token-cap'),
+    ], limits)).toEqual([
+      { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 100 tokens stopped 1 of its 6 research parts and 1 vote(s)' },
+      { profile: 'security', reason: 'review-deadline', detail: 'the review\'s deadline of 1000 ms stopped 1 of its 6 research parts' },
+      { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 3 of its 6 research parts and 2 vote(s)' },
+    ])
+    expect(limitGaps('security', ['interrupted'], [], limits)).toEqual([
+      { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped its research' },
+    ])
+    expect(limitGaps('security', ['reviewed'], [
+      voted('interrupted', 'interrupted', 'interrupted'),
+    ], limits)).toEqual([
+      { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 3 vote(s)' },
+    ])
+    expect(LIMITS).toEqual(['token-cap', 'review-deadline', 'interrupted'])
+    expect(LIMITS.every(isLimitName)).toBe(true)
+    expect(isLimitName('provider-down')).toBe(false)
+    expect(isLimitName(undefined)).toBe(false)
+    expect(INTERRUPT_GRACE_MS).toBe(5000)
   })
 })

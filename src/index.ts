@@ -22,6 +22,7 @@ export type { ConfigInput, QuorumConfig, QuorumConfigFile } from './config/schem
 export type { ProfileBudgets, ReplyFacts, ThinkingLevel } from './core/budgets.ts'
 export { ConfigError, OutputError, ProviderDownError, ProviderError, QuorumError } from './core/errors.ts'
 export type { ConfigIssue, NoAnswer, ProviderErrorKind, ReplyLack } from './core/errors.ts'
+export { INTERRUPT_GRACE_MS } from './core/limits.ts'
 export { outcome } from './core/outcome.ts'
 export type { Outcome, OutcomeStatus } from './core/outcome.ts'
 export { defaultPolicy } from './core/policy.ts'

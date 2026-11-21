@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { publicView } from '../report/view.ts'
 import { reportMeta, SQL } from '../testing/report.ts'
-import { failsItsProfile, isIncomplete, outcome } from './outcome.ts'
+import { failsItsProfile, isIncomplete, isInterrupted, outcome } from './outcome.ts'
 import type { QuorumResult, Verdict } from './types.ts'
 
 describe('outcome', () => {
@@ -299,6 +299,64 @@ describe('outcome', () => {
     expect(outcome(withGaps({ security: true, style: false }, [
       { profile: 'style', reason: 'review-deadline' },
     ]), { allowIncomplete: true }).exitCode).toBe(0)
+  })
+
+  it('reads an interrupted gap as interrupted, exit 130, ahead of a kept finding and of any other gap, an advisory profile\'s included', () => {
+    const interrupted = { profile: 'security', reason: 'interrupted' }
+    const expected = { status: 'interrupted', exitCode: 130, lifted: false }
+    expect(outcome(withGaps(securityGates, [interrupted]))).toEqual(expected)
+    // ahead of a kept finding that would exit 1, and of the gaps that would exit 4
+    expect(outcome({
+      ...withGaps(securityGates, [interrupted]),
+      kept: [
+        kept('security', 'high'),
+      ],
+    })).toEqual(expected)
+    expect(outcome(withGaps(securityGates, [
+      { profile: 'security', reason: 'token-cap' },
+      voteFailedGap,
+      interrupted,
+    ]))).toEqual(expected)
+    expect(outcome({
+      ...withGaps(securityGates, [interrupted]),
+      unreviewed: [
+        voted('security', undefined, [
+          { kind: 'interrupted' },
+        ]),
+      ],
+    })).toEqual(expected)
+    // an advisory profile's gap reads the same, where its other gaps exit 0
+    expect(outcome(withGaps({ security: true, style: false }, [
+      { profile: 'style', reason: 'binary' },
+    ]))).toEqual({ status: 'pass', exitCode: 0, lifted: false })
+    expect(outcome(withGaps({ security: true, style: false }, [
+      { profile: 'style', reason: 'interrupted' },
+    ]))).toEqual(expected)
+    // the public view reads the same
+    const view = publicView(whole(withGaps(securityGates, [interrupted])))
+    expect(outcome(view)).toEqual(expected)
+    expect(isInterrupted(view)).toBe(true)
+    expect(isInterrupted(withGaps(securityGates, [voteFailedGap]))).toBe(false)
+  })
+
+  it('never lifts an interrupted gap with allowIncomplete', () => {
+    const interrupted = { profile: 'security', reason: 'interrupted' }
+    const network = { kind: 'network' }
+    for (const input of [
+      withGaps(securityGates, [interrupted]),
+      // beside a vote-failed gap whose failed votes all failed in passing, which alone is lifted
+      withGaps(securityGates, [voteFailedGap, interrupted], [
+        voted('security', 'medium', [network]),
+      ]),
+      withGaps({ security: true, style: false }, [
+        { profile: 'style', reason: 'interrupted' },
+      ]),
+    ]) {
+      expect(outcome(input, { allowIncomplete: true })).toEqual({ status: 'interrupted', exitCode: 130, lifted: false })
+    }
+    expect(outcome(withGaps(securityGates, [voteFailedGap], [
+      voted('security', 'medium', [network]),
+    ]), { allowIncomplete: true })).toEqual({ status: 'pass', exitCode: 0, lifted: true })
   })
 
   it('exits 4 for a too-large gap of a gating profile, even with --allow-incomplete', () => {

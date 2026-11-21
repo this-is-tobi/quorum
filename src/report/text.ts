@@ -53,6 +53,7 @@ const SGR = {
   removed: '31',
   findings: '31',
   incomplete: '33',
+  interrupted: '33',
   pass: '32',
 } as const
 

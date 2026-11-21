@@ -3,7 +3,7 @@ import type { Confidence, Flag, IncompleteEntry, LeftOutFile, PublicView, Quorum
 import { describe, expect, it, vi } from 'vitest'
 import { utf8Length } from '../core/tokens.ts'
 import { publicView } from '../report/view.ts'
-import { blankResult, cast, FAILED, FINDINGS, INCOMPLETE, PASS, reportMeta, reportResult, SQL, UPLOAD } from '../testing/report.ts'
+import { blankResult, cast, FAILED, FINDINGS, INCOMPLETE, INTERRUPTED, PASS, reportMeta, reportResult, SQL, UPLOAD } from '../testing/report.ts'
 import { agentResult, agentResultSchema, CLAIM_CAP, ITEM_CEILING, LISTED, NOTICE, RESULT_BUDGET } from './result.ts'
 
 const skew = vi.hoisted(() => ({ on: false, hits: 0 }))
@@ -134,6 +134,22 @@ describe('agentResult', () => {
     })
     expect(result.notice).toBe(NOTICE)
     expect(result.source).toEqual(reportMeta().source)
+  })
+
+  it('takes interrupted as a status and as a gap reason', () => {
+    const result = received(reportResult({
+      unreviewed: [],
+      meta: {
+        incomplete: [
+          { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 2 of its 3 research parts' },
+        ],
+      },
+    }), INTERRUPTED)
+    expect(result.status).toBe('interrupted')
+    expect(result.gaps).toEqual([
+      { profile: 'security', reason: 'interrupted' },
+    ])
+    expect(agentResultSchema.parse(JSON.parse(JSON.stringify(result)))).toEqual(result)
   })
 
   it('gives each profile its level, its counts and its coverage counted by status', () => {

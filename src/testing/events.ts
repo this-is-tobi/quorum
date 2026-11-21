@@ -468,6 +468,97 @@ export function longReview(): Timed[] {
   return ordered(entries)
 }
 
+/**
+ * `longReview()` interrupted as its twentieth part ends: `run:stopping` with the calls then in flight and the grace's
+ * 5000 ms, those calls cancelled at its end, each part they held `interrupted`, the research's gap for the 24 parts the
+ * interrupt stopped, and the end of the review, which asked no vote.
+ */
+export function interrupted(): Timed[] {
+  const all = longReview()
+  let parts = 0
+  const cut = all.findIndex(({ event }) => event.type === 'part' && ++parts === 20)
+  const kept = all.slice(0, cut + 1)
+  const at = kept[cut].at
+  const flying = new Map<number, Extract<QuorumEvent, { type: 'call:start' }>>()
+  for (const { event } of kept) {
+    if (event.type === 'call:start') flying.set(event.call, event)
+    if (event.type === 'call') flying.delete(event.call!)
+  }
+  const stopped = at + 5000
+  const ends: Timed[] = [
+    {
+      at,
+      event: {
+        type: 'run:stopping',
+        cause: 'interrupt',
+        inFlight: flying.size,
+        graceMs: 5000,
+      },
+    },
+    ...[
+      ...flying.values(),
+    ].flatMap(({ call, profile, role, provider, part, reserved }): Timed[] => [
+      {
+        at: stopped,
+        event: {
+          type: 'call',
+          call,
+          profile,
+          role,
+          provider,
+          part,
+          durationMs: stopped,
+          ok: false,
+          spent: reserved,
+        },
+      },
+      {
+        at: stopped,
+        event: {
+          type: 'part',
+          profile,
+          part: { index: part!.index, count: part!.count },
+          outcome: 'interrupted',
+          durationMs: 5000,
+          spent: reserved,
+        },
+      },
+    ]),
+    {
+      at: stopped,
+      event: {
+        type: 'stage:end',
+        profile: 'security',
+        stage: 'research',
+        durationMs: stopped,
+        count: 5,
+      },
+    },
+    {
+      at: stopped,
+      event: {
+        type: 'incomplete',
+        entry: { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 24 of its 44 research parts' },
+      },
+    },
+    {
+      at: stopped,
+      event: {
+        type: 'run:end',
+        kept: 0,
+        discarded: 0,
+        unreviewed: 0,
+        incomplete: 1,
+        durationMs: stopped,
+      },
+    },
+  ]
+  return [
+    ...kept,
+    ...ends,
+  ]
+}
+
 /** Two profiles, `security` and `style`, on one provider `api` and one limit of four calls at once, 10 parts each, interleaved. */
 export function twoProfiles(): Timed[] {
   const entries: Entry[] = [

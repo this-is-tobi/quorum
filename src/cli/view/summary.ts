@@ -8,7 +8,7 @@
 
 import { CUT_ADVICE, failureFix, QUOTA_FIX } from '../../core/errors.ts'
 import { inertLine } from '../../core/sanitize.ts'
-import type { IncompleteReason, StageName } from '../../core/types.ts'
+import type { IncompleteReason, QuorumResult, StageName } from '../../core/types.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords } from './eta.ts'
 import { durationWords, elapsedWords } from './lines.ts'
@@ -18,6 +18,19 @@ import type { SummaryFacts } from './writer.ts'
 
 /** The fix of a gap with no better advice: the report holds its detail. */
 const SEE_REPORT = 'see the gap in the report'
+
+/** The fix of a gap a rerun can fill: the resume line says how. */
+const SEE_RESUME = 'see resume'
+
+/** The reasons of a gap that a rerun of the review could fill, which the resume line is written for. */
+const RERUN_REASONS: ReadonlySet<IncompleteReason> = new Set<IncompleteReason>([
+  'interrupted',
+  'token-cap',
+  'review-deadline',
+  'provider-down',
+  'research-failed',
+  'vote-failed',
+])
 
 /** The fix of each reason that needs no cause. */
 const FIXES: Readonly<Partial<Record<IncompleteReason, string>>> = {
@@ -29,7 +42,8 @@ const FIXES: Readonly<Partial<Record<IncompleteReason, string>>> = {
   'too-large': 'raise contextTokens, or lower partTokens',
   'research-unusable': SEE_REPORT,
   'finding-unreadable': SEE_REPORT,
-  'vote-failed': 'rerun the review',
+  'vote-failed': SEE_RESUME,
+  interrupted: SEE_RESUME,
 }
 
 /** A cause in words: its kind, then its status when it has one. */
@@ -167,6 +181,22 @@ function gapsLine(state: ViewState, view: ReportView): string | undefined {
   return `gaps: ${entries.join('; ')}`
 }
 
+/**
+ * Whether a rerun of the review could fill what is missing from `result`: a gap of an interrupt, a limit, a provider that
+ * was down, a failed research part or a failed vote, or a finding left unreviewed. The resume line is written when it holds.
+ */
+export function rerunCouldFill(result: Pick<QuorumResult, 'unreviewed' | 'meta'>): boolean {
+  return result.unreviewed.length > 0 || result.meta.incomplete.some(entry => RERUN_REASONS.has(entry.reason))
+}
+
+/** The resume line: with `--state`, how a rerun reuses the calls this review kept, naming the flag and the count, which may be 0, and never the directory; without it, how to keep them. */
+function resumeLine({ state, result }: SummaryFacts): string | undefined {
+  if (!rerunCouldFill(result)) return undefined
+  return state.kind === 'flag'
+    ? `resume: rerun with the same --state: its ${state.kept} answered call(s) are reused`
+    : 'resume: to keep the answered calls for a rerun, pass --state <dir>; this review kept none'
+}
+
 function resultLine(facts: SummaryFacts, view: ReportView): string {
   const { format } = facts.stdout
   const where = reportAbove(facts)
@@ -182,8 +212,8 @@ function resultLine(facts: SummaryFacts, view: ReportView): string {
 
 /**
  * The summary's lines for a review whose events were folded into `state`, in this order, each left out when it has
- * nothing to say: the time, the tokens (not under the public view), the calls, the gaps with their fixes and
- * where the report went. A review whose stages never started has no summary. `dash` is the glyph set's.
+ * nothing to say: the time, the tokens (not under the public view), the calls, the gaps with their fixes, where the
+ * report went and, when a rerun could fill what is missing, how to resume it. A review whose stages never started has no summary. `dash` is the glyph set's.
  */
 export function summaryLines(state: ViewState, facts: SummaryFacts, view: ReportView, dash: string): string[] {
   if (state.stages.size === 0) return []
@@ -195,6 +225,7 @@ export function summaryLines(state: ViewState, facts: SummaryFacts, view: Report
     callsLine(state),
     gapsLine(state, view),
     resultLine(facts, view),
+    resumeLine(facts),
   ]
   return lines.flatMap(line => line === undefined
     ? []

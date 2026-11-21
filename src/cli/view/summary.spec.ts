@@ -5,7 +5,7 @@ import { longReview, replay } from '../../testing/events.ts'
 import { reportResult, SQL, TOKEN } from '../../testing/report.ts'
 import { DEFAULT_FACTS, fold, startState } from './model.ts'
 import type { ViewState } from './model.ts'
-import { summaryLines } from './summary.ts'
+import { rerunCouldFill, summaryLines } from './summary.ts'
 import type { SummaryFacts } from './writer.ts'
 
 const ESC = String.fromCharCode(0x1B)
@@ -16,7 +16,9 @@ function factsOf(changes: Partial<SummaryFacts> = {}): SummaryFacts {
     stdout: { format: 'json', terminal: false },
     stderr: { terminal: false },
     outputs: [],
+    state: { kind: 'none', kept: 0 },
     result: reportResult({
+      unreviewed: [],
       meta: {
         durationMs: 2_285_000,
         usage: { inputTokens: 2_412_833, outputTokens: 312_094 },
@@ -435,7 +437,57 @@ describe('summaryLines', () => {
           entry: { profile: 'security', reason: 'vote-failed', detail: `${JSON.stringify('b.js')}:9 is kept at low, but 1 failed vote(s) could have made it undecided` },
         },
       ],
-      '3 vote(s) vote-failed: rerun the review',
+      '3 vote(s) vote-failed: see resume',
+    ],
+    [
+      'vote-failed of one finding',
+      [
+        {
+          type: 'incomplete',
+          entry: { profile: 'security', reason: 'vote-failed', detail: `${JSON.stringify('a.js')}:3 is kept at medium, but 1 failed vote(s) could have made it undecided` },
+        },
+      ],
+      '1 vote(s) vote-failed: see resume',
+    ],
+    [
+      'interrupted, counting its parts and votes',
+      [
+        {
+          type: 'incomplete',
+          entry: { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 5 of its 6 research parts and 3 vote(s)' },
+        },
+      ],
+      '5 part(s) and 3 vote(s) interrupted: see resume',
+    ],
+    [
+      'interrupted, of words it does not know',
+      [
+        {
+          type: 'incomplete',
+          entry: { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 5 of its 6 research parts and some' },
+        },
+      ],
+      '1 gap(s) interrupted: see resume',
+    ],
+    [
+      'token-cap, counting its parts and votes',
+      [
+        {
+          type: 'incomplete',
+          entry: { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 2000000 tokens stopped 4 of its 6 research parts and 7 vote(s)' },
+        },
+      ],
+      '4 part(s) and 7 vote(s) token-cap: raise maxReviewTokens',
+    ],
+    [
+      'review-deadline, counting its research',
+      [
+        {
+          type: 'incomplete',
+          entry: { profile: 'security', reason: 'review-deadline', detail: 'the review\'s deadline of 1800000 ms stopped its research' },
+        },
+      ],
+      '1 part(s) review-deadline: raise reviewTimeoutMs',
     ],
     [
       'request-too-large of parts, votes and an entry that counts neither',
@@ -482,6 +534,77 @@ describe('summaryLines', () => {
     ],
   ])('writes a %s gap with its fix', (_name, events, entry) => {
     expect(lines(reviewed(...events))).toContain(`gaps: ${entry}`)
+  })
+
+  it.each<[string, Partial<Pick<SummaryFacts, 'state'>> & { readonly reason?: IncompleteReason, readonly unreviewed?: boolean }, string | undefined]>([
+    [
+      'naming --state and its kept calls after an interrupt',
+      {
+        reason: 'interrupted',
+        state: { kind: 'flag', kept: 43 },
+      },
+      'resume: rerun with the same --state: its 43 answered call(s) are reused',
+    ],
+    [
+      'naming --state when it kept none',
+      {
+        reason: 'interrupted',
+        state: { kind: 'flag', kept: 0 },
+      },
+      'resume: rerun with the same --state: its 0 answered call(s) are reused',
+    ],
+    [
+      'asking for --state when the review ran with none',
+      {
+        reason: 'interrupted',
+        state: { kind: 'none', kept: 0 },
+      },
+      'resume: to keep the answered calls for a rerun, pass --state <dir>; this review kept none',
+    ],
+    [
+      'after a research-failed gap',
+      {
+        reason: 'research-failed',
+        state: { kind: 'flag', kept: 1 },
+      },
+      'resume: rerun with the same --state: its 1 answered call(s) are reused',
+    ],
+    [
+      'after an unreviewed finding',
+      { unreviewed: true },
+      'resume: to keep the answered calls for a rerun, pass --state <dir>; this review kept none',
+    ],
+    [
+      'nowhere when nothing is left for a rerun',
+      {
+        reason: 'binary',
+        state: { kind: 'flag', kept: 43 },
+      },
+      undefined,
+    ],
+  ])('writes the resume line %s', (_name, { reason, unreviewed = false, state = { kind: 'none', kept: 0 } }, expected) => {
+    const result = reportResult({
+      unreviewed: unreviewed
+        ? undefined
+        : [],
+      meta: {
+        incomplete: reason === undefined
+          ? []
+          : [
+              { profile: 'security', reason, detail: 'a detail' },
+            ],
+      },
+    })
+    expect(rerunCouldFill(result)).toBe(expected !== undefined)
+    const shown = lines(replay(longReview()), factsOf({ result, state }))
+    // the resume line is the last, after the line that says where the report went, whatever the view
+    expect(shown.filter(line => line.startsWith('resume:'))).toEqual(expected === undefined
+      ? []
+      : [expected])
+    if (expected !== undefined) expect(shown.at(-1)).toBe(expected)
+    expect(lines(replay(longReview()), factsOf({ result, state }), 'public').filter(line => line.startsWith('resume:'))).toEqual(expected === undefined
+      ? []
+      : [expected])
   })
 
   it('writes where the report went: above, on stdout in its format and view, and the --output formats, never a path', () => {
@@ -581,7 +704,7 @@ describe('summaryLines', () => {
     const result = reportResult({
       meta: { durationMs: 2_285_000 },
     })
-    const shown = lines(state, factsOf({ result })).join('\n')
+    const shown = lines(state, factsOf({ result })).filter(line => !line.startsWith('resume:')).join('\n')
     for (const text of [
       'part 12 of 44 was not read',
       SQL.summary,

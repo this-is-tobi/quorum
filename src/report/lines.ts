@@ -56,6 +56,7 @@ export const GAP_WORDS: Readonly<Record<IncompleteReason, string>> = {
   'too-large': 'a hunk fits in no research request of its model',
   'token-cap': 'the review\'s token cap stopped part of the work',
   'review-deadline': 'the review\'s deadline stopped part of the work',
+  interrupted: 'the review was stopped before its end, so part of the work was never read',
   'reply-cut-off': 'a reply was cut off at its limit even for one hunk, so that hunk went unreviewed',
   binary: 'the diff carries no content for a binary file',
   submodule: 'the diff carries only a submodule\'s commit',
@@ -117,6 +118,7 @@ const WHY: Readonly<Record<OutcomeStatus, string>> = {
   findings: 'a gating profile kept a finding at or above its fail-on level',
   incomplete: 'a gating profile has a gap or an unreviewed finding',
   pass: 'no gating profile kept a finding to fail on, and none has a gap',
+  interrupted: 'the review was stopped before its end; what it read is above',
 }
 
 /** Why a review came to what it did, from the one outcome the exit code is made of: the words after `exit 1, findings: `. */

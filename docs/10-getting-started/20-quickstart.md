@@ -144,7 +144,7 @@ echo $code
 | `2` | A usage or configuration error: nothing was reviewed | Fail: fix the command or the variables |
 | `3` | No research call answered, since a provider is down: nothing was reviewed | Fail: fix the endpoint, or run again |
 | `4` | The review is incomplete, and no gating profile kept a finding at or above its fail-on level, `high` by default | Fail: read the unreviewed findings and `meta.incomplete`; run again only for a failed vote |
-| `130` | The run was interrupted by SIGINT or SIGTERM: nothing was reviewed | Fail: the job was cancelled, run it again |
+| `130` | The run was interrupted by SIGINT or SIGTERM: the report holds what was read, with an `interrupted` gap, or nothing was reviewed when the signal came before the review | Fail: the job was cancelled, run it again |
 
 This run exits `1`: it kept a finding at `high`, the level the security profile fails on, and `1` wins over the `4` that its unreviewed finding and its unreadable one would otherwise give.
 
