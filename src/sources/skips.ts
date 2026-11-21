@@ -68,7 +68,43 @@ export const MINIFIED_SUFFIXES: readonly string[] = Object.freeze([
   '.css.map',
 ])
 
+const TEST_SCRIPT_EXTENSIONS: readonly string[] = [
+  'js',
+  'jsx',
+  'mjs',
+  'cjs',
+  'ts',
+  'tsx',
+  'mts',
+  'cts',
+]
+
+/** What a test file's name ends with, matched on the file's own name and in that case. */
+export const TEST_NAME_SUFFIXES: readonly string[] = Object.freeze([
+  ...['test', 'spec'].flatMap(marker => TEST_SCRIPT_EXTENSIONS.map(extension => `.${marker}.${extension}`)),
+  '_test.go',
+  '_test.py',
+  'Test.java',
+  'Tests.java',
+  'Test.kt',
+  'Tests.cs',
+  '_spec.rb',
+])
+
+/** What a test file's name starts with, once it also ends with the extension: `test_x.py`, matched in that case. */
+export const TEST_NAME_PREFIXES: readonly { readonly prefix: string, readonly extension: string }[] = Object.freeze([
+  { prefix: 'test_', extension: '.py' },
+])
+
+/** The directories whose files are tests, matched on a directory segment of the path and never on the file's own name: `testing` can hold shipped helpers. */
+export const TEST_DIRECTORIES: readonly string[] = Object.freeze([
+  '__tests__',
+  'test',
+  'tests',
+])
+
 const VENDORED: ReadonlySet<string> = new Set(VENDORED_DIRECTORIES)
+const TEST_DIRECTORY_NAMES: ReadonlySet<string> = new Set(TEST_DIRECTORIES)
 const LOCKFILE_NAMES: ReadonlySet<string> = new Set(LOCKFILES)
 const MINIFIED_CONTENT_SUFFIXES: readonly string[] = ['.js', '.mjs', '.cjs', '.css']
 
@@ -82,12 +118,21 @@ function endsWithAny(name: string, suffixes: readonly string[]): boolean {
   return suffixes.some(suffix => lower.endsWith(suffix))
 }
 
+/** Whether the name marks a test: one of the suffixes or a prefix with its extension, in case, or a directory of the path is a test one. */
+function isTestPath(path: string, name: string): boolean {
+  return TEST_NAME_SUFFIXES.some(suffix => name.endsWith(suffix))
+    || TEST_NAME_PREFIXES.some(({ prefix, extension }) => name.startsWith(prefix) && name.endsWith(extension))
+    || path.split('/').slice(0, -1).some(directory => TEST_DIRECTORY_NAMES.has(directory))
+}
+
 /**
  * The rule that skips a file by its path alone, or undefined when none does. The rules are taken in this
  * order, so a file that fits several is listed under the first: `secret` (the core's `isSecretName`: a
  * secret's name, a template apart), `vendored` (a directory of the path, the file's own name aside, is one
  * of the vendored ones: `vendor.go` is reviewed, and so is a file named `vendor`), `lockfile` (the name is
- * a lockfile's) and `minified` (the name ends in a minified suffix, in any case). A secret is taken before
+ * a lockfile's), `minified` (the name ends in a minified suffix, in any case) and `test` (the name marks a
+ * test, in its case, or a directory of the path is a test one: `src/testing/fake.ts` and `Contest.java` are
+ * reviewed, and a vendored test file is listed as `vendored`). A secret is taken before
  * anything, so a `vendor/.env` is still flagged. `secret` false passes the first rule over, for a file the
  * operator sends: it goes to the next rule, so a sent `vendor/.env` is still vendored.
  */
@@ -97,6 +142,7 @@ export function nameRule(path: string, secret = true): SkipRule | undefined {
   if (path.split('/').slice(0, -1).some(directory => VENDORED.has(directory))) return 'vendored'
   if (LOCKFILE_NAMES.has(name)) return 'lockfile'
   if (endsWithAny(name, MINIFIED_SUFFIXES)) return 'minified'
+  if (isTestPath(path, name)) return 'test'
   return undefined
 }
 

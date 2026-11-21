@@ -9,7 +9,7 @@ const S = 'c'.repeat(64)
 const ID = 'must be a full commit id of its object format: 40 lowercase hexadecimal characters for sha1, 64 for sha256'
 const KIND = 'must be diff, range, local, staged or paths'
 const REASON = 'must be excluded, binary, submodule, skipped, secret or deleted-secret'
-const RULE = 'must be vendored, lockfile, minified, secret, binary, submodule or lfs'
+const RULE = 'must be vendored, lockfile, minified, test, secret, binary, submodule or lfs'
 const SECRET_RULE = 'must be name, private-key, aws-key, github-token, slack-token, google-key, stripe-key, anthropic-key or openai-key'
 const RULE_ALONE = 'belongs to a skipped, secret or deleted-secret file only'
 
@@ -234,11 +234,12 @@ describe('leftOutIssues', () => {
     expect(lines(leftOutIssues([entry]))).toEqual(issues)
   })
 
-  it('takes a skipped file of each of the seven rules, and every other reason with no rule', () => {
+  it('takes a skipped file of each of the eight rules, and every other reason with no rule', () => {
     const rules = [
       'vendored',
       'lockfile',
       'minified',
+      'test',
       'secret',
       'binary',
       'submodule',

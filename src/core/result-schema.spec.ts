@@ -49,6 +49,20 @@ describe('the schemas of a result', () => {
     }
   })
 
+  it('reads a file skipped with the rule test in meta.leftOut, in the public view too', () => {
+    const result = reportResult({
+      meta: {
+        leftOut: [
+          { file: 'src/a.test.ts', reason: 'skipped', rule: 'test' },
+        ],
+      },
+    })
+    const full = saved(result)
+    expect(resultSchema.parse(full)).toEqual(full)
+    const view = saved(publicView(result))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+  })
+
   it('reads a result holding provider-down as a gap, a coverage reason and a vote failure', () => {
     const down = {
       angle: 'b',
