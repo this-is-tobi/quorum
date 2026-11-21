@@ -4,7 +4,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import { MAX_PATTERNS, patternProblem, TOO_MANY_PATTERNS } from '../core/exclude.ts'
 import { MIN_PART_TOKENS } from '../core/parts.ts'
 import type { CompletionRequest, CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
-import { MAX_RETRIES, MAX_STATED_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, retriesProblem, timeoutProblem } from '../core/ports.ts'
+import { MAX_RETRIES, MAX_STATED_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../core/ports.ts'
 import { FAIL_ON_LEVELS } from '../core/profile.ts'
 import { ownData } from '../core/stages/context.ts'
 import { securityProfile } from '../profiles/security.ts'
@@ -77,7 +77,7 @@ const providerShape = {
   extraBody: z.record(z.string(), z.json()).optional().describe('JSON values deep-merged into the request body last'),
   structuredOutput: z.enum(Object.keys(STRUCTURED_OUTPUTS) as [StructuredOutput, ...StructuredOutput[]]).optional().describe('How the reply shape reaches the endpoint: described in the prompt, as a JSON object, or as a strict schema'),
   temperature: z.number().nullable().optional().describe('The sampling temperature; null leaves the field out'),
-  maxTokens: z.int().min(1).optional().describe('The most tokens the reply may hold, thinking included, sent as the server\'s limit; 16000 when unset. On claude-code, Claude Code\'s own limit on each reply'),
+  maxTokens: z.int().min(1).optional().describe('The most tokens a reply may hold, thinking included: the ceiling of every reply, sent as the server\'s limit; with it unset, each request is sent the reply budget derived from the window, else 16000. On claude-code, Claude Code\'s own limit on each reply'),
   maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']).optional().describe('The body field that carries maxTokens, on the openai-compatible protocol'),
   systemPrompt: z.enum(['native', 'inline']).optional().describe('Where the instructions go: the protocol\'s system field, or inline in the first message'),
   timeoutMs: z.int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe('The deadline of one attempt of a call, in milliseconds; 600000 when unset. On claude-code, Claude Code\'s wait for each attempt\'s response headers, and the whole run\'s deadline is timeoutMs times retries plus one'),
@@ -157,15 +157,21 @@ const SNAPSHOTS = new WeakSet<object>()
 interface StatedFacts {
   readonly timeoutMs?: number
   readonly retries?: number
+  readonly window?: number
+  readonly maxTokens?: number
+  readonly thinking?: NonNullable<Provider['thinking']>
 }
 
-/** Each fact a provider states, with the check of its value: a deadline up to what a provider may state, which is more than an option takes. */
+/** Each fact a provider states, with the check of its value: a deadline up to what a provider may state, which is more than an option takes, and the window, the `maxTokens` and the thinking level the core sizes replies from. */
 const FACTS: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly problem: (value: unknown) => string | undefined }> = [
   {
     field: 'timeoutMs',
     problem: value => timeoutProblem(value, MAX_STATED_TIMEOUT_MS),
   },
   { field: 'retries', problem: retriesProblem },
+  { field: 'window', problem: tokensProblem },
+  { field: 'maxTokens', problem: tokensProblem },
+  { field: 'thinking', problem: thinkingProblem },
 ]
 
 /**
@@ -175,16 +181,16 @@ const FACTS: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly problem
  */
 export function statedFacts(provider: unknown): { readonly stated: StatedFacts, readonly problems: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly message: string }> } {
   // No prototype, so a reader of `stated` never finds a fact on `Object.prototype`.
-  const stated: Record<string, number> = Object.create(null)
+  const stated: Record<string, number | string> = Object.create(null)
   const problems: Array<{ field: keyof StatedFacts, message: string }> = []
   for (const { field, problem } of FACTS) {
     const value = ownData(provider, field)
     if (value === undefined) continue
     const message = problem(value)
-    if (message === undefined) stated[field] = value as number
+    if (message === undefined) stated[field] = value as number | string
     else problems.push({ field, message })
   }
-  return { stated, problems }
+  return { stated: stated as StatedFacts, problems }
 }
 
 /**
@@ -230,8 +236,8 @@ function snapshot({ worstCase, room, ...fields }: { readonly id?: string, readon
  * into a snapshot. The check reads `model` and `complete` one time each, and nothing reads the object again,
  * so a getter of the program's cannot run outside the guard that hides what it throws. The snapshot calls the
  * method read here on the object itself, through `Reflect.apply`, which reads nothing off the function. The
- * `timeoutMs` and `retries` it states are read as own data, so no getter runs for them; the snapshot keeps
- * each that is in range, and a value out of range is an issue at its field. The `worstCase` it states is read
+ * `timeoutMs`, `retries`, `window`, `maxTokens` and `thinking` it states are read as own data, so no getter runs
+ * for them; the snapshot keeps each that is in range, and a value out of range is an issue at its field. The `worstCase` it states is read
  * as own data too and kept as a function that calls it on the object, so the review's token cap counts
  * what the object says one call may cost; a value that is no function is an issue at its field. So is the
  * `room` it states, which the review reads to know how much one request of the object may hold.

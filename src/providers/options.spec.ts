@@ -422,10 +422,6 @@ describe('httpOptionIssues', () => {
 
   it.each<[Record<string, unknown>, string]>([
     [
-      { contextTokens: 16512 },
-      'must be more than 16512, the 16000 tokens of the reply budget and 512 for the chat template',
-    ],
-    [
       { contextTokens: 1000, maxTokens: 488 },
       'must be more than 1000, the 488 tokens of the reply budget and 512 for the chat template',
     ],
@@ -436,8 +432,14 @@ describe('httpOptionIssues', () => {
   })
 
   it('takes a context size one token over the reply budget and the chat template', () => {
-    expect(issuesOf({ contextTokens: 16513 })).toEqual([])
     expect(issuesOf({ contextTokens: 1001, maxTokens: 488 })).toEqual([])
+  })
+
+  it('accepts a window that holds the template reserve when maxTokens is unset, and refuses one that does not', () => {
+    expect(issuesOf({ contextTokens: 513 })).toEqual([])
+    expect(issuesOf({ contextTokens: 512 })).toEqual([
+      { path: 'p.contextTokens', message: 'must be more than 512, the tokens kept for the chat template' },
+    ])
   })
 
   it('checks the room against a valid maxTokens only', () => {

@@ -155,6 +155,40 @@ describe('estimate', () => {
     expect(sum(calls.map(call => call.spent))).toBeLessThanOrEqual(estimate.worst)
   })
 
+  it('builds each request at the reply budget and the findings its provider\'s window gives, as the review does, so each reservation is the one the review takes', async () => {
+    const asked: CompletionRequest[] = []
+    const reserve = (request: CompletionRequest): number => requestTokens(request) + 512 + (request.replyTokens ?? 16_000)
+    const events: QuorumEvent[] = []
+    const finder: Provider & { readonly requests: CompletionRequest[] } = {
+      ...windowed(32_768, request => request.output.name === 'panel_vote'
+        ? KEEP
+        : '{"findings":[]}'),
+      window: 32_768,
+      worstCase: (request) => {
+        asked.push(request)
+        return reserve(request)
+      },
+      room: request => 32_768 - reserve(request),
+    }
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+      concurrency: 1,
+    }, portsFor(securityProfile, finder, event => events.push(event)))
+    const estimate = quorum.estimate({ diff: DIFF })
+    const research = asked.filter(request => request.output.name === 'research_findings')
+    const votes = asked.filter(request => request.output.name === 'panel_vote')
+    // A window of 32768 gives research 8192 tokens and 15 findings, and a vote the 8192 a quarter of the window holds.
+    expect(research.length).toBeGreaterThan(1)
+    expect(research.map(request => [
+      request.replyTokens,
+      request.system.includes('List at most 15 findings,'),
+    ])).toEqual(research.map(() => [8192, true]))
+    expect(votes.length).toBeGreaterThan(0)
+    expect(new Set(votes.map(request => request.replyTokens))).toEqual(new Set([8192]))
+    await quorum.review({ diff: DIFF })
+    expect(events.filter(event => event.type === 'call').map(call => call.spent)).toEqual(estimate.profiles.security.parts)
+  })
+
   it('counts the research parts at a third of their bound, rounded up, and the votes in the worst case only', () => {
     const finder = windowed(32_768, () => '{"findings":[]}')
     const quorum = createQuorum({

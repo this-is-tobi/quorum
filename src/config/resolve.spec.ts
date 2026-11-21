@@ -83,8 +83,8 @@ describe('resolveConfig', () => {
   })
 
   it('names the variable that set a context size the adapter refuses, and the rule a malformed one breaks', () => {
-    expect(issuesOf({}, { QUORUM_RESEARCH_MODEL: 'q', QUORUM_RESEARCH_CONTEXT_TOKENS: '16512' })).toEqual([
-      { path: 'QUORUM_RESEARCH_CONTEXT_TOKENS', message: 'must be more than 16512, the 16000 tokens of the reply budget and 512 for the chat template' },
+    expect(issuesOf({}, { QUORUM_RESEARCH_MODEL: 'q', QUORUM_RESEARCH_CONTEXT_TOKENS: '512' })).toEqual([
+      { path: 'QUORUM_RESEARCH_CONTEXT_TOKENS', message: 'must be more than 512, the tokens kept for the chat template' },
     ])
     expect(issuesOf({}, { QUORUM_RESEARCH_MODEL: 'q', QUORUM_RESEARCH_CONTEXT_TOKENS: '32k' })).toEqual([
       { path: 'QUORUM_RESEARCH_CONTEXT_TOKENS', message: 'must be a whole number of tokens, from 1 to 999999999' },

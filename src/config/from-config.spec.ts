@@ -353,6 +353,37 @@ describe('fromConfig', () => {
     expect(worstCase).toHaveBeenCalledTimes(2)
   })
 
+  it('hands a code config\'s provider object\'s stated window, maxTokens and thinking to the review, which sizes each reply from them', async () => {
+    const complete = vi.fn<(request: CompletionRequest) => Promise<CompletionResponse>>()
+      .mockResolvedValue({ text: '{"findings":[]}', model: 'm' })
+    await (await fromConfig({
+      providers: {
+        mine: {
+          model: 'm',
+          complete,
+          window: 8192,
+          thinking: 'off',
+        },
+      },
+    }, { env: {} })).review({ diff })
+    // A window of 8192 with no thinking: a quarter of it, 2048 tokens, which hold 7 findings.
+    const request = complete.mock.calls[0][0]
+    expect(request.replyTokens).toBe(2048)
+    expect(request.system).toContain('List at most 7 findings,')
+    complete.mockClear()
+    await (await fromConfig({
+      providers: {
+        mine: {
+          model: 'm',
+          complete,
+          window: 8192,
+          maxTokens: 700,
+        },
+      },
+    }, { env: {} })).review({ diff })
+    expect(complete.mock.calls[0][0].replyTokens).toBe(700)
+  })
+
   it('hands a code config\'s provider object\'s stated room to the review, which then researches in parts', async () => {
     // Six files of 92 tokens each, which a request that leaves 500 tokens holds in six parts, not in one.
     const six = [

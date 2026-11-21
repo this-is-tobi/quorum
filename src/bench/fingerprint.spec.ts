@@ -225,6 +225,30 @@ describe('fingerprint', () => {
     expect(researchOf(unstated)).toEqual({ model: 'm', object: 'fake' })
   })
 
+  it('holds the window, the maxTokens and the thinking a provider object states beside its deadline', () => {
+    const stated = of({
+      ...object('m'),
+      window: 8192,
+      maxTokens: 700,
+      thinking: 'low',
+    }, 'fake')
+    const researchOf = (config: ResolvedConfig): unknown => (JSON.parse(canonicalSettings(config)) as { profiles: Array<{ research: unknown }> }).profiles[0].research
+    expect(researchOf(stated)).toEqual({
+      model: 'm',
+      object: 'fake',
+      window: 8192,
+      maxTokens: 700,
+      thinking: 'low',
+    })
+    expect(same(stated, of(object('m'), 'fake'))).toBe(false)
+    expect(same(stated, of({
+      ...object('m'),
+      window: 8192,
+      maxTokens: 700,
+      thinking: 'off',
+    }, 'fake'))).toBe(false)
+  })
+
   it('never holds the worstCase a provider object states: one that states it is the same configuration as one that does not', () => {
     const stated = of({
       ...object('m'),

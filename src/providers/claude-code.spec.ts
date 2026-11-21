@@ -526,9 +526,15 @@ describe('claudeCodeIssues', () => {
       ],
     ],
     [
-      { contextTokens: 20096 },
+      { contextTokens: 4096 },
       [
-        at('contextTokens', 'must be more than 20096, the 16000 tokens of the reply budget and 4096 for the chat template'),
+        at('contextTokens', 'must be more than 4096, the tokens kept for the chat template'),
+      ],
+    ],
+    [
+      { contextTokens: 8000, maxTokens: 3904 },
+      [
+        at('contextTokens', 'must be more than 8000, the 3904 tokens of the reply budget and 4096 for the chat template'),
       ],
     ],
     [
@@ -1392,6 +1398,50 @@ describe('claudeCode', () => {
     // The fake exited while its grandchild still held the pipes: the call did not wait, and the group is gone.
     await vi.waitFor(() => expect(isRunning(record.grandchild as number)).toBe(false), { timeout: 2000 })
     expect(readdirSync(runs)).toEqual([])
+  })
+
+  it('sets CLAUDE_CODE_MAX_OUTPUT_TOKENS per run from the request\'s budget, capped by maxTokens, else maxTokens, else 16000', async () => {
+    for (const [name, maxTokens, replyTokens, expected] of [
+      [
+        'budget-asked',
+        undefined,
+        4000,
+        '4000',
+      ],
+      ['budget-capped', 3000, 4000, '3000'],
+      [
+        'budget-ceiling',
+        3000,
+        undefined,
+        '3000',
+      ],
+      [
+        'budget-default',
+        undefined,
+        undefined,
+        '16000',
+      ],
+    ] as const) {
+      const provider = claudeCode({
+        id: 'cc',
+        model: 'haiku',
+        contextTokens: 200000,
+        ...maxTokens === undefined
+          ? {}
+          : { maxTokens },
+        command: claude,
+        env: fakeClaudeEnv(dir, name, fixtures.schema),
+      })
+      await provider.complete({
+        ...request,
+        ...replyTokens === undefined
+          ? {}
+          : { replyTokens },
+      })
+      expect(readFakeRecord(dir, name).env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, name).toBe(expected)
+      // It states its window, its maxTokens when set and thinking default, as own data.
+      expect(Object.fromEntries(['window', 'maxTokens', 'thinking'].map(field => [field, Object.getOwnPropertyDescriptor(provider, field)?.value]))).toEqual({ window: 200000, maxTokens, thinking: 'default' })
+    }
   })
 
   it('runs api-key mode bare with its key, and reports an exit without JSON by its stderr, redacted of every credential it holds', async () => {

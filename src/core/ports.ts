@@ -14,6 +14,12 @@ export interface CompletionRequest {
   messages: readonly ChatMessage[]
   /** The reply shape the caller validates against; adapters may also use it for native enforcement. */
   output: { name: string, schema: JsonSchema }
+  /**
+   * The tokens the core budgets for this reply, thinking included: a whole number of at least 1, which an
+   * adapter counts in its size guard and sends as the server's limit, at most its `maxTokens` when it has one.
+   * Absent, the request states none, and an adapter reserves its `maxTokens`, else 16000.
+   */
+  replyTokens?: number
   /** The attempt's own signal: aborted with the review's, or at the attempt's deadline. */
   signal?: AbortSignal
 }
@@ -71,6 +77,23 @@ export function retriesProblem(value: unknown): string | undefined {
 }
 
 /**
+ * What is wrong with a stated count of tokens, `window` or `maxTokens`, worded with what to write, or undefined
+ * for a whole number of at least 1. The value is never quoted: it may be anything.
+ */
+export function tokensProblem(value: unknown): string | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1
+    ? undefined
+    : 'must be a whole number of tokens of at least 1'
+}
+
+/** What is wrong with a stated `thinking`, worded with what to write, or undefined for `default`, `low` or `off`. The value is never quoted. */
+export function thinkingProblem(value: unknown): string | undefined {
+  return value === 'default' || value === 'low' || value === 'off'
+    ? undefined
+    : 'must be default, low or off'
+}
+
+/**
  * A model behind a port: it receives text and returns text (invariant I1). No environment value, key
  * or credential appears in a request; keys live in adapters only. The core never trusts the reply
  * and extracts and validates it itself.
@@ -114,6 +137,24 @@ export interface Provider {
    * states nothing, so a class sets it as an arrow-function field.
    */
   readonly room?: (request: CompletionRequest) => number
+  /**
+   * The model's context window in tokens, prompt and reply together: a whole number of at least 1, which the
+   * core sizes the reply budgets from. A provider that states none is reserved and asked as it always was. It
+   * is read when the quorum is created, as an own data property, as `timeoutMs` is.
+   */
+  readonly window?: number
+  /**
+   * The most tokens a reply may hold, a whole number of at least 1: the ceiling of every reply the provider
+   * gives, which the core never asks more than. It is read when the quorum is created, as an own data
+   * property, as `timeoutMs` is.
+   */
+  readonly maxTokens?: number
+  /**
+   * How much the provider thinks: `default` (the server's own, and what a provider that states nothing is
+   * taken to do), `low` or `off`. The core leaves room for the thinking a level allows when it sizes a reply.
+   * It is read when the quorum is created, as an own data property, as `timeoutMs` is.
+   */
+  readonly thinking?: 'default' | 'low' | 'off'
   /**
    * Answer one request. It should honour `request.signal`, settling soon after the signal aborts:
    * the core settles the call at its deadline or at the review's abort without waiting for the

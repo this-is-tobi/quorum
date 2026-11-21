@@ -1332,13 +1332,13 @@ describe('a claude-code provider', () => {
   })
 
   it('holds the context size to the adapter\'s reserve for what Claude Code adds, and to its being set', () => {
-    expect(issuesOf({ ...cc, contextTokens: 20096 })).toEqual([
-      { path: 'p.contextTokens', message: 'must be more than 20096, the 16000 tokens of the reply budget and 4096 for the chat template' },
+    expect(issuesOf({ ...cc, contextTokens: 4096 })).toEqual([
+      { path: 'p.contextTokens', message: 'must be more than 4096, the tokens kept for the chat template' },
     ])
     expect(issuesOf({ ...cc, contextTokens: undefined })).toEqual([
       { path: 'p.contextTokens', message: CONTEXT_REQUIRED },
     ])
-    expect(issuesOf({ ...cc, contextTokens: 20097 })).toEqual([])
+    expect(issuesOf({ ...cc, contextTokens: 4097 })).toEqual([])
   })
 
   it('throws the spec\'s problems and the adapter\'s in one ConfigError', () => {

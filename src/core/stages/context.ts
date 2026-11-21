@@ -1,3 +1,4 @@
+import type { ProfileBudgets } from '../budgets.ts'
 import type { Clock } from '../clock.ts'
 import type { Limiter } from '../concurrency.ts'
 import type { Health } from '../down.ts'
@@ -6,17 +7,17 @@ import type { NoAnswer, ProviderErrorKind } from '../errors.ts'
 import { settlementOf } from '../limits.ts'
 import type { Ledger } from '../limits.ts'
 import { isRecord } from '../output.ts'
-import { DEFAULT_TIMEOUT_MS, MAX_STATED_TIMEOUT_MS, retriesProblem, timeoutProblem } from '../ports.ts'
+import { DEFAULT_TIMEOUT_MS, MAX_STATED_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../ports.ts'
 import type { CompletionRequest, CompletionResponse, EventSink, Provider } from '../ports.ts'
 import { isTimeout, retryWait } from '../retry.ts'
 import type { FailureFacts } from '../retry.ts'
-import { DEFAULT_REPLY_TOKENS, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
+import { DEFAULT_REPLY_TOKENS, replyLimit, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
 import type { FailOn, ProviderRef, QuorumEvent, StageName, Thresholds, Usage } from '../types.ts'
 
 /**
  * A provider as a compiled profile holds it: the object it calls, the ref captured at creation that
- * events and meta report, the deadline of each of its attempts, the retries of a call, and the worst case
- * and the room it states.
+ * events and meta report, the deadline of each of its attempts, the retries of a call, the worst case and the
+ * room it states, and the window, the `maxTokens` and the thinking level it states.
  */
 export interface Target {
   readonly provider: Provider
@@ -29,6 +30,12 @@ export interface Target {
   readonly worstCase: ((request: CompletionRequest) => unknown) | undefined
   /** The room the provider stated when the quorum was created, when it is a function; `roomOf` reads its result. */
   readonly room: ((request: CompletionRequest) => unknown) | undefined
+  /** The context window the provider stated when the quorum was created, in tokens, when it passes its check. */
+  readonly window: number | undefined
+  /** The ceiling of a reply the provider stated when the quorum was created, in tokens, when it passes its check. */
+  readonly maxTokens: number | undefined
+  /** The thinking level the provider stated when the quorum was created, `default` when it states none or one that fails its check. */
+  readonly thinking: NonNullable<Provider['thinking']>
 }
 
 /** One lens of a compiled profile: its vote instructions, rendered once, and its own provider. */
@@ -90,6 +97,8 @@ export interface RunContext {
   readonly lacked: Set<string>
   /** How many findings of a research reply each profile sends to the panel. */
   readonly maxFindings: number
+  /** The reply budgets of each profile, by profile id: what its research and vote requests carry and ask for. */
+  readonly budgets: Readonly<Record<string, ProfileBudgets>>
   /** The review's concurrency: how many parts of its research one profile has in flight at once. */
   readonly concurrency: number
   /** The time and the randomness the call path reads: the system's, unless a spec injects its own. */
@@ -162,9 +171,9 @@ export function lackOf(error: unknown): { readonly kind: 'truncated' | 'no-answe
 }
 
 /**
- * What a request was sent with, that a reply's counts are read against: its reply limit and its provider's stated
- * window, in tokens. The call path states neither yet, so no cut-off is below its limit here and the window line
- * carries no window.
+ * What a request was sent with, that a reply's counts are read against: the reply limit it was sent with, which
+ * is undefined for a provider that states no `maxTokens` and a request that carries no budget, and its provider's
+ * stated window, in tokens.
  */
 interface SentWith {
   readonly limit?: number
@@ -258,13 +267,17 @@ export interface Requester {
  * ones they passed; a proxy that answers the check and this read differently still gets an in-range
  * deadline and no retry, never an unbounded one. The worst case it states is its own data value when
  * that is a function, else none, and so is the room it states: a getter is never run, and an inherited method
- * states nothing.
+ * states nothing. Its window and its `maxTokens` are taken as own data when each is a whole number of tokens of at
+ * least 1, else it states none, and its thinking when it is `default`, `low` or `off`, else `default`.
  */
 export function targetOf(provider: Provider): Target {
   const timeoutMs = ownData(provider, 'timeoutMs')
   const retries = ownData(provider, 'retries')
   const worstCase = ownData(provider, 'worstCase')
   const room = ownData(provider, 'room')
+  const window = ownData(provider, 'window')
+  const maxTokens = ownData(provider, 'maxTokens')
+  const thinking = ownData(provider, 'thinking')
   return {
     provider,
     ref: Object.freeze({ id: provider.id, model: provider.model }),
@@ -280,6 +293,15 @@ export function targetOf(provider: Provider): Target {
     room: typeof room === 'function'
       ? room as Target['room']
       : undefined,
+    window: tokensProblem(window) === undefined
+      ? window as number
+      : undefined,
+    maxTokens: tokensProblem(maxTokens) === undefined
+      ? maxTokens as number
+      : undefined,
+    thinking: thinkingProblem(thinking) === undefined
+      ? thinking as Target['thinking']
+      : 'default',
   }
 }
 
@@ -437,7 +459,10 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
             : { noAnswer: found.noAnswer }),
         })
       }
-      const lacked = lackedEvent(target.ref.id, error, {})
+      const lacked = lackedEvent(target.ref.id, error, {
+        limit: replyLimit(request, target.maxTokens),
+        window: target.window,
+      })
       if (lacked !== undefined && !ctx.lacked.has(lacked.key)) {
         ctx.lacked.add(lacked.key)
         ctx.emit(lacked.event)

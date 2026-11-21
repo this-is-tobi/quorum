@@ -1,8 +1,10 @@
+import type { ProfileBudgets } from './budgets.ts'
 import { reviewScope } from './coverage.ts'
 import { diffSections, splitDiff } from './diff.ts'
 import { partText } from './parts.ts'
 import type { CompletionRequest } from './ports.ts'
 import { researchRequest, voteRequest } from './prompts.ts'
+import type { Ask } from './prompts.ts'
 import { reservationOf, roomOf } from './stages/context.ts'
 import type { LensRun, ProfileRun } from './stages/context.ts'
 import { planResearch } from './stages/research.ts'
@@ -27,6 +29,8 @@ export interface EstimateSettings {
   readonly partTokens: number
   /** How many findings of a research reply each profile sends to the panel. */
   readonly maxFindings: number
+  /** The reply budgets of each profile, by profile id: what its requests carry and ask for, as the review sends them. */
+  readonly budgets: Readonly<Record<string, ProfileBudgets>>
   /** How many provider calls run at once in one review. */
   readonly concurrency: number
   /** The token cap of one review. */
@@ -50,6 +54,9 @@ interface Section {
  * research part is the one the ledger takes for it. A diff with nothing left to read makes no call and costs
  * nothing.
  *
+ * Each request is built as the review builds it, with the reply budget and the findings its provider's budgets
+ * give it, so a reservation is the one the review takes.
+ *
  * A vote's reservation depends on a finding that does not exist yet, so each lens's is a bound: the request for
  * a finding at the caps the harness cleans a finder's text to, citing the largest section of the filtered
  * diff, whole for a voter that states no room or whose room holds it, else the partial context filled to its
@@ -72,7 +79,7 @@ export function estimateReview(runs: readonly ProfileRun[], settings: EstimateSe
     id: run.id,
     estimate: largest === undefined
       ? noCall()
-      : profileEstimate(run, planResearch(run, scope.diff, filtered, settings.partTokens), scope.diff, largest, settings.maxFindings),
+      : profileEstimate(run, planResearch(run, scope.diff, filtered, { partTokens: settings.partTokens, maxFindings: settings.maxFindings, replyTokens: settings.budgets[run.id].research.replyTokens }), scope.diff, largest, settings),
   }))
   const profiles = estimates.map(({ estimate }) => estimate)
   const expected = sum(profiles.map(profile => profile.expected))
@@ -118,10 +125,12 @@ function largestSection(sections: ReadonlyMap<string, string>, diff: string): Se
 }
 
 /** One profile's estimate, from the plan its research follows. */
-function profileEstimate(run: ProfileRun, plan: ResearchPlan, diff: string, largest: Section, maxFindings: number): ProfileEstimate {
-  const parts = researchReservations(run, plan, diff)
+function profileEstimate(run: ProfileRun, plan: ResearchPlan, diff: string, largest: Section, settings: EstimateSettings): ProfileEstimate {
+  const { maxFindings } = settings
+  const budgets = settings.budgets[run.id]
+  const parts = researchReservations(run, plan, diff, { findings: budgets.research.findings, replyTokens: budgets.research.replyTokens })
   if (parts.length === 0) return noCall()
-  const bounds = run.lenses.map(lens => voteBound(run, lens, largest))
+  const bounds = run.lenses.map(lens => voteBound(run, lens, largest, budgets.lenses[lens.id].replyTokens))
   return {
     parts,
     votes: maxFindings * run.lenses.length,
@@ -137,13 +146,13 @@ function profileEstimate(run: ProfileRun, plan: ResearchPlan, diff: string, larg
  * not blank, a plan of one part sending its text with no parts block, and a plan of several naming each part's
  * position among them and the change's files. A part that holds only white space is asked of no model.
  */
-function researchReservations(run: ProfileRun, plan: ResearchPlan, diff: string): number[] {
+function researchReservations(run: ProfileRun, plan: ResearchPlan, diff: string, ask: Ask): number[] {
   const { instructions } = run.research
   const reserve = (request: CompletionRequest): number => reservationOf(run.research, request)
   const { packing } = plan
   if (packing === undefined) {
     return [
-      reserve(researchRequest(instructions, diff, run.guidelines)),
+      reserve(researchRequest(instructions, diff, run.guidelines, undefined, ask)),
     ]
   }
   const { parts } = packing
@@ -153,13 +162,13 @@ function researchReservations(run: ProfileRun, plan: ResearchPlan, diff: string)
     if (text.trim() === '') return []
     return [
       reserve(parts.length === 1
-        ? researchRequest(instructions, text, run.guidelines)
+        ? researchRequest(instructions, text, run.guidelines, undefined, ask)
         : researchRequest(instructions, text, run.guidelines, {
             index: index + 1,
             count: parts.length,
             files,
             unlisted,
-          })),
+          }, ask)),
     ]
   })
 }
@@ -187,9 +196,9 @@ function longestFinding(file: string): Finding {
  * request filled to that room, the most such a context holds. A room of the partial request that states
  * nothing, or less than 0, sends the whole section, which the provider refuses as too large.
  */
-function voteBound(run: ProfileRun, lens: LensRun, largest: Section): number {
+function voteBound(run: ProfileRun, lens: LensRun, largest: Section, replyTokens: number | undefined): number {
   const finding = longestFinding(largest.path)
-  const request = (context: string, partial = false): CompletionRequest => voteRequest(lens.instructions, finding, context, run.guidelines, partial)
+  const request = (context: string, partial = false): CompletionRequest => voteRequest(lens.instructions, finding, context, run.guidelines, partial, { replyTokens })
   const room = roomOf(lens, request(''))
   if (room !== undefined && largest.tokens > room) {
     const partialRoom = roomOf(lens, request('', true))

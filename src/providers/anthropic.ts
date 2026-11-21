@@ -1,11 +1,11 @@
 import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
-import type { CompletionResponse, Provider } from '../core/ports.ts'
+import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson } from './http.ts'
 import { shapeMessages } from './messages.ts'
 import { isRecord, mergeBody, prepareHttp } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions } from './options.ts'
 import { endedEarly, joinedText, readAnswer, replyFailure, tokenUsage } from './reply.ts'
-import { checkFits, contextBudget, DEFAULT_REPLY_TOKENS, roomTokens, worstCaseTokens } from './size.ts'
+import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
 import type { ContextBudget } from './size.ts'
 
 /** The options of an Anthropic Messages provider: the ones every HTTP adapter takes, and no other. */
@@ -105,28 +105,31 @@ function readReply(reply: unknown, { id, model, budget }: Pick<AnthropicOptions,
  * there is one, travels only in the header `auth` names, `Authorization: Bearer` by default (invariant
  * I1). It never sends an assistant prefill, which current models reject. It refuses, before any request,
  * a request that may not fit `contextTokens`. It always sends a token limit, since the Messages API
- * requires one: `maxTokens`, else the reply budget of the size guard. It states its worst case from the
- * count its size guard keeps: the text it sends, the template reserve and that budget, and the room its
- * guard leaves from the same count: `contextTokens` less those three.
+ * requires one: the request's reply budget at most `maxTokens`, else `maxTokens`, else 16000
+ * (`replyBudgetOf`). It states its worst case from the count its size guard keeps: the text it sends, the
+ * template reserve and that budget, and the room its guard leaves from the same count: `contextTokens` less
+ * those three. It also states its window, its `maxTokens` when set, and thinking `default`.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function anthropic(options: AnthropicOptions): Provider {
-  const { id, model, auth = 'bearer' as Auth, temperature, maxTokens = DEFAULT_REPLY_TOKENS, contextTokens, systemPrompt = 'native', structuredOutput = 'prompt', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
+  const { id, model, auth = 'bearer' as Auth, temperature, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'prompt', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
   const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/v1/messages')
   // The version goes last, so no header can replace it.
   const sent = { ...headers, 'anthropic-version': ANTHROPIC_VERSION }
-  const budget = contextBudget(contextTokens, maxTokens)
+  const budgetOf = (request: CompletionRequest): ContextBudget => contextBudget(contextTokens, replyBudgetOf(request, maxTokens))
 
   return {
     id,
     model,
     timeoutMs,
     retries,
-    worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budget),
-    room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budget),
+    ...statedReply(contextTokens, maxTokens),
+    worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
+    room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
+      const budget = budgetOf(request)
       checkFits(id, { system, messages }, request.output, budget)
       // JSON.stringify drops the undefined fields: no system inline, no temperature unless set, no output_config outside schema mode.
       const reply = await postJson<unknown>({
@@ -135,7 +138,7 @@ export function anthropic(options: AnthropicOptions): Provider {
         headers: sent,
         body: mergeBody({
           model,
-          max_tokens: maxTokens,
+          max_tokens: budget.replyTokens,
           system,
           messages,
           temperature: temperature ?? undefined,

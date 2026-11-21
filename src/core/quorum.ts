@@ -1,4 +1,6 @@
 import { VERSION } from './version.ts'
+import { DEFAULT_MAX_FINDINGS, profileBudgets } from './budgets.ts'
+import type { ProfileBudgets } from './budgets.ts'
 import { systemClock } from './clock.ts'
 import type { Clock } from './clock.ts'
 import { createLimiter, DEFAULT_CONCURRENCY } from './concurrency.ts'
@@ -16,7 +18,7 @@ import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, Lim
 import { isRecord } from './output.ts'
 import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap } from './parts.ts'
 import type { PartOutcome } from './parts.ts'
-import { MAX_STATED_TIMEOUT_MS, retriesProblem, timeoutProblem } from './ports.ts'
+import { MAX_STATED_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts } from './ports.ts'
 import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
 import { renderTemplate } from './prompts.ts'
@@ -25,7 +27,7 @@ import type { ProfileRun, RunContext } from './stages/context.ts'
 import { dedup } from './stages/dedup.ts'
 import { panel } from './stages/panel.ts'
 import type { PanelOutcome } from './stages/panel.ts'
-import { DEFAULT_MAX_FINDINGS, planResearch, research } from './stages/research.ts'
+import { planResearch, research } from './stages/research.ts'
 import type { ResearchPlan } from './stages/research.ts'
 import type { CoverageEntry, Estimate, Profile, ProfileMeta, ProfileProviders, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ReviewInput, Usage } from './types.ts'
 
@@ -45,6 +47,8 @@ interface Compiled {
   readonly reviewTimeoutMs: number
   /** The most tokens of diff text one research part holds. */
   readonly partTokens: number
+  /** The reply budgets of each profile at its providers' stated windows, by profile id, computed once. */
+  readonly budgets: Readonly<Record<string, ProfileBudgets>>
   /** The time and the randomness every review reads: the system's, unless a spec injects its own through `createQuorumWith`. */
   readonly clock: Clock
   /** Whether a file's path is left out of every request, built once from `exclude`. */
@@ -113,13 +117,21 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
   const issues = inputIssues(options, ports)
   if (issues.length > 0) throw new ConfigError(issues)
   // The checks found every profile valid and named once, with an own entry in ports.profiles and an own voter per lens.
-  const compiled: Compiled = {
-    runs: Object.freeze(options.profiles.map(profile => compile(profile, ports.profiles[profile.id]))),
-    concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
+  const runs = Object.freeze(options.profiles.map(profile => compile(profile, ports.profiles[profile.id])))
+  const settings = {
     maxFindings: options.maxFindings ?? DEFAULT_MAX_FINDINGS,
     maxReviewTokens: options.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS,
-    reviewTimeoutMs: options.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
     partTokens: options.partTokens ?? DEFAULT_PART_TOKENS,
+  }
+  const compiled: Compiled = {
+    runs,
+    concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
+    ...settings,
+    budgets: Object.fromEntries(runs.map(run => [
+      run.id,
+      profileBudgets(run, target => target.window, settings),
+    ])),
+    reviewTimeoutMs: options.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
     clock,
     excluded: excludeMatcher(options.exclude ?? []),
     sink: ports.events,
@@ -305,7 +317,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     : diffSections(scope.diff)
   const plans = sections === undefined
     ? []
-    : runs.map(run => planResearch(run, scope.diff, filtered, compiled.partTokens))
+    : runs.map(run => planResearch(run, scope.diff, filtered, { partTokens: compiled.partTokens, maxFindings: compiled.maxFindings, replyTokens: compiled.budgets[run.id].research.replyTokens }))
   const gaps = new Map(runs.map((run, index) => {
     const tooLarge = tooLargeGap(run.id, filtered, plans[index]?.packing, scope.leftOut)
     return [
@@ -343,6 +355,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     health: createHealth(),
     lacked: new Set(),
     maxFindings: compiled.maxFindings,
+    budgets: compiled.budgets,
     concurrency: compiled.concurrency,
     clock: compiled.clock,
   }
@@ -661,7 +674,9 @@ function profilePortIssues(entries: Record<string, unknown>, profile: Profile): 
 
 /**
  * The issues of one provider: it is missing, it is not one, the `timeoutMs` or the `retries` it
- * states, as own data, is out of range, or the `worstCase` or the `room` it states, as own data, is not a function.
+ * states, as own data, is out of range, the `window` or the `maxTokens` it states is not a whole number of
+ * tokens of at least 1, its `thinking` is not `default`, `low` or `off`, or the `worstCase` or the `room` it
+ * states, as own data, is not a function.
  */
 function providerIssues(path: string, value: unknown): ConfigIssue[] {
   if (value === undefined) {
@@ -685,6 +700,18 @@ function providerIssues(path: string, value: unknown): ConfigIssue[] {
     ? undefined
     : retriesProblem(retries)
   if (retry !== undefined) issues.push({ path: `${path}.retries`, message: retry })
+  for (const field of ['window', 'maxTokens'] as const) {
+    const stated = ownData(value, field)
+    const problem = stated === undefined
+      ? undefined
+      : tokensProblem(stated)
+    if (problem !== undefined) issues.push({ path: `${path}.${field}`, message: problem })
+  }
+  const thinking = ownData(value, 'thinking')
+  const thinkingIssue = thinking === undefined
+    ? undefined
+    : thinkingProblem(thinking)
+  if (thinkingIssue !== undefined) issues.push({ path: `${path}.thinking`, message: thinkingIssue })
   const worstCase = ownData(value, 'worstCase')
   if (worstCase !== undefined && typeof worstCase !== 'function') issues.push({ path: `${path}.worstCase`, message: 'must be a function' })
   const room = ownData(value, 'room')

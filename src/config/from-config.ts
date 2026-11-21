@@ -26,7 +26,7 @@ function fromSpec(name: string, spec: Exclude<ResolvedProvider, Provider>, env: 
   }
 }
 
-/** A provider object of the config, which the check read once into a snapshot, under the name the config gives it, with the `timeoutMs`, `retries`, `worstCase` and `room` the snapshot holds. */
+/** A provider object of the config, which the check read once into a snapshot, under the name the config gives it, with the facts (`timeoutMs`, `retries`, `window`, `maxTokens` and `thinking`), the `worstCase` and the `room` the snapshot holds. */
 function fromObject(name: string, snapshot: Provider): { readonly provider?: Provider, readonly issues: readonly ConfigIssue[] } {
   const { model, complete }: { model: unknown, complete: Provider['complete'] } = snapshot
   if (typeof model !== 'string') {

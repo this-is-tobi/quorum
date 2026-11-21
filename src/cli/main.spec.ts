@@ -1073,7 +1073,7 @@ describe('the diff byte cap', () => {
 
 describe('the size guard', () => {
   it('sends nothing and exits 4, even with --allow-incomplete, when the research request may not fit the model', async () => {
-    const config = write('small.yaml', 'providers:\n  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 17000}\n')
+    const config = write('small.yaml', 'providers:\n  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 2000}\n')
     const fetchMock = stubChat()
     const { io, stdout, stderr } = harness({
       argv: ['--config', config, '--allow-incomplete'],
@@ -1081,7 +1081,7 @@ describe('the size guard', () => {
     })
     expect(await runCli(io)).toBe(EXIT.incomplete)
     expect(fetchMock).not.toHaveBeenCalled()
-    const refusal = 'local: may need 18087 tokens, more than contextTokens (17000): 1575 for its text at one token per byte, 512 for the chat template and 16000 for the reply'
+    const refusal = 'local: may need 2707 tokens, more than contextTokens (2000): 1695 for its text at one token per byte, 512 for the chat template and 500 for the reply'
     expect((JSON.parse(stdout()) as QuorumResult).meta.incomplete).toEqual([
       { profile: 'security', reason: 'request-too-large', detail: `the research request was not sent: ${refusal}` },
     ])
@@ -1092,7 +1092,7 @@ describe('the size guard', () => {
     const yaml = [
       'providers:',
       '  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 1000000}',
-      '  small: {protocol: openai-compatible, baseUrl: "https://v.example/v1", model: v, contextTokens: 17000}',
+      '  small: {protocol: openai-compatible, baseUrl: "https://v.example/v1", model: v, contextTokens: 2000}',
       'roles: {research: local, voter: small}',
       '',
     ].join('\n')
@@ -1124,7 +1124,7 @@ describe('the size guard', () => {
         profile: 'security',
         reason: 'request-too-large',
         file: 'a.js',
-        detail: '"a.js":1: 3 of 3 vote requests were not sent: small: may need 18062 tokens, more than contextTokens (17000): 1550 for its text at one token per byte, 512 for the chat template and 16000 for the reply',
+        detail: '"a.js":1: 3 of 3 vote requests were not sent: small: may need 2562 tokens, more than contextTokens (2000): 1550 for its text at one token per byte, 512 for the chat template and 500 for the reply',
       },
     ])
   })

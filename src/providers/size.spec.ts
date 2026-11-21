@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ProviderError } from '../core/errors.ts'
-import { checkFits, contextBudget, roomTokens, textTokens, utf8Length, worstCaseTokens } from './size.ts'
+import { checkFits, contextBudget, replyBudgetOf, roomTokens, textTokens, utf8Length, worstCaseTokens } from './size.ts'
 
 const output = {
   name: 'panel_vote',
@@ -226,15 +226,52 @@ describe('textTokens', () => {
 })
 
 describe('contextBudget', () => {
-  it('reserves maxTokens for the reply, else 16000', () => {
-    expect(contextBudget(32768, undefined)).toEqual({ contextTokens: 32768, replyTokens: 16000, templateTokens: 512 })
+  it('reserves the reply budget it is given', () => {
+    expect(contextBudget(32768, 16000)).toEqual({ contextTokens: 32768, replyTokens: 16000, templateTokens: 512 })
     expect(contextBudget(32768, 900)).toEqual({ contextTokens: 32768, replyTokens: 900, templateTokens: 512 })
   })
 
   it('keeps the chat template reserve a budget names', () => {
-    expect(contextBudget(200000, undefined, 4096)).toEqual({ contextTokens: 200000, replyTokens: 16000, templateTokens: 4096 })
+    expect(contextBudget(200000, 16000, 4096)).toEqual({ contextTokens: 200000, replyTokens: 16000, templateTokens: 4096 })
     expect(() => checkFits('p', shaped, output, { contextTokens: 4229, replyTokens: 100, templateTokens: 4096 })).not.toThrow()
     expect(() => checkFits('p', shaped, output, { contextTokens: 4228, replyTokens: 100, templateTokens: 4096 })).toThrow('p: may need 4229 tokens, more than contextTokens (4228): 33 for its text at one token per byte, 4096 for the chat template and 100 for the reply')
+  })
+})
+
+describe('replyBudgetOf', () => {
+  it.each([
+    [
+      'the request\'s',
+      [4000],
+      undefined,
+      4000,
+    ],
+    [
+      'the request\'s, capped by maxTokens',
+      [4000],
+      1000,
+      1000,
+    ],
+    [
+      'maxTokens alone',
+      [undefined],
+      1000,
+      1000,
+    ],
+    [
+      '16000 when neither is set or the request\'s is ignored',
+      [undefined, 0, Number.NaN],
+      undefined,
+      16_000,
+    ],
+    [
+      'maxTokens, or 16000, when the request\'s is 0, NaN or no whole number, which are ignored',
+      [0, Number.NaN, 1.5, -3],
+      900,
+      900,
+    ],
+  ])('takes the reply budget %s', (_name, replyTokens, maxTokens, expected) => {
+    for (const tokens of replyTokens) expect(replyBudgetOf({ replyTokens: tokens }, maxTokens)).toBe(expected)
   })
 })
 
@@ -271,13 +308,13 @@ describe('roomTokens', () => {
 
 describe('worstCaseTokens', () => {
   it('is the text, the template reserve and the reply budget of one turn', () => {
-    expect(worstCaseTokens(shaped, output, contextBudget(100_000, undefined))).toBe(16_545)
+    expect(worstCaseTokens(shaped, output, contextBudget(100_000, 16_000))).toBe(16_545)
     expect(worstCaseTokens(shaped, output, contextBudget(100_000, 100))).toBe(645)
-    expect(worstCaseTokens(shaped, output, contextBudget(100_000, undefined, 4096))).toBe(20_129)
+    expect(worstCaseTokens(shaped, output, contextBudget(100_000, 16_000, 4096))).toBe(20_129)
   })
 
   it('counts each turn\'s text and template, and each turn\'s reply as input to the next', () => {
-    expect(worstCaseTokens(shaped, output, contextBudget(100_000, undefined, 4096), 2)).toBe(2 * (33 + 4096) + 3 * 16_000)
-    expect(worstCaseTokens(shaped, output, contextBudget(100_000, undefined, 4096), 2)).toBe(56_258)
+    expect(worstCaseTokens(shaped, output, contextBudget(100_000, 16_000, 4096), 2)).toBe(2 * (33 + 4096) + 3 * 16_000)
+    expect(worstCaseTokens(shaped, output, contextBudget(100_000, 16_000, 4096), 2)).toBe(56_258)
   })
 })

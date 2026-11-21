@@ -1,3 +1,4 @@
+import { DEFAULT_MAX_FINDINGS } from './budgets.ts'
 import { researchReplyJsonSchema, voteReplyJsonSchema } from './output.ts'
 import type { CompletionRequest } from './ports.ts'
 import { showHidden } from './sanitize.ts'
@@ -77,6 +78,23 @@ export interface PartOf {
   readonly unlisted: number
 }
 
+/** What a request asks of its reply, beyond its blocks: how many findings a research reply lists at most, and the tokens the reply is budgeted. */
+export interface Ask {
+  /** The most findings the reply lists, the most serious first; `DEFAULT_MAX_FINDINGS` when unset. */
+  readonly findings?: number
+  /** The reply's budget, which the request carries as `replyTokens`; none when unset. */
+  readonly replyTokens?: number
+}
+
+/**
+ * The line that asks a research reply for at most `findings` findings, which code owns and which is part of the
+ * contract: it goes in the system message after the instructions and before the reply format. The quote is only
+ * checked, so a shorter one costs nothing and bounds the largest term of a finding.
+ */
+export function findingsLine(findings: number): string {
+  return `List at most ${findings} findings, the most serious first. For each, quote the shortest verbatim span of the diff that shows it.`
+}
+
 /**
  * Research call: instructions in the system message, the fenced diff as the user message. The
  * profile's guidelines, when they hold text, follow as one more fenced block: reference text the
@@ -88,10 +106,17 @@ export interface PartOf {
  * with its hidden characters shown as `<U+XXXX>` (a name is the author's text, so it stays one line and
  * never closes a fence), then `and <n> more` when names are left out; the `diff` block holds the part's
  * diff and is described as one part of it. Without `part`, the request is the whole change's.
+ *
+ * The system message asks for at most `ask.findings` findings (`DEFAULT_MAX_FINDINGS` when unset), the most
+ * serious first, right after the instructions (`findingsLine`), and the request carries `ask.replyTokens` as
+ * its reply budget when one is given.
  */
-export function researchRequest(instructions: string, diff: string, guidelines?: string, part?: PartOf): CompletionRequest {
+export function researchRequest(instructions: string, diff: string, guidelines?: string, part?: PartOf, ask: Ask = {}): CompletionRequest {
   return buildRequest(
     instructions,
+    [
+      findingsLine(ask.findings ?? DEFAULT_MAX_FINDINGS),
+    ],
     part === undefined
       ? [
           { label: 'diff', content: diff, description: BLOCK_DESCRIPTIONS.researchDiff },
@@ -106,6 +131,7 @@ export function researchRequest(instructions: string, diff: string, guidelines?:
         ],
     guidelines,
     { name: 'research_findings', schema: researchReplyJsonSchema },
+    ask.replyTokens,
   )
 }
 
@@ -128,15 +154,17 @@ function partsBlock(part: PartOf): string {
  * `partial`, the diff block is described as the header and the hunks nearest the cited line of the
  * cited file's section, which is what `diffContext` then holds, not the whole section. The
  * cited file name's hidden characters show as `<U+XXXX>` (git's quoting decodes to any character, a
- * line break included), so the claim stays two lines.
+ * line break included), so the claim stays two lines. The request carries `ask.replyTokens` as its reply budget
+ * when one is given.
  */
-export function voteRequest(instructions: string, finding: Finding, diffContext: string, guidelines?: string, partial = false): CompletionRequest {
+export function voteRequest(instructions: string, finding: Finding, diffContext: string, guidelines?: string, partial = false, ask: Pick<Ask, 'replyTokens'> = {}): CompletionRequest {
   const claim = [
     `Finding: ${showHidden(finding.file)}:${finding.line} [${finding.category}]`,
     `Claim by the finder (unverified): ${finding.summary}`,
   ].join('\n')
   return buildRequest(
     instructions,
+    [],
     [
       { label: 'claim', content: claim, description: BLOCK_DESCRIPTIONS.claim },
       { label: 'evidence', content: finding.evidence, description: BLOCK_DESCRIPTIONS.evidence },
@@ -150,14 +178,21 @@ export function voteRequest(instructions: string, finding: Finding, diffContext:
     ],
     guidelines,
     { name: 'panel_vote', schema: voteReplyJsonSchema },
+    ask.replyTokens,
   )
 }
 
+/**
+ * The request of one call: the system message is the instructions, then the code-owned `lines` that ask for the
+ * reply's size, the reply format, the data notice and the untrusted-content notice, each a paragraph.
+ */
 function buildRequest(
   instructions: string,
+  lines: readonly string[],
   blocks: readonly Block[],
   guidelines: string | undefined,
   output: CompletionRequest['output'],
+  replyTokens: number | undefined,
 ): CompletionRequest {
   const withGuidelines = guidelines !== undefined && guidelines.trim() !== ''
     ? [
@@ -178,6 +213,7 @@ function buildRequest(
   return {
     system: [
       instructions,
+      ...lines,
       `Respond with ONLY a JSON object matching this JSON Schema: ${JSON.stringify(output.schema)}`,
       dataNotice,
       UNTRUSTED_CONTENT_NOTICE,
@@ -189,5 +225,8 @@ function buildRequest(
       },
     ],
     output,
+    ...replyTokens === undefined
+      ? {}
+      : { replyTokens },
   }
 }

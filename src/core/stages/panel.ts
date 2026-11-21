@@ -139,7 +139,7 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
   let refusal: string | undefined
   let replied = false
   try {
-    const text = await callProvider(ctx, { profile: run.id, role: 'vote', lens: lens.id }, lens, () => requestFor(run, finding, lens, context))
+    const text = await callProvider(ctx, { profile: run.id, role: 'vote', lens: lens.id }, lens, () => requestFor(ctx, run, finding, lens, context))
     replied = true
     lensVote = {
       angle: lens.id,
@@ -188,24 +188,27 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
  * The context is then the section's header and the hunks nearest the cited line that fit the room of the
  * request that describes them (see `nearestHunks`), when the cited hunk fits alone. A voter that states no
  * room has no request built to ask. `undefined` from `nearestHunks`, a cited line no hunk holds or a cited
- * hunk that does not fit alone, sends the whole context, which the provider refuses as too large if it is.
+ * hunk that does not fit alone, sends the whole context, which the provider refuses as too large if it is. The
+ * request, and each request the choice of context asks the room of, carries the lens's reply budget.
  */
-function requestFor(run: ProfileRun, finding: Finding, lens: LensRun, context: VoteContext): CompletionRequest {
+function requestFor(ctx: RunContext, run: ProfileRun, finding: Finding, lens: LensRun, context: VoteContext): CompletionRequest {
+  const { replyTokens } = ctx.budgets[run.id].lenses[lens.id]
+  const ask = { replyTokens }
   const nearest = lens.room === undefined
     ? undefined
-    : nearestContext(run, finding, lens, context.sections)
+    : nearestContext(run, finding, lens, context.sections, ask)
   return nearest === undefined
-    ? voteRequest(lens.instructions, finding, context.text, run.guidelines)
-    : voteRequest(lens.instructions, finding, nearest, run.guidelines, true)
+    ? voteRequest(lens.instructions, finding, context.text, run.guidelines, false, ask)
+    : voteRequest(lens.instructions, finding, nearest, run.guidelines, true, ask)
 }
 
 /** The partial context of a voter that states a room, or undefined when the whole section fits, or nothing of it does. */
-function nearestContext(run: ProfileRun, finding: Finding, lens: LensRun, sections: ReadonlyMap<string, string>): string | undefined {
+function nearestContext(run: ProfileRun, finding: Finding, lens: LensRun, sections: ReadonlyMap<string, string>, ask: { readonly replyTokens?: number }): string | undefined {
   const section = sectionFor(sections, finding.file)
   if (section === undefined) return undefined
-  const room = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines))
+  const room = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines, false, ask))
   if (room === undefined || tokenBound(section.text) <= room) return undefined
-  const partialRoom = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines, true))
+  const partialRoom = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines, true, ask))
   return partialRoom === undefined
     ? undefined
     : nearestHunks(section.text, hunksOf(sections, section.path, section.text), finding.line, partialRoom)

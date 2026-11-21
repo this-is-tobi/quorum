@@ -3,7 +3,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import { retriesProblem, timeoutProblem } from '../core/ports.ts'
 import { endpointUrl, redactionsOf } from './http.ts'
 import type { SystemPrompt } from './messages.ts'
-import { DEFAULT_REPLY_TOKENS, TEMPLATE_TOKENS } from './size.ts'
+import { TEMPLATE_TOKENS } from './size.ts'
 
 const HTTP_URL_WITH_HOST = /^https?:\/\/[^/\\?#\s]/i
 /** An HTTP header name: one or more token characters. */
@@ -57,7 +57,11 @@ export interface HttpProviderOptions {
   extraBody?: Readonly<Record<string, unknown>>
   /** `null` leaves the field out, for models that reject it. */
   temperature?: number | null
-  /** The most tokens the reply may hold, thinking included, sent as the server's limit. Default 16000. */
+  /**
+   * The most tokens a reply may hold, thinking included: the ceiling of every reply, sent as the server's
+   * limit. With it unset, each request is sent the reply budget the core derives for it from the window, else
+   * 16000.
+   */
   maxTokens?: number
   systemPrompt?: SystemPrompt
   structuredOutput?: StructuredOutput
@@ -298,10 +302,12 @@ export function maxTokensIssues(id: string, maxTokens: unknown): ConfigIssue[] {
 }
 
 /**
- * The problems of `contextTokens`: not set, not a whole number of at least 1, or no more than the reply budget
- * and the template reserve (`TEMPLATE_TOKENS` unless the adapter names one), which leaves no room for a
- * request; one of them, never two. The room is checked against a valid `maxTokens` only, since an invalid
- * one has its own issue.
+ * The problems of `contextTokens`: not set, not a whole number of at least 1, or no more than the template
+ * reserve (`TEMPLATE_TOKENS` unless the adapter names one) with the reply budget `maxTokens` when it is set,
+ * which leaves no room for a request; one of them, never two. With `maxTokens` unset the reply has no budget
+ * yet, since the core sizes one for each request from the window, so the reserve alone must fit, and room
+ * accounting refuses a window that leaves no room for the diff. The room is checked against a valid `maxTokens`
+ * only, since an invalid one has its own issue.
  */
 export function contextTokensIssues(id: string, contextTokens: number | undefined, maxTokens: number | undefined, templateTokens = TEMPLATE_TOKENS): ConfigIssue[] {
   const path = `${id}.contextTokens`
@@ -316,10 +322,16 @@ export function contextTokensIssues(id: string, contextTokens: number | undefine
     ]
   }
   if (maxTokens !== undefined && !isTokenCount(maxTokens)) return []
-  const reply = maxTokens ?? DEFAULT_REPLY_TOKENS
-  if (contextTokens > reply + templateTokens) return []
+  if (maxTokens === undefined) {
+    return contextTokens > templateTokens
+      ? []
+      : [
+          { path, message: `must be more than ${templateTokens}, the tokens kept for the chat template` },
+        ]
+  }
+  if (contextTokens > maxTokens + templateTokens) return []
   return [
-    { path, message: `must be more than ${reply + templateTokens}, the ${reply} tokens of the reply budget and ${templateTokens} for the chat template` },
+    { path, message: `must be more than ${maxTokens + templateTokens}, the ${maxTokens} tokens of the reply budget and ${templateTokens} for the chat template` },
   ]
 }
 
