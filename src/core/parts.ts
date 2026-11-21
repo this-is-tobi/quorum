@@ -310,7 +310,7 @@ export function tooLargeGap(profile: string, sections: readonly DiffSection[], p
 }
 
 /** What became of the research part that held a unit: it was read, or the reason it was not. */
-export type PartOutcome = 'reviewed' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'research-failed'
+export type PartOutcome = 'reviewed' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'research-failed' | 'provider-down'
 
 /** What became of a unit of the diff: its part's outcome, or `too-large` when no part holds it. */
 type Outcome = PartOutcome | 'too-large'

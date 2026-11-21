@@ -75,7 +75,7 @@ The review's token cap and its deadline are the config's, `maxReviewTokens` (2,0
 
 ## The result
 
-The agent receives the result in a fixed shape, in a structured form and as the same JSON in a text block, within 10,000 bytes each: code-checked fields first, a model's category and summary last, each capped and made inert, and a notice that says they are claims: [What a calling agent receives](../30-security/30-output-handling.md#what-a-calling-agent-receives).
+The agent receives the result in a fixed shape, in a structured form and as the same JSON in a text block, within 10,000 bytes each: code-checked fields first, a model's category and summary last, each capped and made inert, and a notice that says they are claims: [What a calling agent receives](../30-security/30-output-handling.md#what-a-calling-agent-receives). A review that read less than the change says so in `gaps`, each with its `reason`, one of [the incomplete reasons](../95-reference/20-json-result.md#incomplete-reasons): a research part that failed (`research-failed`) and the parts and votes a provider found down was never sent (`provider-down`) are among them, and the review's status is `incomplete` for either.
 
 ## Errors
 
@@ -92,7 +92,7 @@ A call that gives no result answers with `isError` and one text, which holds not
 | `the repository's own config names a filter program, which a review of the working tree runs: review a range, or launch quorum mcp with --trust-repo-config if the repository is yours` | `local` or `staged` in a repository whose config names a filter, without `--trust-repo-config` |
 | `quorum could not read the change: the server's log says why` | The source refused: an untracked file quorum will not read, for one, whose name the text leaves out |
 | `git failed: the server's log says why` | A git command failed |
-| `the review failed: the server's log says why` | The review failed: a gating profile's research, for one |
+| `the review failed: the server's log says why` | The review failed: no research call of any profile answered, since a provider was found down, for one |
 | `this server has spent its session's tokens: start it again, or launch it with a larger --max-session-tokens` | What is left of the session budget cannot hold a review's cap: [Limits](#limits) |
 
 A refusal of the range, a path or `at` is the one exception, since those texts repeat nothing of what was written and tell the agent how to correct the call. It is passed through under the argument's name, as `range: its base names no commit of this repository: fetch it first, as actions/checkout does with fetch-depth: 0`, `paths: path 1 names no file tracked at the commit` or `at: names no commit of this repository`. They are the command line's own texts, so they can name its flags, such as `--at` or `--send`, which a call has no way to give, and count paths from 1, where the argument's own errors write `paths.0` for the first.

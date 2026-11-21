@@ -5,6 +5,7 @@
  * @see ../../docs/95-reference/30-library-api.md for usage.
  */
 
+import type { ProviderErrorKind } from './errors.ts'
 import type { PolicyRules } from './policy.ts'
 
 /**
@@ -58,12 +59,12 @@ export interface Lens {
 
 /**
  * What a vote failed with: a provider's kind of failure, the limit that stopped it (`token-cap` or
- * `review-deadline`), `unusable-reply` for a reply the panel could not read as a vote, or `unknown` for
+ * `review-deadline`), `provider-down` for a vote never sent because its provider was found down, `unusable-reply` for a reply the panel could not read as a vote, or `unknown` for
  * anything else thrown.
  * The kinds a gating profile's `--allow-incomplete` lifts are `network`, `timeout` and an `http` failure of
  * status 408, 409, 429 or 5xx.
  */
-export type VoteFailureKind = 'http' | 'network' | 'process' | 'timeout' | 'aborted' | 'refusal' | 'truncated' | 'invalid-response' | 'unsupported' | 'too-large' | 'token-cap' | 'review-deadline' | 'unusable-reply' | 'unknown'
+export type VoteFailureKind = 'http' | 'network' | 'process' | 'timeout' | 'aborted' | 'refusal' | 'truncated' | 'invalid-response' | 'unsupported' | 'too-large' | 'token-cap' | 'review-deadline' | 'provider-down' | 'unusable-reply' | 'unknown'
 
 /** The facts of a failed vote the code read, never a word a server or a model wrote. */
 export interface VoteFailure {
@@ -154,9 +155,11 @@ export interface Verdict extends Finding {
 export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
 
 /**
- * Why part of a review is missing, as an `IncompleteEntry` records it. `research-failed`: an
- * advisory profile's research call failed after its retries, or its reply was no findings
- * envelope, so the profile reviewed nothing; a gating profile's ends the review instead.
+ * Why part of a review is missing, as an `IncompleteEntry` records it. `research-failed`: a research
+ * call, of a gating profile or an advisory one, failed after its retries, or its reply was no findings
+ * envelope, so the part of the change it held went unreviewed. `provider-down`: a provider was found down,
+ * three of its calls in a row having failed for a reason of its own, so the research parts or the votes it
+ * was never sent are missing.
  * `request-too-large`: a provider refused a request that may not fit its model's context, so it was
  * not sent. `binary` and `submodule`: the diff carries no content for a file, shown only as binary
  * or as a submodule's commit; `secret`: no model was sent a file, held back because its name is a
@@ -167,14 +170,14 @@ export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
  * of its parts, for a large change) or some of its votes, which were not sent; `review-deadline`: the
  * review reached its deadline, which stopped part of the profile's work, its research (some of its
  * parts) or some of its votes, in flight or not yet sent; one entry per limit and profile counts them.
- * For a large change researched in parts, `research-failed` and `request-too-large` count the parts that
- * failed or were refused, and each of the other reasons its parts' share.
+ * For a large change researched in parts, `research-failed`, `provider-down` and `request-too-large` count the
+ * parts that failed, were not sent or were refused, and each of the other reasons its parts' share.
  */
-export type IncompleteReason = 'research-unusable' | 'research-failed' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'too-large' | 'token-cap' | 'review-deadline' | 'binary' | 'submodule' | 'secret'
+export type IncompleteReason = 'research-unusable' | 'research-failed' | 'provider-down' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'too-large' | 'token-cap' | 'review-deadline' | 'binary' | 'submodule' | 'secret'
 
 /**
- * Work the run could not review: a research reply with findings but none usable, an advisory
- * profile's research that failed (`research-failed`), findings beyond the cap, a finding the
+ * Work the run could not review: a research reply with findings but none usable, a research part that
+ * failed (`research-failed`) or was never sent (`provider-down`), findings beyond the cap, a finding the
  * harness could not read, a kept finding whose failed votes could have raised it to a higher
  * level, a request its provider refused as too large to send, work the review's token cap or deadline
  * stopped, a file whose change the diff does not carry, binary or a submodule's commit, or a file held back
@@ -248,9 +251,9 @@ export type LeftOutFile
  * Why part of a file was not reviewed, as `CoverageEntry` records it: a `LeftOutReason`'s `binary`,
  * `submodule`, `secret` or `deleted-secret`, `too-large` for a hunk, or a section with no hunk, that fits in
  * no research part of its model's window, or the `IncompleteReason` of the research part that held it and
- * did not read it: `request-too-large`, `token-cap`, `review-deadline` or `research-failed`.
+ * did not read it: `request-too-large`, `token-cap`, `review-deadline`, `research-failed` or `provider-down`.
  */
-export type CoverageReason = 'binary' | 'submodule' | 'secret' | 'deleted-secret' | 'too-large' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'research-failed'
+export type CoverageReason = 'binary' | 'submodule' | 'secret' | 'deleted-secret' | 'too-large' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'research-failed' | 'provider-down'
 
 /**
  * How much of a file a profile's research reviewed: `reviewed` when every part that holds it was
@@ -552,6 +555,12 @@ export type QuorumEvent
      * reported usage, nothing for one the server refused before any work, else its reservation.
      */
     | { type: 'call', profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, durationMs: number, ok: boolean, attempts?: number, usage?: Usage, spent: number }
+    /**
+     * A provider was found down: three of its calls in a row failed for a reason of its own (`kind`, and for an
+     * `http` failure its `status`), so no call goes to it for the rest of the review. Sent once per provider, at the
+     * moment the third call ends; the calls in flight run to their end.
+     */
+    | { type: 'provider-down', provider: string, kind: ProviderErrorKind, status?: number, calls: number }
     /** A finding was dropped for citing code outside the diff, with the reason. */
     | { type: 'finding:invalid', profile: string, reason: string }
     /** A gap was recorded, as `meta.incomplete` will hold it. */

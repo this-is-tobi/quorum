@@ -5,8 +5,9 @@ import { createLimiter, DEFAULT_CONCURRENCY } from './concurrency.ts'
 import { leftOutGaps, reviewScope } from './coverage.ts'
 import type { ReviewScope } from './coverage.ts'
 import { diffSections, splitDiff } from './diff.ts'
+import { createHealth } from './down.ts'
 import { ConfigError } from './errors.ts'
-import type { ConfigIssue } from './errors.ts'
+import type { ConfigIssue, ProviderDownError } from './errors.ts'
 import { estimateReview } from './estimate.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
 import { diffFlags, secretFlags } from './flags.ts'
@@ -88,7 +89,7 @@ interface Tally {
  * resolved and its providers captured, and `exclude` is compiled into a matcher, so later changes to
  * the caller's profiles, ports or `exclude` are not seen. `warnings` lists what the profiles set
  * that cannot take full effect. Each review can be stopped through its own signal; a throwing event
- * sink or a failing profile stops it too.
+ * sink stops it too.
  *
  * @throws ConfigError listing every issue of the options and the ports
  *
@@ -199,11 +200,17 @@ function estimate(compiled: Compiled, input: EstimateInput): Estimate {
  * abort and the attempt's deadline abort, and it is checked once more after the profiles have run,
  * a blank diff included, so an aborted review rejects with the signal's reason, whatever error a
  * call it cut raised, and never resolves. No event is delivered once the review is aborted. A sink
- * that throws aborts the review with its error, and a gating profile's research failure (the call or
- * its reply) aborts it with that failure where it fails, so no other profile starts a call after
- * it; any other failure aborts the review when the profiles' run rejects. Either way the review
- * rejects with the first reason. An advisory profile's research failure is its `research-failed`
- * gap and aborts nothing. An abort after `run:end` has no effect: the review is over.
+ * that throws aborts the review with its error, and any other failure that is no gap aborts it when the
+ * profiles' run rejects; either way the review rejects with the first reason. A research part that fails,
+ * its call or its reply, is its profile's `research-failed` gap, a gating profile's included, and aborts
+ * nothing. An abort after `run:end` has no effect: the review is over.
+ *
+ * A provider is called no more once three of its calls in a row failed for a reason of its own (see
+ * `createHealth`), across the profiles and roles that share it: the calls in flight run to their end and
+ * their replies are read, and the parts and votes it was never sent are `provider-down` gaps, exit 4. The
+ * review rejects with a `ProviderDownError`, exit 3, only when no part of any profile was reviewed: with the
+ * error of the first research provider, in profile order, that was found down, else of the first whose every
+ * call failed for a reason of its own, though fewer than three did.
  *
  * A review ends at its deadline, `reviewTimeoutMs` after it starts, with an answer: at it every call in
  * flight and every wait is stopped at once, no call still queued starts, and what was not done is a
@@ -237,7 +244,8 @@ function estimate(compiled: Compiled, input: EstimateInput): Estimate {
  *
  * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take, options that are not an object, a `signal` that is not an AbortSignal
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
- * @throws the error of a sink that throws, or of a gating profile that fails: a ProviderError from its research call, an OutputError for its reply
+ * @throws the error of a sink that throws
+ * @throws ProviderDownError when no research call of any profile answered and a research provider was found down, or each of whose calls failed for a reason of its own
  */
 async function review(compiled: Compiled, input: ReviewInput, options: ReviewOptions = {}): Promise<QuorumResult> {
   const issues = reviewIssues(input, options)
@@ -265,9 +273,6 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
   const signal = options.signal === undefined
     ? internal.signal
     : AbortSignal.any([options.signal, internal.signal])
-  const fail = (error: unknown): void => {
-    if (!signal.aborted) internal.abort(error)
-  }
   const startedAt = new Date().toISOString()
   const started = performance.now()
   const { runs, sink } = compiled
@@ -335,7 +340,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     signal,
     stop: AbortSignal.any([signal, expired]),
     deadline,
-    fail,
+    health: createHealth(),
     maxFindings: compiled.maxFindings,
     concurrency: compiled.concurrency,
     clock: compiled.clock,
@@ -354,12 +359,14 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
   }
   for (const flag of flags) emit({ type: 'flag', flag })
   const outcomes = await reviewAll(ctx, runs, plans, scope.diff, sections).catch((error: unknown) => {
-    // A gating profile's research failure aborted the review where it failed; any other failure aborts it here. The first reason stays the reason.
+    // A failure that is no gap (a sink's error, a bug) aborts the review here. The first reason stays the reason.
     const reason: unknown = signal.aborted ? signal.reason : error
     internal.abort(reason)
     throw reason
   })
   signal.throwIfAborted()
+  const down = nothingAnswered(ctx, runs, outcomes)
+  if (down !== undefined) throw down
   const kept = outcomes.flatMap(outcome => outcome.kept)
   const discarded = outcomes.flatMap(outcome => outcome.discarded)
   const unreviewed = outcomes.flatMap(outcome => outcome.unreviewed)
@@ -393,6 +400,20 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     durationMs,
   })
   return { kept, discarded, unreviewed, meta }
+}
+
+/**
+ * The error a review that read nothing rejects with, or `undefined` when it resolves: when no part of any
+ * profile was `reviewed`, the `ProviderDownError` of the first research provider, in profile order, that was
+ * found down, else of the first whose every call failed for a reason of its own and that made fewer than
+ * three (`health.spent`). A review that read nothing for any other reason, refusals or limits, or that ran no
+ * research, resolves with its gaps.
+ */
+function nothingAnswered(ctx: RunContext, runs: readonly ProfileRun[], outcomes: readonly ProfileOutcome[]): ProviderDownError | undefined {
+  if (outcomes.length === 0 || outcomes.some(outcome => outcome.parts.includes('reviewed'))) return undefined
+  const { health } = ctx
+  const down = runs.map(run => health.refused(run.research.provider)).find(error => error !== undefined)
+  return down ?? runs.map(run => health.spent(run.research.provider, run.research.ref.id)).find(error => error !== undefined)
 }
 
 /** What a profile's review comes to: its panel's outcome, and what became of each part of its research, for its coverage. */

@@ -32,6 +32,7 @@ describe('the public API', () => {
       'ConfigError',
       'GitError',
       'OutputError',
+      'ProviderDownError',
       'ProviderError',
       'QuorumError',
       'anthropic',

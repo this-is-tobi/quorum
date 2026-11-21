@@ -47,7 +47,8 @@ export function flagWhere({ file, line }: Flag): string {
  */
 export const GAP_WORDS: Readonly<Record<IncompleteReason, string>> = {
   'research-unusable': 'the research reply listed findings, but none could be read',
-  'research-failed': 'the profile\'s research failed, so it reviewed nothing',
+  'research-failed': 'a research call failed, so part of the change went unreviewed',
+  'provider-down': 'a provider was down, so part of the work was never sent',
   'findings-capped': 'research reported more findings than the panel reviews',
   'finding-unreadable': 'the harness could not read a finding',
   'vote-failed': 'a failed vote could have raised a kept finding\'s level',

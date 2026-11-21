@@ -142,7 +142,7 @@ const quorum = createQuorum({
 - **One concurrency limit.** `concurrency` (4 by default) caps the provider calls in flight across every profile of the review.
 - **Every finding is tagged with its profile**, and its `id` hashes the profile too, so a line two profiles flag is two findings with two ids, each judged by its own panel.
 - **Nothing is merged across profiles.** No request of one profile holds another profile's output. In each list of the result, a profile's verdicts follow the previous profile's, in the order of `profiles`, and `meta.profiles` has one entry per profile.
-- **One failure stops them all.** A gating profile whose research call or reply fails ends the whole review: [Abort](../95-reference/30-library-api.md#abort). An advisory profile's is its own `research-failed` gap: [Gating](#gating).
+- **A failure ends no profile.** A research call or reply that fails is its profile's own `research-failed` gap, a gating profile's too, and the other parts and profiles go on: [Gating](#gating). Only a review in which no research call of any profile answered ends with an error: [When the research call fails](./10-cli.md#when-the-research-call-fails).
 
 The cost grows with each profile: one more research call, and one call per lens for each of its findings.
 
@@ -160,7 +160,7 @@ The cost grows with each profile: one more research call, and one call per lens 
 quorum --range origin/main...HEAD --fail-on medium
 ```
 
-A profile at `failOn: 'none'` reports every finding and every gap in full, and neither changes the exit code: its kept findings are in `kept`, its unreviewed findings and gaps in `unreviewed` and `meta.incomplete`, and the exit code follows the gating profiles alone. An advisory profile's failed research, the call or its reply, is its own gap, `research-failed`, and the other profiles go on; a gating profile's ends the review, exit `3`. The CLI runs the profiles its config selects, and by default the security profile alone, which gates.
+A profile at `failOn: 'none'` reports every finding and every gap in full, and neither changes the exit code: its kept findings are in `kept`, its unreviewed findings and gaps in `unreviewed` and `meta.incomplete`, and the exit code follows the gating profiles alone. A failed research part, the call or its reply, is its profile's own gap, `research-failed`, whether it gates or not, and the other parts and profiles go on; for a gating profile it exits `4`. The CLI runs the profiles its config selects, and by default the security profile alone, which gates.
 
 A result records each profile's level in `meta.profiles.<id>.failOn`, and `gating` beside it, true unless the level is `none`. A program that runs other profiles reads `failOn` there, or calls `outcome`, which applies the rule of the CLI's exit code: [`outcome`](../95-reference/30-library-api.md#outcome).
 

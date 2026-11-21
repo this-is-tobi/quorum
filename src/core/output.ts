@@ -126,8 +126,8 @@ export interface ResearchReply {
 
 /**
  * Validate a research reply. The envelope must be exactly `{ findings: [...] }`: a missing or
- * non-array `findings` is a failed reply, which fails a gating profile's review and is an advisory
- * profile's `research-failed` gap, because a malformed reply must never read as "no findings", and so
+ * non-array `findings` is a failed reply, which is its profile's `research-failed` gap, because a malformed
+ * reply must never read as "no findings", and so
  * is any other top-level key, because text planted in an unescaped string could close
  * the findings array early and move the rest of the reply under a key of its own, where it would
  * be dropped without a trace. Only the first `limit` listed findings are read, so a flooded reply

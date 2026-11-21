@@ -3,6 +3,7 @@ import { describe, expect, it, onTestFinished } from 'vitest'
 import { fakeClock, settle } from '../../testing/clock.ts'
 import type { FakeClock } from '../../testing/clock.ts'
 import { createLimiter } from '../concurrency.ts'
+import { createHealth } from '../down.ts'
 import { ProviderError } from '../errors.ts'
 import { createLedger, DEFAULT_REVIEW_TIMEOUT_MS, LimitError } from '../limits.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../ports.ts'
@@ -11,13 +12,12 @@ import { callProvider, reservationOf, roomOf, targetOf } from './context.ts'
 import type { Requester, RunContext, Target } from './context.ts'
 
 /**
- * A context of one review: its events as the sink would receive them, and what `fail` was given. When
+ * A context of one review: its events as the sink would receive them. When
  * `limits.deadlineMs` is given, a timer on the fake clock aborts the review's deadline with its failure, as the
  * review arms it, and `stop` joins that to the review's signal.
  */
-function context(clock: FakeClock, controller = new AbortController(), concurrency = 1, limits: { readonly cap?: number, readonly deadlineMs?: number } = {}): { ctx: RunContext, events: QuorumEvent[], failures: unknown[] } {
+function context(clock: FakeClock, controller = new AbortController(), concurrency = 1, limits: { readonly cap?: number, readonly deadlineMs?: number } = {}): { ctx: RunContext, events: QuorumEvent[] } {
   const events: QuorumEvent[] = []
-  const failures: unknown[] = []
   const deadlineMs = limits.deadlineMs ?? DEFAULT_REVIEW_TIMEOUT_MS
   const deadline = new AbortController()
   if (limits.deadlineMs !== undefined) {
@@ -34,14 +34,12 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
     signal: controller.signal,
     stop: AbortSignal.any([controller.signal, deadline.signal]),
     deadline: { at: clock.now() + deadlineMs, ms: deadlineMs },
-    fail: (error) => {
-      failures.push(error)
-    },
+    health: createHealth(),
     maxFindings: 50,
     concurrency,
     clock,
   }
-  return { ctx, events, failures }
+  return { ctx, events }
 }
 
 /** A target whose provider's own id is not the id of its ref, which is the one an error and an event name. */
@@ -382,7 +380,7 @@ describe('the retries of a call', () => {
 
   it('calls onFailure once, inside the slot, with the last failure and the attempts, before a queued call starts', async () => {
     const clock = fakeClock(0)
-    const { ctx, failures } = context(clock)
+    const { ctx } = context(clock)
     const order: string[] = []
     const thrown = new ProviderError({ providerId: 'p', kind: 'network', message: 'down' })
     const down = target(async () => {
@@ -401,7 +399,6 @@ describe('the retries of a call', () => {
     const queued = callProvider(ctx, requester, behind, () => request)
     await Promise.all([first, queued])
     expect(order).toEqual(['failed 2 true', 'queued started', 'first settled'])
-    expect(failures).toEqual([])
   })
 
   it('gives a provider that states no retries none, and reads stated retries as own data', () => {

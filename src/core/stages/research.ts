@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { DiffSection } from '../diff.ts'
-import { OutputError } from '../errors.ts'
+import { OutputError, ProviderDownError } from '../errors.ts'
 import { isLimit } from '../limits.ts'
 import type { LimitName } from '../limits.ts'
 import { parseResearchReply } from '../output.ts'
@@ -26,7 +26,7 @@ export interface ResearchOutcome {
    * code outside the diff, or names no file). An unreadable finding is reported in `incomplete` only.
    */
   invalid: string[]
-  /** What the run could not review: findings the harness could not read, findings beyond the cap, a reply whose findings were all unusable, research requests refused as too large, or an advisory profile's research that failed. */
+  /** What the run could not review: findings the harness could not read, findings beyond the cap, a reply whose findings were all unusable, research requests refused as too large, research that failed, or research a provider that was down never got. */
   incomplete: IncompleteEntry[]
   /**
    * What became of each research part, in the parts' order: `reviewed` when its reply was a valid findings
@@ -250,11 +250,11 @@ export function checkReplies(replies: ReadonlyArray<{ readonly text: string, rea
  *
  * A change in one request (no packing, or a packing of one part, whose text is that part's) goes through
  * one call. A research request its provider refused as too large (a `too-large` `ProviderError`) was not
- * sent: the profile reviews nothing, records one `request-too-large` gap, and the other profiles run. For
- * any other failed research, the call after its retries or a reply that is not a valid envelope, a gating
- * profile fails and aborts the review where it fails (`onFailure` aborts it for the call), so no other
- * profile starts a call after it; an advisory profile's failure is its own `research-failed` gap, in words
- * the code writes, and the other profiles run. A research request a limit stopped (the token cap refused it
+ * sent: the profile reviews nothing, records one `request-too-large` gap, and the other profiles run. Any
+ * other failed research, the call after its retries or a reply that is not a valid envelope, is the
+ * profile's own `research-failed` gap, in words the code writes, gating or not: nothing aborts the review
+ * for it, and the other profiles run. A request a provider found down was never sent is a `provider-down`
+ * gap (see `createHealth`). A research request a limit stopped (the token cap refused it
  * or left no room for it, or the review's deadline ended it) is no failure of either kind: the outcome holds
  * no finding and names the limit in `parts`, which the review turns into the profile's one gap for that
  * limit, a gating profile's included. A packing of none, where no part holds any of the diff, makes no call, and
@@ -264,20 +264,18 @@ export function checkReplies(replies: ReadonlyArray<{ readonly text: string, rea
  * A packing of several parts runs `ctx.concurrency` workers of this profile, each taking the next part, in
  * order, while one is left, and a call of each through the review's one limit, so the review's concurrency
  * holds across profiles. Each part fails as a one-request research does, and a reply's envelope is checked
- * as it arrives: a gating profile's failed call or unreadable envelope aborts the review where it fails, so
- * no queued part starts and the review rejects with the first reason, and an advisory profile's is that
- * part's `research-failed`, while its other parts go on. Once a part ends with a limit, the profile's parts
+ * as it arrives: a failed call or an unreadable envelope is that part's `research-failed`, while the profile's
+ * other parts go on, and the replies that were read are kept. Once a part ends with a limit, the profile's parts
  * not yet taken are stopped by the same limit without a call: each would be built and counted only to be
  * refused, and the gap counts them, failing closed. Once every part has answered, the replies are read in
  * the parts' order, up to `maxFindings` findings in all, each checked against the whole diff, and a finding
  * two parts report is dropped by the dedup stage. The gaps come in this order, each counting parts: the
- * requests refused as too large, then the parts that failed, then the reading's. The events follow: the
- * `finding:invalid` ones, then the `incomplete` ones.
+ * requests refused as too large, then the parts that failed, then the parts a provider that was down never
+ * got, then the reading's. The events follow: the `finding:invalid` ones, then the `incomplete` ones.
  *
  * A review that is aborted rejects with its reason, never with a gap.
  *
- * @throws ProviderError, or whatever a custom provider throws, when a gating profile's research call fails for any other reason than a refusal as too large
- * @throws OutputError when a gating profile's reply is not one JSON object holding a `findings` array and nothing else
+ * @throws whatever the parser throws for a reply that is no `OutputError`: a bug, not a reply
  */
 export async function research(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, diff: string, sections: ReadonlyMap<string, string>): Promise<ResearchOutcome> {
   const { packing } = plan
@@ -310,7 +308,7 @@ function nothingRead(parts: PartOutcome[]): ResearchOutcome {
 /** What became of one research request: its reply to read, the words of a failure to tell, or the limit that stopped it. */
 type PartResult
   = | { readonly outcome: 'reviewed', readonly text: string }
-    | { readonly outcome: 'request-too-large' | 'research-failed', readonly words: string }
+    | { readonly outcome: 'request-too-large' | 'research-failed' | 'provider-down', readonly words: string }
     | { readonly outcome: LimitName }
 
 type SpokenResult = Extract<PartResult, { readonly words: string }>
@@ -321,42 +319,40 @@ const isStopped = (result: PartResult): result is Extract<PartResult, { readonly
 
 /**
  * One research request, sent and its reply's envelope checked, and what became of it: the one place where a
- * failure is told from a gap, for a research of one request and for each part of a research in parts alike.
- * `onFailure` aborts the review for a gating profile's failure (the call's, not a refusal as too large nor a
- * limit's) inside the call's slot, so no queued request starts after it. In this order:
+ * failure is told from a gap, for a research of one request and for each part of a research in parts alike,
+ * a gating profile's included. In this order:
  * - a limit that stopped the call is the limit's name;
  * - a refusal as too large is `request-too-large` with the refusal's message;
- * - any other failure of the call rethrows for a gating profile, and is `research-failed` with the words
- *   `researchFailed` writes for an advisory one;
- * - a reply that is no findings envelope aborts the review and rethrows for a gating profile, and for any
- *   error that is no `OutputError`; for an advisory profile it is `research-failed` with the reason;
+ * - a call the provider-down rule refused (a `ProviderDownError`) is `provider-down`;
+ * - any other failure of the call is `research-failed` with the words `researchFailed` writes;
+ * - a reply that is no findings envelope (an `OutputError`) is `research-failed` with the reason; any other
+ *   error the parser throws rethrows, a bug and not a reply;
  * - else `reviewed`, with the reply's text.
- * A limit, a refusal and an advisory failure are each told only after the review's abort check, so a review
- * that is aborted rejects with its reason, never with a gap.
+ * Each failure is told only after the review's abort check, so a review that is aborted rejects with its
+ * reason, never with a gap.
  */
 async function askResearch(ctx: RunContext, run: ProfileRun, request: () => CompletionRequest): Promise<PartResult> {
   let attempts = 1
   let text: string
   try {
-    text = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, request, (error, made) => {
+    text = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, request, (_error, made) => {
       attempts = made
-      if (run.gating && !isTooLarge(error) && !isLimit(error)) ctx.fail(error)
     })
   } catch (error) {
-    if (isLimit(error)) {
-      ctx.signal.throwIfAborted()
-      return { outcome: error.limit }
-    }
+    ctx.signal.throwIfAborted()
+    if (isLimit(error)) return { outcome: error.limit }
     if (isTooLarge(error)) {
-      ctx.signal.throwIfAborted()
       return {
         outcome: 'request-too-large',
         words: refusalMessage(error),
       }
     }
-    // A gating profile's failure aborted the review where it failed (`onFailure`).
-    if (run.gating) throw error
-    ctx.signal.throwIfAborted()
+    if (error instanceof ProviderDownError) {
+      return {
+        outcome: 'provider-down',
+        words: 'the research request was not sent, since its provider was down',
+      }
+    }
     return {
       outcome: 'research-failed',
       words: researchFailed(error, attempts),
@@ -365,10 +361,7 @@ async function askResearch(ctx: RunContext, run: ProfileRun, request: () => Comp
   try {
     parseResearchReply(text, 1)
   } catch (error) {
-    if (run.gating || !(error instanceof OutputError)) {
-      ctx.fail(error)
-      throw error
-    }
+    if (!(error instanceof OutputError)) throw error
     ctx.signal.throwIfAborted()
     return { outcome: 'research-failed', words: `the research reply could not be read: ${error.reason}` }
   }
@@ -445,7 +438,7 @@ function askPart(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, packing: 
   }))
 }
 
-/** The gaps of the parts that were not read, one per reason and profile counting its parts: the refused requests, then the failed parts, each naming the first one's words. */
+/** The gaps of the parts that were not read, one per reason and profile counting its parts: the refused requests, then the failed parts, each naming the first one's words, then the parts a provider that was down never got. */
 function partGaps(profile: string, results: readonly PartResult[]): IncompleteEntry[] {
   const spoken = results.filter(result => isSpoken(result))
   const gaps: IncompleteEntry[] = []
@@ -456,6 +449,10 @@ function partGaps(profile: string, results: readonly PartResult[]): IncompleteEn
   const failed = spoken.filter(result => result.outcome === 'research-failed')
   if (failed.length > 0) {
     gaps.push({ profile, reason: 'research-failed', detail: `${failed.length} of ${results.length} research parts failed: ${failed[0].words}` })
+  }
+  const down = spoken.filter(result => result.outcome === 'provider-down')
+  if (down.length > 0) {
+    gaps.push({ profile, reason: 'provider-down', detail: `${down.length} of ${results.length} research parts were not sent, since their provider was down` })
   }
   return gaps
 }
@@ -482,8 +479,8 @@ function gap(ctx: RunContext, entry: IncompleteEntry, outcome: PartOutcome): Res
  * What a failed research call says in a gap, in words the code writes: `the research call failed`,
  * then ` (<kind>)` when `providerFailure` reads a kind of `ProviderError` in the failure, with ` <status>`
  * after an `http` kind when it reads an HTTP status too, then ` after <n> attempts` when the call made
- * more than one. The provider's message, which can quote a server, is never read: a gating review
- * rejects with it, and a gap carries nothing a server or a model wrote.
+ * more than one. The provider's message, which can quote a server, is never read: a gap carries nothing a
+ * server or a model wrote.
  */
 function researchFailed(error: unknown, attempts: number): string {
   const failure = providerFailure(error)

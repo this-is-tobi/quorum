@@ -1,4 +1,5 @@
 import { diffSectionFor, hunksOf, sectionFor } from '../diff.ts'
+import { ProviderDownError } from '../errors.ts'
 import { isLimit } from '../limits.ts'
 import { parseVoteReply } from '../output.ts'
 import { nearestHunks } from '../parts.ts'
@@ -125,7 +126,8 @@ async function judge(ctx: RunContext, run: ProfileRun, finding: Finding, context
  * One lens's vote on one finding, from the lens's own provider. A failed call or an unusable reply
  * is a vote of null with its error: the message of an `Error`, the text of anything else thrown.
  * It also records its failure: `voteFailureOf` the error for a failed call (a call the token cap or the
- * review's deadline stopped is a failed vote of kind `token-cap` or `review-deadline`), `unusable-reply`
+ * review's deadline stopped is a failed vote of kind `token-cap` or `review-deadline`, and one its provider's
+ * being down kept from being sent is of kind `provider-down`), `unusable-reply`
  * for a reply that came back and could not be read as a vote; a cast vote's failure is null. A request its provider refused as too large is
  * that failed vote too, and carries the refusal's message besides, for the finding's `request-too-large`
  * gap. Once the review is aborted, the vote rethrows the abort's reason instead, whatever the call
@@ -209,9 +211,10 @@ function nearestContext(run: ProfileRun, finding: Finding, lens: LensRun, sectio
     : nearestHunks(section.text, hunksOf(sections, section.path, section.text), finding.line, partialRoom)
 }
 
-/** What a call that failed says of itself as a vote's failure: the limit that stopped it, else what `providerFailure` reads, else `unknown`. */
+/** What a call that failed says of itself as a vote's failure: the limit that stopped it, `provider-down` for a vote its provider's being down kept from being sent, else what `providerFailure` reads, else `unknown`. */
 function voteFailureOf(error: unknown): VoteFailure {
   if (isLimit(error)) return { kind: error.limit }
+  if (error instanceof ProviderDownError) return { kind: 'provider-down' }
   return providerFailure(error) ?? { kind: 'unknown' }
 }
 

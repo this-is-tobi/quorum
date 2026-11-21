@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { WriteFailure } from '../bench/run-dir.ts'
-import { ConfigError, OutputError, ProviderError } from '../core/errors.ts'
+import { ConfigError, OutputError, ProviderDownError, ProviderError } from '../core/errors.ts'
 import { GitError } from '../git/run.ts'
 import { errorLines } from './io.ts'
 
@@ -51,5 +51,34 @@ describe('errorLines', () => {
     ]), 'public')).toBe('Error: a: one\nb: two')
     expect(errorLines(new GitError('GIT-CANARY', 'version'), 'public')).toBe('Error: git version failed')
     expect(errorLines(new ProviderError({ providerId: 'default', kind: 'timeout', message: 'SERVER-CANARY' }), 'public')).toBe('Error: default: the call failed (timeout)')
+  })
+
+  it('writes a ProviderDownError and its cause on two inert lines under the full view, its message alone under the public one', () => {
+    const cause = new ProviderError({
+      providerId: 'default',
+      kind: 'http',
+      status: 500,
+      message: `HTTP 500: "SERVER-CANARY${String.fromCharCode(0x202E)}\nboom"`,
+    })
+    const down = new ProviderDownError({
+      providerId: 'default',
+      kind: 'http',
+      status: 500,
+      count: 3,
+      streak: true,
+      cause,
+    })
+    expect(errorLines(down)).toBe('Error: default: 3 calls in a row failed (http 500): no more calls go to it in this review: lower concurrency or wait\ndefault: HTTP 500: "SERVER-CANARY<U+202E><U+000A>boom"')
+    expect(errorLines(down, 'public')).toBe('Error: default: 3 calls in a row failed (http 500): no more calls go to it in this review: lower concurrency or wait')
+    expect(errorLines(new ProviderDownError({
+      providerId: 'default',
+      kind: 'network',
+      count: 1,
+      streak: false,
+    }))).toBe('Error: default: its one call failed (network): check that the server at its origin is running')
+  })
+
+  it('writes a failure that has no text form as a fixed text', () => {
+    expect(errorLines(Object.create(null))).toBe('Error: an error with no text form')
   })
 })

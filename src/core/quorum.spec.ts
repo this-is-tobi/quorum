@@ -4,7 +4,8 @@ import { securityProfile } from '../profiles/security.ts'
 import { fakeClock, settle } from '../testing/clock.ts'
 import { fakeCredential } from '../testing/credentials.ts'
 import * as git from '../testing/fixtures/git.ts'
-import { ConfigError, OutputError, ProviderError } from './errors.ts'
+import { ConfigError, ProviderDownError, ProviderError } from './errors.ts'
+import { outcome } from './outcome.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts } from './ports.ts'
 import { researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum, createQuorumWith } from './quorum.ts'
@@ -482,9 +483,18 @@ describe('createQuorum', () => {
 })
 
 describe('review', () => {
-  it('fails closed on a reply without a findings array', async () => {
+  it('fails closed on a reply without a findings array: a research-failed gap that exits 4, never a pass', async () => {
     complete.mockResolvedValue('{"result":"nothing to report"}')
-    await expect(run().review({ diff })).rejects.toThrow(OutputError)
+    const result = await run().review({ diff })
+    expect(result.kept).toEqual([])
+    expect(result.meta.incomplete).toEqual([
+      {
+        profile: 'security',
+        reason: 'research-failed',
+        detail: expect.stringContaining('the research reply could not be read: '),
+      },
+    ])
+    expect(outcome(result).exitCode).toBe(4)
   })
 
   it('keeps verified findings, reports invalid ones and records a gap only for an unreadable one', async () => {
@@ -1347,7 +1357,7 @@ describe('meta and events', () => {
     expect(result.meta.incomplete).toEqual([])
   })
 
-  it('reports a failed research call\'s usage on its call event, and still rejects with the provider\'s own error', async () => {
+  it('reports a failed research call\'s usage on its call event, and still resolves with the profile\'s research-failed gap', async () => {
     const cutOff = new ProviderError({
       providerId: 'metered',
       kind: 'truncated',
@@ -1363,7 +1373,8 @@ describe('meta and events', () => {
       })),
       events: event => events.push(event),
     }).review({ diff })
-    await expect(review).rejects.toBe(cutOff)
+    const result = await review
+    expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['research-failed'])
     const calls = events.filter(event => event.type === 'call')
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({
@@ -1451,7 +1462,7 @@ describe('meta and events', () => {
         })),
         events: event => events.push(event),
       }).review({ diff })
-      await expect(review).rejects.toBe(thrown)
+      await expect(review).resolves.toMatchObject({ kept: [] })
       const [call, ...others] = events.filter(event => event.type === 'call')
       expect(others).toEqual([])
       expect(call).toMatchObject({ role: 'research', ok: false })
@@ -2558,7 +2569,7 @@ describe('the retries of a call', () => {
 })
 
 describe('failure', () => {
-  it('stops the other profiles once one fails: no call starts and no event arrives after the rejection', async () => {
+  it('records the broken profile\'s failed research as its gap, and the other profile\'s calls are still made', async () => {
     const events: QuorumEvent[] = []
     const broken: Provider = {
       id: 'broken',
@@ -2577,14 +2588,15 @@ describe('failure', () => {
       },
       events: (event: QuorumEvent) => { events.push(event) },
     }
-    await expect(createQuorum({
+    const result = await createQuorum({
       profiles: [securityProfile, style],
       concurrency: 1,
-    }, ports).review({ diff })).rejects.toThrow('broken: endpoint down')
-    const delivered = events.length
-    await new Promise(resolve => setTimeout(resolve, 20))
-    expect(styled.requests).toEqual([])
-    expect(events).toHaveLength(delivered)
+    }, ports).review({ diff })
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'research-failed', detail: 'the research call failed (http)' },
+    ])
+    expect(styled.requests.length).toBeGreaterThan(0)
+    expect(result.kept.map(verdict => verdict.profile)).toEqual(['style'])
   })
 })
 
@@ -2723,7 +2735,7 @@ describe('an advisory profile\'s failed research', () => {
     await expect(reviewWith(research, { signal: controller.signal })).rejects.toBe(reason)
   })
 
-  it('runs a profile at fail-on none as advisory: its failed research is a research-failed gap, and at medium it ends the review', async () => {
+  it('runs a profile at fail-on none as advisory: its failed research is a research-failed gap at none and at medium alike', async () => {
     const down = new ProviderError({
       providerId: 'styled',
       kind: 'http',
@@ -2732,14 +2744,24 @@ describe('an advisory profile\'s failed research', () => {
     })
     const reviewAt = async (failOn: Profile['failOn']): Promise<QuorumResult> => {
       const profile: Profile = { ...style, failOn }
+      const working = fake('security', request => isVote(request)
+        ? vote(true)
+        : findings(reported))
       return createQuorum({
-        profiles: [profile],
-      }, portsFor(profile, failing(down))).review({ diff })
+        profiles: [securityProfile, profile],
+      }, {
+        profiles: {
+          ...portsFor(securityProfile, working).profiles,
+          ...portsFor(profile, failing(down)).profiles,
+        },
+      }).review({ diff })
     }
     expect((await reviewAt('none')).meta.incomplete).toEqual([
       { profile: 'style', reason: 'research-failed', detail: 'the research call failed (http 503)' },
     ])
-    await expect(reviewAt('medium')).rejects.toBeInstanceOf(ProviderError)
+    expect((await reviewAt('medium')).meta.incomplete).toEqual([
+      { profile: 'style', reason: 'research-failed', detail: 'the research call failed (http 503)' },
+    ])
   })
 
   it('keeps an advisory profile\'s research refused as too large a request-too-large gap', async () => {
@@ -2794,13 +2816,16 @@ describe('a request too large for its provider', () => {
     ])
   })
 
-  it('still fails the review on a research failure of any other kind, unsupported included', async () => {
+  it('rejects with ProviderDownError when the only research call failed of any other kind of its own, unsupported included', async () => {
+    const cause = new ProviderError({ providerId: 'research', kind: 'unsupported', message: 'cannot take this request' })
     const research = fake('research', () => {
-      throw new ProviderError({ providerId: 'research', kind: 'unsupported', message: 'cannot take this request' })
+      throw cause
     })
-    await expect(createQuorum({
+    const error = await createQuorum({
       profiles: [securityProfile],
-    }, portsFor(securityProfile, research)).review({ diff })).rejects.toThrow('research: cannot take this request')
+    }, portsFor(securityProfile, research)).review({ diff }).catch((thrown: unknown) => thrown)
+    expect(error).toBeInstanceOf(ProviderDownError)
+    expect(error).toMatchObject({ message: 'research: its one call failed (unsupported): check the provider\'s settings', cause })
   })
 
   it('records one request-too-large gap per finding whose vote requests are refused, and leaves the finding unreviewed', async () => {
@@ -2898,22 +2923,28 @@ describe('a request too large for its provider', () => {
         },
         message: 'x',
       }
-      await expect(createQuorum({
-        profiles: [securityProfile],
-      }, portsFor(securityProfile, throwing('research', error))).review({ diff })).rejects.toBe(error)
+      expect(await researchGaps(error)).toEqual([
+        { profile: 'security', reason: 'research-failed', detail: 'the research call failed' },
+      ])
       const result = await voteGaps(error)
       expect(result.meta.incomplete.filter(entry => entry.reason === 'request-too-large')).toEqual([])
       expect(ran).toBe(0)
+    })
+
+    it('takes a kind of another value for the failure it names, not a refusal', async () => {
+      const error = { kind: 'http', message: 'x' }
+      const thrown = await createQuorum({
+        profiles: [securityProfile],
+      }, portsFor(securityProfile, throwing('research', error))).review({ diff }).catch((reason: unknown) => reason)
+      expect(thrown).toBeInstanceOf(ProviderDownError)
+      expect(thrown).toMatchObject({ message: 'research: its one call failed (http): check the provider\'s settings', cause: error })
+      expect((await voteGaps(error)).meta.incomplete.filter(entry => entry.reason === 'request-too-large')).toEqual([])
     })
 
     it.each<[string, () => unknown]>([
       [
         'an inherited kind',
         () => Object.create({ kind: 'too-large', message: 'x' }),
-      ],
-      [
-        'a kind of another value',
-        () => ({ kind: 'http', message: 'x' }),
       ],
       [
         'a kind that is not a string',
@@ -2932,9 +2963,9 @@ describe('a request too large for its provider', () => {
       ],
     ])('does not take %s for a refusal', async (_name, make) => {
       const error = make()
-      await expect(createQuorum({
-        profiles: [securityProfile],
-      }, portsFor(securityProfile, throwing('research', error))).review({ diff })).rejects.toBe(error)
+      expect(await researchGaps(error)).toEqual([
+        { profile: 'security', reason: 'research-failed', detail: 'the research call failed' },
+      ])
       expect((await voteGaps(error)).meta.incomplete.filter(entry => entry.reason === 'request-too-large')).toEqual([])
     })
 
@@ -2944,9 +2975,9 @@ describe('a request too large for its provider', () => {
           throw new Error('trap')
         },
       })
-      await expect(createQuorum({
-        profiles: [securityProfile],
-      }, portsFor(securityProfile, throwing('research', hostile))).review({ diff })).rejects.toBe(hostile)
+      expect(await researchGaps(hostile)).toEqual([
+        { profile: 'security', reason: 'research-failed', detail: 'the research call failed' },
+      ])
       expect((await voteGaps(hostile)).meta.incomplete.filter(entry => entry.reason === 'request-too-large')).toEqual([])
     })
 
@@ -3355,44 +3386,57 @@ describe('a large change in parts', () => {
     expect(result.meta.incomplete).toEqual([])
   })
 
-  it('rejects with the first reason when a gating part fails while others are in flight, starts no queued part, and leaves no timer', async () => {
+  it('records a gating part that fails while others are in flight as research-failed, and reads the others', async () => {
     const clock = fakeClock()
-    const failure = new ProviderError({
-      providerId: 'finder',
-      kind: 'http',
-      status: 500,
-      message: 'boom',
+    const at = (file: string): unknown => ({ ...reported, file, quote: `exec(input) // ${file}` })
+    let open = (): void => {}
+    const gate = new Promise<void>((resolve) => {
+      open = resolve
     })
-    const finder = partsFinder(500, (_request, call) => {
-      if (call === 2) throw failure
-      return never()
+    const finder = partsFinder(500, async (request, call) => {
+      if (call === 2) {
+        throw new ProviderError({
+          providerId: 'finder',
+          kind: 'http',
+          status: 500,
+          message: 'boom',
+        })
+      }
+      if (call === 4) open()
+      await (call === 1 || call === 3
+        ? gate
+        : Promise.resolve())
+      const part = partOf(request)
+      return part === 1 || part === 3
+        ? findings(at(FILES[part - 1]))
+        : findings()
     })
     const quorum = createQuorumWith({
       profiles: [securityProfile],
       concurrency: 3,
     }, portsFor(securityProfile, finder, keeps()), clock)
-    const outcome = await settle(clock, quorum.review({ diff: partsDiff }).catch((error: unknown) => error))
-    expect(outcome).toBe(failure)
-    await turn()
-    expect(finder.requests.length).toBeLessThanOrEqual(3)
-    expect(finder.signals.filter((_, index) => index !== 1).every(signal => signal?.aborted === true)).toBe(true)
+    const result = await settle(clock, quorum.review({ diff: partsDiff }))
+    expect(finder.requests).toHaveLength(6)
+    expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js', 'c.js'])
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'research-failed', detail: '1 of 6 research parts failed: the research call failed (http 500)' },
+    ])
     expect(clock.pending()).toBe(0)
   })
 
-  it('rejects with the OutputError of a gating part whose reply is no envelope', async () => {
+  it('records a gating part whose reply is no envelope as research-failed, naming the parser\'s reason, and reads the others', async () => {
     const clock = fakeClock()
     const finder = partsFinder(500, request => partOf(request) === 3
       ? 'not json'
-      : never())
+      : findings())
     const quorum = createQuorumWith({
       profiles: [securityProfile],
     }, portsFor(securityProfile, finder, keeps()), clock)
-    const outcome = await settle(clock, quorum.review({ diff: partsDiff }).catch((error: unknown) => error))
-    expect(outcome).toBeInstanceOf(OutputError)
-    expect(outcome).toMatchObject({ stage: 'research' })
-    await turn()
-    expect(finder.requests.length).toBeLessThanOrEqual(4)
-    expect(finder.signals.filter((_, index) => index !== 2).every(signal => signal?.aborted === true)).toBe(true)
+    const result = await settle(clock, quorum.review({ diff: partsDiff }))
+    expect(finder.requests).toHaveLength(6)
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'research-failed', detail: '1 of 6 research parts failed: the research reply could not be read: reply contains no JSON object' },
+    ])
     expect(clock.pending()).toBe(0)
   })
 
@@ -3806,6 +3850,396 @@ describe('a large change in parts', () => {
     await turn()
     await turn()
     expect(rejections).toEqual([])
+  })
+
+  describe('a failed research part', () => {
+    const at = (file: string): unknown => ({ ...reported, file, quote: `exec(input) // ${file}` })
+    /** b.js holds two hunks, so a part that holds it is two units; every file is still one part at a room of 500. */
+    const twoHunks = [
+      'diff --git a/b.js b/b.js',
+      '--- a/b.js',
+      '+++ b/b.js',
+      '@@ -1 +1 @@',
+      '-safe(input)',
+      '+exec(input) // b.js',
+      '@@ -9 +9 @@',
+      '-x',
+      '+y',
+    ].join('\n')
+    const ownerDiff = FILES.map(file => file === 'b.js'
+      ? twoHunks
+      : sectionOf(file)).join('\n')
+    /** Voters where one lens rejects, so a kept finding stays at medium and fails no gating profile. */
+    const splitVoters = (finder: Provider): QuorumPorts => ({
+      profiles: {
+        security: {
+          research: finder,
+          voters: {
+            reachability: fake('no', () => vote(false)),
+            impact: fake('yes', () => vote(true)),
+            defenses: fake('yes', () => vote(true)),
+          },
+        },
+      },
+    })
+
+    it('keeps the findings of the parts that answered when one part\'s reply is cut off, and records that part as research-failed', async () => {
+      const finder = partsFinder(500, (request) => {
+        const part = partOf(request)
+        if (part === 2) throw new ProviderError({ providerId: 'finder', kind: 'truncated', message: 'reply was cut off by the token limit' })
+        return findings(at(FILES[part - 1]))
+      })
+      const result = await createQuorum({
+        profiles: [securityProfile],
+        concurrency: 1,
+      }, splitVoters(finder)).review({ diff: ownerDiff })
+      expect(finder.requests.map(partOf)).toEqual([1, 2, 3, 4, 5, 6])
+      expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js', 'c.js', 'd.js', 'e.js', 'f.js'])
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'research-failed', detail: '1 of 6 research parts failed: the research call failed (truncated)' },
+      ])
+      expect(result.meta.profiles.security.coverage).toEqual([
+        { file: 'a.js', status: 'reviewed' },
+        { file: 'b.js', status: 'unreviewed', reason: 'research-failed' },
+        ...reviewedFiles(FILES.slice(2)),
+      ])
+      expect(outcome(result).exitCode).toBe(4)
+    })
+
+    it('records a gating profile\'s one-request research that failed as research-failed, and resolves', async () => {
+      const broken = fake('broken', () => {
+        throw new ProviderError({
+          providerId: 'broken',
+          kind: 'http',
+          status: 503,
+          message: 'busy',
+        })
+      })
+      const working = fake('working', request => isVote(request)
+        ? vote(true)
+        : findings(reported))
+      const gating: Profile = { ...style, failOn: 'medium' }
+      const result = await createQuorum({
+        profiles: [securityProfile, gating],
+      }, {
+        profiles: {
+          ...portsFor(securityProfile, working).profiles,
+          ...portsFor(gating, broken).profiles,
+        },
+      }).review({ diff })
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'style', reason: 'research-failed', detail: 'the research call failed (http 503)' },
+      ])
+      expect(result.kept.map(verdict => [verdict.profile, verdict.confidence])).toEqual([
+        ['security', 'high'],
+      ])
+    })
+
+    it('records a gating profile\'s reply that is no findings envelope as research-failed, naming the parser\'s reason', async () => {
+      const result = await createQuorum({
+        profiles: [securityProfile],
+      }, portsFor(securityProfile, fake('finder', () => 'No issues found.'))).review({ diff })
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'research-failed', detail: 'the research reply could not be read: reply contains no JSON object' },
+      ])
+      expect(outcome(result).exitCode).toBe(4)
+    })
+  })
+
+  describe('a provider that is down', () => {
+    const http503 = (): ProviderError => new ProviderError({
+      providerId: 'finder',
+      kind: 'http',
+      status: 503,
+      message: 'busy',
+    })
+    const at = (file: string): unknown => ({ ...reported, file, quote: `exec(input) // ${file}` })
+    const downEvents = (events: readonly QuorumEvent[]): QuorumEvent[] => events.filter(event => event.type === 'provider-down')
+    /** Three files of about 600 tokens each: at a partTokens of 1024 each is a part of its own. */
+    const threeFiles = FILES.slice(0, 3).map(file => wideSection(file, 1800)).join('\n')
+
+    it('calls a provider no more after three calls in a row failed, and records its unsent parts as provider-down', async () => {
+      const events: QuorumEvent[] = []
+      const finder = partsFinder(500, (request) => {
+        const part = partOf(request)
+        if (part > 2) throw http503()
+        return findings(at(FILES[part - 1]))
+      })
+      const result = await quorumOf(finder, { concurrency: 1 }, securityProfile, events).review({ diff: partsDiff })
+      expect(finder.requests.map(partOf)).toEqual([1, 2, 3, 4, 5])
+      expect(downEvents(events)).toEqual([
+        {
+          type: 'provider-down',
+          provider: 'finder',
+          kind: 'http',
+          status: 503,
+          calls: 3,
+        },
+      ])
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'research-failed', detail: '3 of 6 research parts failed: the research call failed (http 503)' },
+        { profile: 'security', reason: 'provider-down', detail: '1 of 6 research parts were not sent, since their provider was down' },
+      ])
+      expect(result.meta.profiles.security.coverage.at(-1)).toEqual({ file: 'f.js', status: 'unreviewed', reason: 'provider-down' })
+      expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js', 'b.js'])
+      expect(events.filter(event => event.type === 'call' && !event.ok)).toHaveLength(3)
+    })
+
+    it('reads the calls in flight when a provider goes down, sends no other, and keeps what it read', async () => {
+      const clock = fakeClock()
+      const events: QuorumEvent[] = []
+      let release = (): void => {}
+      const held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      // The order of microtasks this test relies on: parts 1 to 4 start together, and parts 1 to 3 fail in the same
+      // turn, so each `end` counts its failure inside its slot, and the third finds the provider down, before the
+      // limiter's `finally` of the first resumes (one more hop) and hands its slot to part 5. Part 5 then meets
+      // the down rule before it builds its request, and part 4 is the only call in flight, held until the event.
+      const finder = partsFinder(500, async (request) => {
+        const part = partOf(request)
+        if (part <= 3) throw http503()
+        await held
+        return findings(at(FILES[part - 1]))
+      })
+      const quorum = createQuorumWith({
+        profiles: [securityProfile],
+        concurrency: 4,
+      }, {
+        ...portsFor(securityProfile, finder, keeps()),
+        events: (event) => {
+          events.push(event)
+          if (event.type === 'provider-down') release()
+        },
+      }, clock)
+      const result = await settle(clock, quorum.review({ diff: partsDiff }))
+      expect(finder.requests.map(partOf)).toEqual([1, 2, 3, 4])
+      expect(downEvents(events)).toHaveLength(1)
+      expect(result.kept.map(verdict => verdict.file)).toEqual(['d.js'])
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'research-failed', detail: '3 of 6 research parts failed: the research call failed (http 503)' },
+        { profile: 'security', reason: 'provider-down', detail: '2 of 6 research parts were not sent, since their provider was down' },
+      ])
+      expect(result.meta.profiles.security.coverage).toEqual([
+        ...FILES.slice(0, 3).map(file => ({ file, status: 'unreviewed', reason: 'research-failed' })),
+        { file: 'd.js', status: 'reviewed' },
+        ...FILES.slice(4).map(file => ({ file, status: 'unreviewed', reason: 'provider-down' })),
+      ])
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('records the votes of a voter that is down as failed votes of kind provider-down', async () => {
+      const voter = fake('voter', () => {
+        throw new ProviderError({ providerId: 'voter', kind: 'network', message: 'fetch failed' })
+      })
+      const finder = fake('finder', () => findings(at('a.js'), at('b.js'), at('c.js')))
+      const events: QuorumEvent[] = []
+      const result = await createQuorum({
+        profiles: [securityProfile],
+        concurrency: 1,
+      }, {
+        ...portsFor(securityProfile, finder, voter),
+        events: event => events.push(event),
+      }).review({ diff: partsDiff })
+      expect(voter.requests).toHaveLength(3)
+      expect(result.unreviewed).toHaveLength(3)
+      const failures = result.unreviewed.map(verdict => verdict.votes.map(lensVote => lensVote.failure))
+      expect(failures).toEqual([
+        Array.from({ length: 3 }).fill({ kind: 'network' }),
+        Array.from({ length: 3 }).fill({ kind: 'provider-down' }),
+        Array.from({ length: 3 }).fill({ kind: 'provider-down' }),
+      ])
+      expect(result.unreviewed[1].votes[0].error).toBe('voter: 3 calls in a row failed (network): no more calls go to it in this review: check that the server at its origin is running')
+      expect(downEvents(events)).toEqual([
+        {
+          type: 'provider-down',
+          provider: 'voter',
+          kind: 'network',
+          calls: 3,
+        },
+      ])
+    })
+
+    it('counts a provider\'s failures across the profiles and roles that share it', async () => {
+      const shared = fake('shared', () => {
+        throw new ProviderError({ providerId: 'shared', kind: 'network', message: 'fetch failed' })
+      })
+      const working = fake('working', () => findings(reported))
+      const third: Profile = { ...style, id: 'third' }
+      const events: QuorumEvent[] = []
+      const result = await createQuorum({
+        profiles: [securityProfile, style, third],
+        concurrency: 1,
+      }, {
+        profiles: {
+          ...portsFor(securityProfile, shared).profiles,
+          ...portsFor(style, shared).profiles,
+          ...portsFor(third, working, shared).profiles,
+        },
+        events: event => events.push(event),
+      }).review({ diff })
+      expect(downEvents(events)).toEqual([
+        {
+          type: 'provider-down',
+          provider: 'shared',
+          kind: 'network',
+          calls: 3,
+        },
+      ])
+      expect(shared.requests).toHaveLength(3)
+      expect(result.unreviewed.map(verdict => verdict.votes.map(lensVote => lensVote.failure))).toEqual([
+        [
+          { kind: 'network' },
+          { kind: 'provider-down' },
+        ],
+      ])
+    })
+
+    it('counts a timeout, as a server that hangs must be found down', async () => {
+      const clock = fakeClock()
+      const events: QuorumEvent[] = []
+      const finder = partsFinder(500, (request) => {
+        const part = partOf(request)
+        return part <= 2
+          ? findings(at(FILES[part - 1]))
+          : never()
+      }, { timeoutMs: 5000 })
+      const quorum = createQuorumWith({
+        profiles: [securityProfile],
+        concurrency: 1,
+      }, {
+        ...portsFor(securityProfile, finder, keeps()),
+        events: event => events.push(event),
+      }, clock)
+      const result = await settle(clock, quorum.review({ diff: partsDiff }))
+      expect(finder.requests).toHaveLength(5)
+      expect(downEvents(events)).toEqual([
+        {
+          type: 'provider-down',
+          provider: 'finder',
+          kind: 'timeout',
+          calls: 3,
+        },
+      ])
+      expect(result.meta.incomplete.map(entry => [entry.reason, entry.detail])).toEqual([
+        ['research-failed', '3 of 6 research parts failed: the research call failed (timeout)'],
+        ['provider-down', '1 of 6 research parts were not sent, since their provider was down'],
+      ])
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('leaves a provider up whose calls are refused, cut off or unreadable, however many', async () => {
+      const events: QuorumEvent[] = []
+      const finder = partsFinder(500, (request) => {
+        const part = partOf(request)
+        if (part % 3 === 1) throw new ProviderError({ providerId: 'finder', kind: 'refusal', message: 'no' })
+        if (part % 3 === 2) throw new ProviderError({ providerId: 'finder', kind: 'truncated', message: 'cut off' })
+        return 'No issues found.'
+      })
+      const result = await quorumOf(finder, { concurrency: 1 }, securityProfile, events).review({ diff: partsDiff })
+      expect(finder.requests).toHaveLength(6)
+      expect(downEvents(events)).toEqual([])
+      expect(result.meta.incomplete.map(entry => [entry.reason, entry.detail])).toEqual([
+        ['research-failed', '6 of 6 research parts failed: the research call failed (refusal)'],
+      ])
+    })
+
+    it('rejects with ProviderDownError when no research call of any profile answered', async () => {
+      const cause = new ProviderError({
+        providerId: 'finder',
+        kind: 'http',
+        status: 401,
+        message: 'HTTP 401',
+      })
+      const one = await createQuorum({
+        profiles: [securityProfile],
+      }, portsFor(securityProfile, fake('finder', () => {
+        throw cause
+      }))).review({ diff }).catch((error: unknown) => error)
+      expect(one).toBeInstanceOf(ProviderDownError)
+      expect(one).toMatchObject({ message: 'finder: its one call failed (http 401): check apiKey', cause })
+      const network = (): never => {
+        throw new ProviderError({ providerId: 'finder', kind: 'network', message: 'fetch failed' })
+      }
+      const finder = partsFinder(5000, network)
+      const three = await quorumOf(finder, { concurrency: 1, partTokens: 1024 }).review({ diff: threeFiles }).catch((error: unknown) => error)
+      expect(finder.requests).toHaveLength(3)
+      expect(three).toBeInstanceOf(ProviderDownError)
+      expect(three).toMatchObject({ message: 'finder: 3 calls in a row failed (network): no more calls go to it in this review: check that the server at its origin is running' })
+      // A provider found down comes before one that is only spent, whatever the profile order.
+      const spent = fake('alpha', () => {
+        throw new ProviderError({
+          providerId: 'alpha',
+          kind: 'http',
+          status: 401,
+          message: 'HTTP 401',
+        })
+      })
+      const both = await createQuorum({
+        profiles: [securityProfile, style],
+        concurrency: 1,
+        partTokens: 1024,
+      }, {
+        profiles: {
+          ...portsFor(securityProfile, spent).profiles,
+          ...portsFor(style, partsFinder(5000, network)).profiles,
+        },
+      }).review({ diff: threeFiles }).catch((error: unknown) => error)
+      expect(both).toMatchObject({ providerId: 'finder', streak: true })
+    })
+
+    it('records the one request a down provider was never sent as a provider-down gap, in the design\'s words', async () => {
+      const down = fake('finder', () => {
+        throw http503()
+      })
+      const working = fake('working', request => isVote(request)
+        ? vote(true)
+        : findings(reported))
+      const failing = ['a', 'b', 'c', 'd'].map(id => ({ ...style, id }))
+      const advisory: Profile = { ...style, id: 'e', failOn: 'none' }
+      const result = await createQuorum({
+        profiles: [...failing, advisory],
+        concurrency: 1,
+      }, {
+        profiles: {
+          ...Object.assign({}, ...failing.map(profile => portsFor(profile, down).profiles)),
+          ...portsFor(advisory, working).profiles,
+        },
+      }).review({ diff })
+      // Three profiles' one request each failed in a row; the fourth was never sent: its provider was found down.
+      expect(down.requests).toHaveLength(3)
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'a', reason: 'research-failed', detail: 'the research call failed (http 503)' },
+        { profile: 'b', reason: 'research-failed', detail: 'the research call failed (http 503)' },
+        { profile: 'c', reason: 'research-failed', detail: 'the research call failed (http 503)' },
+        { profile: 'd', reason: 'provider-down', detail: 'the research request was not sent, since its provider was down' },
+      ])
+    })
+
+    it('resolves when another profile\'s research answered, whatever the provider down left', async () => {
+      const working = fake('working', request => isVote(request)
+        ? vote(true)
+        : findings(reported))
+      const down = partsFinder(500, () => {
+        throw http503()
+      })
+      const advisory: Profile = { ...style, failOn: 'none' }
+      const result = await createQuorum({
+        profiles: [securityProfile, advisory],
+        concurrency: 1,
+      }, {
+        profiles: {
+          ...portsFor(securityProfile, down).profiles,
+          ...portsFor(advisory, working).profiles,
+        },
+      }).review({ diff: partsDiff })
+      expect(result.kept.map(verdict => verdict.profile)).toEqual(['style'])
+      expect(result.meta.incomplete.map(entry => [entry.profile, entry.reason])).toEqual([
+        ['security', 'research-failed'],
+        ['security', 'provider-down'],
+      ])
+      expect(outcome(result).exitCode).toBe(4)
+    })
   })
 })
 

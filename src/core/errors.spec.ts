@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ConfigError, issuePath, ProviderError, QuorumError } from './errors.ts'
+import { ConfigError, downWords, issuePath, ProviderDownError, ProviderError, QuorumError } from './errors.ts'
 import type { ConfigIssue, ProviderErrorKind } from './errors.ts'
 
 describe('provider errors', () => {
@@ -82,6 +82,141 @@ describe('provider errors', () => {
       usage: { inputTokens: 10, outputTokens: 20 },
     }).usage).toEqual({ inputTokens: 10, outputTokens: 20 })
     expect(new ProviderError(details).usage).toBeUndefined()
+  })
+})
+
+describe('a provider that is down', () => {
+  it.each<[string, ProviderErrorKind, number | undefined, string]>([
+    [
+      'network',
+      'network',
+      undefined,
+      'check that the server at its origin is running',
+    ],
+    [
+      'timeout',
+      'timeout',
+      undefined,
+      'raise timeoutMs',
+    ],
+    [
+      'http 401',
+      'http',
+      401,
+      'check apiKey',
+    ],
+    [
+      'http 403',
+      'http',
+      403,
+      'check apiKey',
+    ],
+    [
+      'http 404',
+      'http',
+      404,
+      'check baseUrl and model',
+    ],
+    [
+      'http 429',
+      'http',
+      429,
+      'lower concurrency or wait',
+    ],
+    [
+      'http 503',
+      'http',
+      503,
+      'lower concurrency or wait',
+    ],
+    [
+      'http 418',
+      'http',
+      418,
+      'check the provider\'s settings',
+    ],
+    [
+      'invalid-response',
+      'invalid-response',
+      undefined,
+      'check protocol and baseUrl',
+    ],
+  ])('words a provider down after %s with its fix', (_name, kind, status, fix) => {
+    const failure = status === undefined
+      ? kind
+      : `${kind} ${status}`
+    expect(downWords({
+      providerId: 'api',
+      kind,
+      status,
+      count: 3,
+      streak: true,
+    })).toBe(`api: 3 calls in a row failed (${failure}): no more calls go to it in this review: ${fix}`)
+  })
+
+  it('words a provider whose one call failed, and one whose two did', () => {
+    expect(downWords({
+      providerId: 'api',
+      kind: 'http',
+      status: 401,
+      count: 1,
+      streak: false,
+    })).toBe('api: its one call failed (http 401): check apiKey')
+    expect(downWords({
+      providerId: 'api',
+      kind: 'process',
+      count: 2,
+      streak: false,
+    })).toBe('api: its 2 calls failed (process): check command')
+  })
+
+  it('words the kinds that have a fix of their own, and any other with the provider\'s settings', () => {
+    expect(downWords({
+      providerId: 'api',
+      kind: 'unsupported',
+      count: 3,
+      streak: true,
+    })).toContain('check the provider\'s settings')
+    expect(downWords({
+      providerId: 'api',
+      kind: 'http',
+      count: 3,
+      streak: true,
+    })).toBe('api: 3 calls in a row failed (http): no more calls go to it in this review: check the provider\'s settings')
+  })
+
+  it('keeps the last failure as the cause, and is no ProviderError', () => {
+    const cause = new ProviderError({ providerId: 'api', kind: 'network', message: 'fetch failed' })
+    const error = new ProviderDownError({
+      providerId: 'api',
+      kind: 'network',
+      count: 3,
+      streak: true,
+      cause,
+    })
+    expect(error).toBeInstanceOf(QuorumError)
+    expect(error).not.toBeInstanceOf(ProviderError)
+    expect(error).toMatchObject({
+      name: 'ProviderDownError',
+      message: downWords({
+        providerId: 'api',
+        kind: 'network',
+        count: 3,
+        streak: true,
+      }),
+      providerId: 'api',
+      kind: 'network',
+      status: undefined,
+      count: 3,
+      streak: true,
+      cause,
+    })
+    expect('cause' in new ProviderDownError({
+      providerId: 'api',
+      kind: 'network',
+      count: 1,
+      streak: false,
+    })).toBe(false)
   })
 })
 
