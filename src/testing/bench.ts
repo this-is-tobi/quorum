@@ -177,7 +177,7 @@ function attackCase(id: string, twinId: string, goal: Goal, carrier: Carrier, en
   }
 }
 
-/** A review score that caught nothing, was not denied and took one millisecond, with `fields` laid over it. */
+/** A review score that caught nothing, took one millisecond, with `fields` laid over it. */
 export function scoreWith(fields: Partial<ReviewScore> = {}): ReviewScore {
   return {
     keptCatch: false,
@@ -186,7 +186,6 @@ export function scoreWith(fields: Partial<ReviewScore> = {}): ReviewScore {
     incomplete: false,
     keptDecoys: [],
     judged: [],
-    denied: false,
     latencyMs: 1,
     ...fields,
   }

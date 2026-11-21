@@ -1,19 +1,18 @@
 /**
  * The runner of a bench: it takes the planned reviews and runs each through a quorum of its own, at most
- * `jobs` at once, and hands every review that resolved, or that a model's reply denied, to the caller as a
- * record to write. It knows nothing of the run directory, the report or the terminal: the caller gives it
- * a way to write a line and a callback to report to.
+ * `jobs` at once, and hands every review that resolved to the caller as a record to write. It knows
+ * nothing of the run directory, the report or the terminal: the caller gives it a way to write a line and
+ * a callback to report to.
  */
 
 import type { Env } from '../config/env.ts'
 import { fromConfig } from '../config/from-config.ts'
 import type { ResolvedConfig } from '../config/resolve.ts'
 import { createLimiter } from '../core/concurrency.ts'
-import { OutputError, ProviderError } from '../core/errors.ts'
 import type { EventSink } from '../core/ports.ts'
-import type { QuorumResult, Usage } from '../core/types.ts'
+import type { Usage } from '../core/types.ts'
 import { MAX_RECORD_BYTES, recordLine } from './records.ts'
-import type { Denial, ResultRecord, ReviewRecord } from './records.ts'
+import type { ResultRecord, ReviewRecord } from './records.ts'
 import type { Suite } from './suite.ts'
 
 const OVERSIZED_RECORD = 'its record is over the size a line of results.jsonl holds'
@@ -33,7 +32,7 @@ export interface RunnerConfiguration {
   readonly fingerprint: string
 }
 
-/** What the runner reports: a review that was recorded, resolved or denied, and written, or one that failed. */
+/** What the runner reports: a review that resolved and was recorded, or one that failed. */
 export type RunnerEvent
   = | { readonly type: 'recorded', readonly review: BenchReview, readonly record: ReviewRecord }
     | { readonly type: 'failed', readonly review: BenchReview, readonly error: unknown }
@@ -62,7 +61,7 @@ export interface RunReviewsOptions {
 export interface RunReviewsOutcome {
   /** The reviews written to the record. */
   readonly recorded: number
-  /** The reviews that failed, a rejection that is no denial, or whose record was too large to write. */
+  /** The reviews that failed, a rejection (an outage, a `ProviderDownError` among them, or a bug), or whose record was too large to write. */
   readonly failed: number
   /** The reviews that did not start because the run had spent `maxRunTokens`. */
   readonly notRun: number
@@ -117,35 +116,17 @@ function tallyCalls(): { readonly sink: EventSink, readonly counts: () => Pick<R
 }
 
 /**
- * The denial a review's rejection records, or undefined when the review fails and is retried. A review
- * whose research reply could not be used (an `OutputError`), or whose research call the model refused or
- * cut off at its token limit (a `ProviderError` of kind `refusal` or `truncated`), was answered by its
- * model: a retry cannot tell the model's unreliability from an outage, and a poisoned patch provokes such
- * replies on purpose, so the review is recorded as denied, with no result, and counts as incomplete. Any
- * other rejection (an HTTP, network, timeout or process failure, a reply the server shaped wrong) says
- * nothing of the model's answer, so the review fails and runs again. The classes are matched with
- * `instanceof`: an error from a second copy of quorum is no denial, so it fails, which fails closed.
- * A failed research part, the call or its reply, resolves the review with a `research-failed` gap
- * recorded with its result, neither failed nor denied; only a review in which no research call answered
- * rejects, with a `ProviderDownError`, and it fails and runs again.
- */
-export function denialOf(error: unknown): Denial | undefined {
-  if (error instanceof OutputError) return 'unusable-reply'
-  if (error instanceof ProviderError && (error.kind === 'refusal' || error.kind === 'truncated')) return error.kind
-  return undefined
-}
-
-/**
  * Run the planned reviews in the order given, at most `jobs` at once, and give the caller each review
- * that resolved, or that a model's reply denied (`denialOf`), as a record: `append` writes its line, then
- * `events` reports it as `recorded`.
+ * that resolved as a record: `append` writes its line, then `events` reports it as `recorded`. A failed
+ * research part, the call or its reply, resolves the review with a `research-failed` gap in its result.
  *
  * Each review gets a quorum of its own through `fromConfig`, with an event sink of its own, so its record
- * counts only its own calls. A review that rejects with any other error is reported as `failed` and not
- * recorded, and the others run. One `AbortController` of the runner's, joined to the caller's `signal`,
+ * counts only its own calls. A review that rejects, with a `ProviderDownError` (no research call
+ * answered, and a provider was found down) or any other error, is reported as `failed` and not recorded, so
+ * the next run runs it again, and the others run. One `AbortController` of the runner's, joined to the caller's `signal`,
  * cuts the reviews in flight when the caller is interrupted or a write fails, and a review that has not
  * started when it is aborted does not start. A review that rejects while the run is aborted is neither
- * recorded, a denial included, nor a failure: an interrupt is not a verdict on the review. A review that
+ * recorded nor a failure: an interrupt is not a verdict on the review. A review that
  * resolved is recorded, even when the interrupt came while its record was written. A line over
  * `maxRecordBytes` is a failed review and is never written, since the reader of `results.jsonl` refuses
  * a line that long, and with it the whole directory. A write that fails stops the run: it reports
@@ -153,7 +134,7 @@ export function denialOf(error: unknown): Denial | undefined {
  * review has settled. A callback of `events` that throws does the same.
  *
  * The run counts what each review's cap counts: the `spent` of every `call` event of every review, one that
- * failed or was denied included. Before a review starts, and after the abort's check, the run checks that
+ * failed included. Before a review starts, and after the abort's check, the run checks that
  * the total is below `maxRunTokens`: once it is not, the review does not start and counts as `notRun`, the
  * reviews in flight finish and are recorded, and the outcome says what was spent. The check is made before
  * each review starts, so the reviews in flight can pass the cap by up to `jobs` reviews' own caps. The calls
@@ -211,19 +192,7 @@ export async function runReviews(options: RunReviewsOptions): Promise<RunReviews
       latencyMs: Math.round(performance.now() - started),
       ...tally.counts(),
     })
-    let result: QuorumResult
-    try {
-      result = await quorum.review({ diff, send: configuration.config.send }, { signal })
-    } catch (error) {
-      const denied = signal.aborted
-        ? undefined
-        : denialOf(error)
-      if (denied === undefined) throw error
-      return {
-        ...facts(),
-        denied,
-      }
-    }
+    const result = await quorum.review({ diff, send: configuration.config.send }, { signal })
     return {
       ...facts(),
       result,

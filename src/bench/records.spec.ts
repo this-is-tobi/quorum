@@ -3,7 +3,7 @@ import { hiddenLabels } from '../core/sanitize.ts'
 import type { CoverageEntry, ReviewSource } from '../core/types.ts'
 import { record, RESULT, resultWith, RUN_SUITE, verdict } from '../testing/bench.ts'
 import { parseRecord, parseRunFile, recordLine, reviewKey } from './records.ts'
-import type { DeniedRecord, ResultRecord, RunFile } from './records.ts'
+import type { ResultRecord, RunFile } from './records.ts'
 
 const RECORD = record()
 const RUN: RunFile = {
@@ -190,13 +190,8 @@ describe('parseRecord', () => {
   })
 })
 
-describe('a denied record', () => {
+describe('a record without a result', () => {
   const { result: _result, ...facts } = record()
-  const DENIED: DeniedRecord = { ...facts, denied: 'unusable-reply' }
-
-  it('reads back the record of a denied review, which holds no result', () => {
-    expect(parseRecord(recordLine(DENIED).slice(0, -1))).toEqual(DENIED)
-  })
 
   it.each<[string, object]>([
     [
@@ -207,8 +202,8 @@ describe('a denied record', () => {
       },
     ],
     [
-      'a denial outside the three',
-      { ...facts, denied: 'timeout' },
+      'a denial in place of a result',
+      { ...facts, denied: 'unusable-reply' },
     ],
     ['a record with neither', facts],
   ])('refuses %s', (_name, value) => {
