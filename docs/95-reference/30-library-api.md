@@ -31,6 +31,7 @@ interface Quorum {
   readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal, readonly store?: ReplyStore }) => Promise<QuorumResult>
   readonly estimate: (input: { readonly diff: string, readonly send?: readonly string[] }) => Estimate
   readonly warnings: readonly string[]
+  readonly budgets: Readonly<Record<string, ProfileBudgets>>
 }
 
 interface ReviewInput {
@@ -86,6 +87,7 @@ One provider object may fill several ports: the research provider of a profile c
 | `ports.profiles.<id>.research.worstCase`, `ports.profiles.<id>.voters.<lens>.worstCase` | `must be a function` |
 | `ports.profiles.<id>.research.room`, `ports.profiles.<id>.voters.<lens>.room` | `must be a function` |
 | `ports.events` | `must be a function` |
+| `profiles.<id>` | `the research request on <provider> leaves <room> tokens for the diff, less than the 1024 a hunk may need: contextTokens <window> counts <fixed> for the instructions, guidelines and rules, <template> for the chat template and <reply> for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window`, and the same for `the vote request on <provider> for the longest finding`: a profile whose fixed text leaves a provider that states its `room` and its `window` no room for a diff, checked once the ports pass ([Room accounting](../20-using/20-configuration.md#room-accounting)) |
 
 A port for a profile or a lens the review does not have is refused, as a likely typo. A profile's ports are checked only when the profile itself has no issue, and no port is checked when `profiles` is not an array. Every record keyed by an id is read through its own properties, so `constructor` is as valid an id as any other. For the security profile with `concurrency: 0`, `maxFindings: 2.5`, a research port that is not a provider, its `defenses` voter missing and one named `typo` instead, a port for a profile named `other`, and a sink that is a string, the message reads:
 
@@ -102,6 +104,10 @@ ports.events: must be a function
 ### The snapshot
 
 Each profile is compiled once, when the quorum is created: its vote template rendered for each lens, its thresholds resolved, and its providers captured beside the `{ id, model }` each had then, which is what events and `meta` report, with the `window`, `maxTokens` and `thinking` each stated, from which the profile's reply budgets are computed once ([Reply budgets](../20-using/20-configuration.md#reply-budgets)). A later change to a profile, to `exclude`, or to which provider a port names, is never seen by a review of that quorum. The provider objects themselves are called as they are.
+
+### `budgets`
+
+`Quorum.budgets` holds each profile's `ProfileBudgets` by profile id, frozen, at its providers' stated windows: the reply budget of its research and of each lens's vote (`replyTokens`), the `N` its research asks for (`findings`, and `findingsWithoutThinking`), the tokens of diff its research provider's stated room leaves a one-request research and a part (`rooms.one` and `rooms.part`), the room each voter leaves the vote of the longest finding (`room`), and `worstPart`, the tokens the review's token cap reserves for a part that holds as much diff as its room and `partTokens` allow, with how many of them `maxReviewTokens` holds: the worst case of a part that lists no file, so where `partTokens` bounds the diff the figure runs low and `holds` high, by the size of the file list a real part carries, and where the room bounds it both are exact. A provider that states no room has no `rooms`, `worstPart` or `room`. [`--print-config`](../20-using/10-cli.md#printing-the-resolved-config) prints them. A profile whose rooms fall below 1,024 tokens never gets this far: `createQuorum` throws it ([Room accounting](../20-using/20-configuration.md#room-accounting)). `fromConfig` keeps the field.
 
 ### `warnings`
 

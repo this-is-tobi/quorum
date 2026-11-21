@@ -174,6 +174,8 @@ describe('estimate', () => {
       profiles: [securityProfile],
       concurrency: 1,
     }, portsFor(securityProfile, finder, event => events.push(event)))
+    // Creating the quorum asked the worst case of a part for its budgets, with N at maxFindings: only the estimate's requests are read here.
+    asked.length = 0
     const estimate = quorum.estimate({ diff: DIFF })
     const research = asked.filter(request => request.output.name === 'research_findings')
     const votes = asked.filter(request => request.output.name === 'panel_vote')

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
+import type { ProfileBudgets } from '../core/budgets.ts'
 import type { Provider } from '../core/ports.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { printConfig } from './print-config.ts'
@@ -247,5 +248,115 @@ describe('printConfig', () => {
       delete proto.headers
       delete proto.model
     }
+  })
+
+  /** The budgets of the built-in profile on one provider at a window of 8192, its figures computed from the real prompts: the rooms, the worst part and the lenses' rooms (1602) alike. */
+  const BUDGETS: Readonly<Record<string, ProfileBudgets>> = {
+    security: {
+      research: {
+        provider: 'a',
+        window: 8192,
+        replyTokens: 2048,
+        findings: 3,
+        findingsWithoutThinking: 7,
+        rooms: { one: 4014, part: 3702 },
+        worstPart: { tokens: 8192, holds: 244 },
+      },
+      lenses: {
+        reachability: {
+          provider: 'a',
+          window: 8192,
+          replyTokens: 2048,
+          room: 1602,
+        },
+        impact: {
+          provider: 'a',
+          window: 8192,
+          replyTokens: 2048,
+          room: 1602,
+        },
+      },
+    },
+  }
+
+  it('prints the budgets of each profile', () => {
+    const text = printConfig(config({ a: SPEC }), undefined, BUDGETS)
+    expect(text).toContain([
+      'budgets:',
+      '  security:',
+      '    research:',
+      '      provider: a',
+      '      contextTokens: 8192',
+      '      replyTokens: 2048',
+      '      findings: 3',
+      '      findingsWithoutThinking: 7',
+      '      rooms:',
+      '        one: 4014',
+      '        part: 3702',
+      '      worstPart:',
+      '        tokens: 8192',
+      '        holds: 244',
+      '    lenses:',
+      '      reachability:',
+      '        provider: a',
+      '        contextTokens: 8192',
+      '        replyTokens: 2048',
+      '        room: 1602',
+      '      impact:',
+      '        provider: a',
+      '        contextTokens: 8192',
+      '        replyTokens: 2048',
+      '        room: 1602',
+      'concurrency: 4',
+      '',
+    ].join('\n'))
+    // They follow the profiles, and a call without them prints none.
+    expect(text.indexOf('\nbudgets:\n')).toBeGreaterThan(text.indexOf('\nprofiles:\n'))
+    expect(printed(SPEC)).not.toContain('budgets')
+    expect(text).toContain('\nwarnings: []\n')
+  })
+
+  it('warns at 19 parts the token cap holds, and at 20 does not', () => {
+    const holding = (holds: number): string => printConfig(config({ a: SPEC }, { maxReviewTokens: 2_000_000 }), undefined, {
+      security: {
+        ...BUDGETS.security,
+        research: {
+          ...BUDGETS.security.research,
+          worstPart: { tokens: 100_000, holds },
+        },
+      },
+    })
+    expect(holding(19)).toContain('\nwarnings:\n  - "the token cap of 2000000 holds the worst case of 19 research parts of a (100000 tokens each): lower maxTokens, or raise maxReviewTokens"\n')
+    expect(holding(20)).toContain('\nwarnings: []\n')
+  })
+
+  it('warns when the token cap holds the worst case of fewer than 20 parts', () => {
+    const small = {
+      ...BUDGETS.security.research,
+      worstPart: { tokens: 120_000, holds: 16 },
+    }
+    const budgets = {
+      security: { ...BUDGETS.security, research: small },
+    }
+    const lines = (spec: ResolvedProvider): string[] => printConfig(config({ a: spec }, { maxReviewTokens: 2_000_000 }), undefined, budgets).split('\n')
+    expect(lines(SPEC).slice(-3)).toEqual([
+      'warnings:',
+      '  - "the token cap of 2000000 holds the worst case of 16 research parts of a (120000 tokens each): lower maxTokens, or raise maxReviewTokens"',
+      '',
+    ])
+    expect(lines({ ...SPEC, maxTokens: 100_000 }).slice(-2)[0]).toBe('  - "the token cap of 2000000 holds the worst case of 16 research parts of a (120000 tokens each, maxTokens 100000): lower maxTokens, or raise maxReviewTokens"')
+    // A provider object's stated maxTokens is the one the warning advises lowering.
+    const object = {
+      id: 'a',
+      model: 'm',
+      complete: async () => ({ text: '', model: 'm' }),
+      maxTokens: 90_000,
+    } satisfies Provider
+    expect(lines(object).slice(-2)[0]).toBe('  - "the token cap of 2000000 holds the worst case of 16 research parts of a (120000 tokens each, maxTokens 90000): lower maxTokens, or raise maxReviewTokens"')
+    // 20 parts is enough, and the config's own warnings come first.
+    expect(printConfig(config({ a: SPEC }), undefined, BUDGETS)).toContain('\nwarnings: []\n')
+    expect(printConfig(config({ a: SPEC }, {
+      warnings: ['a: b'],
+    }), undefined, budgets).split('\n').slice(-4, -2)).toEqual(['warnings:', '  - "a: b"'])
   })
 })

@@ -5,6 +5,7 @@
  * @see ../../docs/95-reference/30-library-api.md for usage.
  */
 
+import type { ProfileBudgets } from './budgets.ts'
 import type { NoAnswer, ProviderErrorKind } from './errors.ts'
 import type { PolicyRules } from './policy.ts'
 import type { ReplyStore } from './ports.ts'
@@ -569,6 +570,12 @@ export interface Quorum {
   readonly estimate: (input: { readonly diff: string, readonly send?: readonly string[] }) => Estimate
   /** Settings that cannot take full effect, such as a policy level that never applies; each starts at its profile id. */
   readonly warnings: readonly string[]
+  /**
+   * The budgets of each profile by id, at its providers' stated windows, frozen: each request kind's reply budget, the
+   * findings a research request asks for, the tokens of diff each provider's stated room leaves a request, and the worst
+   * case of a research part with how many the review's token cap holds. A provider that states no room has no rooms.
+   */
+  readonly budgets: Readonly<Record<string, ProfileBudgets>>
 }
 
 /** The stages every profile runs through, in this order. */

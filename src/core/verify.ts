@@ -112,3 +112,18 @@ function cap(value: string, max: number): string {
     : max - 1
   return `${value.slice(0, keep)}…`
 }
+
+/** A finding as the harness leaves it at its longest, citing `file`: every text the finder or the diff writes at its cap, in the one character that costs a token a character. The estimate and the room accounting size a vote by it. */
+export function longestFinding(file: string): Finding {
+  return {
+    id: '',
+    fingerprint: '',
+    profile: '',
+    file,
+    line: Number.MAX_SAFE_INTEGER,
+    category: 'x'.repeat(MAX_CATEGORY),
+    summary: 'x'.repeat(MAX_SUMMARY),
+    evidence: 'x'.repeat(MAX_EVIDENCE),
+    quoteMatched: true,
+  }
+}

@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto'
-import { DEFAULT_MAX_FINDINGS } from './budgets.ts'
 import { researchReplyJsonSchema, voteReplyJsonSchema } from './output.ts'
 import type { CompletionRequest } from './ports.ts'
 import { showHidden } from './sanitize.ts'
@@ -60,6 +59,9 @@ const BLOCK_DESCRIPTIONS = {
   diffSectionPart: 'part of the diff section of the cited file: its header and the hunks nearest the cited line, since the whole section does not fit.',
   guidelines: 'the project\'s review guidelines. Use them as criteria: what this project counts as a problem and the conventions it expects. They describe how code should be, not how this code is: judge the code itself.',
 } as const
+
+/** The most findings of a research reply each profile reads, when a quorum sets none: what a request asks for when nothing narrows it. */
+export const DEFAULT_MAX_FINDINGS = 50
 
 interface Block {
   label: string

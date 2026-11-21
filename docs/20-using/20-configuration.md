@@ -283,6 +283,53 @@ Neither of these is done today. Counting with a vendor's own tokenizer would shr
 
 A research request is split into parts first, so its profile records a `request-too-large` gap, counting the parts, only for a part its provider refused all the same, and a `too-large` gap for a hunk no part can hold, and the other profiles run. A refused vote is a failed vote ([Failed votes](./50-lenses-and-policy.md#failed-votes)), and its finding records a `request-too-large` gap as well, whatever its status: kept, discarded or `unreviewed`, the gap stays. A gating profile with such a gap exits `4`, even with `--allow-incomplete`, unless it also kept a finding at or above its fail-on level, `high` by default, which exits `1`; the gap of an advisory profile changes no code. The result says what was not sent: [Incomplete reasons](../95-reference/20-json-result.md#incomplete-reasons). A provider with no context size is a configuration error, exit `2`, before any request.
 
+## Room accounting
+
+The window holds three things besides the diff: the request's fixed text (the instructions, the fences, the reply schema, the line that asks for at most `N` findings and the guidelines), the chat template, and the reply's budget ([Reply budgets](#reply-budgets)). What is left is the room for the diff. A profile that leaves a provider less than 1,024 tokens of it, the least a hunk may need, would run every request into a `request-too-large` gap, so quorum refuses it when it is created, before any call, with exit `2`: [Exit codes](./10-cli.md#exit-codes).
+
+Two requests are read, each over an empty diff, and each asks its provider's own `room`:
+
+- **The research request** of the one-request research, with `N` at `maxFindings`, the widest its line can be. Its message names the profile and the provider's id, then the figures, which add up to the window:
+
+  ```text
+  profiles.security: the research request on local leaves -630 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1618 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window
+  ```
+
+- **The vote request for the longest finding**, the one the [estimate](../95-reference/30-library-api.md#estimate) bounds a vote by, whose fixed text is the instructions of one lens, the guidelines and a finding at its caps. Its message reads `the vote request on <provider> for the longest finding leaves <room> tokens for the diff, less than the 1024 a hunk may need: contextTokens <window> counts <fixed> for the instructions, guidelines and finding, <template> for the chat template and <reply> for the reply: shorten the guidelines, lower maxTokens, or state a larger window`. Each lens whose voter is refused is a line.
+
+The fixed text is counted as the size guard counts it, one token per byte, and the template is what the provider's own room leaves of the window besides the other three, so its reserve is read and never assumed: 512, or 4,096 for a `claude-code` provider. A part's request carries the parts block too, whose size depends on the diff, so a part's room is printed under `budgets`, with no file listed, and refuses nothing. A provider that states no room, a provider object of a library program that does not state one or states a room and no `window`, is checked by nothing here; its own size guard still refuses each request that is too large.
+
+To fix a refusal, lower what the message names: shorten the guidelines or the rules, lower `maxTokens` (the reply's budget is the largest term of a small window), or state a larger window if the server really loads one ([Finding the number](#finding-the-number)). The table in [What it counts, and what it costs](#what-it-counts-and-what-it-costs) shows what a window leaves.
+
+### The budgets
+
+[`--print-config`](./10-cli.md#printing-the-resolved-config) prints each profile's budgets under `budgets`, after `profiles`, and `Quorum.budgets` holds them as data ([Library API](../95-reference/30-library-api.md#budgets)):
+
+```yaml
+budgets:
+  security:
+    research:
+      provider: local
+      contextTokens: 131072
+      replyTokens: 21024
+      findings: 50
+      findingsWithoutThinking: 50
+      rooms:
+        one: 107918
+        part: 107606
+      worstPart:
+        tokens: 56234
+        holds: 35
+    lenses:
+      reachability:
+        provider: local
+        contextTokens: 131072
+        replyTokens: 9216
+        room: 117322
+```
+
+`replyTokens` is the reply budget of a request of that kind and `findings` the `N` its research request asks for; `rooms.one` is the tokens of diff the one-request research may hold and `rooms.part` a part's; each lens's `room` is the vote's. `worstPart` is what the token cap reserves for a part that holds as much diff as its room and `partTokens` allow, the worst case of a part that lists no file, and `holds` how many of them `maxReviewTokens` holds. Where `partTokens` bounds the diff, the figure runs low and `holds` runs high, by the size of the file list a real part carries; where the room bounds it, both are exact. When that is fewer than 20, `warnings` says so: `the token cap of 2000000 holds the worst case of 16 research parts of local (120000 tokens each, maxTokens 100000): lower maxTokens, or raise maxReviewTokens`, since a large `maxTokens` makes each part reserve that much. A provider that states no room prints no `rooms`, `worstPart` or `room`.
+
 ## Thinking
 
 A reasoning model can spend its whole reply on thinking, so a provider takes `thinking`, `off` or `low`, in a config file or in `QUORUM_RESEARCH_THINKING` and `QUORUM_VOTER_THINKING`:
@@ -600,6 +647,9 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `QUORUM_REVIEW_TIMEOUT_MS: must be a whole number of milliseconds, from 1000 to 86400000` | The variable is not a whole number written in decimal digits, from 1000 to 86400000: `999`, `86400001` and `30m` are refused. The message never repeats the value |
 | `providers.local.contextTokens: must be more than 512, the tokens kept for the chat template` | A window that leaves no room even for the chat template, with `maxTokens` unset: raise the window. Set by a variable, the issue names the variable instead |
 | `providers.local.contextTokens: must be more than 1000, the 488 tokens of the reply budget and 512 for the chat template` | A window that leaves no room for a request beside the `maxTokens` set: lower `maxTokens`, or raise the window |
+| `profiles.security: the research request on local leaves -630 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1618 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window` | A profile whose research request, with an empty diff, leaves its provider less than 1024 tokens for the diff. It is refused before any diff is read, and before a source error: [Room accounting](#room-accounting) |
+| `profiles.security: the vote request on small for the longest finding leaves 188 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 800 for the instructions, guidelines and finding, 512 for the chat template and 500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window` | The same for a voter, the vote of the longest finding, one line for each lens refused: [Room accounting](#room-accounting) |
+| `--state: is a symbolic link`, `is not a directory`, `is owned by another user`, `can be written by its group or by others: chmod 700 it`, `lies inside a git work tree, which a change could write to: name a directory outside every repository`, `holds files but no quorum-state.json, so it is not a state directory quorum made: name an empty or new directory`, `holds a quorum-state.json quorum did not write`, or `cannot be created` or `cannot be read` with an error code | A state directory the store refuses, before any call. None names the path: [Saved state](#saved-state). A `--state` that is empty, given twice or given with `--print-config` is a usage error, listed on [the CLI page](./10-cli.md#the-invocation) |
 | `QUORUM_VOTER_MODEL: must be set when the voter variables name another endpoint than the research provider's` | A panel on another origin, a preset or a protocol, without a model of its own |
 | `QUORUM_RESEARCH_PRESET: must be one of ollama, ollama-cloud, ...` | The builder refuses what a variable set: the issue names the variable. Every `QUORUM_` variable of a role does the same |
 | `QUORUM_RESEARCH_MODEL: cannot change providers.mine, an object implementing Provider` | A variable set for a role bound to a provider object |

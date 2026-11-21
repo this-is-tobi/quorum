@@ -370,6 +370,20 @@ describe('quorum mcp', () => {
     expect(loaded).toEqual(['serve'])
   })
 
+  it('refuses to launch with a profile that leaves no room, before it serves anything and with no call', async () => {
+    const fetchMock = stubModels({})
+    const config = write(directory(), 'q.yaml', 'providers:\n  local: {protocol: openai-compatible, baseUrl: "https://example.invalid/v1", model: m, contextTokens: 2000}\n')
+    const root = directory()
+    const streams = streamIO({ cwd: root, git: fakeRepository(root).seam })
+    const run = runMcp(streams.io, ['--config', config])
+    streams.input.end()
+    expect(await run).toBe(EXIT.usage)
+    expect(streams.lines()).toEqual([])
+    expect(streams.stderr()).toContain('Error: profiles.security: the research request on local leaves -630 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1618 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window\n')
+    expect(streams.stderr()).not.toContain('serving the review tool')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('writes nothing on stdout but protocol messages, one a line, and exits 0 when the client closes stdin', async () => {
     stubModels({
       m: {
