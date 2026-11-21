@@ -62,6 +62,16 @@ describe('renderEvent', () => {
     })).toBe('finder: 3 calls in a row had no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt')
   })
 
+  it('writes a provider-down event of calls cut on the way with the cut fix, and names its length', () => {
+    expect(renderEvent({
+      type: 'provider-down',
+      provider: 'finder',
+      kind: 'network',
+      calls: 3,
+      cutAfterMs: 600_000,
+    })).toBe('finder: 3 calls in a row failed (network): no more calls go to it in this review: each call was cut after about 10m00s, likely by a proxy or load balancer on the way: make replies shorter, with a lower maxTokens or partTokens')
+  })
+
   it('writes a used-up quota\'s provider-down as its line, and as the call failed under the public view', () => {
     const event: QuorumEvent = {
       type: 'provider-down',
@@ -555,6 +565,7 @@ function retryEvent(over: Partial<Extract<QuorumEvent, { type: 'call:retry' }>> 
     attempt: 1,
     retries: 2,
     failure: { kind: 'http', status: 503 },
+    attemptMs: 3000,
     waitMs: 3600,
     ...over,
   }
@@ -691,7 +702,7 @@ describe('logLines', () => {
       {},
       undefined,
       { index: 7, count: 44 },
-      'part 7 of 44: http 503, retry 1 of 2 in 4s',
+      'part 7 of 44: http 503 after 3s, retry 1 of 2 in 4s',
     ],
     [
       'network',
@@ -701,12 +712,42 @@ describe('logLines', () => {
       },
       undefined,
       { index: 7, count: 44 },
-      'part 7 of 44: network, retry 2 of 2 in 4s',
+      'part 7 of 44: network after 3s, retry 2 of 2 in 4s',
+    ],
+    [
+      'a network failure after ten minutes',
+      {
+        failure: { kind: 'network' },
+        attemptMs: 600_000,
+        waitMs: 1500,
+      },
+      undefined,
+      { index: 7, count: 51 },
+      'part 7 of 51: network after 10m00s, retry 1 of 2 in 2s',
+    ],
+    [
+      'a gateway timeout after ten minutes',
+      {
+        failure: { kind: 'http', status: 504 },
+        attemptMs: 600_000,
+        waitMs: 1500,
+      },
+      undefined,
+      { index: 7, count: 51 },
+      'part 7 of 51: http 504 after 10m00s, retry 1 of 2 in 2s',
+    ],
+    [
+      'a 503 after a few seconds',
+      {},
+      undefined,
+      { index: 7, count: 51 },
+      'part 7 of 51: http 503 after 3s, retry 1 of 2 in 4s',
     ],
     [
       'a timeout',
       {
         failure: { kind: 'timeout' },
+        attemptMs: 600_000,
         waitMs: 1000,
       },
       undefined,
@@ -722,7 +763,7 @@ describe('logLines', () => {
         count: 44,
         piece: { index: 3, count: 4 },
       },
-      'part 7 of 44, piece 3 of 4: http 503, retry 1 of 2 in 4s',
+      'part 7 of 44, piece 3 of 4: http 503 after 3s, retry 1 of 2 in 4s',
     ],
   ])('writes a research retry of %s', (_name, over, _unused, part, text) => {
     expect(textsOf(retryEvent(over), [
@@ -879,7 +920,7 @@ describe('logLines', () => {
       ],
     ]
     expect(textsOf(partEvent({ profile: 'style' }), several)).toEqual(['[style] part 7 of 44: answered in 4.3s, 41200 tokens, 2 finding(s) listed'])
-    expect(textsOf(retryEvent(), several)).toEqual(['[style] part 7 of 44: http 503, retry 1 of 2 in 4s'])
+    expect(textsOf(retryEvent(), several)).toEqual(['[style] part 7 of 44: http 503 after 3s, retry 1 of 2 in 4s'])
     expect(textsOf({ type: 'run:stopping', cause: 'review-deadline', inFlight: 1 }, several)[0]).toMatch(/^stopping: /)
   })
 

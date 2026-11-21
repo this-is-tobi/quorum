@@ -466,7 +466,10 @@ export function elapsed(started: number): number {
  *
  * The events of a call come in this order: `call:start` once, when the first attempt's reservation is granted and
  * before the attempt is sent, numbering the call `++ctx.calls.last`; `call:retry` before each wait, once the wait is
- * known and the stop has not fired; then the one `call` event, which repeats the call's number. A call the store
+ * known and the stop has not fired, saying how long the failed attempt ran (`attemptMs`, from the moment its request is
+ * handed to the provider, after the slot, the ledger and any backoff, to its failure); then the one `call` event,
+ * which repeats the call's number. A call that ends with a failure tells the health, its `onFailure` and its
+ * `provider-down` event how long the attempt that threw it ran, so a cut on the way (`cutOf`) is named. A call the store
  * answered, the down rule refused or a limit stopped before its first attempt sends no `call:start`; a refusal as too
  * large is sent after the reservation, so it does. Each attempt is counted in `ctx.flying` from its reservation until it settles.
  *
@@ -527,6 +530,11 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     let reused = false
     /** The cut-offs a stored marker gave: no answer of the provider, which the health is told nothing of. */
     const marked = new Set<unknown>()
+    /** How long the attempt that threw each failure ran, by the failure: a call that ends with one tells the health and its stage. */
+    const ran = new WeakMap<object, number>()
+    const ranFor = (error: unknown): number | undefined => typeof error === 'object' && error !== null
+      ? ran.get(error)
+      : undefined
     const started = ctx.clock.now()
     const took = (): number => Math.round(ctx.clock.now() - started)
     /** The call's number, once its first attempt's reservation is granted and `call:start` is sent. */
@@ -553,7 +561,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       if (!(error instanceof ProviderDownError)) {
         const found = marked.has(error)
           ? undefined
-          : ctx.health.failed(target.provider, target.ref.id, error)
+          : ctx.health.failed(target.provider, target.ref.id, error, ranFor(error))
         if (found !== undefined) {
           ctx.emit({
             type: 'provider-down',
@@ -566,6 +574,9 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
             ...(found.exhausted
               ? { exhausted: true as const }
               : {}),
+            ...(found.cutAfterMs === undefined
+              ? {}
+              : { cutAfterMs: found.cutAfterMs }),
             ...(found.noAnswer === undefined
               ? {}
               : { noAnswer: found.noAnswer }),
@@ -582,7 +593,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       }
       // Still inside the slot: a review aborted here never starts the queued call the slot goes to next.
       options.onEnd?.({ spent, startedAt: started })
-      options.onFailure?.(error, attempts)
+      options.onFailure?.(error, attempts, ranFor(error))
       return error
     }
     /**
@@ -607,6 +618,8 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           })
         }
         ctx.flying.count += 1
+        /** When the request is handed to the provider: after the slot, the ledger and any backoff. */
+        const sentAt = ctx.clock.now()
         /** Settles the attempt's reservation at `tokens`, which the call's `spent` adds. */
         const settle = (tokens: number): void => {
           ctx.flying.count -= 1
@@ -622,6 +635,8 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           ctx.health.answered(target.provider)
           return reply
         } catch (error) {
+          const attemptMs = Math.round(ctx.clock.now() - sentAt)
+          if (typeof error === 'object' && error !== null) ran.set(error, attemptMs)
           const reported = failureUsage(error)
           usage = addUsage(usage, reported)
           const facts = failureFacts(error)
@@ -646,6 +661,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
             retries: target.retries,
             // A call retries only a `network`, `timeout` or `http` failure, kinds `providerFailure` always reads.
             failure: providerFailure(error)!,
+            attemptMs,
             waitMs: Math.round(wait),
           })
           await pause(ctx, wait)
@@ -786,8 +802,11 @@ export interface Checked {
 export interface CallOptions {
   /** Reads a reply that came back: whether it is saturated, and what it listed; a throw ends the call with that error. */
   readonly check?: (text: string) => Checked
-  /** Hears a call's failure, with the attempts it made, once, inside the call's slot, before the call rethrows. */
-  readonly onFailure?: (error: unknown, attempts: number) => void
+  /**
+   * Hears a call's failure, with the attempts it made and how long the attempt that threw it ran, when one did, once,
+   * inside the call's slot, before the call rethrows.
+   */
+  readonly onFailure?: (error: unknown, attempts: number, attemptMs?: number) => void
   /**
    * Hears a call's end, once, inside its slot, for every call that built its request, whatever became of it (answered,
    * reused, failed, or refused by its check), before it returns or rethrows: the tokens it spent and the clock's reading

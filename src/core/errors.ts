@@ -1,3 +1,4 @@
+import { elapsedWords } from './duration.ts'
 import type { Usage } from './types.ts'
 
 /** Base class for every error quorum raises on purpose. */
@@ -230,6 +231,35 @@ export function failureFix(kind: ProviderErrorKind, status: number | undefined):
   }
 }
 
+/**
+ * The shortest attempt that reads as cut on the way, in milliseconds: it matches the shortest idle limit of the
+ * common proxies, nginx's and an ALB's. A refused or unreachable server fails within seconds.
+ */
+export const CUT_AFTER_MS = 60_000
+
+/** The statuses a gateway answers with when it cut a call on the way: bad gateway, gateway timeout and Cloudflare's timeout. */
+const CUT_STATUSES: ReadonlySet<number> = new Set([502, 504, 524])
+
+/**
+ * How long a failed attempt ran when it reads as cut on the way, else undefined: its kind is `network`, or `http` with
+ * a gateway's status (502, 504 or 524), and it ran at least `CUT_AFTER_MS`. Facts only, never a message.
+ */
+export function cutOf(failure: { readonly kind: ProviderErrorKind, readonly status?: number }, attemptMs: number | undefined): number | undefined {
+  if (attemptMs === undefined || attemptMs < CUT_AFTER_MS) return undefined
+  const gateway = failure.kind === 'http' && failure.status !== undefined && CUT_STATUSES.has(failure.status)
+  return failure.kind === 'network' || gateway
+    ? attemptMs
+    : undefined
+}
+
+/** What to do about calls cut on the way: one imperative phrase. */
+export const CUT_ADVICE = 'make replies shorter, with a lower maxTokens or partTokens'
+
+/** What a provider found down by calls cut on the way says: how long each ran, the likely cause, and `CUT_ADVICE`. */
+export function CUT_FIX(ms: number): string {
+  return `each call was cut after about ${elapsedWords(ms)}, likely by a proxy or load balancer on the way: ${CUT_ADVICE}`
+}
+
 /** What the words of a provider that is down are made of: facts the code read, never a message a server or a provider wrote. */
 export interface DownFacts {
   readonly providerId: string
@@ -244,6 +274,8 @@ export interface DownFacts {
   readonly noAnswer?: NoAnswer
   /** The failure says the account's credit, quota or spend limit is used up: the provider is down at its first such failure. */
   readonly exhausted?: true
+  /** Every call of the streak was cut on the way (`cutOf`): the shortest of their last attempts, in milliseconds. */
+  readonly cutAfterMs?: number
 }
 
 /**
@@ -253,7 +285,8 @@ export interface DownFacts {
  * provider down by replies with no answer says what they lacked instead: `<id>: <n> calls in a row had no
  * answer, only reasoning: ...` or `had no answer and no reasoning: ...`. A provider whose quota is used up says
  * so, whatever the count, and names `QUOTA_FIX`: `<id>: the account's credit, quota or spend limit is used up
- * (<kind>[ <status>]): no more calls go to it in this review: <fix>`.
+ * (<kind>[ <status>]): no more calls go to it in this review: <fix>`. A provider whose calls were each cut on the
+ * way (`cutAfterMs`) names `CUT_FIX` in place of the fix of its kind, after the quota's.
  */
 export function downWords(facts: DownFacts): string {
   if (facts.exhausted === true) {
@@ -275,7 +308,9 @@ export function downWords(facts: DownFacts): string {
   const failure = facts.status === undefined
     ? facts.kind
     : `${facts.kind} ${facts.status}`
-  const fix = failureFix(facts.kind, facts.status)
+  const fix = facts.cutAfterMs === undefined
+    ? failureFix(facts.kind, facts.status)
+    : CUT_FIX(facts.cutAfterMs)
   if (facts.streak) return `${facts.providerId}: ${facts.count} calls in a row failed (${failure}): no more calls go to it in this review: ${fix}`
   return `${facts.providerId}: its ${facts.count === 1
     ? 'one call'
@@ -297,6 +332,8 @@ export class ProviderDownError extends QuorumError {
   readonly streak: boolean
   /** The failure that found the provider down said its quota is used up. */
   readonly exhausted: boolean
+  /** Every counted call was cut on the way: the shortest of their last attempts, in milliseconds. */
+  readonly cutAfterMs: number | undefined
   /** What the last failure lacked, for a `no-answer` kind. */
   readonly noAnswer: NoAnswer | undefined
 
@@ -310,6 +347,7 @@ export class ProviderDownError extends QuorumError {
     this.count = facts.count
     this.streak = facts.streak
     this.exhausted = facts.exhausted === true
+    this.cutAfterMs = facts.cutAfterMs
     this.noAnswer = facts.noAnswer
   }
 }

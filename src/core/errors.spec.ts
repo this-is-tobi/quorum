@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ConfigError, downWords, issuePath, lackWords, ProviderDownError, ProviderError, QuorumError } from './errors.ts'
+import { ConfigError, CUT_ADVICE, CUT_AFTER_MS, CUT_FIX, cutOf, downWords, issuePath, lackWords, ProviderDownError, ProviderError, QuorumError, QUOTA_FIX } from './errors.ts'
 import type { ConfigIssue, ProviderErrorKind, ReplyLack } from './errors.ts'
 
 describe('provider errors', () => {
@@ -239,6 +239,120 @@ describe('a provider that is down', () => {
       streak: true,
       exhausted: true,
     })).toBe(line(402))
+  })
+
+  it('words a provider whose calls were each cut on the way with the cut fix, and one that was not with the server fix', () => {
+    const facts = {
+      providerId: 'api',
+      kind: 'network',
+      count: 3,
+      streak: true,
+    } as const
+    expect(downWords({ ...facts, cutAfterMs: 600_000 })).toBe('api: 3 calls in a row failed (network): no more calls go to it in this review: each call was cut after about 10m00s, likely by a proxy or load balancer on the way: make replies shorter, with a lower maxTokens or partTokens')
+    expect(downWords(facts)).toBe('api: 3 calls in a row failed (network): no more calls go to it in this review: check that the server at its origin is running')
+    expect(downWords({
+      ...facts,
+      kind: 'http',
+      status: 504,
+      cutAfterMs: 65_000,
+    })).toContain('each call was cut after about 1m05s, likely')
+    expect(new ProviderDownError({ ...facts, cutAfterMs: 600_000 })).toMatchObject({ cutAfterMs: 600_000 })
+    expect(new ProviderDownError(facts).cutAfterMs).toBeUndefined()
+  })
+
+  it.each<[string, number, string]>([
+    ['ten minutes', 600_000, '10m00s'],
+    ['a minute and five seconds', 65_000, '1m05s'],
+    ['under a minute', 59_000, '59s'],
+  ])('writes the cut fix with a length of %s', (_name, ms, words) => {
+    expect(CUT_FIX(ms)).toBe(`each call was cut after about ${words}, likely by a proxy or load balancer on the way: ${CUT_ADVICE}`)
+  })
+
+  it('keeps the quota line for a used-up quota, whatever its cut', () => {
+    expect(downWords({
+      providerId: 'api',
+      kind: 'http',
+      status: 429,
+      count: 1,
+      streak: true,
+      exhausted: true,
+      cutAfterMs: 600_000,
+    })).toBe(`api: the account's credit, quota or spend limit is used up (http 429): no more calls go to it in this review: ${QUOTA_FIX}`)
+  })
+
+  it.each<[string, ProviderErrorKind, number | undefined, number | undefined, number | undefined]>([
+    [
+      'a network failure of a minute',
+      'network',
+      undefined,
+      CUT_AFTER_MS,
+      CUT_AFTER_MS,
+    ],
+    [
+      'a network failure just under a minute',
+      'network',
+      undefined,
+      CUT_AFTER_MS - 1,
+      undefined,
+    ],
+    [
+      'a network failure with no length told',
+      'network',
+      undefined,
+      undefined,
+      undefined,
+    ],
+    [
+      'an http 502',
+      'http',
+      502,
+      600_000,
+      600_000,
+    ],
+    [
+      'an http 504',
+      'http',
+      504,
+      600_000,
+      600_000,
+    ],
+    [
+      'an http 524',
+      'http',
+      524,
+      600_000,
+      600_000,
+    ],
+    [
+      'an http 503',
+      'http',
+      503,
+      600_000,
+      undefined,
+    ],
+    [
+      'an http with no status',
+      'http',
+      undefined,
+      600_000,
+      undefined,
+    ],
+    [
+      'a timeout',
+      'timeout',
+      undefined,
+      600_000,
+      undefined,
+    ],
+    [
+      'a process failure',
+      'process',
+      undefined,
+      600_000,
+      undefined,
+    ],
+  ])('tells a cut from %s', (_name, kind, status, ran, cut) => {
+    expect(cutOf({ kind, status }, ran)).toBe(cut)
   })
 
   it('never makes an exhausted ProviderError retryable', () => {

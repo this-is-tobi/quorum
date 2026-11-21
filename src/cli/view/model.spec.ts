@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { QuorumEvent } from '../../core/types.ts'
+import type { IncompleteReason, QuorumEvent } from '../../core/types.ts'
 import { longReview, providerDown, replay, twoProfiles } from '../../testing/events.ts'
 import { BUCKET_MS, BUCKETS, DEFAULT_FACTS, fold, stageEnd, stageStart, stageTime, startState } from './model.ts'
 import type { ViewState } from './model.ts'
@@ -207,8 +207,14 @@ describe('fold', () => {
   it('counts the gaps by reason, and keeps each research-failed and provider-down cause once, in the order seen', () => {
     const state = replay(providerDown())
     expect([...state.gaps]).toEqual([
-      ['research-failed', 3],
-      ['provider-down', 3],
+      [
+        'research-failed',
+        { parts: 3, votes: 0, other: 0 },
+      ],
+      [
+        'provider-down',
+        { parts: 3, votes: 0, other: 0 },
+      ],
     ])
     expect([...state.causes]).toEqual([
       [
@@ -244,6 +250,93 @@ describe('fold', () => {
       calls: 3,
     }, 2)
     expect(again.causes.get('provider-down')).toHaveLength(2)
+  })
+
+  it('sums what the gap entries count over the profiles: research parts, votes, or neither', () => {
+    const gap = (profile: string, reason: IncompleteReason, detail: string): [number, QuorumEvent] => [
+      0,
+      {
+        type: 'incomplete',
+        entry: { profile, reason, detail },
+      },
+    ]
+    const quoted = JSON.stringify('src/"7 of 9 vote requests were not sent: ".js')
+    const state = folded(
+      gap('security', 'research-failed', '5 of 51 research parts failed: the research call failed (network)'),
+      gap('style', 'research-failed', '2 of 40 research parts failed: the research call failed (network)'),
+      gap('security', 'provider-down', '41 of 51 research parts were not sent, since their provider was down'),
+      gap('security', 'request-too-large', '3 of 51 research requests were not sent: refused as too large'),
+      gap('security', 'request-too-large', `${quoted}:12: 2 of 3 vote requests were not sent: refused as too large`),
+      gap('security', 'vote-failed', `${quoted}:12 is kept at medium, but 2 failed vote(s) could have made it undecided`),
+      gap('security', 'token-cap', 'the review\'s token cap of 2000000 tokens stopped 5 of its 6 research parts and 3 vote(s)'),
+      gap('security', 'research-unusable', 'a detail'),
+      gap('style', 'research-unusable', 'a detail'),
+    )
+    expect([...state.gaps]).toEqual([
+      [
+        'research-failed',
+        { parts: 7, votes: 0, other: 0 },
+      ],
+      [
+        'provider-down',
+        { parts: 41, votes: 0, other: 0 },
+      ],
+      [
+        'request-too-large',
+        { parts: 3, votes: 2, other: 0 },
+      ],
+      [
+        'vote-failed',
+        { parts: 0, votes: 2, other: 0 },
+      ],
+      [
+        'token-cap',
+        { parts: 0, votes: 0, other: 1 },
+      ],
+      [
+        'research-unusable',
+        { parts: 0, votes: 0, other: 2 },
+      ],
+    ])
+    // A file name that mimics the core's words counts for nothing: only what follows its JSON string is read.
+    const file = 'x", but 8 failed vote(s) could have made it undecided'
+    const hostile = folded(gap('security', 'vote-failed', `${JSON.stringify(file)}:1 is kept at low, but 9 failed vote(s) could have made it high`))
+    expect([...hostile.gaps]).toEqual([
+      [
+        'vote-failed',
+        { parts: 0, votes: 9, other: 0 },
+      ],
+    ])
+  })
+
+  it('keeps the cut of a cause, and a cut and a failure that is none are two causes', () => {
+    const cut = { kind: 'network', cutAfterMs: 600_000 } as const
+    const part = (index: number, failure: { kind: 'network', cutAfterMs?: number }): QuorumEvent => ({
+      type: 'part',
+      profile: 'security',
+      part: { index, count: 3 },
+      outcome: 'research-failed',
+      durationMs: 1,
+      spent: 0,
+      failure,
+    })
+    const state = [
+      part(1, cut),
+      part(2, { kind: 'network', cutAfterMs: 601_000 }),
+      part(3, { kind: 'network' }),
+      {
+        type: 'provider-down',
+        provider: 'api',
+        kind: 'network',
+        calls: 3,
+        cutAfterMs: 600_000,
+      } satisfies QuorumEvent,
+    ].reduce((folded, event) => fold(folded, event, 1), startState(DEFAULT_FACTS))
+    expect(state.causes.get('research-failed')).toEqual([
+      cut,
+      { kind: 'network' },
+    ])
+    expect(state.causes.get('provider-down')).toEqual([cut])
   })
 
   it('prefixes when several profiles run, and starts a fresh state at each run:start of one writer', () => {

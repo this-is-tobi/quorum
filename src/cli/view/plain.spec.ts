@@ -252,7 +252,7 @@ describe('plainWriter', () => {
       'time: research 30m12s, dedup 0.0s, panel 7m40s; the first estimate, 5m10s in, put research at 30-31m',
       'tokens: 74 percent of the cap of 2000000, the default',
       'calls: 46 research (2 retried, 1 recovered into 2 pieces), 18 vote(s); 4 at once',
-      'gaps: 1 research-failed (timeout): raise timeoutMs',
+      'gaps: 1 part(s) research-failed (timeout): raise timeoutMs',
       'result: the text report above; --output json written',
     ])
 
@@ -288,7 +288,7 @@ describe('plainWriter', () => {
     // One line as each of the 44 parts ends, a line for part 9's recovery and for the two retries (parts 7 and 12), the dedup count and the totals.
     expect(lines.filter(line => /^part \d+ of 44: (?:answered|failed|split)/.test(line))).toHaveLength(44)
     expect(lines.filter(line => /retry 1 of 2 in/.test(line))).toEqual([
-      'part 7 of 44: http 503, retry 1 of 2 in 4s',
+      'part 7 of 44: http 503 after 7m08s, retry 1 of 2 in 4s',
       'part 12 of 44: timeout after 600000 ms, retry 1 of 2 in 2s',
     ])
     expect(lines.slice(-2)).toEqual(['6 candidate(s) after dedup', '4 kept, 2 discarded, 0 unreviewed by panel'])

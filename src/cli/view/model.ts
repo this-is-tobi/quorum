@@ -40,7 +40,23 @@ export const DEFAULT_FACTS: ViewFacts = {
   maxFindings: DEFAULT_MAX_FINDINGS,
 }
 
-/** The cause of a gap: what a failed call said of itself. */
+/** One profile's time in a stage: when it started, and when it ended once it has. */
+export interface Interval {
+  readonly first: number
+  readonly last?: number
+}
+
+/**
+ * What the gap entries of one reason say they count, summed over the profiles: the research parts or the votes each
+ * entry counts in its detail, and `other` for the entries that count neither, each of which stands for itself.
+ */
+export interface GapCount {
+  readonly parts: number
+  readonly votes: number
+  readonly other: number
+}
+
+/** The cause of a gap: what a failed call said of itself, its quota and its cut on the way included. */
 export type Cause = CallFailure & { readonly exhausted?: true }
 
 /** A provider call in flight. */
@@ -76,12 +92,6 @@ export interface ProfileState {
   readonly kept: number
 }
 
-/** One profile's time in a stage: when it started, and when it ended once it has. */
-export interface Interval {
-  readonly first: number
-  readonly last?: number
-}
-
 export interface ViewState {
   readonly facts: ViewFacts
   readonly startedAt?: number
@@ -108,7 +118,7 @@ export interface ViewState {
   readonly recovered: { readonly parts: number, readonly pieces: number }
   /** Each profile's interval in each stage, by stage then profile id. */
   readonly stages: ReadonlyMap<StageName, ReadonlyMap<string, Interval>>
-  readonly gaps: ReadonlyMap<IncompleteReason, number>
+  readonly gaps: ReadonlyMap<IncompleteReason, GapCount>
   readonly causes: ReadonlyMap<'research-failed' | 'provider-down', readonly Cause[]>
   readonly usage: ReadonlyMap<string, Usage>
   readonly stopping?: { readonly cause: 'review-deadline', readonly at: number, readonly inFlight: number }
@@ -212,6 +222,21 @@ export function stageTime(state: ViewState, stage: StageName): number | undefine
   return total + last - first
 }
 
+const PART_COUNT = /^(\d+) of \d+ research (?:parts|requests) /
+/** A vote gap's detail starts with its finding's file as a JSON string, which holds no unescaped quote, so what follows it is the core's own words. */
+const VOTE_COUNT = /^"(?:[^"\\]|\\.)*":\d+(?:: (\d+) of \d+ vote requests were not sent: | is kept at \S+, but (\d+) failed vote\(s\) could have made it \S+$)/
+
+/** The research parts or votes a gap's detail says it counts, as the core writes it, and nothing for any other detail. */
+function countOf(detail: string): { readonly parts?: number, readonly votes?: number } {
+  const parts = Number(PART_COUNT.exec(detail)?.[1])
+  if (Number.isSafeInteger(parts)) return { parts }
+  const match = VOTE_COUNT.exec(detail)
+  const votes = Number(match?.[1] ?? match?.[2])
+  return Number.isSafeInteger(votes)
+    ? { votes }
+    : {}
+}
+
 /** `state` with `patch` made to one profile's state. */
 function withProfile(state: ViewState, id: string, patch: (profile: ProfileState) => ProfileState): ViewState {
   return {
@@ -220,8 +245,9 @@ function withProfile(state: ViewState, id: string, patch: (profile: ProfileState
   }
 }
 
+/** Two causes are the same when they have the same kind, status and quota, and both were cut on the way or neither was. */
 function sameCause(a: Cause, b: Cause): boolean {
-  return a.kind === b.kind && a.status === b.status && a.exhausted === b.exhausted
+  return a.kind === b.kind && a.status === b.status && a.exhausted === b.exhausted && (a.cutAfterMs === undefined) === (b.cutAfterMs === undefined)
 }
 
 /** `state` with `cause` among the causes of `reason`, once. */
@@ -234,7 +260,7 @@ function withCause(state: ViewState, reason: 'research-failed' | 'provider-down'
   }
 }
 
-/** `failure` as a cause: its kind, its status and its quota, each when it has one. */
+/** `failure` as a cause: its kind, its status, its quota and its cut, each when it has one. */
 function causeOf(failure: CallFailure): Cause {
   return {
     kind: failure.kind,
@@ -244,6 +270,9 @@ function causeOf(failure: CallFailure): Cause {
     ...failure.exhausted === true
       ? { exhausted: true as const }
       : {},
+    ...failure.cutAfterMs === undefined
+      ? {}
+      : { cutAfterMs: failure.cutAfterMs },
   }
 }
 
@@ -448,12 +477,24 @@ export function fold(state: ViewState, event: QuorumEvent, now: number): ViewSta
         ...event.exhausted === true
           ? { exhausted: true as const }
           : {},
+        ...event.cutAfterMs === undefined
+          ? {}
+          : { cutAfterMs: event.cutAfterMs },
       }))
-    case 'incomplete':
+    case 'incomplete': {
+      const known = state.gaps.get(event.entry.reason) ?? { parts: 0, votes: 0, other: 0 }
+      const { parts, votes } = countOf(event.entry.detail)
       return {
         ...state,
-        gaps: set(state.gaps, event.entry.reason, (state.gaps.get(event.entry.reason) ?? 0) + 1),
+        gaps: set(state.gaps, event.entry.reason, {
+          parts: known.parts + (parts ?? 0),
+          votes: known.votes + (votes ?? 0),
+          other: known.other + (parts === undefined && votes === undefined
+            ? 1
+            : 0),
+        }),
       }
+    }
     case 'vote':
       return withProfile(state, event.profile, profile => ({ ...profile, cast: profile.cast + 1 }))
     case 'verdict':

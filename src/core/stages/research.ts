@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { DEFAULT_MAX_FINDINGS } from '../budgets.ts'
 import type { DiffSection } from '../diff.ts'
-import { OutputError, ProviderDownError } from '../errors.ts'
+import { cutOf, OutputError, ProviderDownError } from '../errors.ts'
 import { isLimit } from '../limits.ts'
 import type { LimitName } from '../limits.ts'
 import { parseResearchReply } from '../output.ts'
@@ -398,12 +398,13 @@ interface Spend {
  *   and is not returned: the stage splits the request;
  * - else `reviewed`, with the reply's text, the findings it was asked for at most and the findings it listed.
  * A call that built its request adds what it spent to `spend`, and its start when `spend` has none. A `research-failed`
- * call that failed carries what the failure said of itself, as `providerFailure` reads it.
+ * call that failed carries what the failure said of itself, as `providerFailure` reads it, and `cutAfterMs` when its last
+ * attempt was cut on the way (`cutOf`).
  * Each failure is told only after the review's abort check, so a review that is aborted rejects with its
  * reason, never with a gap.
  */
 async function askResearch(ctx: RunContext, run: ProfileRun, where: Position, spend: Spend, request: (ask: Ask) => CompletionRequest, splittable: boolean): Promise<Asked> {
-  const state: { attempts: number, findings: number, listed: number, limit?: number, parsed?: unknown } = { attempts: 1, findings: 0, listed: 0 }
+  const state: { attempts: number, ran?: number, findings: number, listed: number, limit?: number, parsed?: unknown } = { attempts: 1, findings: 0, listed: 0 }
   try {
     const answered = await callProvider(ctx, { profile: run.id, role: 'research', part: where }, run.research, () => {
       const ask = askOf(ctx, run)
@@ -423,8 +424,9 @@ async function askResearch(ctx: RunContext, run: ProfileRun, where: Position, sp
         state.listed = listed
         return { saturated: splittable && state.findings < ctx.maxFindings && listed >= state.findings, listed }
       },
-      onFailure: (_error, made) => {
+      onFailure: (_error, made, ran) => {
         state.attempts = made
+        state.ran = ran
       },
       onEnd: ({ spent, startedAt }) => {
         spend.spent += spent
@@ -471,12 +473,19 @@ async function askResearch(ctx: RunContext, run: ProfileRun, where: Position, sp
       }
     }
     const failure = providerFailure(error)
+    const cut = failure === undefined
+      ? undefined
+      : cutOf(failure, state.ran)
     return {
       outcome: 'research-failed',
       words: researchFailed(error, state.attempts),
       ...failure === undefined
         ? {}
-        : { failure },
+        : {
+            failure: cut === undefined
+              ? failure
+              : { ...failure, cutAfterMs: cut },
+          },
     }
   }
 }

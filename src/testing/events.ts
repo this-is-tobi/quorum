@@ -125,6 +125,7 @@ function runParts(jobs: readonly Job[], lanes: number, from: number, entries: En
         attempt: 1,
         retries: 2,
         failure: step.retry.failure,
+        attemptMs: step.retry.afterMs,
         waitMs: step.retry.waitMs,
       })
     }
@@ -188,7 +189,13 @@ function runParts(jobs: readonly Job[], lanes: number, from: number, entries: En
     if (job.outcome === 'research-failed' || job.outcome === 'provider-down') {
       push(at, ENDS, {
         type: 'incomplete',
-        entry: { profile: job.profile, reason: job.outcome, detail: `part ${job.index} of ${job.count} was not read` },
+        entry: {
+          profile: job.profile,
+          reason: job.outcome,
+          detail: job.outcome === 'research-failed'
+            ? `1 of ${job.count} research parts failed: the research call failed`
+            : `1 of ${job.count} research parts were not sent, since their provider was down`,
+        },
       })
     }
   }
@@ -593,7 +600,7 @@ export function providerDown(): Timed[] {
     })
     add({
       type: 'incomplete',
-      entry: { profile: 'security', reason: 'provider-down', detail: `part ${index} of 6 was not sent` },
+      entry: { profile: 'security', reason: 'provider-down', detail: '1 of 6 research parts were not sent, since their provider was down' },
     })
   }
   add({

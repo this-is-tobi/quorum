@@ -3,6 +3,7 @@
  * time left in words. Every line holds numbers, ids and code words, and passes `inertLine` whole.
  */
 
+import { elapsedWords } from '../../core/duration.ts'
 import { downWords, lackWords } from '../../core/errors.ts'
 import type { PartOutcome } from '../../core/parts.ts'
 import { inertLine } from '../../core/sanitize.ts'
@@ -11,6 +12,8 @@ import { flagWhere, leftOutEntry } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords, timeLeft } from './eta.ts'
 import type { ViewState } from './model.ts'
+
+export { elapsedWords }
 
 /** The start of a profile's line, when several profiles run. */
 export const profilePrefix = (profile: string): string => `[${profile}] `
@@ -76,6 +79,9 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
         ...(event.exhausted === true
           ? { exhausted: true as const }
           : {}),
+        ...(event.cutAfterMs === undefined
+          ? {}
+          : { cutAfterMs: event.cutAfterMs }),
       })
     case 'reply-lacked':
       return `${event.provider}: ${lackWords(event.kind, event)}`
@@ -242,12 +248,15 @@ function glyphOf(event: QuorumEvent): GlyphName | undefined {
   }
 }
 
-/** A retry's failure as its line words it: `http 503`, `network`, `timeout after 600000 ms`, else the kind. */
-function retryFailure({ kind, status }: CallFailure, timeoutMs: number): string {
+/**
+ * A retry's failure as its line words it: `timeout after 600000 ms`, whose length is the deadline's, else its kind
+ * (`http 503`, `network`) and how long the attempt ran: `network after 10m00s`.
+ */
+function retryFailure({ kind, status }: CallFailure, timeoutMs: number, attemptMs: number): string {
   if (kind === 'timeout') return `timeout after ${timeoutMs} ms`
-  return kind === 'http' && status !== undefined
+  return `${kind === 'http' && status !== undefined
     ? `http ${status}`
-    : kind
+    : kind} after ${elapsedWords(attemptMs)}`
 }
 
 /** The line of a research call's retry, read against the call in the state; a vote's retry, and a call the state does not hold, write none. */
@@ -258,7 +267,7 @@ function retryLines(event: Extract<QuorumEvent, { type: 'call:retry' }>, state: 
   const where = part.piece === undefined
     ? `part ${part.index} of ${part.count}`
     : `part ${part.index} of ${part.count}, piece ${part.piece.index} of ${part.piece.count}`
-  const text = `${where}: ${retryFailure(event.failure, call.timeoutMs)}, retry ${event.attempt} of ${event.retries} in ${Math.ceil(event.waitMs / 1000)}s`
+  const text = `${where}: ${retryFailure(event.failure, call.timeoutMs, event.attemptMs)}, retry ${event.attempt} of ${event.retries} in ${Math.ceil(event.waitMs / 1000)}s`
   return [
     {
       glyph: 'retry',
@@ -295,30 +304,12 @@ export function logLines(event: QuorumEvent, state: ViewState, view: ReportView)
       ]
 }
 
-/** Whole seconds of `ms`, never below 0. */
-const wholeSeconds = (ms: number): number => Math.max(0, Math.round(ms / 1000))
-
-const twoDigits = (count: number): string => String(count).padStart(2, '0')
-
-/** `seconds` as `42s`, `2m14s` or `1h02m09s`: each unit after the first two digits. */
-function clockWords(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m${twoDigits(seconds % 60)}s`
-  return `${Math.floor(minutes / 60)}h${twoDigits(minutes % 60)}m${twoDigits(seconds % 60)}s`
-}
-
 /** A duration in words: one decimal under 10 s (`4.3s`), whole seconds under a minute (`42s`), then `2m14s`, then `1h02m09s`. */
 export function durationWords(ms: number): string {
   const tenths = Math.max(0, Math.round(ms / 100))
   return tenths < 100
     ? `${(tenths / 10).toFixed(1)}s`
-    : clockWords(wholeSeconds(ms))
-}
-
-/** A duration in words, with whole seconds throughout: `4s`, `42s`, `2m14s`, `1h02m09s`; for the block, the heartbeat and the stopping hint. */
-export function elapsedWords(ms: number): string {
-  return clockWords(wholeSeconds(ms))
+    : elapsedWords(ms)
 }
 
 /**

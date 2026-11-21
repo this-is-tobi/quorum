@@ -595,12 +595,15 @@ export interface Position {
 /**
  * What a failed call says of itself, as facts and never its words: the `kind` of the failure, its HTTP `status` when
  * it is an `http` failure with one, and `exhausted` when that failure said the account's credit, quota or spend
- * limit is used up.
+ * limit is used up. `cutAfterMs` is set only on the failure a call ends with (a `part` event's), when its last attempt
+ * was cut on the way: a `network` failure, or an `http` 502, 504 or 524, after at least `CUT_AFTER_MS`, and holds the
+ * attempt's length in milliseconds.
  */
 export interface CallFailure {
   kind: ProviderErrorKind
   status?: number
   exhausted?: true
+  cutAfterMs?: number
 }
 
 /**
@@ -635,9 +638,10 @@ export type QuorumEvent
      * A call's attempt failed and the call waits to send another: sent before each wait, once the wait is known and
      * the review's stop has not fired. `call` is the call's number, `attempt` the number of the failed attempt of
      * its send, from 1, `retries` the retries its provider states, `failure` what the failure said of itself and
-     * `waitMs` the wait, in milliseconds. A failure the stop ends instead of a retry sends none.
+     * `attemptMs` how long the failed attempt ran, from its send to its failure, in whole milliseconds on the review's
+     * clock, and `waitMs` the wait, in milliseconds. A failure the stop ends instead of a retry sends none.
      */
-    | { type: 'call:retry', call: number, attempt: number, retries: number, failure: CallFailure, waitMs: number }
+    | { type: 'call:retry', call: number, attempt: number, retries: number, failure: CallFailure, attemptMs: number, waitMs: number }
     /**
      * One per provider call, failed ones included, sent when the call ends. The call runs its
      * attempts inside its slot, retried as the retry policy decides, so `durationMs` runs from its
@@ -657,9 +661,10 @@ export type QuorumEvent
      * `http` failure its `status`), so no call goes to it for the rest of the review. Sent once per provider, at the
      * moment the third call ends; the calls in flight run to their end. `exhausted` is true when the failure said
      * the account's credit, quota or spend limit is used up: the provider is then found down at its first call
-     * that failed so, `calls` is 1, and no retry was made.
+     * that failed so, `calls` is 1, and no retry was made. `cutAfterMs` is present only when every call of the streak
+     * was cut on the way, and holds the shortest of their last attempts' lengths, in milliseconds.
      */
-    | { type: 'provider-down', provider: string, kind: ProviderErrorKind, status?: number, calls: number, noAnswer?: NoAnswer, exhausted?: true }
+    | { type: 'provider-down', provider: string, kind: ProviderErrorKind, status?: number, calls: number, noAnswer?: NoAnswer, exhausted?: true, cutAfterMs?: number }
     /**
      * A reply lacked what a review needs, said once per provider and line in a review: `truncated` with
      * `noAnswer` `window` (the server's window ended it) or `reply` or `thinking` with `outputTokens` below the
