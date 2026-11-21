@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { QuorumEvent } from '../../core/types.ts'
 import { longReview, providerDown, replay, twoProfiles } from '../../testing/events.ts'
-import { BUCKET_MS, BUCKETS, DEFAULT_FACTS, fold, startState } from './model.ts'
+import { BUCKET_MS, BUCKETS, DEFAULT_FACTS, fold, stageEnd, stageStart, stageTime, startState } from './model.ts'
 import type { ViewState } from './model.ts'
 
 const API = { id: 'api', model: 'model' }
@@ -149,6 +149,59 @@ describe('fold', () => {
     ])
     const far = fold(later, ended(5_000_000, 7)[1], 5_000_000)
     expect(far.buckets.tokens.reduce((sum, tokens) => sum + tokens, 0)).toBe(7)
+  })
+
+  it('keeps the interval of each profile in a stage, and reads the union of the ones that ended as the stage\'s time', () => {
+    const stage = (at: number, profile: string, type: 'stage:start' | 'stage:end', name: 'research' | 'dedup' | 'panel'): [number, QuorumEvent] => [
+      at,
+      type === 'stage:start'
+        ? { type, profile, stage: name }
+        : {
+            type,
+            profile,
+            stage: name,
+            durationMs: 0,
+            count: 0,
+          },
+    ]
+    // Two profiles' research ends at 100 s and 1000 s, each then dedups for 50 ms and runs a panel of 60 s.
+    const state = folded(
+      [
+        0,
+        started(['security', 'style']),
+      ],
+      stage(0, 'security', 'stage:start', 'research'),
+      stage(0, 'style', 'stage:start', 'research'),
+      stage(100_000, 'security', 'stage:end', 'research'),
+      stage(100_000, 'security', 'stage:start', 'dedup'),
+      stage(100_050, 'security', 'stage:end', 'dedup'),
+      stage(100_050, 'security', 'stage:start', 'panel'),
+      stage(160_050, 'security', 'stage:end', 'panel'),
+      stage(1_000_000, 'style', 'stage:end', 'research'),
+      stage(1_000_000, 'style', 'stage:start', 'dedup'),
+      stage(1_000_050, 'style', 'stage:end', 'dedup'),
+      stage(1_000_050, 'style', 'stage:start', 'panel'),
+      stage(1_060_050, 'style', 'stage:end', 'panel'),
+    )
+    expect(stageTime(state, 'research')).toBe(1_000_000)
+    expect(stageTime(state, 'dedup')).toBe(100)
+    expect(stageTime(state, 'panel')).toBe(120_000)
+    expect(stageStart(state, 'panel')).toBe(100_050)
+    expect(stageEnd(state, 'research')).toBe(1_000_000)
+    // Overlapping and nested intervals count once, and a stage still running counts for nothing.
+    const overlapping = folded(
+      stage(0, 'a', 'stage:start', 'research'),
+      stage(10, 'b', 'stage:start', 'research'),
+      stage(40, 'c', 'stage:start', 'research'),
+      stage(30, 'a', 'stage:end', 'research'),
+      stage(50, 'b', 'stage:end', 'research'),
+      stage(45, 'c', 'stage:end', 'research'),
+      stage(60, 'd', 'stage:start', 'research'),
+    )
+    expect(stageTime(overlapping, 'research')).toBe(50)
+    expect(stageTime(overlapping, 'panel')).toBeUndefined()
+    expect(stageStart(overlapping, 'panel')).toBeUndefined()
+    expect(stageEnd(overlapping, 'panel')).toBeUndefined()
   })
 
   it('counts the gaps by reason, and keeps each research-failed and provider-down cause once, in the order seen', () => {

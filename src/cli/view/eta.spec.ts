@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Estimate, QuorumEvent } from '../../core/types.ts'
 import { longReview, replay, twoProfiles } from '../../testing/events.ts'
 import { rangeWords, timeLeft } from './eta.ts'
-import { DEFAULT_FACTS, fold, startState } from './model.ts'
+import { DEFAULT_FACTS, fold, stageEnd, startState } from './model.ts'
 import type { ViewFacts, ViewState } from './model.ts'
 
 const API = { id: 'api', model: 'model' }
@@ -309,7 +309,7 @@ describe('timeLeft', () => {
     const end = replay(longReview())
     const { firstEstimate } = end
     expect(firstEstimate).toBeDefined()
-    const real = end.stages.get('research')!.last! - firstEstimate!.at
+    const real = stageEnd(end, 'research')! - firstEstimate!.at
     expect(real).toBeGreaterThanOrEqual(firstEstimate!.lowMs)
     expect(real).toBeLessThanOrEqual(firstEstimate!.highMs)
   })

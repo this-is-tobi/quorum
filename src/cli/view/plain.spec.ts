@@ -3,6 +3,8 @@ import type { Clock } from '../../core/clock.ts'
 import type { QuorumEvent } from '../../core/types.ts'
 import { fakeClock } from '../../testing/clock.ts'
 import { longReview, replay } from '../../testing/events.ts'
+import { reportResult } from '../../testing/report.ts'
+import { DEFAULT_FACTS } from './model.ts'
 import { HEARTBEAT_MS, plainWriter } from './plain.ts'
 import type { LineLevel } from './writer.ts'
 
@@ -216,6 +218,54 @@ describe('plainWriter', () => {
       '<U+003A>:error::x<U+000A>second',
       '<U+003A>:error::x<U+000A>second',
     ])
+  })
+
+  it('writes the summary once, after everything else', () => {
+    const list = longReview()
+    let now = 0
+    const clock: Clock = {
+      ...fakeClock(),
+      now: () => now,
+    }
+    const lines: string[] = []
+    const view = plainWriter({
+      write: line => lines.push(line),
+      clock,
+    })
+    for (const { at, event } of list) {
+      now = at
+      view.sink(event)
+    }
+    const before = lines.length
+    const facts = {
+      stdout: { format: 'text' as const, terminal: true },
+      outputs: ['json' as const],
+      result: reportResult({
+        meta: { durationMs: 2_285_000 },
+      }),
+    }
+    view.summary(facts)
+    view.summary(facts)
+    expect(lines).toHaveLength(before + 5)
+    expect(lines.slice(before)).toEqual([
+      'time: research 30m12s, dedup 0.0s, panel 7m40s; the first estimate, 5m10s in, put research at 30-31m',
+      'tokens: 74 percent of the cap of 2000000, the default',
+      'calls: 46 research (2 retried, 1 recovered into 2 pieces), 18 vote(s); 4 at once',
+      'gaps: 1 research-failed (timeout): raise timeoutMs',
+      'result: the text report above; --output json written',
+    ])
+
+    // A review that ran no stage writes none, and a new review writes its own.
+    const empty: string[] = []
+    const idle = plainWriter({
+      write: line => empty.push(line),
+    })
+    idle.summary(facts)
+    expect(empty).toEqual([])
+    idle.sink(started(['team']))
+    idle.begin(DEFAULT_FACTS)
+    idle.summary(facts)
+    expect(empty).toEqual([])
   })
 
   it('writes no glyph, no colour and no control sequence', () => {

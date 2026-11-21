@@ -76,6 +76,12 @@ export interface ProfileState {
   readonly kept: number
 }
 
+/** One profile's time in a stage: when it started, and when it ended once it has. */
+export interface Interval {
+  readonly first: number
+  readonly last?: number
+}
+
 export interface ViewState {
   readonly facts: ViewFacts
   readonly startedAt?: number
@@ -100,7 +106,8 @@ export interface ViewState {
   readonly made: { readonly research: number, readonly votes: number }
   readonly retried: { readonly research: number, readonly votes: number }
   readonly recovered: { readonly parts: number, readonly pieces: number }
-  readonly stages: ReadonlyMap<StageName, { readonly first: number, readonly last?: number }>
+  /** Each profile's interval in each stage, by stage then profile id. */
+  readonly stages: ReadonlyMap<StageName, ReadonlyMap<string, Interval>>
   readonly gaps: ReadonlyMap<IncompleteReason, number>
   readonly causes: ReadonlyMap<'research-failed' | 'provider-down', readonly Cause[]>
   readonly usage: ReadonlyMap<string, Usage>
@@ -147,6 +154,62 @@ export function startState(facts: ViewFacts): ViewState {
 /** `map` with `key` set to `value`. */
 function set<K, V>(map: ReadonlyMap<K, V>, key: K, value: V): ReadonlyMap<K, V> {
   return new Map(map).set(key, value)
+}
+
+/** `stages` with the interval of `profile` in `stage` set to what `change` makes of the one it had, if any. */
+function withInterval(stages: ViewState['stages'], stage: StageName, profile: string, change: (known: Interval | undefined) => Interval): ViewState['stages'] {
+  const runs = stages.get(stage) ?? new Map<string, Interval>()
+  return set(stages, stage, set(runs, profile, change(runs.get(profile))))
+}
+
+/** The intervals of `stage` that ended, and their earliest start and latest end. */
+function endedRuns(state: ViewState, stage: StageName): Array<{ readonly first: number, readonly last: number }> {
+  return [
+    ...state.stages.get(stage)?.values() ?? [],
+  ].flatMap(({ first, last }) => last === undefined
+    ? []
+    : [
+        { first, last },
+      ])
+}
+
+/** When the first profile started `stage`, or undefined while none has. */
+export function stageStart(state: ViewState, stage: StageName): number | undefined {
+  const starts = [
+    ...state.stages.get(stage)?.values() ?? [],
+  ].map(({ first }) => first)
+  return starts.length === 0
+    ? undefined
+    : Math.min(...starts)
+}
+
+/** When the last profile to end `stage` did, or undefined while none has. */
+export function stageEnd(state: ViewState, stage: StageName): number | undefined {
+  const ends = endedRuns(state, stage).map(({ last }) => last)
+  return ends.length === 0
+    ? undefined
+    : Math.max(...ends)
+}
+
+/**
+ * How long some profile was in `stage`: the length of the union of its profiles' intervals that ended, so two profiles
+ * running side by side count their time once and a gap between them counts for nothing. Undefined while none has ended.
+ */
+export function stageTime(state: ViewState, stage: StageName): number | undefined {
+  const runs = endedRuns(state, stage).sort((a, b) => a.first - b.first)
+  if (runs.length === 0) return undefined
+  let total = 0
+  let { first, last } = runs[0]
+  for (const run of runs.slice(1)) {
+    if (run.first > last) {
+      total += last - first
+      first = run.first
+      last = run.last
+    } else {
+      last = Math.max(last, run.last)
+    }
+  }
+  return total + last - first
 }
 
 /** `state` with `patch` made to one profile's state. */
@@ -342,7 +405,6 @@ export function fold(state: ViewState, event: QuorumEvent, now: number): ViewSta
     case 'run:start':
       return started(state, event, now)
     case 'stage:start': {
-      const known = state.stages.get(event.stage)
       return {
         ...withProfile(state, event.profile, profile => ({
           ...profile,
@@ -354,20 +416,16 @@ export function fold(state: ViewState, event: QuorumEvent, now: number): ViewSta
             ? {}
             : { votes: event.votes },
         })),
-        stages: known === undefined
-          ? set(state.stages, event.stage, { first: now })
-          : state.stages,
+        stages: withInterval(state.stages, event.stage, event.profile, known => known ?? { first: now }),
       }
     }
-    case 'stage:end': {
-      const known = state.stages.get(event.stage)
+    case 'stage:end':
       return {
         ...withProfile(state, event.profile, profile => event.stage === 'panel'
           ? { ...profile, stage: 'done' }
           : profile),
-        stages: set(state.stages, event.stage, { first: known?.first ?? now, last: now }),
+        stages: withInterval(state.stages, event.stage, event.profile, known => ({ first: known?.first ?? now, last: now })),
       }
-    }
     case 'call:start':
       return callStarted(state, event, now)
     case 'call:retry':

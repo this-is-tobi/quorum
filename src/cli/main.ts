@@ -182,6 +182,10 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * write, one inside a git work tree, one that is not a state directory quorum made) exits 2 before any call, naming
  * the flag and never the path. Its warnings are inert `--state:` lines, and a write that fails never fails the review.
  *
+ * Once the report and the `--output` files are written, the view writes the review's summary on stderr: the time of each
+ * stage, the tokens against the cap, the calls, each gap with its fix, and where the report went, by format and never by
+ * path (`summaryLines`). A run that fails writes none.
+ *
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
  * error ended the review, and writes no result. A review that has already resolved is complete.
  *
@@ -300,6 +304,11 @@ export async function runCli(io: CliIO): Promise<number> {
       : result
     io.stdout.write(renderReport(input, { format: plan.format, color: plan.color, outcome: done }))
     await writeOutputs(plan.outputs, input, done)
+    view.summary({
+      stdout: { format: plan.format, terminal: io.stdout.isTTY === true },
+      outputs: plan.outputs.map(output => output.format),
+      result,
+    })
     return done.exitCode
   } catch (error) {
     await view.close()

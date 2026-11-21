@@ -102,9 +102,9 @@ Besides the diff, it reads the environment: the `QUORUM_*` variables of [Configu
 
 ## stdout and stderr
 
-**stdout carries only the report**: the text report when stdout is a terminal, the JSON result when it is a pipe or a file, or the format `--format` names, written once the review ends: [The report](#the-report). When the run exits `2`, `3` or `130`, nothing was reviewed and stdout stays empty, but for an `--output` file that cannot be written, which exits `3` after the report is on stdout. With `--print-config`, stdout carries the config's YAML instead, and nothing else. On a terminal stdout carries the text report, and the lines of stderr, written as the review runs, still come before it.
+**stdout carries only the report**: the text report when stdout is a terminal, the JSON result when it is a pipe or a file, or the format `--format` names, written once the review ends: [The report](#the-report). When the run exits `2`, `3` or `130`, nothing was reviewed and stdout stays empty, but for an `--output` file that cannot be written, which exits `3` after the report is on stdout. With `--print-config`, stdout carries the config's YAML instead, and nothing else. On a terminal stdout carries the text report, and the lines of stderr, written as the review runs, still come before it, but for the summary, which comes after it: [The summary](#the-summary).
 
-**stderr carries everything else**, in this order: the `warning:` lines, the banner, a path review's estimate, the progress lines while the review runs, and an `Error:` line when it fails. After the flags are read, every line goes through one writer, at one of five levels: `warning` (the config's and the state directory's lines), `banner`, `estimate`, `notice` (`empty diff: nothing to review`, `reused from --state: ...` and `interrupted`) and `error`. The review's own events are the progress lines, which the writer folds into what it knows of the review: the plain lines below are what it writes with no terminal to draw on, which a CI log and a screen reader read. A run that fails on its configuration has no banner: its `Error:` lines come after the `warning:` lines of the environment, which often explain them. Every line is inert: a hidden character is shown as `<U+XXXX>`.
+**stderr carries everything else**, in this order: the `warning:` lines, the banner, a path review's estimate, the progress lines while the review runs, the summary once the report and the `--output` files are written, and an `Error:` line when it fails. After the flags are read, every line goes through one writer, at one of five levels: `warning` (the config's and the state directory's lines), `banner`, `estimate`, `notice` (`empty diff: nothing to review`, `reused from --state: ...` and `interrupted`) and `error`. The review's own events are the progress lines, which the writer folds into what it knows of the review: the plain lines below are what it writes with no terminal to draw on, which a CI log and a screen reader read. A run that fails on its configuration has no banner: its `Error:` lines come after the `warning:` lines of the environment, which often explain them. Every line is inert: a hidden character is shown as `<U+XXXX>`.
 
 ```text
 warning: RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead
@@ -150,6 +150,36 @@ With `--view public` the lines that a stranger could read in a CI log carry less
 | `<k> kept, <d> discarded, <u> unreviewed by panel` | When the review ends, a blank diff included |
 
 When several profiles run, the `invalid finding dropped`, `incomplete` and `candidate(s) after dedup` lines start with `[<id>] `, the id of the profile they belong to. The same goes for each profile's line of the estimate. The `left out:`, `flag:`, provider-down and adaptation lines, the totals line, and the estimate's total, belong to the whole review and never do. The `part <n> of <parts>:` lines, with the retry's, belong to a profile, and do. The stopping line and the heartbeat belong to the whole review and never do.
+
+### The summary
+
+Once the report is on stdout and the `--output` files are written, stderr ends with the review's summary: how it went. It comes last, after everything else on stderr and after the report, so a terminal shows it below the report. Each line is left out when it has nothing to say, a review that ran no stage (a blank diff) writes none, and a run that fails writes none: its `Error:` line is the last.
+
+| Line | Says |
+| --- | --- |
+| `time: research <d>, dedup <d>, panel <d>` | The time of each stage on the review's clock: the time during which some profile was in it, so profiles that run side by side count their time once, and the time between one profile's stage and another's counts for nothing; a stage no profile ended has none |
+| `; the first estimate, <at> in, put research at <range>` | On the same line, when the time left was ever estimated: how long after research started the first estimate was read, and the whole research time it put, that time in plus the time left it gave (`30-31m`), to set against `<d>` |
+| `; done in <total>, <i> tokens in and <o> out` | On the same line, only when stdout carries no text report, so a log beside a JSON result still says what the review took and spent. Under `--view public` it is `; done in <total>` |
+| `tokens: <p> percent of the cap of <cap>, <origin>` | The share of the review's token cap spent, rounded down so it never says `100 percent` of a cap that was not reached, and where the cap came from: `the default`, or `maxReviewTokens` when the config sets it. When several providers answered, `; <id> <i> in and <o> out` for each, joined by `, `. Left out under `--view public` |
+| `calls: <n> research (<r> retried, <k> recovered into <p> pieces), <v> vote(s) (<w> retried); <c> at once` | The calls the review made, each parenthesis left out at 0 and with it the parentheses, and the calls it holds at once. A call `--state` answered is not counted: it was not made |
+| `gaps: <count> <reason> (<causes>): <fix>` | Each reason in `meta.incomplete`, with its count, joined by `; `. The causes, for `research-failed` and `provider-down`, are what the failed calls said (`timeout`, `http 503`), and the fix follows the table below |
+| `result: the text report above` | Where the report went: `the text report above` on a terminal when its format is `text`, else `<format> on stdout`, each followed by ` (public view)` under that view, then `; --output <formats> written` (`json`, `json and sarif`, `json, sarif and brief`) |
+
+The fixes, by reason:
+
+| Reason | Fix |
+| --- | --- |
+| `token-cap` | `raise maxReviewTokens` |
+| `review-deadline` | `raise reviewTimeoutMs` |
+| `research-failed`, `provider-down` | The fix of each cause, joined by `, or `: `raise timeoutMs` for `timeout`, `lower concurrency or wait` for a 429 or a 5xx, `check apiKey` for a 401 or 403, `check baseUrl and model` for a 404, `check that the server at its origin is running` for `network`, `check protocol and baseUrl` for `invalid-response`, `check command` for `process`, and for a used-up quota `add credit or raise the limit at the provider, or wait until it resets`; the same words as the provider-down line's. A `research-failed` gap with no cause says `see the gap in the report` |
+| `reply-cut-off` | `raise maxTokens, set thinking: low, or lower partTokens` |
+| `findings-capped` | `raise maxFindings` |
+| `request-too-large`, `too-large` | `raise contextTokens, or lower partTokens` |
+| `research-unusable`, `finding-unreadable` | `see the gap in the report` |
+| `vote-failed` | `rerun the review` |
+| `binary`, `submodule`, `secret` | None: the file is left out by design |
+
+The summary names formats and never paths: neither an `--output` file's nor the `--state` directory's. It repeats nothing the report says (no finding, no verdict, no gap's detail), prints no model or server text, and passes every line through the same inertness as the others. Under `--view public` it leaves out the tokens, and a gap whose cause is a used-up quota shows its count and its cause alone, with no fix (`1 research-failed (http 429)`), since the fix would tell a stranger the account is out of money; every other gap keeps its fix.
 
 ## The report
 
