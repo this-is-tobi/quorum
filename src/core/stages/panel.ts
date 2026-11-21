@@ -137,7 +137,8 @@ async function judge(ctx: RunContext, run: ProfileRun, finding: Finding, context
 async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens: LensRun, context: VoteContext): Promise<Cast> {
   let lensVote: LensVote
   let refusal: string | undefined
-  let unreadable = false
+  /** The error of a reply that was no vote: a stored reply that failed its check and was asked again leaves one that no later failure is. */
+  let unreadable: { readonly error: unknown } | undefined
   try {
     // The vote is read inside the call, once it has answered, so a reply that is no vote is the voter's `unusable-reply`.
     const read: { vote?: Vote } = {}
@@ -146,7 +147,7 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
         try {
           read.vote = parseVoteReply(text)
         } catch (error) {
-          unreadable = true
+          unreadable = { error }
           throw error
         }
         return 'answer'
@@ -167,7 +168,7 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
       error: error instanceof Error
         ? error.message
         : String(error),
-      failure: unreadable
+      failure: unreadable !== undefined && unreadable.error === error
         ? { kind: 'unusable-reply' }
         : voteFailureOf(error),
     }

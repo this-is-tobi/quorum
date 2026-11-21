@@ -6,7 +6,7 @@ import { fakeCredential } from '../testing/credentials.ts'
 import * as git from '../testing/fixtures/git.ts'
 import { ConfigError, ProviderDownError, ProviderError } from './errors.ts'
 import { outcome } from './outcome.ts'
-import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts } from './ports.ts'
+import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts, ReplyStore, StoredCall } from './ports.ts'
 import { researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum, createQuorumWith } from './quorum.ts'
 import { FINGERPRINT_PATTERN } from './stages/research.ts'
@@ -4666,6 +4666,22 @@ describe('reply budgets', () => {
   })
 })
 
+/** A store in memory, keyed as a file store's entries are, by provider and key, that keeps what it was given. */
+interface Memory extends ReplyStore {
+  readonly entries: Map<string, StoredCall>
+}
+function memory(): Memory {
+  const entries = new Map<string, StoredCall>()
+  const name = ({ key, provider }: { readonly key: string, readonly provider: string }): string => `${provider}|${key}`
+  return {
+    entries,
+    get: async entry => entries.get(name(entry)),
+    put: async (entry, call) => {
+      entries.set(name(entry), structuredClone(call))
+    },
+  }
+}
+
 describe('adaptations', () => {
   /** A file's section: one hunk whose second added line is long, so two of them never share a part of 1024 tokens. */
   const bigSection = (file: string): string => [
@@ -4711,7 +4727,7 @@ describe('adaptations', () => {
   }
 
   /** One review on a fake clock, with its events. */
-  function reviewOn(finder: Provider, voter: Provider, options: Omit<QuorumOptions, 'profiles'> = {}): { readonly events: QuorumEvent[], readonly clock: ReturnType<typeof fakeClock>, readonly review: (diffText: string) => Promise<QuorumResult> } {
+  function reviewOn(finder: Provider, voter: Provider, options: Omit<QuorumOptions, 'profiles'> = {}): { readonly events: QuorumEvent[], readonly clock: ReturnType<typeof fakeClock>, readonly review: (diffText: string, store?: ReplyStore) => Promise<QuorumResult> } {
     const events: QuorumEvent[] = []
     const clock = fakeClock()
     const quorum = createQuorumWith({
@@ -4724,7 +4740,9 @@ describe('adaptations', () => {
     return {
       events,
       clock,
-      review: diffText => settle(clock, quorum.review({ diff: diffText })),
+      review: (diffText, store) => settle(clock, quorum.review({ diff: diffText }, store === undefined
+        ? undefined
+        : { store })),
     }
   }
 
@@ -4793,7 +4811,22 @@ describe('adaptations', () => {
       },
     })
     const { events, review } = reviewOn(finder, keeps(), { concurrency: 2, partTokens: 1024 })
-    const result = await review(`${bigSection('a.js')}\n${bigSection('b.js')}`)
+    // Under a store that notes every key the finder's sends are looked up and saved under; the votes' are no matter here.
+    const memorized = memory()
+    const looked: string[] = []
+    const saved: string[] = []
+    const store: ReplyStore = {
+      get: async (entry) => {
+        if (entry.provider === 'finder') looked.push(entry.key)
+        return memorized.get(entry)
+      },
+      put: async (entry, call) => {
+        if (entry.provider === 'finder') saved.push(entry.key)
+        await memorized.put(entry, call)
+      },
+    }
+    const twoFiles = `${bigSection('a.js')}\n${bigSection('b.js')}`
+    const result = await review(twoFiles, store)
     expect(result.meta.incomplete).toEqual([])
     expect(result.kept.map(verdict => verdict.file).toSorted()).toEqual(['a.js', 'b.js'])
     // Each part was asked twice: at the default level, then at the lowered one, the probe's and the other part's alike.
@@ -4811,6 +4844,31 @@ describe('adaptations', () => {
     expect(events.filter(event => event.type === 'reply-lacked')).toEqual([])
     // Neither part was split: the lowered level answered.
     expect(events.filter(event => event.type === 'recovered')).toEqual([])
+    // Each of the four sends, the re-sends included, was looked up and saved under a key of its own: a cut-off marker for each
+    // send at the default level, and a reply for each at the lowered one.
+    expect(new Set(looked).size).toBe(4)
+    expect(looked.toSorted()).toEqual(saved.toSorted())
+    expect(saved.toSorted()).toEqual([
+      ...memorized.entries.keys(),
+    ].filter(name => name.startsWith('finder|')).map(name => name.slice('finder|'.length)).toSorted())
+    expect([
+      ...memorized.entries.entries(),
+    ].filter(([name]) => name.startsWith('finder|')).map(([, call]) => 'reply' in call
+      ? 'reply'
+      : call.lacked.noAnswer).toSorted()).toEqual([
+      'reply',
+      'reply',
+      'thinking',
+      'thinking',
+    ])
+    // A rerun replays each send from the store, the re-sends at the lowered level included, and asks the provider nothing.
+    const asked = finder.requests.length
+    const rerun = reviewOn(finder, keeps(), { concurrency: 2, partTokens: 1024 })
+    const again = await rerun.review(twoFiles, store)
+    expect(finder.requests).toHaveLength(asked)
+    expect(again.meta.incomplete).toEqual([])
+    expect(again.kept.map(verdict => verdict.file).toSorted()).toEqual(['a.js', 'b.js'])
+    expect(saved).toHaveLength(4)
   })
 
   it('lowers thinking once on a reply that held only reasoning, and asks that part again', async () => {
@@ -5620,5 +5678,509 @@ describe('recovery', () => {
       'invalidFindings',
       'coverage',
     ])
+  })
+})
+
+describe('a reply store', () => {
+  const USAGE: Usage = { inputTokens: 10, outputTokens: 5 }
+  /** A provider that answers from the request and reports usage, so a reused call's silence about it shows. */
+  function counting(id: string, answer: (request: CompletionRequest) => string, extra: Partial<Provider> = {}): Fake {
+    const requests: CompletionRequest[] = []
+    return {
+      id,
+      model: `${id}-model`,
+      requests,
+      async complete(request) {
+        requests.push(request)
+        return {
+          text: answer(request),
+          model: `${id}-model`,
+          usage: USAGE,
+        }
+      },
+      ...extra,
+    }
+  }
+  /** A provider that is never to be asked. */
+  const silent = (id: string): Fake => counting(id, () => {
+    throw new Error('asked')
+  })
+  const answers = (id = 'finder'): Fake => counting(id, () => findings(reported))
+  const keeps = (id = 'voter'): Fake => counting(id, () => vote(true))
+
+  function build(finder: Provider, voter: Provider, options: Omit<QuorumOptions, 'profiles'> = {}): { readonly events: QuorumEvent[], readonly quorum: Quorum } {
+    const events: QuorumEvent[] = []
+    return {
+      events,
+      quorum: createQuorum({
+        ...options,
+        profiles: [securityProfile],
+      }, {
+        ...portsFor(securityProfile, finder, voter),
+        events: event => events.push(event),
+      }),
+    }
+  }
+  const calls = (events: readonly QuorumEvent[]): Array<Extract<QuorumEvent, { type: 'call' }>> => events.filter(event => event.type === 'call')
+  const refusals = (events: readonly QuorumEvent[]): QuorumEvent[] => events.filter(event => event.type === 'stored-refused')
+  /** The stored markers of a store: what each lacked. */
+  const markers = (store: Memory): string[] => [
+    ...store.entries.values(),
+  ].flatMap(call => 'lacked' in call
+    ? [call.lacked.noAnswer]
+    : [])
+
+  it('reuses a stored research reply and vote, spending nothing, and counts them in meta.reused', async () => {
+    const store = memory()
+    const fresh = await build(answers(), keeps()).quorum.review({ diff }, { store })
+    expect(fresh.meta.reused).toEqual({ research: 0, votes: 0 })
+    expect(fresh.meta.usage).toEqual({ inputTokens: 40, outputTokens: 20 })
+    // One research reply and one vote of each of the three lenses.
+    expect(store.entries.size).toBe(4)
+    expect([
+      ...store.entries.values(),
+    ].map(call => 'reply' in call && call.reply.usage)).toEqual(Array.from({ length: 4 }).fill(USAGE))
+    // The rerun is under a cap of one token, which no call could be reserved under: none is made.
+    const [finder, voter] = [
+      silent('finder'),
+      silent('voter'),
+    ]
+    const { events, quorum } = build(finder, voter, { maxReviewTokens: 1 })
+    const again = await quorum.review({ diff }, { store })
+    expect([finder.requests, voter.requests]).toEqual([[], []])
+    expect(again.kept).toEqual(fresh.kept)
+    expect(again.meta.reused).toEqual({ research: 1, votes: 3 })
+    expect(again.meta.usage).toBeUndefined()
+    expect(again.meta.incomplete).toEqual([])
+    const ended = calls(events)
+    expect(ended.map(call => call.role)).toEqual(['research', 'vote', 'vote', 'vote'])
+    for (const call of ended) {
+      expect(call.ok).toBe(true)
+      expect(call.reused).toBe(true)
+      expect(call.spent).toBe(0)
+      expect(call).not.toHaveProperty('usage')
+      expect(call).not.toHaveProperty('attempts')
+    }
+    // Without a store, nothing is reused and the meta says nothing of it.
+    const alone = await build(answers(), keeps()).quorum.review({ diff })
+    expect(alone.meta).not.toHaveProperty('reused')
+  })
+
+  it('makes the call again for a stored reply that was tampered with, warning once', async () => {
+    const store = memory()
+    const fresh = await build(answers(), keeps()).quorum.review({ diff }, { store })
+    // Whoever wrote the directory wrote replies no envelope check reads, the research reply's and every vote's.
+    for (const [name, call] of store.entries) {
+      if ('reply' in call) {
+        store.entries.set(name, {
+          reply: { ...call.reply, text: 'not an envelope' },
+        })
+      }
+    }
+    const [finder, voter] = [
+      answers(),
+      keeps(),
+    ]
+    const { events, quorum } = build(finder, voter)
+    const again = await quorum.review({ diff }, { store })
+    expect(finder.requests).toHaveLength(1)
+    expect(voter.requests).toHaveLength(3)
+    expect(again.kept).toEqual(fresh.kept)
+    expect(again.meta.reused).toEqual({ research: 0, votes: 0 })
+    // One line for each provider and role, however many replies failed their check.
+    expect(refusals(events)).toEqual([
+      { type: 'stored-refused', provider: 'finder', role: 'research' },
+      { type: 'stored-refused', provider: 'voter', role: 'vote' },
+    ])
+    expect(calls(events).some(call => call.reused !== undefined)).toBe(false)
+    // The calls made again were saved over the entries that failed, so a third review reuses them.
+    const third = await build(silent('finder'), silent('voter')).quorum.review({ diff }, { store })
+    expect(third.meta.reused).toEqual({ research: 1, votes: 3 })
+  })
+
+  it('misses for a changed diff, budget or thinking level', async () => {
+    const lowering = (answer: (request: CompletionRequest) => string): Fake => counting('finder', answer, {
+      adapts: { thinking: 'low' },
+      room: () => 100_000,
+    })
+    const cutOffThinking = new ProviderError({
+      providerId: 'finder',
+      kind: 'truncated',
+      noAnswer: 'thinking',
+      message: 'cut',
+    })
+    // A finder cut off at its default level while it reasons, which answers at the lowered one: two sends of one call.
+    const store = memory()
+    const first = lowering((request) => {
+      if (request.thinking === undefined) throw cutOffThinking
+      return findings(reported)
+    })
+    const fresh = await build(first, keeps()).quorum.review({ diff }, { store })
+    expect(first.requests.map(request => request.thinking)).toEqual([undefined, 'low'])
+    expect(fresh.meta.adaptations).toEqual([
+      {
+        provider: 'finder',
+        setting: 'thinking',
+        from: 'default',
+        to: 'low',
+        cause: 'cut-off-thinking',
+      },
+    ])
+    // The cut-off send and the send that answered are each under their own key, and the votes under theirs.
+    expect(markers(store)).toEqual(['thinking'])
+    expect(store.entries.size).toBe(5)
+
+    // A rerun replays both sends from the store, the one that was cut off and the one that a re-send saved: no call, one call event.
+    const [replayFinder, replayVoter] = [
+      silent('finder'),
+      silent('voter'),
+    ]
+    const replay = build(Object.assign(replayFinder, {
+      adapts: { thinking: 'low' } as const,
+      room: () => 100_000,
+    }), replayVoter)
+    const replayed = await replay.quorum.review({ diff }, { store })
+    expect([replayFinder.requests, replayVoter.requests]).toEqual([[], []])
+    expect(replayed.kept).toEqual(fresh.kept)
+    expect(replayed.meta.reused).toEqual({ research: 1, votes: 3 })
+    expect(replayed.meta.adaptations).toEqual(fresh.meta.adaptations)
+    expect(calls(replay.events).filter(call => call.role === 'research')).toHaveLength(1)
+
+    // Another diff misses for the research and the vote asks as before: a change of one request is a miss of that request alone.
+    const wider = `${diff}\ndiff --git a/more.js b/more.js\n--- /dev/null\n+++ b/more.js\n@@ -0,0 +1 @@\n+MORE`
+    const [diffFinder, diffVoter] = [
+      answers(),
+      silent('voter'),
+    ]
+    const changedDiff = await build(diffFinder, diffVoter).quorum.review({ diff: wider }, { store })
+    expect(diffFinder.requests).toHaveLength(1)
+    expect(changedDiff.meta.reused).toEqual({ research: 0, votes: 3 })
+
+    // Another reply budget (here the provider's ceiling) misses for the research alone.
+    const [budgetFinder, budgetVoter] = [
+      counting('finder', () => findings(reported), { maxTokens: 1234 }),
+      silent('voter'),
+    ]
+    const changedBudget = await build(budgetFinder, budgetVoter).quorum.review({ diff }, { store })
+    expect(budgetFinder.requests.map(request => request.replyTokens)).toEqual([1234])
+    expect(changedBudget.meta.reused).toEqual({ research: 0, votes: 3 })
+
+    // Another thinking level misses: without the entry of the send at the default level, the reply the lowered send saved is not
+    // taken for an answer of the default one, and the call is made, at the default level.
+    for (const [name, call] of [...store.entries]) {
+      if ('lacked' in call) store.entries.delete(name)
+    }
+    const [plain, plainVoter] = [
+      lowering(() => findings(reported)),
+      silent('voter'),
+    ]
+    const changedLevel = await build(plain, plainVoter).quorum.review({ diff }, { store })
+    expect(plain.requests.map(request => request.thinking)).toEqual([undefined])
+    expect(changedLevel.meta.adaptations).toEqual([])
+    expect(changedLevel.meta.reused).toEqual({ research: 0, votes: 3 })
+  })
+
+  describe('a cut-off or saturated reply', () => {
+    const small = (file: string): string => [
+      `diff --git a/${file} b/${file}`,
+      `--- a/${file}`,
+      `+++ b/${file}`,
+      '@@ -1 +1 @@',
+      '-safe(input)',
+      `+exec(input) // ${file}`,
+    ].join('\n')
+    const twoFiles = ['a.js', 'b.js'].map(small).join('\n')
+    const at = (file: string): unknown => ({ ...reported, file, quote: `exec(input) // ${file}` })
+    const filesOf = (request: CompletionRequest): string[] => [
+      ...request.messages[0].content.matchAll(/exec\(input\) \/\/ (\w+\.js)/g),
+    ].map(found => found[1])
+    const recovered = (events: readonly QuorumEvent[]): QuorumEvent[] => events.filter(event => event.type === 'recovered')
+
+    it('sends a part straight to recovery from its cut-off marker, and splits a saturated one', async () => {
+      const store = memory()
+      const cut = new ProviderError({
+        providerId: 'finder',
+        kind: 'truncated',
+        noAnswer: 'reply',
+        message: 'cut',
+        usage: { inputTokens: 100, outputTokens: 50 },
+      })
+      const finder = counting('finder', (request) => {
+        const files = filesOf(request)
+        if (files.length === 2) throw cut
+        return findings(at(files[0]))
+      })
+      const fresh = await build(finder, keeps()).quorum.review({ diff: twoFiles }, { store })
+      expect(finder.requests.map(request => filesOf(request).length)).toEqual([2, 1, 1])
+      expect(fresh.kept.map(verdict => verdict.file)).toEqual(['a.js', 'b.js'])
+      // The cut-off is a marker that holds what it lacked and its usage, and never a text.
+      expect([
+        ...store.entries.values(),
+      ].filter(call => 'lacked' in call)).toEqual([
+        {
+          lacked: {
+            noAnswer: 'reply',
+            usage: { inputTokens: 100, outputTokens: 50 },
+          },
+        },
+      ])
+
+      // The rerun pays for none of it: the part goes straight to its two pieces, which the store holds too.
+      const [again, voter] = [
+        silent('finder'),
+        silent('voter'),
+      ]
+      const { events, quorum } = build(again, voter)
+      const reused = await quorum.review({ diff: twoFiles }, { store })
+      expect([again.requests, voter.requests]).toEqual([[], []])
+      expect(reused.kept).toEqual(fresh.kept)
+      expect(reused.meta.reused).toEqual({ research: 3, votes: 6 })
+      expect(recovered(events)).toHaveLength(1)
+      expect(reused.meta.profiles.security.recovery).toEqual(fresh.meta.profiles.security.recovery)
+      expect(calls(events).filter(call => call.role === 'research').map(call => call.ok)).toEqual([false, true, true])
+
+      // A reply that listed the findings it was asked for at most, where N is below maxFindings, is a marker too, and is split again.
+      const seven = Array.from({ length: 7 }, (_, index) => ({ ...reported, line: index + 1 }))
+      const saturated = memory()
+      const asking = counting('finder', request => (filesOf(request).length === 2
+        ? findings(...seven)
+        : findings(at(filesOf(request)[0]))), { window: 16_384 })
+      const first = await build(asking, keeps()).quorum.review({ diff: twoFiles }, { store: saturated })
+      expect(markers(saturated)).toEqual(['saturated'])
+      const [rerun, rerunVoter] = [
+        Object.assign(silent('finder'), { window: 16_384 }),
+        silent('voter'),
+      ]
+      const rebuilt = build(rerun, rerunVoter)
+      const second = await rebuilt.quorum.review({ diff: twoFiles }, { store: saturated })
+      expect([rerun.requests, rerunVoter.requests]).toEqual([[], []])
+      expect(second.kept).toEqual(first.kept)
+      expect(recovered(rebuilt.events)).toEqual([
+        expect.objectContaining({
+          noAnswer: 'saturated',
+          findings: 7,
+          pieces: 2,
+          read: 2,
+        }),
+      ])
+    })
+  })
+
+  it('tells the provider-down rule nothing of a stored reply, and reads none of a provider found down', async () => {
+    // Four parts of one file each, which no two share a part of 1024 tokens.
+    const section = (file: string): string => [
+      `diff --git a/${file} b/${file}`,
+      `--- a/${file}`,
+      `+++ b/${file}`,
+      '@@ -1 +1,2 @@',
+      '-safe(input)',
+      `+exec(input) // ${file}`,
+      `+${'y'.repeat(700)}`,
+    ].join('\n')
+    const names = ['a.js', 'b.js', 'c.js', 'd.js']
+    const wide = names.map(section).join('\n')
+    const fileOf = (request: CompletionRequest): string => /exec\(input\) \/\/ (\w+\.js)/.exec(request.messages[0].content)?.[1] ?? ''
+    const options = { concurrency: 1, partTokens: 1024 }
+    const room = {
+      room: () => 100_000,
+    }
+    /** A store that holds the research replies of `kept` files only, each as a first review saved it. */
+    const seeded = async (kept: string[]): Promise<Memory> => {
+      const store = memory()
+      const answering = counting('finder', request => findings({
+        ...reported,
+        file: fileOf(request),
+        quote: `exec(input) // ${fileOf(request)}`,
+      }), room)
+      await build(answering, keeps(), options).quorum.review({ diff: wide }, { store })
+      for (const [name, call] of [...store.entries]) {
+        if ('reply' in call && call.reply.text.startsWith('{"findings"') && !kept.some(file => call.reply.text.includes(`"${file}"`))) store.entries.delete(name)
+      }
+      return store
+    }
+    const network = (): Fake => counting('finder', () => {
+      throw new ProviderError({ providerId: 'finder', kind: 'network', message: 'unreachable' })
+    }, room)
+
+    // A stored reply between two failures resets nothing: the third failure of the three, a, c and d, finds the provider down.
+    const between = await seeded(['b.js'])
+    const failing = network()
+    const { events, quorum } = build(failing, keeps(), options)
+    const result = await quorum.review({ diff: wide }, { store: between })
+    expect(failing.requests.map(fileOf)).toEqual(['a.js', 'c.js', 'd.js'])
+    expect(events.filter(event => event.type === 'provider-down')).toEqual([
+      {
+        type: 'provider-down',
+        provider: 'finder',
+        kind: 'network',
+        calls: 3,
+      },
+    ])
+    expect(result.meta.reused?.research).toBe(1)
+    expect(result.kept.map(verdict => verdict.file)).toEqual(['b.js'])
+
+    // A provider found down is called no more, and its stored reply is not read either: nothing was answered.
+    const after = await seeded(['d.js'])
+    const dead = network()
+    await expect(build(dead, keeps(), options).quorum.review({ diff: wide }, { store: after })).rejects.toBeInstanceOf(ProviderDownError)
+    expect(dead.requests.map(fileOf)).toEqual(['a.js', 'b.js', 'c.js'])
+  })
+
+  it('saves no failed call and no vote that does not parse', async () => {
+    const failing = {
+      store: memory(),
+    }
+    // A research call that failed is saved as nothing, and the review has no reply to read.
+    const down = counting('finder', () => {
+      throw new ProviderError({
+        providerId: 'finder',
+        kind: 'http',
+        status: 500,
+        message: 'down',
+      })
+    })
+    await expect(build(down, silent('voter')).quorum.review({ diff }, { store: failing.store })).rejects.toBeInstanceOf(ProviderDownError)
+    expect(failing.store.entries.size).toBe(0)
+    // A vote that is no vote is saved as nothing too, beside the research reply and the votes that did parse.
+    const store = memory()
+    let turn = 0
+    const voter = counting('voter', () => (turn++ === 0
+      ? 'garbage'
+      : vote(true)))
+    await build(answers(), voter).quorum.review({ diff }, { store })
+    expect(store.entries.size).toBe(3)
+    expect([
+      ...store.entries.values(),
+    ].some(call => 'reply' in call && call.reply.text === 'garbage')).toBe(false)
+  })
+
+  it('reviews as if no store were given when the store throws or rejects', async () => {
+    const baseline = await build(answers(), keeps()).quorum.review({ diff })
+    const boom = (): never => {
+      throw new Error('boom')
+    }
+    const broken: Array<[string, ReplyStore]> = [
+      [
+        'a get that throws',
+        {
+          get: boom,
+          put: async () => {},
+        },
+      ],
+      [
+        'a get that rejects',
+        {
+          get: () => Promise.reject(new Error('boom')),
+          put: async () => {},
+        },
+      ],
+      [
+        'a put that throws',
+        {
+          get: async () => undefined,
+          put: boom,
+        },
+      ],
+      [
+        'a put that rejects',
+        {
+          get: async () => undefined,
+          put: () => Promise.reject(new Error('boom')),
+        },
+      ],
+      [
+        'a get that answers a string',
+        {
+          get: (async () => 'stored') as never,
+          put: async () => {},
+        },
+      ],
+      [
+        'a get that answers a reply of no text',
+        {
+          get: (async () => ({
+            reply: { text: 5, model: 'm' },
+          })) as never,
+          put: async () => {},
+        },
+      ],
+      [
+        'a get that answers a reply whose getter throws',
+        {
+          get: (async () => ({
+            get reply() {
+              throw new Error('boom')
+            },
+          })) as never,
+          put: async () => {},
+        },
+      ],
+      [
+        'a get that answers a marker of a word no marker holds',
+        {
+          get: (async () => ({
+            lacked: { noAnswer: 'empty' },
+          })) as never,
+          put: async () => {},
+        },
+      ],
+      [
+        'a get that answers both a reply and a marker',
+        {
+          get: (async () => ({
+            reply: { text: '{"findings":[]}', model: 'm' },
+            lacked: { noAnswer: 'reply' },
+          })) as never,
+          put: async () => {},
+        },
+      ],
+    ]
+    for (const [label, store] of broken) {
+      const [finder, voter] = [
+        answers(),
+        keeps(),
+      ]
+      const { events, quorum } = build(finder, voter)
+      const result = await quorum.review({ diff }, { store })
+      expect([finder.requests.length, voter.requests.length], label).toEqual([1, 3])
+      expect(result.kept, label).toEqual(baseline.kept)
+      expect(result.meta.reused, label).toEqual({ research: 0, votes: 0 })
+      expect(refusals(events), label).toEqual([])
+    }
+  })
+
+  it('does not hold an aborted review for a store that never answers', async () => {
+    const controller = new AbortController()
+    const hung: ReplyStore = {
+      get: () => new Promise<never>(() => {}),
+      put: async () => {},
+    }
+    const finder = answers()
+    const pending = build(finder, keeps()).quorum.review({ diff }, { store: hung, signal: controller.signal })
+    await new Promise(resolve => setImmediate(resolve))
+    controller.abort(new Error('stop'))
+    await expect(pending).rejects.toThrow('stop')
+    expect(finder.requests).toHaveLength(0)
+  })
+
+  it('refuses a store that is no reply store', async () => {
+    const { quorum } = build(silent('finder'), silent('voter'))
+    for (const store of [
+      {},
+      {
+        get: async () => undefined,
+      },
+      {
+        put: async () => {},
+      },
+      { get: 1, put: 2 },
+      'store',
+      null,
+      [],
+    ]) {
+      await expect(quorum.review({ diff }, { store: store as never })).rejects.toThrow(new ConfigError([
+        { path: 'store', message: 'must be a reply store: an object with get and put functions' },
+      ]))
+    }
   })
 })

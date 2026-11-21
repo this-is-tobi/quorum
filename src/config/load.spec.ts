@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, constants, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, constants, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import type { Stats } from 'node:fs'
 import { lstat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, Provider } from '../core/ports.ts'
-import { loadConfig, readBounded, readConfigFile, readNamedConfig } from './load.ts'
+import { loadConfig, readBounded, readConfigFile, readNamedConfig, writeAtomic } from './load.ts'
 import { parseFailOn } from './profiles.ts'
 import { configFileSchema } from './schema.ts'
 
@@ -1026,5 +1026,40 @@ describe('loadConfig', () => {
     file('prompts/r.md', 'Find style issues.')
     const name = file('q.yaml', 'providers:\n  local: {preset: ollama, model: q, contextTokens: 131072}\nprofiles:\n  team:\n    prompts: {research: {file: ./prompts/r.md}, vote: "Judge {{lens.id}}: {{lens.question}}"}\n    lenses: [{id: one, question: "Real?"}]\n')
     expect((await loadConfig({ cwd: dir, env: {}, configPath: name })).config.profiles[0].profile.prompts.research).toBe('Find style issues.')
+  })
+})
+
+describe('writeAtomic', () => {
+  /** The directory `writeAtomic` writes into, which a test makes when it needs one. */
+  const out = (): string => join(dir, 'out')
+
+  it('writes the text through a new file and a rename, leaving no temporary file', async () => {
+    mkdirSync(out())
+    await writeAtomic(out(), 'report.md', '# one\n')
+    await writeAtomic(out(), 'report.md', '# two\n')
+    expect(readFileSync(join(out(), 'report.md'), 'utf8')).toBe('# two\n')
+    expect(readdirSync(out())).toEqual(['report.md'])
+  })
+
+  it('replaces a symbolic link at the name without writing through it', async () => {
+    mkdirSync(out())
+    writeFileSync(join(dir, 'bashrc'), 'mine')
+    symlinkSync(join(dir, 'bashrc'), join(out(), 'report.md'))
+    await writeAtomic(out(), 'report.md', '# report\n')
+    expect(readFileSync(join(dir, 'bashrc'), 'utf8')).toBe('mine')
+    expect(lstatSync(join(out(), 'report.md')).isSymbolicLink()).toBe(false)
+    expect(readFileSync(join(out(), 'report.md'), 'utf8')).toBe('# report\n')
+  })
+
+  it('names the error\'s code when the directory is missing, and when the name is a directory, and leaves no temporary file', async () => {
+    await expect(writeAtomic(join(dir, 'missing'), 'report.md', 'x')).rejects.toThrow(/^report\.md: cannot be written \(ENOENT\)$/)
+    mkdirSync(out())
+    mkdirSync(join(out(), 'report.md'))
+    await expect(writeAtomic(out(), 'report.md', 'x')).rejects.toThrow(/^report\.md: cannot be written \(E[A-Z]+\)$/)
+    expect(readdirSync(out())).toEqual(['report.md'])
+  })
+
+  it('words a failure with the label it is given', async () => {
+    await expect(writeAtomic(join(dir, 'missing'), 'r.json', 'x', { label: '--output json' })).rejects.toThrow(/^--output json: cannot be written \(ENOENT\)$/)
   })
 })

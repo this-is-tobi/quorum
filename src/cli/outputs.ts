@@ -1,7 +1,7 @@
 import type { Stats } from 'node:fs'
 import { lstat, stat } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
-import { errorCode, writeAtomic } from '../bench/run-dir.ts'
+import { errorCode, writeAtomic } from '../config/load.ts'
 import { ConfigError } from '../core/errors.ts'
 import type { Outcome } from '../core/outcome.ts'
 import { formatWords, isReportFormat, renderReport } from '../report/registry.ts'

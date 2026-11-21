@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { WriteFailure } from '../bench/run-dir.ts'
+import { WriteFailure } from '../config/load.ts'
 import { ConfigError, OutputError, ProviderDownError, ProviderError } from '../core/errors.ts'
 import { GitError } from '../git/run.ts'
 import { errorLines } from './io.ts'

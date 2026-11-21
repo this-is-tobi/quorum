@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ResolvedConfig } from '../config/resolve.ts'
 import type { ConfigInput } from '../config/schema.ts'
 import { resolvedConfig } from '../testing/bench.ts'
-import { canonicalSettings, fingerprint, newSalt } from './fingerprint.ts'
+import { canonicalSettings, fingerprint, newSalt, providerIdentity } from './fingerprint.ts'
 
 const PROVIDER = {
   protocol: 'openai-compatible',
@@ -429,6 +429,79 @@ describe('canonicalSettings', () => {
     }
     expect(() => canonicalSettings(broken)).toThrow(RangeError)
     expect(() => canonicalSettings({ ...config, providers: {} })).toThrow(RangeError)
+  })
+})
+
+describe('providerIdentity', () => {
+  const identityOf = (provider: Record<string, unknown>, name = 'p'): string => providerIdentity(of(provider, name).providers[name])
+
+  it('leaves out the key, timeoutMs and retries of a spec, and the bench fingerprint keeps them', () => {
+    const base = identityOf(PROVIDER)
+    expect(identityOf({ ...PROVIDER, timeoutMs: 120000 })).toBe(base)
+    expect(identityOf({ ...PROVIDER, retries: 5 })).toBe(base)
+    expect(identityOf({
+      ...PROVIDER,
+      timeoutMs: 120000,
+      retries: 0,
+      apiKey: 'a-secret',
+    })).toBe(base)
+    expect(base).not.toContain('timeoutMs')
+    expect(same(of({ ...PROVIDER, timeoutMs: 120000 }), of(PROVIDER))).toBe(false)
+  })
+
+  it('leaves out the timeoutMs and retries a provider object states, and keeps every other field', () => {
+    const base = identityOf(object('m'), 'fake')
+    expect(identityOf({
+      ...object('m'),
+      timeoutMs: 120000,
+      retries: 4,
+    }, 'fake')).toBe(base)
+    expect(identityOf({
+      ...object('n'),
+    }, 'fake')).not.toBe(base)
+    expect(identityOf({
+      ...object('m'),
+      window: 8192,
+    }, 'fake')).not.toBe(base)
+    expect(identityOf({
+      ...object('m'),
+      maxTokens: 700,
+    }, 'fake')).not.toBe(base)
+    expect(identityOf({
+      ...object('m'),
+      thinking: 'low',
+    }, 'fake')).not.toBe(base)
+    expect(identityOf(object('m'), 'other')).not.toBe(base)
+  })
+
+  it.each([
+    [
+      'the model',
+      { model: 'n' },
+    ],
+    [
+      'the context size',
+      { contextTokens: 8192 },
+    ],
+    [
+      'the base URL',
+      { baseUrl: 'https://gw.example/team-b/v1' },
+    ],
+    [
+      'a header value',
+      {
+        headers: { 'x-team': 'b' },
+      },
+    ],
+    [
+      'the thinking level',
+      { thinking: 'low' },
+    ],
+  ])('still changes with %s of a spec', (_name, change) => {
+    expect(identityOf({
+      ...PROVIDER,
+      ...change,
+    })).not.toBe(identityOf(PROVIDER))
   })
 })
 

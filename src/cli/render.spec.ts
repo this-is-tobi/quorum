@@ -195,6 +195,15 @@ describe('renderEvent', () => {
     expect(renderEvent(hostile, true, 'public')).toBe(line.replace('api:', 'a<U+202E>b:'))
   })
 
+  it('writes a stored-refused event as one fixed line, whatever the view and the provider\'s name', () => {
+    const line = '--state: a stored reply failed its check: the call is made again'
+    for (const role of ['research', 'vote'] as const) {
+      const event: QuorumEvent = { type: 'stored-refused', provider: `a${RLO}b`, role }
+      expect(renderEvent(event)).toBe(line)
+      expect(renderEvent(event, true, 'public')).toBe(line)
+    }
+  })
+
   const recoveredEvent = (fields: Partial<Extract<QuorumEvent, { type: 'recovered' }>>): QuorumEvent => ({
     type: 'recovered',
     profile: 'security',

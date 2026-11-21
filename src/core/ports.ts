@@ -225,3 +225,25 @@ export interface QuorumPorts {
   /** The sink that receives every event of a review, synchronously and in order, each as a copy. */
   readonly events?: EventSink
 }
+
+/**
+ * One call kept by a `ReplyStore`: the reply of a call that passed its check, or, for a research call whose reply was cut
+ * off or listed as many findings as it was asked for at most, a marker that holds what it lacked and the usage it was
+ * charged and never any text. A marker only ever sends a part to recovery: it can make nothing read as clean.
+ */
+export type StoredCall
+  = | { readonly reply: { readonly text: string, readonly model: string, readonly usage?: Usage } }
+    | { readonly lacked: { readonly noAnswer: 'reply' | 'thinking' | 'window' | 'saturated', readonly usage?: Usage } }
+
+/**
+ * Where a review keeps the calls it paid for and finds them again on a rerun. A request's `key` is the core's: a hash of
+ * what the request was sent as (see `callProvider`), never of its bytes, which differ by a nonce each time; `provider` is
+ * the id of the provider it went to, so a store may tell two providers' calls apart as it sees fit. What a store gives back
+ * is as untrusted as a reply: the core reads it as own data, checks a stored reply as a fresh one, and takes a
+ * `get` or a `put` that throws or rejects, or that never settles in a review that is stopped, for a miss or a write
+ * that failed. A review that is given a store spends nothing on a call the store holds.
+ */
+export interface ReplyStore {
+  readonly get: (entry: { readonly key: string, readonly provider: string }) => Promise<StoredCall | undefined>
+  readonly put: (entry: { readonly key: string, readonly provider: string }, call: StoredCall) => Promise<void>
+}

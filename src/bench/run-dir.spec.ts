@@ -1,15 +1,16 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import { chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
+import { writeAtomic } from '../config/load.ts'
 import { hiddenLabels } from '../core/sanitize.ts'
 import { handleDescriptors, isClosed, record, RESULT, RUN_SUITE } from '../testing/bench.ts'
 import { MAX_RECORD_BYTES, recordLine } from './records.ts'
 import type { ResultRecord, RunFile } from './records.ts'
-import { createRun, inspectRunDir, openRecords, readRecords, runDifferences, writeAtomic, writeRunFile } from './run-dir.ts'
+import { createRun, inspectRunDir, openRecords, readRecords, runDifferences, writeRunFile } from './run-dir.ts'
 
 let root = ''
 let out = ''
@@ -621,37 +622,5 @@ describe('the records, when results.jsonl changed after it was read', () => {
       await reader.close()
     }
     expect(await refused(() => openRecords(out, NOTHING_READ))).toEqual(['results.jsonl: is not a file'])
-  })
-})
-
-describe('writeAtomic', () => {
-  it('writes the text through a new file and a rename, leaving no temporary file', async () => {
-    mkdirSync(out)
-    await writeAtomic(out, 'report.md', '# one\n')
-    await writeAtomic(out, 'report.md', '# two\n')
-    expect(readFileSync(join(out, 'report.md'), 'utf8')).toBe('# two\n')
-    expect(readdirSync(out)).toEqual(['report.md'])
-  })
-
-  it('replaces a symbolic link at the name without writing through it', async () => {
-    mkdirSync(out)
-    writeFileSync(join(root, 'bashrc'), 'mine')
-    symlinkSync(join(root, 'bashrc'), join(out, 'report.md'))
-    await writeAtomic(out, 'report.md', '# report\n')
-    expect(readFileSync(join(root, 'bashrc'), 'utf8')).toBe('mine')
-    expect(lstatSync(join(out, 'report.md')).isSymbolicLink()).toBe(false)
-    expect(readFileSync(join(out, 'report.md'), 'utf8')).toBe('# report\n')
-  })
-
-  it('names the error\'s code when the directory is missing, and when the name is a directory, and leaves no temporary file', async () => {
-    await expect(writeAtomic(join(root, 'missing'), 'report.md', 'x')).rejects.toThrow(/^report\.md: cannot be written \(ENOENT\)$/)
-    mkdirSync(out)
-    mkdirSync(join(out, 'report.md'))
-    await expect(writeAtomic(out, 'report.md', 'x')).rejects.toThrow(/^report\.md: cannot be written \(E[A-Z]+\)$/)
-    expect(readdirSync(out)).toEqual(['report.md'])
-  })
-
-  it('words a failure with the label it is given', async () => {
-    await expect(writeAtomic(join(root, 'missing'), 'r.json', 'x', { label: '--output json' })).rejects.toThrow(/^--output json: cannot be written \(ENOENT\)$/)
   })
 })

@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as api from './index.ts'
-import { readSource, runQuorum } from './index.ts'
+import { fileStore, readSource, runQuorum } from './index.ts'
 import { isolateEnv } from './testing/env.ts'
 import { chatReply, ollamaReply } from './testing/http.ts'
 
@@ -27,7 +27,7 @@ afterEach(() => {
 })
 
 describe('the public API', () => {
-  it('exports createQuorum, defineConfig, fromConfig, loadConfig, outcome, readSource, renderReport, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer, publicView, readResult and runQuorum', () => {
+  it('exports createQuorum, defineConfig, fileStore, fromConfig, loadConfig, outcome, readSource, renderReport, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer, publicView, readResult and runQuorum', () => {
     expect(Object.keys(api).sort()).toEqual([
       'ConfigError',
       'GitError',
@@ -42,6 +42,7 @@ describe('the public API', () => {
       'defaultPolicy',
       'defineConfig',
       'fencedBlock',
+      'fileStore',
       'fromConfig',
       'gemini',
       'inertJson',
@@ -59,6 +60,45 @@ describe('the public API', () => {
       'runQuorum',
       'securityProfile',
     ])
+  })
+})
+
+describe('fileStore', () => {
+  it('opens a state directory for the providers of a resolved config, and keeps a call for each of them', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'quorum-index-')))
+    try {
+      const providers = {
+        api: {
+          protocol: 'openai-compatible',
+          baseUrl: 'http://localhost:11434/v1',
+          model: 'm',
+          contextTokens: 8192,
+        },
+      } as const
+      const store = await fileStore(join(root, 'state'), { providers })
+      const call = {
+        reply: { text: '{"findings":[]}', model: 'm' },
+      }
+      await store.put({ key: 'k', provider: 'api' }, call)
+      expect(await store.get({ key: 'k', provider: 'api' })).toEqual(call)
+      // A provider the config does not hold has no identity: nothing is kept for it.
+      await store.put({ key: 'k', provider: 'ghost' }, call)
+      expect(readdirSync(join(root, 'state'))).toHaveLength(2)
+      // A raised deadline or retry count is the same provider, so the call is still kept for it; another model is a miss.
+      const raised = {
+        api: { ...providers.api, timeoutMs: 900_000, retries: 5 },
+      }
+      expect(await (await fileStore(join(root, 'state'), { providers: raised })).get({ key: 'k', provider: 'api' })).toEqual(call)
+      const another = {
+        api: { ...providers.api, model: 'n' },
+      }
+      expect(await (await fileStore(join(root, 'state'), { providers: another })).get({ key: 'k', provider: 'api' })).toBeUndefined()
+      // The directory is refused as the CLI refuses it.
+      writeFileSync(join(root, 'plain'), 'x')
+      await expect(fileStore(join(root, 'plain'), { providers })).rejects.toThrow('--state: is not a directory')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 

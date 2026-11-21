@@ -1,7 +1,13 @@
+import { providerIdentity } from './bench/fingerprint.ts'
 import { progressSink } from './cli/render.ts'
 import { fromConfig } from './config/from-config.ts'
 import { loadConfig } from './config/load.ts'
+import type { ResolvedConfig } from './config/resolve.ts'
+import { inertLine } from './core/sanitize.ts'
+import type { ReplyStore } from './core/ports.ts'
 import type { QuorumResult } from './core/types.ts'
+import { VERSION } from './core/version.ts'
+import { openFileStore } from './state/store.ts'
 import { readSource as readSourceOf } from './sources/read.ts'
 import type { SourceContext, SourceRead, SourceSpec } from './sources/read.ts'
 
@@ -19,7 +25,7 @@ export { outcome } from './core/outcome.ts'
 export type { Outcome, OutcomeStatus } from './core/outcome.ts'
 export { defaultPolicy } from './core/policy.ts'
 export type { PolicyRules, Rule } from './core/policy.ts'
-export type { Adapts, ChatMessage, CompletionRequest, CompletionResponse, EventSink, JsonSchema, ProfilePorts, Provider, QuorumPorts } from './core/ports.ts'
+export type { Adapts, ChatMessage, CompletionRequest, CompletionResponse, EventSink, JsonSchema, ProfilePorts, Provider, QuorumPorts, ReplyStore, StoredCall } from './core/ports.ts'
 export { createQuorum } from './core/quorum.ts'
 export { codeSpan, fencedBlock, inertJson, inertLine, inertPlain } from './core/sanitize.ts'
 export type {
@@ -96,6 +102,38 @@ export type { ReportInput } from './report/reporter.ts'
 export { publicView } from './report/view.ts'
 export type { ReportView } from './report/view.ts'
 export type { SourceRead, SourceSpec } from './sources/read.ts'
+
+/**
+ * The file store the CLI's `--state <dir>` uses, as a `ReplyStore` for `review(input, { store })`: every research call
+ * whose reply passed its check and every vote that parsed is kept in `directory` as it completes, and a cut-off or
+ * saturated research reply as a marker that sends its part straight to recovery, so a rerun of a review that failed
+ * late reuses what it paid for, for a request sent as it was and checked as a fresh reply, and spends nothing on it.
+ * `providers` are the config's (`ResolvedConfig['providers']`): each provider's identity (every field of it but its key, `timeoutMs` and `retries`) is part of an entry's key, so
+ * a changed provider is a miss, and a provider the config does not name keeps nothing. The rest is the process's: its
+ * platform, the user that owns it (the directory must be that user's, and no other user's to write), quorum's own
+ * version, and its standard error, where each warning is one inert line. The directory is made with mode 0700 when it is
+ * missing; it must be a directory, no link, that the user owns and no one else may write, empty or made by quorum, and
+ * outside every git work tree: whoever writes it writes a part's review, so it must never be restored from a cache another
+ * job can write, and it is removed once the review it serves is done.
+ *
+ * @throws ConfigError at `--state` when the directory is refused, naming the flag and never the path
+ *
+ * @example
+ * const store = await fileStore('/home/me/.quorum-state', { providers: config.providers })
+ * const result = await quorum.review(input, { store })
+ */
+export async function fileStore(directory: string, options: { readonly providers: ResolvedConfig['providers'] }): Promise<ReplyStore> {
+  return openFileStore(directory, {
+    identities: new Map(Object.entries(options.providers).map(([id, provider]) => [
+      id,
+      providerIdentity(provider),
+    ])),
+    version: VERSION,
+    owner: process.getuid?.(),
+    platform: process.platform,
+    warn: line => process.stderr.write(`${inertLine(line)}\n`),
+  })
+}
 
 /**
  * Read the diff a review is about from a source, as the CLI does for a diff, `--range`, `--local`, `--staged`

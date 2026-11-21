@@ -20,7 +20,7 @@ import { isRecord } from './output.ts'
 import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap } from './parts.ts'
 import type { Packing, PartResult } from './parts.ts'
 import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
-import type { EventSink, ProfilePorts, Provider, QuorumPorts } from './ports.ts'
+import type { EventSink, ProfilePorts, Provider, QuorumPorts, ReplyStore } from './ports.ts'
 import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
 import { renderTemplate } from './prompts.ts'
 import { addUsage, elapsed, ownData, stage, targetOf } from './stages/context.ts'
@@ -67,6 +67,8 @@ type EstimateInput = Parameters<Quorum['estimate']>[0]
 interface Tally {
   usage?: Usage
   readonly invalidFindings: Map<string, number>
+  /** The research calls and the votes a store answered, counted from the `call` events that say `reused`. */
+  readonly reused: { research: number, votes: number }
 }
 
 /**
@@ -239,6 +241,14 @@ function estimate(compiled: Compiled, input: EstimateInput): Estimate {
  * records nothing, and the part splits. A research reply that shows no reasoning makes
  * that provider's later research requests ask for more findings.
  *
+ * With `options.store`, a `ReplyStore`, the review keeps what it paid for and finds it again on a rerun: each research
+ * call whose reply passed its envelope check and each vote that parsed is saved as it completes, and a research reply that
+ * was cut off or listed as many findings as it was asked for at most as a marker that sends its part straight to
+ * recovery; a failed call is never saved. Each send is looked up under a key of the request as it is sent (see
+ * `callProvider`), a stored reply is checked as a fresh one and is the answer only if it passes, and it spends nothing: no
+ * reservation, no usage, a `call` event that says `reused`. `meta.reused` counts the research calls and the votes reused,
+ * and is present whenever a store was given. A store that throws, rejects or answers what is no stored call is a miss.
+ *
  * A review ends at its deadline, `reviewTimeoutMs` after it starts, with an answer: at it every call in
  * flight and every wait is stopped at once, no call still queued starts, and what was not done is a
  * `review-deadline` gap of its profile, its research request (the parts of it not yet answered) or its
@@ -269,7 +279,7 @@ function estimate(compiled: Compiled, input: EstimateInput): Estimate {
  * and votes run as far as the cap lets them. A research in parts spends up to the cap, each part reserved
  * before it is sent: the parts the cap cannot fund are not sent, and one gap counts them.
  *
- * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take, options that are not an object, a `signal` that is not an AbortSignal
+ * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take, options that are not an object, a `signal` that is not an AbortSignal, a `store` that is no object with a `get` and a `put` function
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
  * @throws the error of a sink that throws
  * @throws ProviderDownError when no research call of any profile answered and a research provider was found down, or each of whose calls failed for a reason of its own
@@ -347,10 +357,16 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
   }))
   const tally: Tally = {
     invalidFindings: new Map(),
+    reused: { research: 0, votes: 0 },
   }
   const emit = (event: QuorumEvent): void => {
     if (signal.aborted) return
     if (event.type === 'call' && event.usage !== undefined) tally.usage = addUsage(tally.usage, event.usage)
+    if (event.type === 'call' && event.reused === true) {
+      tally.reused[event.role === 'research'
+        ? 'research'
+        : 'votes'] += 1
+    }
     if (event.type === 'finding:invalid') tally.invalidFindings.set(event.profile, (tally.invalidFindings.get(event.profile) ?? 0) + 1)
     try {
       sink?.(structuredClone(event))
@@ -369,6 +385,10 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     deadline,
     health: createHealth(),
     lacked: new Set(),
+    storedRefused: new Set(),
+    ...options.store === undefined
+      ? {}
+      : { store: options.store },
     adapt: createAdaptations(),
     maxFindings: compiled.maxFindings,
     budgets: compiled.budgets,
@@ -423,6 +443,11 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     adaptations: [
       ...ctx.adapt.record(),
     ],
+    ...options.store === undefined
+      ? {}
+      : {
+          reused: { ...tally.reused },
+        },
   }
   emit({
     type: 'run:end',
@@ -521,9 +546,18 @@ function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
     if (typeof input.diff !== 'string') issues.push({ path: 'diff', message: 'must be a string' })
     issues.push(...sourceIssues(input.source), ...leftOutIssues(input.leftOut), ...sendIssues(input.send))
   }
-  if (!isRecord(options)) issues.push({ path: 'options', message: 'must be an object' })
-  else if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) issues.push({ path: 'signal', message: 'must be an AbortSignal' })
+  if (!isRecord(options)) {
+    issues.push({ path: 'options', message: 'must be an object' })
+  } else {
+    if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) issues.push({ path: 'signal', message: 'must be an AbortSignal' })
+    if (options.store !== undefined && !isReplyStore(options.store)) issues.push({ path: 'store', message: 'must be a reply store: an object with get and put functions' })
+  }
   return issues
+}
+
+/** Whether `value` is an object with a `get` and a `put` function, which is all a review asks of a store before it calls it. */
+function isReplyStore(value: unknown): value is ReplyStore {
+  return isRecord(value) && typeof value.get === 'function' && typeof value.put === 'function'
 }
 
 /** Who reviews for a profile, as new objects the caller may keep or change: never the frozen refs of the run. */

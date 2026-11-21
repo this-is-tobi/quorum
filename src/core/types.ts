@@ -7,6 +7,7 @@
 
 import type { NoAnswer, ProviderErrorKind } from './errors.ts'
 import type { PolicyRules } from './policy.ts'
+import type { ReplyStore } from './ports.ts'
 
 /**
  * A candidate issue after the harness checked it against the diff. The finder supplies the file,
@@ -397,6 +398,8 @@ export interface QuorumMeta {
   flags: Flag[]
   /** What the review moved by itself, in the order it happened: empty when nothing moved. A setting an explicit option holds is never moved. */
   adaptations: Adaptation[]
+  /** How many research calls and votes were reused from the review's store, counted from the `call` events that say `reused`: present when a store was given, even at 0. */
+  reused?: { research: number, votes: number }
 }
 
 /** Final review output. */
@@ -549,9 +552,10 @@ export interface Quorum {
    * listing the files its source left out (`leftOut`) before the diff's own. Once `signal` aborts, the
    * review stops and rejects with the signal's reason; an aborted review never resolves. The review is
    * over once it has sent `run:end`: an abort from that event's handler, or later, has no effect, and the
-   * review resolves with its result.
+   * review resolves with its result. With a `store`, the review saves each call that passed its check and reuses what
+   * the store holds for a request sent as it was, checked as a fresh reply, spending nothing on it (`meta.reused`).
    */
-  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal }) => Promise<QuorumResult>
+  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal, readonly store?: ReplyStore }) => Promise<QuorumResult>
   /**
    * What a review of `input.diff` may cost, before any call: per profile, what the token ledger reserves for each
    * research part, and a bound for every vote. It makes no call and reads no file. The research parts are counted
@@ -592,9 +596,10 @@ export type QuorumEvent
      * first attempt to its end, the waits between attempts included; `attempts` is their number,
      * only when the call made more than one; `usage` is summed over the attempts that reported
      * valid counts; `spent` is the tokens the review's cap counted for the call: each attempt's
-     * reported usage, nothing for one the server refused before any work, else its reservation.
+     * reported usage, nothing for one the server refused before any work, else its reservation. `reused` is true for a call
+     * the review's store answered with no attempt made: it holds no `usage` and no `attempts`, and `spent` is 0.
      */
-    | { type: 'call', profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, durationMs: number, ok: boolean, attempts?: number, usage?: Usage, spent: number }
+    | { type: 'call', profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, durationMs: number, ok: boolean, attempts?: number, usage?: Usage, spent: number, reused?: true }
     /**
      * A provider was found down: three of its calls in a row failed for a reason of its own (`kind`, and for an
      * `http` failure its `status`), so no call goes to it for the rest of the review. Sent once per provider, at the
@@ -624,6 +629,11 @@ export type QuorumEvent
      * setting: the same record `meta.adaptations` holds. Every field is a provider's id or a code word.
      */
     | { type: 'adapted', adaptation: Adaptation }
+    /**
+     * A reply the review's store held failed the check a fresh reply passes, so the call was made again: said once per
+     * provider and role in a review. Whoever wrote the state directory wrote it. It holds a provider's id and a code word only.
+     */
+    | { type: 'stored-refused', provider: string, role: 'research' | 'vote' }
     /** A finding was dropped for citing code outside the diff, with the reason. */
     | { type: 'finding:invalid', profile: string, reason: string }
     /** A gap was recorded, as `meta.incomplete` will hold it. */

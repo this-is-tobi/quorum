@@ -13,13 +13,12 @@
  * trust as its own is a `ConfigError`; an I/O failure is an `Error`.
  */
 
-import { randomBytes } from 'node:crypto'
 import { constants } from 'node:fs'
 import type { Stats } from 'node:fs'
-import { lstat, mkdir, open, opendir, rename, unlink } from 'node:fs/promises'
+import { lstat, mkdir, open, opendir } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { decode, readBounded } from '../config/load.ts'
+import { codeSuffix, decode, errorCode, readBounded, writeAtomic, writeFailure } from '../config/load.ts'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { inertJson } from '../core/sanitize.ts'
@@ -39,8 +38,6 @@ const DEFAULT_CONFIGURATION = '(default configuration)'
 const CHUNK_BYTES = 64 * 1024
 /** The byte that ends a line; no multi-byte UTF-8 sequence holds it. */
 const LINE_FEED = 0x0A
-/** An error code worth printing: `EACCES`, never text. */
-const ERROR_CODE = /^E[A-Z]+$/
 /** Whether the platform can refuse a symbolic link at the open itself. */
 const HAS_NOFOLLOW = typeof constants.O_NOFOLLOW === 'number'
 const NO_FOLLOW = HAS_NOFOLLOW
@@ -50,7 +47,6 @@ const NO_FOLLOW = HAS_NOFOLLOW
 const READ_FLAGS = constants.O_RDONLY | constants.O_NONBLOCK | NO_FOLLOW
 /** Without blocking too, so a FIFO swapped in after the read is refused instead of waited for. */
 const APPEND_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_NONBLOCK | NO_FOLLOW
-const NEW_FILE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
 /** The mode `run.json` and `results.jsonl` are made with: read and written by their owner only. */
 const OWNER_ONLY = 0o600
 /** The name `writeAtomic` gives the temporary file of `run.json`, which a run killed while it wrote can leave. */
@@ -88,22 +84,6 @@ function refusal(path: string, message: string): ConfigError {
   return new ConfigError([
     { path, message },
   ])
-}
-
-/** The code of a failed system call, when it is one worth printing. */
-export function errorCode(error: unknown): string | undefined {
-  const code = (error as { code?: unknown } | null | undefined)?.code
-  return typeof code === 'string' && ERROR_CODE.test(code)
-    ? code
-    : undefined
-}
-
-/** ` (EACCES)`, or nothing for an error without a code worth printing. */
-function codeSuffix(error: unknown): string {
-  const code = errorCode(error)
-  return code === undefined
-    ? ''
-    : ` (${code})`
 }
 
 function ioFailure(file: string, what: string, error: unknown): Error {
@@ -350,16 +330,6 @@ export async function readRecords(directory: string, visit: (record: ReviewRecor
 }
 
 /**
- * A file quorum writes that could not be written. Its message is `<file>: cannot be written (<code>)`: it names
- * the file's label and the error's code, never a path, so a log a stranger may read can hold it.
- */
-export class WriteFailure extends Error {}
-
-function writeFailure(file: string, error: unknown): WriteFailure {
-  return new WriteFailure(`${file}: cannot be written${codeSuffix(error)}`)
-}
-
-/**
  * `results.jsonl` opened to be appended to, never through a symbolic link, never waiting for a FIFO, and
  * cut to `read.validBytes` when it ends in the torn tail the read found. A read that found no bytes opens
  * with `O_CREAT`: a new run's file, or an empty one deleted since, is made. A read that found bytes opens
@@ -443,35 +413,5 @@ export async function openRecords(directory: string, read: ReadSizes): Promise<R
         throw writeFailure(RESULTS_FILE, error)
       }
     },
-  }
-}
-
-/**
- * Write `text` as `name` in `directory` whole or not at all: to a new file `.<name>.<8 hex digits>.tmp`
- * made with `O_EXCL` (which never follows a link), written, synced and closed, then renamed over `name`.
- * The rename replaces a symbolic link at `name`, and never writes through it. The temporary file is made
- * with `options.mode`, which the rename keeps: Node's own default unless a caller asks for another. A
- * failure removes the temporary file it made, and names `options.label` in place of `name` when the caller
- * has one, so a message can say what was being written without the path it was written to.
- *
- * @throws WriteFailure `<label or name>: cannot be written (<code>)`
- */
-export async function writeAtomic(directory: string, name: string, text: string, options: { readonly mode?: number, readonly label?: string } = {}): Promise<void> {
-  const { mode = 0o666, label = name } = options
-  const temporary = join(directory, `.${name}.${randomBytes(4).toString('hex')}.tmp`)
-  let made = false
-  try {
-    const handle = await open(temporary, NEW_FILE_FLAGS, mode)
-    made = true
-    try {
-      await handle.writeFile(text)
-      await handle.sync()
-    } finally {
-      await handle.close()
-    }
-    await rename(temporary, join(directory, name))
-  } catch (error) {
-    if (made) await unlink(temporary).catch(() => undefined)
-    throw writeFailure(label, error)
   }
 }

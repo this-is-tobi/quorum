@@ -104,6 +104,11 @@ export const usageSchema = z.strictObject({
   outputTokens: amount,
   costUsd: amount.optional(),
 })
+/** How many research calls and votes a review reused from its store. */
+const reused = z.strictObject({
+  research: count,
+  votes: count,
+})
 const coverageReason = z.enum([
   'binary',
   'submodule',
@@ -348,6 +353,7 @@ export const resultSchema = z.strictObject({
     leftOut: z.array(leftOutFile),
     flags: z.array(flag),
     adaptations: z.array(adaptation),
+    reused: reused.optional(),
   }),
 }).superRefine(checkResult)
 
@@ -372,5 +378,6 @@ export const publicViewSchema = z.strictObject({
     leftOut: z.array(leftOutFile),
     flags: z.array(flag),
     adaptations: z.array(adaptation),
+    reused: reused.optional(),
   }),
 }).superRefine(checkResult)

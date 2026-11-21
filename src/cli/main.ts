@@ -1,12 +1,16 @@
+import { resolve } from 'node:path'
+import { providerIdentity } from '../bench/fingerprint.ts'
 import { readEnv } from '../config/env.ts'
 import { fromConfig } from '../config/from-config.ts'
 import { loadConfig } from '../config/load.ts'
 import { parseFailOn } from '../config/profiles.ts'
 import type { FailOnOverride } from '../config/profiles.ts'
+import type { ResolvedConfig } from '../config/resolve.ts'
 import { ConfigError } from '../core/errors.ts'
 import { VERSION } from '../core/version.ts'
 import { outcome } from '../core/outcome.ts'
 import { inertLine } from '../core/sanitize.ts'
+import type { ReplyStore } from '../core/ports.ts'
 import type { Estimate, Quorum } from '../core/types.ts'
 import { renderReport } from '../report/registry.ts'
 import { publicView } from '../report/view.ts'
@@ -15,6 +19,7 @@ import { atProblem, pathProblem } from '../sources/paths.ts'
 import { parseRange } from '../sources/range.ts'
 import { readSource } from '../sources/read.ts'
 import type { SourceSpec } from '../sources/read.ts'
+import { openFileStore } from '../state/store.ts'
 import { runBench } from './bench.ts'
 import { errorLines, errorMessage, EXIT, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
@@ -56,6 +61,7 @@ const USAGE = [
   '  -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several',
   '      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never',
   '      --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage',
+  '      --state <dir>        Save every answered call in this directory, and reuse the calls it holds',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
   '  -v, --version            Print the version and exit',
@@ -80,6 +86,7 @@ const OPTIONS = {
   output: { type: 'string', short: 'o', multiple: true },
   color: { type: 'string', multiple: true },
   view: { type: 'string', multiple: true },
+  state: { type: 'string', multiple: true },
   'print-config': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
   version: { type: 'boolean', short: 'v' },
@@ -118,7 +125,7 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  *
  * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`, `--path`,
  * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--fail-on`, `--format`, `--output`,
- * `--color`, `--view`, `--print-config`, `--help` and `--version`; a usage error prints the usage after its message. Its
+ * `--color`, `--view`, `--state`, `--print-config`, `--help` and `--version`; a usage error prints the usage after its message. Its
  * settings are the config file `--config` or `QUORUM_CONFIG`
  * names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the `QUORUM_*`
  * variables of `io.env` with their deprecated aliases. Each warning is printed once, before the banner, and
@@ -163,6 +170,16 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * value, is a usage error for any other, and is one with `--print-config`, all before the source and any config
  * (`reportPlan`). The exit code is the same: `outcome` reads the result, not the view.
  *
+ * `--state <dir>` keeps every answered call of the review in that directory, and reuses the calls it holds (see
+ * `openFileStore`): each research call whose reply passed its envelope check and each vote that parsed is saved as it
+ * completes, and a cut-off or saturated research reply as a marker, so a rerun of a review that failed late pays for
+ * none of it again, for a request sent as it was, checked as a fresh reply. It is opened once the config is read and
+ * before the banner, with the identity of each of the config's providers, and the review says on stderr what it reused
+ * (`reused from --state: <n> research call(s), <n> vote(s)`) when it reused any. It is a usage error when empty, given
+ * twice or with `--print-config`, and a directory the store refuses (a link, one another user owns or others can
+ * write, one inside a git work tree, one that is not a state directory quorum made) exits 2 before any call, naming
+ * the flag and never the path. Its warnings are inert `--state:` lines, and a write that fails never fails the review.
+ *
  * The run is interrupted when `io.signal` aborts: it then writes `interrupted` and returns 130, whatever
  * error ended the review, and writes no result. A review that has already resolved is complete.
  *
@@ -197,6 +214,7 @@ export async function runCli(io: CliIO): Promise<number> {
   let spec: SourceSpec | undefined
   let failOn: FailOnOverride | undefined
   let plan: ReportPlan
+  let state: string | undefined
   try {
     if (values.config === '') {
       throw new ConfigError([
@@ -207,6 +225,7 @@ export async function runCli(io: CliIO): Promise<number> {
       ? undefined
       : parseFailOn(values['fail-on'], '--fail-on')
     plan = reportPlan(values, io)
+    state = stateDirectory(values)
     spec = await sourceSpec(io, values, positionals)
   } catch (error) {
     return usageError(io, error)
@@ -248,11 +267,16 @@ export async function runCli(io: CliIO): Promise<number> {
       io.stdout.write(printConfig(config, source))
       return EXIT.ok
     }
+    const store = state === undefined
+      ? undefined
+      : await openStore(io, resolve(io.cwd, state), config.providers)
     writeWarnings(io, quorum.warnings)
     for (const line of bannerLines(config, plan.view)) io.stderr.write(`${line}\n`)
     if (spec?.kind === 'paths') holdLargeReview(io, quorum.estimate({ diff: read.diff, send }), values.large === true)
     if (read.diff.trim() === '') io.stderr.write('empty diff: nothing to review\n')
-    const result = await quorum.review({ ...read, send }, { signal: io.signal })
+    const result = await quorum.review({ ...read, send }, { signal: io.signal, store })
+    const { reused } = result.meta
+    if (reused !== undefined && reused.research + reused.votes > 0) io.stderr.write(`${inertLine(`reused from --state: ${reused.research} research call(s), ${reused.votes} vote(s)`)}\n`)
     const done = outcome(result, { allowIncomplete: values['allow-incomplete'] === true })
     const input = plan.view === 'public'
       ? publicView(result)
@@ -288,6 +312,40 @@ function holdLargeReview(io: CliIO, estimate: Estimate, large: boolean): void {
       message: `may not finish under the review's token cap of ${estimate.maxReviewTokens} tokens: its research alone expects about ${estimate.expected}, with ${estimate.inFlight} reserved at once: name a narrower path, raise maxReviewTokens, or pass --large to review what the cap allows`,
     },
   ])
+}
+
+/**
+ * The directory `--state` names, or undefined without the flag. It is checked with the other flags, before the source and
+ * any config, and no message holds the value given: a second `--state`, an empty one, and one beside `--print-config`,
+ * which reads no diff and calls no model, are usage errors.
+ */
+function stateDirectory(values: Flags['values']): string | undefined {
+  const given = values.state
+  if (given === undefined) return undefined
+  const refuse = (path: string, message: string): ConfigError => new ConfigError([
+    { path, message },
+  ])
+  if (given.length > 1) throw refuse('--state', 'takes one directory')
+  if (given[0] === '') throw refuse('--state', 'must name a directory')
+  if (values['print-config']) throw refuse('--print-config', 'reads no diff and calls no model, so it takes no --state')
+  return given[0]
+}
+
+/**
+ * The file store `--state` opens, in `directory`: its providers' identities are the config's, so a changed provider is a miss,
+ * and its warnings are inert `--state:` lines on stderr. A directory it refuses is a `ConfigError` at `--state`, exit 2.
+ */
+function openStore(io: CliIO, directory: string, providers: ResolvedConfig['providers']): Promise<ReplyStore> {
+  return openFileStore(directory, {
+    identities: new Map(Object.entries(providers).map(([id, provider]) => [
+      id,
+      providerIdentity(provider),
+    ])),
+    version: VERSION,
+    owner: process.getuid?.(),
+    platform: io.platform ?? process.platform,
+    warn: line => io.stderr.write(`${inertLine(line)}\n`),
+  })
 }
 
 /** Write each warning as an inert `warning:` line. */

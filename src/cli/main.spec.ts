@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -115,6 +115,7 @@ const USAGE = [
   '  -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several',
   '      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never',
   '      --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage',
+  '      --state <dir>        Save every answered call in this directory, and reuse the calls it holds',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
   '  -v, --version            Print the version and exit',
@@ -797,6 +798,86 @@ describe('runCli', () => {
     // Each profile's dedup line is there with its prefix; which comes first depends on scheduling.
     expect(lines.slice(5, 7).sort()).toEqual(['[security] 0 candidate(s) after dedup', '[team] 0 candidate(s) after dedup'])
     expect(lines.slice(7)).toEqual(['0 kept, 0 discarded, 0 unreviewed by panel', ''])
+  })
+})
+
+describe('--state', () => {
+  /** A directory of its own for the state a test keeps, which no other test reads. */
+  let state = ''
+  beforeEach(() => {
+    state = realpathSync(mkdtempSync(join(dir, 'state-')))
+  })
+  const refusedWith = async (argv: string[], env = DEFAULT): Promise<{ readonly code: number, readonly stderr: string }> => {
+    const fetchMock = stubOllamaChat()
+    const { io, stderr } = harness({ env, stdin: DIFF, argv })
+    const code = await runCli(io)
+    expect(fetchMock).not.toHaveBeenCalled()
+    return {
+      code,
+      stderr: stderr(),
+    }
+  }
+
+  it('reuses a --state directory on a rerun, printing what it reused', async () => {
+    const directory = join(state, 'calls')
+    const first = stubOllamaChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true), vote(true))
+    const run = harness({
+      env: DEFAULT,
+      stdin: DIFF,
+      argv: ['--state', directory],
+    })
+    expect(await runCli(run.io)).toBe(EXIT.finding)
+    expect(first).toHaveBeenCalledTimes(4)
+    // A first run reuses nothing and says nothing of it.
+    expect(run.stderr()).not.toContain('reused from --state')
+    expect(JSON.parse(run.stdout()).meta.reused).toEqual({ research: 0, votes: 0 })
+    expect(readdirSync(directory)).toHaveLength(5)
+    // The rerun asks no model, and spends nothing: its result is the first's.
+    vi.unstubAllGlobals()
+    const second = stubOllamaChat()
+    const rerun = harness({
+      env: DEFAULT,
+      stdin: DIFF,
+      argv: ['--state', directory],
+    })
+    expect(await runCli(rerun.io)).toBe(EXIT.finding)
+    expect(second).not.toHaveBeenCalled()
+    expect(rerun.stderr()).toContain('reused from --state: 1 research call(s), 3 vote(s)\n')
+    const result = JSON.parse(rerun.stdout())
+    expect(result.meta.reused).toEqual({ research: 1, votes: 3 })
+    expect(result.meta).not.toHaveProperty('usage')
+    expect(result.kept[0]).toMatchObject({ file: 'a.js', confidence: 'high' })
+    // The line comes before the report, and names no path.
+    expect(rerun.stderr()).not.toContain(directory)
+    // A run with no --state has no reused count.
+    const plain = harness({ env: DEFAULT, stdin: '  \n' })
+    await runCli(plain.io)
+    expect(JSON.parse(plain.stdout()).meta).not.toHaveProperty('reused')
+  })
+
+  it('refuses --state twice, empty, or with --print-config', async () => {
+    expect(await refusedWith([
+      '--state',
+      join(state, 'a'),
+      '--state',
+      join(state, 'b'),
+    ])).toEqual({ code: EXIT.usage, stderr: `Error: --state: takes one directory\n${USAGE}` })
+    expect(await refusedWith(['--state', ''])).toEqual({ code: EXIT.usage, stderr: `Error: --state: must name a directory\n${USAGE}` })
+    expect(await refusedWith([
+      '--state',
+      join(state, 'a'),
+      '--print-config',
+    ])).toEqual({ code: EXIT.usage, stderr: `Error: --print-config: reads no diff and calls no model, so it takes no --state\n${USAGE}` })
+    // A directory the store refuses is refused before any call, by the flag and never the path.
+    symlinkSync(state, join(state, 'link'))
+    const linked = await refusedWith([
+      '--state',
+      join(state, 'link'),
+    ])
+    expect(linked).toEqual({ code: EXIT.usage, stderr: 'Error: --state: is a symbolic link\n' })
+    expect(readdirSync(state)).toEqual(['link'])
   })
 })
 
@@ -2796,7 +2877,7 @@ describe('the sources', () => {
       '       quorum mcp [options]',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
-    expect(options).toHaveLength(20)
+    expect(options).toHaveLength(21)
     for (const line of options) {
       expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line.slice(25, 27), line).toBe('  ')

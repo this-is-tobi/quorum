@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { Adaptations, Fields, Probe, ProbeOutcome } from '../adapt.ts'
 import type { ProfileBudgets } from '../budgets.ts'
 import type { Clock } from '../clock.ts'
@@ -9,7 +10,8 @@ import { isLimit, settlementOf } from '../limits.ts'
 import type { Ledger } from '../limits.ts'
 import { isRecord } from '../output.ts'
 import { adaptsProblem, DEFAULT_TIMEOUT_MS, MAX_STATED_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../ports.ts'
-import type { Adapts, CompletionRequest, CompletionResponse, EventSink, Provider } from '../ports.ts'
+import type { Adapts, CompletionRequest, CompletionResponse, EventSink, Provider, ReplyStore, StoredCall } from '../ports.ts'
+import { requestDigest } from '../prompts.ts'
 import { isTimeout, retryWait } from '../retry.ts'
 import type { FailureFacts } from '../retry.ts'
 import { DEFAULT_REPLY_TOKENS, replyLimit, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
@@ -98,6 +100,10 @@ export interface RunContext {
   readonly health: Health
   /** The `reply-lacked` lines this review has said, one per provider and line (`provider|line`): each is said once. */
   readonly lacked: Set<string>
+  /** The `stored-refused` lines this review has said, one per provider and role (`provider|role`): each is said once. */
+  readonly storedRefused: Set<string>
+  /** Where the review keeps the calls it paid for and finds them again, when the caller gave one. */
+  readonly store?: ReplyStore
   /** What this review moved by itself, and the probes that find out whether a move helps: one per review, so nothing carries to the next. */
   readonly adapt: Adaptations
   /** How many findings of a research reply each profile sends to the panel. */
@@ -250,7 +256,11 @@ export function addUsage(total: Usage | undefined, more: Usage | undefined): Usa
  * getter and never throws: an inherited property, a getter or a throwing proxy reads as no usage.
  */
 export function failureUsage(error: unknown): Usage | undefined {
-  const usage = ownData(error, 'usage')
+  return ownUsage(ownData(error, 'usage'))
+}
+
+/** The usage an object holds as own data, when its counts can be trusted: never a getter run, an inherited field read or a throw. */
+function ownUsage(usage: unknown): Usage | undefined {
   return checkedUsage({
     inputTokens: ownData(usage, 'inputTokens'),
     outputTokens: ownData(usage, 'outputTokens'),
@@ -455,6 +465,20 @@ export function elapsed(started: number): number {
  * which the stage splits and does not read), and the call returns `saturated` for such a reply, with no text. A
  * throw from it, an `OutputError` the stage tells as a gap, ends the call with that error: no second event is
  * sent, the health is told nothing more, and `onFailure` hears it.
+ *
+ * With a store (`ctx.store`), each send of a call, the first and every re-send, is looked up under its own key once its
+ * request is built and before anything is reserved: the SHA-256 of the call's role, the request's digest (`requestDigest`:
+ * what a builder made it of, never its bytes), its reply budget and the `thinking` and `structuredOutput` it is sent with,
+ * so a rerun replays a call's sends and a reply saved at one setting is never taken for another's. A stored reply is
+ * read as a fresh one, by the stage's `check`, and is the answer, or is refused, with one `stored-refused` event per
+ * provider and role, and the call is made again; a stored marker is the cut-off it records (a `truncated` failure that
+ * enters the adaptation and the recovery as a fresh one does) or a saturated reply, for a research call alone. A call a
+ * store answered sends one `call` event with `reused` true, no usage and `spent` 0, reserves nothing and tells the
+ * health nothing: a stored reply is no answer of the provider, and a down provider's calls are refused before their
+ * request is built, so before any lookup. What is saved is each fresh reply that passed its `check`, each fresh
+ * saturated reply and each send of a research call that was cut off, as a marker, under the key of the send that made it;
+ * never a failed call. A store that throws, rejects, answers what is no `StoredCall` or never answers (once the review
+ * is stopped) is a miss, and a save that fails is a save that did not happen.
  */
 export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest, options: CallOptions = {}): Promise<Answered> {
   return ctx.limit(async () => {
@@ -472,6 +496,12 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
         }
     let sentWith = ctx.adapt.sent(target)
     let request = withSettings(sentWith)
+    /** The store's key of the send in hand, which is the one a reply or a cut-off is saved under. */
+    let key: string | undefined
+    /** Whether the store answered a send of this call. */
+    let reused = false
+    /** The cut-offs a stored marker gave: no answer of the provider, which the health is told nothing of. */
+    const marked = new Set<unknown>()
     const started = ctx.clock.now()
     const took = (): number => Math.round(ctx.clock.now() - started)
     let attempts = 0
@@ -481,7 +511,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     let replied: Usage | undefined
     /** Ends the call with `error`: its failed event when an attempt was made, then `onFailure`; the error to throw. */
     const end = (error: unknown): unknown => {
-      if (attempts > 0) {
+      if (attempts > 0 || reused) {
         ctx.emit({
           type: 'call',
           ...requester,
@@ -493,7 +523,9 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       }
       // A refusal by the down rule is no failure of the provider: it counts nowhere and says nothing of a reply.
       if (!(error instanceof ProviderDownError)) {
-        const found = ctx.health.failed(target.provider, target.ref.id, error)
+        const found = marked.has(error)
+          ? undefined
+          : ctx.health.failed(target.provider, target.ref.id, error)
         if (found !== undefined) {
           ctx.emit({
             type: 'provider-down',
@@ -566,12 +598,26 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
         }
       }
     }
-    /** The result of a send: its reply, or its failure. */
-    const sendNow = async (asked: CompletionRequest): Promise<{ readonly reply: CompletionResponse } | { readonly failure: unknown }> => {
+    /**
+     * The result of a send: what the store answered with, else its reply, or its failure. A send's request is looked up
+     * under its own key before it is sent, and a send cut off is saved, as a marker, under the same key.
+     */
+    const sendNow = async (asked: CompletionRequest): Promise<{ readonly reply: CompletionResponse } | { readonly failure: unknown } | { readonly answered: Answered }> => {
       request = asked
+      key = storeKey(ctx, requester, built, asked)
+      if (key !== undefined) {
+        const found = await reuse(ctx, requester, target, key, options)
+        if (found !== undefined) {
+          reused = true
+          if ('failure' in found) marked.add(found.failure)
+          return found
+        }
+      }
       try {
         return { reply: await send(asked) }
       } catch (failure) {
+        // Without a key nothing is awaited, so a review with no store takes no turn it never took.
+        if (key !== undefined) await keepCutOff(ctx, requester, target, key, failure)
         return { failure }
       }
     }
@@ -611,10 +657,10 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       let first = false
       try {
         result = await sendNow(withSettings(sentWith))
-        if ('reply' in result) {
-          outcome = 'answered'
-        } else {
+        if ('failure' in result) {
           ({ outcome, first } = probeEnd(ctx, result.failure, plan))
+        } else {
+          outcome = 'answered'
         }
       } finally {
         const adaptation = ctx.adapt.settle(target, plan.setting, outcome)
@@ -624,8 +670,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       if ('failure' in result && first) result = { failure }
     }
     if ('failure' in result) throw end(result.failure)
-    const { reply } = result
-    if (requester.role === 'research') ctx.adapt.reasoned(target, reply)
+    if ('reply' in result && requester.role === 'research') ctx.adapt.reasoned(target, result.reply)
     ctx.emit({
       type: 'call',
       ...requester,
@@ -634,7 +679,10 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       ok: true,
       ...counted(attempts, addUsage(usage, replied), spent),
     })
-    return answeredBy(reply.text, options, attempts)
+    if ('answered' in result) return result.answered
+    const answered = answeredBy(result.reply.text, options, attempts)
+    if (key !== undefined) await keepAnswer(ctx, requester, target, key, answered, result.reply, replied)
+    return answered
   })
 }
 
@@ -651,17 +699,201 @@ export interface CallOptions {
 
 /** The reply's reading by the stage's `check`, which is an answer when the stage passes none; a throw from it is heard by `onFailure` and rethrown. */
 function answeredBy(text: string, { check, onFailure }: CallOptions, attempts: number): Answered {
-  if (check === undefined) return { text }
-  let verdict: 'answer' | 'saturated'
   try {
-    verdict = check(text)
+    return readAs(text, check)
   } catch (error) {
     onFailure?.(error, attempts)
     throw error
   }
-  return verdict === 'saturated'
+}
+
+/** What `text` is read as: an answer, or a saturated reply, as the stage's `check` says; an answer when it passes none. A throw is the check's. */
+function readAs(text: string, check: CallOptions['check']): Answered {
+  return check?.(text) === 'saturated'
     ? { saturated: true }
     : { text }
+}
+
+/** What the store gave a send: the answer it is, or the cut-off it records. */
+type Reused = { readonly answered: Answered } | { readonly failure: ProviderError }
+
+/** The words of the failure a stored cut-off marker stands for: code words alone. */
+const MARKER_WORDS = 'the stored reply was cut off'
+/** What a marker may say a reply lacked. */
+const MARKED_LACKS: ReadonlySet<unknown> = new Set([
+  'reply',
+  'thinking',
+  'window',
+  'saturated',
+])
+
+/**
+ * The key a send is kept under, or undefined when there is no store or the request is no builder's: the SHA-256 of the
+ * call's role, the request's digest, and what it is sent with, the reply budget, the thinking level and the mode, each
+ * null when the request carries none. The digest comes from `built`, the request a builder made: a send with a setting is
+ * a copy of it.
+ */
+function storeKey(ctx: RunContext, requester: Requester, built: CompletionRequest, asked: CompletionRequest): string | undefined {
+  const digest = ctx.store === undefined
+    ? undefined
+    : requestDigest(built)
+  return digest === undefined
+    ? undefined
+    : createHash('sha256').update(JSON.stringify([
+        requester.role,
+        digest,
+        asked.replyTokens ?? null,
+        asked.thinking ?? null,
+        asked.structuredOutput ?? null,
+      ])).digest('hex')
+}
+
+/** `work`, or undefined once `stop` has fired: a store that never answers holds no review past its abort or its deadline. */
+function unlessStopped<T>(work: Promise<T>, stop: AbortSignal): Promise<T | undefined> {
+  if (stop.aborted) return Promise.resolve(undefined)
+  return new Promise<T | undefined>((resolve, reject) => {
+    const onAbort = (): void => resolve(undefined)
+    stop.addEventListener('abort', onAbort, { once: true })
+    work.then((value) => {
+      stop.removeEventListener('abort', onAbort)
+      resolve(value)
+    }, (error: unknown) => {
+      stop.removeEventListener('abort', onAbort)
+      reject(error)
+    })
+  })
+}
+
+/**
+ * The call the store holds under `key`, read as own data, or undefined for a miss: nothing there, a `get` that throws or
+ * rejects, a stop that came first, and anything that is no `StoredCall` (a reply of no text or model, a marker of a word
+ * no marker holds, a usage that fails its check, both a reply and a marker, or neither).
+ */
+async function stored(ctx: RunContext, target: Target, key: string): Promise<StoredCall | undefined> {
+  if (ctx.store === undefined) return undefined
+  try {
+    return storedCallOf(await unlessStopped(Promise.resolve(ctx.store.get({ key, provider: target.ref.id })), ctx.stop))
+  } catch {
+    return undefined
+  }
+}
+
+/** `value` as a `StoredCall`, every field read as own data and checked, or undefined. */
+function storedCallOf(value: unknown): StoredCall | undefined {
+  const reply = ownData(value, 'reply')
+  const lacked = ownData(value, 'lacked')
+  if ((reply === undefined) === (lacked === undefined)) return undefined
+  const held = reply ?? lacked
+  const stated = ownData(held, 'usage')
+  const usage = stated === undefined
+    ? undefined
+    : ownUsage(stated)
+  if (stated !== undefined && usage === undefined) return undefined
+  const counted = usage === undefined
+    ? {}
+    : { usage }
+  if (lacked !== undefined) {
+    const noAnswer = ownData(lacked, 'noAnswer')
+    return MARKED_LACKS.has(noAnswer)
+      ? {
+          lacked: { noAnswer: noAnswer as 'reply' | 'thinking' | 'window' | 'saturated', ...counted },
+        }
+      : undefined
+  }
+  const text = ownData(reply, 'text')
+  const model = ownData(reply, 'model')
+  return typeof text === 'string' && typeof model === 'string'
+    ? {
+        reply: { text, model, ...counted },
+      }
+    : undefined
+}
+
+/**
+ * What the store holds for one send, or undefined for a miss, which sends it: a stored reply that the stage's `check` reads
+ * as it reads a fresh one is the answer, and one that fails it, whatever the failure, is refused (one `stored-refused` event
+ * per provider and role) and the call is made; a marker is the failure it records, or a saturated reply, for a research
+ * call alone, and a miss for any other.
+ */
+async function reuse(ctx: RunContext, requester: Requester, target: Target, key: string, options: CallOptions): Promise<Reused | undefined> {
+  const call = await stored(ctx, target, key)
+  if (call === undefined) return undefined
+  if ('lacked' in call) {
+    if (requester.role !== 'research') return undefined
+    const { noAnswer, usage } = call.lacked
+    return noAnswer === 'saturated'
+      ? {
+          answered: { saturated: true },
+        }
+      : {
+          failure: new ProviderError({
+            providerId: target.ref.id,
+            kind: 'truncated',
+            noAnswer,
+            message: MARKER_WORDS,
+            ...usage === undefined
+              ? {}
+              : { usage },
+          }),
+        }
+  }
+  try {
+    return {
+      answered: readAs(call.reply.text, options.check),
+    }
+  } catch {
+    const said = `${target.ref.id}|${requester.role}`
+    if (!ctx.storedRefused.has(said)) {
+      ctx.storedRefused.add(said)
+      ctx.emit({ type: 'stored-refused', provider: target.ref.id, role: requester.role })
+    }
+    return undefined
+  }
+}
+
+/** Saves `call` under `key`: a write that throws, rejects or is stopped never happened, and never fails the review. */
+async function keep(ctx: RunContext, target: Target, key: string, call: StoredCall): Promise<void> {
+  if (ctx.store === undefined) return
+  try {
+    await unlessStopped(Promise.resolve(ctx.store.put({ key, provider: target.ref.id }, call)), ctx.stop)
+  } catch {
+    // A write that failed leaves the review as it was: its verdict owes nothing to the store.
+  }
+}
+
+/** Saves a research send that was cut off as a marker, under the key of the send: what it lacked and the usage it reported, never a text. */
+async function keepCutOff(ctx: RunContext, requester: Requester, target: Target, key: string, failure: unknown): Promise<void> {
+  const lack = lackOf(failure)
+  if (requester.role !== 'research' || lack?.kind !== 'truncated') return
+  const usage = failureUsage(failure)
+  await keep(ctx, target, key, {
+    lacked: {
+      noAnswer: lack.noAnswer as 'reply' | 'thinking' | 'window',
+      ...usage === undefined
+        ? {}
+        : { usage },
+    },
+  })
+}
+
+/** Saves a fresh reply that passed its check, under the key of the send that made it, or a saturated one as a marker: never a reply that failed its check. */
+async function keepAnswer(ctx: RunContext, requester: Requester, target: Target, key: string, answered: Answered, reply: CompletionResponse, usage: Usage | undefined): Promise<void> {
+  const counted = usage === undefined
+    ? {}
+    : { usage }
+  if ('saturated' in answered) {
+    if (requester.role === 'research') {
+      await keep(ctx, target, key, {
+        lacked: { noAnswer: 'saturated', ...counted },
+      })
+    }
+    return
+  }
+  if (typeof reply.model === 'string') {
+    await keep(ctx, target, key, {
+      reply: { text: answered.text, model: reply.model, ...counted },
+    })
+  }
 }
 
 /**
@@ -702,11 +934,15 @@ function tookTheRequest(failure: unknown): boolean {
   return (read !== undefined && TOOK_THE_REQUEST.has(read.kind)) || isTimeout(failureFacts(failure))
 }
 
-/** The fields of a `call` event that hold what the call's attempts add up to: their number when above one, their summed usage when valid, and the tokens the cap counted. */
-function counted(attempts: number, usage: Usage | undefined, spent: number): { attempts?: number, usage?: Usage, spent: number } {
+/** The fields of a `call` event that hold what the call's attempts add up to: their number when above one, their summed usage when valid, the tokens the cap counted, and `reused` for a call that made no attempt. */
+function counted(attempts: number, usage: Usage | undefined, spent: number): { attempts?: number, usage?: Usage, spent: number, reused?: true } {
   return {
     ...(attempts > 1
       ? { attempts }
+      : {}),
+    // A call with no attempt was answered by the store.
+    ...(attempts === 0
+      ? { reused: true as const }
       : {}),
     ...(usage === undefined
       ? {}

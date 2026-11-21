@@ -402,6 +402,30 @@ const CASES: Array<[string, string, string, string[]]> = [
     'export const probe = process.env\n',
     ['no-restricted-globals'],
   ],
+  [
+    'the state layer imports the config layer\'s file helpers and node:crypto',
+    'src/state/probe.ts',
+    'import { createHash } from \'node:crypto\'\nimport { readBounded } from \'../config/load.ts\'\n\nexport const probe = [createHash, readBounded]\n',
+    [],
+  ],
+  [
+    'the state layer refuses node:child_process',
+    'src/state/probe.ts',
+    'import { spawn } from \'node:child_process\'\n\nexport const probe = spawn\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'the state layer refuses process',
+    'src/state/probe.ts',
+    'export const probe = process.env\n',
+    ['no-restricted-globals'],
+  ],
+  [
+    'the core refuses the state layer',
+    'src/core/probe.ts',
+    'import { openFileStore } from \'../state/store.ts\'\n\nexport const probe = openFileStore\n',
+    ['no-restricted-imports'],
+  ],
 ]
 
 describe('the layer boundaries of eslint.config.js', { timeout: 30_000 }, () => {
