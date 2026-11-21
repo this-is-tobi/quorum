@@ -4481,6 +4481,12 @@ describe('a vote\'s context', () => {
   })
 
   it('asks a voter\'s room for requests that carry the lens\'s reply budget, the whole section\'s and the partial one', async () => {
+    // A room of 1100 is the least a profile may state at startup, and 20 hunks of about 80 tokens do not fit it.
+    const ROOM = 1100
+    const longFile = [
+      HEADER,
+      ...Array.from({ length: 20 }, (_, index) => hunkAt(1 + (index * 10))),
+    ].join('\n')
     const asked: Array<[partial: boolean, replyTokens: number | undefined]> = []
     const voter: Fake = {
       ...stating((request) => {
@@ -4488,14 +4494,14 @@ describe('a vote\'s context', () => {
           request.system.includes(PARTIAL),
           request.replyTokens,
         ])
-        return 300 - tokenBound(diffBlock(request))
+        return ROOM - tokenBound(diffBlock(request))
       }),
       // A window of 16384 gives a vote 4096 tokens, a quarter of it.
       window: 16_384,
     }
     await createQuorum({
       profiles: [securityProfile],
-    }, portsFor(securityProfile, finder(), voter)).review({ diff: oneFile })
+    }, portsFor(securityProfile, finder(), voter)).review({ diff: longFile })
     expect(asked.some(([partial]) => partial)).toBe(true)
     expect(asked.some(([partial]) => !partial)).toBe(true)
     expect(new Set(asked.map(([, replyTokens]) => replyTokens))).toEqual(new Set([4096]))
@@ -4604,14 +4610,8 @@ describe('reply budgets', () => {
     expect(voter.requests.map(request => request.replyTokens)).toEqual([4096, 4096, 4096])
 
     // A large change: every part is sent the same budget and N, whatever its position.
-    const sections = [
-      'a.js',
-      'b.js',
-      'c.js',
-      'd.js',
-      'e.js',
-      'f.js',
-    ].map(file => [
+    // Twenty files of about 70 tokens do not fit the room of 1100 tokens, which is the least a profile may state at startup.
+    const sections = Array.from({ length: 20 }, (_, index) => `${String.fromCodePoint(97 + index)}.js`).map(file => [
       `diff --git a/${file} b/${file}`,
       `--- a/${file}`,
       `+++ b/${file}`,
@@ -4623,7 +4623,7 @@ describe('reply budgets', () => {
     const small = {
       ...fake('small', () => findings()),
       window: 8192,
-      room: (request: CompletionRequest) => base + 500 - requestTokens(request),
+      room: (request: CompletionRequest) => base + 1100 - requestTokens(request),
     }
     await createQuorum({
       profiles: [securityProfile],
@@ -6182,5 +6182,104 @@ describe('a reply store', () => {
         { path: 'store', message: 'must be a reply store: an object with get and put functions' },
       ]))
     }
+  })
+})
+
+describe('room accounting', () => {
+  /** A provider that states its window, and the room a size guard leaves for the diff with 512 tokens kept for the chat template. */
+  function guarded(id: string, window: number, extra: Partial<Provider> = {}): Fake {
+    const reply = (request: CompletionRequest): number => request.replyTokens ?? 16_000
+    return {
+      ...fake(id, () => vote(true)),
+      window,
+      room: request => window - requestTokens(request) - 512 - reply(request),
+      ...extra,
+    }
+  }
+
+  const thrown = (research: Provider, voter: Provider = research): ConfigError => {
+    try {
+      createQuorum({
+        profiles: [securityProfile],
+      }, portsFor(securityProfile, research, voter))
+    } catch (error) {
+      return error as ConfigError
+    }
+    throw new Error('the quorum was created')
+  }
+
+  /** The figures a refusal's message states, in order: the room, the window, the fixed text, the template and the reply. */
+  const figures = (message: string): number[] => [
+    ...message.matchAll(/(-?\d+) (?:tokens for the diff|for the instructions|for the chat template|for the reply)|contextTokens (\d+)/g),
+  ].map(found => Number(found[1] ?? found[2]))
+
+  it('refuses a profile whose fixed text leaves its research provider less than 1024 tokens of diff, naming the figures', () => {
+    const error = thrown(guarded('local', 8192, { thinking: 'default', maxTokens: 6000 }), guarded('big', 1_000_000))
+    expect(error).toBeInstanceOf(ConfigError)
+    expect(error.issues).toHaveLength(1)
+    const [issue] = error.issues
+    expect(issue.path).toBe('profiles.security')
+    // A reply budget of 6000 and the fixed text leave 8192 - 1618 - 512 - 6000 tokens.
+    expect(issue.message).toBe('the research request on local leaves 62 tokens for the diff, less than the 1024 a hunk may need: contextTokens 8192 counts 1618 for the instructions, guidelines and rules, 512 for the chat template and 6000 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window')
+    const [room, window, fixed, template, reply] = figures(issue.message)
+    expect(room + fixed + template + reply).toBe(window)
+    expect(error.message).not.toContain('http')
+  })
+
+  it('refuses one whose vote for the longest finding leaves less than 1024', () => {
+    const error = thrown(guarded('big', 1_000_000), guarded('small', 6000))
+    expect(error.issues.map(issue => issue.path)).toEqual(['profiles.security', 'profiles.security', 'profiles.security'])
+    for (const issue of error.issues) {
+      expect(issue.message).toMatch(/^the vote request on small for the longest finding leaves -?\d+ tokens for the diff, less than the 1024 a hunk may need: contextTokens 6000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and 1500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window$/)
+      const [room, window, fixed, template, reply] = figures(issue.message)
+      expect(room + fixed + template + reply).toBe(window)
+      expect(room).toBeLessThan(1024)
+    }
+  })
+
+  it('checks no provider that states no room', async () => {
+    const quiet = {
+      ...fake('quiet', () => vote(true)),
+      window: 2000,
+    }
+    const unsized = fake('unsized', () => vote(true))
+    expect(() => createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, quiet))).not.toThrow()
+    expect(() => createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, unsized))).not.toThrow()
+    // A provider that states a room and no window is not checked either: its size guard still refuses each request too large.
+    const roomOnly = {
+      ...unsized,
+      room: () => 10,
+    }
+    expect(() => createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, roomOnly))).not.toThrow()
+    // A room of at least 1024 passes.
+    expect(() => createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, guarded('fits', 8192)))).not.toThrow()
+  })
+
+  it('freezes Quorum.budgets', () => {
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, guarded('local', 32_768)))
+    const { security } = quorum.budgets
+    expect(Object.isFrozen(quorum.budgets)).toBe(true)
+    expect(Object.isFrozen(security)).toBe(true)
+    expect(Object.isFrozen(security.research)).toBe(true)
+    expect(Object.isFrozen(security.research.rooms)).toBe(true)
+    expect(Object.isFrozen(security.lenses)).toBe(true)
+    expect(Object.isFrozen(security.lenses.reachability)).toBe(true)
+    expect(security.research).toMatchObject({
+      provider: 'local',
+      window: 32_768,
+      replyTokens: 8192,
+      findings: 15,
+      rooms: { one: 22_446, part: 22_134 },
+    })
   })
 })

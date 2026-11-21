@@ -244,6 +244,11 @@ export async function runCli(io: CliIO): Promise<number> {
       selection,
       failOn,
     })
+    // The profiles are checked first, the room accounting among them: a profile refused for room is refused before any diff is read.
+    const built = await fromConfig(config, {
+      env: io.env,
+      events: progressSink(line => io.stderr.write(`${line}\n`), plan.view),
+    })
     const send = [
       ...config.send ?? [],
       ...values.send ?? [],
@@ -259,12 +264,10 @@ export async function runCli(io: CliIO): Promise<number> {
           send,
           git: io.git,
         })
-    quorum = await fromConfig(config, {
-      env: io.env,
-      events: progressSink(line => io.stderr.write(`${line}\n`), plan.view),
-    })
+    // Only now is the review built: an error from the source above still writes the environment's warnings, as before.
+    quorum = built
     if (read === undefined) {
-      io.stdout.write(printConfig(config, source))
+      io.stdout.write(printConfig(config, source, quorum.budgets))
       return EXIT.ok
     }
     const store = state === undefined

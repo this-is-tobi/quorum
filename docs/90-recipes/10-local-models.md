@@ -93,6 +93,16 @@ The `llamacpp` preset points at `http://127.0.0.1:9931/v1`, where `llama-server`
 - **A slow model needs `timeoutMs` raised.** The deadline is 600000 ms an attempt and a timeout is tried again once, so a model that needs more than ten minutes fails after about twenty, and the retry's tokens are spent again. Set `timeoutMs` on the provider, or `QUORUM_RESEARCH_TIMEOUT_MS` and `QUORUM_VOTER_TIMEOUT_MS`: [What a provider states](../20-using/30-providers.md#what-a-provider-states). The whole review ends at `reviewTimeoutMs`, 30 minutes by default, whatever `timeoutMs` says, so raise it too for a long run: [The review's deadline](../20-using/20-configuration.md#the-reviews-deadline).
 - **A server answers 503 while it loads a model**: llama.cpp until the model is ready, and Ollama when its queue is full. A call that fails in passing is tried again, twice by default, but the two retries wait seconds where a load takes minutes, so start a review once the server answers: [What is retried](../20-using/30-providers.md#what-is-retried).
 
+## A window too small
+
+A small window is refused when quorum starts, before any call, with exit `2`, once the fixed text of a request, the chat template and the reply's budget leave no room for 1,024 tokens of diff, the least a hunk may need. It reads as:
+
+```text
+Error: profiles.security: the research request on local leaves -630 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1618 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window
+```
+
+The figures add up to `contextTokens`, so the message says what to change: a model that really loads a larger window needs it stated ([Finding the number](../20-using/20-configuration.md#finding-the-number)); a `maxTokens` that is larger than the replies need takes room from the diff, so lower it; and a long guideline or rule takes room of its own. A voter's window is checked the same way, for the vote of the longest finding, which carries more fixed text than a research request: on the default budgets that is about 4,000 tokens, so a voter needs a window of about 8,192 tokens to leave 1,600. [Room accounting](../20-using/20-configuration.md#room-accounting) has the rule, and `--print-config` prints each provider's rooms once a window passes.
+
 ## Choosing a model
 
 - **One that follows a JSON Schema.** All three servers constrain a reply by constrained decoding: Ollama through `format`, vLLM and llama-server through `response_format`. The `ollama`, `vllm` and `llamacpp` presets ask for a JSON object, `structuredOutput: json`, with the schema in the system message, and `structuredOutput: schema` has the server enforce the schema itself: [Structured output](../20-using/30-providers.md#structured-output). A reply quorum cannot read is never read as clean. An unreadable finding is a `finding-unreadable` gap and an unusable vote is a failed vote, either of which can make a gating profile exit `4`, and a research reply that is no usable object at all is a `research-failed` gap of its part, which makes a gating profile exit `4`.

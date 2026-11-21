@@ -1,6 +1,6 @@
 import { createAdaptations } from './adapt.ts'
 import { VERSION } from './version.ts'
-import { DEFAULT_MAX_FINDINGS, profileBudgets } from './budgets.ts'
+import { DEFAULT_MAX_FINDINGS, profileBudgets, roomIssues } from './budgets.ts'
 import type { ProfileBudgets } from './budgets.ts'
 import { systemClock } from './clock.ts'
 import type { Clock } from './clock.ts'
@@ -126,14 +126,17 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
     maxReviewTokens: options.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS,
     partTokens: options.partTokens ?? DEFAULT_PART_TOKENS,
   }
+  const budgets: Readonly<Record<string, ProfileBudgets>> = Object.freeze(Object.fromEntries(runs.map(run => [
+    run.id,
+    profileBudgets(run, target => target.window, settings),
+  ])))
+  const room = runs.flatMap(run => roomIssues(run.id, budgets[run.id], run, settings.maxFindings))
+  if (room.length > 0) throw new ConfigError(room)
   const compiled: Compiled = {
     runs,
     concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
     ...settings,
-    budgets: Object.fromEntries(runs.map(run => [
-      run.id,
-      profileBudgets(run, target => target.window, settings),
-    ])),
+    budgets,
     reviewTimeoutMs: options.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
     clock,
     excluded: excludeMatcher(options.exclude ?? []),
@@ -144,6 +147,7 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
     review: (input: ReviewInput, options?: ReviewOptions) => review(compiled, input, options),
     estimate: (input: EstimateInput) => estimate(compiled, input),
     warnings,
+    budgets,
   })
 }
 

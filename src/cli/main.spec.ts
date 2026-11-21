@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
-import type { QuorumResult } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { fakeClaudeEnv, readFakeRecord, writeFakeClaude } from '../testing/claude.ts'
 import { fakeCredential } from '../testing/credentials.ts'
@@ -1153,24 +1152,52 @@ describe('the diff byte cap', () => {
   })
 })
 
-describe('the size guard', () => {
-  it('sends nothing and exits 4, even with --allow-incomplete, when the research request may not fit the model', async () => {
+describe('the room accounting', () => {
+  /** The refusal of the research request, for the one provider `local` of 2000 tokens: 2000 less 1618 of text, 512 of template and 500 of reply. */
+  const RESEARCH = 'profiles.security: the research request on local leaves -630 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1618 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window\n'
+
+  it('refuses before any call, exit 2, a profile whose research request leaves its model no room for a diff', async () => {
     const config = write('small.yaml', 'providers:\n  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 2000}\n')
     const fetchMock = stubChat()
     const { io, stdout, stderr } = harness({
       argv: ['--config', config, '--allow-incomplete'],
       stdin: DIFF,
     })
-    expect(await runCli(io)).toBe(EXIT.incomplete)
+    expect(await runCli(io)).toBe(EXIT.usage)
     expect(fetchMock).not.toHaveBeenCalled()
-    const refusal = 'local: may need 2707 tokens, more than contextTokens (2000): 1695 for its text at one token per byte, 512 for the chat template and 500 for the reply'
-    expect((JSON.parse(stdout()) as QuorumResult).meta.incomplete).toEqual([
-      { profile: 'security', reason: 'request-too-large', detail: `the research request was not sent: ${refusal}` },
-    ])
-    expect(stderr()).toContain(`incomplete: request-too-large (the research request was not sent: ${refusal})\n`)
+    expect(stdout()).toBe('')
+    // The one provider holds the votes too, whose fixed text leaves no room either: both are refused at once.
+    expect(stderr()).toContain(`Error: ${RESEARCH}`)
+    expect(stderr()).toMatch(/\nprofiles\.security: the vote request on local for the longest finding leaves -\d+ tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and 500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window\n/)
+    expect(stderr()).not.toContain('http')
   })
 
-  it('records the vote requests that may not fit the voter as a request-too-large gap, and exits 4 even with --allow-incomplete', async () => {
+  it('refuses a profile before it reads the source, a range or a path: no git runs', async () => {
+    const config = write('small-source.yaml', 'providers:\n  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 2000}\n')
+    for (const source of [
+      ['--range', 'main...feature'],
+      ['--path', 'src'],
+    ]) {
+      const fetchMock = stubChat()
+      const fake = fakeGit(() => ({ stdout: `${'a'.repeat(40)}\n` }))
+      const { io, stdout, stderr } = harness({
+        argv: [
+          '--config',
+          config,
+          ...source,
+        ],
+        git: { executable: '/usr/bin/git', spawn: fake.spawn },
+        platform: 'linux',
+      })
+      expect(await runCli(io)).toBe(EXIT.usage)
+      expect(stderr()).toContain(`Error: ${RESEARCH}`)
+      expect(stdout()).toBe('')
+      expect(fake.calls, source[0]).toEqual([])
+      expect(fetchMock).not.toHaveBeenCalled()
+    }
+  })
+
+  it('refuses before any call, exit 2, a voter whose request for the longest finding leaves no room for a diff', async () => {
     const yaml = [
       'providers:',
       '  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 1000000}',
@@ -1181,7 +1208,7 @@ describe('the size guard', () => {
     const fetchMock = stubChat(JSON.stringify({
       findings: [FINDING],
     }))
-    const { io, stdout } = harness({
+    const { io, stdout, stderr } = harness({
       argv: [
         '--config',
         write('small-voter.yaml', yaml),
@@ -1189,26 +1216,11 @@ describe('the size guard', () => {
       ],
       stdin: DIFF,
     })
-    expect(await runCli(io)).toBe(EXIT.incomplete)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    const result = JSON.parse(stdout()) as QuorumResult
-    expect(result.unreviewed.map(verdict => [
-      verdict.file,
-      verdict.votes.map(entry => entry.vote),
-    ])).toEqual([
-      [
-        'a.js',
-        [null, null, null],
-      ],
-    ])
-    expect(result.meta.incomplete).toEqual([
-      {
-        profile: 'security',
-        reason: 'request-too-large',
-        file: 'a.js',
-        detail: '"a.js":1: 3 of 3 vote requests were not sent: small: may need 2562 tokens, more than contextTokens (2000): 1550 for its text at one token per byte, 512 for the chat template and 500 for the reply',
-      },
-    ])
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(stdout()).toBe('')
+    expect(stderr()).toMatch(/^Error: profiles\.security: the vote request on small for the longest finding leaves -\d+ tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and 500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window\n/)
+    expect(stderr()).not.toContain('the research request')
   })
 })
 
@@ -1834,6 +1846,36 @@ describe('--print-config', () => {
       '    prompts:',
       `      research: ${sha256(securityProfile.prompts.research)}`,
       `      vote: ${sha256(securityProfile.prompts.vote)}`,
+      'budgets:',
+      '  security:',
+      '    research:',
+      '      provider: local',
+      '      contextTokens: 131072',
+      '      replyTokens: 21024',
+      '      findings: 50',
+      '      findingsWithoutThinking: 50',
+      '      rooms:',
+      '        one: 107918',
+      '        part: 107606',
+      '      worstPart:',
+      '        tokens: 56234',
+      '        holds: 35',
+      '    lenses:',
+      '      reachability:',
+      '        provider: gateway',
+      '        contextTokens: 131072',
+      '        replyTokens: 9216',
+      '        room: 117322',
+      '      impact:',
+      '        provider: gateway',
+      '        contextTokens: 131072',
+      '        replyTokens: 9216',
+      '        room: 117370',
+      '      defenses:',
+      '        provider: gateway',
+      '        contextTokens: 131072',
+      '        replyTokens: 9216',
+      '        room: 117374',
       'concurrency: 2',
       'maxFindings: 50',
       'partTokens: 32768',

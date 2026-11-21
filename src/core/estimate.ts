@@ -14,8 +14,8 @@ import type { LensRun, ProfileRun, Target } from './stages/context.ts'
 import { planResearch } from './stages/research.ts'
 import type { ResearchPlan } from './stages/research.ts'
 import { DEFAULT_REPLY_TOKENS, tokenBound } from './tokens.ts'
-import type { Estimate, Finding, ProfileEstimate } from './types.ts'
-import { MAX_CATEGORY, MAX_EVIDENCE, MAX_SUMMARY } from './verify.ts'
+import type { Estimate, ProfileEstimate } from './types.ts'
+import { longestFinding } from './verify.ts'
 
 /**
  * How many times the bound of a research request over-counts the tokens of code. The bound is one token per
@@ -275,21 +275,6 @@ function researchCalls(run: ProfileRun, plan: ResearchPlan, diff: string, ask: A
       },
     ]
   })
-}
-
-/** A finding as the harness leaves it at its longest: every text the finder or the diff writes at its cap, in the one character that costs a token a character. */
-function longestFinding(file: string): Finding {
-  return {
-    id: '',
-    fingerprint: '',
-    profile: '',
-    file,
-    line: Number.MAX_SAFE_INTEGER,
-    category: 'x'.repeat(MAX_CATEGORY),
-    summary: 'x'.repeat(MAX_SUMMARY),
-    evidence: 'x'.repeat(MAX_EVIDENCE),
-    quoteMatched: true,
-  }
 }
 
 /**

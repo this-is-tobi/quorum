@@ -4,6 +4,7 @@ import { own } from '../config/profiles.ts'
 import type { ResolvedProfile } from '../config/profiles.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider, statedFacts } from '../config/schema.ts'
+import type { ProfileBudgets } from '../core/budgets.ts'
 import { DEFAULT_CONCURRENCY } from '../core/concurrency.ts'
 import type { Provider } from '../core/ports.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../core/limits.ts'
@@ -112,6 +113,57 @@ function profileView({ profile, research, voters }: ResolvedProfile): Record<str
   }
 }
 
+/** The research parts whose worst case the token cap must hold at least, before the config is warned of. */
+const WARNED_BELOW_PARTS = 20
+
+/** A profile's budgets as printed: the provider's context size by the name the config uses, and every figure a reader needs to size a window. Absent figures print nothing. */
+function budgetsView(budgets: ProfileBudgets): Record<string, unknown> {
+  const { research } = budgets
+  return {
+    research: {
+      provider: research.provider,
+      contextTokens: research.window,
+      replyTokens: research.replyTokens,
+      findings: research.findings,
+      findingsWithoutThinking: research.findingsWithoutThinking,
+      rooms: research.rooms,
+      worstPart: research.worstPart,
+    },
+    lenses: Object.fromEntries(Object.entries(budgets.lenses).map(([id, lens]) => [
+      id,
+      {
+        provider: lens.provider,
+        contextTokens: lens.window,
+        replyTokens: lens.replyTokens,
+        room: lens.room,
+      },
+    ])),
+  }
+}
+
+/** What the config says of a provider's `maxTokens`, as the text a warning adds after the tokens of a part: empty when it sets none. */
+function maxTokensNote(config: ResolvedConfig, provider: string): string {
+  const spec = own(config.providers, provider)
+  const maxTokens = spec === undefined
+    ? undefined
+    : isProvider(spec)
+      ? statedFacts(spec).stated.maxTokens
+      : own(spec, 'maxTokens')
+  return typeof maxTokens === 'number'
+    ? `, maxTokens ${maxTokens}`
+    : ''
+}
+
+/** The warnings the budgets add: a token cap that holds the worst case of fewer than 20 research parts of a profile's provider, with what to lower. */
+function budgetWarnings(config: ResolvedConfig, budgets: Readonly<Record<string, ProfileBudgets>>): string[] {
+  const cap = config.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS
+  return Object.values(budgets).flatMap(({ research }) => research.worstPart === undefined || research.worstPart.holds >= WARNED_BELOW_PARTS
+    ? []
+    : [
+        `the token cap of ${cap} holds the worst case of ${research.worstPart.holds} research parts of ${research.provider} (${research.worstPart.tokens} tokens each${maxTokensNote(config, research.provider)}): lower maxTokens, or raise maxReviewTokens`,
+      ])
+}
+
 /**
  * The resolved config as the YAML `--print-config` writes, for a CI log that anyone can read: the file it
  * came from (`null` for none), the providers, the profiles that run, the limits the review applies
@@ -123,10 +175,15 @@ function profileView({ profile, research, voters }: ResolvedProfile): Record<str
  * the command and the args are the user's own config. The view is an allowlist, so a field added to the
  * config prints nothing until it is added here on purpose.
  *
+ * With `budgets`, a quorum's (`Quorum.budgets`), each profile's follow `profiles` under `budgets`: each request kind's reply
+ * budget, the findings a research request asks for, the tokens of diff each provider's stated room leaves, and the worst
+ * case of a research part with how many the token cap holds; a cap that holds fewer than 20 of them adds a warning.
+ * A provider that states no room prints none of it.
+ *
  * The text ends with a newline, and each line passes through `inertLine`. It is YAML 1.1, so a reader of
  * that version reads `off` as a string, and no line folds.
  */
-export function printConfig(config: ResolvedConfig, source: string | undefined): string {
+export function printConfig(config: ResolvedConfig, source: string | undefined, budgets?: Readonly<Record<string, ProfileBudgets>>): string {
   const view = {
     source: source ?? null,
     providers: Object.fromEntries(Object.entries(config.providers).map(([name, provider]) => [
@@ -139,6 +196,12 @@ export function printConfig(config: ResolvedConfig, source: string | undefined):
       resolved.profile.id,
       profileView(resolved),
     ])),
+    budgets: budgets === undefined
+      ? undefined
+      : Object.fromEntries(Object.entries(budgets).map(([id, profile]) => [
+          id,
+          budgetsView(profile),
+        ])),
     concurrency: config.concurrency ?? DEFAULT_CONCURRENCY,
     maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,
     partTokens: config.partTokens ?? DEFAULT_PART_TOKENS,
@@ -150,7 +213,12 @@ export function printConfig(config: ResolvedConfig, source: string | undefined):
     send: [
       ...config.send ?? [],
     ],
-    warnings: [...config.warnings],
+    warnings: [
+      ...config.warnings,
+      ...budgets === undefined
+        ? []
+        : budgetWarnings(config, budgets),
+    ],
   }
   return stringify(view, { version: '1.1', lineWidth: 0, blockQuote: false }).split('\n').map(line => inertLine(line)).join('\n')
 }

@@ -122,5 +122,6 @@ export async function fromConfig(config: ConfigInput | ResolvedConfig, options: 
       ...resolved.warnings,
       ...quorum.warnings,
     ]),
+    budgets: quorum.budgets,
   })
 }
