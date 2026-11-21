@@ -14,6 +14,7 @@ const ESC = String.fromCharCode(0x1B)
 function factsOf(changes: Partial<SummaryFacts> = {}): SummaryFacts {
   return {
     stdout: { format: 'json', terminal: false },
+    stderr: { terminal: false },
     outputs: [],
     result: reportResult({
       meta: {
@@ -84,6 +85,7 @@ describe('summaryLines', () => {
     expect(lines(state)[0]).toBe('time: research 30m12s, dedup 0.0s, panel 7m40s; the first estimate, 5m10s in, put research at 30-31m; done in 38m05s, 2412833 tokens in and 312094 out')
     expect(lines(state, factsOf({
       stdout: { format: 'text', terminal: true },
+      stderr: { terminal: true },
     }))[0]).toBe('time: research 30m12s, dedup 0.0s, panel 7m40s; the first estimate, 5m10s in, put research at 30-31m')
     // A stage that has not ended has no time, and a review that made no estimate has none to compare.
     expect(lines(replay(longReview(), 100_000)).some(line => line.startsWith('time:'))).toBe(false)
@@ -95,6 +97,7 @@ describe('summaryLines', () => {
       count: 0,
     }), factsOf({
       stdout: { format: 'text', terminal: true },
+      stderr: { terminal: true },
     }))[0]).toBe('time: research 0.0s')
   })
 
@@ -223,6 +226,7 @@ describe('summaryLines', () => {
     )
     expect(lines(state, factsOf({
       stdout: { format: 'text', terminal: true },
+      stderr: { terminal: true },
     }))[0]).toBe('time: research 16m40s, dedup 0.1s, panel 2m00s')
   })
 
@@ -373,8 +377,23 @@ describe('summaryLines', () => {
     const state = reviewed()
     const terminal = factsOf({
       stdout: { format: 'text', terminal: true },
+      stderr: { terminal: true },
     })
     expect(lines(state, terminal).at(-1)).toBe('result: the text report above')
+    // Stderr in a log, with stdout a terminal: nothing is above the summary, so the report is said to be on stdout.
+    expect(lines(state, {
+      ...terminal,
+      stderr: { terminal: false },
+    }).at(-1)).toBe('result: text on stdout')
+    expect(lines(state, {
+      ...terminal,
+      stderr: { terminal: false },
+    }, 'public').at(-1)).toBe('result: text on stdout (public view)')
+    expect(lines(state, {
+      ...terminal,
+      outputs: ['json'],
+      stderr: { terminal: false },
+    }).at(-1)).toBe('result: text on stdout; --output json written')
     expect(lines(state, factsOf({
       stdout: { format: 'json', terminal: true },
     })).at(-1)).toBe('result: json on stdout')
@@ -397,6 +416,30 @@ describe('summaryLines', () => {
     }).at(-1)).toBe('result: the text report above; --output json written')
   })
 
+  it('adds the totals to the time line when stderr is a log beside a terminal\'s text report', () => {
+    const state = reviewed({
+      type: 'stage:end',
+      profile: 'security',
+      stage: 'research',
+      durationMs: 4,
+      count: 0,
+    })
+    const text = { format: 'text' as const, terminal: true }
+    // `quorum --path src 2> run.log`: the report is on the terminal, and nothing is above the log's lines.
+    expect(lines(state, factsOf({
+      stdout: text,
+      stderr: { terminal: false },
+    }))[0]).toBe('time: research 0.0s; done in 38m05s, 2412833 tokens in and 312094 out')
+    expect(lines(state, factsOf({
+      stdout: text,
+      stderr: { terminal: false },
+    }), 'public')[0]).toBe('time: research 0.0s; done in 38m05s')
+    expect(lines(state, factsOf({
+      stdout: text,
+      stderr: { terminal: true },
+    }))[0]).toBe('time: research 0.0s')
+  })
+
   it('adds the totals to the time line only when stdout carries no text report', () => {
     const state = reviewed({
       type: 'stage:end',
@@ -412,6 +455,7 @@ describe('summaryLines', () => {
     }))[0]).toBe('time: research 0.0s; done in 38m05s, 2412833 tokens in and 312094 out')
     expect(lines(state, factsOf({
       stdout: { format: 'text', terminal: true },
+      stderr: { terminal: true },
     }))[0]).toBe('time: research 0.0s')
     const unused = factsOf({
       result: reportResult({

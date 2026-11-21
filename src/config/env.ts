@@ -112,13 +112,15 @@ const LIMIT_VARIABLES: ReadonlyArray<{ readonly field: 'maxReviewTokens' | 'revi
 ]
 
 /**
- * Every variable the environment layer reads: `QUORUM_CONFIG`, `QUORUM_PROFILES`, `QUORUM_CLAUDE_CODE_COMMAND`, the
- * review's two limits, the `QUORUM_` form of each role's variables and the deprecated aliases of those that have one.
+ * Every variable the environment layer reads: `QUORUM_CONFIG`, `QUORUM_PROFILES`, `QUORUM_PROGRESS` (which the CLI
+ * reads itself), `QUORUM_CLAUDE_CODE_COMMAND`, the review's two limits, the `QUORUM_` form of each role's variables and the deprecated aliases of those that have one.
  * The one list: a variable added to `VARIABLES` or `LIMIT_VARIABLES` joins it.
  */
 export const READ_VARIABLES: ReadonlySet<string> = new Set([
   'QUORUM_CONFIG',
   'QUORUM_PROFILES',
+  // Read by the CLI alone (`progressMode`), which takes the environment itself.
+  'QUORUM_PROGRESS',
   CLAUDE_CODE_COMMAND,
   ...LIMIT_VARIABLES.map(({ name }) => name),
   ...ROLES.flatMap(role => VARIABLES.map(({ suffix }) => canonicalName(role, suffix))),

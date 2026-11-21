@@ -187,7 +187,8 @@ Options:
       --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile
   -f, --format <format>    Write the report on stdout in this format: text, json, brief, markdown, payload or sarif; text on a terminal, else json
   -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several
-      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never
+      --color <when>       Color the text report and the live view: auto, on a terminal unless NO_COLOR is set; always; or never
+      --progress <mode>    Show progress on stderr: auto, live on a terminal and plain lines elsewhere; live; plain; json; or none
       --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage
       --state <dir>        Save every answered call in this directory, and reuse the calls it holds
       --print-config       Print the resolved config, keys redacted, and exit

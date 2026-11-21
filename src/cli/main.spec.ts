@@ -13,8 +13,10 @@ import * as fixtures from '../testing/fixtures/claude-code.ts'
 import * as diffs from '../testing/fixtures/git.ts'
 import { harness } from '../testing/cli.ts'
 import { fakeGit } from '../testing/git.ts'
+import { fakeTerminal } from '../testing/terminal.ts'
 import type { GitCall, GitReply } from '../testing/git.ts'
 import { chatReply, jsonReply, sent, stubChat, stubFetch, stubOllamaChat, textReply } from '../testing/http.ts'
+import { CSI, CURSOR_SHOW } from './view/terminal.ts'
 import { EXIT, interruptSignal, runCli } from './main.ts'
 import type { CliIO } from './main.ts'
 
@@ -113,7 +115,8 @@ const USAGE = [
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
   '  -f, --format <format>    Write the report on stdout in this format: text, json, brief, markdown, payload or sarif; text on a terminal, else json',
   '  -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several',
-  '      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never',
+  '      --color <when>       Color the text report and the live view: auto, on a terminal unless NO_COLOR is set; always; or never',
+  '      --progress <mode>    Show progress on stderr: auto, live on a terminal and plain lines elsewhere; live; plain; json; or none',
   '      --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage',
   '      --state <dir>        Save every answered call in this directory, and reuse the calls it holds',
   '      --print-config       Print the resolved config, keys redacted, and exit',
@@ -2191,6 +2194,314 @@ describe('interrupts', () => {
   })
 })
 
+/** A fetch whose first call waits until the test releases it with `first`, and whose others answer at once, one reply each. */
+function heldChat(first: Response, ...rest: string[]): { fetchMock: ReturnType<typeof vi.fn>, release: () => void } {
+  let release = (): void => {}
+  const queue = [...rest]
+  const fetchMock = vi.fn().mockImplementation(() => {
+    if (fetchMock.mock.calls.length > 1) return Promise.resolve(chatReply(queue.shift() ?? '{"findings":[]}'))
+    return new Promise<Response>((resolve) => {
+      release = () => resolve(first)
+    })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return {
+    fetchMock,
+    release: () => release(),
+  }
+}
+
+/** What the live block draws, whatever its width: its rule, its calls, tokens and time lines, and a profile's bar. */
+const BLOCK_ROW = /^─+ \d|^-+ \d|^calls {5}|^tokens {4}|^time {6}|^security {2}research /
+
+describe('progress modes', () => {
+  const LIVE = { ...MODEL, LANG: 'en_US.UTF-8' }
+
+  it('draws the live view on a terminal, and erases it before the report on stdout', async () => {
+    const { release } = heldChat(chatReply('{"findings":[]}'))
+    const clock = fakeClock()
+    const terminal = fakeTerminal({ columns: 80, rows: 24 })
+    const { io, stdout, stderr } = harness({
+      env: LIVE,
+      stdin: DIFF,
+      terminal,
+      stdoutIsTTY: true,
+      clock,
+    })
+    const exit = runCli(io)
+    await vi.waitFor(() => expect(clock.pending()).toBeGreaterThan(0))
+    await vi.waitFor(() => expect(terminal.written()).toContain('Panel will use'))
+    // The first frame, 500 ms in: the block is on the screen under the banner, and the cursor is hidden.
+    expect(clock.fireNext()).toBe(true)
+    expect(clock.now()).toBe(500)
+    expect(terminal.screen().filter(row => BLOCK_ROW.test(row)).length).toBeGreaterThanOrEqual(4)
+    expect(terminal.cursorVisible()).toBe(false)
+    release()
+    expect(await exit).toBe(EXIT.ok)
+
+    // Nothing of the block is left: the log lines, then the report, then the summary, and the cursor shows.
+    const rows = terminal.screen().filter(row => row !== '')
+    expect(rows.filter(row => BLOCK_ROW.test(row))).toEqual([])
+    const report = rows.indexOf(stdout().split('\n')[0])
+    const last = rows.indexOf('0 kept, 0 discarded, 0 unreviewed by panel')
+    expect(rows[0]).toBe('Research (m @ http://localhost:11434)...')
+    expect(last).toBeGreaterThan(0)
+    expect(report).toBeGreaterThan(last)
+    expect(rows.findIndex(row => row.startsWith('time: '))).toBeGreaterThan(report)
+    // The report is above the summary only because stdout and stderr are one terminal.
+    expect(stderr().split('\n').filter(row => row !== '').at(-1)).toBe('result: the text report above')
+    expect(terminal.cursorVisible()).toBe(true)
+    expect(terminal.history()).toEqual([])
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('writes the report on stdout only once the erase of the block has been written', async () => {
+    const { release } = heldChat(chatReply('{"findings":[]}'))
+    const clock = fakeClock()
+    const terminal = fakeTerminal({ columns: 80, rows: 24 })
+    // The write of the erase, the only one that asks to be told, is not done until the test says so.
+    const done: Array<() => void> = []
+    const { io, stdout } = harness({
+      env: LIVE,
+      stdin: DIFF,
+      terminal,
+      stdoutIsTTY: true,
+      clock,
+      drain: held => done.push(held),
+    })
+    const exit = runCli(io)
+    await vi.waitFor(() => expect(terminal.written()).toContain('Panel will use'))
+    expect(clock.fireNext()).toBe(true)
+    expect(terminal.cursorVisible()).toBe(false)
+    release()
+    await vi.waitFor(() => expect(done).toHaveLength(1))
+    // The erase is on the terminal and not yet drained: nothing is on stdout, and the review has not ended.
+    expect(terminal.cursorVisible()).toBe(true)
+    expect(stdout()).toBe('')
+    let ended = false
+    void exit.then(() => {
+      ended = true
+    })
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(stdout()).toBe('')
+    expect(ended).toBe(false)
+    done[0]()
+    expect(await exit).toBe(EXIT.ok)
+    expect(stdout()).not.toBe('')
+  })
+
+  it('erases the block and shows the cursor before the Error line of a failed review', async () => {
+    const { release } = heldChat(textReply('bad request', 400))
+    const clock = fakeClock()
+    const terminal = fakeTerminal({ columns: 80, rows: 24 })
+    const hooks = new Set<() => void>()
+    const { io, stdout } = harness({
+      env: LIVE,
+      stdin: DIFF,
+      terminal,
+      stdoutIsTTY: true,
+      clock,
+      exitHooks: hooks,
+    })
+    const exit = runCli(io)
+    await vi.waitFor(() => expect(terminal.written()).toContain('Panel will use'))
+    expect(clock.fireNext()).toBe(true)
+    expect(terminal.cursorVisible()).toBe(false)
+    // The run adds its restorer to the exit hooks while it lasts.
+    expect(hooks.size).toBe(1)
+    release()
+    expect(await exit).toBe(EXIT.runtime)
+    expect(hooks.size).toBe(0)
+    expect(stdout()).toBe('')
+    const rows = terminal.screen().filter(row => row !== '')
+    expect(rows.filter(row => BLOCK_ROW.test(row))).toEqual([])
+    expect(rows.findIndex(row => row.startsWith('Error: '))).toBeGreaterThan(1)
+    expect(terminal.cursorVisible()).toBe(true)
+    const written = terminal.written()
+    expect(written.indexOf(CURSOR_SHOW)).toBeGreaterThan(-1)
+    expect(written.indexOf(CURSOR_SHOW)).toBeLessThan(written.indexOf('Error: '))
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('writes the events as JSON lines with --progress json, and its own lines as cli:line', async () => {
+    stubChat('{"findings":[]}')
+    const { io, stderr } = harness({
+      argv: ['--progress', 'json'],
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const lines = stderr().split('\n').filter(line => line !== '').map(line => JSON.parse(line) as { type: string, level?: string, text?: string })
+    expect(lines[0]).toMatchObject({ type: 'cli:line', level: 'banner', text: 'Research (m @ http://localhost:11434)...' })
+    const types = lines.map(line => line.type)
+    for (const type of [
+      'run:start',
+      'call:start',
+      'part',
+      'run:end',
+    ]) expect(types, type).toContain(type)
+    // The summary is the text modes': a tool has the events.
+    expect(lines.filter(line => line.type === 'cli:line').map(line => line.text).some(text => /^(?:time|tokens|calls|result): /.test(text ?? ''))).toBe(false)
+    expect(types.at(-1)).toBe('run:end')
+  })
+
+  it('writes only the warning and Error lines with --progress none', async () => {
+    const warned = harness({
+      argv: ['--progress', 'none'],
+      env: { RESEARCH_MODEL: 'm', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
+      stdin: '  \n',
+    })
+    expect(await runCli(warned.io)).toBe(EXIT.ok)
+    expect(warned.stderr()).toBe('warning: RESEARCH_MODEL is deprecated: set QUORUM_RESEARCH_MODEL instead\n')
+
+    stubChat('{"findings":[]}')
+    const clean = harness({
+      argv: ['--progress', 'none'],
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(clean.io)).toBe(EXIT.ok)
+    expect(clean.stderr()).toBe('')
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(textReply('bad request', 400)))
+    const failed = harness({
+      argv: ['--progress', 'none'],
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(failed.io)).toBe(EXIT.runtime)
+    expect(failed.stderr()).toMatch(/^Error: /)
+    expect(failed.stderr()).not.toMatch(/Research|Panel|part \d|kept|calls:/)
+  })
+
+  it('refuses an unknown mode, live off a terminal and json with --view public, before any config, with the usage', async () => {
+    const fetchMock = stubChat()
+    const refused: Array<[string[], Record<string, string>, string]> = [
+      [
+        ['--progress', 'fancy'],
+        {},
+        '--progress: must be auto, live, plain, json or none',
+      ],
+      [
+        [],
+        { QUORUM_PROGRESS: 'fancy' },
+        'QUORUM_PROGRESS: must be auto, live, plain, json or none',
+      ],
+      [
+        ['--progress', 'live'],
+        {},
+        '--progress: live needs stderr to be a terminal: use plain',
+      ],
+      [
+        [],
+        { QUORUM_PROGRESS: 'live' },
+        'QUORUM_PROGRESS: live needs stderr to be a terminal: use plain',
+      ],
+      [
+        [
+          '--progress',
+          'json',
+          '--view',
+          'public',
+        ],
+        {},
+        '--progress: json writes the library\'s events, which hold usage and server text: it cannot be given with --view public',
+      ],
+      [
+        [
+          '--progress',
+          'plain',
+          '--progress',
+          'json',
+        ],
+        {},
+        '--progress: takes one mode',
+      ],
+    ]
+    for (const [argv, env, message] of refused) {
+      // No model is configured, so a config read first would refuse with another message.
+      const { io, stdout, stderr } = harness({ argv, env, stdin: DIFF })
+      expect(await runCli(io), message).toBe(EXIT.usage)
+      expect(stdout()).toBe('')
+      expect(stderr()).toBe(`Error: ${message}\n${USAGE}`)
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('reads QUORUM_PROGRESS, which the flag wins over, and warns of no unread variable', async () => {
+    const viaVariable = harness({
+      env: { ...MODEL, QUORUM_PROGRESS: 'json' },
+      stdin: '  \n',
+    })
+    expect(await runCli(viaVariable.io)).toBe(EXIT.ok)
+    const lines = viaVariable.stderr().split('\n').filter(line => line !== '')
+    expect(lines.map(line => JSON.parse(line) as { text?: string }).some(line => line.text?.includes('is not a variable quorum reads'))).toBe(false)
+    expect(JSON.parse(lines[0])).toMatchObject({ type: 'cli:line', level: 'banner' })
+
+    const flagged = harness({
+      argv: ['--progress', 'plain'],
+      env: { ...MODEL, QUORUM_PROGRESS: 'json' },
+      stdin: '  \n',
+    })
+    expect(await runCli(flagged.io)).toBe(EXIT.ok)
+    expect(flagged.stderr()).toBe('Research (m @ http://localhost:11434)...\nPanel will use m @ http://localhost:11434\nempty diff: nothing to review\n0 kept, 0 discarded, 0 unreviewed by panel\n')
+
+    // A blank variable is unset, and one that is not a mode is refused with the usage.
+    const blank = harness({
+      env: { ...MODEL, QUORUM_PROGRESS: ' ' },
+      stdin: '  \n',
+    })
+    expect(await runCli(blank.io)).toBe(EXIT.ok)
+    expect(blank.stderr()).toMatch(/^Research \(m/)
+  })
+
+  it('colours the live view unless NO_COLOR or --color never, and never colours plain lines with --color always', async () => {
+    const colours = async (argv: string[], env: Record<string, string> = {}): Promise<string> => {
+      stubChat('{"findings":[]}')
+      const terminal = fakeTerminal({ columns: 80, rows: 24 })
+      const { io } = harness({
+        argv,
+        env: {
+          ...LIVE,
+          ...env,
+        },
+        stdin: DIFF,
+        terminal,
+      })
+      expect(await runCli(io)).toBe(EXIT.ok)
+      return terminal.written()
+    }
+    // The part line's glyph is green, and the colour is the live view's own, set with the glyph.
+    expect(await colours([])).toContain(`${CSI}32m✓${CSI}0m part 1 of 1`)
+    expect(await colours(['--color', 'always'], { NO_COLOR: '1' })).toContain(`${CSI}32m✓${CSI}0m`)
+    for (const [argv, env] of [
+      [
+        ['--color', 'never'],
+        {},
+      ],
+      [
+        [],
+        { NO_COLOR: '1' },
+      ],
+    ] as const) {
+      const written = await colours([...argv], { ...env })
+      expect(written).toContain('✓ part 1 of 1')
+      expect(written).not.toMatch(/\[\d+m/)
+    }
+
+    // Plain lines are never coloured: stderr is no terminal, whatever --color says.
+    stubChat('{"findings":[]}')
+    const plain = harness({
+      argv: ['--color', 'always'],
+      env: LIVE,
+      stdin: DIFF,
+    })
+    expect(await runCli(plain.io)).toBe(EXIT.ok)
+    expect(plain.stderr()).toContain('part 1 of 1')
+    expect(plain.stderr()).not.toContain(String.fromCharCode(0x1B))
+  })
+})
+
 describe('interruptSignal', () => {
   it('aborts on the first SIGINT or SIGTERM, and exits 130 on the next', () => {
     for (const [first, second] of [
@@ -3019,7 +3330,7 @@ describe('the sources', () => {
       '       quorum mcp [options]',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
-    expect(options).toHaveLength(21)
+    expect(options).toHaveLength(22)
     for (const line of options) {
       expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line.slice(25, 27), line).toBe('  ')

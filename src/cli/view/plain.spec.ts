@@ -239,6 +239,7 @@ describe('plainWriter', () => {
     const before = lines.length
     const facts = {
       stdout: { format: 'text' as const, terminal: true },
+      stderr: { terminal: true },
       outputs: ['json' as const],
       result: reportResult({
         meta: { durationMs: 2_285_000 },

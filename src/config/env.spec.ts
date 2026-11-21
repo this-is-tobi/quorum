@@ -380,6 +380,9 @@ describe('the variables quorum does not read', () => {
 
   it('warns about none of the variables it reads', () => {
     expect(QUORUM_VARIABLES).toContain('QUORUM_RESEARCH_API_KEY')
+    // The CLI reads QUORUM_PROGRESS itself, so the environment layer must not call it a typo.
+    expect(QUORUM_VARIABLES).toContain('QUORUM_PROGRESS')
+    expect(readEnv({ QUORUM_PROGRESS: 'plain' }).warnings).toEqual([])
     expect(readEnv(Object.fromEntries(QUORUM_VARIABLES.map(name => [name, 'x']))).warnings).toEqual([])
   })
 
