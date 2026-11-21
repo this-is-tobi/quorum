@@ -827,7 +827,12 @@ describe('readResult', () => {
   })
 
   it('reads a reply the token limit cut off as truncated, in both modes, before it reads the text', () => {
-    const cut = { kind: 'truncated', retryable: false, message: 'cc: reply was cut off by the token limit' }
+    const cut = {
+      kind: 'truncated',
+      noAnswer: 'reply',
+      retryable: false,
+      message: 'cc: reply was cut off at its limit',
+    }
     expect(failure(() => read(change(fixtures.schema, { stop_reason: 'max_tokens' })))).toMatchObject(cut)
     expect(failure(() => read(change(fixtures.plain, { stop_reason: 'max_tokens' }), { structuredOutput: 'prompt' }))).toMatchObject(cut)
     // Before the text: a cut reply with no structured output is not read as a reply that has none.
@@ -855,7 +860,8 @@ describe('readResult', () => {
     })
     expect(failure(() => read(stdout, { code: 1 }))).toMatchObject({
       kind: 'truncated',
-      message: 'cc: reply was cut off by the token limit',
+      noAnswer: 'reply',
+      message: 'cc: reply was cut off at its limit',
       usage: { inputTokens: 10, outputTokens: 16_000 },
     })
   })
@@ -922,8 +928,19 @@ describe('readResult', () => {
     }
   })
 
-  it('fails a prompt run with no text, and a schema run whose output is no object', () => {
-    expect(failure(() => read(change(fixtures.plain, { result: undefined }), { structuredOutput: 'prompt' }))).toMatchObject({ kind: 'invalid-response', message: 'cc: reply has no text' })
+  it('reads a success with a blank or missing result in prompt mode as no-answer empty, with its usage', () => {
+    for (const result of [undefined, '', ' \n\t', null, 7]) {
+      expect(failure(() => read(change(fixtures.plain, { result }), { structuredOutput: 'prompt' })), JSON.stringify(result)).toMatchObject({
+        kind: 'no-answer',
+        noAnswer: 'empty',
+        retryable: false,
+        message: 'cc: reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt',
+        usage: { inputTokens: 955, outputTokens: 4 },
+      })
+    }
+  })
+
+  it('fails a schema run whose output is no object', () => {
     for (const structured_output of [null, [], '{"keep":true}']) {
       expect(failure(() => read(change(fixtures.schema, { structured_output })))).toMatchObject({ kind: 'invalid-response', message: 'cc: reply has no structured output' })
     }

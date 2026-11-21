@@ -110,6 +110,15 @@ export QUORUM_VOTER_CONTEXT_TOKENS=32768
 
 A thinking model writes its reasoning before the answer, and the reasoning counts against the reply's token limit, so against the context, on all three servers. Every adapter sends `maxTokens`, 16000 when unset, as the server's limit ([The reply's limit](../20-using/30-providers.md#the-replys-limit)), so the server stops a reply there: a model that reasons long is cut before its answer. A server that shifts its context as the reply is written (llama.cpp's `--context-shift`, Ollama's `/v1`) drops the start of the prompt and keeps writing. A reply cut off before its answer is a failed call, not a shorter review ([Raising the limit knowingly](../20-using/20-configuration.md#raising-the-limit-knowingly)). So for a thinking model either turn thinking off, or raise `maxTokens` and `contextTokens` together. Quorum reads the answer, `message.content`, and never the reasoning field.
 
+**When the answer lands in the reasoning field**, as it does on a server that parses reasoning but leaves `content` empty, or one that mishandles JSON mode, the reply has no answer quorum can read, and it says so, once per provider, naming the cause and the fix and quoting nothing of the reply:
+
+- `<provider>: reply has no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt`. The reply held reasoning (`message.reasoning`, `message.reasoning_content`, `message.thinking`, a `thinking` part, or a reasoning token count) and no text. Turn thinking off with the table below, or send the schema in the prompt with `structuredOutput: prompt`.
+- `<provider>: reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt`. The reply ended on its own with nothing in it, as some gateways answer a JSON mode they do not support. `structuredOutput: prompt` asks for the JSON in the prompt instead.
+- `<provider>: a reply was cut off at <o> tokens, below the <l> quorum asked for: the server caps replies near <o>: set maxTokens: <o>`. The server caps a reply lower than `maxTokens`, so a reasoning model is cut before its answer: set `maxTokens` to the number it names, and turn thinking off so the answer fits in it.
+- `<provider>: a reply ended at the server's window ...: set contextTokens to at most <n>`. The server loaded a smaller window than `contextTokens` says.
+
+A reply with no answer is a failed call, never a clean review: a research part is a `research-failed` gap, a vote a failed vote. Three of them in a row from one provider find it down (`<provider>: 3 calls in a row had no answer, only reasoning: ...`), and it is called no more in the review: [What a reply lacked](../20-using/30-providers.md#what-a-reply-lacked).
+
 `extraBody` and `maxTokens` need a config file. To turn thinking off:
 
 | Server | Turn thinking off | Where the reasoning goes |

@@ -1,5 +1,5 @@
-import { ProviderError } from '../core/errors.ts'
-import type { ProviderErrorKind } from '../core/errors.ts'
+import { lackWords, ProviderError } from '../core/errors.ts'
+import type { NoAnswer, ProviderErrorKind, ReplyLack } from '../core/errors.ts'
 import type { Usage } from '../core/types.ts'
 import { snippet } from './http.ts'
 import { isRecord } from './options.ts'
@@ -67,4 +67,78 @@ export function joinedText(parts: unknown, keep: (part: Record<string, unknown>)
   return texts.length === 0
     ? undefined
     : texts.join('')
+}
+
+/**
+ * A `ProviderError` of a reply that lacked its answer: `truncated` or `no-answer`, worded by `lackWords` from
+ * the facts alone, carrying `noAnswer` and the counts the reply reported. Nothing the reply held is quoted.
+ */
+export function lackFailure(providerId: string, kind: 'truncated' | 'no-answer', lack: ReplyLack, usage?: Usage): ProviderError {
+  return new ProviderError({
+    providerId,
+    kind,
+    message: lackWords(kind, lack),
+    noAnswer: lack.noAnswer,
+    usage,
+  })
+}
+
+/** What an adapter read of a reply whose own earlier checks passed: the facts `readAnswer` tells what it lacked from. */
+export interface ReplyReading {
+  /** The reply's visible answer, when the reply has a text field at all: reasoning is never passed as the answer. */
+  readonly text: string | undefined
+  /** Whether the protocol says the reply was cut off by the limit: its finish or stop reason. */
+  readonly flaggedCutOff: boolean
+  /** Whether the protocol says the server's window ended the reply. */
+  readonly windowEnded: boolean
+  /** Whether the reply showed reasoning: a reasoning field or part with text, or a reasoning token count above 0. */
+  readonly reasoned: boolean
+  /** The reply limit the request was sent with, in tokens. */
+  readonly limit: number
+  /** The model's context window, `contextTokens`: the number a window end's message names. */
+  readonly window?: number
+  /** Whether a cut-off whose output stays under the limit while its input and output reach `window` is a window end: `openai-compatible` and `ollama`, whose servers clamp the limit to what the window leaves. */
+  readonly windowByCount?: boolean
+  readonly usage?: Usage
+}
+
+/**
+ * The answer of a reply, or the `ProviderError` of what it lacked, by one rule for every HTTP adapter. A reply
+ * is cut off when its protocol says so or its reported output tokens reach the limit sent, whatever its flag.
+ * A cut-off is `window` when the protocol says the window ended it, or when its output stays under the limit
+ * while its input and output reach `window` (only for an adapter that sets `windowByCount`); else, with no visible answer and reasoning shown, `thinking`; else
+ * `reply`. A reply not cut off with no visible answer is `no-answer`: `thinking` when it showed reasoning,
+ * else `empty`. A visible answer is text that is not blank once trimmed. Reasoning text is never read as the
+ * answer, and no text of the reply is quoted.
+ *
+ * @throws ProviderError of kind `truncated` (`reply`, `thinking` or `window`) or `no-answer` (`thinking` or `empty`)
+ */
+export function readAnswer(providerId: string, reading: ReplyReading): { readonly text: string, readonly reasoning: boolean } {
+  const { text, flaggedCutOff, windowEnded, reasoned, limit, window, windowByCount, usage } = reading
+  const answer = text !== undefined && text.trim() !== ''
+    ? text
+    : undefined
+  const output = usage?.outputTokens
+  const atLimit = output !== undefined && output >= limit
+  const cutOff = flaggedCutOff || atLimit
+  const fail = (kind: 'truncated' | 'no-answer', noAnswer: NoAnswer): ProviderError => lackFailure(providerId, kind, {
+    noAnswer,
+    limit,
+    outputTokens: usage?.outputTokens,
+    inputTokens: usage?.inputTokens,
+    window,
+  }, usage)
+  const reachedWindow = windowByCount === true && cutOff && !atLimit && usage !== undefined && window !== undefined && usage.inputTokens + usage.outputTokens >= window
+  if (windowEnded || reachedWindow) throw fail('truncated', 'window')
+  if (cutOff) {
+    throw fail('truncated', answer === undefined && reasoned
+      ? 'thinking'
+      : 'reply')
+  }
+  if (answer === undefined) {
+    throw fail('no-answer', reasoned
+      ? 'thinking'
+      : 'empty')
+  }
+  return { text: answer, reasoning: reasoned }
 }

@@ -21,12 +21,14 @@ export interface CompletionRequest {
 /**
  * What a provider returns: the reply text, the model that produced it and, when reported, its usage.
  * `model` is server text: nothing shows or stores it today, and whatever does must render it through
- * the sanitizer.
+ * the sanitizer. `reasoning` is `true` when the reply showed reasoning, `false` when the adapter could tell it
+ * showed none, and absent when it cannot tell, as for a provider with no way to read it.
  */
 export interface CompletionResponse {
   text: string
   model: string
   usage?: Usage
+  reasoning?: boolean
 }
 
 /** The deadline of an attempt when its provider states none: ten minutes. */

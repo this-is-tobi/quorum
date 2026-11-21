@@ -30,9 +30,13 @@ export interface ContractSubject {
   defaultKeyHeader: (key: string) => readonly [name: string, value: string]
   /**
    * Recorded replies, as the protocol sends them: a success whose text is `{}`, with the model and usage it
-   * names, a truncation, which reports the success's counts, and, when the protocol has one, a refusal.
+   * names and whether it shows reasoning (`reasoned`), a truncation, which reports the success's counts, and,
+   * when the protocol has one, a refusal. Three more a reply can lack its answer by: `empty`, a finished reply
+   * with no text and no reasoning, `reasoningOnly`, a finished reply with reasoning and no text, and
+   * `countedOut`, a finished reply whose stop flag is clean and whose output tokens equal the 16000-token limit
+   * sent by default.
    */
-  replies: { ok: unknown, model: string, usage: Usage, refusal?: unknown, truncated: unknown }
+  replies: { ok: unknown, model: string, usage: Usage, reasoned: boolean, refusal?: unknown, truncated: unknown, empty: unknown, reasoningOnly: unknown, countedOut: unknown }
   /** Where a sent body holds the system text, the first user message, the temperature and the token limit. */
   read: {
     system: (body: Body) => unknown
@@ -67,6 +71,11 @@ const request: CompletionRequest = {
     schema: { type: 'object' },
   },
 }
+/**
+ * A reply limit above the output tokens of every recorded reply, for the tests that fit a request to its window
+ * exactly: a recorded reply whose output tokens reach the limit sent reads as cut off, whatever its flag.
+ */
+const TIGHT_REPLY = 600
 const base = {
   id: 'p',
   baseUrl: 'https://h.example/v1',
@@ -195,27 +204,27 @@ export function describeProviderContract(subject: ContractSubject): void {
     it('refuses a request that may not fit contextTokens, before sending it', async () => {
       const fetchMock = vi.fn()
       vi.stubGlobal('fetch', fetchMock)
-      await expect(subject.make({ ...base, contextTokens: 644, maxTokens: 100 }).complete(request)).rejects.toMatchObject({
+      await expect(subject.make({ ...base, contextTokens: 1144, maxTokens: TIGHT_REPLY }).complete(request)).rejects.toMatchObject({
         kind: 'too-large',
         retryable: false,
-        message: 'p: may need 645 tokens, more than contextTokens (644): 33 for its text at one token per byte, 512 for the chat template and 100 for the reply',
+        message: `p: may need 1145 tokens, more than contextTokens (1144): 33 for its text at one token per byte, 512 for the chat template and ${TIGHT_REPLY} for the reply`,
       })
       expect(fetchMock).not.toHaveBeenCalled()
-      await send({ contextTokens: 645, maxTokens: 100 })
+      await send({ contextTokens: 1145, maxTokens: TIGHT_REPLY })
     })
 
     it('counts the text it sends, the system text placed inline included', async () => {
       vi.stubGlobal('fetch', vi.fn())
       await expect(subject.make({
         ...base,
-        contextTokens: 646,
-        maxTokens: 100,
+        contextTokens: 1146,
+        maxTokens: TIGHT_REPLY,
         systemPrompt: 'inline',
       }).complete(request)).rejects.toMatchObject({
         kind: 'too-large',
-        message: 'p: may need 647 tokens, more than contextTokens (646): 35 for its text at one token per byte, 512 for the chat template and 100 for the reply',
+        message: `p: may need 1147 tokens, more than contextTokens (1146): 35 for its text at one token per byte, 512 for the chat template and ${TIGHT_REPLY} for the reply`,
       })
-      await send({ contextTokens: 647, maxTokens: 100, systemPrompt: 'inline' })
+      await send({ contextTokens: 1147, maxTokens: TIGHT_REPLY, systemPrompt: 'inline' })
     })
 
     it('keeps 16000 tokens for the reply when maxTokens is unset', async () => {
@@ -421,7 +430,12 @@ export function describeProviderContract(subject: ContractSubject): void {
 
     it('returns the text, the model and the usage of a recorded reply', async () => {
       vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(subject.replies.ok)))
-      await expect(subject.make(base).complete(request)).resolves.toEqual({ text: '{}', model: subject.replies.model, usage: subject.replies.usage })
+      await expect(subject.make(base).complete(request)).resolves.toEqual({
+        text: '{}',
+        model: subject.replies.model,
+        usage: subject.replies.usage,
+        reasoning: subject.replies.reasoned,
+      })
     })
 
     it('maps a recorded refusal, when the protocol has one, to a refusal and a recorded truncation to truncated, neither retryable', async () => {
@@ -443,6 +457,57 @@ export function describeProviderContract(subject: ContractSubject): void {
           ...extra,
         })
       }
+    })
+
+    it('reads a finished reply with no text and no reasoning as no-answer empty, with its usage', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(subject.replies.empty)))
+      await expect(subject.make(base).complete(request)).rejects.toMatchObject({
+        name: 'ProviderError',
+        kind: 'no-answer',
+        noAnswer: 'empty',
+        retryable: false,
+        usage: {
+          inputTokens: expect.any(Number),
+          outputTokens: expect.any(Number),
+        },
+        message: 'p: reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt',
+      })
+    })
+
+    it('reads a finished reply with reasoning and no answer as no-answer thinking, quoting none of it', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(subject.replies.reasoningOnly)))
+      const error = await subject.make(base).complete(request).catch((caught: unknown) => caught)
+      expect(error).toMatchObject({
+        name: 'ProviderError',
+        kind: 'no-answer',
+        noAnswer: 'thinking',
+        retryable: false,
+        usage: {
+          inputTokens: expect.any(Number),
+          outputTokens: expect.any(Number),
+        },
+        message: 'p: reply has no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt',
+      })
+      expect(JSON.stringify(error)).not.toContain('bound parameter')
+    })
+
+    it('reads a reply whose output tokens reach the limit sent as cut off, whatever its flag', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(subject.replies.countedOut)))
+      await expect(subject.make(base).complete(request)).rejects.toMatchObject({
+        name: 'ProviderError',
+        kind: 'truncated',
+        noAnswer: 'reply',
+        retryable: false,
+        usage: { outputTokens: 16_000 },
+        message: 'p: reply was cut off at its limit of 16000 tokens',
+      })
+      // One token under the limit sent is a reply that finished.
+      await expect(subject.make({ ...base, maxTokens: 16_001 }).complete(request)).resolves.toMatchObject({ text: '{}' })
+    })
+
+    it('reports whether a reply showed reasoning', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(subject.replies.ok)))
+      await expect(subject.make(base).complete(request)).resolves.toMatchObject({ reasoning: subject.replies.reasoned })
     })
 
     it('reports a 5xx or 429 as retryable, another status as not, and a body that is not a JSON object as invalid-response', async () => {
@@ -489,23 +554,23 @@ export function describeProviderContract(subject: ContractSubject): void {
       expect(typeof Object.getOwnPropertyDescriptor(provider, 'worstCase')?.value).toBe('function')
       expect(provider.worstCase?.(request)).toBe(16_545)
       expect(subject.make({ ...base, systemPrompt: 'inline' }).worstCase?.(request)).toBe(16_547)
-      expect(subject.make({ ...base, maxTokens: 100 }).worstCase?.(request)).toBe(645)
+      expect(subject.make({ ...base, maxTokens: TIGHT_REPLY }).worstCase?.(request)).toBe(1145)
     })
 
     it('states the room its guard leaves as an own data property: a request fits at 0, is refused at -1, and loses the exact count of text added to its diff', async () => {
       expect(typeof Object.getOwnPropertyDescriptor(subject.make(base), 'room')?.value).toBe('function')
-      expect(subject.make({ ...base, contextTokens: 645, maxTokens: 100 }).room?.(request)).toBe(0)
-      await send({ contextTokens: 645, maxTokens: 100 })
+      expect(subject.make({ ...base, contextTokens: 1145, maxTokens: TIGHT_REPLY }).room?.(request)).toBe(0)
+      await send({ contextTokens: 1145, maxTokens: TIGHT_REPLY })
       const fetchMock = vi.fn()
       vi.stubGlobal('fetch', fetchMock)
-      const refused = subject.make({ ...base, contextTokens: 644, maxTokens: 100 })
+      const refused = subject.make({ ...base, contextTokens: 1144, maxTokens: TIGHT_REPLY })
       expect(refused.room?.(request)).toBe(-1)
       await expect(refused.complete(request)).rejects.toMatchObject({ kind: 'too-large' })
       expect(fetchMock).not.toHaveBeenCalled()
       expect(subject.make({
         ...base,
-        contextTokens: 647,
-        maxTokens: 100,
+        contextTokens: 1147,
+        maxTokens: TIGHT_REPLY,
         systemPrompt: 'inline',
       }).room?.(request)).toBe(0)
 

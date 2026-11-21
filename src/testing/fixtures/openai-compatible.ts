@@ -52,6 +52,43 @@ export const truncated = {
   ],
 }
 
+/** A finished reply with no text and no reasoning: `content` null, `finish_reason: 'stop'`. A gateway that mishandles JSON mode sends this. */
+export const empty = {
+  ...chatCompletion,
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: null, refusal: null },
+      logprobs: null,
+      finish_reason: 'stop',
+    },
+  ],
+}
+
+/** A finished reply whose answer sits in `reasoning_content` (llama.cpp, DeepSeek) with `content` null, as a reasoning model behind some gateways answers. */
+export const reasoningOnly = {
+  ...chatCompletion,
+  choices: [
+    {
+      index: 0,
+      message: {
+        role: 'assistant',
+        content: null,
+        reasoning_content: 'The id reaches the query as a bound parameter.',
+        refusal: null,
+      },
+      logprobs: null,
+      finish_reason: 'stop',
+    },
+  ],
+}
+
+/** A reply that says `stop` while its `completion_tokens` equal the 16000-token limit quorum sends by default: a server that fails to flag a cut-off. */
+export const countedOut = {
+  ...chatCompletion,
+  usage: { prompt_tokens: 19, completion_tokens: 16_000, total_tokens: 16_019 },
+}
+
 /** OpenRouter's answer, with status 200, to a failure during generation: a top-level `error` beside an empty choice. */
 export const openRouterGenerationError = {
   id: 'gen-1762651234-abc',

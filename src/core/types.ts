@@ -5,7 +5,7 @@
  * @see ../../docs/95-reference/30-library-api.md for usage.
  */
 
-import type { ProviderErrorKind } from './errors.ts'
+import type { NoAnswer, ProviderErrorKind } from './errors.ts'
 import type { PolicyRules } from './policy.ts'
 
 /**
@@ -64,7 +64,7 @@ export interface Lens {
  * The kinds a gating profile's `--allow-incomplete` lifts are `network`, `timeout` and an `http` failure of
  * status 408, 409, 429 or 5xx.
  */
-export type VoteFailureKind = 'http' | 'network' | 'process' | 'timeout' | 'aborted' | 'refusal' | 'truncated' | 'invalid-response' | 'unsupported' | 'too-large' | 'token-cap' | 'review-deadline' | 'provider-down' | 'unusable-reply' | 'unknown'
+export type VoteFailureKind = 'http' | 'network' | 'process' | 'timeout' | 'aborted' | 'refusal' | 'truncated' | 'no-answer' | 'invalid-response' | 'unsupported' | 'too-large' | 'token-cap' | 'review-deadline' | 'provider-down' | 'unusable-reply' | 'unknown'
 
 /** The facts of a failed vote the code read, never a word a server or a model wrote. */
 export interface VoteFailure {
@@ -560,7 +560,15 @@ export type QuorumEvent
      * `http` failure its `status`), so no call goes to it for the rest of the review. Sent once per provider, at the
      * moment the third call ends; the calls in flight run to their end.
      */
-    | { type: 'provider-down', provider: string, kind: ProviderErrorKind, status?: number, calls: number }
+    | { type: 'provider-down', provider: string, kind: ProviderErrorKind, status?: number, calls: number, noAnswer?: NoAnswer }
+    /**
+     * A reply lacked what a review needs, said once per provider and line in a review: `truncated` with
+     * `noAnswer` `window` (the server's window ended it) or `reply` or `thinking` with `outputTokens` below the
+     * `limit` the request was sent with (the server caps replies lower), and `no-answer` with `thinking` (only
+     * reasoning) or `empty` (nothing). A cut-off at its limit sends none. Every field is a code fact the call path
+     * read, never a word a provider's error or a reply held.
+     */
+    | { type: 'reply-lacked', provider: string, kind: 'truncated' | 'no-answer', noAnswer: NoAnswer, limit?: number, outputTokens?: number, inputTokens?: number, window?: number }
     /** A finding was dropped for citing code outside the diff, with the reason. */
     | { type: 'finding:invalid', profile: string, reason: string }
     /** A gap was recorded, as `meta.incomplete` will hold it. */

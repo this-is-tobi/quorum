@@ -4,7 +4,7 @@ import type { ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
 import { sent, stubFetch } from '../testing/http.ts'
 import { ollama } from './ollama.ts'
-import { chatResponse, contextExceeded, debugRender, truncated } from '../testing/fixtures/ollama.ts'
+import { chatResponse, contextExceeded, countedOut, debugRender, empty, reasoningOnly, truncated } from '../testing/fixtures/ollama.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
 
 const request: CompletionRequest = {
@@ -35,7 +35,11 @@ describeProviderContract({
     ok: chatResponse,
     model: 'qwen3.6:27b',
     usage: { inputTokens: 1840, outputTokens: 412 },
+    reasoned: true,
     truncated,
+    empty,
+    reasoningOnly,
+    countedOut,
   },
   read: {
     system: body => conversation(body).find(message => message.role === 'system')?.content,
@@ -226,23 +230,29 @@ describe('ollama', () => {
       text: '{}',
       model: 'qwen3.6:27b',
       usage: { inputTokens: 1840, outputTokens: 412 },
+      reasoning: true,
     })
     stubFetch({
       ...chatResponse,
       message: { role: 'assistant', content: '<think>a plan</think>{}' },
     })
-    await expect(provider.complete(request)).resolves.toMatchObject({ text: '<think>a plan</think>{}' })
+    await expect(provider.complete(request)).resolves.toMatchObject({ text: '<think>a plan</think>{}', reasoning: false })
   })
 
   it('falls back to the configured model, and reports no usage, when the reply names neither', async () => {
     stubFetch({ ...chatResponse, model: '', eval_count: undefined })
-    await expect(provider.complete(request)).resolves.toEqual({ text: '{}', model: 'qwen3.6:27b', usage: undefined })
+    await expect(provider.complete(request)).resolves.toEqual({
+      text: '{}',
+      model: 'qwen3.6:27b',
+      usage: undefined,
+      reasoning: true,
+    })
   })
 
   const { done_reason: _doneReason, ...noDoneReason } = chatResponse
 
   it.each<[ProviderErrorKind, unknown, string]>([
-    ['truncated', truncated, 'local: reply was cut off by the token limit or the context'],
+    ['truncated', truncated, 'local: a reply was cut off at 412 tokens, below the 16000 quorum asked for: the server caps replies near 412: set maxTokens: 412'],
     [
       'invalid-response',
       { error: 'model "qwen9" not found, try pulling it first' },
@@ -271,22 +281,22 @@ describe('ollama', () => {
     ],
     ['invalid-response', debugRender, 'local: reply has not finished'],
     [
-      'invalid-response',
+      'no-answer',
       {
         ...chatResponse,
         message: { role: 'assistant', content: null },
       },
-      'local: reply has no text',
+      'local: reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt',
     ],
     [
-      'invalid-response',
+      'no-answer',
       { ...chatResponse, message: 'text' },
-      'local: reply has no text',
+      'local: reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt',
     ],
     [
-      'invalid-response',
+      'no-answer',
       { ...chatResponse, message: undefined },
-      'local: reply has no text',
+      'local: reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt',
     ],
     ['invalid-response', [], 'local: reply is not a JSON object'],
     ['invalid-response', null, 'local: reply is not a JSON object'],
@@ -298,6 +308,34 @@ describe('ollama', () => {
       retryable: false,
       providerId: 'local',
       message: expected,
+    })
+  })
+
+  it('reads message.thinking alone as no-answer thinking, never as the answer, quoting none of it', async () => {
+    stubFetch({
+      ...chatResponse,
+      message: { role: 'assistant', content: '', thinking: '{"findings":[]}' },
+    })
+    const failed = await provider.complete(request).catch((error: unknown) => error)
+    expect(failed).toMatchObject({
+      name: 'ProviderError',
+      kind: 'no-answer',
+      noAnswer: 'thinking',
+      usage: { inputTokens: 1840, outputTokens: 412 },
+      message: 'local: reply has no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt',
+    })
+    expect(JSON.stringify(failed)).not.toContain('findings')
+    expect((failed as Error).message).not.toContain('findings')
+  })
+
+  it('reads a length under num_predict, with input and output at num_ctx, as the window ending the reply', async () => {
+    const small = ollama({ ...options, contextTokens: 8192, maxTokens: 4000 })
+    stubFetch({ ...truncated, prompt_eval_count: 6000, eval_count: 2192 })
+    await expect(small.complete(request)).rejects.toMatchObject({
+      kind: 'truncated',
+      noAnswer: 'window',
+      usage: { inputTokens: 6000, outputTokens: 2192 },
+      message: 'local: a reply ended at the server\'s window, which is smaller than contextTokens: lower contextTokens',
     })
   })
 

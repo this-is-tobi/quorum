@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { endedEarly, joinedText, replyFailure, tokenUsage } from './reply.ts'
+import { ProviderError } from '../core/errors.ts'
+import { endedEarly, joinedText, readAnswer, replyFailure, tokenUsage } from './reply.ts'
+import type { ReplyReading } from './reply.ts'
 
 describe('replyFailure', () => {
   it('builds a ProviderError of the provider, retryable as its kind and status say', () => {
@@ -95,5 +97,114 @@ describe('joinedText', () => {
     ]) {
       expect(joinedText(parts, isText), JSON.stringify(parts)).toBeUndefined()
     }
+  })
+})
+
+describe('readAnswer', () => {
+  const usage = { inputTokens: 100, outputTokens: 50 }
+  const finished: ReplyReading = {
+    text: '{"findings":[]}',
+    flaggedCutOff: false,
+    windowEnded: false,
+    reasoned: false,
+    limit: 1000,
+    usage,
+  }
+
+  /** What `readAnswer` throws for `reading`, which a test expects to throw. */
+  function lackOf(reading: ReplyReading): ProviderError {
+    try {
+      readAnswer('p', reading)
+    } catch (error) {
+      expect(error).toBeInstanceOf(ProviderError)
+      return error as ProviderError
+    }
+    throw new Error('the reading was read as an answer')
+  }
+
+  it.each<[string, Partial<ReplyReading>, string, string, string?]>([
+    [
+      'cut off by its flag, with visible text',
+      { flaggedCutOff: true, text: '{"kee' },
+      'truncated',
+      'reply',
+    ],
+    [
+      'cut off by its flag, with reasoning and no text',
+      { flaggedCutOff: true, text: undefined, reasoned: true },
+      'truncated',
+      'thinking',
+    ],
+    [
+      'cut off by its flag, with no text and no reasoning',
+      { flaggedCutOff: true, text: '' },
+      'truncated',
+      'reply',
+    ],
+    [
+      'whose output tokens reach the limit sent, whatever its flag',
+      {
+        usage: { inputTokens: 100, outputTokens: 1000 },
+      },
+      'truncated',
+      'reply',
+    ],
+    [
+      'that the protocol says the window ended',
+      { windowEnded: true, text: '{"kee' },
+      'truncated',
+      'window',
+      'a reply ended at the server\'s window, which is smaller than contextTokens: lower contextTokens',
+    ],
+    [
+      'with no answer, only reasoning, that ended on its own',
+      { text: undefined, reasoned: true },
+      'no-answer',
+      'thinking',
+    ],
+    [
+      'with a blank text and no reasoning',
+      { text: ' \n\t' },
+      'no-answer',
+      'empty',
+    ],
+  ])('reads a reply %s', (_label, reading, kind, noAnswer, words) => {
+    const error = lackOf({
+      ...finished,
+      ...reading,
+    })
+    expect(error).toMatchObject({
+      kind,
+      noAnswer,
+      retryable: false,
+      providerId: 'p',
+      usage: reading.usage ?? usage,
+    })
+    if (words !== undefined) expect(error.message).toBe(`p: ${words}`)
+  })
+
+  it.each<[string, Partial<ReplyReading>, boolean]>([
+    [
+      'with text and reasoning',
+      { reasoned: true },
+      true,
+    ],
+    ['with text and none', {}, false],
+  ])('reads a reply %s', (_label, reading, reasoning) => {
+    expect(readAnswer('p', {
+      ...finished,
+      ...reading,
+    })).toEqual({ text: '{"findings":[]}', reasoning })
+  })
+
+  it('reads a cut-off below the limit sent as reply, with the server-cap words', () => {
+    const error = lackOf({
+      ...finished,
+      flaggedCutOff: true,
+      limit: 21_024,
+      usage: { inputTokens: 30_100, outputTokens: 8192 },
+    })
+    expect(error).toMatchObject({ kind: 'truncated', noAnswer: 'reply' })
+    expect(error.message).toBe('p: a reply was cut off at 8192 tokens, below the 21024 quorum asked for: the server caps replies near 8192: set maxTokens: 8192')
   })
 })

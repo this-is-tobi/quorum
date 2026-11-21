@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { ConfigError, downWords, issuePath, ProviderDownError, ProviderError, QuorumError } from './errors.ts'
-import type { ConfigIssue, ProviderErrorKind } from './errors.ts'
+import { ConfigError, downWords, issuePath, lackWords, ProviderDownError, ProviderError, QuorumError } from './errors.ts'
+import type { ConfigIssue, ProviderErrorKind, ReplyLack } from './errors.ts'
 
 describe('provider errors', () => {
   it.each([
@@ -217,6 +217,104 @@ describe('a provider that is down', () => {
       count: 1,
       streak: false,
     })).toBe(false)
+  })
+})
+
+describe('what a reply lacked', () => {
+  it.each<[string, 'truncated' | 'no-answer', ReplyLack, string]>([
+    [
+      'the window, below contextTokens',
+      'truncated',
+      {
+        noAnswer: 'window',
+        inputTokens: 30_100,
+        outputTokens: 2668,
+        window: 200_000,
+      },
+      'a reply ended at the server\'s window after 30100 input and 2668 output tokens, below contextTokens 200000: set contextTokens to at most 32768',
+    ],
+    [
+      'the window, when its numbers reach contextTokens or are not all known',
+      'truncated',
+      {
+        noAnswer: 'window',
+        inputTokens: 30_100,
+        outputTokens: 2668,
+        window: 32_768,
+      },
+      'a reply ended at the server\'s window, which is smaller than contextTokens: lower contextTokens',
+    ],
+    [
+      'a cut-off below the limit sent',
+      'truncated',
+      { noAnswer: 'reply', limit: 21_024, outputTokens: 8192 },
+      'a reply was cut off at 8192 tokens, below the 21024 quorum asked for: the server caps replies near 8192: set maxTokens: 8192',
+    ],
+    [
+      'a cut-off at a known limit',
+      'truncated',
+      { noAnswer: 'reply', limit: 16_000, outputTokens: 16_000 },
+      'reply was cut off at its limit of 16000 tokens',
+    ],
+    [
+      'a cut-off at a limit not known',
+      'truncated',
+      { noAnswer: 'reply' },
+      'reply was cut off at its limit',
+    ],
+    [
+      'reasoning that used a known limit',
+      'truncated',
+      { noAnswer: 'thinking', limit: 16_000, outputTokens: 16_000 },
+      'reply was cut off at its limit of 16000 tokens while reasoning, before any answer',
+    ],
+    [
+      'reasoning that used a limit not known',
+      'truncated',
+      { noAnswer: 'thinking' },
+      'reply was cut off at its limit while reasoning, before any answer',
+    ],
+    [
+      'a reply with only reasoning',
+      'no-answer',
+      { noAnswer: 'thinking' },
+      'reply has no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt',
+    ],
+    [
+      'a reply with nothing',
+      'no-answer',
+      { noAnswer: 'empty' },
+      'reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt',
+    ],
+  ])('words a reply that lacked its answer: %s', (_name, kind, lack, words) => {
+    expect(lackWords(kind, lack)).toBe(words)
+  })
+
+  it('words a provider down by replies with no answer', () => {
+    const only = 'had no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt'
+    const nothing = 'had no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt'
+    const facts = {
+      providerId: 'api',
+      kind: 'no-answer',
+      count: 3,
+      streak: true,
+    } as const
+    expect(downWords({ ...facts, noAnswer: 'thinking' })).toBe(`api: 3 calls in a row ${only}`)
+    expect(downWords({ ...facts, noAnswer: 'empty' })).toBe(`api: 3 calls in a row ${nothing}`)
+    expect(downWords({
+      ...facts,
+      count: 1,
+      streak: false,
+      noAnswer: 'thinking',
+    })).toBe(`api: its one call ${only}`)
+    expect(downWords({
+      ...facts,
+      count: 2,
+      streak: false,
+      noAnswer: 'empty',
+    })).toBe(`api: its 2 calls ${nothing}`)
+    expect(downWords(facts)).toBe(`api: 3 calls in a row ${nothing}`)
+    expect(new ProviderDownError({ ...facts, noAnswer: 'thinking' })).toMatchObject({ kind: 'no-answer', noAnswer: 'thinking', message: `api: 3 calls in a row ${only}` })
   })
 })
 

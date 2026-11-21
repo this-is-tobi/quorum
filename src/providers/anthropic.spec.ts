@@ -3,7 +3,7 @@ import { ConfigError } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
 import { sent, stubFetch } from '../testing/http.ts'
 import { anthropic } from './anthropic.ts'
-import { contextWindowFull, message, notFound, refusal, toolUse, truncated } from '../testing/fixtures/anthropic.ts'
+import { contextWindowFull, countedOut, empty, message, notFound, reasoningOnly, refusal, toolUse, truncated } from '../testing/fixtures/anthropic.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
 
 const request: CompletionRequest = {
@@ -33,8 +33,12 @@ describeProviderContract({
     ok: message,
     model: 'claude-opus-5-5',
     usage: { inputTokens: 2095, outputTokens: 503 },
+    reasoned: true,
     refusal,
     truncated,
+    empty,
+    reasoningOnly,
+    countedOut,
   },
   read: {
     system: body => body.system,
@@ -160,6 +164,7 @@ describe('anthropic', () => {
       text: '{"keep":true}',
       model: 'claude-opus-5-5',
       usage: { inputTokens: 2095, outputTokens: 503 },
+      reasoning: true,
     })
   })
 
@@ -170,7 +175,12 @@ describe('anthropic', () => {
       model: '',
       usage: { input_tokens: 10 },
     })
-    await expect(anthropic({ ...options, model: 'claude-haiku-5-5' }).complete(request)).resolves.toEqual({ text: '{}', model: 'claude-haiku-5-5', usage: undefined })
+    await expect(anthropic({ ...options, model: 'claude-haiku-5-5' }).complete(request)).resolves.toEqual({
+      text: '{}',
+      model: 'claude-haiku-5-5',
+      usage: undefined,
+      reasoning: true,
+    })
   })
 
   it('counts as input the prompt tokens the cache wrote and read, when they are numbers', async () => {
@@ -204,8 +214,8 @@ describe('anthropic', () => {
 
   it.each([
     ['refusal', refusal, 'claude: model refused'],
-    ['truncated', truncated, 'claude: reply was cut off by the token limit'],
-    ['truncated', contextWindowFull, 'claude: reply was cut off: the context window is full'],
+    ['truncated', truncated, 'claude: a reply was cut off at 503 tokens, below the 16000 quorum asked for: the server caps replies near 503: set maxTokens: 503'],
+    ['truncated', contextWindowFull, 'claude: a reply ended at the server\'s window after 2095 input and 503 output tokens, below contextTokens 131072: set contextTokens to at most 2598'],
     ['invalid-response', toolUse, 'claude: reply ended early: "tool_use"'],
     [
       'invalid-response',
@@ -235,32 +245,37 @@ describe('anthropic', () => {
       'claude: reply ended early',
     ],
     [
-      'invalid-response',
+      'no-answer',
       {
         ...message,
         content: [
           { type: 'thinking', thinking: '{}', signature: 's' },
         ],
       },
-      'claude: reply has no text',
+      'claude: reply has no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt',
     ],
     [
-      'invalid-response',
-      { ...message, content: '{}' },
-      'claude: reply has no text',
+      'no-answer',
+      {
+        ...message,
+        content: '{}',
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+      'claude: reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt',
     ],
     [
-      'invalid-response',
+      'no-answer',
       {
         ...message,
         content: [
           null,
           '{}',
-          { type: 'text', text: 1 },
+          { type: 'text', text: ' ' },
           { text: '{}' },
         ],
+        usage: { input_tokens: 10, output_tokens: 5 },
       },
-      'claude: reply has no text',
+      'claude: reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt',
     ],
     ['invalid-response', [], 'claude: reply is not a JSON object'],
     ['invalid-response', null, 'claude: reply is not a JSON object'],
@@ -292,6 +307,69 @@ describe('anthropic', () => {
     await expect(provider.complete(request)).rejects.toMatchObject({
       name: 'ProviderError',
       usage: { inputTokens: 3050, outputTokens: 503 },
+    })
+  })
+
+  it.each([
+    [
+      'a redacted_thinking block',
+      [
+        { type: 'redacted_thinking', data: 'EmwKAhgBEgy3va3pzix' },
+      ],
+      undefined,
+    ],
+    [
+      'a thinking token count above 0',
+      [],
+      {
+        input_tokens: 10,
+        output_tokens: 90,
+        output_tokens_details: { thinking_tokens: 90 },
+      },
+    ],
+  ])('reads a finished reply with no answer and %s as no-answer thinking, quoting none of it', async (_name, content, usage) => {
+    stubFetch({ ...message, content, usage: usage ?? message.usage })
+    const failed = await provider.complete(request).catch((error: unknown) => error)
+    expect(failed).toMatchObject({
+      name: 'ProviderError',
+      kind: 'no-answer',
+      noAnswer: 'thinking',
+      usage: { outputTokens: usage?.output_tokens ?? 503 },
+    })
+    expect(JSON.stringify(failed)).not.toContain('findings')
+    expect((failed as Error).message).not.toContain('findings')
+  })
+
+  it('reads model_context_window_exceeded as the window ending the reply, naming its numbers when they stay below contextTokens', async () => {
+    stubFetch({
+      ...message,
+      stop_reason: 'model_context_window_exceeded',
+      content: [],
+      usage: { input_tokens: 30_100, output_tokens: 2668 },
+    })
+    await expect(provider.complete(request)).rejects.toMatchObject({
+      kind: 'truncated',
+      noAnswer: 'window',
+      retryable: false,
+      usage: { inputTokens: 30_100, outputTokens: 2668 },
+      message: 'claude: a reply ended at the server\'s window after 30100 input and 2668 output tokens, below contextTokens 131072: set contextTokens to at most 32768',
+    })
+  })
+
+  it('reads a max_tokens stop below the limit sent as a reply cut off, never as the window, though input and output reach contextTokens', async () => {
+    stubFetch({
+      ...message,
+      stop_reason: 'max_tokens',
+      content: [
+        { type: 'text', text: '{"kee' },
+      ],
+      usage: { input_tokens: 130_000, output_tokens: 1500 },
+    })
+    await expect(provider.complete(request)).rejects.toMatchObject({
+      kind: 'truncated',
+      noAnswer: 'reply',
+      usage: { inputTokens: 130_000, outputTokens: 1500 },
+      message: 'claude: a reply was cut off at 1500 tokens, below the 16000 quorum asked for: the server caps replies near 1500: set maxTokens: 1500',
     })
   })
 

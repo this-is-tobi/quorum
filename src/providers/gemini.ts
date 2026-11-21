@@ -7,8 +7,9 @@ import type { ErrorHints } from './http.ts'
 import { shapeMessages } from './messages.ts'
 import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
-import { endedEarly, joinedText, replyFailure, tokenUsage } from './reply.ts'
+import { endedEarly, joinedText, readAnswer, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, roomTokens, worstCaseTokens } from './size.ts'
+import type { ContextBudget } from './size.ts'
 
 /** The options of a Gemini provider: the ones every HTTP adapter takes, and no other. */
 export type GeminiOptions = HttpProviderOptions
@@ -137,13 +138,24 @@ function generationConfig({ temperature, replyTokens, structuredOutput }: Genera
   }
 }
 
+/** Whether the reply showed thoughts: a part flagged `thought`, or a `thoughtsTokenCount` above 0. Only the fact is read, never a thought's text. */
+function showedThoughts(parts: unknown, usageMetadata: unknown): boolean {
+  if (Array.isArray(parts) && parts.some(part => isRecord(part) && part.thought === true)) return true
+  const tokens = isRecord(usageMetadata)
+    ? usageMetadata.thoughtsTokenCount
+    : undefined
+  return typeof tokens === 'number' && tokens > 0
+}
+
 /**
  * Turn a `generateContent` reply into text, or a `ProviderError`. Every property is read defensively: the
  * reply is untrusted. A blocked prompt comes first, since its reply has no candidates. The counts are read
  * once, after the body check, and every failure from then on carries them, since the server generated those
- * tokens. Gemini leaves a zero count out of its JSON, so a candidates count the reply leaves out reads as 0.
+ * tokens. Gemini leaves a zero count out of its JSON, so a candidates count the reply leaves out reads as 0. What
+ * the reply lacked, once its finish reason is `STOP` or a cut-off, is `readAnswer`'s: its output is the candidates
+ * plus the thoughts, which the limit counts.
  */
-function readReply(reply: unknown, { id, model }: Pick<GeminiOptions, 'id' | 'model'>, redact: readonly string[]): CompletionResponse {
+function readReply(reply: unknown, { id, model, budget }: Pick<GeminiOptions, 'id' | 'model'> & { readonly budget: ContextBudget }, redact: readonly string[]): CompletionResponse {
   if (!isRecord(reply)) throw replyFailure(id)('invalid-response', 'reply is not a JSON object')
 
   const usage = isRecord(reply.usageMetadata)
@@ -167,18 +179,25 @@ function readReply(reply: unknown, { id, model }: Pick<GeminiOptions, 'id' | 'mo
 
   const reason = candidate.finishReason
   if (reason === undefined || reason === null) throw fail('invalid-response', 'reply has not finished')
-  if (CUT_OFF.has(reason)) throw fail('truncated', 'reply was cut off by the token limit')
   if (FILTERED.has(reason)) throw fail('refusal', 'reply was stopped by the safety filter')
-  if (reason !== 'STOP') throw fail('invalid-response', endedEarly(reason, redact))
+  const cutOff = CUT_OFF.has(reason)
+  if (!cutOff && reason !== 'STOP') throw fail('invalid-response', endedEarly(reason, redact))
 
   const content = isRecord(candidate.content)
     ? candidate.content
     : {}
-  const text = joinedText(content.parts, part => !part.thought)
-  if (text === undefined) throw fail('invalid-response', 'reply has no text')
+  const { text, reasoning } = readAnswer(id, {
+    text: joinedText(content.parts, part => !part.thought),
+    flaggedCutOff: cutOff,
+    windowEnded: false,
+    reasoned: showedThoughts(content.parts, reply.usageMetadata),
+    limit: budget.replyTokens,
+    usage,
+  })
 
   return {
     text,
+    reasoning,
     model: typeof reply.modelVersion === 'string' && reply.modelVersion !== ''
       ? reply.modelVersion
       : model,
@@ -250,7 +269,7 @@ export function gemini(options: GeminiOptions): Provider {
         redact,
         errorHints,
       })
-      return readReply(reply, { id, model }, redact)
+      return readReply(reply, { id, model, budget }, redact)
     },
   }
 }

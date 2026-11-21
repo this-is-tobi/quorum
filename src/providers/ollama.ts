@@ -6,8 +6,9 @@ import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
 import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
-import { MAX_MODEL_TEXT, replyFailure, tokenUsage } from './reply.ts'
+import { MAX_MODEL_TEXT, readAnswer, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, roomTokens, worstCaseTokens } from './size.ts'
+import type { ContextBudget } from './size.ts'
 
 /** The options of an Ollama provider: the ones every HTTP adapter takes, and no other. */
 export type OllamaOptions = HttpProviderOptions
@@ -71,9 +72,11 @@ function format(mode: StructuredOutput, output: CompletionRequest['output']): un
  * Turn an `/api/chat` reply into text, or a `ProviderError`. Every property is read defensively: the
  * reply is untrusted. A server error comes first: a local server answers one with an error status, but
  * the reply of a remote model could carry one in a 200. The counts are read once, after the body check,
- * and every failure from then on carries them, since the server generated those tokens.
+ * and every failure from then on carries them, since the server generated those tokens. What the reply lacked,
+ * once it is done, is `readAnswer`'s: `length` or `eval_count` at `num_predict`, a window the server ended
+ * (`length` with the input and output at `num_ctx`), only `message.thinking`, or nothing.
  */
-function readReply(reply: unknown, { id, model }: Pick<OllamaOptions, 'id' | 'model'>, redact: readonly string[]): CompletionResponse {
+function readReply(reply: unknown, { id, model, budget }: Pick<OllamaOptions, 'id' | 'model'> & { readonly budget: ContextBudget }, redact: readonly string[]): CompletionResponse {
   if (!isRecord(reply)) throw replyFailure(id)('invalid-response', 'reply is not a JSON object')
 
   const usage = tokenUsage(reply, ['prompt_eval_count'], ['eval_count'])
@@ -81,15 +84,26 @@ function readReply(reply: unknown, { id, model }: Pick<OllamaOptions, 'id' | 'mo
   if (typeof reply.error === 'string') throw fail('invalid-response', `server error: ${snippet(reply.error, MAX_MODEL_TEXT, redact)}`)
 
   if (reply.done !== true || !DONE.has(reply.done_reason)) throw fail('invalid-response', 'reply has not finished')
-  if (reply.done_reason === 'length') throw fail('truncated', 'reply was cut off by the token limit or the context')
 
   const message = isRecord(reply.message)
     ? reply.message
     : {}
-  if (typeof message.content !== 'string') throw fail('invalid-response', 'reply has no text')
+  const { text, reasoning } = readAnswer(id, {
+    text: typeof message.content === 'string'
+      ? message.content
+      : undefined,
+    flaggedCutOff: reply.done_reason === 'length',
+    windowEnded: false,
+    reasoned: typeof message.thinking === 'string' && message.thinking.trim() !== '',
+    limit: budget.replyTokens,
+    window: budget.contextTokens,
+    windowByCount: true,
+    usage,
+  })
 
   return {
-    text: message.content,
+    text,
+    reasoning,
     model: typeof reply.model === 'string' && reply.model !== ''
       ? reply.model
       : model,
@@ -149,7 +163,7 @@ export function ollama(options: OllamaOptions): Provider {
         signal: request.signal,
         redact,
       })
-      return readReply(reply, { id, model }, redact)
+      return readReply(reply, { id, model, budget }, redact)
     },
   }
 }

@@ -1,8 +1,8 @@
 import type { Clock } from '../clock.ts'
 import type { Limiter } from '../concurrency.ts'
 import type { Health } from '../down.ts'
-import { PROVIDER_ERROR_KINDS, ProviderError } from '../errors.ts'
-import type { ProviderErrorKind } from '../errors.ts'
+import { NO_ANSWERS, PROVIDER_ERROR_KINDS, ProviderError } from '../errors.ts'
+import type { NoAnswer, ProviderErrorKind } from '../errors.ts'
 import { settlementOf } from '../limits.ts'
 import type { Ledger } from '../limits.ts'
 import { isRecord } from '../output.ts'
@@ -11,7 +11,7 @@ import type { CompletionRequest, CompletionResponse, EventSink, Provider } from 
 import { isTimeout, retryWait } from '../retry.ts'
 import type { FailureFacts } from '../retry.ts'
 import { DEFAULT_REPLY_TOKENS, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
-import type { FailOn, ProviderRef, StageName, Thresholds, Usage } from '../types.ts'
+import type { FailOn, ProviderRef, QuorumEvent, StageName, Thresholds, Usage } from '../types.ts'
 
 /**
  * A provider as a compiled profile holds it: the object it calls, the ref captured at creation that
@@ -86,6 +86,8 @@ export interface RunContext {
   readonly deadline: { readonly at: number, readonly ms: number }
   /** Which providers are down in this review: one count per provider object, across every profile and role that shares it. */
   readonly health: Health
+  /** The `reply-lacked` lines this review has said, one per provider and line (`provider|line`): each is said once. */
+  readonly lacked: Set<string>
   /** How many findings of a research reply each profile sends to the panel. */
   readonly maxFindings: number
   /** The review's concurrency: how many parts of its research one profile has in flight at once. */
@@ -134,6 +136,73 @@ export function providerFailure(error: unknown): { readonly kind: ProviderErrorK
   return kind === 'http' && typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
     ? { kind, status }
     : { kind }
+}
+
+/**
+ * What a failed call says of what its reply lacked, as facts: the own data `kind` when it is `truncated` or
+ * `no-answer`, with its own data `noAnswer` when that is one of the four values and the pair is one an adapter
+ * raises (a `truncated` reply, thinking or window, a `no-answer` thinking or empty). A message is never read, and
+ * it never runs a getter and never throws.
+ */
+export function lackOf(error: unknown): { readonly kind: 'truncated' | 'no-answer', readonly noAnswer: NoAnswer } | undefined {
+  const kind = ownData(error, 'kind')
+  const noAnswer = NO_ANSWERS.find(known => known === ownData(error, 'noAnswer'))
+  if (noAnswer === undefined) return undefined
+  if (kind === 'truncated') {
+    return noAnswer === 'empty'
+      ? undefined
+      : { kind, noAnswer }
+  }
+  if (kind === 'no-answer') {
+    return noAnswer === 'thinking' || noAnswer === 'empty'
+      ? { kind, noAnswer }
+      : undefined
+  }
+  return undefined
+}
+
+/**
+ * What a request was sent with, that a reply's counts are read against: its reply limit and its provider's stated
+ * window, in tokens. The call path states neither yet, so no cut-off is below its limit here and the window line
+ * carries no window.
+ */
+interface SentWith {
+  readonly limit?: number
+  readonly window?: number
+}
+
+/**
+ * The `reply-lacked` event of a call's final failure, with the key it is said once under, or undefined when
+ * the failure says none: a cut-off at its limit, which the recovery's and the adaptation's lines say, and any
+ * failure that is no reply lacking its answer. A reply cut below the limit sent shows a server that caps replies
+ * lower than quorum asked: the event holds both numbers. Every field is a count the code read or a code word.
+ */
+function lackedEvent(provider: string, error: unknown, sent: SentWith): { readonly key: string, readonly event: Extract<QuorumEvent, { type: 'reply-lacked' }> } | undefined {
+  const lack = lackOf(error)
+  if (lack === undefined) return undefined
+  const usage = failureUsage(error)
+  const cap = lack.kind === 'truncated' && lack.noAnswer !== 'window'
+  if (cap && (sent.limit === undefined || usage === undefined || usage.outputTokens >= sent.limit)) return undefined
+  return {
+    key: `${provider}|${cap
+      ? 'cap'
+      : lack.noAnswer}`,
+    event: {
+      type: 'reply-lacked',
+      provider,
+      kind: lack.kind,
+      noAnswer: lack.noAnswer,
+      ...(sent.limit === undefined
+        ? {}
+        : { limit: sent.limit }),
+      ...(usage === undefined
+        ? {}
+        : { outputTokens: usage.outputTokens, inputTokens: usage.inputTokens }),
+      ...(sent.window === undefined
+        ? {}
+        : { window: sent.window }),
+    },
+  }
 }
 
 /** What a refusal as too large says: its own data string `message`, else a fixed text, never anything else from the object. */
@@ -303,7 +372,9 @@ export function elapsed(started: number): number {
  * and no attempt and calling no `onFailure`; the error is no failure of the provider and counts nowhere.
  * Every other call tells the health what became of it: a reply is `answered`, whatever it holds, and a
  * call that ends in a failure is `failed` once, after its retries, which sends one `provider-down` event
- * when that failure is the third in a row.
+ * when that failure is the third in a row. A call's final failure that is a reply lacking its answer (a
+ * `truncated` or `no-answer` kind with a `noAnswer` of its own data) sends one `reply-lacked` event the first time
+ * the review meets its line for that provider, built from the failure's facts and never its message.
  *
  * A call that fails once its request is built, for any reason, ends through one place: it sends its
  * failed `call` event when an attempt was made, tells the health, then hands that failure and the
@@ -361,7 +432,15 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
             ? {}
             : { status: found.status }),
           calls: found.count,
+          ...(found.noAnswer === undefined
+            ? {}
+            : { noAnswer: found.noAnswer }),
         })
+      }
+      const lacked = lackedEvent(target.ref.id, error, {})
+      if (lacked !== undefined && !ctx.lacked.has(lacked.key)) {
+        ctx.lacked.add(lacked.key)
+        ctx.emit(lacked.event)
       }
       // Still inside the slot: a review aborted here never starts the queued call the slot goes to next.
       onFailure?.(error, attempts)

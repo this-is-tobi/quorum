@@ -26,12 +26,14 @@ interface CompletionResponse {
   text: string
   model: string
   usage?: Usage
+  reasoning?: boolean
 }
 ```
 
 - **Text in, text out.** A request carries the instructions in `system`, the fenced data in `messages` (one `user` message), the shape of the reply in `output` (named `research_findings` or `panel_vote`, with its JSON Schema), and the attempt's `signal`. The request has no field for a tool, a function, a file or a network capability, and quorum offers none to a model. Each shipped adapter refuses the body fields of its protocol that would offer one, so `extraBody` cannot add them, but a model id can bring tools of its own, which only a preset's list refuses, and `headers` are sent as given: [The tool fields](#the-tool-fields).
 - **No secret in a request.** No environment value, key or credential appears in a request: a key lives in the adapter that holds it.
 - **The core never trusts the reply.** It extracts and validates the JSON in `text` itself, whatever the provider did to get it, and reads `usage` (`inputTokens`, `outputTokens`, optional `costUsd`) only when its counts are finite numbers of at least 0.
+- **`reasoning` says whether the reply showed reasoning**: `true` when it did, `false` when the adapter could tell it showed none, absent when the provider cannot tell, as a provider object of your own states none. The four HTTP adapters state it; `claudeCode` does not. It is a fact about the reply, never its text.
 - **`id` and `model` name the provider** in events and in `meta`, as they were when the quorum was created.
 - **A provider may state its deadline**, `timeoutMs`, and its `retries`: [Deadlines and retries](#deadlines-and-retries).
 - **A provider may state its worst case**, `worstCase(request)`: the most tokens one attempt of the request may spend, which the review's token cap reserves before it is sent ([The token cap](./20-configuration.md#the-token-cap)): [What a provider states](#what-a-provider-states).
@@ -54,7 +56,7 @@ The core runs each call's attempts inside the call's concurrency slot, and gives
 ### What is retried
 
 - **A failure that passes**: a dropped connection, a timeout, an HTTP 408, 409, 429 or 5xx, as the error's `retryable` says, within the provider's `retries` retries after the first attempt.
-- **Never a `refusal`, `truncated`, `invalid-response`, `unsupported`, `too-large`, `process` or `aborted` failure**, whatever `retryable` says: planted text can cause each of them, so a retry would let it multiply the spend.
+- **Never a `refusal`, `truncated`, `no-answer`, `invalid-response`, `unsupported`, `too-large`, `process` or `aborted` failure**, whatever `retryable` says: planted text can cause each of them, so a retry would let it multiply the spend.
 - **A timeout, the core's or a gateway's 504 or 524, once per call**: a slow request is likely slow again, and may be billed each time. A second one ends the call, and a failure that passes after a timeout is retried as any other.
 - **Never a reply that says its credit, spend limit or quota is used up**, whatever its status: OpenAI's codes `credit_balance_exhausted`, `organization_usage_limit_exceeded`, any `..._spend_limit_exceeded` and `insufficient_quota`, Anthropic's `enforced_spend_limit_reached`, Gemini's per-day quota, and `x-should-retry: false`.
 - **A reply that says `x-should-retry: true` is retried**, whatever its status, and so is an OpenRouter 402 of its in-flight budget (`metadata.limit_source` of `openrouter_in_flight_budget`) that carries a `Retry-After`, the one 402 retried. A reply that says both to retry and never to is never retried.
@@ -127,7 +129,7 @@ const hosted = openaiCompatible({
 const code = claudeCode({ id: 'code', model: 'sonnet', contextTokens: 1000000 })
 ```
 
-Every HTTP adapter sends one JSON `POST` per call through the same hardened path, [The limits of a request](#the-limits-of-a-request), passes the request's signal to `fetch` with the runtime's own timers off: [The deadline of an attempt](#the-deadline-of-an-attempt), and reports in `usage` every prompt token the request carried, cached ones included, and every token the model generated, thinking included, from the counts its protocol sends: never a cost. The counts a protocol keeps apart, such as Anthropic's cache tokens or Gemini's thought tokens, are added in when they are numbers; a reply without both main counts as numbers reports no `usage`. A reply the adapter reads and then refuses, cut off at its token limit, refused or unusable, carries the same counts in its `ProviderError`'s `usage`, which the review counts: a status outside 2xx carries none. `claudeCode` sends no request of its own: it runs a process, [`claudeCode`](#claudecode), and is the one adapter that reports a cost.
+Every HTTP adapter sends one JSON `POST` per call through the same hardened path, [The limits of a request](#the-limits-of-a-request), passes the request's signal to `fetch` with the runtime's own timers off: [The deadline of an attempt](#the-deadline-of-an-attempt), and reports in `usage` every prompt token the request carried, cached ones included, and every token the model generated, thinking included, from the counts its protocol sends: never a cost. The counts a protocol keeps apart, such as Anthropic's cache tokens or Gemini's thought tokens, are added in when they are numbers; a reply without both main counts as numbers reports no `usage`. A reply the adapter reads and then refuses, cut off at its token limit, with no answer, refused or unusable, carries the same counts in its `ProviderError`'s `usage`, which the review counts: a status outside 2xx carries none. `claudeCode` sends no request of its own: it runs a process, [`claudeCode`](#claudecode), and is the one adapter that reports a cost.
 
 ## Presets
 
@@ -311,10 +313,51 @@ The guard does not count the text that `extraBody` adds to a request, such as a 
 Planted text can draw a reply out to the model's whole window, so every request carries the reply's limit, `maxTokens` else 16000, in the field of the last column of [the presets table](#presets), and the server stops the reply there.
 
 - **Thinking counts inside it** on Anthropic, OpenAI and Gemini, so a reasoning model needs more than a model that answers at once: OpenAI advises at least 25000 for its reasoning models. Raise `maxTokens`, and `contextTokens` with it, since the guard keeps the whole limit as room for the reply.
-- **A reply that reaches it fails** as `truncated`, `reply was cut off by the token limit`, and is never retried: [`ProviderError`](#providererror).
+- **A reply that reaches it fails** as `truncated`, `reply was cut off at its limit of 16000 tokens`, and is never retried: [What a reply lacked](#what-a-reply-lacked), [`ProviderError`](#providererror). A reply whose output tokens reach the limit fails so whatever its finish reason says.
 - **A model whose own output limit is below 16000** may refuse the request. An older model that an Azure deployment still serves is one: set `maxTokens` to its limit. Every current model of the presets takes more than 16000.
 - **A server that refuses the field** does the same: an `openai-compatible` provider with no preset sends the limit as `max_tokens`, which the reasoning models of OpenAI and Azure refuse. Set `maxTokensField: max_completion_tokens` for them, as the `openai` and `azure-openai` presets do.
 - **`claudeCode` sends it as Claude Code's own limit**, in `CLAUDE_CODE_MAX_OUTPUT_TOKENS`: [The size of a Claude Code request](#the-size-of-a-claude-code-request).
+
+### What a reply lacked
+
+A reply can come back with no answer quorum can use. Each HTTP adapter reads which, by one rule, into a `ProviderError` whose `noAnswer` field and message say what the reply lacked, in code words and numbers, and never quote the reply or its reasoning:
+
+| Kind | `noAnswer` | The reply |
+| --- | --- | --- |
+| `truncated` | `reply` | Its visible answer was cut off at the limit sent, or its output stopped below that limit: a server that caps replies lower than quorum asked |
+| `truncated` | `thinking` | It was cut off with reasoning and no visible answer: its reasoning used the limit |
+| `truncated` | `window` | The server's window ended it |
+| `no-answer` | `thinking` | It ended on its own with reasoning and no visible answer, as a server that puts its answer in a reasoning field does |
+| `no-answer` | `empty` | It ended on its own with no visible answer and no reasoning, as a server that mishandles its structured output does |
+
+- **A reply is cut off** when its protocol says so, or when its reported output tokens reach the limit sent, whatever its flag: a server may fail to flag it. It is `window` when the protocol says the server's window ended it, or, for `openaiCompatible` and `ollama`, when its output stays under the limit sent while its input and output reach `contextTokens`: vLLM clamps the limit to what its window leaves. Else, with no visible answer and reasoning shown, it is `thinking`, and otherwise `reply`.
+- **A reply that ended on its own** with no visible answer is `no-answer`: `thinking` when it showed reasoning, else `empty`. A visible answer is text that is not blank once trimmed.
+- **Reasoning is never read as the answer.** It is a fact the adapter reads (a field or part with text, or a reasoning token count above 0), never text it returns or quotes.
+- **`claudeCode` reads its flags alone.** Its usage sums every model turn of a run, so a count rule would misfire: `api_error` `max_output_tokens` and `stop_reason` `max_tokens` are `reply`, a success with a blank or missing `result` in `prompt` mode is `empty`, and it reports no reasoning. A missing structured output in `schema` mode stays `invalid-response`: it is Claude Code's own failure to call its schema tool.
+
+Each adapter reads these fields:
+
+| Adapter | Cut off | Reasoning shown by | The window ended it | `empty` |
+| --- | --- | --- | --- | --- |
+| `openaiCompatible` | `finish_reason` `length` or `model_length` | `message.reasoning` (vLLM), `message.reasoning_content` (llama.cpp, DeepSeek), a `thinking` part (Mistral), or `usage.completion_tokens_details.reasoning_tokens` above 0 | A cut-off whose `prompt_tokens` and `completion_tokens` reach `contextTokens` while the output stays under the limit sent | `stop` or no reason, with no text and no reasoning |
+| `anthropic` | `stop_reason` `max_tokens` | A `thinking` or `redacted_thinking` block, or `usage.output_tokens_details.thinking_tokens` above 0 | `stop_reason` `model_context_window_exceeded` | `end_turn` with no text block and no thinking |
+| `gemini` | `finishReason` `MAX_TOKENS` or `CONTINUATION`; the candidates and thoughts count as output | A part flagged `thought`, or `usageMetadata.thoughtsTokenCount` above 0 | None documented | `STOP` with no text part and no thought |
+| `ollama` | `done_reason` `length` | `message.thinking` with text | `length` with `eval_count` under `num_predict` and the input and output at `num_ctx` | `stop` with no content and no thinking |
+| `claudeCode` | `api_error` `max_output_tokens` or `stop_reason` `max_tokens` | None | None | A success with a blank or missing `result`, in `prompt` mode |
+
+Each adapter's `reasoning` is `true` for a reply that showed reasoning and `false` for one it could tell showed none. The messages, which the CLI's [progress lines](./10-cli.md#progress-lines) share:
+
+| The reply | Message |
+| --- | --- |
+| Cut off below the limit sent | `a reply was cut off at <o> tokens, below the <l> quorum asked for: the server caps replies near <o>: set maxTokens: <o>` |
+| Cut off at the limit | `reply was cut off at its limit of <l> tokens`, or `reply was cut off at its limit` when the limit is not known |
+| Cut off while reasoning | `reply was cut off at its limit of <l> tokens while reasoning, before any answer` |
+| Ended at the server's window, its input and output below `contextTokens` | `a reply ended at the server's window after <i> input and <o> output tokens, below contextTokens <c>: set contextTokens to at most <i + o>` |
+| Ended at the server's window, any other | `a reply ended at the server's window, which is smaller than contextTokens: lower contextTokens` |
+| Only reasoning | `reply has no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt` |
+| Nothing | `reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt` |
+
+Each message names the setting to change. Turning thinking off is the protocol's own field in `extraBody`: [Reasoning mode](../90-recipes/10-local-models.md#reasoning-mode). A reply with no answer is never retried. Three of them in a row find the provider down, in words that say what they lacked: `<id>: 3 calls in a row had no answer, only reasoning: ...` or `had no answer and no reasoning: ...`; a `truncated` reply never counts. A server that caps replies below quorum's limit, or loads a window smaller than `contextTokens`, is named once per provider in a review, with its numbers, as the `reply-lacked` event: [Events](../95-reference/30-library-api.md#events).
 
 ### Configuration errors
 
@@ -388,7 +431,7 @@ The body of every request holds, in this order:
 - the reply's limit under `maxTokensField`, `maxTokens` else 16000;
 - then `extraBody`, merged. It cannot replace `model`, `messages` or `stream`, or set `max_tokens` or `max_completion_tokens`, which `maxTokens` sets.
 
-The text is the first choice's `message.content`: a string, or an array of parts whose `text` parts are joined, as Mistral sends it. Every other part is skipped, thinking parts included. `model` is the one the reply names, or the configured one when it names none. `usage` is read from `usage.prompt_tokens` and `usage.completion_tokens`.
+The text is the first choice's `message.content`: a string, or an array of parts whose `text` parts are joined, as Mistral sends it. Every other part is skipped, thinking parts included, and so is `message.reasoning` or `message.reasoning_content`: reasoning is never read as the answer, only noted: [What a reply lacked](#what-a-reply-lacked). `model` is the one the reply names, or the configured one when it names none. `usage` is read from `usage.prompt_tokens` and `usage.completion_tokens`.
 
 A top-level `error` in the reply fails the call before the choices are read, since some servers answer a failure with status 200 (OpenRouter does, for a failure during generation). The error is `{ message, code }` or a string. An `error` of `null` beside the choices is a success. A message that shows a tool the server ran fails next, before a refusal or a finish reason is read: a model or a gateway that ran a tool by itself leaves a review that cannot be trusted. An empty `executed_tools`, and `annotations` without a `url_citation`, are not one.
 
@@ -400,9 +443,10 @@ A top-level `error` in the reply fails the call before the choices are read, sin
 | A non-empty `executed_tools` array in the message (Groq's built-in tools), or a `url_citation` entry in its `annotations` (OpenAI's search models, OpenRouter's web plugin) | `invalid-response` | `the server ran a tool for this reply, which quorum never allows` |
 | `message.refusal` set | `refusal` | `model refused: "<up to 200 characters>"`, or `model refused` when it is not a string |
 | The finish reason `content_filter` | `refusal` | `reply was stopped by the content filter` |
-| The finish reason `length` or `model_length` | `truncated` | `reply was cut off by the token limit` |
+| The finish reason `length` or `model_length`, or `completion_tokens` at or above the reply's limit | `truncated`, `reply`, `thinking` or `window` | What it lacked: [What a reply lacked](#what-a-reply-lacked) |
 | The finish reason `error`, `insufficient_system_resource` or `aborted` | `invalid-response` | `reply ended early: "<finish reason>"` |
-| No message content | `invalid-response` | `reply has no message content` |
+| No text, and a reasoning field or part, or a reasoning token count above 0 | `no-answer`, `thinking` | `reply has no answer, only reasoning: ...` |
+| No text, and no reasoning | `no-answer`, `empty` | `reply has no answer and no reasoning: ...` |
 
 ## `anthropic`
 
@@ -424,15 +468,16 @@ The body of every request holds, in this order:
 - `output_config: { format: { type: 'json_schema', schema: <output.schema> } }`, in `schema` mode;
 - then `extraBody`, merged: `{ output_config: { effort: 'low' } }` goes beside the format in `schema` mode. It cannot replace `model`, `messages`, `system` or `stream`, or set `max_tokens`, which `maxTokens` sets.
 
-A reply succeeds with the stop reason `end_turn` or `stop_sequence` and a text block. The stop reason is read first, since a refused or cut-off reply can still hold some text. The text is the `text` of the `type: 'text'` blocks, joined: `thinking` and `redacted_thinking` blocks are skipped, as is every block of another type. `model` is the one the reply names, or the configured one. The input count is `usage.input_tokens`, plus `usage.cache_creation_input_tokens` and `usage.cache_read_input_tokens` when they are numbers; the output count is `usage.output_tokens`. A status outside 2xx is an `http` error that quotes Anthropic's `{ "type": "error", "error": { "type", "message" } }` body.
+A reply succeeds with the stop reason `end_turn` or `stop_sequence` and a text block. The stop reason is read first, since a refused or cut-off reply can still hold some text. The text is the `text` of the `type: 'text'` blocks, joined: `thinking` and `redacted_thinking` blocks are skipped, never read as the answer, as is every block of another type. `model` is the one the reply names, or the configured one. The input count is `usage.input_tokens`, plus `usage.cache_creation_input_tokens` and `usage.cache_read_input_tokens` when they are numbers; the output count is `usage.output_tokens`. A status outside 2xx is an `http` error that quotes Anthropic's `{ "type": "error", "error": { "type", "message" } }` body.
 
 | The reply | Kind | Message |
 | --- | --- | --- |
 | `stop_reason` `refusal` | `refusal` | `model refused` |
-| `stop_reason` `max_tokens` | `truncated` | `reply was cut off by the token limit` |
-| `stop_reason` `model_context_window_exceeded` | `truncated` | `reply was cut off: the context window is full` |
+| `stop_reason` `max_tokens`, or `output_tokens` at or above the reply's limit | `truncated`, `reply` or `thinking` | What it lacked: [What a reply lacked](#what-a-reply-lacked) |
+| `stop_reason` `model_context_window_exceeded` | `truncated`, `window` | `a reply ended at the server's window after <i> input and <o> output tokens, below contextTokens <c>: set contextTokens to at most <i + o>`, or, when the counts are not all known or reach `contextTokens`, `a reply ended at the server's window, which is smaller than contextTokens: lower contextTokens` |
 | Any other `stop_reason`, `tool_use` and `pause_turn` included | `invalid-response` | `reply ended early: "<stop reason>"`, or `reply ended early` when it is not a string |
-| No text block | `invalid-response` | `reply has no text` |
+| No text block, and a thinking block or a thinking token count above 0 | `no-answer`, `thinking` | `reply has no answer, only reasoning: ...` |
+| No text block, and no thinking | `no-answer`, `empty` | `reply has no answer and no reasoning: ...` |
 
 ## `gemini`
 
@@ -449,17 +494,18 @@ The body of every request holds, in this order:
 - `generationConfig`: `temperature` when set, `maxOutputTokens`, `maxTokens` else 16000, `responseMimeType: 'application/json'` in `json` and `schema` mode, and `responseJsonSchema: <output.schema>` in `schema` mode, as Google's JavaScript SDK sends it (`responseSchema` is deprecated);
 - then `extraBody`, merged: `{ generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } }` goes beside the rest. It cannot replace `contents` or `systemInstruction`, or set `generationConfig.maxOutputTokens`, which `maxTokens` sets. Its `generationConfig` must be an object, written `generationConfig`: another spelling, such as `generation_config`, would send a second key, so it is refused.
 
-A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose parts hold text. The text is the `text` of the first candidate's `content.parts`, joined, without the parts flagged as thoughts. `model` is the reply's `modelVersion`, or the configured model. The input count is `usageMetadata.promptTokenCount`; the output count is `usageMetadata.candidatesTokenCount`, plus `usageMetadata.thoughtsTokenCount` when it is a number. Gemini leaves a zero count out of its JSON, so a candidates count the reply leaves out reads as 0: a thinking model cut off while it thinks reports only its prompt and thought counts. A reply without `promptTokenCount`, or with a prompt or candidates count that is not a number, reports no `usage`. A status outside 2xx is an `http` error that quotes Google's `{ "error": { "code", "message", "status", "details" } }` body; a 402, which Google sends for a depleted prepay balance, is not retryable, unlike a 429, and a 429 of a per-day quota is not either.
+A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose parts hold text. The text is the `text` of the first candidate's `content.parts`, joined, without the parts flagged as thoughts, which are never read as the answer. `model` is the reply's `modelVersion`, or the configured model. The input count is `usageMetadata.promptTokenCount`; the output count is `usageMetadata.candidatesTokenCount`, plus `usageMetadata.thoughtsTokenCount` when it is a number. Gemini leaves a zero count out of its JSON, so a candidates count the reply leaves out reads as 0: a thinking model cut off while it thinks reports only its prompt and thought counts. A reply without `promptTokenCount`, or with a prompt or candidates count that is not a number, reports no `usage`. A status outside 2xx is an `http` error that quotes Google's `{ "error": { "code", "message", "status", "details" } }` body; a 402, which Google sends for a depleted prepay balance, is not retryable, unlike a 429, and a 429 of a per-day quota is not either.
 
 | The reply | Kind | Message |
 | --- | --- | --- |
 | `promptFeedback.blockReason` set | `refusal` | `prompt was blocked: "<reason>"` for a reason of 1 to 64 capital letters and underscores, such as `PROHIBITED_CONTENT`, and `prompt was blocked` for any other |
 | No first candidate | `invalid-response` | `reply has no candidates` |
-| `finishReason` `MAX_TOKENS` or `CONTINUATION` | `truncated` | `reply was cut off by the token limit` |
+| `finishReason` `MAX_TOKENS` or `CONTINUATION`, or candidate and thought tokens at or above the reply's limit | `truncated`, `reply` or `thinking` | What it lacked: [What a reply lacked](#what-a-reply-lacked) |
 | `finishReason` `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII` or `IMAGE_SAFETY` | `refusal` | `reply was stopped by the safety filter` |
 | No `finishReason`, or `null` | `invalid-response` | `reply has not finished` |
 | Any other `finishReason` | `invalid-response` | `reply ended early: "<finish reason>"`, or `reply ended early` when it is not a string |
-| No text part | `invalid-response` | `reply has no text` |
+| No text part, and a part flagged `thought` or a `thoughtsTokenCount` above 0 | `no-answer`, `thinking` | `reply has no answer, only reasoning: ...` |
+| No text part, and no thought | `no-answer`, `empty` | `reply has no answer and no reasoning: ...` |
 
 ## `ollama`
 
@@ -470,7 +516,7 @@ For Ollama's native chat API, on a local server or Ollama's cloud, `https://olla
 - **`shift: false` keeps it whole as the reply is written.** A reply that fills the model's context then stops, as a truncation, instead of part of the prompt dropped so the reply can go on. It needs the same versions, and a server that loaded the model with context shift on loads it again, as it does each time a client asks for the other setting.
 - **`num_ctx` from `contextTokens`.** The adapter sends `options.num_ctx`, so the server loads the context the size guard counts with; a larger value than the model's own maximum is cut to it, so keep `contextTokens` at most what `ollama show <model>` reports, and read the context a running model loaded in the `CONTEXT` column of `ollama ps`. `extraBody` cannot set `options.num_ctx`, in any letter case, or replace `options` with anything but an object, which would drop it. Its `options` must be written `options`: another spelling, such as `Options`, would send a second key, so it is refused.
 - **The key goes as `Authorization: Bearer <key>`**, only when one is set: a local server needs none.
-- **No `think` field.** A thinking model thinks as it does by default, and its thinking comes back apart, in `message.thinking`, which the adapter ignores. `extraBody: { think: false }` sets one: [Reasoning mode](../90-recipes/10-local-models.md#reasoning-mode).
+- **No `think` field.** A thinking model thinks as it does by default, and its thinking comes back apart, in `message.thinking`, which the adapter never reads as the answer: it notes that the reply showed reasoning. `extraBody: { think: false }` sets one: [Reasoning mode](../90-recipes/10-local-models.md#reasoning-mode).
 
 The body of every request holds, in this order:
 
@@ -485,9 +531,10 @@ A reply succeeds with `done: true`, the `done_reason` `stop` and a string `messa
 | The reply | Kind | Message |
 | --- | --- | --- |
 | A string `error` | `invalid-response` | `server error: "<message>"` |
-| `done: true` and `done_reason` `length` | `truncated` | `reply was cut off by the token limit or the context`: with `shift: false`, a reply that fills the context ends as `length` too |
+| `done: true` and `done_reason` `length`, or `eval_count` at or above the reply's limit | `truncated`, `reply`, `thinking` or `window` | What it lacked: [What a reply lacked](#what-a-reply-lacked). With `shift: false`, a reply that fills the context ends as `length` too, and is the window's when its input and output reach `num_ctx` |
 | No `done: true`, or a `done_reason` other than `stop` or `length` | `invalid-response` | `reply has not finished` |
-| No string `message.content` | `invalid-response` | `reply has no text` |
+| No `message.content` text, and a `message.thinking` with text | `no-answer`, `thinking` | `reply has no answer, only reasoning: ...` |
+| No `message.content` text, and no thinking | `no-answer`, `empty` | `reply has no answer and no reasoning: ...` |
 
 ## `claudeCode`
 
@@ -601,15 +648,15 @@ The guard of [The size of a request](#the-size-of-a-request), with two differenc
 | --- | --- | --- |
 | `terminal_reason` `prompt_too_long`, or an error result that starts `Prompt is too long` | `too-large` | `Claude Code refused the prompt as too long for the model's context` |
 | `stop_reason` `refusal` | `refusal` | `model refused` |
-| An error result whose `api_error` is `max_output_tokens`: Claude Code continued a reply cut at its limit three times, then gave up | `truncated` | `reply was cut off by the token limit` |
+| An error result whose `api_error` is `max_output_tokens`: Claude Code continued a reply cut at its limit three times, then gave up | `truncated`, `reply` | `reply was cut off at its limit` |
 | An error (`is_error` is not `false`, or `subtype` is not `success`) with an `api_error_status` from 400 to 599 | `http`, retryable as that status would be, so 429 and 5xx are | `HTTP 404 from the model API: "<up to 200 characters>"` |
 | Any other error | `process`, with the exit code as `status` | `claude failed (error_max_structured_output_retries): "<up to 200 characters>"`, the subtype, or the `terminal_reason` of a `success` one, left out when it is not a short word |
 | A signal ended `claude` after a success result | `process` | `claude was stopped by SIGTERM after its result` |
 | A non-zero exit after a success result | `process` | `claude exited 1 after its result` |
 | A tool the server ran: `usage.server_tool_use` or a model's `webSearchRequests` above 0 | `invalid-response` | `the server ran a tool for this reply, which quorum never allows` |
-| A success result with `stop_reason` `max_tokens`, checked before the text | `truncated` | `reply was cut off by the token limit` |
+| A success result with `stop_reason` `max_tokens`, checked before the text | `truncated`, `reply` | `reply was cut off at its limit` |
 | `schema` mode and no structured output, though no error is reported | `invalid-response` | `reply has no structured output`, or `reply structured output could not be serialized` |
-| `prompt` mode and no `result` text | `invalid-response` | `reply has no text` |
+| `prompt` mode and a `result` that is blank or missing | `no-answer`, `empty` | `reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt` |
 
 Without a JSON result, a signal, a non-zero exit and an exit `0` with nothing are each a failure:
 
@@ -639,7 +686,7 @@ Every message starts with the provider id. A quoted text is cut, written as a JS
 - **`usage` is the sum over every model the result reports** in `modelUsage`: the input is every prompt token, cached ones included (`inputTokens`, `cacheReadInputTokens` and `cacheCreationInputTokens`), and the output every token generated. The result's own `usage` covers the last turn only, 2 input tokens against 1199 in a schema run, so its token counts are not read. A result the adapter refuses, cut off, refused or failed after it, carries the same sum in its `ProviderError`'s `usage`; one with no `modelUsage` entry carries none.
 - **`costUsd` is `total_cost_usd`**, Claude Code's own estimate, when it is a number of at least 0.
 - **`model` is the one that answered**: the single key of `modelUsage`, since `--fallback-model` can change it, else the configured one.
-- **The text** is `structured_output` serialized in `schema` mode, and `result` in `prompt` mode.
+- **The text** is `structured_output` serialized in `schema` mode, and `result` in `prompt` mode. It reports no `reasoning`, and reads no count of output tokens as a cut-off: [What a reply lacked](#what-a-reply-lacked).
 
 ### Stopping, nesting and the version
 
@@ -695,6 +742,7 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 | `status` | The HTTP status, for `http`. For a server error in an `openaiCompatible` 2xx reply, it is the status the body's `code` names. For a `claudeCode` `process` error that follows an exit of `claude` (a reported error, or `claude exited 2`), it is that exit code. A signal, a version that is too old, a start failure and a directory failure carry none |
 | `retryable` | `true` for `network` and `timeout`, and for `http` with status 408, 409, 429 or 5xx: a caller may try the call again. A provider may set it, and the core retries only `network`, `timeout` and `http` failures, whatever it says |
 | `retryAfterMs` | The wait the server asked for at least, in milliseconds, or `undefined`. The HTTP adapters set it from the reply's headers, and `gemini` from its body |
+| `noAnswer` | What a `truncated` or `no-answer` reply lacked: `reply`, `thinking`, `window` or `empty`, as [What a reply lacked](#what-a-reply-lacked) says; `undefined` for any other failure |
 | `usage` | The counts of the reply the call failed on, `{ inputTokens, outputTokens, costUsd? }`, when the provider read one that reports them; `undefined` otherwise. The review counts them as the failed call's usage, in its `call` event and in `meta.usage`, and the token cap settles the attempt at them ([The token cap](./20-configuration.md#the-token-cap)). The shipped adapters set it on every failure that follows a reply they read and that reports its counts |
 
 | Kind | Raised when |
@@ -703,8 +751,9 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 | `network` | The request fails, `request to http://localhost:11434 failed (ECONNREFUSED)`, or reading the reply does, `reading the reply from <origin> failed` |
 | `aborted` | The request's signal stopped it, a `claude` run included: `request aborted`. A request carries its attempt's signal, which the review's abort, the review's deadline and the attempt's own deadline all abort, so inside a review an `aborted` failure never surfaces: the attempt's `timeout`, the review's deadline or the abort's reason wins |
 | `refusal` | The model refused, or a filter stopped the reply or the prompt: each adapter's reply table names its messages, and `claudeCode`'s is [Claude Code replies and errors](#claude-code-replies-and-errors) |
-| `truncated` | The token limit or the model's context cut the reply off: `reply was cut off by the token limit`, `anthropic`'s `reply was cut off: the context window is full`, or `ollama`'s `reply was cut off by the token limit or the context` |
-| `invalid-response` | The body is not JSON (`response body is not JSON`), is over 16 MiB (`reply body is over 16 MiB`) or is not an object (`reply is not a JSON object`), for every HTTP adapter. Or the reply holds an error, has not finished, ended early or holds no text, as each adapter's reply table words it. For `claudeCode`: a `claude` that printed no JSON result, a result with no reply or one that shows a tool the server ran, or more than 16 MiB on stdout (`reply is over 16 MiB`) |
+| `truncated` | The token limit, the server's window or a lower cap of the server cut the reply off: `reply was cut off at its limit of 16000 tokens`, `a reply was cut off at 8192 tokens, below the 16000 quorum asked for: ...` or `a reply ended at the server's window ...`, each with its `noAnswer` (`reply`, `thinking` or `window`): [What a reply lacked](#what-a-reply-lacked) |
+| `no-answer` | The reply ended on its own with no visible answer: `reply has no answer, only reasoning: ...` (`noAnswer` `thinking`) or `reply has no answer and no reasoning: ...` (`noAnswer` `empty`). Never retried; three in a row find the provider down: [What a reply lacked](#what-a-reply-lacked) |
+| `invalid-response` | The body is not JSON (`response body is not JSON`), is over 16 MiB (`reply body is over 16 MiB`) or is not an object (`reply is not a JSON object`), for every HTTP adapter. Or the reply holds an error, has not finished or ended early, as each adapter's reply table words it. For `claudeCode`: a `claude` that printed no JSON result, a `schema` result with no structured output or one that shows a tool the server ran, or more than 16 MiB on stdout (`reply is over 16 MiB`) |
 | `too-large` | A request may not fit the model's context, and the provider refused it before sending it: `<id>: may need <n> tokens, more than contextTokens (<c>): ...`, with the numbers [The size of a request](#the-size-of-a-request) explains. Not retryable. The review records it as a `request-too-large` gap, on research and on a vote alike, and never fails on it. `claudeCode` adds a message over its 10,000,000-byte stdin cap, and Claude Code's own refusal of a prompt as too long, which are gaps too: [The size of a Claude Code request](#the-size-of-a-claude-code-request) |
 | `process` | A `claude` that failed, exited or could not start: `claude exited 2: "..."`, `claude failed (...): "..."`, `could not start the claude CLI (ENOENT)`. Only `claudeCode` raises it |
 | `unsupported` | `claudeCode` refuses a request that is not exactly one user message, or whose message starts with `/`. Only `claudeCode` raises it |
@@ -712,7 +761,7 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 
 The core raises one more itself: a provider whose reply has no string `text` fails that call with `<id>: returned no reply text`, of kind `invalid-response`.
 
-The core retries a call as [Deadlines and retries](#deadlines-and-retries) says. A failed research call is its profile's `research-failed` gap, a gating profile's too, unless it is a `too-large` refusal, which is a `request-too-large` gap: the other parts and profiles go on. A provider whose calls fail three times in a row for a reason of its own is found down and called no more, its unsent parts and votes are `provider-down` gaps, and only when no research call answered does `review` reject, with a `ProviderDownError`, which the CLI writes as exit `3`: [When the research call fails](./10-cli.md#when-the-research-call-fails). A failed vote is recorded in the vote's `error` and counts as a reject: [Failed votes](./50-lenses-and-policy.md#failed-votes).
+The core retries a call as [Deadlines and retries](#deadlines-and-retries) says. A failed research call is its profile's `research-failed` gap, a gating profile's too, unless it is a `too-large` refusal, which is a `request-too-large` gap: the other parts and profiles go on. A provider whose calls fail three times in a row for a reason of its own, a reply with no answer included, is found down and called no more, its unsent parts and votes are `provider-down` gaps, and only when no research call answered does `review` reject, with a `ProviderDownError`, which the CLI writes as exit `3`: [When the research call fails](./10-cli.md#when-the-research-call-fails). A failed vote is recorded in the vote's `error` and counts as a reject: [Failed votes](./50-lenses-and-policy.md#failed-votes).
 
 ## Writing a provider
 
@@ -720,7 +769,7 @@ Any object of the port's shape is a provider. It must:
 
 - **return the model's raw text** in `text`, without parsing it: the core extracts and validates the JSON itself, and a reply it cannot use is a failed vote, or, for research, a `research-failed` gap;
 - **honour `request.signal`**, settling soon after it aborts: the core settles the call at its deadline or at the review's abort without waiting, and a provider that ignores the signal works on, outside the review, until it ends;
-- **throw when the call fails**, a `ProviderError` with the closest `kind` for preference. A vote records the message of any `Error`, and the text of anything else thrown;
+- **throw when the call fails**, a `ProviderError` with the closest `kind` for preference. A vote records the message of any `Error`, and the text of anything else thrown. A reply that held no usable answer is `truncated`, with a `noAnswer` of `reply`, `thinking` or `window`, or `no-answer`, with `thinking` or `empty`: the review reads the error's own data `kind` and `noAnswer`, never its message, to say so once and to count a provider that is down;
 - **report `usage` only when it knows it**: `inputTokens` and `outputTokens`, and `costUsd` when it knows the price. It reports it on a reply it returns, and in the `usage` of the `ProviderError` it throws for a reply it read but cannot use, which the review counts as the failed call's;
 - **check the size of its own requests**: quorum states no context size for a provider object. The review's token cap reserves the provider's stated `worstCase`, else the core's own count of the request with 512 and 16000, which bounds the spend and is no size guard: the provider's own check still refuses what may not fit its window. A provider that refuses a request as too large throws a `ProviderError` of kind `too-large`, which the review records as a `request-too-large` gap, on research and on a vote alike, instead of a failure: [`ProviderError`](#providererror). The review recognises the refusal by an own `kind` property of `'too-large'`, not by class, so one raised by a second copy of quorum counts too.
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createHealth, DOWN_AFTER, DOWN_KINDS } from './down.ts'
 import { ProviderDownError, ProviderError } from './errors.ts'
-import type { ProviderErrorKind } from './errors.ts'
+import type { NoAnswer, ProviderErrorKind } from './errors.ts'
 import { LimitError } from './limits.ts'
 import type { Provider } from './ports.ts'
 
@@ -13,12 +13,13 @@ function provider(id = 'api'): Provider {
   }
 }
 
-function failure(kind: ProviderErrorKind, status?: number): ProviderError {
+function failure(kind: ProviderErrorKind, status?: number, noAnswer?: NoAnswer): ProviderError {
   return new ProviderError({
     providerId: 'api',
     kind,
     message: 'it failed',
     status,
+    noAnswer,
   })
 }
 
@@ -29,23 +30,55 @@ describe('a provider being down', () => {
       'http',
       'invalid-response',
       'network',
+      'no-answer',
       'process',
       'timeout',
       'unsupported',
     ])
   })
 
-  it.each<[string, ProviderErrorKind, number | undefined]>([
-    ['http 503', 'http', 503],
-    ['network', 'network', undefined],
-    ['timeout', 'timeout', undefined],
-    ['process', 'process', undefined],
-    ['unsupported', 'unsupported', undefined],
-    ['invalid-response', 'invalid-response', undefined],
-  ])('counts a call that ended with %s toward a provider being down', (_name, kind, status) => {
+  it.each<[string, ProviderErrorKind, number | undefined, NoAnswer | undefined]>([
+    ['http 503', 'http', 503, undefined],
+    [
+      'network',
+      'network',
+      undefined,
+      undefined,
+    ],
+    [
+      'timeout',
+      'timeout',
+      undefined,
+      undefined,
+    ],
+    [
+      'process',
+      'process',
+      undefined,
+      undefined,
+    ],
+    [
+      'unsupported',
+      'unsupported',
+      undefined,
+      undefined,
+    ],
+    [
+      'invalid-response',
+      'invalid-response',
+      undefined,
+      undefined,
+    ],
+    [
+      'no-answer',
+      'no-answer',
+      undefined,
+      'thinking',
+    ],
+  ])('counts a call that ended with %s toward a provider being down', (_name, kind, status, noAnswer) => {
     const health = createHealth()
     const api = provider()
-    const error = failure(kind, status)
+    const error = failure(kind, status, noAnswer)
     expect(health.failed(api, 'api', error)).toBeUndefined()
     expect(health.failed(api, 'api', error)).toBeUndefined()
     expect(health.refused(api)).toBeUndefined()
@@ -55,6 +88,7 @@ describe('a provider being down', () => {
       providerId: 'api',
       kind,
       status,
+      noAnswer,
       count: 3,
       streak: true,
       cause: error,
