@@ -509,24 +509,32 @@ export interface ProfileEstimate {
   votes: number
   /** What the ledger reserves at most for one vote of each lens, keyed by lens id. Empty when research makes no call. */
   vote: Record<string, number>
-  /** The research parts alone, each counted at a third of its reservation, rounded up: code takes about that many tokens, not one per byte. The votes are not in it, since how many findings research reports is not known before it runs. */
+  /** The research parts alone, each counted at a third of its input, rounded up (code takes about that many tokens, not one per byte), and its reply at the lesser of its budget and 4096 tokens, its usual size. The votes are not in it, since how many findings research reports is not known before it runs. */
   expected: number
-  /** The most the profile may reserve in all: the research parts in full, and `maxFindings` votes of every lens at its bound. */
+  /** The most the profile may reserve in all: each research part in full and every piece recovery may make of it, and `maxFindings` votes of every lens at its bound. The calls an adaptation sends once more are the provider's, and join `Estimate.worst` alone. */
   worst: number
+  /** The findings its research requests ask for at most, the most serious first: `maxFindings`, or fewer when the research provider's reply budget holds fewer. */
+  findings: number
+  /** The id of the profile's research provider. */
+  provider: string
 }
 
 /**
  * What a review of a diff may cost, as `Quorum.estimate` states it: no call is made. `profiles` is keyed by
- * profile id, in the run's order; `expected` and `worst` sum the profiles'. `inFlight` is what the calls that
- * run at once reserve, the `concurrency` largest bounds among every research part and vote, and `fits` is
- * whether `expected` and `inFlight` together are within `maxReviewTokens`. It is an estimate: the review's
- * ledger still holds the cap, whatever `fits` says.
+ * profile id, in the run's order; `expected` sums the profiles', and `worst` too, plus what each provider's
+ * adaptations may send once more: per setting its `adapts` states, the `concurrency` largest reservations of its
+ * calls. `worst` is an upper bound, never an average, with one attempt per call: a retry reserves again. `inFlight` is what the calls that run at once reserve, the
+ * `concurrency` largest bounds among every research part and vote, and `fits` is whether `expected` and `inFlight`
+ * together are within `maxReviewTokens`: recovery and the adaptations are in `worst` and not in `fits`. It is an
+ * estimate: the review's ledger still holds the cap, whatever `fits` says.
  */
 export interface Estimate {
   profiles: Record<string, ProfileEstimate>
   expected: number
   worst: number
   inFlight: number
+  /** How many findings of a research reply each profile sends to the panel, as `createQuorum` was given or defaulted it. */
+  maxFindings: number
   /** The token cap of every review of the quorum, as `createQuorum` was given or defaulted it. */
   maxReviewTokens: number
   /** The deadline of every review of the quorum, in milliseconds. */
@@ -547,8 +555,9 @@ export interface Quorum {
   /**
    * What a review of `input.diff` may cost, before any call: per profile, what the token ledger reserves for each
    * research part, and a bound for every vote. It makes no call and reads no file. The research parts are counted
-   * at a third of their reservation in `expected`, code taking about three bytes a token, and the votes in the
-   * worst case only; `fits` says whether `expected` and what the calls in flight reserve are within
+   * in `expected` at a third of their input, code taking about three bytes a token, and their reply at its usual
+   * size, and the votes in the worst case only, which also counts every part recovered and the calls an adaptation
+   * sends once more; `fits` says whether `expected` and what the calls in flight reserve are within
    * `maxReviewTokens`. It is an estimate, not a promise: a review still reserves each call against the cap.
    * A file held back as a secret costs nothing, and one `input.send` names is counted, as `review` sends it.
    * Throws a `ConfigError` for an input `review` would refuse.

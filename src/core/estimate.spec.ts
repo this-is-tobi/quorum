@@ -5,7 +5,7 @@ import { ConfigError } from './errors.ts'
 import type { CompletionRequest, Provider, QuorumPorts } from './ports.ts'
 import { researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum } from './quorum.ts'
-import { requestTokens } from './tokens.ts'
+import { requestTokens, tokenBound } from './tokens.ts'
 import type { Estimate, Finding, Profile, Quorum, QuorumEvent } from './types.ts'
 
 /** What a provider keeps over a request's own bound: 512 tokens for the chat template and 16000 for the reply, which the providers here state as an attempt's worst case. */
@@ -189,7 +189,7 @@ describe('estimate', () => {
     expect(events.filter(event => event.type === 'call').map(call => call.spent)).toEqual(estimate.profiles.security.parts)
   })
 
-  it('counts the research parts at a third of their bound, rounded up, and the votes in the worst case only', () => {
+  it('counts the research parts at a third of their input and a reply at its usual size, and the votes in the worst case only', () => {
     const finder = windowed(32_768, () => '{"findings":[]}')
     const quorum = createQuorum({
       profiles: [securityProfile],
@@ -201,11 +201,269 @@ describe('estimate', () => {
     expect(security.parts.length).toBeGreaterThan(1)
     expect(Object.keys(security.vote)).toEqual(['reachability', 'impact', 'defenses'])
     expect(security.votes).toBe(7 * 3)
-    expect(security.expected).toBe(sum(security.parts.map(part => Math.ceil(part / 3))))
-    expect(security.worst).toBe(sum(security.parts) + 7 * sum(Object.values(security.vote)))
+    // A provider that states no window nor maxTokens is reserved the 16000 tokens of the core's own reply budget.
+    expect(security.expected).toBe(sum(security.parts.map(part => Math.ceil((part - 16_000) / 3) + 4096)))
+    expect(security.worst).toBeGreaterThan(sum(security.parts) + 7 * sum(Object.values(security.vote)))
     expect(estimate.expected).toBe(security.expected)
-    expect(estimate.worst).toBe(security.worst)
+    expect(estimate.worst).toBeGreaterThanOrEqual(security.worst)
     expect(finder.requests).toEqual([])
+  })
+
+  it('expects a research reply at the lesser of its budget and 4096, not a third of maxTokens', () => {
+    const diff = Array.from({ length: 8 }, (_, index) => addedFile(`f${index}.js`, 120)).join('\n')
+    const reserve = (request: CompletionRequest): number => requestTokens(request) + 512 + (request.replyTokens ?? 16_000)
+    const expectedOf = (parts: readonly number[], reply: number): number => sum(parts.map(part => Math.ceil((part - reply) / 3) + Math.min(reply, 4096)))
+    const estimateFor = (provider: Provider): Estimate => createQuorum({
+      profiles: [securityProfile],
+      partTokens: 10_000,
+    }, portsFor(securityProfile, provider)).estimate({ diff })
+
+    for (const maxTokens of [100_000, 2000]) {
+      const finder: Provider = {
+        ...windowed(240_000, () => '{"findings":[]}'),
+        window: 240_000,
+        maxTokens,
+        worstCase: reserve,
+        room: request => 240_000 - reserve(request),
+      }
+      const { parts, expected } = estimateFor(finder).profiles.security
+      expect(parts).toHaveLength(8)
+      // Each part's input at a third, and its reply at the lesser of its budget and 4096: a larger maxTokens is headroom.
+      expect(expected).toBe(expectedOf(parts, maxTokens))
+      if (maxTokens === 100_000) expect(expected).toBeLessThan(sum(parts.map(part => Math.ceil(part / 3))))
+    }
+    // With nothing stated to size a reply by, the reply is the core's 16000.
+    const silentFinder = silent(reserve)
+    const alone = estimateFor(silentFinder).profiles.security
+    expect(alone.expected).toBe(expectedOf(alone.parts, 16_000))
+  })
+
+  it('counts recovery\'s bound for each part, and concurrency of each provider\'s largest reservations for each of its two settings, in worst', () => {
+    /** What recovery may spend beyond a part's own reservation: each of three depths holds the diff once, and its 14 pieces repeat one header and the part's fixed text each, with what a piece's position adds. */
+    const recoveryBound = (reservation: number, d: number, h: number, extra: number): number => 3 * d + 14 * h + 14 * (reservation - d + extra)
+    const headerOf = (section: string): number => tokenBound(section.slice(0, section.indexOf('@@') - 1)) + 1
+    const topSum = (bounds: readonly number[], count: number): number => sum([...bounds].sort((a, b) => b - a).slice(0, count))
+    const lone: Profile = {
+      id: 'lone',
+      prompts: { research: 'Find bugs.', vote: 'Judge as {{lens.id}}.' },
+      lenses: [
+        { id: 'only', question: 'Is it real?' },
+      ],
+      policy: { high: 'unanimous', medium: 'off', low: 'off' },
+    }
+    const reserve = (request: CompletionRequest): number => requestTokens(request) + RESERVE
+    const ports = (research: Provider, voter: Provider): QuorumPorts => ({
+      profiles: {
+        lone: {
+          research,
+          voters: { only: voter },
+        },
+      },
+    })
+
+    // A research of one request: the part is the whole diff, and a piece adds a parts block with a position line alone.
+    const small = addedFile('a.js', 3)
+    const ask = { findings: 3 }
+    const oneRequest = researchRequest('Find bugs.', '', undefined, undefined, ask)
+    const asPiece = researchRequest('Find bugs.', '', undefined, {
+      piece: { index: 8, count: 8 },
+      files: [],
+      unlisted: 0,
+    }, ask)
+    const pieceExtra = requestTokens(asPiece) - requestTokens(oneRequest)
+    expect(pieceExtra).toBeGreaterThan(0)
+    const researcher: Provider = {
+      ...silent(reserve),
+      adapts: { thinking: 'low', prompt: true },
+    }
+    const voter: Provider = {
+      ...silent(reserve),
+      adapts: { prompt: true },
+    }
+    const single = createQuorum({
+      profiles: [lone],
+      maxFindings: 3,
+      concurrency: 2,
+    }, ports(researcher, voter)).estimate({ diff: small })
+    const [reservation] = single.profiles.lone.parts
+    const vote = single.profiles.lone.vote.only
+    const d = tokenBound(small)
+    const bound = recoveryBound(reservation, d, headerOf(small), pieceExtra)
+    // The profile counts the part, its recovery and its three votes; the review adds each provider's calls sent once more: the researcher's two settings over its one call (as a piece, its position included), the voter's one over two of its three votes.
+    expect(single.profiles.lone.worst).toBe(reservation + bound + 3 * vote)
+    expect(single.worst).toBe(single.profiles.lone.worst + 2 * topSum([reservation + pieceExtra], 2) + topSum([vote, vote, vote], 2))
+
+    // A provider that states no adapts sends no probe: nothing is added.
+    const plain = createQuorum({
+      profiles: [lone],
+      maxFindings: 3,
+      concurrency: 2,
+    }, ports(silent(reserve), silent(reserve))).estimate({ diff: small })
+    expect(plain.worst).toBe(plain.profiles.lone.worst)
+
+    // A research in parts, one file to a part: each part's own diff, header and position (the parts block lists the files).
+    const files = ['f1.js', 'f2.js', 'f3.js']
+    const diff = files.map(name => addedFile(name, 100)).join('\n')
+    const sections = files.map(name => splitDiff(diff).get(name) ?? '')
+    const partTokens = tokenBound(sections[0]) + 100
+    const solo: Provider = {
+      ...windowed(200_000, () => '{"findings":[]}'),
+      adapts: { thinking: 'low' },
+    }
+    const profile = securityProfile
+    const packed = createQuorum({
+      profiles: [profile],
+      partTokens,
+      concurrency: 2,
+    }, portsFor(profile, solo)).estimate({ diff })
+    const { security } = packed.profiles
+    expect(security.parts).toHaveLength(3)
+    const asked = { findings: 50 }
+    const instructions = profile.prompts.research
+    const partOf = {
+      index: 1,
+      count: 3,
+      files,
+      unlisted: 0,
+    }
+    const partExtra = requestTokens(researchRequest(instructions, '', undefined, {
+      ...partOf,
+      piece: { index: 8, count: 8 },
+    }, asked)) - requestTokens(researchRequest(instructions, '', undefined, partOf, asked))
+    expect(partExtra).toBeGreaterThan(0)
+    const recovery = sum(security.parts.map((part, index) => part + recoveryBound(part, tokenBound(sections[index]), headerOf(sections[index]), partExtra)))
+    expect(security.worst).toBe(recovery + 50 * sum(Object.values(security.vote)))
+    // One setting over the two largest of the provider's calls, whether research parts or the votes each lens may cast.
+    const calls = [
+      ...security.parts.map(part => part + partExtra),
+      ...Object.values(security.vote).flatMap(bound => Array.from<number>({ length: 50 }).fill(bound)),
+    ]
+    expect(packed.worst).toBe(security.worst + topSum(calls, 2))
+  })
+
+  it('counts a provider object that serves research and votes once in the adaptations\' bound', () => {
+    const lone: Profile = {
+      id: 'lone',
+      prompts: { research: 'Find bugs.', vote: 'Judge as {{lens.id}}.' },
+      lenses: [
+        { id: 'only', question: 'Is it real?' },
+      ],
+      policy: { high: 'unanimous', medium: 'off', low: 'off' },
+    }
+    const reserve = (request: CompletionRequest): number => requestTokens(request) + RESERVE
+    const topSum = (bounds: readonly number[], count: number): number => sum([...bounds].sort((a, b) => b - a).slice(0, count))
+    const small = addedFile('a.js', 3)
+    const pieceExtra = requestTokens(researchRequest('Find bugs.', '', undefined, {
+      piece: { index: 8, count: 8 },
+      files: [],
+      unlisted: 0,
+    }, { findings: 3 })) - requestTokens(researchRequest('Find bugs.', '', undefined, undefined, { findings: 3 }))
+    const adapts = { thinking: 'low' as const, prompt: true as const }
+    const options = {
+      profiles: [lone],
+      maxFindings: 3,
+      concurrency: 2,
+    }
+    // The owner's own configuration: one provider object is the research and every voter.
+    const one: Provider = {
+      ...silent(reserve),
+      adapts,
+    }
+    const shared = createQuorum(options, portsFor(lone, one)).estimate({ diff: small })
+    const [reservation] = shared.profiles.lone.parts
+    const vote = shared.profiles.lone.vote.only
+    // Its two settings count once over its research part (as a piece) and its three votes together, `concurrency` of the largest in all.
+    expect(shared.worst).toBe(shared.profiles.lone.worst + 2 * topSum([
+      reservation + pieceExtra,
+      vote,
+      vote,
+      vote,
+    ], 2))
+    // Two objects of the same states, as two providers would be, each count their own calls: more than the one object does.
+    const separate = createQuorum(options, {
+      profiles: {
+        lone: {
+          research: {
+            ...silent(reserve),
+            adapts,
+          },
+          voters: {
+            only: {
+              ...silent(reserve),
+              adapts,
+            },
+          },
+        },
+      },
+    }).estimate({ diff: small })
+    expect(separate.worst).toBe(separate.profiles.lone.worst + 2 * topSum([reservation + pieceExtra], 2) + 2 * topSum([vote, vote, vote], 2))
+    expect(separate.worst).toBeGreaterThan(shared.worst)
+  })
+
+  it('states the N each profile\'s research asks for, and its provider', () => {
+    const profile = (id: string): Profile => ({
+      id,
+      prompts: { research: 'Find bugs.', vote: 'Judge as {{lens.id}}.' },
+      lenses: [
+        { id: 'only', question: 'Is it real?' },
+      ],
+      policy: { high: 'unanimous', medium: 'off', low: 'off' },
+    })
+    const small: Provider = {
+      ...windowed(32_768, () => '{"findings":[]}'),
+      window: 32_768,
+    }
+    const estimate = createQuorum({
+      profiles: [
+        profile('tight'),
+        profile('free'),
+      ],
+    }, {
+      profiles: {
+        tight: {
+          research: small,
+          voters: { only: small },
+        },
+        free: {
+          research: silent(),
+          voters: {
+            only: silent(),
+          },
+        },
+      },
+    }).estimate({
+      diff: addedFile('a.js', 3),
+    })
+
+    // A window of 32768 gives research 8192 tokens and 15 findings; a provider that states none asks for maxFindings.
+    expect(estimate.maxFindings).toBe(50)
+    expect(estimate.profiles.tight).toMatchObject({ findings: 15, provider: 'windowed' })
+    expect(estimate.profiles.free).toMatchObject({ findings: 50, provider: 'silent' })
+  })
+
+  it('keeps fits to expected and inFlight within the cap', () => {
+    const diff = Array.from({ length: 8 }, (_, index) => addedFile(`f${index}.js`, 120)).join('\n')
+    const reserve = (request: CompletionRequest): number => requestTokens(request) + 512 + (request.replyTokens ?? 16_000)
+    const finder: Provider = {
+      ...windowed(240_000, () => '{"findings":[]}'),
+      window: 240_000,
+      maxTokens: 100_000,
+      worstCase: reserve,
+      room: request => 240_000 - reserve(request),
+      adapts: { thinking: 'low', prompt: true },
+    }
+    const estimateAt = (maxReviewTokens: number): Estimate => createQuorum({
+      profiles: [securityProfile],
+      partTokens: 10_000,
+      maxReviewTokens,
+    }, portsFor(securityProfile, finder)).estimate({ diff })
+    const { expected, inFlight, worst } = estimateAt(2_000_000)
+    const needed = expected + inFlight
+
+    // The worst case, which counts every part recovered, is many times the cap, and `fits` leaves it out.
+    expect(worst).toBeGreaterThan(5 * needed)
+    expect(estimateAt(needed)).toMatchObject({ fits: true, worst })
+    expect(estimateAt(needed - 1).fits).toBe(false)
   })
 
   it('estimates a blank diff, and one whose every file is excluded, as no call', () => {
@@ -218,11 +476,14 @@ describe('estimate', () => {
           vote: {},
           expected: 0,
           worst: 0,
+          findings: 50,
+          provider: 'windowed',
         },
       },
       expected: 0,
       worst: 0,
       inFlight: 0,
+      maxFindings: 50,
       maxReviewTokens: 2_000_000,
       reviewTimeoutMs: 1_800_000,
       fits: true,
