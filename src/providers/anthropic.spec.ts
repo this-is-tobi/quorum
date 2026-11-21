@@ -46,6 +46,12 @@ describeProviderContract({
     temperature: body => body.temperature,
     maxTokens: body => body.max_tokens,
   },
+  thinking: {
+    read: body => (body.output_config as Body | undefined)?.effort,
+    extraBody: {
+      output_config: { effort: 'high' },
+    },
+  },
   reservedBodyKeys: [
     'model',
     'messages',
@@ -93,6 +99,39 @@ describe('anthropic', () => {
     apiKey: 'sk-ant-k',
   }
   const provider = anthropic(options)
+
+  it.each([
+    [
+      'prompt',
+      { effort: 'low' },
+    ],
+    [
+      'schema',
+      {
+        format: {
+          type: 'json_schema',
+          schema: { type: 'object' },
+        },
+        effort: 'low',
+      },
+    ],
+  ] as const)('sends thinking low as its protocol\'s control in %s mode, beside the format', async (structuredOutput, outputConfig) => {
+    const fetchMock = stubFetch(message)
+    const low = anthropic({ ...options, structuredOutput, thinking: 'low' })
+    await low.complete(request)
+    expect(sent(fetchMock).body.output_config).toEqual(outputConfig)
+    expect(low.thinking).toBe('low')
+  })
+
+  it('refuses thinking off on anthropic, naming low and extraBody', () => {
+    const refused = (): unknown => anthropic({ ...options, thinking: 'off' })
+    expect(refused).toThrow(ConfigError)
+    expect(refused).toThrow(expect.objectContaining({
+      issues: [
+        { path: 'claude.thinking', message: 'the anthropic protocol has no one setting that turns thinking off on every model: set thinking: low, or set thinking in extraBody for your model' },
+      ],
+    }))
+  })
 
   it('posts the system text, the conversation and a 16000-token limit to /v1/messages, with the version header and no temperature', async () => {
     const fetchMock = stubFetch(message)

@@ -35,6 +35,7 @@ export interface RoleOverrides {
   readonly timeoutMs?: number
   readonly retries?: number
   readonly apiKey?: string
+  readonly thinking?: string
 }
 
 /** What the environment holds for the config layer. */
@@ -66,6 +67,7 @@ const VARIABLES: ReadonlyArray<{ readonly field: keyof RoleOverrides, readonly s
   { field: 'timeoutMs', suffix: 'TIMEOUT_MS', aliased: false },
   { field: 'retries', suffix: 'RETRIES', aliased: false },
   { field: 'apiKey', suffix: 'API_KEY', aliased: true },
+  { field: 'thinking', suffix: 'THINKING', aliased: false },
 ]
 const ROLES: readonly Role[] = ['RESEARCH', 'VOTER']
 /** Each role as `RoleBinding` names it, with its variables' prefix. */

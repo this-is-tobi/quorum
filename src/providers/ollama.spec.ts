@@ -47,6 +47,10 @@ describeProviderContract({
     temperature: body => runtime(body).temperature,
     maxTokens: body => runtime(body).num_predict,
   },
+  thinking: {
+    read: body => body.think,
+    extraBody: { think: true },
+  },
   reservedBodyKeys: [
     'model',
     'messages',
@@ -81,6 +85,17 @@ describe('ollama', () => {
     { role: 'system', content: 'instructions' },
     { role: 'user', content: 'data' },
   ]
+
+  it.each([
+    ['low', 'low'],
+    ['off', false],
+  ] as const)('sends thinking %s as its protocol\'s control', async (thinking, think) => {
+    const fetchMock = stubFetch(chatResponse)
+    const provider = ollama({ ...options, thinking })
+    await provider.complete(request)
+    expect(sent(fetchMock).body.think).toBe(think)
+    expect(provider.thinking).toBe(thinking)
+  })
 
   it('posts the system message first, then the data, to /api/chat, with no stream, no truncation, temperature 0 and JSON format', async () => {
     const fetchMock = stubFetch(chatResponse)

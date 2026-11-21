@@ -50,6 +50,14 @@ describeProviderContract({
     temperature: body => generationConfig(body)?.temperature,
     maxTokens: body => generationConfig(body)?.maxOutputTokens,
   },
+  thinking: {
+    read: body => generationConfig(body)?.thinkingConfig,
+    extraBody: {
+      generationConfig: {
+        thinkingConfig: { thinkingBudget: 0 },
+      },
+    },
+  },
   reservedBodyKeys: ['contents', 'systemInstruction'],
   toolBodyKeys: ['tools', 'toolConfig', 'cachedContent'],
   replyLimitPaths: [
@@ -95,6 +103,17 @@ describe('gemini', () => {
       ],
     },
   }
+
+  it.each([
+    ['low', 'LOW'],
+    ['off', 'MINIMAL'],
+  ] as const)('sends thinking %s as its protocol\'s control', async (thinking, level) => {
+    const fetchMock = stubFetch(generateContentResponse)
+    const provider = gemini({ ...options, thinking })
+    await provider.complete(request)
+    expect(generationConfig(sent(fetchMock).body)?.thinkingConfig).toEqual({ thinkingLevel: level })
+    expect(provider.thinking).toBe(thinking)
+  })
 
   it('posts the conversation, the system instruction and JSON mode to the model\'s generateContent, with the key in x-goog-api-key', async () => {
     const fetchMock = stubFetch(generateContentResponse)

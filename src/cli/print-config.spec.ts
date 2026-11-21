@@ -180,6 +180,12 @@ describe('printConfig', () => {
     expect(printed({ ...SPEC, contextTokens: 65536 })).toContain('    model: m\n    contextTokens: 65536\n')
   })
 
+  it('prints thinking when set', () => {
+    expect(printed({ ...SPEC, maxTokens: 900, thinking: 'low' })).toContain('    maxTokens: 900\n    thinking: low\n')
+    expect(printed({ ...SPEC, thinking: 'off' })).toContain('\n    thinking: "off"\n')
+    expect(printed(SPEC)).not.toContain('thinking')
+  })
+
   it('prints a provider\'s timeoutMs and retries after its system prompt when it sets them, and a provider object\'s after its model', () => {
     expect(printed({ ...SPEC, timeoutMs: 120000, retries: 0 })).toContain('    timeoutMs: 120000\n    retries: 0\n')
     const unset = printed(SPEC)

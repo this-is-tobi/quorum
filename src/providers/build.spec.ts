@@ -963,6 +963,50 @@ describe('buildProvider', () => {
       expect((thrown as ConfigError).message).not.toMatch(/zz|gpt-oss/)
     }
   })
+
+  it.each<[string, Record<string, unknown>, Record<string, unknown>, string]>([
+    [
+      'reasoning_effort',
+      { protocol: 'openai-compatible' },
+      { reasoning_effort: 'high' },
+      'reasoning_effort',
+    ],
+    [
+      'output_config.effort',
+      { protocol: 'anthropic' },
+      {
+        output_config: { effort: 'high' },
+      },
+      'output_config.effort',
+    ],
+    [
+      'generationConfig.thinkingConfig',
+      { protocol: 'gemini' },
+      {
+        generationConfig: {
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      },
+      'generationConfig.thinkingConfig',
+    ],
+    [
+      'think',
+      { protocol: 'ollama' },
+      { think: false },
+      'think',
+    ],
+  ])('refuses thinking beside %s in extraBody', (_control, protocol, extraBody, field) => {
+    expect(issuesOf({
+      id: 'p',
+      ...protocol,
+      baseUrl: 'https://h.example',
+      model: 'm',
+      thinking: 'low',
+      extraBody,
+    })).toEqual([
+      { path: 'p.thinking', message: `is set, and extraBody sets ${field} too: two settings for one control, so keep one` },
+    ])
+  })
 })
 
 describe('a claude-code provider', () => {

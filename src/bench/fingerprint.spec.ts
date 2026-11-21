@@ -272,6 +272,12 @@ describe('fingerprint', () => {
     expect(same(of({ ...PROVIDER, timeoutMs: 120000 }), of(PROVIDER))).toBe(false)
   })
 
+  it('moves the fingerprint when thinking is set, and keeps it when it is not', () => {
+    expect(same(of({ ...PROVIDER, thinking: 'low' }), of(PROVIDER))).toBe(false)
+    expect(same(of({ ...PROVIDER, thinking: 'off' }), of({ ...PROVIDER, thinking: 'low' }))).toBe(false)
+    expect(same(of({ ...PROVIDER, thinking: undefined }), of(PROVIDER))).toBe(true)
+  })
+
   it('changes with the salt', () => {
     expect(fingerprint(of(PROVIDER), SALT)).not.toBe(fingerprint(of(PROVIDER), 'b'.repeat(64)))
   })

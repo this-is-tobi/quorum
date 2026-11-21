@@ -27,6 +27,12 @@ export type Auth = 'bearer' | 'x-api-key' | 'none' | { readonly header: string, 
 /** How the reply shape reaches the endpoint: described in the prompt only, as a JSON object, or as a strict schema. */
 export type StructuredOutput = 'prompt' | 'json' | 'schema'
 
+/** How much the model thinks: `low`, or `off`, which each protocol maps to its own control. */
+export type Thinking = 'low' | 'off'
+
+/** The levels a provider may set, in the order a message names them. */
+export const THINKING_LEVELS: readonly Thinking[] = ['low', 'off']
+
 /** The options every HTTP adapter takes. Each adapter documents its defaults. */
 export interface HttpProviderOptions {
   /** Names the provider in events, `meta` and its error messages. */
@@ -65,6 +71,12 @@ export interface HttpProviderOptions {
   maxTokens?: number
   systemPrompt?: SystemPrompt
   structuredOutput?: StructuredOutput
+  /**
+   * The model's thinking, sent as the protocol's own control: `low`, or `off`, which the anthropic protocol
+   * refuses, since no one setting turns thinking off on every model. Unset, the server's default, which quorum
+   * lowers by itself when a reply runs out of room while reasoning. Refused beside the same control in `extraBody`.
+   */
+  thinking?: Thinking
   /** The deadline of one attempt, in milliseconds, from 1000 to 86400000. Default 600000. */
   timeoutMs?: number
   /** The retries of a call that failed in passing, from 0 to 5. Default 2. */
@@ -395,6 +407,50 @@ export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRul
   }
   issues.push(...attemptIssues(id, timeoutMs, retries))
   return issues
+}
+
+/** Where a protocol's thinking control sits in the body, as the keys leading to it, and whether the protocol can honour `off`. */
+export interface ThinkingControl {
+  readonly path: readonly string[]
+  /** Set when the protocol has no one setting that turns thinking off: `off` is then refused with this advice. */
+  readonly offRefusal?: string
+}
+
+/**
+ * Whether `extraBody` sets the control at `path`: a key that a server reads as the path's key (any letter case,
+ * with or without underscores, as `bodyKeyForm` folds it), at every step, through objects only. Merged last,
+ * such a control undoes whatever the adapter sends for `thinking`, so quorum neither sends both nor lowers it.
+ */
+export function thinkingControl(extraBody: unknown, path: readonly string[]): boolean {
+  const [head, ...rest] = path
+  if (head === undefined || !isRecord(extraBody)) return false
+  return Object.entries(extraBody).some(([key, value]) => bodyKeyForm(key) === bodyKeyForm(head)
+    && (rest.length === 0 || thinkingControl(value, rest)))
+}
+
+/**
+ * The problem of `thinking`, one issue at `<id>.thinking`: a value that is neither `low` nor `off`; `off` where
+ * the protocol cannot honour it; or a value beside the same control in `extraBody`, which names the control's
+ * path. No message repeats the value.
+ */
+export function thinkingIssues(id: string, thinking: unknown, extraBody: unknown, control: ThinkingControl): ConfigIssue[] {
+  if (thinking === undefined) return []
+  const path = `${id}.thinking`
+  if (!THINKING_LEVELS.includes(thinking as Thinking)) {
+    return [
+      { path, message: `must be ${wordList(THINKING_LEVELS)}` },
+    ]
+  }
+  if (thinking === 'off' && control.offRefusal !== undefined) {
+    return [
+      { path, message: control.offRefusal },
+    ]
+  }
+  return thinkingControl(extraBody, control.path)
+    ? [
+        { path, message: `is set, and extraBody sets ${control.path.join('.')} too: two settings for one control, so keep one` },
+      ]
+    : []
 }
 
 /**

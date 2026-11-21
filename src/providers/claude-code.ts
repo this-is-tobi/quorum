@@ -139,6 +139,8 @@ const HTTP_FIELDS = [
   'temperature',
   'systemPrompt',
 ] as const
+/** Why `thinking` is no option of the CLI: its effort is a flag it already takes. */
+const THINKING_REFUSAL = 'claude-code takes its effort from args: --effort low'
 const WINDOWS_SCRIPT = /\.(?:cmd|bat)$/i
 const PATH_SEPARATOR = /[/\\]/
 
@@ -395,6 +397,7 @@ export function claudeCodeIssues(options: ClaudeCodeOptions): ConfigIssue[] {
   const issues: ConfigIssue[] = HTTP_FIELDS
     .filter(field => Object.hasOwn(given, field) && given[field] !== undefined)
     .map(field => at(field, 'is not an option of the claude-code protocol'))
+  if (Object.hasOwn(given, 'thinking') && given.thinking !== undefined) issues.push(at('thinking', THINKING_REFUSAL))
   if (typeof model !== 'string' || !plainValue(model)) issues.push(at('model', 'must be a model id of visible ASCII characters, with no space, that does not start with -'))
   issues.push(...maxTokensIssues(id, maxTokens))
   issues.push(...contextTokensIssues(id, contextTokens, maxTokens, CLAUDE_CODE_TEMPLATE_TOKENS))

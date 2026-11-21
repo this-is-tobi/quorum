@@ -91,6 +91,16 @@ describe('resolveConfig', () => {
     ])
   })
 
+  it('refuses a thinking variable that is neither off nor low, at the variable', () => {
+    expect(issuesOf({}, { QUORUM_RESEARCH_MODEL: 'q', QUORUM_RESEARCH_THINKING: 'medium', ...SIZE })).toEqual([
+      { path: 'QUORUM_RESEARCH_THINKING', message: 'must be low or off' },
+    ])
+    expect(issuesOf({}, { QUORUM_RESEARCH_MODEL: 'q', QUORUM_VOTER_THINKING: 'none', ...SIZE })).toEqual([
+      { path: 'QUORUM_VOTER_THINKING', message: 'must be low or off' },
+    ])
+    expect(resolve({}, { QUORUM_RESEARCH_MODEL: 'q', QUORUM_RESEARCH_THINKING: 'off', ...SIZE }).providers.default).toMatchObject({ thinking: 'off' })
+  })
+
   it('reads the deprecated aliases as today\'s CLI does, with one warning', () => {
     const config = resolve({}, {
       RESEARCH_MODEL: 'qwen',

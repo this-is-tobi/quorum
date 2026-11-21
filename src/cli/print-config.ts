@@ -77,6 +77,7 @@ function specView(spec: ProviderSpec): Record<string, unknown> {
     temperature: own(spec, 'temperature'),
     maxTokens: own(spec, 'maxTokens'),
     maxTokensField: own(spec, 'maxTokensField'),
+    thinking: own(spec, 'thinking'),
     systemPrompt: systemPromptView(own(spec, 'systemPrompt')),
     timeoutMs: own(spec, 'timeoutMs'),
     retries: own(spec, 'retries'),

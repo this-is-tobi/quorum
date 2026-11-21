@@ -34,15 +34,16 @@ export function replyBudgetOf(request: Pick<CompletionRequest, 'replyTokens'>, m
 
 /**
  * What an HTTP adapter states of itself to the core, which sizes a request's reply from it: its window, its
- * `maxTokens` when the options set one, and its thinking, which is the server's default.
+ * `maxTokens` when the options set one, and its thinking: the option's level, else `default`, the server's own,
+ * which is also what a provider whose `extraBody` sets the control states, since quorum cannot read that level.
  */
-export function statedReply(contextTokens: number, maxTokens: number | undefined): { readonly window: number, readonly maxTokens?: number, readonly thinking: 'default' } {
+export function statedReply(contextTokens: number, maxTokens: number | undefined, thinking: 'low' | 'off' | undefined = undefined): { readonly window: number, readonly maxTokens?: number, readonly thinking: 'default' | 'low' | 'off' } {
   return {
     window: contextTokens,
     ...maxTokens === undefined
       ? {}
       : { maxTokens },
-    thinking: 'default',
+    thinking: thinking ?? 'default',
   }
 }
 

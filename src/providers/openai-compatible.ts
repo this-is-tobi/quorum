@@ -2,8 +2,8 @@ import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { isRecord, mergeBody, prepareHttp } from './options.ts'
-import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
+import { isRecord, mergeBody, prepareHttp, thinkingIssues } from './options.ts'
+import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput, Thinking, ThinkingControl } from './options.ts'
 import { endedEarly, joinedText, MAX_MODEL_TEXT, readAnswer, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
 import type { ContextBudget } from './size.ts'
@@ -52,6 +52,10 @@ const RULES: Omit<AdapterRules, 'auth'> = {
   fixedHeaders: [],
   structuredOutputs: ['prompt', 'json', 'schema'],
 }
+/** `reasoning_effort`, which `low` sends as it is and `off` as `none`, the value that turns thinking off where a server takes one. */
+const THINKING: ThinkingControl = {
+  path: ['reasoning_effort'],
+}
 const MAX_TOKENS_FIELDS: ReadonlySet<unknown> = new Set(['max_tokens', 'max_completion_tokens'])
 
 function responseFormat(mode: StructuredOutput, output: CompletionRequest['output']): unknown {
@@ -63,6 +67,12 @@ function responseFormat(mode: StructuredOutput, output: CompletionRequest['outpu
     }
   }
   return undefined
+}
+
+function reasoningEffort(thinking: Thinking | undefined): string | undefined {
+  return thinking === 'off'
+    ? 'none'
+    : thinking
 }
 
 /** Finish reasons that end a reply before the model is done, besides the token limit and the content filter. */
@@ -195,19 +205,22 @@ function readReply(reply: unknown, { id, model, budget }: Pick<OpenAICompatibleO
  * budget at most `maxTokens`, else `maxTokens`, else 16000 (`replyBudgetOf`), under `maxTokensField`, so the
  * server bounds a reply's length. It states its worst case from the count its size guard keeps: the text it
  * sends, the template reserve and that budget, and the room its guard leaves from the same count:
- * `contextTokens` less those three. It also states its window, its `maxTokens` when set, and thinking
- * `default`.
+ * `contextTokens` less those three. It also states its window, its `maxTokens` when set, and its thinking: the
+ * option's level, else `default`. A set `thinking` is sent as `reasoning_effort`, `low` or `none`.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
-  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, maxTokensField = 'max_tokens', systemPrompt = 'native', structuredOutput = 'json', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
+  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, maxTokensField = 'max_tokens', thinking, systemPrompt = 'native', structuredOutput = 'json', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
   const fieldIssues = MAX_TOKENS_FIELDS.has(maxTokensField)
     ? []
     : [
         { path: `${id}.maxTokensField`, message: 'must be max_tokens or max_completion_tokens' },
       ]
-  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/chat/completions', fieldIssues)
+  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/chat/completions', [
+    ...fieldIssues,
+    ...thinkingIssues(id, thinking, options.extraBody, THINKING),
+  ])
   const budgetOf = (request: CompletionRequest): ContextBudget => contextBudget(contextTokens, replyBudgetOf(request, maxTokens))
 
   return {
@@ -215,7 +228,7 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
     model,
     timeoutMs,
     retries,
-    ...statedReply(contextTokens, maxTokens),
+    ...statedReply(contextTokens, maxTokens, thinking),
     worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     async complete(request) {
@@ -237,6 +250,7 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
               ],
           response_format: responseFormat(structuredOutput, request.output),
           temperature: temperature ?? undefined,
+          reasoning_effort: reasoningEffort(thinking),
           [maxTokensField]: budget.replyTokens,
         }, extraBody),
         signal: request.signal,

@@ -44,6 +44,11 @@ export interface ContractSubject {
     temperature: (body: Body) => unknown
     maxTokens: (body: Body) => unknown
   }
+  /** Where a sent body holds the protocol's thinking control, and an `extraBody` that sets it, which makes thinking explicit. */
+  thinking: {
+    read: (body: Body) => unknown
+    extraBody: Body
+  }
   /** The body fields the adapter writes for the conversation, which `extraBody` cannot replace. */
   reservedBodyKeys: readonly string[]
   /** The body fields that would offer the model a tool or a server-side capability, which `extraBody` cannot set. */
@@ -195,6 +200,16 @@ export function describeProviderContract(subject: ContractSubject): void {
         subject.read.maxTokens(set.body),
       ]).toEqual([0.3, 900])
       expect(subject.read.temperature((await send({ temperature: null })).body)).toBeUndefined()
+    })
+
+    it('sends no thinking control when thinking is unset, and states the default', async () => {
+      const unset = subject.make(base)
+      expect(subject.thinking.read((await sendThrough(unset)).body)).toBeUndefined()
+      expect(unset.thinking).toBe('default')
+      const explicit = subject.make({ ...base, extraBody: subject.thinking.extraBody })
+      const { body } = await sendThrough(explicit)
+      expect(body).toMatchObject(subject.thinking.extraBody)
+      expect(explicit.thinking).toBe('default')
     })
 
     it('sends the reply\'s limit on every request: 16000 when maxTokens is unset, the budget the guard keeps', async () => {

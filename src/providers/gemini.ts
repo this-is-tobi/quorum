@@ -5,8 +5,8 @@ import type { CompletionRequest, CompletionResponse, Provider } from '../core/po
 import { postJson, snippet } from './http.ts'
 import type { ErrorHints } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues } from './options.ts'
-import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
+import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues, thinkingIssues } from './options.ts'
+import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput, Thinking, ThinkingControl } from './options.ts'
 import { endedEarly, joinedText, readAnswer, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
 import type { ContextBudget } from './size.ts'
@@ -32,6 +32,10 @@ const RULES: Omit<AdapterRules, 'auth'> = {
 }
 /** The one spelling of the generation config's key that the adapter merges its own into. */
 const GENERATION_CONFIG = 'generationConfig'
+/** `generationConfig.thinkingConfig`, whose `thinkingLevel` is `LOW`, or `MINIMAL` for `off`, "little to no thinking": a level Gemini does not let a model turn off. Its `thinkingBudget` is the same control, so a config of either is one. */
+const THINKING: ThinkingControl = {
+  path: [GENERATION_CONFIG, 'thinkingConfig'],
+}
 /** The finish reasons of a reply cut off by the token limit: `CONTINUATION` stops at the per-request limit before the model is done. */
 const CUT_OFF: ReadonlySet<unknown> = new Set(['MAX_TOKENS', 'CONTINUATION'])
 /** The finish reasons of a reply the safety filter stopped. */
@@ -122,10 +126,11 @@ interface Generation {
   temperature: number | null | undefined
   replyTokens: number
   structuredOutput: StructuredOutput
+  thinking: Thinking | undefined
 }
 
 /** The generation config of a request: it always holds the reply's limit. */
-function generationConfig({ temperature, replyTokens, structuredOutput }: Generation, output: CompletionRequest['output']): Record<string, unknown> {
+function generationConfig({ temperature, replyTokens, structuredOutput, thinking }: Generation, output: CompletionRequest['output']): Record<string, unknown> {
   return {
     temperature: temperature ?? undefined,
     maxOutputTokens: replyTokens,
@@ -135,6 +140,13 @@ function generationConfig({ temperature, replyTokens, structuredOutput }: Genera
     responseJsonSchema: structuredOutput === 'schema'
       ? output.schema
       : undefined,
+    thinkingConfig: thinking === undefined
+      ? undefined
+      : {
+          thinkingLevel: thinking === 'off'
+            ? 'MINIMAL'
+            : 'LOW',
+        },
   }
 }
 
@@ -213,12 +225,12 @@ function readReply(reply: unknown, { id, model, budget }: Pick<GeminiOptions, 'i
  * `generationConfig.maxOutputTokens`, so the server bounds a reply's length. It states its worst case from the
  * count its size guard keeps: the text it sends, the template reserve and that budget, and the room its guard
  * leaves from the same count: `contextTokens` less those three. It also states its window, its `maxTokens` when
- * set, and thinking `default`.
+ * set, and its thinking: the option's level, else `default`, which it sends as `thinkingConfig.thinkingLevel`.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function gemini(options: GeminiOptions): Provider {
-  const { id, model, auth = { header: 'x-goog-api-key' } as Auth, query, temperature, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
+  const { id, model, auth = { header: 'x-goog-api-key' } as Auth, query, temperature, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json', thinking, timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
   const modelId = typeof model === 'string'
     ? model.replace(/^models\//, '')
     : ''
@@ -227,6 +239,7 @@ export function gemini(options: GeminiOptions): Provider {
       ? keyParameterIssues(id, query)
       : []),
     ...generationConfigIssues(id, options.extraBody),
+    ...thinkingIssues(id, thinking, options.extraBody, THINKING),
   ]
   if (!MODEL_ID.test(modelId)) issues.push({ path: `${id}.model`, message: 'must be a Gemini model id, such as gemini-3.8-flash' })
   // The path is built before the checks, harmlessly: nothing is sent when they fail.
@@ -238,7 +251,7 @@ export function gemini(options: GeminiOptions): Provider {
     model,
     timeoutMs,
     retries,
-    ...statedReply(contextTokens, maxTokens),
+    ...statedReply(contextTokens, maxTokens, thinking),
     worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     async complete(request) {
@@ -266,7 +279,12 @@ export function gemini(options: GeminiOptions): Provider {
                   { text: system },
                 ],
               },
-          generationConfig: generationConfig({ temperature, replyTokens: budget.replyTokens, structuredOutput }, request.output),
+          generationConfig: generationConfig({
+            temperature,
+            replyTokens: budget.replyTokens,
+            structuredOutput,
+            thinking,
+          }, request.output),
         }, extraBody),
         signal: request.signal,
         redact,
