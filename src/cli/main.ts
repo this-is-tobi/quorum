@@ -6,10 +6,10 @@ import { loadConfig } from '../config/load.ts'
 import { parseFailOn } from '../config/profiles.ts'
 import type { FailOnOverride } from '../config/profiles.ts'
 import type { ResolvedConfig } from '../config/resolve.ts'
+import { systemClock } from '../core/clock.ts'
 import { ConfigError } from '../core/errors.ts'
 import { VERSION } from '../core/version.ts'
 import { outcome } from '../core/outcome.ts'
-import { inertLine } from '../core/sanitize.ts'
 import type { ReplyStore } from '../core/ports.ts'
 import type { Estimate, Quorum } from '../core/types.ts'
 import { renderReport } from '../report/registry.ts'
@@ -27,8 +27,10 @@ import { runMcp } from './mcp.ts'
 import { checkOutputs, reportPlan, writeOutputs } from './outputs.ts'
 import type { ReportPlan } from './outputs.ts'
 import { printConfig } from './print-config.ts'
-import { bannerLines, estimateLines, progressSink } from './render.ts'
+import { bannerLines, estimateLines, viewFacts } from './render.ts'
 import { runReport } from './report.ts'
+import { plainWriter } from './view/plain.ts'
+import type { ViewWriter } from './view/writer.ts'
 
 export { errorMessage, EXIT }
 export type { CliIO }
@@ -187,7 +189,8 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * `runBench`, `runReport` or `runMcp` and its exit code is returned, before any review flag is read. A file named
  * `bench`, `report` or `mcp` is reviewed as `quorum ./bench`, `quorum ./report` or `quorum ./mcp`.
  *
- * Everything the CLI writes is inert (invariant I3): each stderr line passes through `inertLine`, and
+ * Everything the CLI writes is inert (invariant I3): each stderr line after the flags goes through one view writer (`plainWriter`),
+ * which passes it through `inertLine`, and
  * each report through its reporter, `json` through `inertJson`, `brief` and `text` through `inertLine`, and `text`'s color
  * around the words quorum wrote alone.
  */
@@ -231,6 +234,12 @@ export async function runCli(io: CliIO): Promise<number> {
     return usageError(io, error)
   }
 
+  const view = plainWriter({
+    write: line => io.stderr.write(`${line}\n`),
+    view: plan.view,
+    clock: io.clock ?? systemClock,
+    heartbeat: true,
+  })
   let quorum: Quorum | undefined
   try {
     const selection = values.profile === undefined
@@ -247,7 +256,7 @@ export async function runCli(io: CliIO): Promise<number> {
     // The profiles are checked first, the room accounting among them: a profile refused for room is refused before any diff is read.
     const built = await fromConfig(config, {
       env: io.env,
-      events: progressSink(line => io.stderr.write(`${line}\n`), plan.view),
+      events: view.sink,
     })
     const send = [
       ...config.send ?? [],
@@ -272,14 +281,19 @@ export async function runCli(io: CliIO): Promise<number> {
     }
     const store = state === undefined
       ? undefined
-      : await openStore(io, resolve(io.cwd, state), config.providers)
-    writeWarnings(io, quorum.warnings)
-    for (const line of bannerLines(config, plan.view)) io.stderr.write(`${line}\n`)
-    if (spec?.kind === 'paths') holdLargeReview(io, quorum.estimate({ diff: read.diff, send }), values.large === true)
-    if (read.diff.trim() === '') io.stderr.write('empty diff: nothing to review\n')
+      : await openStore(io, view, resolve(io.cwd, state), config.providers)
+    writeWarnings(view, quorum.warnings)
+    for (const line of bannerLines(config, plan.view)) view.line('banner', line)
+    const estimate = spec?.kind === 'paths'
+      ? quorum.estimate({ diff: read.diff, send })
+      : undefined
+    if (estimate !== undefined) holdLargeReview(view, estimate, values.large === true)
+    if (read.diff.trim() === '') view.line('notice', 'empty diff: nothing to review')
+    view.begin(viewFacts(config, estimate))
     const result = await quorum.review({ ...read, send }, { signal: io.signal, store })
     const { reused } = result.meta
-    if (reused !== undefined && reused.research + reused.votes > 0) io.stderr.write(`${inertLine(`reused from --state: ${reused.research} research call(s), ${reused.votes} vote(s)`)}\n`)
+    if (reused !== undefined && reused.research + reused.votes > 0) view.line('notice', `reused from --state: ${reused.research} research call(s), ${reused.votes} vote(s)`)
+    await view.close()
     const done = outcome(result, { allowIncomplete: values['allow-incomplete'] === true })
     const input = plan.view === 'public'
       ? publicView(result)
@@ -288,15 +302,18 @@ export async function runCli(io: CliIO): Promise<number> {
     await writeOutputs(plan.outputs, input, done)
     return done.exitCode
   } catch (error) {
+    await view.close()
     if (io.signal?.aborted) {
-      io.stderr.write('interrupted\n')
+      view.line('notice', 'interrupted')
       return EXIT.interrupted
     }
-    if (error instanceof ConfigError && quorum === undefined) writeWarnings(io, readEnv(io.env).warnings)
-    io.stderr.write(`${errorLines(error, plan.view)}\n`)
+    if (error instanceof ConfigError && quorum === undefined) writeWarnings(view, readEnv(io.env).warnings)
+    for (const line of errorLines(error, plan.view).split('\n')) view.line('error', line)
     return error instanceof ConfigError
       ? EXIT.usage
       : EXIT.runtime
+  } finally {
+    view.restore()
   }
 }
 
@@ -306,8 +323,8 @@ export async function runCli(io: CliIO): Promise<number> {
  * a `ConfigError` that names `--path`, a narrower path, the cap and `--large`, which `large` lifts: the review
  * then runs, spends no more than the cap and ends incomplete where the cap stops it. It runs before any call.
  */
-function holdLargeReview(io: CliIO, estimate: Estimate, large: boolean): void {
-  for (const line of estimateLines(estimate)) io.stderr.write(`${line}\n`)
+function holdLargeReview(view: ViewWriter, estimate: Estimate, large: boolean): void {
+  for (const line of estimateLines(estimate)) view.line('estimate', line)
   if (estimate.fits || large) return
   throw new ConfigError([
     {
@@ -338,7 +355,7 @@ function stateDirectory(values: Flags['values']): string | undefined {
  * The file store `--state` opens, in `directory`: its providers' identities are the config's, so a changed provider is a miss,
  * and its warnings are inert `--state:` lines on stderr. A directory it refuses is a `ConfigError` at `--state`, exit 2.
  */
-function openStore(io: CliIO, directory: string, providers: ResolvedConfig['providers']): Promise<ReplyStore> {
+function openStore(io: CliIO, view: ViewWriter, directory: string, providers: ResolvedConfig['providers']): Promise<ReplyStore> {
   return openFileStore(directory, {
     identities: new Map(Object.entries(providers).map(([id, provider]) => [
       id,
@@ -347,13 +364,13 @@ function openStore(io: CliIO, directory: string, providers: ResolvedConfig['prov
     version: VERSION,
     owner: process.getuid?.(),
     platform: io.platform ?? process.platform,
-    warn: line => io.stderr.write(`${inertLine(line)}\n`),
+    warn: line => view.line('warning', line),
   })
 }
 
 /** Write each warning as an inert `warning:` line. */
-function writeWarnings(io: CliIO, warnings: readonly string[]): void {
-  for (const warning of warnings) io.stderr.write(`${inertLine(`warning: ${warning}`)}\n`)
+function writeWarnings(view: ViewWriter, warnings: readonly string[]): void {
+  for (const warning of warnings) view.line('warning', `warning: ${warning}`)
 }
 
 /** The one source of signals the CLI listens to: `process`, or an emitter in a test. */

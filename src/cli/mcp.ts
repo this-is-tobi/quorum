@@ -14,7 +14,8 @@ import { ConfigError } from '../core/errors.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS } from '../core/limits.ts'
 import { errorLines, EXIT, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
-import { bannerLines, progressSink } from './render.ts'
+import { bannerLines, viewFacts } from './render.ts'
+import { plainWriter } from './view/plain.ts'
 
 export const MCP_USAGE = [
   'Usage: quorum mcp [options]',
@@ -221,7 +222,10 @@ export async function runMcp(io: CliIO, argv: readonly string[]): Promise<number
       sessionTokens: requestedTokens ?? Math.min(Number.MAX_SAFE_INTEGER, SESSION_FACTOR * cap),
       codeFieldsOnly: values['code-fields-only'] === true,
       requireApproval: values['require-approval'] === true,
-      observe: progressSink(line => io.stderr.write(`${line}\n`)),
+      observe: plainWriter({
+        write: line => io.stderr.write(`${line}\n`),
+        facts: viewFacts(config),
+      }).sink,
       git: io.git,
     }, {
       input: streamOf<Readable>(io.stdin),

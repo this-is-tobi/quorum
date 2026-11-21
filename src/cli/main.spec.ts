@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import packageJson from '../../package.json' with { type: 'json' }
 import { securityProfile } from '../profiles/security.ts'
 import { fakeClaudeEnv, readFakeRecord, writeFakeClaude } from '../testing/claude.ts'
+import { fakeClock } from '../testing/clock.ts'
 import { fakeCredential } from '../testing/credentials.ts'
 import * as fixtures from '../testing/fixtures/claude-code.ts'
 import * as diffs from '../testing/fixtures/git.ts'
@@ -247,6 +248,15 @@ describe('runCli', () => {
     expect(await runCli(io)).toBe(EXIT.finding)
     expect(JSON.parse(stdout()).kept[0]).toMatchObject({ file: 'a.js', confidence: 'high' })
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(Array.from({ length: 4 }).fill('http://localhost:11434/api/chat'))
+  })
+
+  it('writes a line on stderr as each research part ends, with its time, tokens and findings listed', async () => {
+    stubOllamaChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true), vote(true))
+    const { io, stderr } = harness({ env: DEFAULT, stdin: DIFF })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    expect(stderr()).toMatch(/^part 1 of 1: answered in \d+(\.\d)?s, \d+ tokens, 1 finding\(s\) listed$/m)
   })
 
   it('refuses a voter on another endpoint that states no context size of its own', async () => {
@@ -747,7 +757,7 @@ describe('runCli', () => {
     })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(sent(fetchMock).url).toBe('https://team.example/v1/chat/completions')
-    expect(stderr()).toBe('Research (t @ https://team.example)...\nPanel will use t @ https://team.example\n0 candidate(s) after dedup\n0 kept, 0 discarded, 0 unreviewed by panel\n')
+    expect(stderr()).toMatch(/^Research \(t @ https:\/\/team\.example\)\.\.\.\nPanel will use t @ https:\/\/team\.example\npart 1 of 1: answered in \d+(\.\d)?s, \d+ tokens, 0 finding\(s\) listed\n0 candidate\(s\) after dedup\n0 kept, 0 discarded, 0 unreviewed by panel\n$/)
   })
 
   it('exits 2 when the file QUORUM_CONFIG names does not exist, naming it as given', async () => {
@@ -817,9 +827,15 @@ describe('runCli', () => {
       '[team] Research (m @ http://localhost:11434)...',
       '[team] Panel will use grounded (m @ http://localhost:11434), significant (v @ https://v.example)',
     ])
-    // Each profile's dedup line is there with its prefix; which comes first depends on scheduling.
-    expect(lines.slice(5, 7).sort()).toEqual(['[security] 0 candidate(s) after dedup', '[team] 0 candidate(s) after dedup'])
-    expect(lines.slice(7)).toEqual(['0 kept, 0 discarded, 0 unreviewed by panel', ''])
+    // Each profile's part line comes before its dedup line, with its prefix; how the two profiles interleave depends on scheduling.
+    for (const profile of ['security', 'team']) {
+      expect(lines.filter(line => line.startsWith(`[${profile}] `) && /part \d|dedup/.test(line))).toEqual([
+        expect.stringMatching(new RegExp(`^\\[${profile}\\] part 1 of 1: answered in \\d+(\\.\\d)?s, \\d+ tokens, 0 finding\\(s\\) listed$`)),
+        `[${profile}] 0 candidate(s) after dedup`,
+      ])
+    }
+    expect(lines.slice(5)).toHaveLength(6)
+    expect(lines.slice(-2)).toEqual(['0 kept, 0 discarded, 0 unreviewed by panel', ''])
   })
 })
 
@@ -2080,6 +2096,27 @@ describe('interrupts', () => {
     expect(await exit).toBe(130)
     expect(stdout()).toBe('')
     expect(stderr()).toBe('Research (m @ http://localhost:11434)...\nPanel will use m @ http://localhost:11434\ninterrupted\n')
+  })
+
+  it('stops the view\'s timers when the review is aborted, which sends no run:end', async () => {
+    const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const clock = fakeClock()
+    const controller = new AbortController()
+    const { io } = harness({
+      env: MODEL,
+      stdin: DIFF,
+      signal: controller.signal,
+      clock,
+    })
+    const exit = runCli(io)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    expect(clock.pending()).toBe(1)
+    controller.abort()
+    expect(await exit).toBe(130)
+    expect(clock.pending()).toBe(0)
   })
 
   it('exits 130 when its signal aborted before the review started, and calls no model', async () => {

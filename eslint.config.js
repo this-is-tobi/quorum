@@ -337,4 +337,21 @@ export default antfu(
       ],
     },
   },
+  {
+    // The view draws a review from its events: a view module imports only view modules, the core and the report
+    // layer, and reads no global of the environment. The CLI hands it the stream, the environment and the clock.
+    files: ['src/cli/view/**/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./\\.\\./(core|report)/(?!.*\\.\\.))', message: 'A view module imports only view modules, the core and the report layer.' },
+          ],
+        },
+      ],
+      'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
+    },
+  },
 )
