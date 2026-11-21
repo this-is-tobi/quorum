@@ -226,11 +226,16 @@ function nearestContext(run: ProfileRun, finding: Finding, lens: LensRun, sectio
     : nearestHunks(section.text, hunksOf(sections, section.path, section.text), finding.line, partialRoom)
 }
 
-/** What a call that failed says of itself as a vote's failure: the limit that stopped it, `provider-down` for a vote its provider's being down kept from being sent, else what `providerFailure` reads, else `unknown`. */
+/** What a call that failed says of itself as a vote's failure: the limit that stopped it, `provider-down` for a vote its provider's being down kept from being sent, else its `kind` and `status` as `providerFailure` reads them, never its `exhausted`, else `unknown`. */
 function voteFailureOf(error: unknown): VoteFailure {
   if (isLimit(error)) return { kind: error.limit }
   if (error instanceof ProviderDownError) return { kind: 'provider-down' }
-  return providerFailure(error) ?? { kind: 'unknown' }
+  const failure = providerFailure(error)
+  if (failure === undefined) return { kind: 'unknown' }
+  // The result schema's vote failure is strict: a used-up quota is the provider-down event's fact, not the vote's.
+  return failure.status === undefined
+    ? { kind: failure.kind }
+    : { kind: failure.kind, status: failure.status }
 }
 
 /**

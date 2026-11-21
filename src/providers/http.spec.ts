@@ -617,6 +617,212 @@ describe('postJson on a failed reply', () => {
     expect(error).toMatchObject({ kind: 'http', status, retryable: false })
   })
 
+  it.each([
+    [
+      'of billing_hard_limit_reached',
+      429,
+      {},
+      {
+        error: { code: 'billing_hard_limit_reached' },
+      },
+    ],
+    [
+      'of insufficient_quota as its code',
+      429,
+      {},
+      {
+        error: { code: 'insufficient_quota' },
+      },
+    ],
+    [
+      'of insufficient_quota as its type with no code',
+      429,
+      {},
+      {
+        error: { type: 'insufficient_quota', code: null },
+      },
+    ],
+    [
+      'of insufficient_quota inside a 500',
+      500,
+      {},
+      {
+        error: { code: 'insufficient_quota', message: 'quota' },
+      },
+    ],
+    [
+      'of credit_balance_exhausted',
+      429,
+      {},
+      {
+        error: { code: 'credit_balance_exhausted' },
+      },
+    ],
+    [
+      'of organization_usage_limit_exceeded',
+      429,
+      {},
+      {
+        error: { code: 'organization_usage_limit_exceeded' },
+      },
+    ],
+    [
+      'of project_spend_limit_exceeded',
+      429,
+      {},
+      {
+        error: { code: 'project_spend_limit_exceeded' },
+      },
+    ],
+    [
+      'of Anthropic\'s enforced_spend_limit_reached',
+      429,
+      {},
+      {
+        type: 'error',
+        error: {
+          type: 'rate_limit_error',
+          message: 'limit',
+          details: { error_code: 'enforced_spend_limit_reached' },
+        },
+      },
+    ],
+    [
+      'of Anthropic\'s own usage limit',
+      400,
+      {},
+      {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.',
+        },
+      },
+    ],
+    [
+      'of Anthropic\'s workspace usage limit',
+      400,
+      {},
+      {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'You have reached your specified workspace API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.',
+        },
+      },
+    ],
+    [
+      'of OpenRouter\'s openrouter_credits',
+      402,
+      {},
+      {
+        error: {
+          code: 402,
+          message: 'credits',
+          metadata: { limit_source: 'openrouter_credits' },
+        },
+      },
+    ],
+    [
+      'of OpenRouter\'s openrouter_key_limit beside a Retry-After',
+      402,
+      { 'retry-after': '1' },
+      {
+        error: {
+          code: 402,
+          message: 'limit',
+          metadata: { limit_source: 'openrouter_key_limit' },
+        },
+      },
+    ],
+  ])('marks a reply %s as a used-up quota, never retried', async (_name, status, headers, body) => {
+    const error = await failure(JSON.stringify(body), status, headers)
+    expect(error).toMatchObject({
+      kind: 'http',
+      status,
+      retryable: false,
+      exhausted: true,
+    })
+  })
+
+  it.each([
+    [
+      'Anthropic\'s ramp_limit_exceeded',
+      429,
+      {},
+      {
+        type: 'error',
+        error: {
+          type: 'rate_limit_error',
+          message: 'ramp',
+          details: { error_code: 'ramp_limit_exceeded' },
+        },
+      },
+      true,
+    ],
+    [
+      'OpenAI\'s slow_down',
+      429,
+      {},
+      {
+        error: { code: 'slow_down' },
+      },
+      true,
+    ],
+    [
+      'OpenRouter\'s in-flight budget with a Retry-After',
+      402,
+      { 'retry-after': '1' },
+      {
+        error: {
+          code: 402,
+          message: 'in flight',
+          metadata: { limit_source: 'openrouter_in_flight_budget' },
+        },
+      },
+      true,
+    ],
+    [
+      'a 400 of invalid_request_error whose message holds the usage-limit words past its start',
+      400,
+      {},
+      {
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'Note: You have reached your specified API usage limits' },
+      },
+      false,
+    ],
+    [
+      'a 400 of another type that starts with them',
+      400,
+      {},
+      {
+        type: 'error',
+        error: { type: 'api_error', message: 'You have reached your specified API usage limits' },
+      },
+      false,
+    ],
+  ])('leaves %s a failure of its status', async (_name, status, headers, body, retryable) => {
+    const error = await failure(JSON.stringify(body), status, headers)
+    expect(error).toMatchObject({
+      kind: 'http',
+      status,
+      retryable,
+      exhausted: false,
+    })
+  })
+
+  it('takes exhausted from an errorHints hook, and a hook that says nothing never clears the vendor\'s', async () => {
+    expect(await failure('busy', 503, {}, {
+      errorHints: () => ({ exhausted: true }),
+    })).toMatchObject({ status: 503, retryable: false, exhausted: true })
+    expect(await failure(JSON.stringify({
+      error: { code: 'billing_hard_limit_reached' },
+    }), 429, {}, {
+      errorHints: () => ({}),
+    })).toMatchObject({ exhausted: true })
+  })
+
   it('retries a reply that says x-should-retry: true, whatever its status', async () => {
     expect(await failure('bad request', 400, { 'x-should-retry': 'true' })).toMatchObject({ kind: 'http', status: 400, retryable: true })
   })
@@ -638,7 +844,7 @@ describe('postJson on a failed reply', () => {
         metadata: { limit_source: 'openrouter_key_limit' },
       },
     })
-    expect(await failure(keyLimit, 402, { 'retry-after': '1' })).toMatchObject({ retryable: false })
+    expect(await failure(keyLimit, 402, { 'retry-after': '1' })).toMatchObject({ retryable: false, exhausted: true })
   })
 
   it('leaves the status to decide for a body that is no JSON or names no code it knows', async () => {

@@ -119,6 +119,12 @@ export class ProviderError extends QuorumError {
    * the adapter set it. The core retries only `network`, `timeout` and `http` failures, whatever it says.
    */
   readonly retryable: boolean
+  /**
+   * The reply says the account's credit, quota or spend limit is used up: the adapter matched the vendor's own
+   * code, never a message. Such an error is never `retryable`, whatever the adapter set, and finds its provider
+   * down at its first failure.
+   */
+  readonly exhausted: boolean
   /** The wait the server asked for at least, in milliseconds, when the adapter read one. */
   readonly retryAfterMs: number | undefined
   /** What the reply the call failed on reported, when the provider read one: the review counts it as the failed call's usage. */
@@ -132,14 +138,15 @@ export class ProviderError extends QuorumError {
    */
   readonly refused: 'structuredOutput' | undefined
 
-  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, retryAfterMs?: number, usage?: Usage, noAnswer?: NoAnswer, refused?: 'structuredOutput', cause?: unknown }) {
+  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, exhausted?: true, retryAfterMs?: number, usage?: Usage, noAnswer?: NoAnswer, refused?: 'structuredOutput', cause?: unknown }) {
     super(`${details.providerId}: ${details.message}`, details.cause === undefined
       ? undefined
       : { cause: details.cause })
     this.providerId = details.providerId
     this.kind = details.kind
     this.status = details.status
-    this.retryable = details.retryable ?? isRetryable(details.kind, details.status)
+    this.exhausted = details.exhausted === true
+    this.retryable = !this.exhausted && (details.retryable ?? isRetryable(details.kind, details.status))
     this.retryAfterMs = details.retryAfterMs
     this.usage = details.usage
     this.noAnswer = details.noAnswer
@@ -198,6 +205,9 @@ export function lackWords(kind: 'truncated' | 'no-answer', lack: ReplyLack): str
     : `reply was cut off at its limit${at}`
 }
 
+/** What to do about a provider whose account's credit, quota or spend limit is used up: one imperative phrase. */
+export const QUOTA_FIX = 'add credit or raise the limit at the provider, or wait until it resets'
+
 /** What to do about a provider whose calls ended with `kind`, and for an `http` failure its `status`: one imperative phrase, never a word a server wrote. */
 function downFix(kind: ProviderErrorKind, status: number | undefined): string {
   switch (kind) {
@@ -232,6 +242,8 @@ export interface DownFacts {
   readonly streak: boolean
   /** What the last failure lacked, for a `no-answer` kind: `thinking` or `empty`; any other value reads as `empty`. */
   readonly noAnswer?: NoAnswer
+  /** The failure says the account's credit, quota or spend limit is used up: the provider is down at its first such failure. */
+  readonly exhausted?: true
 }
 
 /**
@@ -239,9 +251,17 @@ export interface DownFacts {
  * one copy: `<id>: <n> calls in a row failed (<kind>[ <status>]): no more calls go to it in this review:
  * <fix>` for the calls in a row, else `<id>: its one call failed (...): <fix>` or `its <n> calls failed`. A
  * provider down by replies with no answer says what they lacked instead: `<id>: <n> calls in a row had no
- * answer, only reasoning: ...` or `had no answer and no reasoning: ...`.
+ * answer, only reasoning: ...` or `had no answer and no reasoning: ...`. A provider whose quota is used up says
+ * so, whatever the count, and names `QUOTA_FIX`: `<id>: the account's credit, quota or spend limit is used up
+ * (<kind>[ <status>]): no more calls go to it in this review: <fix>`.
  */
 export function downWords(facts: DownFacts): string {
+  if (facts.exhausted === true) {
+    const used = facts.status === undefined
+      ? facts.kind
+      : `${facts.kind} ${facts.status}`
+    return `${facts.providerId}: the account's credit, quota or spend limit is used up (${used}): no more calls go to it in this review: ${QUOTA_FIX}`
+  }
   if (facts.kind === 'no-answer') {
     const lack = facts.noAnswer === 'thinking'
       ? `had no answer, only reasoning: ${THINKING_FIX}`
@@ -275,6 +295,8 @@ export class ProviderDownError extends QuorumError {
   readonly status: number | undefined
   readonly count: number
   readonly streak: boolean
+  /** The failure that found the provider down said its quota is used up. */
+  readonly exhausted: boolean
   /** What the last failure lacked, for a `no-answer` kind. */
   readonly noAnswer: NoAnswer | undefined
 
@@ -287,6 +309,7 @@ export class ProviderDownError extends QuorumError {
     this.status = facts.status
     this.count = facts.count
     this.streak = facts.streak
+    this.exhausted = facts.exhausted === true
     this.noAnswer = facts.noAnswer
   }
 }

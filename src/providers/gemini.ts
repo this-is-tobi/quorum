@@ -66,6 +66,8 @@ const QUOTA_FAILURE = 'type.googleapis.com/google.rpc.QuotaFailure'
 const RETRY_DELAY = /^(\d+(?:\.\d{1,9})?)s$/
 /** The part of a quota's id that names a per-day limit, which no wait of seconds lifts. */
 const PER_DAY = 'PerDay'
+/** The string `error.code` of Google's Interactions API for a used-up quota or a payment owed, which a gateway may forward. */
+const EXHAUSTED_CODES: ReadonlySet<unknown> = new Set(['quota_exceeded', 'payment_required'])
 
 /** The entries of `list` that are objects of the given `@type`, when it is a list. */
 function detailsOfType(list: unknown, type: string): Array<Record<string, unknown>> {
@@ -88,7 +90,10 @@ function delayMs(retryDelay: unknown): number | undefined {
 /**
  * What an error body of Google's `{ error: { details } }` says of a retry, read defensively: the first
  * `RetryInfo` with a valid `retryDelay` is the wait, and a `QuotaFailure` violation whose `quotaId` names
- * a per-day limit turns the retry off, whatever the delay says, since the quota is back only the next day.
+ * a per-day limit turns the retry off, whatever the delay says, since the quota is back only the next day, and
+ * the quota is used up. So is an `error.code` that is the string `quota_exceeded` or `payment_required`, the
+ * Interactions API's form: `generateContent` answers Google's standard body, whose `error.code` is the HTTP
+ * status as a number, so a 402 of that form holds neither and is read by its status alone, never exhausted.
  * Only numbers and a verdict leave this function: no text of the body does.
  */
 function errorHints(body: unknown): ErrorHints {
@@ -98,12 +103,13 @@ function errorHints(body: unknown): ErrorHints {
   const retryAfterMs = detailsOfType(details, RETRY_INFO).map(info => delayMs(info.retryDelay)).find(ms => ms !== undefined)
   const perDay = detailsOfType(details, QUOTA_FAILURE).some(failure => Array.isArray(failure.violations)
     && failure.violations.some(violation => isRecord(violation) && typeof violation.quotaId === 'string' && violation.quotaId.includes(PER_DAY)))
+  const exhausted = perDay || (isRecord(body) && isRecord(body.error) && EXHAUSTED_CODES.has(body.error.code))
   return {
     ...(retryAfterMs === undefined
       ? {}
       : { retryAfterMs }),
-    ...(perDay
-      ? { retryable: false }
+    ...(exhausted
+      ? { retryable: false as const, exhausted: true as const }
       : {}),
   }
 }

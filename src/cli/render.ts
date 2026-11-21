@@ -22,7 +22,9 @@ import type { ReportView } from '../report/view.ts'
  * Under the public view, whose log a stranger may read, two lines leave out the text of a finder or a server: a
  * gap is `incomplete: <reason>`, then ` at <file as a JSON string>` when it has a file, with no detail, and a
  * dropped finding is `invalid finding dropped`, with no reason, since the reason quotes the file name and the text
- * of a finding the harness dropped, the oracle a discarded finding would be. Every other line is the full view's.
+ * of a finding the harness dropped, the oracle a discarded finding would be. A provider-down line of a used-up
+ * quota is `<id>: the call failed (<kind>[ <status>])`, since it tells a stranger the account is out of money.
+ * Every other line is the full view's.
  */
 export function renderEvent(event: QuorumEvent, prefixed = false, view: ReportView = 'full'): string | undefined {
   const line = progressLine(event, prefixed, view)
@@ -56,6 +58,11 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
           : ` at ${JSON.stringify(event.entry.file)}`}`
         : `incomplete: ${event.entry.reason} (${event.entry.detail})`)
     case 'provider-down':
+      if (event.exhausted === true && view === 'public') {
+        return `${event.provider}: the call failed (${event.kind}${event.status === undefined
+          ? ''
+          : ` ${event.status}`})`
+      }
       return downWords({
         providerId: event.provider,
         kind: event.kind,
@@ -63,6 +70,9 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
         count: event.calls,
         streak: true,
         noAnswer: event.noAnswer,
+        ...(event.exhausted === true
+          ? { exhausted: true as const }
+          : {}),
       })
     case 'reply-lacked':
       return `${event.provider}: ${lackWords(event.kind, event)}`

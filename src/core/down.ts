@@ -20,6 +20,9 @@ import { lackOf, providerFailure } from './stages/context.ts'
  * `kind` and `status` (and, for `no-answer`, what it lacked) and nothing else, so a message a server wrote
  * decides nothing.
  *
+ * A used-up quota (`exhausted`, an `http` failure alone) finds its provider down at its first such failure:
+ * no retry lifts it, so waiting for two more calls only bills them.
+ *
  * A provider found down stays down for the review: calls in flight run to their end and an answer is read as
  * any is, but no later call is sent. The count is of the order calls end.
  */
@@ -44,8 +47,8 @@ interface Counts {
   failures: number
   /** Calls that ended in any way: a reply, a counted failure or a neutral one. */
   ended: number
-  /** The last counted failure: its kind, status and thrown value. */
-  last?: { readonly kind: ProviderErrorKind, readonly status?: number, readonly noAnswer?: NoAnswer, readonly error: unknown }
+  /** The last counted failure: its kind, status, whether it was a used-up quota, and thrown value. */
+  last?: { readonly kind: ProviderErrorKind, readonly status?: number, readonly exhausted?: true, readonly noAnswer?: NoAnswer, readonly error: unknown }
   /** The error of the provider once it is found down. */
   down?: ProviderDownError
 }
@@ -105,7 +108,7 @@ export function createHealth(): Health {
         ...lackFacts(failure.kind, error),
       }
       record.last = { ...facts, error }
-      if (record.down !== undefined || record.streak < DOWN_AFTER) return undefined
+      if (record.down !== undefined || (record.streak < DOWN_AFTER && failure.exhausted !== true)) return undefined
       record.down = new ProviderDownError({
         providerId: id,
         ...facts,

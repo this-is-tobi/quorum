@@ -487,6 +487,50 @@ describe('the retries of a call', () => {
     expect(read).toBe(false)
   })
 
+  it('never retries a provider object\'s own-data exhausted failure, and finds its provider down at once', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, events } = context(clock)
+    const thrown = failure({
+      kind: 'http',
+      status: 429,
+      retryable: true,
+      exhausted: true,
+    })
+    let ran = 0
+    const spent = target(async () => {
+      ran += 1
+      throw thrown
+    }, { retries: 2 })
+    await expect(settle(clock, callProvider(ctx, requester, spent, () => request))).rejects.toBe(thrown)
+    expect(ran).toBe(1)
+    // Only the attempt's own deadline was armed: no wait for a retry.
+    expect(clock.armed).toEqual([1000])
+    expect(events.filter(event => event.type === 'provider-down')).toEqual([
+      {
+        type: 'provider-down',
+        provider: 'p',
+        kind: 'http',
+        status: 429,
+        calls: 1,
+        exhausted: true,
+      },
+    ])
+    expect(ctx.health.refused(spent.provider)).toBeDefined()
+    // The flag counts for an `http` failure alone: a `network` failure that says it is still retried.
+    const other = fakeClock(0.5)
+    let again = 0
+    const flaky = target(async () => {
+      again += 1
+      throw failure({
+        kind: 'network',
+        retryable: true,
+        exhausted: true,
+      })
+    }, { retries: 1 })
+    await settle(other, callProvider(context(other).ctx, requester, flaky, () => request)).catch(() => {})
+    expect(again).toBe(2)
+  })
+
   it('calls onFailure once, inside the slot, with the last failure and the attempts, before a queued call starts', async () => {
     const clock = fakeClock(0)
     const { ctx } = context(clock)
