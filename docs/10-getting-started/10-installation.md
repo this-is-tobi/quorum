@@ -189,6 +189,7 @@ Options:
   -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several
       --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never
       --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage
+      --state <dir>        Save every answered call in this directory, and reuse the calls it holds
       --print-config       Print the resolved config, keys redacted, and exit
   -h, --help               Print this help and exit
   -v, --version            Print the version and exit

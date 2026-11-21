@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { DEFAULT_MAX_FINDINGS } from './budgets.ts'
 import { researchReplyJsonSchema, voteReplyJsonSchema } from './output.ts'
 import type { CompletionRequest } from './ports.ts'
@@ -203,6 +204,20 @@ export function voteRequest(instructions: string, finding: Finding, diffContext:
   )
 }
 
+/** The digest of each request a builder made, by the request object itself: a copy of a request, or one no builder made, has none. */
+const DIGESTS = new WeakMap<CompletionRequest, string>()
+
+/**
+ * The digest of a request one of the builders here made, as 64 hexadecimal digits, or undefined for any other: the SHA-256 of
+ * its logical content, the instructions and the code-owned lines, each block's label, content and description in order,
+ * and the reply's name and schema. It is never of the request's bytes, since every fence carries a nonce of its own, so
+ * two requests built alike share one digest and any change of a block, an instruction or a line makes another. The reply
+ * budget, the thinking level and the mode a request is sent with are not in it: the call path keys them beside it.
+ */
+export function requestDigest(request: CompletionRequest): string | undefined {
+  return DIGESTS.get(request)
+}
+
 /**
  * The request of one call: the system message is the instructions, then the code-owned `lines` that ask for the
  * reply's size, the reply format, the data notice and the untrusted-content notice, each a paragraph.
@@ -231,7 +246,7 @@ function buildRequest(
       : 'The user message holds these blocks:',
     ...fenced.map(block => `- <${block.tag}>: ${block.description}`),
   ].join('\n')
-  return {
+  const request: CompletionRequest = {
     system: [
       instructions,
       ...lines,
@@ -250,4 +265,12 @@ function buildRequest(
       ? {}
       : { replyTokens },
   }
+  DIGESTS.set(request, createHash('sha256').update(JSON.stringify([
+    instructions,
+    lines,
+    withGuidelines.map(block => [block.label, block.content, block.description]),
+    output.name,
+    output.schema,
+  ])).digest('hex'))
+  return request
 }

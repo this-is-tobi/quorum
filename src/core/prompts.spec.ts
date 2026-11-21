@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CompletionRequest } from './ports.ts'
 import { securityProfile } from '../profiles/security.ts'
-import { fence, renderTemplate, researchRequest, UNTRUSTED_CONTENT_NOTICE, voteRequest } from './prompts.ts'
+import { fence, renderTemplate, requestDigest, researchRequest, UNTRUSTED_CONTENT_NOTICE, voteRequest } from './prompts.ts'
 
 const finding = {
   id: '0123456789ab',
@@ -280,6 +280,87 @@ describe('the findings line and the reply budget', () => {
     ]) {
       expect(request).not.toHaveProperty('replyTokens')
     }
+  })
+})
+
+describe('requestDigest', () => {
+  it('gives two requests built alike one digest whatever their nonces, and another for any change of a block', () => {
+    const built = (): CompletionRequest => researchRequest('Review.', 'diff --git a/x b/x\n+exec(cmd)', 'Keep it short.', {
+      index: 1,
+      count: 2,
+      files: ['x'],
+      unlisted: 0,
+    }, { findings: 7, replyTokens: 4096 })
+    const [one, two] = [
+      built(),
+      built(),
+    ]
+    // Every fence carries its own nonce, so the two requests differ in bytes and agree in digest.
+    expect(one.messages[0].content).not.toBe(two.messages[0].content)
+    const digest = requestDigest(one)
+    expect(digest).toMatch(/^[0-9a-f]{64}$/)
+    expect(requestDigest(two)).toBe(digest)
+    // Any change of an instruction, a code-owned line, a block's content or description, or the reply schema is another digest.
+    const changed = [
+      researchRequest('Review it.', 'diff --git a/x b/x\n+exec(cmd)', 'Keep it short.', {
+        index: 1,
+        count: 2,
+        files: ['x'],
+        unlisted: 0,
+      }, { findings: 7, replyTokens: 4096 }),
+      researchRequest('Review.', 'diff --git a/x b/x\n+exec(cmd2)', 'Keep it short.', {
+        index: 1,
+        count: 2,
+        files: ['x'],
+        unlisted: 0,
+      }, { findings: 7, replyTokens: 4096 }),
+      researchRequest('Review.', 'diff --git a/x b/x\n+exec(cmd)', 'Keep it long.', {
+        index: 1,
+        count: 2,
+        files: ['x'],
+        unlisted: 0,
+      }, { findings: 7, replyTokens: 4096 }),
+      researchRequest('Review.', 'diff --git a/x b/x\n+exec(cmd)', undefined, {
+        index: 1,
+        count: 2,
+        files: ['x'],
+        unlisted: 0,
+      }, { findings: 7, replyTokens: 4096 }),
+      researchRequest('Review.', 'diff --git a/x b/x\n+exec(cmd)', 'Keep it short.', {
+        index: 2,
+        count: 2,
+        files: ['x'],
+        unlisted: 0,
+      }, { findings: 7, replyTokens: 4096 }),
+      researchRequest('Review.', 'diff --git a/x b/x\n+exec(cmd)', 'Keep it short.', {
+        index: 1,
+        count: 2,
+        files: ['y'],
+        unlisted: 0,
+      }, { findings: 7, replyTokens: 4096 }),
+      researchRequest('Review.', 'diff --git a/x b/x\n+exec(cmd)', 'Keep it short.', undefined, { findings: 7, replyTokens: 4096 }),
+      researchRequest('Review.', 'diff --git a/x b/x\n+exec(cmd)', 'Keep it short.', {
+        index: 1,
+        count: 2,
+        files: ['x'],
+        unlisted: 0,
+      }, { findings: 8, replyTokens: 4096 }),
+      voteRequest('Review.', finding, 'diff --git a/x b/x\n+exec(cmd)', 'Keep it short.'),
+    ]
+    const digests = changed.map(requestDigest)
+    expect(new Set([digest, ...digests]).size).toBe(digests.length + 1)
+    // The vote's two descriptions of its diff block are two digests, and so are two findings.
+    expect(requestDigest(voteRequest('V', finding, 'd'))).not.toBe(requestDigest(voteRequest('V', finding, 'd', undefined, true)))
+    expect(requestDigest(voteRequest('V', finding, 'd'))).not.toBe(requestDigest(voteRequest('V', { ...finding, line: 4 }, 'd')))
+    expect(requestDigest(voteRequest('V', finding, 'd'))).toBe(requestDigest(voteRequest('V', finding, 'd')))
+    // The reply budget is the call path's to key, not the digest's; a request no builder made has no digest.
+    expect(requestDigest(researchRequest('R', 'd', undefined, undefined, { replyTokens: 1 }))).toBe(requestDigest(researchRequest('R', 'd', undefined, undefined, { replyTokens: 2 })))
+    expect(requestDigest({
+      system: 's',
+      messages: [],
+      output: { name: 'x', schema: {} },
+    })).toBeUndefined()
+    expect(requestDigest({ ...one })).toBeUndefined()
   })
 })
 

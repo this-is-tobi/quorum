@@ -7,7 +7,7 @@
 import { parseArgs } from 'node:util'
 import type { ParseArgsOptionsConfig } from 'node:util'
 import type { Env } from '../config/env.ts'
-import { WriteFailure } from '../bench/run-dir.ts'
+import { WriteFailure } from '../config/load.ts'
 import { ConfigError, OutputError, ProviderDownError, ProviderError } from '../core/errors.ts'
 import { inertLine } from '../core/sanitize.ts'
 import { GitError } from '../git/run.ts'

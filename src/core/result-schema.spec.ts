@@ -190,6 +190,38 @@ describe('the schemas of a result', () => {
     }
   })
 
+  it('reads meta.reused strictly, in the public view too, and does not require it', () => {
+    const result = reportResult({
+      meta: {
+        ...reportResult().meta,
+        reused: { research: 2, votes: 5 },
+      },
+    })
+    const full = saved(result)
+    expect(resultSchema.parse(full)).toEqual(full)
+    const view = saved(publicView(result))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(view.meta.reused).toEqual({ research: 2, votes: 5 })
+    // A review with no store has none, and a count is a whole number, no more fields than the two.
+    const { reused: _none, ...without } = full.meta
+    expect(resultSchema.safeParse({ ...full, meta: without }).success).toBe(true)
+    for (const forged of [
+      { research: -1, votes: 0 },
+      { research: 1.5, votes: 0 },
+      { research: 1 },
+      { research: 1, votes: 0, extra: 1 },
+    ] as Forged[]) {
+      expect(resultSchema.safeParse({
+        ...full,
+        meta: { ...full.meta, reused: forged },
+      }).success, JSON.stringify(forged)).toBe(false)
+      expect(publicViewSchema.safeParse({
+        ...view,
+        meta: { ...view.meta, reused: forged },
+      }).success, JSON.stringify(forged)).toBe(false)
+    }
+  })
+
   it('reads reply-cut-off as a gap and a coverage reason, and meta.profiles.<id>.recovery strictly, in the public view too', () => {
     const base = reportResult()
     const recovery = {

@@ -229,6 +229,24 @@ export default antfu(
     },
   },
   {
+    // The state layer is the one place that reads and writes a state directory: it builds on the core and the
+    // config layer's file helpers, and imports nothing else but zod and the file, path and hash modules. It reads no
+    // process, and never the network, another thread or the global object.
+    files: ['src/state/**/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./core/(?!.*\\.\\.)|\\.\\./config/load\\.ts$|zod$|node:(fs|fs/promises|path|crypto)$)', message: 'A state module imports only state modules, the core, config/load.ts, zod, node:fs, node:fs/promises, node:path and node:crypto.' },
+          ],
+        },
+      ],
+      'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
+    },
+  },
+  {
     // A reporter renders a result it is given: it imports only report modules, the core and zod, and reads no
     // global of the environment.
     files: ['src/report/**/*.ts'],

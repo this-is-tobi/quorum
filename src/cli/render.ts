@@ -68,6 +68,8 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
       return `${event.provider}: ${lackWords(event.kind, event)}`
     case 'adapted':
       return adaptedWords(event.adaptation)
+    case 'stored-refused':
+      return '--state: a stored reply failed its check: the call is made again'
     case 'recovered':
       return of(event.profile, recoveredWords(event))
     case 'left-out':

@@ -1,8 +1,8 @@
 import { constants } from 'node:fs'
 import type { Stats } from 'node:fs'
-import { lstat, open } from 'node:fs/promises'
+import { lstat, open, rename, unlink } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
-import { dirname, extname, isAbsolute, resolve } from 'node:path'
+import { dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isMap, isPair, isScalar, isSeq, LineCounter, parseDocument } from 'yaml'
 import type { Document, YAMLError } from 'yaml'
@@ -43,6 +43,10 @@ const FORMATS: ReadonlyMap<string, Format> = new Map([
 /** A name a message may give what a config threw: a class name, never text the config could have written a secret into. */
 const ERROR_NAME = /^[A-Z][A-Za-z]{0,63}$/
 const STAGES = ['research', 'vote'] as const
+/** An error code worth printing: `EACCES`, never text. */
+const ERROR_CODE = /^E[A-Z]+$/
+/** A new file, which `O_EXCL` never makes through a link. */
+const NEW_FILE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
 
 /** A config file once read and checked. */
 export interface LoadedConfig {
@@ -596,4 +600,63 @@ export async function loadConfig(options: { readonly cwd?: string, readonly env?
   const { input, source } = await readNamedConfig({ cwd: options.cwd, env, configPath: options.configPath })
   const config = resolveConfig(input, { env, selection: options.selection, failOn: options.failOn })
   return { config, source, warnings: config.warnings }
+}
+
+/** The code of a failed system call, when it is one worth printing. */
+export function errorCode(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | null | undefined)?.code
+  return typeof code === 'string' && ERROR_CODE.test(code)
+    ? code
+    : undefined
+}
+
+/** ` (EACCES)`, or nothing for an error without a code worth printing. */
+export function codeSuffix(error: unknown): string {
+  const code = errorCode(error)
+  return code === undefined
+    ? ''
+    : ` (${code})`
+}
+
+/**
+ * A file quorum writes that could not be written. Its message is `<file>: cannot be written (<code>)`: it names
+ * the file's label and the error's code, never a path, so a log a stranger may read can hold it.
+ */
+export class WriteFailure extends Error {}
+
+/** The `WriteFailure` of the file `file` for `error`, worded with its code alone. */
+export function writeFailure(file: string, error: unknown): WriteFailure {
+  return new WriteFailure(`${file}: cannot be written${codeSuffix(error)}`)
+}
+
+/**
+ * Write `text` as `name` in `directory` whole or not at all: to a new file `.<name>.<8 hex digits>.tmp`
+ * made with `O_EXCL` (which never follows a link), written, synced and closed, then renamed over `name`.
+ * The rename replaces a symbolic link at `name`, and never writes through it. The temporary file is made
+ * with `options.mode`, which the rename keeps: Node's own default unless a caller asks for another. A
+ * failure removes the temporary file it made, and names `options.label` in place of `name` when the caller
+ * has one, so a message can say what was being written without the path it was written to. The digits are
+ * drawn with the global `crypto`, so this layer imports no module for them.
+ *
+ * @throws WriteFailure `<label or name>: cannot be written (<code>)`
+ */
+export async function writeAtomic(directory: string, name: string, text: string, options: { readonly mode?: number, readonly label?: string } = {}): Promise<void> {
+  const { mode = 0o666, label = name } = options
+  const digits = Array.from(crypto.getRandomValues(new Uint8Array(4)), byte => byte.toString(16).padStart(2, '0')).join('')
+  const temporary = join(directory, `.${name}.${digits}.tmp`)
+  let made = false
+  try {
+    const handle = await open(temporary, NEW_FILE_FLAGS, mode)
+    made = true
+    try {
+      await handle.writeFile(text)
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    await rename(temporary, join(directory, name))
+  } catch (error) {
+    if (made) await unlink(temporary).catch(() => undefined)
+    throw writeFailure(label, error)
+  }
 }

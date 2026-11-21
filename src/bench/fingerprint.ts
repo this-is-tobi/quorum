@@ -16,7 +16,8 @@
  * settings, so it is in the form.
  *
  * The form can hold a secret (a credential kept in a header, a query parameter or the base path), so it
- * never leaves this module: not written, not logged, not put in an error message. Only the HMAC does.
+ * never leaves this module but through a hash: not written, not logged, not put in an error message. Only the HMAC
+ * does, and `providerIdentity`, the same form of one provider less its `timeoutMs` and `retries`, whose text the state layer hashes into the name of an entry and never keeps.
  *
  * What it cannot see: a provider object's code (a changed implementation under the same key and model
  * needs a new run directory), and the environment a `claude-code` provider inherits.
@@ -39,7 +40,7 @@ export function newSalt(): string {
 }
 
 /** A provider as the form holds it: a provider object by its config key, its model and the facts it states, a spec by its fields less the key. */
-function providerForm(provider: ResolvedProvider): unknown {
+function providerForm(provider: ResolvedProvider): Record<string, unknown> {
   if (isProvider(provider)) {
     return {
       object: provider.id,
@@ -48,6 +49,20 @@ function providerForm(provider: ResolvedProvider): unknown {
     }
   }
   return Object.fromEntries(Object.entries(provider).filter(([field]) => field !== 'apiKey'))
+}
+
+/** The fields of a provider's form that are no part of its identity: how long a call waits and how often it is tried again change no reply a stored call holds. */
+const OUT_OF_IDENTITY = new Set(['timeoutMs', 'retries'])
+
+/**
+ * A provider's identity, as the saved state keys its entries by: the form `providerForm` gives it, less `timeoutMs` and
+ * `retries` (a call stored under one deadline is reused under another; every other field still moves it), as JSON with the keys
+ * of every object sorted, so the same provider written in another order is one. The bench's fingerprint keeps both fields.
+ * It can hold a secret: only ever hash it.
+ */
+export function providerIdentity(provider: ResolvedProvider): string {
+  const form = Object.fromEntries(Object.entries(providerForm(provider)).filter(([field]) => !OUT_OF_IDENTITY.has(field)))
+  return JSON.stringify(form, sortKeys)
 }
 
 /** The form of the provider a profile binds by `name`; a name the config holds no provider under is a RangeError, never a silent gap. */

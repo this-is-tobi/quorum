@@ -124,6 +124,11 @@ function publicMeta(result: QuorumResult): PublicMeta {
     leftOut: structuredClone(meta.leftOut),
     flags: structuredClone(meta.flags),
     adaptations: structuredClone(meta.adaptations),
+    ...meta.reused === undefined
+      ? {}
+      : {
+          reused: { ...meta.reused },
+        },
   }
 }
 
