@@ -15,7 +15,7 @@ import { requestDigest } from '../prompts.ts'
 import { isTimeout, retryWait } from '../retry.ts'
 import type { FailureFacts } from '../retry.ts'
 import { DEFAULT_REPLY_TOKENS, replyLimit, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
-import type { FailOn, ProviderRef, QuorumEvent, StageName, Thresholds, Usage } from '../types.ts'
+import type { FailOn, Position, ProviderRef, QuorumEvent, StageName, Thresholds, Usage } from '../types.ts'
 
 /**
  * A provider as a compiled profile holds it: the object it calls, the ref captured at creation that
@@ -114,6 +114,10 @@ export interface RunContext {
   readonly concurrency: number
   /** The time and the randomness the call path reads: the system's, unless a spec injects its own. */
   readonly clock: Clock
+  /** The last call number the review has given: a call that starts is numbered `++last`, from 1, whatever its profile. */
+  readonly calls: { last: number }
+  /** The attempts the review has sent and not settled: what `run:stopping` counts when the deadline falls. */
+  readonly flying: { count: number }
 }
 
 /** What a refusal as too large says when it holds no message of its own. */
@@ -276,11 +280,16 @@ function ownUsage(usage: unknown): Usage | undefined {
   })
 }
 
-/** Who requests a provider call, as its `call` event names it: `lens` only for a vote. */
+/**
+ * Who requests a provider call, as its `call:start` and `call` events name it: `lens` and `finding` only for a vote,
+ * `part` only for a research call.
+ */
 export interface Requester {
   readonly profile: string
   readonly role: 'research' | 'vote'
   readonly lens?: string
+  readonly part?: Position
+  readonly finding?: string
 }
 
 /**
@@ -455,6 +464,12 @@ export function elapsed(started: number): number {
  * the `try` that catches the provider's failure, so a sink that throws on it is never reported as a failed
  * call.
  *
+ * The events of a call come in this order: `call:start` once, when the first attempt's reservation is granted and
+ * before the attempt is sent, numbering the call `++ctx.calls.last`; `call:retry` before each wait, once the wait is
+ * known and the stop has not fired; then the one `call` event, which repeats the call's number. A call the store
+ * answered, the down rule refused or a limit stopped before its first attempt sends no `call:start`; a refusal as too
+ * large is sent after the reservation, so it does. Each attempt is counted in `ctx.flying` from its reservation until it settles.
+ *
  * A call waits, inside its slot and before it checks the stop and the down rule, until no probe of its provider is
  * pending (`ctx.adapt.ready`), so it is built and sent at the settings the review has settled on, and each request
  * carries them (`ctx.adapt.sent`). A call's final failure that a setting answers (see `createAdaptations`) is
@@ -468,11 +483,13 @@ export function elapsed(started: number): number {
  * call with its first failure. A research reply goes through `ctx.adapt.reasoned`.
  *
  * The stage's `check`, when it passes one, reads the reply once the call is over as a call that answered: after
- * its usage is settled, its `call` event is sent as `ok` and the down rule has seen the reply. It says whether the
- * reply is an answer or is saturated (a research reply that listed as many findings as it was asked for at most,
- * which the stage splits and does not read), and the call returns `saturated` for such a reply, with no text. A
- * throw from it, an `OutputError` the stage tells as a gap, ends the call with that error: no second event is
- * sent, the health is told nothing more, and `onFailure` hears it.
+ * its usage is settled and the down rule has seen the reply, and before the call's `call` event, which is sent as `ok`
+ * and carries what the check listed (`listed`) and whether the reply reasoned. It says whether the reply is an answer or
+ * is saturated (a research reply that listed as many findings as it was asked for at most, which the stage splits and
+ * does not read), and how many findings it listed, and the call returns `saturated` for such a reply, with no text. A
+ * throw from it, an `OutputError` the stage tells as a gap, ends the call with that error after the one `ok` event,
+ * which then holds no `listed`: no second event is sent, the health is told nothing more, and `onFailure` hears it.
+ * Every call that built its request tells `onEnd`, once, inside its slot, what it spent and when it started.
  *
  * With a store (`ctx.store`), each send of a call, the first and every re-send, is looked up under its own key once its
  * request is built and before anything is reserved: the SHA-256 of the call's role, the request's digest (`requestDigest`:
@@ -512,6 +529,8 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     const marked = new Set<unknown>()
     const started = ctx.clock.now()
     const took = (): number => Math.round(ctx.clock.now() - started)
+    /** The call's number, once its first attempt's reservation is granted and `call:start` is sent. */
+    let number: number | undefined
     let attempts = 0
     let usage: Usage | undefined
     let spent = 0
@@ -522,6 +541,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       if (attempts > 0 || reused) {
         ctx.emit({
           type: 'call',
+          ...numbered(number),
           ...requester,
           provider: target.ref,
           durationMs: took(),
@@ -561,6 +581,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
         }
       }
       // Still inside the slot: a review aborted here never starts the queued call the slot goes to next.
+      options.onEnd?.({ spent, startedAt: started })
       options.onFailure?.(error, attempts)
       return error
     }
@@ -574,8 +595,21 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       for (;;) {
         await ctx.ledger.reserve(reservation, ctx.stop)
         attempts += 1
+        if (number === undefined) {
+          number = ++ctx.calls.last
+          ctx.emit({
+            type: 'call:start',
+            call: number,
+            ...requester,
+            provider: target.ref,
+            reserved: reservation,
+            timeoutMs: target.timeoutMs,
+          })
+        }
+        ctx.flying.count += 1
         /** Settles the attempt's reservation at `tokens`, which the call's `spent` adds. */
         const settle = (tokens: number): void => {
+          ctx.flying.count -= 1
           ctx.ledger.settle(reservation, tokens)
           spent += tokens
         }
@@ -605,6 +639,15 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           if (ctx.stop.aborted) throw ctx.stop.reason
           timedOut ||= isTimeout(facts)
           retried += 1
+          ctx.emit({
+            type: 'call:retry',
+            call: number,
+            attempt: retried,
+            retries: target.retries,
+            // A call retries only a `network`, `timeout` or `http` failure, kinds `providerFailure` always reads.
+            failure: providerFailure(error)!,
+            waitMs: Math.round(wait),
+          })
           await pause(ctx, wait)
         }
       }
@@ -613,7 +656,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
      * The result of a send: what the store answered with, else its reply, or its failure. A send's request is looked up
      * under its own key before it is sent, and a send cut off is saved, as a marker, under the same key.
      */
-    const sendNow = async (asked: CompletionRequest): Promise<{ readonly reply: CompletionResponse } | { readonly failure: unknown } | { readonly answered: Answered }> => {
+    const sendNow = async (asked: CompletionRequest): Promise<{ readonly reply: CompletionResponse } | { readonly failure: unknown } | Read> => {
       request = asked
       key = storeKey(ctx, requester, built, asked)
       if (key !== undefined) {
@@ -681,52 +724,99 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       if ('failure' in result && first) result = { failure }
     }
     if ('failure' in result) throw end(result.failure)
-    if ('reply' in result && requester.role === 'research') ctx.adapt.reasoned(target, result.reply)
+    let read: Read | undefined
+    let unread: { readonly error: unknown } | undefined
+    let reasoning: boolean | undefined
+    if ('answered' in result) {
+      read = result
+    } else {
+      if (requester.role === 'research') ctx.adapt.reasoned(target, result.reply)
+      const shown = ownData(result.reply, 'reasoning')
+      if (typeof shown === 'boolean') reasoning = shown
+      try {
+        read = readAs(result.reply.text, options.check)
+      } catch (error) {
+        unread = { error }
+      }
+    }
     ctx.emit({
       type: 'call',
+      ...numbered(number),
       ...requester,
       provider: target.ref,
       durationMs: took(),
       ok: true,
       ...counted(attempts, addUsage(usage, replied), spent),
+      ...read?.listed === undefined
+        ? {}
+        : { listed: read.listed },
+      ...reasoning === undefined
+        ? {}
+        : { reasoning },
     })
+    options.onEnd?.({ spent, startedAt: started })
+    if (read === undefined) {
+      // The reply was no answer the stage could read: the failure goes to the stage as any other of the call.
+      options.onFailure?.(unread!.error, attempts)
+      throw unread!.error
+    }
     if ('answered' in result) return result.answered
-    const answered = answeredBy(result.reply.text, options, attempts)
-    if (key !== undefined) await keepAnswer(ctx, requester, target, key, answered, result.reply, replied)
-    return answered
+    if (key !== undefined) await keepAnswer(ctx, requester, target, key, read.answered, result.reply, replied)
+    return read.answered
   })
+}
+
+/** The `call` field of an event of a call that was numbered, and none for one that sent no `call:start`. */
+function numbered(number: number | undefined): { call?: number } {
+  return number === undefined
+    ? {}
+    : { call: number }
 }
 
 /** What a reply is read as: its text, or a saturated reply, which the stage does not read. */
 export type Answered = { readonly text: string } | { readonly saturated: true }
 
-/** What a stage hands a call besides its request. */
-export interface CallOptions {
-  /** Reads a reply that came back: whether it is an answer or is saturated; a throw ends the call with that error. */
-  readonly check?: (text: string) => 'answer' | 'saturated'
-  /** Hears a call's failure, with the attempts it made, once, inside the call's slot, before the call rethrows. */
-  readonly onFailure?: (error: unknown, attempts: number) => void
+/** What a stage's `check` says of a reply it read: whether the reply is saturated, and how many findings it listed, when the stage counts them. */
+export interface Checked {
+  readonly saturated: boolean
+  readonly listed?: number
 }
 
-/** The reply's reading by the stage's `check`, which is an answer when the stage passes none; a throw from it is heard by `onFailure` and rethrown. */
-function answeredBy(text: string, { check, onFailure }: CallOptions, attempts: number): Answered {
-  try {
-    return readAs(text, check)
-  } catch (error) {
-    onFailure?.(error, attempts)
-    throw error
+/** What a stage hands a call besides its request. */
+export interface CallOptions {
+  /** Reads a reply that came back: whether it is saturated, and what it listed; a throw ends the call with that error. */
+  readonly check?: (text: string) => Checked
+  /** Hears a call's failure, with the attempts it made, once, inside the call's slot, before the call rethrows. */
+  readonly onFailure?: (error: unknown, attempts: number) => void
+  /**
+   * Hears a call's end, once, inside its slot, for every call that built its request, whatever became of it (answered,
+   * reused, failed, or refused by its check), before it returns or rethrows: the tokens it spent and the clock's reading
+   * once its request was built.
+   */
+  readonly onEnd?: (end: { readonly spent: number, readonly startedAt: number }) => void
+}
+
+/** What a reply is read as, and what the stage's check listed of it. */
+interface Read {
+  readonly answered: Answered
+  readonly listed?: number
+}
+
+/** What `text` is read as: an answer, or a saturated reply, as the stage's `check` says, with what it listed; an answer when it passes none. A throw is the check's. */
+function readAs(text: string, check: CallOptions['check']): Read {
+  const checked = check?.(text)
+  return {
+    answered: checked?.saturated === true
+      ? { saturated: true }
+      : { text },
+    ...checked?.listed === undefined
+      ? {}
+      : { listed: checked.listed },
   }
 }
 
-/** What `text` is read as: an answer, or a saturated reply, as the stage's `check` says; an answer when it passes none. A throw is the check's. */
-function readAs(text: string, check: CallOptions['check']): Answered {
-  return check?.(text) === 'saturated'
-    ? { saturated: true }
-    : { text }
-}
-
-/** What the store gave a send: the answer it is, or the cut-off it records. */
-type Reused = { readonly answered: Answered } | { readonly failure: ProviderError }
+/** What the store gave a send: the answer it is, read as a fresh reply, or the cut-off it records. */
+type Reused = Read | { readonly failure: ProviderError }
 
 /** The words of the failure a stored cut-off marker stands for: code words alone. */
 const MARKER_WORDS = 'the stored reply was cut off'
@@ -849,9 +939,7 @@ async function reuse(ctx: RunContext, requester: Requester, target: Target, key:
         }
   }
   try {
-    return {
-      answered: readAs(call.reply.text, options.check),
-    }
+    return readAs(call.reply.text, options.check)
   } catch {
     const said = `${target.ref.id}|${requester.role}`
     if (!ctx.storedRefused.has(said)) {
@@ -1055,11 +1143,17 @@ function attempt(ctx: RunContext, target: Target, request: CompletionRequest): P
  * review's signal is checked before the stage starts, not after its step: an abort during the step
  * is covered by the emit gate, the check in each call slot and the review's final check. The
  * duration is the stage's wall-clock time, queue waits included; `count` reads the number of items
- * the stage produced from its result.
+ * the stage produced from its result. `start` holds the counts the stage's `stage:start` event carries: the research's
+ * `parts` or the panel's `votes`.
  */
-export async function stage<T>(ctx: RunContext, profile: string, name: StageName, step: () => T, count: (result: Awaited<T>) => number): Promise<Awaited<T>> {
+export async function stage<T>(ctx: RunContext, profile: string, name: StageName, step: () => T, count: (result: Awaited<T>) => number, start: { readonly parts?: number, readonly votes?: number } = {}): Promise<Awaited<T>> {
   ctx.signal.throwIfAborted()
-  ctx.emit({ type: 'stage:start', profile, stage: name })
+  ctx.emit({
+    type: 'stage:start',
+    profile,
+    stage: name,
+    ...start,
+  })
   const started = performance.now()
   const result = await step()
   ctx.emit({

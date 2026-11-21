@@ -5,20 +5,23 @@ import type { FakeClock } from '../../testing/clock.ts'
 import { createAdaptations } from '../adapt.ts'
 import { createLimiter } from '../concurrency.ts'
 import { createHealth } from '../down.ts'
-import { ProviderError } from '../errors.ts'
+import { ProviderDownError, ProviderError } from '../errors.ts'
 import { createLedger, DEFAULT_REVIEW_TIMEOUT_MS, LimitError } from '../limits.ts'
-import type { CompletionRequest, CompletionResponse, Provider } from '../ports.ts'
+import type { CompletionRequest, CompletionResponse, Provider, StoredCall } from '../ports.ts'
+import { researchRequest } from '../prompts.ts'
 import type { QuorumEvent } from '../types.ts'
 import { callProvider, reservationOf, roomOf, targetOf } from './context.ts'
 import type { Requester, RunContext, Target } from './context.ts'
 
 /**
- * A context of one review: its events as the sink would receive them. When
+ * A context of one review: its events as the sink would receive them, but for a call's start and retries, which it
+ * returns apart, in `progress`, so the exact event lists of the other tests stand. When
  * `limits.deadlineMs` is given, a timer on the fake clock aborts the review's deadline with its failure, as the
  * review arms it, and `stop` joins that to the review's signal.
  */
-function context(clock: FakeClock, controller = new AbortController(), concurrency = 1, limits: { readonly cap?: number, readonly deadlineMs?: number } = {}): { ctx: RunContext, events: QuorumEvent[] } {
+function context(clock: FakeClock, controller = new AbortController(), concurrency = 1, limits: { readonly cap?: number, readonly deadlineMs?: number } = {}): { ctx: RunContext, events: QuorumEvent[], progress: QuorumEvent[] } {
   const events: QuorumEvent[] = []
+  const progress: QuorumEvent[] = []
   const deadlineMs = limits.deadlineMs ?? DEFAULT_REVIEW_TIMEOUT_MS
   const deadline = new AbortController()
   if (limits.deadlineMs !== undefined) {
@@ -30,7 +33,9 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
     limit: createLimiter(concurrency),
     ledger: createLedger(limits.cap ?? 2_000_000),
     emit: (event) => {
-      if (!controller.signal.aborted) events.push(event)
+      if (controller.signal.aborted) return
+      if (event.type === 'call:start' || event.type === 'call:retry') progress.push(event)
+      else events.push(event)
     },
     signal: controller.signal,
     stop: AbortSignal.any([controller.signal, deadline.signal]),
@@ -43,8 +48,10 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
     budgets: {},
     concurrency,
     clock,
+    calls: { last: 0 },
+    flying: { count: 0 },
   }
-  return { ctx, events }
+  return { ctx, events, progress }
 }
 
 /** A target whose provider's own id is not the id of its ref, which is the one an error and an event name. */
@@ -107,6 +114,7 @@ describe('the deadline of an attempt', () => {
     expect(events).toEqual([
       {
         type: 'call',
+        call: 1,
         profile: 'security',
         role: 'vote',
         lens: 'impact',
@@ -354,6 +362,7 @@ describe('the retries of a call', () => {
     expect(clock.armed.slice(0, 3)).toEqual([1000, 250, 1000])
     expect(events[0]).toEqual({
       type: 'call',
+      call: 1,
       profile: 'security',
       role: 'vote',
       lens: 'impact',
@@ -937,6 +946,7 @@ describe('the review\'s token cap', () => {
     expect(events).toEqual([
       {
         type: 'call',
+        call: 1,
         profile: 'security',
         role: 'vote',
         lens: 'impact',
@@ -1035,6 +1045,7 @@ describe('the review\'s deadline', () => {
     expect(events).toEqual([
       {
         type: 'call',
+        call: 1,
         profile: 'security',
         role: 'vote',
         lens: 'impact',
@@ -1586,10 +1597,10 @@ describe('a stage\'s check of a reply', () => {
     expect(ctx.health.refused(target(reply('x')).provider)).toBeUndefined()
     // A check that calls the reply saturated returns it with no text, and a check that calls it an answer returns the text.
     await expect(callProvider(ctx, requester, target(reply('{"findings":[]}')), () => request, {
-      check: () => 'saturated',
+      check: () => ({ saturated: true }),
     })).resolves.toEqual({ saturated: true })
     await expect(callProvider(ctx, requester, target(reply('{"findings":[]}')), () => request, {
-      check: () => 'answer',
+      check: () => ({ saturated: false }),
     })).resolves.toEqual({ text: '{"findings":[]}' })
     expect(events.filter(event => event.type === 'call' && event.ok)).toHaveLength(3)
   })
@@ -1607,5 +1618,302 @@ describe('a stage\'s check of a reply', () => {
     }
     expect(ctx.health.refused(live.provider)).toBeUndefined()
     expect(events.some(event => event.type === 'provider-down')).toBe(false)
+  })
+})
+
+describe('the events of a call', () => {
+  const answer: Provider['complete'] = async () => ({ text: '{}', model: 'm' })
+
+  /** A store that keeps what it is given in memory, as the review's store keeps a reply under its key. */
+  function memory(): NonNullable<RunContext['store']> {
+    const kept = new Map<string, StoredCall>()
+    return {
+      get: async ({ key }) => kept.get(key),
+      put: async ({ key }, call) => {
+        kept.set(key, call)
+      },
+    }
+  }
+
+  /** A request a builder made, which the store keys: the call path never keys a request it was handed otherwise. */
+  const keyed = (): CompletionRequest => researchRequest('look', 'a diff', undefined, undefined, { findings: 5 })
+  const researching: Requester = { profile: 'security', role: 'research' }
+
+  it('sends call:start once per call inside its slot, after its reservation and before its attempt, numbering the review\'s calls from 1', async () => {
+    const clock = fakeClock()
+    const { ctx, events, progress } = context(clock)
+    /** What each provider call saw when it was made: the starts sent and the calls ended. */
+    const seen: Array<{ readonly starts: number, readonly ended: number }> = []
+    const stated = target(async () => {
+      seen.push({ starts: progress.length, ended: events.length })
+      return { text: '{}', model: 'm' }
+    }, worst(500))
+    const first = callProvider(ctx, requester, stated, () => request)
+    const second = callProvider(ctx, requester, stated, () => request)
+    await Promise.all([first, second])
+    expect(progress).toEqual([
+      {
+        type: 'call:start',
+        call: 1,
+        profile: 'security',
+        role: 'vote',
+        lens: 'impact',
+        provider: { id: 'p', model: 'm' },
+        reserved: 500,
+        timeoutMs: 1000,
+      },
+      {
+        type: 'call:start',
+        call: 2,
+        profile: 'security',
+        role: 'vote',
+        lens: 'impact',
+        provider: { id: 'p', model: 'm' },
+        reserved: 500,
+        timeoutMs: 1000,
+      },
+    ])
+    // The first start came before the first provider call, and the second only after the first call's own event.
+    expect(seen).toEqual([
+      { starts: 1, ended: 0 },
+      { starts: 2, ended: 1 },
+    ])
+    expect(ctx.calls.last).toBe(2)
+    expect(ctx.flying.count).toBe(0)
+  })
+
+  it('sends no call:start for a call the store answered, the down rule refused, or a limit stopped before its first attempt', async () => {
+    const clock = fakeClock()
+    const { ctx, progress } = context(clock, new AbortController(), 1, { cap: 100 })
+    const store = memory()
+    const keeping: RunContext = {
+      ...ctx,
+      ledger: createLedger(2_000_000),
+      store,
+    }
+    // A first call answers and is saved: it starts, and the same call again is answered by the store.
+    await callProvider(keeping, researching, target(answer), keyed)
+    expect(progress).toHaveLength(1)
+    progress.length = 0
+    await callProvider(keeping, researching, target(async () => {
+      throw new Error('the store answers')
+    }), keyed)
+    // A provider found down is called no more.
+    const down = target(answer)
+    for (let call = 0; call < 3; call++) {
+      ctx.health.failed(down.provider, 'p', new ProviderError({
+        providerId: 'p',
+        kind: 'http',
+        status: 503,
+        message: 'down',
+      }))
+    }
+    await expect(callProvider(ctx, requester, down, () => request)).rejects.toBeInstanceOf(ProviderDownError)
+    // A worst case over the cap is never reserved, so the attempt is never sent.
+    await expect(callProvider(ctx, requester, target(answer, worst(5000)), () => request)).rejects.toBeInstanceOf(LimitError)
+    expect(progress).toEqual([])
+    expect(ctx.calls.last).toBe(1)
+  })
+
+  it('sends call:retry before each wait with the attempt of its send that failed, the retries, the failure and the wait', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, progress } = context(clock)
+    let ran = 0
+    const flaky = target(async () => {
+      ran += 1
+      if (ran < 3) throw failure({ kind: 'http', status: 503, retryable: true })
+      return { text: '{}', model: 'm' }
+    }, { retries: 2 })
+    await settle(clock, callProvider(ctx, requester, flaky, () => request))
+    expect(progress.filter(event => event.type === 'call:retry')).toEqual([
+      {
+        type: 'call:retry',
+        call: 1,
+        attempt: 1,
+        retries: 2,
+        failure: { kind: 'http', status: 503 },
+        waitMs: 250,
+      },
+      {
+        type: 'call:retry',
+        call: 1,
+        attempt: 2,
+        retries: 2,
+        failure: { kind: 'http', status: 503 },
+        waitMs: 500,
+      },
+    ])
+    expect(progress.filter(event => event.type === 'call:start')).toHaveLength(1)
+  })
+
+  it('sends no call:retry for a failure the stop ends instead of a retry', async () => {
+    const clock = fakeClock(0.5)
+    const controller = new AbortController()
+    const { ctx, progress } = context(clock, controller)
+    const reason = new Error('stop')
+    const stopped = target(async () => {
+      controller.abort(reason)
+      throw failure({ kind: 'network', retryable: true })
+    }, { retries: 2 })
+    await expect(callProvider(ctx, requester, stopped, () => request)).rejects.toBe(reason)
+    expect(progress.map(event => event.type)).toEqual(['call:start'])
+  })
+
+  it('names the call in its call event, and carries the requester\'s part or finding into each event of the call', async () => {
+    const clock = fakeClock()
+    const { ctx, events, progress } = context(clock)
+    const part = {
+      index: 3,
+      count: 44,
+      piece: { index: 2, count: 2 },
+    }
+    await callProvider(ctx, { ...researching, part }, target(answer), () => request)
+    const refused = failure({ kind: 'refusal' })
+    await expect(callProvider(ctx, { ...requester, finding: 'f1' }, target(async () => {
+      throw refused
+    }), () => request)).rejects.toBe(refused)
+    expect(progress).toEqual([
+      expect.objectContaining({
+        type: 'call:start',
+        call: 1,
+        role: 'research',
+        part,
+      }),
+      expect.objectContaining({
+        type: 'call:start',
+        call: 2,
+        role: 'vote',
+        lens: 'impact',
+        finding: 'f1',
+      }),
+    ])
+    expect(progress[0]).not.toHaveProperty('finding')
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'call',
+        call: 1,
+        role: 'research',
+        part,
+        ok: true,
+      }),
+      expect.objectContaining({
+        type: 'call',
+        call: 2,
+        role: 'vote',
+        finding: 'f1',
+        ok: false,
+      }),
+    ])
+    expect(events[1]).not.toHaveProperty('part')
+  })
+
+  it('carries what the check listed and whether the reply reasoned in the ok call event, sent once the check has read the reply', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    let seen: number | undefined
+    await callProvider(ctx, requester, target(async () => ({ text: '{}', model: 'm', reasoning: true })), () => request, {
+      check: () => {
+        seen = events.length
+        return { saturated: false, listed: 3 }
+      },
+    })
+    // The check ran before the event was sent.
+    expect(seen).toBe(0)
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'call',
+        call: 1,
+        ok: true,
+        listed: 3,
+        reasoning: true,
+      }),
+    ])
+
+    // A reply that says it did not reason says so; one whose `reasoning` is no boolean says nothing.
+    await callProvider(ctx, requester, target(async () => ({ text: '{}', model: 'm', reasoning: false })), () => request)
+    await callProvider(ctx, requester, target(async () => ({ text: '{}', model: 'm', reasoning: 'yes' as unknown as boolean })), () => request)
+    expect(events[1]).toMatchObject({ reasoning: false })
+    expect(events[1]).not.toHaveProperty('listed')
+    expect(events[2]).not.toHaveProperty('reasoning')
+
+    // A check that throws still gets the call's one ok event, with no `listed`, then the call rejects with its error.
+    const unreadable = new Error('no envelope')
+    await expect(callProvider(ctx, requester, target(answer), () => request, {
+      check: () => {
+        throw unreadable
+      },
+    })).rejects.toBe(unreadable)
+    expect(events).toHaveLength(4)
+    expect(events[3]).toMatchObject({ type: 'call', ok: true })
+    expect(events[3]).not.toHaveProperty('listed')
+
+    // A call the store answered carries what its check listed, and no call number.
+    const store = memory()
+    const keeping: RunContext = { ...ctx, store }
+    const counting = {
+      check: (): { saturated: boolean, listed: number } => ({ saturated: false, listed: 2 }),
+    }
+    await callProvider(keeping, researching, target(answer), keyed, counting)
+    await callProvider(keeping, researching, target(answer), keyed, counting)
+    expect(events[5]).toMatchObject({
+      type: 'call',
+      ok: true,
+      reused: true,
+      listed: 2,
+    })
+    expect(events[5]).not.toHaveProperty('call')
+  })
+
+  it('tells onEnd the spend and the start of each call that built its request, whatever its end', async () => {
+    const clock = fakeClock()
+    const { ctx } = context(clock)
+    const ends: Array<{ readonly spent: number, readonly startedAt: number }> = []
+    const onEnd = (end: { readonly spent: number, readonly startedAt: number }): void => {
+      ends.push(end)
+    }
+    // Time moves to 5000 before the first call builds its request.
+    clock.timer(5000, () => {})
+    clock.fireNext()
+    const usage = { inputTokens: 10, outputTokens: 5 }
+    await callProvider(ctx, requester, target(async () => ({ text: '{}', model: 'm', usage })), () => request, { onEnd })
+    expect(ends).toEqual([
+      { spent: 15, startedAt: 5000 },
+    ])
+
+    // A failure ends once, with what its attempt settled at.
+    await expect(callProvider(ctx, requester, target(async () => {
+      throw failure({ kind: 'refusal', usage })
+    }), () => request, { onEnd })).rejects.toThrow('failed')
+    expect(ends).toHaveLength(2)
+    expect(ends[1]).toEqual({ spent: 15, startedAt: 5000 })
+
+    // A reply the store answered spent nothing; a check that throws still tells the call's end.
+    const keeping: RunContext = {
+      ...ctx,
+      store: memory(),
+    }
+    await callProvider(keeping, researching, target(answer, worst(700)), keyed, { onEnd })
+    await callProvider(keeping, researching, target(answer, worst(700)), keyed, { onEnd })
+    expect(ends.slice(2).map(end => end.spent)).toEqual([700, 0])
+    await expect(callProvider(ctx, requester, target(answer), () => request, {
+      check: () => {
+        throw new Error('no envelope')
+      },
+      onEnd,
+    })).rejects.toThrow('no envelope')
+    expect(ends).toHaveLength(5)
+
+    // A call the down rule refused never built its request, so it never tells.
+    const down = target(answer)
+    for (let call = 0; call < 3; call++) {
+      ctx.health.failed(down.provider, 'p', new ProviderError({
+        providerId: 'p',
+        kind: 'http',
+        status: 503,
+        message: 'down',
+      }))
+    }
+    await expect(callProvider(ctx, requester, down, () => request, { onEnd })).rejects.toBeInstanceOf(ProviderDownError)
+    expect(ends).toHaveLength(5)
   })
 })

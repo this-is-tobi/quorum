@@ -398,6 +398,8 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     budgets: compiled.budgets,
     concurrency: compiled.concurrency,
     clock: compiled.clock,
+    calls: { last: 0 },
+    flying: { count: 0 },
   }
   emit({
     type: 'run:start',
@@ -412,11 +414,22 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     for (const entry of gaps.get(run.id) ?? []) emit({ type: 'incomplete', entry })
   }
   for (const flag of flags) emit({ type: 'flag', flag })
+  const stopping = (): void => {
+    try {
+      emit({ type: 'run:stopping', cause: 'review-deadline', inFlight: ctx.flying.count })
+    } catch {
+      // A sink that throws has aborted the review, which rejects with its error: a listener must not throw it a second time.
+    }
+  }
+  // Only while the stages run: the deadline's own signal fires first, so the attempts it stops are still counted in flight.
+  expired.addEventListener('abort', stopping, { once: true })
   const outcomes = await reviewAll(ctx, runs, plans, scope.diff, sections).catch((error: unknown) => {
     // A failure that is no gap (a sink's error, a bug) aborts the review here. The first reason stays the reason.
     const reason: unknown = signal.aborted ? signal.reason : error
     internal.abort(reason)
     throw reason
+  }).finally(() => {
+    expired.removeEventListener('abort', stopping)
   })
   signal.throwIfAborted()
   const down = nothingAnswered(ctx, runs, outcomes)
@@ -509,9 +522,9 @@ async function reviewAll(ctx: RunContext, runs: readonly ProfileRun[], plans: re
  * gap of each limit that stopped its work, reported by an `incomplete` event once the panel's stage has ended.
  */
 async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, diff: string, sections: ReadonlyMap<string, string>): Promise<ProfileOutcome> {
-  const researched = await stage(ctx, run.id, 'research', () => research(ctx, run, plan, diff, sections), outcome => outcome.findings.length)
+  const researched = await stage(ctx, run.id, 'research', () => research(ctx, run, plan, diff, sections), outcome => outcome.findings.length, { parts: plan.packing?.parts.length ?? 1 })
   const candidates = await stage(ctx, run.id, 'dedup', () => dedup(researched.findings), found => found.length)
-  const judged = await stage(ctx, run.id, 'panel', () => panel(ctx, run, candidates, sections, diff), outcome => outcome.kept.length + outcome.discarded.length + outcome.unreviewed.length)
+  const judged = await stage(ctx, run.id, 'panel', () => panel(ctx, run, candidates, sections, diff), outcome => outcome.kept.length + outcome.discarded.length + outcome.unreviewed.length, { votes: candidates.length * run.lenses.length })
   const limits = limitGaps(run.id, researched.parts.map(limitOf), [
     ...judged.kept,
     ...judged.discarded,

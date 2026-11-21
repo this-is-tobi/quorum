@@ -6,15 +6,24 @@ import type { ProgressNote } from './progress.ts'
 
 const PROVIDER = { id: 'p', model: 'm' }
 
+/** A research part that ended. */
 function research(): QuorumEvent {
   return {
-    type: 'call',
+    type: 'part',
     profile: 'security',
-    role: 'research',
-    provider: PROVIDER,
+    part: { index: 1, count: 2 },
+    outcome: 'reviewed',
     durationMs: 1,
-    ok: true,
     spent: 10,
+  }
+}
+/** A profile's research starting with `parts` parts. */
+function planned(parts: number): QuorumEvent {
+  return {
+    type: 'stage:start',
+    profile: 'security',
+    stage: 'research',
+    parts,
   }
 }
 function verdict(): QuorumEvent {
@@ -42,16 +51,21 @@ describe('progressReporter', () => {
   it('says it is reading the change at once, then counts the research parts and the findings decided', () => {
     const { notes, onEvent, stop } = reporter()
     expect(notes.map(({ message }) => message)).toEqual(['reading the change'])
-    onEvent({ type: 'stage:start', profile: 'security', stage: 'research' })
+    onEvent(planned(2))
     onEvent(research())
     onEvent(research())
-    onEvent({ type: 'stage:start', profile: 'security', stage: 'panel' })
+    onEvent({
+      type: 'stage:start',
+      profile: 'security',
+      stage: 'panel',
+      votes: 1,
+    })
     onEvent(verdict())
     expect(notes.map(({ message }) => message)).toEqual([
       'reading the change',
-      'research: 0 parts done',
-      'research: 1 part done',
-      'research: 2 parts done',
+      'research: 0 of 2 parts done',
+      'research: 1 of 2 parts done',
+      'research: 2 of 2 parts done',
       'panel: 0 findings decided',
       'panel: 1 finding decided',
     ])
@@ -60,14 +74,15 @@ describe('progressReporter', () => {
 
   it('notifies at least once a minute while nothing happens, repeating its last message', () => {
     const { clock, notes, onEvent, stop } = reporter()
+    onEvent(planned(1))
     onEvent(research())
-    expect(clock.armed).toEqual([HEARTBEAT_MS, HEARTBEAT_MS])
+    expect(clock.armed).toEqual([HEARTBEAT_MS, HEARTBEAT_MS, HEARTBEAT_MS])
     expect(clock.pending()).toBe(1)
     expect(clock.fireNext()).toBe(true)
     expect(clock.now()).toBe(HEARTBEAT_MS)
-    expect(notes.at(-1)).toEqual({ progress: 3, message: 'research: 1 part done' })
+    expect(notes.at(-1)).toEqual({ progress: 4, message: 'research: 1 of 1 part done' })
     expect(clock.fireNext()).toBe(true)
-    expect(notes.at(-1)).toEqual({ progress: 4, message: 'research: 1 part done' })
+    expect(notes.at(-1)).toEqual({ progress: 5, message: 'research: 1 of 1 part done' })
     stop()
   })
 
@@ -132,6 +147,15 @@ describe('progressReporter', () => {
         spent: 10,
       },
       {
+        type: 'call:retry',
+        call: 1,
+        attempt: 1,
+        retries: 2,
+        failure: { kind: 'network' },
+        waitMs: 250,
+      },
+      { type: 'run:stopping', cause: 'review-deadline', inFlight: 1 },
+      {
         type: 'run:end',
         kept: 0,
         discarded: 0,
@@ -142,6 +166,51 @@ describe('progressReporter', () => {
     ]
     for (const event of quiet) onEvent(event)
     expect(notes).toHaveLength(1)
+    stop()
+  })
+
+  it('counts research by part events out of the plan\'s parts, never by calls or pieces', () => {
+    const { notes, onEvent, stop } = reporter()
+    onEvent(planned(44))
+    const call = (profile: string): QuorumEvent => ({
+      type: 'call',
+      profile,
+      role: 'research',
+      provider: PROVIDER,
+      durationMs: 1,
+      ok: true,
+      spent: 10,
+    })
+    onEvent(call('security'))
+    onEvent(call('security'))
+    onEvent({
+      type: 'call:start',
+      call: 3,
+      profile: 'security',
+      role: 'research',
+      provider: PROVIDER,
+      part: {
+        index: 1,
+        count: 44,
+        piece: { index: 1, count: 2 },
+      },
+      reserved: 10,
+      timeoutMs: 1000,
+    })
+    onEvent(research())
+    // Another profile's research adds its parts to the total.
+    onEvent({
+      type: 'stage:start',
+      profile: 'other',
+      stage: 'research',
+      parts: 2,
+    })
+    expect(notes.map(({ message }) => message)).toEqual([
+      'reading the change',
+      'research: 0 of 44 parts done',
+      'research: 1 of 44 parts done',
+      'research: 1 of 46 parts done',
+    ])
     stop()
   })
 })
