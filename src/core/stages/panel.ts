@@ -142,7 +142,12 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
   try {
     // The vote is read inside the call, once it has answered, so a reply that is no vote is the voter's `unusable-reply`.
     const read: { vote?: Vote } = {}
-    await callProvider(ctx, { profile: run.id, role: 'vote', lens: lens.id }, lens, () => requestFor(ctx, run, finding, lens, context), {
+    await callProvider(ctx, {
+      profile: run.id,
+      role: 'vote',
+      lens: lens.id,
+      finding: finding.id,
+    }, lens, () => requestFor(ctx, run, finding, lens, context), {
       check: (text) => {
         try {
           read.vote = parseVoteReply(text)
@@ -150,7 +155,7 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
           unreadable = { error }
           throw error
         }
-        return 'answer'
+        return { saturated: false }
       },
     })
     lensVote = {

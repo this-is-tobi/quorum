@@ -1572,9 +1572,10 @@ describe('meta and events', () => {
         },
       },
     })
-    expect(events.map(event => event.type).filter(type => type !== 'call' && type !== 'vote')).toEqual([
+    expect(events.map(event => event.type).filter(type => type !== 'call' && type !== 'call:start' && type !== 'vote')).toEqual([
       'run:start',
       'stage:start',
+      'part',
       'stage:end',
       'stage:start',
       'stage:end',
@@ -2431,11 +2432,14 @@ describe('abort', () => {
     expect(events.map(event => event.type)).toEqual([
       'run:start',
       'stage:start',
+      'call:start',
       'call',
+      'part',
       'stage:end',
       'stage:start',
       'stage:end',
       'stage:start',
+      'call:start',
     ])
   })
 
@@ -3242,11 +3246,17 @@ describe('the review\'s deadline', () => {
       : event.type)).toEqual([
       'run:start',
       'stage:start',
+      'call:start',
       'call',
+      'part',
       'stage:end research',
       'stage:start',
       'stage:end dedup',
       'stage:start',
+      'call:start',
+      'call:start',
+      'call:start',
+      'run:stopping',
       'call',
       'call',
       'call',
@@ -4126,6 +4136,13 @@ describe('a large change in parts', () => {
           exhausted: true,
         },
       ])
+      // The failed part says so too: its failure carries the quota, which the summary reads its fix from.
+      expect(events.filter(event => event.type === 'part' && event.outcome === 'research-failed')).toEqual([
+        expect.objectContaining({
+          part: { index: 2, count: 6 },
+          failure: { kind: 'http', status: 429, exhausted: true },
+        }),
+      ])
       expect(result.meta.incomplete).toEqual([
         { profile: 'security', reason: 'research-failed', detail: '1 of 6 research parts failed: the research call failed (http 429)' },
         { profile: 'security', reason: 'provider-down', detail: '4 of 6 research parts were not sent, since their provider was down' },
@@ -4450,6 +4467,312 @@ describe('a large change in parts', () => {
         ['security', 'provider-down'],
       ])
       expect(outcome(result).exitCode).toBe(4)
+    })
+  })
+
+  describe('the progress events', () => {
+    const at = (file: string): unknown => ({ ...reported, file, quote: `exec(input) // ${file}` })
+    const cutOff = (): ProviderError => new ProviderError({
+      providerId: 'finder',
+      kind: 'truncated',
+      noAnswer: 'reply',
+      message: 'cut off',
+    })
+    const unavailable = (): ProviderError => new ProviderError({
+      providerId: 'finder',
+      kind: 'http',
+      status: 503,
+      message: 'down',
+    })
+    const ofType = <T extends QuorumEvent['type']>(events: readonly QuorumEvent[], type: T): Array<Extract<QuorumEvent, { type: T }>> => events.filter((event): event is Extract<QuorumEvent, { type: T }> => event.type === type)
+    /** A quorum on the fake clock, its events recorded, whose research is `finder` and whose votes are `voter`'s, which keeps every finding unless it is given. */
+    function onClock(finder: Provider, options: Omit<QuorumOptions, 'profiles'> = {}, clock = fakeClock(), voter: Provider = keeps()): { readonly events: QuorumEvent[], readonly clock: ReturnType<typeof fakeClock>, readonly review: (text: string) => Promise<QuorumResult> } {
+      const events: QuorumEvent[] = []
+      const quorum = createQuorumWith({
+        ...options,
+        profiles: [securityProfile],
+      }, {
+        ...portsFor(securityProfile, finder, voter),
+        events: event => events.push(event),
+      }, clock)
+      return {
+        events,
+        clock,
+        review: text => settle(clock, quorum.review({ diff: text })),
+      }
+    }
+
+    it('starts research with its plan\'s count of parts and the panel with the votes it asks', async () => {
+      const many: QuorumEvent[] = []
+      await quorumOf(partsFinder(500), {}, securityProfile, many).review({ diff: partsDiff })
+      expect(ofType(many, 'stage:start').filter(event => event.stage === 'research')).toEqual([
+        {
+          type: 'stage:start',
+          profile: 'security',
+          stage: 'research',
+          parts: 6,
+        },
+      ])
+
+      const one: QuorumEvent[] = []
+      await quorumOf(fake('finder', () => findings()) as Provider, {}, securityProfile, one).review({ diff })
+      expect(ofType(one, 'stage:start').filter(event => event.stage === 'research')).toEqual([
+        {
+          type: 'stage:start',
+          profile: 'security',
+          stage: 'research',
+          parts: 1,
+        },
+      ])
+      // The stages that count nothing carry no count.
+      expect(ofType(one, 'stage:start').filter(event => event.stage === 'dedup')).toEqual([
+        { type: 'stage:start', profile: 'security', stage: 'dedup' },
+      ])
+
+      // Two findings, each voted by the three lenses of the security profile.
+      const voted: QuorumEvent[] = []
+      const second = {
+        file: 'other.js',
+        line: 1,
+        category: 'CWE-1',
+        quote: 'UNRELATED',
+        summary: 'unrelated',
+      }
+      await quorumOf(fake('finder', () => findings(reported, second)) as Provider, {}, securityProfile, voted).review({ diff })
+      expect(ofType(voted, 'stage:start').filter(event => event.stage === 'panel')).toEqual([
+        {
+          type: 'stage:start',
+          profile: 'security',
+          stage: 'panel',
+          votes: 6,
+        },
+      ])
+    })
+
+    it('sends one part event per research part as it ends, with its duration from its first call, its spend and the findings its replies listed', async () => {
+      const clock = fakeClock()
+      // Part 1 answers at 3000 ms, with one finding and its usage; the others answer at once.
+      const finder = partsFinder(500, () => findings(), {
+        async complete(request) {
+          if (partOf(request) !== 1) {
+            return {
+              text: findings(),
+              model: 'finder-model',
+            }
+          }
+          await new Promise<void>((resolve) => {
+            clock.timer(3000, resolve)
+          })
+          return {
+            text: findings(at('a.js')),
+            model: 'finder-model',
+            usage: { inputTokens: 1000, outputTokens: 200 },
+          }
+        },
+      })
+      const { events, review } = onClock(finder, { concurrency: 2 }, clock)
+      await review(partsDiff)
+      const parts = ofType(events, 'part')
+      expect(parts.map(event => event.part.index)).toEqual([2, 3, 4, 5, 6, 1])
+      expect(parts.at(-1)).toEqual({
+        type: 'part',
+        profile: 'security',
+        part: { index: 1, count: 6 },
+        outcome: 'reviewed',
+        durationMs: 3000,
+        spent: 1200,
+        listed: 1,
+      })
+      // A part that listed nothing was read all the same: it lists 0, and took no time.
+      expect(parts[0]).toMatchObject({ outcome: 'reviewed', durationMs: 0, listed: 0 })
+      expect(parts[0]).not.toHaveProperty('failure')
+      expect(parts[0]).not.toHaveProperty('pieces')
+    })
+
+    it('sends a failed part\'s failure, and no duration for a part a limit or the down rule settled before any call', async () => {
+      // Part 1 is read, parts 2 to 4 fail in a row, so the provider is down for parts 5 and 6.
+      const failing = partsFinder(500, request => partOf(request) >= 2 && partOf(request) <= 4
+        ? Promise.reject(unavailable())
+        : findings())
+      const down = onClock(failing, { concurrency: 1 })
+      await down.review(partsDiff)
+      const ended = ofType(down.events, 'part')
+      expect(ended.map(event => event.outcome)).toEqual([
+        'reviewed',
+        'research-failed',
+        'research-failed',
+        'research-failed',
+        'provider-down',
+        'provider-down',
+      ])
+      expect(ended[1]).toMatchObject({
+        failure: { kind: 'http', status: 503 },
+      })
+      expect(ended[4]).toEqual({
+        type: 'part',
+        profile: 'security',
+        part: { index: 5, count: 6 },
+        outcome: 'provider-down',
+        durationMs: 0,
+        spent: 0,
+      })
+
+      // The token cap leaves the last four parts unsent: the first of them was refused its reservation, the others never asked.
+      const capped = onClock(partsFinder(500, () => findings(), {
+        worstCase: () => 1000,
+      }), { maxReviewTokens: 2000, concurrency: 1 })
+      await capped.review(partsDiff)
+      expect(ofType(capped.events, 'part').slice(2)).toEqual([3, 4, 5, 6].map(index => ({
+        type: 'part',
+        profile: 'security',
+        part: { index, count: 6 },
+        outcome: 'token-cap',
+        durationMs: 0,
+        spent: 0,
+      })))
+    })
+
+    it('sends a recovered part\'s part event after its recovered event, with its pieces read and not', async () => {
+      // The whole change is cut off, so it is split in two, a piece a file: the first piece is read, the second is cut off at the floor.
+      let calls = 0
+      const finder = fake('finder', () => {
+        calls += 1
+        if (calls === 3 || calls === 1) throw cutOff()
+        return findings()
+      })
+      const { events, review } = onClock(finder)
+      await review(diff)
+      expect(calls).toBe(3)
+      const types = events.map(event => event.type).filter(type => type === 'recovered' || type === 'part')
+      expect(types).toEqual(['recovered', 'part'])
+      expect(ofType(events, 'part')).toEqual([
+        {
+          type: 'part',
+          profile: 'security',
+          part: { index: 1, count: 1 },
+          outcome: 'reply-cut-off',
+          durationMs: 0,
+          spent: expect.any(Number),
+          listed: 0,
+          pieces: {
+            count: 2,
+            read: 1,
+            unread: { 'reply-cut-off': 1 },
+          },
+        },
+      ])
+      expect(ofType(events, 'part')[0].spent).toBeGreaterThan(0)
+    })
+
+    it('sends part 1 of 1 for a research of one request, and for a one-part plan whose text is blank', async () => {
+      const one = onClock(fake('finder', () => findings(reported)) as Provider)
+      await one.review(diff)
+      expect(ofType(one.events, 'part')).toEqual([
+        {
+          type: 'part',
+          profile: 'security',
+          part: { index: 1, count: 1 },
+          outcome: 'reviewed',
+          durationMs: 0,
+          spent: expect.any(Number),
+          listed: 1,
+        },
+      ])
+
+      // A blank line before the header of a hunk too large for any part: the plan's one part holds nothing to ask a model.
+      const finder = partsFinder(500)
+      const blank = onClock(finder)
+      await blank.review(`\n${wideSection('a.js', 900)}`)
+      expect(finder.requests).toEqual([])
+      expect(ofType(blank.events, 'stage:start').filter(event => event.stage === 'research')).toEqual([
+        {
+          type: 'stage:start',
+          profile: 'security',
+          stage: 'research',
+          parts: 1,
+        },
+      ])
+      expect(ofType(blank.events, 'part')).toEqual([
+        {
+          type: 'part',
+          profile: 'security',
+          part: { index: 1, count: 1 },
+          outcome: 'reviewed',
+          durationMs: 0,
+          spent: 0,
+        },
+      ])
+    })
+
+    it('sends run:stopping once at the deadline with the attempts in flight, and none once the stages ended', async () => {
+      const patient = (answer: (request: CompletionRequest) => string | Promise<string>): Provider => ({
+        ...fake('finder', answer),
+        timeoutMs: 600_000,
+      })
+      const stuck = patient(request => isVote(request)
+        ? new Promise<string>(() => {})
+        : findings(reported))
+      const stalled = onClock(stuck, { reviewTimeoutMs: 1000 }, fakeClock(), stuck)
+      await stalled.review(diff)
+      expect(ofType(stalled.events, 'run:stopping')).toEqual([
+        { type: 'run:stopping', cause: 'review-deadline', inFlight: 3 },
+      ])
+      // It comes before the calls it stops end, and no timer is left.
+      const types = stalled.events.map(event => event.type)
+      expect(types.indexOf('run:stopping')).toBeLessThan(types.lastIndexOf('call'))
+      expect(stalled.clock.pending()).toBe(0)
+
+      // A review that ends at 500 ms never reaches its deadline of 1000.
+      const clock = fakeClock()
+      const slow = patient(async (request) => {
+        if (!isVote(request)) await new Promise<void>(resolve => clock.timer(500, resolve))
+        return isVote(request)
+          ? vote(true)
+          : findings(reported)
+      })
+      const early = onClock(slow, { reviewTimeoutMs: 1000 }, clock, slow)
+      await early.review(diff)
+      expect(clock.now()).toBe(500)
+      expect(ofType(early.events, 'run:stopping')).toEqual([])
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('carries a research call\'s position, a piece\'s included, and a vote\'s finding into its call:start and call events', async () => {
+      const events: QuorumEvent[] = []
+      const result = await quorumOf(partsFinder(500, request => findings(at(FILES[partOf(request) - 1]))), {}, securityProfile, events).review({ diff: partsDiff })
+      const research = (type: 'call:start' | 'call'): unknown[] => ofType(events, type).filter(event => event.role === 'research').map(event => event.part)
+      const positions = FILES.map((_, index) => ({ index: index + 1, count: 6 }))
+      expect(research('call:start')).toEqual(positions)
+      expect(research('call')).toEqual(positions)
+      // A vote names its finding, and has no position.
+      const votes = ofType(events, 'call:start').filter(event => event.role === 'vote')
+      expect(votes).toHaveLength(FILES.length * securityProfile.lenses.length)
+      expect(new Set(votes.map(event => event.finding))).toEqual(new Set(result.kept.map(verdict => verdict.id)))
+      expect(votes.every(event => event.part === undefined)).toBe(true)
+      expect(ofType(events, 'call').filter(event => event.role === 'vote').every(event => typeof event.finding === 'string')).toBe(true)
+
+      // A part recovery split: each piece's request carries the part's position and its own.
+      let calls = 0
+      const split: QuorumEvent[] = []
+      const finder = fake('finder', () => {
+        calls += 1
+        if (calls === 1) throw cutOff()
+        return findings()
+      })
+      await quorumOf(finder, {}, securityProfile, split).review({ diff })
+      expect(ofType(split, 'call:start').map(event => event.part)).toEqual([
+        { index: 1, count: 1 },
+        {
+          index: 1,
+          count: 1,
+          piece: { index: 1, count: 2 },
+        },
+        {
+          index: 1,
+          count: 1,
+          piece: { index: 2, count: 2 },
+        },
+      ])
     })
   })
 })

@@ -183,7 +183,7 @@ describe('serveMcp', () => {
     expect(notes.every(({ progressToken }) => progressToken === 'tok-1')).toBe(true)
     expect(notes.map(({ progress }) => progress)).toEqual(notes.map((_, index) => index + 1))
     expect(notes[0].message).toBe('reading the change')
-    expect(notes.map(({ message }) => message)).toContain('research: 1 part done')
+    expect(notes.map(({ message }) => message)).toContain('research: 1 of 1 part done')
     expect(notes.at(-1)?.message).toBe('panel: 1 finding decided')
     // The call is over: its heartbeat is gone with it.
     expect(clock.pending()).toBe(0)

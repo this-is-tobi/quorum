@@ -30,6 +30,7 @@ export { createQuorum } from './core/quorum.ts'
 export { codeSpan, fencedBlock, inertJson, inertLine, inertPlain } from './core/sanitize.ts'
 export type {
   Adaptation,
+  CallFailure,
   Confidence,
   CoverageEntry,
   CoverageReason,
@@ -48,6 +49,7 @@ export type {
   Lens,
   LensVote,
   ObjectFormat,
+  Position,
   Profile,
   ProfileEstimate,
   ProfileMeta,

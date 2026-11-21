@@ -15,12 +15,14 @@ const READING = 'reading the change'
 
 /**
  * What a review reports to a client that asked for progress. It counts what the review has done and says
- * nothing about it: a note is `reading the change` at the start, `research: <n> part(s) done` for the research
- * calls that ended, across the profiles, and `panel: <n> finding(s) decided` for the verdicts the panel gave.
- * A vote, a flag, a gap, a stage's end and a call of the panel carry nothing a count would show, so they send
- * no note. The notes come at the call's start, when research or the panel starts, at each research call that
- * ends and at each verdict, and the heartbeat repeats the last message 60 000 ms after each note, on `clock`,
- * so a client that cuts a call that is silent for a minute is never silent that long.
+ * nothing about it: a note is `reading the change` at the start, `research: <n> of <m> part(s) done` for the
+ * research parts that ended (the `part` events), out of the parts the profiles' research plans hold (the `parts` of
+ * each research `stage:start`, summed across the profiles), and `panel: <n> finding(s) decided` for the verdicts the
+ * panel gave. A call, a retry, a vote, a flag, a gap and a stage's end carry nothing a count would show, so they send
+ * no note, and a part that recovery split is one part, whatever its pieces. The notes come at the call's start, when
+ * research or the panel starts, at each research part that ends and at each verdict, and the heartbeat repeats the
+ * last message 60 000 ms after each note, on `clock`, so a client that cuts a call that is silent for a minute is
+ * never silent that long.
  *
  * `progress` is the notification's own number, 1, 2, 3, and not a share of a total: a review's total is not
  * known before research ends, and the protocol asks only that `progress` rise. No message holds a profile id,
@@ -32,7 +34,8 @@ const READING = 'reading the change'
 export function progressReporter(send: (note: ProgressNote) => void, clock: Clock): { readonly onEvent: (event: QuorumEvent) => void, readonly stop: () => void } {
   let progress = 0
   let message = READING
-  let parts = 0
+  let total = 0
+  let done = 0
   let decided = 0
   let stopped = false
   let cancel: (() => void) | undefined
@@ -49,17 +52,21 @@ export function progressReporter(send: (note: ProgressNote) => void, clock: Cloc
     }
     cancel = clock.timer(HEARTBEAT_MS, () => note(message))
   }
-  const researched = (): string => `research: ${plural(parts, 'part')} done`
+  const researched = (): string => `research: ${done} of ${plural(total, 'part')} done`
   const judged = (): string => `panel: ${plural(decided, 'finding')} decided`
 
   note(READING)
   return {
     onEvent: (event) => {
       if (event.type === 'stage:start') {
-        if (event.stage === 'research') note(researched())
-        else if (event.stage === 'panel') note(judged())
-      } else if (event.type === 'call' && event.role === 'research') {
-        parts += 1
+        if (event.stage === 'research') {
+          total += event.parts ?? 0
+          note(researched())
+        } else if (event.stage === 'panel') {
+          note(judged())
+        }
+      } else if (event.type === 'part') {
+        done += 1
         note(researched())
       } else if (event.type === 'verdict') {
         decided += 1
