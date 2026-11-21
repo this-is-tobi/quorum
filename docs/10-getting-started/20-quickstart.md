@@ -148,7 +148,7 @@ echo $code
 
 This run exits `1`: it kept a finding at `high`, the level the security profile fails on, and `1` wins over the `4` that its unreviewed finding and its unreadable one would otherwise give.
 
-A longer branch is reviewed in parts: with the 32768 above, a research request holds about 14.7 KB (14,759 bytes) of diff, so a larger diff takes several requests ([Research in parts](../20-using/20-configuration.md#research-in-parts)). Running again does not fix a `too-large` or `request-too-large` gap, which the same diff on the same model repeats, and a model with a larger window does: [What it counts, and what it costs](../20-using/20-configuration.md#what-it-counts-and-what-it-costs).
+A longer branch is reviewed in parts: with the 32768 above, a research request holds about 22.4 KB (22,446 bytes) of diff, so a larger diff takes several requests ([Research in parts](../20-using/20-configuration.md#research-in-parts)). Running again does not fix a `too-large` or `request-too-large` gap, which the same diff on the same model repeats, and a model with a larger window does: [What it counts, and what it costs](../20-using/20-configuration.md#what-it-counts-and-what-it-costs).
 
 ## Where to go next
 

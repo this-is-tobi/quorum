@@ -5,7 +5,7 @@ import { shapeMessages } from './messages.ts'
 import { isRecord, mergeBody, prepareHttp } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { endedEarly, joinedText, MAX_MODEL_TEXT, readAnswer, replyFailure, tokenUsage } from './reply.ts'
-import { checkFits, contextBudget, roomTokens, worstCaseTokens } from './size.ts'
+import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
 import type { ContextBudget } from './size.ts'
 
 /** The options of an OpenAI-compatible provider. */
@@ -191,10 +191,12 @@ function readReply(reply: unknown, { id, model, budget }: Pick<OpenAICompatibleO
 /**
  * A provider for any OpenAI-compatible `/chat/completions` endpoint. The key, when there is one, travels
  * only in the header `auth` names, `Authorization: Bearer` by default (invariant I1). It refuses, before
- * any request, a request that may not fit `contextTokens`. It sends the reply's limit, `maxTokens` else the
- * budget of the size guard, under `maxTokensField`, so the server bounds a reply's length. It states its
- * worst case from the count its size guard keeps: the text it sends, the template reserve and that budget,
- * and the room its guard leaves from the same count: `contextTokens` less those three.
+ * any request, a request that may not fit `contextTokens`. It sends the reply's limit, the request's reply
+ * budget at most `maxTokens`, else `maxTokens`, else 16000 (`replyBudgetOf`), under `maxTokensField`, so the
+ * server bounds a reply's length. It states its worst case from the count its size guard keeps: the text it
+ * sends, the template reserve and that budget, and the room its guard leaves from the same count:
+ * `contextTokens` less those three. It also states its window, its `maxTokens` when set, and thinking
+ * `default`.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
@@ -206,17 +208,19 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
         { path: `${id}.maxTokensField`, message: 'must be max_tokens or max_completion_tokens' },
       ]
   const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/chat/completions', fieldIssues)
-  const budget = contextBudget(contextTokens, maxTokens)
+  const budgetOf = (request: CompletionRequest): ContextBudget => contextBudget(contextTokens, replyBudgetOf(request, maxTokens))
 
   return {
     id,
     model,
     timeoutMs,
     retries,
-    worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budget),
-    room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budget),
+    ...statedReply(contextTokens, maxTokens),
+    worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
+    room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
+      const budget = budgetOf(request)
       checkFits(id, { system, messages }, request.output, budget)
       // JSON.stringify drops the undefined fields: no response_format for `prompt`, no temperature for null.
       const reply = await postJson<unknown>({

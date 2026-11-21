@@ -8,10 +8,23 @@ import type { CompletionRequest } from './ports.ts'
 export const TEMPLATE_TOKENS = 512
 
 /**
- * Tokens kept for the reply when `maxTokens` is not set, and the limit every adapter sends as the server's
- * then, so the budget the guard keeps is the one the server enforces.
+ * Tokens kept for the reply when neither the request nor `maxTokens` names a budget, and the limit every adapter
+ * sends as the server's then, so the budget the guard keeps is the one the server enforces.
  */
 export const DEFAULT_REPLY_TOKENS = 16_000
+
+/**
+ * The most tokens a reply of `request` may take, as an adapter sends it as the server's limit: the request's
+ * `replyTokens` when it is a whole number of at least 1, at most `maxTokens` when that is set (the owner's
+ * ceiling); else `maxTokens`; else undefined, which an adapter reads as `DEFAULT_REPLY_TOKENS`.
+ */
+export function replyLimit(request: Pick<CompletionRequest, 'replyTokens'>, maxTokens: number | undefined): number | undefined {
+  const { replyTokens } = request
+  if (typeof replyTokens === 'number' && Number.isSafeInteger(replyTokens) && replyTokens >= 1) {
+    return Math.min(replyTokens, maxTokens ?? replyTokens)
+  }
+  return maxTokens
+}
 
 const encoder = new TextEncoder()
 

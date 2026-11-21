@@ -4,12 +4,13 @@ Every model call quorum makes has the same layout: the profile's instructions an
 
 ## The layout of a request
 
-The system message is four parts, joined by blank lines, and only the first comes from the profile:
+The system message is four parts, and five in a research request, joined by blank lines, and only the first comes from the profile:
 
 1. **The profile's instructions**: the research template as written, or the vote template rendered for one lens.
-2. **The reply format**: `Respond with ONLY a JSON object matching this JSON Schema:`, then the schema of the reply this call expects.
-3. **The [data notice](#the-data-notice)**, naming each block of the user message.
-4. **The [untrusted-content notice](#the-untrusted-content-notice)**, always last.
+2. **The findings line**, in a research request only: `List at most <N> findings, the most serious first. For each, quote the shortest verbatim span of the diff that shows it.` `N` is what the research reply's budget holds, 50 at most ([Reply budgets](./20-configuration.md#reply-budgets)); a request of a provider that states no budget asks for `maxFindings`. The quote is only checked against the diff, so a shorter one costs nothing and bounds the largest part of a finding. A vote request has no such line.
+3. **The reply format**: `Respond with ONLY a JSON object matching this JSON Schema:`, then the schema of the reply this call expects.
+4. **The [data notice](#the-data-notice)**, naming each block of the user message.
+5. **The [untrusted-content notice](#the-untrusted-content-notice)**, always last.
 
 The user message holds the data, each block in its own fence, joined by blank lines:
 
@@ -67,7 +68,7 @@ index 3b18e51..a9f4c2d 100644
 </untrusted-diff-d21e0b79>
 ```
 
-The research request of a profile has the same layout: its research instructions, the research reply's schema (a `findings` array whose entries hold `file`, `line`, `category`, `quote` and `summary`, and nothing else), a data notice naming its blocks, and the same last notice.
+The research request of a profile has the same layout: its research instructions, the findings line, the research reply's schema (a `findings` array whose entries hold `file`, `line`, `category`, `quote` and `summary`, and nothing else), a data notice naming its blocks, and the same last notice.
 
 A change too large for one request is researched in parts ([Research in parts](./20-configuration.md#research-in-parts)), and the request of each part carries a block of its own before the part's diff, the parts block. It says where the request stands in the change, then lists the change's files, so a model that reads one part knows what the others hold:
 
@@ -148,7 +149,7 @@ A profile sets its instructions, its lenses, its policy, its `failOn` and its gu
 | Fixed | Why |
 | --- | --- |
 | The fences, and data only in the user message | Every block of attacker-influenced data, and the guidelines, is fenced as data: no template can put data in the system message, or take it out of its fence |
-| The data notice and the untrusted-content notice | Only the code knows which blocks a request carries, and a template has no logic to list them; both notices come after the profile's instructions, which cannot remove or reword them |
+| The findings line, the data notice and the untrusted-content notice | Only the code knows which blocks a request carries and how many findings its reply can hold, and a template has no logic to say so; all three come after the profile's instructions, which cannot remove or reword them |
 | The reply schemas | The research reply is `{ findings }` with five fields per finding, and a vote is `{ keep, reasoning }`, with no confidence field to fill |
 | Blind votes | A vote request is built from the finding, the lens, the diff context and the profile's guidelines, and no template variable exposes another vote |
 | Arithmetic confidence | Confidence is computed by the policy from the kept and total votes |

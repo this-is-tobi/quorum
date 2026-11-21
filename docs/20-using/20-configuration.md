@@ -214,28 +214,61 @@ A number above the real window defeats the guard, which counts against the numbe
 
 ### What it counts, and what it costs
 
-A request is counted at one token per byte of what it carries, each code point at its longest form (as it is, decomposed, or compatibility-decomposed), so that a tokenizer that normalizes with NFC, NFKC, NFD or NFKD first stays bounded. Case folding is not proven covered. Accented letters count one more byte per accent, and Hangul syllables up to three times their size. The count adds 512 tokens for the chat template (4096 for a `claude-code` provider, [The context size of Claude's models](#the-context-size-of-claudes-models)) and the reply budget, `maxTokens` else 16000, and the request is sent only when the sum is at most `contextTokens`: [The size of a request](./30-providers.md#the-size-of-a-request) has the rule and the message of a refusal.
+A request is counted at one token per byte of what it carries, each code point at its longest form (as it is, decomposed, or compatibility-decomposed), so that a tokenizer that normalizes with NFC, NFKC, NFD or NFKD first stays bounded. Case folding is not proven covered. Accented letters count one more byte per accent, and Hangul syllables up to three times their size. The count adds 512 tokens for the chat template (4096 for a `claude-code` provider, [The context size of Claude's models](#the-context-size-of-claudes-models)) and the request's reply budget ([Reply budgets](#reply-budgets)), and the request is sent only when the sum is at most `contextTokens`: [The size of a request](./30-providers.md#the-size-of-a-request) has the rule and the message of a refusal.
 
-One token per byte is the price of a bound that holds for every tokenizer checked. Code runs about three bytes per token, so the guard accepts about a third of the diff that would really fit. The diff that a research request of the `security` profile leaves room for, as ASCII text with no guidelines, `maxTokens` unset and the default `systemPrompt: 'native'` (`inline` leaves 2 bytes less):
+One token per byte is the price of a bound that holds for every tokenizer checked. Code runs about three bytes per token, so the guard accepts about a third of the diff that would really fit. The diff that a research request of the `security` profile leaves room for, as ASCII text with no guidelines, `maxTokens` and `thinking` unset and the default `systemPrompt: 'native'` (`inline` leaves 2 bytes less):
 
-| `contextTokens` | The largest diff, in bytes |
+| `contextTokens` | The largest diff, in bytes | Before this release |
+| --- | --- | --- |
+| `8192` | 4,014 | refused |
+| `16384` | 10,158 | refused |
+| `32768` | 22,446 | 14,759 |
+| `65536` | 47,022 | 47,527 |
+| `131072` | 107,918 | 113,063 |
+| `200000` | 176,846 | 181,991 |
+| `1000000` | 976,846 | 981,991 |
+
+A larger diff is reviewed in parts of at most that size, or of `partTokens` when it is smaller. A part's own request holds the parts block too, so a part takes a few hundred bytes less than the figure says.
+
+Each row is `contextTokens` less 1,618 for the instructions, the fences, the reply schema and the line that asks for at most 50 findings, less 512 tokens for the chat template, less the research reply's budget, which a row's window gives as [Reply budgets](#reply-budgets) says: 21,024 from 131072 tokens up, 16,384 at 65536, 8,192 at 32768, 4,096 at 16384 and 2,048 at 8192. A `maxTokens` replaces that budget, so `maxTokens: 4096` at 32768 tokens adds 4,096 bytes to the row, and the guidelines of a profile take room of their own. A vote request carries the diff section of the cited file (the whole diff when the file has no section of its own), up to five lines of evidence and the claim, and reserves a vote's own, smaller budget, and when that section does not fit the voter's window, the hunks nearest the cited line: [Research in parts](#research-in-parts). A panel on a smaller model refuses sooner.
+
+## Reply budgets
+
+A reply takes room from the window, so each request reserves the room its reply needs, and no more. With `maxTokens` unset, quorum derives a reply budget for each kind of request from the provider's window, its `maxTokens` and its thinking level, and the research request asks for as many findings as its budget holds. A request used to reserve and send `maxTokens`, else 16000, whatever it was: a window of 32768 tokens gave half of it to a reply of a few dozen tokens, and a window of 16384 tokens or less refused every request.
+
+With `W` the window, `M` the most findings a research reply is read for (`maxFindings`, 50 by default), and `T` the tokens the provider's thinking may take:
+
+| Thinking | `T` |
 | --- | --- |
-| `32768` | 14,759 |
-| `65536` | 47,527 |
-| `131072` | 113,063 |
-| `200000` | 181,991 |
-| `1000000` | 981,991 |
+| the server's own (`default`) | 8192 |
+| `low` | 4096 |
+| `off` | 0 |
 
-A larger diff is reviewed in parts of at most that size, or of `partTokens` when it is smaller.
+- **A research reply** is given what its findings and its thinking need, and at most a quarter of the window: `min(M * 256 + 32 + T, W / 4)` tokens, rounded down. Three quarters of the window stay for the request. The 256 tokens are what one finding is assumed to take and the 32 the reply's envelope.
+- **The findings it asks for** are what the budget holds once the thinking has taken its share, which is at most half of it: with `R` the budget and `T'` the lesser of `T` and `R / 2`, `N = max(1, min(M, (R - T' - 32) / 256))`, rounded down. The request says so in its system message, after the instructions and before the reply format: `List at most <N> findings, the most serious first. For each, quote the shortest verbatim span of the diff that shows it.` A reply that lists more is read as any reply is, up to `maxFindings`; the line is what is asked, not a cap.
+- **A vote's reply** is given 1,024 tokens for its verdict and its reasoning, plus `T`, and at most a quarter of the window: `min(1024 + T, W / 4)`.
+- **`maxTokens`, when set, is the ceiling of every reply.** A research request sends it as its budget, and a vote sends the lesser of it and the vote's own, so a large `maxTokens` set for research no longer reserves that much for every vote. `N` is then computed from it as above.
 
-Each row is `contextTokens` less 18,009: 1,497 bytes of instructions, fences and reply schema, 512 tokens for the chat template and 16000 for the reply. `maxTokens: 4096` adds 11,904 bytes to each row, and the guidelines of a profile take room of their own. A vote request carries the diff section of the cited file (the whole diff when the file has no section of its own), up to five lines of evidence and the claim, and reserves the same reply budget, and when that section does not fit the voter's window, the hunks nearest the cited line: [Research in parts](#research-in-parts). A panel on a smaller model refuses sooner.
+| `contextTokens` | Research reply | Findings asked | A vote's reply |
+| --- | --- | --- | --- |
+| `8192` | 2,048 | 3 | 2,048 |
+| `16384` | 4,096 | 7 | 4,096 |
+| `32768` | 8,192 | 15 | 8,192 |
+| `65536` | 16,384 | 31 | 9,216 |
+| `200000` | 21,024 | 50 | 9,216 |
+
+The figures are for `maxTokens` unset and `thinking` default. With `maxTokens: 100000` on a window of 240000 tokens a research reply is given 100,000 tokens and asks for 50 findings, and a vote 9,216.
+
+The allowances sit below OpenAI's advice of 25,000 tokens for reasoning and outputs, since quorum's replies are short. The 256 tokens of a finding are an assumption, not a measurement. The budgets are fixed for a review, computed when it starts: what a provider sends is its budget, at most `maxTokens`, and the research planner packs each part for the widest line, `N` at `maxFindings`, so a part always fits whatever `N` its request asks.
+
+A provider that states neither a window nor a `maxTokens`, a provider object of a library program that does not state them ([What a provider states](./30-providers.md#what-a-provider-states)), has nothing to size a reply by: its requests carry no budget, its reservation is the request's text plus 512 and 16000, as before, and its research asks for `maxFindings` findings. A `claude-code` provider is given its budget as Claude Code's limit on each reply ([The context size of Claude's models](#the-context-size-of-claudes-models)).
 
 ### Raising the limit knowingly
 
 To review a larger diff, change what is true and state it, not what is counted:
 
 - **Give the model a larger window, and state it.** On Ollama's native API, the built-in default's and the `ollama` preset's, raise `contextTokens` itself, up to what `ollama show <model>` prints: quorum sends it as `num_ctx`, and `OLLAMA_CONTEXT_LENGTH` matters for Ollama's `/v1` only. For `/v1` raise `OLLAMA_CONTEXT_LENGTH`, and for the other servers llama.cpp's `-c`, vLLM's `--max-model-len` or the context length LM Studio loads, then set `contextTokens` to the number the server really loads. A larger window costs the server memory.
-- **Lower `maxTokens`** to what the model needs to answer. The server then stops the reply there, and the reserve shrinks with it: 4096 leaves 11,904 bytes more. A thinking model needs more, and a reply cut off at the limit is a failed call, not a shorter review. `maxTokens` is the one setting of the reply limit: `extraBody` cannot set `max_tokens` or its equivalents ([The size of a request](./30-providers.md#the-size-of-a-request)).
+- **Set `maxTokens`** to what the model needs to answer, when its replies are shorter than the budget quorum derives ([Reply budgets](#reply-budgets)). It is the ceiling of every reply: the server stops a reply there, and the reserve shrinks with it. A thinking model needs more, and a reply cut off at the limit is a failed call, not a shorter review. `maxTokens` is the one setting of the reply limit: `extraBody` cannot set `max_tokens` or its equivalents ([The size of a request](./30-providers.md#the-size-of-a-request)).
 - **Review fewer commits at once**, so fewer parts are spent: quorum splits a diff that does not fit one request into parts, and leaves unreviewed only a hunk that no request of the window holds ([Research in parts](#research-in-parts)).
 
 Two other ways are not offered, because each reopens the padding attack that [The size guard](../30-security/10-threat-model.md#the-size-guard) describes:
@@ -366,7 +399,7 @@ providers:
 - **`auth`** is `inherit`, `login` or `api-key`, `inherit` when unset: [The auth modes](#the-auth-modes).
 - **`args`** passes `--effort`, `--fallback-model`, `--max-budget-usd` and, in `api-key` mode, `--betas`, each followed by its value or written `--flag=value`. No other flag is accepted, so `args` cannot loosen the isolation: [Claude Code options](./30-providers.md#claude-code-options).
 - **`timeoutMs` and `retries` bound the run.** Its deadline is `timeoutMs` times `retries` plus one, 30 minutes by default, so raise `timeoutMs` for a long run, such as one at `--effort high`: [Stopping, nesting and the version](./30-providers.md#stopping-nesting-and-the-version).
-- **`maxTokens`** sets Claude Code's own limit on each reply, as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, 16000 by default: raise it, with `timeoutMs`, at a high `--effort`: [Stopping, nesting and the version](./30-providers.md#stopping-nesting-and-the-version).
+- **`maxTokens`** is the ceiling of Claude Code's own limit on each reply, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`: each run is given the reply budget of its request, at most `maxTokens`, else `maxTokens`, else 16000 ([Reply budgets](#reply-budgets)). Raise it, with `timeoutMs`, at a high `--effort`: [Stopping, nesting and the version](./30-providers.md#stopping-nesting-and-the-version).
 - **`structuredOutput`** is `schema` by default, and `prompt` leaves the reply's shape to the prompt.
 - **`apiKeyEnv`** names the variable that holds the key in `api-key` mode, `ANTHROPIC_API_KEY` by default. Under `inherit` or `login` it is refused, `providers.claude.apiKeyEnv: is set, but auth is not api-key`, and the variable is never read.
 - **A YAML or JSON provider cannot name the executable.** `command` is code-only: [Where the command comes from](#where-the-command-comes-from).
@@ -379,7 +412,7 @@ Quorum requires Claude Code 2.1.311 or newer. Before a provider's first request 
 
 `contextTokens` is what the model gives you, stated as for any provider: [The context size](#the-context-size). On Anthropic's API, `sonnet`, `opus` and `haiku` resolve to models with a 1M window, so `1000000`. On Bedrock and Vertex, `sonnet` and `haiku` resolve to the 4.5 models, whose window is `200000`. A 4.6 model has the 1M window only with the `[1m]` suffix, as in `opus[1m]`, and `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` in the environment holds the 1M models to 200K. When in doubt, state the smaller number.
 
-The guard keeps 4096 tokens for what Claude Code adds around the messages and the reply budget, `maxTokens`, 16000 by default, so the window must be more than 20096 by default, and the diff a research request of the `security` profile leaves room for is `contextTokens` less 21,593 bytes: 1,497 of instructions, fences and reply schema, 4096 and 16000. [The size of a Claude Code request](./30-providers.md#the-size-of-a-claude-code-request) has the rule.
+The guard keeps 4096 tokens for what Claude Code adds around the messages, and the request's reply budget ([Reply budgets](#reply-budgets)), so the window must be more than 4096 when `maxTokens` is unset, and more than 4096 and `maxTokens` together when it is set. The diff a research request of the `security` profile leaves room for is `contextTokens` less 1,618 bytes of instructions, fences, reply schema and findings line, less 4096 and the reply's budget. [The size of a Claude Code request](./30-providers.md#the-size-of-a-claude-code-request) has the rule.
 
 ### The auth modes
 
@@ -482,7 +515,8 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `QUORUM_RESEARCH_RETRIES: must be a whole number, from 0 to 5` | The variable is not a whole number written in decimal digits, from 0 to 5: `6`, `-1`, `1.5` and `02` are refused. `QUORUM_VOTER_RETRIES` has the same check. The message never repeats the value |
 | `QUORUM_MAX_REVIEW_TOKENS: must be a whole number of tokens, from 1 to 9007199254740991` | The variable is not a whole number written in decimal digits, from 1 to 9007199254740991: `0`, `1e6`, `+5`, `02000000`, `2,000,000` and `9007199254740992` are refused, never rounded down. The message never repeats the value |
 | `QUORUM_REVIEW_TIMEOUT_MS: must be a whole number of milliseconds, from 1000 to 86400000` | The variable is not a whole number written in decimal digits, from 1000 to 86400000: `999`, `86400001` and `30m` are refused. The message never repeats the value |
-| `providers.local.contextTokens: must be more than 16512, the 16000 tokens of the reply budget and 512 for the chat template` | A window that leaves no room for a request beside the reply budget: lower `maxTokens`, or raise the window. Set by a variable, the issue names the variable instead |
+| `providers.local.contextTokens: must be more than 512, the tokens kept for the chat template` | A window that leaves no room even for the chat template, with `maxTokens` unset: raise the window. Set by a variable, the issue names the variable instead |
+| `providers.local.contextTokens: must be more than 1000, the 488 tokens of the reply budget and 512 for the chat template` | A window that leaves no room for a request beside the `maxTokens` set: lower `maxTokens`, or raise the window |
 | `QUORUM_VOTER_MODEL: must be set when the voter variables name another endpoint than the research provider's` | A panel on another origin, a preset or a protocol, without a model of its own |
 | `QUORUM_RESEARCH_PRESET: must be one of ollama, ollama-cloud, ...` | The builder refuses what a variable set: the issue names the variable. Every `QUORUM_` variable of a role does the same |
 | `QUORUM_RESEARCH_MODEL: cannot change providers.mine, an object implementing Provider` | A variable set for a role bound to a provider object |

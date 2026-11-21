@@ -7,7 +7,7 @@ import { shapeMessages } from './messages.ts'
 import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
 import { MAX_MODEL_TEXT, readAnswer, replyFailure, tokenUsage } from './reply.ts'
-import { checkFits, contextBudget, roomTokens, worstCaseTokens } from './size.ts'
+import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
 import type { ContextBudget } from './size.ts'
 
 /** The options of an Ollama provider: the ones every HTTP adapter takes, and no other. */
@@ -119,27 +119,30 @@ function readReply(reply: unknown, { id, model, budget }: Pick<OllamaOptions, 'i
  * stop as a truncation, instead of part of the prompt dropped so the reply can go on (Ollama 0.12.6 or
  * later; an older server ignores both fields). It sends `contextTokens` as `options.num_ctx`, so the server
  * loads the context the size guard counts with, and refuses, before any request, a request that may not
- * fit it. It sends the reply's limit, `maxTokens` else the budget of the size guard, as `options.num_predict`,
- * so the server bounds a reply's length. It states its worst case from the count its size guard keeps: the
- * text it sends, the template reserve and that budget, and the room its guard leaves from the same count:
- * `contextTokens` less those three.
+ * fit it. It sends the reply's limit, the request's reply budget at most `maxTokens`, else `maxTokens`, else
+ * 16000 (`replyBudgetOf`), as `options.num_predict`, so the server bounds a reply's length. It states its worst
+ * case from the count its size guard keeps: the text it sends, the template reserve and that budget, and the
+ * room its guard leaves from the same count: `contextTokens` less those three. It also states its window, its
+ * `maxTokens` when set, and thinking `default`.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function ollama(options: OllamaOptions): Provider {
   const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
   const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/api/chat', numCtxIssues(id, options.extraBody))
-  const budget = contextBudget(contextTokens, maxTokens)
+  const budgetOf = (request: CompletionRequest): ContextBudget => contextBudget(contextTokens, replyBudgetOf(request, maxTokens))
 
   return {
     id,
     model,
     timeoutMs,
     retries,
-    worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budget),
-    room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budget),
+    ...statedReply(contextTokens, maxTokens),
+    worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
+    room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
+      const budget = budgetOf(request)
       checkFits(id, { system, messages }, request.output, budget)
       // JSON.stringify drops the undefined fields: no format for `prompt`, no temperature for null.
       const reply = await postJson<unknown>({

@@ -96,10 +96,10 @@ export function describeProviderContract(subject: ContractSubject): void {
     })
 
     /** Send one request through `provider` and return what reached fetch. */
-    async function sendThrough(provider: Provider): Promise<Sent> {
+    async function sendThrough(provider: Provider, asked: CompletionRequest = request): Promise<Sent> {
       const fetchMock = vi.fn().mockImplementation(async () => jsonReply(subject.replies.ok))
       vi.stubGlobal('fetch', fetchMock)
-      await provider.complete(request)
+      await provider.complete(asked)
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
       return {
         url,
@@ -199,6 +199,37 @@ export function describeProviderContract(subject: ContractSubject): void {
 
     it('sends the reply\'s limit on every request: 16000 when maxTokens is unset, the budget the guard keeps', async () => {
       expect(subject.read.maxTokens((await send()).body)).toBe(16_000)
+    })
+
+    it('counts and sends the request\'s replyTokens when maxTokens is unset, and caps it at maxTokens', async () => {
+      const asked = { ...request, replyTokens: 700 }
+      const provider = subject.make(base)
+      expect(subject.read.maxTokens((await sendThrough(provider, asked)).body)).toBe(700)
+      expect(provider.worstCase?.(asked)).toBe(33 + 512 + 700)
+      expect(subject.make({ ...base, contextTokens: 1245 }).room?.(asked)).toBe(0)
+      expect(subject.make({ ...base, contextTokens: 1244 }).room?.(asked)).toBe(-1)
+      vi.stubGlobal('fetch', vi.fn())
+      await expect(subject.make({ ...base, contextTokens: 1244 }).complete(asked)).rejects.toMatchObject({
+        kind: 'too-large',
+        message: 'p: may need 1245 tokens, more than contextTokens (1244): 33 for its text at one token per byte, 512 for the chat template and 700 for the reply',
+      })
+      await sendThrough(subject.make({ ...base, contextTokens: 1245 }), asked)
+      // maxTokens is the ceiling: a smaller budget of the request is sent as it is, a larger one is cut to it.
+      const capped = subject.make({ ...base, maxTokens: 650 })
+      expect(subject.read.maxTokens((await sendThrough(capped, asked)).body)).toBe(650)
+      expect(capped.worstCase?.(asked)).toBe(33 + 512 + 650)
+      expect(subject.read.maxTokens((await sendThrough(capped, { ...request, replyTokens: 620 })).body)).toBe(620)
+      expect(capped.worstCase?.({ ...request, replyTokens: 620 })).toBe(33 + 512 + 620)
+    })
+
+    it('states its window, its maxTokens when set, and thinking default', () => {
+      /** What `provider` holds as own data: a getter or an inherited field gives `undefined`, as the core reads it. */
+      const stated = (provider: Provider): unknown => Object.fromEntries(['window', 'maxTokens', 'thinking'].map(field => [
+        field,
+        Object.getOwnPropertyDescriptor(provider, field)?.value,
+      ]))
+      expect(stated(subject.make(base))).toEqual({ window: 131_072, maxTokens: undefined, thinking: 'default' })
+      expect(stated(subject.make({ ...base, contextTokens: 8192, maxTokens: 900 }))).toEqual({ window: 8192, maxTokens: 900, thinking: 'default' })
     })
 
     it('refuses a request that may not fit contextTokens, before sending it', async () => {

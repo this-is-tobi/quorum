@@ -1,6 +1,6 @@
 import { ProviderError } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
-import { DEFAULT_REPLY_TOKENS, TEMPLATE_TOKENS, tokenBound } from '../core/tokens.ts'
+import { DEFAULT_REPLY_TOKENS, replyLimit, TEMPLATE_TOKENS, tokenBound } from '../core/tokens.ts'
 import type { ShapedMessages } from './messages.ts'
 
 export { DEFAULT_REPLY_TOKENS, TEMPLATE_TOKENS, utf8Length } from '../core/tokens.ts'
@@ -14,12 +14,36 @@ export interface ContextBudget {
 }
 
 /**
- * The budget a request is checked against: the context size, the reply budget, `maxTokens` else
- * `DEFAULT_REPLY_TOKENS`, and the template reserve, which an adapter whose server adds more context than a
- * chat template raises.
+ * The budget a request is checked against: the context size, the reply budget `replyTokens` (see
+ * `replyBudgetOf`), and the template reserve, which an adapter whose server adds more context than a chat
+ * template raises.
  */
-export function contextBudget(contextTokens: number, maxTokens: number | undefined, templateTokens = TEMPLATE_TOKENS): ContextBudget {
-  return { contextTokens, replyTokens: maxTokens ?? DEFAULT_REPLY_TOKENS, templateTokens }
+export function contextBudget(contextTokens: number, replyTokens: number, templateTokens = TEMPLATE_TOKENS): ContextBudget {
+  return { contextTokens, replyTokens, templateTokens }
+}
+
+/**
+ * The tokens a reply of `request` may take, which the size guard keeps, the room and the worst case count, and
+ * the adapter sends as the server's limit: the request's `replyTokens` when it is a whole number of at least 1,
+ * at most `maxTokens` when the options set one, the owner's ceiling; else `maxTokens`; else
+ * `DEFAULT_REPLY_TOKENS`.
+ */
+export function replyBudgetOf(request: Pick<CompletionRequest, 'replyTokens'>, maxTokens: number | undefined): number {
+  return replyLimit(request, maxTokens) ?? DEFAULT_REPLY_TOKENS
+}
+
+/**
+ * What an HTTP adapter states of itself to the core, which sizes a request's reply from it: its window, its
+ * `maxTokens` when the options set one, and its thinking, which is the server's default.
+ */
+export function statedReply(contextTokens: number, maxTokens: number | undefined): { readonly window: number, readonly maxTokens?: number, readonly thinking: 'default' } {
+  return {
+    window: contextTokens,
+    ...maxTokens === undefined
+      ? {}
+      : { maxTokens },
+    thinking: 'default',
+  }
 }
 
 /**

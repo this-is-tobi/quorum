@@ -280,6 +280,50 @@ describe('createQuorum', () => {
     expect(() => create(stating(0), stating(5), stating(2), stating(undefined))).not.toThrow()
   })
 
+  it.each([
+    [
+      'window of 0',
+      'window',
+      0,
+      'must be a whole number of tokens of at least 1',
+    ],
+    [
+      'maxTokens of 1.5',
+      'maxTokens',
+      1.5,
+      'must be a whole number of tokens of at least 1',
+    ],
+    [
+      'thinking of high',
+      'thinking',
+      'high',
+      'must be default, low or off',
+    ],
+    [
+      'window of "8192"',
+      'window',
+      '8192',
+      'must be a whole number of tokens of at least 1',
+    ],
+  ])('refuses a stated %s that is out of range, at its port', (_name, field, value, message) => {
+    const stating = (stated: unknown): Provider => ({ ...provider, [field]: stated }) as Provider
+    const create = (research: Provider, reachability: Provider): Quorum => createQuorum({
+      profiles: [securityProfile],
+    }, {
+      profiles: {
+        security: {
+          research,
+          voters: { reachability, impact: provider, defenses: provider },
+        },
+      },
+    })
+    expect(issuesOf(() => create(stating(value), stating(value)))).toEqual([
+      `ports.profiles.security.research.${field}: ${message}`,
+      `ports.profiles.security.voters.reachability.${field}: ${message}`,
+    ])
+    expect(() => create(stating(undefined), stating(undefined))).not.toThrow()
+  })
+
   it('reads a provider\'s timeoutMs as own data: a getter never runs, and an inherited one states nothing', () => {
     let read = false
     const getter = { ...provider }
@@ -4364,6 +4408,28 @@ describe('a vote\'s context', () => {
     expect(result.meta.incomplete).toEqual([])
   })
 
+  it('asks a voter\'s room for requests that carry the lens\'s reply budget, the whole section\'s and the partial one', async () => {
+    const asked: Array<[partial: boolean, replyTokens: number | undefined]> = []
+    const voter: Fake = {
+      ...stating((request) => {
+        asked.push([
+          request.system.includes(PARTIAL),
+          request.replyTokens,
+        ])
+        return 300 - tokenBound(diffBlock(request))
+      }),
+      // A window of 16384 gives a vote 4096 tokens, a quarter of it.
+      window: 16_384,
+    }
+    await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder(), voter)).review({ diff: oneFile })
+    expect(asked.some(([partial]) => partial)).toBe(true)
+    expect(asked.some(([partial]) => !partial)).toBe(true)
+    expect(new Set(asked.map(([, replyTokens]) => replyTokens))).toEqual(new Set([4096]))
+    expect(voter.requests.map(request => request.replyTokens)).toEqual([4096, 4096, 4096])
+  })
+
   it('takes the room of the request that carries the partial description, which is the one it sends', async () => {
     const solo: Profile = {
       id: 'solo',
@@ -4431,6 +4497,99 @@ describe('a vote\'s context', () => {
         file: 'v.js',
         detail: `"v.js":41: 3 of 3 vote requests were not sent: voter: ${MESSAGE}`,
       },
+    ])
+  })
+})
+
+describe('reply budgets', () => {
+  const findingsLine = (n: number): string => `List at most ${n} findings, the most serious first. For each, quote the shortest verbatim span of the diff that shows it.`
+  const asks = (request: CompletionRequest): string => request.system.includes(findingsLine(50))
+    ? '50'
+    : /List at most (\d+) findings/.exec(request.system)?.[1] ?? 'none'
+
+  it('sends each research request its budget and N, and each vote its own, for providers that state their window', async () => {
+    const finder = {
+      ...fake('finder', () => findings(reported)),
+      window: 32_768,
+    }
+    const voter = {
+      ...fake('voter', () => vote(true)),
+      window: 16_384,
+      thinking: 'low' as const,
+    }
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder, voter)).review({ diff })
+    expect(result.kept).toHaveLength(1)
+    // A window of 32768 gives a research reply 8192 tokens and 15 findings: thinking takes half, 4096, and a finding 256.
+    expect(finder.requests.map(request => [
+      request.replyTokens,
+      asks(request),
+    ])).toEqual([
+      [8192, '15'],
+    ])
+    // A voter's budget is its verdict and its thinking allowance, 1024 and 4096, within a quarter of its window, 4096.
+    expect(voter.requests.map(request => request.replyTokens)).toEqual([4096, 4096, 4096])
+
+    // A large change: every part is sent the same budget and N, whatever its position.
+    const sections = [
+      'a.js',
+      'b.js',
+      'c.js',
+      'd.js',
+      'e.js',
+      'f.js',
+    ].map(file => [
+      `diff --git a/${file} b/${file}`,
+      `--- a/${file}`,
+      `+++ b/${file}`,
+      '@@ -1 +1 @@',
+      '-safe(input)',
+      `+exec(input) // ${file}`,
+    ].join('\n'))
+    const base = requestTokens(researchRequest(securityProfile.prompts.research, ''))
+    const small = {
+      ...fake('small', () => findings()),
+      window: 8192,
+      room: (request: CompletionRequest) => base + 500 - requestTokens(request),
+    }
+    await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, small, fake('voter', () => vote(true)))).review({
+      diff: sections.join('\n'),
+    })
+    expect(small.requests.length).toBeGreaterThan(1)
+    expect(new Set(small.requests.map(request => [
+      request.replyTokens,
+      asks(request),
+    ].join(' ')))).toEqual(new Set(['2048 3']))
+  })
+
+  it('reserves as today, 512 and 16000, and asks for maxFindings, for a provider that states nothing', async () => {
+    const events: QuorumEvent[] = []
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+      maxFindings: 12,
+    }, {
+      ...portsFor(securityProfile, fake('finder', () => findings(reported)), fake('voter', () => vote(true))),
+      events: event => events.push(event),
+    })
+    await quorum.review({ diff })
+    const research = researchRequest(securityProfile.prompts.research, diff, undefined, undefined, { findings: 12 })
+    const reserved = requestTokens(research) + 512 + 16_000
+    // The research call settled at its whole reservation, since the provider reported no usage.
+    expect(events.find(event => event.type === 'call' && event.role === 'research')).toMatchObject({ spent: reserved })
+    expect(quorum.estimate({ diff }).profiles.security.parts).toEqual([reserved])
+    const finder = fake('finder', () => findings())
+    await createQuorum({
+      profiles: [securityProfile],
+      maxFindings: 12,
+    }, portsFor(securityProfile, finder)).review({ diff })
+    expect(finder.requests.map(request => [
+      request.replyTokens,
+      asks(request),
+    ])).toEqual([
+      [undefined, '12'],
     ])
   })
 })

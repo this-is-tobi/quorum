@@ -13,7 +13,8 @@ import type { Usage } from '../core/types.ts'
 import { snippet } from './http.ts'
 import { attemptIssues, contextTokensIssues, isRecord, maxTokensIssues, NOT_VISIBLE_ASCII, wordList } from './options.ts'
 import { lackFailure, replyFailure, tokenUsage } from './reply.ts'
-import { checkFits, contextBudget, DEFAULT_REPLY_TOKENS, roomTokens, utf8Length, worstCaseTokens } from './size.ts'
+import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, utf8Length, worstCaseTokens } from './size.ts'
+import type { ContextBudget } from './size.ts'
 
 /**
  * The `claude-code` adapter runs the user's installed `claude` CLI once per request, headless and isolated,
@@ -56,14 +57,15 @@ export interface ClaudeCodeOptions {
   model: string
   /**
    * The model's context window in tokens, prompt and reply together. Required: every request is checked
-   * against it and refused, before it is run, when it may not fit. It must be more than `maxTokens` and the
-   * 4096 tokens reserved for what Claude Code adds: 20096 by default.
+   * against it and refused, before it is run, when it may not fit. It must be more than the 4096 tokens reserved
+   * for what Claude Code adds, and, when `maxTokens` is set, more than that and `maxTokens` together.
    */
   contextTokens: number
   /**
    * The most tokens each reply may hold, thinking included, which Claude Code reads from
-   * `CLAUDE_CODE_MAX_OUTPUT_TOKENS` and caps at the model's own limit: a whole number of at least 1. Default 16000.
-   * It replaces a `CLAUDE_CODE_MAX_OUTPUT_TOKENS` of the environment.
+   * `CLAUDE_CODE_MAX_OUTPUT_TOKENS` and caps at the model's own limit: a whole number of at least 1. It is the
+   * ceiling of every reply: each run is given the reply budget its request carries, at most this, else this,
+   * else 16000. It replaces a `CLAUDE_CODE_MAX_OUTPUT_TOKENS` of the environment.
    */
   maxTokens?: number
   /** Whose credentials `claude` uses. Default `inherit`. */
@@ -1038,7 +1040,7 @@ async function requireVersion(launch: Launch, signal: AbortSignal | undefined, f
  * 1. exactly one message, a user message, else `unsupported`;
  * 2. a message that starts with `/` after white space, which `-p` would run as a command: `unsupported`;
  * 3. a message over `MAX_STDIN_BYTES` bytes: `too-large`;
- * 4. the size guard, with the reply budget, `maxTokens`, and `CLAUDE_CODE_TEMPLATE_TOKENS` kept for the
+ * 4. the size guard, with the reply budget (the request's, at most `maxTokens`, else `maxTokens`, else 16000), and `CLAUDE_CODE_TEMPLATE_TOKENS` kept for the
  *    context Claude Code adds: `too-large`;
  * 5. an aborted signal: `aborted`;
  * 6. a directory of its own, under the temporary directory, holding an empty working directory, `claude`'s
@@ -1061,18 +1063,19 @@ async function requireVersion(launch: Launch, signal: AbortSignal | undefined, f
  * Claude Code retries a failed API call by itself, ten times by default, so the provider sets `API_TIMEOUT_MS`
  * and `CLAUDE_CODE_MAX_RETRIES` in the child's environment from `timeoutMs` and `retries` (600000 ms and 2 by
  * default) over any the environment held, and states no retry to the core, which would retry what Claude Code
- * retried. It sets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` the same way from `maxTokens` (16000 by default, where
- * Claude Code asks for up to 128000 by itself), so the model's API bounds every reply. It states one deadline
- * for the whole run, `timeoutMs` times `retries` plus one: Claude Code's own attempts and the waits between
+ * retried. It sets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` the same way, for each run, from the reply budget
+ * of its request, at most `maxTokens`, or `maxTokens` else 16000 when the request carries none (Claude Code asks
+ * for up to 128000 by itself), so the model's API bounds every reply. It states its window, its `maxTokens` when
+ * set, and thinking `default`. It states one deadline for the whole run, `timeoutMs` times `retries` plus one: Claude Code's own attempts and the waits between
  * them, its start and the version check, and each reply's time after its headers all count against it, where
  * `API_TIMEOUT_MS` limits only an attempt's wait for its headers. At it the core aborts the signal, which
  * stops the child's group as step 11 says.
  *
  * It states its worst case from the count its size guard keeps, over the model turns of a run: in `schema`
  * mode two, since the model answers by calling the schema tool and `claude` then makes a second turn after
- * the tool's result, which carries the first reply as input, so `2 * (text + 4096) + 3 * maxTokens`; in
- * `prompt` mode one, `text + 4096 + maxTokens`. It leaves out what Claude Code spends beyond that, a reply
- * it continues after its limit, up to three times a turn, and its own retries: those count once the run
+ * the tool's result, which carries the first reply as input, so `2 * (text + 4096) + 3 * reply`; in
+ * `prompt` mode one, `text + 4096 + reply`, `reply` being the reply budget. It leaves out what Claude Code
+ * spends beyond that, a reply it continues after its limit, up to three times a turn, and its own retries: those count once the run
  * reports its usage.
  *
  * It states the room its checks leave: the lesser of what its size guard leaves, from the same count, and what
@@ -1085,35 +1088,36 @@ async function requireVersion(launch: Launch, signal: AbortSignal | undefined, f
 export function claudeCode(options: ClaudeCodeOptions): Provider {
   const issues = claudeCodeIssues(options)
   if (issues.length > 0) throw new ConfigError(issues)
-  const { id, model, contextTokens, maxTokens = DEFAULT_REPLY_TOKENS, auth = 'inherit', apiKey, structuredOutput = 'schema', command = 'claude', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
-  const settings = { timeoutMs, retries, maxTokens }
+  const { id, model, contextTokens, maxTokens, auth = 'inherit', apiKey, structuredOutput = 'schema', command = 'claude', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
   const args = [
     ...options.args ?? [],
   ]
   const env = Object.fromEntries(Object.entries(options.env ?? process.env))
-  const budget = contextBudget(contextTokens, maxTokens, CLAUDE_CODE_TEMPLATE_TOKENS)
+  const budgetOf = (request: CompletionRequest): ContextBudget => contextBudget(contextTokens, replyBudgetOf(request, maxTokens), CLAUDE_CODE_TEMPLATE_TOKENS)
 
   return {
     id,
     model,
     timeoutMs: timeoutMs * (retries + 1),
     retries: 0,
+    ...statedReply(contextTokens, maxTokens),
     worstCase: request => worstCaseTokens({
       system: request.system,
       messages: [...request.messages],
-    }, request.output, budget, structuredOutput === 'schema'
+    }, request.output, budgetOf(request), structuredOutput === 'schema'
       ? 2
       : 1),
     room: request => Math.min(
       roomTokens({
         system: request.system,
         messages: [...request.messages],
-      }, request.output, budget),
+      }, request.output, budgetOf(request)),
       MAX_STDIN_BYTES - tokenBound(request.messages[0]?.content ?? ''),
     ),
     async complete(request) {
       const fail = replyFailure(id)
       const message = messageOf(request, fail)
+      const budget = budgetOf(request)
       checkFits(id, {
         system: request.system,
         messages: [message],
@@ -1125,7 +1129,7 @@ export function claudeCode(options: ClaudeCodeOptions): Provider {
       const untrack = trackRun(live)
       try {
         throwIfAborted(signal, fail)
-        const environment = childEnv(env, auth, apiKey, run.tmp, settings)
+        const environment = childEnv(env, auth, apiKey, run.tmp, { timeoutMs, retries, maxTokens: budget.replyTokens })
         await requireVersion({
           command,
           args: [],

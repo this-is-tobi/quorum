@@ -37,6 +37,7 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
     health: createHealth(),
     lacked: new Set(),
     maxFindings: 50,
+    budgets: {},
     concurrency,
     clock,
   }
@@ -44,7 +45,7 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
 }
 
 /** A target whose provider's own id is not the id of its ref, which is the one an error and an event name. */
-function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'retries' | 'worstCase' | 'room'>> = {}): Target {
+function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'retries' | 'worstCase' | 'room' | 'window' | 'maxTokens' | 'thinking'>> = {}): Target {
   return {
     provider: { id: 'live-id', model: 'm', complete },
     ref: { id: 'p', model: 'm' },
@@ -52,6 +53,9 @@ function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'tim
     retries: 0,
     worstCase: undefined,
     room: undefined,
+    window: undefined,
+    maxTokens: undefined,
+    thinking: 'default',
     ...facts,
   }
 }
@@ -187,6 +191,7 @@ describe('the deadline of an attempt', () => {
       ref: { id: 'p', model: 'm' },
       timeoutMs: 600_000,
       retries: 0,
+      thinking: 'default',
     })
     expect(targetOf({ ...provider, timeoutMs: 1000 }).timeoutMs).toBe(1000)
     expect(targetOf({ ...provider, timeoutMs: 518_400_000 }).timeoutMs).toBe(518_400_000)
@@ -212,6 +217,105 @@ describe('the deadline of an attempt', () => {
 
 /** A thrown value of the kind a retry may follow: its facts are own data, as an adapter's error holds them. */
 const failure = (facts: Record<string, unknown>): Error => Object.assign(new Error('failed'), facts)
+
+describe('the window, the maxTokens and the thinking a provider states', () => {
+  const complete = async (): Promise<CompletionResponse> => ({ text: '', model: 'm' })
+  const provider: Provider = { id: 'p', model: 'm', complete }
+
+  it('reads each as an own data property that passes its check, and states none otherwise', () => {
+    expect(targetOf({
+      ...provider,
+      window: 8192,
+      maxTokens: 500,
+      thinking: 'low',
+    })).toMatchObject({ window: 8192, maxTokens: 500, thinking: 'low' })
+    expect(targetOf({
+      ...provider,
+      window: 0,
+      maxTokens: 1.5,
+      thinking: 'high' as Provider['thinking'],
+    })).toMatchObject({ window: undefined, maxTokens: undefined, thinking: 'default' })
+    const getter = { ...provider }
+    let read = false
+    for (const field of ['window', 'maxTokens', 'thinking']) {
+      Object.defineProperty(getter, field, {
+        enumerable: true,
+        get() {
+          read = true
+          return 'off'
+        },
+      })
+    }
+    expect(targetOf(getter)).toMatchObject({ window: undefined, maxTokens: undefined, thinking: 'default' })
+    expect(read).toBe(false)
+    const inherited: Provider = Object.assign(Object.create({ window: 8192 }), provider)
+    expect(targetOf(inherited).window).toBeUndefined()
+  })
+})
+
+describe('the limit and the window a reply-lacked event holds', () => {
+  const lacking = (noAnswer: string, usage: { inputTokens: number, outputTokens: number }) => async (): Promise<CompletionResponse> => {
+    throw new ProviderError({
+      providerId: 'p',
+      kind: 'truncated',
+      noAnswer,
+      message: 'cut off',
+      usage,
+    } as ConstructorParameters<typeof ProviderError>[0])
+  }
+  const lackedEvents = (events: QuorumEvent[]): QuorumEvent[] => events.filter(event => event.type === 'reply-lacked')
+
+  it('says a server that caps replies below the limit the request was sent with, naming both numbers, and its window', async () => {
+    const { ctx, events } = context(fakeClock())
+    const sent = { ...request, replyTokens: 8000 }
+    await expect(callProvider(ctx, requester, target(lacking('reply', { inputTokens: 100, outputTokens: 4096 }), { window: 16_384 }), () => sent)).rejects.toThrow('cut off')
+    expect(lackedEvents(events)).toEqual([
+      {
+        type: 'reply-lacked',
+        provider: 'p',
+        kind: 'truncated',
+        noAnswer: 'reply',
+        limit: 8000,
+        outputTokens: 4096,
+        inputTokens: 100,
+        window: 16_384,
+      },
+    ])
+  })
+
+  it('sends the lesser of the request\'s budget and the provider\'s maxTokens as the limit, and maxTokens alone for a request with no budget', async () => {
+    for (const [replyTokens, limit] of [
+      [8000, 5000],
+      [3000, 3000],
+      [undefined, 5000],
+    ] as const) {
+      const { ctx, events } = context(fakeClock())
+      await expect(callProvider(ctx, requester, target(lacking('reply', { inputTokens: 100, outputTokens: 2000 }), { maxTokens: 5000 }), () => ({ ...request, replyTokens }))).rejects.toThrow('cut off')
+      expect(lackedEvents(events)).toMatchObject([
+        { limit, outputTokens: 2000 },
+      ])
+    }
+  })
+
+  it('says nothing of a cap for a request sent with no limit, and names the window of a reply the server\'s window ended', async () => {
+    const none = context(fakeClock())
+    await expect(callProvider(none.ctx, requester, target(lacking('reply', { inputTokens: 100, outputTokens: 2000 })), () => request)).rejects.toThrow('cut off')
+    expect(lackedEvents(none.events)).toEqual([])
+    const ended = context(fakeClock())
+    await expect(callProvider(ended.ctx, requester, target(lacking('window', { inputTokens: 9000, outputTokens: 500 }), { window: 16_384 }), () => request)).rejects.toThrow('cut off')
+    expect(lackedEvents(ended.events)).toEqual([
+      {
+        type: 'reply-lacked',
+        provider: 'p',
+        kind: 'truncated',
+        noAnswer: 'window',
+        outputTokens: 500,
+        inputTokens: 9000,
+        window: 16_384,
+      },
+    ])
+  })
+})
 
 describe('the retries of a call', () => {
   it('retries what passes after its backoff, inside its slot, and sends one call event with the attempts, the summed usage and the wait in its duration', async () => {

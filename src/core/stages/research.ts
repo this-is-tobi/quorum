@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { DEFAULT_MAX_FINDINGS } from '../budgets.ts'
 import type { DiffSection } from '../diff.ts'
 import { OutputError, ProviderDownError } from '../errors.ts'
 import { isLimit } from '../limits.ts'
@@ -8,6 +9,7 @@ import { listedFiles, packParts, partText } from '../parts.ts'
 import type { Packing, PartOutcome } from '../parts.ts'
 import type { CompletionRequest } from '../ports.ts'
 import { researchRequest } from '../prompts.ts'
+import type { Ask } from '../prompts.ts'
 import { tokenBound } from '../tokens.ts'
 import type { Finding, FindingDetails, IncompleteEntry } from '../types.ts'
 import { collapse, verifyFindings } from '../verify.ts'
@@ -16,8 +18,7 @@ import { callProvider, isTooLarge, providerFailure, refusalMessage, roomOf } fro
 import type { ProfileRun, RunContext } from './context.ts'
 import { dedupKey } from './dedup.ts'
 
-/** How many reported findings a research reply may send to the panel; the rest is reported as incomplete. */
-export const DEFAULT_MAX_FINDINGS = 50
+export { DEFAULT_MAX_FINDINGS }
 
 export interface ResearchOutcome {
   findings: Finding[]
@@ -128,6 +129,8 @@ function lineCount(text: string): number {
  * 5. the packing sets a hunk aside while the one request still holds the whole diff: that hunk fits the
  *    one request but not a part's, which carries the parts block, and 0.5.0 read it, so nothing it read is
  *    left unread now.
+ * Every room is asked of a request that asks for `settings.maxFindings` findings, the widest its line can be, and
+ * carries `settings.replyTokens`, so a request packed for fits whatever fewer findings it then asks.
  * Otherwise it is the packing of the sections into parts of at most `partTokens` that fit that room (see
  * `packParts`), with the change's files its requests name: at most 100, and at most a quarter of the
  * lesser of `partTokens` and the one request's room, so the list stays small beside the diff of a part. When that
@@ -136,16 +139,18 @@ function lineCount(text: string): number {
  * may be what left the unit out: the second packing and its block are kept when it sets fewer units aside,
  * else the first, and the rule above (5) applies to the packing kept.
  */
-export function planResearch(run: ProfileRun, diff: string, sections: readonly DiffSection[], partTokens: number): ResearchPlan {
+export function planResearch(run: ProfileRun, diff: string, sections: readonly DiffSection[], settings: { readonly partTokens: number, readonly maxFindings: number, readonly replyTokens?: number }): ResearchPlan {
   const whole: ResearchPlan = { sections }
   if (run.research.room === undefined) return whole
   const { instructions } = run.research
-  const one = roomOf(run.research, researchRequest(instructions, '', run.guidelines))
+  const { partTokens } = settings
+  const ask: Ask = { findings: settings.maxFindings, replyTokens: settings.replyTokens }
+  const one = roomOf(run.research, researchRequest(instructions, '', run.guidelines, undefined, ask))
   if (one === undefined || one < 0) return whole
   const tokens = tokenBound(diff)
   if (tokens <= Math.min(partTokens, one)) return whole
   const widest = lineCount(diff)
-  const roomWith = (names: ListedFiles): number | undefined => roomOf(run.research, researchRequest(instructions, '', run.guidelines, { index: widest, count: widest, ...names }))
+  const roomWith = (names: ListedFiles): number | undefined => roomOf(run.research, researchRequest(instructions, '', run.guidelines, { index: widest, count: widest, ...names }, ask))
   let listed: ListedFiles = listedFiles(sections, Math.floor(Math.min(partTokens, one) / 4))
   const room = roomWith(listed)
   if (room === undefined || room < 0) return whole
@@ -331,11 +336,11 @@ const isStopped = (result: PartResult): result is Extract<PartResult, { readonly
  * Each failure is told only after the review's abort check, so a review that is aborted rejects with its
  * reason, never with a gap.
  */
-async function askResearch(ctx: RunContext, run: ProfileRun, request: () => CompletionRequest): Promise<PartResult> {
+async function askResearch(ctx: RunContext, run: ProfileRun, request: (ask: Ask) => CompletionRequest): Promise<PartResult> {
   let attempts = 1
   let text: string
   try {
-    text = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, request, (_error, made) => {
+    text = await callProvider(ctx, { profile: run.id, role: 'research' }, run.research, () => request(askOf(ctx, run)), (_error, made) => {
       attempts = made
     })
   } catch (error) {
@@ -368,9 +373,15 @@ async function askResearch(ctx: RunContext, run: ProfileRun, request: () => Comp
   return { outcome: 'reviewed', text }
 }
 
+/** What a research request of `run` asks: the findings its budget holds and the reply budget it carries, from the review's budgets. */
+function askOf(ctx: RunContext, run: ProfileRun): Ask {
+  const { findings, replyTokens } = ctx.budgets[run.id].research
+  return { findings, replyTokens }
+}
+
 /** One research request holding `diff`, its outcome's `parts` the one part's, and its failure told as a gap in today's words. */
 async function researchInOne(ctx: RunContext, run: ProfileRun, diff: string, sections: ReadonlyMap<string, string>): Promise<ResearchOutcome> {
-  const result = await askResearch(ctx, run, () => researchRequest(run.research.instructions, diff, run.guidelines))
+  const result = await askResearch(ctx, run, ask => researchRequest(run.research.instructions, diff, run.guidelines, undefined, ask))
   if (isSpoken(result)) {
     return gap(ctx, {
       profile: run.id,
@@ -430,12 +441,12 @@ function askPart(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, packing: 
   const text = partText(plan.sections, packing, packing.parts[index])
   if (isBlank(text)) return Promise.resolve(NO_FINDINGS)
   const { files, unlisted } = plan.listed ?? { files: [], unlisted: 0 }
-  return askResearch(ctx, run, () => researchRequest(run.research.instructions, text, run.guidelines, {
+  return askResearch(ctx, run, ask => researchRequest(run.research.instructions, text, run.guidelines, {
     index: index + 1,
     count: packing.parts.length,
     files,
     unlisted,
-  }))
+  }, ask))
 }
 
 /** The gaps of the parts that were not read, one per reason and profile counting its parts: the refused requests, then the failed parts, each naming the first one's words, then the parts a provider that was down never got. */

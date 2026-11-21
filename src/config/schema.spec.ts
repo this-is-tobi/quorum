@@ -4,7 +4,7 @@ import type { z } from 'zod'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionResponse, Provider } from '../core/ports.ts'
-import { configCodeSchema, configFileSchema, configInputSchema, configIssues, configJsonSchema, parseConfig, unknownName } from './schema.ts'
+import { configCodeSchema, configFileSchema, configInputSchema, configIssues, configJsonSchema, nameSnapshot, parseConfig, statedFacts, unknownName } from './schema.ts'
 import type { QuorumConfigFile } from './schema.ts'
 
 /** The issues of the ConfigError that parsing `value` with `schema` throws, each after the file name; none when it parses. */
@@ -1305,6 +1305,59 @@ describe('configCodeSchema', () => {
     }, configCodeSchema)).toEqual([
       at(`providers.mine.${field}`, message),
     ])
+  })
+
+  it('keeps the window, maxTokens and thinking a provider object states in its snapshot, and refuses one out of range', () => {
+    const snapshotOf = (object: unknown): Provider => parseConfig(configCodeSchema, {
+      providers: { mine: object },
+    }).providers?.mine as Provider
+    const stated = snapshotOf({
+      ...fakeProvider,
+      window: 8192,
+      maxTokens: 500,
+      thinking: 'low',
+    })
+    expect(Object.keys(stated)).toEqual([
+      'model',
+      'complete',
+      'window',
+      'maxTokens',
+      'thinking',
+    ])
+    expect(stated).toMatchObject({ window: 8192, maxTokens: 500, thinking: 'low' })
+    // The named copy and the facts read of it carry them too.
+    expect(nameSnapshot('mine', stated)).toMatchObject({
+      id: 'mine',
+      window: 8192,
+      maxTokens: 500,
+      thinking: 'low',
+    })
+    expect(statedFacts(stated).stated).toEqual({ window: 8192, maxTokens: 500, thinking: 'low' })
+    let ran = false
+    const read = snapshotOf({
+      ...fakeProvider,
+      window: 8192,
+      get thinking() {
+        ran = true
+        return 'off'
+      },
+    })
+    expect(Object.keys(read)).toEqual(['model', 'complete', 'window'])
+    expect(ran).toBe(false)
+    for (const [field, value, message] of [
+      ['window', 0, 'must be a whole number of tokens of at least 1'],
+      ['window', '8192', 'must be a whole number of tokens of at least 1'],
+      ['maxTokens', 1.5, 'must be a whole number of tokens of at least 1'],
+      ['thinking', 'high', 'must be default, low or off'],
+    ] as const) {
+      expect(issuesOf({
+        providers: {
+          mine: { ...fakeProvider, [field]: value },
+        },
+      }, configCodeSchema), field).toEqual([
+        at(`providers.mine.${field}`, message),
+      ])
+    }
   })
 
   it('keeps a provider object\'s stated worstCase in its snapshot, calling it on the object, and refuses one that is no function', () => {
