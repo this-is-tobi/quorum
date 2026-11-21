@@ -53,6 +53,65 @@ describe('renderEvent', () => {
       kind: 'timeout',
       calls: 3,
     }, true, 'public')).toBe('f<U+202E>x: 3 calls in a row failed (timeout): no more calls go to it in this review: raise timeoutMs')
+    expect(renderEvent({
+      type: 'provider-down',
+      provider: 'finder',
+      kind: 'no-answer',
+      calls: 3,
+      noAnswer: 'thinking',
+    })).toBe('finder: 3 calls in a row had no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt')
+  })
+
+  it.each<[string, QuorumEvent, string]>([
+    [
+      'the server\'s lower cap',
+      {
+        type: 'reply-lacked',
+        provider: 'api',
+        kind: 'truncated',
+        noAnswer: 'reply',
+        limit: 21_024,
+        outputTokens: 8192,
+        inputTokens: 9000,
+      },
+      'api: a reply was cut off at 8192 tokens, below the 21024 quorum asked for: the server caps replies near 8192: set maxTokens: 8192',
+    ],
+    [
+      'a smaller window',
+      {
+        type: 'reply-lacked',
+        provider: 'api',
+        kind: 'truncated',
+        noAnswer: 'window',
+        inputTokens: 30_100,
+        outputTokens: 2668,
+        window: 200_000,
+      },
+      'api: a reply ended at the server\'s window after 30100 input and 2668 output tokens, below contextTokens 200000: set contextTokens to at most 32768',
+    ],
+    [
+      'only reasoning',
+      {
+        type: 'reply-lacked',
+        provider: 'api',
+        kind: 'no-answer',
+        noAnswer: 'thinking',
+      },
+      'api: reply has no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt',
+    ],
+    [
+      'nothing',
+      {
+        type: 'reply-lacked',
+        provider: 'api',
+        kind: 'no-answer',
+        noAnswer: 'empty',
+      },
+      'api: reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt',
+    ],
+  ])('writes a reply-lacked event as %s', (_name, event, line) => {
+    expect(renderEvent(event)).toBe(line)
+    expect(renderEvent({ ...event, provider: `a${RLO}b` } as QuorumEvent, true, 'public')).toBe(line.replace('api:', 'a<U+202E>b:'))
   })
 
   it('renders a flag with where it points', () => {

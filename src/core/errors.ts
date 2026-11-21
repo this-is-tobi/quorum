@@ -78,6 +78,7 @@ export const PROVIDER_ERROR_KINDS = [
   'aborted',
   'refusal',
   'truncated',
+  'no-answer',
   'invalid-response',
   'unsupported',
   'too-large',
@@ -85,6 +86,16 @@ export const PROVIDER_ERROR_KINDS = [
 
 /** What went wrong with a provider call. `retryable` is derived from it, unless the adapter sets it. */
 export type ProviderErrorKind = typeof PROVIDER_ERROR_KINDS[number]
+
+/**
+ * What a reply lacked: `reply`, its visible answer was cut off at the limit sent, `thinking`, its reasoning used
+ * the limit, or it held only reasoning, `window`, the server's window ended it, `empty`, it held nothing. A
+ * `truncated` failure is `reply`, `thinking` or `window`; a `no-answer` one is `thinking` or `empty`.
+ */
+export type NoAnswer = 'reply' | 'thinking' | 'window' | 'empty'
+
+/** Every value of `NoAnswer`, for a reader that checks an own data property against them. */
+export const NO_ANSWERS: readonly NoAnswer[] = ['reply', 'thinking', 'window', 'empty']
 
 const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([408, 409, 429])
 
@@ -112,8 +123,10 @@ export class ProviderError extends QuorumError {
   readonly retryAfterMs: number | undefined
   /** What the reply the call failed on reported, when the provider read one: the review counts it as the failed call's usage. */
   readonly usage: Usage | undefined
+  /** What a `truncated` or `no-answer` reply lacked, when the adapter read it. */
+  readonly noAnswer: NoAnswer | undefined
 
-  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, retryAfterMs?: number, usage?: Usage, cause?: unknown }) {
+  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, retryAfterMs?: number, usage?: Usage, noAnswer?: NoAnswer, cause?: unknown }) {
     super(`${details.providerId}: ${details.message}`, details.cause === undefined
       ? undefined
       : { cause: details.cause })
@@ -123,7 +136,59 @@ export class ProviderError extends QuorumError {
     this.retryable = details.retryable ?? isRetryable(details.kind, details.status)
     this.retryAfterMs = details.retryAfterMs
     this.usage = details.usage
+    this.noAnswer = details.noAnswer
   }
+}
+
+/** The facts of a reply that lacked its answer, all code facts: counts and a code word, never a word the reply held. */
+export interface ReplyLack {
+  readonly noAnswer: NoAnswer
+  /** The reply limit the request was sent with, in tokens, when known. */
+  readonly limit?: number
+  /** The output tokens the reply reported, reasoning included. */
+  readonly outputTokens?: number
+  /** The input tokens the reply reported. */
+  readonly inputTokens?: number
+  /** The window `contextTokens` states, in tokens, when known. */
+  readonly window?: number
+}
+
+const THINKING_FIX = 'the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt'
+const EMPTY_FIX = 'the server may mishandle its structured output: set structuredOutput: prompt'
+
+/** A token count a message may print and a setting may be set to: a whole number of at least 1. */
+function isWhole(count: number | undefined): count is number {
+  return count !== undefined && Number.isSafeInteger(count) && count >= 1
+}
+
+/**
+ * The words of a reply that lacked its answer, so an adapter's message and the CLI's `reply-lacked` line share
+ * one copy: what the reply held, then the setting to change. Built from facts the code read, never from the
+ * reply: a reply's or a reasoning's text is never quoted. A cut-off below the limit sent names both numbers, and
+ * a window that ended a reply names its numbers only when the input and output stay below the window, the case
+ * a protocol's own flag reports, since a count that reaches the window advises no lower value.
+ */
+export function lackWords(kind: 'truncated' | 'no-answer', lack: ReplyLack): string {
+  const { noAnswer, limit, outputTokens, inputTokens, window } = lack
+  if (kind === 'no-answer') {
+    return noAnswer === 'thinking'
+      ? `reply has no answer, only reasoning: ${THINKING_FIX}`
+      : `reply has no answer and no reasoning: ${EMPTY_FIX}`
+  }
+  if (noAnswer === 'window') {
+    return isWhole(window) && isWhole(outputTokens) && inputTokens !== undefined && Number.isSafeInteger(inputTokens) && inputTokens >= 0 && inputTokens + outputTokens < window
+      ? `a reply ended at the server's window after ${inputTokens} input and ${outputTokens} output tokens, below contextTokens ${window}: set contextTokens to at most ${inputTokens + outputTokens}`
+      : 'a reply ended at the server\'s window, which is smaller than contextTokens: lower contextTokens'
+  }
+  if (isWhole(limit) && isWhole(outputTokens) && outputTokens < limit) {
+    return `a reply was cut off at ${outputTokens} tokens, below the ${limit} quorum asked for: the server caps replies near ${outputTokens}: set maxTokens: ${outputTokens}`
+  }
+  const at = isWhole(limit)
+    ? ` of ${limit} tokens`
+    : ''
+  return noAnswer === 'thinking'
+    ? `reply was cut off at its limit${at} while reasoning, before any answer`
+    : `reply was cut off at its limit${at}`
 }
 
 /** What to do about a provider whose calls ended with `kind`, and for an `http` failure its `status`: one imperative phrase, never a word a server wrote. */
@@ -158,14 +223,28 @@ export interface DownFacts {
   readonly count: number
   /** True for the calls in a row that found the provider down, false for the calls of a provider spent at the end. */
   readonly streak: boolean
+  /** What the last failure lacked, for a `no-answer` kind: `thinking` or `empty`; any other value reads as `empty`. */
+  readonly noAnswer?: NoAnswer
 }
 
 /**
  * The words of a provider that is down, so the CLI's progress line and a `ProviderDownError`'s message share
  * one copy: `<id>: <n> calls in a row failed (<kind>[ <status>]): no more calls go to it in this review:
- * <fix>` for the calls in a row, else `<id>: its one call failed (...): <fix>` or `its <n> calls failed`.
+ * <fix>` for the calls in a row, else `<id>: its one call failed (...): <fix>` or `its <n> calls failed`. A
+ * provider down by replies with no answer says what they lacked instead: `<id>: <n> calls in a row had no
+ * answer, only reasoning: ...` or `had no answer and no reasoning: ...`.
  */
 export function downWords(facts: DownFacts): string {
+  if (facts.kind === 'no-answer') {
+    const lack = facts.noAnswer === 'thinking'
+      ? `had no answer, only reasoning: ${THINKING_FIX}`
+      : `had no answer and no reasoning: ${EMPTY_FIX}`
+    return facts.streak
+      ? `${facts.providerId}: ${facts.count} calls in a row ${lack}`
+      : `${facts.providerId}: its ${facts.count === 1
+        ? 'one call'
+        : `${facts.count} calls`} ${lack}`
+  }
   const failure = facts.status === undefined
     ? facts.kind
     : `${facts.kind} ${facts.status}`
@@ -189,6 +268,8 @@ export class ProviderDownError extends QuorumError {
   readonly status: number | undefined
   readonly count: number
   readonly streak: boolean
+  /** What the last failure lacked, for a `no-answer` kind. */
+  readonly noAnswer: NoAnswer | undefined
 
   constructor(facts: DownFacts & { readonly cause?: unknown }) {
     super(downWords(facts), facts.cause === undefined
@@ -199,5 +280,6 @@ export class ProviderDownError extends QuorumError {
     this.status = facts.status
     this.count = facts.count
     this.streak = facts.streak
+    this.noAnswer = facts.noAnswer
   }
 }

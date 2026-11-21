@@ -4128,6 +4128,67 @@ describe('a large change in parts', () => {
       expect(clock.pending()).toBe(0)
     })
 
+    it('says once per provider that a reply had no answer, from code facts, whatever the provider\'s message', async () => {
+      const events: QuorumEvent[] = []
+      const finder = partsFinder(500, (request) => {
+        const part = partOf(request)
+        if (part <= 2) {
+          throw Object.assign(new Error('<b>CANARY</b>'), {
+            kind: 'no-answer',
+            noAnswer: 'empty',
+            usage: { inputTokens: 900, outputTokens: 4 },
+          })
+        }
+        return findings(at(FILES[part - 1]))
+      })
+      const result = await quorumOf(finder, { concurrency: 1 }, securityProfile, events).review({ diff: partsDiff })
+      expect(events.filter(event => event.type === 'reply-lacked')).toEqual([
+        {
+          type: 'reply-lacked',
+          provider: 'finder',
+          kind: 'no-answer',
+          noAnswer: 'empty',
+          outputTokens: 4,
+          inputTokens: 900,
+        },
+      ])
+      expect(JSON.stringify(events)).not.toContain('CANARY')
+      expect(JSON.stringify(result.meta)).not.toContain('CANARY')
+      expect(downEvents(events)).toEqual([])
+    })
+
+    it('counts replies with no answer toward a provider being down', async () => {
+      const events: QuorumEvent[] = []
+      const finder = partsFinder(500, (request) => {
+        const part = partOf(request)
+        if (part > 2) {
+          throw new ProviderError({
+            providerId: 'finder',
+            kind: 'no-answer',
+            noAnswer: 'thinking',
+            message: 'reply has no answer, only reasoning',
+          })
+        }
+        return findings(at(FILES[part - 1]))
+      })
+      const result = await quorumOf(finder, { concurrency: 1 }, securityProfile, events).review({ diff: partsDiff })
+      expect(finder.requests.map(partOf)).toEqual([1, 2, 3, 4, 5])
+      expect(downEvents(events)).toEqual([
+        {
+          type: 'provider-down',
+          provider: 'finder',
+          kind: 'no-answer',
+          calls: 3,
+          noAnswer: 'thinking',
+        },
+      ])
+      expect(events.filter(event => event.type === 'reply-lacked')).toHaveLength(1)
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'research-failed', detail: '3 of 6 research parts failed: the research call failed (no-answer)' },
+        { profile: 'security', reason: 'provider-down', detail: '1 of 6 research parts were not sent, since their provider was down' },
+      ])
+    })
+
     it('leaves a provider up whose calls are refused, cut off or unreadable, however many', async () => {
       const events: QuorumEvent[] = []
       const finder = partsFinder(500, (request) => {

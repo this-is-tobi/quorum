@@ -75,6 +75,41 @@ export const thoughtsOnlyCutOff = {
   modelVersion: 'gemini-3.8-flash',
 }
 
+/** A finished candidate with no part at all, and no thoughts counted: `STOP` and an empty `content`. */
+export const empty = {
+  candidates: [
+    {
+      content: { parts: [], role: 'model' },
+      finishReason: 'STOP',
+      index: 0,
+    },
+  ],
+  usageMetadata: { promptTokenCount: 1840, totalTokenCount: 1840 },
+  modelVersion: 'gemini-3.8-flash',
+}
+
+/** A finished candidate whose only part is a thought summary (`thought: true`): `STOP`, no answer. */
+export const reasoningOnly = {
+  ...generateContentResponse,
+  candidates: [
+    {
+      ...candidate,
+      content: {
+        parts: [
+          { text: '**Checking the query**\n\nThe id reaches the query as a bound parameter.', thought: true },
+        ],
+        role: 'model',
+      },
+    },
+  ],
+}
+
+/** A reply that says `STOP` while its candidate and thought tokens equal the 16000-token limit quorum sends by default. */
+export const countedOut = {
+  ...generateContentResponse,
+  usageMetadata: { ...generateContentResponse.usageMetadata, candidatesTokenCount: 15_664, thoughtsTokenCount: 336 },
+}
+
 /**
  * A reply with a thought summary first and a thought signature on the answer's part
  * (https://aistudio.google.com/docs/thinking?generate-content=true).

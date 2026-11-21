@@ -4,8 +4,9 @@ import { postJson } from './http.ts'
 import { shapeMessages } from './messages.ts'
 import { isRecord, mergeBody, prepareHttp } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions } from './options.ts'
-import { endedEarly, joinedText, replyFailure, tokenUsage } from './reply.ts'
+import { endedEarly, joinedText, readAnswer, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, DEFAULT_REPLY_TOKENS, roomTokens, worstCaseTokens } from './size.ts'
+import type { ContextBudget } from './size.ts'
 
 /** The options of an Anthropic Messages provider: the ones every HTTP adapter takes, and no other. */
 export type AnthropicOptions = HttpProviderOptions
@@ -48,28 +49,50 @@ const RULES: Omit<AdapterRules, 'auth'> = {
 /** The stop reasons of a finished reply. */
 const FINISHED: ReadonlySet<unknown> = new Set(['end_turn', 'stop_sequence'])
 
+/** Whether the reply showed thinking: a `thinking` or `redacted_thinking` block, or a thinking token count above 0. Only the fact is read, never the thinking's text. */
+function showedThinking(reply: Record<string, unknown>): boolean {
+  if (Array.isArray(reply.content) && reply.content.some(block => isRecord(block) && (block.type === 'thinking' || block.type === 'redacted_thinking'))) return true
+  const details = isRecord(reply.usage)
+    ? reply.usage.output_tokens_details
+    : undefined
+  const tokens = isRecord(details)
+    ? details.thinking_tokens
+    : undefined
+  return typeof tokens === 'number' && tokens > 0
+}
+
 /**
  * Turn a Messages reply into text, or a `ProviderError`. Every property is read defensively: the reply
  * is untrusted. The stop reason comes first, since a refused or cut-off reply can still hold some text.
  * The counts are read once, after the body check, and every failure from then on carries them, since the
- * server generated those tokens.
+ * server generated those tokens. What the reply lacked, once the stop reason is one of a finished, a cut-off or a
+ * window-ended reply, is `readAnswer`'s: `max_tokens` or output tokens that reach the limit sent, the window
+ * (`model_context_window_exceeded`), only thinking, or nothing.
  */
-function readReply(reply: unknown, { id, model }: Pick<AnthropicOptions, 'id' | 'model'>, redact: readonly string[]): CompletionResponse {
+function readReply(reply: unknown, { id, model, budget }: Pick<AnthropicOptions, 'id' | 'model'> & { readonly budget: ContextBudget }, redact: readonly string[]): CompletionResponse {
   if (!isRecord(reply)) throw replyFailure(id)('invalid-response', 'reply is not a JSON object')
 
   const usage = tokenUsage(reply.usage, ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'], ['output_tokens'])
   const fail = replyFailure(id, usage)
   const reason = reply.stop_reason
   if (reason === 'refusal') throw fail('refusal', 'model refused')
-  if (reason === 'max_tokens') throw fail('truncated', 'reply was cut off by the token limit')
-  if (reason === 'model_context_window_exceeded') throw fail('truncated', 'reply was cut off: the context window is full')
-  if (!FINISHED.has(reason)) throw fail('invalid-response', endedEarly(reason, redact))
+  const cutOff = reason === 'max_tokens'
+  const windowEnded = reason === 'model_context_window_exceeded'
+  if (!cutOff && !windowEnded && !FINISHED.has(reason)) throw fail('invalid-response', endedEarly(reason, redact))
 
-  const text = joinedText(reply.content, block => block.type === 'text')
-  if (text === undefined) throw fail('invalid-response', 'reply has no text')
+  const { text, reasoning } = readAnswer(id, {
+    text: joinedText(reply.content, block => block.type === 'text'),
+    flaggedCutOff: cutOff,
+    windowEnded,
+    reasoned: showedThinking(reply),
+    limit: budget.replyTokens,
+    window: budget.contextTokens,
+    usage,
+  })
 
   return {
     text,
+    reasoning,
     model: typeof reply.model === 'string' && reply.model !== ''
       ? reply.model
       : model,
@@ -125,7 +148,7 @@ export function anthropic(options: AnthropicOptions): Provider {
         signal: request.signal,
         redact,
       })
-      return readReply(reply, { id, model }, redact)
+      return readReply(reply, { id, model, budget }, redact)
     },
   }
 }

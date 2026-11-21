@@ -48,6 +48,23 @@ export const contextWindowFull = {
   stop_reason: 'model_context_window_exceeded',
 }
 
+/** A finished reply with no text block and no thinking: `end_turn` and an empty `content`. */
+export const empty = { ...message, content: [], stop_reason: 'end_turn' }
+
+/** A finished reply that holds a thinking block and no text block. */
+export const reasoningOnly = {
+  ...message,
+  content: [
+    { type: 'thinking', thinking: 'The id reaches the query as a bound parameter.', signature: 'EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds' },
+  ],
+}
+
+/** A reply that says `end_turn` while its `output_tokens` equal the 16000-token limit quorum sends by default. */
+export const countedOut = {
+  ...message,
+  usage: { ...message.usage, output_tokens: 16_000 },
+}
+
 /** A reply that stops to call a tool: a `tool_use` block and `stop_reason: 'tool_use'`. */
 export const toolUse = {
   ...message,

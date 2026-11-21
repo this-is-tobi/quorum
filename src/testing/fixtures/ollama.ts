@@ -27,6 +27,22 @@ export const truncated = {
   done_reason: 'length',
 }
 
+/** A finished reply with no content and no thinking: `done_reason: 'stop'`. */
+export const empty = {
+  ...chatResponse,
+  message: { role: 'assistant', content: '' },
+  eval_count: 2,
+}
+
+/** A finished reply whose `message.thinking` holds text and whose `content` is empty. */
+export const reasoningOnly = {
+  ...chatResponse,
+  message: { role: 'assistant', content: '', thinking: 'The id reaches the query as a bound parameter.' },
+}
+
+/** A reply that says `stop` while its `eval_count` equals the 16000-token limit quorum sends by default as `num_predict`. */
+export const countedOut = { ...chatResponse, eval_count: 16_000 }
+
 /** The answer to `_debug_render_only`: the rendered template in `debug_info`, and no `done` (server/routes.go, `ChatHandler`). */
 export const debugRender = {
   model: 'qwen3.6:27b',

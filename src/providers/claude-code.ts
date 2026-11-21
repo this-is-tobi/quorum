@@ -12,7 +12,7 @@ import { tokenBound } from '../core/tokens.ts'
 import type { Usage } from '../core/types.ts'
 import { snippet } from './http.ts'
 import { attemptIssues, contextTokensIssues, isRecord, maxTokensIssues, NOT_VISIBLE_ASCII, wordList } from './options.ts'
-import { replyFailure, tokenUsage } from './reply.ts'
+import { lackFailure, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, DEFAULT_REPLY_TOKENS, roomTokens, utf8Length, worstCaseTokens } from './size.ts'
 
 /**
@@ -595,8 +595,12 @@ function sumUsage(modelUsage: readonly Record<string, unknown>[], total: unknown
   return usage
 }
 
-/** The text of a result: the structured output serialized in `schema` mode, `result` in `prompt` mode. */
-function replyText(result: Record<string, unknown>, structuredOutput: ClaudeCodeStructuredOutput, fail: Failure): string {
+/**
+ * The text of a result: the structured output serialized in `schema` mode, `result` in `prompt` mode. A success
+ * whose `result` is blank or missing in `prompt` mode is `empty`, which `noAnswer` builds; a missing structured
+ * output in `schema` mode stays `invalid-response`, Claude Code's own failure to call its schema tool.
+ */
+function replyText(result: Record<string, unknown>, structuredOutput: ClaudeCodeStructuredOutput, fail: Failure, noAnswer: () => ProviderError): string {
   if (structuredOutput === 'schema') {
     if (!isRecord(result.structured_output)) throw fail('invalid-response', 'reply has no structured output')
     try {
@@ -605,7 +609,7 @@ function replyText(result: Record<string, unknown>, structuredOutput: ClaudeCode
       throw fail('invalid-response', 'reply structured output could not be serialized')
     }
   }
-  if (typeof result.result !== 'string') throw fail('invalid-response', 'reply has no text')
+  if (typeof result.result !== 'string' || result.result.trim() === '') throw noAnswer()
   return result.result
 }
 
@@ -639,7 +643,8 @@ function signalName(signal: string): string {
  * refusal, a reply Claude Code reports cut off at its output limit (an error result whose `api_error` is
  * `max_output_tokens`, which it gives after continuing the reply three times), an error (anything but an
  * `is_error` of `false` is one), a child a signal ended or a non-zero exit after a success, a tool the server
- * ran, a reply the token limit cut off, then the text. Claude Code reports an API error as exit 1 with
+ * ran, a reply the token limit cut off, then the text, which a success in `prompt` mode may leave blank
+ * (`no-answer`, `empty`). Claude Code reports an API error as exit 1 with
  * `subtype: "success"` and `is_error: true`, so the JSON on stdout is read before the exit code. Every
  * failure carries the usage the result reports, summed as `sumUsage` does, since the model generated and
  * billed those tokens whatever came after.
@@ -650,15 +655,17 @@ function readFinished(result: Record<string, unknown>, run: ClaudeRun, context: 
     : []
   const usage = sumUsage(modelUsage, result.total_cost_usd)
   const fail = replyFailure(context.id, usage)
+  // Its usage sums every model turn of a run, so no count rule applies: only the flags say a reply was cut off.
+  const cutOff = (): ProviderError => lackFailure(context.id, 'truncated', { noAnswer: 'reply' }, usage)
   if (isPromptTooLong(result)) throw fail('too-large', 'Claude Code refused the prompt as too long for the model\'s context')
   if (result.stop_reason === 'refusal') throw fail('refusal', 'model refused')
-  if (result.api_error === 'max_output_tokens') throw fail('truncated', 'reply was cut off by the token limit')
+  if (result.api_error === 'max_output_tokens') throw cutOff()
   if (result.is_error !== false || result.subtype !== 'success') throw errorFailure(result, run, context, usage)
   if (run.signal !== null) throw fail('process', `claude was stopped by ${signalName(run.signal)} after its result`)
   if (run.code !== null && run.code !== 0) throw fail('process', `claude exited ${run.code} after its result`, run.code)
   if (ranServerTool(result, modelUsage)) throw fail('invalid-response', 'the server ran a tool for this reply, which quorum never allows')
-  if (result.stop_reason === 'max_tokens') throw fail('truncated', 'reply was cut off by the token limit')
-  const text = replyText(result, context.structuredOutput, fail)
+  if (result.stop_reason === 'max_tokens') throw cutOff()
+  const text = replyText(result, context.structuredOutput, fail, () => lackFailure(context.id, 'no-answer', { noAnswer: 'empty' }, usage))
   const models = isRecord(result.modelUsage)
     ? Object.keys(result.modelUsage)
     : []

@@ -13,7 +13,7 @@ export type { FailOnOverride, ProfileSelection, ResolvedProfile } from './config
 export type { ResolvedConfig, ResolvedProvider } from './config/resolve.ts'
 export type { ConfigInput, QuorumConfig, QuorumConfigFile } from './config/schema.ts'
 export { ConfigError, OutputError, ProviderDownError, ProviderError, QuorumError } from './core/errors.ts'
-export type { ConfigIssue, ProviderErrorKind } from './core/errors.ts'
+export type { ConfigIssue, NoAnswer, ProviderErrorKind, ReplyLack } from './core/errors.ts'
 export { outcome } from './core/outcome.ts'
 export type { Outcome, OutcomeStatus } from './core/outcome.ts'
 export { defaultPolicy } from './core/policy.ts'

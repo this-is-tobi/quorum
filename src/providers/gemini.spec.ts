@@ -5,7 +5,7 @@ import type { CompletionRequest } from '../core/ports.ts'
 import { sent, stubFetch } from '../testing/http.ts'
 import { gemini } from './gemini.ts'
 import type { GeminiOptions } from './gemini.ts'
-import { candidate, generateContentResponse, invalidKey, promptBlocked, thoughtsOnlyCutOff, truncated, withThoughts } from '../testing/fixtures/gemini.ts'
+import { candidate, countedOut, empty, generateContentResponse, invalidKey, promptBlocked, reasoningOnly, thoughtsOnlyCutOff, truncated, withThoughts } from '../testing/fixtures/gemini.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
 
 const request: CompletionRequest = {
@@ -37,8 +37,12 @@ describeProviderContract({
     ok: generateContentResponse,
     model: 'gemini-3.8-flash',
     usage: { inputTokens: 1840, outputTokens: 340 },
+    reasoned: true,
     refusal: promptBlocked,
     truncated,
+    empty,
+    reasoningOnly,
+    countedOut,
   },
   read: {
     system: body => (body.systemInstruction as Content | undefined)?.parts[0]?.text,
@@ -292,6 +296,7 @@ describe('gemini', () => {
       text: '{"keep":false,"reasoning":"r"}',
       model: 'gemini-3.8-flash',
       usage: { inputTokens: 1840, outputTokens: 340 },
+      reasoning: true,
     })
   })
 
@@ -318,14 +323,21 @@ describe('gemini', () => {
       modelVersion: '',
       usageMetadata: { candidatesTokenCount: 4 },
     })
-    await expect(provider.complete(request)).resolves.toEqual({ text: '{}', model: 'gemini-3.8-flash', usage: undefined })
+    await expect(provider.complete(request)).resolves.toEqual({
+      text: '{}',
+      model: 'gemini-3.8-flash',
+      usage: undefined,
+      reasoning: false,
+    })
   })
 
   it('carries the counts of a thinking model cut off while it thinks, reading the candidates count it leaves out as 0', async () => {
     stubFetch(thoughtsOnlyCutOff)
     await expect(provider.complete(request)).rejects.toMatchObject({
       kind: 'truncated',
+      noAnswer: 'thinking',
       usage: { inputTokens: 1124, outputTokens: 47 },
+      message: 'gemini: a reply was cut off at 47 tokens, below the 16000 quorum asked for: the server caps replies near 47: set maxTokens: 47',
     })
   })
 
@@ -428,11 +440,11 @@ describe('gemini', () => {
       { candidates: 'x' },
       'gemini: reply has no candidates',
     ],
-    ['truncated', truncated, 'gemini: reply was cut off by the token limit'],
+    ['truncated', truncated, 'gemini: a reply was cut off at 340 tokens, below the 16000 quorum asked for: the server caps replies near 340: set maxTokens: 340'],
     [
       'truncated',
       ending('CONTINUATION'),
-      'gemini: reply was cut off by the token limit',
+      'gemini: a reply was cut off at 340 tokens, below the 16000 quorum asked for: the server caps replies near 340: set maxTokens: 340',
     ],
     ...safety.map((reason): [ProviderErrorKind, unknown, string] => [
       'refusal',
@@ -467,7 +479,7 @@ describe('gemini', () => {
       'gemini: reply ended early',
     ],
     [
-      'invalid-response',
+      'no-answer',
       {
         candidates: [
           {
@@ -480,10 +492,10 @@ describe('gemini', () => {
           },
         ],
       },
-      'gemini: reply has no text',
+      'gemini: reply has no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt',
     ],
     [
-      'invalid-response',
+      'no-answer',
       {
         candidates: [
           {
@@ -499,16 +511,16 @@ describe('gemini', () => {
           },
         ],
       },
-      'gemini: reply has no text',
+      'gemini: reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt',
     ],
     [
-      'invalid-response',
+      'no-answer',
       {
         candidates: [
           { ...candidate, content: undefined },
         ],
       },
-      'gemini: reply has no text',
+      'gemini: reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt',
     ],
     ['invalid-response', [], 'gemini: reply is not a JSON object'],
   ])('maps a %s reply to a ProviderError with its exact message', async (kind, body, expected) => {
@@ -520,6 +532,24 @@ describe('gemini', () => {
       providerId: 'gemini',
       message: expected,
     })
+  })
+
+  it('reads a STOP with only thought parts as no-answer thinking, and the thought tokens alone as reasoning, quoting none of it', async () => {
+    stubFetch(reasoningOnly)
+    const failed = await provider.complete(request).catch((error: unknown) => error)
+    expect(failed).toMatchObject({
+      name: 'ProviderError',
+      kind: 'no-answer',
+      noAnswer: 'thinking',
+      usage: { inputTokens: 1840, outputTokens: 340 },
+    })
+    expect(JSON.stringify(failed)).not.toContain('bound parameter')
+    expect((failed as Error).message).not.toContain('bound parameter')
+    stubFetch({
+      ...empty,
+      usageMetadata: { promptTokenCount: 1840, thoughtsTokenCount: 90 },
+    })
+    await expect(provider.complete(request)).rejects.toMatchObject({ kind: 'no-answer', noAnswer: 'thinking' })
   })
 
   describe('on a 429', () => {

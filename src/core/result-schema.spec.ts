@@ -107,6 +107,33 @@ describe('the schemas of a result', () => {
     ])
   })
 
+  it('reads a result holding no-answer as a vote failure', () => {
+    const empty = {
+      angle: 'b',
+      vote: null,
+      error: 'x',
+      failure: { kind: 'no-answer' },
+    } as const
+    const result = reportResult({
+      kept: [
+        {
+          ...SQL,
+          keptVotes: 2,
+          confidence: 'medium',
+          votes: [
+            cast(true),
+            cast(true),
+            empty,
+          ],
+        },
+      ],
+    })
+    const full = saved(result)
+    expect(resultSchema.parse(full)).toEqual(full)
+    const view = saved(publicView(result))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+  })
+
   it.each<[string, 'full' | 'public', (value: Forged) => void]>([
     [
       'a profile key in capitals',

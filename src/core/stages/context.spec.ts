@@ -35,6 +35,7 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
     stop: AbortSignal.any([controller.signal, deadline.signal]),
     deadline: { at: clock.now() + deadlineMs, ms: deadlineMs },
     health: createHealth(),
+    lacked: new Set(),
     maxFindings: 50,
     concurrency,
     clock,

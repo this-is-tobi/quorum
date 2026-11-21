@@ -4,7 +4,7 @@ import type { CompletionRequest } from '../core/ports.ts'
 import { sent, stubFetch } from '../testing/http.ts'
 import { openaiCompatible } from './openai-compatible.ts'
 import type { OpenAICompatibleOptions } from './openai-compatible.ts'
-import { chatCompletion, groqBrowserSearch, mistralChunks, openRouterGenerationError, refusal, searchCitations, stringError, truncated } from '../testing/fixtures/openai-compatible.ts'
+import { chatCompletion, countedOut, empty, groqBrowserSearch, mistralChunks, openRouterGenerationError, reasoningOnly, refusal, searchCitations, stringError, truncated } from '../testing/fixtures/openai-compatible.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
 
 const request: CompletionRequest = {
@@ -43,8 +43,12 @@ describeProviderContract({
     ok: chatCompletion,
     model: 'gpt-6-astra-2026-09-30',
     usage: { inputTokens: 19, outputTokens: 10 },
+    reasoned: false,
     refusal,
     truncated,
+    empty,
+    reasoningOnly,
+    countedOut,
   },
   read: {
     system: body => conversation(body).find(message => message.role === 'system')?.content,
@@ -220,18 +224,29 @@ describe('openaiCompatible', () => {
       text: 'hi',
       model: 'qwen:latest',
       usage: { inputTokens: 10, outputTokens: 2 },
+      reasoning: false,
     })
   })
 
   it('falls back to the configured model, and reports no usage, when the endpoint sends none or only part', async () => {
     stubFetch(ok)
-    await expect(provider.complete(request)).resolves.toEqual({ text: '{}', model: 'qwen', usage: undefined })
+    await expect(provider.complete(request)).resolves.toEqual({
+      text: '{}',
+      model: 'qwen',
+      usage: undefined,
+      reasoning: false,
+    })
     stubFetch({
       ...ok,
       model: '',
       usage: { prompt_tokens: 10 },
     })
-    await expect(provider.complete(request)).resolves.toEqual({ text: '{}', model: 'qwen', usage: undefined })
+    await expect(provider.complete(request)).resolves.toEqual({
+      text: '{}',
+      model: 'qwen',
+      usage: undefined,
+      reasoning: false,
+    })
   })
 
   it.each([
@@ -280,7 +295,7 @@ describe('openaiCompatible', () => {
           },
         ],
       },
-      /cut off/,
+      /^local: reply was cut off at its limit of 16000 tokens$/,
     ],
     [
       'invalid-response',
@@ -288,7 +303,7 @@ describe('openaiCompatible', () => {
       /no choices/,
     ],
     [
-      'invalid-response',
+      'no-answer',
       {
         choices: [
           {
@@ -296,7 +311,7 @@ describe('openaiCompatible', () => {
           },
         ],
       },
-      /no message content/,
+      /^local: reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt$/,
     ],
     [
       'invalid-response',
@@ -321,7 +336,7 @@ describe('openaiCompatible', () => {
           },
         ],
       },
-      /cut off/,
+      /^local: reply was cut off at its limit of 16000 tokens$/,
     ],
     [
       'invalid-response',
@@ -348,7 +363,7 @@ describe('openaiCompatible', () => {
       /^local: reply ended early: "error"$/,
     ],
     [
-      'invalid-response',
+      'no-answer',
       {
         choices: [
           {
@@ -360,7 +375,7 @@ describe('openaiCompatible', () => {
           },
         ],
       },
-      /no message content/,
+      /^local: reply has no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt$/,
     ],
     ['invalid-response', null, /not a JSON object/],
     ['invalid-response', [], /not a JSON object/],
@@ -384,13 +399,13 @@ describe('openaiCompatible', () => {
       /no choices/,
     ],
     [
-      'invalid-response',
+      'no-answer',
       {
         choices: [
           { message: 'str' },
         ],
       },
-      /no message content/,
+      /has no answer and no reasoning/,
     ],
     [
       'refusal',
@@ -434,7 +449,7 @@ describe('openaiCompatible', () => {
     ],
     [
       'a reply with no message content',
-      'invalid-response',
+      'no-answer',
       {
         finish_reason: 'stop',
         message: { content: null },
@@ -507,6 +522,7 @@ describe('openaiCompatible', () => {
       text: '{"keep":true,"reasoning":"r"}',
       model: 'magistral-medium-2610',
       usage: { inputTokens: 40, outputTokens: 12 },
+      reasoning: true,
     })
     stubFetch({
       choices: [
@@ -521,6 +537,102 @@ describe('openaiCompatible', () => {
       ],
     })
     await expect(provider.complete(request)).resolves.toMatchObject({ text: '{}' })
+  })
+
+  it.each([
+    [
+      'message.reasoning (vLLM)',
+      { content: null, reasoning: '{"findings":[]}' },
+      undefined,
+    ],
+    [
+      'message.reasoning_content (llama.cpp, DeepSeek)',
+      { content: '', reasoning_content: '{"findings":[]}' },
+      undefined,
+    ],
+    [
+      'a thinking part (Mistral)',
+      {
+        content: [
+          {
+            type: 'thinking',
+            thinking: [
+              { type: 'text', text: '{"findings":[]}' },
+            ],
+          },
+        ],
+      },
+      undefined,
+    ],
+    [
+      'a reasoning token count above 0',
+      { content: '' },
+      {
+        prompt_tokens: 7,
+        completion_tokens: 9,
+        completion_tokens_details: { reasoning_tokens: 9 },
+      },
+    ],
+  ])('reads a finished reply whose answer sits in %s as no-answer thinking, never as the answer, quoting none of it', async (_name, message, usage) => {
+    stubFetch({
+      choices: [
+        {
+          finish_reason: 'stop',
+          message,
+        },
+      ],
+      usage: usage ?? { prompt_tokens: 7, completion_tokens: 9 },
+    })
+    const failed = await provider.complete(request).catch((error: unknown) => error)
+    expect(failed).toMatchObject({
+      name: 'ProviderError',
+      kind: 'no-answer',
+      noAnswer: 'thinking',
+      usage: { inputTokens: 7, outputTokens: 9 },
+      message: 'local: reply has no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt',
+    })
+    expect(JSON.stringify(failed)).not.toContain('findings')
+    expect((failed as Error).message).not.toContain('findings')
+  })
+
+  it('reads a cut-off at the server\'s window when input and output reach contextTokens below the limit sent', async () => {
+    const small = openaiCompatible({
+      id: 'local',
+      baseUrl: 'http://localhost:11434/v1',
+      model: 'qwen',
+      contextTokens: 8192,
+      maxTokens: 4000,
+    })
+    stubFetch({
+      choices: [
+        {
+          finish_reason: 'length',
+          message: { content: '{"kee' },
+        },
+      ],
+      usage: { prompt_tokens: 6000, completion_tokens: 2192 },
+    })
+    await expect(small.complete(request)).rejects.toMatchObject({
+      kind: 'truncated',
+      noAnswer: 'window',
+      usage: { inputTokens: 6000, outputTokens: 2192 },
+      message: 'local: a reply ended at the server\'s window, which is smaller than contextTokens: lower contextTokens',
+    })
+    // The same cut-off with room left in the window is a server that caps replies, whatever it says of its flag.
+    stubFetch({
+      choices: [
+        {
+          finish_reason: 'length',
+          message: { content: '{"kee' },
+        },
+      ],
+      usage: { prompt_tokens: 1000, completion_tokens: 2192 },
+    })
+    await expect(small.complete(request)).rejects.toMatchObject({
+      kind: 'truncated',
+      noAnswer: 'reply',
+      message: 'local: a reply was cut off at 2192 tokens, below the 4000 quorum asked for: the server caps replies near 2192: set maxTokens: 2192',
+    })
   })
 
   it('caps the refusal and the server error at 200 characters before quoting them', async () => {

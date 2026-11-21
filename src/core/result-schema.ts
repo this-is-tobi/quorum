@@ -46,6 +46,7 @@ const voteFailure = z.strictObject({
     'aborted',
     'refusal',
     'truncated',
+    'no-answer',
     'invalid-response',
     'unsupported',
     'too-large',

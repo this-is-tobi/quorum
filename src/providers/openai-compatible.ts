@@ -4,8 +4,9 @@ import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
 import { isRecord, mergeBody, prepareHttp } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
-import { endedEarly, joinedText, MAX_MODEL_TEXT, replyFailure, tokenUsage } from './reply.ts'
+import { endedEarly, joinedText, MAX_MODEL_TEXT, readAnswer, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, roomTokens, worstCaseTokens } from './size.ts'
+import type { ContextBudget } from './size.ts'
 
 /** The options of an OpenAI-compatible provider. */
 export interface OpenAICompatibleOptions extends HttpProviderOptions {
@@ -94,15 +95,39 @@ function textOf(content: unknown): string | undefined {
     : joinedText(content, part => part.type === 'text')
 }
 
+/** Whether `value` is a string with something in it besides white space. */
+function hasText(value: unknown): boolean {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
+/**
+ * Whether the reply showed reasoning: a `reasoning` (vLLM) or `reasoning_content` (llama.cpp, DeepSeek) field
+ * with text, a `thinking` part of the content (Mistral), or a reasoning token count above 0. Only the fact
+ * is read: the reasoning's text is never the answer and never quoted.
+ */
+function showedReasoning(message: Record<string, unknown>, usage: unknown): boolean {
+  if (hasText(message.reasoning) || hasText(message.reasoning_content)) return true
+  if (Array.isArray(message.content) && message.content.some(part => isRecord(part) && part.type === 'thinking')) return true
+  const details = isRecord(usage)
+    ? usage.completion_tokens_details
+    : undefined
+  const tokens = isRecord(details)
+    ? details.reasoning_tokens
+    : undefined
+  return typeof tokens === 'number' && tokens > 0
+}
+
 /**
  * Turn a chat completion reply into text, or a `ProviderError`. Every property is read defensively: the
  * reply is untrusted, and a malformed shape must fail as a provider error, not as a `TypeError`. A
  * server error comes first, since some servers answer 200 with one beside an empty choice (OpenRouter,
  * for a failure during generation), as `{ error: { message, code } }` or `{ error: "text" }`. A tool the
  * server ran comes next, before a refusal or a finish reason. The counts are read once, after the body
- * check, and every failure from then on carries them, since the server generated those tokens.
+ * check, and every failure from then on carries them, since the server generated those tokens. What the reply
+ * lacked, once these checks pass, is `readAnswer`'s: a cut-off by the finish reason or by output tokens that reach
+ * the limit sent, a window the server ended, only reasoning, or nothing.
  */
-function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 'id' | 'model'>, redact: readonly string[]): CompletionResponse {
+function readReply(reply: unknown, { id, model, budget }: Pick<OpenAICompatibleOptions, 'id' | 'model'> & { readonly budget: ContextBudget }, redact: readonly string[]): CompletionResponse {
   if (!isRecord(reply)) throw replyFailure(id)('invalid-response', 'reply is not a JSON object')
 
   const usage = tokenUsage(reply.usage, ['prompt_tokens'], ['completion_tokens'])
@@ -140,14 +165,22 @@ function readReply(reply: unknown, { id, model }: Pick<OpenAICompatibleOptions, 
   }
   const reason = choice.finish_reason
   if (reason === 'content_filter') throw fail('refusal', 'reply was stopped by the content filter')
-  if (CUT_OFF.has(reason)) throw fail('truncated', 'reply was cut off by the token limit')
   if (ENDED_EARLY.has(reason)) throw fail('invalid-response', endedEarly(reason, redact))
 
-  const text = textOf(message.content)
-  if (text === undefined) throw fail('invalid-response', 'reply has no message content')
+  const { text, reasoning } = readAnswer(id, {
+    text: textOf(message.content),
+    flaggedCutOff: CUT_OFF.has(reason),
+    windowEnded: false,
+    reasoned: showedReasoning(message, reply.usage),
+    limit: budget.replyTokens,
+    window: budget.contextTokens,
+    windowByCount: true,
+    usage,
+  })
 
   return {
     text,
+    reasoning,
     model: typeof reply.model === 'string' && reply.model !== ''
       ? reply.model
       : model,
@@ -205,7 +238,7 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
         signal: request.signal,
         redact,
       })
-      return readReply(reply, { id, model }, redact)
+      return readReply(reply, { id, model, budget }, redact)
     },
   }
 }

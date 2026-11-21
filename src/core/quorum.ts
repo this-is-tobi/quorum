@@ -341,6 +341,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     stop: AbortSignal.any([signal, expired]),
     deadline,
     health: createHealth(),
+    lacked: new Set(),
     maxFindings: compiled.maxFindings,
     concurrency: compiled.concurrency,
     clock: compiled.clock,
