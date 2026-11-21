@@ -679,6 +679,48 @@ describe('postJson on a failed reply', () => {
   })
 })
 
+describe('postJson on a body that names a format field', () => {
+  async function failure(body: string, status: number, formatFields: readonly string[] | undefined): Promise<ProviderError> {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply(body, status)))
+    return await postJson({
+      ...options,
+      ...formatFields === undefined
+        ? {}
+        : { formatFields },
+    }).catch((caught: unknown) => caught) as ProviderError
+  }
+
+  it('matches the format fields as whole words in a 400 or 422 body only', async () => {
+    const fields = ['response_format', 'format']
+    const named = '{"error":{"message":"Unsupported parameter: \'response_format\' is not supported with this model."}}'
+    for (const status of [400, 422]) expect(await failure(named, status, fields), String(status)).toMatchObject({ kind: 'http', status, refused: 'structuredOutput' })
+    // Any other status names no refusal, whatever the body holds.
+    for (const status of [401, 404, 429, 500, 503]) expect(await failure(named, status, fields), String(status)).toMatchObject({ status, refused: undefined })
+    // A field is a whole word: it never matches inside another word, a letter or digit or underscore beside it.
+    for (const body of [
+      'invalid response_formats',
+      'unknown reformat',
+      'my_response_format_x',
+      'formatting failed',
+      'response_format2',
+      'Response_Format is invalid',
+      'a body that names no field',
+    ]) expect(await failure(body, 400, ['response_format']), body).toMatchObject({ refused: undefined })
+    for (const body of [
+      'response_format: invalid',
+      '"response_format"',
+      'the field (response_format) is refused',
+      'response_format',
+    ]) expect(await failure(body, 422, ['response_format']), body).toMatchObject({ refused: 'structuredOutput' })
+    expect(await failure('Invalid format', 400, ['format'])).toMatchObject({ refused: 'structuredOutput' })
+    // Without fields to look for it never matches, and the message quotes the body as it always did, never the field's verdict.
+    const plain = await failure(named, 400, undefined)
+    expect(plain.refused).toBeUndefined()
+    const refused = await failure('response_format is bad', 400, fields)
+    expect(refused.message).toBe('p: HTTP 400: "response_format is bad"')
+  })
+})
+
 describe('the runtimes\' timers', () => {
   const KEY = Symbol.for('undici.globalDispatcher.1')
   const scope = globalThis as unknown as Record<symbol, unknown>

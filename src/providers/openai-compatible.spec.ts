@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
-import { sent, stubFetch } from '../testing/http.ts'
+import { sent, stubFetch, textReply } from '../testing/http.ts'
 import { openaiCompatible } from './openai-compatible.ts'
 import type { OpenAICompatibleOptions } from './openai-compatible.ts'
 import { chatCompletion, countedOut, empty, groqBrowserSearch, mistralChunks, openRouterGenerationError, reasoningOnly, refusal, searchCitations, stringError, truncated } from '../testing/fixtures/openai-compatible.ts'
@@ -59,6 +59,13 @@ describeProviderContract({
   thinking: {
     read: body => body.reasoning_effort,
     extraBody: { reasoning_effort: 'high' },
+    lowersTo: 'low',
+  },
+  jsonMode: {
+    read: body => body.response_format,
+    extraBody: {
+      response_format: { type: 'text' },
+    },
   },
   reservedBodyKeys: ['model', 'messages', 'stream'],
   toolBodyKeys: [
@@ -819,5 +826,54 @@ describe('openaiCompatible', () => {
       error: { message: 'bad key sk-secret' },
     })
     await expect(keyed.complete(request)).rejects.toMatchObject({ message: 'local: server error: "bad key [redacted]"' })
+  })
+})
+
+describe('openaiCompatible on a 400 that names its structured-output field', () => {
+  const failure = async (body: string, status: number, options: Partial<OpenAICompatibleOptions> = {}): Promise<unknown> => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply(body, status)))
+    return openaiCompatible({
+      id: 'p',
+      baseUrl: 'https://h.example/v1',
+      model: 'm',
+      contextTokens: 8192,
+      maxTokens: 1000,
+      ...options,
+    }).complete(request).catch((caught: unknown) => caught)
+  }
+
+  it('marks a 400 that names response_format as refused for its structured output, quoting nothing', async () => {
+    const error = await failure('{"error":{"message":"response_format is unsupported by this model"}}', 400)
+    expect(error).toMatchObject({ kind: 'http', status: 400, refused: 'structuredOutput' })
+    // The field's name is matched, never copied: the mark is a code word.
+    expect(Object.entries(error as object).filter(([key, value]) => key !== 'message' && key !== 'name' && typeof value === 'string').flatMap(([, value]) => value as string)).toEqual(['p', 'http', 'structuredOutput'])
+    expect(await failure('{"error":{"message":"response_format is unsupported"}}', 422)).toMatchObject({ refused: 'structuredOutput' })
+    // Another field, another status, and a request that sent no response_format name no refusal.
+    expect(await failure('{"error":{"message":"reasoning_effort is unsupported"}}', 400)).toMatchObject({ refused: undefined })
+    expect(await failure('{"error":{"message":"response_format is unsupported"}}', 500)).toMatchObject({ refused: undefined })
+    expect(await failure('{"error":{"message":"response_format is unsupported"}}', 400, { structuredOutput: 'prompt' })).toMatchObject({ refused: undefined })
+    expect(await failure('{"error":{"message":"response_format is unsupported"}}', 400, { structuredOutput: 'schema' })).toMatchObject({ refused: 'structuredOutput' })
+  })
+
+  it('states the lowered level of its preset, and sends the request\'s level as the control it maps to', async () => {
+    const adapts = (options: Partial<OpenAICompatibleOptions>): unknown => Object.getOwnPropertyDescriptor(openaiCompatible({
+      id: 'p',
+      baseUrl: 'https://h.example/v1',
+      model: 'm',
+      contextTokens: 8192,
+      ...options,
+    }), 'adapts')?.value
+    expect(adapts({})).toEqual({ thinking: 'low', prompt: true })
+    expect(adapts({ lowersThinkingTo: 'off' })).toEqual({ thinking: 'off', prompt: true })
+    const fetchMock = stubFetch(chatCompletion)
+    await openaiCompatible({
+      id: 'p',
+      baseUrl: 'https://h.example/v1',
+      model: 'm',
+      contextTokens: 8192,
+      maxTokens: 1000,
+      lowersThinkingTo: 'off',
+    }).complete({ ...request, thinking: 'off' })
+    expect(sent(fetchMock).body.reasoning_effort).toBe('none')
   })
 })

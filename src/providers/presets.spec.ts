@@ -46,6 +46,7 @@ describe('presets', () => {
         structuredOutput: 'json',
         temperature: 0,
         maxTokensField: 'max_tokens',
+        lowersThinkingTo: 'off',
         toolModels: [],
       },
       vllm: {
@@ -54,6 +55,7 @@ describe('presets', () => {
         structuredOutput: 'json',
         temperature: 0,
         maxTokensField: 'max_tokens',
+        lowersThinkingTo: 'off',
         toolModels: [],
       },
       openai: {

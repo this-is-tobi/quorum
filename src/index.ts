@@ -19,10 +19,11 @@ export { outcome } from './core/outcome.ts'
 export type { Outcome, OutcomeStatus } from './core/outcome.ts'
 export { defaultPolicy } from './core/policy.ts'
 export type { PolicyRules, Rule } from './core/policy.ts'
-export type { ChatMessage, CompletionRequest, CompletionResponse, EventSink, JsonSchema, ProfilePorts, Provider, QuorumPorts } from './core/ports.ts'
+export type { Adapts, ChatMessage, CompletionRequest, CompletionResponse, EventSink, JsonSchema, ProfilePorts, Provider, QuorumPorts } from './core/ports.ts'
 export { createQuorum } from './core/quorum.ts'
 export { codeSpan, fencedBlock, inertJson, inertLine, inertPlain } from './core/sanitize.ts'
 export type {
+  Adaptation,
   Confidence,
   CoverageEntry,
   CoverageReason,

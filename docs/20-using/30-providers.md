@@ -15,6 +15,7 @@ interface Provider {
   readonly window?: number
   readonly maxTokens?: number
   readonly thinking?: 'default' | 'low' | 'off'
+  readonly adapts?: { readonly thinking?: 'low' | 'off', readonly prompt?: true }
   complete: (request: CompletionRequest) => Promise<CompletionResponse>
 }
 
@@ -23,6 +24,8 @@ interface CompletionRequest {
   messages: readonly ChatMessage[]
   output: { name: string, schema: JsonSchema }
   replyTokens?: number
+  thinking?: 'low' | 'off'
+  structuredOutput?: 'prompt'
   signal?: AbortSignal
 }
 
@@ -38,6 +41,7 @@ interface CompletionResponse {
 - **No secret in a request.** No environment value, key or credential appears in a request: a key lives in the adapter that holds it.
 - **The core never trusts the reply.** It extracts and validates the JSON in `text` itself, whatever the provider did to get it, and reads `usage` (`inputTokens`, `outputTokens`, optional `costUsd`) only when its counts are finite numbers of at least 0.
 - **`reasoning` says whether the reply showed reasoning**: `true` when it did, `false` when the adapter could tell it showed none, absent when the provider cannot tell, as a provider object of your own states none. The four HTTP adapters state it; `claudeCode` does not. It is a fact about the reply, never its text.
+- **`thinking` and `structuredOutput` are what the core changes by itself**, for a provider that states `adapts`: a lowered thinking level after a reply ran out of room while reasoning, and prompt mode after an empty reply or a refused field. An adapter honours each only when it states the matching `adapts`, so a setting you set is never undone: [What quorum adapts by itself](./20-configuration.md#what-quorum-adapts-by-itself).
 - **`id` and `model` name the provider** in events and in `meta`, as they were when the quorum was created.
 - **A provider may state its deadline**, `timeoutMs`, and its `retries`: [Deadlines and retries](#deadlines-and-retries).
 - **A provider may state its worst case**, `worstCase(request)`: the most tokens one attempt of the request may spend, which the review's token cap reserves before it is sent ([The token cap](./20-configuration.md#the-token-cap)): [What a provider states](#what-a-provider-states).
@@ -88,7 +92,9 @@ The core runs each call's attempts inside the call's concurrency slot, and gives
 - **`maxTokens`** is the most tokens a reply may hold, a whole number of at least 1, read as `window` is. It is the ceiling of every reply the core budgets: a research request is asked for it, and a vote for the lesser of it and the vote's own budget.
 - **`thinking`** is how much the provider thinks: `default`, `low` or `off`, read as `window` is. The core leaves room for the thinking the level allows when it sizes a reply: 8192 tokens for `default`, 4096 for `low` and none for `off`. A provider that states none thinks `default`.
 - **The shipped adapters state them**: `window` is their `contextTokens`, `maxTokens` is their option when it is set, and `thinking` is their `thinking` option, `default` when it is unset or `extraBody` sets the control ([Thinking](#thinking)).
-- **A value out of range is refused** where the provider is given, as the issue `ports.profiles.<id>.research.<field>` or `ports.profiles.<id>.voters.<lens>.<field>`, `<field>` being `timeoutMs`, `retries`, `window`, `maxTokens` or `thinking`: `must be a whole number of milliseconds from 1000 to 518400000`, `must be a whole number from 0 to 5`, `must be a whole number of tokens of at least 1` (`window` and `maxTokens`) and `must be default, low or off`. A `worstCase` or a `room` that is not a function is refused the same way: `must be a function`. The message never repeats the value.
+- **`adapts`** is what the core may change by itself for the rest of a review, an own data object read when the quorum is created: `thinking`, the level a lowering sends, `low` or `off`, and `prompt: true`, the move from JSON mode to prompt mode, each optional. State each only when the setting is automatic. A provider that states none, as one whose settings are explicit does, is never moved: quorum adapts only what a provider says it may.
+- **The shipped adapters state `adapts`** from their options: a `thinking` level when the `thinking` option is unset and `extraBody` does not set the protocol's control (`low`, `off` on `ollama`, and `off` on `openaiCompatible` under the `vllm` and `llamacpp` presets), and `prompt` when `structuredOutput` is unset on a protocol whose default is `json` (`openaiCompatible`, `gemini` and `ollama`, not `anthropic`) and `extraBody` sets none of its fields. `claudeCode` states none.
+- **A value out of range is refused** where the provider is given, as the issue `ports.profiles.<id>.research.<field>` or `ports.profiles.<id>.voters.<lens>.<field>`, `<field>` being `timeoutMs`, `retries`, `window`, `maxTokens`, `thinking` or `adapts`: `must be a whole number of milliseconds from 1000 to 518400000`, `must be a whole number from 0 to 5`, `must be a whole number of tokens of at least 1` (`window` and `maxTokens`), `must be default, low or off` and `must be an object whose thinking is low or off and whose prompt is true, each optional`. A `worstCase` or a `room` that is not a function is refused the same way: `must be a function`. The message never repeats the value.
 
 ## The adapters
 
@@ -254,6 +260,8 @@ A custom header name is lower-cased, and its `prefix` goes before the key. A req
 | `prompt` | No `response_format` | No `output_config` | No `responseMimeType` | No `format` |
 | `json` | `response_format: { "type": "json_object" }` | Refused: the Messages API has no JSON mode | `generationConfig.responseMimeType: "application/json"` | `format: "json"` |
 | `schema` | `response_format: { "type": "json_schema", "json_schema": { "name": <output.name>, "schema": <output.schema>, "strict": true } }` | `output_config: { "format": { "type": "json_schema", "schema": <output.schema> } }` | `generationConfig.responseMimeType: "application/json"` and `generationConfig.responseJsonSchema: <output.schema>` | `format: <output.schema>` |
+
+**Unset, `structuredOutput` is automatic**: the mode a preset gives, else the protocol's default, `json` on `openaiCompatible`, `gemini` and `ollama` and `prompt` on `anthropic`. A preset's `json` is that automatic start, and quorum moves a provider that starts there to `prompt` for the rest of a review when a reply comes back empty, or when the server answers a 400 or 422 that names the field (`response_format`, `responseMimeType`, `responseJsonSchema` or `format`): [What quorum adapts by itself](./20-configuration.md#what-quorum-adapts-by-itself). It never moves from `schema`, which a preset such as `lmstudio` or `anthropic` sets, nor from a mode you set, `json` and `prompt` included, nor when `extraBody` sets the field. The provider states what it may move in `adapts` ([What a provider states](#what-a-provider-states)).
 
 Every mode keeps the schema in the system message, and the core validates the reply the same way in each. `schema` asks the endpoint to enforce the shape; use it where the endpoint supports it, `json` where it supports only JSON mode, and `prompt` where it supports neither. An endpoint can drop the field without a word: Ollama's and DeepSeek's Anthropic-compatible endpoints ignore `output_config.format`, so `schema` is enforced only where the endpoint supports it, and Anthropic accepts it only on the models its structured-outputs page lists.
 

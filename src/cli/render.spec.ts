@@ -114,6 +114,87 @@ describe('renderEvent', () => {
     expect(renderEvent({ ...event, provider: `a${RLO}b` } as QuorumEvent, true, 'public')).toBe(line.replace('api:', 'a<U+202E>b:'))
   })
 
+  it.each<[string, QuorumEvent, string]>([
+    [
+      'thinking lowered after a cut-off',
+      {
+        type: 'adapted',
+        adaptation: {
+          provider: 'api',
+          setting: 'thinking',
+          from: 'default',
+          to: 'low',
+          cause: 'cut-off-thinking',
+        },
+      },
+      'api: thinking lowered to low for the rest of the review: a reply ran out of room while reasoning; set thinking to choose it yourself',
+    ],
+    [
+      'thinking lowered after a reply with only reasoning',
+      {
+        type: 'adapted',
+        adaptation: {
+          provider: 'api',
+          setting: 'thinking',
+          from: 'default',
+          to: 'off',
+          cause: 'no-answer-thinking',
+        },
+      },
+      'api: thinking lowered to off for the rest of the review: a reply held only reasoning; set thinking to choose it yourself',
+    ],
+    [
+      'structured output moved to prompt after an empty reply',
+      {
+        type: 'adapted',
+        adaptation: {
+          provider: 'api',
+          setting: 'structuredOutput',
+          from: 'json',
+          to: 'prompt',
+          cause: 'empty-reply',
+        },
+      },
+      'api: structuredOutput moved to prompt for the rest of the review: a reply in JSON mode was empty; set structuredOutput to choose it yourself',
+    ],
+    [
+      'structured output moved to prompt after a refused field',
+      {
+        type: 'adapted',
+        adaptation: {
+          provider: 'api',
+          setting: 'structuredOutput',
+          from: 'json',
+          to: 'prompt',
+          cause: 'format-refused',
+        },
+      },
+      'api: structuredOutput moved to prompt for the rest of the review: the server refused the request\'s JSON mode; set structuredOutput to choose it yourself',
+    ],
+    [
+      'a lowering the server refused',
+      {
+        type: 'adapted',
+        adaptation: {
+          provider: 'api',
+          setting: 'thinking',
+          from: 'low',
+          to: 'default',
+          cause: 'lowering-refused',
+        },
+      },
+      'api: the server refused thinking lowered to low: thinking stays as the server sets it for the rest of the review; set thinking to choose it yourself',
+    ],
+  ])('writes an adapted event as %s, one inert line whatever the view', (_name, event, line) => {
+    expect(renderEvent(event)).toBe(line)
+    expect(renderEvent(event, true, 'public')).toBe(line)
+    const hostile = {
+      ...event,
+      adaptation: { ...(event as Extract<QuorumEvent, { type: 'adapted' }>).adaptation, provider: `a${RLO}b` },
+    } as QuorumEvent
+    expect(renderEvent(hostile, true, 'public')).toBe(line.replace('api:', 'a<U+202E>b:'))
+  })
+
   it('renders a flag with where it points', () => {
     expect(renderEvent({
       type: 'flag',

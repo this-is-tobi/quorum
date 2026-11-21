@@ -1314,7 +1314,7 @@ describe('configCodeSchema', () => {
     ])
   })
 
-  it('keeps the window, maxTokens and thinking a provider object states in its snapshot, and refuses one out of range', () => {
+  it('keeps the window, maxTokens, thinking and adapts a provider object states in its snapshot, and refuses one out of range', () => {
     const snapshotOf = (object: unknown): Provider => parseConfig(configCodeSchema, {
       providers: { mine: object },
     }).providers?.mine as Provider
@@ -1323,6 +1323,7 @@ describe('configCodeSchema', () => {
       window: 8192,
       maxTokens: 500,
       thinking: 'low',
+      adapts: { thinking: 'off', prompt: true },
     })
     expect(Object.keys(stated)).toEqual([
       'model',
@@ -1330,16 +1331,28 @@ describe('configCodeSchema', () => {
       'window',
       'maxTokens',
       'thinking',
+      'adapts',
     ])
-    expect(stated).toMatchObject({ window: 8192, maxTokens: 500, thinking: 'low' })
+    expect(stated).toMatchObject({
+      window: 8192,
+      maxTokens: 500,
+      thinking: 'low',
+      adapts: { thinking: 'off', prompt: true },
+    })
     // The named copy and the facts read of it carry them too.
     expect(nameSnapshot('mine', stated)).toMatchObject({
       id: 'mine',
       window: 8192,
       maxTokens: 500,
       thinking: 'low',
+      adapts: { thinking: 'off', prompt: true },
     })
-    expect(statedFacts(stated).stated).toEqual({ window: 8192, maxTokens: 500, thinking: 'low' })
+    expect(statedFacts(stated).stated).toEqual({
+      window: 8192,
+      maxTokens: 500,
+      thinking: 'low',
+      adapts: { thinking: 'off', prompt: true },
+    })
     let ran = false
     const read = snapshotOf({
       ...fakeProvider,
@@ -1356,6 +1369,12 @@ describe('configCodeSchema', () => {
       ['window', '8192', 'must be a whole number of tokens of at least 1'],
       ['maxTokens', 1.5, 'must be a whole number of tokens of at least 1'],
       ['thinking', 'high', 'must be default, low or off'],
+      ['adapts', 'low', 'must be an object whose thinking is low or off and whose prompt is true, each optional'],
+      [
+        'adapts',
+        { thinking: 'high' },
+        'must be an object whose thinking is low or off and whose prompt is true, each optional',
+      ],
     ] as const) {
       expect(issuesOf({
         providers: {

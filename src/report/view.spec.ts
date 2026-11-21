@@ -127,6 +127,7 @@ describe('publicView', () => {
         ],
         leftOut: reportMeta().leftOut,
         flags: reportMeta().flags,
+        adaptations: [],
       },
     }
     expect(view).toStrictEqual(expected)
@@ -141,6 +142,7 @@ describe('publicView', () => {
       'incomplete',
       'leftOut',
       'flags',
+      'adaptations',
     ])
     expect(Object.keys(view.meta.profiles.security)).toEqual([
       'policy',
@@ -151,6 +153,35 @@ describe('publicView', () => {
       'coverage',
     ])
     expect(Object.keys(view.kept[0])).toEqual(Object.keys(SQL))
+  })
+
+  it('keeps meta.adaptations in the public view, as a copy', () => {
+    const adaptations = [
+      {
+        provider: 'api',
+        setting: 'thinking',
+        from: 'default',
+        to: 'low',
+        cause: 'no-answer-thinking',
+      },
+      {
+        provider: 'api',
+        setting: 'structuredOutput',
+        from: 'json',
+        to: 'prompt',
+        cause: 'empty-reply',
+      },
+    ] as const
+    const result = reportResult({
+      meta: {
+        ...reportMeta(),
+        adaptations: [...adaptations],
+      },
+    })
+    const view = publicView(result)
+    expect(view.meta.adaptations).toEqual(adaptations)
+    expect(view.meta.adaptations).not.toBe(result.meta.adaptations)
+    expect(view.meta.adaptations[0]).not.toBe(result.meta.adaptations[0])
   })
 
   it('keeps a vote\'s lens, its keep, null when it failed, and its failure', () => {

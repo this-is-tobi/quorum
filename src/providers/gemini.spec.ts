@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ProviderError, ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
-import { sent, stubFetch } from '../testing/http.ts'
+import { sent, stubFetch, textReply } from '../testing/http.ts'
 import { gemini } from './gemini.ts'
 import type { GeminiOptions } from './gemini.ts'
 import { candidate, countedOut, empty, generateContentResponse, invalidKey, promptBlocked, reasoningOnly, thoughtsOnlyCutOff, truncated, withThoughts } from '../testing/fixtures/gemini.ts'
@@ -56,6 +56,13 @@ describeProviderContract({
       generationConfig: {
         thinkingConfig: { thinkingBudget: 0 },
       },
+    },
+    lowersTo: 'low',
+  },
+  jsonMode: {
+    read: body => generationConfig(body)?.responseMimeType,
+    extraBody: {
+      generationConfig: { responseMimeType: 'text/plain' },
     },
   },
   reservedBodyKeys: ['contents', 'systemInstruction'],
@@ -654,5 +661,36 @@ describe('gemini', () => {
       error: { code: 402, message: 'prepay balance depleted', status: 'RESOURCE_EXHAUSTED' },
     }, 402)
     await expect(provider.complete(request)).rejects.toMatchObject({ kind: 'http', status: 402, retryable: false })
+  })
+})
+
+describe('gemini on a 400 that names its structured-output field', () => {
+  const failure = async (body: string, status: number, options: Partial<GeminiOptions> = {}): Promise<unknown> => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply(body, status)))
+    return gemini({
+      id: 'p',
+      baseUrl: 'https://h.example',
+      model: 'gemini-3.8-flash',
+      contextTokens: 8192,
+      maxTokens: 1000,
+      ...options,
+    }).complete(request).catch((caught: unknown) => caught)
+  }
+
+  it('marks a 400 that names responseMimeType or responseJsonSchema as refused for its structured output, quoting nothing', async () => {
+    for (const field of [
+      'responseMimeType',
+      'responseJsonSchema',
+      'response_mime_type',
+      'response_json_schema',
+    ]) {
+      const error = await failure(`{"error":{"message":"Invalid JSON payload received. Unknown name \\"${field}\\" at 'generation_config'"}}`, 400)
+      expect(error, field).toMatchObject({ kind: 'http', status: 400, refused: 'structuredOutput' })
+      expect(Object.entries(error as object).filter(([key, value]) => key !== 'message' && key !== 'name' && typeof value === 'string').flatMap(([, value]) => value as string), field).toEqual(['p', 'http', 'structuredOutput'])
+    }
+    expect(await failure('{"error":{"message":"thinkingLevel is not supported"}}', 400)).toMatchObject({ refused: undefined })
+    expect(await failure('{"error":{"message":"responseMimeType is bad"}}', 403)).toMatchObject({ refused: undefined })
+    expect(await failure('{"error":{"message":"responseMimeType is bad"}}', 400, { structuredOutput: 'prompt' })).toMatchObject({ refused: undefined })
+    expect(await failure('{"error":{"message":"responseMimeTypes"}}', 400)).toMatchObject({ refused: undefined })
   })
 })

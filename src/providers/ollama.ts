@@ -4,7 +4,7 @@ import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues, thinkingIssues } from './options.ts'
+import { adaptsOf, bodyKeyForm, isRecord, mergeBody, prepareHttp, requestSettings, spellingIssues, thinkingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput, Thinking, ThinkingControl } from './options.ts'
 import { MAX_MODEL_TEXT, readAnswer, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
@@ -36,6 +36,8 @@ const RULES: Omit<AdapterRules, 'auth'> = {
 const THINKING: ThinkingControl = {
   path: ['think'],
 }
+/** The body field that sets the structured-output mode, which a 400 may name: a word an unrelated body may hold, which costs one probe. */
+const FORMAT_FIELDS = ['format']
 /** The one spelling of the options key that the adapter merges its own into. */
 const OPTIONS = 'options'
 /** The done reasons of a finished reply: `length` is one cut off by the token limit, or by a context that filled. */
@@ -134,6 +136,10 @@ function readReply(reply: unknown, { id, model, budget }: Pick<OllamaOptions, 'i
  * case from the count its size guard keeps: the text it sends, the template reserve and that budget, and the
  * room its guard leaves from the same count: `contextTokens` less those three. It also states its window, its
  * `maxTokens` when set, and its thinking: the option's level, else `default`, which it sends as `think`, `"low"` or `false`.
+ * Unless the options set `thinking`, or `extraBody` sets `think`, it states that the core may lower thinking, to `off`,
+ * and honours the request's `thinking`; unless the options set `structuredOutput`, or `extraBody` sets `format`, it
+ * states that the core may move it from `json` to `prompt`, and honours the request's `structuredOutput`. A 400 or
+ * 422 that names `format`, sent in `json` or `schema` mode, is marked `refused` for the structured output.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
@@ -144,6 +150,11 @@ export function ollama(options: OllamaOptions): Provider {
     ...thinkingIssues(id, thinking, options.extraBody, THINKING),
   ])
   const budgetOf = (request: CompletionRequest): ContextBudget => contextBudget(contextTokens, replyBudgetOf(request, maxTokens))
+  const adapting = adaptsOf(options, {
+    level: 'off',
+    control: THINKING,
+    format: [FORMAT_FIELDS],
+  })
 
   return {
     id,
@@ -151,12 +162,14 @@ export function ollama(options: OllamaOptions): Provider {
     timeoutMs,
     retries,
     ...statedReply(contextTokens, maxTokens, thinking),
+    ...adapting,
     worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       const budget = budgetOf(request)
       checkFits(id, { system, messages }, request.output, budget)
+      const settings = requestSettings({ thinking, structuredOutput }, adapting.adapts, request)
       // JSON.stringify drops the undefined fields: no format for `prompt`, no temperature for null.
       const reply = await postJson<unknown>({
         providerId: id,
@@ -174,11 +187,14 @@ export function ollama(options: OllamaOptions): Provider {
           truncate: false,
           shift: false,
           options: { temperature: temperature ?? undefined, num_predict: budget.replyTokens, num_ctx: contextTokens },
-          format: format(structuredOutput, request.output),
-          think: think(thinking),
+          format: format(settings.structuredOutput, request.output),
+          think: think(settings.thinking),
         }, extraBody),
         signal: request.signal,
         redact,
+        ...settings.structuredOutput === 'prompt'
+          ? {}
+          : { formatFields: FORMAT_FIELDS },
       })
       return readReply(reply, { id, model, budget }, redact)
     },

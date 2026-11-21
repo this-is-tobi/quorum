@@ -44,8 +44,20 @@ export interface ContractSubject {
     temperature: (body: Body) => unknown
     maxTokens: (body: Body) => unknown
   }
-  /** Where a sent body holds the protocol's thinking control, and an `extraBody` that sets it, which makes thinking explicit. */
+  /**
+   * Where a sent body holds the protocol's thinking control, an `extraBody` that sets it, which makes thinking
+   * explicit, and the level a lowering sends when thinking is unset.
+   */
   thinking: {
+    read: (body: Body) => unknown
+    extraBody: Body
+    lowersTo: 'low' | 'off'
+  }
+  /**
+   * When the protocol's default is `json`: where a sent body holds that mode (undefined outside it), and an
+   * `extraBody` that sets the structured-output field, which makes the mode explicit. Absent when the default is `prompt`.
+   */
+  jsonMode?: {
     read: (body: Body) => unknown
     extraBody: Body
   }
@@ -210,6 +222,69 @@ export function describeProviderContract(subject: ContractSubject): void {
       const { body } = await sendThrough(explicit)
       expect(body).toMatchObject(subject.thinking.extraBody)
       expect(explicit.thinking).toBe('default')
+    })
+
+    it('honours the request\'s thinking and structuredOutput only when its options leave them automatic', async () => {
+      const lowering = { ...request, thinking: subject.thinking.lowersTo }
+      const level = async (options: Partial<HttpProviderOptions>, asked: CompletionRequest = request): Promise<unknown> => subject.thinking.read((await sendThrough(subject.make({
+        ...base,
+        ...options,
+      }), asked)).body)
+      // Automatic: the request's level reaches the protocol's control, which is absent without it.
+      expect(await level({})).toBeUndefined()
+      expect(await level({}, lowering)).toBeDefined()
+      // A level the options set wins, whatever the request holds, and so does a control `extraBody` sets.
+      expect(await level({ thinking: 'low' }, { ...request, thinking: 'off' })).toEqual(await level({ thinking: 'low' }))
+      expect(await level({ extraBody: subject.thinking.extraBody }, lowering)).toEqual(await level({ extraBody: subject.thinking.extraBody }))
+      const prompting = { ...request, structuredOutput: 'prompt' as const }
+      if (subject.jsonMode === undefined) {
+        // The default is prompt already: the request's field changes nothing, in any mode.
+        for (const structuredOutput of ['prompt', 'schema'] as const) {
+          if (!subject.structuredOutputs.includes(structuredOutput)) continue
+          const options = { structuredOutput }
+          expect((await sendThrough(subject.make({
+            ...base,
+            ...options,
+          }), prompting)).body, structuredOutput).toEqual((await send(options)).body)
+        }
+        expect((await sendThrough(subject.make(base), prompting)).body).toEqual((await send()).body)
+        return
+      }
+      const json = async (options: Partial<HttpProviderOptions>, asked: CompletionRequest = request): Promise<unknown> => subject.jsonMode?.read((await sendThrough(subject.make({
+        ...base,
+        ...options,
+      }), asked)).body)
+      expect(await json({})).toBeDefined()
+      expect(await json({}, prompting)).toBeUndefined()
+      // A mode the options set never moves, json included, nor does one `extraBody` sets.
+      expect(await json({ structuredOutput: 'json' }, prompting)).toBeDefined()
+      expect((await sendThrough(subject.make({ ...base, structuredOutput: 'schema' }), prompting)).body).toEqual((await send({ structuredOutput: 'schema' })).body)
+      expect((await sendThrough(subject.make({ ...base, structuredOutput: 'prompt' }), prompting)).body).toEqual((await send({ structuredOutput: 'prompt' })).body)
+      expect((await sendThrough(subject.make({ ...base, extraBody: subject.jsonMode.extraBody }), prompting)).body).toEqual((await send({ extraBody: subject.jsonMode.extraBody })).body)
+    })
+
+    it('states adapts from its options', () => {
+      /** What `provider` holds as own data: a getter or an inherited field gives `undefined`, as the core reads it. */
+      const adapts = (options: Partial<HttpProviderOptions>): unknown => Object.getOwnPropertyDescriptor(subject.make({
+        ...base,
+        ...options,
+      }), 'adapts')?.value
+      const lowers = subject.thinking.lowersTo
+      expect(adapts({})).toEqual(subject.jsonMode === undefined
+        ? { thinking: lowers }
+        : { thinking: lowers, prompt: true })
+      // An option that sets a control is never undone: it states nothing for that control.
+      expect(adapts({ thinking: 'low' })).toEqual(subject.jsonMode === undefined
+        ? undefined
+        : { prompt: true })
+      expect(adapts({ extraBody: subject.thinking.extraBody })).toEqual(subject.jsonMode === undefined
+        ? undefined
+        : { prompt: true })
+      for (const structuredOutput of subject.structuredOutputs) {
+        expect(adapts({ structuredOutput }), structuredOutput).toEqual({ thinking: lowers })
+      }
+      if (subject.jsonMode !== undefined) expect(adapts({ extraBody: subject.jsonMode.extraBody })).toEqual({ thinking: lowers })
+      expect(adapts({ thinking: 'low', structuredOutput: 'prompt' })).toBeUndefined()
     })
 
     it('sends the reply\'s limit on every request: 16000 when maxTokens is unset, the budget the guard keeps', async () => {

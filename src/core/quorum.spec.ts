@@ -305,6 +305,24 @@ describe('createQuorum', () => {
       '8192',
       'must be a whole number of tokens of at least 1',
     ],
+    [
+      'adapts of 5',
+      'adapts',
+      5,
+      'must be an object whose thinking is low or off and whose prompt is true, each optional',
+    ],
+    [
+      'adapts with a thinking of high',
+      'adapts',
+      { thinking: 'high' },
+      'must be an object whose thinking is low or off and whose prompt is true, each optional',
+    ],
+    [
+      'adapts with a prompt of false',
+      'adapts',
+      { prompt: false },
+      'must be an object whose thinking is low or off and whose prompt is true, each optional',
+    ],
   ])('refuses a stated %s that is out of range, at its port', (_name, field, value, message) => {
     const stating = (stated: unknown): Provider => ({ ...provider, [field]: stated }) as Provider
     const create = (research: Provider, reachability: Provider): Quorum => createQuorum({
@@ -1180,6 +1198,7 @@ describe('meta and events', () => {
       incomplete: [],
       leftOut: [],
       flags: [],
+      adaptations: [],
     })
     expect(result.meta).not.toHaveProperty('usage')
   })
@@ -1247,6 +1266,7 @@ describe('meta and events', () => {
       'incomplete',
       'leftOut',
       'flags',
+      'adaptations',
     ])
   })
 
@@ -1278,6 +1298,7 @@ describe('meta and events', () => {
       'incomplete',
       'leftOut',
       'flags',
+      'adaptations',
     ])
   })
 
@@ -1349,6 +1370,7 @@ describe('meta and events', () => {
       'incomplete',
       'leftOut',
       'flags',
+      'adaptations',
     ])
     expect(events.flatMap(event => event.type === 'call'
       ? [event.usage]
@@ -4591,5 +4613,362 @@ describe('reply budgets', () => {
     ])).toEqual([
       [undefined, '12'],
     ])
+  })
+})
+
+describe('adaptations', () => {
+  /** A file's section: one hunk whose second added line is long, so two of them never share a part of 1024 tokens. */
+  const bigSection = (file: string): string => [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    '@@ -1 +1,2 @@',
+    '-safe(input)',
+    `+exec(input) // ${file}`,
+    `+${'y'.repeat(700)}`,
+  ].join('\n')
+  const FILES = [
+    'a.js',
+    'b.js',
+    'c.js',
+  ]
+  const bigDiff = FILES.map(bigSection).join('\n')
+  const fileOf = (request: CompletionRequest): string => /exec\(input\) \/\/ (\w+\.js)/.exec(request.messages[0].content)?.[1] ?? ''
+  const at = (file: string): unknown => ({ ...reported, file, quote: `exec(input) // ${file}` })
+  const fail = (kind: 'truncated' | 'no-answer', noAnswer: 'thinking' | 'empty', id = 'finder'): ProviderError => new ProviderError({
+    providerId: id,
+    kind,
+    noAnswer,
+    message: 'x',
+  })
+  const turn = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
+
+  /** A provider that asks for no room and answers from the request and its position, stating `adapts`. */
+  function providerOf(id: string, adapts: Provider['adapts'], answer: (request: CompletionRequest, call: number) => string | Promise<string>, extra: Partial<Provider> = {}): Fake {
+    const requests: CompletionRequest[] = []
+    return {
+      id,
+      model: `${id}-model`,
+      requests,
+      adapts,
+      room: () => 100_000,
+      async complete(request) {
+        requests.push(request)
+        return { text: await answer(request, requests.length), model: `${id}-model` }
+      },
+      ...extra,
+    }
+  }
+
+  /** One review on a fake clock, with its events. */
+  function reviewOn(finder: Provider, voter: Provider, options: Omit<QuorumOptions, 'profiles'> = {}): { readonly events: QuorumEvent[], readonly clock: ReturnType<typeof fakeClock>, readonly review: (diffText: string) => Promise<QuorumResult> } {
+    const events: QuorumEvent[] = []
+    const clock = fakeClock()
+    const quorum = createQuorumWith({
+      ...options,
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, finder, voter),
+      events: event => events.push(event),
+    }, clock)
+    return {
+      events,
+      clock,
+      review: diffText => settle(clock, quorum.review({ diff: diffText })),
+    }
+  }
+
+  const keeps = (): Fake => fake('voter', () => vote(true))
+  const adaptedEvents = (events: QuorumEvent[]): unknown[] => events.filter(event => event.type === 'adapted')
+
+  it('sends a vote in flight at the old setting once more at the settled one, so no vote fails for it', async () => {
+    let release = (): void => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const voter = providerOf('voter', { prompt: true }, () => vote(true), {
+      async complete(request) {
+        voter.requests.push(request)
+        if (request.structuredOutput === 'prompt') {
+          return {
+            text: vote(true),
+            model: 'voter-model',
+          }
+        }
+        // The first wave, three votes at json, is in flight together before any of them fails.
+        if (voter.requests.filter(sent => sent.structuredOutput === undefined).length === 3) release()
+        await gate
+        throw fail('no-answer', 'empty', 'voter')
+      },
+    })
+    const finder = fake('finder', () => findings({ ...reported, category: 'CWE-78' }, { ...reported, category: 'CWE-79' }, { ...reported, category: 'CWE-80' }))
+    const { events, review } = reviewOn(finder, voter, { concurrency: 3 })
+    const result = await review(diff)
+    expect(result.kept).toHaveLength(3)
+    expect(result.kept.flatMap(verdict => verdict.votes.map(lensVote => lensVote.vote?.keep))).toEqual(Array.from({ length: 9 }).fill(true))
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.meta.adaptations).toEqual([
+      {
+        provider: 'voter',
+        setting: 'structuredOutput',
+        from: 'json',
+        to: 'prompt',
+        cause: 'empty-reply',
+      },
+    ])
+    expect(adaptedEvents(events)).toHaveLength(1)
+    // The three votes in flight went once more, the six that waited went once, at prompt: nine votes, twelve requests.
+    expect(voter.requests.filter(request => request.structuredOutput === undefined)).toHaveLength(3)
+    expect(voter.requests.filter(request => request.structuredOutput === 'prompt')).toHaveLength(9)
+    expect(events.filter(event => event.type === 'provider-down')).toEqual([])
+  })
+
+  it('sends a research part in flight at the old thinking level once more at the lowered one before any split', async () => {
+    let release = (): void => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const finder = providerOf('finder', { thinking: 'low' }, () => findings(), {
+      async complete(request) {
+        finder.requests.push(request)
+        if (request.thinking === 'low') {
+          return {
+            text: findings(at(fileOf(request))),
+            model: 'finder-model',
+          }
+        }
+        if (finder.requests.filter(sent => sent.thinking === undefined).length === 2) release()
+        await gate
+        throw fail('truncated', 'thinking')
+      },
+    })
+    const { events, review } = reviewOn(finder, keeps(), { concurrency: 2, partTokens: 1024 })
+    const result = await review(`${bigSection('a.js')}\n${bigSection('b.js')}`)
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.kept.map(verdict => verdict.file).toSorted()).toEqual(['a.js', 'b.js'])
+    // Each part was asked twice: at the default level, then at the lowered one, the probe's and the other part's alike.
+    expect(finder.requests.map(request => request.thinking)).toEqual([undefined, undefined, 'low', 'low'])
+    expect(result.meta.adaptations).toEqual([
+      {
+        provider: 'finder',
+        setting: 'thinking',
+        from: 'default',
+        to: 'low',
+        cause: 'cut-off-thinking',
+      },
+    ])
+    expect(adaptedEvents(events)).toHaveLength(1)
+    expect(events.filter(event => event.type === 'reply-lacked')).toEqual([])
+  })
+
+  it('lowers thinking once on a reply that held only reasoning, and asks that part again', async () => {
+    const finder = providerOf('finder', { thinking: 'low' }, (request) => {
+      if (request.thinking === undefined) throw fail('no-answer', 'thinking')
+      return findings(at(fileOf(request)))
+    })
+    const { events, review } = reviewOn(finder, keeps(), { concurrency: 1, partTokens: 1024 })
+    const result = await review(bigDiff)
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.kept.map(verdict => verdict.file)).toEqual(FILES)
+    // The first part twice, and every later request at the lowered level.
+    expect(finder.requests.map(request => [
+      fileOf(request),
+      request.thinking,
+    ])).toEqual([
+      ['a.js', undefined],
+      ['a.js', 'low'],
+      ['b.js', 'low'],
+      ['c.js', 'low'],
+    ])
+    expect(result.meta.adaptations).toEqual([
+      {
+        provider: 'finder',
+        setting: 'thinking',
+        from: 'default',
+        to: 'low',
+        cause: 'no-answer-thinking',
+      },
+    ])
+    expect(adaptedEvents(events)).toEqual([
+      {
+        type: 'adapted',
+        adaptation: {
+          provider: 'finder',
+          setting: 'thinking',
+          from: 'default',
+          to: 'low',
+          cause: 'no-answer-thinking',
+        },
+      },
+    ])
+    // The failure the lowering answered is no final failure: no line says the reply lacked its answer.
+    expect(events.filter(event => event.type === 'reply-lacked' || event.type === 'provider-down')).toEqual([])
+  })
+
+  it('moves to prompt mode on an empty reply in automatic json mode, and stays there when prompt mode answers', async () => {
+    const finder = providerOf('finder', { prompt: true }, (request) => {
+      if (request.structuredOutput === undefined) throw fail('no-answer', 'empty')
+      return findings(at(fileOf(request)))
+    })
+    const { events, review } = reviewOn(finder, keeps(), { concurrency: 1, partTokens: 1024 })
+    const result = await review(bigDiff)
+    expect(result.meta.incomplete).toEqual([])
+    expect(finder.requests.map(request => [
+      fileOf(request),
+      request.structuredOutput,
+    ])).toEqual([
+      ['a.js', undefined],
+      ['a.js', 'prompt'],
+      ['b.js', 'prompt'],
+      ['c.js', 'prompt'],
+    ])
+    expect(result.meta.adaptations).toEqual([
+      {
+        provider: 'finder',
+        setting: 'structuredOutput',
+        from: 'json',
+        to: 'prompt',
+        cause: 'empty-reply',
+      },
+    ])
+    expect(adaptedEvents(events)).toHaveLength(1)
+  })
+
+  it('moves to prompt mode on a 400 that names the structured-output field', async () => {
+    const finder = providerOf('finder', { prompt: true }, (request) => {
+      if (request.structuredOutput === undefined) {
+        throw new ProviderError({
+          providerId: 'finder',
+          kind: 'http',
+          status: 400,
+          refused: 'structuredOutput',
+          message: 'bad request',
+        })
+      }
+      return findings(reported)
+    })
+    const { events, review } = reviewOn(finder, keeps())
+    const result = await review(diff)
+    expect(result.kept).toHaveLength(1)
+    expect(finder.requests.map(request => request.structuredOutput)).toEqual([undefined, 'prompt'])
+    expect(result.meta.adaptations).toEqual([
+      {
+        provider: 'finder',
+        setting: 'structuredOutput',
+        from: 'json',
+        to: 'prompt',
+        cause: 'format-refused',
+      },
+    ])
+    expect(events.filter(event => event.type === 'provider-down')).toEqual([])
+  })
+
+  it('sends a lowering refused with a 400 no more, counts the 400 nowhere, and records lowering-refused', async () => {
+    const finder = providerOf('finder', { thinking: 'low' }, (request) => {
+      if (request.thinking === 'low') {
+        throw new ProviderError({
+          providerId: 'finder',
+          kind: 'http',
+          status: 400,
+          message: 'bad value',
+        })
+      }
+      throw fail('truncated', 'thinking')
+    })
+    const { events, review } = reviewOn(finder, keeps(), { concurrency: 1, partTokens: 1024 })
+    const result = await review(bigDiff)
+    // Only the probe carried the lowered value; the three parts each ended with their own cut-off.
+    expect(finder.requests.map(request => [
+      fileOf(request),
+      request.thinking,
+    ])).toEqual([
+      ['a.js', undefined],
+      ['a.js', 'low'],
+      ['b.js', undefined],
+      ['c.js', undefined],
+    ])
+    expect(result.meta.adaptations).toEqual([
+      {
+        provider: 'finder',
+        setting: 'thinking',
+        from: 'low',
+        to: 'default',
+        cause: 'lowering-refused',
+      },
+    ])
+    expect(adaptedEvents(events)).toHaveLength(1)
+    expect(events.filter(event => event.type === 'provider-down')).toEqual([])
+    expect(result.meta.incomplete.map(gap => gap.reason)).toEqual(['research-failed'])
+    expect(result.meta.incomplete[0].detail).toBe('3 of 3 research parts failed: the research call failed (truncated) after 2 attempts')
+  })
+
+  it('never adapts a provider whose thinking and structuredOutput are explicit', async () => {
+    // A provider that sets them states no `adapts`, however it fails: a cut-off while reasoning, then an empty reply.
+    const finder = providerOf('finder', undefined, (request) => {
+      throw fileOf(request) === 'a.js'
+        ? fail('truncated', 'thinking')
+        : fail('no-answer', 'empty')
+    }, { thinking: 'low' })
+    const { events, review } = reviewOn(finder, keeps(), { concurrency: 1, partTokens: 1024 })
+    const result = await review(`${bigSection('a.js')}\n${bigSection('b.js')}`)
+    expect(result.meta.adaptations).toEqual([])
+    expect(adaptedEvents(events)).toEqual([])
+    expect(finder.requests).toHaveLength(2)
+    for (const request of finder.requests) {
+      expect(request).not.toHaveProperty('thinking')
+      expect(request).not.toHaveProperty('structuredOutput')
+    }
+  })
+
+  it('starts every review from the provider\'s settings again', async () => {
+    const finder = providerOf('finder', { thinking: 'low' }, (request) => {
+      if (request.thinking === undefined) throw fail('no-answer', 'thinking')
+      return findings(reported)
+    })
+    const { review, events } = reviewOn(finder, keeps())
+    const first = await review(diff)
+    expect(first.meta.adaptations).toHaveLength(1)
+    const second = await review(diff)
+    expect(finder.requests.map(request => request.thinking)).toEqual([undefined, 'low', undefined, 'low'])
+    expect(second.meta.adaptations).toHaveLength(1)
+    expect(adaptedEvents(events)).toHaveLength(2)
+  })
+
+  it('lowers thinking for a vote on a thinking cut-off, and asks the vote again', async () => {
+    const voter = providerOf('voter', { thinking: 'low' }, (request) => {
+      if (request.thinking === undefined) throw fail('truncated', 'thinking', 'voter')
+      return vote(true)
+    })
+    const { events, review } = reviewOn(fake('finder', () => findings(reported)), voter, { concurrency: 1 })
+    const result = await review(diff)
+    expect(result.kept).toHaveLength(1)
+    expect(result.kept[0].votes.map(lensVote => lensVote.vote?.keep)).toEqual([true, true, true])
+    expect(voter.requests.map(request => request.thinking)).toEqual([undefined, 'low', 'low', 'low'])
+    expect(result.meta.adaptations).toEqual([
+      {
+        provider: 'voter',
+        setting: 'thinking',
+        from: 'default',
+        to: 'low',
+        cause: 'cut-off-thinking',
+      },
+    ])
+    expect(result.meta.incomplete).toEqual([])
+    expect(adaptedEvents(events)).toHaveLength(1)
+  })
+
+  it('ends the waits of a pending probe at the review\'s deadline, so no call holds its slot for it', async () => {
+    const finder = providerOf('finder', { thinking: 'low' }, (request) => {
+      // The probe, at the lowered level, never answers; the part in flight at the default level fails and waits for it.
+      if (request.thinking === 'low') return new Promise<string>(() => {})
+      throw fail('truncated', 'thinking')
+    })
+    const { events, clock, review } = reviewOn(finder, keeps(), { concurrency: 2, partTokens: 1024, reviewTimeoutMs: 1000 })
+    const result = await review(`${bigSection('a.js')}\n${bigSection('b.js')}`)
+    expect(result.meta.incomplete.map(gap => gap.reason)).toEqual(['review-deadline'])
+    expect(result.meta.adaptations).toEqual([])
+    expect(adaptedEvents(events)).toEqual([])
+    expect(clock.pending()).toBe(0)
+    await turn()
   })
 })

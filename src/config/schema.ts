@@ -3,8 +3,8 @@ import { ConfigError, isSafeSegment, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { MAX_PATTERNS, patternProblem, TOO_MANY_PATTERNS } from '../core/exclude.ts'
 import { MIN_PART_TOKENS } from '../core/parts.ts'
-import type { CompletionRequest, CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
-import { MAX_RETRIES, MAX_STATED_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../core/ports.ts'
+import type { Adapts, CompletionRequest, CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
+import { adaptsProblem, MAX_RETRIES, MAX_STATED_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../core/ports.ts'
 import { FAIL_ON_LEVELS } from '../core/profile.ts'
 import { ownData } from '../core/stages/context.ts'
 import { securityProfile } from '../profiles/security.ts'
@@ -161,9 +161,10 @@ interface StatedFacts {
   readonly window?: number
   readonly maxTokens?: number
   readonly thinking?: NonNullable<Provider['thinking']>
+  readonly adapts?: Adapts
 }
 
-/** Each fact a provider states, with the check of its value: a deadline up to what a provider may state, which is more than an option takes, and the window, the `maxTokens` and the thinking level the core sizes replies from. */
+/** Each fact a provider states, with the check of its value: a deadline up to what a provider may state, which is more than an option takes, and the window, the `maxTokens` and the thinking level the core sizes replies from, and what it lets the core adapt. */
 const FACTS: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly problem: (value: unknown) => string | undefined }> = [
   {
     field: 'timeoutMs',
@@ -173,7 +174,22 @@ const FACTS: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly problem
   { field: 'window', problem: tokensProblem },
   { field: 'maxTokens', problem: tokensProblem },
   { field: 'thinking', problem: thinkingProblem },
+  { field: 'adapts', problem: adaptsProblem },
 ]
+
+/** The `adapts` a provider states, copied once from its own data into a frozen object with no prototype that holds the stated fields alone. */
+function adaptsCopy(value: unknown): Adapts {
+  const thinking = ownData(value, 'thinking')
+  const prompt = ownData(value, 'prompt')
+  return Object.freeze(withoutPrototype<Adapts>(Object.entries({
+    ...thinking === undefined
+      ? {}
+      : { thinking },
+    ...prompt === undefined
+      ? {}
+      : { prompt },
+  })))
+}
 
 /**
  * The facts `provider` states, each read as own data, so a getter never runs and an inherited property
@@ -182,14 +198,19 @@ const FACTS: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly problem
  */
 export function statedFacts(provider: unknown): { readonly stated: StatedFacts, readonly problems: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly message: string }> } {
   // No prototype, so a reader of `stated` never finds a fact on `Object.prototype`.
-  const stated: Record<string, number | string> = Object.create(null)
+  const stated: Record<string, number | string | Adapts> = Object.create(null)
   const problems: Array<{ field: keyof StatedFacts, message: string }> = []
   for (const { field, problem } of FACTS) {
     const value = ownData(provider, field)
     if (value === undefined) continue
     const message = problem(value)
-    if (message === undefined) stated[field] = value as number | string
-    else problems.push({ field, message })
+    if (message !== undefined) {
+      problems.push({ field, message })
+    } else {
+      stated[field] = field === 'adapts'
+        ? adaptsCopy(value)
+        : value as number | string
+    }
   }
   return { stated: stated as StatedFacts, problems }
 }

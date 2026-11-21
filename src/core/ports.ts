@@ -20,6 +20,16 @@ export interface CompletionRequest {
    * Absent, the request states none, and an adapter reserves its `maxTokens`, else 16000.
    */
   replyTokens?: number
+  /**
+   * A lowered thinking level the core asks for after a reply ran out of room while reasoning: `low` or `off`. An
+   * adapter honours it only when its `adapts` states a `thinking`, so a level the options set is never undone.
+   */
+  thinking?: 'low' | 'off'
+  /**
+   * `prompt` when the core moved the provider to prompt mode after an empty reply or a refused field: the reply
+   * shape is then described in the prompt alone. An adapter honours it only when its `adapts` states `prompt`.
+   */
+  structuredOutput?: 'prompt'
   /** The attempt's own signal: aborted with the review's, or at the attempt's deadline. */
   signal?: AbortSignal
 }
@@ -93,6 +103,33 @@ export function thinkingProblem(value: unknown): string | undefined {
     : 'must be default, low or off'
 }
 
+/** What a provider lets the core change by itself for the rest of a review: the level a lowering sends, and prompt mode. */
+export interface Adapts {
+  readonly thinking?: 'low' | 'off'
+  readonly prompt?: true
+}
+
+/**
+ * What is wrong with a stated `adapts`, worded with what to write, or undefined for an object whose `thinking`
+ * is `low` or `off` and whose `prompt` is `true`, each optional. The fields are read as own data, so a getter
+ * never runs. The value is never quoted.
+ */
+export function adaptsProblem(value: unknown): string | undefined {
+  const problem = 'must be an object whose thinking is low or off and whose prompt is true, each optional'
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return problem
+  const field = (name: string): unknown => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, name)
+    return descriptor !== undefined && Object.hasOwn(descriptor, 'value')
+      ? descriptor.value
+      : undefined
+  }
+  const thinking = field('thinking')
+  const prompt = field('prompt')
+  return (thinking === undefined || thinking === 'low' || thinking === 'off') && (prompt === undefined || prompt === true)
+    ? undefined
+    : problem
+}
+
 /**
  * A model behind a port: it receives text and returns text (invariant I1). No environment value, key
  * or credential appears in a request; keys live in adapters only. The core never trusts the reply
@@ -155,6 +192,16 @@ export interface Provider {
    * It is read when the quorum is created, as an own data property, as `timeoutMs` is.
    */
   readonly thinking?: 'default' | 'low' | 'off'
+  /**
+   * What the core may change for the rest of a review, once, when a reply calls for it: `thinking`, the level it
+   * lowers to (`low` or `off`) when a reply runs out of room while reasoning or holds only reasoning, and `prompt`,
+   * set when it may move the provider from JSON mode to prompt mode on an empty reply or a refused field. State
+   * each only when it is automatic: a provider whose thinking or structured output is set, or whose body sets the
+   * control itself, states none, and the core never moves it. A provider that states `adapts` honours the
+   * request's `thinking` and `structuredOutput`. It is read when the quorum is created, as an own data
+   * property, as `timeoutMs` is.
+   */
+  readonly adapts?: Adapts
   /**
    * Answer one request. It should honour `request.signal`, settling soon after the signal aborts:
    * the core settles the call at its deadline or at the review's abort without waiting for the

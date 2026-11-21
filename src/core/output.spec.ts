@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { OutputError } from './errors.ts'
-import { extractJsonObject, parseResearchReply, parseVoteReply, researchReplyJsonSchema, voteReplyJsonSchema } from './output.ts'
+import { extractJsonObject, holdsReasoning, parseResearchReply, parseVoteReply, researchReplyJsonSchema, voteReplyJsonSchema } from './output.ts'
 
 const finding = {
   file: 'a.js',
@@ -537,5 +537,15 @@ describe('reply JSON Schemas', () => {
     const schema = JSON.stringify(researchReplyJsonSchema)
     expect(schema).toContain('"quote"')
     expect(schema).not.toContain('"sink"')
+  })
+})
+
+describe('holdsReasoning', () => {
+  it('tells a reply that holds a think block', () => {
+    expect(holdsReasoning('<think>weighing it</think>{"findings":[]}')).toBe(true)
+    expect(holdsReasoning('<THINK>no closer')).toBe(true)
+    expect(holdsReasoning('{"findings":[]}')).toBe(false)
+    expect(holdsReasoning('a </think> closer alone, and think> without its opener')).toBe(false)
+    expect(holdsReasoning('')).toBe(false)
   })
 })

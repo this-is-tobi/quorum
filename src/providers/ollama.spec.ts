@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
-import { sent, stubFetch } from '../testing/http.ts'
+import { sent, stubFetch, textReply } from '../testing/http.ts'
 import { ollama } from './ollama.ts'
+import type { OllamaOptions } from './ollama.ts'
 import { chatResponse, contextExceeded, countedOut, debugRender, empty, reasoningOnly, truncated } from '../testing/fixtures/ollama.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
 
@@ -50,6 +51,11 @@ describeProviderContract({
   thinking: {
     read: body => body.think,
     extraBody: { think: true },
+    lowersTo: 'off',
+  },
+  jsonMode: {
+    read: body => body.format,
+    extraBody: { format: 'json' },
   },
   reservedBodyKeys: [
     'model',
@@ -371,5 +377,29 @@ describe('ollama', () => {
       retryable: false,
       message: `local: HTTP 400: ${JSON.stringify(JSON.stringify(contextExceeded))}`,
     })
+  })
+})
+
+describe('ollama on a 400 that names its structured-output field', () => {
+  const failure = async (body: string, status: number, options: Partial<OllamaOptions> = {}): Promise<unknown> => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply(body, status)))
+    return ollama({
+      id: 'p',
+      baseUrl: 'http://h.example',
+      model: 'm',
+      contextTokens: 8192,
+      maxTokens: 1000,
+      ...options,
+    }).complete(request).catch((caught: unknown) => caught)
+  }
+
+  it('marks a 400 that names format as refused for its structured output, quoting nothing', async () => {
+    const error = await failure('{"error":"invalid format: expected a JSON schema"}', 400)
+    expect(error).toMatchObject({ kind: 'http', status: 400, refused: 'structuredOutput' })
+    expect(Object.entries(error as object).filter(([key, value]) => key !== 'message' && key !== 'name' && typeof value === 'string').flatMap(([, value]) => value as string)).toEqual(['p', 'http', 'structuredOutput'])
+    // A whole word: `format` inside another word names nothing, and neither does another status or a request with no format.
+    expect(await failure('{"error":"the model does not support reformatting"}', 400)).toMatchObject({ refused: undefined })
+    expect(await failure('{"error":"invalid format"}', 404)).toMatchObject({ refused: undefined })
+    expect(await failure('{"error":"invalid format"}', 400, { structuredOutput: 'prompt' })).toMatchObject({ refused: undefined })
   })
 })

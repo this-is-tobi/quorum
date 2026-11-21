@@ -296,7 +296,7 @@ providers:
     thinking: off
 ```
 
-- **Unset, the server's own default holds.** No control is sent, and the reply budget leaves room for the thinking a model does by default ([Reply budgets](#reply-budgets)).
+- **Unset, the server's own default holds.** No control is sent, and the reply budget leaves room for the thinking a model does by default ([Reply budgets](#reply-budgets)). Quorum lowers it by itself, once, for the rest of a review, when a reply runs out of room while reasoning: [What quorum adapts by itself](#what-quorum-adapts-by-itself).
 - **A value is sent as the protocol's own control**, with every request of the provider: `reasoning_effort` on `openai-compatible`, `output_config.effort` on `anthropic`, `generationConfig.thinkingConfig.thinkingLevel` on `gemini` and `think` on `ollama`. The table of values is in [Thinking](./30-providers.md#thinking) of the providers page.
 - **An explicit value is never undone.** It sizes the reply budget too: `low` leaves 4096 tokens for thinking and `off` none, where the default leaves 8192.
 - **A control in `extraBody` is explicit as well.** `extraBody` is merged last, so a provider that sets the protocol's control there thinks as that value says. Quorum cannot read it, so it sizes the budget as for the default's thinking. Setting `thinking` and the same control in `extraBody` is refused, since the two would disagree.
@@ -304,6 +304,26 @@ providers:
 - **A value that is neither `off` nor `low` is refused**, never clamped: `QUORUM_RESEARCH_THINKING: must be low or off`, or `providers.local.thinking: must be one of off or low` in a file.
 
 `--print-config` prints a provider's `thinking` when it sets one.
+
+## What quorum adapts by itself
+
+Quorum moves a setting by itself when a reply shows that it must, says so in one line, and never moves one you set. Each move holds for the rest of one review, and the next review starts from the provider's own settings again: nothing is learned across reviews, and nothing is saved.
+
+| Adaptation | When | Turned off by |
+| --- | --- | --- |
+| Thinking lowered | A reply was cut off while it reasoned (`truncated`, `thinking`), or held only reasoning (`no-answer`, `thinking`) | `thinking` set, or the control in `extraBody` |
+| Prompt mode | A reply in JSON mode was empty (`no-answer`, `empty`), or the server answered a 400 or 422 whose body names the structured-output field | `structuredOutput` set, or the field in `extraBody` |
+| Reply budgets per kind | Always | `maxTokens` ([Reply budgets](#reply-budgets)) |
+
+- **Thinking lowered** goes to `low`, and to `off` on `ollama`, and on `openaiCompatible` under the `vllm` and `llamacpp` presets, whose chat templates may not know `low` and can fall back to maximum reasoning. The line is `api: thinking lowered to low for the rest of the review: a reply ran out of room while reasoning; set thinking to choose it yourself`, or `a reply held only reasoning` for the second cause. It is sent as the protocol's own control ([Thinking](./30-providers.md#thinking)), with every later request of the provider, votes included.
+- **Prompt mode** moves a provider from `json` to `prompt`, for finder and voter alike: `api: structuredOutput moved to prompt for the rest of the review: a reply in JSON mode was empty; set structuredOutput to choose it yourself`, or `the server refused the request's JSON mode`. It starts only from automatic `json`: the mode a preset or a protocol gives when `structuredOutput` is unset. It never starts from `schema`, whose strict schema and verdict first are what a vote's independence rests on, nor from a mode you set, `json` included. Prompt mode gives up the server's guarantee of well-formed JSON, so a weak model's reply is unreadable more often: a gap or a failed vote, never a pass. A 400 or 422 is matched by code against the field's name as a whole word, and the body is never quoted.
+- **A refused lowering goes back.** A model that answers a 400 or 422 to the lowered value (a template that raises on an effort, an OpenAI model that refuses `none`) keeps the server's own level: `api: the server refused thinking lowered to low: thinking stays as the server sets it for the rest of the review; set thinking to choose it yourself`. No other request sends the lowered value, and the refusal counts toward no provider being down.
+- **An explicit setting is never moved.** A provider whose `thinking` is set, or whose `extraBody` sets the control, does not lower; one whose `structuredOutput` is set, or whose `extraBody` sets the field, does not move to prompt mode. A provider object states which settings it lets quorum move in `adapts` ([What a provider states](./30-providers.md#what-a-provider-states)), and one that states none moves none.
+- **A research request asks for more findings** once a reply of its provider shows that the model does not reason: a reply that reports no reasoning and holds no `<think>` block. The request then asks for the findings its budget holds with no thinking allowance (`N'` for `N`, [Reply budgets](#reply-budgets)), for the rest of the review. The reply budget itself never moves.
+
+How a move is found out, so that no call fails for it: the first call whose failure a setting answers becomes that setting's probe, and is sent once more with the new setting. While the probe is pending, the provider's new calls wait for it, inside their slots, and then go at the settled setting. The calls already in flight, which still hold the old setting, wait for the probe too when they fail the same way, and are sent once more at the setting it settled on. So a voter whose JSON mode answers empty leaves no failed vote in its first wave, and a research part in flight does not split for a setting the review has already moved. A setting is probed once per provider in a review. The thinking probe sets the lowered level and records it once the server shows it took the request: it answers, or its reply is cut off, empty, only reasoning, unreadable or refused by the model, or it times out, a gateway's 504 or 524 included. After a reply that held only reasoning, any other failure but a 400 or 422 sets it too, since the server's own level was answering nothing. After a cut-off, any other failure (a network error, or a status such as 429, 500 or 503) moves nothing and records nothing: the setting counts as tried, and the call ends with its first failure, so the part is split. A 400 or 422 refuses the lowering. The prompt-mode probe moves only when it answered, and a probe that failed leaves `json`, says nothing and ends its call with its first failure. A probe or a call the token cap or the deadline stops moves nothing. The bound is per setting, at most `concurrency` calls sent once more, the probe included. Every wait ends with the review's deadline or abort.
+
+Each move is one progress line ([Progress lines](./10-cli.md#progress-lines)), one `adapted` event ([Library API](../95-reference/30-library-api.md#events)) and one entry of `meta.adaptations` ([The adaptations](../95-reference/20-json-result.md#the-adaptations)), in the order they happened.
 
 ## Research in parts
 

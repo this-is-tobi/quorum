@@ -419,6 +419,7 @@ export function resultWith(parts: {
       incomplete: [...incomplete],
       leftOut: [],
       flags: [],
+      adaptations: [],
     },
   }
 }

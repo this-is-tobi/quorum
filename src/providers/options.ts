@@ -1,6 +1,7 @@
 import { ConfigError, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { retriesProblem, timeoutProblem } from '../core/ports.ts'
+import type { Adapts, CompletionRequest } from '../core/ports.ts'
 import { endpointUrl, redactionsOf } from './http.ts'
 import type { SystemPrompt } from './messages.ts'
 import { TEMPLATE_TOKENS } from './size.ts'
@@ -451,6 +452,55 @@ export function thinkingIssues(id: string, thinking: unknown, extraBody: unknown
         { path, message: `is set, and extraBody sets ${control.path.join('.')} too: two settings for one control, so keep one` },
       ]
     : []
+}
+
+/** What an adapter's protocol has to adapt by itself: how it lowers thinking, and where it sets its JSON mode, when its default is `json`. */
+export interface Lowering {
+  /** The level an automatic lowering sends: `low`, or `off` where a lowering to `low` does not take. */
+  readonly level: Thinking
+  /** Where the protocol's thinking control sits in the body. */
+  readonly control: ThinkingControl
+  /** The paths of the body fields that set the structured-output mode, as an `extraBody` would set them; absent when the protocol's default is `prompt`. */
+  readonly format?: readonly (readonly string[])[]
+}
+
+/**
+ * What an adapter states it lets the core change by itself (`Provider.adapts`), from its options: a `thinking`
+ * level when the option leaves thinking unset and `extraBody` does not set the control, since `extraBody` is
+ * merged last and would undo a lowering, and `prompt` when the protocol's default is `json`, the option leaves
+ * the mode unset and `extraBody` sets none of its fields. An explicit setting is never undone. The result is
+ * empty, to spread, when nothing adapts.
+ */
+export function adaptsOf(options: Pick<HttpProviderOptions, 'thinking' | 'structuredOutput' | 'extraBody'>, { level, control, format }: Lowering): { readonly adapts?: Adapts } {
+  const { thinking, structuredOutput, extraBody } = options
+  const lowers = thinking === undefined && !thinkingControl(extraBody, control.path)
+  const prompts = format !== undefined && structuredOutput === undefined && !format.some(path => thinkingControl(extraBody, path))
+  if (!lowers && !prompts) return {}
+  return {
+    adapts: {
+      ...lowers
+        ? { thinking: level }
+        : {},
+      ...prompts
+        ? { prompt: true as const }
+        : {},
+    },
+  }
+}
+
+/**
+ * The thinking level and the structured-output mode a request is sent with: the options' own, unless the provider
+ * states it adapts (`adapts`) and the request carries the core's change, so a setting the options hold is never undone.
+ */
+export function requestSettings(settings: { readonly thinking: Thinking | undefined, readonly structuredOutput: StructuredOutput }, adapts: Adapts | undefined, request: Pick<CompletionRequest, 'thinking' | 'structuredOutput'>): { readonly thinking: Thinking | undefined, readonly structuredOutput: StructuredOutput } {
+  return {
+    thinking: settings.thinking ?? (adapts?.thinking === undefined
+      ? undefined
+      : request.thinking),
+    structuredOutput: adapts?.prompt === true && request.structuredOutput === 'prompt'
+      ? 'prompt'
+      : settings.structuredOutput,
+  }
 }
 
 /**

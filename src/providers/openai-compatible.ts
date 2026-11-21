@@ -2,7 +2,7 @@ import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { isRecord, mergeBody, prepareHttp, thinkingIssues } from './options.ts'
+import { adaptsOf, isRecord, mergeBody, prepareHttp, requestSettings, thinkingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput, Thinking, ThinkingControl } from './options.ts'
 import { endedEarly, joinedText, MAX_MODEL_TEXT, readAnswer, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
@@ -12,6 +12,12 @@ import type { ContextBudget } from './size.ts'
 export interface OpenAICompatibleOptions extends HttpProviderOptions {
   /** The body field that carries `maxTokens`: `max_tokens`, or `max_completion_tokens`, which OpenAI's reasoning models need. */
   maxTokensField?: 'max_tokens' | 'max_completion_tokens'
+  /**
+   * The level an automatic lowering of thinking sends: `low` unless this is `off`. A server whose chat template may not
+   * know `low` and falls back to maximum reasoning (vLLM, llama.cpp) lowers to `off`, which it reads as `none`. The
+   * builder sets it from the preset, so no configuration sets it.
+   */
+  lowersThinkingTo?: 'off'
 }
 
 /**
@@ -57,6 +63,8 @@ const THINKING: ThinkingControl = {
   path: ['reasoning_effort'],
 }
 const MAX_TOKENS_FIELDS: ReadonlySet<unknown> = new Set(['max_tokens', 'max_completion_tokens'])
+/** The body field that sets the structured-output mode, which a 400 may name. */
+const FORMAT_FIELDS = ['response_format']
 
 function responseFormat(mode: StructuredOutput, output: CompletionRequest['output']): unknown {
   if (mode === 'json') return { type: 'json_object' }
@@ -206,22 +214,39 @@ function readReply(reply: unknown, { id, model, budget }: Pick<OpenAICompatibleO
  * server bounds a reply's length. It states its worst case from the count its size guard keeps: the text it
  * sends, the template reserve and that budget, and the room its guard leaves from the same count:
  * `contextTokens` less those three. It also states its window, its `maxTokens` when set, and its thinking: the
- * option's level, else `default`. A set `thinking` is sent as `reasoning_effort`, `low` or `none`.
+ * option's level, else `default`. A set `thinking` is sent as `reasoning_effort`, `low` or `none`. Unless the
+ * options set `thinking`, or `extraBody` sets `reasoning_effort`, it states that the core may lower thinking, to
+ * `low`, or to `off` under `lowersThinkingTo`, and honours the request's `thinking`; unless the options set
+ * `structuredOutput`, or `extraBody` sets `response_format`, it states that the core may move it from `json` to
+ * `prompt`, and honours the request's `structuredOutput`. A 400 or 422 that names `response_format`, sent in
+ * `json` or `schema` mode, is marked `refused` for the structured output.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
-  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, maxTokensField = 'max_tokens', thinking, systemPrompt = 'native', structuredOutput = 'json', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
-  const fieldIssues = MAX_TOKENS_FIELDS.has(maxTokensField)
-    ? []
-    : [
-        { path: `${id}.maxTokensField`, message: 'must be max_tokens or max_completion_tokens' },
-      ]
+  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, maxTokensField = 'max_tokens', thinking, systemPrompt = 'native', structuredOutput = 'json', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES, lowersThinkingTo } = options
+  const fieldIssues = [
+    ...MAX_TOKENS_FIELDS.has(maxTokensField)
+      ? []
+      : [
+          { path: `${id}.maxTokensField`, message: 'must be max_tokens or max_completion_tokens' },
+        ],
+    ...lowersThinkingTo === undefined || lowersThinkingTo === 'off'
+      ? []
+      : [
+          { path: `${id}.lowersThinkingTo`, message: 'must be off' },
+        ],
+  ]
   const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/chat/completions', [
     ...fieldIssues,
     ...thinkingIssues(id, thinking, options.extraBody, THINKING),
   ])
   const budgetOf = (request: CompletionRequest): ContextBudget => contextBudget(contextTokens, replyBudgetOf(request, maxTokens))
+  const adapting = adaptsOf(options, {
+    level: lowersThinkingTo ?? 'low',
+    control: THINKING,
+    format: [FORMAT_FIELDS],
+  })
 
   return {
     id,
@@ -229,12 +254,14 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
     timeoutMs,
     retries,
     ...statedReply(contextTokens, maxTokens, thinking),
+    ...adapting,
     worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     async complete(request) {
       const { system, messages } = shapeMessages(request, systemPrompt)
       const budget = budgetOf(request)
       checkFits(id, { system, messages }, request.output, budget)
+      const settings = requestSettings({ thinking, structuredOutput }, adapting.adapts, request)
       // JSON.stringify drops the undefined fields: no response_format for `prompt`, no temperature for null.
       const reply = await postJson<unknown>({
         providerId: id,
@@ -248,13 +275,16 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
                 { role: 'system', content: system },
                 ...messages,
               ],
-          response_format: responseFormat(structuredOutput, request.output),
+          response_format: responseFormat(settings.structuredOutput, request.output),
           temperature: temperature ?? undefined,
-          reasoning_effort: reasoningEffort(thinking),
+          reasoning_effort: reasoningEffort(settings.thinking),
           [maxTokensField]: budget.replyTokens,
         }, extraBody),
         signal: request.signal,
         redact,
+        ...settings.structuredOutput === 'prompt'
+          ? {}
+          : { formatFields: FORMAT_FIELDS },
       })
       return readReply(reply, { id, model, budget }, redact)
     },

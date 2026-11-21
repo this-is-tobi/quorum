@@ -29,7 +29,7 @@ export interface BuildContext {
 }
 
 /** A provider described as data: a preset, or a protocol, and the options of that protocol's adapter. */
-export interface ProviderSpec extends Omit<OpenAICompatibleOptions, 'baseUrl' | 'contextTokens' | 'auth'> {
+export interface ProviderSpec extends Omit<OpenAICompatibleOptions, 'baseUrl' | 'contextTokens' | 'auth' | 'lowersThinkingTo'> {
   preset?: string
   protocol?: string
   /** Required when the preset has no default, or without a preset; not an option of `claude-code`. */
@@ -107,8 +107,13 @@ function ownRecord(value: unknown): unknown {
 /** The fields of a spec as the builder reads them: whatever a caller or a config put in each. */
 type Fields = Readonly<Partial<Record<keyof ProviderSpec, unknown>>>
 
-/** The fields that make the builder's own decisions: the adapter is handed the others, and `maxTokensField` only when it takes it. */
-const BUILDER_FIELDS: ReadonlySet<string> = new Set(['preset', 'protocol', 'maxTokensField'])
+/** The fields that make the builder's own decisions: the adapter is handed the others, `maxTokensField` and `lowersThinkingTo` (the preset's, never the spec's) only when it takes them. */
+const BUILDER_FIELDS: ReadonlySet<string> = new Set([
+  'preset',
+  'protocol',
+  'maxTokensField',
+  'lowersThinkingTo',
+])
 /** The fields of the `claude-code` adapter alone. */
 const CLAUDE_CODE_FIELDS = ['args', 'command'] as const
 /** The fields no HTTP adapter is handed: the builder's own, and those of the `claude-code` adapter. */
@@ -132,7 +137,10 @@ function makeAdapter(protocol: ProviderProtocol, fields: ReadonlyArray<readonly 
 
 /**
  * Build a provider from a spec: the preset fills in `baseUrl`, `auth`, `structuredOutput`, `temperature`
- * and, for `openai-compatible`, `maxTokensField`, and any of them set on the spec wins. The `claude-code`
+ * and, for `openai-compatible`, `maxTokensField`, and any of them set on the spec wins. A preset's `structuredOutput`
+ * is handed over only when it is not `json`: a `json` preset is the adapter's own automatic start, which it may
+ * move to prompt mode, while a `prompt` or `schema` preset's mode is explicit and never moves. The preset's
+ * `lowersThinkingTo` is the level an automatic lowering of thinking sends on `openai-compatible`; no spec sets it. The `claude-code`
  * protocol has no base URL and no preset: its own fields reach its adapter as they are, and `args` and
  * `command` are refused on every other protocol. The model must be a visible ASCII id, and is refused when
  * a pattern of its preset, or of any preset whose base URL has the spec's origin, says the model runs tools
@@ -199,7 +207,9 @@ export function buildProvider(spec: ProviderSpec, context: BuildContext = {}): P
         ],
         [
           'structuredOutput',
-          filled(own.structuredOutput, preset?.structuredOutput),
+          filled(own.structuredOutput, preset?.structuredOutput === 'json'
+            ? undefined
+            : preset?.structuredOutput),
         ],
         [
           'temperature',
@@ -210,6 +220,9 @@ export function buildProvider(spec: ProviderSpec, context: BuildContext = {}): P
     fields.push([
       'maxTokensField',
       filled(maxTokensField, preset?.maxTokensField),
+    ], [
+      'lowersThinkingTo',
+      preset?.lowersThinkingTo,
     ])
   }
   let adapterIssues: readonly ConfigIssue[] = []

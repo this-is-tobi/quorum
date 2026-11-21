@@ -18,6 +18,12 @@ export interface Preset {
   readonly temperature: number | null
   /** `openai-compatible` only. */
   readonly maxTokensField?: 'max_tokens' | 'max_completion_tokens'
+  /**
+   * `openai-compatible` only: the level an automatic lowering of thinking sends, `off` where the server's chat template
+   * may not know `low` and can fall back to maximum reasoning (vLLM, llama.cpp), and whose `none` turns thinking off.
+   * Absent, a lowering sends `low`.
+   */
+  readonly lowersThinkingTo?: 'off'
   /** Model ids that run tools on the server by themselves, as patterns where `*` stands for any text, matched in any letter case. */
   readonly toolModels: readonly string[]
 }
@@ -73,6 +79,7 @@ export const presets: Readonly<Record<PresetName, Preset>> = deepFreeze<Record<P
     structuredOutput: 'json',
     temperature: 0,
     maxTokensField: 'max_tokens',
+    lowersThinkingTo: 'off',
     toolModels: [],
   },
   vllm: {
@@ -82,6 +89,7 @@ export const presets: Readonly<Record<PresetName, Preset>> = deepFreeze<Record<P
     structuredOutput: 'json',
     temperature: 0,
     maxTokensField: 'max_tokens',
+    lowersThinkingTo: 'off',
     toolModels: [],
   },
   // The search models search the web before every answer; the computer-use models drive a browser.

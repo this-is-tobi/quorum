@@ -60,6 +60,7 @@ A failed vote counts as a reject. Its `failure` holds only what the code read, n
 | `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's gaps for the files left out first, then its `too-large` gap, then its research gaps, then its panel's, then its limits'. A review is complete when this list and `unreviewed` are both empty |
 | `leftOut` | entry[] | Every file the review left out, once per file, reason and rule: the files its source left out before it made the diff first, then the diff's own in its order: [A file left out](#a-file-left-out). Empty when it left none out, a blank diff included |
 | `flags` | flag[] | The advisory flags, the `secret-file` flags of the files left out first, in the order `leftOut` lists them, then those read from the diff, file by file in its order: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
+| `adaptations` | entry[] | What the review moved by itself, in the order it happened: [The adaptations](#the-adaptations). Required, and empty when nothing moved, a blank diff included |
 
 A usage count is valid when it is a finite number of at least 0. A failed call's usage counts too, when its reply reported valid counts, as a reply refused or cut off at its token limit does. `meta.usage` and each `invalidFindings` are counted from the review's own events, so `meta` and the events cannot disagree.
 
@@ -220,6 +221,18 @@ A file raises at most one flag for each row of this table, in this order:
 
 A `secret-file` flag comes from `meta.leftOut`, not from the diff: one for each `skipped` file of the rule `secret`, `secret` file and `deleted-secret` file, in its order, ahead of the diff's flags. The detail of a held file by a credential names the kind in words (`a private key`, `an AWS key`, `a GitHub token`, `a Slack token or webhook`, `a Google API key`, `a Stripe key`, `an Anthropic key` or `an OpenAI key`), and a `deleted-secret` entry that names a kind, which only the input's `leftOut` can hold, reads `deletes a file that holds what reads as an AWS key, so no model was sent any of it: the history still holds it, so rotate it`. A flag quotes no line of the file. A secret that an `exclude` pattern matched first is listed as `excluded` and raises none. A detail names at most eight code points or patterns, then `and N more`. [Advisory flags](../30-security/30-output-handling.md#advisory-flags) says what each code looks for. A flag never changes a verdict, a gap or the exit code.
 
+### The adaptations
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `provider` | string | The id of the provider whose setting moved |
+| `setting` | `"thinking"` or `"structuredOutput"` | Which setting moved. A later release moves `"tokenCount"` and `"window"` too |
+| `from` | string | What it was: `default`, or for a lowering the server refused, the level tried (`low` or `off`); `json` for the structured output |
+| `to` | string | What it became: the level `low` or `off`, or `prompt`; for a lowering the server refused, `default`, the server's own level |
+| `cause` | string | Why, a code word: `cut-off-thinking` (a reply ran out of room while reasoning), `no-answer-thinking` (a reply held only reasoning), `empty-reply` (a reply in JSON mode was empty), `format-refused` (the server refused the request's JSON mode), `lowering-refused` (the server refused the lowered thinking). A later release writes `byte-bound-refused` and `loaded-window` |
+
+Each entry is one `adapted` event, once per provider and setting in a review, and the move holds for the rest of that review alone: [What quorum adapts by itself](../20-using/20-configuration.md#what-quorum-adapts-by-itself). A setting you set, and a provider that does not state it may move, never appears. `readResult` refuses a result whose `adaptations` it cannot read, since the schema is strict and the lists of settings and causes are closed.
+
 ## Incomplete reasons
 
 | Reason | Recorded when | `detail` |
@@ -252,9 +265,10 @@ Each gap makes the review incomplete, as an unreviewed finding does: the CLI exi
 | `meta.profiles.<id>.discarded` | The number of findings of the profile that were discarded, after `gating` |
 | `meta.profiles.<id>.providers` | Absent: no provider and no model is named |
 | `meta.usage` | Absent |
+| `meta.adaptations` | Kept as it is: a provider's id and code words, nothing a server or a model wrote |
 | An incomplete entry | `profile`, `reason`, then `file` when it has one, and no `detail`: a report describes a gap by its reason, in fixed words |
 
-Everything else is as in the full result: the findings with their evidence, the profiles' policy, `failOn`, `gating`, `invalidFindings` and coverage, the files left out, a held file's name, reason and rule included, and the flags with their details. `meta` is written in this order: `version`, `view`, `startedAt`, `durationMs`, `source`, `profiles`, `incomplete`, `leftOut`, `flags`; a profile in this one: `policy`, `failOn`, `gating`, `discarded`, `invalidFindings`, `coverage`.
+Everything else is as in the full result: the findings with their evidence, the profiles' policy, `failOn`, `gating`, `invalidFindings` and coverage, the files left out, a held file's name, reason and rule included, and the flags with their details. `meta` is written in this order: `version`, `view`, `startedAt`, `durationMs`, `source`, `profiles`, `incomplete`, `leftOut`, `flags`, `adaptations`; a profile in this one: `policy`, `failOn`, `gating`, `discarded`, `invalidFindings`, `coverage`.
 
 ```json
 {
@@ -302,7 +316,7 @@ Everything else is as in the full result: the findings with their evidence, the 
 }
 ```
 
-The example leaves out the fields of `meta` that do not change, `startedAt`, `durationMs`, `source`, `leftOut` and `flags`. `outcome` reads a view as the result it came from, so a program that holds only the view gets the review's exit code: [`outcome`](./30-library-api.md#outcome).
+The example leaves out the fields of `meta` that do not change, `startedAt`, `durationMs`, `source`, `leftOut`, `flags` and `adaptations`. `outcome` reads a view as the result it came from, so a program that holds only the view gets the review's exit code: [`outcome`](./30-library-api.md#outcome).
 
 ## An example
 
@@ -511,7 +525,8 @@ A review of a diff that touches three files, run on the one provider, named `def
       }
     ],
     "leftOut": [],
-    "flags": []
+    "flags": [],
+    "adaptations": []
   }
 }
 ```
