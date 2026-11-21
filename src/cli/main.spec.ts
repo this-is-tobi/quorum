@@ -2654,7 +2654,7 @@ describe('the sources', () => {
   /** The two lines of the estimate a run printed, and the numbers of the total's. */
   function estimateOf(stderr: string): { lines: string[], parts: number, expected: number, inFlight: number } {
     const lines = stderr.split('\n').filter(line => line.startsWith('estimate: '))
-    const total = /^estimate: research about (\d+) tokens expected, at most \d+ with every vote, (\d+) of them reserved at once; the review's token cap is \d+ and its deadline 1800000 ms$/.exec(lines[1] ?? '')
+    const total = /^estimate: research about (\d+) tokens expected, at most \d+ with every vote and every part recovered, (\d+) of them reserved at once; the review's token cap is \d+ and its deadline 1800000 ms$/.exec(lines[1] ?? '')
     const parts = /^estimate: (\d+) research part\(s\), about \d+ tokens expected for them; then up to 150 vote\(s\), at most \d+ tokens in all$/.exec(lines[0] ?? '')
     return {
       lines,
@@ -2705,9 +2705,11 @@ describe('the sources', () => {
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(stdout()).toBe('')
     const { lines, expected, inFlight } = estimateOf(stderr())
-    expect(lines).toHaveLength(2)
-    expect(stderr().split('\n').slice(2, 4)).toEqual(lines)
-    expect(stderr().split('\n').slice(4)).toEqual([
+    // The profile's line, the total, and the cap line: research alone expects over half of a cap of 1000, and the review needs the next hundred thousand.
+    expect(lines).toHaveLength(3)
+    expect(lines[2]).toMatch(/^estimate: research alone expects about \d+ of the review's token cap of 1000 \(\d+%\): a review of this size needs a cap of about \d+00000: raise maxReviewTokens, or narrow the path$/)
+    expect(stderr().split('\n').slice(2, 5)).toEqual(lines)
+    expect(stderr().split('\n').slice(5)).toEqual([
       `Error: --path: may not finish under the review's token cap of 1000 tokens: its research alone expects about ${expected}, with ${inFlight} reserved at once: name a narrower path, raise maxReviewTokens, or pass --large to review what the cap allows`,
       '',
     ])
@@ -2726,7 +2728,8 @@ describe('the sources', () => {
     expect(await runCli(io)).toBe(EXIT.incomplete)
 
     const { lines, parts, expected, inFlight } = estimateOf(stderr())
-    expect(lines).toHaveLength(2)
+    expect(lines).toHaveLength(3)
+    expect(lines[2]).toContain('research alone expects about')
     // The estimate says the review may pass the cap, and it is printed all the same.
     expect(parts).toBeGreaterThan(2)
     expect(expected + inFlight).toBeGreaterThan(120_000)

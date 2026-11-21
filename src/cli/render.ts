@@ -156,7 +156,10 @@ export function progressSink(write: (line: string) => void, view: ReportView = '
 /**
  * The lines a path review prints once its estimate is made, before any call: one per profile, starting with
  * `[<id>] ` when several run, then the total, which belongs to the whole review and is never prefixed. The
- * expected figure is the research's alone, as the votes are in the worst case only. Each line is inert.
+ * expected figure is the research's alone, as the votes are in the worst case only, and the worst counts every
+ * part recovered. When research alone expects over half of the token cap, one line follows that says what cap the
+ * review needs (`needed`), and then one for each research provider whose reply asks for fewer findings than
+ * `maxFindings`, since the parts with more split. Each line is inert.
  */
 export function estimateLines(estimate: Estimate): string[] {
   const entries = Object.entries(estimate.profiles)
@@ -168,8 +171,45 @@ export function estimateLines(estimate: Estimate): string[] {
         : ''
       return `${prefix}estimate: ${parts.length} research part(s), about ${expected} tokens expected for them; then up to ${votes} vote(s), at most ${worst} tokens in all`
     }),
-    `estimate: research about ${estimate.expected} tokens expected, at most ${estimate.worst} with every vote, ${estimate.inFlight} of them reserved at once; the review's token cap is ${estimate.maxReviewTokens} and its deadline ${estimate.reviewTimeoutMs} ms`,
+    `estimate: research about ${estimate.expected} tokens expected, at most ${estimate.worst} with every vote and every part recovered, ${estimate.inFlight} of them reserved at once; the review's token cap is ${estimate.maxReviewTokens} and its deadline ${estimate.reviewTimeoutMs} ms`,
+    ...capLine(estimate),
+    ...findingsLines(estimate),
   ].map(inertLine)
+}
+
+/** The next hundred thousand tokens at or above `tokens`. */
+const roundedUp = (tokens: number): number => Math.ceil(tokens / 100_000) * 100_000
+
+/**
+ * The line that says research alone takes most of the token cap, and what cap the review needs: what its research
+ * expects and its calls in flight reserve, and every vote at a third of its bound (the research's `expected`
+ * counts each reply at a third as well), rounded up to the next 100 000. None when research expects half the cap
+ * or less.
+ */
+function capLine(estimate: Estimate): string[] {
+  const { expected, inFlight, maxFindings, maxReviewTokens: cap } = estimate
+  if (expected * 2 <= cap) return []
+  const votes = Object.values(estimate.profiles).reduce((total, profile) => total + maxFindings * Object.values(profile.vote).reduce((bounds, bound) => bounds + bound, 0), 0)
+  const needed = roundedUp(expected + inFlight + votes / 3)
+  return [
+    `estimate: research alone expects about ${expected} of the review's token cap of ${cap} (${Math.round(expected * 100 / cap)}%): a review of this size needs a cap of about ${needed}: raise maxReviewTokens, or narrow the path`,
+  ]
+}
+
+/**
+ * One line for each research provider whose request asks for fewer findings than `maxFindings`, in profile order,
+ * once however many profiles share it: a reply with more findings than it was asked for splits its part, so the
+ * review makes more calls than the estimate counts. A profile whose research makes no call asks nothing.
+ */
+function findingsLines(estimate: Estimate): string[] {
+  const named = new Set<string>()
+  const lines: string[] = []
+  for (const { parts, findings, provider } of Object.values(estimate.profiles)) {
+    if (parts.length === 0 || findings >= estimate.maxFindings || named.has(provider)) continue
+    named.add(provider)
+    lines.push(`estimate: on ${provider} a research reply asks for at most ${findings} of maxFindings ${estimate.maxFindings} findings: parts with more split, so expect more calls than this estimate; a larger window, or thinking: off, raises N`)
+  }
+  return lines
 }
 
 /**

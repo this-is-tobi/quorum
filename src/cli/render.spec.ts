@@ -500,18 +500,21 @@ describe('estimateLines', () => {
         vote: { reachability: 4000, impact: 4000, defenses: 4000 },
         expected: 16_667,
         worst: 1_850_000,
+        findings: 50,
+        provider: 'api',
       },
     },
     expected: 16_667,
     worst: 1_850_000,
     inFlight: 50_000,
+    maxFindings: 50,
     maxReviewTokens: 2_000_000,
     reviewTimeoutMs: 1_800_000,
     fits: true,
   }
+  const total = 'estimate: research about 16667 tokens expected, at most 1850000 with every vote and every part recovered, 50000 of them reserved at once; the review\'s token cap is 2000000 and its deadline 1800000 ms'
 
   it('writes the estimate\'s lines, a profile\'s prefixed when several run', () => {
-    const total = 'estimate: research about 16667 tokens expected, at most 1850000 with every vote, 50000 of them reserved at once; the review\'s token cap is 2000000 and its deadline 1800000 ms'
     expect(estimateLines(estimate)).toEqual([
       'estimate: 2 research part(s), about 16667 tokens expected for them; then up to 150 vote(s), at most 1850000 tokens in all',
       total,
@@ -522,6 +525,8 @@ describe('estimateLines', () => {
       vote: { naming: 3000, layout: 3000 },
       expected: 2667,
       worst: 608_000,
+      findings: 50,
+      provider: 'api',
     }
     expect(estimateLines({
       ...estimate,
@@ -537,6 +542,91 @@ describe('estimateLines', () => {
       profiles: { [`a${RLO}b`]: estimate.profiles.security, team },
     })
     expect(first).toBe('[a<U+202E>b] estimate: 2 research part(s), about 16667 tokens expected for them; then up to 150 vote(s), at most 1850000 tokens in all')
+  })
+
+  it('writes the cap line when research expects over half the cap, with the cap the review needs', () => {
+    // Expected 1000001 of a cap of 2000000 is over half; the review needs expected and inFlight, and every vote at a third of its bound: 150 votes of 4000 each, 200000, so 1250001 rounded up to 1300000.
+    const heavy: Estimate = {
+      ...estimate,
+      expected: 1_000_001,
+      inFlight: 50_000,
+    }
+    const lines = estimateLines(heavy)
+    expect(lines).toEqual([
+      'estimate: 2 research part(s), about 16667 tokens expected for them; then up to 150 vote(s), at most 1850000 tokens in all',
+      'estimate: research about 1000001 tokens expected, at most 1850000 with every vote and every part recovered, 50000 of them reserved at once; the review\'s token cap is 2000000 and its deadline 1800000 ms',
+      'estimate: research alone expects about 1000001 of the review\'s token cap of 2000000 (50%): a review of this size needs a cap of about 1300000: raise maxReviewTokens, or narrow the path',
+    ])
+    // Half the cap is not over half: no line. The need rounds up to the next 100000, and an exact multiple stays.
+    expect(estimateLines({ ...estimate, expected: 1_000_000 })).toHaveLength(2)
+    expect(estimateLines({ ...estimate, expected: 1_000_000 - 1 })).toHaveLength(2)
+    const vote = {
+      ...estimate.profiles.security,
+      vote: { only: 3000 },
+    }
+    expect(estimateLines({
+      ...estimate,
+      expected: 1_000_001,
+      inFlight: 49_999,
+      profiles: { security: vote },
+    })[2]).toContain('needs a cap of about 1100000')
+    expect(estimateLines({
+      ...estimate,
+      expected: 1_000_001,
+      inFlight: 50_000,
+      profiles: { security: vote },
+    })[2]).toContain('needs a cap of about 1200000')
+    // Several profiles: every one's votes count, and the line is never prefixed.
+    const two = estimateLines({
+      ...heavy,
+      profiles: {
+        security: estimate.profiles.security,
+        team: { ...estimate.profiles.security },
+      },
+    })
+    expect(two.at(-1)).toBe('estimate: research alone expects about 1000001 of the review\'s token cap of 2000000 (50%): a review of this size needs a cap of about 1500000: raise maxReviewTokens, or narrow the path')
+  })
+
+  it('writes the N line once per research provider below maxFindings', () => {
+    const profile = (findings: number, provider: string, parts = [1000]): Estimate['profiles'][string] => ({
+      ...estimate.profiles.security,
+      parts,
+      findings,
+      provider,
+    })
+    const line = (provider: string, n: number): string => `estimate: on ${provider} a research reply asks for at most ${n} of maxFindings 50 findings: parts with more split, so expect more calls than this estimate; a larger window, or thinking: off, raises N`
+    // One line for a provider below maxFindings, none for one at it.
+    expect(estimateLines({
+      ...estimate,
+      profiles: {
+        a: profile(15, 'local'),
+        b: profile(50, 'api'),
+      },
+    }).slice(3)).toEqual([
+      line('local', 15),
+    ])
+    // A provider two profiles share is named once; each provider below maxFindings has its own line, in profile order.
+    expect(estimateLines({
+      ...estimate,
+      profiles: {
+        a: profile(15, 'local'),
+        b: profile(15, 'local'),
+        c: profile(7, 'small'),
+      },
+    }).slice(4)).toEqual([
+      line('local', 15),
+      line('small', 7),
+    ])
+    // A profile whose research makes no call asks nothing, and a provider's id is a caller's text, shown inert.
+    expect(estimateLines({
+      ...estimate,
+      profiles: {
+        a: profile(15, 'local', []),
+        b: profile(7, `x${RLO}y`),
+      },
+    }).slice(3)).toEqual([
+      line('x<U+202E>y', 7),
+    ])
   })
 })
 

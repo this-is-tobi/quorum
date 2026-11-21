@@ -474,7 +474,8 @@ describe('fromConfig', () => {
       profiles: {
         security: {
           parts: [100],
-          expected: 34,
+          // A worst case below the reply budget holds no input to count at a third: the part expects the reservation it has.
+          expected: 100,
         },
       },
       maxReviewTokens: 5000,

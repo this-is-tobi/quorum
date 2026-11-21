@@ -35,6 +35,13 @@ export const ENVELOPE_TOKENS = 32
 /** The tokens a verdict and its reasoning take, before the thinking allowance. */
 export const VOTE_TOKENS = 1024
 
+/**
+ * The output tokens a research reply usually takes, which the estimate counts a reply at when its budget is larger
+ * (an assumption, the design's placeholder: no recorded run holds the output tokens of each research call, so the
+ * figure is not yet measured). A larger `maxTokens` is headroom, not an expectation.
+ */
+export const EXPECTED_REPLY_TOKENS = 4096
+
 /** The most findings of a research reply each profile reads, when a quorum sets none. */
 export const DEFAULT_MAX_FINDINGS = 50
 
