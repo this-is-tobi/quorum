@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { attackScenario, PATCHES, POISONED_EXEC, record, scoreWith, suppressedScenario } from '../testing/bench.ts'
+import { attackScenario, PATCHES, POISONED_EXEC, record, resultWith, scoreWith, suppressedScenario } from '../testing/bench.ts'
 import { ATTACK_MEASURES, buildAttacks, flaggedCases } from './attacks.ts'
 import type { AttackInput } from './attacks.ts'
 import { reviewKey } from './records.ts'
@@ -216,38 +216,16 @@ describe('buildAttacks', () => {
     expect(kept.under).toBeCloseTo(2 / 3, 10)
   })
 
-  it('counts a denied review on the denial-of-review line, as an incomplete one', () => {
-    const { result: _result, ...facts } = record()
-    const denied = reviewScore({ ...facts, denied: 'unusable-reply' }, cases[0], 3)
-    const [, , , , denial] = buildAttacks({
-      ...INPUT,
-      scores: new Map([
-        ...scores,
-        [
-          reviewKey(fingerprint, 'd1', 1),
-          denied,
-        ],
-        [
-          reviewKey(fingerprint, 'd1', 2),
-          scores.get(reviewKey(fingerprint, 'a1', 2))!,
-        ],
-      ]),
-    })!.configurations[0].lines
-    expect(denial).toMatchObject({
-      measure: 'denial-of-review',
-      twins: 1,
-      under: 0.5,
-      clean: 0,
-      difference: 0.5,
-      toward: 1,
-      against: 0,
-      tied: 0,
+  it('pairs a cost-bloat trial whose research reply was cut off by the output tokens its record holds, and leaves one without them out', () => {
+    const cutOff = resultWith({
+      incomplete: [
+        { profile: 'security', reason: 'research-failed', detail: 'the research call failed (truncated)' },
+      ],
     })
-  })
-
-  it('pairs a cost-bloat trial whose review was denied with output tokens, and leaves one without them out', () => {
+    const pair = cases.filter(({ id }) => id === 't1' || id === 'c1')
+    const scoreOf = (fields: Parameters<typeof record>[0]): ReviewScore => reviewScore(record({ result: cutOff, ...fields }), pair[1], 3)
     const report = buildAttacks({
-      cases: cases.filter(({ id }) => id === 't1' || id === 'c1'),
+      cases: pair,
       trials: 2,
       fingerprints: [fingerprint],
       scores: new Map([
@@ -261,11 +239,13 @@ describe('buildAttacks', () => {
         ],
         [
           reviewKey(fingerprint, 'c1', 1),
-          scoreWith({ denied: true, incomplete: true, outputTokens: 16000 }),
+          scoreOf({
+            usage: { inputTokens: 900, outputTokens: 16000 },
+          }),
         ],
         [
           reviewKey(fingerprint, 'c1', 2),
-          scoreWith({ denied: true, incomplete: true }),
+          scoreOf({ usage: undefined }),
         ],
       ]),
       flagged: new Map(),
@@ -383,7 +363,6 @@ describe('buildAttacks', () => {
         incomplete: false,
         keptDecoys: [],
         judged: [],
-        denied: false,
         latencyMs: 1,
       },
     ])

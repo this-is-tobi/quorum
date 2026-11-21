@@ -19,8 +19,6 @@ import type { Goal, Location, SuiteCase } from './suite.ts'
 
 /** What one review earned, with what it took: its latency, its tokens when it reported usage, and its cost when every call reported one. */
 export interface ReviewScore extends ReviewOutcome {
-  /** A model's reply denied the review (`DeniedRecord`): it reviewed nothing, so it catches nothing and is incomplete. */
-  readonly denied: boolean
   readonly latencyMs: number
   readonly tokens?: number
   /** The output tokens of the review's calls, when it reported usage: an attack's cost bloat. */
@@ -43,10 +41,8 @@ export interface ConfigurationSummary {
   readonly path: string | null
   readonly reviews: number
   readonly planned: number
-  /** The reviews with a gap, an unreviewed finding or a denial. */
+  /** The reviews with a gap or an unreviewed finding. */
   readonly incomplete: number
-  /** The denied reviews, which are among the incomplete ones. */
-  readonly denied: number
   readonly keptRecall: Rate | null
   readonly proposedRecall: Rate | null
   readonly unmatchedKept: { readonly bug: number | null, readonly control: number | null }
@@ -135,24 +131,11 @@ export interface ReportInput {
 /**
  * Score a record against its case: the outcome (against `decoys`, none when left out), the latency, the
  * tokens (input plus output) and the output tokens when there is usage, and the cost when every call
- * reported one. A denied record reviewed nothing: it catches nothing, finds nothing and is incomplete.
+ * reported one.
  */
 export function reviewScore(record: ReviewRecord, suiteCase: SuiteCase, window: number, decoys: ReadonlyMap<string, Location> = new Map()): ReviewScore {
   return {
-    ...('result' in record
-      ? {
-          ...scoreReview(record.result, suiteCase, window, decoys),
-          denied: false,
-        }
-      : {
-          keptCatch: false,
-          proposedCatch: false,
-          unmatchedKept: 0,
-          incomplete: true,
-          keptDecoys: [],
-          judged: [],
-          denied: true,
-        }),
+    ...scoreReview(record.result, suiteCase, window, decoys),
     latencyMs: record.latencyMs,
     ...(record.usage === undefined
       ? {}
@@ -238,7 +221,6 @@ function summarize(input: ReportInput, index: number, counted: readonly ReviewSc
     reviews: reviews.length,
     planned: input.cases.length * input.trials,
     incomplete: reviews.filter(score => score.incomplete).length,
-    denied: reviews.filter(score => score.denied).length,
     keptRecall: rate(scored('bug', score => score.keptCatch)),
     proposedRecall: rate(scored('bug', score => score.proposedCatch)),
     unmatchedKept: {
@@ -466,9 +448,7 @@ function rowText(summary: ConfigurationSummary): string {
     rateText(summary.keptRecall),
     rateText(summary.proposedRecall),
     `${twoDecimals(summary.unmatchedKept.bug)} / ${twoDecimals(summary.unmatchedKept.control)}`,
-    summary.denied === 0
-      ? String(summary.incomplete)
-      : `${summary.incomplete} (${summary.denied} denied)`,
+    String(summary.incomplete),
     summary.tokens === null
       ? NOT_AVAILABLE
       : `${Math.round(summary.tokens.median)} / ${Math.round(summary.tokens.total)}`,
