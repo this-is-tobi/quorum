@@ -302,6 +302,38 @@ describe('the path source', () => {
     ].map(match => match[1])).toEqual(['a.js', 'b.css', 'c.ts'])
   })
 
+  /** The paths a path review wrote, in order. */
+  const written = (diff: string): string[] => [
+    ...diff.matchAll(/^diff --git a\/(\S+) /gm),
+  ].map(match => match[1])
+
+  it('lists the test files of a path review as skipped with the rule test, and reviews them with --no-default-skips', async () => {
+    const { context } = setup([
+      { path: '__tests__/a.js', content: 'test()\n' },
+      { path: 'src/a.test.ts', content: 'export const t = 1\n' },
+      { path: 'src/b.ts', content: 'export const b = 2\n' },
+      { path: 'src/testing/fake.ts', content: 'export const fake = 3\n' },
+      { path: 'test/helper.go', content: 'package test\n' },
+    ])
+    const on = await pathsSource(['.'], undefined, true, context)
+    expect(on.leftOut).toEqual([
+      { file: '__tests__/a.js', reason: 'skipped', rule: 'test' },
+      { file: 'src/a.test.ts', reason: 'skipped', rule: 'test' },
+      { file: 'test/helper.go', reason: 'skipped', rule: 'test' },
+    ])
+    expect(written(on.diff)).toEqual(['src/b.ts', 'src/testing/fake.ts'])
+
+    const off = await pathsSource(['.'], undefined, false, context)
+    expect(off.leftOut).toEqual([])
+    expect(written(off.diff)).toEqual([
+      '__tests__/a.js',
+      'src/a.test.ts',
+      'src/b.ts',
+      'src/testing/fake.ts',
+      'test/helper.go',
+    ])
+  })
+
   it('always skips a gitlink, an LFS pointer and a secret, even with the default skips off', async () => {
     const { fake, context, id } = setup()
     const read = await pathsSource(['.'], undefined, false, context)
@@ -638,11 +670,6 @@ describe('the path source', () => {
     ])
   })
 
-  /** The paths a path review wrote, in order. */
-  const written = (diff: string): string[] => [
-    ...diff.matchAll(/^diff --git a\/(\S+) /gm),
-  ].map(match => match[1])
-
   it('skips a file whose text holds a credential as secret, after a binary file and before a minified one', async () => {
     const { context } = setup(HOLDING)
     const read = await pathsSource(['.'], undefined, true, context)
@@ -705,7 +732,7 @@ describe('the path source', () => {
     const { context } = setup(HOLDING)
     const read = await pathsSource(['.'], undefined, false, context)
 
-    // A secret stays skipped: only the vendored, lockfile, minified and binary rules are off. A binary file that holds a key is one, since no model reads it either way.
+    // A secret stays skipped: only the vendored, lockfile, minified, test and binary rules are off. A binary file that holds a key is one, since no model reads it either way.
     expect(read.leftOut).toEqual([
       { file: '.env.example', reason: 'skipped', rule: 'secret' },
       { file: 'dist/bundle.js', reason: 'skipped', rule: 'secret' },

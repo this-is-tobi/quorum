@@ -61,6 +61,53 @@ describe('nameRule', () => {
   })
 })
 
+describe('the test rule', () => {
+  it.each([
+    'a.test.ts',
+    'a.spec.mjs',
+    'x_test.go',
+    'test_x.py',
+    'x_test.py',
+    'FooTest.java',
+    'FooTests.java',
+    'FooTest.kt',
+    'FooTests.cs',
+    'x_spec.rb',
+    '__tests__/a.js',
+    'test/a.c',
+    'tests/a.rs',
+    'src/tests/b.go',
+  ])('skips %s as a test', (path) => {
+    expect(nameRule(path)).toBe('test')
+  })
+
+  // A word inside a name is no test's name, and a directory is matched whole: quorum's own src/testing ships.
+  it.each([
+    'src/testing/fake.ts',
+    'latest.ts',
+    'Contest.java',
+    'testdata.go',
+    'a.test',
+    'spec/a.rb',
+    // A file named test or tests is no directory: only a directory segment matches.
+    'test',
+    'tests',
+    'src/test',
+    // The prefix is for .py alone.
+    'test_x.go',
+    // A name is matched in its case.
+    'A.TEST.TS',
+    'Footest.java',
+  ])('reviews %s', (path) => {
+    expect(nameRule(path)).toBeUndefined()
+  })
+
+  it('lists a vendored test file as vendored', () => {
+    expect(nameRule('node_modules/x/a.test.ts')).toBe('vendored')
+    expect(nameRule('vendor/tests/a.go')).toBe('vendored')
+  })
+})
+
 describe('isMinifiedContent', () => {
   it('reads linguist\'s minified rule on .js, .mjs, .cjs and .css only: lines averaging over 110 bytes', () => {
     const line = (bytes: number): Uint8Array => encode('x'.repeat(bytes))

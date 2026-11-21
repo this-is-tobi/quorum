@@ -143,14 +143,14 @@ function leftOutAfterReading(name: string, content: Uint8Array, skips: boolean, 
  * Each selected entry, in git's order, is decided in this order: a gitlink is skipped as `submodule`,
  * always; a name `exclude` matches is listed `excluded`; a name the core takes as a secret's is skipped as
  * `secret`, whatever the skips, unless the context's `send` names the file; and with the skips on a name is
- * skipped by the first other rule it fits, `vendored`, `lockfile` or `minified` (`nameRule`). The sizes of
+ * skipped by the first other rule it fits, `vendored`, `lockfile`, `minified` or `test` (`nameRule`). The sizes of
  * what is left must then be within 16 MiB before any blob is read, and the blobs are read through one
  * `cat-file`. Once read, a Git LFS pointer is skipped as `lfs`, always; with the skips on a binary file is
  * skipped as `binary`; a file whose text holds a credential is skipped as `secret`, whatever the skips,
  * unless `send` names it; and with the skips on one whose lines are long is skipped as `minified`. With the
  * skips off a binary file is written as git's binary line, a gap of every profile. So only `send` sends a
  * secret, by its name and by its content, and `--no-default-skips` turns off the vendored, lockfile,
- * minified and binary rules alone. `send` holds exact paths, as the diff writes them and `leftOut` lists
+ * minified, test and binary rules alone. `send` holds exact paths, as the diff writes them and `leftOut` lists
  * them. A template (`.env.example`, a Helm chart's `secrets.yaml`) is no secret by name, so it is read and
  * written unless it holds a credential. Nothing is read from a `.gitattributes`: a tree can still shape a
  * file to match a rule, which is why each skip is listed in `leftOut` with its rule, and no skip is a gap.

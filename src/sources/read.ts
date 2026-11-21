@@ -14,7 +14,7 @@ import { rangeSource } from './range.ts'
  * and untracked); `staged`, what the next commit holds; or `paths`, the files under `paths` at the commit
  * `at` names, HEAD when unset, as they are written in the user's working directory. `trustRepoConfig` says the
  * repository is the user's, so a filter its own config names may run. `skips` says whether a path review
- * skips what it skips by default, vendored, lockfile, minified and binary files, and is true when unset: a
+ * skips what it skips by default, vendored, lockfile, minified, test and binary files, and is true when unset: a
  * path review skips a secret, by its name or by what it holds, whatever `skips` says, and only the
  * context's `send` sends one.
  */

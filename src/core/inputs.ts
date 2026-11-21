@@ -37,6 +37,7 @@ export const SKIP_RULES = [
   'vendored',
   'lockfile',
   'minified',
+  'test',
   'secret',
   'binary',
   'submodule',
@@ -125,7 +126,7 @@ export function leftOutIssues(value: unknown): ConfigIssue[] {
     if (!LEFT_OUT_REASONS.has(entry.reason)) {
       issues.push({ path: `${path}.reason`, message: 'must be excluded, binary, submodule, skipped, secret or deleted-secret' })
     } else if (entry.reason === 'skipped') {
-      if (!SKIP_RULE_SET.has(entry.rule)) issues.push({ path: `${path}.rule`, message: 'must be vendored, lockfile, minified, secret, binary, submodule or lfs' })
+      if (!SKIP_RULE_SET.has(entry.rule)) issues.push({ path: `${path}.rule`, message: 'must be vendored, lockfile, minified, test, secret, binary, submodule or lfs' })
     } else if (HELD_REASONS.has(entry.reason)) {
       if (!SECRET_RULE_SET.has(entry.rule)) issues.push({ path: `${path}.rule`, message: `must be ${SECRET_RULES.slice(0, -1).join(', ')} or ${SECRET_RULES.at(-1)}` })
     } else if (entry.rule !== undefined) {
