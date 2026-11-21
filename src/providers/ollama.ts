@@ -4,8 +4,8 @@ import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson, snippet } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues } from './options.ts'
-import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput } from './options.ts'
+import { bodyKeyForm, isRecord, mergeBody, prepareHttp, spellingIssues, thinkingIssues } from './options.ts'
+import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput, Thinking, ThinkingControl } from './options.ts'
 import { MAX_MODEL_TEXT, readAnswer, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
 import type { ContextBudget } from './size.ts'
@@ -31,6 +31,10 @@ const RULES: Omit<AdapterRules, 'auth'> = {
   ],
   fixedHeaders: [],
   structuredOutputs: ['prompt', 'json', 'schema'],
+}
+/** `think`, which `low` sends as the level `"low"`, a model without named levels reading it as its default, and `off` as `false`, the lowest level of a model that cannot turn thinking off. */
+const THINKING: ThinkingControl = {
+  path: ['think'],
 }
 /** The one spelling of the options key that the adapter merges its own into. */
 const OPTIONS = 'options'
@@ -60,6 +64,12 @@ function numCtxIssues(id: string, extraBody: unknown): ConfigIssue[] {
       ...numCtx,
     ]
   })
+}
+
+function think(thinking: Thinking | undefined): string | false | undefined {
+  return thinking === 'off'
+    ? false
+    : thinking
 }
 
 function format(mode: StructuredOutput, output: CompletionRequest['output']): unknown {
@@ -123,13 +133,16 @@ function readReply(reply: unknown, { id, model, budget }: Pick<OllamaOptions, 'i
  * 16000 (`replyBudgetOf`), as `options.num_predict`, so the server bounds a reply's length. It states its worst
  * case from the count its size guard keeps: the text it sends, the template reserve and that budget, and the
  * room its guard leaves from the same count: `contextTokens` less those three. It also states its window, its
- * `maxTokens` when set, and thinking `default`.
+ * `maxTokens` when set, and its thinking: the option's level, else `default`, which it sends as `think`, `"low"` or `false`.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function ollama(options: OllamaOptions): Provider {
-  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
-  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/api/chat', numCtxIssues(id, options.extraBody))
+  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json', thinking, timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
+  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/api/chat', [
+    ...numCtxIssues(id, options.extraBody),
+    ...thinkingIssues(id, thinking, options.extraBody, THINKING),
+  ])
   const budgetOf = (request: CompletionRequest): ContextBudget => contextBudget(contextTokens, replyBudgetOf(request, maxTokens))
 
   return {
@@ -137,7 +150,7 @@ export function ollama(options: OllamaOptions): Provider {
     model,
     timeoutMs,
     retries,
-    ...statedReply(contextTokens, maxTokens),
+    ...statedReply(contextTokens, maxTokens, thinking),
     worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     async complete(request) {
@@ -162,6 +175,7 @@ export function ollama(options: OllamaOptions): Provider {
           shift: false,
           options: { temperature: temperature ?? undefined, num_predict: budget.replyTokens, num_ctx: contextTokens },
           format: format(structuredOutput, request.output),
+          think: think(thinking),
         }, extraBody),
         signal: request.signal,
         redact,

@@ -87,7 +87,7 @@ The core runs each call's attempts inside the call's concurrency slot, and gives
 - **`window`** is the model's context window in tokens, prompt and reply together: a whole number of at least 1, an own data field of the provider object, read when the quorum is created. The core sizes each reply from it ([Reply budgets](./20-configuration.md#reply-budgets)). A provider that states none, and no `maxTokens` either, is reserved and asked as it always was: its research asks for `maxFindings` findings and its requests carry no budget.
 - **`maxTokens`** is the most tokens a reply may hold, a whole number of at least 1, read as `window` is. It is the ceiling of every reply the core budgets: a research request is asked for it, and a vote for the lesser of it and the vote's own budget.
 - **`thinking`** is how much the provider thinks: `default`, `low` or `off`, read as `window` is. The core leaves room for the thinking the level allows when it sizes a reply: 8192 tokens for `default`, 4096 for `low` and none for `off`. A provider that states none thinks `default`.
-- **The shipped adapters state them**: `window` is their `contextTokens`, `maxTokens` is their option when it is set, and `thinking` is `default`.
+- **The shipped adapters state them**: `window` is their `contextTokens`, `maxTokens` is their option when it is set, and `thinking` is their `thinking` option, `default` when it is unset or `extraBody` sets the control ([Thinking](#thinking)).
 - **A value out of range is refused** where the provider is given, as the issue `ports.profiles.<id>.research.<field>` or `ports.profiles.<id>.voters.<lens>.<field>`, `<field>` being `timeoutMs`, `retries`, `window`, `maxTokens` or `thinking`: `must be a whole number of milliseconds from 1000 to 518400000`, `must be a whole number from 0 to 5`, `must be a whole number of tokens of at least 1` (`window` and `maxTokens`) and `must be default, low or off`. A `worstCase` or a `room` that is not a function is refused the same way: `must be a function`. The message never repeats the value.
 
 ## The adapters
@@ -205,7 +205,7 @@ A provider built from a preset or a protocol is checked first for the problems b
 
 ## The shared options
 
-These are the options of the four HTTP adapters. `claudeCode` takes `id`, `model`, `contextTokens`, `maxTokens`, `apiKey`, `structuredOutput`, `timeoutMs` and `retries`, with its own rules, refuses the rest, and has options of its own: [Claude Code options](#claude-code-options).
+These are the options of the four HTTP adapters. `claudeCode` takes `id`, `model`, `contextTokens`, `maxTokens`, `apiKey`, `structuredOutput`, `timeoutMs` and `retries`, with its own rules, refuses the rest (`thinking` among them: its effort is `--effort` in `args`), and has options of its own: [Claude Code options](#claude-code-options).
 
 ### Options
 
@@ -226,6 +226,7 @@ These are the options of the four HTTP adapters. `claudeCode` takes `id`, `model
 | `retries` | `number` | `2` | How many times a call that failed in passing is tried again, from 0 to 5: [What is retried](#what-is-retried) |
 | `systemPrompt` | `'native' \| 'inline'` | `'native'` | `native` sends the system text in the protocol's own place; `inline` puts it at the head of the first user message, joined by a blank line, for a chat template that rejects a system role |
 | `structuredOutput` | `'prompt' \| 'json' \| 'schema'` | The adapter's | How the reply's shape reaches the endpoint: [Structured output](#structured-output) |
+| `thinking` | `'low' \| 'off'` | The server's own | How much the model thinks, sent as the protocol's own control: [Thinking](#thinking) |
 
 `systemPrompt: 'inline'` sends the instructions in the same user message as the fenced data, so they lose the role that sets them apart from it: a weaker separation than the one [Prompts](./60-prompts.md#the-layout-of-a-request) describes. When the conversation does not start with a user message, `inline` sends the system text as a user message of its own.
 
@@ -255,6 +256,28 @@ A custom header name is lower-cased, and its `prefix` goes before the key. A req
 | `schema` | `response_format: { "type": "json_schema", "json_schema": { "name": <output.name>, "schema": <output.schema>, "strict": true } }` | `output_config: { "format": { "type": "json_schema", "schema": <output.schema> } }` | `generationConfig.responseMimeType: "application/json"` and `generationConfig.responseJsonSchema: <output.schema>` | `format: <output.schema>` |
 
 Every mode keeps the schema in the system message, and the core validates the reply the same way in each. `schema` asks the endpoint to enforce the shape; use it where the endpoint supports it, `json` where it supports only JSON mode, and `prompt` where it supports neither. An endpoint can drop the field without a word: Ollama's and DeepSeek's Anthropic-compatible endpoints ignore `output_config.format`, so `schema` is enforced only where the endpoint supports it, and Anthropic accepts it only on the models its structured-outputs page lists.
+
+### Thinking
+
+A reasoning model can spend its whole reply on thinking, so `thinking` turns it down. Each protocol maps the two values to its documented control, and the adapter sends the control with every request, before `extraBody` is merged:
+
+| Protocol | `low` | `off` |
+| --- | --- | --- |
+| `openaiCompatible` | `reasoning_effort: "low"` | `reasoning_effort: "none"` |
+| `anthropic` | `output_config: { "effort": "low" }`, merged beside the `format` of `schema` mode | Refused |
+| `gemini` | `generationConfig.thinkingConfig.thinkingLevel: "LOW"` | `thinkingLevel: "MINIMAL"`, Gemini's "little to no thinking" |
+| `ollama` | `think: "low"`, which a model without named levels reads as its default | `think: false`, the lowest level of a model that cannot turn thinking off |
+| `claudeCode` | Refused | Refused |
+
+Unset, no control is sent: the server's own default holds. The provider states its `thinking` to the core as its option's level, `default` when it is unset, from which the core sizes the reply budget ([Reply budgets](./20-configuration.md#reply-budgets)). It states `default` too when `extraBody` sets the control, since quorum cannot read that level.
+
+Three things are refused when the provider is built, each a configuration error at `<id>.thinking`:
+
+- **`thinking: off` on `anthropic`:** `the anthropic protocol has no one setting that turns thinking off on every model: set thinking: low, or set thinking in extraBody for your model`. Claude Opus 5.5 answers 400 to `disabled`, and Claude Sonnet 5.5 takes `between_tools`, so no one value turns it off.
+- **Any `thinking` on `claudeCode`:** `claude-code takes its effort from args: --effort low`.
+- **`thinking` beside the same control in `extraBody`:** `is set, and extraBody sets <field> too: two settings for one control, so keep one`, `<field>` being `reasoning_effort`, `output_config.effort`, `generationConfig.thinkingConfig` or `think`. `extraBody` is merged last, so it would undo the setting.
+
+A value that is neither `low` nor `off` is `must be low or off`. A server whose model or chat template does not know the value can answer a 400, and the call then fails with that status: set the control in `extraBody` for such a model, as [Reasoning mode](../90-recipes/10-local-models.md#reasoning-mode) shows for the servers' own fields. The role variables `QUORUM_RESEARCH_THINKING` and `QUORUM_VOTER_THINKING` set it from the environment: [Thinking](./20-configuration.md#thinking).
 
 ### The tool fields
 
@@ -366,7 +389,7 @@ Each adapter's `reasoning` is `true` for a reply that showed reasoning and `fals
 | Only reasoning | `reply has no answer, only reasoning: the server may put its answer in its reasoning field: set thinking: off, or structuredOutput: prompt` |
 | Nothing | `reply has no answer and no reasoning: the server may mishandle its structured output: set structuredOutput: prompt` |
 
-Each message names the setting to change. Turning thinking off is the protocol's own field in `extraBody`: [Reasoning mode](../90-recipes/10-local-models.md#reasoning-mode). A reply with no answer is never retried. Three of them in a row find the provider down, in words that say what they lacked: `<id>: 3 calls in a row had no answer, only reasoning: ...` or `had no answer and no reasoning: ...`; a `truncated` reply never counts. A server that caps replies below quorum's limit, or loads a window smaller than `contextTokens`, is named once per provider in a review, with its numbers, as the `reply-lacked` event: [Events](../95-reference/30-library-api.md#events).
+Each message names the setting to change. Turning thinking off is the `thinking` option, `off` or `low`: [Thinking](#thinking), and [Reasoning mode](../90-recipes/10-local-models.md#reasoning-mode) for a server's own field. A reply with no answer is never retried. Three of them in a row find the provider down, in words that say what they lacked: `<id>: 3 calls in a row had no answer, only reasoning: ...` or `had no answer and no reasoning: ...`; a `truncated` reply never counts. A server that caps replies below quorum's limit, or loads a window smaller than `contextTokens`, is named once per provider in a review, with its numbers, as the `reply-lacked` event: [Events](../95-reference/30-library-api.md#events).
 
 ### Configuration errors
 
@@ -438,6 +461,7 @@ The body of every request holds, in this order:
 - `response_format`, unless `structuredOutput` is `prompt`;
 - `temperature`, unless it is `null`;
 - the reply's limit under `maxTokensField`, the request's reply budget at most `maxTokens`, else `maxTokens`, else 16000;
+- `reasoning_effort`, `low` or `none`, when `thinking` is set;
 - then `extraBody`, merged. It cannot replace `model`, `messages` or `stream`, or set `max_tokens` or `max_completion_tokens`, which `maxTokens` sets.
 
 The text is the first choice's `message.content`: a string, or an array of parts whose `text` parts are joined, as Mistral sends it. Every other part is skipped, thinking parts included, and so is `message.reasoning` or `message.reasoning_content`: reasoning is never read as the answer, only noted: [What a reply lacked](#what-a-reply-lacked). `model` is the one the reply names, or the configured one when it names none. `usage` is read from `usage.prompt_tokens` and `usage.completion_tokens`.
@@ -465,7 +489,7 @@ For the Anthropic Messages API, or a gateway that speaks it, such as Ollama's or
 - **The key goes as `Authorization: Bearer <key>`** by default: Anthropic documents it as its primary key header, `x-api-key` as a legacy fallback it still accepts, and the gateways take bearer. `auth: 'x-api-key'` sends the legacy header.
 - **No temperature is sent unless one is set.** Under `2026-10-21`, Anthropic answers 400 to any `temperature`, `top_p` or `top_k`, even at its default value; a gateway may accept one.
 - **`max_tokens` is always sent**, the request's reply budget at most `maxTokens`, else `maxTokens`, else 16000: the Messages API requires it, and thinking counts toward it.
-- **No assistant prefill and no `thinking` field.** Current models reject a prefill, and Claude Opus 5.5 answers 400 to a request that turns thinking off.
+- **No assistant prefill, and no `thinking` field.** Current models reject a prefill, and Claude Opus 5.5 answers 400 to a request that turns thinking off. `thinking: low` is sent as `output_config.effort`, and `off` is refused: [Thinking](#thinking).
 
 The body of every request holds, in this order:
 
@@ -474,7 +498,7 @@ The body of every request holds, in this order:
 - `system`: the system text, unless `systemPrompt` is `inline`;
 - `messages`: the request's messages, each `{ role, content }` with its text;
 - `temperature`, when set;
-- `output_config: { format: { type: 'json_schema', schema: <output.schema> } }`, in `schema` mode;
+- `output_config`: `format: { type: 'json_schema', schema: <output.schema> }` in `schema` mode, and `effort: 'low'` when `thinking` is `low`, in one object;
 - then `extraBody`, merged: `{ output_config: { effort: 'low' } }` goes beside the format in `schema` mode. It cannot replace `model`, `messages`, `system` or `stream`, or set `max_tokens`, which `maxTokens` sets.
 
 A reply succeeds with the stop reason `end_turn` or `stop_sequence` and a text block. The stop reason is read first, since a refused or cut-off reply can still hold some text. The text is the `text` of the `type: 'text'` blocks, joined: `thinking` and `redacted_thinking` blocks are skipped, never read as the answer, as is every block of another type. `model` is the one the reply names, or the configured one. The input count is `usage.input_tokens`, plus `usage.cache_creation_input_tokens` and `usage.cache_read_input_tokens` when they are numbers; the output count is `usage.output_tokens`. A status outside 2xx is an `http` error that quotes Anthropic's `{ "type": "error", "error": { "type", "message" } }` body.
@@ -500,7 +524,7 @@ The body of every request holds, in this order:
 
 - `contents`: each message as `{ role, parts: [{ text }] }`, an `assistant` message with the role `model`;
 - `systemInstruction: { parts: [{ text: <system text> }] }`, unless `systemPrompt` is `inline`;
-- `generationConfig`: `temperature` when set, `maxOutputTokens`, the request's reply budget at most `maxTokens`, else `maxTokens`, else 16000, `responseMimeType: 'application/json'` in `json` and `schema` mode, and `responseJsonSchema: <output.schema>` in `schema` mode, as Google's JavaScript SDK sends it (`responseSchema` is deprecated);
+- `generationConfig`: `temperature` when set, `maxOutputTokens`, the request's reply budget at most `maxTokens`, else `maxTokens`, else 16000, `responseMimeType: 'application/json'` in `json` and `schema` mode, `responseJsonSchema: <output.schema>` in `schema` mode, as Google's JavaScript SDK sends it (`responseSchema` is deprecated), and `thinkingConfig: { thinkingLevel }` when `thinking` is set: [Thinking](#thinking);
 - then `extraBody`, merged: `{ generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } }` goes beside the rest. It cannot replace `contents` or `systemInstruction`, or set `generationConfig.maxOutputTokens`, which `maxTokens` sets. Its `generationConfig` must be an object, written `generationConfig`: another spelling, such as `generation_config`, would send a second key, so it is refused.
 
 A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose parts hold text. The text is the `text` of the first candidate's `content.parts`, joined, without the parts flagged as thoughts, which are never read as the answer. `model` is the reply's `modelVersion`, or the configured model. The input count is `usageMetadata.promptTokenCount`; the output count is `usageMetadata.candidatesTokenCount`, plus `usageMetadata.thoughtsTokenCount` when it is a number. Gemini leaves a zero count out of its JSON, so a candidates count the reply leaves out reads as 0: a thinking model cut off while it thinks reports only its prompt and thought counts. A reply without `promptTokenCount`, or with a prompt or candidates count that is not a number, reports no `usage`. A status outside 2xx is an `http` error that quotes Google's `{ "error": { "code", "message", "status", "details" } }` body; a 402, which Google sends for a depleted prepay balance, is not retryable, unlike a 429, and a 429 of a per-day quota is not either.
@@ -525,7 +549,7 @@ For Ollama's native chat API, on a local server or Ollama's cloud, `https://olla
 - **`shift: false` keeps it whole as the reply is written.** A reply that fills the model's context then stops, as a truncation, instead of part of the prompt dropped so the reply can go on. It needs the same versions, and a server that loaded the model with context shift on loads it again, as it does each time a client asks for the other setting.
 - **`num_ctx` from `contextTokens`.** The adapter sends `options.num_ctx`, so the server loads the context the size guard counts with; a larger value than the model's own maximum is cut to it, so keep `contextTokens` at most what `ollama show <model>` reports, and read the context a running model loaded in the `CONTEXT` column of `ollama ps`. `extraBody` cannot set `options.num_ctx`, in any letter case, or replace `options` with anything but an object, which would drop it. Its `options` must be written `options`: another spelling, such as `Options`, would send a second key, so it is refused.
 - **The key goes as `Authorization: Bearer <key>`**, only when one is set: a local server needs none.
-- **No `think` field.** A thinking model thinks as it does by default, and its thinking comes back apart, in `message.thinking`, which the adapter never reads as the answer: it notes that the reply showed reasoning. `extraBody: { think: false }` sets one: [Reasoning mode](../90-recipes/10-local-models.md#reasoning-mode).
+- **No `think` field unless `thinking` is set.** A thinking model thinks as it does by default, and its thinking comes back apart, in `message.thinking`, which the adapter never reads as the answer: it notes that the reply showed reasoning. `thinking: low` sends `think: "low"` and `off` sends `think: false`: [Thinking](#thinking).
 
 The body of every request holds, in this order:
 
@@ -533,6 +557,7 @@ The body of every request holds, in this order:
 - `stream: false`, `truncate: false` and `shift: false`;
 - `options`: `temperature`, unless it is `null`, `num_predict`, the request's reply budget at most `maxTokens`, else `maxTokens`, else 16000, and `num_ctx`, always, from `contextTokens`;
 - `format`: `'json'` in `json` mode, `<output.schema>` in `schema` mode;
+- `think`: `'low'` or `false`, when `thinking` is set;
 - then `extraBody`, merged: `{ options: { seed: 7 } }` goes beside the temperature. It cannot replace `model`, `messages`, `stream`, `truncate` or `shift`, or set `options.num_ctx`, which `contextTokens` sets, or `options.num_predict`, which `maxTokens` sets. Its `options` must be an object.
 
 A reply succeeds with `done: true`, the `done_reason` `stop` and a string `message.content`. The text is `message.content`, as it came: a `<think>` block left in it, by a model or a template Ollama cannot split, is for the core's reply parser to drop. `model` is the one the reply names, or the configured one; `usage` is read from `prompt_eval_count` and `eval_count`. A status outside 2xx is an `http` error that quotes Ollama's `{ "error": "<message>" }` body.

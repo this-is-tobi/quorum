@@ -76,6 +76,7 @@ const providerShape = {
   query: z.record(z.string(), z.string()).optional().describe('Query parameters added to every request URL; they are not redacted, so never put a key here'),
   extraBody: z.record(z.string(), z.json()).optional().describe('JSON values deep-merged into the request body last'),
   structuredOutput: z.enum(Object.keys(STRUCTURED_OUTPUTS) as [StructuredOutput, ...StructuredOutput[]]).optional().describe('How the reply shape reaches the endpoint: described in the prompt, as a JSON object, or as a strict schema'),
+  thinking: z.enum(['off', 'low']).optional().describe('The model\'s thinking: off or low; unset, the server\'s default, which quorum lowers by itself when a reply runs out of room while reasoning'),
   temperature: z.number().nullable().optional().describe('The sampling temperature; null leaves the field out'),
   maxTokens: z.int().min(1).optional().describe('The most tokens a reply may hold, thinking included: the ceiling of every reply, sent as the server\'s limit; with it unset, each request is sent the reply budget derived from the window, else 16000. On claude-code, Claude Code\'s own limit on each reply'),
   maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']).optional().describe('The body field that carries maxTokens, on the openai-compatible protocol'),
@@ -146,7 +147,7 @@ function configSchema<P extends z.ZodType, R extends z.ZodType>(provider: P, pro
 }
 
 /** Whether `value` implements `Provider` as a code config can hand one over: an object whose `complete` is a function. */
-export function isProvider(value: unknown): value is Provider {
+export function isProvider(value: unknown): value is Readonly<Provider> {
   return typeof value === 'object' && value !== null && typeof (value as { complete?: unknown }).complete === 'function'
 }
 

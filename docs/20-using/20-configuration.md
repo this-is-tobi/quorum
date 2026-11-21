@@ -130,6 +130,7 @@ The profiles that run are the ones `--profile` names, else the ones `QUORUM_PROF
 | `QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS` | The context window of a role's provider's model, in tokens: a whole number from 1 to 999999999. It has no deprecated alias |
 | `QUORUM_RESEARCH_TIMEOUT_MS`, `QUORUM_VOTER_TIMEOUT_MS` | The deadline of one attempt of a role's provider, in milliseconds: a whole number from 1000 to 86400000. On a `claude-code` provider it is Claude Code's wait for each attempt's response headers, and the whole run's deadline is that times the retries plus one: [Stopping, nesting and the version](./30-providers.md#stopping-nesting-and-the-version). It has no deprecated alias |
 | `QUORUM_RESEARCH_RETRIES`, `QUORUM_VOTER_RETRIES` | How many times a call of a role's provider that failed in passing is tried again: a whole number from 0 to 5. It has no deprecated alias |
+| `QUORUM_RESEARCH_THINKING`, `QUORUM_VOTER_THINKING` | The thinking of a role's provider: `off` or `low`, sent as its protocol's own control: [Thinking](#thinking). It has no deprecated alias |
 | `QUORUM_RESEARCH_API_KEY`, `QUORUM_VOTER_API_KEY` | The key of a role's provider, sent in the header its `auth` names, `Authorization: Bearer <key>` by default. Without a key, no key header is sent |
 | `QUORUM_CLAUDE_CODE_COMMAND` | The `claude` executable of every `claude-code` provider a profile uses: an absolute path, or a name found in the absolute entries of `PATH`. A relative path and a `.cmd` or `.bat` file are refused. It wins over a code config's `command`, which a YAML or JSON config cannot hold: [Where the command comes from](#where-the-command-comes-from) |
 | `QUORUM_MAX_REVIEW_TOKENS` | The review's token cap: a whole number of tokens from 1 to 9007199254740991, over the config's |
@@ -281,6 +282,28 @@ Neither of these is done today. Counting with a vendor's own tokenizer would shr
 ### What happens
 
 A research request is split into parts first, so its profile records a `request-too-large` gap, counting the parts, only for a part its provider refused all the same, and a `too-large` gap for a hunk no part can hold, and the other profiles run. A refused vote is a failed vote ([Failed votes](./50-lenses-and-policy.md#failed-votes)), and its finding records a `request-too-large` gap as well, whatever its status: kept, discarded or `unreviewed`, the gap stays. A gating profile with such a gap exits `4`, even with `--allow-incomplete`, unless it also kept a finding at or above its fail-on level, `high` by default, which exits `1`; the gap of an advisory profile changes no code. The result says what was not sent: [Incomplete reasons](../95-reference/20-json-result.md#incomplete-reasons). A provider with no context size is a configuration error, exit `2`, before any request.
+
+## Thinking
+
+A reasoning model can spend its whole reply on thinking, so a provider takes `thinking`, `off` or `low`, in a config file or in `QUORUM_RESEARCH_THINKING` and `QUORUM_VOTER_THINKING`:
+
+```yaml
+providers:
+  local:
+    preset: ollama
+    model: qwen3.6:27b
+    contextTokens: 32768
+    thinking: off
+```
+
+- **Unset, the server's own default holds.** No control is sent, and the reply budget leaves room for the thinking a model does by default ([Reply budgets](#reply-budgets)).
+- **A value is sent as the protocol's own control**, with every request of the provider: `reasoning_effort` on `openai-compatible`, `output_config.effort` on `anthropic`, `generationConfig.thinkingConfig.thinkingLevel` on `gemini` and `think` on `ollama`. The table of values is in [Thinking](./30-providers.md#thinking) of the providers page.
+- **An explicit value is never undone.** It sizes the reply budget too: `low` leaves 4096 tokens for thinking and `off` none, where the default leaves 8192.
+- **A control in `extraBody` is explicit as well.** `extraBody` is merged last, so a provider that sets the protocol's control there thinks as that value says. Quorum cannot read it, so it sizes the budget as for the default's thinking. Setting `thinking` and the same control in `extraBody` is refused, since the two would disagree.
+- **Two refusals,** when the provider is built: `off` on `anthropic`, whose models have no one setting that turns thinking off, and any `thinking` on `claude-code`, whose effort is `--effort` in `args`.
+- **A value that is neither `off` nor `low` is refused**, never clamped: `QUORUM_RESEARCH_THINKING: must be low or off`, or `providers.local.thinking: must be one of off or low` in a file.
+
+`--print-config` prints a provider's `thinking` when it sets one.
 
 ## Research in parts
 
@@ -513,6 +536,10 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `QUORUM_RESEARCH_CONTEXT_TOKENS: must be a whole number of tokens, from 1 to 999999999` | The variable is not a whole number written in decimal digits, from 1 to 999999999: `32k`, `1e5`, `0x10`, `1.5` and `0` are refused. `QUORUM_VOTER_CONTEXT_TOKENS` has the same check. The message never repeats the value |
 | `QUORUM_RESEARCH_TIMEOUT_MS: must be a whole number of milliseconds, from 1000 to 86400000` | The variable is not a whole number written in decimal digits, from 1000 to 86400000: `999`, `120s`, `1e5`, `0x3e8` and `0120000` are refused. `QUORUM_VOTER_TIMEOUT_MS` has the same check. The message never repeats the value |
 | `QUORUM_RESEARCH_RETRIES: must be a whole number, from 0 to 5` | The variable is not a whole number written in decimal digits, from 0 to 5: `6`, `-1`, `1.5` and `02` are refused. `QUORUM_VOTER_RETRIES` has the same check. The message never repeats the value |
+| `QUORUM_RESEARCH_THINKING: must be low or off` | The variable is neither `low` nor `off`: `medium`, `none` and `true` are refused, never clamped. `QUORUM_VOTER_THINKING` has the same check. The message never repeats the value |
+| `providers.api.thinking: the anthropic protocol has no one setting that turns thinking off on every model: set thinking: low, or set thinking in extraBody for your model` | `thinking: off` on an `anthropic` provider. Set `low`, or put the control in `extraBody` for your model |
+| `providers.cc.thinking: claude-code takes its effort from args: --effort low` | A `thinking` on a `claude-code` provider. Set `--effort` in `args` |
+| `providers.local.thinking: is set, and extraBody sets think too: two settings for one control, so keep one` | `thinking` beside the protocol's own control in `extraBody`: `reasoning_effort`, `output_config.effort`, `generationConfig.thinkingConfig` or `think`. Keep one |
 | `QUORUM_MAX_REVIEW_TOKENS: must be a whole number of tokens, from 1 to 9007199254740991` | The variable is not a whole number written in decimal digits, from 1 to 9007199254740991: `0`, `1e6`, `+5`, `02000000`, `2,000,000` and `9007199254740992` are refused, never rounded down. The message never repeats the value |
 | `QUORUM_REVIEW_TIMEOUT_MS: must be a whole number of milliseconds, from 1000 to 86400000` | The variable is not a whole number written in decimal digits, from 1000 to 86400000: `999`, `86400001` and `30m` are refused. The message never repeats the value |
 | `providers.local.contextTokens: must be more than 512, the tokens kept for the chat template` | A window that leaves no room even for the chat template, with `maxTokens` unset: raise the window. Set by a variable, the issue names the variable instead |

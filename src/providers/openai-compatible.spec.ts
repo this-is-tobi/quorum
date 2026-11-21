@@ -56,6 +56,10 @@ describeProviderContract({
     temperature: body => body.temperature,
     maxTokens: body => body.max_tokens,
   },
+  thinking: {
+    read: body => body.reasoning_effort,
+    extraBody: { reasoning_effort: 'high' },
+  },
   reservedBodyKeys: ['model', 'messages', 'stream'],
   toolBodyKeys: [
     'tools',
@@ -100,6 +104,23 @@ describe('openaiCompatible', () => {
     baseUrl: 'http://localhost:11434/v1//',
     model: 'qwen',
     contextTokens: 131072,
+  })
+
+  it.each([
+    ['low', 'low'],
+    ['off', 'none'],
+  ] as const)('sends thinking %s as its protocol\'s control', async (thinking, effort) => {
+    const fetchMock = stubFetch(ok)
+    const provider = openaiCompatible({
+      id: 'x',
+      baseUrl: 'http://h/v1',
+      model: 'm',
+      contextTokens: 131072,
+      thinking,
+    })
+    await provider.complete(request)
+    expect(sent(fetchMock).body.reasoning_effort).toBe(effort)
+    expect(provider.thinking).toBe(thinking)
   })
 
   it('posts the system message first, then the data, to /chat/completions with json_object and temperature 0', async () => {

@@ -175,6 +175,25 @@ describe('the context size variables', () => {
   })
 })
 
+describe('the thinking variables', () => {
+  it('reads QUORUM_RESEARCH_THINKING and QUORUM_VOTER_THINKING onto their providers', () => {
+    expect(readEnv({ QUORUM_RESEARCH_THINKING: ' low ', QUORUM_VOTER_THINKING: 'off' })).toEqual({
+      research: { thinking: 'low' },
+      voter: { thinking: 'off' },
+      warnings: [],
+      issues: [],
+    })
+    expect(READ_VARIABLES.has('QUORUM_RESEARCH_THINKING')).toBe(true)
+    expect(READ_VARIABLES.has('QUORUM_VOTER_THINKING')).toBe(true)
+    const { providers } = apply({ main: research }, shared, {
+      research: { thinking: 'low' },
+      voter: { thinking: 'off' },
+    })
+    expect(providers.main).toEqual({ ...research, thinking: 'low' })
+    expect(providers.voter).toMatchObject({ ...research, thinking: 'off' })
+  })
+})
+
 describe('the deadline and retries variables', () => {
   const TIMEOUT = 'must be a whole number of milliseconds, from 1000 to 86400000'
   const RETRIES = 'must be a whole number, from 0 to 5'

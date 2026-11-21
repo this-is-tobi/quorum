@@ -482,6 +482,15 @@ describe('claudeCodeIssues', () => {
   const NOT_A_STRING = 'must be a string'
   const BUDGET = 'must be a positive number of dollars, such as 0.50'
 
+  it('refuses thinking, naming --effort low in args', () => {
+    expect(issuesOf({ thinking: 'low' })).toEqual([
+      at('thinking', 'claude-code takes its effort from args: --effort low'),
+    ])
+    expect(issuesOf({ thinking: 'off' })).toEqual([
+      at('thinking', 'claude-code takes its effort from args: --effort low'),
+    ])
+  })
+
   it('takes the defaults, every auth mode and every allowlisted flag', () => {
     expect(issuesOf({})).toEqual([])
     expect(issuesOf({ auth: 'login', command: 'claude' })).toEqual([])

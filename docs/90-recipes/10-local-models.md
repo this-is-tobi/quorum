@@ -119,15 +119,13 @@ A thinking model writes its reasoning before the answer, and the reasoning count
 
 A reply with no answer is a failed call, never a clean review: a research part is a `research-failed` gap, a vote a failed vote. Three of them in a row from one provider find it down (`<provider>: 3 calls in a row had no answer, only reasoning: ...`), and it is called no more in the review: [What a reply lacked](../20-using/30-providers.md#what-a-reply-lacked).
 
-`extraBody` and `maxTokens` need a config file. To turn thinking off:
+To turn thinking off, set `thinking: off` on the provider, or `QUORUM_RESEARCH_THINKING=off` for the finder and `QUORUM_VOTER_THINKING=off` for the panel. Quorum sends the control each protocol documents, so no server needs its own field written:
 
-| Server | Turn thinking off | Where the reasoning goes |
+| Server | `thinking: off` sends | Where the reasoning goes |
 | --- | --- | --- |
-| Ollama | `extraBody: { think: false }` | `message.thinking` |
-| vLLM | `extraBody: { chat_template_kwargs: { enable_thinking: false } }`, or `extraBody: { reasoning_effort: "none" }` | `message.reasoning` with `--reasoning-parser`, else `content` |
-| llama.cpp | The same two `extraBody` fields, or `--reasoning off` on the server | `message.reasoning_content`, unless `--reasoning-format none` leaves it in `content` |
-
-On Ollama:
+| Ollama | `think: false` | `message.thinking` |
+| vLLM | `reasoning_effort: "none"` | `message.reasoning` with `--reasoning-parser`, else `content` |
+| llama.cpp | `reasoning_effort: "none"` | `message.reasoning_content`, unless `--reasoning-format none` leaves it in `content` |
 
 ```yaml
 version: 1
@@ -136,11 +134,12 @@ providers:
     preset: ollama
     model: qwen3.6:27b
     contextTokens: 32768
-    extraBody:
-      think: false
+    thinking: off
 ```
 
-On vLLM, and the same under `preset: llamacpp` on llama.cpp:
+`thinking: low` asks for less thinking instead of none: `think: "low"` on Ollama, `reasoning_effort: "low"` on vLLM and llama.cpp. A model whose chat template does not declare the value may keep thinking, or a server answer 400 to it: [Thinking](../20-using/30-providers.md#thinking). The table's fields are the protocol's own. A server whose template reads a field of its own takes it in `extraBody`, which needs a config file, as does `maxTokens`. `thinking` and the same control in `extraBody` are refused as two settings for one control, so use `extraBody` for the vendor's field alone.
+
+On vLLM, and the same under `preset: llamacpp` on llama.cpp, a template that reads `enable_thinking`:
 
 ```yaml
 version: 1
@@ -154,7 +153,7 @@ providers:
         enable_thinking: false
 ```
 
-- **`think` takes a boolean or a level**, `low`, `medium` or `high`. Unset, a thinking model thinks as it does by default, and `think: true` on a model that cannot think is a 400.
+- **`think` takes a boolean or a level**, `low`, `medium` or `high`, and `thinking` sends the two quorum needs, `"low"` and `false`. Unset, a thinking model thinks as it does by default.
 - **`enable_thinking` and `reasoning_effort` are for the chat templates that declare them.** A model whose template does not may keep thinking.
 - **Without `--reasoning-parser`, vLLM leaves the reasoning in `content`** and constrains the reply from its first token, so a thinking model cannot think. To let it think, start vLLM with `--reasoning-parser`, which takes the parser of the model's family, `qwen3` for a Qwen3 model: the reasoning then goes to `message.reasoning` and the constraint starts after it.
 - **llama.cpp bounds the reasoning with `--reasoning-budget N`**, and its `--reasoning off` turns it off for every request.

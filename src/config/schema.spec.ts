@@ -522,6 +522,13 @@ describe('configFileSchema', () => {
       ],
     ],
     [
+      'thinking',
+      provider({ thinking: 'medium' }),
+      [
+        at('providers.p.thinking', 'must be one of off or low'),
+      ],
+    ],
+    [
       'temperature',
       provider({ temperature: '0' }),
       [
@@ -1658,6 +1665,14 @@ describe('configJsonSchema', () => {
 
   it('advertises the bounds of contextTokens, 1 to 999999999, as the variable takes them', () => {
     expect(node('properties', 'providers', 'additionalProperties', 'properties', 'contextTokens')).toMatchObject({ type: 'integer', minimum: 1, maximum: 999_999_999 })
+  })
+
+  it('advertises thinking as off or low, described', () => {
+    expect(node('properties', 'providers', 'additionalProperties', 'properties', 'thinking')).toMatchObject({
+      type: 'string',
+      enum: ['off', 'low'],
+      description: 'The model\'s thinking: off or low; unset, the server\'s default, which quorum lowers by itself when a reply runs out of room while reasoning',
+    })
   })
 
   it('advertises failOn as one of four levels', () => {

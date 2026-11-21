@@ -145,6 +145,14 @@
               "schema"
             ]
           },
+          "thinking": {
+            "description": "The model's thinking: off or low; unset, the server's default, which quorum lowers by itself when a reply runs out of room while reasoning",
+            "type": "string",
+            "enum": [
+              "off",
+              "low"
+            ]
+          },
           "temperature": {
             "description": "The sampling temperature; null leaves the field out",
             "type": [

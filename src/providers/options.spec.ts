@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
-import { baseUrlIssues, httpOptionIssues, mergeBody, prepareHttp, requestHeaders } from './options.ts'
+import { baseUrlIssues, httpOptionIssues, mergeBody, prepareHttp, requestHeaders, thinkingControl, thinkingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions } from './options.ts'
 
 describe('baseUrlIssues', () => {
@@ -446,6 +446,46 @@ describe('httpOptionIssues', () => {
     expect(issuesOf({ contextTokens: 100, maxTokens: 0 })).toEqual([
       { path: 'p.maxTokens', message: 'must be a whole number of at least 1' },
     ])
+  })
+})
+
+describe('thinkingIssues', () => {
+  const control = {
+    path: ['generationConfig', 'thinkingConfig'],
+  }
+
+  it.each([
+    ['medium'],
+    [true],
+  ])('refuses thinking %j, which is neither low nor off, naming both', (thinking) => {
+    expect(thinkingIssues('p', thinking, undefined, control)).toEqual([
+      { path: 'p.thinking', message: 'must be low or off' },
+    ])
+  })
+
+  it('accepts low and off, and no thinking at all', () => {
+    expect(thinkingIssues('p', 'low', undefined, control)).toEqual([])
+    expect(thinkingIssues('p', 'off', {}, control)).toEqual([])
+    expect(thinkingIssues('p', undefined, {
+      generationConfig: { thinkingConfig: {} },
+    }, control)).toEqual([])
+  })
+
+  it('finds the control in extraBody the way a server reads a key: in any letter case and with or without underscores, through objects only', () => {
+    expect(thinkingControl({
+      generationConfig: {
+        thinkingConfig: { thinkingBudget: 0 },
+      },
+    }, control.path)).toBe(true)
+    expect(thinkingControl({
+      Generation_Config: { THINKING_CONFIG: 1 },
+    }, control.path)).toBe(true)
+    expect(thinkingControl({ generationConfig: {} }, control.path)).toBe(false)
+    expect(thinkingControl({ generationConfig: 'thinkingConfig' }, control.path)).toBe(false)
+    expect(thinkingControl(undefined, control.path)).toBe(false)
+    expect(thinkingControl({
+      generationConfig: { temperature: 1 },
+    }, control.path)).toBe(false)
   })
 })
 

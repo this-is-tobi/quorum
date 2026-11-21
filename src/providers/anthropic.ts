@@ -2,8 +2,8 @@ import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
 import { postJson } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { isRecord, mergeBody, prepareHttp } from './options.ts'
-import type { AdapterRules, Auth, HttpProviderOptions } from './options.ts'
+import { isRecord, mergeBody, prepareHttp, thinkingIssues } from './options.ts'
+import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput, Thinking, ThinkingControl } from './options.ts'
 import { endedEarly, joinedText, readAnswer, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
 import type { ContextBudget } from './size.ts'
@@ -45,6 +45,11 @@ const RULES: Omit<AdapterRules, 'auth'> = {
   ],
   fixedHeaders: ['anthropic-version'],
   structuredOutputs: ['prompt', 'schema'],
+}
+/** `output_config.effort`, which turns thinking down to `low`. No one setting turns it off on every model: Opus 5.5 answers a 400 to `disabled` and Sonnet 5.5 takes `between_tools`. */
+const THINKING: ThinkingControl = {
+  path: ['output_config', 'effort'],
+  offRefusal: 'the anthropic protocol has no one setting that turns thinking off on every model: set thinking: low, or set thinking in extraBody for your model',
 }
 /** The stop reasons of a finished reply. */
 const FINISHED: ReadonlySet<unknown> = new Set(['end_turn', 'stop_sequence'])
@@ -100,6 +105,23 @@ function readReply(reply: unknown, { id, model, budget }: Pick<AnthropicOptions,
   }
 }
 
+/** The request's `output_config`: the reply schema in `schema` mode and the effort `low` when thinking is set, merged in one object, or none. */
+function outputConfig(structuredOutput: StructuredOutput, thinking: Thinking | undefined, output: CompletionRequest['output']): Record<string, unknown> | undefined {
+  const config = {
+    ...structuredOutput === 'schema'
+      ? {
+          format: { type: 'json_schema', schema: output.schema },
+        }
+      : {},
+    ...thinking === undefined
+      ? {}
+      : { effort: 'low' },
+  }
+  return Object.keys(config).length === 0
+    ? undefined
+    : config
+}
+
 /**
  * A provider for the Anthropic Messages API, `/v1/messages`, or a gateway that speaks it. The key, when
  * there is one, travels only in the header `auth` names, `Authorization: Bearer` by default (invariant
@@ -108,13 +130,14 @@ function readReply(reply: unknown, { id, model, budget }: Pick<AnthropicOptions,
  * requires one: the request's reply budget at most `maxTokens`, else `maxTokens`, else 16000
  * (`replyBudgetOf`). It states its worst case from the count its size guard keeps: the text it sends, the
  * template reserve and that budget, and the room its guard leaves from the same count: `contextTokens` less
- * those three. It also states its window, its `maxTokens` when set, and thinking `default`.
+ * those three. It also states its window, its `maxTokens` when set, and its thinking: `low` when the option sets it,
+ * which it sends as `output_config.effort`, else `default`; `off` is refused.
  *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function anthropic(options: AnthropicOptions): Provider {
-  const { id, model, auth = 'bearer' as Auth, temperature, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'prompt', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
-  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/v1/messages')
+  const { id, model, auth = 'bearer' as Auth, temperature, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'prompt', thinking, timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
+  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/v1/messages', thinkingIssues(id, thinking, options.extraBody, THINKING))
   // The version goes last, so no header can replace it.
   const sent = { ...headers, 'anthropic-version': ANTHROPIC_VERSION }
   const budgetOf = (request: CompletionRequest): ContextBudget => contextBudget(contextTokens, replyBudgetOf(request, maxTokens))
@@ -124,7 +147,7 @@ export function anthropic(options: AnthropicOptions): Provider {
     model,
     timeoutMs,
     retries,
-    ...statedReply(contextTokens, maxTokens),
+    ...statedReply(contextTokens, maxTokens, thinking),
     worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     room: request => roomTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
     async complete(request) {
@@ -142,11 +165,7 @@ export function anthropic(options: AnthropicOptions): Provider {
           system,
           messages,
           temperature: temperature ?? undefined,
-          output_config: structuredOutput === 'schema'
-            ? {
-                format: { type: 'json_schema', schema: request.output.schema },
-              }
-            : undefined,
+          output_config: outputConfig(structuredOutput, thinking, request.output),
         }, extraBody),
         signal: request.signal,
         redact,
