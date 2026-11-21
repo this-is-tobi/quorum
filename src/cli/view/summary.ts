@@ -63,6 +63,11 @@ function listed(names: readonly string[]): string {
   return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
 }
 
+/** Whether the text report is above the summary: stdout and stderr are both terminals, and the format is `text`. */
+function reportAbove({ stdout, stderr }: SummaryFacts): boolean {
+  return stdout.terminal && stdout.format === 'text' && stderr.terminal
+}
+
 function timeLine(state: ViewState, facts: SummaryFacts, view: ReportView, dash: string): string | undefined {
   const spans: string[] = []
   const names: readonly StageName[] = ['research', 'dedup', 'panel']
@@ -77,7 +82,7 @@ function timeLine(state: ViewState, facts: SummaryFacts, view: ReportView, dash:
     const at = state.firstEstimate.at - researchStart
     line += `; the first estimate, ${elapsedWords(at)} in, put research at ${rangeWords(at + state.firstEstimate.lowMs, at + state.firstEstimate.highMs, dash)}`
   }
-  if (facts.stdout.terminal && facts.stdout.format === 'text') return line
+  if (reportAbove(facts)) return line
   const { durationMs, usage } = facts.result.meta
   line += `; done in ${elapsedWords(durationMs)}`
   if (view !== 'public' && usage !== undefined) line += `, ${usage.inputTokens} tokens in and ${usage.outputTokens} out`
@@ -144,8 +149,8 @@ function gapsLine(state: ViewState, view: ReportView): string | undefined {
 }
 
 function resultLine(facts: SummaryFacts, view: ReportView): string {
-  const { format, terminal } = facts.stdout
-  const where = terminal && format === 'text'
+  const { format } = facts.stdout
+  const where = reportAbove(facts)
     ? 'the text report above'
     : `${format} on stdout`
   const files = facts.outputs.length === 0

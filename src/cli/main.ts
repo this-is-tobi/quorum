@@ -24,12 +24,13 @@ import { runBench } from './bench.ts'
 import { errorLines, errorMessage, EXIT, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
 import { runMcp } from './mcp.ts'
-import { checkOutputs, reportPlan, writeOutputs } from './outputs.ts'
-import type { ReportPlan } from './outputs.ts'
+import { checkOutputs, colorFor, reportPlan, writeOutputs } from './outputs.ts'
+import type { ColorWhen, ReportPlan } from './outputs.ts'
 import { printConfig } from './print-config.ts'
 import { bannerLines, estimateLines, viewFacts } from './render.ts'
 import { runReport } from './report.ts'
-import { plainWriter } from './view/plain.ts'
+import { progressMode, viewWriter } from './view/progress.ts'
+import type { ProgressMode } from './view/progress.ts'
 import type { ViewWriter } from './view/writer.ts'
 
 export { errorMessage, EXIT }
@@ -61,7 +62,8 @@ const USAGE = [
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
   '  -f, --format <format>    Write the report on stdout in this format: text, json, brief, markdown, payload or sarif; text on a terminal, else json',
   '  -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several',
-  '      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never',
+  '      --color <when>       Color the text report and the live view: auto, on a terminal unless NO_COLOR is set; always; or never',
+  '      --progress <mode>    Show progress on stderr: auto, live on a terminal and plain lines elsewhere; live; plain; json; or none',
   '      --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage',
   '      --state <dir>        Save every answered call in this directory, and reuse the calls it holds',
   '      --print-config       Print the resolved config, keys redacted, and exit',
@@ -87,6 +89,7 @@ const OPTIONS = {
   format: { type: 'string', short: 'f', multiple: true },
   output: { type: 'string', short: 'o', multiple: true },
   color: { type: 'string', multiple: true },
+  progress: { type: 'string', multiple: true },
   view: { type: 'string', multiple: true },
   state: { type: 'string', multiple: true },
   'print-config': { type: 'boolean' },
@@ -127,7 +130,7 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  *
  * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`, `--path`,
  * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--fail-on`, `--format`, `--output`,
- * `--color`, `--view`, `--state`, `--print-config`, `--help` and `--version`; a usage error prints the usage after its message. Its
+ * `--color`, `--progress`, `--view`, `--state`, `--print-config`, `--help` and `--version`; a usage error prints the usage after its message. Its
  * settings are the config file `--config` or `QUORUM_CONFIG`
  * names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the `QUORUM_*`
  * variables of `io.env` with their deprecated aliases. Each warning is printed once, before the banner, and
@@ -182,6 +185,16 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * write, one inside a git work tree, one that is not a state directory quorum made) exits 2 before any call, naming
  * the flag and never the path. Its warnings are inert `--state:` lines, and a write that fails never fails the review.
  *
+ * `--progress <mode>` (or `QUORUM_PROGRESS`, which the flag wins over) chooses how stderr shows the review: `auto`, the
+ * default, is `live` when stderr is a terminal, `CI` is unset or empty and `TERM` is not `dumb`, else `plain`; `live`
+ * redraws a block under the log lines (`liveWriter`); `plain` writes one line for each event worth one, with a heartbeat;
+ * `json` writes each event and each line of the CLI's as a JSON line; `none` writes the warnings and the errors alone (see
+ * `progressMode`). A value that is none of them, a flag given twice, `live` off a terminal and `json` with `--view public`
+ * are usage errors, before any config. A usage error is text in every mode, as are the exit-path lines of `bin.ts`. `--color` colors the live
+ * view too, over a terminal, and `NO_COLOR` or `never` removes it and keeps the block. The report on stdout is written
+ * after the view's `close`, which has erased the block and shown the cursor, and the view's `restore` runs on each way out
+ * of this function and, through `io.exitHooks`, of the process.
+ *
  * Once the report and the `--output` files are written, the view writes the review's summary on stderr: the time of each
  * stage, the tokens against the cap, the calls, each gap with its fix, and where the report went, by format and never by
  * path (`summaryLines`). A run that fails writes none.
@@ -193,8 +206,8 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * `runBench`, `runReport` or `runMcp` and its exit code is returned, before any review flag is read. A file named
  * `bench`, `report` or `mcp` is reviewed as `quorum ./bench`, `quorum ./report` or `quorum ./mcp`.
  *
- * Everything the CLI writes is inert (invariant I3): each stderr line after the flags goes through one view writer (`plainWriter`),
- * which passes it through `inertLine`, and
+ * Everything the CLI writes is inert (invariant I3): each stderr line after the flags goes through one view writer (`viewWriter`),
+ * which passes it through `inertLine` or `inertJsonLine`, and
  * each report through its reporter, `json` through `inertJson`, `brief` and `text` through `inertLine`, and `text`'s color
  * around the words quorum wrote alone.
  */
@@ -221,6 +234,7 @@ export async function runCli(io: CliIO): Promise<number> {
   let spec: SourceSpec | undefined
   let failOn: FailOnOverride | undefined
   let plan: ReportPlan
+  let mode: ProgressMode
   let state: string | undefined
   try {
     if (values.config === '') {
@@ -232,18 +246,28 @@ export async function runCli(io: CliIO): Promise<number> {
       ? undefined
       : parseFailOn(values['fail-on'], '--fail-on')
     plan = reportPlan(values, io)
+    mode = progressMode({
+      flag: values.progress,
+      env: io.env,
+      terminal: io.stderr.isTTY === true,
+      view: plan.view,
+    })
     state = stateDirectory(values)
     spec = await sourceSpec(io, values, positionals)
   } catch (error) {
     return usageError(io, error)
   }
 
-  const view = plainWriter({
-    write: line => io.stderr.write(`${line}\n`),
-    view: plan.view,
+  // The live view's colour is `--color`'s over a terminal, which `mode` being live says stderr is: NO_COLOR and `never` remove it.
+  const view = viewWriter(mode, {
+    stderr: io.stderr,
+    env: io.env,
+    platform: io.platform ?? process.platform,
     clock: io.clock ?? systemClock,
-    heartbeat: true,
+    color: colorFor((values.color?.[0] ?? 'auto') as ColorWhen, true, io.env.NO_COLOR),
+    view: plan.view,
   })
+  io.exitHooks?.add(view.restore)
   let quorum: Quorum | undefined
   try {
     const selection = values.profile === undefined
@@ -306,6 +330,7 @@ export async function runCli(io: CliIO): Promise<number> {
     await writeOutputs(plan.outputs, input, done)
     view.summary({
       stdout: { format: plan.format, terminal: io.stdout.isTTY === true },
+      stderr: { terminal: io.stderr.isTTY === true },
       outputs: plan.outputs.map(output => output.format),
       result,
     })
@@ -323,6 +348,7 @@ export async function runCli(io: CliIO): Promise<number> {
       : EXIT.runtime
   } finally {
     view.restore()
+    io.exitHooks?.delete(view.restore)
   }
 }
 

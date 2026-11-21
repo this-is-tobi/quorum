@@ -14,6 +14,7 @@ import { inertLine } from '../core/sanitize.ts'
 import { GitError } from '../git/run.ts'
 import type { ReportView } from '../report/view.ts'
 import type { GitSeam } from '../sources/read.ts'
+import type { ViewStream } from './view/writer.ts'
 
 /** Exit codes (ADR-0008, amended by ADR-0012). */
 export const EXIT = {
@@ -35,7 +36,8 @@ export interface CliIO {
   stdin: AsyncIterable<Uint8Array | string> & { isTTY?: boolean }
   /** Where the report goes; `isTTY` is `true` on a terminal and absent on a pipe and a file, which is how the CLI chooses its format and its color. */
   stdout: { write: (text: string) => unknown, readonly isTTY?: boolean }
-  stderr: { write: (text: string) => unknown }
+  /** Where the log goes: a terminal when `isTTY`, and then the size and the resize event the live view reads. */
+  stderr: ViewStream
   /** The review's signal: once it is aborted, a run that ends without a result exits 130. */
   readonly signal?: AbortSignal
   /** The git a source runs, for the specs: its executable and its spawn. A run looks git up on `PATH` when unset. */
@@ -44,6 +46,8 @@ export interface CliIO {
   readonly platform?: NodeJS.Platform
   /** The view's time, the system's when unset: for the specs, which then move it themselves. */
   readonly clock?: Clock
+  /** The restorers `bin.ts` runs on an exit that `runCli`'s return does not reach: the second signal, an uncaught failure, `process.on('exit')`. A run adds its view's while it lasts. */
+  readonly exitHooks?: Set<() => void>
 }
 
 /**

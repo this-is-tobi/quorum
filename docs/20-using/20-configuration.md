@@ -123,6 +123,7 @@ The profiles that run are the ones `--profile` names, else the ones `QUORUM_PROF
 | --- | --- |
 | `QUORUM_CONFIG` | The config file to read, when `--config` does not name one. It must be an absolute path |
 | `QUORUM_PROFILES` | The profiles that run: ids separated by commas, each a profile the config defines or a built-in one, none twice. `--profile` wins over it, and a malformed value is refused even then |
+| `QUORUM_PROGRESS` | How stderr shows the review, when `--progress` does not name a mode: `auto`, `live`, `plain`, `json` or `none` (`auto` by default): [The modes](./10-cli.md#the-modes). The CLI reads it, so a library program ignores it. A blank value is unset, a value that is no mode is a usage error, and `QUORUM_PROGRESS=plain` set once in a shell profile is the screen-reader mode |
 | `QUORUM_RESEARCH_PRESET`, `QUORUM_VOTER_PRESET` | A role's provider, built from a [preset](./30-providers.md#presets) |
 | `QUORUM_RESEARCH_PROTOCOL`, `QUORUM_VOTER_PROTOCOL` | A role's provider, built from a wire protocol: `openai-compatible`, `anthropic`, `gemini` or `ollama`, or `claude-code` for your installed Claude Code CLI: [Claude Code](#claude-code) |
 | `QUORUM_RESEARCH_BASE_URL`, `QUORUM_VOTER_BASE_URL` | The base URL of a role's provider. Requests go to it, its trailing slashes removed, followed by the adapter's path, `/chat/completions` for `openai-compatible` and `/api/chat` for `ollama` |
