@@ -1,6 +1,3 @@
-/** Maximum simultaneous provider calls per review (ADR-0009). */
-export const DEFAULT_CONCURRENCY = 4
-
 /** Runs `task` once a slot is free and settles with the task's own result. */
 export type Limiter = <T>(task: () => Promise<T>) => Promise<T>
 

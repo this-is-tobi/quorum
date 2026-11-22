@@ -42,6 +42,107 @@ describe('fold', () => {
     expect(fold(seen, started(['security']), 3).cutSeen).toBe(false)
   })
 
+  it('follows each lane\'s limit, its last change, and its pause and pacing', () => {
+    const lane = (limit: number, cause: Extract<QuorumEvent, { type: 'concurrency' }>['cause'], more: Partial<Extract<QuorumEvent, { type: 'concurrency' }>> = {}, provider = API): QuorumEvent => ({
+      type: 'concurrency',
+      provider,
+      limit,
+      cause,
+      ...more,
+    })
+    const throttle = { kind: 'http', status: 429 } as const
+    const second = { id: 'other', model: 'model' }
+    const first = folded([
+      0,
+      started(['security']),
+    ])
+    // the research provider of each profile comes from `run:start`
+    expect(first.researchProvider).toEqual(new Map([
+      ['security', 'api'],
+    ]))
+    expect(first.lanes.size).toBe(0)
+
+    // a lane is known from its first call, at the start, with no change yet
+    const called = fold(first, {
+      type: 'call:start',
+      call: 1,
+      profile: 'security',
+      role: 'research',
+      provider: API,
+      part: { index: 1, count: 2 },
+      reserved: 1000,
+      timeoutMs: 600_000,
+    }, 1)
+    expect(called.lanes).toEqual(new Map([
+      [
+        'api',
+        { limit: 4 },
+      ],
+    ]))
+
+    // growth, then a cut with its throttle, then regrowth, which each move the limit and the last change
+    const grown = fold(called, lane(5, 'grown'), 10)
+    expect(grown.lanes.get('api')).toEqual({ limit: 5, last: 'grown' })
+    const cut = fold(grown, lane(2, 'cut', { from: 5, failure: throttle }), 20)
+    expect(cut.lanes.get('api')).toEqual({ limit: 2, last: 'cut', failure: throttle })
+    const regrown = fold(cut, lane(3, 'regrown'), 30)
+    expect(regrown.lanes.get('api')).toEqual({ limit: 3, last: 'regrown' })
+
+    // a pause and a pacing wait end at a time, and change neither the limit's last change nor its other lanes
+    const paused = fold(cut, lane(2, 'paused', { waitMs: 14_000, failure: throttle }), 21_000)
+    expect(paused.lanes.get('api')).toEqual({
+      limit: 2,
+      last: 'cut',
+      failure: throttle,
+      pausedUntil: 35_000,
+    })
+    const paced = fold(paused, lane(2, 'paced', { waitMs: 9000 }), 22_000)
+    expect(paced.lanes.get('api')).toEqual({
+      limit: 2,
+      last: 'cut',
+      failure: throttle,
+      pausedUntil: 35_000,
+      pacedUntil: 31_000,
+    })
+    // a growth while a pause holds keeps the throttle the pause names, and one after it ends drops it
+    expect(fold(paced, lane(3, 'regrown'), 23_000).lanes.get('api')).toMatchObject({ last: 'regrown', failure: throttle })
+    expect(fold(paced, lane(3, 'regrown'), 36_000).lanes.get('api')).toEqual({
+      limit: 3,
+      last: 'regrown',
+      pausedUntil: 35_000,
+      pacedUntil: 31_000,
+    })
+    // a pause of a lane that never changed has no last change
+    expect(fold(called, lane(4, 'paused', { waitMs: 1000, failure: throttle }), 5).lanes.get('api')).toEqual({ limit: 4, failure: throttle, pausedUntil: 1005 })
+
+    // the slots a provider states, and a second lane that has its own entry
+    const slots = fold(grown, lane(3, 'slots', {}, second), 40)
+    expect(slots.lanes.get('other')).toEqual({ limit: 3, last: 'slots' })
+    expect(slots.lanes.get('api')).toEqual({ limit: 5, last: 'grown' })
+    // a call of a lane that is known leaves it as it is
+    expect(fold(slots, {
+      type: 'call:start',
+      call: 2,
+      profile: 'security',
+      role: 'research',
+      provider: second,
+      part: { index: 2, count: 2 },
+      reserved: 1000,
+      timeoutMs: 600_000,
+    }, 41).lanes.get('other')).toEqual({ limit: 3, last: 'slots' })
+
+    // a review starts its lanes afresh, and `concurrency` set has none and takes no event
+    expect(fold(slots, started(['security']), 50).lanes.size).toBe(0)
+    const set = fold(startState({ ...DEFAULT_FACTS, concurrency: 8 }), lane(5, 'grown'), 1)
+    expect(set.lanes.size).toBe(0)
+  })
+
+  it('records the research part\'s provider with each answered part\'s sample', () => {
+    const state = replay(twoProfiles())
+    expect(state.sample.parts.length).toBeGreaterThan(0)
+    expect(new Set(state.sample.parts.map(({ provider }) => provider))).toEqual(new Set(['api']))
+  })
+
   it('folds a long review into its parts done, its calls in flight and waiting, its spend and its retries', () => {
     const list = longReview()
     const tenth = replay(list, 600_000)
@@ -129,6 +230,7 @@ describe('fold', () => {
     expect(end.sample.parts).toHaveLength(43)
     expect(end.sample.votes).toHaveLength(18)
     expect(end.sample.parts[0]).toEqual({
+      provider: 'api',
       planned: 60_000,
       durationMs: expect.any(Number),
     })

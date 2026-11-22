@@ -8,7 +8,8 @@
 
 import { CUT_ADVICE, failureFix, QUOTA_FIX, STALL_FIX } from '../../core/errors.ts'
 import { inertLine } from '../../core/sanitize.ts'
-import type { IncompleteReason, QuorumResult, StageName } from '../../core/types.ts'
+import type { ConcurrencyRecord } from '../../core/lanes.ts'
+import type { IncompleteReason, QuorumMeta, QuorumResult, StageName } from '../../core/types.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords } from './eta.ts'
 import { durationWords, elapsedWords } from './lines.ts'
@@ -129,7 +130,40 @@ function tokensLine(state: ViewState): string {
   return line
 }
 
-function callsLine(state: ViewState): string | undefined {
+/** What a provider's lane did, as the calls line tells it: its range, or, for a lane that sent no rate-limit headers and never moved from its start, why it ran no more. */
+function laneWords(id: string, { start, lowest, highest, cuts, headers }: ConcurrencyRecord): string {
+  if (!headers && cuts === 0 && highest <= start) return `${id} sent no rate-limit headers, so it ran at most ${highest} at once: set concurrency to run more, if its gateway has room`
+  return lowest === highest
+    ? `${id} ran ${highest} at once`
+    : `${id} ran ${lowest} to ${highest} at once`
+}
+
+/**
+ * The calls line's clauses after the calls: with `concurrency` set, its calls at once; else each provider's lane, as `laneWords`
+ * says it, in the order the lanes began, and none of them while the result holds no lane's record. A provider's longest first
+ * token and silence come after its own lane's clause as `its longest ...`, else alone as `<id>'s longest ...`.
+ */
+function laneClauses(state: ViewState, lanes: QuorumMeta['concurrency']): string[] {
+  const timing = ({ firstTokenMs, longestSilenceMs }: { readonly firstTokenMs: number, readonly longestSilenceMs: number }): string => `longest first token ${durationWords(firstTokenMs)}, its longest silence ${durationWords(longestSilenceMs)}`
+  const { concurrency } = state.facts
+  const records = concurrency === 'auto'
+    ? Object.entries(lanes ?? {})
+    : []
+  const clauses = concurrency === 'auto'
+    ? []
+    : [`${concurrency} at once`]
+  for (const [id, record] of records) {
+    clauses.push(laneWords(id, record))
+    const timings = state.timings.get(id)
+    if (timings !== undefined) clauses.push(`its ${timing(timings)}`)
+  }
+  for (const [id, timings] of state.timings) {
+    if (!records.some(([lane]) => lane === id)) clauses.push(`${id}'s ${timing(timings)}`)
+  }
+  return clauses
+}
+
+function callsLine(state: ViewState, lanes: QuorumMeta['concurrency']): string | undefined {
   const { made, retried, recovered } = state
   if (made.research + made.votes === 0) return undefined
   const parts: string[] = []
@@ -151,8 +185,10 @@ function callsLine(state: ViewState): string | undefined {
       ? ` (${retried.votes} retried)`
       : ''}`)
   }
-  const timings = [...state.timings].map(([id, { firstTokenMs, longestSilenceMs }]) => `${id}'s longest first token ${durationWords(firstTokenMs)}, its longest silence ${durationWords(longestSilenceMs)}`)
-  return `calls: ${parts.join(', ')}; ${[`${state.facts.concurrency} at once`, ...timings].join('; ')}`
+  return `calls: ${[
+    parts.join(', '),
+    ...laneClauses(state, lanes),
+  ].join('; ')}`
 }
 
 /** What a reason's entries count, each unit named: `5 part(s)`, `3 vote(s)`, and `2 gap(s)` for entries that count neither. */
@@ -248,7 +284,7 @@ export function summaryLines(state: ViewState, facts: SummaryFacts, view: Report
     view === 'public'
       ? undefined
       : tokensLine(state),
-    callsLine(state),
+    callsLine(state, facts.result.meta.concurrency),
     gapsLine(state, view),
     resultLine(facts, view),
     resumeLine(facts),

@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import type { Estimate, QuorumEvent } from '../../core/types.ts'
+import type { Estimate, ProviderRef, QuorumEvent } from '../../core/types.ts'
 import { longReview, replay, twoProfiles } from '../../testing/events.ts'
 import { rangeWords, timeLeft } from './eta.ts'
 import { DEFAULT_FACTS, fold, stageEnd, startState } from './model.ts'
 import type { ViewFacts, ViewState } from './model.ts'
+import type { TimeLeft } from './eta.ts'
 
 const API = { id: 'api', model: 'model' }
+const OTHER = { id: 'other', model: 'model' }
 
 /** The events of a profile's research: its parts started together at 0, the answered ones ended at the given durations, in that order. */
-function research(options: { readonly profile?: string, readonly parts: number, readonly answered: readonly number[], readonly planned?: number, readonly flying?: ReadonlyArray<{ readonly index: number, readonly startedAt: number }> }): Array<[number, QuorumEvent]> {
-  const { profile = 'security', parts, answered, planned = 10_000 } = options
+function research(options: { readonly profile?: string, readonly provider?: ProviderRef, readonly parts: number, readonly answered: readonly number[], readonly planned?: number, readonly flying?: ReadonlyArray<{ readonly index: number, readonly startedAt: number }> }): Array<[number, QuorumEvent]> {
+  const { profile = 'security', provider = API, parts, answered, planned = 10_000 } = options
   const events: Array<[number, QuorumEvent]> = []
   const call = (index: number): number => (profile === 'security'
     ? 0
@@ -23,7 +25,7 @@ function research(options: { readonly profile?: string, readonly parts: number, 
         call: call(index),
         profile,
         role: 'research',
-        provider: API,
+        provider,
         part: { index, count: parts },
         reserved: planned,
         timeoutMs: 600_000,
@@ -39,7 +41,7 @@ function research(options: { readonly profile?: string, readonly parts: number, 
         call: call(index),
         profile,
         role: 'research',
-        provider: API,
+        provider,
         part: { index, count: parts },
         durationMs,
         ok: true,
@@ -68,7 +70,7 @@ function research(options: { readonly profile?: string, readonly parts: number, 
         call: call(index),
         profile,
         role: 'research',
-        provider: API,
+        provider,
         part: { index, count: parts },
         reserved: planned,
         timeoutMs: 600_000,
@@ -78,20 +80,24 @@ function research(options: { readonly profile?: string, readonly parts: number, 
   return events
 }
 
-function started(profiles: string[]): QuorumEvent {
+function started(profiles: string[], providers: Readonly<Record<string, ProviderRef>> = {}): QuorumEvent {
   return {
     type: 'run:start',
     profiles,
     providers: Object.fromEntries(profiles.map(id => [
       id,
-      { research: API, lenses: {} },
+      { research: providers[id] ?? API, lenses: {} },
     ])),
   }
 }
 
 /** The state after `profiles` started and `events` happened. */
-function stateOf(profiles: Array<{ readonly id: string, readonly parts: number }>, events: Array<[number, QuorumEvent]>, facts: ViewFacts = DEFAULT_FACTS): ViewState {
-  let state = fold(startState(facts), started(profiles.map(({ id }) => id)), 0)
+function stateOf(profiles: Array<{ readonly id: string, readonly parts: number, readonly provider?: ProviderRef }>, events: Array<[number, QuorumEvent]>, facts: ViewFacts = DEFAULT_FACTS): ViewState {
+  let state = fold(startState(facts), started(profiles.map(({ id }) => id), Object.fromEntries(profiles.flatMap(({ id, provider }) => provider === undefined
+    ? []
+    : [
+        [id, provider],
+      ]))), 0)
   for (const { id, parts } of profiles) {
     state = fold(state, {
       type: 'stage:start',
@@ -295,6 +301,241 @@ describe('timeLeft', () => {
     expect(left.lowMs).toBeCloseTo(740_000 * (100_000 / 60_000) / 4, 3)
     expect(left.highMs).toBeCloseTo(740_000 * (140_000 / 60_000) / 4, 3)
     expect(left.then).toBe(300)
+  })
+
+  /** A provider's lane at `limit`, as the events say it: its limit is set by a growth. */
+  const laneAt = (provider: ProviderRef, limit: number): [number, QuorumEvent] => [
+    0,
+    {
+      type: 'concurrency',
+      provider,
+      limit,
+      cause: 'grown',
+    },
+  ]
+
+  it('gives 3g\'s range for one provider, its lane\'s limit as the calls at once', () => {
+    const answered = research({ parts: 12, answered: SECONDS })
+    const at = (limit: number): TimeLeft => timeLeft(stateOf([
+      { id: 'security', parts: 12 },
+    ], [
+      ...answered,
+      laneAt(API, limit),
+    ]), 160_000)
+    // 8 parts are left at 10 000 tokens, between 10 and 14 ms a token
+    expect(at(4)).toEqual({
+      kind: 'range',
+      stage: 'research',
+      lowMs: 200_000,
+      highMs: 280_000,
+    })
+    expect(at(2)).toEqual({
+      kind: 'range',
+      stage: 'research',
+      lowMs: 400_000,
+      highMs: 560_000,
+    })
+    expect(at(6)).toEqual({
+      kind: 'range',
+      stage: 'research',
+      lowMs: 80_000 * 10 / 6,
+      highMs: 80_000 * 14 / 6,
+    })
+    // never over the parts left
+    expect(at(12)).toEqual({
+      kind: 'range',
+      stage: 'research',
+      lowMs: 100_000,
+      highMs: 140_000,
+    })
+    // a lane no event has moved is at its start, 4
+    expect(timeLeft(stateOf([
+      { id: 'security', parts: 12 },
+    ], answered), 160_000)).toEqual(at(4))
+    // a cut and a regrowth are read at the limit they leave
+    const moved = stateOf([
+      { id: 'security', parts: 12 },
+    ], [
+      ...answered,
+      laneAt(API, 8),
+      [
+        0,
+        {
+          type: 'concurrency',
+          provider: API,
+          limit: 4,
+          cause: 'cut',
+          from: 8,
+          failure: { kind: 'http', status: 429 },
+        },
+      ],
+    ])
+    expect(timeLeft(moved, 160_000)).toEqual(at(4))
+  })
+
+  it('takes the largest of each research provider\'s own estimate when two run side by side', () => {
+    const slow = [300_000, 360_000, 420_000, 480_000]
+    const profiles = [
+      { id: 'security', parts: 12, provider: API },
+      { id: 'style', parts: 12, provider: OTHER },
+    ]
+    const events = [
+      ...research({ parts: 12, answered: SECONDS }),
+      ...research({
+        profile: 'style',
+        provider: OTHER,
+        parts: 12,
+        answered: slow,
+      }),
+    ]
+    // each has 8 parts of 10 000 tokens left, over its own 4: its own rates, 10 to 14 and 30 to 42 ms a token
+    expect(timeLeft(stateOf(profiles, events), 480_000)).toEqual({
+      kind: 'range',
+      stage: 'research',
+      lowMs: 600_000,
+      highMs: 840_000,
+    })
+    // the one with the longer lane is not the slower one
+    expect(timeLeft(stateOf(profiles, [
+      ...events,
+      laneAt(OTHER, 8),
+    ]), 480_000)).toEqual({
+      kind: 'range',
+      stage: 'research',
+      lowMs: 300_000,
+      highMs: 420_000,
+    })
+    // lanes that pass 16 together are scaled down together to 16: 12 and 12 over 18 parts left each are 8 and 8
+    const many = [
+      { id: 'security', parts: 22, provider: API },
+      { id: 'style', parts: 22, provider: OTHER },
+    ]
+    const wide = [
+      ...research({ parts: 22, answered: SECONDS }),
+      ...research({
+        profile: 'style',
+        provider: OTHER,
+        parts: 22,
+        answered: slow,
+      }),
+      laneAt(API, 12),
+      laneAt(OTHER, 12),
+    ]
+    expect(timeLeft(stateOf(many, wide), 480_000)).toEqual({
+      kind: 'range',
+      stage: 'research',
+      lowMs: 180_000 * 30 / 8,
+      highMs: 180_000 * 42 / 8,
+    })
+    // two profiles on one provider are one estimate, over that provider's one lane
+    const same = [
+      { id: 'security', parts: 12, provider: API },
+      { id: 'style', parts: 12, provider: API },
+    ]
+    const together = [
+      ...research({ parts: 12, answered: SECONDS }),
+      ...research({ profile: 'style', parts: 12, answered: SECONDS }),
+    ]
+    expect(timeLeft(stateOf(same, together), 160_000)).toEqual({
+      kind: 'range',
+      stage: 'research',
+      lowMs: 160_000 * 10 / 4,
+      highMs: 160_000 * 14 / 4,
+    })
+  })
+
+  it('reads estimating until every provider with parts left has its threshold', () => {
+    const profiles = [
+      { id: 'security', parts: 12, provider: API },
+      { id: 'style', parts: 12, provider: OTHER },
+    ]
+    const own = research({ parts: 12, answered: SECONDS })
+    // the other provider has answered nothing, whatever the first has
+    expect(timeLeft(stateOf(profiles, own), 160_000)).toEqual({ kind: 'estimating' })
+    const two = research({
+      profile: 'style',
+      provider: OTHER,
+      parts: 12,
+      answered: [200_000, 240_000],
+    })
+    expect(timeLeft(stateOf(profiles, [
+      ...own,
+      ...two,
+    ]), 240_000)).toEqual({ kind: 'estimating' })
+    const three = research({
+      profile: 'style',
+      provider: OTHER,
+      parts: 12,
+      answered: [200_000, 240_000, 280_000],
+    })
+    expect(timeLeft(stateOf(profiles, [
+      ...own,
+      ...three,
+    ]), 280_000).kind).toBe('range')
+    // a provider with no part left does not wait for a threshold
+    const done = research({
+      profile: 'style',
+      provider: OTHER,
+      parts: 3,
+      answered: [200_000, 240_000, 280_000],
+    })
+    expect(timeLeft(stateOf([
+      { id: 'security', parts: 12, provider: API },
+      { id: 'style', parts: 3, provider: OTHER },
+    ], [
+      ...own,
+      ...done,
+    ]), 280_000).kind).toBe('range')
+  })
+
+  it('pools every profile, as 3g does, with concurrency set', () => {
+    const profiles = [
+      { id: 'security', parts: 12, provider: API },
+      { id: 'style', parts: 12, provider: OTHER },
+    ]
+    const events = [
+      ...research({ parts: 12, answered: SECONDS }),
+      ...research({
+        profile: 'style',
+        provider: OTHER,
+        parts: 12,
+        answered: [300_000, 360_000, 420_000, 480_000],
+      }),
+      // a lane event is not sent with concurrency set, and one that came is not read
+      laneAt(API, 2),
+    ]
+    // 16 parts of 10 000 tokens left over the 4 calls at once, at the pooled quartiles of 12 and 36 ms a token
+    expect(timeLeft(stateOf(profiles, events, { ...DEFAULT_FACTS, concurrency: 4 }), 480_000)).toEqual({
+      kind: 'range',
+      stage: 'research',
+      lowMs: 160_000 * 12 / 4,
+      highMs: 160_000 * 36 / 4,
+    })
+    // one threshold for all of them: 3 answered parts pool, wherever they answered
+    expect(timeLeft(stateOf(profiles, research({
+      parts: 12,
+      answered: SECONDS.slice(0, 3),
+    }), { ...DEFAULT_FACTS, concurrency: 4 }), 160_000).kind).toBe('range')
+  })
+
+  it('sums the lanes\' limits as the votes\' calls at once, at most 16', () => {
+    const list = longReview()
+    const first = list.find(({ event }) => event.type === 'call' && event.role === 'vote')!.at
+    const lane = (provider: ProviderRef, limit: number): QuorumEvent => ({
+      type: 'concurrency',
+      provider,
+      limit,
+      cause: 'grown',
+    })
+    const base = replay(list, first)
+    // 17 votes left over the one lane's 4, the recorded review's
+    expect(timeLeft(base, first)).toMatchObject({ lowMs: 85_000 * 17 / 4 })
+    const two = fold(fold(base, lane(API, 6), first), lane(OTHER, 2), first)
+    expect(timeLeft(two, first)).toMatchObject({ lowMs: 85_000 * 17 / 8 })
+    const wide = fold(fold(base, lane(API, 12), first), lane(OTHER, 8), first)
+    expect(timeLeft(wide, first)).toMatchObject({ lowMs: 85_000 * 17 / 16 })
+    // with concurrency set it is the setting
+    expect(timeLeft(replay(list, first, { ...DEFAULT_FACTS, concurrency: 2 }), first)).toMatchObject({ lowMs: 85_000 * 17 / 2 })
   })
 
   it.each<[number, number, string]>([

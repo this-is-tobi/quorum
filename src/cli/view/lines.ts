@@ -95,6 +95,8 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
       return adaptedWords(event.adaptation)
     case 'cut':
       return cutWords(event, view)
+    case 'concurrency':
+      return laneWords(event)
     case 'stored-refused':
       return '--state: a stored reply failed its check: the call is made again'
     case 'recovered':
@@ -213,6 +215,21 @@ function cutWords({ provider, afterMs, holds, lowered, fits }: Extract<QuorumEve
     : `${line}; lower maxTokens to about ${holds} to keep each call under it`
 }
 
+/**
+ * The line of a lane's cut, `<id>: <n> call(s) at once for now, cut from <from> after <failure>`, or of the slots its provider
+ * states, which the lane holds to. A growth, a pause and a pacing wait have no line: the block shows them. It holds an id,
+ * numbers and a failure's code words.
+ */
+function laneWords({ provider, limit, cause, from, failure }: Extract<QuorumEvent, { type: 'concurrency' }>): string | undefined {
+  if (cause === 'slots') return `${provider.id}: the server serves ${limit} calls at once: its lane holds ${limit}`
+  if (cause !== 'cut') return undefined
+  return `${provider.id}: ${limit} call(s) at once for now${from === undefined
+    ? ''
+    : `, cut from ${from}`}${failure === undefined
+    ? ''
+    : ` after ${kindWords(failure)}`}`
+}
+
 /** What each cause of a setting moved says, in words the code writes: the reason the review gives for it. */
 const ADAPTED_BECAUSE: Readonly<Partial<Record<Adaptation['cause'], string>>> = {
   'cut-off-thinking': 'a reply ran out of room while reasoning',
@@ -279,6 +296,7 @@ function glyphOf(event: QuorumEvent): GlyphName | undefined {
       return 'retry'
     case 'adapted':
     case 'cut':
+    case 'concurrency':
     case 'recovered':
     case 'reply-lacked':
       return 'adapted'
