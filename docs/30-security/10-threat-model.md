@@ -123,6 +123,15 @@ A model that reads less than the whole diff can miss what an attacker put in the
 
 The flag stays out of reach because of the padding attack. A pull request that pads one hunk until no request of the window holds it needs no persuasion of any model, and a flag that waved the gap through would let the padding push a finding out of the reviewed text. `--allow-incomplete` lifts only a vote that failed in passing, never a gap a pull request can cause directly: decoy findings that push a real one past `maxFindings`, decoy findings and drawn-out replies that spend the review's token cap (a `token-cap` gap) or hold it until its deadline (a `review-deadline` gap), a binary or submodule file, a file held back as a secret, or text that makes a voter refuse, run on or answer unreadably. [Unreviewed and incomplete reviews](#unreviewed-and-incomplete-reviews) says which. This is also why no ratio of bytes to tokens is offered: encoded content takes 1 to 1.5 bytes per token, so any ratio above one lets the padding past.
 
+### The stream readers
+
+A server can stream a reply, as server-sent events or NDJSON, and a stream is text quorum has not seen the end of. Two in-house readers, in `src/providers/stream.ts`, hold it to caps that fail closed, so a server cannot make a review hold more than they allow:
+
+- **Every cap is counted after decoding.** A compressed body's size on the wire says nothing of the text it inflates to, so the body's total is the bytes `fetch` hands over after its decompression, 16 MiB, and a line, an event and an answer are counted in decoded characters: a line 1048576, an event 4194304 characters of data and 1000 lines, and an answer 1000000. A line is counted as it grows, so one over its cap is refused before it is kept. Every line of an event but a comment counts toward its 1000, so a flood of tiny fields stops there too.
+- **A broken stream is a failure, never an answer.** A passed cap, or an event or a line that is not JSON, ends the read as an `invalid-response`, which is never retried, with the body cancelled first. A stream that ends before its last event is a `network` failure, and an event the body leaves unclosed, with no blank line after it, is discarded, so nothing is decided on a part of a reply.
+- **Comments and blank lines cost only bytes.** A comment of a server-sent event and a blank NDJSON line are keep-alives: each is dropped as it is read, and counts toward the body's total and the line cap, so a flood of them ends at the same caps.
+- **Reasoning text is counted and never kept.** A reply that reasons is counted by its characters, and only the fact that it reasoned and how much is kept, so a server cannot make a review hold what a model thought.
+
 ### Research in parts
 
 A change larger than one research request is reviewed in parts, each a research request of its own, and not refused: [Research in parts](../20-using/20-configuration.md#research-in-parts) says what a part holds. What that defends against, and what it leaves:
