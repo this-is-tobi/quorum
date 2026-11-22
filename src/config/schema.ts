@@ -82,7 +82,8 @@ const providerShape = {
   maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']).optional().describe('The body field that carries maxTokens, on the openai-compatible protocol'),
   systemPrompt: z.enum(['native', 'inline']).optional().describe('Where the instructions go: the protocol\'s system field, or inline in the first message'),
   stream: z.boolean().optional().describe('Whether each reply is streamed: unset, it is, and quorum steps down by itself when the server refuses a stream\'s options, refuses streaming or answers a stream whole; true pins the stream, so a refusal fails the call; false asks for whole replies'),
-  timeoutMs: z.int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe('The deadline of one attempt of a call, in milliseconds; 600000 when unset. On claude-code, Claude Code\'s wait for each attempt\'s response headers, and the whole run\'s deadline is timeoutMs times retries plus one'),
+  timeoutMs: z.int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe('The deadline of one attempt of a call, in milliseconds; unset, it grows with the reply budget, from 600000 up to a day. On claude-code, Claude Code\'s wait for each attempt\'s response headers, and the whole run\'s deadline is timeoutMs times retries plus one (600000 when unset)'),
+  stallTimeoutMs: z.int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe('How long a streamed attempt may show no progress before it fails as a timeout, in milliseconds; unset, it is learned from the provider\'s own streams in the review: 600000 until one answered, then three times its longest silence, at least 300000'),
   retries: z.int().min(0).max(MAX_RETRIES).optional().describe('How many times a call that failed in passing is tried again; 2 when unset'),
   args: z.array(z.string()).optional().describe('On claude-code, extra claude flags, each with its value: --effort, --fallback-model, --max-budget-usd, or --betas with auth api-key'),
 }
@@ -158,6 +159,7 @@ const SNAPSHOTS = new WeakSet<object>()
 /** The facts a provider object states of its calls, as the port names them. */
 interface StatedFacts {
   readonly timeoutMs?: number
+  readonly stallTimeoutMs?: number
   readonly retries?: number
   readonly window?: number
   readonly maxTokens?: number
@@ -171,6 +173,10 @@ const FACTS: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly problem
   {
     field: 'timeoutMs',
     problem: value => timeoutProblem(value, MAX_STATED_TIMEOUT_MS),
+  },
+  {
+    field: 'stallTimeoutMs',
+    problem: value => timeoutProblem(value),
   },
   { field: 'retries', problem: retriesProblem },
   { field: 'window', problem: tokensProblem },
@@ -265,7 +271,7 @@ function snapshot({ worstCase, room, ...fields }: { readonly id?: string, readon
  * into a snapshot. The check reads `model` and `complete` one time each, and nothing reads the object again,
  * so a getter of the program's cannot run outside the guard that hides what it throws. The snapshot calls the
  * method read here on the object itself, through `Reflect.apply`, which reads nothing off the function. The
- * `timeoutMs`, `retries`, `window`, `maxTokens` and `thinking` it states are read as own data, so no getter runs
+ * `timeoutMs`, `stallTimeoutMs`, `retries`, `window`, `maxTokens` and `thinking` it states are read as own data, so no getter runs
  * for them; the snapshot keeps each that is in range, and a value out of range is an issue at its field. The `worstCase` it states is read
  * as own data too and kept as a function that calls it on the object, so the review's token cap counts
  * what the object says one call may cost; a value that is no function is an issue at its field. So is the

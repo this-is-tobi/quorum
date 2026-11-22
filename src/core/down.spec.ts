@@ -327,4 +327,62 @@ describe('a provider being down', () => {
     const found = streak.map(([kind, status, ran]) => health.failed(api, 'api', failure(kind, status), ran)).at(-1)
     expect(found).toMatchObject({ count: 3, cutAfterMs: undefined })
   })
+
+  it('finds a streak of stalls and keeps its shortest window', () => {
+    const health = createHealth()
+    const api = provider()
+    const stall = (stalledMs: number): ProviderError => new ProviderError({
+      providerId: 'api',
+      kind: 'timeout',
+      message: 'it stalled',
+      stalledMs,
+    })
+    expect(health.failed(api, 'api', stall(600_000))).toBeUndefined()
+    expect(health.failed(api, 'api', stall(300_000))).toBeUndefined()
+    expect(health.failed(api, 'api', stall(450_000))).toMatchObject({
+      kind: 'timeout',
+      count: 3,
+      streak: true,
+      stalledMs: 300_000,
+    })
+  })
+
+  it('names no stall when a call of the streak was a plain timeout, and counts the stalls again after an answer', () => {
+    const health = createHealth()
+    const api = provider()
+    const stall = (): ProviderError => new ProviderError({
+      providerId: 'api',
+      kind: 'timeout',
+      message: 'it stalled',
+      stalledMs: 300_000,
+    })
+    health.failed(api, 'api', stall())
+    health.failed(api, 'api', failure('timeout'))
+    expect(health.failed(api, 'api', stall())).toMatchObject({ count: 3, stalledMs: undefined })
+
+    const other = provider()
+    health.failed(other, 'api', failure('timeout'))
+    health.answered(other)
+    health.failed(other, 'api', stall())
+    health.failed(other, 'api', stall())
+    expect(health.failed(other, 'api', stall())).toMatchObject({ stalledMs: 300_000 })
+  })
+
+  it('names the stall of a provider spent at the end, when each of its calls was one', () => {
+    const health = createHealth()
+    const api = provider()
+    health.failed(api, 'api', new ProviderError({
+      providerId: 'api',
+      kind: 'timeout',
+      message: 'it stalled',
+      stalledMs: 300_000,
+    }))
+    health.failed(api, 'api', new ProviderError({
+      providerId: 'api',
+      kind: 'timeout',
+      message: 'it stalled',
+      stalledMs: 900_000,
+    }))
+    expect(health.spent(api, 'api')).toMatchObject({ count: 2, streak: false, stalledMs: 300_000 })
+  })
 })

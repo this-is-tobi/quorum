@@ -1,9 +1,9 @@
-import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
+import { DEFAULT_RETRIES } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider, StreamSignal } from '../core/ports.ts'
 import { postStream, snippet } from './http.ts'
 import type { PostStreamOptions } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { adaptsOf, isRecord, mergeBody, prepareHttp, requestSettings, streamFacts, thinkingIssues } from './options.ts'
+import { adaptsOf, attemptFacts, isRecord, mergeBody, prepareHttp, requestSettings, streamFacts, thinkingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput, Thinking, ThinkingControl } from './options.ts'
 import { endedEarly, joinedText, MAX_MODEL_TEXT, readAnswer, replyFailure, STREAMED_REASONING, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
@@ -435,7 +435,7 @@ export async function assembleOpenAi(items: AsyncIterable<StreamItem>, providerI
  * @throws ConfigError with every problem of the options, before any request
  */
 export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
-  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, maxTokensField = 'max_tokens', thinking, systemPrompt = 'native', structuredOutput = 'json', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES, lowersThinkingTo, stream: streamOption } = options
+  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, maxTokensField = 'max_tokens', thinking, systemPrompt = 'native', structuredOutput = 'json', retries = DEFAULT_RETRIES, lowersThinkingTo, stream: streamOption } = options
   const fieldIssues = [
     ...MAX_TOKENS_FIELDS.has(maxTokensField)
       ? []
@@ -463,7 +463,7 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
   return {
     id,
     model,
-    timeoutMs,
+    ...attemptFacts(options),
     retries,
     ...streamFacts(streamOption),
     ...statedReply(contextTokens, maxTokens, thinking),

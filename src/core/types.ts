@@ -618,7 +618,8 @@ export interface Position {
  * limit is used up. `cutAfterMs` is set only on the failure a call ends with (a `part` event's), when its last attempt
  * was cut on the way: a `network` failure, or an `http` 502, 504 or 524, after at least `CUT_AFTER_MS`, and holds the
  * attempt's length in milliseconds. `refused` is `stream` when an `http` 400 or 422 named the stream or its options,
- * which a provider with `stream: true` can only be told to give up.
+ * which a provider with `stream: true` can only be told to give up. `stalledMs` is set on a `timeout` that was a stream with
+ * no progress for that long, in milliseconds: the window it stalled at.
  */
 export interface CallFailure {
   kind: ProviderErrorKind
@@ -626,6 +627,7 @@ export interface CallFailure {
   exhausted?: true
   cutAfterMs?: number
   refused?: 'stream'
+  stalledMs?: number
 }
 
 /**
@@ -653,9 +655,18 @@ export type QuorumEvent
      * by a limit before its first attempt sends none. `call` is the call's number in the review, from 1, in the
      * order calls start, which its `call:retry` and `call` events repeat; `part` and `finding` say what it asks (a
      * research call's position, a vote's finding id); `reserved` is the tokens its first attempt reserved in the
-     * review's ledger and `timeoutMs` the deadline of each of its attempts. Every field is a number, an id or a code word.
+     * review's ledger and `timeoutMs` the ceiling of its first attempt: the deadline the provider stated, else the one
+     * its reply budget sizes. `stream` is `true` when that attempt is streamed, so the core watches it for progress.
+     * Every field is a number, an id or a code word.
      */
-    | { type: 'call:start', call: number, profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, part?: Position, finding?: string, reserved: number, timeoutMs: number }
+    | { type: 'call:start', call: number, profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, part?: Position, finding?: string, reserved: number, timeoutMs: number, stream?: true }
+    /**
+     * A streamed call shows progress: sent at most once a second per call, on the review's clock. `outputTokens` is the
+     * output its streamed attempt has shown, the larger of the server's own count and a quarter of the characters, and
+     * `signal` is `tokens` when it grew since the call's last `call:progress`, `keep-alive` when only keep-alives came.
+     * Never sent for a call that does not stream, nor for the headers alone. Numbers and a code word only.
+     */
+    | { type: 'call:progress', call: number, outputTokens: number, signal: 'tokens' | 'keep-alive' }
     /**
      * A call's attempt failed and the call waits to send another: sent before each wait, once the wait is known and
      * the review's stop has not fired. `call` is the call's number, `attempt` the number of the failed attempt of
@@ -675,19 +686,22 @@ export type QuorumEvent
      * `call` is the call's number, the one its `call:start` carried, absent for a call that sent none; `part` and
      * `finding` are the research position or the finding it asked about; `listed` is the findings the research
      * reply listed, as the stage's check read it, and `reasoning` whether the reply showed reasoning, when the
-     * provider could tell.
+     * provider could tell. An ok call whose answered attempt streamed adds `firstTokenMs`, from the attempt's send to its
+     * first data event, the headers excluded, and `longestSilenceMs`, the longest time between two signs of its progress,
+     * the headers counted as one.
      */
-    | { type: 'call', call?: number, profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, part?: Position, finding?: string, durationMs: number, ok: boolean, attempts?: number, usage?: Usage, spent: number, reused?: true, listed?: number, reasoning?: boolean }
+    | { type: 'call', call?: number, profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, part?: Position, finding?: string, durationMs: number, ok: boolean, attempts?: number, usage?: Usage, spent: number, reused?: true, listed?: number, reasoning?: boolean, firstTokenMs?: number, longestSilenceMs?: number }
     /**
      * A provider was found down: three of its calls in a row failed for a reason of its own (`kind`, and for an
      * `http` failure its `status`), so no call goes to it for the rest of the review. Sent once per provider, at the
      * moment the third call ends; the calls in flight run to their end. `exhausted` is true when the failure said
      * the account's credit, quota or spend limit is used up: the provider is then found down at its first call
      * that failed so, `calls` is 1, and no retry was made. `cutAfterMs` is present only when every call of the streak
-     * was cut on the way, and holds the shortest of their last attempts' lengths, in milliseconds. `refused` is `stream`
+     * was cut on the way, and holds the shortest of their last attempts' lengths, in milliseconds. `stalledMs` is present
+     * only when every call of the streak stalled, and holds the shortest of their windows. `refused` is `stream`
      * when the last failure was a stream the server refused.
      */
-    | { type: 'provider-down', provider: string, kind: ProviderErrorKind, status?: number, calls: number, noAnswer?: NoAnswer, exhausted?: true, cutAfterMs?: number, refused?: 'stream' }
+    | { type: 'provider-down', provider: string, kind: ProviderErrorKind, status?: number, calls: number, noAnswer?: NoAnswer, exhausted?: true, cutAfterMs?: number, stalledMs?: number, refused?: 'stream' }
     /**
      * A reply lacked what a review needs, said once per provider and line in a review: `truncated` with
      * `noAnswer` `window` (the server's window ended it) or `reply` or `thinking` with `outputTokens` below the

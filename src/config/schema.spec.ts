@@ -187,10 +187,12 @@ describe('configFileSchema', () => {
     })).toEqual([])
   })
 
-  it('takes a provider\'s timeoutMs and retries in range', () => {
+  it('takes a provider\'s timeoutMs, stallTimeoutMs and retries in range', () => {
     for (const fields of [
       { timeoutMs: 1000, retries: 0 },
       { timeoutMs: 86_400_000, retries: 5 },
+      { stallTimeoutMs: 1000 },
+      { stallTimeoutMs: 86_400_000 },
     ]) {
       expect(issuesOf({
         providers: {
@@ -206,6 +208,18 @@ describe('configFileSchema', () => {
   })
 
   it.each<[string, string, unknown, string]>([
+    [
+      'stallTimeoutMs 999',
+      'stallTimeoutMs',
+      999,
+      'must be at least 1000',
+    ],
+    [
+      'stallTimeoutMs 86400001',
+      'stallTimeoutMs',
+      86_400_001,
+      'must be at most 86400000',
+    ],
     [
       'timeoutMs 999',
       'timeoutMs',
@@ -1273,6 +1287,22 @@ describe('configCodeSchema', () => {
     })
     expect(Object.keys(read)).toEqual(['model', 'complete', 'timeoutMs'])
     expect(ran).toBe(false)
+  })
+
+  it('keeps a provider object\'s stated stallTimeoutMs in its snapshot, and refuses one out of range at its field', () => {
+    const snapshotOf = (object: unknown): Provider => parseConfig(configCodeSchema, {
+      providers: { mine: object },
+    }).providers?.mine as Provider
+    expect(snapshotOf({ ...fakeProvider, stallTimeoutMs: 300_000 })).toMatchObject({ stallTimeoutMs: 300_000 })
+    for (const bad of [999, 86_400_001, '300000']) {
+      expect(issuesOf({
+        providers: {
+          mine: { ...fakeProvider, stallTimeoutMs: bad },
+        },
+      }, configCodeSchema)).toEqual([
+        at('providers.mine.stallTimeoutMs', 'must be a whole number of milliseconds from 1000 to 86400000'),
+      ])
+    }
   })
 
   it('refuses a provider object\'s stated timeoutMs or retries out of range at its field', () => {

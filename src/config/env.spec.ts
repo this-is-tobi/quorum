@@ -301,6 +301,50 @@ describe('the deadline and retries variables', () => {
   })
 })
 
+describe('the stall window variable', () => {
+  const TIMEOUT = 'must be a whole number of milliseconds, from 1000 to 86400000'
+
+  it('reads each role\'s QUORUM_<ROLE>_STALL_TIMEOUT_MS in decimal digits and in range', () => {
+    expect(readEnv({
+      QUORUM_RESEARCH_STALL_TIMEOUT_MS: '1000',
+      QUORUM_VOTER_STALL_TIMEOUT_MS: '300000',
+    })).toEqual({
+      research: { stallTimeoutMs: 1000 },
+      voter: { stallTimeoutMs: 300000 },
+      warnings: [],
+      issues: [],
+    })
+    expect(readEnv({ QUORUM_VOTER_STALL_TIMEOUT_MS: '86400000' }).voter).toEqual({ stallTimeoutMs: 86400000 })
+  })
+
+  it.each([
+    '999',
+    '86400001',
+    '1e5',
+    '0x3e8',
+    '1500.5',
+    '-1000',
+    '120s',
+    '0120000',
+  ])('refuses QUORUM_VOTER_STALL_TIMEOUT_MS=%s, never repeating it', (value) => {
+    const layer = readEnv({ QUORUM_VOTER_STALL_TIMEOUT_MS: value })
+    expect(layer.issues).toEqual([
+      { path: 'QUORUM_VOTER_STALL_TIMEOUT_MS', message: TIMEOUT },
+    ])
+    expect(layer).toMatchObject({ research: {}, voter: {} })
+    expect(JSON.stringify(layer.issues)).not.toContain(value)
+  })
+
+  it('is a variable the environment layer reads, and sets the field on the role\'s provider', () => {
+    expect(READ_VARIABLES.has('QUORUM_RESEARCH_STALL_TIMEOUT_MS')).toBe(true)
+    expect(READ_VARIABLES.has('QUORUM_VOTER_STALL_TIMEOUT_MS')).toBe(true)
+    const stated: ProviderSettings = { protocol: 'openai-compatible', baseUrl: 'https://a.example/v1', model: 'm' }
+    expect(apply({ a: stated }, { research: 'a', voter: 'a' }, {
+      research: { stallTimeoutMs: 120000 },
+    }).providers.a).toEqual({ ...stated, stallTimeoutMs: 120000 })
+  })
+})
+
 describe('the stream variable', () => {
   it.each<[string, Record<string, unknown>, unknown[]]>([
     [

@@ -6,7 +6,7 @@
  * `inertLine` whole.
  */
 
-import { CUT_ADVICE, failureFix, QUOTA_FIX } from '../../core/errors.ts'
+import { CUT_ADVICE, failureFix, QUOTA_FIX, STALL_FIX } from '../../core/errors.ts'
 import { inertLine } from '../../core/sanitize.ts'
 import type { IncompleteReason, QuorumResult, StageName } from '../../core/types.ts'
 import type { ReportView } from '../../report/view.ts'
@@ -46,8 +46,9 @@ const FIXES: Readonly<Partial<Record<IncompleteReason, string>>> = {
   interrupted: SEE_RESUME,
 }
 
-/** A cause in words: its kind, then its status when it has one. */
-function causeWords({ kind, status }: Cause): string {
+/** A cause in words: its kind, then its status when it has one, or `stalled` for a timeout that was a stalled stream. */
+function causeWords({ kind, status, stalledMs }: Cause): string {
+  if (stalledMs !== undefined) return `${kind}, stalled`
   return status === undefined
     ? kind
     : `${kind} ${status}`
@@ -56,16 +57,20 @@ function causeWords({ kind, status }: Cause): string {
 /**
  * What to do about a gap of `reason`, or undefined when there is nothing to say: a fixed phrase for most reasons,
  * and for `research-failed` and `provider-down` the fix of each cause the events gave, joined by `, or ` (a used-up
- * quota's is `QUOTA_FIX`, a call cut on the way's `CUT_ADVICE`, a refused stream's `set stream: false`), `research-failed` with no cause pointing to the report.
+ * quota's is `QUOTA_FIX`, a call cut on the way's `CUT_ADVICE`, a stalled stream's `STALL_FIX`, a refused stream's `set stream: false`), `research-failed` with no cause pointing to the report.
+ * A plain timeout's `raise timeoutMs` is left out beside `STALL_FIX`, which names it.
  */
 export function gapFix(reason: IncompleteReason, causes: readonly Cause[]): string | undefined {
   if (reason !== 'research-failed' && reason !== 'provider-down') return FIXES[reason]
   const fixes = new Set(causes.map((cause) => {
     if (cause.exhausted === true) return QUOTA_FIX
-    return cause.cutAfterMs === undefined
+    if (cause.cutAfterMs !== undefined) return CUT_ADVICE
+    return cause.stalledMs === undefined
       ? failureFix(cause.kind, cause.status, cause.refused)
-      : CUT_ADVICE
+      : STALL_FIX
   }))
+  // `STALL_FIX` names `timeoutMs` already: a plain timeout's own fix beside it would say it twice.
+  if (fixes.has(STALL_FIX)) fixes.delete(failureFix('timeout', undefined))
   if (fixes.size === 0) {
     return reason === 'research-failed'
       ? SEE_REPORT
@@ -176,10 +181,14 @@ function gapsLine(state: ViewState, view: ReportView): string | undefined {
     const fix = quota && fixed.length === 0
       ? undefined
       : gapFix(reason, fixed)
+    // A plain timeout is written only when no stalled one is beside it, whose cause covers it.
+    const shown = known.some(cause => cause.stalledMs !== undefined)
+      ? known.filter(cause => cause.kind !== 'timeout' || cause.stalledMs !== undefined)
+      : known
     return `${quantityWords(count)} ${reason}${known.length === 0
       ? ''
       : ` (${[
-        ...new Set(known.map(causeWords)),
+        ...new Set(shown.map(causeWords)),
       ].join(', ')})`}${fix === undefined
       ? ''
       : `: ${fix}`}`

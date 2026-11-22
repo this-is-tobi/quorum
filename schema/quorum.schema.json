@@ -187,7 +187,13 @@
             "type": "boolean"
           },
           "timeoutMs": {
-            "description": "The deadline of one attempt of a call, in milliseconds; 600000 when unset. On claude-code, Claude Code's wait for each attempt's response headers, and the whole run's deadline is timeoutMs times retries plus one",
+            "description": "The deadline of one attempt of a call, in milliseconds; unset, it grows with the reply budget, from 600000 up to a day. On claude-code, Claude Code's wait for each attempt's response headers, and the whole run's deadline is timeoutMs times retries plus one (600000 when unset)",
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 86400000
+          },
+          "stallTimeoutMs": {
+            "description": "How long a streamed attempt may show no progress before it fails as a timeout, in milliseconds; unset, it is learned from the provider's own streams in the review: 600000 until one answered, then three times its longest silence, at least 300000",
             "type": "integer",
             "minimum": 1000,
             "maximum": 86400000

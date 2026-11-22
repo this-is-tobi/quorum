@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ConfigError, CUT_ADVICE, CUT_AFTER_MS, CUT_FIX, cutOf, downWords, failureFix, issuePath, lackWords, ProviderDownError, ProviderError, QuorumError, QUOTA_FIX } from './errors.ts'
+import { ConfigError, CUT_ADVICE, CUT_AFTER_MS, CUT_FIX, cutOf, downWords, failureFix, issuePath, lackWords, ProviderDownError, ProviderError, QuorumError, QUOTA_FIX, STALL_FIX } from './errors.ts'
 import type { ConfigIssue, ProviderErrorKind, ReplyLack } from './errors.ts'
 
 describe('provider errors', () => {
@@ -291,6 +291,41 @@ describe('a provider that is down', () => {
     })).toContain('each call was cut after about 1m05s, likely')
     expect(new ProviderDownError({ ...facts, cutAfterMs: 600_000 })).toMatchObject({ cutAfterMs: 600_000 })
     expect(new ProviderDownError(facts).cutAfterMs).toBeUndefined()
+  })
+
+  it('words a provider whose calls each stalled with the stall fix, after the quota and the cut', () => {
+    const facts = {
+      providerId: 'api',
+      kind: 'timeout',
+      count: 3,
+      streak: true,
+    } as const
+    expect(downWords({ ...facts, stalledMs: 300_000 })).toBe('api: 3 calls in a row failed (timeout): no more calls go to it in this review: raise stallTimeoutMs, or timeoutMs')
+    expect(downWords({
+      ...facts,
+      count: 2,
+      streak: false,
+      stalledMs: 300_000,
+    })).toBe('api: its 2 calls failed (timeout): raise stallTimeoutMs, or timeoutMs')
+    expect(downWords(facts)).toBe('api: 3 calls in a row failed (timeout): no more calls go to it in this review: raise timeoutMs')
+    expect(downWords({ ...facts, stalledMs: 300_000, cutAfterMs: 600_000 })).toContain('each call was cut after about 10m00s')
+    expect(downWords({
+      ...facts,
+      kind: 'http',
+      status: 429,
+      exhausted: true,
+      stalledMs: 300_000,
+    })).toContain(QUOTA_FIX)
+    expect(STALL_FIX).toBe('raise stallTimeoutMs, or timeoutMs')
+    expect(new ProviderDownError({ ...facts, stalledMs: 300_000 })).toMatchObject({ stalledMs: 300_000 })
+    expect(new ProviderDownError(facts).stalledMs).toBeUndefined()
+    expect(new ProviderError({
+      providerId: 'api',
+      kind: 'timeout',
+      message: 'x',
+      stalledMs: 300_000,
+    }).stalledMs).toBe(300_000)
+    expect(new ProviderError({ providerId: 'api', kind: 'timeout', message: 'x' }).stalledMs).toBeUndefined()
   })
 
   it.each<[string, number, string]>([

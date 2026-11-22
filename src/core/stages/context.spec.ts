@@ -2,12 +2,14 @@ import { getEventListeners } from 'node:events'
 import { describe, expect, it, onTestFinished } from 'vitest'
 import { fakeClock, settle } from '../../testing/clock.ts'
 import type { FakeClock } from '../../testing/clock.ts'
+import { streamingProvider } from '../../testing/streams.ts'
 import { createAdaptations } from '../adapt.ts'
+import { createClocks } from '../clocks.ts'
 import { createLimiter } from '../concurrency.ts'
 import { createHealth } from '../down.ts'
 import { ProviderDownError, ProviderError } from '../errors.ts'
 import { createLedger, DEFAULT_REVIEW_TIMEOUT_MS, LimitError } from '../limits.ts'
-import type { CompletionRequest, CompletionResponse, Provider, StoredCall } from '../ports.ts'
+import type { CompletionRequest, CompletionResponse, Provider, StoredCall, StreamSignal } from '../ports.ts'
 import { researchRequest } from '../prompts.ts'
 import type { QuorumEvent } from '../types.ts'
 import { callProvider, providerFailure, reservationOf, roomOf, targetOf } from './context.ts'
@@ -34,7 +36,7 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
     ledger: createLedger(limits.cap ?? 2_000_000),
     emit: (event) => {
       if (controller.signal.aborted) return
-      if (event.type === 'call:start' || event.type === 'call:retry') progress.push(event)
+      if (event.type === 'call:start' || event.type === 'call:retry' || event.type === 'call:progress') progress.push(event)
       else events.push(event)
     },
     signal: controller.signal,
@@ -48,6 +50,7 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
     maxFindings: 50,
     budgets: {},
     concurrency,
+    clocks: createClocks(),
     clock,
     calls: { last: 0 },
     flying: { count: 0 },
@@ -56,11 +59,12 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
 }
 
 /** A target whose provider's own id is not the id of its ref, which is the one an error and an event name. */
-function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'retries' | 'worstCase' | 'room' | 'window' | 'maxTokens' | 'thinking' | 'adapts' | 'streams'>> = {}): Target {
+function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'stallTimeoutMs' | 'retries' | 'worstCase' | 'room' | 'window' | 'maxTokens' | 'thinking' | 'adapts' | 'streams'>> = {}): Target {
   return {
     provider: { id: 'live-id', model: 'm', complete },
     ref: { id: 'p', model: 'm' },
     timeoutMs: 1000,
+    stallTimeoutMs: undefined,
     retries: 0,
     worstCase: undefined,
     room: undefined,
@@ -197,13 +201,14 @@ describe('the deadline of an attempt', () => {
     expect(clock.pending()).toBe(0)
   })
 
-  it('gives a provider that states no deadline 600000 ms, and reads a stated one as an own data property, never running a getter', () => {
+  it('states no deadline for a provider that states none, and reads a stated one as an own data property, never running a getter', () => {
     const complete = async (): Promise<CompletionResponse> => ({ text: '', model: 'm' })
     const provider: Provider = { id: 'p', model: 'm', complete }
     expect(targetOf(provider)).toEqual({
       provider,
       ref: { id: 'p', model: 'm' },
-      timeoutMs: 600_000,
+      timeoutMs: undefined,
+      stallTimeoutMs: undefined,
       retries: 0,
       thinking: 'default',
       streams: false,
@@ -220,13 +225,42 @@ describe('the deadline of an attempt', () => {
         return 1000
       },
     })
-    expect(targetOf(getter).timeoutMs).toBe(600_000)
+    expect(targetOf(getter).timeoutMs).toBeUndefined()
     expect(read).toBe(false)
 
     const inherited: Provider = Object.assign(Object.create({ timeoutMs: 1000 }), provider)
-    expect(targetOf(inherited).timeoutMs).toBe(600_000)
+    expect(targetOf(inherited).timeoutMs).toBeUndefined()
 
-    expect(targetOf({ ...provider, timeoutMs: 5 }).timeoutMs).toBe(600_000)
+    expect(targetOf({ ...provider, timeoutMs: 5 }).timeoutMs).toBeUndefined()
+  })
+
+  it('reads a stated stallTimeoutMs from 1000 to 86400000 as own data, and states none otherwise', () => {
+    const complete = async (): Promise<CompletionResponse> => ({ text: '', model: 'm' })
+    const provider: Provider = { id: 'p', model: 'm', complete }
+    expect(targetOf({ ...provider, stallTimeoutMs: 300_000 }).stallTimeoutMs).toBe(300_000)
+    expect(targetOf({ ...provider, stallTimeoutMs: 1000 }).stallTimeoutMs).toBe(1000)
+    expect(targetOf({ ...provider, stallTimeoutMs: 86_400_000 }).stallTimeoutMs).toBe(86_400_000)
+    for (const bad of [
+      999,
+      86_400_001,
+      1.5,
+      Number.NaN,
+      '300000',
+    ]) {
+      expect(targetOf({ ...provider, stallTimeoutMs: bad as number }).stallTimeoutMs).toBeUndefined()
+    }
+    let read = false
+    const getter = { ...provider }
+    Object.defineProperty(getter, 'stallTimeoutMs', {
+      enumerable: true,
+      get() {
+        read = true
+        return 300_000
+      },
+    })
+    expect(targetOf(getter).stallTimeoutMs).toBeUndefined()
+    expect(read).toBe(false)
+    expect(targetOf(Object.assign(Object.create({ stallTimeoutMs: 300_000 }), provider)).stallTimeoutMs).toBeUndefined()
   })
 })
 
@@ -2160,5 +2194,445 @@ describe('the stream setting of a call', () => {
     expect(ctx.adapt.sent(api)).toEqual({ stream: false })
     expect(keys.size).toBe(1)
     expect(kept.size).toBe(1)
+  })
+})
+
+describe('the ceiling and the stall window of an attempt', () => {
+  const headers: StreamSignal = { kind: 'headers' }
+  const keepAlive: StreamSignal = { kind: 'keep-alive' }
+  const data = (outputTokens: number, shown: { answer?: boolean, reasoning?: boolean } = {}): StreamSignal => ({
+    kind: 'data',
+    outputTokens,
+    answer: shown.answer ?? false,
+    reasoning: shown.reasoning ?? true,
+  })
+  const answer: CompletionResponse = { text: 'ok', model: 'm' }
+  const at = (afterMs: number, signal: StreamSignal): { afterMs: number, signal: StreamSignal } => ({ afterMs, signal })
+
+  /** A target of a streaming provider whose requests follow `plan`, with a reply budget of 150000 tokens, so an attempt's ceiling is 4218750 ms. */
+  function streamed(clock: FakeClock, plan: Parameters<typeof streamingProvider>[1], facts: Parameters<typeof target>[1] = {}): Target {
+    return target(streamingProvider(clock, plan).complete, {
+      streams: true,
+      maxTokens: 150_000,
+      timeoutMs: undefined,
+      ...facts,
+    })
+  }
+
+  it('fails an attempt at the ceiling its reply budget derives, as a timeout of the core\'s own', async () => {
+    const clock = fakeClock()
+    const { ctx } = context(clock)
+    const never = target(() => new Promise(() => {}), { timeoutMs: undefined, maxTokens: 150_000 })
+    const error = await settle(clock, callProvider(ctx, requester, never, () => request)).catch((caught: unknown) => caught)
+    expect(error).toMatchObject({ kind: 'timeout', message: 'p: no reply within 4218750 ms', stalledMs: undefined })
+    expect(clock.armed).toEqual([4_218_750])
+    const unbudgeted = target(() => new Promise(() => {}), { timeoutMs: undefined })
+    const second = await settle(clock, callProvider(ctx, requester, unbudgeted, () => request)).catch((caught: unknown) => caught)
+    expect(second).toMatchObject({ kind: 'timeout', message: 'p: no reply within 600000 ms' })
+  })
+
+  it('carries the request\'s ceiling in call:start, and stream on a streamed attempt', async () => {
+    const clock = fakeClock()
+    const { ctx, progress } = context(clock)
+    const t = streamed(clock, () => ({
+      script: [
+        at(0, headers),
+      ],
+      end: answer,
+    }))
+    await settle(clock, callProvider(ctx, requester, t, () => request))
+    expect(progress[0]).toMatchObject({ type: 'call:start', timeoutMs: 4_218_750, stream: true })
+
+    const whole = target(async () => answer, { timeoutMs: undefined, maxTokens: 150_000 })
+    await settle(clock, callProvider(ctx, requester, whole, () => request))
+    const start = progress.filter(event => event.type === 'call:start').at(-1)
+    expect(start).toMatchObject({ timeoutMs: 4_218_750 })
+    expect(start).not.toHaveProperty('stream')
+    const stated = target(async () => answer, { timeoutMs: 1000 })
+    await settle(clock, callProvider(ctx, requester, stated, () => request))
+    expect(progress.filter(event => event.type === 'call:start').at(-1)).toMatchObject({ timeoutMs: 1000 })
+  })
+
+  it('lets a stream whose signals keep coming run past its window, and reports its first token and longest silence', async () => {
+    const clock = fakeClock()
+    const { ctx, events, progress } = context(clock)
+    const t = streamed(clock, () => ({
+      script: [
+        at(0, headers),
+        at(41_000, data(10)),
+        at(441_000, data(400)),
+        at(1_031_000, data(900, { answer: true })),
+      ],
+      end: answer,
+    }))
+    await expect(settle(clock, callProvider(ctx, requester, t, () => request))).resolves.toEqual({ text: 'ok' })
+    expect(events).toMatchObject([
+      {
+        type: 'call',
+        ok: true,
+        durationMs: 1_031_000,
+        firstTokenMs: 41_000,
+        longestSilenceMs: 590_000,
+      },
+    ])
+    expect(progress[0]).toMatchObject({ type: 'call:start', timeoutMs: 4_218_750, stream: true })
+    // One stall timer ran past its window, armed again for what was left, and the attempt's end cleared it.
+    expect(clock.armed.filter(ms => ms === 600_000)).toHaveLength(1)
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('stalls a stream silent for its window after its first token as a timeout with stalledMs, retries it once, and fails a second stall', async () => {
+    const clock = fakeClock()
+    const { ctx, events, progress } = context(clock)
+    const t = streamed(clock, () => ({
+      script: [
+        at(0, headers),
+        at(30_000, data(10)),
+        // The signal never comes: the core ends the attempt first.
+        at(5_000_000, keepAlive),
+      ],
+      end: answer,
+    }), { stallTimeoutMs: 300_000, retries: 1 })
+    const error = await settle(clock, callProvider(ctx, requester, t, () => request)).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(ProviderError)
+    expect(error).toMatchObject({
+      kind: 'timeout',
+      retryable: true,
+      stalledMs: 300_000,
+      message: 'p: no reply progress within 300000 ms',
+    })
+    const retries = progress.filter(event => event.type === 'call:retry')
+    expect(retries).toMatchObject([
+      {
+        call: 1,
+        attempt: 1,
+        retries: 1,
+        failure: { kind: 'timeout', stalledMs: 300_000 },
+        attemptMs: 330_000,
+      },
+    ])
+    expect(events).toMatchObject([
+      { type: 'call', ok: false, attempts: 2 },
+    ])
+    expect(events[0]).not.toHaveProperty('firstTokenMs')
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('stalls a stream of keep-alives alone, and reports keep-alive progress', async () => {
+    const clock = fakeClock()
+    const { ctx, progress } = context(clock)
+    const t = streamed(clock, () => ({
+      script: [
+        at(0, headers),
+        ...Array.from({ length: 13 }, (_, index) => at(90_000 * (index + 1), keepAlive)),
+      ],
+      end: answer,
+    }))
+    const error = await settle(clock, callProvider(ctx, requester, t, () => request)).catch((caught: unknown) => caught)
+    expect(error).toMatchObject({ kind: 'timeout', stalledMs: 600_000 })
+    const reported = progress.filter(event => event.type === 'call:progress')
+    expect(reported).toHaveLength(6)
+    expect(reported.every(event => event.type === 'call:progress' && event.call === 1 && event.outputTokens === 0 && event.signal === 'keep-alive')).toBe(true)
+  })
+
+  it('reads a count that is no whole number as progress, floored, so a stream reporting one never stalls', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    // A server that reports chars / 4 unrounded: 2.5 every 100000 ms, seven times, so the last comes at 700000 ms, past the 600000 ms window.
+    const t = streamed(clock, () => ({
+      script: [
+        at(0, headers),
+        ...Array.from({ length: 7 }, (_, index) => at(100_000 * (index + 1), data(2.5))),
+      ],
+      end: answer,
+    }))
+    await expect(settle(clock, callProvider(ctx, requester, t, () => request))).resolves.toEqual({ text: 'ok' })
+    expect(events).toMatchObject([
+      {
+        type: 'call',
+        ok: true,
+        durationMs: 700_000,
+        firstTokenMs: 100_000,
+        longestSilenceMs: 100_000,
+      },
+    ])
+  })
+
+  it('reads a stream a gateway held until its end as slow, not broken, and learns its window from it', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const t = streamed(clock, () => ({
+      script: [
+        at(0, headers),
+        at(540_000, data(100, { answer: true })),
+        at(540_000, data(900, { answer: true })),
+      ],
+      end: answer,
+    }))
+    await expect(settle(clock, callProvider(ctx, requester, t, () => request))).resolves.toEqual({ text: 'ok' })
+    expect(events).toMatchObject([
+      {
+        type: 'call',
+        ok: true,
+        firstTokenMs: 540_000,
+        longestSilenceMs: 540_000,
+      },
+    ])
+    expect(ctx.clocks.window(t, 4_218_750, true)).toBe(1_620_000)
+    expect(ctx.clocks.window(t, 4_218_750, false)).toBe(1_620_000)
+  })
+
+  it('never stalls the wait for a first token before 600000 ms, though the learned window is shorter', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const scripts: Array<Array<{ afterMs: number, signal: StreamSignal }>> = [
+      [
+        at(0, headers),
+        at(10_000, data(10)),
+        at(10_000, data(20, { answer: true })),
+      ],
+      [
+        at(0, headers),
+        at(1000, data(10)),
+        at(3_000_000, keepAlive),
+      ],
+      [
+        at(0, headers),
+        at(450_000, data(10)),
+      ],
+    ]
+    let next = 0
+    const t = streamed(clock, () => ({ script: scripts[next++]!, end: answer }), { timeoutMs: 2_000_000 })
+    // An answered streamed attempt whose longest silence was 10000 ms teaches a window of 300000 ms.
+    await expect(settle(clock, callProvider(ctx, requester, t, () => request))).resolves.toEqual({ text: 'ok' })
+    expect(ctx.clocks.window(t, 2_000_000, true)).toBe(300_000)
+    // Silent for 300000 ms after its first data event, an attempt stalls at that window.
+    const error = await settle(clock, callProvider(ctx, requester, t, () => request)).catch((caught: unknown) => caught)
+    expect(error).toMatchObject({ kind: 'timeout', stalledMs: 300_000 })
+    expect(events.at(-1)).toMatchObject({ type: 'call', ok: false, durationMs: 301_000 })
+    // Its headers at 0 and its first data event at 450000 ms answer: the wait for a first token is never cut before 600000 ms.
+    await expect(settle(clock, callProvider(ctx, requester, t, () => request))).resolves.toEqual({ text: 'ok' })
+    expect(events.at(-1)).toMatchObject({
+      type: 'call',
+      ok: true,
+      firstTokenMs: 450_000,
+      longestSilenceMs: 450_000,
+    })
+  })
+
+  it('arms no stall window on a request sent as a whole reply', async () => {
+    const clock = fakeClock()
+    const { ctx, events, progress } = context(clock)
+    const t = streamed(clock, () => ({
+      script: [
+        at(700_000, keepAlive),
+      ],
+      end: answer,
+    }))
+    await expect(settle(clock, callProvider(ctx, requester, t, () => ({ ...request, stream: false })))).resolves.toEqual({ text: 'ok' })
+    // Only the ceiling and the provider's own wait were armed, and the call reports no timings and no stream.
+    expect(clock.armed).toEqual([4_218_750, 700_000])
+    expect(progress[0]).not.toHaveProperty('stream')
+    expect(events[0]).not.toHaveProperty('firstTokenMs')
+    expect(events[0]).not.toHaveProperty('longestSilenceMs')
+  })
+
+  it('arms no stall window on a provider that does not state that it streams', async () => {
+    const clock = fakeClock()
+    const { ctx } = context(clock)
+    const t = target(streamingProvider(clock, () => ({
+      script: [
+        at(700_000, keepAlive),
+      ],
+      end: answer,
+    }), { streams: undefined }).complete, { timeoutMs: undefined, maxTokens: 150_000 })
+    await expect(settle(clock, callProvider(ctx, requester, t, () => request))).resolves.toEqual({ text: 'ok' })
+    expect(clock.armed).toEqual([4_218_750, 700_000])
+  })
+
+  it('sends call:progress at most once a second, tokens when the output grew and keep-alive when only keep-alives came', async () => {
+    const clock = fakeClock()
+    const { ctx, progress } = context(clock)
+    const t = streamed(clock, () => ({
+      script: [
+        at(0, headers),
+        at(100, data(10)),
+        at(600, data(20)),
+        at(1100, data(30)),
+        at(1200, data(30)),
+        at(1300, keepAlive),
+        at(2200, data(50)),
+        at(2300, keepAlive),
+        at(3500, keepAlive),
+      ],
+      end: answer,
+    }))
+    await settle(clock, callProvider(ctx, requester, t, () => request))
+    expect(progress.filter(event => event.type === 'call:progress')).toEqual([
+      {
+        type: 'call:progress',
+        call: 1,
+        outputTokens: 10,
+        signal: 'tokens',
+      },
+      {
+        type: 'call:progress',
+        call: 1,
+        outputTokens: 30,
+        signal: 'tokens',
+      },
+      {
+        type: 'call:progress',
+        call: 1,
+        outputTokens: 50,
+        signal: 'tokens',
+      },
+      {
+        type: 'call:progress',
+        call: 1,
+        outputTokens: 50,
+        signal: 'keep-alive',
+      },
+    ])
+  })
+
+  it('sends no call:progress for a call that does not stream, nor for headers alone', async () => {
+    const clock = fakeClock()
+    const { ctx, progress } = context(clock)
+    const t = streamed(clock, () => ({
+      script: [
+        at(0, headers),
+        at(5000, headers),
+      ],
+      end: answer,
+    }))
+    await settle(clock, callProvider(ctx, requester, t, () => request))
+    const whole = target(async (given) => {
+      given.onProgress?.(data(100))
+      return answer
+    }, { timeoutMs: undefined })
+    await settle(clock, callProvider(ctx, requester, whole, () => request))
+    expect(progress.filter(event => event.type === 'call:progress')).toEqual([])
+  })
+
+  it('reads a progress signal as own data, and ignores one that is no StreamSignal', async () => {
+    const clock = fakeClock()
+    const { ctx, events, progress } = context(clock)
+    const inherited = Object.create({
+      kind: 'data',
+      outputTokens: 5,
+      answer: true,
+      reasoning: false,
+    }) as StreamSignal
+    const getter = {}
+    Object.defineProperty(getter, 'kind', {
+      enumerable: true,
+      get() {
+        throw new Error('a getter ran')
+      },
+    })
+    const t = target(async (given) => {
+      for (const junk of [
+        null,
+        'data',
+        42,
+        {},
+        { kind: 'other' },
+        { kind: 'data' },
+        {
+          kind: 'data',
+          outputTokens: '5',
+          answer: true,
+          reasoning: false,
+        },
+        {
+          kind: 'data',
+          outputTokens: -1,
+          answer: true,
+          reasoning: false,
+        },
+        {
+          kind: 'data',
+          outputTokens: Number.POSITIVE_INFINITY,
+          answer: true,
+          reasoning: false,
+        },
+        {
+          kind: 'data',
+          outputTokens: Number.NaN,
+          answer: true,
+          reasoning: false,
+        },
+        {
+          kind: 'data',
+          outputTokens: 5,
+          answer: 'yes',
+          reasoning: false,
+        },
+        inherited,
+        getter,
+      ]) {
+        given.onProgress?.(junk as StreamSignal)
+      }
+      return answer
+    }, { streams: true, timeoutMs: undefined })
+    await settle(clock, callProvider(ctx, requester, t, () => request))
+    expect(progress.filter(event => event.type === 'call:progress')).toEqual([])
+    expect(events[0]).not.toHaveProperty('firstTokenMs')
+  })
+
+  it('ignores a signal a provider sends after its attempt settled', async () => {
+    const clock = fakeClock()
+    const { ctx, progress } = context(clock)
+    let late: (() => void) | undefined
+    const t = target(async (given) => {
+      late = () => given.onProgress?.(data(500))
+      return answer
+    }, { streams: true, timeoutMs: undefined })
+    await settle(clock, callProvider(ctx, requester, t, () => request))
+    late?.()
+    expect(progress.filter(event => event.type === 'call:progress')).toEqual([])
+  })
+
+  it('reads a timeout\'s stalledMs as own data, a positive safe integer, and no other kind\'s', () => {
+    expect(providerFailure(failure({ kind: 'timeout', stalledMs: 300_000 }))).toEqual({ kind: 'timeout', stalledMs: 300_000 })
+    expect(providerFailure(failure({ kind: 'timeout', stalledMs: 0 }))).toEqual({ kind: 'timeout' })
+    expect(providerFailure(failure({ kind: 'timeout', stalledMs: 1.5 }))).toEqual({ kind: 'timeout' })
+    expect(providerFailure(failure({ kind: 'timeout', stalledMs: '300000' }))).toEqual({ kind: 'timeout' })
+    expect(providerFailure(failure({ kind: 'timeout' }))).toEqual({ kind: 'timeout' })
+    expect(providerFailure(failure({ kind: 'network', stalledMs: 300_000 }))).toEqual({ kind: 'network' })
+    const getter = new Error('x')
+    Object.defineProperty(getter, 'kind', { value: 'timeout' })
+    Object.defineProperty(getter, 'stalledMs', {
+      get() {
+        throw new Error('a getter ran')
+      },
+    })
+    expect(providerFailure(getter)).toEqual({ kind: 'timeout' })
+    expect(providerFailure(Object.assign(Object.create({ stalledMs: 5 }), { kind: 'timeout' }))).toEqual({ kind: 'timeout' })
+  })
+
+  it('tells the health of a call whose every attempt stalled, once three calls in a row did', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const t = streamed(clock, () => ({
+      script: [
+        at(0, headers),
+        at(9_000_000, keepAlive),
+      ],
+      end: answer,
+    }), { stallTimeoutMs: 300_000 })
+    for (let call = 0; call < 3; call++) {
+      await settle(clock, callProvider(ctx, requester, t, () => request)).catch(() => {})
+    }
+    expect(events.filter(event => event.type === 'provider-down')).toEqual([
+      {
+        type: 'provider-down',
+        provider: 'p',
+        kind: 'timeout',
+        calls: 3,
+        stalledMs: 300_000,
+      },
+    ])
   })
 })

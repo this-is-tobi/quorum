@@ -402,6 +402,36 @@ describe('fold', () => {
     expect(state.causes.get('provider-down')).toEqual([cut])
   })
 
+  it('keeps the stall of a cause, and a stall and a plain timeout are two causes', () => {
+    const stalled = { kind: 'timeout', stalledMs: 300_000 } as const
+    const part = (index: number, failure: { kind: 'timeout', stalledMs?: number }): QuorumEvent => ({
+      type: 'part',
+      profile: 'security',
+      part: { index, count: 3 },
+      outcome: 'research-failed',
+      durationMs: 1,
+      spent: 0,
+      failure,
+    })
+    const state = [
+      part(1, stalled),
+      part(2, { kind: 'timeout', stalledMs: 450_000 }),
+      part(3, { kind: 'timeout' }),
+      {
+        type: 'provider-down',
+        provider: 'api',
+        kind: 'timeout',
+        calls: 3,
+        stalledMs: 300_000,
+      } satisfies QuorumEvent,
+    ].reduce((folded, event) => fold(folded, event, 1), startState(DEFAULT_FACTS))
+    expect(state.causes.get('research-failed')).toEqual([
+      stalled,
+      { kind: 'timeout' },
+    ])
+    expect(state.causes.get('provider-down')).toEqual([stalled])
+  })
+
   it('prefixes when several profiles run, and starts a fresh state at each run:start of one writer', () => {
     const two = replay(twoProfiles(), 0)
     expect(two.prefixed).toBe(true)

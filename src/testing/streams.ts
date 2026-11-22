@@ -1,3 +1,7 @@
+import type { Clock } from '../core/clock.ts'
+import { ProviderError } from '../core/errors.ts'
+import type { CompletionRequest, CompletionResponse, Provider, StreamSignal } from '../core/ports.ts'
+
 /** Test helpers for code that reads a streamed reply. */
 
 /**
@@ -297,4 +301,51 @@ export function ollamaStream(reply: unknown, headers: Record<string, string> = {
   return new Response(lines.map(data => `${JSON.stringify(data)}\n`).join(''), {
     headers: { 'content-type': 'application/x-ndjson', ...headers },
   })
+}
+
+/** What a streaming provider's plan says of one request: the signals it reports, each at the time since the request was sent, and how it ends. */
+export interface StreamPlan {
+  readonly script: ReadonlyArray<{ readonly afterMs: number, readonly signal: StreamSignal }>
+  readonly end: CompletionResponse | ProviderError
+}
+
+/**
+ * A provider that streams on `clock`, whose reply `plan` scripts for each request: it states `streams: true` and `facts`, then
+ * waits on `clock` until each signal of the script is due, `afterMs` being the time since the request was sent, and reports it
+ * through the request's `onProgress`; it answers or throws `end` right after the last signal, so a silence is a last signal far
+ * off, which the core's own timers end first. It honours the request's signal: an abort rejects its wait with the abort's reason.
+ */
+export function streamingProvider(clock: Clock, plan: (request: CompletionRequest) => StreamPlan, facts: Partial<Provider> = {}): Provider {
+  const wait = (ms: number, signal: AbortSignal | undefined): Promise<void> => {
+    if (signal?.aborted === true) return Promise.reject(signal.reason)
+    if (ms <= 0) return Promise.resolve()
+    return new Promise<void>((resolve, reject) => {
+      let cancel = (): void => {}
+      const onAbort = (): void => {
+        cancel()
+        reject(signal!.reason)
+      }
+      cancel = clock.timer(ms, () => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve()
+      })
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+  return {
+    id: 'streaming',
+    model: 'm',
+    streams: true,
+    ...facts,
+    async complete(request) {
+      const { script, end } = plan(request)
+      const sent = clock.now()
+      for (const step of script) {
+        await wait(step.afterMs - (clock.now() - sent), request.signal)
+        request.onProgress?.(step.signal)
+      }
+      if (end instanceof ProviderError) throw end
+      return end
+    },
+  }
 }
