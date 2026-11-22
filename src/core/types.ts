@@ -7,6 +7,7 @@
 
 import type { ProfileBudgets } from './budgets.ts'
 import type { NoAnswer, ProviderErrorKind } from './errors.ts'
+import type { ConcurrencyRecord } from './lanes.ts'
 import type { PartOutcome } from './parts.ts'
 import type { PolicyRules } from './policy.ts'
 import type { ReplyStore } from './ports.ts'
@@ -409,6 +410,11 @@ export interface QuorumMeta {
   adaptations: Adaptation[]
   /** How many research calls and votes were reused from the review's store, counted from the `call` events that say `reused`: present when a store was given, even at 0. */
   reused?: { research: number, votes: number }
+  /**
+   * What each provider's lane did, by provider id: its `limit` (`auto` when `concurrency` is unset, else the number), where it started, its lowest and its highest
+   * limit, how many times it was cut, and whether its replies carried rate-limit headers. Two provider objects of one id are merged. Present when a call was made.
+   */
+  concurrency?: Record<string, ConcurrencyRecord>
 }
 
 /** Final review output. */
@@ -459,7 +465,12 @@ export interface PublicView {
 export interface QuorumOptions {
   /** At least one, ids unique: each runs research, dedup and panel on its own, concurrently with the others. */
   readonly profiles: readonly Profile[]
-  /** Maximum simultaneous provider calls per review, shared by every profile; `DEFAULT_CONCURRENCY` when unset. */
+  /**
+   * Maximum simultaneous provider calls per review, shared by every profile, which pins today's one limit with no lane, no event and no
+   * pacing. Unset, each provider has a lane of its own under a ceiling of `REVIEW_CEILING` calls in all, which starts at `LANE_START`
+   * (or at the `slots` the provider states), grows while the provider's rate-limit headers hold one more call, halves on a throttle and
+   * waits out a Retry-After.
+   */
   readonly concurrency?: number
   /** How many findings of a research reply each profile sends to the panel; `DEFAULT_MAX_FINDINGS` when unset. */
   readonly maxFindings?: number
@@ -732,6 +743,14 @@ export type QuorumEvent
      * number or a boolean.
      */
     | { type: 'cut', provider: string, afterMs: number, holds?: number, lowered: boolean, fits?: true }
+    /**
+     * A provider's lane changed its limit, paused or paced, with `concurrency` unset: `limit` is the lane's limit once the change is
+     * made. `cause` is `grown` (one more call, the headers holding it), `regrown` (back toward its start, after a cut, with no header),
+     * `cut` (halved by a throttle signal, `from` the limit before it, `failure` the throttle), `paused` (new calls held `waitMs` for a
+     * Retry-After, `failure` the throttle, the calls in flight going on), `paced` (a call waits `waitMs` for the headers' reset) and `slots` (the
+     * lane holds the slots the provider states, sent once when its lane begins). Every field is a provider's ref, a number or a code word.
+     */
+    | { type: 'concurrency', provider: ProviderRef, limit: number, cause: 'grown' | 'cut' | 'paused' | 'paced' | 'regrown' | 'slots', from?: number, waitMs?: number, failure?: CallFailure }
     /**
      * Quorum moved a setting of a provider by itself for the rest of the review, said once per provider and
      * setting: the same record `meta.adaptations` holds. Every field is a provider's id or a code word.

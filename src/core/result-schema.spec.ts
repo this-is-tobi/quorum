@@ -285,6 +285,87 @@ describe('the schemas of a result', () => {
     }
   })
 
+  it('reads meta.concurrency strictly, in the public view too, and does not require it', () => {
+    const lane = {
+      limit: 'auto',
+      start: 4,
+      lowest: 2,
+      highest: 8,
+      cuts: 1,
+      headers: true,
+    }
+    const concurrency = {
+      api: lane,
+      local: {
+        limit: 2,
+        start: 2,
+        lowest: 2,
+        highest: 2,
+        cuts: 0,
+        headers: false,
+      },
+    }
+    const result = reportResult({
+      meta: {
+        ...reportResult().meta,
+        concurrency: concurrency as never,
+      },
+    })
+    const full = saved(result)
+    expect(resultSchema.parse(full)).toEqual(full)
+    const view = saved(publicView(result))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(view.meta.concurrency).toEqual(concurrency)
+    // A review that ran no call has none.
+    const { concurrency: _none, ...without } = full.meta
+    expect(resultSchema.safeParse({ ...full, meta: without }).success).toBe(true)
+    for (const forged of [
+      {
+        api: { ...lane, limit: 0 },
+      },
+      {
+        api: { ...lane, limit: 'many' },
+      },
+      {
+        api: { ...lane, start: 0 },
+      },
+      {
+        api: { ...lane, lowest: 1.5 },
+      },
+      {
+        api: { ...lane, highest: -1 },
+      },
+      {
+        api: { ...lane, cuts: -1 },
+      },
+      {
+        api: { ...lane, headers: 'yes' },
+      },
+      {
+        api: { ...lane, extra: 1 },
+      },
+      {
+        api: {
+          limit: 'auto',
+          start: 4,
+          lowest: 4,
+          highest: 4,
+          cuts: 0,
+        },
+      },
+      { api: 4 },
+    ] as Forged[]) {
+      expect(resultSchema.safeParse({
+        ...full,
+        meta: { ...full.meta, concurrency: forged },
+      }).success, JSON.stringify(forged)).toBe(false)
+      expect(publicViewSchema.safeParse({
+        ...view,
+        meta: { ...view.meta, concurrency: forged },
+      }).success, JSON.stringify(forged)).toBe(false)
+    }
+  })
+
   it('reads reply-cut-off as a gap and a coverage reason, and meta.profiles.<id>.recovery strictly, in the public view too', () => {
     const base = reportResult()
     const recovery = {

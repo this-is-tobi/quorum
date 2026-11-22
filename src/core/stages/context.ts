@@ -1,18 +1,20 @@
 import { createHash } from 'node:crypto'
 import type { Adaptations, Fields, Probe, ProbeOutcome } from '../adapt.ts'
 import type { ProfileBudgets } from '../budgets.ts'
+import { wait } from '../clock.ts'
 import type { Clock } from '../clock.ts'
 import { attemptCeiling, PROGRESS_MS } from '../clocks.ts'
 import type { AttemptSeen, Clocks } from '../clocks.ts'
-import type { Limiter } from '../concurrency.ts'
 import type { Health } from '../down.ts'
 import { cutOf, cutWords, NO_ANSWERS, PROVIDER_ERROR_KINDS, ProviderDownError, ProviderError } from '../errors.ts'
 import type { NoAnswer, ProviderErrorKind } from '../errors.ts'
+import { expectedOf } from '../estimate.ts'
+import type { LaneAttempt, Lanes } from '../lanes.ts'
 import { isLimit, settlementOf } from '../limits.ts'
 import type { Ledger } from '../limits.ts'
 import { isRecord } from '../output.ts'
-import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../ports.ts'
-import type { Adapts, CompletionRequest, CompletionResponse, EventSink, Provider, ReplyStore, StoredCall } from '../ports.ts'
+import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, slotsProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../ports.ts'
+import type { Adapts, CompletionRequest, CompletionResponse, EventSink, Provider, RateLimit, ReplyStore, StoredCall } from '../ports.ts'
 import { requestDigest } from '../prompts.ts'
 import { isTimeout, retryWait } from '../retry.ts'
 import type { FailureFacts } from '../retry.ts'
@@ -50,6 +52,8 @@ export interface Target {
   readonly adapts: Adapts | undefined
   /** Whether the provider states, as own data, that it streams its replies. */
   readonly streams: boolean
+  /** How many calls the provider states its server serves at once, as own data, when it is a whole number of at least 1: its lane starts and stays there. */
+  readonly slots: number | undefined
 }
 
 /** One lens of a compiled profile: its vote instructions, rendered once, and its own provider. */
@@ -79,8 +83,11 @@ export interface ProfileRun {
 
 /** What every stage of one review shares. */
 export interface RunContext {
-  /** The review's one concurrency limit, shared by every profile. */
-  readonly limit: Limiter
+  /**
+   * The review's concurrency: one limit shared by every profile when `concurrency` is set, else a lane per provider under the
+   * review's ceiling. A call runs in it, and each of its attempts tells it what became of the attempt.
+   */
+  readonly lanes: Lanes
   /**
    * The review's one token ledger, shared by every profile: each attempt of a call reserves its worst case in
    * it before the attempt is sent and settles after, inside the call's slot, so the attempts in flight can
@@ -125,7 +132,7 @@ export interface RunContext {
   readonly maxFindings: number
   /** The reply budgets of each profile, by profile id: what its research and vote requests carry and ask for. */
   readonly budgets: Readonly<Record<string, ProfileBudgets>>
-  /** The review's concurrency: how many parts of its research one profile has in flight at once. */
+  /** How many parts of its research one profile has in flight at once: the `concurrency` the review is set to, else the review's ceiling, which the lanes then share out. */
   readonly concurrency: number
   /** What the review has learned of how its providers' streams pace: each stream's stall window. */
   readonly clocks: Clocks
@@ -331,7 +338,8 @@ export interface Requester {
  * that is a function, else none, and so is the room it states: a getter is never run, and an inherited method
  * states nothing. Its window and its `maxTokens` are taken as own data when each is a whole number of tokens of at
  * least 1, else it states none, its thinking when it is `default`, `low` or `off`, else `default`, and its `adapts` as
- * a copy of the own data it holds when it passes its check, else none. It streams when its own data `streams` is `true`.
+ * a copy of the own data it holds when it passes its check, else none. It streams when its own data `streams` is `true`, and its `slots` are
+ * the own data it states when that is a whole number of at least 1.
  */
 export function targetOf(provider: Provider): Target {
   const timeoutMs = ownData(provider, 'timeoutMs')
@@ -344,6 +352,7 @@ export function targetOf(provider: Provider): Target {
   const thinking = ownData(provider, 'thinking')
   const adapts = ownData(provider, 'adapts')
   const streams = ownData(provider, 'streams')
+  const slots = ownData(provider, 'slots')
   return {
     provider,
     ref: Object.freeze({ id: provider.id, model: provider.model }),
@@ -375,6 +384,9 @@ export function targetOf(provider: Provider): Target {
       ? adaptsOf(adapts)
       : undefined,
     streams: streams === true,
+    slots: slotsProblem(slots) === undefined
+      ? slots as number
+      : undefined,
   }
 }
 
@@ -456,7 +468,10 @@ export function elapsed(started: number): number {
  * stop is checked inside the slot, before the request is built, so a call still queued when the review
  * is aborted or reaches its deadline never starts. `buildRequest` runs inside the slot once that check
  * passes: a request holds the diff or a section of it, and building it only there keeps the requests a
- * review holds at once to its concurrency, whatever the number of findings and lenses (ADR-0009).
+ * review holds at once to its concurrency, whatever the number of findings and lenses (ADR-0009). The slot is the provider's lane
+ * (`ctx.lanes`), then a slot of the review's ceiling, unless `concurrency` is set, which is one slot shared by every provider: the
+ * call waits for its lane's pause and pacing between them, and each attempt tells its lane what it was sent as, the rate-limit
+ * headers of its stream when they come, and how it ended.
  * The call runs its attempts inside its slot, retried as `retryWait` decides, the waits between
  * them holding the slot: the review's abort ends a wait at once, and no failure is retried once the
  * review is aborted. Each attempt has its ceiling, the provider's deadline or the one its reply budget sizes
@@ -556,7 +571,7 @@ export function elapsed(started: number): number {
  * is stopped) is a miss, and a save that fails is a save that did not happen.
  */
 export async function callProvider(ctx: RunContext, requester: Requester, target: Target, buildRequest: () => CompletionRequest, options: CallOptions = {}): Promise<Answered> {
-  return ctx.limit(async () => {
+  return ctx.lanes.run(target, ctx.stop, async (lane) => {
     await ctx.adapt.ready(target, ctx.stop)
     ctx.stop.throwIfAborted()
     const down = ctx.health.refused(target.provider)
@@ -682,6 +697,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
      */
     const send = async (asked: CompletionRequest): Promise<CompletionResponse> => {
       const reservation = reservationOf(target, asked)
+      const replyTokens = replyLimit(asked, target.maxTokens)
       const streamed = streamsAttempt(target, asked)
       let retried = 0
       for (;;) {
@@ -702,6 +718,13 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           })
         }
         ctx.flying.count += 1
+        const inLane = lane.sent({
+          reservation,
+          expected: expectedOf(reservation, replyTokens ?? DEFAULT_REPLY_TOKENS),
+          ...replyTokens === undefined
+            ? {}
+            : { replyTokens },
+        })
         /** When the request is handed to the provider: after the slot, the ledger and any backoff. */
         const sentAt = ctx.clock.now()
         const watch = streamed
@@ -714,12 +737,23 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           spent += tokens
         }
         try {
-          const reply = await attempt(ctx, target, asked, watch)
+          const reply = await attempt(ctx, target, asked, watch, inLane)
           const endedAt = ctx.clock.now()
           if (typeof reply?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
           // The reply's usage is read once, so its settlement and its event cannot disagree.
           replied = checkedUsage(reply.usage)
           settle(settlementOf(reservation, replied))
+          const headers = rateLimitFacts(ownData(reply, 'rateLimit'))
+          try {
+            inLane.ended({
+              answered: true,
+              ...headers === undefined
+                ? {}
+                : { rateLimit: headers },
+            })
+          } catch {
+            // The lane's event goes to the sink, which has ended the review already when it throws (`emit`): the attempt is settled, so it must not reach the `catch` below, which would settle it again.
+          }
           ctx.health.answered(target.provider)
           const seen = seenOf(watch, sentAt, endedAt, replied)
           ctx.clocks.answered(target, seen)
@@ -734,6 +768,8 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           const reported = failureUsage(caught)
           usage = addUsage(usage, reported)
           settle(settlementOf(reservation, reported, failureFacts(caught)))
+          // The lane reads the provider's own failure, its Retry-After and its headers, before the core rewrites it as a cut or a stall.
+          inLane.ended(endOf(caught))
           // A call cut at the length its provider learned is read as a reply cut off at its limit, which is never retried as it was.
           const error = cutReading(ctx, target, caught, attemptMs, () => seenOf(watch, sentAt, endedAt, undefined))
           if (error !== caught && typeof error === 'object' && error !== null) ran.set(error, attemptMs)
@@ -1200,22 +1236,9 @@ function failureFacts(error: unknown): FailureFacts {
 /**
  * Wait `ms` milliseconds between two attempts of a call, which holds its slot meanwhile. The review's
  * abort or deadline ends the wait at once: it rejects with the stop's reason, and the timer is cancelled.
- * Each of the timer and the stop listener removes the other when it goes first.
  */
 function pause(ctx: RunContext, ms: number): Promise<void> {
-  if (ctx.stop.aborted) return Promise.reject(ctx.stop.reason)
-  return new Promise<void>((resolve, reject) => {
-    let cancel = (): void => {}
-    function onAbort(): void {
-      cancel()
-      reject(ctx.stop.reason)
-    }
-    cancel = ctx.clock.timer(ms, () => {
-      ctx.stop.removeEventListener('abort', onAbort)
-      resolve()
-    })
-    ctx.stop.addEventListener('abort', onAbort, { once: true })
-  })
+  return wait(ctx.clock, ms, ctx.stop)
 }
 
 /** Whether an attempt of `request` is streamed: the target states that it streams and the request does not ask for a whole reply. */
@@ -1363,13 +1386,18 @@ function cutReading(ctx: RunContext, target: Target, error: unknown, attemptMs: 
  * clamped to a safe integer, so a server that counts in fractions is still a stream that makes progress.
  */
 type Signal
-  = | { readonly kind: 'headers' }
+  = | { readonly kind: 'headers', readonly rateLimit?: RateLimit }
     | { readonly kind: 'keep-alive' }
     | { readonly kind: 'data', readonly outputTokens: number, readonly answer: boolean, readonly reasoning: boolean }
 
 function signalOf(value: unknown): Signal | undefined {
   const kind = ownData(value, 'kind')
-  if (kind === 'headers') return { kind }
+  if (kind === 'headers') {
+    const rateLimit = rateLimitFacts(ownData(value, 'rateLimit'))
+    return rateLimit === undefined
+      ? { kind }
+      : { kind, rateLimit }
+  }
   if (kind === 'keep-alive') return { kind }
   if (kind !== 'data') return undefined
   const outputTokens = ownData(value, 'outputTokens')
@@ -1383,6 +1411,53 @@ function signalOf(value: unknown): Signal | undefined {
         reasoning,
       }
     : undefined
+}
+
+const RATE_LIMIT_FIELDS = [
+  'requests',
+  'tokens',
+  'tokensLimit',
+  'requestsResetMs',
+  'tokensResetMs',
+] as const
+
+/**
+ * The rate-limit headers a reply, a failure or a stream's headers signal states, as numbers alone: each field is read as own data and
+ * kept when it is a finite number of at least 0, so a getter never runs, an inherited field is never read and nothing else is copied.
+ * Undefined when none is left.
+ */
+function rateLimitFacts(value: unknown): RateLimit | undefined {
+  const facts: { -readonly [Field in keyof RateLimit]: number } = {}
+  for (const field of RATE_LIMIT_FIELDS) {
+    const stated = ownData(value, field)
+    if (typeof stated === 'number' && Number.isFinite(stated) && stated >= 0) facts[field] = stated
+  }
+  return Object.keys(facts).length === 0
+    ? undefined
+    : facts
+}
+
+/**
+ * What an attempt tells its lane when it failed: what the provider's own error says of itself, its Retry-After and its rate-limit
+ * headers, as facts. It is read from the error the provider threw, before the core rewrites it, so a failure the core rebuilds as a
+ * cut on the way or a stall loses none of what the server said.
+ */
+function endOf(error: unknown): Parameters<LaneAttempt['ended']>[0] {
+  const failure = providerFailure(error)
+  const retryAfterMs = ownData(error, 'retryAfterMs')
+  const rateLimit = rateLimitFacts(ownData(error, 'rateLimit'))
+  return {
+    answered: false,
+    ...failure === undefined
+      ? {}
+      : { failure },
+    ...typeof retryAfterMs === 'number' && retryAfterMs > 0
+      ? { retryAfterMs }
+      : {},
+    ...rateLimit === undefined
+      ? {}
+      : { rateLimit },
+  }
 }
 
 /**
@@ -1400,7 +1475,7 @@ function signalOf(value: unknown): Signal | undefined {
  * old, and else is armed again for what is left, so a stream that keeps coming arms one timer however many events it
  * sends; the first data event arms it again only when the window shrinks to the learned one. Keep-alives are no progress.
  */
-function attempt(ctx: RunContext, target: Target, request: CompletionRequest, watch?: Watch): Promise<CompletionResponse> {
+function attempt(ctx: RunContext, target: Target, request: CompletionRequest, watch?: Watch, lane?: LaneAttempt): Promise<CompletionResponse> {
   if (ctx.halt.aborted) return Promise.reject(ctx.halt.reason)
   const controller = new AbortController()
   const ceiling = ceilingOf(target, request)
@@ -1457,7 +1532,10 @@ function attempt(ctx: RunContext, target: Target, request: CompletionRequest, wa
           watch.longestSilenceMs = Math.max(watch.longestSilenceMs, now - watch.progressAt)
           watch.progressAt = now
         }
-        if (signal.kind === 'headers') return
+        if (signal.kind === 'headers') {
+          lane?.headers(signal.rateLimit)
+          return
+        }
         if (signal.kind === 'keep-alive') {
           watch.counted(watch, 'keep-alive')
           return

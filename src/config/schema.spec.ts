@@ -1345,7 +1345,7 @@ describe('configCodeSchema', () => {
     ])
   })
 
-  it('keeps the window, maxTokens, thinking, adapts and streams a provider object states in its snapshot, and refuses one out of range', () => {
+  it('keeps the window, maxTokens, thinking, adapts, streams and slots a provider object states in its snapshot, and refuses one out of range', () => {
     const snapshotOf = (object: unknown): Provider => parseConfig(configCodeSchema, {
       providers: { mine: object },
     }).providers?.mine as Provider
@@ -1356,6 +1356,7 @@ describe('configCodeSchema', () => {
       thinking: 'low',
       adapts: { thinking: 'off', prompt: true, stream: true },
       streams: true,
+      slots: 2,
     })
     expect(Object.keys(stated)).toEqual([
       'model',
@@ -1365,6 +1366,7 @@ describe('configCodeSchema', () => {
       'thinking',
       'adapts',
       'streams',
+      'slots',
     ])
     expect(stated).toMatchObject({
       window: 8192,
@@ -1372,6 +1374,7 @@ describe('configCodeSchema', () => {
       thinking: 'low',
       adapts: { thinking: 'off', prompt: true, stream: true },
       streams: true,
+      slots: 2,
     })
     // The named copy and the facts read of it carry them too.
     expect(nameSnapshot('mine', stated)).toMatchObject({
@@ -1381,6 +1384,7 @@ describe('configCodeSchema', () => {
       thinking: 'low',
       adapts: { thinking: 'off', prompt: true, stream: true },
       streams: true,
+      slots: 2,
     })
     expect(statedFacts(stated).stated).toEqual({
       window: 8192,
@@ -1388,6 +1392,7 @@ describe('configCodeSchema', () => {
       thinking: 'low',
       adapts: { thinking: 'off', prompt: true, stream: true },
       streams: true,
+      slots: 2,
     })
     let ran = false
     const read = snapshotOf({
@@ -1407,6 +1412,9 @@ describe('configCodeSchema', () => {
       ['thinking', 'high', 'must be default, low or off'],
       ['streams', 'yes', 'must be true'],
       ['streams', false, 'must be true'],
+      ['slots', 0, 'must be a whole number of at least 1'],
+      ['slots', 1.5, 'must be a whole number of at least 1'],
+      ['slots', '2', 'must be a whole number of at least 1'],
       ['adapts', 'low', 'must be an object whose thinking is low or off and whose prompt and stream are true, each optional'],
       [
         'adapts',

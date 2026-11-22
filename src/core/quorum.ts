@@ -5,7 +5,6 @@ import type { ProfileBudgets } from './budgets.ts'
 import { systemClock } from './clock.ts'
 import type { Clock } from './clock.ts'
 import { createClocks } from './clocks.ts'
-import { createLimiter, DEFAULT_CONCURRENCY } from './concurrency.ts'
 import { leftOutGaps, reviewScope } from './coverage.ts'
 import type { ReviewScope } from './coverage.ts'
 import { diffSections, splitDiff } from './diff.ts'
@@ -16,11 +15,12 @@ import { estimateReview } from './estimate.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
 import { diffFlags, secretFlags } from './flags.ts'
 import { leftOutIssues, mergeLeftOut, sendIssues, sourceIssues, sourceOf } from './inputs.ts'
+import { createLanes, REVIEW_CEILING } from './lanes.ts'
 import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, INTERRUPT_GRACE_MS, isLimitName, LimitError, limitGaps, maxReviewTokensProblem } from './limits.ts'
 import { isRecord } from './output.ts'
 import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap } from './parts.ts'
 import type { Packing, PartResult } from './parts.ts'
-import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, streamsProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
+import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, slotsProblem, streamsProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts, ReplyStore } from './ports.ts'
 import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
 import { renderTemplate } from './prompts.ts'
@@ -41,7 +41,8 @@ const LIMITS = ['concurrency', 'maxFindings'] as const
 /** What createQuorum compiled: the frozen runs and settings every review of the quorum reads. */
 interface Compiled {
   readonly runs: readonly ProfileRun[]
-  readonly concurrency: number
+  /** The review's `concurrency`, or none: each provider then has a lane. */
+  readonly concurrency: number | undefined
   readonly maxFindings: number
   /** The most tokens one review spends: each review gets a ledger of this cap. */
   readonly maxReviewTokens: number
@@ -88,7 +89,7 @@ interface Tally {
  * `exclude` that is not a list of at most 100 patterns that can be taken, a missing or malformed
  * research provider or voter, a provider's stated `timeoutMs` that is not a
  * whole number of milliseconds from 1000 to 518400000, a `stallTimeoutMs` that is not one from 1000 to 86400000,
- * a `streams` that is not `true`, `retries` that is not a whole number from
+ * a `streams` that is not `true`, a `slots` that is not a whole number of at least 1, `retries` that is not a whole number from
  * 0 to 5 or `worstCase` or `room` that is not a function, ports for a profile or a lens the run does not have
  * (a likely typo), and an event sink that is not a function. Ports are checked only for the profiles
  * that have no issue of their own, and not at all when `profiles` is not an array. Every record keyed
@@ -139,7 +140,7 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
   if (room.length > 0) throw new ConfigError(room)
   const compiled: Compiled = {
     runs,
-    concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
+    concurrency: options.concurrency,
     ...settings,
     budgets,
     reviewTimeoutMs: options.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
@@ -461,7 +462,13 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     }
   }
   const ctx: RunContext = {
-    limit: createLimiter(compiled.concurrency),
+    lanes: createLanes({
+      ...compiled.concurrency === undefined
+        ? {}
+        : { concurrency: compiled.concurrency },
+      clock: compiled.clock,
+      emit,
+    }),
     ledger: createLedger(options.maxReviewTokens ?? compiled.maxReviewTokens),
     emit,
     signal,
@@ -477,7 +484,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     adapt: createAdaptations(),
     maxFindings: compiled.maxFindings,
     budgets: compiled.budgets,
-    concurrency: compiled.concurrency,
+    concurrency: compiled.concurrency ?? REVIEW_CEILING,
     clocks: createClocks(),
     clock: compiled.clock,
     calls: { last: 0 },
@@ -540,6 +547,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     ...outcomes[index]?.incomplete ?? [],
   ])
   const durationMs = elapsed(started)
+  const lanes = ctx.lanes.record()
   const meta: QuorumMeta = {
     version: VERSION,
     startedAt,
@@ -562,6 +570,11 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
       ? {}
       : {
           reused: { ...tally.reused },
+        },
+    ...Object.keys(lanes).length === 0
+      ? {}
+      : {
+          concurrency: { ...lanes },
         },
   }
   emit({
@@ -888,7 +901,7 @@ function profilePortIssues(entries: Record<string, unknown>, profile: Profile): 
  * states, as own data, is out of range, the `streams` it states is not `true`, the `window` or the `maxTokens` it states is not a whole number of
  * tokens of at least 1, its `thinking` is not `default`, `low` or `off`, its `adapts` is not an object whose
  * `thinking` is `low` or `off` and whose `prompt` and `stream` are `true`, or the `worstCase` or the `room` it
- * states, as own data, is not a function.
+ * states, as own data, is not a function, or its `slots` is not a whole number of at least 1.
  */
 function providerIssues(path: string, value: unknown): ConfigIssue[] {
   if (value === undefined) {
@@ -939,6 +952,11 @@ function providerIssues(path: string, value: unknown): ConfigIssue[] {
     ? undefined
     : streamsProblem(streams)
   if (streamsIssue !== undefined) issues.push({ path: `${path}.streams`, message: streamsIssue })
+  const slots = ownData(value, 'slots')
+  const slotsIssue = slots === undefined
+    ? undefined
+    : slotsProblem(slots)
+  if (slotsIssue !== undefined) issues.push({ path: `${path}.slots`, message: slotsIssue })
   const worstCase = ownData(value, 'worstCase')
   if (worstCase !== undefined && typeof worstCase !== 'function') issues.push({ path: `${path}.worstCase`, message: 'must be a function' })
   const room = ownData(value, 'room')

@@ -25,3 +25,24 @@ export const systemClock: Clock = Object.freeze({
     }
   },
 })
+
+/**
+ * Wait `ms` milliseconds on `clock`, which the abort of `signal` ends at once: the wait rejects with the signal's reason, and
+ * its timer is cancelled. A signal that is aborted already rejects at once, starting no timer. Each of the timer and the
+ * abort's listener removes the other when it goes first.
+ */
+export function wait(clock: Clock, ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason)
+  return new Promise<void>((resolve, reject) => {
+    let cancel = (): void => {}
+    function onAbort(): void {
+      cancel()
+      reject(signal.reason)
+    }
+    cancel = clock.timer(ms, () => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    })
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}

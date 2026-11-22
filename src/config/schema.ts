@@ -4,7 +4,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import { MAX_PATTERNS, patternProblem, TOO_MANY_PATTERNS } from '../core/exclude.ts'
 import { MIN_PART_TOKENS } from '../core/parts.ts'
 import type { Adapts, CompletionRequest, CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
-import { adaptsProblem, MAX_RETRIES, MAX_STATED_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, retriesProblem, streamsProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../core/ports.ts'
+import { adaptsProblem, MAX_RETRIES, MAX_STATED_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, retriesProblem, slotsProblem, streamsProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../core/ports.ts'
 import { FAIL_ON_LEVELS } from '../core/profile.ts'
 import { ownData } from '../core/stages/context.ts'
 import { securityProfile } from '../profiles/security.ts'
@@ -137,7 +137,7 @@ function configSchema<P extends z.ZodType, R extends z.ZodType>(provider: P, pro
     version: z.literal(1, { error: VERSION }).optional().describe('The version of the config format: 1'),
     providers: z.record(name, provider).optional().describe('The model endpoints, by name'),
     roles: roles.optional().describe('The providers every profile uses, unless it names its own. research is required once several providers are defined; voter is research when unset'),
-    concurrency: z.int().min(1).optional().describe('The most provider calls in flight at once in one review, shared by every profile'),
+    concurrency: z.int().min(1).optional().describe('The most provider calls in flight at once in one review, shared by every profile, with no lane and no adaptation; unset, each provider has a lane of its own that follows its rate-limit headers, from 4 calls at once up to 16 in all'),
     maxFindings: z.int().min(1).optional().describe('The most findings of a research reply each profile reads, the only ones that can reach its panel'),
     partTokens: z.int().min(MIN_PART_TOKENS).optional().describe('The most tokens of diff text, at one token per byte, one research request of a large change holds; 32768 when unset'),
     maxReviewTokens: z.int().min(1).optional().describe('The most tokens, input and output, one review may spend; 2000000 when unset. Set here or in QUORUM_MAX_REVIEW_TOKENS'),
@@ -166,9 +166,10 @@ interface StatedFacts {
   readonly thinking?: NonNullable<Provider['thinking']>
   readonly adapts?: Adapts
   readonly streams?: true
+  readonly slots?: number
 }
 
-/** Each fact a provider states, with the check of its value: a deadline up to what a provider may state, which is more than an option takes, and the window, the `maxTokens` and the thinking level the core sizes replies from, and what it lets the core adapt. */
+/** Each fact a provider states, with the check of its value: a deadline up to what a provider may state, which is more than an option takes, and the window, the `maxTokens` and the thinking level the core sizes replies from, what it lets the core adapt, whether it streams and how many calls its server serves at once. */
 const FACTS: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly problem: (value: unknown) => string | undefined }> = [
   {
     field: 'timeoutMs',
@@ -184,6 +185,7 @@ const FACTS: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly problem
   { field: 'thinking', problem: thinkingProblem },
   { field: 'adapts', problem: adaptsProblem },
   { field: 'streams', problem: streamsProblem },
+  { field: 'slots', problem: slotsProblem },
 ]
 
 /** The `adapts` a provider states, copied once from its own data into a frozen object with no prototype that holds the stated fields alone. */

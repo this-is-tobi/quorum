@@ -1232,6 +1232,24 @@ describe('meta and events', () => {
       leftOut: [],
       flags: [],
       adaptations: [],
+      concurrency: {
+        finder: {
+          limit: 'auto',
+          start: 4,
+          lowest: 4,
+          highest: 4,
+          cuts: 0,
+          headers: false,
+        },
+        voter: {
+          limit: 'auto',
+          start: 4,
+          lowest: 4,
+          highest: 4,
+          cuts: 0,
+          headers: false,
+        },
+      },
     })
     expect(result.meta).not.toHaveProperty('usage')
   })
@@ -1300,6 +1318,7 @@ describe('meta and events', () => {
       'leftOut',
       'flags',
       'adaptations',
+      'concurrency',
     ])
   })
 
@@ -1332,6 +1351,7 @@ describe('meta and events', () => {
       'leftOut',
       'flags',
       'adaptations',
+      'concurrency',
     ])
   })
 
@@ -1404,6 +1424,7 @@ describe('meta and events', () => {
       'leftOut',
       'flags',
       'adaptations',
+      'concurrency',
     ])
     expect(events.flatMap(event => event.type === 'call'
       ? [event.usage]
@@ -6730,6 +6751,32 @@ describe('a reply store', () => {
     expect(alone.meta).not.toHaveProperty('reused')
   })
 
+  it.each([
+    ['lanes', undefined],
+    ['a set concurrency', 2],
+  ])('records no entry in meta.concurrency for a provider that no request went to, under %s', async (_name, concurrency) => {
+    const store = memory()
+    const options = concurrency === undefined
+      ? {}
+      : { concurrency }
+    await build(answers(), keeps(), options).quorum.review({ diff }, { store })
+    // The rerun is answered by the store for the finder alone: its votes are looked up and found missing.
+    for (const name of [
+      ...store.entries.keys(),
+    ]) {
+      if (name.startsWith('voter|')) store.entries.delete(name)
+    }
+    const finder = silent('finder')
+    const rerun = await build(finder, keeps(), options).quorum.review({ diff }, { store })
+    expect(finder.requests).toEqual([])
+    expect(rerun.meta.reused).toEqual({ research: 1, votes: 0 })
+    expect(Object.keys(rerun.meta.concurrency ?? {})).toEqual(['voter'])
+    // A review the store answered whole made no request at all: no entry, and none of the no-headers advice that follows from one.
+    const whole = await build(silent('finder'), silent('voter'), options).quorum.review({ diff }, { store })
+    expect(whole.meta.reused).toEqual({ research: 1, votes: 3 })
+    expect(whole.meta).not.toHaveProperty('concurrency')
+  })
+
   it('makes the call again for a stored reply that was tampered with, warning once', async () => {
     const store = memory()
     const fresh = await build(answers(), keeps()).quorum.review({ diff }, { store })
@@ -7527,5 +7574,238 @@ describe('a path that cuts calls on the way', () => {
     expect(ofType(events, 'provider-down')).toEqual([])
     expect(requests.filter(request => request.thinking === 'low')).toHaveLength(3)
     expect(new Set(requests.map(request => request.replyTokens))).toEqual(new Set([9216]))
+  })
+})
+
+describe('the lanes of a review', () => {
+  /** A file's section whose one hunk holds a line of `length` characters. */
+  const sectionOf = (file: string, length: number): string => [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    '@@ -1 +1 @@',
+    '-x',
+    `+${'y'.repeat(length)}`,
+  ].join('\n')
+  /** `count` files of some 500 tokens each: with the room `roomy` leaves, one file makes a part. */
+  const partsOf = (count: number): string => Array.from({ length: count }, (_, index) => sectionOf(`f${index}.js`, 500)).join('\n')
+  /** The room a research provider states: 1000 tokens for the diff, which holds one file of `partsOf` and not two. */
+  const base = requestTokens(researchRequest(securityProfile.prompts.research, ''))
+  const roomy: Pick<Provider, 'room'> = {
+    room: request => base + 1000 - requestTokens(request),
+  }
+  const keeps = (): Fake => fake('voter', () => vote(true))
+  const turn = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
+  const lanesOf = (events: readonly QuorumEvent[]): QuorumEvent[] => events.filter(event => event.type === 'concurrency')
+
+  it('cuts and pauses the lane of the provider that throttles and leaves the other lane as it was', async () => {
+    const clock = fakeClock()
+    const events: QuorumEvent[] = []
+    const times: Record<string, number[]> = { a: [], b: [] }
+    /** A research provider that answers nothing found, and notes when each call came. */
+    const finder = (id: string, throttle: boolean): Provider => {
+      let calls = 0
+      return {
+        id,
+        model: `${id}-model`,
+        ...roomy,
+        async complete() {
+          calls += 1
+          times[id].push(clock.now())
+          if (throttle && calls === 1) {
+            throw new ProviderError({
+              providerId: id,
+              kind: 'http',
+              status: 429,
+              retryable: true,
+              retryAfterMs: 5000,
+              message: 'slow down',
+            })
+          }
+          return {
+            text: findings(),
+            model: `${id}-model`,
+          }
+        },
+      }
+    }
+    const voter = keeps()
+    const quorum = createQuorumWith({
+      profiles: [securityProfile, style],
+    }, {
+      profiles: {
+        ...portsFor(securityProfile, finder('a', true), voter).profiles,
+        ...portsFor(style, finder('b', false), voter).profiles,
+      },
+      events: event => events.push(event),
+    }, clock)
+    const result = await settle(clock, quorum.review({
+      diff: partsOf(6),
+    }))
+    // Only a's lane is cut, from 4 to 2, and paused for its Retry-After: its two queued calls wait for it, and b's six go on at once.
+    expect(lanesOf(events)).toEqual([
+      {
+        type: 'concurrency',
+        provider: { id: 'a', model: 'a-model' },
+        limit: 2,
+        cause: 'cut',
+        from: 4,
+        failure: { kind: 'http', status: 429 },
+      },
+      {
+        type: 'concurrency',
+        provider: { id: 'a', model: 'a-model' },
+        limit: 2,
+        cause: 'paused',
+        waitMs: 5000,
+        failure: { kind: 'http', status: 429 },
+      },
+      // Its two calls after the pause answer, one window of its limit of 2, so it regrows by one.
+      {
+        type: 'concurrency',
+        provider: { id: 'a', model: 'a-model' },
+        limit: 3,
+        cause: 'regrown',
+      },
+    ])
+    expect(times.a).toEqual([0, 0, 0, 0, 5000, 5000])
+    expect(times.b).toEqual([0, 0, 0, 0, 0, 0])
+    expect(result.meta.concurrency).toEqual({
+      a: {
+        limit: 'auto',
+        start: 4,
+        lowest: 2,
+        highest: 4,
+        cuts: 1,
+        headers: false,
+      },
+      b: {
+        limit: 'auto',
+        start: 4,
+        lowest: 4,
+        highest: 4,
+        cuts: 0,
+        headers: false,
+      },
+    })
+  })
+
+  it('records meta.concurrency per provider, auto or set', async () => {
+    const finder = fake('finder', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
+    const voter = fake('voter', () => vote(true))
+    // The voter's replies carry rate-limit headers, so its lane says so.
+    const headed: Provider = {
+      ...voter,
+      async complete(request) {
+        return {
+          ...await voter.complete(request),
+          rateLimit: { requests: 100 },
+        }
+      },
+    }
+    const reviewed = (options: Omit<QuorumOptions, 'profiles'>, input = diff): Promise<QuorumResult> => createQuorum({
+      ...options,
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder, headed)).review({ diff: input })
+    expect((await reviewed({})).meta.concurrency).toEqual({
+      finder: {
+        limit: 'auto',
+        start: 4,
+        lowest: 4,
+        highest: 4,
+        cuts: 0,
+        headers: false,
+      },
+      voter: {
+        limit: 'auto',
+        start: 4,
+        lowest: 4,
+        highest: 4,
+        cuts: 0,
+        headers: true,
+      },
+    })
+    expect((await reviewed({ concurrency: 3 })).meta.concurrency).toEqual({
+      finder: {
+        limit: 3,
+        start: 3,
+        lowest: 3,
+        highest: 3,
+        cuts: 0,
+        headers: false,
+      },
+      voter: {
+        limit: 3,
+        start: 3,
+        lowest: 3,
+        highest: 3,
+        cuts: 0,
+        headers: true,
+      },
+    })
+    // A review that calls no provider records none.
+    expect(Object.hasOwn((await reviewed({}, '')).meta, 'concurrency')).toBe(false)
+  })
+
+  it('runs up to 16 research workers a profile with lanes, and concurrency of them when it is set', async () => {
+    const peaks = async (options: Omit<QuorumOptions, 'profiles'>): Promise<{ peak: number, calls: number }> => {
+      let active = 0
+      let peak = 0
+      let calls = 0
+      let open = (): void => {}
+      const gate = new Promise<void>((resolve) => {
+        open = resolve
+      })
+      const finder: Provider = {
+        id: 'finder',
+        model: 'finder-model',
+        // The server states 16 slots, so its lane starts at 16: the workers are what the review runs at once.
+        slots: 16,
+        ...roomy,
+        async complete() {
+          calls += 1
+          active += 1
+          peak = Math.max(peak, active)
+          await gate
+          active -= 1
+          return {
+            text: findings(),
+            model: 'finder-model',
+          }
+        },
+      }
+      const running = createQuorum({
+        ...options,
+        profiles: [securityProfile],
+      }, portsFor(securityProfile, finder, keeps())).review({
+        diff: partsOf(20),
+      })
+      for (let index = 0; index < 5; index++) await turn()
+      open()
+      await running
+      return { peak, calls }
+    }
+    expect(await peaks({})).toEqual({ peak: 16, calls: 20 })
+    expect(await peaks({ concurrency: 4 })).toEqual({ peak: 4, calls: 20 })
+  })
+
+  it('refuses a stated slots that is not a whole number of at least 1', () => {
+    const stating = (slots: unknown): Provider => ({
+      ...fake('m', () => ''),
+      slots,
+    } as Provider)
+    expect(issuesOf(() => createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, stating(0), stating(1.5))))).toEqual([
+      'ports.profiles.security.research.slots: must be a whole number of at least 1',
+      'ports.profiles.security.voters.reachability.slots: must be a whole number of at least 1',
+      'ports.profiles.security.voters.impact.slots: must be a whole number of at least 1',
+      'ports.profiles.security.voters.defenses.slots: must be a whole number of at least 1',
+    ])
+    expect(() => createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, stating(1), stating(16)))).not.toThrow()
   })
 })

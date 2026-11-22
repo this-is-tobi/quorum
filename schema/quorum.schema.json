@@ -233,7 +233,7 @@
       "additionalProperties": false
     },
     "concurrency": {
-      "description": "The most provider calls in flight at once in one review, shared by every profile",
+      "description": "The most provider calls in flight at once in one review, shared by every profile, with no lane and no adaptation; unset, each provider has a lane of its own that follows its rate-limit headers, from 4 calls at once up to 16 in all",
       "type": "integer",
       "minimum": 1,
       "maximum": 9007199254740991

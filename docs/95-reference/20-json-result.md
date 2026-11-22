@@ -61,6 +61,7 @@ A failed vote counts as a reject. Its `failure` holds only what the code read, n
 | `leftOut` | entry[] | Every file the review left out, once per file, reason and rule: the files its source left out before it made the diff first, then the diff's own in its order: [A file left out](#a-file-left-out). Empty when it left none out, a blank diff included |
 | `flags` | flag[] | The advisory flags, the `secret-file` flags of the files left out first, in the order `leftOut` lists them, then those read from the diff, file by file in its order: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
 | `adaptations` | entry[] | What the review moved by itself, in the order it happened: [The adaptations](#the-adaptations). Required, and empty when nothing moved, a blank diff included |
+| `concurrency` | object | Only when the review made a call: what each provider's lane did, one entry per provider id, keyed by it: [The lanes](#the-lanes) |
 | `reused` | object | Only when the review was given a state directory (`--state`, or a `store` in the library), even when nothing was reused: `research`, the research calls, and `votes`, the votes, that the store answered instead of a provider, whole numbers of at least 0, counted from the `call` events that say `reused`: [Saved state](../20-using/20-configuration.md#saved-state). A call the store answered spends nothing and adds nothing to `usage` |
 
 A usage count is valid when it is a finite number of at least 0. A failed call's usage counts too, when its reply reported valid counts, as a reply refused or cut off at its token limit does. `meta.usage` and each `invalidFindings` are counted from the review's own events, so `meta` and the events cannot disagree.
@@ -238,6 +239,31 @@ A `secret-file` flag comes from `meta.leftOut`, not from the diff: one for each 
 | `cause` | string | Why, a code word: `cut-off-thinking` (a reply ran out of room while reasoning), `no-answer-thinking` (a reply held only reasoning), `empty-reply` (a reply in JSON mode was empty), `format-refused` (the server refused the request's JSON mode), `lowering-refused` (the server refused the lowered thinking), `stream-refused` (the server refused a stream's options, or streaming itself), `stream-answered-whole` (the server answered a streamed call whole), `cut-on-the-way` (the provider's calls are cut at a length, so its derived reply budget is held to what the cut lets through). A later release writes `byte-bound-refused` and `loaded-window` |
 
 Each entry is one `adapted` event, once per provider and setting in a review, and the move holds for the rest of that review alone: [What quorum adapts by itself](../20-using/20-configuration.md#what-quorum-adapts-by-itself). A setting you set, and a provider that does not state it may move, never appears. `readResult` refuses a result whose `adaptations` it cannot read, since the schema is strict and the lists of settings and causes are closed.
+
+### The lanes
+
+This fragment shows only the part of `meta` that holds the lanes. `meta.concurrency` has one entry per provider id that a request went to, in the order of their first requests. Two provider objects of one id are merged: the widest range, every cut, and whether either sent headers. The public view keeps it.
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `limit` | `"auto"` or number | `"auto"` when `concurrency` is unset, so the provider had a lane, else the number it was set to |
+| `start` | number | Where the lane started: 4, the `slots` the provider states when fewer, or the `concurrency` set |
+| `lowest` | number | The lowest limit the lane had, at least 1 |
+| `highest` | number | The highest limit it had, at most 16 with lanes, else the `concurrency` set |
+| `cuts` | number | How many times a throttle halved it: 0 with `concurrency` set |
+| `headers` | boolean | Whether the provider's replies carried rate-limit headers a lane reads: [The rate-limit headers](../20-using/30-providers.md#the-rate-limit-headers). A lane with none never passed its start |
+
+```json
+{
+  "meta": {
+    "concurrency": {
+      "default": { "limit": "auto", "start": 4, "lowest": 2, "highest": 6, "cuts": 1, "headers": true }
+    }
+  }
+}
+```
+
+Each change of a limit is a `concurrency` event ([Events](./30-library-api.md#events)); the record keeps the range and the count, and a review with `concurrency` set records the number as `limit`, `start`, `lowest` and `highest`, and 0 cuts: [Lanes](../20-using/30-providers.md#lanes).
 
 ## Incomplete reasons
 

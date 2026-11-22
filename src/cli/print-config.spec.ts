@@ -134,7 +134,7 @@ describe('printConfig', () => {
   })
 
   it('prints the values the review applies when the config sets none', () => {
-    expect(printed(SPEC)).toContain('\nconcurrency: 4\nmaxFindings: 50\npartTokens: 32768\nmaxReviewTokens: 2000000\nreviewTimeoutMs: 1800000\nexclude: []\nsend: []\nwarnings: []\n')
+    expect(printed(SPEC)).toContain('\nconcurrency: auto\nmaxFindings: 50\npartTokens: 32768\nmaxReviewTokens: 2000000\nreviewTimeoutMs: 1800000\nexclude: []\nsend: []\nwarnings: []\n')
     expect(printConfig(config({ a: SPEC }, { concurrency: 2, maxFindings: 5 }), undefined)).toContain('\nconcurrency: 2\nmaxFindings: 5\n')
   })
 
@@ -322,7 +322,7 @@ describe('printConfig', () => {
       '        contextTokens: 8192',
       '        replyTokens: 2048',
       '        room: 1602',
-      'concurrency: 4',
+      'concurrency: auto',
       '',
     ].join('\n'))
     // They follow the profiles, and a call without them prints none.
