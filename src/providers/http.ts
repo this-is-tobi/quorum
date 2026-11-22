@@ -597,8 +597,9 @@ export type StreamReply = ({ readonly whole: unknown } | { readonly items: Async
  * credit, spend limit or quota also marks the error `exhausted`, by the vendor's codes or a hook's `exhausted`, so the
  * review stops calling its provider at once.
  *
- * The rate-limit facts of the headers (`rateLimitOf`) are on the `headers` signal, on the result and on a failure's error.
- * `onProgress` hears one `headers` signal when the status is a success, and each keep-alive of a stream as it is read. A
+ * The rate-limit facts of the headers (`rateLimitOf`) are on the result and on a failure's error, and on the `headers`
+ * signal of a stream. `onProgress` hears one `headers` signal when the reply is a stream, none for a whole reply, whose
+ * headers a gateway may write after its body, and each keep-alive of a stream as it is read. A
  * read that rejects is `aborted` when the attempt's signal is aborted, else `network`; a stream a consumer leaves
  * early, by a throw or a return, cancels its body.
  */
@@ -610,8 +611,8 @@ export async function postStream(options: PostStreamOptions): Promise<StreamRepl
   const stated = rateLimit === undefined
     ? {}
     : { rateLimit }
-  onProgress?.({ kind: 'headers', ...stated })
   if (mediaTypeOf(response.headers.get('content-type')) !== STREAM_TYPES[format]) return { whole: await readWhole<unknown>(options, response), ...stated }
+  onProgress?.({ kind: 'headers', ...stated })
   const body = response.body ?? new ReadableStream<Uint8Array>({
     start(controller) {
       controller.close()
@@ -641,9 +642,40 @@ export async function postStream(options: PostStreamOptions): Promise<StreamRepl
 }
 
 /**
+ * A failure read from a whole reply, with the rate-limit facts that reply's headers stated: a copy of a `ProviderError` that
+ * has none of its own, keeping every field, since the reader that threw it never saw the headers. Any other value, and an
+ * error with its own facts, is as it was.
+ */
+function withHeaders(error: unknown, rateLimit: RateLimit | undefined): unknown {
+  if (rateLimit === undefined || !(error instanceof ProviderError) || error.rateLimit !== undefined) return error
+  const prefix = `${error.providerId}: `
+  return new ProviderError({
+    providerId: error.providerId,
+    kind: error.kind,
+    message: error.message.startsWith(prefix)
+      ? error.message.slice(prefix.length)
+      : error.message,
+    status: error.status,
+    retryable: error.retryable,
+    exhausted: error.exhausted
+      ? true
+      : undefined,
+    retryAfterMs: error.retryAfterMs,
+    usage: error.usage,
+    noAnswer: error.noAnswer,
+    refused: error.refused,
+    stalledMs: error.stalledMs,
+    cutAfterMs: error.cutAfterMs,
+    rateLimit,
+    cause: error.cause,
+  })
+}
+
+/**
  * The tail every adapter's `complete` ends with: the whole reply `postStream` answered, or `assemble`'s reading of its
  * stream, read by `read`, marked `whole` when a streamed request was answered whole, and carrying the rate-limit facts the
- * reply's headers stated when it stated any: the field is left out otherwise.
+ * reply's headers stated when it stated any: the field is left out otherwise. A failure `assemble` or `read` throws carries
+ * them too, when it has none of its own (`withHeaders`).
  */
 export async function replyOf(
   sent: StreamReply,
@@ -652,9 +684,14 @@ export async function replyOf(
   read: (reply: unknown) => CompletionResponse,
 ): Promise<CompletionResponse> {
   const answered = 'whole' in sent
-  const reply = read(answered
-    ? sent.whole
-    : await assemble(sent.items))
+  let reply: CompletionResponse
+  try {
+    reply = read(answered
+      ? sent.whole
+      : await assemble(sent.items))
+  } catch (error) {
+    throw withHeaders(error, sent.rateLimit)
+  }
   const marked: CompletionResponse = streamed && answered
     ? { ...reply, whole: true }
     : reply

@@ -1241,6 +1241,22 @@ describe('openaiCompatible streams', () => {
     await expect(openaiCompatible({ ...base, stream: false }).complete(request)).resolves.not.toHaveProperty('whole')
   })
 
+  it('sends no headers signal for a streamed request answered whole, and keeps its rate-limit facts on the reply', async () => {
+    stubResponses(new Response(JSON.stringify(ok), {
+      headers: { 'content-type': 'application/json', 'x-ratelimit-remaining-tokens': '1000000', 'x-ratelimit-limit-tokens': '1000000' },
+    }))
+    const signals: StreamSignal[] = []
+    const reply = await local.complete({
+      ...request,
+      onProgress: signal => signals.push(signal),
+    })
+    expect(signals).toEqual([])
+    expect(reply).toMatchObject({
+      whole: true,
+      rateLimit: { tokens: 1000000, tokensLimit: 1000000 },
+    })
+  })
+
   it('refuses stream_options and a stream that is no boolean in its options', () => {
     expect(() => openaiCompatible({
       ...base,

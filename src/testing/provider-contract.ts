@@ -726,6 +726,19 @@ export function describeProviderContract(subject: ContractSubject): void {
       await expect(subject.make(base).complete(request)).rejects.toMatchObject({ kind: 'http', rateLimit: undefined })
     })
 
+    it('carries a whole reply\'s rate-limit headers on the failure read from it', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => {
+        const response = answer('whole', subject.replies.truncated)
+        response.headers.set('x-ratelimit-remaining-requests', '7')
+        return response
+      }))
+      await expect(subject.make(base).complete(request)).rejects.toMatchObject({
+        name: 'ProviderError',
+        kind: 'truncated',
+        rateLimit: { requests: 7 },
+      })
+    })
+
     it('reports a 5xx or 429 as retryable, another status as not, and a body that is not a JSON object as invalid-response', async () => {
       for (const [status, retryable] of [
         [503, true],

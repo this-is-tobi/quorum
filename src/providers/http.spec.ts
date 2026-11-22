@@ -1262,7 +1262,7 @@ describe('postStream', () => {
       { kind: 'keep-alive' },
       { kind: 'keep-alive' },
     ])
-    // A whole reply reports its headers too, and a failed status none.
+    // A whole reply reports no headers signal, since its headers may come after its body, and a failed status none.
     signals.length = 0
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply({ a: 1 })))
     await postStream({
@@ -1274,9 +1274,7 @@ describe('postStream', () => {
       ...streamOptions,
       onProgress: signal => signals.push(signal),
     })).rejects.toMatchObject({ kind: 'http', status: 500 })
-    expect(signals).toEqual([
-      { kind: 'headers' },
-    ])
+    expect(signals).toEqual([])
   })
 
   it('carries the rate-limit facts in the headers signal, on the reply, and on a failure', async () => {
@@ -1294,7 +1292,7 @@ describe('postStream', () => {
     ])
     expect(streamed).toMatchObject({ rateLimit: facts })
     await drain((streamed as { items: AsyncIterable<unknown> }).items)
-    // A whole reply: the same, with the body beside them.
+    // A whole reply: its facts are on the result alone, with the body beside them, and it sends no signal.
     signals.length = 0
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response('{"a":1}', {
       headers: { 'content-type': 'application/json', ...said },
@@ -1303,9 +1301,7 @@ describe('postStream', () => {
       whole: { a: 1 },
       rateLimit: facts,
     })
-    expect(signals).toEqual([
-      { kind: 'headers', rateLimit: facts },
-    ])
+    expect(signals).toEqual([])
     // A failure.
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('slow', 429, said)))
     const failed = await postStream(streamOptions).catch((caught: unknown) => caught)
@@ -1317,10 +1313,15 @@ describe('postStream', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply({ a: 1 })))
     const bare = await postStream({ ...streamOptions, onProgress })
     expect(Object.keys(bare)).toEqual(['whole'])
+    expect(signals).toEqual([])
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => served('data: {"a":1}\n\n', 'text/event-stream')))
+    const bareStream = await postStream({ ...streamOptions, onProgress })
+    expect(Object.keys(bareStream)).toEqual(['items'])
     expect(signals).toEqual([
       { kind: 'headers' },
     ])
     expect(Object.keys(signals[0]!)).toEqual(['kind'])
+    await drain((bareStream as { items: AsyncIterable<unknown> }).items)
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('slow', 429)))
     expect(((await postStream(streamOptions).catch((caught: unknown) => caught)) as ProviderError).rateLimit).toBeUndefined()
   })
@@ -1384,6 +1385,48 @@ describe('replyOf', () => {
     const items = none()
     expect(await replyOf({ items }, true, assemble, read)).toEqual(read({ assembled: true }))
     expect(assemble).toHaveBeenCalledExactlyOnceWith(items)
+  })
+
+  it('throws a failure read from a whole reply with the reply\'s rate-limit facts, every other field kept', async () => {
+    const assemble = async (): Promise<unknown> => ({})
+    const sent = {
+      whole: {},
+      rateLimit: { requests: 7 },
+    }
+    const failure = new ProviderError({
+      providerId: 'p',
+      kind: 'truncated',
+      message: 'reply was cut off at its limit',
+      noAnswer: 'reply',
+      usage: { inputTokens: 5, outputTokens: 9 },
+    })
+    const caught = await replyOf(sent, true, assemble, () => {
+      throw failure
+    }).catch((error: unknown) => error)
+    expect(caught).toBeInstanceOf(ProviderError)
+    expect(caught).not.toBe(failure)
+    expect(caught).toMatchObject({
+      kind: 'truncated',
+      message: 'p: reply was cut off at its limit',
+      noAnswer: 'reply',
+      usage: { inputTokens: 5, outputTokens: 9 },
+      retryable: false,
+      rateLimit: { requests: 7 },
+    })
+    // An error with a rate limit of its own, and any other value, is thrown as it is.
+    const own = new ProviderError({
+      providerId: 'p',
+      kind: 'truncated',
+      message: 'cut',
+      rateLimit: { requests: 1 },
+    })
+    const plain = new Error('boom')
+    await expect(replyOf(sent, true, assemble, () => {
+      throw own
+    })).rejects.toBe(own)
+    await expect(replyOf(sent, true, assemble, () => {
+      throw plain
+    })).rejects.toBe(plain)
   })
 
   it('adds no rateLimit field when the reply stated none', async () => {

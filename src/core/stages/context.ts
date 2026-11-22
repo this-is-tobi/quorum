@@ -608,11 +608,21 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
             ? undefined
             : { watch, progressed: reports.progressed }, inLane)
           const endedAt = ctx.clock.now()
-          if (typeof reply?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
+          // The lane reads a reply's headers even when the core refuses the reply, so they are read first.
+          const headers = rateLimitFacts(ownData(reply, 'rateLimit'))
+          if (typeof reply?.text !== 'string') {
+            throw new ProviderError({
+              providerId: target.ref.id,
+              kind: 'invalid-response',
+              message: 'returned no reply text',
+              ...headers === undefined
+                ? {}
+                : { rateLimit: headers },
+            })
+          }
           // The reply's usage is read once, so its settlement and its event cannot disagree.
           replied = checkedUsage(reply.usage)
           settle(settlementOf(reservation, replied))
-          const headers = rateLimitFacts(ownData(reply, 'rateLimit'))
           try {
             inLane.ended({
               answered: true,
