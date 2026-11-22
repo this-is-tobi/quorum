@@ -39,10 +39,19 @@ interface CompletionResponse {
   usage?: Usage
   reasoning?: boolean
   whole?: true
+  rateLimit?: RateLimit
+}
+
+interface RateLimit {
+  readonly requests?: number
+  readonly tokens?: number
+  readonly tokensLimit?: number
+  readonly requestsResetMs?: number
+  readonly tokensResetMs?: number
 }
 
 type StreamSignal
-  = | { readonly kind: 'headers' }
+  = | { readonly kind: 'headers', readonly rateLimit?: RateLimit }
     | { readonly kind: 'data', readonly outputTokens: number, readonly answer: boolean, readonly reasoning: boolean }
     | { readonly kind: 'keep-alive' }
 ```
@@ -53,6 +62,7 @@ type StreamSignal
 - **`reasoning` says whether the reply showed reasoning**: `true` when it did, `false` when the adapter could tell it showed none, absent when the provider cannot tell, as a provider object of your own states none. The four HTTP adapters state it; `claudeCode` does not. It is a fact about the reply, never its text.
 - **`thinking`, `structuredOutput` and `stream` are what the core changes by itself**, for a provider that states `adapts`: a lowered thinking level after a reply ran out of room while reasoning, prompt mode after an empty reply or a refused field, and a stream moved to a bare stream or to whole replies after a server refused one or answered it whole. An adapter honours each only when it states the matching `adapts`, so a setting you set is never undone: [What quorum adapts by itself](./20-configuration.md#what-quorum-adapts-by-itself).
 - **A provider that streams says so** with `streams: true`, and reports each sign of life of a streamed reply through the request's `onProgress`: its headers, each data event with the output tokens so far, a whole number, floored, and whether an answer or reasoning has shown, and each keep-alive. `whole: true` on a response says the server answered a streamed request whole: [Streaming](#streaming).
+- **`rateLimit` says what the reply's rate-limit headers stated**, as numbers: the requests and tokens left, the tokens' limit and the wait until each count resets. A reply, its `headers` signal and a failure's `ProviderError` carry it when the server sent any: [The rate-limit headers](#the-rate-limit-headers).
 - **`id` and `model` name the provider** in events and in `meta`, as they were when the quorum was created.
 - **A provider may state its deadline**, `timeoutMs`, its stall window, `stallTimeoutMs`, and its `retries`: [Deadlines and retries](#deadlines-and-retries).
 - **A provider may state its worst case**, `worstCase(request)`: the most tokens one attempt of the request may spend, which the review's token cap reserves before it is sent ([The token cap](./20-configuration.md#the-token-cap)): [What a provider states](#what-a-provider-states).
@@ -196,6 +206,25 @@ A whole reply is what a proxy can cut, as a gateway did in 0.7.0 at 600 s, so `s
 - **`text/event-stream`**, unbuffered, with a content type whose media type is that: a charset after it is fine. `ollama` streams `application/x-ndjson`.
 - **Every event as it is written**: a gateway that holds the stream and sends it at the end gives an answer after the same wait as a whole reply, and passes no cut it was never going to pass.
 - **Comments** (`: ping`) are signs of life, and a keep-alive is no progress of its own.
+
+### The rate-limit headers
+
+A server says in the headers of each reply how much of its limit is left, and a failed reply says it too. Every HTTP adapter reads them, from a stream's headers as they arrive, from a whole reply and from a failure, and states what it read as numbers in `rateLimit`: on the `headers` signal, on the response and on the `ProviderError`. The names read, each field from the first that holds a well-formed value:
+
+| Field | OpenAI's name | Anthropic's name |
+| --- | --- | --- |
+| `requests`, left | `x-ratelimit-remaining-requests` | `anthropic-ratelimit-requests-remaining` |
+| `tokens`, left | `x-ratelimit-remaining-tokens` | `anthropic-ratelimit-tokens-remaining` |
+| `tokensLimit` | `x-ratelimit-limit-tokens` | `anthropic-ratelimit-tokens-limit` |
+| `requestsResetMs` | `x-ratelimit-reset-requests` | `anthropic-ratelimit-requests-reset` |
+| `tokensResetMs` | `x-ratelimit-reset-tokens` | `anthropic-ratelimit-tokens-reset` |
+
+- **A count** is decimal digits, at most 15. A sign, a fraction, an exponent or a longer number is read as nothing.
+- **OpenAI's resets** are durations, `1s`, `6m0s`, `1h2m3.5s`, `20ms` or `1.5s`, in hours, minutes, seconds and milliseconds, read as milliseconds. `0s` is no wait left.
+- **Anthropic's resets** are RFC 3339 dates, `2026-11-22T10:00:30Z`, matched by their shape before they are read and taken as the milliseconds from now. A date already past is read as nothing, since a clock that is off must not read as a reset that came.
+- **The generic `x-ratelimit-limit`, `x-ratelimit-remaining` and `x-ratelimit-reset` are not read**: they name no window.
+- **A malformed header is read as nothing**, and one good header beside it is still read. A reply with none well formed carries no `rateLimit`.
+- **A value is read as a number and never copied**: no header value reaches an error message, a line or a log.
 
 ## The adapters
 
@@ -901,6 +930,7 @@ Every failure of a shipped adapter's call is a `ProviderError`, the error class 
 | `exhausted` | `true` when the reply says the account's credit, quota or spend limit is used up, else `false`: [What is retried](#what-is-retried). Such an error is never `retryable`, whatever the adapter set, and finds its provider down at once |
 | `retryAfterMs` | The wait the server asked for at least, in milliseconds, or `undefined`. The HTTP adapters set it from the reply's headers, and `gemini` from its body |
 | `noAnswer` | What a `truncated` or `no-answer` reply lacked: `reply`, `thinking`, `window` or `empty`, as [What a reply lacked](#what-a-reply-lacked) says; `undefined` for any other failure |
+| `rateLimit` | What the failed reply's rate-limit headers stated, `{ requests?, tokens?, tokensLimit?, requestsResetMs?, tokensResetMs? }`, or `undefined`: [The rate-limit headers](#the-rate-limit-headers). Numbers only |
 | `usage` | The counts of the reply the call failed on, `{ inputTokens, outputTokens, costUsd? }`, when the provider read one that reports them; `undefined` otherwise. The review counts them as the failed call's usage, in its `call` event and in `meta.usage`, and the token cap settles the attempt at them ([The token cap](./20-configuration.md#the-token-cap)). The shipped adapters set it on every failure that follows a reply they read and that reports its counts |
 
 | Kind | Raised when |

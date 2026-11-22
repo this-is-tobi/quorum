@@ -1144,7 +1144,16 @@ describe('openaiCompatible streams', () => {
     // The reasoning is counted as it streams and never kept or quoted.
     expect(JSON.stringify(failed)).not.toContain('rrrr')
     const data = signals.filter(signal => signal.kind === 'data')
-    expect(signals[0]).toEqual({ kind: 'headers' })
+    expect(signals[0]).toEqual({
+      kind: 'headers',
+      rateLimit: {
+        requests: 299,
+        tokens: 1_000_000,
+        tokensLimit: 1_000_000,
+        requestsResetMs: 1000,
+        tokensResetMs: 0,
+      },
+    })
     expect(data.at(-1)).toEqual({
       kind: 'data',
       outputTokens: 4000,

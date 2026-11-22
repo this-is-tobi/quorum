@@ -486,12 +486,28 @@ process.stdout.write(renderReport(result, { format: 'markdown' }))
 | --- | --- | --- | --- |
 | `QuorumError` | `Error` | `name`, the class's own name | The base of every error quorum raises on purpose |
 | `ConfigError` | `QuorumError` | `issues`, each a `{ path, message }`, every one; the message holds one `path: message` line per issue for the first 50, then `and <n> more issues` | Invalid configuration or input, every issue at once. The CLI exits `2` on it |
-| `ProviderError` | `QuorumError` | `providerId`, `kind`, `status`, `retryable`, `exhausted`, `retryAfterMs`, `usage`, `noAnswer`, `refused` (`structuredOutput`, `streamOptions` or `stream`: the field an HTTP 400 or 422 named as a whole word), `stalledMs` (set by the core alone, on a `timeout` that is a stalled stream: the window it showed no progress for), `cutAfterMs` (set by the core alone, on the `truncated` failure it reads a learned cut as) | A provider call that failed: [`ProviderError`](../20-using/30-providers.md#providererror) |
+| `ProviderError` | `QuorumError` | `providerId`, `kind`, `status`, `retryable`, `exhausted`, `retryAfterMs`, `usage`, `noAnswer`, `refused` (`structuredOutput`, `streamOptions` or `stream`: the field an HTTP 400 or 422 named as a whole word), `stalledMs` (set by the core alone, on a `timeout` that is a stalled stream: the window it showed no progress for), `cutAfterMs` (set by the core alone, on the `truncated` failure it reads a learned cut as), `rateLimit` (a [`RateLimit`](#ratelimit): what the failed reply's rate-limit headers stated) | A provider call that failed: [`ProviderError`](../20-using/30-providers.md#providererror) |
 | `OutputError` | `QuorumError` | `stage`, `reason`; `snippet`, the first 200 characters of the reply | A model reply that could not be read: `<stage> reply unusable: <reason> (reply starts: "<snippet>")` |
 | `ProviderDownError` | `QuorumError` | `providerId`, `kind`, `status`, `count`, `streak`, `exhausted`, `cutAfterMs`, the shortest attempt in milliseconds when every call it counts was cut on the way, `noAnswer`, for a `no-answer` kind, `refused`, `stream` when the last failure was a refused stream, `stalledMs`, the shortest window in milliseconds when every call it counts stalled; `cause`, the last failure | A provider whose calls stopped: `<id>: 3 calls in a row failed (<kind>): no more calls go to it in this review: <fix>` when three of its calls in a row failed for a reason of its own, else `<id>: its one call failed (<kind>): <fix>` or `its <n> calls failed`, for a provider every call of which failed though fewer than three did. `<fix>` is a phrase naming what to check, as the CLI's progress line words it; for a provider whose quota is used up (`exhausted`) the message is `<id>: the account's credit, quota or spend limit is used up (<kind> <status>): no more calls go to it in this review: add credit or raise the limit at the provider, or wait until it resets`, whatever the count; for a provider down by replies with no answer the message says what they lacked instead: `<id>: 3 calls in a row had no answer, only reasoning: ...`, or `had no answer and no reasoning: ...`. It rejects a review only when no research call of any profile answered, and it is recognised by `instanceof` alone, as a limit's error is, so a provider cannot raise one. It is no `ProviderError`. The CLI exits `3` on it, and writes its message, then the cause's |
 | `GitError` | `QuorumError` | `operation`, the git subcommand (`diff`, `rev-parse`, `ls-tree`, and `version` for `--version`); `exitCode`, git's, or `null` when it did not start or did not finish | A git command a source ran that failed: [below](#git-errors). The CLI exits `3` on it |
 
 A failed research call or an unusable research reply, a gating profile's included, is its profile's `research-failed` gap, in words the code writes: `the research call failed (http 503) after 3 attempts`, or `the research reply could not be read: <reason>`, which quote nothing a server or a model wrote, and a provider found down leaves `provider-down` gaps. A research call's `ProviderError` or `OutputError` never rejects the review itself. The same errors from a vote are recorded in the vote's `error` and `failure` instead, a vote its provider was never sent with the failure `provider-down`. A `ProviderError` of kind `too-large`, from research or from a vote, is a `request-too-large` gap instead: the review does not reject, and a provider of your own raises it to have its own refusal of an oversized request recorded so. Any object with an own `kind` property of `'too-large'` counts, whatever its class, so a refusal from a second copy of quorum is a gap too.
+
+### `RateLimit`
+
+What a reply's rate-limit headers stated, as numbers, on a `CompletionResponse`, on a `headers` `StreamSignal` and on a `ProviderError`, each field there only when the reply sent it well formed:
+
+```ts
+interface RateLimit {
+  readonly requests?: number
+  readonly tokens?: number
+  readonly tokensLimit?: number
+  readonly requestsResetMs?: number
+  readonly tokensResetMs?: number
+}
+```
+
+`requests` and `tokens` are what is left of the window, `tokensLimit` is the window's tokens, and the resets are milliseconds until each count resets. A provider object of your own may state it on its responses and errors. The names the shipped adapters read, and what they ignore: [The rate-limit headers](../20-using/30-providers.md#the-rate-limit-headers).
 
 ### Git errors
 

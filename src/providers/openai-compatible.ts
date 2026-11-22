@@ -1,6 +1,6 @@
 import { DEFAULT_RETRIES } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider, StreamSignal } from '../core/ports.ts'
-import { postStream, snippet } from './http.ts'
+import { postStream, snippet, withRateLimit } from './http.ts'
 import type { PostStreamOptions } from './http.ts'
 import { shapeMessages } from './messages.ts'
 import { adaptsOf, attemptFacts, isRecord, mergeBody, prepareHttp, requestSettings, streamFacts, thinkingIssues } from './options.ts'
@@ -522,9 +522,9 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
         ? sentReply.whole
         : await assembleOpenAi(sentReply.items, id, request.onProgress)
       const read = readReply(reply, { id, model, budget }, redact)
-      return streams && answered
+      return withRateLimit(streams && answered
         ? { ...read, whole: true }
-        : read
+        : read, sentReply)
     },
   }
 }
