@@ -26,13 +26,18 @@
  * that is no entry, or holds another key, is a miss with one warning line, once per store and reason, and a write
  * that fails is one warning line and no failure: a review's verdict owes nothing to the store.
  *
+ * `parents: true` makes the missing parents of the directory too, each with mode 0700, for the default directory in the
+ * user's cache (`default.ts`), whose parents may not exist yet. The work-tree check runs on the nearest parent that
+ * exists before any is made, so nothing is made inside a work tree. `discard()` removes the directory and what it holds
+ * once the review it serves needs no rerun, and a failure to is one warning line and no failure.
+ *
  * The directory is never pruned: it grows by one file for each distinct request, so it is removed once the review it
  * serves is done, and never restored from a cache another job can write.
  */
 
 import { createHash } from 'node:crypto'
 import type { Stats } from 'node:fs'
-import { lstat, mkdir, readdir, realpath } from 'node:fs/promises'
+import { lstat, mkdir, readdir, realpath, rm } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { z } from 'zod'
 import { decode, errorCode, readBounded, writeAtomic } from '../config/load.ts'
@@ -97,6 +102,8 @@ export interface FileStoreOptions {
   readonly owner?: number
   /** The platform, `process.platform`: on `win32` the owner and mode checks are skipped. */
   readonly platform: string
+  /** Makes the directory's missing parents too, each with mode 0700, after the work-tree check of the nearest one that exists; a missing parent refuses the directory when unset. */
+  readonly parents?: true
   /** Receives each warning, one line, once per store and reason; none when unset. */
   readonly warn?: (line: string) => void
 }
@@ -151,14 +158,24 @@ async function realPathOf(path: string): Promise<string> {
   }
 }
 
-/** Makes the directory with its marker's place, mode 0700, when it is not there; the parent must be there, and outside every work tree. */
-async function make(location: string): Promise<void> {
-  const parent = await realpath(dirname(location)).catch((error: unknown) => {
+/** The nearest of `start` and its ancestors that exists, which is the root at the latest. */
+async function nearestExisting(start: string): Promise<string> {
+  let at = start
+  while (await look(at) === undefined && dirname(at) !== at) at = dirname(at)
+  return at
+}
+
+/** Makes the directory with its marker's place, mode 0700, when it is not there; its parent must be there, or be made with `parents`, and be outside every work tree. */
+async function make(location: string, parents: boolean): Promise<void> {
+  const nearest = parents
+    ? await nearestExisting(dirname(location))
+    : dirname(location)
+  const parent = await realpath(nearest).catch((error: unknown) => {
     throw refusal(withCode('cannot be created', error))
   })
   // The first check: nothing is made inside a work tree. The second, in `prepare`, refuses a directory that already exists there.
   if (await insideWorkTree(parent)) throw refusal(IN_WORK_TREE)
-  await mkdir(location, { mode: DIRECTORY_MODE }).catch((error: unknown) => {
+  await mkdir(location, { mode: DIRECTORY_MODE, recursive: parents }).catch((error: unknown) => {
     throw refusal(withCode('cannot be created', error))
   })
 }
@@ -173,7 +190,7 @@ async function make(location: string): Promise<void> {
 async function prepare(location: string, options: FileStoreOptions): Promise<void> {
   let found = await look(location)
   if (found === undefined) {
-    await make(location)
+    await make(location, options.parents === true)
     found = await look(location)
     if (found === undefined) throw refusal('cannot be created')
   }
@@ -206,6 +223,8 @@ async function prepare(location: string, options: FileStoreOptions): Promise<voi
 /** A `ReplyStore` that also says how many calls it kept: the distinct entries it wrote, or read back as a stored call, since it was opened. */
 export interface FileStore extends ReplyStore {
   readonly kept: () => number
+  /** Removes the directory and what it holds; a failure is one warning line, once, and no throw. */
+  readonly discard: () => Promise<void>
 }
 
 /**
@@ -281,6 +300,14 @@ export async function openFileStore(directory: string, options: FileStoreOptions
       }
     },
     kept: () => kept.size,
+    discard: async () => {
+      try {
+        await rm(location, { recursive: true, force: true })
+      } catch (error) {
+        const code = codeOf(error) ?? 'unknown'
+        warn(`discard ${code}`, `--state: the default state directory could not be removed (${code})`)
+      }
+    },
   }
 }
 

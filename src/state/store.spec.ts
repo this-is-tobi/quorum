@@ -382,4 +382,53 @@ describe('openFileStore', () => {
     writeFileSync(join(root, 'plain'), 'x')
     expect(await refused(join(root, 'plain'), { platform: 'win32' })).toEqual(['--state: is not a directory'])
   })
+
+  it('makes the missing parents of its directory with mode 0700 when asked, and refuses a missing parent when not', async () => {
+    const directory = join(root, 'cache', 'quorum', 'state', 'key')
+    expect(await refused(directory)).toEqual(['--state: cannot be created (ENOENT)'])
+    expect(readdirSync(root)).toEqual([])
+    await open(directory, { parents: true })
+    for (const made of [
+      'cache',
+      'cache/quorum',
+      'cache/quorum/state',
+      'cache/quorum/state/key',
+    ]) expect(modeOf(join(root, made)), made).toBe(0o700)
+    expect(readFileSync(join(directory, MARKER), 'utf8')).toBe('{"quorum":"state","version":1}')
+    // The parents are there now: a second open makes nothing and takes the marker.
+    await open(directory, { parents: true })
+    expect(warnings).toEqual([])
+    // A nearest existing parent in a work tree refuses the directory, and none of its parents is made.
+    mkdirSync(join(root, 'repo', '.git'), { recursive: true })
+    expect(await refused(join(root, 'repo', 'cache', 'state'), { parents: true })).toEqual(['--state: lies inside a git work tree, which a change could write to: name a directory outside every repository'])
+    expect(readdirSync(join(root, 'repo'))).toEqual(['.git'])
+    // A parent that is a file cannot hold it.
+    writeFileSync(join(root, 'file'), 'x')
+    expect(await refused(join(root, 'file', 'state'), { parents: true })).toHaveLength(1)
+  })
+
+  it.skipIf(process.getuid?.() === 0)('removes its directory with discard, and warns once when it cannot', async () => {
+    const directory = join(root, 'held', 'state')
+    mkdirSync(join(root, 'held'))
+    const store = await open(directory)
+    await store.put(entry('k1'), REPLY)
+    await store.discard()
+    expect(readdirSync(join(root, 'held'))).toEqual([])
+    // A directory that is already gone is removed all the same.
+    await expect(store.discard()).resolves.toBeUndefined()
+    expect(warnings).toEqual([])
+    const again = await open(directory)
+    await again.put(entry('k1'), REPLY)
+    // A directory that cannot be unlinked from its parent: one warning, however often it is asked, and no throw.
+    chmodSync(join(root, 'held'), 0o500)
+    try {
+      await expect(again.discard()).resolves.toBeUndefined()
+      await expect(again.discard()).resolves.toBeUndefined()
+    } finally {
+      chmodSync(join(root, 'held'), 0o700)
+    }
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toMatch(/^--state: the default state directory could not be removed \(E[A-Z]+\)$/)
+    expect(warnings[0]).not.toContain(root)
+  })
 })

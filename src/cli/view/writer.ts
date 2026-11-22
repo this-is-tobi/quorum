@@ -22,8 +22,8 @@ export interface SummaryFacts {
   readonly stderr: { readonly terminal: boolean }
   readonly outputs: readonly ReportFormat[]
   readonly result: Pick<QuorumResult, 'unreviewed' | 'meta'>
-  /** Whether the review kept its answered calls in a state directory (`flag`: `--state`) or not (`none`), and how many it kept: the entries it wrote or read back. */
-  readonly state: { readonly kind: 'flag' | 'none', readonly kept: number }
+  /** Whether the review kept its answered calls in the directory `--state` names (`flag`), in the user's cache by default (`default`) or nowhere (`none`), and how many it kept: the entries it wrote or read back. */
+  readonly state: { readonly kind: 'flag' | 'default' | 'none', readonly kept: number }
 }
 
 /**

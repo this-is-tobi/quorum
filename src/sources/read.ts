@@ -50,6 +50,8 @@ export interface SourceRead {
   readonly diff: string
   readonly source: ReviewSource
   readonly leftOut: LeftOutFile[]
+  /** A path review's repository, its top level as git prints it, which keys the review's default state directory. It is a path, so it reaches no result and no line: only a path source sets it. */
+  readonly repository?: string
 }
 
 /**

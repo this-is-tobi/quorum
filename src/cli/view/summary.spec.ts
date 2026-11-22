@@ -588,12 +588,12 @@ describe('summaryLines', () => {
       'resume: to keep the answered calls for a rerun, pass --state <dir>; this review kept none',
     ],
     [
-      'after a research-failed gap',
+      'after a research-failed gap, naming the same command for the default directory',
       {
         reason: 'research-failed',
-        state: { kind: 'flag', kept: 1 },
+        state: { kind: 'default', kept: 1 },
       },
-      'resume: rerun with the same --state: its 1 answered call(s) are reused',
+      'resume: rerun the same command: its 1 answered call(s) are reused',
     ],
     [
       'after an unreviewed finding',
