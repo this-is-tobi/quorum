@@ -451,6 +451,36 @@ const CASES: Array<[string, string, string, string[]]> = [
     ['no-restricted-imports'],
   ],
   [
+    'the CLI refuses a bare http',
+    'src/cli/probe.ts',
+    'import { createServer } from \'http\'\n\nexport const probe = createServer\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'the public API refuses node:http2',
+    'src/probe.ts',
+    'import { connect } from \'node:http2\'\n\nexport const probe = connect\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'another test helper refuses node:http2',
+    'src/testing/probe.ts',
+    'import { connect } from \'node:http2\'\n\nexport const probe = connect\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'another test helper refuses the fake server',
+    'src/testing/probe.ts',
+    'import { fakeServer } from \'./server.ts\'\n\nexport const probe = fakeServer\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'a spec of the test helpers imports the fake server',
+    'src/testing/probe.spec.ts',
+    'import { fakeServer } from \'./server.ts\'\n\nexport const probe = fakeServer\n',
+    [],
+  ],
+  [
     'the CLI refuses node:http',
     'src/cli/probe.ts',
     'import { createServer } from \'node:http\'\n\nexport const probe = createServer\n',
