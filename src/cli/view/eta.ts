@@ -213,13 +213,13 @@ function researchLeft(state: ViewState, now: number, then: number | undefined): 
     : pooledLeft(state, state.facts.concurrency, now, then)
 }
 
-/** The calls the panel's votes run at once: the setting's, else the lanes' limits summed, at most the review's ceiling. */
+/** The calls the panel's votes run at once: the setting's, else the limits of the lenses' providers' lanes summed (`LANE_START` for one with none yet), at most the review's ceiling. */
 function votesAtOnce(state: ViewState): number {
   const { concurrency } = state.facts
   if (concurrency !== 'auto') return concurrency
-  if (state.lanes.size === 0) return LANE_START
+  if (state.lensProviders.size === 0) return LANE_START
   let sum = 0
-  for (const { limit } of state.lanes.values()) sum += limit
+  for (const provider of state.lensProviders) sum += state.lanes.get(provider)?.limit ?? LANE_START
   return Math.min(REVIEW_CEILING, sum)
 }
 

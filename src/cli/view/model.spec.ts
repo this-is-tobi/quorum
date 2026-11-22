@@ -26,20 +26,57 @@ function started(profiles: string[]): QuorumEvent {
 }
 
 describe('fold', () => {
-  it('keeps that a cut was learned, from its event, for a review and no longer', () => {
+  it('keeps which providers learned a cut, whose research left a reply-cut-off gap, and every lens\'s provider', () => {
     const cut: QuorumEvent = {
       type: 'cut',
       provider: 'api',
       afterMs: 900_000,
       lowered: false,
     }
-    expect(startState(DEFAULT_FACTS).cutSeen).toBe(false)
-    const seen = folded([
-      0,
-      started(['security']),
-    ], [1, cut], [2, cut])
-    expect(seen.cutSeen).toBe(true)
-    expect(fold(seen, started(['security']), 3).cutSeen).toBe(false)
+    const cutOff = (profile: string): QuorumEvent => ({
+      type: 'incomplete',
+      entry: { profile, reason: 'reply-cut-off', detail: 'a detail' },
+    })
+    const local = { id: 'local', model: 'model' }
+    const run: QuorumEvent = {
+      type: 'run:start',
+      profiles: ['security', 'style'],
+      providers: {
+        security: {
+          research: API,
+          lenses: { impact: API, reachability: local },
+        },
+        style: {
+          research: local,
+          lenses: { impact: API },
+        },
+      },
+    }
+    const first = startState(DEFAULT_FACTS)
+    expect(first.cutSeen).toEqual(new Set())
+    expect(first.cutOffBy).toEqual(new Set())
+    expect(first.lensProviders).toEqual(new Set())
+    const seen = folded([0, run], [1, cut], [2, cut], [
+      3,
+      cutOff('style'),
+    ], [
+      4,
+      cutOff('style'),
+    ])
+    expect(seen.cutSeen).toEqual(new Set(['api']))
+    expect(seen.cutOffBy).toEqual(new Set(['local']))
+    expect(seen.lensProviders).toEqual(new Set(['api', 'local']))
+    const both = fold(seen, cutOff('security'), 5)
+    expect(both.cutOffBy).toEqual(new Set(['local', 'api']))
+    // a gap of another reason is not a cut-off one
+    expect(fold(seen, {
+      type: 'incomplete',
+      entry: { profile: 'security', reason: 'binary', detail: 'a detail' },
+    }, 5).cutOffBy).toEqual(new Set(['local']))
+    const again = fold(seen, started(['security']), 6)
+    expect(again.cutSeen).toEqual(new Set())
+    expect(again.cutOffBy).toEqual(new Set())
+    expect(again.lensProviders).toEqual(new Set(['api']))
   })
 
   it('follows each lane\'s limit, its last change, and its pause and pacing', () => {

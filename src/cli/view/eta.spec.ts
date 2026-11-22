@@ -527,15 +527,107 @@ describe('timeLeft', () => {
       limit,
       cause: 'grown',
     })
+    // the lenses run on both providers, so both lanes count
+    const both = list.map(({ at, event }) => event.type === 'run:start'
+      ? {
+          at,
+          event: {
+            ...event,
+            providers: Object.fromEntries(event.profiles.map(id => [
+              id,
+              {
+                research: API,
+                lenses: { impact: API, reachability: OTHER },
+              },
+            ])),
+          },
+        }
+      : { at, event })
     const base = replay(list, first)
     // 17 votes left over the one lane's 4, the recorded review's
     expect(timeLeft(base, first)).toMatchObject({ lowMs: 85_000 * 17 / 4 })
-    const two = fold(fold(base, lane(API, 6), first), lane(OTHER, 2), first)
+    // a second lens provider with no lane yet counts 4
+    expect(timeLeft(replay(both, first), first)).toMatchObject({ lowMs: 85_000 * 17 / 8 })
+    const two = fold(fold(replay(both, first), lane(API, 6), first), lane(OTHER, 2), first)
     expect(timeLeft(two, first)).toMatchObject({ lowMs: 85_000 * 17 / 8 })
-    const wide = fold(fold(base, lane(API, 12), first), lane(OTHER, 8), first)
+    const wide = fold(fold(replay(both, first), lane(API, 12), first), lane(OTHER, 8), first)
     expect(timeLeft(wide, first)).toMatchObject({ lowMs: 85_000 * 17 / 16 })
     // with concurrency set it is the setting
-    expect(timeLeft(replay(list, first, { ...DEFAULT_FACTS, concurrency: 2 }), first)).toMatchObject({ lowMs: 85_000 * 17 / 2 })
+    expect(timeLeft(replay(both, first, { ...DEFAULT_FACTS, concurrency: 2 }), first)).toMatchObject({ lowMs: 85_000 * 17 / 2 })
+  })
+
+  it('runs the panel\'s votes at the lanes of its lenses\' providers alone, a research-only lane left out', () => {
+    const big = { id: 'big', model: 'model' }
+    const lane = (provider: ProviderRef, limit: number): [number, QuorumEvent] => [
+      0,
+      {
+        type: 'concurrency',
+        provider,
+        limit,
+        cause: 'grown',
+      },
+    ]
+    const panel = (...lanes: Array<[number, QuorumEvent]>): ViewState => {
+      let state = fold(startState(DEFAULT_FACTS), {
+        type: 'run:start',
+        profiles: ['security'],
+        providers: {
+          security: {
+            research: big,
+            lenses: { impact: API, reachability: API },
+          },
+        },
+      }, 0)
+      const events: Array<[number, QuorumEvent]> = [
+        ...lanes,
+        [
+          0,
+          {
+            type: 'stage:start',
+            profile: 'security',
+            stage: 'panel',
+            votes: 9,
+          },
+        ],
+        [
+          10_000,
+          {
+            type: 'call',
+            call: 1,
+            profile: 'security',
+            role: 'vote',
+            lens: 'impact',
+            provider: API,
+            finding: 'finding-1',
+            durationMs: 10_000,
+            ok: true,
+            usage: { inputTokens: 5000, outputTokens: 300 },
+            spent: 5300,
+          },
+        ],
+        [
+          10_000,
+          {
+            type: 'vote',
+            profile: 'security',
+            findingId: 'finding-1',
+            lens: 'impact',
+            keep: true,
+          },
+        ],
+      ]
+      for (const [at, event] of events) state = fold(state, event, at)
+      return state
+    }
+    // 8 votes left of 10 000 ms each, at the lenses' provider's 4 and not at the 16 of both lanes
+    expect(timeLeft(panel(lane(big, 12), lane(API, 4)), 10_000)).toEqual({
+      kind: 'range',
+      stage: 'panel',
+      lowMs: 20_000,
+      highMs: 20_000,
+    })
+    // a lens provider with no lane yet counts 4
+    expect(timeLeft(panel(lane(big, 12)), 10_000)).toEqual(timeLeft(panel(lane(big, 12), lane(API, 4)), 10_000))
   })
 
   it.each<[number, number, string]>([
