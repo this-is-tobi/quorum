@@ -439,6 +439,36 @@ const CASES: Array<[string, string, string, string[]]> = [
     ['no-restricted-globals'],
   ],
   [
+    'the fake server uses node:http',
+    'src/testing/server.ts',
+    'import { createServer } from \'node:http\'\n\nexport const probe = createServer\n',
+    [],
+  ],
+  [
+    'another test helper refuses node:http',
+    'src/testing/probe.ts',
+    'import { createServer } from \'node:http\'\n\nexport const probe = createServer\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'the CLI refuses node:http',
+    'src/cli/probe.ts',
+    'import { createServer } from \'node:http\'\n\nexport const probe = createServer\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'the public API refuses node:http',
+    'src/probe.ts',
+    'import { createServer } from \'node:http\'\n\nexport const probe = createServer\n',
+    ['no-restricted-imports'],
+  ],
+  [
+    'a spec file imports the fake server',
+    'src/providers/probe.spec.ts',
+    'import { fakeServer } from \'../testing/server.ts\'\n\nexport const probe = fakeServer\n',
+    [],
+  ],
+  [
     'the core refuses the state layer',
     'src/core/probe.ts',
     'import { openFileStore } from \'../state/store.ts\'\n\nexport const probe = openFileStore\n',
