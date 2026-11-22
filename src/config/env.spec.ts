@@ -443,6 +443,22 @@ describe('the review\'s limits variables', () => {
   })
 })
 
+describe('the strict variable', () => {
+  it('reads QUORUM_STRICT as true or false exactly, and refuses any other value', () => {
+    expect(readEnv({ QUORUM_STRICT: 'true' })).toMatchObject({ strict: true, issues: [] })
+    const off = readEnv({ QUORUM_STRICT: 'false' })
+    expect(off.issues).toEqual([])
+    expect(Object.hasOwn(off, 'strict')).toBe(false)
+    const refused = readEnv({ QUORUM_STRICT: 'yes' })
+    expect(refused.issues).toEqual([
+      { path: 'QUORUM_STRICT', message: 'must be true or false' },
+    ])
+    expect(Object.hasOwn(refused, 'strict')).toBe(false)
+    expect(READ_VARIABLES.has('QUORUM_STRICT')).toBe(true)
+    expect(readEnv({ QUORUM_STRICT: 'true' }).warnings).toEqual([])
+  })
+})
+
 describe('the variables of a role, read as the role\'s own', () => {
   it('reads no rule for a variable off Object.prototype, so a planted property sets no number rule', () => {
     const proto: object = Object.prototype

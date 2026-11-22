@@ -555,6 +555,7 @@ maxFindings: 50
 partTokens: 32768
 maxReviewTokens: 2000000
 reviewTimeoutMs: 1800000
+strict: false
 exclude: []
 send: []
 warnings: []
@@ -571,6 +572,7 @@ That run set a base URL on its own, so its provider is `openai-compatible`. With
 | `concurrency`, `maxFindings` | The values the review applies: the config's, else the defaults, `auto`, a lane for each provider ([Lanes](./30-providers.md#lanes)), and `50` |
 | `partTokens` | The research part size the review applies: the config's, else `32768` ([Research in parts](./20-configuration.md#research-in-parts)) |
 | `maxReviewTokens`, `reviewTimeoutMs` | The limits of a review as the review applies them, defaults filled in: `QUORUM_MAX_REVIEW_TOKENS` and `QUORUM_REVIEW_TIMEOUT_MS`, else the config's, else `2000000` tokens and `1800000` ms ([The limits of a review](./20-configuration.md#the-limits-of-a-review)) |
+| `strict` | Whether `strict` is on: `true` when the config's `strict` or `QUORUM_STRICT` is `true`, else `false` ([Keys](./20-configuration.md#keys)) |
 | `exclude` | The config's patterns, as written, `[]` when it lists none: what every review leaves out ([Excludes](./20-configuration.md#excludes)) |
 | `send` | The config's files, as written, `[]` when it lists none: what every review sends though they are held as secrets, which `--send` adds to ([Sending a held file](./20-configuration.md#sending-a-held-file)). It prints the config's list alone, never `--send`'s |
 | `warnings` | The config's warnings: the deprecated variables, the variables nothing reads, the keys that are not sent or sent in cleartext, and a profile that sets the deprecated `gating`. A run prints these as `warning:` lines before its banner, and adds the warnings of the profiles, such as a policy level that is never reached: [Warnings](./40-profiles.md#warnings). `--print-config` adds, from the budgets, a token cap that holds the worst case of fewer than 20 research parts of a provider: `the token cap of <cap> holds the worst case of <n> research parts of <provider> (<tokens> tokens each): lower maxTokens, or raise maxReviewTokens`, with `, maxTokens <n>` after the tokens when the provider sets one |

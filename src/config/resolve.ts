@@ -35,6 +35,8 @@ export interface ResolvedConfig {
   readonly maxReviewTokens?: number
   /** The deadline of one review, in milliseconds: `QUORUM_REVIEW_TIMEOUT_MS`, else the config's; absent when neither sets it. */
   readonly reviewTimeoutMs?: number
+  /** Present, `true`, when the config's `strict` or `QUORUM_STRICT` is `true`: neither turns the other off. What would only warn that a key may be exposed is then refused before any call. */
+  readonly strict?: true
   /** The path patterns of the files every review leaves out; absent when the config lists none. */
   readonly exclude?: readonly string[]
   /** The files sent to the models though held as secrets, each the path as the diff writes it; the CLI merges them with `--send`. Absent when the config lists none. */
@@ -191,11 +193,22 @@ function readKey(name: string, fields: ProviderSettings, env: Env, presetKey: bo
   return readVariable(name, variable, env)
 }
 
-/** The warnings of a key that is sent over plain http to a host other than this machine. */
-function cleartextWarnings(name: string, apiKey: string | undefined, baseUrl: string | undefined): string[] {
+/** The warning of a key that is sent over plain http to a host other than this machine, or, under `strict`, the issue that refuses it. */
+function cleartextReport(name: string, apiKey: string | undefined, baseUrl: string | undefined, strict: boolean): { issues: ConfigIssue[], warnings: string[] } {
   const origin = httpOrigin(baseUrl)
-  if (!apiKey || origin === undefined || !origin.startsWith('http:') || isThisMachine(hostOf(origin))) return []
-  return [`${configPath(['providers', name, 'baseUrl'])}: sends the key over plain http to a host other than this machine`]
+  if (!apiKey || origin === undefined || !origin.startsWith('http:') || isThisMachine(hostOf(origin))) return { issues: [], warnings: [] }
+  const path = configPath(['providers', name, 'baseUrl'])
+  return strict
+    ? {
+        issues: [
+          { path, message: 'sends the key over plain http to a host other than this machine, and strict refuses it: use an https URL' },
+        ],
+        warnings: [],
+      }
+    : {
+        issues: [],
+        warnings: [`${path}: sends the key over plain http to a host other than this machine`],
+      }
 }
 
 interface CheckedSpec {
@@ -219,7 +232,7 @@ function readClaude(name: string, fields: ProviderSettings, env: Env, variable: 
  * a key or a command, and none of its variables is read. `presetKey` is false for a provider that is never
  * sent its preset's key variable.
  */
-function checkSpec(name: string, entry: ProviderSettings, inUse: boolean, env: Env, presetKey: boolean, command: string | undefined): CheckedSpec {
+function checkSpec(name: string, entry: ProviderSettings, inUse: boolean, env: Env, presetKey: boolean, command: string | undefined, strict: boolean): CheckedSpec {
   const fields = ownFields(entry)
   const key = inUse
     ? readKey(name, fields, env, presetKey)
@@ -238,9 +251,11 @@ function checkSpec(name: string, entry: ProviderSettings, inUse: boolean, env: E
       ? {}
       : { command: claude.command },
   } as Omit<ProviderSpec, 'id'>
+  const cleartext = cleartextReport(name, key.apiKey, baseUrlOf(fields), strict)
   const issues = [
     ...key.issues,
     ...claude.issues,
+    ...cleartext.issues,
   ]
   try {
     buildProvider({ ...spec, id: name }, { env })
@@ -254,7 +269,7 @@ function checkSpec(name: string, entry: ProviderSettings, inUse: boolean, env: E
     warnings: [
       ...key.warnings,
       ...claude.warnings,
-      ...cleartextWarnings(name, key.apiKey, baseUrlOf(fields)),
+      ...cleartext.warnings,
     ],
   }
 }
@@ -283,8 +298,8 @@ function copySpec(name: string, spec: Omit<ProviderSpec, 'id'>): { readonly copy
       }
 }
 
-/** Every provider of the config checked by the builder, and the specs and objects a profile uses. `withheld` names the provider that is never sent its preset's key variable, `command` is `QUORUM_CLAUDE_CODE_COMMAND`'s. An issue two providers share (the variable names no file) is reported once. */
-function checkProviders(providers: Readonly<Record<string, ProviderEntry>>, inUse: ReadonlySet<string>, env: Env, withheld: string | undefined, command: string | undefined): { providers: Array<[string, ResolvedProvider]>, issues: ConfigIssue[], warnings: string[] } {
+/** Every provider of the config checked by the builder, and the specs and objects a profile uses. `withheld` names the provider that is never sent its preset's key variable, `command` is `QUORUM_CLAUDE_CODE_COMMAND`'s, `strict` whether what only warns of an exposed key is refused. An issue two providers share (the variable names no file) is reported once. */
+function checkProviders(providers: Readonly<Record<string, ProviderEntry>>, inUse: ReadonlySet<string>, env: Env, withheld: string | undefined, command: string | undefined, strict: boolean): { providers: Array<[string, ResolvedProvider]>, issues: ConfigIssue[], warnings: string[] } {
   const result: Array<[string, ResolvedProvider]> = []
   const issues: ConfigIssue[] = []
   const warnings: string[] = []
@@ -294,7 +309,7 @@ function checkProviders(providers: Readonly<Record<string, ProviderEntry>>, inUs
       if (used) result.push([name, entry])
       continue
     }
-    const checked = checkSpec(name, entry, used, env, name !== withheld, command)
+    const checked = checkSpec(name, entry, used, env, name !== withheld, command, strict)
     issues.push(...checked.issues.filter(issue => !issues.some(({ path, message }) => path === issue.path && message === issue.message)))
     warnings.push(...checked.warnings)
     if (!used) continue
@@ -433,7 +448,7 @@ function bindRoles(roles: ConfigInput['roles'], names: readonly string[]): { rea
  * command as it gets its key: `QUORUM_CLAUDE_CODE_COMMAND`, else the config's, else `claude` in an absolute
  * entry of `PATH`, found or refused here, and its billing warning. The review's limits, `maxReviewTokens` and
  * `reviewTimeoutMs`, come from `QUORUM_MAX_REVIEW_TOKENS` and `QUORUM_REVIEW_TIMEOUT_MS`, else from the config,
- * and are kept only when one of them sets them. Its `warnings` are the environment layer's, then the providers',
+ * and are kept only when one of them sets them. `strict` is on when the config's or `QUORUM_STRICT` is `true`, and then a key sent over plain http to another machine is an issue, not a warning. Its `warnings` are the environment layer's, then the providers',
  * then the profiles' (an entry that sets the deprecated `gating`). A resolved config is returned as it is. The
  * input must already have passed a config schema. `options.selection`, when given, names the profiles that
  * run, over `QUORUM_PROFILES`, which is still checked; its ids are checked before anything is resolved.
@@ -492,7 +507,8 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
     ? undefined
     : applied.roles.voter
   const elsewhere = derived !== undefined && own(layer.voter, 'preset') === undefined && originOf(applied.providers[derived]) !== originOf(applied.providers[applied.roles.research])
-  const checked = checkProviders(applied.providers, inUse, env, elsewhere ? derived : undefined, own(layer, 'claudeCodeCommand'))
+  const strict = own(layer, 'strict') === true || own(input, 'strict') === true
+  const checked = checkProviders(applied.providers, inUse, env, elsewhere ? derived : undefined, own(layer, 'claudeCodeCommand'), strict)
 
   const reportedVoter = applied.issues.some(issue => issue.path === VOTER_MODEL)
     ? derived
@@ -535,6 +551,9 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
     ...reviewTimeoutMs === undefined
       ? {}
       : { reviewTimeoutMs },
+    ...strict
+      ? { strict }
+      : {},
     ...exclude === undefined || exclude.length === 0
       ? {}
       : {

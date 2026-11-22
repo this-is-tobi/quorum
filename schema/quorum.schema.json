@@ -262,6 +262,10 @@
       "minimum": 1000,
       "maximum": 86400000
     },
+    "strict": {
+      "description": "Refuse, before any call, what is otherwise a warning that a key may be exposed: today, a key sent over plain http to a host other than this machine. QUORUM_STRICT=true turns it on too; neither turns the other off",
+      "type": "boolean"
+    },
     "exclude": {
       "description": "The files left out of every request, by path pattern, each listed as excluded in meta.leftOut; nothing is excluded by default",
       "maxItems": 100,
