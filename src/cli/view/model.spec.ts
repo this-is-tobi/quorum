@@ -26,6 +26,22 @@ function started(profiles: string[]): QuorumEvent {
 }
 
 describe('fold', () => {
+  it('keeps that a cut was learned, from its event, for a review and no longer', () => {
+    const cut: QuorumEvent = {
+      type: 'cut',
+      provider: 'api',
+      afterMs: 900_000,
+      lowered: false,
+    }
+    expect(startState(DEFAULT_FACTS).cutSeen).toBe(false)
+    const seen = folded([
+      0,
+      started(['security']),
+    ], [1, cut], [2, cut])
+    expect(seen.cutSeen).toBe(true)
+    expect(fold(seen, started(['security']), 3).cutSeen).toBe(false)
+  })
+
   it('folds a long review into its parts done, its calls in flight and waiting, its spend and its retries', () => {
     const list = longReview()
     const tenth = replay(list, 600_000)

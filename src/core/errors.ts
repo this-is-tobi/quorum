@@ -142,8 +142,10 @@ export class ProviderError extends QuorumError {
   readonly refused: 'structuredOutput' | 'streamOptions' | 'stream' | undefined
   /** A `timeout` that is a stalled stream: the window it showed no progress for, in milliseconds. Set by the core, which watches the stream. */
   readonly stalledMs: number | undefined
+  /** A `truncated` failure the core read from calls cut on the way at a learned length: how long the attempt ran, in milliseconds. Set by the core, never by an adapter. */
+  readonly cutAfterMs: number | undefined
 
-  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, exhausted?: true, retryAfterMs?: number, usage?: Usage, noAnswer?: NoAnswer, refused?: 'structuredOutput' | 'streamOptions' | 'stream', stalledMs?: number, cause?: unknown }) {
+  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, exhausted?: true, retryAfterMs?: number, usage?: Usage, noAnswer?: NoAnswer, refused?: 'structuredOutput' | 'streamOptions' | 'stream', stalledMs?: number, cutAfterMs?: number, cause?: unknown }) {
     super(`${details.providerId}: ${details.message}`, details.cause === undefined
       ? undefined
       : { cause: details.cause })
@@ -157,6 +159,7 @@ export class ProviderError extends QuorumError {
     this.noAnswer = details.noAnswer
     this.refused = details.refused
     this.stalledMs = details.stalledMs
+    this.cutAfterMs = details.cutAfterMs
   }
 }
 
@@ -274,6 +277,11 @@ export const CUT_ADVICE = 'make replies shorter, with a lower maxTokens or partT
 /** What a provider found down by calls cut on the way says: how long each ran, the likely cause, and `CUT_ADVICE`. */
 export function CUT_FIX(ms: number): string {
   return `each call was cut after about ${elapsedWords(ms)}, likely by a proxy or load balancer on the way: ${CUT_ADVICE}`
+}
+
+/** What a call that ended with a cut on the way, at a length its provider learned, says of itself: `cutAfterMs` is the length of the attempt. */
+export function cutWords(ms: number): string {
+  return `cut on the way after about ${elapsedWords(ms)}, the length this provider's calls are cut at`
 }
 
 /** What the words of a provider that is down are made of: facts the code read, never a message a server or a provider wrote. */

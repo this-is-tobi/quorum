@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { DEFAULT_MAX_FINDINGS } from '../budgets.ts'
+import { DEFAULT_MAX_FINDINGS, factsOf, replyBudget } from '../budgets.ts'
 import type { DiffSection } from '../diff.ts'
 import { cutOf, OutputError, ProviderDownError } from '../errors.ts'
 import { isLimit, isLimitName } from '../limits.ts'
@@ -359,7 +359,7 @@ type Asked
   = | { readonly outcome: 'reviewed', readonly text: string, readonly asked: number, readonly listed: number }
     | { readonly outcome: 'request-too-large' | 'research-failed' | 'provider-down', readonly words: string, readonly failure?: CallFailure }
     | { readonly outcome: LimitName }
-    | { readonly outcome: 'cut-off', readonly lacked: 'reply' | 'thinking' | 'window', readonly limit?: number }
+    | { readonly outcome: 'cut-off', readonly lacked: 'reply' | 'thinking' | 'window', readonly limit?: number, readonly cutAfterMs?: number }
     | { readonly outcome: 'saturated', readonly asked: number }
 
 /** What became of one piece of a part, once recovery is done with it: the piece, and its request's end as `Asked` tells it, but for a cut-off at the floor. */
@@ -390,7 +390,8 @@ interface Spend {
  * - a refusal as too large is `request-too-large` with the refusal's message (the stage splits a piece so refused, never a part);
  * - a call the provider-down rule refused (a `ProviderDownError`) is `provider-down`;
  * - a reply cut off at its limit (a `truncated` failure, which the call path's adaptation has already had its try at)
- *   is a cut-off, with what it lacked and the limit it was sent with: the stage splits the request, or loses it at the floor;
+ *   is a cut-off, with what it lacked and the limit it was sent with, or for a reply cut on the way at a length its provider
+ *   learned (`cutAfterMs`), that length in its place: the stage splits the request, or loses it at the floor;
  * - any other failure of the call is `research-failed` with the words `researchFailed` writes;
  * - a reply that is no findings envelope (an `OutputError` of the check) is `research-failed` with the reason; any other
  *   error the parser throws rethrows, a bug and not a reply;
@@ -462,14 +463,17 @@ async function askResearch(ctx: RunContext, run: ProfileRun, where: Position, sp
     }
     if (ownData(error, 'kind') === 'truncated') {
       const lack = lackOf(error)?.noAnswer
+      const cutAfterMs = ownData(error, 'cutAfterMs')
       return {
         outcome: 'cut-off',
         lacked: lack === 'thinking' || lack === 'window'
           ? lack
           : 'reply',
-        ...state.limit === undefined
-          ? {}
-          : { limit: state.limit },
+        ...typeof cutAfterMs === 'number' && Number.isSafeInteger(cutAfterMs) && cutAfterMs >= 1
+          ? { cutAfterMs }
+          : state.limit === undefined
+            ? {}
+            : { limit: state.limit },
       }
     }
     const failure = providerFailure(error)
@@ -492,13 +496,26 @@ async function askResearch(ctx: RunContext, run: ProfileRun, where: Position, sp
 
 /**
  * What a research request of `run` asks: the findings its budget holds, which are more once a reply of its provider
- * showed that the model does not reason (`ctx.adapt.findings`), and the reply budget it carries, from the review's budgets.
+ * showed that the model does not reason (`ctx.adapt.findings`), and the reply budget it carries, from the review's budgets, held to
+ * what a cut on the way lets through once its provider learned one (`ctx.clocks.ceiling`).
  */
 function askOf(ctx: RunContext, run: ProfileRun): Ask & { readonly findings: number } {
-  const budget = ctx.budgets[run.id].research
+  const stated = ctx.budgets[run.id].research
+  const ceiling = ctx.clocks.ceiling(run.research)
+  if (ceiling === undefined) {
+    return {
+      findings: ctx.adapt.findings(run.research, stated),
+      replyTokens: stated.replyTokens,
+    }
+  }
+  // A provider whose calls are cut on the way, at a length it learned, has a derived budget held to what the cut lets through.
+  const lowered = replyBudget({
+    ...factsOf(run.research),
+    ceiling,
+  }, stated.window, ctx.maxFindings)
   return {
-    findings: ctx.adapt.findings(run.research, budget),
-    replyTokens: budget.replyTokens,
+    findings: ctx.adapt.findings(run.research, lowered),
+    replyTokens: lowered.research,
   }
 }
 
@@ -513,6 +530,8 @@ interface Scope {
 interface Recovered {
   readonly noAnswer: Extract<QuorumEvent, { type: 'recovered' }>['noAnswer']
   readonly limit?: number
+  /** The length a reply was cut on the way at, in place of a limit. */
+  readonly cutAfterMs?: number
   readonly findings?: number
   readonly thinkingLowered: boolean
   /** The replies of the part that were saturated and split. */
@@ -604,6 +623,9 @@ async function researchPart(ctx: RunContext, run: ProfileRun, scope: Scope, root
         ...asked.outcome === 'cut-off' && asked.limit !== undefined
           ? { limit: asked.limit }
           : {},
+        ...asked.outcome === 'cut-off' && asked.cutAfterMs !== undefined
+          ? { cutAfterMs: asked.cutAfterMs }
+          : {},
         ...asked.outcome === 'saturated'
           ? { findings: asked.asked }
           : {},
@@ -634,6 +656,9 @@ async function researchPart(ctx: RunContext, run: ProfileRun, scope: Scope, root
       ...recovered.limit === undefined
         ? {}
         : { limit: recovered.limit },
+      ...recovered.cutAfterMs === undefined
+        ? {}
+        : { cutAfterMs: recovered.cutAfterMs },
       ...recovered.findings === undefined
         ? {}
         : { findings: recovered.findings },

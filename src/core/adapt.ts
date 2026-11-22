@@ -97,6 +97,11 @@ export interface Adaptations {
    * probe, once, when it states that it may (`adapts.stream`) and has not moved there; the record it makes, else `undefined`.
    */
   readonly answeredWhole: (target: Target) => Adaptation | undefined
+  /**
+   * A move the review made with no probe, from a fact the call path read (a learned cut that lowers a derived reply
+   * budget): it is recorded as it is, in the order it happened, and the caller sends its `adapted` event.
+   */
+  readonly recorded: (adaptation: Adaptation) => void
   /** What the review has moved, in the order it happened. */
   readonly record: () => readonly Adaptation[]
   /** Resolves once no probe of the provider is pending, so a call sends its request at the settled settings; `stop` ends the wait with its reason. */
@@ -329,6 +334,9 @@ export function createAdaptations(): Adaptations {
     findings: (target, budget) => stateOf(target).noReasoning
       ? budget.findingsWithoutThinking
       : budget.findings,
+    recorded: (adaptation) => {
+      records.push({ ...adaptation })
+    },
     record: () => records.map(record => ({ ...record })),
     ready: async (target, stop) => {
       for (let pending = pendingOf(stateOf(target)); pending !== undefined; pending = pendingOf(stateOf(target))) await until(pending.wait, stop)
