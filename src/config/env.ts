@@ -53,6 +53,8 @@ export interface EnvLayer {
   readonly maxReviewTokens?: number
   /** `QUORUM_REVIEW_TIMEOUT_MS`: present only when it is set and in range. */
   readonly reviewTimeoutMs?: number
+  /** `QUORUM_STRICT`: `true` only when it is set to `true`; `false` sets nothing, so it never turns off a config's `strict`. */
+  readonly strict?: true
   /** The deprecation line, when an alias is set, then the line naming the `QUORUM_` variables nothing reads. */
   readonly warnings: readonly string[]
   readonly issues: readonly ConfigIssue[]
@@ -92,6 +94,9 @@ const canonicalName = (role: Role, suffix: string): string => `QUORUM_${role}_${
 /** The variable that names the executable of every `claude-code` provider. */
 export const CLAUDE_CODE_COMMAND = 'QUORUM_CLAUDE_CODE_COMMAND'
 
+/** The variable that turns `strict` on. */
+const STRICT = 'QUORUM_STRICT'
+
 /** How a variable that holds a whole number is read: the form it is written in, the most it may be, and the message that says what to write. */
 interface NumberRule {
   readonly form: RegExp
@@ -118,7 +123,7 @@ const LIMIT_VARIABLES: ReadonlyArray<{ readonly field: 'maxReviewTokens' | 'revi
 
 /**
  * Every variable the environment layer reads: `QUORUM_CONFIG`, `QUORUM_PROFILES`, `QUORUM_PROGRESS` (which the CLI
- * reads itself), `QUORUM_CLAUDE_CODE_COMMAND`, the review's two limits, the `QUORUM_` form of each role's variables and the deprecated aliases of those that have one.
+ * reads itself), `QUORUM_CLAUDE_CODE_COMMAND`, `QUORUM_STRICT`, the review's two limits, the `QUORUM_` form of each role's variables and the deprecated aliases of those that have one.
  * The one list: a variable added to `VARIABLES` or `LIMIT_VARIABLES` joins it.
  */
 export const READ_VARIABLES: ReadonlySet<string> = new Set([
@@ -127,6 +132,7 @@ export const READ_VARIABLES: ReadonlySet<string> = new Set([
   // Read by the CLI alone (`progressMode`), which takes the environment itself.
   'QUORUM_PROGRESS',
   CLAUDE_CODE_COMMAND,
+  STRICT,
   ...LIMIT_VARIABLES.map(({ name }) => name),
   ...ROLES.flatMap(role => VARIABLES.map(({ suffix }) => canonicalName(role, suffix))),
   ...ROLES.flatMap(role => VARIABLES.filter(({ aliased }) => aliased).map(({ suffix }) => `${role}_${suffix}`)),
@@ -241,6 +247,19 @@ function readLimits(env: Env): Pick<EnvLayer, 'maxReviewTokens' | 'reviewTimeout
   }
 }
 
+/** `QUORUM_STRICT`: `strict: true` when it is `true`, nothing when it is `false`, or the one issue that refuses any other value, which never repeats it. */
+function readStrict(env: Env): Pick<EnvLayer, 'strict' | 'issues'> {
+  const value = envValue(env, STRICT)
+  if (value === undefined || value === 'false') return { issues: [] }
+  return value === 'true'
+    ? { strict: true, issues: [] }
+    : {
+        issues: [
+          { path: STRICT, message: 'must be true or false' },
+        ],
+      }
+}
+
 /** The profile ids of `QUORUM_PROFILES`, or the one issue that refuses it. Neither repeats the value. */
 function readProfiles(env: Env): Pick<EnvLayer, 'profiles' | 'issues'> {
   const value = envValue(env, 'QUORUM_PROFILES')
@@ -282,7 +301,7 @@ function readClaudeCodeCommand(env: Env): Pick<EnvLayer, 'claudeCodeCommand' | '
  * of each role, which are `QUORUM_RESEARCH_*` and `QUORUM_VOTER_*`, `QUORUM_PROFILES`, and
  * `QUORUM_CLAUDE_CODE_COMMAND`, the executable of the `claude-code` protocol: an absolute path, or a name to
  * find on `PATH`; and the review's two limits, the run-level `QUORUM_MAX_REVIEW_TOKENS` and
- * `QUORUM_REVIEW_TIMEOUT_MS`, which belong to no role and are read as strictly as a role's numbers.
+ * `QUORUM_REVIEW_TIMEOUT_MS`, which belong to no role and are read as strictly as a role's numbers; and `QUORUM_STRICT`, `true` or `false`.
  * `RESEARCH_*` and `VOTER_*` are read as deprecated aliases of the base URL, model and key, and
  * the `QUORUM_` form wins; the context size (`QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS`),
  * the deadline (`_TIMEOUT_MS`), the stall window (`_STALL_TIMEOUT_MS`) and the retries (`_RETRIES`) have no alias. Any other variable set under a
@@ -292,12 +311,14 @@ export function readEnv(env: Env): EnvLayer {
   const { issues: profileIssues, ...profiles } = readProfiles(env)
   const { issues: commandIssues, ...command } = readClaudeCodeCommand(env)
   const { issues: limitIssues, ...limits } = readLimits(env)
+  const { issues: strictIssues, ...strict } = readStrict(env)
   const research = readRole(env, 'RESEARCH')
   const voter = readRole(env, 'VOTER')
   return {
     ...profiles,
     ...command,
     ...limits,
+    ...strict,
     research: research.overrides,
     voter: voter.overrides,
     warnings: [
@@ -308,6 +329,7 @@ export function readEnv(env: Env): EnvLayer {
       ...profileIssues,
       ...commandIssues,
       ...limitIssues,
+      ...strictIssues,
       ...research.issues,
       ...voter.issues,
     ],

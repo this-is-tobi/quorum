@@ -169,7 +169,7 @@ function budgetWarnings(config: ResolvedConfig, budgets: Readonly<Record<string,
 /**
  * The resolved config as the YAML `--print-config` writes, for a CI log that anyone can read: the file it
  * came from (`null` for none), the providers, the profiles that run, the limits the review applies
- * (`concurrency`, `auto` when unset, `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs`, defaults filled in), the
+ * (`concurrency`, `auto` when unset, `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs`, defaults filled in), `strict`, the
  * patterns it excludes, the files it sends though held as secrets, and the warnings. A key and every value of
  * `headers`, `query` and `extraBody` print as `[redacted]`, a base URL as its origin, and a prompt as its
  * SHA-256. A provider's `timeoutMs`, `stallTimeoutMs` and `retries` print when it sets them, a provider object's when it states
@@ -209,6 +209,7 @@ export function printConfig(config: ResolvedConfig, source: string | undefined, 
     partTokens: config.partTokens ?? DEFAULT_PART_TOKENS,
     maxReviewTokens: config.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS,
     reviewTimeoutMs: config.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
+    strict: config.strict === true,
     exclude: [
       ...config.exclude ?? [],
     ],

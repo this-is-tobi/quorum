@@ -2159,6 +2159,47 @@ describe('files held back as secrets', () => {
     ])
   })
 
+  it('holds a .env.example section that holds a credential, by its content, from every request of a diff review', async () => {
+    const token = fakeCredential('github-token')
+    const example = [
+      'diff --git a/.env.example b/.env.example',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/.env.example',
+      '@@ -0,0 +1,1 @@',
+      `+TOKEN=${token}`,
+    ].join('\n')
+    const finder = fake('finder', () => findings(reported))
+    const voter = fake('voter', () => vote(true))
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder, voter)).review({ diff: `${example}\n${diff}` })
+
+    const texts = requestTexts(finder, voter)
+    expect(texts.length).toBeGreaterThan(1)
+    const pieces = token.match(/.{1,8}/g) ?? []
+    expect(pieces.length).toBeGreaterThan(2)
+    for (const text of texts) {
+      for (const secret of [
+        'TOKEN=',
+        ...pieces,
+      ]) expect(text).not.toContain(secret)
+    }
+    expect(result.meta.leftOut).toEqual([
+      { file: '.env.example', reason: 'secret', rule: 'github-token' },
+    ])
+    expect(result.meta.flags).toEqual([
+      {
+        code: 'secret-file',
+        file: '.env.example',
+        detail: 'holds what reads as a GitHub token, so no model was sent any of it: keep it out of the repository, and rotate it if it is real',
+      },
+    ])
+    expect(result.meta.incomplete).toEqual([
+      gap('security'),
+    ])
+  })
+
   it('runs no stage for a diff whose every file is held, and still records the gap', async () => {
     const finder = fake('finder', () => findings(reported))
     const events: QuorumEvent[] = []

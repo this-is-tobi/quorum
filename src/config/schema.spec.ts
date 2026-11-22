@@ -70,6 +70,7 @@ const FULL: QuorumConfigFile = {
   maxFindings: 50,
   maxReviewTokens: 500000,
   reviewTimeoutMs: 600000,
+  strict: true,
   exclude: [
     'package-lock.json',
     '*.min.js',

@@ -1968,6 +1968,7 @@ describe('--print-config', () => {
       'partTokens: 32768',
       'maxReviewTokens: 2000000',
       'reviewTimeoutMs: 1800000',
+      'strict: false',
       'exclude: []',
       'send: []',
       'warnings: []',

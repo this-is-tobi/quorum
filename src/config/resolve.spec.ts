@@ -408,6 +408,82 @@ describe('resolveConfig', () => {
     ]) expect(gpu(baseUrl), baseUrl).toEqual([])
   })
 
+  describe('strict', () => {
+    const REFUSAL = [
+      { path: 'providers.gpu.baseUrl', message: 'sends the key over plain http to a host other than this machine, and strict refuses it: use an https URL' },
+    ]
+    const gpu = (baseUrl: string, strict?: boolean, apiKeyEnv: string | null = 'GPU_KEY'): ConfigInput => ({
+      ...strict === undefined
+        ? {}
+        : { strict },
+      providers: {
+        gpu: {
+          protocol: 'openai-compatible',
+          baseUrl,
+          model: 'm',
+          contextTokens: 131072,
+          ...apiKeyEnv === null
+            ? {}
+            : { apiKeyEnv },
+        },
+      },
+    })
+
+    it('refuses under strict a key sent over plain http to another machine, from the config or QUORUM_STRICT, and warns without it', () => {
+      const lan = 'http://gpu.lan:8000/v1'
+      expect(issuesOf(gpu(lan, true), { GPU_KEY: 'k' })).toEqual(REFUSAL)
+      expect(issuesOf(gpu(lan), { GPU_KEY: 'k', QUORUM_STRICT: 'true' })).toEqual(REFUSAL)
+      const plain = resolve(gpu(lan), { GPU_KEY: 'k' })
+      expect(plain.warnings).toEqual(['providers.gpu.baseUrl: sends the key over plain http to a host other than this machine'])
+      expect(plain.strict).toBeUndefined()
+      const strict = resolve(gpu('https://gpu.lan/v1', true), { GPU_KEY: 'k' })
+      expect(strict.strict).toBe(true)
+      expect(strict.warnings).toEqual([])
+      expect(resolve(gpu('https://gpu.lan/v1'), { GPU_KEY: 'k', QUORUM_STRICT: 'true' }).strict).toBe(true)
+    })
+
+    it('keeps strict on when the config or QUORUM_STRICT says so, whatever the other says, and exempts this machine, https and a provider with no key', () => {
+      const lan = 'http://gpu.lan:8000/v1'
+      expect(issuesOf(gpu(lan, true), { GPU_KEY: 'k', QUORUM_STRICT: 'false' })).toEqual(REFUSAL)
+      expect(issuesOf(gpu(lan, false), { GPU_KEY: 'k', QUORUM_STRICT: 'true' })).toEqual(REFUSAL)
+      for (const baseUrl of [
+        'http://localhost:8000/v1',
+        'http://127.0.0.1:8000/v1',
+        'http://[::1]:8000/v1',
+        'http://box.localhost/v1',
+        'https://gpu.lan/v1',
+      ]) expect(issuesOf(gpu(baseUrl, true), { GPU_KEY: 'k' }), baseUrl).toEqual([])
+      expect(issuesOf(gpu(lan, true, null))).toEqual([])
+    })
+
+    it('names the variable that set the base URL in the refusal, where the warning names the provider\'s path', () => {
+      const research = {
+        QUORUM_RESEARCH_BASE_URL: 'http://gpu.lan:8000/v1',
+        QUORUM_RESEARCH_MODEL: 'm',
+        QUORUM_RESEARCH_API_KEY: 'k',
+        ...SIZE,
+      }
+      expect(issuesOf({}, { ...research, QUORUM_STRICT: 'true' })).toEqual([
+        { path: 'QUORUM_RESEARCH_BASE_URL', message: REFUSAL[0]!.message },
+      ])
+      expect(resolve({}, research).warnings).toEqual([
+        expect.stringMatching(/^providers\.\w+\.baseUrl: sends the key over plain http/),
+      ])
+      const voter = {
+        QUORUM_RESEARCH_BASE_URL: 'https://r.example/v1',
+        QUORUM_RESEARCH_MODEL: 'm',
+        QUORUM_VOTER_BASE_URL: 'http://gpu.lan:8000/v1',
+        QUORUM_VOTER_MODEL: 'v',
+        QUORUM_VOTER_API_KEY: 'k',
+        ...SIZE,
+        ...VOTER_SIZE,
+      }
+      expect(issuesOf({ strict: true }, voter)).toEqual([
+        { path: 'QUORUM_VOTER_BASE_URL', message: REFUSAL[0]!.message },
+      ])
+    })
+  })
+
   it('checks every defined provider with the builder, and reads the keys of the ones in use only', () => {
     const main: ProviderSettings = { preset: 'ollama', model: 'q', contextTokens: 131072 }
     expect(issuesOf({
