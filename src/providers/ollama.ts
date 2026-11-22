@@ -2,7 +2,7 @@ import { issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { DEFAULT_RETRIES } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider, StreamSignal } from '../core/ports.ts'
-import { postStream, snippet } from './http.ts'
+import { postStream, snippet, withRateLimit } from './http.ts'
 import type { PostStreamOptions } from './http.ts'
 import { shapeMessages } from './messages.ts'
 import { adaptsOf, attemptFacts, bodyKeyForm, isRecord, mergeBody, prepareHttp, requestSettings, spellingIssues, streamFacts, thinkingIssues } from './options.ts'
@@ -313,9 +313,9 @@ export function ollama(options: OllamaOptions): Provider {
         ? sentReply.whole
         : await assembleOllama(sentReply.items, id, request.onProgress)
       const read = readReply(reply, { id, model, budget }, redact)
-      return streams && answered
+      return withRateLimit(streams && answered
         ? { ...read, whole: true }
-        : read
+        : read, sentReply)
     },
   }
 }

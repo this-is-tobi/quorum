@@ -1,5 +1,9 @@
+/**
+ * The one path every HTTP adapter sends a request through, and what is read of its reply: the stream, the failure, and the
+ * rate-limit headers, which are the provider's own replies alone (ADR-0013), read as numbers and never copied.
+ */
 import { ProviderError } from '../core/errors.ts'
-import type { StreamSignal } from '../core/ports.ts'
+import type { RateLimit, StreamSignal } from '../core/ports.ts'
 import { ndjsonItems, sseItems } from './stream.ts'
 import type { StreamItem } from './stream.ts'
 
@@ -31,6 +35,19 @@ const SPEND_CODES: ReadonlySet<string> = new Set([
   'insufficient_quota',
 ])
 const SPEND_LIMIT_SUFFIX = '_spend_limit_exceeded'
+/** A count as a header writes it: decimal digits, at most 15, so it is exact. Never a sign, a fraction, an exponent or a list. */
+const COUNT = /^\d{1,15}$/
+/** A Go duration as OpenAI writes a reset: one or more parts of digits with an optional fraction and a unit, such as `6m0s`, `20ms` or `1.5s`. */
+const GO_DURATION = /^(?:\d{1,15}(?:\.\d{1,15})?(?:ms|[smh]))+$/
+const GO_DURATION_PART = /(\d+(?:\.\d+)?)(ms|[smh])/g
+const GO_UNIT_MS: Readonly<Record<string, number>> = {
+  ms: 1,
+  s: 1000,
+  m: 60_000,
+  h: 3_600_000,
+}
+/** The one date form of Anthropic's resets: an RFC 3339 date and time with its zone. Matched by shape before `Date.parse` reads it. */
+const RFC_3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
 const ANTHROPIC_SPEND_CODE = 'enforced_spend_limit_reached'
 /** The starts of the message of Anthropic's 400 for a usage limit its user set: a code word of the account, never copied. */
 const ANTHROPIC_USAGE_LIMITS: readonly string[] = [
@@ -46,7 +63,7 @@ const WORD_CHARACTER = /^\w$/
 const ESCAPED_PRINTABLE_ASCII = /\\u00(2[0-9a-fA-F]|[3-6][0-9a-fA-F]|7[0-9a-eA-E])/g
 
 /**
- * What an adapter reads of a failed reply's body that `postJson` cannot: a wait the server asks for, in
+ * What an adapter reads of a failed reply's body that the status cannot: a wait the server asks for, in
  * milliseconds, a reason never to retry, and that the account's credit, quota or spend limit is used up. A hook
  * can add a hint, turn a retry off and say a quota is used up, never undo any of them: the vendor's own
  * verdict (`vendorExhausted`) is kept whatever a hook says.
@@ -57,7 +74,7 @@ export interface ErrorHints {
   readonly exhausted?: true
 }
 
-export interface PostJsonOptions {
+export interface RequestOptions {
   providerId: string
   url: string
   headers?: Readonly<Record<string, string>>
@@ -81,8 +98,8 @@ export interface PostJsonOptions {
   streamWords?: ReadonlyArray<{ readonly word: string, readonly refused: 'streamOptions' | 'stream' }>
 }
 
-/** What `postStream` reads beside what `postJson` does: the body's format, its last event's sentinel, and who hears its signs of life. */
-export interface PostStreamOptions extends PostJsonOptions {
+/** What `postStream` reads beside the request: the body's format, its last event's sentinel, and who hears its signs of life. */
+export interface PostStreamOptions extends RequestOptions {
   /** How a streamed body is read: as server-sent events, or as NDJSON. */
   readonly format: 'sse' | 'ndjson'
   /** The data a server-sent event holds when it is the protocol's last, such as OpenAI's `[DONE]`. */
@@ -321,6 +338,55 @@ export function retryAfterHint(headers: Headers, now: number): number | undefine
   return scaled(headers.get('retry-after-ms'), 1) ?? scaled(after, 1000) ?? untilDate(after, now)
 }
 
+/** A count a header writes as decimal digits, at most 15 of them, else nothing. */
+function countOf(value: string | null): number | undefined {
+  return value !== null && COUNT.test(value)
+    ? Number(value)
+    : undefined
+}
+
+/** A Go duration, such as `6m0s` or `1.5s`, in milliseconds, else nothing. A parsed zero is a reset with no wait left. */
+function goDurationMs(value: string | null): number | undefined {
+  if (value === null || !GO_DURATION.test(value)) return undefined
+  let total = 0
+  for (const [, amount, unit] of value.matchAll(GO_DURATION_PART)) total += Number(amount) * GO_UNIT_MS[unit!]!
+  return Math.round(total)
+}
+
+/**
+ * The wait, in milliseconds, until an RFC 3339 date, given the wall clock `now`. A date that is not in the future is
+ * nothing, not a wait of none: a skewed clock must not read as a reset that already came.
+ */
+function untilRfc3339(value: string | null, now: number): number | undefined {
+  return value !== null && RFC_3339.test(value)
+    ? positiveOrUndefined(Math.round(Date.parse(value) - now))
+    : undefined
+}
+
+/**
+ * What a reply's rate-limit headers state, as numbers, or nothing when it states none that are well formed. Two vendors'
+ * names are read, OpenAI's first for each field: its `x-ratelimit-remaining-requests`, `-remaining-tokens` and
+ * `-limit-tokens`, with `-reset-requests` and `-reset-tokens` as Go durations (`1s`, `6m0s`, `20ms`, `1.5s`), and
+ * Anthropic's `anthropic-ratelimit-requests-remaining`, `-tokens-remaining` and `-tokens-limit`, with `-requests-reset`
+ * and `-tokens-reset` as RFC 3339 dates matched by their shape before `Date.parse` reads them, less `now`, the wall
+ * clock in milliseconds. A count is decimal digits, at most 15. The generic `x-ratelimit-limit`, `-remaining` and
+ * `-reset` are not read: they name no window. A header that is malformed is read as nothing, and no value is copied,
+ * quoted or logged, so a reply can put nothing in an error or a line through these names.
+ */
+export function rateLimitOf(headers: Headers, now: number): RateLimit | undefined {
+  const read = {
+    requests: countOf(headers.get('x-ratelimit-remaining-requests')) ?? countOf(headers.get('anthropic-ratelimit-requests-remaining')),
+    tokens: countOf(headers.get('x-ratelimit-remaining-tokens')) ?? countOf(headers.get('anthropic-ratelimit-tokens-remaining')),
+    tokensLimit: countOf(headers.get('x-ratelimit-limit-tokens')) ?? countOf(headers.get('anthropic-ratelimit-tokens-limit')),
+    requestsResetMs: goDurationMs(headers.get('x-ratelimit-reset-requests')) ?? untilRfc3339(headers.get('anthropic-ratelimit-requests-reset'), now),
+    tokensResetMs: goDurationMs(headers.get('x-ratelimit-reset-tokens')) ?? untilRfc3339(headers.get('anthropic-ratelimit-tokens-reset'), now),
+  }
+  const stated = Object.entries(read).filter(([, value]) => value !== undefined)
+  return stated.length === 0
+    ? undefined
+    : Object.fromEntries(stated) as RateLimit
+}
+
 /** The own property `key` of `value` when it is an object, else nothing: the body is untrusted, and so is its prototype. */
 function member(value: unknown, key: string): unknown {
   return typeof value === 'object' && value !== null && Object.hasOwn(value, key)
@@ -391,7 +457,7 @@ function namesWord(text: string, word: string): boolean {
  * What a 400 or 422 whose body names a field the request sent refused: the first of the request's stream words, then its
  * structured-output fields, matched as whole words. The body is matched and never copied: the mark is a code word.
  */
-function refusalOf(options: PostJsonOptions, status: number, text: string): 'structuredOutput' | 'streamOptions' | 'stream' | undefined {
+function refusalOf(options: RequestOptions, status: number, text: string): 'structuredOutput' | 'streamOptions' | 'stream' | undefined {
   if (status !== 400 && status !== 422) return undefined
   const streamed = options.streamWords?.find(({ word }) => namesWord(text, word))
   if (streamed !== undefined) return streamed.refused
@@ -401,7 +467,7 @@ function refusalOf(options: PostJsonOptions, status: number, text: string): 'str
 }
 
 /** A failed reply's error: its message quotes the body, and its hint and verdict are numbers and booleans, never text. */
-function httpFailure(options: PostJsonOptions, response: Response, text: string): ProviderError {
+function httpFailure(options: RequestOptions, response: Response, text: string): ProviderError {
   const { providerId, redact } = options
   const { status } = response
   const body = jsonOrUndefined(text)
@@ -427,6 +493,7 @@ function httpFailure(options: PostJsonOptions, response: Response, text: string)
     : ''
   const refused = refusalOf(options, status, text)
   const exhausted = vendorExhausted(body, status) || extra.exhausted === true
+  const rateLimit = rateLimitOf(response.headers, Date.now())
   return new ProviderError({
     providerId,
     kind: 'http',
@@ -440,11 +507,14 @@ function httpFailure(options: PostJsonOptions, response: Response, text: string)
     ...refused === undefined
       ? {}
       : { refused },
+    ...rateLimit === undefined
+      ? {}
+      : { rateLimit },
   })
 }
 
 /** The failure of a read or a request that fell through: `aborted` when the attempt's signal is aborted, else `network`, naming the origin and never the runtime's own text. */
-function lostOf(options: PostJsonOptions): (what: string, error: unknown) => ProviderError {
+function lostOf(options: RequestOptions): (what: string, error: unknown) => ProviderError {
   const { providerId, url, signal } = options
   return (what, error) => signal?.aborted
     ? new ProviderError({ providerId, kind: 'aborted', message: 'request aborted' })
@@ -455,7 +525,7 @@ function lostOf(options: PostJsonOptions): (what: string, error: unknown) => Pro
  * Send the request, with no redirect followed and the runtimes' own timers off, and return the response. The reply may
  * be a failure: the caller reads its status. Only the request itself failing throws, as `aborted` or `network`.
  */
-async function post(options: PostJsonOptions): Promise<Response> {
+async function post(options: RequestOptions): Promise<Response> {
   const { url, headers, body, signal } = options
   // Outside the try: a body that cannot be serialized is a programming error, not a network failure to retry.
   const payload = JSON.stringify(body)
@@ -481,7 +551,7 @@ async function post(options: PostJsonOptions): Promise<Response> {
 }
 
 /** The body of a response as JSON, read under the 16 MiB cap: an `invalid-response` when it is over it or is none. */
-async function readWhole<T>(options: PostJsonOptions, response: Response): Promise<T> {
+async function readWhole<T>(options: RequestOptions, response: Response): Promise<T> {
   const fail = (message: string): ProviderError => new ProviderError({ providerId: options.providerId, kind: 'invalid-response', message })
   let reply: { text: string, complete: boolean }
   try {
@@ -497,26 +567,11 @@ async function readWhole<T>(options: PostJsonOptions, response: Response): Promi
   }
 }
 
-/**
- * POST a JSON body and return the parsed JSON reply. A redirect is not followed: it is an `http` error,
- * so a key sent in any header never reaches another endpoint. The runtimes' own timers are off, so
- * the core's deadline is the only one: a long reply of a thinking model is not cut at 300 seconds.
- * A reply body over 16 MiB is refused unread. Every failure is a `ProviderError` without a `cause`:
- * the runtime's own error text can hold the URL with its credentials or a header value, so it is
- * never copied, and no header value appears in a message.
- *
- * A failed reply's error quotes the body in its message, as it always did, and carries what the reply
- * says of a retry as a number and a boolean, never as text: `retryAfterMs` from `retry-after-ms` or
- * `retry-after`, else from `errorHints`, and `retryable` when the reply settles it, which a "never" wins:
- * `x-should-retry: false`, a used-up credit, spend limit or quota, or a hook's, else `x-should-retry: true`
- * or OpenRouter's in-flight 402 with a hint, else the status decides. A used-up credit, spend limit or quota
- * also marks the error `exhausted`, by the vendor's codes or a hook's `exhausted`, so the review stops calling
- * its provider at once.
- */
-export async function postJson<T>(options: PostJsonOptions): Promise<T> {
-  const response = await post(options)
-  if (!response.ok) throw httpFailure(options, response, await readErrorText(response))
-  return readWhole<T>(options, response)
+/** `reply` with the rate-limit facts a `postStream` result carried, when it carried any: the field is left out otherwise. */
+export function withRateLimit<T extends object>(reply: T, sent: { readonly rateLimit?: RateLimit }): T & { rateLimit?: RateLimit } {
+  return sent.rateLimit === undefined
+    ? reply
+    : { ...reply, rateLimit: sent.rateLimit }
 }
 
 /** The media type of a content type header, as a reader compares it: the text before any `;`, trimmed and in lower case. */
@@ -527,23 +582,43 @@ function mediaTypeOf(contentType: string | null): string {
 /** The content type that says a body is the stream `format` names. */
 const STREAM_TYPES = { sse: 'text/event-stream', ndjson: 'application/x-ndjson' } as const
 
+/** What `postStream` hands back, beside the rate-limit facts the reply's headers stated, when it sent any. */
+export type StreamReply = ({ readonly whole: unknown } | { readonly items: AsyncGenerator<StreamItem> }) & { readonly rateLimit?: RateLimit }
+
 /**
  * POST a JSON body the server may answer as a stream, and hand back what it answered: the events of a stream, read
- * under the caps of `stream.ts`, or, for a server that answered a whole reply, its JSON, as `postJson` reads it. The
- * request, its failures and the failed status are `postJson`'s. The reply's content type decides which it is, by its media
- * type alone, so `text/event-stream; charset=utf-8` is a stream: `text/event-stream` for `sse` and `application/x-ndjson`
- * for `ndjson`; anything else, or none, is a whole reply.
+ * under the caps of `stream.ts`, or, for a server that answered a whole reply, its JSON. The reply's content type decides
+ * which it is, by its media type alone, so `text/event-stream; charset=utf-8` is a stream: `text/event-stream` for `sse`
+ * and `application/x-ndjson` for `ndjson`; anything else, or none, is a whole reply.
  *
+ * A redirect is not followed: it is an `http` error, so a key sent in any header never reaches another endpoint. The
+ * runtimes' own timers are off, so the core's deadline is the only one: a long reply of a thinking model is not cut at 300
+ * seconds. A reply body over 16 MiB is refused unread. Every failure is a `ProviderError` without a `cause`: the
+ * runtime's own error text can hold the URL with its credentials or a header value, so it is never copied, and no header
+ * value appears in a message.
+ *
+ * A failed reply's error quotes the body in its message, and carries what the reply says of a retry as a number and a
+ * boolean, never as text: `retryAfterMs` from `retry-after-ms` or `retry-after`, else from `errorHints`, and `retryable`
+ * when the reply settles it, which a "never" wins: `x-should-retry: false`, a used-up credit, spend limit or quota, or a
+ * hook's, else `x-should-retry: true` or OpenRouter's in-flight 402 with a hint, else the status decides. A used-up
+ * credit, spend limit or quota also marks the error `exhausted`, by the vendor's codes or a hook's `exhausted`, so the
+ * review stops calling its provider at once.
+ *
+ * The rate-limit facts of the headers (`rateLimitOf`) are on the `headers` signal, on the result and on a failure's error.
  * `onProgress` hears one `headers` signal when the status is a success, and each keep-alive of a stream as it is read. A
  * read that rejects is `aborted` when the attempt's signal is aborted, else `network`; a stream a consumer leaves
  * early, by a throw or a return, cancels its body.
  */
-export async function postStream(options: PostStreamOptions): Promise<{ readonly whole: unknown } | { readonly items: AsyncGenerator<StreamItem> }> {
+export async function postStream(options: PostStreamOptions): Promise<StreamReply> {
   const { format, sentinel, onProgress } = options
   const response = await post(options)
   if (!response.ok) throw httpFailure(options, response, await readErrorText(response))
-  onProgress?.({ kind: 'headers' })
-  if (mediaTypeOf(response.headers.get('content-type')) !== STREAM_TYPES[format]) return { whole: await readWhole<unknown>(options, response) }
+  const rateLimit = rateLimitOf(response.headers, Date.now())
+  const stated = rateLimit === undefined
+    ? {}
+    : { rateLimit }
+  onProgress?.({ kind: 'headers', ...stated })
+  if (mediaTypeOf(response.headers.get('content-type')) !== STREAM_TYPES[format]) return { whole: await readWhole<unknown>(options, response), ...stated }
   const body = response.body ?? new ReadableStream<Uint8Array>({
     start(controller) {
       controller.close()
@@ -568,5 +643,6 @@ export async function postStream(options: PostStreamOptions): Promise<{ readonly
   }
   return {
     items: reported(),
+    ...stated,
   }
 }

@@ -2,10 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProviderError } from '../core/errors.ts'
 import type { StreamSignal } from '../core/ports.ts'
 import { brokenReply, jsonReply, streamedReply, textReply } from '../testing/http.ts'
-import { endpointUrl, httpOrigin, originOf, postJson, postStream, redactionsOf, retryAfterHint, snippet } from './http.ts'
+import { endpointUrl, httpOrigin, originOf, postStream, rateLimitOf, redactionsOf, retryAfterHint, snippet } from './http.ts'
 import type { ErrorHints } from './http.ts'
 
-const options = { providerId: 'p', url: 'http://h/x', body: {} }
+const options = {
+  providerId: 'p',
+  url: 'http://h/x',
+  body: {},
+  format: 'sse' as const,
+}
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -323,17 +328,183 @@ describe('retryAfterHint', () => {
   })
 })
 
-describe('postJson', () => {
+describe('rateLimitOf', () => {
+  const now = Date.parse('2026-11-22T10:00:00Z')
+
+  it.each<[string, Record<string, string>, object]>([
+    [
+      'a gateway\'s headers, its generic x-ratelimit headers read as nothing',
+      {
+        'x-ratelimit-limit-requests': '300',
+        'x-ratelimit-limit-tokens': '1000000',
+        'x-ratelimit-remaining-requests': '299',
+        'x-ratelimit-remaining-tokens': '999919',
+        'x-ratelimit-reset-requests': '1m0s',
+        'x-ratelimit-limit': '300',
+        'x-ratelimit-remaining': '299',
+        'x-ratelimit-reset': String(Math.floor(now / 1000) + 60),
+      },
+      {
+        requests: 299,
+        tokens: 999_919,
+        tokensLimit: 1_000_000,
+        requestsResetMs: 60_000,
+      },
+    ],
+    [
+      'OpenAI\'s, with resets of 6m0s and 20ms',
+      {
+        'x-ratelimit-limit-requests': '5000',
+        'x-ratelimit-limit-tokens': '150000',
+        'x-ratelimit-remaining-requests': '4999',
+        'x-ratelimit-remaining-tokens': '149984',
+        'x-ratelimit-reset-requests': '6m0s',
+        'x-ratelimit-reset-tokens': '20ms',
+      },
+      {
+        requests: 4999,
+        tokens: 149_984,
+        tokensLimit: 150_000,
+        requestsResetMs: 360_000,
+        tokensResetMs: 20,
+      },
+    ],
+    [
+      'Anthropic\'s, with RFC 3339 resets on a fixed now',
+      {
+        'anthropic-ratelimit-requests-limit': '50',
+        'anthropic-ratelimit-requests-remaining': '49',
+        'anthropic-ratelimit-requests-reset': '2026-11-22T10:00:30Z',
+        'anthropic-ratelimit-tokens-limit': '40000',
+        'anthropic-ratelimit-tokens-remaining': '39000',
+        'anthropic-ratelimit-tokens-reset': '2026-11-22T10:01:00.500Z',
+      },
+      {
+        requests: 49,
+        tokens: 39_000,
+        tokensLimit: 40_000,
+        requestsResetMs: 30_000,
+        tokensResetMs: 60_500,
+      },
+    ],
+    [
+      'a reset of 1.5s',
+      { 'x-ratelimit-reset-requests': '1.5s' },
+      { requestsResetMs: 1500 },
+    ],
+    [
+      'a reset of several units',
+      { 'x-ratelimit-reset-tokens': '1h2m3.5s' },
+      { tokensResetMs: 3_723_500 },
+    ],
+    [
+      'a reset of 0s, which is no wait',
+      { 'x-ratelimit-reset-requests': '0s' },
+      { requestsResetMs: 0 },
+    ],
+    [
+      'a date with an offset',
+      { 'anthropic-ratelimit-requests-reset': '2026-11-22T11:00:30+01:00' },
+      { requestsResetMs: 30_000 },
+    ],
+    [
+      'OpenAI\'s names before Anthropic\'s, field by field',
+      {
+        'x-ratelimit-remaining-requests': '5',
+        'anthropic-ratelimit-requests-remaining': '9',
+        'anthropic-ratelimit-tokens-remaining': '8',
+      },
+      { requests: 5, tokens: 8 },
+    ],
+    [
+      'a good header beside a malformed one',
+      { 'x-ratelimit-remaining-requests': '-1', 'x-ratelimit-remaining-tokens': '12' },
+      { tokens: 12 },
+    ],
+  ])('reads %s', (_name, headers, expected) => {
+    expect(rateLimitOf(new Headers(headers), now)).toEqual(expected)
+  })
+
+  it.each<[string, Record<string, string>]>([
+    [
+      'a negative count',
+      { 'x-ratelimit-remaining-requests': '-1' },
+    ],
+    [
+      'a count in an exponent',
+      { 'x-ratelimit-remaining-tokens': '1e6' },
+    ],
+    [
+      'a count of 16 digits',
+      { 'x-ratelimit-limit-tokens': '1234567890123456' },
+    ],
+    [
+      'a fraction as a count',
+      { 'anthropic-ratelimit-tokens-remaining': '1.5' },
+    ],
+    [
+      'a count that is no number',
+      { 'x-ratelimit-remaining-requests': 'sk-secret' },
+    ],
+    [
+      'a reset of 1x',
+      { 'x-ratelimit-reset-requests': '1x' },
+    ],
+    [
+      'a reset with no unit',
+      { 'x-ratelimit-reset-tokens': '60' },
+    ],
+    [
+      'a reset of a sign',
+      { 'x-ratelimit-reset-tokens': '-1s' },
+    ],
+    [
+      'a reset of two parts out of order or joined',
+      { 'x-ratelimit-reset-tokens': '1s 2s' },
+    ],
+    [
+      'an empty reset',
+      { 'x-ratelimit-reset-requests': '' },
+    ],
+    [
+      'a date not of RFC 3339\'s shape',
+      { 'anthropic-ratelimit-requests-reset': 'Sun, 22 Nov 2026 10:00:30 GMT' },
+    ],
+    [
+      'a date without its zone',
+      { 'anthropic-ratelimit-tokens-reset': '2026-11-22T10:00:30' },
+    ],
+    [
+      'a date that is no date',
+      { 'anthropic-ratelimit-tokens-reset': '2026-13-45T10:00:30Z' },
+    ],
+    [
+      'a date already past, which a skewed clock would read as no wait',
+      { 'anthropic-ratelimit-requests-reset': '2026-11-22T09:59:00Z' },
+    ],
+    [
+      'only the generic headers',
+      { 'x-ratelimit-limit': '300', 'x-ratelimit-remaining': '299', 'x-ratelimit-reset': '1795341660' },
+    ],
+    ['no header', {}],
+  ])('ignores %s', (_name, headers) => {
+    expect(rateLimitOf(new Headers(headers), now)).toBeUndefined()
+  })
+})
+
+describe('postStream on a request and a whole reply', () => {
   it('sends the body as JSON with the given headers and signal, without following redirects, and returns the parsed reply', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => jsonReply({ answer: 1 }))
     vi.stubGlobal('fetch', fetchMock)
     const signal = new AbortController().signal
-    await expect(postJson({
+    await expect(postStream({
       ...options,
       headers: { authorization: 'Bearer k' },
       body: { a: 1 },
       signal,
-    })).resolves.toEqual({ answer: 1 })
+    })).resolves.toEqual({
+      whole: { answer: 1 },
+    })
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('http://h/x')
     expect(init).toMatchObject({
@@ -347,7 +518,7 @@ describe('postJson', () => {
 
   it('reports a redirect as an http error that is not retried, so a key never reaches another endpoint', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('moved', 307)))
-    const error = await postJson(options).catch((caught: unknown) => caught)
+    const error = await postStream(options).catch((caught: unknown) => caught)
     expect(error).toMatchObject({
       kind: 'http',
       status: 307,
@@ -359,7 +530,7 @@ describe('postJson', () => {
   it('refuses a reply body over 16 MiB, and reads no more of it', async () => {
     const { response, pulled } = streamedReply('x'.repeat(1024 * 1024), 64)
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => response))
-    await expect(postJson(options)).rejects.toMatchObject({ kind: 'invalid-response', retryable: false, message: 'p: reply body is over 16 MiB' })
+    await expect(postStream(options)).rejects.toMatchObject({ kind: 'invalid-response', retryable: false, message: 'p: reply body is over 16 MiB' })
     expect(pulled()).toBeLessThan(20)
   })
 
@@ -374,20 +545,22 @@ describe('postJson', () => {
       },
     })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(body, { status: 200 })))
-    await expect(postJson(options)).resolves.toEqual({ text: `caf${String.fromCharCode(0xE9)} ${String.fromCodePoint(0x1F600)}` })
+    await expect(postStream(options)).resolves.toEqual({
+      whole: { text: `caf${String.fromCharCode(0xE9)} ${String.fromCodePoint(0x1F600)}` },
+    })
   })
 
   it('reads no more than 64 KiB of an error body', async () => {
     const { response, pulled } = streamedReply('e'.repeat(16 * 1024), 1000, 500)
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => response))
-    await expect(postJson(options)).rejects.toMatchObject({ kind: 'http', status: 500, message: `p: HTTP 500: ${JSON.stringify('e'.repeat(500))}` })
+    await expect(postStream(options)).rejects.toMatchObject({ kind: 'http', status: 500, message: `p: HTTP 500: ${JSON.stringify('e'.repeat(500))}` })
     expect(pulled()).toBeLessThan(10)
   })
 
   it('lets a body that cannot be serialized fail as a programming error, before any request', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const error = await postJson({
+    const error = await postStream({
       ...options,
       body: { n: 1n },
     }).catch((caught: unknown) => caught)
@@ -398,7 +571,7 @@ describe('postJson', () => {
 
   it('truncates the error body to 500 characters, writes it as one JSON string and marks 5xx as retryable', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('x'.repeat(10_000), 503)))
-    const error = await postJson(options).catch((caught: unknown) => caught)
+    const error = await postStream(options).catch((caught: unknown) => caught)
     expect(error).toBeInstanceOf(ProviderError)
     expect(error).toMatchObject({
       kind: 'http',
@@ -411,18 +584,18 @@ describe('postJson', () => {
 
   it('does not mark client errors as retryable', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('bad request', 400)))
-    await expect(postJson(options)).rejects.toMatchObject({ kind: 'http', status: 400, retryable: false })
+    await expect(postStream(options)).rejects.toMatchObject({ kind: 'http', status: 400, retryable: false })
   })
 
   it('quotes, rather than strips, the control characters of an error body', async () => {
     const body = `bad\n::error::forged${String.fromCharCode(27)}[2K`
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply(body, 400)))
-    await expect(postJson(options)).rejects.toMatchObject({ message: `p: HTTP 400: ${JSON.stringify(body)}` })
+    await expect(postStream(options)).rejects.toMatchObject({ message: `p: HTTP 400: ${JSON.stringify(body)}` })
   })
 
   it('redacts the key from an error body that echoes it', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('bad token: Bearer sk-secret', 401)))
-    await expect(postJson({
+    await expect(postStream({
       ...options,
       redact: ['sk-secret'],
     })).rejects.toMatchObject({ message: 'p: HTTP 401: "bad token: Bearer [redacted]"' })
@@ -430,14 +603,14 @@ describe('postJson', () => {
 
   it('still reports the status when the error body cannot be read', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => brokenReply(new Error('stream error'), 502)))
-    await expect(postJson(options)).rejects.toMatchObject({ kind: 'http', status: 502, message: 'p: HTTP 502: ""' })
+    await expect(postStream(options)).rejects.toMatchObject({ kind: 'http', status: 502, message: 'p: HTTP 502: ""' })
   })
 
   it('never copies the runtime error text, which can hold the URL with its credentials', async () => {
     const url = 'https://user:pw-secret@api.example.com/v1/x?key=q-secret'
     const cause = Object.assign(new Error('connect'), { code: 'ECONNREFUSED' })
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError(`Request cannot be constructed from a URL that includes credentials: ${url}`, { cause })))
-    const error = await postJson({ ...options, url }).catch((caught: Error) => caught) as Error
+    const error = await postStream({ ...options, url }).catch((caught: Error) => caught) as Error
     expect(error).toMatchObject({ kind: 'network', retryable: true, message: 'p: request to https://api.example.com failed (ECONNREFUSED)' })
     expect(error.cause).toBeUndefined()
   })
@@ -445,7 +618,7 @@ describe('postJson', () => {
   it('never copies the runtime error text, which can hold an invalid header value with the key', async () => {
     const header = `Bearer sk-secret${String.fromCharCode(10)}X`
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError(`Headers.append: "${header}" is an invalid header value.`)))
-    const error = await postJson({
+    const error = await postStream({
       ...options,
       headers: { authorization: header },
     }).catch((caught: Error) => caught) as Error
@@ -454,7 +627,7 @@ describe('postJson', () => {
 
   it('names the code of the error itself, as Bun reports it', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(Object.assign(new TypeError('Unable to connect'), { code: 'ECONNREFUSED' })))
-    await expect(postJson(options)).rejects.toMatchObject({ kind: 'network', message: 'p: request to http://h failed (ECONNREFUSED)' })
+    await expect(postStream(options)).rejects.toMatchObject({ kind: 'network', message: 'p: request to http://h failed (ECONNREFUSED)' })
   })
 
   it.each([
@@ -465,7 +638,7 @@ describe('postJson', () => {
     ],
   ])('ignores the error code %j, which is not a plain identifier', async (code) => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(Object.assign(new TypeError('fetch failed'), { code })))
-    await expect(postJson(options)).rejects.toMatchObject({ kind: 'network', message: 'p: request to http://h failed' })
+    await expect(postStream(options)).rejects.toMatchObject({ kind: 'network', message: 'p: request to http://h failed' })
   })
 
   it('still reports a network failure when reading the error code throws', async () => {
@@ -476,7 +649,7 @@ describe('postJson', () => {
       },
     })
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(hostile))
-    await expect(postJson(options)).rejects.toMatchObject({ name: 'ProviderError', kind: 'network', message: 'p: request to http://h failed' })
+    await expect(postStream(options)).rejects.toMatchObject({ name: 'ProviderError', kind: 'network', message: 'p: request to http://h failed' })
   })
 
   it.each([
@@ -484,14 +657,14 @@ describe('postJson', () => {
     ['localhost:11434/v1'],
   ])('names the endpoint when the URL %j has no http origin', async (url) => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')))
-    await expect(postJson({ ...options, url })).rejects.toMatchObject({ kind: 'network', message: 'p: request to the endpoint failed' })
+    await expect(postStream({ ...options, url })).rejects.toMatchObject({ kind: 'network', message: 'p: request to the endpoint failed' })
   })
 
   it('reports a request aborted before the call as aborted, not as a network failure', async () => {
     const controller = new AbortController()
     controller.abort()
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new DOMException('aborted', 'AbortError')))
-    await expect(postJson({ ...options, signal: controller.signal })).rejects.toMatchObject({ kind: 'aborted', retryable: false, message: 'p: request aborted' })
+    await expect(postStream({ ...options, signal: controller.signal })).rejects.toMatchObject({ kind: 'aborted', retryable: false, message: 'p: request aborted' })
   })
 
   it('reports a request aborted while in flight as aborted', async () => {
@@ -500,12 +673,12 @@ describe('postJson', () => {
       controller.abort()
       throw new DOMException('aborted', 'AbortError')
     }))
-    await expect(postJson({ ...options, signal: controller.signal })).rejects.toMatchObject({ kind: 'aborted', retryable: false })
+    await expect(postStream({ ...options, signal: controller.signal })).rejects.toMatchObject({ kind: 'aborted', retryable: false })
   })
 
   it('reports a connection lost while the reply is read as a network failure', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => brokenReply(new TypeError('terminated'))))
-    const error = await postJson(options).catch((caught: Error) => caught) as Error
+    const error = await postStream(options).catch((caught: Error) => caught) as Error
     expect(error).toMatchObject({ kind: 'network', retryable: true, message: 'p: reading the reply from http://h failed' })
     expect(error.cause).toBeUndefined()
   })
@@ -513,21 +686,21 @@ describe('postJson', () => {
   it('reports a request aborted while its reply is read as aborted', async () => {
     const controller = new AbortController()
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => brokenReply(new DOMException('aborted', 'AbortError'), 200, () => controller.abort())))
-    await expect(postJson({ ...options, signal: controller.signal })).rejects.toMatchObject({ kind: 'aborted', message: 'p: request aborted' })
+    await expect(postStream({ ...options, signal: controller.signal })).rejects.toMatchObject({ kind: 'aborted', message: 'p: request aborted' })
   })
 
   it('rejects a success response whose body is not JSON', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('<html>not json</html>', 200)))
-    const error = await postJson(options).catch((caught: Error) => caught) as Error
+    const error = await postStream(options).catch((caught: Error) => caught) as Error
     expect(error).toMatchObject({ kind: 'invalid-response', retryable: false, message: 'p: response body is not JSON' })
     expect(error.cause).toBeUndefined()
   })
 })
 
-describe('postJson on a failed reply', () => {
-  async function failure(body: string, status: number, headers: Record<string, string> = {}, extra: Partial<Parameters<typeof postJson>[0]> = {}): Promise<ProviderError> {
+describe('postStream on a failed reply', () => {
+  async function failure(body: string, status: number, headers: Record<string, string> = {}, extra: Partial<Parameters<typeof postStream>[0]> = {}): Promise<ProviderError> {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply(body, status, headers)))
-    return await postJson({
+    return await postStream({
       ...options,
       ...extra,
     }).catch((caught: unknown) => caught) as ProviderError
@@ -886,10 +1059,10 @@ describe('postJson on a failed reply', () => {
   })
 })
 
-describe('postJson on a body that names a format field', () => {
+describe('postStream on a body that names a format field', () => {
   async function failure(body: string, status: number, formatFields: readonly string[] | undefined): Promise<ProviderError> {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply(body, status)))
-    return await postJson({
+    return await postStream({
       ...options,
       ...formatFields === undefined
         ? {}
@@ -943,11 +1116,11 @@ describe('the runtimes\' timers', () => {
     else scope[KEY] = saved
   })
 
-  /** The init `postJson` hands `fetch`, read as `fetch` reads it: through the object itself. */
+  /** The init `postStream` hands `fetch`, read as `fetch` reads it: through the object itself. */
   async function initOf(): Promise<{ timeout: unknown, dispatcher: Delegate | undefined }> {
     const fetchMock = vi.fn().mockImplementation(async () => jsonReply({}))
     vi.stubGlobal('fetch', fetchMock)
-    await postJson(options)
+    await postStream(options)
     return fetchMock.mock.calls[0][1]
   }
 
@@ -985,7 +1158,7 @@ describe('the runtimes\' timers', () => {
 })
 
 describe('postStream', () => {
-  const streamOptions = { ...options, format: 'sse' } as const
+  const streamOptions = options
   /** A response of `text` as bytes, which carries no content type of its own, with `contentType` when it is given. */
   const served = (text: string, contentType?: string): Response => new Response(new TextEncoder().encode(text), {
     headers: contentType === undefined
@@ -1105,7 +1278,53 @@ describe('postStream', () => {
     ])
   })
 
-  it('fails a whole reply that is no JSON or that is over 16 MiB, and a failed status as postJson does', async () => {
+  it('carries the rate-limit facts in the headers signal, on the reply, and on a failure', async () => {
+    const facts = { requests: 7, tokens: 900, requestsResetMs: 1500 }
+    const said = { 'x-ratelimit-remaining-requests': '7', 'x-ratelimit-remaining-tokens': '900', 'x-ratelimit-reset-requests': '1.5s' }
+    const signals: StreamSignal[] = []
+    const onProgress = (signal: StreamSignal): number => signals.push(signal)
+    // A stream: the signal has them as the headers arrive, and so has the result.
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response('data: {"a":1}\n\n', {
+      headers: { 'content-type': 'text/event-stream', ...said },
+    })))
+    const streamed = await postStream({ ...streamOptions, onProgress })
+    expect(signals).toEqual([
+      { kind: 'headers', rateLimit: facts },
+    ])
+    expect(streamed).toMatchObject({ rateLimit: facts })
+    await drain((streamed as { items: AsyncIterable<unknown> }).items)
+    // A whole reply: the same, with the body beside them.
+    signals.length = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response('{"a":1}', {
+      headers: { 'content-type': 'application/json', ...said },
+    })))
+    expect(await postStream({ ...streamOptions, onProgress })).toEqual({
+      whole: { a: 1 },
+      rateLimit: facts,
+    })
+    expect(signals).toEqual([
+      { kind: 'headers', rateLimit: facts },
+    ])
+    // A failure.
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('slow', 429, said)))
+    const failed = await postStream(streamOptions).catch((caught: unknown) => caught)
+    expect(failed).toBeInstanceOf(ProviderError)
+    expect((failed as ProviderError).rateLimit).toEqual(facts)
+    expect((failed as ProviderError).message).toBe('p: HTTP 429: "slow"')
+    // None read, none carried: no field on the signal, the result or the error.
+    signals.length = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply({ a: 1 })))
+    const bare = await postStream({ ...streamOptions, onProgress })
+    expect(Object.keys(bare)).toEqual(['whole'])
+    expect(signals).toEqual([
+      { kind: 'headers' },
+    ])
+    expect(Object.keys(signals[0]!)).toEqual(['kind'])
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('slow', 429)))
+    expect(((await postStream(streamOptions).catch((caught: unknown) => caught)) as ProviderError).rateLimit).toBeUndefined()
+  })
+
+  it('fails a whole reply that is no JSON or that is over 16 MiB, and a failed status as any other reply does', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('<html>', 200)))
     await expect(postStream(streamOptions)).rejects.toMatchObject({ kind: 'invalid-response', message: 'p: response body is not JSON' })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => streamedReply('x'.repeat(1024 * 1024), 17).response))

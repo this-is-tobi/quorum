@@ -48,9 +48,22 @@ export interface CompletionRequest {
  * and a quarter of the characters streamed) and whether an answer or reasoning has shown text yet, or a keep-alive came. Numbers and booleans only.
  */
 export type StreamSignal
-  = | { readonly kind: 'headers' }
+  = | { readonly kind: 'headers', readonly rateLimit?: RateLimit }
     | { readonly kind: 'data', readonly outputTokens: number, readonly answer: boolean, readonly reasoning: boolean }
     | { readonly kind: 'keep-alive' }
+
+/**
+ * What a reply's rate-limit headers state, each as a number, and only the ones the reply sent and the adapter could read:
+ * the requests and the tokens left in the window, the tokens' limit, and how long until the requests' and the tokens'
+ * counts reset, in milliseconds. Numbers only: no header value is ever kept as text.
+ */
+export interface RateLimit {
+  readonly requests?: number
+  readonly tokens?: number
+  readonly tokensLimit?: number
+  readonly requestsResetMs?: number
+  readonly tokensResetMs?: number
+}
 
 /**
  * What a provider returns: the reply text, the model that produced it and, when reported, its usage.
@@ -65,6 +78,8 @@ export interface CompletionResponse {
   reasoning?: boolean
   /** `true` when the request streamed and the server answered it whole: the core then asks that provider for whole replies for the rest of the review. */
   whole?: true
+  /** What the reply's rate-limit headers stated, when it sent any the adapter read. */
+  rateLimit?: RateLimit
 }
 
 /** The deadline of an attempt when its provider states none: ten minutes. */

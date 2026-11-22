@@ -702,6 +702,30 @@ export function describeProviderContract(subject: ContractSubject): void {
       await expect(subject.make(base).complete(request)).resolves.toMatchObject({ reasoning: subject.replies.reasoned })
     })
 
+    it.each(FORMS)('states the reply\'s rate-limit facts, and none when it sends none, %s', async (form) => {
+      const said = { 'x-ratelimit-remaining-requests': '7', 'x-ratelimit-remaining-tokens': '900', 'anthropic-ratelimit-tokens-limit': '4000' }
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => {
+        const response = answer(form, subject.replies.ok)
+        for (const [name, value] of Object.entries(said)) response.headers.set(name, value)
+        return response
+      }))
+      const reply = await subject.make(base).complete(request)
+      expect(reply.rateLimit).toEqual({ requests: 7, tokens: 900, tokensLimit: 4000 })
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => answer(form, subject.replies.ok)))
+      expect(Object.keys(await subject.make(base).complete(request))).not.toContain('rateLimit')
+    })
+
+    it('states the rate-limit facts of a failed reply, and none when it sends none', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('slow', 429, { 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-reset-requests': '2s' })))
+      await expect(subject.make(base).complete(request)).rejects.toMatchObject({
+        kind: 'http',
+        status: 429,
+        rateLimit: { requests: 0, requestsResetMs: 2000 },
+      })
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('slow', 429)))
+      await expect(subject.make(base).complete(request)).rejects.toMatchObject({ kind: 'http', rateLimit: undefined })
+    })
+
     it('reports a 5xx or 429 as retryable, another status as not, and a body that is not a JSON object as invalid-response', async () => {
       for (const [status, retryable] of [
         [503, true],
