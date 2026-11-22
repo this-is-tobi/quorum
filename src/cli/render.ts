@@ -15,14 +15,25 @@ import { profilePrefix } from './view/lines.ts'
 import type { ViewFacts } from './view/model.ts'
 
 /**
- * The lines a path review prints once its estimate is made, before any call: one per profile, starting with
- * `[<id>] ` when several run, then the total, which belongs to the whole review and is never prefixed. The
- * expected figure is the research's alone, as the votes are in the worst case only, and the worst counts every
- * part recovered. When research alone expects over half of the token cap, one line follows that says what cap the
- * review needs (`needed`), and then one for each research provider whose reply asks for fewer findings than
- * `maxFindings`, since the parts with more split. Each line is inert.
+ * Where a path review's token cap and deadline came from, which the estimate's last line says: the cap is the
+ * estimate's own worst case (`estimate`), the default floor that holds it (`floor`), or the config's `maxReviewTokens`
+ * (`config`); the deadline is the longest allowed (`longest`) or the config's `reviewTimeoutMs` (`config`).
  */
-export function estimateLines(estimate: Estimate): string[] {
+export interface Bounds {
+  readonly cap: 'estimate' | 'floor' | 'config'
+  readonly deadline: 'longest' | 'config'
+}
+
+/**
+ * The lines a path review prints once its estimate is made, before any call: one per profile, starting with
+ * `[<id>] ` when several run, then the total, which belongs to the whole review and is never prefixed and ends with
+ * the review's token cap and deadline and where each came from (`bounds`). The expected figure is the research's
+ * alone, as the votes are in the worst case only, and the worst counts every part recovered. When research alone
+ * expects over half of the token cap, one line follows that says what cap the review needs (`needed`), and then one
+ * for each research provider whose reply asks for fewer findings than `maxFindings`, since the parts with more
+ * split. Each line is inert.
+ */
+export function estimateLines(estimate: Estimate, bounds: Bounds): string[] {
   const entries = Object.entries(estimate.profiles)
   const prefixed = entries.length > 1
   return [
@@ -32,10 +43,49 @@ export function estimateLines(estimate: Estimate): string[] {
         : ''
       return `${prefix}estimate: ${parts.length} research part(s), about ${expected} tokens expected for them; then up to ${votes} vote(s), at most ${worst} tokens in all`
     }),
-    `estimate: research about ${estimate.expected} tokens expected, at most ${estimate.worst} with every vote and every part recovered, ${estimate.inFlight} of them reserved at once; the review's token cap is ${estimate.maxReviewTokens} and its deadline ${estimate.reviewTimeoutMs} ms`,
+    `estimate: research about ${estimate.expected} tokens expected, at most ${estimate.worst} with every vote and every part recovered, ${estimate.inFlight} of them reserved at once; the review's token cap is ${capWords(estimate, bounds)}, and its deadline ${deadlineWords(estimate, bounds)}${bounds.cap !== 'config' && bounds.deadline === 'longest'
+      ? ': the config sets neither'
+      : ''}`,
     ...capLine(estimate),
     ...findingsLines(estimate),
   ].map(inertLine)
+}
+
+function capWords({ maxReviewTokens: cap }: Estimate, { cap: origin }: Bounds): string {
+  if (origin === 'config') return `${cap} (maxReviewTokens)`
+  return origin === 'estimate'
+    ? `${cap}, this estimate's worst case`
+    : `${cap}, the default, which holds this estimate's worst case`
+}
+
+function deadlineWords({ reviewTimeoutMs: ms }: Estimate, { deadline }: Bounds): string {
+  return deadline === 'config'
+    ? `${ms} ms (reviewTimeoutMs)`
+    : `${ms} ms, the longest allowed`
+}
+
+/**
+ * The warnings a path review's bounds call for, each inert: for a cap that follows the estimate (the config sets none), a
+ * large review when its research's expected spend and what its calls in flight reserve pass the default cap, the review
+ * that 0.8.0 held at exit 2, which Ctrl-C stops and keeps what it read; a small review says nothing, though recovery's
+ * bound puts its worst case past the default too. For a cap the config sets that the estimate does not fit under, the
+ * research parts it holds, since the review runs to the cap and the rest is a `token-cap` gap.
+ */
+export function boundWarnings(estimate: Estimate, bounds: Bounds): string[] {
+  const profiles = Object.values(estimate.profiles)
+  const parts = profiles.reduce((total, profile) => total + profile.parts.length, 0)
+  const votes = profiles.reduce((total, profile) => total + profile.votes, 0)
+  if (bounds.cap !== 'config' && estimate.expected + estimate.inFlight > DEFAULT_MAX_REVIEW_TOKENS) {
+    return [
+      inertLine(`warning: a large review: ${parts} research part(s) and up to ${votes} vote(s), about ${estimate.expected} tokens expected and at most ${estimate.worst}: Ctrl-C stops it and keeps what it read`),
+    ]
+  }
+  if (bounds.cap === 'config' && !estimate.fits) {
+    return [
+      inertLine(`warning: the token cap of ${estimate.maxReviewTokens} (maxReviewTokens) holds about ${estimate.held} of the ${parts} research parts this estimate expects: the review runs to the cap, and what it cannot pay for is a token-cap gap; unset maxReviewTokens to let a path review's cap follow its estimate`),
+    ]
+  }
+  return []
 }
 
 /** The next hundred thousand tokens at or above `tokens`. */
@@ -141,16 +191,17 @@ export function bannerLines(config: ResolvedConfig, view: ReportView = 'full'): 
 
 /**
  * What the view knows of a review before it runs, from its resolved config: the calls at once, the token cap and
- * where it came from, the deadline, `maxFindings`, and for a path review its estimate. The view reads the config's
- * numbers only through these facts.
+ * where it came from, the deadline, `maxFindings`, and for a path review its estimate. A path review's bounds are
+ * derived, so it gives them as `bounds`, and they win over the config's. The view reads the config's numbers only
+ * through these facts.
  */
-export function viewFacts(config: ResolvedConfig, estimate?: Estimate): ViewFacts {
+export function viewFacts(config: ResolvedConfig, estimate?: Estimate, bounds?: { readonly cap: ViewFacts['cap'], readonly deadlineMs: number }): ViewFacts {
   return {
     concurrency: config.concurrency ?? DEFAULT_CONCURRENCY,
-    cap: config.maxReviewTokens === undefined
+    cap: bounds?.cap ?? (config.maxReviewTokens === undefined
       ? { tokens: DEFAULT_MAX_REVIEW_TOKENS, origin: 'default' }
-      : { tokens: config.maxReviewTokens, origin: 'config' },
-    deadlineMs: config.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
+      : { tokens: config.maxReviewTokens, origin: 'config' }),
+    deadlineMs: bounds?.deadlineMs ?? config.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
     maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,
     ...estimate === undefined
       ? {}

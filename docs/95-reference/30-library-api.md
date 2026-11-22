@@ -28,8 +28,8 @@ interface ProfilePorts {
 }
 
 interface Quorum {
-  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal, readonly interrupt?: AbortSignal, readonly store?: ReplyStore }) => Promise<QuorumResult>
-  readonly estimate: (input: { readonly diff: string, readonly send?: readonly string[] }) => Estimate
+  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal, readonly interrupt?: AbortSignal, readonly store?: ReplyStore, readonly maxReviewTokens?: number, readonly reviewTimeoutMs?: number }) => Promise<QuorumResult>
+  readonly estimate: (input: { readonly diff: string, readonly send?: readonly string[] }, limits?: { readonly maxReviewTokens?: number, readonly reviewTimeoutMs?: number }) => Estimate
   readonly warnings: readonly string[]
   readonly budgets: Readonly<Record<string, ProfileBudgets>>
 }
@@ -130,6 +130,7 @@ const result = await quorum.review({ diff, source, leftOut }, {
 - **`signal`**, optional, stops the review: [Abort](#abort). Its meaning is unchanged.
 - **`interrupt`**, optional, stops the review gently, and the review resolves with what it read: [Interrupt](#interrupt). `INTERRUPT_GRACE_MS`, exported, is the 5000 ms it gives the calls in flight.
 - **`store`**, optional, is a [`ReplyStore`](#replystore): where the review keeps the calls it paid for and finds them again on a rerun, which reuses every call the store holds for a request sent as it was, and still pays the calls that failed, about `concurrency` more, and every call of a provider whose settings changed. Each research call whose reply passed its envelope check and each vote that parsed is put as it completes, and a research reply that was cut off or listed as many findings as it was asked for at most is put as a marker that sends its part straight to recovery; a failed call is never put. Each send is looked up under a key of the request as it is sent, never of its bytes, so a changed diff, prompt, budget, thinking level or mode is a miss. A stored reply is checked as a fresh one and reused only if it passes, and spends nothing: no reservation, no usage, a `call` event that says `reused`, and the count in `meta.reused`. A `get` or a `put` that throws, rejects or never settles in a review that is stopped is a miss or a write that did not happen, and a stored call that is no `StoredCall` is a miss: the review is as if it had no store. [`fileStore`](#filestore) is the CLI's own: [Saved state](../20-using/20-configuration.md#saved-state).
+- **`maxReviewTokens`** and **`reviewTimeoutMs`**, optional, are the token cap and the deadline of this review alone, in place of the quorum's, and each is checked as the quorum's is: a whole number of tokens from 1 to 9007199254740991, and of milliseconds from 1000 to 86400000, else a `ConfigError` before any event. A caller that knows how large its input is gives its review the bounds that fit it, and the reviews that give none keep the quorum's. The CLI gives a `--path` review its estimate's worst case, never below 2000000, and 24 hours when the config sets none: [The bounds of a path review](../20-using/15-sources.md#the-bounds-of-a-path-review). The gaps read the limits the review kept to, and so do `run:stopping` and the summary's bounds.
 - **A quorum reviews any number of diffs**, one per call. Each review has its own concurrency limit and its own signal, and several may run at once.
 
 It resolves with the [result](./20-json-result.md), or rejects:
@@ -267,6 +268,7 @@ interface Estimate {
   maxReviewTokens: number
   reviewTimeoutMs: number
   fits: boolean
+  held: number
 }
 
 interface ProfileEstimate {
@@ -280,7 +282,7 @@ interface ProfileEstimate {
 }
 ```
 
-`estimate` says what a review of the diff may cost, in tokens, before any call. It sends nothing and reads no file: it filters the diff and plans each profile's research as `review` does, then asks each provider for the `worstCase` and the `room` it states, on the requests the review would build. Every figure is what the review's token ledger reserves for a call, not what the call spends. The input is `{ diff, send }`, `send` optional as `review`'s is: the estimate reads the diff less its held files, so a file held back as a secret costs nothing and one `send` names is counted. It throws a `ConfigError` for an input `review` would refuse, such as a `diff` that is not a string.
+`estimate` says what a review of the diff may cost, in tokens, before any call. Its second argument, `limits`, is the cap and the deadline the estimate is made under, in place of the quorum's, as `review`'s `maxReviewTokens` and `reviewTimeoutMs` are, and checked the same way: the estimate's `maxReviewTokens`, `reviewTimeoutMs`, `fits` and `held` read them, and no other figure depends on them, so the worst case is the same whatever the cap, which is why a caller may make one estimate for its worst case and another under the cap it derives from it. It sends nothing and reads no file: it filters the diff and plans each profile's research as `review` does, then asks each provider for the `worstCase` and the `room` it states, on the requests the review would build. Every figure is what the review's token ledger reserves for a call, not what the call spends. The input is `{ diff, send }`, `send` optional as `review`'s is: the estimate reads the diff less its held files, so a file held back as a secret costs nothing and one `send` names is counted. It throws a `ConfigError` for an input `review` would refuse, such as a `diff` that is not a string.
 
 | Field | Holds |
 | --- | --- |
@@ -295,10 +297,11 @@ interface ProfileEstimate {
 | `expected` | The sum over the profiles |
 | `worst` | The sum over the profiles, and the calls an adaptation sends once more: for each provider and each setting its `adapts` states, per setting at most `concurrency` calls, counted as the `concurrency` largest reservations of its calls, a research part's with what a piece's position adds. A provider that states no `adapts` adds none ([What quorum adapts by itself](../20-using/20-configuration.md#what-quorum-adapts-by-itself)) |
 | `inFlight` | What the calls that run at once reserve: the sum of the `concurrency` largest bounds among every research part and every vote of every profile, a lens's bound counted `maxFindings` times |
-| `maxFindings`, `maxReviewTokens`, `reviewTimeoutMs` | The quorum's limits, as `createQuorum` took them |
+| `maxFindings`, `maxReviewTokens`, `reviewTimeoutMs` | The limits the estimate was made under: `limits`' when given, else the quorum's, as `createQuorum` took them |
 | `fits` | `expected + inFlight <= maxReviewTokens`: whether the research may finish under the cap. It leaves recovery and the adaptations out, which only a failing or an adversarial review reaches and which would refuse every large path review: `worst` counts them |
+| `held` | How many research parts the cap holds: the parts of every profile, in profile order and then in the order they are sent, counted while their expected spends and `inFlight` stay within `maxReviewTokens`. 0 for a cap below `inFlight`, every part when `fits`. The CLI's warning for a cap the config sets below the estimate names it |
 
-A blank diff, and one whose every file `exclude` leaves out or is held back as a secret, make no call: every token figure is 0, `parts` and `vote` are empty and `fits` is true, with `findings` and `provider` as the profile's research provider states them. The CLI prints the estimate of a path review and refuses one that does not fit unless `--large` is given: [What a path review costs](../20-using/15-sources.md#what-a-path-review-costs). It is an estimate, not a limit: each call of a review still reserves its worst case against `maxReviewTokens`, whatever `fits` says, so a review that does not fit stops at the cap with a `token-cap` gap, and one that fits may stop there too, since the votes are in `worst` alone.
+A blank diff, and one whose every file `exclude` leaves out or is held back as a secret, make no call: every token figure is 0, `parts` and `vote` are empty and `fits` is true, with `findings` and `provider` as the profile's research provider states them. The CLI prints the estimate of a path review, derives the review's token cap and deadline from it and never refuses one for its size: [The bounds of a path review](../20-using/15-sources.md#the-bounds-of-a-path-review). A blank diff has `held` 0. It is an estimate, not a limit: each call of a review still reserves its worst case against `maxReviewTokens`, whatever `fits` says, so a review that does not fit stops at the cap with a `token-cap` gap, and one that fits may stop there too, since the votes are in `worst` alone.
 
 ## `readSource`
 
@@ -351,8 +354,13 @@ const input = await readSource(spec, {
   env: process.env,
   exclude: ['**/*.spec.ts']
 })
-if (!quorum.estimate(input).fits) throw new Error('src may not finish under the token cap: name a narrower path')
-const result = await quorum.review(input)
+// The cap follows the estimate's worst case, never below the default, as the CLI's does for a path review.
+const { worst } = quorum.estimate(input)
+const limits = {
+  maxReviewTokens: Math.max(worst, 2_000_000),
+  reviewTimeoutMs: 86_400_000
+}
+const result = await quorum.review(input, limits)
 ```
 
 ## `outcome`

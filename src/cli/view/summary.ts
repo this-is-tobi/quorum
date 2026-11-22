@@ -13,7 +13,7 @@ import type { ReportView } from '../../report/view.ts'
 import { rangeWords } from './eta.ts'
 import { durationWords, elapsedWords } from './lines.ts'
 import { stageStart, stageTime } from './model.ts'
-import type { Cause, GapCount, ViewState } from './model.ts'
+import type { CapOrigin, Cause, GapCount, ViewState } from './model.ts'
 import type { SummaryFacts } from './writer.ts'
 
 /** The fix of a gap with no better advice: the report holds its detail. */
@@ -106,12 +106,18 @@ function timeLine(state: ViewState, facts: SummaryFacts, view: ReportView, dash:
   return line
 }
 
+/** How the tokens line names where the cap came from. */
+const CAP_WORDS: Readonly<Record<CapOrigin, string>> = {
+  default: 'the default',
+  config: 'maxReviewTokens',
+  estimate: 'this review\'s estimated worst case',
+  floor: 'the default, which holds this review\'s estimated worst case',
+}
+
 function tokensLine(state: ViewState): string {
   const { tokens, origin } = state.facts.cap
   const percent = Math.floor(state.spent * 100 / tokens)
-  let line = `tokens: ${percent} percent of the cap of ${tokens}, ${origin === 'config'
-    ? 'maxReviewTokens'
-    : 'the default'}`
+  let line = `tokens: ${percent} percent of the cap of ${tokens}, ${CAP_WORDS[origin]}`
   if (state.usage.size > 1) line += `; ${[...state.usage].map(([id, usage]) => `${id} ${usage.inputTokens} in and ${usage.outputTokens} out`).join(', ')}`
   return line
 }

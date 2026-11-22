@@ -57,11 +57,14 @@ interface Compiled {
   readonly sink: EventSink | undefined
 }
 
-/** What one review takes besides its input: the signal that aborts it, the one that interrupts it and the store it keeps its calls in. */
+/** What one review takes besides its input: the signal that aborts it, the one that interrupts it, the store it keeps its calls in, and the token cap and the deadline it keeps to in place of the quorum's. */
 type ReviewOptions = NonNullable<Parameters<Quorum['review']>[1]>
 
 /** What an estimate takes of a review's input: the diff, and the files it sends though they are held back. */
 type EstimateInput = Parameters<Quorum['estimate']>[0]
+
+/** The cap and the deadline an estimate is made under, in place of the quorum's. */
+type EstimateLimits = NonNullable<Parameters<Quorum['estimate']>[1]>
 
 /** What a review counts from its own events, so its meta and its events cannot disagree. */
 interface Tally {
@@ -145,7 +148,7 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
   const warnings: readonly string[] = Object.freeze(options.profiles.flatMap(profile => profileWarnings(profile)))
   return Object.freeze({
     review: (input: ReviewInput, options?: ReviewOptions) => review(compiled, input, options),
-    estimate: (input: EstimateInput) => estimate(compiled, input),
+    estimate: (input: EstimateInput, limits?: EstimateLimits) => estimate(compiled, input, limits),
     warnings,
     budgets,
   })
@@ -165,13 +168,28 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
  * held back, so it is counted, as `review` sends it. It is an estimate, not a limit: a review reserves each call
  * against the cap, which still holds whatever `fits` says.
  *
- * @throws ConfigError listing every issue of the input that `review` refuses: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take
+ * `limits` are the cap and the deadline of the review the estimate is for, in place of the quorum's, and the
+ * estimate's `maxReviewTokens`, `reviewTimeoutMs`, `fits` and `held` read them; every other figure is the same
+ * whatever they are. `held` counts the research parts the cap holds.
+ *
+ * @throws ConfigError listing every issue of the input that `review` refuses: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take; and of the `limits`: a `maxReviewTokens` or a `reviewTimeoutMs` out of range
  */
-function estimate(compiled: Compiled, input: EstimateInput): Estimate {
-  const issues = reviewIssues(input, {})
+function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimits = {}): Estimate {
+  const issues = [
+    ...reviewIssues(input, {}),
+    ...isRecord(limits)
+      ? reviewLimitIssues(limits)
+      : [
+          { path: 'limits', message: 'must be an object' },
+        ],
+  ]
   if (issues.length > 0) throw new ConfigError(issues)
   const sent = new Set(input.send)
-  return estimateReview(compiled.runs, compiled, input.diff, path => sent.has(path))
+  return estimateReview(compiled.runs, {
+    ...compiled,
+    maxReviewTokens: limits.maxReviewTokens ?? compiled.maxReviewTokens,
+    reviewTimeoutMs: limits.reviewTimeoutMs ?? compiled.reviewTimeoutMs,
+  }, input.diff, path => sent.has(path))
 }
 
 /**
@@ -295,7 +313,12 @@ function estimate(compiled: Compiled, input: EstimateInput): Estimate {
  * and votes run as far as the cap lets them. A research in parts spends up to the cap, each part reserved
  * before it is sent: the parts the cap cannot fund are not sent, and one gap counts them.
  *
- * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take, options that are not an object, a `signal` that is not an AbortSignal, a `store` that is no object with a `get` and a `put` function
+ * `options.maxReviewTokens` and `options.reviewTimeoutMs` are the cap and the deadline of this review alone, in place of
+ * the quorum's, and are checked as the quorum's are: a caller that knows the size of its input gives its review the
+ * cap and the deadline that fit it, and the reviews that give none keep the quorum's. The gaps, the events and `meta`
+ * read the limits the review kept to.
+ *
+ * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take, options that are not an object, a `signal` that is not an AbortSignal, a `store` that is no object with a `get` and a `put` function, a `maxReviewTokens` or a `reviewTimeoutMs` out of range
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
  * @throws the error of a sink that throws
  * @throws ProviderDownError when no research call of any profile answered and a research provider was found down, or each of whose calls failed for a reason of its own
@@ -304,7 +327,8 @@ async function review(compiled: Compiled, input: ReviewInput, options: ReviewOpt
   const issues = reviewIssues(input, options)
   if (issues.length > 0) throw new ConfigError(issues)
   options.signal?.throwIfAborted()
-  const { clock, reviewTimeoutMs } = compiled
+  const { clock } = compiled
+  const reviewTimeoutMs = options.reviewTimeoutMs ?? compiled.reviewTimeoutMs
   const deadline = { at: clock.now() + reviewTimeoutMs, ms: reviewTimeoutMs }
   const expired = new AbortController()
   const cancel = clock.timer(reviewTimeoutMs, () => {
@@ -434,7 +458,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
   }
   const ctx: RunContext = {
     limit: createLimiter(compiled.concurrency),
-    ledger: createLedger(compiled.maxReviewTokens),
+    ledger: createLedger(options.maxReviewTokens ?? compiled.maxReviewTokens),
     emit,
     signal,
     stop: AbortSignal.any([signal, expired, interrupt.stop]),
@@ -638,6 +662,7 @@ function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
     if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) issues.push({ path: 'signal', message: 'must be an AbortSignal' })
     if (options.interrupt !== undefined && !(options.interrupt instanceof AbortSignal)) issues.push({ path: 'interrupt', message: 'must be an AbortSignal' })
     if (options.store !== undefined && !isReplyStore(options.store)) issues.push({ path: 'store', message: 'must be a reply store: an object with get and put functions' })
+    issues.push(...reviewLimitIssues(options))
   }
   return issues
 }
@@ -771,19 +796,34 @@ function limitIssues(options: Record<string, unknown>): ConfigIssue[] {
       { path, message: `must be a positive integer${got}` },
     ]
   })
-  const problem = options.maxReviewTokens === undefined
-    ? undefined
-    : maxReviewTokensProblem(options.maxReviewTokens)
-  if (problem !== undefined) issues.push({ path: 'maxReviewTokens', message: problem })
-  const timeout = options.reviewTimeoutMs === undefined
-    ? undefined
-    : timeoutProblem(options.reviewTimeoutMs)
-  if (timeout !== undefined) issues.push({ path: 'reviewTimeoutMs', message: timeout })
+  issues.push(...reviewLimitIssues(options))
   const partTokens = options.partTokens === undefined
     ? undefined
     : partTokensProblem(options.partTokens)
   if (partTokens !== undefined) issues.push({ path: 'partTokens', message: partTokens })
   return issues
+}
+
+/** The problems of a `maxReviewTokens` and a `reviewTimeoutMs`, whichever of the quorum's options, a review's or an estimate's holds them: the same words, at the same paths. */
+function reviewLimitIssues(options: Record<string, unknown>): ConfigIssue[] {
+  const tokens = options.maxReviewTokens === undefined
+    ? undefined
+    : maxReviewTokensProblem(options.maxReviewTokens)
+  const timeout = options.reviewTimeoutMs === undefined
+    ? undefined
+    : timeoutProblem(options.reviewTimeoutMs)
+  return [
+    ...tokens === undefined
+      ? []
+      : [
+          { path: 'maxReviewTokens', message: tokens },
+        ],
+    ...timeout === undefined
+      ? []
+      : [
+          { path: 'reviewTimeoutMs', message: timeout },
+        ],
+  ]
 }
 
 /** The ports of each checked profile in order, then the ports no profile of the run names, then the sink. */
