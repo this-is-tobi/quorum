@@ -3,6 +3,16 @@ import { CSI, CURSOR_HIDE, CURSOR_SHOW, cursorUp, ERASE_TO_END, ESC, SYNC_BEGIN,
 import { fakeTerminal } from './terminal.ts'
 
 describe('fakeTerminal', () => {
+  it('moves a carriage return to the first column of its row, even from the deferred wrap', () => {
+    const terminal = fakeTerminal({ columns: 10, rows: 3 })
+    const { write } = terminal.stream
+    write(`${'a'.repeat(10)}\rb`)
+    expect(terminal.screen()).toEqual([`b${'a'.repeat(9)}`, '', ''])
+    // Typed text echoed at the cursor, then a return, a move up and an erase: nothing of the row above is left.
+    write(`\ndef\n^C\r${cursorUp(1)}${ERASE_TO_END}`)
+    expect(terminal.screen()).toEqual([`b${'a'.repeat(9)}`, '', ''])
+  })
+
   it('interprets text, line feeds, carriage returns, cursor up and erase to the end of the screen', () => {
     const terminal = fakeTerminal({ columns: 10, rows: 5 })
     const { write } = terminal.stream
