@@ -249,6 +249,8 @@ The calls are `p20` for a research part, `p7.3` for the third piece of a part re
 
 The calls line starts with what each provider's lane holds, one entry per provider, joined by `; `: [Lanes](./30-providers.md#lanes). With `concurrency` set it is `<n> at once (concurrency)`, for every provider together, since the setting keeps one limit and no lane.
 
+Below 60 columns the head is `<n> at once` alone: the `concurrency` set, else the lanes' limits summed, at most 16, the review's ceiling, and none with no lane. Below 80 columns a call's count goes before a call does: each number of calls, the most first, is tried with its `~<tokens>` and `keep-alives only`, then without, before one fewer. At 40 columns one call keeps its count beside a `4 at once` head.
+
 | Entry | Says |
 | --- | --- |
 | `<id> <n> at once` | The lane's limit at its start, before any change: a cut always names its throttle and a growth always says `growing` |

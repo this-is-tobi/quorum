@@ -875,7 +875,7 @@ describe('frameLines', () => {
       expect(calls).toBe('calls     api 4 at once   p1 1s   +3 to go')
     })
 
-    it('wraps the items under the head of two lanes, and cuts the head in a narrow terminal', () => {
+    it('wraps the items under the head of two lanes, and gives the head its narrow form in a narrow terminal', () => {
       const state = stateWith(...begun, callStart(2, OTHER), lane(10_000, 'grown', 6), lane(11_000, 'cut', 2, { from: 4, failure: throttle }, OTHER))
       const wide = frameLines(state, 20_000, {
         columns: 80,
@@ -909,7 +909,10 @@ describe('frameLines', () => {
         view: 'full',
         timeLeft: { kind: 'none' },
       })
-      expect(narrow.find(line => line.startsWith('calls'))).toBe(`calls     api 6 at once, growing; othe${UNICODE_GLYPHS.ellipsis}`)
+      expect(narrow.slice(2, 4)).toEqual([
+        'calls     8 at once   p1 19s   p2 19s',
+        '          +2 to go',
+      ])
       // under 40 columns the block is its one line, which names no lane
       expect(frameLines(state, 20_000, {
         columns: 39,
@@ -919,6 +922,94 @@ describe('frameLines', () => {
         view: 'full',
         timeLeft: { kind: 'none' },
       })).toEqual(['research 0/4 · 2 calls · 20s'])
+    })
+
+    /** 44 parts, 4 streamed calls p20 to p23 at ~6.10k after 12 turns, as of 41 s. */
+    const streamed = (facts: Partial<typeof DEFAULT_FACTS> = {}, lanes: Array<[number, QuorumEvent]> = []): ViewState => {
+      const events: Array<[number, QuorumEvent]> = [
+        ...started(['security'], 44),
+        ...[20, 21, 22, 23].map((index, at): [number, QuorumEvent] => [
+          0,
+          {
+            type: 'call:start',
+            call: at + 1,
+            profile: 'security',
+            role: 'research',
+            provider: API,
+            part: { index, count: 44 },
+            reserved: 6000,
+            timeoutMs: 600_000,
+            stream: true,
+          },
+        ]),
+        ...[1, 2, 3, 4].flatMap(call => Array.from({ length: 12 }, (_, turn): [number, QuorumEvent] => [
+          (turn + 1) * 1000,
+          {
+            type: 'call:progress',
+            call,
+            outputTokens: Math.round(6100 * (turn + 1) / 12),
+            signal: 'tokens',
+          },
+        ])),
+        ...lanes,
+      ]
+      return events.reduce((state, [at, event]) => fold(state, event, at), startState({
+        ...DEFAULT_FACTS,
+        ...facts,
+      }))
+    }
+    const callRowsOf = (state: ViewState, columns: number): string[] => {
+      const rows = frameLines(state, 41_000, {
+        columns,
+        rows: 24,
+        glyphs: UNICODE_GLYPHS,
+        color: false,
+        view: 'full',
+        timeLeft: { kind: 'none' },
+      })
+      const at = rows.findIndex(line => line.startsWith('calls'))
+      return rows.slice(at, at + 2)
+    }
+
+    it.each<[string, ViewState]>([
+      [
+        'concurrency 4',
+        streamed({ concurrency: 4 }),
+      ],
+      [
+        'one lane',
+        streamed(),
+      ],
+    ])('keeps one call in view at 40 columns under a narrow head: %s', (_name, state) => {
+      expect(callRowsOf(state, 40)).toEqual([
+        'calls     4 at once   ⠹ p20 41s ~6.10k',
+        '          +3 more   +40 to go',
+      ])
+    })
+
+    it('drops each call\'s count before a call below 80 columns, and keeps them at 80', () => {
+      expect(callRowsOf(streamed({ concurrency: 4 }), 50)).toEqual([
+        'calls     4 at once   ⠹ p20 41s   ⠹ p21 41s',
+        '          ⠹ p22 41s   ⠹ p23 41s   +40 to go',
+      ])
+      expect(callRowsOf(streamed(), 60)).toEqual([
+        'calls     api 4 at once   ⠹ p20 41s   ⠹ p21 41s   ⠹ p22 41s',
+        '          ⠹ p23 41s   +40 to go',
+      ])
+      expect(callRowsOf(streamed(), 80)).toEqual([
+        'calls     api 4 at once   ⠹ p20 41s ~6.10k   ⠹ p21 41s ~6.10k',
+        '          ⠹ p22 41s ~6.10k   ⠹ p23 41s ~6.10k   +40 to go',
+      ])
+    })
+
+    it('sums the lanes in the narrow head, at most 16', () => {
+      const third = { id: 'third', model: 'model' }
+      const state = streamed({}, [
+        lane(1000, 'grown', 8),
+        lane(1000, 'grown', 6, {}, OTHER),
+        lane(1000, 'grown', 5, {}, third),
+      ])
+      expect(callRowsOf(state, 50)[0]).toMatch(/^calls {5}16 at once {3}/)
     })
 
     it('makes a provider\'s id inert in the head', () => {
