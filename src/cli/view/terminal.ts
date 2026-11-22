@@ -5,8 +5,9 @@
  * Before the first frame, 500 ms after `run:start`, and for a review that ends sooner, each log line is written
  * straight, its glyph and colour included, with no block and no cursor movement. From then on each frame is one write,
  * so a terminal never shows half of one: `CSI ? 2026 h` opens synchronized output; the first frame then hides the
- * cursor, a later one moves up over the last block (`CSI <n> A`, only when that block drew `n > 0` rows) and erases to
- * the end of the screen (`CSI J`); the log lines due follow, each with its line feed, then the block's lines, each with
+ * cursor, a later one returns to the line's start (a carriage return, since a typed Ctrl-C is echoed as `^C` where the
+ * cursor rests), moves up over the last block (`CSI <n> A`, only when that block drew `n > 0` rows) and erases to the
+ * end of the screen (`CSI J`); the log lines due follow, each with its line feed, then the block's lines, each with
  * its own, then `CSI ? 2026 l`. The cursor rests at the start of the row below the block. A frame is drawn at most every
  * 100 ms and only when its text, or the terminal's size, changed or a log line is due; a tick each second redraws it for
  * its timers. The time left is recomputed at most every 5 s. The size, the view's only input from the terminal, is read
@@ -60,6 +61,10 @@ export const CURSOR_HIDE = `${CSI}?25l`
 export const CURSOR_SHOW = `${CSI}?25h`
 export const ERASE_TO_END = `${CSI}J`
 export const cursorUp = (rows: number): string => `${CSI}${rows}A`
+/** Cursor movement too: a Ctrl-C typed at the terminal is echoed where the cursor rests, so an erase starts at the line's start. */
+export const CARRIAGE_RETURN = String.fromCharCode(13)
+/** The return to the line's start, the move up over the last block and the erase to the end of the screen. */
+const eraseBlock = (up: number): string => `${CARRIAGE_RETURN}${cursorUp(up)}${ERASE_TO_END}`
 
 /** The colour of each glyph a log line starts with, from the 16-colour palette. */
 const GLYPH_COLOURS: Readonly<Record<GlyphName, number>> = {
@@ -155,7 +160,7 @@ export function liveWriter(stream: ViewStream, options: { readonly clock: Clock,
     }
     const up = rowsTaken(drawn, columns)
     let out = up > 0
-      ? `${cursorUp(up)}${ERASE_TO_END}`
+      ? eraseBlock(up)
       : ''
     out += due.map(line => `${line}\n`).join('')
     if (hidden) out += CURSOR_SHOW
@@ -238,7 +243,7 @@ export function liveWriter(stream: ViewStream, options: { readonly clock: Clock,
         out += CURSOR_HIDE
         hidden = true
       }
-      if (up > 0) out += `${cursorUp(up)}${ERASE_TO_END}`
+      if (up > 0) out += eraseBlock(up)
       stream.write(`${out}${lines}${SYNC_END}`)
     }
     due = []

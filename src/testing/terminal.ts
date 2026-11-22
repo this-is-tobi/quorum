@@ -4,8 +4,9 @@
  * OSC and any control character among it, so a spec that writes through it also proves the output holds no other.
  *
  * It follows a VT100 where that matters to the view: a character takes `widthOf` columns and wraps at the last one,
- * the wrap deferred until the next character, so a line of exactly the width takes one row; `CSI 0 A` moves up one row,
- * as `CSI A` does; a row past the last scrolls the top row into the history. A resize either re-flows the rows (a
+ * the wrap deferred until the next character, so a line of exactly the width takes one row; a carriage return moves
+ * the cursor to the first column of its row, even from the deferred wrap, and writes nothing; `CSI 0 A` moves up one row,
+ * as `CSI A` does, and keeps the column; a row past the last scrolls the top row into the history. A resize either re-flows the rows (a
  * logical line, its rows joined by soft wraps, wrapped again at the new width, the cursor kept on its place in it), as
  * nearly every terminal in use does, or cuts each row, as xterm does.
  */

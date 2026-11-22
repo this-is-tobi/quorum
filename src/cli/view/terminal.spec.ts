@@ -7,7 +7,7 @@ import type { Timed } from '../../testing/events.ts'
 import { reportResult } from '../../testing/report.ts'
 import { fakeTerminal } from '../../testing/terminal.ts'
 import type { FakeTerminal } from '../../testing/terminal.ts'
-import { CSI, CURSOR_HIDE, CURSOR_SHOW, ERASE_TO_END, ESC, ETA_MS, FIRST_FRAME_MS, FRAME_MS, liveWriter, SYNC_BEGIN, SYNC_END, TICK_MS } from './terminal.ts'
+import { CARRIAGE_RETURN, CSI, CURSOR_HIDE, CURSOR_SHOW, ERASE_TO_END, ESC, ETA_MS, FIRST_FRAME_MS, FRAME_MS, liveWriter, SYNC_BEGIN, SYNC_END, TICK_MS } from './terminal.ts'
 import { ASCII_GLYPHS, UNICODE_GLYPHS } from './glyphs.ts'
 import type { Glyphs } from './glyphs.ts'
 import { DEFAULT_FACTS } from './model.ts'
@@ -269,8 +269,8 @@ describe('liveWriter', () => {
       const holding = writes.slice(before).filter(write => write.includes(line))
       expect(holding).toHaveLength(1)
       const [write] = holding
-      // In one write: the move up over the old block and its erase, then the line, then the new block.
-      expect(write).toMatch(new RegExp(`^${escaped(SYNC_BEGIN)}${escaped(CSI)}\\d+A${escaped(ERASE_TO_END)}`))
+      // In one write: the return to the line's start, the move up over the old block and its erase, then the line, then the new block.
+      expect(write).toMatch(new RegExp(`^${escaped(SYNC_BEGIN)}${escaped(CARRIAGE_RETURN)}${escaped(CSI)}\\d+A${escaped(ERASE_TO_END)}`))
       expect(write.indexOf(ERASE_TO_END)).toBeLessThan(write.indexOf(line))
       expect(write.indexOf(line)).toBeLessThan(write.indexOf('security  research'))
       expect(write.endsWith(SYNC_END)).toBe(true)
@@ -283,6 +283,39 @@ describe('liveWriter', () => {
       ...terminal.history(),
       ...terminal.screen(),
     ])).toEqual(lines)
+  })
+
+  it.each<[string, (rig: Rig) => Promise<void> | void]>([
+    [
+      'the next frame',
+      ({ clock }) => advance(clock, FRAME_MS),
+    ],
+    [
+      'close',
+      ({ writer }) => writer.close(),
+    ],
+    [
+      'restore',
+      ({ writer }) => writer.restore(),
+    ],
+  ])('starts each erase at the line\'s start, so an echoed ^C leaves nothing of the old block: %s', async (_name, finish) => {
+    const line = `${UNICODE_GLYPHS.answered} part 1 of 44: answered in 1.0s, 1000 tokens, 1 finding(s) listed`
+    const live = rig()
+    live.writer.sink(started('security'))
+    live.writer.sink(researching())
+    live.writer.sink(sending(1, 1))
+    advance(live.clock, FIRST_FRAME_MS)
+    expect(live.terminal.screen()[0]).toMatch(/^─+/)
+    // The terminal echoes the typed Ctrl-C where the cursor rests, below the block: the cursor stands at the third column.
+    live.terminal.stream.write('^C')
+    live.writer.sink(answered(1))
+    await finish(live)
+    // The row the old block started on holds the log line alone, with no cell of the old block's first row before it.
+    expect(live.terminal.screen()[0]).toBe(line)
+    expect(live.terminal.history()).toEqual([])
+    // Nothing of the old block is left below it either, once the writer is closed.
+    await live.writer.close()
+    expect(filled(live.terminal.screen())).toEqual([line])
   })
 
   it('erases the block before the report on a shared terminal, and writes the summary after it', async () => {
@@ -737,7 +770,7 @@ describe('liveWriter', () => {
     play(writer, clock, longReview(), 330_000)
     expect(terminal.screen().some(row => /^security {2}research #+-* {2}\d+\/44 parts - \d+ finding\(s\) listed/.test(row))).toBe(true)
     // eslint-disable-next-line no-control-regex
-    expect(terminal.written()).toMatch(/^[\n\x1B\x20-\x7E]*$/)
+    expect(terminal.written()).toMatch(/^[\n\r\x1B\x20-\x7E]*$/)
   })
 
   it('recomputes the time left at most every 5 s', () => {
