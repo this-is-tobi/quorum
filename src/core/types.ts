@@ -543,11 +543,17 @@ export interface Estimate {
   inFlight: number
   /** How many findings of a research reply each profile sends to the panel, as `createQuorum` was given or defaulted it. */
   maxFindings: number
-  /** The token cap of every review of the quorum, as `createQuorum` was given or defaulted it. */
+  /** The token cap the estimate was made under: the `limits` it was given, else the quorum's, as `createQuorum` was given or defaulted it. */
   maxReviewTokens: number
-  /** The deadline of every review of the quorum, in milliseconds. */
+  /** The deadline the estimate was made under, in milliseconds: the `limits` it was given, else the quorum's. */
   reviewTimeoutMs: number
   fits: boolean
+  /**
+   * How many research parts the cap holds: the parts of every profile, in profile order and the order they are sent,
+   * counted while their expected spends and `inFlight` stay within `maxReviewTokens`. 0 when the cap is below
+   * `inFlight`, and every part when `fits`.
+   */
+  held: number
 }
 
 /** A quorum built by createQuorum: its profiles compiled once, ready to review any number of diffs. */
@@ -561,8 +567,11 @@ export interface Quorum {
    * over once it has sent `run:end`: an abort from that event's handler, or later, has no effect, and the
    * review resolves with its result. With a `store`, the review saves each call that passed its check and reuses what
    * the store holds for a request sent as it was, checked as a fresh reply, spending nothing on it (`meta.reused`).
+   * `maxReviewTokens` and `reviewTimeoutMs` are the token cap and the deadline of this review alone, in place of the
+   * quorum's, each checked as `QuorumOptions` checks it: a caller that sizes a cap or a deadline to its input, as the
+   * CLI does for a path review, gives them here and leaves the quorum's as its default for the reviews that give none.
    */
-  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal, readonly interrupt?: AbortSignal, readonly store?: ReplyStore }) => Promise<QuorumResult>
+  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal, readonly interrupt?: AbortSignal, readonly store?: ReplyStore, readonly maxReviewTokens?: number, readonly reviewTimeoutMs?: number }) => Promise<QuorumResult>
   /**
    * What a review of `input.diff` may cost, before any call: per profile, what the token ledger reserves for each
    * research part, and a bound for every vote. It makes no call and reads no file. The research parts are counted
@@ -571,9 +580,12 @@ export interface Quorum {
    * sends once more; `fits` says whether `expected` and what the calls in flight reserve are within
    * `maxReviewTokens`. It is an estimate, not a promise: a review still reserves each call against the cap.
    * A file held back as a secret costs nothing, and one `input.send` names is counted, as `review` sends it.
-   * Throws a `ConfigError` for an input `review` would refuse.
+   * `limits` are the cap and the deadline the estimate is made under, in place of the quorum's, as `review`'s
+   * `maxReviewTokens` and `reviewTimeoutMs` are: `Estimate.maxReviewTokens`, `reviewTimeoutMs`, `fits` and `held` read them,
+   * and no other figure depends on them.
+   * Throws a `ConfigError` for an input or a limit `review` would refuse.
    */
-  readonly estimate: (input: { readonly diff: string, readonly send?: readonly string[] }) => Estimate
+  readonly estimate: (input: { readonly diff: string, readonly send?: readonly string[] }, limits?: { readonly maxReviewTokens?: number, readonly reviewTimeoutMs?: number }) => Estimate
   /** Settings that cannot take full effect, such as a policy level that never applies; each starts at its profile id. */
   readonly warnings: readonly string[]
   /**

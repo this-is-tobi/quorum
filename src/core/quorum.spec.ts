@@ -3211,6 +3211,53 @@ describe('the review\'s token cap', () => {
   })
 })
 
+describe('a review\'s own limits', () => {
+  const answer = (request: CompletionRequest): string => isVote(request)
+    ? vote(true)
+    : findings(reported)
+
+  it('takes a cap and a deadline for one review, in place of the quorum\'s', async () => {
+    const capped = createQuorum({
+      profiles: [securityProfile],
+      maxReviewTokens: 1000,
+    }, portsFor(securityProfile, fake('finder', answer)))
+    // The quorum's cap of 1000 tokens leaves no room for the research request.
+    expect((await capped.review({ diff })).meta.incomplete.map(entry => entry.reason)).toEqual(['token-cap'])
+    const own = await capped.review({ diff }, { maxReviewTokens: 2_000_000 })
+    expect(own.meta.incomplete).toEqual([])
+    expect(own.kept).toHaveLength(1)
+
+    const clock = fakeClock()
+    const slow = createQuorumWith({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, {
+      ...fake('finder', () => new Promise<string>(() => {})),
+      timeoutMs: 600_000,
+    }), clock)
+    const result = await settle(clock, slow.review({ diff }, { reviewTimeoutMs: 1000 }))
+    expect(clock.armed[0]).toBe(1000)
+    expect(clock.now()).toBe(1000)
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'review-deadline', detail: 'the review\'s deadline of 1000 ms stopped its research' },
+    ])
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('refuses a review\'s maxReviewTokens or reviewTimeoutMs out of range, and an estimate\'s', async () => {
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, provider))
+    const issues = [
+      'maxReviewTokens: must be a whole number of tokens from 1 to 9007199254740991',
+      'reviewTimeoutMs: must be a whole number of milliseconds from 1000 to 86400000',
+    ]
+    await expect(quorum.review({ diff }, { maxReviewTokens: 0, reviewTimeoutMs: 999 })).rejects.toThrow(issues.join('\n'))
+    expect(issuesOf(() => quorum.estimate({ diff }, { maxReviewTokens: 1.5, reviewTimeoutMs: 86_400_001 }))).toEqual(issues)
+    expect(issuesOf(() => quorum.estimate({ diff }, 5 as unknown as { maxReviewTokens: number }))).toEqual(['limits: must be an object'])
+    expect(complete).not.toHaveBeenCalled()
+  })
+})
+
 describe('the review\'s deadline', () => {
   const never = (): Promise<string> => new Promise<string>(() => {})
   /** A provider whose attempts end far past the deadlines of these tests, as `timeoutMs: 600000` states. */

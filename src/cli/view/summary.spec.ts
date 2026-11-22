@@ -121,6 +121,32 @@ describe('summaryLines', () => {
     }))[0]).toBe('time: research 0.0s')
   })
 
+  it.each([
+    [
+      'this review\'s estimated worst case',
+      'estimate',
+      9_864_619,
+      'this review\'s estimated worst case',
+    ],
+    [
+      'the default, which holds this review\'s estimated worst case',
+      'floor',
+      2_000_000,
+      'the default, which holds this review\'s estimated worst case',
+    ],
+  ] as const)('names a cap that is %s', (_name, origin, tokens, words) => {
+    const state = replay(longReview())
+    const derived = {
+      ...state,
+      spent: 1_000_000,
+      facts: {
+        ...state.facts,
+        cap: { tokens, origin },
+      },
+    }
+    expect(lines(derived)[1]).toBe(`tokens: ${Math.floor(1_000_000 * 100 / tokens)} percent of the cap of ${tokens}, ${words}`)
+  })
+
   it('writes the share of the cap spent and where the cap came from, and each provider\'s usage when several answered', () => {
     const state = replay(longReview())
     expect(lines(state)[1]).toBe('tokens: 74 percent of the cap of 2000000, the default')

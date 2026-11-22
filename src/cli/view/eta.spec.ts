@@ -138,6 +138,7 @@ function estimateOf(parts: number[]): Estimate {
     maxReviewTokens: 2_000_000,
     reviewTimeoutMs: 1_800_000,
     fits: true,
+    held: parts.length,
   }
 }
 

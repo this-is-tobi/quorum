@@ -74,8 +74,11 @@ interface Section {
  * `concurrency` largest bounds among the research parts and the votes, each lens's counted `maxFindings` times,
  * since the review's one limit shares its slots between every profile. `fits` is `expected + inFlight <=
  * maxReviewTokens`, and leaves recovery and the adaptations out, which only an adversarial or a failing review
- * reaches, and which would refuse every large path review. It is an estimate: the ledger still holds the cap at
- * run time, whatever it says.
+ * reaches, and which would refuse every large path review. `held` is how many research parts the cap holds: the
+ * parts of every profile, in profile order and then in the order they are sent, counted while their expected spends
+ * and `inFlight` stay within `maxReviewTokens`. The cap and the deadline are `settings`', so a caller may make one
+ * estimate under its quorum's and another under limits of its own: `worst`, `expected` and `inFlight` do not depend
+ * on them. It is an estimate: the ledger still holds the cap at run time, whatever it says.
  */
 export function estimateReview(runs: readonly ProfileRun[], settings: EstimateSettings, diff: string, sent: (path: string) => boolean = () => false): Estimate {
   const scope = reviewScope(diff, settings.excluded, sent)
@@ -102,7 +105,24 @@ export function estimateReview(runs: readonly ProfileRun[], settings: EstimateSe
     maxReviewTokens: settings.maxReviewTokens,
     reviewTimeoutMs: settings.reviewTimeoutMs,
     fits: expected + inFlight <= settings.maxReviewTokens,
+    held: heldParts(planned.flatMap(({ partsExpected }) => partsExpected), inFlight, settings.maxReviewTokens),
   }
+}
+
+/**
+ * How many research parts a cap holds: `expected` is each part's expected spend, in profile order and the order the
+ * parts are sent, and parts are counted while their spends, with what the calls in flight reserve (`inFlight`), stay
+ * within `cap`. A cap below `inFlight` holds none, and one that `fits` holds them all.
+ */
+function heldParts(expected: readonly number[], inFlight: number, cap: number): number {
+  let spent = inFlight
+  let held = 0
+  for (const part of expected) {
+    spent += part
+    if (spent > cap) break
+    held += 1
+  }
+  return held
 }
 
 function sum(numbers: readonly number[]): number {
@@ -113,6 +133,8 @@ function sum(numbers: readonly number[]): number {
 interface Planned {
   readonly estimate: ProfileEstimate
   readonly extras: readonly number[]
+  /** What each research part is expected to spend (`expectedOf`), parallel to `estimate.parts`. */
+  readonly partsExpected: readonly number[]
 }
 
 /** The estimate of a profile whose research makes no call: nothing is reserved, and no vote is cast. */
@@ -128,6 +150,7 @@ function noCall(budgets: ProfileBudgets): Planned {
       provider: budgets.research.provider,
     },
     extras: [],
+    partsExpected: [],
   }
 }
 
@@ -210,17 +233,19 @@ function profileEstimate(run: ProfileRun, plan: ResearchPlan, diff: string, larg
   if (research.length === 0) return noCall(budgets)
   const bounds = run.lenses.map(lens => voteBound(run, lens, largest, budgets.lenses[lens.id].replyTokens))
   const parts = research.map(call => call.reservation)
+  const partsExpected = parts.map(part => expectedOf(part, reply))
   return {
     estimate: {
       parts,
       votes: maxFindings * run.lenses.length,
       vote: Object.fromEntries(run.lenses.map((lens, index) => [lens.id, bounds[index]])),
-      expected: sum(parts.map(part => expectedOf(part, reply))),
+      expected: sum(partsExpected),
       worst: sum(research.map(call => call.reservation + recoveryBound(call.reservation, call.diff, call.header, call.extra))) + maxFindings * sum(bounds),
       findings: budgets.research.findings,
       provider: budgets.research.provider,
     },
     extras: research.map(call => call.extra),
+    partsExpected,
   }
 }
 

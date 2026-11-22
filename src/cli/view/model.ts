@@ -18,8 +18,8 @@ import { plannedOf, researchTotal, sampleNeeded, timeLeft } from './eta.ts'
 export const BUCKET_MS = 30_000
 export const BUCKETS = 20
 
-/** Where the review's token cap came from: its default, or the config. */
-export type CapOrigin = 'default' | 'config'
+/** Where the review's token cap came from: its default, the config, or, for a path review, its estimate's worst case or the default floor that holds it. */
+export type CapOrigin = 'default' | 'config' | 'estimate' | 'floor'
 
 /** What the CLI knows of the review before it starts, which no event says. */
 export interface ViewFacts {

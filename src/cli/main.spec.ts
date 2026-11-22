@@ -109,7 +109,7 @@ const USAGE = [
   '      --path <path>        Review the files under a path at a commit; repeat it to review several',
   '      --at <rev>           The commit --path reads, HEAD by default',
   '      --no-default-skips   Review in --path the vendored, lockfile, minified, binary and test files too',
-  '      --large              Run a --path review that may pass the token cap, reviewing what the cap allows',
+  '      --large              Does nothing, and goes in a later release: a --path review\'s token cap follows its estimate',
   '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
@@ -3276,8 +3276,8 @@ describe('the sources', () => {
   })
 
   /** A fake git for a path review of one large file, `src/big.js`, which a research in parts spreads over several parts. */
-  function bigGit(): { seam: { executable: string, spawn: ReturnType<typeof fakeGit>['spawn'] }, calls: GitCall[] } {
-    const code = `${Array.from({ length: 3000 }, (_, index) => `export const value${index} = compute(${index}) // padding`).join('\n')}\n`
+  function bigGit(lines = 3000): { seam: { executable: string, spawn: ReturnType<typeof fakeGit>['spawn'] }, calls: GitCall[] } {
+    const code = `${Array.from({ length: lines }, (_, index) => `export const value${index} = compute(${index}) // padding`).join('\n')}\n`
     const id = '3'.repeat(40)
     const fake = fakeGit(({ command }) => {
       if (command[0] === 'rev-parse' && command[1] === '--verify') return { stdout: `${HEAD}\n` }
@@ -3294,7 +3294,7 @@ describe('the sources', () => {
   /** The two lines of the estimate a run printed, and the numbers of the total's. */
   function estimateOf(stderr: string): { lines: string[], parts: number, expected: number, inFlight: number } {
     const lines = stderr.split('\n').filter(line => line.startsWith('estimate: '))
-    const total = /^estimate: research about (\d+) tokens expected, at most \d+ with every vote and every part recovered, (\d+) of them reserved at once; the review's token cap is \d+ and its deadline 1800000 ms$/.exec(lines[1] ?? '')
+    const total = /^estimate: research about (\d+) tokens expected, at most \d+ with every vote and every part recovered, (\d+) of them reserved at once; the review's token cap is .+$/.exec(lines[1] ?? '')
     const parts = /^estimate: (\d+) research part\(s\), about \d+ tokens expected for them; then up to 150 vote\(s\), at most \d+ tokens in all$/.exec(lines[0] ?? '')
     return {
       lines,
@@ -3322,6 +3322,9 @@ describe('the sources', () => {
 
     const estimate = estimateOf(beforeTheCall)
     expect(estimate.lines).toHaveLength(2)
+    // The cap follows the estimate's worst case, which recovery's bound puts over the default even for one part, and the deadline is the longest allowed: the config sets neither.
+    const worst = /at most (\d+) with every vote/.exec(estimate.lines[1])?.[1]
+    expect(estimate.lines[1]).toMatch(new RegExp(`; the review's token cap is ${worst}, this estimate's worst case, and its deadline 86400000 ms, the longest allowed: the config sets neither$`))
     expect(estimate.parts).toBe(1)
     expect(estimate.expected).toBeGreaterThan(0)
     expect(estimate.inFlight).toBeGreaterThan(0)
@@ -3333,34 +3336,55 @@ describe('the sources', () => {
     expect(estimateOf(stderr()).lines).toEqual(estimate.lines)
   })
 
-  it('exits 2 for a path review that may not finish under the cap, naming --large, a narrower path and the cap', async () => {
-    const fetchMock = stubChat()
-    const fake = pathGit()
-    const { io, stdout, stderr } = harness({
-      argv: ['--path', 'src'],
-      env: { ...MODEL, QUORUM_MAX_REVIEW_TOKENS: '1000' },
-      git: fake.seam,
-      platform: 'linux',
-    })
-    expect(await runCli(io)).toBe(EXIT.usage)
-    expect(stdout()).toBe('')
-    const { lines, expected, inFlight } = estimateOf(stderr())
-    // The profile's line, the total, and the cap line: research alone expects over half of a cap of 1000, and the review needs the next hundred thousand.
-    expect(lines).toHaveLength(3)
-    expect(lines[2]).toMatch(/^estimate: research alone expects about \d+ of the review's token cap of 1000 \(\d+%\): a review of this size needs a cap of about \d+00000: raise maxReviewTokens, or narrow the path$/)
-    expect(stderr().split('\n').slice(2, 5)).toEqual(lines)
-    expect(stderr().split('\n').slice(5)).toEqual([
-      `Error: --path: may not finish under the review's token cap of 1000 tokens: its research alone expects about ${expected}, with ${inFlight} reserved at once: name a narrower path, raise maxReviewTokens, or pass --large to review what the cap allows`,
-      '',
-    ])
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it('runs it with --large, reviewing what the cap allows', async () => {
+  it('runs a path review that 0.8.0 would have held, its expected spend and calls in flight past 2000000, to its end, under its worst case as cap and a deadline of 24 hours, after the large review\'s warning', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => chatReply(JSON.stringify({ findings: [] })))
     vi.stubGlobal('fetch', fetchMock)
     const { io, stdout, stderr } = harness({
-      argv: ['--path', 'src', '--large'],
+      argv: ['--path', 'src'],
+      env: MODEL,
+      git: bigGit(60_000).seam,
+      platform: 'linux',
+    })
+    expect([EXIT.ok, EXIT.finding]).toContain(await runCli(io))
+
+    const { lines, parts } = estimateOf(stderr())
+    const warning = /^warning: a large review: (\d+) research part\(s\) and up to 150 vote\(s\), about (\d+) tokens expected and at most (\d+): Ctrl-C stops it and keeps what it read$/m.exec(stderr())
+    expect(warning).not.toBeNull()
+    expect(Number(warning?.[1])).toBe(parts)
+    const worst = Number(warning?.[3])
+    expect(worst).toBeGreaterThan(2_000_000)
+    // The cap is the estimate's worst case and the deadline the longest allowed, both said on the estimate's last line.
+    expect(lines[1]).toMatch(new RegExp(`; the review's token cap is ${worst}, this estimate's worst case, and its deadline 86400000 ms, the longest allowed: the config sets neither$`))
+    expect(stderr().indexOf(lines[1])).toBeLessThan(stderr().indexOf('warning: a large review'))
+    expect(stderr()).not.toContain('Error:')
+    // The review is never held: every part's request is sent, and no cap stops it.
+    expect(parts).toBeGreaterThan(2)
+    expect(fetchMock).toHaveBeenCalledTimes(parts)
+    expect(JSON.parse(stdout()).meta.incomplete).toEqual([])
+  })
+
+  it('writes no large review\'s warning for a small path review whose worst case passes 2000000 through recovery\'s bound alone', async () => {
+    stubChat(JSON.stringify({ findings: [] }))
+    const { io, stderr } = harness({
+      argv: ['--path', 'src'],
+      env: MODEL,
+      git: pathGit().seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const { lines, expected, inFlight } = estimateOf(stderr())
+    const worst = Number(/at most (\d+) with every vote/.exec(lines[1])?.[1])
+    expect(worst).toBeGreaterThan(2_000_000)
+    expect(expected + inFlight).toBeLessThanOrEqual(2_000_000)
+    expect(lines[1]).toContain(`token cap is ${worst}, this estimate's worst case`)
+    expect(stderr()).not.toContain('warning:')
+  })
+
+  it('runs a path review under an explicit maxReviewTokens below its estimate to the cap, after its warning, the rest a token-cap gap', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => chatReply(JSON.stringify({ findings: [] })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { io, stdout, stderr } = harness({
+      argv: ['--path', 'src'],
       env: { ...MODEL, QUORUM_MAX_REVIEW_TOKENS: '120000' },
       git: bigGit().seam,
       platform: 'linux',
@@ -3369,11 +3393,18 @@ describe('the sources', () => {
 
     const { lines, parts, expected, inFlight } = estimateOf(stderr())
     expect(lines).toHaveLength(3)
+    expect(lines[1]).toMatch(/; the review's token cap is 120000 \(maxReviewTokens\), and its deadline 86400000 ms, the longest allowed$/)
     expect(lines[2]).toContain('research alone expects about')
-    // The estimate says the review may pass the cap, and it is printed all the same.
+    // The estimate says the review may pass the cap, and the warning says how much of it the cap holds.
     expect(parts).toBeGreaterThan(2)
     expect(expected + inFlight).toBeGreaterThan(120_000)
+    const warning = /^warning: the token cap of 120000 \(maxReviewTokens\) holds about (\d+) of the (\d+) research parts this estimate expects: the review runs to the cap, and what it cannot pay for is a token-cap gap; unset maxReviewTokens to let a path review's cap follow its estimate$/m.exec(stderr())
+    expect(warning).not.toBeNull()
+    expect(Number(warning?.[2])).toBe(parts)
+    expect(Number(warning?.[1])).toBeLessThan(parts)
+    expect(stderr().indexOf(lines[2])).toBeLessThan(stderr().indexOf('warning: the token cap'))
     expect(stderr()).not.toContain('Error:')
+    expect(stderr()).not.toContain('a large review')
     // What the cap funds is sent, and the parts it cannot fund are not, and are a gap.
     expect(fetchMock.mock.calls.length).toBeGreaterThan(0)
     expect(fetchMock.mock.calls.length).toBeLessThan(parts)
@@ -3386,6 +3417,35 @@ describe('the sources', () => {
       },
     ])
     expect(JSON.stringify(result.meta.profiles.security.coverage)).toContain('"reason":"token-cap"')
+  })
+
+  it('warns that --large does nothing, and runs as without it', async () => {
+    const run = async (argv: string[]) => {
+      const fetchMock = stubChat(JSON.stringify({ findings: [] }))
+      const { io, stdout, stderr } = harness({
+        argv,
+        env: MODEL,
+        git: pathGit().seam,
+        platform: 'linux',
+      })
+      const code = await runCli(io)
+      vi.unstubAllGlobals()
+      return {
+        code,
+        stdout: JSON.parse(stdout()),
+        stderr: stderr(),
+        calls: fetchMock.mock.calls.length,
+      }
+    }
+    const plain = await run(['--path', 'src'])
+    const large = await run(['--path', 'src', '--large'])
+    const warning = 'warning: --large is no longer needed and does nothing: a path review\'s token cap follows its estimate'
+    expect(plain.stderr).not.toContain('--large')
+    expect(large.stderr.split('\n')).toContain(warning)
+    expect(large.code).toBe(plain.code)
+    expect(large.calls).toBe(plain.calls)
+    expect(large.stdout.meta.incomplete).toEqual(plain.stdout.meta.incomplete)
+    expect(estimateOf(large.stderr).lines).toEqual(estimateOf(plain.stderr).lines)
   })
 
   it('prints no estimate for a diff, a range or local changes, and never gates them', async () => {
@@ -3411,7 +3471,11 @@ describe('the sources', () => {
       expect(await runCli(io)).toBe(EXIT.incomplete)
       expect(stderr()).not.toContain('estimate:')
       expect(stderr()).not.toContain('Error:')
-      expect(JSON.parse(stdout()).meta.incomplete.map((entry: { reason: string }) => entry.reason)).toEqual(['token-cap'])
+      const { incomplete } = JSON.parse(stdout()).meta as { incomplete: Array<{ reason: string, detail: string }> }
+      expect(incomplete.map(entry => entry.reason)).toEqual(['token-cap'])
+      // A diff review keeps the config's cap, and the quorum's deadline of 30 minutes, never a path review's 24 hours.
+      expect(incomplete[0].detail).toBe('the review\'s token cap of 1000 tokens stopped its research')
+      expect(stderr()).not.toContain('86400000')
       expect(fetchMock).not.toHaveBeenCalled()
       vi.unstubAllGlobals()
     }

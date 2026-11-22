@@ -8,6 +8,8 @@ import type { FailOnOverride } from '../config/profiles.ts'
 import type { ResolvedConfig } from '../config/resolve.ts'
 import { systemClock } from '../core/clock.ts'
 import { ConfigError } from '../core/errors.ts'
+import { DEFAULT_MAX_REVIEW_TOKENS } from '../core/limits.ts'
+import { MAX_TIMEOUT_MS } from '../core/ports.ts'
 import { VERSION } from '../core/version.ts'
 import { outcome } from '../core/outcome.ts'
 import type { Estimate, Quorum } from '../core/types.ts'
@@ -27,9 +29,11 @@ import { runMcp } from './mcp.ts'
 import { checkOutputs, colorFor, reportPlan, writeOutputs } from './outputs.ts'
 import type { ColorWhen, ReportPlan } from './outputs.ts'
 import { printConfig } from './print-config.ts'
-import { bannerLines, estimateLines, viewFacts } from './render.ts'
+import { bannerLines, boundWarnings, estimateLines, viewFacts } from './render.ts'
+import type { Bounds } from './render.ts'
 import { runReport } from './report.ts'
 import { progressMode, viewWriter } from './view/progress.ts'
+import type { CapOrigin } from './view/model.ts'
 import type { ProgressMode } from './view/progress.ts'
 import type { ViewWriter } from './view/writer.ts'
 
@@ -56,7 +60,7 @@ const USAGE = [
   '      --path <path>        Review the files under a path at a commit; repeat it to review several',
   '      --at <rev>           The commit --path reads, HEAD by default',
   '      --no-default-skips   Review in --path the vendored, lockfile, minified, binary and test files too',
-  '      --large              Run a --path review that may pass the token cap, reviewing what the cap allows',
+  '      --large              Does nothing, and goes in a later release: a --path review\'s token cap follows its estimate',
   '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
@@ -122,11 +126,14 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * and a source git refuses, or a repository whose own config names a filter without `--trust-repo-config`, exits 2
  * before the banner, a git command that fails exits 3.
  *
- * A path review is a codebase and not a change, so its size is the tree's. After the banner and before any
- * call it prints its estimate on stderr (see `Quorum.estimate`), and exits 2 when its research's expected
- * spend and what the calls in flight reserve pass `maxReviewTokens`, unless `--large` is given: the review then
- * reviews what the cap allows and ends incomplete, exit 4, where the cap stops it. A diff, a range and the
- * local changes print no estimate and are never gated, since their size is the change's.
+ * A path review is a codebase and not a change, so its size is the tree's, and its bounds follow it (see `pathBounds`). After
+ * the banner and before any call it prints its estimate on stderr (see `Quorum.estimate`), ending with the review's token cap and
+ * deadline: with `maxReviewTokens` unset the cap is the estimate's worst case, never below 2000000, and with `reviewTimeoutMs`
+ * unset the deadline is 24 hours, the longest allowed; a set one is kept. A large review, whose expected research spend and calls in flight pass 2000000 under a cap that follows the
+ * estimate, is warned of, and so is a cap the config sets below what the estimate expects, which the review runs to, the rest a `token-cap`
+ * gap, exit 4. A path review is never held for its size, and `--large` warns that it does nothing. A diff, a range and the
+ * local changes print no estimate and keep the quorum's bounds, 2000000 tokens and 30 minutes unless the config sets them, since
+ * their size is the change's.
  *
  * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`, `--path`,
  * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--fail-on`, `--format`, `--output`,
@@ -320,12 +327,11 @@ export async function runCli(io: CliIO): Promise<number> {
       : await openStore(io, view, resolve(io.cwd, state), config.providers)
     writeWarnings(view, quorum.warnings)
     for (const line of bannerLines(config, plan.view)) view.line('banner', line)
-    const estimate = spec?.kind === 'paths'
-      ? quorum.estimate({ diff: read.diff, send })
+    const bounded = spec?.kind === 'paths'
+      ? pathBounds(view, quorum, { diff: read.diff, send }, config, values.large === true)
       : undefined
-    if (estimate !== undefined) holdLargeReview(view, estimate, values.large === true)
     if (read.diff.trim() === '') view.line('notice', 'empty diff: nothing to review')
-    view.begin(viewFacts(config, estimate))
+    view.begin(viewFacts(config, bounded?.estimate, bounded?.facts))
     // The setup's last await is behind: a signal that came before the review is called starts none, and leaves no result.
     if (io.signal?.aborted) {
       await view.close()
@@ -333,7 +339,7 @@ export async function runCli(io: CliIO): Promise<number> {
       return EXIT.interrupted
     }
     // From here the first signal is the review's interrupt, which resolves it with what it read, never its abort.
-    const result = await quorum.review({ ...read, send }, { interrupt: io.signal, store })
+    const result = await quorum.review({ ...read, send }, { interrupt: io.signal, store, ...bounded?.limits })
     reviewed = true
     const { reused } = result.meta
     if (reused !== undefined && reused.research + reused.votes > 0) view.line('notice', `reused from --state: ${reused.research} research call(s), ${reused.votes} vote(s)`)
@@ -374,21 +380,52 @@ export async function runCli(io: CliIO): Promise<number> {
   }
 }
 
+/** A path review's bounds, as the review keeps to them and the view shows them. */
+interface PathBounds {
+  /** The estimate made under the bounds, which the view weighs the parts not yet started with. */
+  readonly estimate: Estimate
+  /** The cap and the deadline the review is given, in place of the quorum's. */
+  readonly limits: { readonly maxReviewTokens: number, readonly reviewTimeoutMs: number }
+  /** The same, as the view's facts name them, the cap with where it came from. */
+  readonly facts: { readonly cap: { readonly tokens: number, readonly origin: CapOrigin }, readonly deadlineMs: number }
+}
+
 /**
- * Print a path review's estimate on stderr, and refuse the review when it may not finish under the token cap:
- * its research's expected spend and what the calls in flight reserve are over `maxReviewTokens`. The gate is
- * a `ConfigError` that names `--path`, a narrower path, the cap and `--large`, which `large` lifts: the review
- * then runs, spends no more than the cap and ends incomplete where the cap stops it. It runs before any call.
+ * Derive a path review's bounds from its estimate and print them on stderr, before any call. A path review is a
+ * codebase, so its size is the tree's: the first estimate is made under the quorum's own limits, and the cap is the
+ * config's `maxReviewTokens` when it sets one, else that estimate's worst case, never below `DEFAULT_MAX_REVIEW_TOKENS`,
+ * and the deadline the config's `reviewTimeoutMs`, else the longest a review may run. The estimate printed is a second
+ * one, made under those bounds, with the warnings they call for: a large review, or a cap below what the estimate
+ * expects. The review is never held for its size: it runs to its cap or its deadline, and what they stop is a gap.
+ * `--large` warns and does nothing.
  */
-function holdLargeReview(view: ViewWriter, estimate: Estimate, large: boolean): void {
-  for (const line of estimateLines(estimate)) view.line('estimate', line)
-  if (estimate.fits || large) return
-  throw new ConfigError([
-    {
-      path: '--path',
-      message: `may not finish under the review's token cap of ${estimate.maxReviewTokens} tokens: its research alone expects about ${estimate.expected}, with ${estimate.inFlight} reserved at once: name a narrower path, raise maxReviewTokens, or pass --large to review what the cap allows`,
-    },
-  ])
+function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: string, readonly send: readonly string[] }, config: ResolvedConfig, large: boolean): PathBounds {
+  const { worst } = quorum.estimate(input)
+  const cap = config.maxReviewTokens === undefined
+    ? {
+        tokens: Math.max(worst, DEFAULT_MAX_REVIEW_TOKENS),
+        origin: worst >= DEFAULT_MAX_REVIEW_TOKENS
+          ? 'estimate'
+          : 'floor',
+      } as const
+    : { tokens: config.maxReviewTokens, origin: 'config' } as const
+  const deadlineMs = config.reviewTimeoutMs ?? MAX_TIMEOUT_MS
+  const limits = { maxReviewTokens: cap.tokens, reviewTimeoutMs: deadlineMs }
+  const estimate = quorum.estimate(input, limits)
+  const bounds: Bounds = {
+    cap: cap.origin,
+    deadline: config.reviewTimeoutMs === undefined
+      ? 'longest'
+      : 'config',
+  }
+  for (const line of estimateLines(estimate, bounds)) view.line('estimate', line)
+  for (const line of boundWarnings(estimate, bounds)) view.line('warning', line)
+  if (large) view.line('warning', 'warning: --large is no longer needed and does nothing: a path review\'s token cap follows its estimate')
+  return {
+    estimate,
+    limits,
+    facts: { cap, deadlineMs },
+  }
 }
 
 /**

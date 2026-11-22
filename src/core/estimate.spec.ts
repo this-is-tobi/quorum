@@ -489,6 +489,7 @@ describe('estimate', () => {
       maxReviewTokens: 2_000_000,
       reviewTimeoutMs: 1_800_000,
       fits: true,
+      held: 0,
     }
     const quorum = createQuorum({
       profiles: [securityProfile],
@@ -633,6 +634,88 @@ describe('estimate', () => {
 
     expect(estimateAt(expected + inFlight)).toMatchObject({ fits: true, maxReviewTokens: expected + inFlight })
     expect(estimateAt(expected + inFlight - 1)).toMatchObject({ fits: false, maxReviewTokens: expected + inFlight - 1 })
+  })
+
+  it('estimates with the limits it is given, and counts the research parts the cap holds', () => {
+    const finder = windowed(32_768, () => '{"findings":[]}')
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder))
+    const input = { diff: DIFF }
+    const { expected, inFlight, profiles } = quorum.estimate(input)
+    const parts = profiles.security.parts.length
+    expect(parts).toBeGreaterThan(1)
+
+    // The quorum's limits when none are given, the limits given when they are.
+    expect(quorum.estimate(input)).toMatchObject({
+      maxReviewTokens: 2_000_000,
+      reviewTimeoutMs: 1_800_000,
+      fits: true,
+      held: parts,
+    })
+    expect(quorum.estimate(input, { maxReviewTokens: Number.MAX_SAFE_INTEGER, reviewTimeoutMs: 5000 })).toMatchObject({
+      maxReviewTokens: Number.MAX_SAFE_INTEGER,
+      reviewTimeoutMs: 5000,
+      fits: true,
+      held: parts,
+    })
+    expect(quorum.estimate(input, { reviewTimeoutMs: 5000 })).toMatchObject({ maxReviewTokens: 2_000_000, reviewTimeoutMs: 5000 })
+    expect(quorum.estimate(input, { maxReviewTokens: expected + inFlight - 1 })).toMatchObject({ fits: false, held: parts - 1 })
+    // A cap below what the calls in flight reserve holds no part.
+    expect(quorum.estimate(input, { maxReviewTokens: inFlight - 1 })).toMatchObject({ fits: false, held: 0 })
+
+    // The prefix that fits in between: each part adds its expected spend to what is in flight, in the order they are sent.
+    const heldAt = (maxReviewTokens: number): number => quorum.estimate(input, { maxReviewTokens }).held
+    const needed = Array.from({ length: parts }, (_, index) => {
+      let low = inFlight
+      let high = inFlight + expected
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2)
+        if (heldAt(middle) > index) high = middle
+        else low = middle + 1
+      }
+      return low
+    })
+    expect(needed.at(-1)).toBe(expected + inFlight)
+    expect(needed[0]).toBeGreaterThan(inFlight)
+    expect(needed).toEqual([...needed].sort((a, b) => a - b))
+    expect(new Set(needed).size).toBe(parts)
+    for (const [index, cap] of needed.entries()) {
+      expect(heldAt(cap)).toBe(index + 1)
+      expect(heldAt(cap - 1)).toBe(index)
+    }
+  })
+
+  it('counts the research parts of every profile, in profile order', () => {
+    const other: Profile = { ...securityProfile, id: 'other' }
+    const finder = windowed(32_768, () => '{"findings":[]}')
+    const quorum = createQuorum({
+      profiles: [securityProfile, other],
+    }, {
+      profiles: {
+        ...portsFor(securityProfile, finder).profiles,
+        ...portsFor(other, finder).profiles,
+      },
+    })
+    const { profiles, expected, inFlight, held } = quorum.estimate({ diff: DIFF }, { maxReviewTokens: Number.MAX_SAFE_INTEGER })
+    expect(held).toBe(profiles.security.parts.length + profiles.other.parts.length)
+    // One expected spend short of the whole holds every part but the last profile's last.
+    expect(quorum.estimate({ diff: DIFF }, { maxReviewTokens: expected + inFlight - 1 }).held).toBe(held - 1)
+  })
+
+  it('makes the same worst case whatever the cap', () => {
+    const finder = windowed(32_768, () => '{"findings":[]}')
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder))
+    const { maxReviewTokens, fits, held, ...usual } = quorum.estimate({ diff: DIFF })
+    for (const cap of [1, 1_000_000, Number.MAX_SAFE_INTEGER]) {
+      const { maxReviewTokens: given, fits: _fits, held: _held, ...same } = quorum.estimate({ diff: DIFF }, { maxReviewTokens: cap })
+      expect(given).toBe(cap)
+      expect(same).toEqual(usual)
+    }
+    expect(maxReviewTokens).toBe(2_000_000)
+    expect(fits && held > 0).toBe(true)
   })
 
   it('refuses an input a review would refuse, as a ConfigError', () => {
