@@ -3049,6 +3049,23 @@ describe('the lane of a call', () => {
     })
   })
 
+  it('tells its lane the headers of a reply whose text is no string, before refusing it', async () => {
+    const clock = fakeClock()
+    const { ctx } = adaptive(clock)
+    const odd = target(async () => ({
+      text: 42,
+      model: 'm',
+      rateLimit: { requests: 7 },
+    }) as unknown as CompletionResponse)
+    await expect(settle(clock, callProvider(ctx, requester, odd, () => request))).rejects.toMatchObject({
+      kind: 'invalid-response',
+      message: 'p: returned no reply text',
+    })
+    expect(ctx.lanes.record()).toMatchObject({
+      p: { headers: true },
+    })
+  })
+
   it('settles an answered attempt once when the sink throws on the lane\'s growth, and goes on with the reply', async () => {
     const clock = fakeClock()
     const made = context(clock)
