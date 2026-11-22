@@ -61,6 +61,7 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
     storedRefused: new Set(),
     adapt: createAdaptations(),
     maxFindings: 50,
+    findingsCap: 50,
     budgets: {},
     concurrency,
     clocks: createClocks(),

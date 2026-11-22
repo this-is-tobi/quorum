@@ -4,7 +4,7 @@ import type { Estimate } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { resolvedConfig } from '../testing/bench.ts'
-import { bannerLines, boundWarnings, estimateLines, profileProviders, providerOrigin, viewFacts } from './render.ts'
+import { bannerLines, boundWarnings, estimateLines, findingsCapOf, profileProviders, providerOrigin, viewFacts } from './render.ts'
 import type { Bounds } from './render.ts'
 
 /** A right-to-left override, which the sanitizer writes as text. */
@@ -27,13 +27,14 @@ describe('estimateLines', () => {
     worst: 1_850_000,
     inFlight: 50_000,
     maxFindings: 50,
+    findingsCap: 50,
     maxReviewTokens: 2_000_000,
     reviewTimeoutMs: 1_800_000,
     fits: true,
     held: 2,
   }
-  const bounds: Bounds = { cap: 'config', deadline: 'config' }
-  const total = 'estimate: research about 16667 tokens expected, at most 1850000 with every vote and every part recovered, 50000 of them reserved at once; the review\'s token cap is 2000000 (maxReviewTokens), and its deadline 1800000 ms (reviewTimeoutMs)'
+  const bounds: Bounds = { cap: 'config', deadline: 'config', findings: 'config' }
+  const total = 'estimate: research about 16667 tokens expected, at most 1850000 with every vote and every part recovered, 50000 of them reserved at once; the review\'s token cap is 2000000 (maxReviewTokens), its deadline 1800000 ms (reviewTimeoutMs), and its finding cap 50 (maxFindings)'
 
   it('writes the estimate\'s lines, a profile\'s prefixed when several run', () => {
     expect(estimateLines(estimate, bounds)).toEqual([
@@ -75,7 +76,7 @@ describe('estimateLines', () => {
     const lines = estimateLines(heavy, bounds)
     expect(lines).toEqual([
       'estimate: 2 research part(s), about 16667 tokens expected for them; then up to 150 vote(s), at most 1850000 tokens in all',
-      'estimate: research about 1000001 tokens expected, at most 1850000 with every vote and every part recovered, 50000 of them reserved at once; the review\'s token cap is 2000000 (maxReviewTokens), and its deadline 1800000 ms (reviewTimeoutMs)',
+      'estimate: research about 1000001 tokens expected, at most 1850000 with every vote and every part recovered, 50000 of them reserved at once; the review\'s token cap is 2000000 (maxReviewTokens), its deadline 1800000 ms (reviewTimeoutMs), and its finding cap 50 (maxFindings)',
       'estimate: research alone expects about 1000001 of the review\'s token cap of 2000000 (50%): a review of this size needs a cap of about 1300000: raise maxReviewTokens, or narrow the path',
     ])
     // Half the cap is not over half: no line. The need rounds up to the next 100000, and an exact multiple stays.
@@ -152,24 +153,34 @@ describe('estimateLines', () => {
 
   it.each([
     [
-      'both follow the estimate',
-      { cap: 'estimate', deadline: 'longest' },
-      'the review\'s token cap is 9864619, this estimate\'s worst case, and its deadline 86400000 ms, the longest allowed: the config sets neither',
+      'all three follow the estimate',
+      { cap: 'estimate', deadline: 'longest', findings: 'floor' },
+      'the review\'s token cap is 9864619, this estimate\'s worst case, its deadline 86400000 ms, the longest allowed, and its finding cap 50, the default, which holds one per research part: the config sets none of them',
     ],
     [
       'the config sets the cap',
-      { cap: 'config', deadline: 'longest' },
-      'the review\'s token cap is 2000000 (maxReviewTokens), and its deadline 86400000 ms, the longest allowed',
+      { cap: 'config', deadline: 'longest', findings: 'floor' },
+      'the review\'s token cap is 2000000 (maxReviewTokens), its deadline 86400000 ms, the longest allowed, and its finding cap 50, the default, which holds one per research part',
     ],
     [
       'the config sets the deadline',
-      { cap: 'estimate', deadline: 'config' },
-      'the review\'s token cap is 9864619, this estimate\'s worst case, and its deadline 3600000 ms (reviewTimeoutMs)',
+      { cap: 'estimate', deadline: 'config', findings: 'floor' },
+      'the review\'s token cap is 9864619, this estimate\'s worst case, its deadline 3600000 ms (reviewTimeoutMs), and its finding cap 50, the default, which holds one per research part',
     ],
     [
       'the floor holds the worst case',
-      { cap: 'floor', deadline: 'longest' },
-      'the review\'s token cap is 2000000, the default, which holds this estimate\'s worst case, and its deadline 86400000 ms, the longest allowed: the config sets neither',
+      { cap: 'floor', deadline: 'longest', findings: 'floor' },
+      'the review\'s token cap is 2000000, the default, which holds this estimate\'s worst case, its deadline 86400000 ms, the longest allowed, and its finding cap 50, the default, which holds one per research part: the config sets none of them',
+    ],
+    [
+      'the finding cap follows the parts',
+      { cap: 'estimate', deadline: 'longest', findings: 'parts' },
+      'the review\'s token cap is 9864619, this estimate\'s worst case, its deadline 86400000 ms, the longest allowed, and its finding cap 121, one per research part: the config sets none of them',
+    ],
+    [
+      'the config sets maxFindings alone',
+      { cap: 'estimate', deadline: 'longest', findings: 'config' },
+      'the review\'s token cap is 9864619, this estimate\'s worst case, its deadline 86400000 ms, the longest allowed, and its finding cap 121 (maxFindings)',
     ],
   ] as const)('ends the estimate with its bounds when %s', (_name, bounds, ending) => {
     const cap = bounds.cap === 'estimate'
@@ -178,8 +189,31 @@ describe('estimateLines', () => {
     const ms = bounds.deadline === 'longest'
       ? 86_400_000
       : 3_600_000
-    const [, last] = estimateLines({ ...estimate, maxReviewTokens: cap, reviewTimeoutMs: ms }, bounds)
+    const findingsCap = bounds.findings === 'floor'
+      ? 50
+      : 121
+    const [, last] = estimateLines({
+      ...estimate,
+      maxReviewTokens: cap,
+      reviewTimeoutMs: ms,
+      findingsCap,
+    }, bounds)
     expect(last).toBe(`estimate: research about 16667 tokens expected, at most 1850000 with every vote and every part recovered, 50000 of them reserved at once; ${ending}`)
+  })
+
+  it('counts the cap line\'s votes at the findingsCap, and compares N to maxFindings', () => {
+    // 121 findings of 3 lenses at 4000 each, a third of it: 484000, so 1000001 + 50000 + 484000 rounds up to 1600000.
+    const heavy: Estimate = { ...estimate, expected: 1_000_001, findingsCap: 121 }
+    expect(estimateLines(heavy, { cap: 'config', deadline: 'config', findings: 'parts' })[2]).toContain('needs a cap of about 1600000')
+    // N below maxFindings is still compared to maxFindings, whatever the finding cap.
+    const narrow: Estimate = {
+      ...estimate,
+      findingsCap: 121,
+      profiles: {
+        security: { ...estimate.profiles.security, findings: 15, provider: 'local' },
+      },
+    }
+    expect(estimateLines(narrow, { cap: 'config', deadline: 'config', findings: 'parts' }).at(-1)).toBe('estimate: on local a research reply asks for at most 15 of maxFindings 50 findings: parts with more split, so expect more calls than this estimate; a larger window, or thinking: off, raises N')
   })
 
   it('writes the large review\'s warning, and the cap\'s when the estimate passes an explicit cap', () => {
@@ -190,13 +224,13 @@ describe('estimateLines', () => {
       maxReviewTokens: 9_864_619,
       reviewTimeoutMs: 86_400_000,
     }
-    expect(boundWarnings(small, { cap: 'estimate', deadline: 'longest' })).toEqual([])
+    expect(boundWarnings(small, { cap: 'estimate', deadline: 'longest', findings: 'floor' })).toEqual([])
     // What 0.8.0 held: the expected spend and the calls in flight pass the default, 2000000.
     const large: Estimate = { ...small, expected: 1_950_001 }
-    expect(boundWarnings(large, { cap: 'estimate', deadline: 'longest' })).toEqual([
+    expect(boundWarnings(large, { cap: 'estimate', deadline: 'longest', findings: 'floor' })).toEqual([
       'warning: a large review: 2 research part(s) and up to 150 vote(s), about 1950001 tokens expected and at most 9864619: Ctrl-C stops it and keeps what it read',
     ])
-    expect(boundWarnings({ ...large, expected: 1_950_000 }, { cap: 'estimate', deadline: 'longest' })).toEqual([])
+    expect(boundWarnings({ ...large, expected: 1_950_000 }, { cap: 'estimate', deadline: 'longest', findings: 'floor' })).toEqual([])
     // An explicit cap writes the cap's warning alone, never the large review's.
     const explicit: Estimate = {
       ...large,
@@ -204,20 +238,54 @@ describe('estimateLines', () => {
       fits: false,
       held: 0,
     }
-    expect(boundWarnings(explicit, { cap: 'config', deadline: 'longest' })).toHaveLength(1)
-    expect(boundWarnings(explicit, { cap: 'config', deadline: 'longest' })[0]).toContain('the token cap of 120000 (maxReviewTokens) holds about 0 of the 2')
+    expect(boundWarnings(explicit, { cap: 'config', deadline: 'longest', findings: 'floor' })).toHaveLength(1)
+    expect(boundWarnings(explicit, { cap: 'config', deadline: 'longest', findings: 'floor' })[0]).toContain('the token cap of 120000 (maxReviewTokens) holds about 0 of the 2')
     // The default floor holds the worst case, and a cap the estimate fits under is no warning.
-    expect(boundWarnings(estimate, { cap: 'floor', deadline: 'longest' })).toEqual([])
-    expect(boundWarnings(estimate, { cap: 'config', deadline: 'config' })).toEqual([])
+    expect(boundWarnings(estimate, { cap: 'floor', deadline: 'longest', findings: 'floor' })).toEqual([])
+    expect(boundWarnings(estimate, { cap: 'config', deadline: 'config', findings: 'config' })).toEqual([])
     const below: Estimate = {
       ...estimate,
       maxReviewTokens: 120_000,
       fits: false,
       held: 1,
     }
-    expect(boundWarnings(below, { cap: 'config', deadline: 'longest' })).toEqual([
+    expect(boundWarnings(below, { cap: 'config', deadline: 'longest', findings: 'floor' })).toEqual([
       'warning: the token cap of 120000 (maxReviewTokens) holds about 1 of the 2 research parts this estimate expects: the review runs to the cap, and what it cannot pay for is a token-cap gap; unset maxReviewTokens to let a path review\'s cap follow its estimate',
     ])
+  })
+})
+
+describe('findingsCapOf', () => {
+  const profileOf = (parts: number): Estimate['profiles'][string] => ({
+    parts: Array.from<number>({ length: parts }).fill(1000),
+    votes: 0,
+    vote: {},
+    expected: 0,
+    worst: 0,
+    findings: 50,
+    provider: 'api',
+  })
+  const estimateOf = (...parts: number[]): Estimate => ({
+    profiles: Object.fromEntries(parts.map((count, index) => [
+      `p${index}`,
+      profileOf(count),
+    ])),
+    expected: 0,
+    worst: 0,
+    inFlight: 0,
+    maxFindings: 50,
+    findingsCap: 50,
+    maxReviewTokens: 2_000_000,
+    reviewTimeoutMs: 1_800_000,
+    fits: true,
+    held: 0,
+  })
+
+  it('is the larger of 50 and each profile\'s research part count', () => {
+    expect(findingsCapOf(estimateOf(121))).toBe(121)
+    expect(findingsCapOf(estimateOf(44))).toBe(50)
+    expect(findingsCapOf(estimateOf(30, 70))).toBe(70)
+    expect(findingsCapOf(estimateOf())).toBe(50)
   })
 })
 
@@ -430,6 +498,7 @@ describe('viewFacts', () => {
       worst: 0,
       inFlight: 0,
       maxFindings: 9,
+      findingsCap: 9,
       maxReviewTokens: 300_000,
       reviewTimeoutMs: 60_000,
       fits: true,
@@ -442,5 +511,11 @@ describe('viewFacts', () => {
       maxFindings: 9,
       estimate,
     })
+    // A path review's finding cap is the facts' maxFindings, which sizes the votes to come.
+    expect(viewFacts(config, estimate, {
+      cap: { tokens: 300_000, origin: 'config' },
+      deadlineMs: 60_000,
+      findingsCap: 121,
+    }).maxFindings).toBe(121)
   })
 })

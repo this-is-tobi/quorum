@@ -131,6 +131,8 @@ export interface RunContext {
   readonly adapt: Adaptations
   /** How many findings of a research reply each profile sends to the panel. */
   readonly maxFindings: number
+  /** How many findings of the research each profile sends to its panel in this review: `maxFindings`, unless the review's own limit says more. Only the checked replies read it. */
+  readonly findingsCap: number
   /** The reply budgets of each profile, by profile id: what its research and vote requests carry and ask for. */
   readonly budgets: Readonly<Record<string, ProfileBudgets>>
   /** How many parts of its research one profile has in flight at once: the `concurrency` the review is set to, else the review's ceiling, which the lanes then share out. */

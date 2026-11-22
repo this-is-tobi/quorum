@@ -3325,14 +3325,15 @@ describe('the sources', () => {
     }
   }
 
-  /** The two lines of the estimate a run printed, and the numbers of the total's. */
-  function estimateOf(stderr: string): { lines: string[], parts: number, expected: number, inFlight: number } {
+  /** The lines of the estimate a run printed, and the numbers of the first and the total's. */
+  function estimateOf(stderr: string): { lines: string[], parts: number, votes: number, expected: number, inFlight: number } {
     const lines = stderr.split('\n').filter(line => line.startsWith('estimate: '))
     const total = /^estimate: research about (\d+) tokens expected, at most \d+ with every vote and every part recovered, (\d+) of them reserved at once; the review's token cap is .+$/.exec(lines[1] ?? '')
-    const parts = /^estimate: (\d+) research part\(s\), about \d+ tokens expected for them; then up to 150 vote\(s\), at most \d+ tokens in all$/.exec(lines[0] ?? '')
+    const parts = /^estimate: (\d+) research part\(s\), about \d+ tokens expected for them; then up to (\d+) vote\(s\), at most \d+ tokens in all$/.exec(lines[0] ?? '')
     return {
       lines,
       parts: Number(parts?.[1]),
+      votes: Number(parts?.[2]),
       expected: Number(total?.[1]),
       inFlight: Number(total?.[2]),
     }
@@ -3358,8 +3359,9 @@ describe('the sources', () => {
     expect(estimate.lines).toHaveLength(2)
     // The cap follows the estimate's worst case, which recovery's bound puts over the default even for one part, and the deadline is the longest allowed: the config sets neither.
     const worst = /at most (\d+) with every vote/.exec(estimate.lines[1])?.[1]
-    expect(estimate.lines[1]).toMatch(new RegExp(`; the review's token cap is ${worst}, this estimate's worst case, and its deadline 86400000 ms, the longest allowed: the config sets neither$`))
+    expect(estimate.lines[1]).toMatch(new RegExp(`; the review's token cap is ${worst}, this estimate's worst case, its deadline 86400000 ms, the longest allowed, and its finding cap 50, the default, which holds one per research part: the config sets none of them$`))
     expect(estimate.parts).toBe(1)
+    expect(estimate.votes).toBe(150)
     expect(estimate.expected).toBeGreaterThan(0)
     expect(estimate.inFlight).toBeGreaterThan(0)
     // The banner, then the estimate, then whatever the review says: all before the first request.
@@ -3381,20 +3383,43 @@ describe('the sources', () => {
     })
     expect([EXIT.ok, EXIT.finding]).toContain(await runCli(io))
 
-    const { lines, parts } = estimateOf(stderr())
-    const warning = /^warning: a large review: (\d+) research part\(s\) and up to 150 vote\(s\), about (\d+) tokens expected and at most (\d+): Ctrl-C stops it and keeps what it read$/m.exec(stderr())
+    const { lines, parts, votes } = estimateOf(stderr())
+    const warning = /^warning: a large review: (\d+) research part\(s\) and up to (\d+) vote\(s\), about (\d+) tokens expected and at most (\d+): Ctrl-C stops it and keeps what it read$/m.exec(stderr())
     expect(warning).not.toBeNull()
     expect(Number(warning?.[1])).toBe(parts)
-    const worst = Number(warning?.[3])
+    expect(parts).toBe(109)
+    // The panel reads one finding per research part: its three lenses vote 109 findings, and the estimate and its warning count them.
+    expect(votes).toBe(327)
+    expect(Number(warning?.[2])).toBe(327)
+    const worst = Number(warning?.[4])
     expect(worst).toBeGreaterThan(2_000_000)
-    // The cap is the estimate's worst case and the deadline the longest allowed, both said on the estimate's last line.
-    expect(lines[1]).toMatch(new RegExp(`; the review's token cap is ${worst}, this estimate's worst case, and its deadline 86400000 ms, the longest allowed: the config sets neither$`))
+    // The cap is the estimate's worst case, the deadline the longest allowed and the finding cap one per part, all said on the estimate's last line.
+    expect(lines[1]).toMatch(new RegExp(`; the review's token cap is ${worst}, this estimate's worst case, its deadline 86400000 ms, the longest allowed, and its finding cap 109, one per research part: the config sets none of them$`))
     expect(stderr().indexOf(lines[1])).toBeLessThan(stderr().indexOf('warning: a large review'))
     expect(stderr()).not.toContain('Error:')
     // The review is never held: every part's request is sent, and no cap stops it.
     expect(parts).toBeGreaterThan(2)
     expect(fetchMock).toHaveBeenCalledTimes(parts)
     expect(JSON.parse(stdout()).meta.incomplete).toEqual([])
+  })
+
+  it('names a set maxFindings in a path review\'s estimate, and counts the votes at it', async () => {
+    const config = write('findings.yaml', `${TEAM_YAML}maxFindings: 3\n`)
+    const fetchMock = vi.fn().mockImplementation(async () => chatReply(JSON.stringify({ findings: [] })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { io, stderr } = harness({
+      argv: ['--config', config, '--path', 'src'],
+      git: bigGit().seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const { lines, parts, votes } = estimateOf(stderr())
+    // The cap is the one the config sets, however many parts there are, and the votes are counted at it.
+    expect(parts).toBeGreaterThan(3)
+    expect(votes).toBe(3 * 3)
+    expect(lines[1]).toMatch(/, and its finding cap 3 \(maxFindings\)$/)
+    expect(lines[1]).not.toContain('the config sets none of them')
+    expect(fetchMock).toHaveBeenCalledTimes(parts)
   })
 
   it('writes no large review\'s warning for a small path review whose worst case passes 2000000 through recovery\'s bound alone', async () => {
@@ -3427,7 +3452,7 @@ describe('the sources', () => {
 
     const { lines, parts, expected, inFlight } = estimateOf(stderr())
     expect(lines).toHaveLength(3)
-    expect(lines[1]).toMatch(/; the review's token cap is 120000 \(maxReviewTokens\), and its deadline 86400000 ms, the longest allowed$/)
+    expect(lines[1]).toMatch(/; the review's token cap is 120000 \(maxReviewTokens\), its deadline 86400000 ms, the longest allowed, and its finding cap \d+(, one per research part|, the default, which holds one per research part)$/)
     expect(lines[2]).toContain('research alone expects about')
     // The estimate says the review may pass the cap, and the warning says how much of it the cap holds.
     expect(parts).toBeGreaterThan(2)

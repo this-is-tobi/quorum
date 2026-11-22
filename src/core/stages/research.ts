@@ -789,7 +789,7 @@ async function researchInOne(ctx: RunContext, run: ProfileRun, plan: ResearchPla
   return reported(ctx, run, {
     ...checkReplies([
       { text: leaf.text, asked: leaf.asked },
-    ], sections, run.id, ctx.maxFindings),
+    ], sections, run.id, ctx.findingsCap),
     parts: ['reviewed'],
   })
 }
@@ -857,7 +857,7 @@ function concluded(ctx: RunContext, run: ProfileRun, scope: Scope, packing: Pack
         },
       ]
     : []))
-  const read = checkReplies(replies, sections, run.id, ctx.maxFindings)
+  const read = checkReplies(replies, sections, run.id, ctx.findingsCap)
   const cutOff = cutOffGap(run.id, scope, runs.flatMap(({ leaves }) => leaves))
   return reported(ctx, run, {
     ...read,

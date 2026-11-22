@@ -63,6 +63,7 @@ profiles:
 - **`send`** lists the files to send the models though they are held back as secrets, each a path as the diff writes it: [Sending a held file](#sending-a-held-file).
 - **`strict`**, `true` or `false`, refuses before any call what is otherwise a warning that a key may be exposed: today, a key sent over plain `http` to a host other than this machine. It does not yet cover a credential in `headers` or `query`, which goes over plain `http` unrefused. `QUORUM_STRICT=true` turns it on too, and neither turns the other off: [Keys](#keys).
 - **`partTokens`** bounds the diff text one research request of a large change holds, 32768 when unset: [Research in parts](#research-in-parts).
+- **`maxFindings`** is the most findings of a research reply each profile reads, 50 when unset, and the number every research request is sized by ([Reply budgets](#reply-budgets)). With it unset, a path review's panel reads one finding per research part, at least 50, so a review of 121 parts reviews up to 121 findings where it would leave the rest a `findings-capped` gap, and every request still asks what 50 sizes: [The bounds of a path review](./15-sources.md#the-bounds-of-a-path-review). A diff, a range and the local changes keep 50, and a `maxFindings` the config sets is honoured exactly, for a path review too.
 - **`concurrency`** pins how many provider calls run at once in a review, shared by every provider. Unset, each provider has a lane of its own that follows its rate-limit headers: [The calls at once](#the-calls-at-once).
 - **`maxReviewTokens`** and **`reviewTimeoutMs`** bound one review: the most tokens it spends, 2000000 when unset, and its deadline in milliseconds, 1800000 when unset. `QUORUM_MAX_REVIEW_TOKENS` and `QUORUM_REVIEW_TIMEOUT_MS` set them over the file's: [The limits of a review](#the-limits-of-a-review).
 
@@ -479,7 +480,7 @@ send:
 
 ## The limits of a review
 
-A review is bounded, so that nothing a pull request holds can make it run away. Each limit stops part of the work and says so in a gap of its own, never as a failed run. Both are set by the operator alone, in the config a run names or in the environment, and [`--print-config`](./10-cli.md#printing-the-resolved-config) prints the values the config gives a run. A `--path` review that finds the cap or the deadline unset derives its own from its estimate, which `--print-config` cannot show, since it reads no diff: [The bounds of a path review](./15-sources.md#the-bounds-of-a-path-review).
+A review is bounded, so that nothing a pull request holds can make it run away. Each limit stops part of the work and says so in a gap of its own, never as a failed run. Both are set by the operator alone, in the config a run names or in the environment, and [`--print-config`](./10-cli.md#printing-the-resolved-config) prints the values the config gives a run. A `--path` review that finds the token cap, the deadline or the finding cap (`maxFindings`) unset derives its own from its estimate, which `--print-config` cannot show, since it reads no diff: [The bounds of a path review](./15-sources.md#the-bounds-of-a-path-review).
 
 ### The token cap
 
