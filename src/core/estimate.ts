@@ -12,7 +12,7 @@ import type { Ask, PartOf } from './prompts.ts'
 import { MAX_DEPTH } from './recovery.ts'
 import { reservationOf, roomOf } from './stages/context.ts'
 import type { LensRun, ProfileRun, Target } from './stages/context.ts'
-import { planResearch } from './stages/research.ts'
+import { dispatchOrder, planResearch } from './stages/research.ts'
 import type { ResearchPlan } from './stages/research.ts'
 import { DEFAULT_REPLY_TOKENS, tokenBound } from './tokens.ts'
 import type { Estimate, ProfileEstimate } from './types.ts'
@@ -78,8 +78,8 @@ interface Section {
  * count in all, as the lanes run at their start. `fits` is `expected + inFlight <=
  * maxReviewTokens`, and leaves recovery and the adaptations out, which only an adversarial or a failing review
  * reaches, and which would refuse every large path review. `held` is how many research parts the cap holds: the
- * parts of every profile, in profile order and then in the order they are sent, counted while their expected spends
- * and `inFlight` stay within `maxReviewTokens`. The cap and the deadline are `settings`', so a caller may make one
+ * parts of every profile, in profile order and then in the order they are sent (largest first, `dispatchOrder`),
+ * counted while their expected spends and `inFlight` stay within `maxReviewTokens`. The cap and the deadline are `settings`', so a caller may make one
  * estimate under its quorum's and another under limits of its own: `worst`, `expected` and `inFlight` do not depend
  * on them. It is an estimate: the ledger still holds the cap at run time, whatever it says.
  */
@@ -136,7 +136,7 @@ function sum(numbers: readonly number[]): number {
 interface Planned {
   readonly estimate: ProfileEstimate
   readonly extras: readonly number[]
-  /** What each research part is expected to spend (`expectedOf`), parallel to `estimate.parts`. */
+  /** What each research part is expected to spend (`expectedOf`), in the order the parts are sent, largest first (`dispatchOrder`). */
   readonly partsExpected: readonly number[]
 }
 
@@ -236,7 +236,7 @@ function profileEstimate(run: ProfileRun, plan: ResearchPlan, diff: string, larg
   if (research.length === 0) return noCall(budgets)
   const bounds = run.lenses.map(lens => voteBound(run, lens, largest, budgets.lenses[lens.id].replyTokens))
   const parts = research.map(call => call.reservation)
-  const partsExpected = parts.map(part => expectedOf(part, reply))
+  const partsExpected = inSendOrder(research, plan).map(call => expectedOf(call.reservation, reply))
   return {
     estimate: {
       parts,
@@ -252,16 +252,26 @@ function profileEstimate(run: ProfileRun, plan: ResearchPlan, diff: string, larg
   }
 }
 
-/** A research request the review would send: what the ledger reserves for it, the diff tokens it holds, its largest file header, and what a piece of it would hold beyond it. */
+/** A research request the review would send: the part it holds, what the ledger reserves for it, the diff tokens it holds, its largest file header, and what a piece of it would hold beyond it. */
 interface ResearchCall {
+  /** The index of the part in the plan's packing, 0 for a request of the whole diff. */
+  readonly part: number
   readonly reservation: number
   readonly diff: number
   readonly header: number
   readonly extra: number
 }
 
+/** The research requests in the order the review sends them: its parts largest first (`dispatchOrder`), a part the plan makes no request of left out. */
+function inSendOrder(calls: readonly ResearchCall[], plan: ResearchPlan): ResearchCall[] {
+  const rank = new Map((plan.packing === undefined
+    ? [0]
+    : dispatchOrder(plan.packing)).map((part, position) => [part, position]))
+  return calls.toSorted((a, b) => (rank.get(a.part) ?? 0) - (rank.get(b.part) ?? 0))
+}
+
 /**
- * Each research request the review would send, in order, as a `ResearchCall` (what the ledger reserves for it, the
+ * Each research request the review would send, in the plan's order, as a `ResearchCall` (what the ledger reserves for it, the
  * diff tokens it holds, its largest file header, and what a piece of it would hold beyond it), built as `research` builds
  * them: one request holding the whole filtered diff when the plan has no packing, else one per part whose text is
  * not blank, a plan of one part sending its text with no parts block, and a plan of several naming each part's
@@ -274,6 +284,7 @@ function researchCalls(run: ProfileRun, plan: ResearchPlan, diff: string, ask: A
   if (packing === undefined) {
     return [
       {
+        part: 0,
         reservation: reserve(researchRequest(instructions, diff, run.guidelines, undefined, ask)),
         diff: tokenBound(diff),
         header: largestHeader(plan.sections, new Map(), plan.sections.map((_, section) => ({ section }))),
@@ -296,6 +307,7 @@ function researchCalls(run: ProfileRun, plan: ResearchPlan, diff: string, ask: A
         }
     return [
       {
+        part: index,
         reservation: reserve(researchRequest(instructions, text, run.guidelines, position, ask)),
         diff: part.tokens,
         header: largestHeader(plan.sections, packing.cuts, part.slices),

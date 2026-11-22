@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { securityProfile } from '../profiles/security.ts'
 import { splitDiff } from './diff.ts'
 import { ConfigError } from './errors.ts'
+import { expectedOf } from './estimate.ts'
 import type { CompletionRequest, Provider, QuorumPorts } from './ports.ts'
 import { researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum } from './quorum.ts'
-import { requestTokens, tokenBound } from './tokens.ts'
+import { DEFAULT_REPLY_TOKENS, requestTokens, tokenBound } from './tokens.ts'
 import type { Estimate, Finding, Profile, Quorum, QuorumEvent, QuorumOptions } from './types.ts'
 
 /** What a provider keeps over a request's own bound: 512 tokens for the chat template and 16000 for the reply, which the providers here state as an attempt's worst case. */
@@ -135,6 +136,9 @@ async function reviewed(window: number): Promise<{ quorum: Quorum, events: Quoru
   return { quorum, events }
 }
 
+/** The reservations in the order the review sends the parts, the largest first. */
+const largestFirst = (reservations: readonly number[]): number[] => reservations.toSorted((a, b) => b - a)
+
 describe('estimate', () => {
   it.each([
     [32_768, 4],
@@ -148,7 +152,8 @@ describe('estimate', () => {
     const votes = calls.filter(call => call.role === 'vote')
 
     expect(security.parts).toHaveLength(parts)
-    expect(research.map(call => call.spent)).toEqual(security.parts)
+    // The review sends the parts largest first, and the estimate states them in the plan's order.
+    expect(research.map(call => call.spent)).toEqual(largestFirst(security.parts))
     // Three findings, each voted by the three lenses: a vote is as large as its section lets it be, and no larger than its lens's bound.
     expect(votes).toHaveLength(9)
     for (const call of votes) expect(call.spent).toBeLessThanOrEqual(security.vote[call.lens ?? ''])
@@ -188,7 +193,7 @@ describe('estimate', () => {
     expect(votes.length).toBeGreaterThan(0)
     expect(new Set(votes.map(request => request.replyTokens))).toEqual(new Set([8192]))
     await quorum.review({ diff: DIFF })
-    expect(events.filter(event => event.type === 'call').map(call => call.spent)).toEqual(estimate.profiles.security.parts)
+    expect(events.filter(event => event.type === 'call').map(call => call.spent)).toEqual(largestFirst(estimate.profiles.security.parts))
   })
 
   it('counts the research parts at a third of their input and a reply at its usual size, and the votes in the worst case only', () => {
@@ -775,6 +780,28 @@ describe('estimate', () => {
       expect(heldAt(cap)).toBe(index + 1)
       expect(heldAt(cap - 1)).toBe(index)
     }
+  })
+
+  it('counts the parts the cap holds in the order they are sent', () => {
+    const finder = windowed(32_768, () => '{"findings":[]}')
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder))
+    const { profiles, inFlight } = quorum.estimate({ diff: DIFF })
+    const { parts } = profiles.security
+    // The parts keep the plan's order; the first is not the largest, so the order they are sent in differs from it.
+    const largest = Math.max(...parts)
+    expect(parts[0]).toBeLessThan(largest)
+    const first = expectedOf(largest, DEFAULT_REPLY_TOKENS)
+    const heldAt = (maxReviewTokens: number): number => quorum.estimate({ diff: DIFF }, { maxReviewTokens }).held
+    expect(heldAt(inFlight + first - 1)).toBe(0)
+    expect(heldAt(inFlight + first)).toBe(1)
+    // The smallest is sent last: the cap that holds all but one holds all the parts but it.
+    const all = sum(parts.map(part => expectedOf(part, DEFAULT_REPLY_TOKENS)))
+    const last = expectedOf(Math.min(...parts), DEFAULT_REPLY_TOKENS)
+    expect(heldAt(inFlight + all)).toBe(parts.length)
+    expect(heldAt(inFlight + all - last)).toBe(parts.length - 1)
+    expect(heldAt(inFlight + all - 1)).toBe(parts.length - 1)
   })
 
   it('counts the research parts of every profile, in profile order', () => {

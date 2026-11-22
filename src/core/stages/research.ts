@@ -297,16 +297,17 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
  * neither does a part whose text is blank (white space only, as the text before a diff's first header can be,
  * when every other unit was set aside): there is nothing to ask a model, so its outcome is `reviewed`.
  *
- * A packing of several parts runs `ctx.concurrency` workers of this profile, each taking the next part, in
- * order, while one is left, and a call of each through the review's one limit, so the review's concurrency
- * holds across profiles. Each part fails as a one-request research does, and a reply's envelope is checked
+ * A packing of several parts runs `ctx.concurrency` workers of this profile, each taking the next part, largest
+ * first (`dispatchOrder`: ties in the plan's order), while one is left, and a call of each through the review's
+ * one limit, so the review's concurrency holds across profiles. Each part fails as a one-request research does, and a reply's envelope is checked
  * as it arrives: a failed call or an unreadable envelope is that part's `research-failed`, while the profile's
  * other parts go on, and the replies that were read are kept. Once a part ends with a limit, the profile's parts
  * not yet taken, and the pieces of the part not yet asked, are stopped by the same limit without a call: each
  * would be built and counted only to be refused, and the gap counts them, failing closed. Once every part has
  * answered, the replies are read in the parts' order, up to `maxFindings` findings in all, each checked against
- * the whole diff, and a finding two parts report is dropped by the dedup stage. The gaps come in this order,
- * each counting parts: the requests refused as too large, then the parts that failed, then the parts a provider
+ * the whole diff, and a finding two parts report is dropped by the dedup stage. Only the sending is reordered:
+ * a part keeps its position, and the replies are read in the plan's order. The gaps come in this order, each
+ * counting parts: the requests refused as too large, then the parts that failed, then the parts a provider
  * that was down never got, then the hunks cut off even alone, then the reading's. The events follow: the
  * `finding:invalid` ones, then the `incomplete` ones.
  *
@@ -785,6 +786,17 @@ async function researchInOne(ctx: RunContext, run: ProfileRun, plan: ResearchPla
   })
 }
 
+/**
+ * The indexes of a packing's parts in the order they are sent: the most planned tokens first, ties in the plan's
+ * order. A review of uneven parts waits at its end on the last part sent, so the large parts go first and the
+ * last to answer are small. Only the sending moves: a part keeps its position, and the replies are read in the plan's order.
+ */
+export function dispatchOrder(packing: Packing): number[] {
+  return packing.parts
+    .map((_, index) => index)
+    .toSorted((a, b) => packing.parts[b].tokens - packing.parts[a].tokens || a - b)
+}
+
 /** A research in parts: its workers, then its replies read in order, as `research` says. */
 async function researchInParts(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, packing: Packing, sections: ReadonlyMap<string, string>): Promise<ResearchOutcome> {
   const count = packing.parts.length
@@ -795,10 +807,11 @@ async function researchInParts(ctx: RunContext, run: ProfileRun, plan: ResearchP
   }
   const { files, unlisted } = plan.listed ?? { files: [], unlisted: 0 }
   const runs: PartRun[] = []
+  const order = dispatchOrder(packing)
   let next = 0
   const work = async (): Promise<void> => {
     while (next < count) {
-      const index = next++
+      const index = order[next++]
       runs[index] = await researchPart(ctx, run, scope, { slices: packing.parts[index].slices, depth: 0, index: 1 }, undefined, { part: index + 1, parts: count }, (piece, text, ask) => researchRequest(run.research.instructions, text, run.guidelines, {
         index: index + 1,
         count,
