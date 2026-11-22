@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.10.0](https://github.com/this-is-tobi/quorum/compare/v0.9.0...v0.10.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* concurrency unset now means a lane per provider: two providers run 4 calls each where they shared 4, up to 16 in all, so a server behind two provider names gets twice the calls, and --print-config prints concurrency: auto. QuorumEvent gains the concurrency type, and the bench fingerprint records concurrency auto: earlier run directories need a new --out.
+* QuorumEvent gains the cut type, so an exhaustive switch over it no longer compiles, and an adaptation's setting gains replyTokens and its cause cut-on-the-way, in the events and in the result's meta.adaptations.
+* with timeoutMs unset, an attempt's deadline follows its reply budget, from 10 minutes up to a day, where it was 10 minutes, and a streamed attempt silent past its stall window fails as a timeout. An HTTP adapter no longer states timeoutMs when its options leave it unset, and QuorumEvent gains call:progress.
+* every Anthropic, Gemini and Ollama request streams by default, and a Gemini query can no longer set alt.
+* every OpenAI-compatible request sends stream: true and stream_options, and extraBody can no longer set stream_options. An adaptation's setting gains stream, and its cause stream-refused and stream-answered-whole, in the events and in the result's meta.adaptations.
+
+### Features
+
+* give each provider its own lane, which grows on rate-limit headers and halves on a throttle ([2b17324](https://github.com/this-is-tobi/quorum/commit/2b17324633f68a7fac137be9b65d161bf546d936))
+* learn the length at which a path cuts calls, and split such a call as a cut-off reply ([f37420b](https://github.com/this-is-tobi/quorum/commit/f37420b6650185c310ab9db26fcaaa07b5b4b09a))
+* read a reply stream under caps that fail closed, as server-sent events or NDJSON ([f6a65df](https://github.com/this-is-tobi/quorum/commit/f6a65dff48b8f2f8e2f621750ff76d9014892b7d))
+* read OpenAI's and Anthropic's rate-limit headers as numbers on every reply and failure ([5139619](https://github.com/this-is-tobi/quorum/commit/5139619000ab9621c0cbd0839f5a13934679b2d5))
+* send a profile's largest research parts first, so the last to answer are the small ones ([9bad876](https://github.com/this-is-tobi/quorum/commit/9bad8766e1501a6fe4649f02310ad22dbf24a9a1))
+* show each provider's lane in the block and the summary, and estimate the time left per lane ([b1b9f4a](https://github.com/this-is-tobi/quorum/commit/b1b9f4acbe09f6c866a8322957e463c210d9739f))
+* show each streamed call's output as it comes, and how long each provider stayed silent ([bee47e7](https://github.com/this-is-tobi/quorum/commit/bee47e745ed2895faead0f5f1cd813478d872d9d))
+* stream Anthropic, Gemini and Ollama replies, each read at its protocol's own last event ([16244c9](https://github.com/this-is-tobi/quorum/commit/16244c9d9a7e6507b8b76afe6efd46949d1bd6fa))
+* stream every OpenAI-compatible reply, falling back by itself to what the server takes ([33ac1de](https://github.com/this-is-tobi/quorum/commit/33ac1de293068b959eb4c866ba6804f624533dd9))
+* tell a slow streamed reply from a stuck one, and size each attempt's deadline to its reply ([9360704](https://github.com/this-is-tobi/quorum/commit/9360704f3a08ca1fd5502bd15840d40b586bc89b))
+
 ## [0.9.0](https://github.com/this-is-tobi/quorum/compare/v0.8.0...v0.9.0) (2026-11-22)
 
 
