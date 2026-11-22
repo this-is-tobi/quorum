@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { ConcurrencyRecord } from '../../core/lanes.ts'
 import type { IncompleteReason, QuorumEvent, StageName } from '../../core/types.ts'
 import type { ReportView } from '../../report/view.ts'
 import { longReview, replay } from '../../testing/events.ts'
@@ -285,9 +286,9 @@ describe('summaryLines', () => {
     expect(spent(580_000)).toBe('tokens: 29 percent of the cap of 2000000, the default')
   })
 
-  it('writes the calls: research and votes, retried and recovered, and the review\'s limit, leaving out what is 0', () => {
+  it('writes the calls: research and votes, retried and recovered, leaving out what is 0, and no limit while no lane has a record', () => {
     const state = replay(longReview())
-    expect(lines(state)[2]).toBe('calls: 46 research (2 retried, 1 recovered into 2 pieces), 18 vote(s); 4 at once')
+    expect(lines(state)[2]).toBe('calls: 46 research (2 retried, 1 recovered into 2 pieces), 18 vote(s)')
 
     const one = {
       ...state,
@@ -295,14 +296,14 @@ describe('summaryLines', () => {
       retried: { research: 0, votes: 0 },
       recovered: { parts: 0, pieces: 0 },
     }
-    expect(lines(one)[2]).toBe('calls: 1 research, 3 vote(s); 4 at once')
+    expect(lines(one)[2]).toBe('calls: 1 research, 3 vote(s)')
 
     const votes = {
       ...one,
       made: { research: 0, votes: 3 },
       retried: { research: 0, votes: 2 },
     }
-    expect(lines(votes)[2]).toBe('calls: 3 vote(s) (2 retried); 4 at once')
+    expect(lines(votes)[2]).toBe('calls: 3 vote(s) (2 retried)')
 
     const none = {
       ...one,
@@ -337,11 +338,127 @@ describe('summaryLines', () => {
       answered(9, 'api', 100, 100, 'vote'),
     )
     const calls = (of: ViewState): string | undefined => lines(of).find(line => line.startsWith('calls:'))
-    expect(calls(state)).toBe('calls: 3 research, 6 vote(s); 4 at once; api\'s longest first token 3m10s, its longest silence 3m40s')
+    expect(calls(state)).toBe('calls: 3 research, 6 vote(s); api\'s longest first token 3m10s, its longest silence 3m40s')
     // a provider with no timing has no clause, and each one that has gets its own, in the order they answered
     const two = fold(state, answered(10, 'second', 1500, 800), 2000)
-    expect(calls(two)).toBe('calls: 4 research, 6 vote(s); 4 at once; api\'s longest first token 3m10s, its longest silence 3m40s; second\'s longest first token 1.5s, its longest silence 0.8s')
-    expect(calls(replay(longReview()))).toBe('calls: 46 research (2 retried, 1 recovered into 2 pieces), 18 vote(s); 4 at once')
+    expect(calls(two)).toBe('calls: 4 research, 6 vote(s); api\'s longest first token 3m10s, its longest silence 3m40s; second\'s longest first token 1.5s, its longest silence 0.8s')
+    expect(calls(replay(longReview()))).toBe('calls: 46 research (2 retried, 1 recovered into 2 pieces), 18 vote(s)')
+  })
+
+  describe('the lanes in the calls line', () => {
+    const answered = (call: number, provider: string, firstTokenMs: number, longestSilenceMs: number, role: 'research' | 'vote' = 'research'): QuorumEvent => ({
+      type: 'call',
+      call,
+      profile: 'security',
+      role,
+      provider: { id: provider, model: 'm' },
+      durationMs: 1000,
+      ok: true,
+      usage: { inputTokens: 1, outputTokens: 1 },
+      spent: 2,
+      firstTokenMs,
+      longestSilenceMs,
+    })
+    const record = (limit: 'auto' | number, start: number, lowest: number, highest: number, cuts: number, headers: boolean): ConcurrencyRecord => ({
+      limit,
+      start,
+      lowest,
+      highest,
+      cuts,
+      headers,
+    })
+    /** A review whose api answered streamed calls, one of them 3m10s to its first token. */
+    const timed = (): ViewState => reviewed(answered(1, 'api', 190_000, 220_000), answered(2, 'api', 2000, 9000))
+    /** The summary's calls line of a review of 44 research parts and 42 votes, whose result holds `concurrency`. */
+    const callsOf = (concurrency: Record<string, ConcurrencyRecord> | undefined, state: ViewState = timed()): string | undefined => {
+      const facts = factsOf({
+        result: reportResult({
+          unreviewed: [],
+          meta: {
+            durationMs: 2_285_000,
+            ...concurrency === undefined
+              ? {}
+              : { concurrency },
+          },
+        }),
+      })
+      return lines({
+        ...state,
+        made: { research: 44, votes: 42 },
+        retried: { research: 0, votes: 0 },
+      }, facts).find(line => line.startsWith('calls:'))
+    }
+
+    it('gives each provider\'s range, then its own longest first token and silence', () => {
+      expect(callsOf({
+        api: record('auto', 4, 2, 4, 1, true),
+      })).toBe('calls: 44 research, 42 vote(s); api ran 2 to 4 at once; its longest first token 3m10s, its longest silence 3m40s')
+      // one number when the lane did not move, and a provider with no timing has only its range
+      expect(callsOf({
+        api: record('auto', 4, 8, 8, 0, true),
+      }, reviewed())).toBe('calls: 44 research, 42 vote(s); api ran 8 at once')
+      // a provider the lanes know and no call timed, and one the timings know and no lane does
+      expect(callsOf({
+        api: record('auto', 4, 4, 9, 0, true),
+        other: record('auto', 4, 4, 4, 0, true),
+      })).toBe('calls: 44 research, 42 vote(s); api ran 4 to 9 at once; its longest first token 3m10s, its longest silence 3m40s; other ran 4 at once')
+      expect(callsOf({
+        other: record('auto', 4, 4, 6, 0, true),
+      })).toBe('calls: 44 research, 42 vote(s); other ran 4 to 6 at once; api\'s longest first token 3m10s, its longest silence 3m40s')
+    })
+
+    it('says a lane that stayed at its start sent no rate-limit headers, with the setting that runs more', () => {
+      expect(callsOf({
+        api: record('auto', 4, 4, 4, 0, false),
+      })).toBe('calls: 44 research, 42 vote(s); api sent no rate-limit headers, so it ran at most 4 at once: set concurrency to run more, if its gateway has room; its longest first token 3m10s, its longest silence 3m40s')
+      // a lane that grew had headers, and one cut by a throttle is not told to run more
+      expect(callsOf({
+        api: record('auto', 4, 4, 6, 0, false),
+      }, reviewed())).toBe('calls: 44 research, 42 vote(s); api ran 4 to 6 at once')
+      expect(callsOf({
+        api: record('auto', 4, 2, 4, 1, false),
+      }, reviewed())).toBe('calls: 44 research, 42 vote(s); api ran 2 to 4 at once')
+      // a lane that stayed at 4 and had headers has nothing to say of them
+      expect(callsOf({
+        api: record('auto', 4, 4, 4, 0, true),
+      }, reviewed())).toBe('calls: 44 research, 42 vote(s); api ran 4 at once')
+    })
+
+    it('says the calls at once as concurrency set them, for every provider together', () => {
+      const set = {
+        ...timed(),
+        facts: { ...DEFAULT_FACTS, concurrency: 8 },
+      }
+      expect(callsOf({
+        api: record(8, 8, 8, 8, 0, false),
+      }, set)).toBe('calls: 44 research, 42 vote(s); 8 at once; api\'s longest first token 3m10s, its longest silence 3m40s')
+      // whatever the result holds
+      expect(callsOf(undefined, set)).toBe('calls: 44 research, 42 vote(s); 8 at once; api\'s longest first token 3m10s, its longest silence 3m40s')
+    })
+
+    it('writes no clause of the calls at once while no lane has a record, and the timings in their own form', () => {
+      expect(callsOf(undefined)).toBe('calls: 44 research, 42 vote(s); api\'s longest first token 3m10s, its longest silence 3m40s')
+    })
+
+    it('makes a provider\'s id inert, in the public view too', () => {
+      const hostile = `a${String.fromCharCode(0x202E)}b`
+      const facts = factsOf({
+        result: reportResult({
+          unreviewed: [],
+          meta: {
+            durationMs: 1,
+            concurrency: {
+              [hostile]: record('auto', 4, 4, 4, 0, false),
+            },
+          },
+        }),
+      })
+      const state = {
+        ...timed(),
+        made: { research: 1, votes: 0 },
+      }
+      expect(lines(state, facts, 'public').find(line => line.startsWith('calls:'))).toBe(`calls: 1 research; a<U+202E>b sent no rate-limit headers, so it ran at most 4 at once: set concurrency to run more, if its gateway has room; api's longest first token 3m10s, its longest silence 3m40s`)
+    })
   })
 
   it.each<[string, QuorumEvent[], string]>([

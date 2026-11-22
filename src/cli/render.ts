@@ -1,7 +1,6 @@
 import { own } from '../config/profiles.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider } from '../config/schema.ts'
-import { DEFAULT_CONCURRENCY } from '../core/concurrency.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../core/limits.ts'
 import type { Provider } from '../core/ports.ts'
 import { DEFAULT_MAX_FINDINGS } from '../core/prompts.ts'
@@ -197,7 +196,7 @@ export function bannerLines(config: ResolvedConfig, view: ReportView = 'full'): 
  */
 export function viewFacts(config: ResolvedConfig, estimate?: Estimate, bounds?: { readonly cap: ViewFacts['cap'], readonly deadlineMs: number }): ViewFacts {
   return {
-    concurrency: config.concurrency ?? DEFAULT_CONCURRENCY,
+    concurrency: config.concurrency ?? 'auto',
     cap: bounds?.cap ?? (config.maxReviewTokens === undefined
       ? { tokens: DEFAULT_MAX_REVIEW_TOKENS, origin: 'default' }
       : { tokens: config.maxReviewTokens, origin: 'config' }),

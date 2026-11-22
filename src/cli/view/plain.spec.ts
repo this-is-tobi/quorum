@@ -252,7 +252,7 @@ describe('plainWriter', () => {
     expect(lines.slice(before)).toEqual([
       'time: research 30m12s, dedup 0.0s, panel 7m40s; the first estimate, 5m10s in, put research at 30-31m',
       'tokens: 74 percent of the cap of 2000000, the default',
-      'calls: 46 research (2 retried, 1 recovered into 2 pieces), 18 vote(s); 4 at once',
+      'calls: 46 research (2 retried, 1 recovered into 2 pieces), 18 vote(s)',
       'gaps: 1 part(s) research-failed (timeout): raise timeoutMs',
       'result: the text report above; --output json written',
       'resume: to keep the answered calls for a rerun, pass --state <dir>; this review kept none',

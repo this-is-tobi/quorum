@@ -761,7 +761,7 @@ describe('runCli', () => {
     })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(sent(fetchMock).url).toBe('https://team.example/v1/chat/completions')
-    expect(stderr()).toMatch(/^Research \(t @ https:\/\/team\.example\)\.\.\.\nPanel will use t @ https:\/\/team\.example\nteam: its calls ask for whole replies for the rest of the review: the server answered a streamed call whole; set stream: false to choose it yourself\npart 1 of 1: answered in \d+(\.\d)?s, \d+ tokens, 0 finding\(s\) listed\n0 candidate\(s\) after dedup\n0 kept, 0 discarded, 0 unreviewed by panel\ntime: research \d+(\.\d)?s, dedup \d+(\.\d)?s, panel \d+(\.\d)?s; done in \d+s\ntokens: \d+ percent of the cap of 2000000, the default\ncalls: 1 research; 4 at once\nresult: json on stdout\n$/)
+    expect(stderr()).toMatch(/^Research \(t @ https:\/\/team\.example\)\.\.\.\nPanel will use t @ https:\/\/team\.example\nteam: its calls ask for whole replies for the rest of the review: the server answered a streamed call whole; set stream: false to choose it yourself\npart 1 of 1: answered in \d+(\.\d)?s, \d+ tokens, 0 finding\(s\) listed\n0 candidate\(s\) after dedup\n0 kept, 0 discarded, 0 unreviewed by panel\ntime: research \d+(\.\d)?s, dedup \d+(\.\d)?s, panel \d+(\.\d)?s; done in \d+s\ntokens: \d+ percent of the cap of 2000000, the default\ncalls: 1 research; team sent no rate-limit headers, so it ran at most 4 at once: set concurrency to run more, if its gateway has room\nresult: json on stdout\n$/)
   })
 
   it('exits 2 when the file QUORUM_CONFIG names does not exist, naming it as given', async () => {
@@ -848,7 +848,7 @@ describe('runCli', () => {
       '0 kept, 0 discarded, 0 unreviewed by panel',
       expect.stringMatching(/^time: research \d+(\.\d)?s, dedup \d+(\.\d)?s, panel \d+(\.\d)?s; done in \d+s$/),
       expect.stringMatching(/^tokens: \d+ percent of the cap of 2000000, the default$/),
-      'calls: 2 research; 4 at once',
+      'calls: 2 research; local sent no rate-limit headers, so it ran at most 4 at once: set concurrency to run more, if its gateway has room',
       'result: json on stdout',
       '',
     ])

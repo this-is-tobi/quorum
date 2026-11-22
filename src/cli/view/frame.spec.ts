@@ -89,7 +89,7 @@ describe('frameLines', () => {
     expect(frameOf(events, 600_000)).toEqual([
       '───────────────────────────────────────────────────────────────────── 10m00s ──',
       'security  research █████░░░░░░░░░░░░░░░  11/44 parts · 2 finding(s) listed',
-      'calls     4 at once   ↻ p7 http 503, 2s   p12 2m50s   p14 2m05s   p15 40s',
+      'calls     api 4 at once   ↻ p7 http 503, 2s   p12 2m50s   p14 2m05s   p15 40s',
       '          +29 to go',
       'tokens    405k of 2.00M   ▁▁▁▁█▄▁▁▁▃▆▄▄▃▆▁▁▄▁▁  65 tok/s',
       'time      about 15–22m left for research, then up to 150 votes',
@@ -234,7 +234,7 @@ describe('frameLines', () => {
       'tokens',
       'time',
     ])
-    expect(short[2]).toMatch(/^calls {5}4 at once {3}.* \+\d+ more {3}\+29 to go$/)
+    expect(short[2]).toMatch(/^calls {5}api 4 at once {3}.* \+\d+ more {3}\+29 to go$/)
     expect(heads(frameOf(one, 600_000, { rows: 6 }))).toEqual([
       expect.stringContaining('─'),
       'security',
@@ -474,7 +474,7 @@ describe('frameLines', () => {
     expect(frameOf(events, end)[1]).toBe('security  panel    ░░░░░░░░░░░░░░░░░░░░  0/18 votes · 0 kept')
     const lines = frameOf(events, 1_900_000)
     expect(lines[1]).toBe('security  panel    █░░░░░░░░░░░░░░░░░░░  1/18 votes · 0 kept')
-    expect(lines[2]).toMatch(/^calls {5}4 at once {3}f1 1m28s {3}f1 1m28s {3}f2 1m28s {3}f2 3s {3}\+13 to go$/)
+    expect(lines[2]).toMatch(/^calls {5}api 4 at once {3}f1 1m28s {3}f1 1m28s {3}f2 1m28s {3}f2 3s {3}\+13 to go$/)
     expect(lines.at(-2)).toBe('time      about 7m left for votes')
   })
 
@@ -483,7 +483,7 @@ describe('frameLines', () => {
     expect(lines).toEqual([
       '--------------------------------------------------------------------- 10m00s --',
       'security  research #####---------------  11/44 parts - 2 finding(s) listed',
-      'calls     4 at once   ~ p7 http 503, 2s   p12 2m50s   p14 2m05s   p15 40s',
+      'calls     api 4 at once   ~ p7 http 503, 2s   p12 2m50s   p14 2m05s   p15 40s',
       '          +29 to go',
       'tokens    405k of 2.00M   ____#=___-+==-*__=__  65 tok/s',
       'time      about 15-22m left for research, then up to 150 votes',
@@ -522,13 +522,20 @@ describe('frameLines', () => {
     ]
     expect(frameOf(deadline, stopping.at).at(-1)).toBe(hint)
     expect(frameOf(events, stopping.at, { columns: 60 }).at(-1)).toBe(`stopping: ${flying} call(s) end within 5 s; Ctrl-C again quits wit${UNICODE_GLYPHS.ellipsis}`)
-    // the hint is the first line to go: the rows less two hold the six lines of this block, and one row fewer holds all but the hint
+    // the hint is the first line to go: the rows less two hold the lines of this block, and one row fewer holds all but the hint; the
+    // calls line's second row is the 7th line of the block before the interrupt, when a fourth call in flight has no room on the first
     for (const at of [stopping.at - 1, stopping.at]) {
       const full = frameOf(events, at, { rows: 50 })
-      expect(full).toHaveLength(6)
-      expect(frameOf(events, at, { rows: 8 })).toEqual(full)
-      expect(frameOf(events, at, { rows: 7 })).toEqual(full.slice(0, -1))
-      expect(frameOf(events, at, { rows: 5 })).toEqual(full.slice(0, 3))
+      expect(full).toHaveLength(at === stopping.at
+        ? 6
+        : 7)
+      expect(frameOf(events, at, { rows: full.length + 2 })).toEqual(full)
+      expect(frameOf(events, at, { rows: full.length + 1 })).toEqual(full.slice(0, -1))
+      // one row of calls holds what it can and counts the rest, where two held them all
+      const five = frameOf(events, at, { rows: 5 })
+      expect(five).toHaveLength(3)
+      expect(five.slice(0, 2)).toEqual(full.slice(0, 2))
+      expect(five[2]).toMatch(/^calls {5}api 4 at once {3}/)
       expect(frameOf(events, at, { rows: 4 })).toEqual(full.slice(0, 2))
     }
     // below 40 columns the block is one line, which holds no hint
@@ -653,7 +660,7 @@ describe('frameLines', () => {
       ])
     }
     const calls = frameFor(stateOf(events), now, overrides).find(line => line.startsWith('calls'))!
-    expect(calls).toBe(`calls     4 at once   ${item}   +29 to go`)
+    expect(calls).toBe(`calls     api 4 at once   ${item}   +29 to go`)
   })
 
   it('turns a call\'s spinner only when its output grows', () => {
@@ -692,6 +699,234 @@ describe('frameLines', () => {
     expect(rate(early, 20_000)).toBe('25')
     // nothing is covered at the start, and no rate is told
     expect(frameFor(stateOf(started(['security'], 4)), 0).find(line => line.startsWith('tokens'))).toBe(`tokens    0 of 2.00M   ${UNICODE_GLYPHS.spark[0].repeat(20)}`)
+  })
+
+  describe('the calls line\'s head', () => {
+    const OTHER = { id: 'other', model: 'model' }
+    const callStart = (call: number, provider = API): [number, QuorumEvent] => [
+      1000,
+      {
+        type: 'call:start',
+        call,
+        profile: 'security',
+        role: 'research',
+        provider,
+        part: { index: call, count: 4 },
+        reserved: 6000,
+        timeoutMs: 600_000,
+      },
+    ]
+    const lane = (at: number, cause: Extract<QuorumEvent, { type: 'concurrency' }>['cause'], limit: number, more: Partial<Extract<QuorumEvent, { type: 'concurrency' }>> = {}, provider = API): [number, QuorumEvent] => [
+      at,
+      {
+        type: 'concurrency',
+        provider,
+        limit,
+        cause,
+        ...more,
+      },
+    ]
+    const throttle = { kind: 'http', status: 429 } as const
+    const stateWith = (...events: Array<[number, QuorumEvent]>): ViewState => events.reduce((state, [at, event]) => fold(state, event, at), startState(DEFAULT_FACTS))
+    const callsOf = (state: ViewState, now: number, overrides: Partial<FrameOptions> = {}): string => frameLines(state, now, {
+      columns: 80,
+      rows: 24,
+      glyphs: UNICODE_GLYPHS,
+      color: false,
+      view: 'full',
+      timeLeft: { kind: 'none' },
+      ...overrides,
+    }).find(line => line.startsWith('calls'))!
+    /** What the calls line says before its first item. */
+    const headOf = (state: ViewState, now: number, overrides: Partial<FrameOptions> = {}): string => callsOf(state, now, overrides).slice(10).split('   ')[0]
+    const begun = [
+      ...started(['security'], 4),
+      callStart(1),
+    ]
+
+    it.each<[string, Array<[number, QuorumEvent]>, number, string]>([
+      [
+        'one lane at its start',
+        [],
+        20_000,
+        'api 4 at once',
+      ],
+      [
+        'one lane growing',
+        [
+          lane(10_000, 'grown', 5),
+        ],
+        20_000,
+        'api 5 at once, growing',
+      ],
+      [
+        'one lane growing back after a cut',
+        [
+          lane(5000, 'cut', 2, { from: 4, failure: throttle }),
+          lane(10_000, 'regrown', 3),
+        ],
+        20_000,
+        'api 3 at once, growing',
+      ],
+      [
+        'one cut after http 429',
+        [
+          lane(10_000, 'cut', 2, { from: 4, failure: throttle }),
+        ],
+        20_000,
+        'api 2 at once after http 429',
+      ],
+      [
+        'one cut after a stall',
+        [
+          lane(10_000, 'cut', 2, {
+            from: 4,
+            failure: { kind: 'timeout', stalledMs: 300_000 },
+          }),
+        ],
+        20_000,
+        'api 2 at once after timeout',
+      ],
+      [
+        'paused 14s',
+        [
+          lane(10_000, 'cut', 2, { from: 4, failure: throttle }),
+          lane(20_000, 'paused', 2, { waitMs: 14_000, failure: throttle }),
+        ],
+        20_000,
+        'api paused 14s (http 429)',
+      ],
+      [
+        'paced 9s',
+        [
+          lane(20_000, 'paced', 4, { waitMs: 9000 }),
+        ],
+        20_000,
+        'api paced 9s',
+      ],
+      [
+        'holding the slots its server states',
+        [
+          lane(0, 'slots', 3),
+        ],
+        20_000,
+        'api 3 at once (slots)',
+      ],
+      [
+        'two lanes',
+        [
+          lane(10_000, 'grown', 6),
+          lane(11_000, 'cut', 2, { from: 4, failure: throttle }, OTHER),
+        ],
+        20_000,
+        'api 6 at once, growing; other 2 at once after http 429',
+      ],
+      [
+        'a pause that has ended, back to what the lane did last',
+        [
+          lane(10_000, 'cut', 2, { from: 4, failure: throttle }),
+          lane(10_000, 'paused', 2, { waitMs: 14_000, failure: throttle }),
+        ],
+        24_001,
+        'api 2 at once after http 429',
+      ],
+      [
+        'a pacing wait that has ended',
+        [
+          lane(10_000, 'paced', 4, { waitMs: 9000 }),
+        ],
+        19_001,
+        'api 4 at once',
+      ],
+      [
+        'a pause shown over a pacing wait',
+        [
+          lane(20_000, 'paced', 4, { waitMs: 9000 }),
+          lane(20_000, 'paused', 4, { waitMs: 2500, failure: throttle }),
+        ],
+        20_000,
+        'api paused 3s (http 429)',
+      ],
+    ])('heads the calls line %s', (_name, events, now, head) => {
+      expect(headOf(stateWith(...begun, ...events), now)).toBe(head)
+      // the public view has the same head: it holds ids, numbers and code words
+      expect(headOf(stateWith(...begun, ...events), now, { view: 'public' })).toBe(head)
+    })
+
+    it('heads the calls line with the setting\'s calls at once, whatever the providers, when concurrency is set', () => {
+      const set = [
+        ...begun,
+        lane(10_000, 'grown', 5),
+      ].reduce((state, [at, event]) => fold(state, event, at), startState({ ...DEFAULT_FACTS, concurrency: 8 }))
+      expect(headOf(set, 20_000)).toBe('8 at once (concurrency)')
+    })
+
+    it('names no lane before a call has started, and keeps the items in their column', () => {
+      const first = callsOf(stateWith(...started(['security'], 4)), 1000)
+      expect(first).toBe('calls     +4 to go')
+      const [, , calls] = frameLines(stateWith(...begun), 2000, {
+        columns: 80,
+        rows: 24,
+        glyphs: UNICODE_GLYPHS,
+        color: false,
+        view: 'full',
+        timeLeft: { kind: 'none' },
+      })
+      expect(calls).toBe('calls     api 4 at once   p1 1s   +3 to go')
+    })
+
+    it('wraps the items under the head of two lanes, and cuts the head in a narrow terminal', () => {
+      const state = stateWith(...begun, callStart(2, OTHER), lane(10_000, 'grown', 6), lane(11_000, 'cut', 2, { from: 4, failure: throttle }, OTHER))
+      const wide = frameLines(state, 20_000, {
+        columns: 80,
+        rows: 24,
+        glyphs: UNICODE_GLYPHS,
+        color: false,
+        view: 'full',
+        timeLeft: { kind: 'none' },
+      })
+      expect(wide.slice(2, 4)).toEqual([
+        'calls     api 6 at once, growing; other 2 at once after http 429   p1 19s',
+        '          p2 19s   +2 to go',
+      ])
+      for (const columns of [40, 50, 60, 80]) {
+        for (const line of frameLines(state, 20_000, {
+          columns,
+          rows: 24,
+          glyphs: UNICODE_GLYPHS,
+          color: false,
+          view: 'full',
+          timeLeft: { kind: 'none' },
+        })) {
+          expect(widthOf(line)).toBeLessThanOrEqual(columns - 1)
+        }
+      }
+      const narrow = frameLines(state, 20_000, {
+        columns: 40,
+        rows: 24,
+        glyphs: UNICODE_GLYPHS,
+        color: false,
+        view: 'full',
+        timeLeft: { kind: 'none' },
+      })
+      expect(narrow.find(line => line.startsWith('calls'))).toBe(`calls     api 6 at once, growing; othe${UNICODE_GLYPHS.ellipsis}`)
+      // under 40 columns the block is its one line, which names no lane
+      expect(frameLines(state, 20_000, {
+        columns: 39,
+        rows: 24,
+        glyphs: UNICODE_GLYPHS,
+        color: false,
+        view: 'full',
+        timeLeft: { kind: 'none' },
+      })).toEqual(['research 0/4 · 2 calls · 20s'])
+    })
+
+    it('makes a provider\'s id inert in the head', () => {
+      const hostile = { id: `a${ESC}b`, model: 'model' }
+      const state = stateWith(...started(['security'], 4), callStart(1, hostile), lane(10_000, 'grown', 5, {}, hostile))
+      expect(headOf(state, 20_000)).toBe('a<U+001B>b 5 at once, growing')
+      expect(callsOf(state, 20_000)).not.toContain(ESC)
+    })
   })
 
   it.each<[number, string]>([

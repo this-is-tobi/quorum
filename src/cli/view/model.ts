@@ -8,7 +8,7 @@
  * `stopping.at` and `firstEstimate.at` are readings of it, and only their differences mean anything.
  */
 
-import { DEFAULT_CONCURRENCY } from '../../core/concurrency.ts'
+import { LANE_START } from '../../core/lanes.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../../core/limits.ts'
 import { DEFAULT_MAX_FINDINGS } from '../../core/prompts.ts'
 import type { CallFailure, Estimate, IncompleteReason, Position, QuorumEvent, StageName, Usage } from '../../core/types.ts'
@@ -23,8 +23,8 @@ export type CapOrigin = 'default' | 'config' | 'estimate' | 'floor'
 
 /** What the CLI knows of the review before it starts, which no event says. */
 export interface ViewFacts {
-  /** The calls the review holds at once. */
-  readonly concurrency: number
+  /** The calls the review holds at once: the number `concurrency` sets for every provider together, else `auto`, each provider's own lane. */
+  readonly concurrency: number | 'auto'
   readonly cap: { readonly tokens: number, readonly origin: CapOrigin }
   readonly deadlineMs: number
   /** The findings a research reply sends the panel at most, which sizes the votes to come. */
@@ -34,7 +34,7 @@ export interface ViewFacts {
 }
 
 export const DEFAULT_FACTS: ViewFacts = {
-  concurrency: DEFAULT_CONCURRENCY,
+  concurrency: 'auto',
   cap: { tokens: DEFAULT_MAX_REVIEW_TOKENS, origin: 'default' },
   deadlineMs: DEFAULT_REVIEW_TIMEOUT_MS,
   maxFindings: DEFAULT_MAX_FINDINGS,
@@ -58,6 +58,17 @@ export interface GapCount {
 
 /** The cause of a gap: what a failed call said of itself, its quota and its cut on the way included. */
 export type Cause = CallFailure & { readonly exhausted?: true }
+
+/** What a provider's lane did: its limit now, what changed it last, and the pause and pacing a throttle or the headers' reset hold new calls to, each until a time of the view's clock. */
+export interface LaneState {
+  readonly limit: number
+  /** The last change of the limit: not set while it has not moved from the start. */
+  readonly last?: 'grown' | 'cut' | 'regrown' | 'slots'
+  /** The throttle behind the last cut or the pause. */
+  readonly failure?: CallFailure
+  readonly pausedUntil?: number
+  readonly pacedUntil?: number
+}
 
 /** A provider call in flight. */
 export interface CallState {
@@ -113,6 +124,10 @@ export interface ViewState {
   readonly profiles: ReadonlyMap<string, ProfileState>
   /** The lenses of each profile's panel, from `run:start`. */
   readonly lenses: ReadonlyMap<string, number>
+  /** The research provider of each profile, by profile id, from `run:start`. */
+  readonly researchProvider: ReadonlyMap<string, string>
+  /** Each provider's lane, by provider id, once it has a call or a change: none with `concurrency` set. */
+  readonly lanes: ReadonlyMap<string, LaneState>
   readonly calls: ReadonlyMap<number, CallState>
   /** Each finding a vote asked about, numbered from 1 in the order first seen. */
   readonly findings: ReadonlyMap<string, number>
@@ -120,7 +135,7 @@ export interface ViewState {
   /** The output tokens of the calls, streamed as they come and the rest of their usage as they end, in the last `BUCKETS` cells of `BUCKET_MS` from `start`. */
   readonly buckets: { readonly start: number, readonly tokens: readonly number[] }
   /** One entry per research part answered fresh and per vote answered fresh. */
-  readonly sample: { readonly parts: ReadonlyArray<{ readonly planned: number, readonly durationMs: number }>, readonly votes: readonly number[] }
+  readonly sample: { readonly parts: ReadonlyArray<{ readonly provider: string, readonly planned: number, readonly durationMs: number }>, readonly votes: readonly number[] }
   /** Each research part's first reservation, by `<profile>|<part>`. */
   readonly planned: ReadonlyMap<string, number>
   /** The research parts ended, by `<profile>|<part>`. */
@@ -161,6 +176,8 @@ export function startState(facts: ViewFacts): ViewState {
     prefixed: false,
     profiles: new Map(),
     lenses: new Map(),
+    researchProvider: new Map(),
+    lanes: new Map(),
     calls: new Map(),
     findings: new Map(),
     spent: 0,
@@ -360,6 +377,14 @@ function started(state: ViewState, event: Extract<QuorumEvent, { type: 'run:star
     prefixed: event.profiles.length > 1,
     profiles: new Map(event.profiles.map(id => [id, NEW_PROFILE])),
     lenses: new Map(event.profiles.map(id => [id, Object.keys(event.providers[id]?.lenses ?? {}).length])),
+    researchProvider: new Map(event.profiles.flatMap((id) => {
+      const research = event.providers[id]?.research
+      return research === undefined
+        ? []
+        : [
+            [id, research.id] as const,
+          ]
+    })),
     buckets: { start: now, tokens: NO_BUCKETS },
   }
 }
@@ -392,6 +417,9 @@ function callStarted(state: ViewState, event: Extract<QuorumEvent, { type: 'call
       counted: 0,
       base: 0,
     }),
+    lanes: state.facts.concurrency !== 'auto' || state.lanes.has(event.provider.id)
+      ? state.lanes
+      : set(state.lanes, event.provider.id, { limit: LANE_START }),
     findings: finding === undefined || state.findings.has(finding)
       ? state.findings
       : set(state.findings, finding, state.findings.size + 1),
@@ -504,6 +532,50 @@ function callEnded(state: ViewState, event: Extract<QuorumEvent, { type: 'call' 
   }
 }
 
+/**
+ * The failure a lane keeps after `cause`: a cut's own, a pause's own or the one it had, and for the changes that
+ * start no wait, the one it had while a pause still holds, else none.
+ */
+function laneFailure(known: LaneState, cause: Extract<QuorumEvent, { type: 'concurrency' }>['cause'], failure: CallFailure | undefined, now: number): CallFailure | undefined {
+  if (cause === 'cut') return failure
+  if (cause === 'paused') return failure ?? known.failure
+  return known.pausedUntil !== undefined && known.pausedUntil > now
+    ? known.failure
+    : undefined
+}
+
+/** `state` with the lane of the event's provider changed: its limit, its last change, its throttle, and the pause or pacing a wait starts. */
+function laneChanged(state: ViewState, event: Extract<QuorumEvent, { type: 'concurrency' }>, now: number): ViewState {
+  const known = state.lanes.get(event.provider.id) ?? { limit: LANE_START }
+  const { cause, waitMs = 0 } = event
+  const failure = laneFailure(known, cause, event.failure, now)
+  const lane: LaneState = {
+    limit: event.limit,
+    ...cause === 'paused' || cause === 'paced'
+      ? known.last === undefined
+        ? {}
+        : { last: known.last }
+      : { last: cause },
+    ...failure === undefined
+      ? {}
+      : { failure },
+    ...cause === 'paused'
+      ? { pausedUntil: now + waitMs }
+      : known.pausedUntil === undefined
+        ? {}
+        : { pausedUntil: known.pausedUntil },
+    ...cause === 'paced'
+      ? { pacedUntil: now + waitMs }
+      : known.pacedUntil === undefined
+        ? {}
+        : { pacedUntil: known.pacedUntil },
+  }
+  return {
+    ...state,
+    lanes: set(state.lanes, event.provider.id, lane),
+  }
+}
+
 function partEnded(state: ViewState, event: Extract<QuorumEvent, { type: 'part' }>, now: number): ViewState {
   const key = `${event.profile}|${event.part.index}`
   const planned = event.outcome === 'reviewed' && event.spent > 0
@@ -518,7 +590,7 @@ function partEnded(state: ViewState, event: Extract<QuorumEvent, { type: 'part' 
           ...state.sample,
           parts: [
             ...state.sample.parts,
-            { planned, durationMs: event.durationMs },
+            { provider: state.researchProvider.get(event.profile) ?? event.profile, planned, durationMs: event.durationMs },
           ],
         },
   }
@@ -564,6 +636,10 @@ export function fold(state: ViewState, event: QuorumEvent, now: number): ViewSta
       }
     case 'call:start':
       return callStarted(state, event, now)
+    case 'concurrency':
+      return state.facts.concurrency === 'auto'
+        ? laneChanged(state, event, now)
+        : state
     case 'call:retry':
       return callRetried(state, event, now)
     case 'call:progress':

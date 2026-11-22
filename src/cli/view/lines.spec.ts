@@ -270,6 +270,44 @@ describe('renderEvent', () => {
     expect(renderEvent(hostile, true, 'public')).toBe(line.replace('api:', 'a<U+202E>b:'))
   })
 
+  it('writes a lane\'s cut as a line with the limit it came from and the throttle, and the slots it holds, whatever the view', () => {
+    const cut: QuorumEvent = {
+      type: 'concurrency',
+      provider: { id: 'api', model: 'model' },
+      limit: 2,
+      cause: 'cut',
+      from: 4,
+      failure: { kind: 'http', status: 429 },
+    }
+    for (const view of ['full', 'public'] as const) {
+      expect(renderEvent(cut, false, view)).toBe('api: 2 call(s) at once for now, cut from 4 after http 429')
+      expect(renderEvent({
+        ...cut,
+        failure: { kind: 'timeout', stalledMs: 300_000 },
+      }, false, view)).toBe('api: 2 call(s) at once for now, cut from 4 after timeout')
+      expect(renderEvent({
+        type: 'concurrency',
+        provider: { id: 'api', model: 'model' },
+        limit: 3,
+        cause: 'slots',
+      }, false, view)).toBe('api: the server serves 3 calls at once: its lane holds 3')
+    }
+    // a lane belongs to no profile, so no prefix; its id is made inert
+    expect(renderEvent({
+      ...cut,
+      provider: { id: `a${RLO}b`, model: 'model' },
+    }, true)).toBe('a<U+202E>b: 2 call(s) at once for now, cut from 4 after http 429')
+    // the changes a block shows and no line tells
+    for (const cause of ['grown', 'regrown', 'paused', 'paced'] as const) {
+      expect(renderEvent({
+        ...cut,
+        cause,
+        limit: 5,
+        waitMs: 14_000,
+      })).toBeUndefined()
+    }
+  })
+
   it('writes a stored-refused event as one fixed line, whatever the view and the provider\'s name', () => {
     const line = '--state: a stored reply failed its check: the call is made again'
     for (const role of ['research', 'vote'] as const) {
@@ -1032,6 +1070,20 @@ describe('logLines', () => {
         to: 'low',
         cause: 'cut-off-thinking',
       },
+    })).toBe('adapted')
+    expect(glyphOf({
+      type: 'concurrency',
+      provider: { id: 'api', model: 'model' },
+      limit: 2,
+      cause: 'cut',
+      from: 4,
+      failure: { kind: 'http', status: 429 },
+    })).toBe('adapted')
+    expect(glyphOf({
+      type: 'concurrency',
+      provider: { id: 'api', model: 'model' },
+      limit: 3,
+      cause: 'slots',
     })).toBe('adapted')
     expect(glyphOf({
       type: 'reply-lacked',

@@ -21,7 +21,7 @@ import type { TimeLeft } from './eta.ts'
 import type { Glyphs } from './glyphs.ts'
 import { elapsedWords, kindWords } from './lines.ts'
 import { BUCKET_MS, BUCKETS } from './model.ts'
-import type { CallState, ProfileState, ViewState } from './model.ts'
+import type { CallState, LaneState, ProfileState, ViewState } from './model.ts'
 import { cut, widthOf } from './width.ts'
 
 export interface FrameOptions {
@@ -253,7 +253,10 @@ function toGo(state: ViewState): number {
   return Math.max(0, parts - started.size) + Math.max(0, votes - flying)
 }
 
-/** Rows of `header` and then the pieces, three spaces apart, a row after the first indented under the header's text; undefined when they need more than `maxRows`. */
+/**
+ * Rows of `header` and then the pieces, three spaces apart, a row after the first indented under the header's text; undefined when
+ * they need more than `maxRows`. A header that ends in a space has no text yet, so the first piece follows it with no gap.
+ */
 function place(pieces: readonly Row[], header: string, width: number, maxRows: number): Row[] | undefined {
   const gap = '   '
   const rows: Piece[][] = [
@@ -264,9 +267,12 @@ function place(pieces: readonly Row[], header: string, width: number, maxRows: n
   let used = widthOf(header)
   for (const piece of pieces) {
     const size = widthOf(plain(piece))
-    if (used + gap.length + size <= width) {
-      rows.at(-1)!.push({ text: gap }, ...piece)
-      used += gap.length + size
+    const sep = rows.length === 1 && rows[0].length === 1 && header.endsWith(' ')
+      ? ''
+      : gap
+    if (used + sep.length + size <= width) {
+      rows.at(-1)!.push({ text: sep }, ...piece)
+      used += sep.length + size
       continue
     }
     if (rows.length >= maxRows) return undefined
@@ -281,6 +287,38 @@ function place(pieces: readonly Row[], header: string, width: number, maxRows: n
   return rows
 }
 
+/** One lane's entry in the calls line's head: its calls at once, and why: a wait it holds new calls to, else what changed its limit last. */
+function laneEntry(id: string, lane: LaneState, now: number): string {
+  const { limit, failure, pausedUntil, pacedUntil } = lane
+  const seconds = (until: number): number => Math.ceil((until - now) / 1000)
+  if (pausedUntil !== undefined && pausedUntil > now) {
+    return `${id} paused ${seconds(pausedUntil)}s${failure === undefined
+      ? ''
+      : ` (${kindWords(failure)})`}`
+  }
+  if (pacedUntil !== undefined && pacedUntil > now) return `${id} paced ${seconds(pacedUntil)}s`
+  switch (lane.last) {
+    case 'cut':
+      return failure === undefined
+        ? `${id} ${limit} at once`
+        : `${id} ${limit} at once after ${kindWords(failure)}`
+    case 'grown':
+    case 'regrown':
+      return `${id} ${limit} at once, growing`
+    case 'slots':
+      return `${id} ${limit} at once (slots)`
+    default:
+      return `${id} ${limit} at once`
+  }
+}
+
+/** What the calls line says before its items: the calls at once of each lane, joined by `; `, or the setting's when `concurrency` is set. */
+function laneHead(state: ViewState, now: number): string {
+  const { concurrency } = state.facts
+  if (concurrency !== 'auto') return `${concurrency} at once (concurrency)`
+  return [...state.lanes].map(([id, lane]) => laneEntry(inertLine(id), lane, now)).join('; ')
+}
+
 /**
  * The calls lines, in at most `maxRows` rows: the calls in flight by start, as many as the rows hold, then `+<n> more`
  * for those no row held and `+<n> to go` for the parts or votes not yet started.
@@ -291,7 +329,7 @@ function callRows(state: ViewState, now: number, options: FrameOptions, maxRows:
   ]
     .sort((a, b) => a.startedAt - b.startedAt)
     .map(call => callItem(state, call, now, options.glyphs, options.view))
-  const header = `calls     ${state.facts.concurrency} at once`
+  const header = `calls     ${laneHead(state, now)}`
   const left = toGo(state)
   const tailOf = (held: number): Row[] => [
     ...held < items.length

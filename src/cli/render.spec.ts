@@ -410,8 +410,9 @@ describe('viewFacts', () => {
         },
       },
     })
+    // `concurrency` unset is `auto`: each provider's own lane
     expect(viewFacts(config)).toEqual({
-      concurrency: 4,
+      concurrency: 'auto',
       cap: { tokens: 2_000_000, origin: 'default' },
       deadlineMs: 1_800_000,
       maxFindings: 50,

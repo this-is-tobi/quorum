@@ -1,11 +1,14 @@
 /**
  * The time a review has left, estimated from what it has already done. Research is weighed in planned tokens:
- * each answered part gives a rate (milliseconds per planned token), the 25th and 75th percentile of the rates
- * bound the range, and the profiles' parts are pooled, since they share the review's one limit on calls at once.
- * The panel is weighed in votes. Nothing is read before enough parts have answered: until then the answer is
- * `estimating`. It is a pure function of the state it is given.
+ * each answered part gives a rate (milliseconds per planned token) and the 25th and 75th percentile of the rates
+ * bound the range. With `concurrency` set the profiles' parts are pooled, since they share the review's one limit
+ * on calls at once. With lanes each research provider has its own estimate, its parts left at its own answered
+ * parts' rates over its lane's limit, and the time left is the largest of them. The panel is weighed in votes.
+ * Nothing is read before enough parts have answered: until then the answer is `estimating`. It is a pure
+ * function of the state it is given.
  */
 
+import { LANE_START, REVIEW_CEILING } from '../../core/lanes.ts'
 import type { ViewState } from './model.ts'
 
 /**
@@ -97,38 +100,133 @@ function startsOfParts(state: ViewState): ReadonlyMap<string, number> {
   return starts
 }
 
-function researchLeft(state: ViewState, now: number, then: number | undefined): TimeLeft {
-  if (state.sample.parts.length < sampleNeeded(researchTotal(state))) return estimating(then)
-  const rates = state.sample.parts.map(({ planned, durationMs }) => durationMs / planned).sort(ascending)
+/** The planned tokens of a profile's research parts not ended, as of `now`, and how many parts that is. */
+function profileLeft(state: ViewState, id: string, now: number, mid: number, mean: number, starts: ReadonlyMap<string, number>): { readonly tokens: number, readonly parts: number } {
+  let tokens = 0
+  let parts = 0
+  for (let index = 1; index <= partsOf(state, id); index++) {
+    const key = `${id}|${index}`
+    if (state.partsEnded.has(key)) continue
+    parts += 1
+    const planned = plannedOf(state, id, index) ?? mean
+    const started = starts.get(key)
+    const covered = started === undefined
+      ? 0
+      : mid > 0
+        ? Math.min(planned, Math.max(0, now - started) / mid)
+        : planned
+    tokens += planned - covered
+  }
+  return { tokens, parts }
+}
+
+/** The 25th, 50th and 75th percentile of the rates of `samples`, in milliseconds per planned token. */
+function quartiles(samples: ViewState['sample']['parts']): readonly [number, number, number] {
+  const rates = samples.map(({ planned, durationMs }) => durationMs / planned).sort(ascending)
   const [low, mid, high] = [25, 50, 75].map(p => percentile(rates, p))
+  return [low, mid, high]
+}
+
+/** With `concurrency` set: the parts of every profile, pooled, over the one limit on calls at once. */
+function pooledLeft(state: ViewState, concurrency: number, now: number, then: number | undefined): TimeLeft {
+  if (state.sample.parts.length < sampleNeeded(researchTotal(state))) return estimating(then)
+  const [low, mid, high] = quartiles(state.sample.parts)
   const mean = meanPlanned(state)
   const starts = startsOfParts(state)
   let left = 0
   let pending = 0
   for (const id of state.profiles.keys()) {
-    for (let index = 1; index <= partsOf(state, id); index++) {
-      const key = `${id}|${index}`
-      if (state.partsEnded.has(key)) continue
-      pending += 1
-      const planned = plannedOf(state, id, index) ?? mean
-      const started = starts.get(key)
-      const covered = started === undefined
-        ? 0
-        : mid > 0
-          ? Math.min(planned, Math.max(0, now - started) / mid)
-          : planned
-      left += planned - covered
-    }
+    const profile = profileLeft(state, id, now, mid, mean, starts)
+    left += profile.tokens
+    pending += profile.parts
   }
   if (pending === 0) return estimating(then)
-  const atOnce = Math.max(1, Math.min(state.facts.concurrency, pending))
+  const atOnce = Math.max(1, Math.min(concurrency, pending))
   return range('research', left * low / atOnce, left * high / atOnce, then)
+}
+
+/** The research provider of a profile: the one `run:start` named, else the profile's own id, which no lane knows. */
+const researcherOf = (state: ViewState, profile: string): string => state.researchProvider.get(profile) ?? profile
+
+/** A research provider's parts left, and the profiles' parts it researches. */
+interface Researcher {
+  readonly profiles: string[]
+  parts: number
+  tokens: number
+  total: number
+}
+
+/**
+ * With lanes: each research provider's own estimate, its parts left at its own answered parts' rates over its lane's
+ * limit (at most its parts left), the lanes' limits scaled down together when they pass the review's ceiling. The
+ * largest of them, and `estimating` until each provider with parts left has its own threshold.
+ */
+function lanesLeft(state: ViewState, now: number, then: number | undefined): TimeLeft {
+  const mean = meanPlanned(state)
+  const starts = startsOfParts(state)
+  const researchers = new Map<string, Researcher>()
+  for (const id of state.profiles.keys()) {
+    const provider = researcherOf(state, id)
+    const known = researchers.get(provider) ?? {
+      profiles: [],
+      parts: 0,
+      tokens: 0,
+      total: 0,
+    }
+    known.profiles.push(id)
+    known.total += partsOf(state, id)
+    researchers.set(provider, known)
+  }
+  const estimates: Array<{ readonly provider: string, readonly tokens: number, readonly low: number, readonly high: number, readonly limit: number }> = []
+  for (const [provider, researcher] of researchers) {
+    const samples = state.sample.parts.filter(sample => sample.provider === provider)
+    const [low, mid, high] = samples.length === 0
+      ? [0, 0, 0]
+      : quartiles(samples)
+    for (const id of researcher.profiles) {
+      const left = profileLeft(state, id, now, mid, mean, starts)
+      researcher.parts += left.parts
+      researcher.tokens += left.tokens
+    }
+    if (researcher.parts === 0) continue
+    if (samples.length < sampleNeeded(researcher.total)) return estimating(then)
+    estimates.push({
+      provider,
+      tokens: researcher.tokens,
+      low,
+      high,
+      limit: Math.max(1, Math.min(state.lanes.get(provider)?.limit ?? LANE_START, researcher.parts)),
+    })
+  }
+  if (estimates.length === 0) return estimating(then)
+  const total = estimates.reduce((sum, { limit }) => sum + limit, 0)
+  const scale = total > REVIEW_CEILING
+    ? REVIEW_CEILING / total
+    : 1
+  const over = (rate: (estimate: (typeof estimates)[number]) => number): number => Math.max(...estimates.map(estimate => estimate.tokens * rate(estimate) / Math.max(1, estimate.limit * scale)))
+  return range('research', over(({ low }) => low), over(({ high }) => high), then)
+}
+
+function researchLeft(state: ViewState, now: number, then: number | undefined): TimeLeft {
+  return state.facts.concurrency === 'auto'
+    ? lanesLeft(state, now, then)
+    : pooledLeft(state, state.facts.concurrency, now, then)
+}
+
+/** The calls the panel's votes run at once: the setting's, else the lanes' limits summed, at most the review's ceiling. */
+function votesAtOnce(state: ViewState): number {
+  const { concurrency } = state.facts
+  if (concurrency !== 'auto') return concurrency
+  if (state.lanes.size === 0) return LANE_START
+  let sum = 0
+  for (const { limit } of state.lanes.values()) sum += limit
+  return Math.min(REVIEW_CEILING, sum)
 }
 
 function panelLeft(state: ViewState, then: number): TimeLeft {
   if (state.sample.votes.length === 0) return estimating(then)
   const durations = [...state.sample.votes].sort(ascending)
-  const atOnce = Math.max(1, Math.min(state.facts.concurrency, then))
+  const atOnce = Math.max(1, Math.min(votesAtOnce(state), then))
   return range('panel', then * percentile(durations, 25) / atOnce, then * percentile(durations, 75) / atOnce)
 }
 
