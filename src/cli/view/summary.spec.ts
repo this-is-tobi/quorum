@@ -789,6 +789,91 @@ describe('summaryLines', () => {
     expect(lines(reviewed(...events))).toContain(`gaps: ${entry}`)
   })
 
+  it('names the cut\'s advice for a reply-cut-off gap of a provider that learned its cut, and the limit\'s fix for one that did not', () => {
+    const run: QuorumEvent = {
+      type: 'run:start',
+      profiles: ['security', 'style'],
+      providers: {
+        security: {
+          research: { id: 'api', model: 'm' },
+          lenses: {},
+        },
+        style: {
+          research: { id: 'local', model: 'm' },
+          lenses: {},
+        },
+      },
+    }
+    const cut: QuorumEvent = {
+      type: 'cut',
+      provider: 'api',
+      afterMs: 900_000,
+      holds: 36_000,
+      lowered: false,
+    }
+    const research: QuorumEvent = {
+      type: 'stage:start',
+      profile: 'security',
+      stage: 'research',
+      parts: 2,
+    }
+    const after = (...events: QuorumEvent[]): string[] => lines([run, research, cut, ...events].reduce((state, event) => fold(state, event, 1000), startState(DEFAULT_FACTS)))
+    expect(after(incomplete('reply-cut-off', 1, 'security'), incomplete('reply-cut-off', 1, 'style'))).toContain('gaps: 2 gap(s) reply-cut-off: make replies shorter, with a lower maxTokens or partTokens (api), or raise maxTokens, set thinking: low, or lower partTokens (local)')
+    expect(after(incomplete('reply-cut-off', 1, 'style'))).toContain('gaps: 1 gap(s) reply-cut-off: raise maxTokens, set thinking: low, or lower partTokens')
+    expect(after(incomplete('reply-cut-off', 1, 'style'), incomplete('reply-cut-off', 1, 'security'))).toContain('gaps: 2 gap(s) reply-cut-off: raise maxTokens, set thinking: low, or lower partTokens (local), or make replies shorter, with a lower maxTokens or partTokens (api)')
+    const localCut: QuorumEvent = { ...cut, provider: 'local' }
+    const both = lines([
+      run,
+      research,
+      cut,
+      localCut,
+      incomplete('reply-cut-off', 1, 'security'),
+      incomplete('reply-cut-off', 1, 'style'),
+    ].reduce((state, event) => fold(state, event, 1000), startState(DEFAULT_FACTS)))
+    expect(both).toContain('gaps: 2 gap(s) reply-cut-off: make replies shorter, with a lower maxTokens or partTokens')
+  })
+
+  it('writes the ids of a reply-cut-off gap\'s providers inertly', () => {
+    const escaped = `api${String.fromCharCode(27)}[31m`
+    const run: QuorumEvent = {
+      type: 'run:start',
+      profiles: ['security', 'style'],
+      providers: {
+        security: {
+          research: { id: escaped, model: 'm' },
+          lenses: {},
+        },
+        style: {
+          research: { id: 'local', model: 'm' },
+          lenses: {},
+        },
+      },
+    }
+    const cut: QuorumEvent = {
+      type: 'cut',
+      provider: escaped,
+      afterMs: 900_000,
+      holds: 36_000,
+      lowered: false,
+    }
+    const research: QuorumEvent = {
+      type: 'stage:start',
+      profile: 'security',
+      stage: 'research',
+      parts: 2,
+    }
+    const shown = lines([
+      run,
+      research,
+      cut,
+      incomplete('reply-cut-off', 1, 'security'),
+      incomplete('reply-cut-off', 1, 'style'),
+    ].reduce((state, event) => fold(state, event, 1000), startState(DEFAULT_FACTS))).join('\n')
+    expect(shown).toContain('(api')
+    expect(shown).toContain('(local)')
+    expect(shown).not.toContain(ESC)
+  })
+
   it.each<[string, Partial<Pick<SummaryFacts, 'state'>> & { readonly reason?: IncompleteReason, readonly unreviewed?: boolean }, string | undefined]>([
     [
       'naming --state and its kept calls after an interrupt',

@@ -55,15 +55,34 @@ function causeWords({ kind, status, stalledMs }: Cause): string {
     : `${kind} ${status}`
 }
 
+/** A provider behind a `reply-cut-off` gap, and whether it learned a cut on the way. */
+export interface CutProvider {
+  readonly id: string
+  readonly cut: boolean
+}
+
 /**
  * What to do about a gap of `reason`, or undefined when there is nothing to say: a fixed phrase for most reasons,
  * and for `research-failed` and `provider-down` the fix of each cause the events gave, joined by `, or ` (a used-up
  * quota's is `QUOTA_FIX`, a call cut on the way's `CUT_ADVICE`, a stalled stream's `STALL_FIX`, a refused stream's `set stream: false`), `research-failed` with no cause pointing to the report.
  * A plain timeout's `raise timeoutMs` is left out beside `STALL_FIX`, which names it.
- * A `reply-cut-off` gap is `CUT_ADVICE` once a cut on the way was learned (`cutSeen`): a larger limit would not help a call a path ends at a length.
+ * A `reply-cut-off` gap has one fix for each provider behind it: `CUT_ADVICE` for one that learned a cut on the way (`cut`), since a larger limit would not help a call a path ends at a length, else the reason's own.
+ * When the fixes differ, each ends with the ids of its providers in parentheses, in the order they came, so no half reads as advice against the other.
  */
-export function gapFix(reason: IncompleteReason, causes: readonly Cause[], cutSeen = false): string | undefined {
-  if (reason === 'reply-cut-off' && cutSeen) return CUT_ADVICE
+export function gapFix(reason: IncompleteReason, causes: readonly Cause[], providers: readonly CutProvider[] = []): string | undefined {
+  if (reason === 'reply-cut-off' && providers.length > 0) {
+    const byFix = new Map<string, string[]>()
+    for (const { id, cut } of providers) {
+      const fix = cut ? CUT_ADVICE : FIXES[reason]!
+      byFix.set(fix, [
+        ...byFix.get(fix) ?? [],
+        id,
+      ])
+    }
+    return [...byFix].map(([fix, ids]) => byFix.size === 1
+      ? fix
+      : `${fix} (${ids.join(', ')})`).join(', or ')
+  }
   if (reason !== 'research-failed' && reason !== 'provider-down') return FIXES[reason]
   const fixes = new Set(causes.map((cause) => {
     if (cause.exhausted === true) return QUOTA_FIX
@@ -219,7 +238,10 @@ function gapsLine(state: ViewState, view: ReportView): string | undefined {
       : known
     const fix = quota && fixed.length === 0
       ? undefined
-      : gapFix(reason, fixed, state.cutSeen)
+      : gapFix(reason, fixed, [...state.cutOffBy].map(id => ({
+          id,
+          cut: state.cutSeen.has(id),
+        })))
     // A plain timeout is written only when no stalled one is beside it, whose cause covers it.
     const shown = known.some(cause => cause.stalledMs !== undefined)
       ? known.filter(cause => cause.kind !== 'timeout' || cause.stalledMs !== undefined)

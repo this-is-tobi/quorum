@@ -143,8 +143,12 @@ export interface ViewState {
   readonly made: { readonly research: number, readonly votes: number }
   readonly retried: { readonly research: number, readonly votes: number }
   readonly recovered: { readonly parts: number, readonly pieces: number }
-  /** Whether a provider's cut on the way was learned, which changes the fix of a reply cut off: shorter replies, not a larger limit. */
-  readonly cutSeen: boolean
+  /** The providers whose cut on the way was learned, which changes the fix of their replies cut off: shorter replies, not a larger limit. */
+  readonly cutSeen: ReadonlySet<string>
+  /** The research providers of the profiles that have a `reply-cut-off` gap. */
+  readonly cutOffBy: ReadonlySet<string>
+  /** Every lens's provider, from `run:start`: the lanes the panel's calls run on. */
+  readonly lensProviders: ReadonlySet<string>
   /** Each profile's interval in each stage, by stage then profile id. */
   readonly stages: ReadonlyMap<StageName, ReadonlyMap<string, Interval>>
   readonly gaps: ReadonlyMap<IncompleteReason, GapCount>
@@ -188,7 +192,9 @@ export function startState(facts: ViewFacts): ViewState {
     made: { research: 0, votes: 0 },
     retried: { research: 0, votes: 0 },
     recovered: { parts: 0, pieces: 0 },
-    cutSeen: false,
+    cutSeen: new Set(),
+    cutOffBy: new Set(),
+    lensProviders: new Set(),
     stages: new Map(),
     gaps: new Map(),
     causes: new Map(),
@@ -385,6 +391,7 @@ function started(state: ViewState, event: Extract<QuorumEvent, { type: 'run:star
             [id, research.id] as const,
           ]
     })),
+    lensProviders: new Set(event.profiles.flatMap(id => Object.values(event.providers[id]?.lenses ?? {}).map(lens => lens.id))),
     buckets: { start: now, tokens: NO_BUCKETS },
   }
 }
@@ -654,9 +661,12 @@ export function fold(state: ViewState, event: QuorumEvent, now: number): ViewSta
         recovered: { parts: state.recovered.parts + 1, pieces: state.recovered.pieces + event.pieces },
       }
     case 'cut':
-      return state.cutSeen
+      return state.cutSeen.has(event.provider)
         ? state
-        : { ...state, cutSeen: true }
+        : {
+            ...state,
+            cutSeen: new Set(state.cutSeen).add(event.provider),
+          }
     case 'provider-down':
       return withCause(state, 'provider-down', causeOf({
         kind: event.kind,
@@ -679,8 +689,14 @@ export function fold(state: ViewState, event: QuorumEvent, now: number): ViewSta
     case 'incomplete': {
       const known = state.gaps.get(event.entry.reason) ?? { parts: 0, votes: 0, other: 0 }
       const { parts, votes } = countOf(event.entry.detail)
+      const researcher = state.researchProvider.get(event.entry.profile)
       return {
         ...state,
+        ...event.entry.reason === 'reply-cut-off' && researcher !== undefined && !state.cutOffBy.has(researcher)
+          ? {
+              cutOffBy: new Set(state.cutOffBy).add(researcher),
+            }
+          : {},
         gaps: set(state.gaps, event.entry.reason, {
           parts: known.parts + (parts ?? 0),
           votes: known.votes + (votes ?? 0),
