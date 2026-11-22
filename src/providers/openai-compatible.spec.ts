@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ConfigError, ProviderError } from '../core/errors.ts'
+import { ConfigError } from '../core/errors.ts'
 import type { CompletionRequest, StreamSignal } from '../core/ports.ts'
-import { sent, stubFetch, textReply } from '../testing/http.ts'
-import { chunkedBody, openAiStream, sse } from '../testing/streams.ts'
+import { sent, stubFetch, stubResponses, textReply } from '../testing/http.ts'
+import { chunkedBody, lostStream, openAiStream, sse } from '../testing/streams.ts'
 import { assembleOpenAi, openaiCompatible } from './openai-compatible.ts'
 import { sseItems } from './stream.ts'
 import type { StreamItem } from './stream.ts'
@@ -924,13 +924,6 @@ describe('openaiCompatible streams', () => {
       { index: 0, delta, finish_reason: finish },
     ],
   })
-  /** Answers each call of `fetch` with the next response. */
-  const serve = (...responses: Response[]): ReturnType<typeof vi.fn> => {
-    const fetchMock = vi.fn()
-    for (const response of responses) fetchMock.mockImplementationOnce(async () => response)
-    vi.stubGlobal('fetch', fetchMock)
-    return fetchMock
-  }
 
   it('sends stream and stream_options by default, stream_options left out for a bare stream, and neither for stream: false', async () => {
     const fetchMock = stubFetch(ok)
@@ -967,7 +960,7 @@ describe('openaiCompatible streams', () => {
       ],
       usage: { prompt_tokens: 41, completion_tokens: 23, total_tokens: 64 },
     }
-    serve(streamOf([
+    stubResponses(streamOf([
       {
         ...chunk({ role: 'assistant' }),
         model: 'qwen-3-2610',
@@ -991,7 +984,7 @@ describe('openaiCompatible streams', () => {
     expect(whole).toEqual({ ...streamed, whole: true })
     // The recorded replies stream through the helper the same way.
     for (const recorded of [chatCompletion, mistralChunks, reply]) {
-      serve(openAiStream(recorded))
+      stubResponses(openAiStream(recorded))
       const viaStream = await local.complete(request)
       stubFetch(recorded)
       expect(viaStream).toEqual({
@@ -1104,17 +1097,17 @@ describe('openaiCompatible streams', () => {
       { kind: 'invalid-response', retryable: false, message: 'local: the reply stream\'s answer is over 1000000 characters' },
     ],
   ])('reads a streamed reply %s', async (_name, response, expected) => {
-    serve(response())
+    stubResponses(response())
     const result = await local.complete(request).catch((error: unknown) => error)
     expect(result).toMatchObject(expected)
   })
 
   it('reads a [DONE] with no finish reason as a stream that ended too soon, and a finish reason with no content as an empty reply', async () => {
-    serve(streamOf([
+    stubResponses(streamOf([
       chunk({ content: '{"kee' }),
     ]))
     await expect(local.complete(request)).rejects.toMatchObject({ kind: 'network', message: 'local: the reply stream ended before its last event' })
-    serve(streamOf([
+    stubResponses(streamOf([
       chunk({ role: 'assistant' }),
       chunk({}, 'stop'),
     ]))
@@ -1122,7 +1115,7 @@ describe('openaiCompatible streams', () => {
   })
 
   it('reads a gateway\'s stream: a charset in its content type, reasoning deltas only, cut off at its limit while reasoning', async () => {
-    serve(gatewayStream())
+    stubResponses(gatewayStream())
     const gateway = openaiCompatible({
       id: 'gateway',
       baseUrl: `${GATEWAY_ORIGIN}/v1`,
@@ -1185,7 +1178,7 @@ describe('openaiCompatible streams', () => {
         usage: { prompt_tokens: 5, completion_tokens: 40 },
       },
     ].map(data => ({ data })))}data: [DONE]\n\n`
-    serve(new Response(body, {
+    stubResponses(new Response(body, {
       headers: { 'content-type': 'text/event-stream' },
     }))
     await local.complete({ ...request, onProgress })
@@ -1225,7 +1218,7 @@ describe('openaiCompatible streams', () => {
     ])
     // A stream of reasoning alone has shown no answer.
     signals.length = 0
-    serve(streamOf([
+    stubResponses(streamOf([
       chunk({ reasoning: 'thinking about it' }),
       chunk({}, 'length'),
     ]))
@@ -1304,11 +1297,7 @@ describe('openaiCompatible on a 400 that names a stream field', () => {
 })
 
 describe('openaiCompatible streams with a field of the wrong type', () => {
-  const lost = (error: unknown): ProviderError => new ProviderError({
-    providerId: 'local',
-    kind: 'network',
-    message: String(error),
-  })
+  const lost = lostStream('local')
   const itemsOf = (...chunks: unknown[]): { items: AsyncGenerator<StreamItem>, cancelled: () => boolean } => {
     const { body, cancelled } = chunkedBody(`${sse(chunks.map(data => ({ data })))}data: [DONE]\n\n`, 1)
     return {

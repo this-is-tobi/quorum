@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ConfigError, ProviderError } from '../core/errors.ts'
+import { ConfigError } from '../core/errors.ts'
 import type { CompletionRequest, StreamSignal } from '../core/ports.ts'
-import { sent, stubFetch, textReply } from '../testing/http.ts'
+import { jsonReply, sent, stubFetch, stubResponses, textReply } from '../testing/http.ts'
 import { anthropic, ANTHROPIC_ERROR_STATUSES, assembleAnthropic } from './anthropic.ts'
 import type { AnthropicOptions } from './anthropic.ts'
 import { sseItems } from './stream.ts'
 import type { StreamItem } from './stream.ts'
 import { contextWindowFull, countedOut, empty, message, notFound, reasoningOnly, refusal, toolUse, truncated } from '../testing/fixtures/anthropic.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
-import { anthropicStream, chunkedBody, sse } from '../testing/streams.ts'
+import { anthropicStream, chunkedBody, lostStream, outcomeOf, sse } from '../testing/streams.ts'
 
 const request: CompletionRequest = {
   system: 'instructions',
@@ -488,35 +488,11 @@ describe('anthropic streams', () => {
     text(index, ':[]}'),
     close(index),
   ]
-  /** Answers each call of `fetch` with the next response. */
-  const serve = (...responses: Response[]): ReturnType<typeof vi.fn> => {
-    const fetchMock = vi.fn()
-    for (const response of responses) fetchMock.mockImplementationOnce(async () => response)
-    vi.stubGlobal('fetch', fetchMock)
-    return fetchMock
-  }
   const failed = async (events: readonly Event[]): Promise<unknown> => {
-    serve(streamOf(events))
+    stubResponses(streamOf(events))
     return await claude.complete(request).catch((error: unknown) => error)
   }
-  /** What a call came to, with no text of the server's but what the error words: for comparing a stream with a whole reply. */
-  const outcome = async (reply: Response, provider = claude): Promise<unknown> => {
-    serve(reply)
-    return await provider.complete(request).then(
-      ({ whole: _whole, ...reached }) => reached,
-      (error: ProviderError) => ({
-        kind: error.kind,
-        message: error.message,
-        noAnswer: error.noAnswer,
-        usage: error.usage,
-      }),
-    )
-  }
-  const lost = (error: unknown): ProviderError => new ProviderError({
-    providerId: 'claude',
-    kind: 'network',
-    message: String(error),
-  })
+  const lost = lostStream('claude')
   /** The items a reader reads from `events`, one byte of the body at a time. */
   const itemsOf = (events: readonly Event[]): { items: AsyncGenerator<StreamItem>, cancelled: () => boolean } => {
     const { body, cancelled } = chunkedBody(streamText(events), 1)
@@ -525,11 +501,6 @@ describe('anthropic streams', () => {
       cancelled,
     }
   }
-
-  /** A whole reply as `fetch` gets it. */
-  const jsonOf = (body: unknown): Response => new Response(JSON.stringify(body), {
-    headers: { 'content-type': 'application/json' },
-  })
 
   it('sends stream: true by default, and nothing for a whole request or an option that asks for whole replies', async () => {
     const fetchMock = stubFetch(message)
@@ -545,7 +516,7 @@ describe('anthropic streams', () => {
   })
 
   it('assembles a stream into the reply its reader reads, the same as the whole reply', async () => {
-    serve(streamOf([
+    stubResponses(streamOf([
       start(),
       open(0, { type: 'thinking', thinking: '', signature: '' }),
       delta(0, { type: 'thinking_delta', thinking: 'The diff calls exec.' }),
@@ -581,14 +552,14 @@ describe('anthropic streams', () => {
       toolUse,
       countedOut,
     ]) {
-      const viaStream = await outcome(anthropicStream(recorded))
-      expect(viaStream, JSON.stringify(recorded.stop_reason)).toEqual(await outcome(jsonOf(recorded)))
+      const viaStream = await outcomeOf(claude, request, anthropicStream(recorded))
+      expect(viaStream, JSON.stringify(recorded.stop_reason)).toEqual(await outcomeOf(claude, request, jsonReply(recorded)))
     }
   })
 
   it('reports its progress signals', async () => {
     const signals: StreamSignal[] = []
-    serve(streamOf([
+    stubResponses(streamOf([
       start(),
       open(0, { type: 'thinking', thinking: '' }),
       delta(0, {
@@ -628,7 +599,7 @@ describe('anthropic streams', () => {
 
   it('reports a ping as a keep-alive and as no progress', async () => {
     const signals: StreamSignal[] = []
-    serve(streamOf([
+    stubResponses(streamOf([
       { type: 'ping' },
       start(),
       { type: 'ping' },
@@ -656,7 +627,7 @@ describe('anthropic streams', () => {
     ])
     // A stream of pings alone has shown no progress and is no reply.
     signals.length = 0
-    serve(streamOf([
+    stubResponses(streamOf([
       { type: 'ping' },
       { type: 'ping' },
     ]))
@@ -743,7 +714,7 @@ describe('anthropic streams', () => {
       })
     }
     // The key is redacted from the text it quotes, and an error with no text quotes none.
-    serve(streamOf([
+    stubResponses(streamOf([
       {
         type: 'error',
         error: { type: 'api_error', message: 'bad key sk-ant-k' },
@@ -811,7 +782,7 @@ describe('anthropic streams', () => {
       stop_reason: 'end_turn',
       usage: { input_tokens: 41, output_tokens: 23 },
     })
-    serve(streamOf(events))
+    stubResponses(streamOf(events))
     await expect(claude.complete(request)).resolves.toMatchObject({ text: '{"findings":[]}', reasoning: true })
     // Reasoning and no answer is a reply with no answer and reasoning, and none of it is quoted.
     const reasoningAlone = await failed([
@@ -838,7 +809,7 @@ describe('anthropic streams', () => {
   })
 
   it('takes the input from message_start and the output from the last message_delta', async () => {
-    serve(streamOf([
+    stubResponses(streamOf([
       start({
         input_tokens: 41,
         cache_read_input_tokens: 9,
@@ -863,7 +834,7 @@ describe('anthropic streams', () => {
       usage: { inputTokens: 50, outputTokens: 23 },
     })
     // A stream whose message_delta reports no usage keeps message_start's, and one with no usage at all reports none.
-    serve(streamOf([
+    stubResponses(streamOf([
       start({ input_tokens: 41, output_tokens: 5 }),
       ...answerBlock(),
       ...ending().map(event => event.type === 'message_delta'
@@ -876,7 +847,7 @@ describe('anthropic streams', () => {
     await expect(claude.complete(request)).resolves.toMatchObject({
       usage: { inputTokens: 41, outputTokens: 5 },
     })
-    serve(streamOf([
+    stubResponses(streamOf([
       start({}),
       ...answerBlock(),
       {
@@ -985,7 +956,7 @@ describe('anthropic streams', () => {
   })
 
   it('reads a stream of exactly 64 content blocks', async () => {
-    serve(streamOf([
+    stubResponses(streamOf([
       start(),
       ...blocksOpen(63),
       ...answerBlock(63),
@@ -1031,11 +1002,7 @@ describe('anthropic streams', () => {
 })
 
 describe('anthropic streams with a field of the wrong type', () => {
-  const lost = (error: unknown): ProviderError => new ProviderError({
-    providerId: 'claude',
-    kind: 'network',
-    message: String(error),
-  })
+  const lost = lostStream('claude')
   const itemsOf = (text: string): { items: AsyncGenerator<StreamItem>, cancelled: () => boolean } => {
     const { body, cancelled } = chunkedBody(text, 1)
     return {

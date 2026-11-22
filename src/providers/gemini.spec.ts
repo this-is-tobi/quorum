@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ConfigError, ProviderError } from '../core/errors.ts'
-import type { ProviderErrorKind } from '../core/errors.ts'
+import { ConfigError } from '../core/errors.ts'
+import type { ProviderError, ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest, StreamSignal } from '../core/ports.ts'
-import { sent, stubFetch, textReply } from '../testing/http.ts'
+import { jsonReply, sent, stubFetch, stubResponses, textReply } from '../testing/http.ts'
 import { assembleGemini, gemini } from './gemini.ts'
 import type { GeminiOptions } from './gemini.ts'
 import { sseItems } from './stream.ts'
 import type { StreamItem } from './stream.ts'
 import { candidate, countedOut, empty, generateContentResponse, invalidKey, promptBlocked, reasoningOnly, thoughtsOnlyCutOff, truncated, withThoughts } from '../testing/fixtures/gemini.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
-import { chunkedBody, geminiStream, sse } from '../testing/streams.ts'
+import { chunkedBody, geminiStream, lostStream, outcomeOf, sse } from '../testing/streams.ts'
 
 const request: CompletionRequest = {
   system: 'instructions',
@@ -801,37 +801,11 @@ describe('gemini streams', () => {
     usageMetadata,
     modelVersion: 'gemini-3.8-flash',
   })
-  const serve = (...responses: Response[]): ReturnType<typeof vi.fn> => {
-    const fetchMock = vi.fn()
-    for (const response of responses) fetchMock.mockImplementationOnce(async () => response)
-    vi.stubGlobal('fetch', fetchMock)
-    return fetchMock
-  }
   const failed = async (chunks: readonly Chunk[], provider = flash): Promise<unknown> => {
-    serve(streamOf(chunks))
+    stubResponses(streamOf(chunks))
     return await provider.complete(request).catch((error: unknown) => error)
   }
-  const jsonOf = (body: unknown): Response => new Response(JSON.stringify(body), {
-    headers: { 'content-type': 'application/json' },
-  })
-  /** What a call came to, for comparing a stream with a whole reply. */
-  const outcome = async (reply: Response): Promise<unknown> => {
-    serve(reply)
-    return await flash.complete(request).then(
-      ({ whole: _whole, ...reached }) => reached,
-      (error: ProviderError) => ({
-        kind: error.kind,
-        message: error.message,
-        noAnswer: error.noAnswer,
-        usage: error.usage,
-      }),
-    )
-  }
-  const lost = (error: unknown): ProviderError => new ProviderError({
-    providerId: 'gemini',
-    kind: 'network',
-    message: String(error),
-  })
+  const lost = lostStream('gemini')
   const itemsOf = (chunks: readonly Chunk[]): { items: AsyncGenerator<StreamItem>, cancelled: () => boolean } => {
     const { body, cancelled } = chunkedBody(streamText(chunks), 1)
     return {
@@ -893,7 +867,7 @@ describe('gemini streams', () => {
   })
 
   it('assembles a stream into the reply its reader reads, the same as the whole reply', async () => {
-    serve(streamOf([
+    stubResponses(streamOf([
       part({ text: 'The diff ', thought: true }),
       part({ text: 'calls exec.', thought: true }),
       part({ text: '{"findings"' }),
@@ -935,13 +909,13 @@ describe('gemini streams', () => {
       promptBlocked,
       countedOut,
     ]) {
-      expect(await outcome(geminiStream(recorded))).toEqual(await outcome(jsonOf(recorded)))
+      expect(await outcomeOf(flash, request, geminiStream(recorded))).toEqual(await outcomeOf(flash, request, jsonReply(recorded)))
     }
   })
 
   it('reports its progress signals', async () => {
     const signals: StreamSignal[] = []
-    serve(new Response(`: keep-alive\n\n${streamText([
+    stubResponses(new Response(`: keep-alive\n\n${streamText([
       part({
         text: 'x'.repeat(10),
         thought: true,
@@ -976,7 +950,7 @@ describe('gemini streams', () => {
     ])
     // A stream of thoughts alone has shown no answer.
     signals.length = 0
-    serve(streamOf([
+    stubResponses(streamOf([
       part({ text: 'thinking about it', thought: true }),
       finish('MAX_TOKENS'),
     ]))
@@ -1116,7 +1090,7 @@ describe('gemini streams', () => {
   })
 
   it('keeps the last usageMetadata it saw', async () => {
-    serve(streamOf([
+    stubResponses(streamOf([
       {
         ...part({ text: '{"a"' }),
         usageMetadata: { promptTokenCount: 41, candidatesTokenCount: 2 },
@@ -1134,7 +1108,7 @@ describe('gemini streams', () => {
       usage: { inputTokens: 41, outputTokens: 21 },
     })
     // No usage in any chunk is no usage.
-    serve(streamOf([
+    stubResponses(streamOf([
       part({ text: '{}' }),
       {
         candidates: [
@@ -1220,7 +1194,7 @@ describe('gemini streams', () => {
     expect(cancelled()).toBe(true)
     expect(await failed(chunks)).toMatchObject({ kind: 'invalid-response', retryable: false })
     // A part with no text, a thought signature alone, is dropped as a whole reply's is.
-    serve(streamOf([
+    stubResponses(streamOf([
       part({ text: '{}' }, { thoughtSignature: 'CiQB' }, { text: null }),
       finish(),
     ]))
@@ -1252,11 +1226,7 @@ describe('gemini streams', () => {
 })
 
 describe('gemini streams with a field of the wrong type', () => {
-  const lost = (error: unknown): ProviderError => new ProviderError({
-    providerId: 'gemini',
-    kind: 'network',
-    message: String(error),
-  })
+  const lost = lostStream('gemini')
   const itemsOf = (...chunks: unknown[]): { items: AsyncGenerator<StreamItem>, cancelled: () => boolean } => {
     const { body, cancelled } = chunkedBody(sse(chunks.map(data => ({ data }))), 1)
     return {

@@ -2,7 +2,7 @@ import { issuePath, ProviderError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { DEFAULT_RETRIES } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider, StreamSignal } from '../core/ports.ts'
-import { endpointUrl, postStream, snippet, withRateLimit } from './http.ts'
+import { endpointUrl, postStream, replyOf, snippet } from './http.ts'
 import type { ErrorHints, PostStreamOptions } from './http.ts'
 import { shapeMessages } from './messages.ts'
 import { adaptsOf, attemptFacts, bodyKeyForm, isRecord, mergeBody, prepareHttp, requestSettings, spellingIssues, streamFacts, thinkingIssues } from './options.ts'
@@ -511,14 +511,7 @@ export function gemini(options: GeminiOptions): Provider {
           ? {}
           : { formatFields: FORMAT_FIELDS },
       })
-      const answered = 'whole' in sentReply
-      const reply = answered
-        ? sentReply.whole
-        : await assembleGemini(sentReply.items, id, request.onProgress, redact)
-      const read = readReply(reply, { id, model, budget }, redact)
-      return withRateLimit(streams && answered
-        ? { ...read, whole: true }
-        : read, sentReply)
+      return replyOf(sentReply, streams, items => assembleGemini(items, id, request.onProgress, redact), reply => readReply(reply, { id, model, budget }, redact))
     },
   }
 }

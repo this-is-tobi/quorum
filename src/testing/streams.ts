@@ -1,6 +1,7 @@
 import type { Clock } from '../core/clock.ts'
 import { ProviderError } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse, Provider, StreamSignal } from '../core/ports.ts'
+import { stubResponses } from './http.ts'
 
 /** Test helpers for code that reads a streamed reply. */
 
@@ -348,4 +349,31 @@ export function streamingProvider(clock: Clock, plan: (request: CompletionReques
       return end
     },
   }
+}
+
+/**
+ * What a call of `provider` came to when `fetch` answers it with `reply`, for comparing a stream with a whole reply:
+ * the reply less `whole`, or the failure's `kind`, `message`, `noAnswer` and `usage`, with no text of the server's
+ * but what the error words.
+ */
+export async function outcomeOf(provider: Provider, request: CompletionRequest, reply: Response): Promise<unknown> {
+  stubResponses(reply)
+  return await provider.complete(request).then(
+    ({ whole: _whole, ...reached }) => reached,
+    (error: ProviderError) => ({
+      kind: error.kind,
+      message: error.message,
+      noAnswer: error.noAnswer,
+      usage: error.usage,
+    }),
+  )
+}
+
+/** The `lost` a reader of a stream is handed in a spec: a `network` failure of `providerId`'s, worded by the error. */
+export function lostStream(providerId: string): (error: unknown) => ProviderError {
+  return error => new ProviderError({
+    providerId,
+    kind: 'network',
+    message: String(error),
+  })
 }
