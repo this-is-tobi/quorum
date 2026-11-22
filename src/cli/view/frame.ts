@@ -14,6 +14,7 @@
  * cells below, the one line alone below 40; at most 8 lines, the hint last, and at most two fewer than the rows, none under 4 rows.
  */
 
+import { REVIEW_CEILING } from '../../core/lanes.ts'
 import { inertLine } from '../../core/sanitize.ts'
 import type { ReportView } from '../../report/view.ts'
 import { partsOf, rangeWords, researchRuns } from './eta.ts'
@@ -41,6 +42,8 @@ const MIN_ROWS = 4
 const LOG_ROWS = 2
 /** The columns from which the bars are wide and the tokens line has its sparkline, and below which the block is one line. */
 const WIDE_COLUMNS = 80
+/** The columns below which the calls line's head is its short form. */
+const NARROW_COLUMNS = 60
 const ONE_LINE_COLUMNS = 40
 const WIDE_CELLS = 20
 const NARROW_CELLS = 10
@@ -215,9 +218,10 @@ function callLabel(state: ViewState, call: CallState): string {
 /**
  * One call in flight as an item of the calls line: its label and its time, or while it waits to retry, its failure and the
  * seconds left. A streamed call has a spinner before it, which turns only when its output grows, so a still one is a silent
- * call, and after its time the tokens it has shown (not under the public view) or that only keep-alives came, once it has progressed.
+ * call, and after its time the tokens it has shown (not under the public view) or that only keep-alives came, once it has progressed,
+ * both left out when `detailed` is false.
  */
-function callItem(state: ViewState, call: CallState, now: number, glyphs: Glyphs, view: ReportView): Row {
+function callItem(state: ViewState, call: CallState, now: number, glyphs: Glyphs, view: ReportView, detailed: boolean): Row {
   const label = callLabel(state, call)
   if (call.waitingUntil !== undefined && call.waitingUntil > now && call.failure !== undefined) {
     return [
@@ -228,6 +232,7 @@ function callItem(state: ViewState, call: CallState, now: number, glyphs: Glyphs
   const elapsed = elapsedWords(now - call.startedAt)
   if (!call.stream) return words(`${label} ${elapsed}`)
   const spin = glyphs.spinner[call.turns % glyphs.spinner.length]
+  if (!detailed) return words(`${spin} ${label} ${elapsed}`)
   if (call.outputTokens > 0 && view !== 'public') return words(`${spin} ${label} ${elapsed} ~${tokenWords(call.outputTokens)}`)
   return words(call.outputTokens === 0 && call.keepAlive
     ? `${spin} ${label} ${elapsed} keep-alives only`
@@ -312,24 +317,39 @@ function laneEntry(id: string, lane: LaneState, now: number): string {
   }
 }
 
-/** What the calls line says before its items: the calls at once of each lane, joined by `; `, or the setting's when `concurrency` is set. */
-function laneHead(state: ViewState, now: number): string {
+/**
+ * What the calls line says before its items: the calls at once of each lane, joined by `; `, or the setting's when `concurrency` is
+ * set. When `narrow`, `<n> at once` alone: the setting's, else the lanes' limits summed, at most the review's ceiling, none with no lane.
+ */
+function laneHead(state: ViewState, now: number, narrow: boolean): string {
   const { concurrency } = state.facts
+  if (narrow) {
+    if (concurrency !== 'auto') return `${concurrency} at once`
+    if (state.lanes.size === 0) return ''
+    const sum = [
+      ...state.lanes.values(),
+    ].reduce((total, { limit }) => total + limit, 0)
+    return `${Math.min(sum, REVIEW_CEILING)} at once`
+  }
   if (concurrency !== 'auto') return `${concurrency} at once (concurrency)`
   return [...state.lanes].map(([id, lane]) => laneEntry(inertLine(id), lane, now)).join('; ')
 }
 
 /**
  * The calls lines, in at most `maxRows` rows: the calls in flight by start, as many as the rows hold, then `+<n> more`
- * for those no row held and `+<n> to go` for the parts or votes not yet started.
+ * for those no row held and `+<n> to go` for the parts or votes not yet started. Below 80 columns each number of calls, most
+ * first, is tried with each call's details, then without, before one fewer: a call's count goes before a call does.
  */
 function callRows(state: ViewState, now: number, options: FrameOptions, maxRows: number): Row[] {
-  const items = [
+  const calls = [
     ...state.calls.values(),
-  ]
-    .sort((a, b) => a.startedAt - b.startedAt)
-    .map(call => callItem(state, call, now, options.glyphs, options.view))
-  const head = laneHead(state, now)
+  ].sort((a, b) => a.startedAt - b.startedAt)
+  const itemsOf = (detailed: boolean): Row[] => calls.map(call => callItem(state, call, now, options.glyphs, options.view, detailed))
+  const items = itemsOf(true)
+  const plainItems = options.columns < WIDE_COLUMNS
+    ? itemsOf(false)
+    : items
+  const head = laneHead(state, now, options.columns < NARROW_COLUMNS)
   const header = { text: `calls     ${head}`, bare: head === '' }
   const left = toGo(state)
   const tailOf = (held: number): Row[] => [
@@ -345,11 +365,15 @@ function callRows(state: ViewState, now: number, options: FrameOptions, maxRows:
       : [],
   ]
   for (let held = items.length; held >= 0; held--) {
-    const rows = place([
-      ...items.slice(0, held),
-      ...tailOf(held),
-    ], header, options.columns - 1, maxRows)
-    if (rows !== undefined) return rows
+    for (const shown of plainItems === items
+      ? [items]
+      : [items, plainItems]) {
+      const rows = place([
+        ...shown.slice(0, held),
+        ...tailOf(held),
+      ], header, options.columns - 1, maxRows)
+      if (rows !== undefined) return rows
+    }
   }
   // not even the tail fits: one row, which the cut shortens
   return [
