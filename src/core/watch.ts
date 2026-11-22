@@ -144,44 +144,79 @@ export interface ProgressReport {
 
 /** The progress reports of one call, across its attempts. */
 export interface ProgressReports {
-  /** Starts a streamed attempt: its count of output tokens begins from 0. */
+  /** Starts a streamed attempt: its count of output tokens begins from 0, and a report the last attempt held back is dropped. */
   readonly attempt: () => void
   /** Tells that a streamed attempt counted a data event or a keep-alive, with the output tokens it has streamed so far. */
   readonly progressed: (kind: 'data' | 'keep-alive', outputTokens: number) => void
+  /** Tells that the streamed attempt settled, however it did: a report held back is dropped. */
+  readonly ended: () => void
 }
 
 /**
  * The progress reports of one call: at most one in `PROGRESS_MS`, `tokens` when the attempt's output grew since the last
- * report, else `keep-alive` when a keep-alive came since. The spacing is the call's, kept across its attempts, and each
- * attempt counts from 0.
+ * report, else `keep-alive` when a keep-alive came since. A report due within the spacing is held on one timer on the
+ * review's clock for what is left of it, and sent then with the attempt's latest output; the attempt's end, or the next
+ * attempt's start, drops it. The spacing is the call's, kept across its attempts, and each attempt counts from 0.
  */
 export function progressReports(clock: Clock, send: (report: ProgressReport) => void): ProgressReports {
   /** When the call last sent a report, on the review's clock. */
   let sentAt: number | undefined
   /** The output tokens the call's last report of the attempt in hand carried. */
   let reported = 0
+  /** The output tokens the attempt in hand has streamed so far. */
+  let latest = 0
   /** Whether a keep-alive came since the call's last report. */
   let keptAlive = false
+  /** Cancels the timer that holds a report back, while one is armed. */
+  let cancelHeld: (() => void) | undefined
+  /** Drops the held report: its timer is cancelled. */
+  const drop = (): void => {
+    cancelHeld?.()
+    cancelHeld = undefined
+  }
+  /** Whether the attempt has something to report: its output grew since the last report, or a keep-alive came. */
+  const due = (): boolean => latest > reported || keptAlive
+  const report = (): void => {
+    const grew = latest > reported
+    sentAt = clock.now()
+    reported = latest
+    keptAlive = false
+    send({
+      outputTokens: latest,
+      signal: grew
+        ? 'tokens'
+        : 'keep-alive',
+    })
+  }
   return {
     attempt: () => {
+      drop()
       reported = 0
+      latest = 0
       keptAlive = false
     },
     progressed: (kind, outputTokens) => {
       if (kind === 'keep-alive') keptAlive = true
-      const now = clock.now()
-      if (sentAt !== undefined && now - sentAt < PROGRESS_MS) return
-      const grew = outputTokens > reported
-      if (!grew && !keptAlive) return
-      sentAt = now
-      reported = outputTokens
-      keptAlive = false
-      send({
-        outputTokens,
-        signal: grew
-          ? 'tokens'
-          : 'keep-alive',
-      })
+      latest = outputTokens
+      const left = sentAt === undefined
+        ? 0
+        : PROGRESS_MS - (clock.now() - sentAt)
+      if (left > 0) {
+        if (cancelHeld === undefined && due()) {
+          cancelHeld = clock.timer(left, () => {
+            cancelHeld = undefined
+            try {
+              report()
+            } catch {
+              // A sink that throws has ended the review already (`emit`), and a report is only advice: it never escapes a timer.
+            }
+          })
+        }
+        return
+      }
+      drop()
+      if (due()) report()
     },
+    ended: drop,
   }
 }

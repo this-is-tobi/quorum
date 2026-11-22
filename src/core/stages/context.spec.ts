@@ -20,13 +20,15 @@ import type { Requester, RunContext, Target } from './context.ts'
 
 /**
  * A context of one review: its events as the sink would receive them, but for a call's start and retries, which it
- * returns apart, in `progress`, so the exact event lists of the other tests stand. When
+ * returns apart, in `progress`, so the exact event lists of the other tests stand, and its `call:progress` reports as
+ * `[time sent, output tokens, signal]` on the fake clock, in `reports`. When
  * `limits.deadlineMs` is given, a timer on the fake clock aborts the review's deadline with its failure, as the
  * review arms it, and `stop` joins that to the review's signal.
  */
-function context(clock: FakeClock, controller = new AbortController(), concurrency = 1, limits: { readonly cap?: number, readonly deadlineMs?: number } = {}): { ctx: RunContext, events: QuorumEvent[], progress: QuorumEvent[] } {
+function context(clock: FakeClock, controller = new AbortController(), concurrency = 1, limits: { readonly cap?: number, readonly deadlineMs?: number } = {}): { ctx: RunContext, events: QuorumEvent[], progress: QuorumEvent[], reports: Array<[number, number, string]> } {
   const events: QuorumEvent[] = []
   const progress: QuorumEvent[] = []
+  const reports: Array<[number, number, string]> = []
   const deadlineMs = limits.deadlineMs ?? DEFAULT_REVIEW_TIMEOUT_MS
   const deadline = new AbortController()
   if (limits.deadlineMs !== undefined) {
@@ -36,6 +38,13 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
   }
   const emit: RunContext['emit'] = (event) => {
     if (controller.signal.aborted) return
+    if (event.type === 'call:progress') {
+      reports.push([
+        clock.now(),
+        event.outputTokens,
+        event.signal,
+      ])
+    }
     if (event.type === 'call:start' || event.type === 'call:retry' || event.type === 'call:progress') progress.push(event)
     else events.push(event)
   }
@@ -59,7 +68,7 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
     calls: { last: 0 },
     flying: { count: 0 },
   }
-  return { ctx, events, progress }
+  return { ctx, events, progress, reports }
 }
 
 /** A target whose provider's own id is not the id of its ref, which is the one an error and an event name. */
@@ -2457,7 +2466,7 @@ describe('the ceiling and the stall window of an attempt', () => {
 
   it('sends call:progress at most once a second, tokens when the output grew and keep-alive when only keep-alives came', async () => {
     const clock = fakeClock()
-    const { ctx, progress } = context(clock)
+    const { ctx, progress, reports } = context(clock)
     const t = streamed(clock, () => ({
       script: [
         at(0, headers),
@@ -2469,6 +2478,7 @@ describe('the ceiling and the stall window of an attempt', () => {
         at(2200, data(50)),
         at(2300, keepAlive),
         at(3500, keepAlive),
+        at(4500, keepAlive),
       ],
       end: answer,
     }))
@@ -2478,6 +2488,12 @@ describe('the ceiling and the stall window of an attempt', () => {
         type: 'call:progress',
         call: 1,
         outputTokens: 10,
+        signal: 'tokens',
+      },
+      {
+        type: 'call:progress',
+        call: 1,
+        outputTokens: 20,
         signal: 'tokens',
       },
       {
@@ -2499,6 +2515,60 @@ describe('the ceiling and the stall window of an attempt', () => {
         signal: 'keep-alive',
       },
     ])
+    // Each one a second after the last at the soonest, a report held back by the spacing sent when it ends.
+    expect(reports.map(([sent]) => sent)).toEqual([100, 1100, 2100, 3100, 4100])
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('sends the report the spacing held back once it ends, so a pause after a burst shows the burst', async () => {
+    const clock = fakeClock()
+    const { ctx, reports } = context(clock)
+    const t = streamed(clock, () => ({
+      script: [
+        at(1000, data(100)),
+        at(1500, data(5800)),
+        at(1900, data(6000)),
+        at(30_000, data(6000)),
+      ],
+      end: answer,
+    }))
+    await settle(clock, callProvider(ctx, requester, t, () => request))
+    expect(reports.map(([sent, tokens]) => [sent, tokens])).toEqual([
+      [1000, 100],
+      [2000, 6000],
+    ])
+    expect(reports.map(([, , signal]) => signal)).toEqual(['tokens', 'tokens'])
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('drops a held report when its attempt fails, and starts the retry\'s reports from 0', async () => {
+    const clock = fakeClock()
+    const { ctx, reports } = context(clock)
+    let sent = 0
+    const t = streamed(clock, () => sent++ === 0
+      ? {
+          script: [
+            at(1000, data(100)),
+            at(1500, data(500)),
+            at(1800, headers),
+          ],
+          end: new ProviderError({ providerId: 'p', kind: 'network', message: 'cut' }),
+        }
+      : {
+          script: [
+            at(100, data(50)),
+            at(5000, data(50)),
+          ],
+          end: answer,
+        }, { retries: 1 })
+    await settle(clock, callProvider(ctx, requester, t, () => request))
+    // The report held at 1500 would come at 2000 with 500 tokens: the failure at 1800 dropped it, and the retry, sent at 2050, reports its own 50.
+    expect(reports.map(([sentAt, tokens]) => [sentAt, tokens])).toEqual([
+      [1000, 100],
+      [2150, 50],
+    ])
+    expect(reports.map(([, , signal]) => signal)).toEqual(['tokens', 'tokens'])
+    expect(clock.pending()).toBe(0)
   })
 
   it('sends no call:progress for a call that does not stream, nor for headers alone', async () => {
