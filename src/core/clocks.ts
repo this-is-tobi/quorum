@@ -1,7 +1,7 @@
-import { VOTE_TOKENS } from './budgets.ts'
 import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS } from './ports.ts'
 import type { Provider } from './ports.ts'
 import type { Target } from './stages/context.ts'
+import { VOTE_TOKENS } from './tokens.ts'
 
 /** The shortest window a provider's stall window is learned as: five minutes. */
 export const STALL_FLOOR_MS = 300_000

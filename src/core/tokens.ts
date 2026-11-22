@@ -98,3 +98,32 @@ export function requestTokens(request: Pick<CompletionRequest, 'system' | 'messa
   ]
   return texts.reduce((sum, text) => sum + tokenBound(text), 0)
 }
+
+/** The tokens a verdict and its reasoning take, before the thinking allowance. */
+export const VOTE_TOKENS = 1024
+
+/**
+ * The output tokens a research reply usually takes, which the estimate counts a reply at when its budget is larger
+ * (an assumption, the design's placeholder: no recorded run holds the output tokens of each research call, so the
+ * figure is not yet measured). A larger `maxTokens` is headroom, not an expectation.
+ */
+export const EXPECTED_REPLY_TOKENS = 4096
+
+/**
+ * How many times the bound of a research request over-counts the tokens of code. The bound is one token per
+ * UTF-8 byte, and code diffs run 2.9 to 3.8 bytes per token across the tokenizers measured, so a third of the
+ * bound is what code most likely takes, and a diff of prose or of encoded data takes more. It only scales the
+ * expected spend of an estimate: the ledger reserves the whole bound at run time.
+ */
+export const BOUND_OVER_CODE = 3
+
+/**
+ * A research part's expected spend: its input at a third of its bound, rounded up, which code takes about that
+ * many tokens of, and its reply at the lesser of its budget and `EXPECTED_REPLY_TOKENS`. `reservation` holds the
+ * reply budget once, so the input is what it holds besides; a reservation a provider states below its reply
+ * budget counts the reply at the reservation, and the part never expects more than it reserves.
+ */
+export function expectedOf(reservation: number, reply: number): number {
+  const held = Math.min(reply, reservation)
+  return Math.ceil((reservation - held) / BOUND_OVER_CODE) + Math.min(held, EXPECTED_REPLY_TOKENS)
+}

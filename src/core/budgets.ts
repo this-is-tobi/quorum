@@ -5,7 +5,7 @@ import { DEFAULT_MAX_FINDINGS, researchRequest, voteRequest } from './prompts.ts
 import type { PartOf } from './prompts.ts'
 import { reservationOf, roomOf } from './stages/context.ts'
 import type { LensRun, ProfileRun, Target } from './stages/context.ts'
-import { requestTokens } from './tokens.ts'
+import { requestTokens, VOTE_TOKENS } from './tokens.ts'
 import { longestFinding } from './verify.ts'
 
 /**
@@ -47,16 +47,6 @@ export const FINDING_TOKENS = 256
 
 /** The output tokens of a research reply's envelope, around its findings. */
 export const ENVELOPE_TOKENS = 32
-
-/** The tokens a verdict and its reasoning take, before the thinking allowance. */
-export const VOTE_TOKENS = 1024
-
-/**
- * The output tokens a research reply usually takes, which the estimate counts a reply at when its budget is larger
- * (an assumption, the design's placeholder: no recorded run holds the output tokens of each research call, so the
- * figure is not yet measured). A larger `maxTokens` is headroom, not an expectation.
- */
-export const EXPECTED_REPLY_TOKENS = 4096
 
 export { DEFAULT_MAX_FINDINGS }
 
