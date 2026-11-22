@@ -33,7 +33,7 @@
 
 import { issuePath } from '../core/errors.ts'
 import { publicViewSchema } from '../core/result-schema.ts'
-import { ownData } from '../core/stages/context.ts'
+import { ownData } from '../core/facts.ts'
 import type { LensVote, PublicGap, PublicMeta, PublicProfileMeta, PublicVerdict, PublicView, PublicVote, QuorumResult, Verdict } from '../core/types.ts'
 
 /** The views a report is written in: the full result, or the public view. */

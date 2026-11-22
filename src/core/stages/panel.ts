@@ -9,7 +9,8 @@ import type { CompletionRequest } from '../ports.ts'
 import { voteRequest } from '../prompts.ts'
 import { tokenBound } from '../tokens.ts'
 import type { Confidence, Finding, IncompleteEntry, LensVote, Verdict, VerdictStatus, Vote, VoteFailure } from '../types.ts'
-import { callProvider, isTooLarge, providerFailure, refusalMessage, roomOf } from './context.ts'
+import { isTooLarge, providerFailure, refusalMessage } from '../facts.ts'
+import { callProvider, roomOf } from './context.ts'
 import type { LensRun, ProfileRun, RunContext } from './context.ts'
 
 /** Where the panel put each finding, the arrays keeping the findings' order, and the gaps its failed votes left. */

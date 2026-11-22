@@ -1,6 +1,6 @@
 import { ConfigError, issuePath } from '../core/errors.ts'
 import { publicViewSchema, resultSchema } from '../core/result-schema.ts'
-import { ownData } from '../core/stages/context.ts'
+import { ownData } from '../core/facts.ts'
 import { utf8Length } from '../core/tokens.ts'
 import type { PublicView, QuorumResult } from '../core/types.ts'
 import { VERSION } from '../core/version.ts'

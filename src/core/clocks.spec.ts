@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { attemptCeiling, createClocks, CUT_MARGIN } from './clocks.ts'
-import type { AttemptSeen } from './clocks.ts'
+import type { AttemptSeen } from './watch.ts'
 import type { Provider } from './ports.ts'
 import { targetOf } from './stages/context.ts'
 import type { Target } from './stages/context.ts'

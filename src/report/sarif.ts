@@ -29,7 +29,7 @@
 
 import { failsItsProfile, isIncomplete, isInterrupted, profileFailOn } from '../core/outcome.ts'
 import { inertJson, inertPlain } from '../core/sanitize.ts'
-import { ownData } from '../core/stages/context.ts'
+import { ownData } from '../core/facts.ts'
 import type { Confidence, FailOn, PublicGap, PublicProfileMeta, PublicVerdict, PublicView } from '../core/types.ts'
 import { commitOf, evidenceRows, GAP_WORDS, isCleanRelativePath, levelWord, placedFindings, plural, votesWords } from './lines.ts'
 import type { Reporter } from './reporter.ts'

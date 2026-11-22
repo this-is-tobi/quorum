@@ -1,5 +1,5 @@
 import { FAIL_ON_LEVELS } from './profile.ts'
-import { ownData } from './stages/context.ts'
+import { ownData } from './facts.ts'
 import type { FailOn, PublicVerdict, PublicView, QuorumResult, Verdict } from './types.ts'
 
 /** The HTTP statuses, besides 5xx, that a call fails with in passing: a request timeout, a conflict and a rate limit. */

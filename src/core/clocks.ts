@@ -2,15 +2,13 @@ import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS } from './ports.ts'
 import type { Provider } from './ports.ts'
 import type { Target } from './stages/context.ts'
 import { VOTE_TOKENS } from './tokens.ts'
+import type { AttemptSeen } from './watch.ts'
 
 /** The shortest window a provider's stall window is learned as: five minutes. */
 export const STALL_FLOOR_MS = 300_000
 
 /** How many times its longest silence a provider's stall window is learned as. */
 export const STALL_FACTOR = 3
-
-/** The least time between two `call:progress` events of one call: one second. */
-export const PROGRESS_MS = 1000
 
 /**
  * What a review learns of a provider's cut. A path (a proxy, a gateway) may end any call at a fixed length, whatever the
@@ -54,22 +52,6 @@ const CEILING_BUDGET_TOKENS = 128_000
 export function attemptCeiling(stated: number | undefined, replyTokens: number): number {
   if (stated !== undefined) return stated
   return Math.min(MAX_TIMEOUT_MS, Math.max(DEFAULT_TIMEOUT_MS, Math.ceil(CEILING_MS_PER_BUDGET * replyTokens / CEILING_BUDGET_TOKENS)))
-}
-
-/** What one answered attempt showed of its stream: the facts the stall window is learned from. */
-export interface AttemptSeen {
-  /** How long the attempt ran, from its send to its answer. */
-  readonly attemptMs: number
-  /** From the attempt's send to its first data event, the headers excluded; absent when it had none, as a whole reply has none. */
-  readonly firstTokenMs?: number
-  /** The longest time between two signs of progress, the attempt's send and its answer included. */
-  readonly longestSilenceMs: number
-  /** The output tokens it streamed, or its reply reported when it did not stream. */
-  readonly outputTokens: number
-  /** Whether its stream showed answer text. */
-  readonly answer: boolean
-  /** Whether its stream showed reasoning. */
-  readonly reasoning: boolean
 }
 
 /** What a review learns of how its providers' streams pace, and what each attempt may wait for by it. */
