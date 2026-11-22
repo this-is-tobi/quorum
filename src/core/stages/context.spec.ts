@@ -2622,6 +2622,205 @@ describe('the ceiling and the stall window of an attempt', () => {
       },
     ])
   })
+
+  describe('a ceiling that grows while the stream progresses', () => {
+    /** A request with a reply budget of 21024 tokens, so a derived ceiling is 600000 ms and the floor's bound 10512000 ms. */
+    const budgeted: Partial<Parameters<typeof target>[1]> = { maxTokens: 21_024 }
+    /** The first data event at 5000 ms, then one every `every` ms up to `until`, each counting what `rate` tokens a second has streamed since the first. */
+    const pacedAt = (rate: number, every: number, until: number, shown: { answer?: boolean, reasoning?: boolean } = {}): Array<{ afterMs: number, signal: StreamSignal }> => {
+      const script: Array<{ afterMs: number, signal: StreamSignal }> = []
+      for (let time = 5000; time <= until; time += every) {
+        script.push(at(time, data(Math.floor((time - 5000) * rate / 1000), shown)))
+      }
+      return script
+    }
+
+    it('grows a streamed attempt\'s ceiling while it streams, so a 10 token a second reply finishes past 600000 ms', async () => {
+      const clock = fakeClock()
+      const { ctx, events } = context(clock)
+      const t = streamed(clock, () => ({
+        script: pacedAt(10, 100_000, 2_105_000),
+        end: answer,
+      }), budgeted)
+      await expect(settle(clock, callProvider(ctx, requester, t, () => request))).resolves.toEqual({ text: 'ok' })
+      expect(events).toMatchObject([
+        {
+          type: 'call',
+          ok: true,
+          durationMs: 2_105_000,
+          ceilingMs: 2_522_880,
+        },
+      ])
+      expect(clock.armed[0]).toBe(600_000)
+      expect(clock.armed.filter(ms => ms > 600_000 && ms < 2_000_000)).toContain(1_922_880)
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('lets a 3 token a second stream finish its reply, as a CPU-hosted model streams it', async () => {
+      const clock = fakeClock()
+      const { ctx, events } = context(clock)
+      const t = streamed(clock, () => ({
+        script: pacedAt(3, 60_000, 6_965_000),
+        end: answer,
+      }), budgeted)
+      await expect(settle(clock, callProvider(ctx, requester, t, () => request), 1000)).resolves.toEqual({ text: 'ok' })
+      expect(events).toMatchObject([
+        {
+          type: 'call',
+          ok: true,
+          durationMs: 6_965_000,
+          ceilingMs: 7_786_667,
+        },
+      ])
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('cuts a stream slower than 2 tokens a second at its budget\'s floor bound, as a timeout naming the ceiling it reached', async () => {
+      const clock = fakeClock()
+      const { ctx, events } = context(clock)
+      const t = streamed(clock, () => ({
+        script: pacedAt(1, 100_000, 12_000_000),
+        end: answer,
+      }), budgeted)
+      const error = await settle(clock, callProvider(ctx, requester, t, () => request), 1000).catch((caught: unknown) => caught)
+      expect(error).toBeInstanceOf(ProviderError)
+      expect(error).toMatchObject({
+        kind: 'timeout',
+        message: 'p: no reply within 10512000 ms',
+        ceilingMs: 10_512_000,
+        stalledMs: undefined,
+      })
+      expect(events).toMatchObject([
+        { type: 'call', ok: false, durationMs: 10_512_000 },
+      ])
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('keeps a set timeoutMs exact, and grows no ceiling for a whole reply or before the first data event', async () => {
+      const failed = async (facts: Parameters<typeof target>[1], asked: CompletionRequest, plan: StreamPlan | undefined): Promise<{ error: unknown, ended: number }> => {
+        const clock = fakeClock()
+        const { ctx } = context(clock)
+        const t = plan === undefined
+          ? target(() => new Promise(() => {}), {
+              streams: true,
+              ...budgeted,
+              timeoutMs: undefined,
+              ...facts,
+            })
+          : streamed(clock, () => plan, {
+              ...budgeted,
+              ...facts,
+            })
+        const error = await settle(clock, callProvider(ctx, requester, t, () => asked)).catch((caught: unknown) => caught)
+        expect(clock.pending()).toBe(0)
+        return {
+          error,
+          ended: clock.now(),
+        }
+      }
+      const slow: StreamPlan = {
+        script: pacedAt(10, 100_000, 1_000_000),
+        end: answer,
+      }
+      const set = await failed({ timeoutMs: 600_000 }, request, slow)
+      const whole = await failed({}, { ...request, stream: false }, undefined)
+      const headersAlone = await failed({}, request, {
+        script: [
+          at(0, headers),
+          at(5_000_000, keepAlive),
+        ],
+        end: answer,
+      })
+      for (const { error, ended } of [set, whole, headersAlone]) {
+        expect(error).toMatchObject({ kind: 'timeout', message: 'p: no reply within 600000 ms', stalledMs: undefined })
+        expect((error as ProviderError).ceilingMs).toBeUndefined()
+        expect(ended).toBe(600_000)
+      }
+    })
+
+    it('stalls a stream silent for its window once its ceiling grew', async () => {
+      const clock = fakeClock()
+      const { ctx, events } = context(clock)
+      const t = streamed(clock, () => ({
+        script: [
+          ...pacedAt(10, 100_000, 905_000),
+          at(9_000_000, keepAlive),
+        ],
+        end: answer,
+      }), budgeted)
+      const error = await settle(clock, callProvider(ctx, requester, t, () => request)).catch((caught: unknown) => caught)
+      expect(error).toMatchObject({ kind: 'timeout', stalledMs: 600_000, message: 'p: no reply progress within 600000 ms' })
+      expect((error as ProviderError).ceilingMs).toBeUndefined()
+      expect(events).toMatchObject([
+        { type: 'call', ok: false, durationMs: 1_505_000 },
+      ])
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('stalls at once a stream quiet for a whole window since its first data event as its ceiling would grow', async () => {
+      const clock = fakeClock()
+      const { ctx, events } = context(clock)
+      const t = streamed(clock, () => ({
+        script: [
+          at(0, data(0)),
+          at(9_000_000, keepAlive),
+        ],
+        end: answer,
+      }), budgeted)
+      const error = await settle(clock, callProvider(ctx, requester, t, () => request)).catch((caught: unknown) => caught)
+      expect(error).toMatchObject({ kind: 'timeout', stalledMs: 600_000, message: 'p: no reply progress within 600000 ms' })
+      expect(events).toMatchObject([
+        { type: 'call', ok: false, durationMs: 600_000 },
+      ])
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('ends a grown attempt at the review\'s deadline', async () => {
+      const clock = fakeClock()
+      const { ctx, events } = context(clock, new AbortController(), 1, { deadlineMs: 1_800_000 })
+      const t = streamed(clock, () => ({
+        script: pacedAt(10, 100_000, 2_105_000),
+        end: answer,
+      }), budgeted)
+      const error = await settle(clock, callProvider(ctx, requester, t, () => request)).catch((caught: unknown) => caught)
+      expect(error).toBeInstanceOf(LimitError)
+      expect(clock.now()).toBe(1_800_000)
+      expect(events).toMatchObject([
+        { type: 'call', ok: false, durationMs: 1_800_000 },
+      ])
+      expect(clock.pending()).toBe(0)
+    })
+
+    it('learns a 900 s cut on a derived budget once its ceiling grows past 600 s', async () => {
+      const clock = fakeClock()
+      const { ctx, events, progress } = context(clock)
+      const t = streamed(clock, () => ({
+        script: [
+          ...pacedAt(20, 100_000, 805_000, { answer: true }),
+          at(900_000, keepAlive),
+        ],
+        end: new ProviderError({ providerId: 'p', kind: 'network', message: 'the reply stream ended before its last event' }),
+      }), { maxTokens: undefined, retries: 1 })
+      const error = await settle(clock, callProvider(ctx, requester, t, () => ({ ...request, replyTokens: 21_024 }))).catch((caught: unknown) => caught)
+      expect(progress.filter(event => event.type === 'call:retry')).toMatchObject([
+        {
+          failure: { kind: 'network' },
+          attemptMs: 900_000,
+        },
+      ])
+      expect(events.filter(event => event.type === 'cut')).toEqual([
+        {
+          type: 'cut',
+          provider: 'p',
+          afterMs: 900_000,
+          holds: 12_800,
+          lowered: true,
+        },
+      ])
+      expect(error).toMatchObject({ kind: 'truncated', cutAfterMs: 900_000, noAnswer: 'reply' })
+      expect(clock.pending()).toBe(0)
+    })
+  })
 })
 
 describe('the reply budgets a learned cut holds', () => {

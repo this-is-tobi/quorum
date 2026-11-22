@@ -54,6 +54,23 @@ export function attemptCeiling(stated: number | undefined, replyTokens: number):
   return Math.min(MAX_TIMEOUT_MS, Math.max(DEFAULT_TIMEOUT_MS, Math.ceil(CEILING_MS_PER_BUDGET * replyTokens / CEILING_BUDGET_TOKENS)))
 }
 
+/** The slowest pace a growing ceiling allows, as the time one token may take: 500 ms, 2 tokens a second. */
+export const GROWTH_FLOOR_MS_PER_TOKEN = 500
+
+/**
+ * The ceiling of a streamed attempt that has shown its first data event, as its own timer fires: the time its reply budget
+ * `replyTokens` takes at the pace it has kept, `outputTokens` in `ranMs` from its send, its first wait included, never over
+ * `replyTokens` times `GROWTH_FLOOR_MS_PER_TOKEN` (a pace under 2 tokens a second is no pace a reply finishes at, which
+ * `timeoutMs` pins knowingly), never under the `derived` ceiling it had, and never over `MAX_TIMEOUT_MS`. Whole numbers all through.
+ */
+export function grownCeiling(derived: number, replyTokens: number, outputTokens: number, ranMs: number): number {
+  const floor = replyTokens * GROWTH_FLOOR_MS_PER_TOKEN
+  const atPace = outputTokens === 0
+    ? floor
+    : Math.min(floor, replyTokens * ranMs / outputTokens)
+  return Math.min(MAX_TIMEOUT_MS, Math.max(derived, Math.ceil(atPace)))
+}
+
 /** What a review learns of how its providers' streams pace, and what each attempt may wait for by it. */
 export interface Clocks {
   /**

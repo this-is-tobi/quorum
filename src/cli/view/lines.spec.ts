@@ -945,6 +945,17 @@ describe('logLines', () => {
       'part 12 of 44: stalled, no progress for 300000 ms, retry 1 of 2 in 2s',
     ],
     [
+      'a timeout at a ceiling that grew',
+      {
+        failure: { kind: 'timeout', ceilingMs: 10_512_000 },
+        attemptMs: 10_512_000,
+        waitMs: 1500,
+      },
+      undefined,
+      { index: 12, count: 44 },
+      'part 12 of 44: timeout after 10512000 ms, retry 1 of 2 in 2s',
+    ],
+    [
       'a piece',
       {},
       undefined,

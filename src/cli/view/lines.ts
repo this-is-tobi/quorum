@@ -309,12 +309,13 @@ function glyphOf(event: QuorumEvent): GlyphName | undefined {
 
 /**
  * A retry's failure as its line words it: `timeout after 600000 ms`, whose length is the deadline's, `stalled, no progress
- * for 300000 ms` for a stream that stalled, whose length is its window, else its kind (`http 503`, `network`) and how long
+ * for 300000 ms` for a stream that stalled, whose length is its window, `timeout after 10512000 ms` with the ceiling a
+ * stream grew to when the failure names it, else its kind (`http 503`, `network`) and how long
  * the attempt ran: `network after 10m00s`.
  */
-function retryFailure({ kind, status, stalledMs }: CallFailure, timeoutMs: number, attemptMs: number): string {
+function retryFailure({ kind, status, stalledMs, ceilingMs }: CallFailure, timeoutMs: number, attemptMs: number): string {
   if (kind === 'timeout' && stalledMs !== undefined) return `stalled, no progress for ${stalledMs} ms`
-  if (kind === 'timeout') return `timeout after ${timeoutMs} ms`
+  if (kind === 'timeout') return `timeout after ${ceilingMs ?? timeoutMs} ms`
   return `${kind === 'http' && status !== undefined
     ? `http ${status}`
     : kind} after ${elapsedWords(attemptMs)}`

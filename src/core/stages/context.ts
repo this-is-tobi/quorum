@@ -417,7 +417,7 @@ export function elapsed(started: number): number {
  * known and the stop has not fired, saying how long the failed attempt ran (`attemptMs`, from the moment its request is
  * handed to the provider, after the slot, the ledger and any backoff, to its failure); then the one `call` event,
  * which repeats the call's number. A streamed call sends `call:progress` between them, at most once a second, and its ok
- * `call` event carries the `firstTokenMs` and `longestSilenceMs` of its answered attempt. A call that ends with a failure tells the health, its `onFailure` and its
+ * `call` event carries the `firstTokenMs`, `longestSilenceMs` and, when its deadline grew, `ceilingMs` of its answered attempt. A call that ends with a failure tells the health, its `onFailure` and its
  * `provider-down` event how long the attempt that threw it ran, so a cut on the way (`cutOf`) is named. A call the store
  * answered, the down rule refused or a limit stopped before its first attempt sends no `call:start`; a refusal as too
  * large is sent after the reservation, so it does. Each attempt is counted in `ctx.flying` from its reservation until it settles.
@@ -494,7 +494,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     let timedOut = false
     let replied: Usage | undefined
     /** What the attempt that answered showed of its stream, when it showed a data event: the `call` event carries it. */
-    let timings: { readonly firstTokenMs: number, readonly longestSilenceMs: number } | undefined
+    let timings: { readonly firstTokenMs: number, readonly longestSilenceMs: number, readonly ceilingMs?: number } | undefined
     /** Ends the call with `error`: its failed event when an attempt was made, then `onFailure`; the error to throw. */
     const end = (error: unknown): unknown => {
       if (attempts > 0 || reused) {
@@ -638,7 +638,13 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           ctx.clocks.answered(target, seen)
           timings = seen.firstTokenMs === undefined
             ? undefined
-            : { firstTokenMs: seen.firstTokenMs, longestSilenceMs: seen.longestSilenceMs }
+            : {
+                firstTokenMs: seen.firstTokenMs,
+                longestSilenceMs: seen.longestSilenceMs,
+                ...seen.ceilingMs === undefined
+                  ? {}
+                  : { ceilingMs: seen.ceilingMs },
+              }
           return reply
         } catch (caught) {
           const endedAt = ctx.clock.now()

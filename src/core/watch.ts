@@ -20,6 +20,8 @@ export interface AttemptSeen {
   readonly answer: boolean
   /** Whether its stream showed reasoning. */
   readonly reasoning: boolean
+  /** The ceiling its deadline grew to while it streamed, in milliseconds; absent when it did not grow. */
+  readonly ceilingMs?: number
 }
 
 /**
@@ -35,6 +37,8 @@ export interface Watch {
   outputTokens: number
   answer: boolean
   reasoning: boolean
+  /** The attempt's ceiling once it grew while the stream progressed (`grownCeiling`), the core's timer sets it. */
+  ceilingMs: number | undefined
 }
 
 export function newWatch(sentAt: number): Watch {
@@ -46,6 +50,7 @@ export function newWatch(sentAt: number): Watch {
     outputTokens: 0,
     answer: false,
     reasoning: false,
+    ceilingMs: undefined,
   }
 }
 
@@ -74,6 +79,9 @@ export function seenOf(watch: Watch | undefined, sentAt: number, endedAt: number
       : watch.outputTokens,
     answer: watch.answer,
     reasoning: watch.reasoning,
+    ...watch.ceilingMs === undefined
+      ? {}
+      : { ceilingMs: watch.ceilingMs },
   }
 }
 

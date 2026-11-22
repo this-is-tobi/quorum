@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { attemptCeiling, createClocks, CUT_MARGIN } from './clocks.ts'
+import { attemptCeiling, createClocks, CUT_MARGIN, grownCeiling, GROWTH_FLOOR_MS_PER_TOKEN } from './clocks.ts'
 import type { AttemptSeen } from './watch.ts'
 import type { Provider } from './ports.ts'
 import { targetOf } from './stages/context.ts'
@@ -44,6 +44,60 @@ describe('the ceiling of an attempt', () => {
     expect(attemptCeiling(1000, 150_000)).toBe(1000)
     expect(attemptCeiling(518_400_000, 16_000)).toBe(518_400_000)
     expect(attemptCeiling(120_000, 10_000_000)).toBe(120_000)
+  })
+})
+
+describe('the ceiling that grows with a stream', () => {
+  it.each([
+    [
+      600_000,
+      2_522_880,
+      5000,
+      21_024,
+      600_000,
+    ],
+    [
+      600_000,
+      10_512_000,
+      500,
+      21_024,
+      600_000,
+    ],
+    [
+      600_000,
+      600_000,
+      30_000,
+      21_024,
+      600_000,
+    ],
+    [
+      600_000,
+      10_512_000,
+      0,
+      21_024,
+      600_000,
+    ],
+    [
+      4_218_750,
+      75_000_000,
+      1000,
+      150_000,
+      4_218_750,
+    ],
+    [
+      5_625_000,
+      86_400_000,
+      10,
+      200_000,
+      5_625_000,
+    ],
+  ])('grows a ceiling of %i ms to %i ms for %i tokens of a %i-token budget after %i ms', (derived, grown, tokens, budget, after) => {
+    expect(grownCeiling(derived, budget, tokens, after)).toBe(grown)
+  })
+
+  it('floors the pace at 2 tokens a second, and never shrinks a ceiling', () => {
+    expect(GROWTH_FLOOR_MS_PER_TOKEN).toBe(500)
+    expect(grownCeiling(3_000_000, 21_024, 25_000, 3_000_000)).toBe(3_000_000)
   })
 })
 

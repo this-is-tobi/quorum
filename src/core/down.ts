@@ -134,7 +134,8 @@ export function createHealth(): Health {
       record.ended += 1
       const read = providerFailure(error)
       if (read === undefined || !DOWN_KINDS.has(read.kind)) return undefined
-      const { stalledMs, ...failure } = read
+      // A ceiling a stream grew is no fact of a provider being down.
+      const { stalledMs, ceilingMs: _ceilingMs, ...failure } = read
       record.streak += 1
       record.failures += 1
       if (record.streak === 1) {
