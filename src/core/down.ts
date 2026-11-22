@@ -1,7 +1,7 @@
 import { cutOf, ProviderDownError } from './errors.ts'
 import type { NoAnswer, ProviderErrorKind } from './errors.ts'
 import type { Provider } from './ports.ts'
-import { lackOf, providerFailure } from './stages/context.ts'
+import { lackOf, providerFailure } from './facts.ts'
 
 /**
  * Which provider is down, for one review: a provider is called no more once three of its calls in a row

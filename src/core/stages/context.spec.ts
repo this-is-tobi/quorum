@@ -14,7 +14,8 @@ import { createLedger, DEFAULT_REVIEW_TIMEOUT_MS, LimitError } from '../limits.t
 import type { CompletionRequest, CompletionResponse, Provider, StoredCall, StreamSignal } from '../ports.ts'
 import { researchRequest } from '../prompts.ts'
 import type { QuorumEvent } from '../types.ts'
-import { callProvider, providerFailure, reservationOf, roomOf, targetOf } from './context.ts'
+import { providerFailure } from '../facts.ts'
+import { callProvider, reservationOf, roomOf, targetOf } from './context.ts'
 import type { Requester, RunContext, Target } from './context.ts'
 
 /**
@@ -2596,24 +2597,6 @@ describe('the ceiling and the stall window of an attempt', () => {
     await settle(clock, callProvider(ctx, requester, t, () => request))
     late?.()
     expect(progress.filter(event => event.type === 'call:progress')).toEqual([])
-  })
-
-  it('reads a timeout\'s stalledMs as own data, a positive safe integer, and no other kind\'s', () => {
-    expect(providerFailure(failure({ kind: 'timeout', stalledMs: 300_000 }))).toEqual({ kind: 'timeout', stalledMs: 300_000 })
-    expect(providerFailure(failure({ kind: 'timeout', stalledMs: 0 }))).toEqual({ kind: 'timeout' })
-    expect(providerFailure(failure({ kind: 'timeout', stalledMs: 1.5 }))).toEqual({ kind: 'timeout' })
-    expect(providerFailure(failure({ kind: 'timeout', stalledMs: '300000' }))).toEqual({ kind: 'timeout' })
-    expect(providerFailure(failure({ kind: 'timeout' }))).toEqual({ kind: 'timeout' })
-    expect(providerFailure(failure({ kind: 'network', stalledMs: 300_000 }))).toEqual({ kind: 'network' })
-    const getter = new Error('x')
-    Object.defineProperty(getter, 'kind', { value: 'timeout' })
-    Object.defineProperty(getter, 'stalledMs', {
-      get() {
-        throw new Error('a getter ran')
-      },
-    })
-    expect(providerFailure(getter)).toEqual({ kind: 'timeout' })
-    expect(providerFailure(Object.assign(Object.create({ stalledMs: 5 }), { kind: 'timeout' }))).toEqual({ kind: 'timeout' })
   })
 
   it('tells the health of a call whose every attempt stalled, once three calls in a row did', async () => {

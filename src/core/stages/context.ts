@@ -1,24 +1,26 @@
 import { createHash } from 'node:crypto'
-import type { Adaptations, Fields, Probe, ProbeOutcome } from '../adapt.ts'
+import type { Adaptations, Fields } from '../adapt.ts'
 import type { ProfileBudgets } from '../budgets.ts'
 import { wait } from '../clock.ts'
 import type { Clock } from '../clock.ts'
-import { attemptCeiling, PROGRESS_MS } from '../clocks.ts'
-import type { AttemptSeen, Clocks } from '../clocks.ts'
+import type { Clocks } from '../clocks.ts'
 import type { Health } from '../down.ts'
-import { cutOf, cutWords, NO_ANSWERS, PROVIDER_ERROR_KINDS, ProviderDownError, ProviderError } from '../errors.ts'
-import type { NoAnswer, ProviderErrorKind } from '../errors.ts'
+import { cutOf, cutWords, ProviderDownError, ProviderError } from '../errors.ts'
+import { checkedUsage, failureFacts, failureUsage, lackOf, ownData, ownUsage, providerFailure, rateLimitFacts } from '../facts.ts'
 import type { LaneAttempt, Lanes } from '../lanes.ts'
-import { isLimit, settlementOf } from '../limits.ts'
+import { settlementOf } from '../limits.ts'
 import type { Ledger } from '../limits.ts'
-import { isRecord } from '../output.ts'
 import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, slotsProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../ports.ts'
-import type { Adapts, CompletionRequest, CompletionResponse, EventSink, Provider, RateLimit, ReplyStore, StoredCall } from '../ports.ts'
+import type { Adapts, CompletionRequest, CompletionResponse, EventSink, Provider, ReplyStore, StoredCall } from '../ports.ts'
 import { requestDigest } from '../prompts.ts'
 import { isTimeout, retryWait } from '../retry.ts'
-import type { FailureFacts } from '../retry.ts'
 import { DEFAULT_REPLY_TOKENS, expectedOf, replyLimit, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
 import type { Adaptation, FailOn, Position, ProviderRef, QuorumEvent, StageName, Thresholds, Usage } from '../types.ts'
+import { newWatch, progressReports, seenOf } from '../watch.ts'
+import type { AttemptSeen } from '../watch.ts'
+import { attempt, ceilingOf, streamsAttempt } from './attempt.ts'
+import { sendAgain } from './resend.ts'
+import type { Sent } from './resend.ts'
 
 /**
  * A provider as a compiled profile holds it: the object it calls, the ref captured at creation that
@@ -143,92 +145,6 @@ export interface RunContext {
   readonly flying: { count: number }
 }
 
-/** What a refusal as too large says when it holds no message of its own. */
-const REFUSAL_FALLBACK = 'refused as too large'
-
-/** The value of an own data property of an object, else undefined: a getter is never run, an inherited property or a throwing proxy never matches. */
-export function ownData(value: unknown, key: string): unknown {
-  if (typeof value !== 'object' || value === null) return undefined
-  try {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key)
-    return descriptor !== undefined && Object.hasOwn(descriptor, 'value')
-      ? descriptor.value
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/**
- * True for a refusal as too large: an object whose own data property `kind` is `'too-large'`, which is what a
- * provider raises when a request may not fit its model's context, before sending it. It is matched by that
- * property, not by class, so a `ProviderError` from a second copy of quorum, such as a code config's own
- * import, is recognised too; a provider is trusted code, and a server cannot forge an error object. It
- * never runs a getter and never throws.
- */
-export function isTooLarge(error: unknown): boolean {
-  return ownData(error, 'kind') === 'too-large'
-}
-
-/**
- * What a failed call says of itself, as facts: the own data `kind` when it is one of `PROVIDER_ERROR_KINDS`,
- * and for an `http` failure its own data `status` when that is an integer from 100 to 599. A message, which can
- * quote a server, is never read. It is matched by those properties, not by class, as `isTooLarge` is, and it
- * never runs a getter and never throws: any other value, a kind of no provider's included, is undefined. An
- * `http` failure whose own data `exhausted` is `true` says so, as `exhausted: true`; any other kind never does. An `http`
- * failure of status 400 or 422 whose own data `refused` is `stream` or `streamOptions` says `refused: 'stream'`: a refused
- * stream, to which a provider that may not step down has one fix. A `timeout` whose own data `stalledMs` is a positive safe
- * integer says so, as `stalledMs`: a stream that showed no progress for that long.
- */
-export function providerFailure(error: unknown): { readonly kind: ProviderErrorKind, readonly status?: number, readonly exhausted?: true, readonly refused?: 'stream', readonly stalledMs?: number } | undefined {
-  const kind = PROVIDER_ERROR_KINDS.find(known => known === ownData(error, 'kind'))
-  if (kind === undefined) return undefined
-  if (kind === 'timeout') {
-    const stalledMs = ownData(error, 'stalledMs')
-    return typeof stalledMs === 'number' && Number.isSafeInteger(stalledMs) && stalledMs >= 1
-      ? { kind, stalledMs }
-      : { kind }
-  }
-  if (kind !== 'http') return { kind }
-  const status = ownData(error, 'status')
-  const refused = ownData(error, 'refused')
-  return {
-    kind,
-    ...(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
-      ? { status }
-      : {}),
-    ...(ownData(error, 'exhausted') === true
-      ? { exhausted: true as const }
-      : {}),
-    ...((status === 400 || status === 422) && (refused === 'stream' || refused === 'streamOptions')
-      ? { refused: 'stream' as const }
-      : {}),
-  }
-}
-
-/**
- * What a failed call says of what its reply lacked, as facts: the own data `kind` when it is `truncated` or
- * `no-answer`, with its own data `noAnswer` when that is one of the four values and the pair is one an adapter
- * raises (a `truncated` reply, thinking or window, a `no-answer` thinking or empty). A message is never read, and
- * it never runs a getter and never throws.
- */
-export function lackOf(error: unknown): { readonly kind: 'truncated' | 'no-answer', readonly noAnswer: NoAnswer } | undefined {
-  const kind = ownData(error, 'kind')
-  const noAnswer = NO_ANSWERS.find(known => known === ownData(error, 'noAnswer'))
-  if (noAnswer === undefined) return undefined
-  if (kind === 'truncated') {
-    return noAnswer === 'empty'
-      ? undefined
-      : { kind, noAnswer }
-  }
-  if (kind === 'no-answer') {
-    return noAnswer === 'thinking' || noAnswer === 'empty'
-      ? { kind, noAnswer }
-      : undefined
-  }
-  return undefined
-}
-
 /**
  * What a request was sent with, that a reply's counts are read against: the reply limit it was sent with, which
  * is undefined for a provider that states no `maxTokens` and a request that carries no budget, and its provider's
@@ -273,14 +189,6 @@ function lackedEvent(provider: string, error: unknown, sent: SentWith): { readon
   }
 }
 
-/** What a refusal as too large says: its own data string `message`, else a fixed text, never anything else from the object. */
-export function refusalMessage(refusal: unknown): string {
-  const message = ownData(refusal, 'message')
-  return typeof message === 'string'
-    ? message
-    : REFUSAL_FALLBACK
-}
-
 /**
  * The usage of one more attempt added to a running total: both sums are of the attempts that
  * reported valid counts, and `costUsd` is summed over those that reported one. With no more usage
@@ -294,26 +202,6 @@ export function addUsage(total: Usage | undefined, more: Usage | undefined): Usa
     : (total?.costUsd ?? 0) + more.costUsd
   if (costUsd !== undefined) sum.costUsd = costUsd
   return sum
-}
-
-/**
- * The usage a failed call's thrown value carries, when its counts can be trusted: its own data property
- * `usage`, and that object's own data `inputTokens`, `outputTokens` and `costUsd`, checked as a reply's
- * usage is. It is matched by those properties, not by class, as `isTooLarge` is, so a `ProviderError`
- * from a second copy of quorum or a library provider's own error object counts too. It never runs a
- * getter and never throws: an inherited property, a getter or a throwing proxy reads as no usage.
- */
-export function failureUsage(error: unknown): Usage | undefined {
-  return ownUsage(ownData(error, 'usage'))
-}
-
-/** The usage an object holds as own data, when its counts can be trusted: never a getter run, an inherited field read or a throw. */
-function ownUsage(usage: unknown): Usage | undefined {
-  return checkedUsage({
-    inputTokens: ownData(usage, 'inputTokens'),
-    outputTokens: ownData(usage, 'outputTokens'),
-    costUsd: ownData(usage, 'costUsd'),
-  })
 }
 
 /**
@@ -583,7 +471,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           ...built,
           ...fields,
         }
-    let sentWith = ctx.adapt.sent(target)
+    const sentWith = ctx.adapt.sent(target)
     let request = withSettings(sentWith)
     /** The store's key of the send in hand, which is the one a reply or a cut-off is saved under. */
     let key: string | undefined
@@ -605,8 +493,6 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     let spent = 0
     let timedOut = false
     let replied: Usage | undefined
-    /** When the call last sent a `call:progress`, on the review's clock: it sends at most one in `PROGRESS_MS`. */
-    let progressSentAt: number | undefined
     /** What the attempt that answered showed of its stream, when it showed a data event: the `call` event carries it. */
     let timings: { readonly firstTokenMs: number, readonly longestSilenceMs: number } | undefined
     /** Ends the call with `error`: its failed event when an attempt was made, then `onFailure`; the error to throw. */
@@ -667,29 +553,10 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       options.onFailure?.(error, attempts, ranFor(error))
       return error
     }
-    /**
-     * Sends the call's `call:progress` for a streamed attempt that showed progress: `tokens` when its output grew since the
-     * call's last one, `keep-alive` when only keep-alives came, at most once in `PROGRESS_MS`.
-     */
-    const progressed = (watch: Watch, kind: 'data' | 'keep-alive'): void => {
-      if (number === undefined) return
-      if (kind === 'keep-alive') watch.keptAlive = true
-      const now = ctx.clock.now()
-      if (progressSentAt !== undefined && now - progressSentAt < PROGRESS_MS) return
-      const grew = watch.outputTokens > watch.reported
-      if (!grew && !watch.keptAlive) return
-      progressSentAt = now
-      watch.reported = watch.outputTokens
-      watch.keptAlive = false
-      ctx.emit({
-        type: 'call:progress',
-        call: number,
-        outputTokens: watch.outputTokens,
-        signal: grew
-          ? 'tokens'
-          : 'keep-alive',
-      })
-    }
+    /** The call's `call:progress` events: at most one in `PROGRESS_MS`, spaced across its attempts. */
+    const reports = progressReports(ctx.clock, (report) => {
+      if (number !== undefined) ctx.emit({ type: 'call:progress', call: number, ...report })
+    })
     /**
      * One request sent with its retries: its reply, or its failure after the retries. Each attempt reserves the
      * request's worst case in the ledger, before it is sent, and settles after.
@@ -727,8 +594,9 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
         /** When the request is handed to the provider: after the slot, the ledger and any backoff. */
         const sentAt = ctx.clock.now()
         const watch = streamed
-          ? newWatch(sentAt, progressed)
+          ? newWatch(sentAt)
           : undefined
+        if (watch !== undefined) reports.attempt()
         /** Settles the attempt's reservation at `tokens`, which the call's `spent` adds. */
         const settle = (tokens: number): void => {
           ctx.flying.count -= 1
@@ -736,7 +604,9 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           spent += tokens
         }
         try {
-          const reply = await attempt(ctx, target, asked, watch, inLane)
+          const reply = await attempt(ctx, target, asked, watch === undefined
+            ? undefined
+            : { watch, progressed: reports.progressed }, inLane)
           const endedAt = ctx.clock.now()
           if (typeof reply?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
           // The reply's usage is read once, so its settlement and its event cannot disagree.
@@ -804,7 +674,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
      * The result of a send: what the store answered with, else its reply, or its failure. A send's request is looked up
      * under its own key before it is sent, and a send cut off is saved, as a marker, under the same key.
      */
-    const sendNow = async (asked: CompletionRequest): Promise<{ readonly reply: CompletionResponse } | { readonly failure: unknown } | Read> => {
+    const sendNow = async (asked: CompletionRequest): Promise<Sent> => {
       request = asked
       key = storeKey(ctx, requester, built, asked)
       if (key !== undefined) {
@@ -824,54 +694,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       }
     }
 
-    let result = await sendNow(request)
-    while ('failure' in result && !ctx.stop.aborted) {
-      const { failure } = result
-      const plan = ctx.adapt.probe(target, failure)
-      let again: Fields | undefined
-      if (plan === undefined) {
-        try {
-          again = await ctx.adapt.after(target, sentWith, failure, ctx.stop)
-        } catch (stopped) {
-          result = { failure: stopped }
-          break
-        }
-        if (again === undefined) break
-      } else {
-        again = {
-          ...sentWith,
-          ...plan.with,
-        }
-      }
-      // A provider found down since is called no more, by the call's own re-send either.
-      const refused = ctx.health.refused(target.provider)
-      if (refused !== undefined) {
-        if (plan !== undefined) ctx.adapt.settle(target, plan.setting, 'unsent')
-        result = { failure: refused }
-        break
-      }
-      sentWith = again
-      if (plan === undefined) {
-        result = await sendNow(withSettings(sentWith))
-        continue
-      }
-      let outcome: ProbeOutcome = 'unsent'
-      let first = false
-      try {
-        result = await sendNow(withSettings(sentWith))
-        if ('failure' in result) {
-          ({ outcome, first } = probeEnd(ctx, result.failure, plan))
-        } else {
-          outcome = 'answered'
-        }
-      } finally {
-        const adaptation = ctx.adapt.settle(target, plan.setting, outcome)
-        if (adaptation !== undefined) ctx.emit({ type: 'adapted', adaptation })
-      }
-      // A refused lowering, a prompt mode that did not answer and a lowering the server showed no sign of taking end the call with the failure that began the probe,
-      // but a stream step the server refused as a stream goes on, with that failure, to the step of whole replies, which is probed once too.
-      if ('failure' in result && first && !(plan.setting === 'stream' && isStreamRefusal(result.failure))) result = { failure }
-    }
+    const result = await sendAgain(ctx, target, await sendNow(request), sentWith, fields => sendNow(withSettings(fields)))
     if ('failure' in result) throw end(result.failure)
     let read: Read | undefined
     let unread: { readonly error: unknown } | undefined
@@ -957,7 +780,7 @@ export interface CallOptions {
 }
 
 /** What a reply is read as, and what the stage's check listed of it. */
-interface Read {
+export interface Read {
   readonly answered: Answered
   readonly listed?: number
 }
@@ -1155,49 +978,6 @@ async function keepAnswer(ctx: RunContext, requester: Requester, target: Target,
   }
 }
 
-/**
- * How a probe's re-send ended, from the failure it ended with: a limit, the review's stop, a refusal as too large
- * or the down rule ended it before the server could answer (`unsent`, and the re-send's failure stands); a 400 or
- * 422 refused the value (`refused`), and the call ends with the failure that began the probe (`first`). Any other
- * failure is the server's or the network's. Prompt mode moves only on an answer, so its failed probe is `failed`
- * and ends with `first`. A thinking probe moves the level only on evidence (ruling R5): after a reply of only
- * reasoning, whose own level answered nothing, any failure is `failed`; after a cut-off, `failed` only when the
- * server showed it took the request, else `unsent` and `first`: tried, nothing moved and nothing recorded, so the
- * part splits.
- */
-function probeEnd(ctx: RunContext, failure: unknown, plan: Probe): { readonly outcome: ProbeOutcome, readonly first: boolean } {
-  if (ctx.stop.aborted || isLimit(failure) || isTooLarge(failure) || failure instanceof ProviderDownError) return { outcome: 'unsent', first: false }
-  if (isRefusal(failure)) return { outcome: 'refused', first: true }
-  if (plan.setting === 'structuredOutput' || plan.setting === 'stream') return { outcome: 'failed', first: true }
-  if (plan.cause === 'cut-off-thinking' && !tookTheRequest(failure)) return { outcome: 'unsent', first: true }
-  return { outcome: 'failed', first: false }
-}
-
-/** Whether `error` is a refusal that names streaming itself (`refused` is `stream`): the server takes no stream at all. */
-function isStreamRefusal(error: unknown): boolean {
-  return isRefusal(error) && ownData(error, 'refused') === 'stream'
-}
-
-/** Whether `error` is a failure of kind `http` with status 400 or 422, as own data: the server read the request and refused its value. */
-export function isRefusal(error: unknown): boolean {
-  const read = providerFailure(error)
-  return read?.kind === 'http' && (read.status === 400 || read.status === 422)
-}
-
-/** The kinds of failure that show the server took the request and read it: its reply was cut off, empty, only reasoning, unreadable or refused by the model. */
-const TOOK_THE_REQUEST: ReadonlySet<ProviderErrorKind> = new Set([
-  'truncated',
-  'no-answer',
-  'invalid-response',
-  'refusal',
-])
-
-/** Whether `failure` shows the server took the request: a reply of one of those kinds, or a timeout, a gateway's 504 and 524 included. */
-function tookTheRequest(failure: unknown): boolean {
-  const read = providerFailure(failure)
-  return (read !== undefined && TOOK_THE_REQUEST.has(read.kind)) || isTimeout(failureFacts(failure))
-}
-
 /** The fields of a `call` event that hold what the call's attempts add up to: their number when above one, their summed usage when valid, the tokens the cap counted, and `reused` for a call that made no attempt. */
 function counted(attempts: number, usage: Usage | undefined, spent: number): { attempts?: number, usage?: Usage, spent: number, reused?: true } {
   return {
@@ -1216,102 +996,11 @@ function counted(attempts: number, usage: Usage | undefined, spent: number): { a
 }
 
 /**
- * What the retry policy reads of a thrown value: its `kind`, `status`, `retryable` and `retryAfterMs` as own data, so a
- * getter decides nothing and never runs. An `http` failure whose own data `exhausted` is `true` is never retryable,
- * whatever it says of `retryable`, as a `ProviderError`'s own `exhausted` makes it.
- */
-function failureFacts(error: unknown): FailureFacts {
-  const exhausted = ownData(error, 'kind') === 'http' && ownData(error, 'exhausted') === true
-  return {
-    kind: ownData(error, 'kind'),
-    status: ownData(error, 'status'),
-    retryable: exhausted
-      ? false
-      : ownData(error, 'retryable'),
-    retryAfterMs: ownData(error, 'retryAfterMs'),
-  }
-}
-
-/**
  * Wait `ms` milliseconds between two attempts of a call, which holds its slot meanwhile. The review's
  * abort or deadline ends the wait at once: it rejects with the stop's reason, and the timer is cancelled.
  */
 function pause(ctx: RunContext, ms: number): Promise<void> {
   return wait(ctx.clock, ms, ctx.stop)
-}
-
-/** Whether an attempt of `request` is streamed: the target states that it streams and the request does not ask for a whole reply. */
-function streamsAttempt(target: Target, request: CompletionRequest): boolean {
-  return target.streams && request.stream !== false
-}
-
-/** The ceiling of an attempt of `request`: the deadline the provider stated, else the one its reply budget sizes. */
-function ceilingOf(target: Target, request: CompletionRequest): number {
-  return attemptCeiling(target.timeoutMs, replyLimit(request, target.maxTokens) ?? DEFAULT_REPLY_TOKENS)
-}
-
-/**
- * What an attempt of a streamed call has seen of its stream, as the review's clock reads it: the stall timer, the call's
- * `call:progress` and the attempt's timings read it. `progressAt` is the last headers or data event, which keep-alives are no
- * part of, and the attempt's send before either.
- */
-interface Watch {
-  readonly sentAt: number
-  progressAt: number
-  firstDataAt: number | undefined
-  longestSilenceMs: number
-  outputTokens: number
-  answer: boolean
-  reasoning: boolean
-  /** The output tokens the call's last `call:progress` of this attempt reported. */
-  reported: number
-  /** Whether a keep-alive came since the call's last `call:progress`. */
-  keptAlive: boolean
-  /** Told of each data event and keep-alive once it is counted: the call sends its `call:progress` from it. */
-  readonly counted: (watch: Watch, kind: 'data' | 'keep-alive') => void
-}
-
-function newWatch(sentAt: number, counted: Watch['counted']): Watch {
-  return {
-    sentAt,
-    progressAt: sentAt,
-    firstDataAt: undefined,
-    longestSilenceMs: 0,
-    outputTokens: 0,
-    answer: false,
-    reasoning: false,
-    reported: 0,
-    keptAlive: false,
-    counted,
-  }
-}
-
-/** What an attempt that answered at `endedAt` showed: its silence counts to its end, and a reply that did not stream is one silence as long as it ran. */
-function seenOf(watch: Watch | undefined, sentAt: number, endedAt: number, reply: Usage | undefined): AttemptSeen {
-  const attemptMs = Math.round(endedAt - sentAt)
-  if (watch === undefined) {
-    return {
-      attemptMs,
-      longestSilenceMs: attemptMs,
-      outputTokens: reply?.outputTokens ?? 0,
-      answer: false,
-      reasoning: false,
-    }
-  }
-  return {
-    attemptMs,
-    ...watch.firstDataAt === undefined
-      ? {}
-      : {
-          firstTokenMs: Math.round(watch.firstDataAt - watch.sentAt),
-        },
-    longestSilenceMs: Math.round(Math.max(watch.longestSilenceMs, endedAt - watch.progressAt)),
-    outputTokens: watch.firstDataAt === undefined
-      ? reply?.outputTokens ?? 0
-      : watch.outputTokens,
-    answer: watch.answer,
-    reasoning: watch.reasoning,
-  }
 }
 
 /**
@@ -1380,63 +1069,6 @@ function cutReading(ctx: RunContext, target: Target, error: unknown, attemptMs: 
 }
 
 /**
- * A sign of life of a stream as the core reads it, from a value an adapter handed over: own data, numbers and booleans
- * alone; anything else is no signal. A count is any finite number of at least 0, read as a whole number, floored and
- * clamped to a safe integer, so a server that counts in fractions is still a stream that makes progress.
- */
-type Signal
-  = | { readonly kind: 'headers', readonly rateLimit?: RateLimit }
-    | { readonly kind: 'keep-alive' }
-    | { readonly kind: 'data', readonly outputTokens: number, readonly answer: boolean, readonly reasoning: boolean }
-
-function signalOf(value: unknown): Signal | undefined {
-  const kind = ownData(value, 'kind')
-  if (kind === 'headers') {
-    const rateLimit = rateLimitFacts(ownData(value, 'rateLimit'))
-    return rateLimit === undefined
-      ? { kind }
-      : { kind, rateLimit }
-  }
-  if (kind === 'keep-alive') return { kind }
-  if (kind !== 'data') return undefined
-  const outputTokens = ownData(value, 'outputTokens')
-  const answer = ownData(value, 'answer')
-  const reasoning = ownData(value, 'reasoning')
-  return typeof outputTokens === 'number' && Number.isFinite(outputTokens) && outputTokens >= 0 && typeof answer === 'boolean' && typeof reasoning === 'boolean'
-    ? {
-        kind,
-        outputTokens: Math.min(Math.floor(outputTokens), Number.MAX_SAFE_INTEGER),
-        answer,
-        reasoning,
-      }
-    : undefined
-}
-
-const RATE_LIMIT_FIELDS = [
-  'requests',
-  'tokens',
-  'tokensLimit',
-  'requestsResetMs',
-  'tokensResetMs',
-] as const
-
-/**
- * The rate-limit headers a reply, a failure or a stream's headers signal states, as numbers alone: each field is read as own data and
- * kept when it is a finite number of at least 0, so a getter never runs, an inherited field is never read and nothing else is copied.
- * Undefined when none is left.
- */
-function rateLimitFacts(value: unknown): RateLimit | undefined {
-  const facts: { -readonly [Field in keyof RateLimit]: number } = {}
-  for (const field of RATE_LIMIT_FIELDS) {
-    const stated = ownData(value, field)
-    if (typeof stated === 'number' && Number.isFinite(stated) && stated >= 0) facts[field] = stated
-  }
-  return Object.keys(facts).length === 0
-    ? undefined
-    : facts
-}
-
-/**
  * What an attempt tells its lane when it failed: what the provider's own error says of itself, its Retry-After and its rate-limit
  * headers, as facts. It is read from the error the provider threw, before the core rewrites it, so a failure the core rebuilds as a
  * cut on the way or a stall loses none of what the server said.
@@ -1457,132 +1089,6 @@ function endOf(error: unknown): Parameters<LaneAttempt['ended']>[0] {
       ? {}
       : { rateLimit },
   }
-}
-
-/**
- * One attempt of a call, settled once, by the first of: the provider's reply or failure; its own
- * ceiling (`ceilingOf`), as a `timeout` error of the core's own with the attempt's signal aborted with it as the
- * reason; its stall, for a streamed attempt (`watch`), as a `timeout` error with `stalledMs`; the review's halt (its
- * abort, its deadline or the end of the interrupt's grace), with the halt's reason.
- * The attempt's timers and the join to the review's halt go when it settles, on every path. A provider that throws before
- * it returns a promise, or returns a plain object, is handled; whatever it does once the attempt
- * settled is caught and ignored, and it is never an unhandled rejection. The join is one listener,
- * not `AbortSignal.any`, so nothing builds up on a signal that outlives thousands of attempts.
- *
- * A streamed attempt is handed an `onProgress`, and stalls when no headers or data event has come for its window
- * (`Clocks.window`): one timer at a time, which when it fires stalls the attempt if its last progress is a whole window
- * old, and else is armed again for what is left, so a stream that keeps coming arms one timer however many events it
- * sends; the first data event arms it again only when the window shrinks to the learned one. Keep-alives are no progress.
- */
-function attempt(ctx: RunContext, target: Target, request: CompletionRequest, watch?: Watch, lane?: LaneAttempt): Promise<CompletionResponse> {
-  if (ctx.halt.aborted) return Promise.reject(ctx.halt.reason)
-  const controller = new AbortController()
-  const ceiling = ceilingOf(target, request)
-  return new Promise<CompletionResponse>((resolve, reject) => {
-    let settled = false
-    let cancel = (): void => {}
-    let cancelStall = (): void => {}
-    /** When the stall timer is due, on the review's clock, while one is armed. */
-    let dueAt: number | undefined
-    /** True the first time, when it clears the timers and the listener; false once the attempt has settled. */
-    function done(): boolean {
-      if (settled) return false
-      settled = true
-      cancel()
-      cancelStall()
-      ctx.halt.removeEventListener('abort', onAbort)
-      return true
-    }
-    function onAbort(): void {
-      if (!done()) return
-      controller.abort(ctx.halt.reason)
-      reject(ctx.halt.reason)
-    }
-    function arm(ms: number): void {
-      cancelStall()
-      dueAt = ctx.clock.now() + ms
-      cancelStall = ctx.clock.timer(ms, onStall)
-    }
-    function onStall(): void {
-      if (settled || watch === undefined) return
-      const window = ctx.clocks.window(target, ceiling, watch.firstDataAt !== undefined)
-      const quiet = ctx.clock.now() - watch.progressAt
-      if (quiet < window) {
-        arm(Math.max(1, Math.ceil(window - quiet)))
-        return
-      }
-      if (!done()) return
-      const error = new ProviderError({
-        providerId: target.ref.id,
-        kind: 'timeout',
-        message: `no reply progress within ${window} ms`,
-        stalledMs: window,
-      })
-      controller.abort(error)
-      reject(error)
-    }
-    function onProgress(value: unknown): void {
-      if (settled || watch === undefined) return
-      const signal = signalOf(value)
-      if (signal === undefined) return
-      try {
-        const now = ctx.clock.now()
-        if (signal.kind !== 'keep-alive') {
-          watch.longestSilenceMs = Math.max(watch.longestSilenceMs, now - watch.progressAt)
-          watch.progressAt = now
-        }
-        if (signal.kind === 'headers') {
-          lane?.headers(signal.rateLimit)
-          return
-        }
-        if (signal.kind === 'keep-alive') {
-          watch.counted(watch, 'keep-alive')
-          return
-        }
-        const first = watch.firstDataAt === undefined
-        watch.firstDataAt ??= now
-        watch.outputTokens = Math.max(watch.outputTokens, signal.outputTokens)
-        watch.answer ||= signal.answer
-        watch.reasoning ||= signal.reasoning
-        if (first) {
-          const next = ctx.clocks.window(target, ceiling, true)
-          if (now + next < watch.sentAt + ceiling && (dueAt === undefined || now + next < dueAt)) arm(next)
-        }
-        watch.counted(watch, 'data')
-      } catch {
-        // A sink that throws has ended the review already (`emit`), and a signal is only advice: it never fails the adapter that reads the stream.
-      }
-    }
-    cancel = ctx.clock.timer(ceiling, () => {
-      if (!done()) return
-      const error = new ProviderError({ providerId: target.ref.id, kind: 'timeout', message: `no reply within ${ceiling} ms` })
-      controller.abort(error)
-      reject(error)
-    })
-    if (watch !== undefined) {
-      const window = ctx.clocks.window(target, ceiling, false)
-      if (window < ceiling) arm(window)
-    }
-    ctx.halt.addEventListener('abort', onAbort, { once: true })
-    let call: Promise<CompletionResponse>
-    try {
-      call = Promise.resolve(target.provider.complete({
-        ...request,
-        signal: controller.signal,
-        ...watch === undefined
-          ? {}
-          : { onProgress },
-      }))
-    } catch (error) {
-      if (done()) reject(error)
-      return
-    }
-    call.then((response) => {
-      if (done()) resolve(response)
-    }, (error: unknown) => {
-      if (done()) reject(error)
-    })
-  })
 }
 
 /**
@@ -1611,20 +1117,4 @@ export async function stage<T>(ctx: RunContext, profile: string, name: StageName
     count: count(result),
   })
   return result
-}
-
-/**
- * The usage a provider reported, when its counts can be trusted: `inputTokens` and `outputTokens`
- * finite numbers of at least 0, plus `costUsd` when it is one too. Anything else is undefined: a
- * reply's usage is as untrusted as its text.
- */
-export function checkedUsage(usage: unknown): Usage | undefined {
-  if (!isRecord(usage) || !isCount(usage.inputTokens) || !isCount(usage.outputTokens)) return undefined
-  const checked: Usage = { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }
-  if (isCount(usage.costUsd)) checked.costUsd = usage.costUsd
-  return checked
-}
-
-function isCount(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0
 }

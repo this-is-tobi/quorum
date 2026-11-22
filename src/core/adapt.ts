@@ -1,6 +1,6 @@
 import { holdsReasoning } from './output.ts'
 import type { CompletionResponse } from './ports.ts'
-import { isRefusal, lackOf, ownData } from './stages/context.ts'
+import { isRefusal, lackOf, ownData } from './facts.ts'
 import type { Target } from './stages/context.ts'
 import type { Adaptation } from './types.ts'
 
