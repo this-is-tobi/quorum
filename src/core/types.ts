@@ -772,11 +772,11 @@ export type QuorumEvent
      * A research part ended, sent once per part as it ends, after its `recovered` event when it has one. `part` is
      * its position, `outcome` what became of it (`reviewed` when every piece was read, else the first unread
      * piece's), `durationMs` the time from its first call's start (0 when it made none), `spent` the tokens its
-     * calls counted, `listed` the findings its read replies listed (absent when none was read), `failure` what the
-     * first call that failed said of itself, and `pieces` the pieces recovery split it into, how many were read
-     * and how many were not, by outcome. Every field is a count, a duration or a code word.
+     * calls counted, `reused` true when it made at least one call and the store answered every one, `listed` the
+     * findings its read replies listed (absent when none was read), `failure` what the first call that failed said
+     * of itself, and `pieces` the pieces recovery split it into, how many were read and how many were not, by outcome. Every field is a count, a duration or a code word.
      */
-    | { type: 'part', profile: string, part: { index: number, count: number }, outcome: PartOutcome, durationMs: number, spent: number, listed?: number, failure?: CallFailure, pieces?: { count: number, read: number, unread: Partial<Record<Exclude<PartOutcome, 'reviewed'>, number>> } }
+    | { type: 'part', profile: string, part: { index: number, count: number }, outcome: PartOutcome, durationMs: number, spent: number, reused?: true, listed?: number, failure?: CallFailure, pieces?: { count: number, read: number, unread: Partial<Record<Exclude<PartOutcome, 'reviewed'>, number>> } }
     /**
      * The review began to stop while its stages ran, sent once. The deadline (`cause` `review-deadline`) stops every call
      * in flight and starts no new one, and what is left undone is a `review-deadline` gap. The interrupt (`cause`

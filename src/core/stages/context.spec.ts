@@ -1962,8 +1962,8 @@ describe('the events of a call', () => {
   it('tells onEnd the spend and the start of each call that built its request, whatever its end', async () => {
     const clock = fakeClock()
     const { ctx } = context(clock)
-    const ends: Array<{ readonly spent: number, readonly startedAt: number }> = []
-    const onEnd = (end: { readonly spent: number, readonly startedAt: number }): void => {
+    const ends: Array<{ readonly spent: number, readonly startedAt: number, readonly reused: boolean }> = []
+    const onEnd = (end: { readonly spent: number, readonly startedAt: number, readonly reused: boolean }): void => {
       ends.push(end)
     }
     // Time moves to 5000 before the first call builds its request.
@@ -1972,7 +1972,7 @@ describe('the events of a call', () => {
     const usage = { inputTokens: 10, outputTokens: 5 }
     await callProvider(ctx, requester, target(async () => ({ text: '{}', model: 'm', usage })), () => request, { onEnd })
     expect(ends).toEqual([
-      { spent: 15, startedAt: 5000 },
+      { spent: 15, startedAt: 5000, reused: false },
     ])
 
     // A failure ends once, with what its attempt settled at.
@@ -1980,7 +1980,7 @@ describe('the events of a call', () => {
       throw failure({ kind: 'refusal', usage })
     }), () => request, { onEnd })).rejects.toThrow('failed')
     expect(ends).toHaveLength(2)
-    expect(ends[1]).toEqual({ spent: 15, startedAt: 5000 })
+    expect(ends[1]).toEqual({ spent: 15, startedAt: 5000, reused: false })
 
     // A reply the store answered spent nothing; a check that throws still tells the call's end.
     const keeping: RunContext = {
@@ -1990,6 +1990,7 @@ describe('the events of a call', () => {
     await callProvider(keeping, researching, target(answer, worst(700)), keyed, { onEnd })
     await callProvider(keeping, researching, target(answer, worst(700)), keyed, { onEnd })
     expect(ends.slice(2).map(end => end.spent)).toEqual([700, 0])
+    expect(ends.slice(2).map(end => end.reused)).toEqual([false, true])
     await expect(callProvider(ctx, requester, target(answer), () => request, {
       check: () => {
         throw new Error('no envelope')

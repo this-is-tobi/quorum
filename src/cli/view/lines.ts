@@ -170,7 +170,7 @@ export function kindWords({ kind, status }: CallFailure): string {
 
 /**
  * The line of a research part that ended: answered with its time, tokens and findings listed (the time alone under the
- * public view), or why it was not read; a part recovery split says how many of its pieces were read, and which were not,
+ * public view), or reused from the saved state with its findings listed (nothing more under the public view), or why it was not read; a part recovery split says how many of its pieces were read, and which were not,
  * by outcome. It holds numbers and code words only.
  */
 function partWords(event: Extract<QuorumEvent, { type: 'part' }>, view: ReportView): string {
@@ -180,6 +180,11 @@ function partWords(event: Extract<QuorumEvent, { type: 'part' }>, view: ReportVi
     const split = pieces === undefined
       ? ''
       : `, in ${pieces.count} pieces`
+    if (event.reused === true) {
+      return view === 'public'
+        ? `${where}: reused from the saved state${split}`
+        : `${where}: reused from the saved state, ${event.listed ?? 0} finding(s) listed${split}`
+    }
     return view === 'public'
       ? `${where}: answered in ${durationWords(event.durationMs)}${split}`
       : `${where}: answered in ${durationWords(event.durationMs)}, ${event.spent} tokens, ${event.listed ?? 0} finding(s) listed${split}`

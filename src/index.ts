@@ -114,7 +114,7 @@ export type { SourceRead, SourceSpec } from './sources/read.ts'
  * whose reply passed its check and every vote that parsed is kept in `directory` as it completes, and a cut-off or
  * saturated research reply as a marker that sends its part straight to recovery, so a rerun of a review that failed
  * late reuses what it paid for, for a request sent as it was and checked as a fresh reply, and spends nothing on it.
- * `providers` are the config's (`ResolvedConfig['providers']`): each provider's identity (every field of it but its key, `timeoutMs`, `stallTimeoutMs` and `retries`) is part of an entry's key, so
+ * `providers` are the config's (`ResolvedConfig['providers']`): each provider's identity (every field of it but its key and the six `OUT_OF_IDENTITY` leaves out: `timeoutMs`, `stallTimeoutMs`, `retries`, `stream`, `streams` and `slots`) is part of an entry's key, so
  * a changed provider is a miss, and a provider the config does not name keeps nothing. The rest is the process's: its
  * platform, the user that owns it (the directory must be that user's, and no other user's to write), quorum's own
  * version, and its standard error, where each warning is one inert line. The directory is made with mode 0700 when it is

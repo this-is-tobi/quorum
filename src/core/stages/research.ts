@@ -378,9 +378,11 @@ const isSpoken = (leaf: Leaf): leaf is SpokenLeaf => 'words' in leaf
 /** What a part that holds nothing but white space is read as, since no model is asked about it: a reply with no finding. */
 const NO_FINDINGS_TEXT = '{"findings":[]}'
 
-/** What the calls of one part came to, as each tells its end: the tokens they spent and the clock's reading when the first one's request was built. */
+/** What the calls of one part came to, as each tells its end: the tokens they spent, the clock's reading when the first one's request was built, how many calls built one and how many of them the store answered. */
 interface Spend {
   spent: number
+  calls: number
+  reused: number
   startedAt?: number
 }
 
@@ -431,8 +433,10 @@ async function askResearch(ctx: RunContext, run: ProfileRun, where: Position, sp
         state.attempts = made
         state.ran = ran
       },
-      onEnd: ({ spent, startedAt }) => {
+      onEnd: ({ spent, startedAt, reused }) => {
         spend.spent += spent
+        spend.calls += 1
+        if (reused) spend.reused += 1
         spend.startedAt ??= startedAt
       },
     })
@@ -576,7 +580,7 @@ function callPosition(part: number, parts: number, piece: Piece): Position {
  */
 async function researchPart(ctx: RunContext, run: ProfileRun, scope: Scope, root: Piece, rootText: string | undefined, position: { readonly part: number, readonly parts: number }, requestOf: (piece: Piece, text: string, ask: Ask) => CompletionRequest): Promise<PartRun> {
   const leaves: Leaf[] = []
-  const spend: Spend = { spent: 0 }
+  const spend: Spend = { spent: 0, calls: 0, reused: 0 }
   let recovered: Recovered | undefined
   const visit = async (piece: Piece): Promise<void> => {
     if (scope.stop.by !== undefined) {
@@ -680,8 +684,8 @@ async function researchPart(ctx: RunContext, run: ProfileRun, scope: Scope, root
 /**
  * The `part` event of a part whose leaves are known: its outcome (`reviewed` when every piece was read, else the first
  * unread piece's in the diff's order), the time from its first call's start (0 when it made none), what its calls spent,
- * the findings its read replies listed (none when no reply was read), the first failure a call that failed told, and, for
- * a part that was split, its pieces: how many, how many were read, and how many were not, by outcome.
+ * the findings its read replies listed (none when no reply was read), `reused` when it made a call and the store answered
+ * every one, the first failure a call that failed told, and, for a part that was split, its pieces: how many, how many were read, and how many were not, by outcome.
  */
 function partEvent(ctx: RunContext, profile: string, position: { readonly part: number, readonly parts: number }, leaves: readonly Leaf[], spend: Spend, split: boolean): Extract<QuorumEvent, { type: 'part' }> {
   const counts: Partial<Record<Exclude<PartOutcome, 'reviewed'>, number>> = {}
@@ -708,6 +712,9 @@ function partEvent(ctx: RunContext, profile: string, position: { readonly part: 
       ? 0
       : Math.round(ctx.clock.now() - spend.startedAt),
     spent: spend.spent,
+    ...spend.calls > 0 && spend.reused === spend.calls
+      ? { reused: true as const }
+      : {},
     ...listed.length === 0
       ? {}
       : {

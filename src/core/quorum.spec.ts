@@ -6846,6 +6846,32 @@ describe('a reply store', () => {
     expect(alone.meta).not.toHaveProperty('reused')
   })
 
+  it('marks a part whose every call the store answered as reused, and a part that sent a fresh call as not', async () => {
+    const store = memory()
+    const parts = (events: readonly QuorumEvent[]): Array<Extract<QuorumEvent, { type: 'part' }>> => events.filter(event => event.type === 'part')
+    const first = build(answers(), keeps())
+    await first.quorum.review({ diff }, { store })
+    expect(parts(first.events).map(part => part.reused)).toEqual([undefined])
+    // The rerun over the first run's store: no call is made, and the part says so.
+    const rerun = build(silent('finder'), silent('voter'))
+    await rerun.quorum.review({ diff }, { store })
+    expect(parts(rerun.events)).toHaveLength(1)
+    expect(parts(rerun.events)[0]).toMatchObject({ reused: true, spent: 0, durationMs: 0 })
+    // A stored reply that was refused is asked again: its part sent a fresh call and carries no mark.
+    for (const [name, call] of store.entries) {
+      if ('reply' in call) {
+        store.entries.set(name, {
+          reply: { ...call.reply, text: 'not an envelope' },
+        })
+      }
+    }
+    const refused = build(answers(), keeps())
+    await refused.quorum.review({ diff }, { store })
+    expect(refused.events.some(event => event.type === 'stored-refused')).toBe(true)
+    expect(parts(refused.events)).toHaveLength(1)
+    expect(parts(refused.events)[0]).not.toHaveProperty('reused')
+  })
+
   it.each([
     ['lanes', undefined],
     ['a set concurrency', 2],
