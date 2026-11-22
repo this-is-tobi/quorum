@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.9.0](https://github.com/this-is-tobi/quorum/compare/v0.8.0...v0.9.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* a path review is never held at exit 2 for its size, an explicit maxReviewTokens below its estimate runs to its cap with token-cap gaps, and with reviewTimeoutMs unset its deadline is 24 hours where it was 30 minutes.
+* an interrupted review writes its result and exits 130 where 0.8.0 wrote nothing; interrupted is a new gap reason, coverage reason, vote failure and outcome status, in every format.
+* a review writes new stderr lines in every mode, its part lines, heartbeat and summary, and a live block on a terminal: a script that read stderr through a pseudo-terminal sets --progress plain.
+* QuorumEvent gains the call:start, call:retry, part and run:stopping types, and its call and stage:start events gain fields, so an exhaustive switch over it no longer compiles.
+
+### Features
+
+* draw a live panel under the log on a terminal, with plain, JSON and quiet modes ([ca4f02d](https://github.com/this-is-tobi/quorum/commit/ca4f02df5359a5f3c36bc0576ef5f30d86576174))
+* draw the progress block of a review: its parts, calls, tokens and time left, to fit ([130d52a](https://github.com/this-is-tobi/quorum/commit/130d52ace9aa37c31dcad65d7b3c1750b326f774))
+* end every review with a summary of its time, tokens, calls, gaps and where the report went ([9f52d57](https://github.com/this-is-tobi/quorum/commit/9f52d57549eb71e90fc0877c6571386447c56ce6))
+* keep a path review's answered calls by default on a terminal, for a rerun to reuse ([8916db3](https://github.com/this-is-tobi/quorum/commit/8916db38b752dab223c40f3eb67f670349c440da))
+* keep what a review read when it is interrupted, and write its report with exit 130 ([63dfd03](https://github.com/this-is-tobi/quorum/commit/63dfd03ed61dfdce3262646e2e2a7d1bcc22ada2))
+* let a path review's token cap follow its estimate, and its deadline run a day ([147d5fa](https://github.com/this-is-tobi/quorum/commit/147d5fa499f1fdf3e30d6ea56ed1db2f8d073d61))
+* report each call's start, each retry, each research part and the deadline as events ([f4253b7](https://github.com/this-is-tobi/quorum/commit/f4253b71a17c0b52f252acbabbe8a1466e264772))
+* write each research part, retry and stop on stderr, with a heartbeat in a quiet minute ([21be9e0](https://github.com/this-is-tobi/quorum/commit/21be9e0d37da3902822b4d257fba01092beb836e))
+
+
+### Bug Fixes
+
+* name a call cut on the way and after how long, where the fix said to check the server ([6b20a3b](https://github.com/this-is-tobi/quorum/commit/6b20a3b7942f0159a291a8fe7470c0ba8a285f88))
+* start each erase of the progress block at the line's start, so an echoed ^C leaves nothing ([3fefb9e](https://github.com/this-is-tobi/quorum/commit/3fefb9e1450926139ff7de966aebe163fd51e11c))
+* stop calling a provider at its first reply that says its quota or credit is used up ([cff0493](https://github.com/this-is-tobi/quorum/commit/cff0493092bc131df607c1ab32841fd9b4a40b8a))
+
 ## [0.8.0](https://github.com/this-is-tobi/quorum/compare/v0.7.0...v0.8.0) (2026-11-21)
 
 
