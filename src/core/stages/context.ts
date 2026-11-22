@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { thinkingLowersTo } from '../adapt.ts'
 import type { Adaptations, Fields } from '../adapt.ts'
 import type { ProfileBudgets } from '../budgets.ts'
 import { wait } from '../clock.ts'
@@ -13,7 +14,7 @@ import type { Ledger } from '../limits.ts'
 import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, slotsProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../ports.ts'
 import type { Adapts, CompletionRequest, CompletionResponse, EventSink, Provider, ReplyStore, StoredCall } from '../ports.ts'
 import { requestDigest } from '../prompts.ts'
-import { isTimeout, retryWait } from '../retry.ts'
+import { isReasoningOnly, isTimeout, retryWait } from '../retry.ts'
 import { DEFAULT_REPLY_TOKENS, expectedOf, replyLimit, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
 import type { Adaptation, FailOn, Position, ProviderRef, QuorumEvent, StageName, Thresholds, Usage } from '../types.ts'
 import { newWatch, progressReports, seenOf } from '../watch.ts'
@@ -436,6 +437,10 @@ export function elapsed(started: number): number {
  * the health once, after its last send, and a probe's 400 or 422 counts toward nothing: a refused probe ends the
  * call with its first failure. A research reply goes through `ctx.adapt.reasoned`.
  *
+ * A reply of only reasoning (a `no-answer` failure whose `noAnswer` is `thinking`) of a provider whose thinking the review
+ * never lowers (`thinkingLowersTo`: a level the config sets) is no adaptation's: it is sent once more as it is, once per
+ * call, as one of the provider's retries, and a second ends the call. The call's final failure alone says what the reply lacked.
+ *
  * The stage's `check`, when it passes one, reads the reply once the call is over as a call that answered: after
  * its usage is settled and the down rule has seen the reply, and before the call's `call` event, which is sent as `ok`
  * and carries what the check listed (`listed`) and whether the reply reasoned. It says whether the reply is an answer or
@@ -494,6 +499,8 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     let usage: Usage | undefined
     let spent = 0
     let timedOut = false
+    /** Whether an attempt of the call ended with a reply of only reasoning: the call sends one such reply once more. */
+    let reasoningOnly = false
     let replied: Usage | undefined
     /** What the attempt that answered showed of its stream, when it showed a data event: the `call` event carries it. */
     let timings: { readonly firstTokenMs: number, readonly longestSilenceMs: number, readonly ceilingMs?: number } | undefined
@@ -667,6 +674,8 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
             retried,
             retries: target.retries,
             timedOut,
+            reasoningOnly,
+            lowersThinking: thinkingLowersTo(target) !== undefined,
             timeLeftMs: ctx.stop.aborted
               ? Number.POSITIVE_INFINITY
               : ctx.deadline.at - ctx.clock.now(),
@@ -674,13 +683,14 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           if (wait === undefined) throw error
           if (ctx.stop.aborted) throw ctx.stop.reason
           timedOut ||= isTimeout(facts)
+          reasoningOnly ||= isReasoningOnly(facts)
           retried += 1
           ctx.emit({
             type: 'call:retry',
             call: number,
             attempt: retried,
             retries: target.retries,
-            // A call retries only a `network`, `timeout` or `http` failure, kinds `providerFailure` always reads.
+            // A call retries only a `network`, `timeout`, `http` or `no-answer` failure, kinds `providerFailure` always reads.
             failure: providerFailure(error)!,
             attemptMs,
             waitMs: Math.round(wait),

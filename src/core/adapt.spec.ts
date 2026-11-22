@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createAdaptations } from './adapt.ts'
+import { createAdaptations, thinkingLowersTo } from './adapt.ts'
 import { ProviderError } from './errors.ts'
 import type { Provider } from './ports.ts'
 import { targetOf } from './stages/context.ts'
@@ -486,5 +486,35 @@ describe('adaptations', () => {
     expect(adapt.probe(target, cutOff('thinking'))).toBeUndefined()
     expect(adapt.probe(target, noAnswer('empty'))).toBeUndefined()
     expect(adapt.record()).toEqual([])
+  })
+})
+
+describe('thinkingLowersTo', () => {
+  it('names the level the review may lower a provider\'s thinking to, its adapts.thinking below its own, and none for a level the config sets', () => {
+    expect(thinkingLowersTo({
+      thinking: 'default',
+      adapts: { thinking: 'low' },
+    })).toBe('low')
+    expect(thinkingLowersTo({
+      thinking: 'default',
+      adapts: { thinking: 'off' },
+    })).toBe('off')
+    expect(thinkingLowersTo({
+      thinking: 'low',
+      adapts: { thinking: 'off' },
+    })).toBe('off')
+    expect(thinkingLowersTo({ thinking: 'low', adapts: undefined })).toBeUndefined()
+    expect(thinkingLowersTo({
+      thinking: 'default',
+      adapts: { prompt: true },
+    })).toBeUndefined()
+    expect(thinkingLowersTo({
+      thinking: 'low',
+      adapts: { thinking: 'low' },
+    })).toBeUndefined()
+    expect(thinkingLowersTo({
+      thinking: 'off',
+      adapts: { thinking: 'low' },
+    })).toBeUndefined()
   })
 })

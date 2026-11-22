@@ -388,6 +388,64 @@ describe('estimate', () => {
     expect(worstWith({ thinking: 'low', stream: true })).toBe(none + 3 * (one - none))
   })
 
+  it('counts each call once more, in the review\'s worst alone, for a provider that sends a reply of only reasoning once more', () => {
+    const lone: Profile = {
+      id: 'lone',
+      prompts: { research: 'Find bugs.', vote: 'Judge as {{lens.id}}.' },
+      lenses: [
+        { id: 'only', question: 'Is it real?' },
+      ],
+      policy: { high: 'unanimous', medium: 'off', low: 'off' },
+    }
+    const reserve = (request: CompletionRequest): number => requestTokens(request) + RESERVE
+    const estimateOf = (research: Partial<Provider>, voter: Partial<Provider>): Estimate => createQuorum({
+      profiles: [lone],
+      maxFindings: 3,
+      concurrency: 2,
+    }, {
+      profiles: {
+        lone: {
+          research: {
+            ...silent(reserve),
+            ...research,
+          },
+          voters: {
+            only: {
+              ...silent(reserve),
+              ...voter,
+            },
+          },
+        },
+      },
+    }).estimate({
+      diff: addedFile('a.js', 3),
+    })
+    const plain = estimateOf({}, {})
+    const { worst: profileWorst, vote } = plain.profiles.lone
+    expect(plain.worst).toBe(profileWorst)
+
+    const both = estimateOf({ retries: 2 }, { retries: 2 })
+    expect(both.profiles.lone.worst).toBe(profileWorst)
+    expect(both.worst).toBe(plain.worst + profileWorst)
+    // The researcher alone adds its part and its recovery, the voter alone the votes at their bound: the finding cap of 3 each.
+    expect(estimateOf({ retries: 2 }, {}).worst).toBe(plain.worst + profileWorst - 3 * vote.only)
+    expect(estimateOf({}, { retries: 1 }).worst).toBe(plain.worst + 3 * vote.only)
+
+    // A provider whose thinking the review may lower leaves a reply of only reasoning to that, and adds none of its own.
+    const lowers = {
+      adapts: { thinking: 'low' as const },
+    }
+    expect(estimateOf({ retries: 2, ...lowers }, { retries: 2, ...lowers }).worst).toBe(estimateOf(lowers, lowers).worst)
+    expect(estimateOf({ retries: 0 }, { retries: 0 }).worst).toBe(plain.worst)
+    for (const estimate of [
+      both,
+      estimateOf({ retries: 2 }, {}),
+    ]) {
+      expect(estimate.inFlight).toBe(plain.inFlight)
+      expect(estimate.expected).toBe(plain.expected)
+    }
+  })
+
   it('counts a provider object that serves research and votes once in the adaptations\' bound', () => {
     const lone: Profile = {
       id: 'lone',

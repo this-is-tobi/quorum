@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { providerFailure } from './facts.ts'
+import { failureFacts, providerFailure } from './facts.ts'
 
 const failure = (facts: Record<string, unknown>): Error => Object.assign(new Error('failed'), facts)
 
@@ -38,5 +38,18 @@ describe('providerFailure', () => {
     })
     expect(providerFailure(getter)).toEqual({ kind: 'timeout' })
     expect(providerFailure(Object.assign(Object.create({ ceilingMs: 5 }), { kind: 'timeout' }))).toEqual({ kind: 'timeout' })
+  })
+
+  it('reads a failure\'s noAnswer as own data, so a getter or an inherited field says nothing', () => {
+    expect(failureFacts(failure({ kind: 'no-answer', noAnswer: 'thinking' })).noAnswer).toBe('thinking')
+    const getter = new Error('x')
+    Object.defineProperty(getter, 'kind', { value: 'no-answer' })
+    Object.defineProperty(getter, 'noAnswer', {
+      get() {
+        throw new Error('a getter ran')
+      },
+    })
+    expect(failureFacts(getter).noAnswer).toBeUndefined()
+    expect(failureFacts(Object.assign(Object.create({ noAnswer: 'thinking' }), { kind: 'no-answer' })).noAnswer).toBeUndefined()
   })
 })

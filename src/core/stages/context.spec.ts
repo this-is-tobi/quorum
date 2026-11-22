@@ -637,6 +637,166 @@ describe('the retries of a call', () => {
   })
 })
 
+describe('a reply of only reasoning', () => {
+  const researcher: Requester = {
+    profile: 'security',
+    role: 'research',
+    part: { index: 12, count: 44 },
+  }
+  const reasoningOnly = (): ProviderError => new ProviderError({
+    providerId: 'p',
+    kind: 'no-answer',
+    noAnswer: 'thinking',
+    message: 'only reasoning',
+    usage: { inputTokens: 100, outputTokens: 900 },
+  })
+
+  it.each([
+    [
+      'low',
+      { thinking: 'low' as const },
+    ],
+    [
+      'off',
+      { thinking: 'off' as const },
+    ],
+    [
+      'default with no adapts',
+      { thinking: 'default' as const },
+    ],
+  ])('sends a reply of only reasoning once more as it is when the provider\'s thinking is %s, and reads the answer of the second', async (_name, facts) => {
+    const clock = fakeClock(0.5)
+    const { ctx, events, progress } = context(clock)
+    const sent: CompletionRequest[] = []
+    const set = target(async (asked) => {
+      sent.push(asked)
+      if (sent.length === 1) throw reasoningOnly()
+      return {
+        text: 'second',
+        model: 'm',
+        usage: { inputTokens: 100, outputTokens: 50 },
+      }
+    }, { ...facts, retries: 2 })
+    await expect(settle(clock, callProvider(ctx, researcher, set, () => request))).resolves.toEqual({ text: 'second' })
+    expect(sent).toHaveLength(2)
+    for (const asked of sent) {
+      expect(asked.messages).toEqual(request.messages)
+      expect(asked.thinking).toBeUndefined()
+      expect(asked.structuredOutput).toBeUndefined()
+      expect(asked.replyTokens).toBeUndefined()
+    }
+    expect(progress.filter(event => event.type === 'call:retry')).toEqual([
+      {
+        type: 'call:retry',
+        call: 1,
+        attempt: 1,
+        retries: 2,
+        failure: { kind: 'no-answer' },
+        attemptMs: 0,
+        waitMs: 250,
+      },
+    ])
+    expect(events).toEqual([
+      {
+        type: 'call',
+        call: 1,
+        profile: 'security',
+        role: 'research',
+        part: { index: 12, count: 44 },
+        provider: { id: 'p', model: 'm' },
+        durationMs: 250,
+        ok: true,
+        attempts: 2,
+        usage: { inputTokens: 200, outputTokens: 950 },
+        spent: 1150,
+      },
+    ])
+    expect(ctx.adapt.record()).toEqual([])
+  })
+
+  it('ends the call at its second reply of only reasoning, says what it lacked once, and counts the call once toward the provider being down', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, events, progress } = context(clock)
+    let ran = 0
+    const second = reasoningOnly()
+    const stuck = target(async () => {
+      ran += 1
+      throw ran === 1
+        ? reasoningOnly()
+        : second
+    }, { thinking: 'low', retries: 5 })
+    await expect(settle(clock, callProvider(ctx, researcher, stuck, () => request))).rejects.toBe(second)
+    expect(ran).toBe(2)
+    expect(progress.filter(event => event.type === 'call:retry')).toHaveLength(1)
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'call', ok: false, attempts: 2 }),
+      {
+        type: 'reply-lacked',
+        provider: 'p',
+        kind: 'no-answer',
+        noAnswer: 'thinking',
+        outputTokens: 900,
+        inputTokens: 100,
+      },
+    ])
+    expect(ctx.health.refused(stuck.provider)).toBeUndefined()
+  })
+
+  it('finds a provider down at its third vote when each reply and its retry hold only reasoning, and sends it no fourth', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, events } = context(clock)
+    let ran = 0
+    const stuck = target(async () => {
+      ran += 1
+      throw reasoningOnly()
+    }, { thinking: 'low', retries: 2 })
+    for (let call = 0; call < 3; call++) {
+      await expect(settle(clock, callProvider(ctx, requester, stuck, () => request))).rejects.toMatchObject({ kind: 'no-answer' })
+    }
+    expect(ran).toBe(6)
+    expect(events.filter(event => event.type === 'provider-down')).toEqual([
+      {
+        type: 'provider-down',
+        provider: 'p',
+        kind: 'no-answer',
+        calls: 3,
+        noAnswer: 'thinking',
+      },
+    ])
+    await expect(settle(clock, callProvider(ctx, requester, stuck, () => request))).rejects.toBeInstanceOf(ProviderDownError)
+    expect(ran).toBe(6)
+  })
+
+  it('leaves a reply of only reasoning to the thinking adaptation when the provider\'s thinking is automatic, and sends none twice with no retries', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, progress } = context(clock)
+    const levels: Array<CompletionRequest['thinking']> = []
+    const lowering = target(async (asked) => {
+      levels.push(asked.thinking)
+      if (asked.thinking === undefined) throw reasoningOnly()
+      return { text: 'done', model: 'm' }
+    }, {
+      adapts: { thinking: 'low' },
+      retries: 2,
+    })
+    await expect(settle(clock, callProvider(ctx, researcher, lowering, () => request))).resolves.toEqual({ text: 'done' })
+    expect(levels).toEqual([undefined, 'low'])
+    expect(progress.filter(event => event.type === 'call:retry')).toEqual([])
+    expect(ctx.adapt.record()).toMatchObject([
+      { setting: 'thinking', to: 'low', cause: 'no-answer-thinking' },
+    ])
+
+    const none = fakeClock(0.5)
+    let ran = 0
+    const unretried = target(async () => {
+      ran += 1
+      throw reasoningOnly()
+    }, { thinking: 'low', retries: 0 })
+    await expect(settle(none, callProvider(context(none).ctx, researcher, unretried, () => request))).rejects.toMatchObject({ kind: 'no-answer' })
+    expect(ran).toBe(1)
+  })
+})
+
 describe('the worst case of a call', () => {
   const complete = async (): Promise<CompletionResponse> => ({ text: '', model: 'm' })
   const provider: Provider = { id: 'p', model: 'm', complete }
