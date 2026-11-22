@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ProviderError } from '../core/errors.ts'
 import { chunkedBody, sse } from '../testing/streams.ts'
 import { fakeServer } from '../testing/server.ts'
-import { MAX_ANSWER_CHARS, ndjsonItems, sseItems, STREAM_LIMITS, streamEnded } from './stream.ts'
+import { MAX_ANSWER_CHARS, ndjsonItems, sseItems, STREAM_LIMITS, streamedTokens, streamEnded } from './stream.ts'
 import type { ReadOptions, StreamItem } from './stream.ts'
 
 const BOM = String.fromCharCode(0xFEFF)
@@ -47,6 +47,16 @@ describe('the limits', () => {
     expect(error).toBeInstanceOf(ProviderError)
     expect(error.kind).toBe('network')
     expect(error.message).toBe('p: the reply stream ended before its last event')
+  })
+})
+
+describe('streamedTokens', () => {
+  it('is the larger of the count, floored, and a quarter of the characters, rounded up, always a whole number', () => {
+    expect(streamedTokens(2.5, 0)).toBe(2)
+    expect(streamedTokens(2.5, 10)).toBe(3)
+    expect(streamedTokens(0, 3)).toBe(1)
+    expect(streamedTokens(100, 40)).toBe(100)
+    expect(streamedTokens(0, 0)).toBe(0)
   })
 })
 

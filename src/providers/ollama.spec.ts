@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ConfigError } from '../core/errors.ts'
+import { ConfigError, ProviderError } from '../core/errors.ts'
 import type { ProviderErrorKind } from '../core/errors.ts'
-import type { CompletionRequest } from '../core/ports.ts'
+import type { CompletionRequest, StreamSignal } from '../core/ports.ts'
 import { jsonReply, sent, stubFetch, textReply } from '../testing/http.ts'
-import { ollama } from './ollama.ts'
+import { assembleOllama, ollama } from './ollama.ts'
 import type { OllamaOptions } from './ollama.ts'
+import { ndjsonItems } from './stream.ts'
+import type { StreamItem } from './stream.ts'
 import { chatResponse, contextExceeded, countedOut, debugRender, empty, reasoningOnly, truncated } from '../testing/fixtures/ollama.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
+import { chunkedBody, ollamaStream } from '../testing/streams.ts'
 
 const request: CompletionRequest = {
   system: 'instructions',
@@ -57,9 +60,9 @@ describeProviderContract({
     read: body => body.format,
     extraBody: { format: 'json' },
   },
-  streams: false,
-  streamFields: {},
-  streamed: reply => jsonReply(reply),
+  streams: true,
+  streamFields: { stream: true },
+  streamed: reply => ollamaStream(reply),
   reservedBodyKeys: [
     'model',
     'messages',
@@ -106,7 +109,7 @@ describe('ollama', () => {
     expect(provider.thinking).toBe(thinking)
   })
 
-  it('posts the system message first, then the data, to /api/chat, with no stream, no truncation, temperature 0 and JSON format', async () => {
+  it('posts the system message first, then the data, to /api/chat, with a stream, no truncation, temperature 0 and JSON format', async () => {
     const fetchMock = stubFetch(chatResponse)
     await provider.complete(request)
     const { url, headers, body } = sent(fetchMock)
@@ -115,7 +118,7 @@ describe('ollama', () => {
     expect(body).toEqual({
       model: 'qwen3.6:27b',
       messages,
-      stream: false,
+      stream: true,
       truncate: false,
       shift: false,
       options: { temperature: 0, num_predict: 16_000, num_ctx: 131072 },
@@ -142,7 +145,7 @@ describe('ollama', () => {
     expect(sent(fetchMock).body).toEqual({
       model: 'qwen3.6:27b',
       messages,
-      stream: false,
+      stream: true,
       truncate: false,
       shift: false,
       options: { num_predict: 900, num_ctx: 131072 },
@@ -240,7 +243,7 @@ describe('ollama', () => {
     expect(sent(fetchMock).body).toEqual({
       model: 'qwen3.6:27b',
       messages,
-      stream: false,
+      stream: true,
       truncate: false,
       shift: false,
       options: { num_predict: 16_000, num_ctx: 131072 },
@@ -255,6 +258,7 @@ describe('ollama', () => {
       model: 'qwen3.6:27b',
       usage: { inputTokens: 1840, outputTokens: 412 },
       reasoning: true,
+      whole: true,
     })
     stubFetch({
       ...chatResponse,
@@ -270,6 +274,7 @@ describe('ollama', () => {
       model: 'qwen3.6:27b',
       usage: undefined,
       reasoning: true,
+      whole: true,
     })
   })
 
@@ -404,5 +409,436 @@ describe('ollama on a 400 that names its structured-output field', () => {
     expect(await failure('{"error":"the model does not support reformatting"}', 400)).toMatchObject({ refused: undefined })
     expect(await failure('{"error":"invalid format"}', 404)).toMatchObject({ refused: undefined })
     expect(await failure('{"error":"invalid format"}', 400, { structuredOutput: 'prompt' })).toMatchObject({ refused: undefined })
+  })
+})
+
+describe('ollama streams', () => {
+  const base: OllamaOptions = {
+    id: 'local',
+    baseUrl: 'http://localhost:11434',
+    model: 'qwen3.6:27b',
+    contextTokens: 131072,
+  }
+  const local = ollama(base)
+  type Line = Record<string, unknown>
+  const lineText = (lines: readonly Line[]): string => lines.map(line => `${JSON.stringify(line)}\n`).join('')
+  const streamOf = (lines: readonly Line[], type = 'application/x-ndjson'): Response => new Response(lineText(lines), {
+    headers: { 'content-type': type },
+  })
+  const piece = (fields: Line): Line => ({
+    model: 'qwen3.6:27b',
+    created_at: '2026-11-09T12:00:00.000000Z',
+    message: { role: 'assistant', content: '', ...fields },
+    done: false,
+  })
+  const done = (fields: Line = {}): Line => ({
+    ...piece({}),
+    done: true,
+    done_reason: 'stop',
+    prompt_eval_count: 41,
+    eval_count: 23,
+    ...fields,
+  })
+  const serve = (...responses: Response[]): ReturnType<typeof vi.fn> => {
+    const fetchMock = vi.fn()
+    for (const response of responses) fetchMock.mockImplementationOnce(async () => response)
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+  const failed = async (response: Response, provider = local): Promise<unknown> => {
+    serve(response)
+    return await provider.complete(request).catch((error: unknown) => error)
+  }
+  const outcome = async (reply: Response): Promise<unknown> => {
+    serve(reply)
+    return await local.complete(request).then(
+      ({ whole: _whole, ...reached }) => reached,
+      (error: ProviderError) => ({
+        kind: error.kind,
+        message: error.message,
+        noAnswer: error.noAnswer,
+        usage: error.usage,
+      }),
+    )
+  }
+  const lost = (error: unknown): ProviderError => new ProviderError({
+    providerId: 'local',
+    kind: 'network',
+    message: String(error),
+  })
+  const itemsOf = (lines: readonly Line[]): { items: AsyncGenerator<StreamItem>, cancelled: () => boolean } => {
+    const { body, cancelled } = chunkedBody(lineText(lines), 1)
+    return {
+      items: ndjsonItems(body, { providerId: 'local', lost }),
+      cancelled,
+    }
+  }
+
+  it('sends stream: true by default, and stream: false for a whole request or an option that asks for whole replies', async () => {
+    const fetchMock = stubFetch(chatResponse)
+    await local.complete(request)
+    await local.complete({ ...request, stream: false })
+    await ollama({ ...base, stream: false }).complete(request)
+    await ollama({ ...base, stream: true }).complete({ ...request, stream: false })
+    expect([0, 1, 2, 3].map(call => sent(fetchMock, call).body.stream)).toEqual([true, false, false, true])
+  })
+
+  it('reads application/x-ndjson as a stream and a JSON reply as whole', async () => {
+    serve(ollamaStream(chatResponse))
+    const streamed = await local.complete(request)
+    expect(streamed).toEqual({
+      text: '{}',
+      model: 'qwen3.6:27b',
+      usage: { inputTokens: 1840, outputTokens: 412 },
+      reasoning: true,
+    })
+    // The media type decides, whatever follows it, and a JSON reply to a streamed request is read whole, and marked.
+    serve(streamOf([
+      piece({ content: '{}' }),
+      done(),
+    ], 'Application/X-NDJSON; charset=utf-8'))
+    expect(await local.complete(request)).not.toHaveProperty('whole')
+    serve(jsonReply(chatResponse))
+    expect(await local.complete(request)).toEqual({ ...streamed, whole: true })
+    // A reply served as plain JSON text, with no content type, is whole too.
+    serve(new Response(JSON.stringify(chatResponse)))
+    expect(await local.complete(request)).toHaveProperty('whole', true)
+  })
+
+  it('assembles a stream into the reply its reader reads, the same as the whole reply', async () => {
+    serve(streamOf([
+      piece({ thinking: 'The diff ' }),
+      piece({ thinking: 'calls exec.' }),
+      piece({ content: '{"findings"' }),
+      piece({ content: ':[]}' }),
+      done(),
+    ]))
+    const streamed = await local.complete(request)
+    expect(streamed).toEqual({
+      text: '{"findings":[]}',
+      model: 'qwen3.6:27b',
+      usage: { inputTokens: 41, outputTokens: 23 },
+      reasoning: true,
+    })
+    // The thinking is never kept: the assembled reply holds the one word that says it showed.
+    const assembled = await assembleOllama(itemsOf([
+      piece({ thinking: 'secret thinking' }),
+      piece({ content: '{}' }),
+      done(),
+    ]).items, 'local')
+    expect(assembled).toEqual({
+      model: 'qwen3.6:27b',
+      message: { role: 'assistant', content: '{}', thinking: 'streamed' },
+      done: true,
+      done_reason: 'stop',
+      prompt_eval_count: 41,
+      eval_count: 23,
+    })
+    // Every recorded reply that finished, as a whole reply and streamed through the helper, comes to the same. One that did not is a stream that ended too soon.
+    for (const recorded of [
+      chatResponse,
+      truncated,
+      empty,
+      reasoningOnly,
+      countedOut,
+      contextExceeded,
+    ]) {
+      expect(await outcome(ollamaStream(recorded)), JSON.stringify(recorded).slice(0, 60)).toEqual(await outcome(jsonReply(recorded)))
+    }
+  })
+
+  it('reports its progress signals', async () => {
+    const signals: StreamSignal[] = []
+    serve(streamOf([
+      piece({
+        thinking: 'x'.repeat(10),
+      }),
+      piece({ content: 'hello' }),
+      done({ eval_count: 40 }),
+    ]))
+    await local.complete({
+      ...request,
+      onProgress: signal => signals.push(signal),
+    })
+    const data = (outputTokens: number, answer: boolean, reasoning: boolean): StreamSignal => ({
+      kind: 'data',
+      outputTokens,
+      answer,
+      reasoning,
+    })
+    expect(signals).toEqual([
+      { kind: 'headers' },
+      data(3, false, true),
+      data(4, true, true),
+      // The done line's own count, 40, is more than a quarter of the 15 characters.
+      data(40, true, true),
+    ])
+  })
+
+  it('reports a blank line as a keep-alive', async () => {
+    const signals: StreamSignal[] = []
+    serve(new Response(`\n${JSON.stringify(piece({ content: '{}' }))}\n  \n\n${JSON.stringify(done())}\n`, {
+      headers: { 'content-type': 'application/x-ndjson' },
+    }))
+    await expect(local.complete({
+      ...request,
+      onProgress: signal => signals.push(signal),
+    })).resolves.toMatchObject({ text: '{}' })
+    expect(signals.map(signal => signal.kind)).toEqual([
+      'headers',
+      'keep-alive',
+      'data',
+      'keep-alive',
+      'keep-alive',
+      'data',
+    ])
+    // The last line may end with no line feed.
+    serve(new Response(`${JSON.stringify(piece({ content: '{}' }))}\n${JSON.stringify(done())}`, {
+      headers: { 'content-type': 'application/x-ndjson' },
+    }))
+    await expect(local.complete(request)).resolves.toMatchObject({ text: '{}' })
+  })
+
+  it('marks a refusal naming its stream word refused stream, never quoting the body', async () => {
+    const failure = async (body: string, status: number, options: Partial<OllamaOptions> = {}, asked: CompletionRequest = request): Promise<unknown> => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply(body, status)))
+      return await ollama({
+        ...base,
+        ...options,
+      }).complete(asked).catch((caught: unknown) => caught)
+    }
+    const naming = (word: string): string => `{"error":"json: cannot unmarshal into ${word}"}`
+    const error = await failure(naming('stream'), 400)
+    expect(error).toMatchObject({ kind: 'http', status: 400, refused: 'stream' })
+    expect(Object.entries(error as object).filter(([key, value]) => key !== 'message' && key !== 'name' && typeof value === 'string').flatMap(([, value]) => value as string)).toEqual(['local', 'http', 'stream'])
+    expect(await failure(naming('stream'), 422)).toMatchObject({ refused: 'stream' })
+    // Another status, a word that is only part of another, and a request that streamed nothing name no refusal.
+    expect(await failure(naming('stream'), 500)).toMatchObject({ refused: undefined })
+    expect(await failure(naming('streaming'), 400)).toMatchObject({ refused: undefined })
+    expect(await failure(naming('stream'), 400, {}, { ...request, stream: false })).toMatchObject({ refused: undefined })
+    expect(await failure(naming('stream'), 400, { stream: false })).toMatchObject({ refused: undefined })
+    // A pinned stream is marked as well, which is how its fix reads set stream: false.
+    expect(await failure(naming('stream'), 400, { stream: true })).toMatchObject({ refused: 'stream' })
+  })
+
+  it('reads a line holding an error as the body\'s error', async () => {
+    expect(await failed(streamOf([
+      piece({ content: '{"kee' }),
+      { error: 'model "qwen9" not found, try pulling it first' },
+    ]))).toMatchObject({
+      kind: 'invalid-response',
+      retryable: false,
+      message: 'local: server error: "model \\"qwen9\\" not found, try pulling it first"',
+    })
+    // The text is redacted and cut as a whole reply's error is.
+    expect(await failed(streamOf([
+      { error: 'bad key ok-secret' },
+    ]), ollama({ ...base, baseUrl: 'https://ollama.com', apiKey: 'ok-secret' }))).toMatchObject({ message: 'local: server error: "bad key [redacted]"' })
+    expect(await failed(streamOf([
+      {
+        error: 'e'.repeat(1000),
+      },
+    ]))).toMatchObject({ message: `local: server error: ${JSON.stringify('e'.repeat(200))}` })
+    // An error that is no text is a malformed line, never read as no error.
+    expect(await failed(streamOf([
+      { error: 7 },
+    ]))).toMatchObject({ kind: 'invalid-response', retryable: false, message: 'local: the reply stream\'s error is not text' })
+  })
+
+  it('fails a stream with no done line as network', async () => {
+    const lastEvent = 'local: the reply stream ended before its last event'
+    for (const lines of [
+      [
+        piece({ content: '{"kee' }),
+      ],
+      [
+        piece({ content: '{}' }),
+        {
+          ...done(),
+          done: false,
+        },
+      ],
+      [
+        piece({ content: '{}' }),
+        {
+          ...done(),
+          done: 'true',
+        },
+      ],
+      [],
+    ]) {
+      expect(await failed(streamOf(lines)), lines.length.toString()).toMatchObject({ kind: 'network', retryable: true, message: lastEvent })
+    }
+  })
+
+  it('fails a line whose content is no text as invalid-response, never retried, and cancels the body', async () => {
+    const lines: Line[] = [
+      piece({ content: '{"a"' }),
+      {
+        ...piece({}),
+        message: {
+          role: 'assistant',
+          content: ['x'],
+        },
+      },
+      piece({ content: ':1}' }),
+      done(),
+    ]
+    const { items, cancelled } = itemsOf(lines)
+    await expect(assembleOllama(items, 'local')).rejects.toMatchObject({ kind: 'invalid-response', retryable: false, message: 'local: the reply stream\'s content is not text' })
+    expect(cancelled()).toBe(true)
+    expect(await failed(streamOf(lines))).toMatchObject({ kind: 'invalid-response', retryable: false })
+    // A null content, as a done line may hold, is no text and no failure.
+    serve(streamOf([
+      piece({ content: '{}' }),
+      {
+        ...done(),
+        message: { role: 'assistant', content: null },
+      },
+    ]))
+    await expect(local.complete(request)).resolves.toMatchObject({ text: '{}' })
+  })
+
+  it('ends its read at an error line and at the done line, pulling none of the lines after, and cancels the body', async () => {
+    const lines: Line[] = [
+      piece({ content: '{"kee' }),
+      { error: 'the model has crashed' },
+      piece({ content: '{}' }),
+      done(),
+    ]
+    let pulled = 0
+    const counted = async function* (): AsyncGenerator<StreamItem> {
+      for await (const item of itemsOf(lines).items) {
+        pulled += 1
+        yield item
+      }
+    }
+    await expect(assembleOllama(counted(), 'local')).resolves.toMatchObject({ error: 'the model has crashed' })
+    expect(pulled).toBe(2)
+    const errored = itemsOf(lines)
+    await assembleOllama(errored.items, 'local')
+    expect(errored.cancelled()).toBe(true)
+    // The done line ends the read as well: a body that never ends after it is not waited for.
+    const ended = itemsOf([
+      piece({ content: '{}' }),
+      done(),
+      piece({ content: 'late' }),
+    ])
+    await expect(assembleOllama(ended.items, 'local')).resolves.toMatchObject({
+      done: true,
+      message: { content: '{}' },
+    })
+    expect(ended.cancelled()).toBe(true)
+  })
+})
+
+describe('ollama streams with a field of the wrong type', () => {
+  const lost = (error: unknown): ProviderError => new ProviderError({
+    providerId: 'local',
+    kind: 'network',
+    message: String(error),
+  })
+  const itemsOf = (...lines: unknown[]): { items: AsyncGenerator<StreamItem>, cancelled: () => boolean } => {
+    const { body, cancelled } = chunkedBody(lines.map(line => `${JSON.stringify(line)}\n`).join(''), 1)
+    return {
+      items: ndjsonItems(body, { providerId: 'local', lost }),
+      cancelled,
+    }
+  }
+  const finished = {
+    message: { content: '' },
+    done: true,
+    done_reason: 'stop',
+  }
+
+  it.each<[string, unknown, string]>([
+    ['a line that is a number', 5, 'line is not an object'],
+    ['a line that is null', null, 'line is not an object'],
+    [
+      'a line that is a list',
+      [
+        {
+          message: { content: '{}' },
+        },
+      ],
+      'line is not an object',
+    ],
+    [
+      'a line whose model is no text',
+      { model: 7 },
+      'model is not text',
+    ],
+    [
+      'a line whose message is a string',
+      { message: '{}' },
+      'message is not an object',
+    ],
+    [
+      'a line whose message is a list',
+      {
+        message: [
+          { content: '{}' },
+        ],
+      },
+      'message is not an object',
+    ],
+    [
+      'a line whose content is no text',
+      {
+        message: {
+          content: ['x'],
+        },
+      },
+      'content is not text',
+    ],
+    [
+      'a line whose thinking is no text',
+      {
+        message: { thinking: 7 },
+      },
+      'thinking is not text',
+    ],
+    [
+      'a line whose error is no text',
+      {
+        error: { message: 'x' },
+      },
+      'error is not text',
+    ],
+  ])('fails %s as invalid-response, never retried, and cancels the body', async (_name, line, field) => {
+    const { items, cancelled } = itemsOf(line, finished)
+    await expect(assembleOllama(items, 'local')).rejects.toMatchObject({
+      name: 'ProviderError',
+      kind: 'invalid-response',
+      retryable: false,
+      message: `local: the reply stream's ${field}`,
+    })
+    expect(cancelled()).toBe(true)
+  })
+
+  it('tolerates an unknown field and a field that is null or absent', async () => {
+    const reply = await assembleOllama(itemsOf(
+      {
+        model: null,
+        message: null,
+        error: null,
+        future: [1],
+      },
+      {
+        message: {
+          content: null,
+          thinking: null,
+          images: [1],
+        },
+      },
+      {
+        message: { content: '{}' },
+      },
+      finished,
+    ).items, 'local')
+    expect(reply).toMatchObject({
+      message: { content: '{}' },
+      done: true,
+    })
   })
 })

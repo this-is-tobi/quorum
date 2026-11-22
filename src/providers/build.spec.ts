@@ -110,7 +110,7 @@ function ollamaChat(model: string): Body {
   return {
     model,
     messages: conversation,
-    stream: false,
+    stream: true,
     truncate: false,
     shift: false,
     options: { temperature: 0, num_predict: 900, num_ctx: 131072 },
@@ -232,6 +232,7 @@ describe('buildProvider', () => {
       {
         model: 'claude-opus-5-5',
         max_tokens: 900,
+        stream: true,
         system: 'instructions',
         messages: [
           { role: 'user', content: 'data' },
@@ -247,7 +248,7 @@ describe('buildProvider', () => {
     [
       'gemini',
       'gemini-3.8-flash',
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse',
       { 'x-goog-api-key': 'sk-k' },
       {
         contents: [
@@ -297,6 +298,7 @@ describe('buildProvider', () => {
       {
         model: 'm',
         max_tokens: 900,
+        stream: true,
         system: 'instructions',
         messages: [
           { role: 'user', content: 'data' },
@@ -305,7 +307,7 @@ describe('buildProvider', () => {
     ],
     [
       'gemini',
-      'https://h.example/v1beta/models/m:generateContent',
+      'https://h.example/v1beta/models/m:streamGenerateContent?alt=sse',
       {
         contents: [
           {
@@ -1026,10 +1028,10 @@ describe('what a built provider adapts', () => {
       'xai',
     ]) expect(adaptsOf({ preset }), preset).toEqual({ thinking: 'low', prompt: true, stream: true })
     expect(adaptsOf({ preset: 'azure-openai', baseUrl: AZURE })).toEqual({ thinking: 'low', prompt: true, stream: true })
-    expect(adaptsOf({ preset: 'gemini' })).toEqual({ thinking: 'low', prompt: true })
+    expect(adaptsOf({ preset: 'gemini' })).toEqual({ thinking: 'low', prompt: true, stream: true })
     // The protocols with a lowering of their own: anthropic lowers to low and has no json to leave, ollama lowers to off.
-    expect(adaptsOf({ preset: 'anthropic' })).toEqual({ thinking: 'low' })
-    expect(adaptsOf({ preset: 'ollama' })).toEqual({ thinking: 'off', prompt: true })
+    expect(adaptsOf({ preset: 'anthropic' })).toEqual({ thinking: 'low', stream: true })
+    expect(adaptsOf({ preset: 'ollama' })).toEqual({ thinking: 'off', prompt: true, stream: true })
     // The level is the preset's knowledge: a spec cannot set it, and a thinking the spec sets is never lowered.
     expect(adaptsOf({ preset: 'openai', lowersThinkingTo: 'off' })).toEqual({ thinking: 'low', prompt: true, stream: true })
     expect(adaptsOf({ preset: 'vllm', thinking: 'low' })).toEqual({ prompt: true, stream: true })

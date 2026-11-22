@@ -111,3 +111,190 @@ export function openAiStream(reply: unknown, headers: Record<string, string> = {
     headers: { 'content-type': 'text/event-stream', ...headers },
   })
 }
+
+/** The text of a reply's field as a string, or nothing. */
+function textOf(value: unknown): string | undefined {
+  return typeof value === 'string'
+    ? value
+    : undefined
+}
+
+/**
+ * A recorded whole Messages reply as the events the Anthropic API streams it in: a `message_start` that holds the
+ * message with no content and the input counts, a `ping`, then each content block as a `content_block_start`, its
+ * deltas (a text or a thinking a few characters each, a thinking's signature, a tool's input as one piece) and a
+ * `content_block_stop`, a `message_delta` that holds the stop reason and the output count, and `message_stop`. Each
+ * event names itself, as the API writes it. The response's content type is `text/event-stream`, and `headers` are added.
+ */
+export function anthropicStream(reply: unknown, headers: Record<string, string> = {}): Response {
+  const whole = isObject(reply)
+    ? reply
+    : {}
+  const usage = isObject(whole.usage)
+    ? whole.usage
+    : undefined
+  const events: Array<{ event: string, data: Record<string, unknown> }> = []
+  const emit = (data: Record<string, unknown>): number => events.push({
+    event: String(data.type),
+    data,
+  })
+  emit({
+    type: 'message_start',
+    message: {
+      ...whole,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      ...usage === undefined
+        ? {}
+        : {
+            usage: { ...usage, output_tokens: 1 },
+          },
+    },
+  })
+  emit({ type: 'ping' })
+  const blocks = Array.isArray(whole.content)
+    ? whole.content.filter(isObject)
+    : []
+  blocks.forEach((block, index) => {
+    const { text, thinking, signature, ...rest } = block
+    const empty = block.type === 'text'
+      ? { text: '' }
+      : block.type === 'thinking'
+        ? { thinking: '', signature: '' }
+        : block.type === 'tool_use'
+          ? { input: {} }
+          : {}
+    emit({
+      type: 'content_block_start',
+      index,
+      content_block: {
+        ...rest,
+        ...empty,
+      },
+    })
+    const delta = (body: Record<string, unknown>): number => emit({ type: 'content_block_delta', index, delta: body })
+    for (const piece of pieces(textOf(text) ?? '')) delta({ type: 'text_delta', text: piece })
+    for (const piece of pieces(textOf(thinking) ?? '')) delta({ type: 'thinking_delta', thinking: piece })
+    if (textOf(signature) !== undefined) delta({ type: 'signature_delta', signature })
+    if (block.type === 'tool_use') {
+      delta({
+        type: 'input_json_delta',
+        partial_json: JSON.stringify(block.input),
+      })
+    }
+    emit({ type: 'content_block_stop', index })
+  })
+  emit({
+    type: 'message_delta',
+    delta: { stop_reason: whole.stop_reason ?? 'end_turn', stop_sequence: whole.stop_sequence ?? null },
+    ...usage === undefined
+      ? {}
+      : {
+          usage: { output_tokens: usage.output_tokens },
+        },
+  })
+  emit({ type: 'message_stop' })
+  return new Response(sse(events), {
+    headers: { 'content-type': 'text/event-stream', ...headers },
+  })
+}
+
+/**
+ * A recorded whole `generateContent` reply as the chunks Gemini's `streamGenerateContent` sends it in with `alt=sse`,
+ * as events with no name: the candidate's parts as chunks of a few characters each (a part that is no text as one chunk),
+ * then a chunk that holds the finish reason and the usage; a reply with no candidate, a blocked prompt, as one chunk that
+ * holds the feedback and the usage. A reply's `error` is its one chunk. The response's content type is `text/event-stream`,
+ * and `headers` are added.
+ */
+export function geminiStream(reply: unknown, headers: Record<string, string> = {}): Response {
+  const whole = isObject(reply)
+    ? reply
+    : {}
+  const base = {
+    modelVersion: whole.modelVersion,
+    responseId: whole.responseId,
+  }
+  const candidate = Array.isArray(whole.candidates) && isObject(whole.candidates[0])
+    ? whole.candidates[0]
+    : undefined
+  const chunks: unknown[] = []
+  if (whole.error !== undefined) {
+    chunks.push({ error: whole.error })
+  } else if (candidate === undefined) {
+    chunks.push({ ...base, promptFeedback: whole.promptFeedback, usageMetadata: whole.usageMetadata })
+  } else {
+    const content = isObject(candidate.content)
+      ? candidate.content
+      : {}
+    const role = content.role ?? 'model'
+    const chunk = (parts: unknown[]): Record<string, unknown> => ({
+      ...base,
+      candidates: [
+        {
+          content: { parts, role },
+          index: 0,
+        },
+      ],
+    })
+    for (const part of Array.isArray(content.parts)
+      ? content.parts
+      : []) {
+      if (isObject(part) && typeof part.text === 'string') {
+        chunks.push(...pieces(part.text).map(piece => chunk([
+          { ...part, text: piece },
+        ])))
+      } else {
+        chunks.push(chunk([part]))
+      }
+    }
+    chunks.push({
+      ...base,
+      candidates: [
+        {
+          content: { role },
+          finishReason: candidate.finishReason,
+          index: 0,
+        },
+      ],
+      usageMetadata: whole.usageMetadata,
+    })
+  }
+  return new Response(sse(chunks.map(data => ({ data }))), {
+    headers: { 'content-type': 'text/event-stream', ...headers },
+  })
+}
+
+/**
+ * A recorded whole `/api/chat` reply as the NDJSON lines Ollama streams it in: the message's thinking, then its content,
+ * a few characters a line, then the done line, which holds every other field of the reply and an empty content. A reply
+ * that is only an `error` is its one line. The response's content type is `application/x-ndjson`, and `headers` are added.
+ */
+export function ollamaStream(reply: unknown, headers: Record<string, string> = {}): Response {
+  const whole = isObject(reply)
+    ? reply
+    : {}
+  const message = isObject(whole.message)
+    ? whole.message
+    : {}
+  const line = (fields: Record<string, unknown>): Record<string, unknown> => ({
+    model: whole.model,
+    created_at: whole.created_at,
+    message: { role: 'assistant', content: '', ...fields },
+    done: false,
+  })
+  const lines: unknown[] = []
+  if (typeof whole.error === 'string') {
+    lines.push({ error: whole.error })
+  } else {
+    lines.push(...pieces(textOf(message.thinking) ?? '').map(piece => line({ thinking: piece })))
+    lines.push(...pieces(textOf(message.content) ?? '').map(piece => line({ content: piece })))
+    lines.push({
+      ...whole,
+      message: { ...message, content: '', thinking: undefined },
+    })
+  }
+  return new Response(lines.map(data => `${JSON.stringify(data)}\n`).join(''), {
+    headers: { 'content-type': 'application/x-ndjson', ...headers },
+  })
+}

@@ -96,7 +96,7 @@ A gateway or proxy between quorum and the server can cut a whole reply after a f
 - **A call cut on the way** is one whose attempt failed with `network`, or an HTTP 502, 504 or 524, after at least a minute, the shortest idle limit of the common proxies (nginx's and an AWS load balancer's). A server that is refused or unreachable fails within seconds.
 - **Each retry says how long its attempt ran**: `part 7 of 51: network after 10m00s, retry 1 of 2 in 2s`. Ten minutes, again and again, is a cut, and a `timeout` line keeps its own words, the deadline.
 - **A provider found down by cuts alone** gets the cut fix in place of the server's: `each call was cut after about 10m00s, likely by a proxy or load balancer on the way: make replies shorter, with a lower maxTokens or partTokens`, the shortest of the three calls' lengths. The summary's fix for its gaps is the same advice. A provider that failed any call of the streak quickly gets the fix of its kind, as before. A used-up quota keeps its own line, ahead of a cut.
-- **Streaming passes such a cut**, since the connection carries bytes all the while: `openaiCompatible` streams every reply, [Streaming](#streaming), and the other adapters will stream theirs in a later release.
+- **Streaming passes such a cut**, since the connection carries bytes all the while: every HTTP adapter streams every reply, [Streaming](#streaming).
 - **Where a reply is not streamed, make replies shorter** so that each call ends under the gateway's limit: set a lower `maxTokens` or leave it unset, or a lower `partTokens`, which makes more, smaller parts: [The reply's limit](#the-replys-limit) and [Research in parts](./20-configuration.md#research-in-parts).
 
 ### What a provider states
@@ -116,22 +116,31 @@ A gateway or proxy between quorum and the server can cut a whole reply after a f
 - **`adapts`** is what the core may change by itself for the rest of a review, an own data object read when the quorum is created: `thinking`, the level a lowering sends, `low` or `off`, `prompt: true`, the move from JSON mode to prompt mode, and `stream: true`, the two steps down from a stream, each optional. State each only when the setting is automatic. A provider that states none, as one whose settings are explicit does, is never moved: quorum adapts only what a provider says it may.
 - **`streams`** is `true` for a provider that streams its replies, read as `adapts` is. A provider that does not stream states none.
 - **The shipped adapters state `adapts`** from their options: a `thinking` level when the `thinking` option is unset and `extraBody` does not set the protocol's control (`low`, `off` on `ollama`, and `off` on `openaiCompatible` under the `vllm` and `llamacpp` presets), `prompt` when `structuredOutput` is unset on a protocol whose default is `json` (`openaiCompatible`, `gemini` and `ollama`, not `anthropic`) and `extraBody` sets none of its fields, and `stream` when the adapter streams and its `stream` option is unset. `claudeCode` states none.
-- **The shipped adapters state `streams`** when they stream and their `stream` option is not `false`: `openaiCompatible` today.
+- **The shipped adapters state `streams`** when they stream and their `stream` option is not `false`: the four HTTP adapters.
 - **A value out of range is refused** where the provider is given, as the issue `ports.profiles.<id>.research.<field>` or `ports.profiles.<id>.voters.<lens>.<field>`, `<field>` being `timeoutMs`, `retries`, `window`, `maxTokens`, `thinking` or `adapts`: `must be a whole number of milliseconds from 1000 to 518400000`, `must be a whole number from 0 to 5`, `must be a whole number of tokens of at least 1` (`window` and `maxTokens`), `must be default, low or off` and `must be an object whose thinking is low or off and whose prompt and stream are true, each optional`. A `worstCase` or a `room` that is not a function is refused the same way: `must be a function`. The message never repeats the value.
 
 ## Streaming
 
-A whole reply waits in silence until it ends, and a proxy on the way can cut it, as a gateway did at 600 s. `openaiCompatible` streams every reply and assembles it into the whole reply its reader already checks, so every check of a reply, a cut-off, an empty one, a refusal or a tool the server ran included, runs unchanged on a streamed one. The other three HTTP adapters stream in a later release.
+A whole reply waits in silence until it ends, and a proxy on the way can cut it, as a gateway did at 600 s. Every HTTP adapter streams every reply and assembles it into the whole reply its reader already checks, so every check of a reply, a cut-off, an empty one, a refusal or a tool the server ran included, runs unchanged on a streamed one. Each protocol has its own stream and its own assembler:
+
+| Adapter | Sent | Complete at | Assembled | An error inside |
+| --- | --- | --- | --- | --- |
+| `openaiCompatible` | `stream: true` and `stream_options: { "include_usage": true }` | The `finish_reason` of choice index 0, the one read, or a top-level `error`, then `[DONE]` or the body's end | The model of the first chunk; of choice 0 alone, `content` joined, `refusal` joined, the annotation types and a non-empty `executed_tools`; the last finish reason that is not `null`; the usage of the last chunk that holds one | The chunk's `error`, read as a whole reply's is |
+| `anthropic` | `stream: true` | `message_stop`, after a `message_delta` that holds a `stop_reason` | The model of `message_start`; the content blocks by index, a text joined, a `thinking` or `redacted_thinking` block kept with no text, any other block by its type; the stop reason; `message_start`'s usage, laid over by the last `message_delta`'s | `event: error`, by its `error.type`: [`anthropic`](#anthropic) |
+| `gemini` | The model's `streamGenerateContent`, with `alt=sse` in the query | A candidate's `finishReason`, or a `promptFeedback.blockReason`, then the body's end | The `modelVersion`; the block reason; the last `usageMetadata`; the first candidate's parts in order, the text parts joined, a `thought` part kept with no text; its finish reason | A chunk's `error`, Google's standard body: [`gemini`](#gemini) |
+| `ollama` | `stream: true`, read as NDJSON | The line that holds `done: true` | The model; `message.content` joined; `message.thinking` as the one word that says it showed; `done`, `done_reason`, `prompt_eval_count` and `eval_count` of the done line | A line's `error`, read as a whole reply's is |
+
+The sections below hold for every adapter; what is the protocol's own is in its section.
 
 ### What is streamed
 
-- **Every call streams**: the body holds `stream: true` and `stream_options: { "include_usage": true }`, so the server sends its usage in a chunk of its own after the last choice. A whole request, which `stream: false` makes, sends neither field.
-- **The events are read as they arrive**, as server-sent events, by the rules of the WHATWG: a comment is a keep-alive, an event ends at a blank line, and an event the body leaves unclosed is dropped. The readers hold caps that fail closed: 16 MiB of body, 1,048,576 characters in a line, 4,194,304 characters and 1000 lines in an event, and 1,000,000 characters of answer. A body that passes one, or an event that is not JSON, is an `invalid-response` that is never retried, and the body is cancelled first.
-- **What is assembled**: the model of the first chunk that names one; per choice, the text of `content` (a string, or the `text` parts of an array), the `refusal`, the annotation types and a non-empty `executed_tools`, and the last finish reason that is not `null`; and the usage of the last chunk that holds one. A reasoning delta (`reasoning`, `reasoning_content`, a `thinking` part) is counted as it arrives and never kept or quoted: the reply only notes that it showed reasoning.
-- **A stream is complete at a finish reason**, and is read on to `[DONE]` or the body's end, since the usage comes after it. A stream that ends with no finish reason, or a `[DONE]` with none, is a `network` failure, `the reply stream ended before its last event`, retried as a dropped connection is, and never an answer. A chunk that holds an `error` ends the read as the reply's own `error`, which fails the call as a whole reply's does: an `error` with a status from 400 to 599 is an `http` failure of that status, retried as it is, and one without is an `invalid-response`.
-- **The usage is the last chunk's**, never a sum of deltas. A stream that reports none settles at the attempt's whole reservation, as a reply with no usage does: [The token cap](./20-configuration.md#the-token-cap).
+- **Every call streams**: a request holds what the table says it sends, and an `openaiCompatible` one asks for its usage in a chunk of its own after the last choice. A whole request, which `stream: false` makes, sends none of it, and `ollama` sends `stream: false`, since its server streams unless it is told not to.
+- **The events are read as they arrive**, as server-sent events, by the rules of the WHATWG, or as NDJSON for `ollama`: a comment, or a blank NDJSON line, is a keep-alive, an event ends at a blank line, and an event the body leaves unclosed is dropped. The readers hold caps that fail closed: 16 MiB of body, 1,048,576 characters in a line, 4,194,304 characters and 1000 lines in an event, and 1,000,000 characters of answer. A body that passes one, or an event that is not JSON, is an `invalid-response` that is never retried, and the body is cancelled first.
+- **What is assembled** is the table's column. A reasoning delta (`reasoning`, `reasoning_content`, a `thinking` part, a `thinking_delta`, a `thought` part, `message.thinking`) is counted as it arrives and never kept or quoted: the reply only notes that it showed reasoning.
+- **A stream is complete at its protocol's last event**, the table's third column. `openaiCompatible` and `gemini` are read on to the body's end, since the usage comes after the finish reason; `anthropic` and `ollama` end their read at `message_stop` and at the done line, with the body cancelled. A stream that ends before it is a `network` failure, `the reply stream ended before its last event`, retried as a dropped connection is, and never an answer. An error inside a stream ends the read at once, with the body cancelled, and fails the call as the protocol's own failure does: an `http` failure of its status, retried as that status is, or an `invalid-response` where it has none.
+- **The usage is the last cumulative count**, never a sum of deltas. A stream that reports none settles at the attempt's whole reservation, as a reply with no usage does: [The token cap](./20-configuration.md#the-token-cap).
 - **The attempt's signal ends a stream at once**: an abort in the middle of a body rejects the read, and the server sees its connection close. A read that rejects is `aborted` when the attempt's signal is aborted, else `network`.
-- **The adapter reports each sign of life** through the request's `onProgress`: one `headers` signal, a `data` signal for each data event with the output tokens so far, the larger of the server's own count and a quarter of the characters streamed, and whether an answer or reasoning has shown text, and a `keep-alive` signal for each comment.
+- **The adapter reports each sign of life** through the request's `onProgress`: one `headers` signal, a `data` signal for each data event with the output tokens so far, a whole number: the larger of the server's own count, floored, and a quarter of the characters streamed, and whether an answer or reasoning has shown text, and a `keep-alive` signal for each comment, each blank NDJSON line and each `ping` of `anthropic`, which is no progress.
 
 ### `stream`
 
@@ -148,10 +157,11 @@ A whole reply waits in silence until it ends, and a proxy on the way can cut it,
 A 400 or 422 whose body names a word of the request as a whole word is marked, as a code word and never a quote, and moves a provider whose `stream` is unset down two steps, each probed once per provider and review as [What quorum adapts by itself](./20-configuration.md#what-quorum-adapts-by-itself) describes:
 
 - **`stream_options`** moves the provider to a bare stream, with no stream options. Each call then settles at its reservation, since the server sends no usage: the line says so.
-- **`stream`** moves it to whole replies, with `stream: false` sent. A server that refuses the bare stream as a stream steps on to whole replies in the same call.
+- **`stream`** moves it to whole replies, with `stream: false` sent. A server that refuses the bare stream as a stream steps on to whole replies in the same call. `anthropic` and `ollama` take this step alone, on a body that names `stream`, and `gemini` on one that names `streamGenerateContent`, since its stream is a path and not a field.
 - **A step moves only when its re-send answers.** A refused or failed one moves nothing and ends the call with the failure that began it.
 - **A word counts only when a request sent it**: a bare stream names no stream options, and a whole request names no stream. `streaming` or `stream_option` is another word.
 - **`stream_options` is refused in `extraBody`**, since the adapter writes it: `<id>.extraBody.stream_options: is written by the adapter and cannot be replaced`.
+- **A `gemini` gateway with no stream path answers 404**, which is no refusal quorum probes, since only a 400 or a 422 is one: set `stream: false` there, and the adapter posts to `generateContent`.
 
 ### When a server answers whole
 
@@ -161,7 +171,7 @@ A whole reply is what a proxy can cut, as a gateway did in 0.7.0 at 600 s, so `s
 
 ### What a gateway must pass
 
-- **`text/event-stream`**, unbuffered, with a content type whose media type is that: a charset after it is fine.
+- **`text/event-stream`**, unbuffered, with a content type whose media type is that: a charset after it is fine. `ollama` streams `application/x-ndjson`.
 - **Every event as it is written**: a gateway that holds the stream and sends it at the end gives an answer after the same wait as a whole reply, and passes no cut it was never going to pass.
 - **Comments** (`: ping`) are signs of life, and a keep-alive is no progress of its own.
 
@@ -173,7 +183,7 @@ Quorum ships one adapter per wire protocol, and one that runs your installed Cla
 | --- | --- | --- | --- | --- | --- |
 | `openaiCompatible` | Any OpenAI-compatible endpoint: vLLM, TGI, llama.cpp, LM Studio or a hosted API. Ollama has `ollama`: its `/v1` cannot be told the context size | `POST {baseUrl}/chat/completions` | `'bearer'` | `0` | `'json'` |
 | `anthropic` | The Anthropic Messages API, or a gateway that speaks it | `POST {baseUrl}/v1/messages` | `'bearer'` | Left out | `'prompt'` |
-| `gemini` | The Gemini API's `generateContent` | `POST {baseUrl}/v1beta/models/{model}:generateContent` | `{ header: 'x-goog-api-key' }` | Left out | `'json'` |
+| `gemini` | The Gemini API's `generateContent` | `POST {baseUrl}/v1beta/models/{model}:streamGenerateContent?alt=sse`, `:generateContent` for a whole reply | `{ header: 'x-goog-api-key' }` | Left out | `'json'` |
 | `ollama` | Ollama's native chat API, on a local server or Ollama's cloud: the CLI's built-in default | `POST {baseUrl}/api/chat` | `'bearer'` | `0` | `'json'` |
 | `claudeCode` | Your installed Claude Code CLI, run headless for each request | Spawns `claude -p` | `'inherit'`, of its own three modes: [The auth modes](#the-auth-modes) | Not supported | `'schema'` |
 
@@ -293,7 +303,7 @@ These are the options of the four HTTP adapters. `claudeCode` takes `id`, `model
 | `apiKey` | `string` | None | Sent as `auth` says, and nowhere else. Without it, or with an empty one, no key header is sent |
 | `auth` | `'bearer' \| 'x-api-key' \| 'none' \| { header, prefix? }` | The adapter's | How the key is sent: [The key header](#the-key-header) |
 | `headers` | `Record<string, string>` | None | Sent with every request, names lower-cased. They cannot replace `content-type`, `content-length`, `host`, the key header, or `anthropic`'s `anthropic-version`. Their values are redacted from error messages, as the key is |
-| `query` | `Record<string, string>` | None | Added to every request URL. Not redacted from error messages: never put a key here. A value equal to `apiKey` is refused |
+| `query` | `Record<string, string>` | None | Added to every request URL. Not redacted from error messages: never put a key here. A value equal to `apiKey` is refused, and `gemini` refuses the names `key` and `alt`, in any letter case |
 | `extraBody` | `Record<string, unknown>` | None | JSON values deep-merged into the body last: objects merge key by key, anything else replaces. A top-level key cannot replace a field the adapter writes for the conversation, or set one that offers the model a tool: [The tool fields](#the-tool-fields). Nor can it set the reply limit, which `maxTokens` sets: [The size of a request](#the-size-of-a-request) |
 | `temperature` | `number \| null` | The adapter's | Sent where the protocol takes it; `null` leaves it out, for a model that rejects it |
 | `maxTokens` | `number` | Derived from the window | The most tokens a reply may hold, thinking included: the ceiling of every reply, sent as the server's limit in the protocol's own field. Unset, each request is sent the reply budget the core derives for it, else 16000: [The reply's limit](#the-replys-limit) |
@@ -302,7 +312,7 @@ These are the options of the four HTTP adapters. `claudeCode` takes `id`, `model
 | `systemPrompt` | `'native' \| 'inline'` | `'native'` | `native` sends the system text in the protocol's own place; `inline` puts it at the head of the first user message, joined by a blank line, for a chat template that rejects a system role |
 | `structuredOutput` | `'prompt' \| 'json' \| 'schema'` | The adapter's | How the reply's shape reaches the endpoint: [Structured output](#structured-output) |
 | `thinking` | `'low' \| 'off'` | The server's own | How much the model thinks, sent as the protocol's own control: [Thinking](#thinking) |
-| `stream` | `boolean` | Unset: streamed | `true` pins the stream, so a refusal fails the call; `false` asks for whole replies. Unset, quorum steps down by itself when a server refuses a stream's options, refuses streaming or answers a stream whole: [Streaming](#streaming). Only `openaiCompatible` streams today, and the others accept the option |
+| `stream` | `boolean` | Unset: streamed | `true` pins the stream, so a refusal fails the call; `false` asks for whole replies. Unset, quorum steps down by itself when a server refuses a stream's options, refuses streaming or answers a stream whole: [Streaming](#streaming). Every HTTP adapter streams |
 
 `systemPrompt: 'inline'` sends the instructions in the same user message as the fenced data, so they lose the role that sets them apart from it: a weaker separation than the one [Prompts](./60-prompts.md#the-layout-of-a-request) describes. When the conversation does not start with a user message, `inline` sends the system text as a user message of its own.
 
@@ -511,6 +521,7 @@ Each adapter checks its options when it is called, before any request, and throw
 | `<id>.retries` | `must be a whole number from 0 to 5` |
 | `<id>.maxTokensField` | `must be max_tokens or max_completion_tokens` |
 | `<id>.query.<name>` | `would carry a key in the URL: set apiKey instead` |
+| `<id>.query.alt` | `is set by the adapter and cannot be replaced` |
 | `<id>.extraBody.generationConfig` | `must be written generationConfig` |
 | `<id>.extraBody.generationConfig` | `must be an object` |
 | `<id>.model` | `must be a Gemini model id, such as gemini-3.8-flash` |
@@ -520,7 +531,7 @@ Each adapter checks its options when it is called, before any request, and throw
 
 `headers` and `query` must be plain objects, an object literal or one with no prototype: a `Headers` or a `Map` is refused with `must map names to strings`, since its entries are not its own fields. A header name that repeats an earlier one in another letter case is refused at the later one, since one request cannot send both.
 
-`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode, and `claudeCode`'s. `maxTokensField` is checked by `openaiCompatible` only, `model`, a `key` query parameter and an `extraBody.generationConfig` that is no object or is not spelled `generationConfig`, by `gemini` only, and `options.num_ctx` in `extraBody`, with an `extraBody.options` that is no object or is not spelled `options`, by `ollama` only. Both servers read the key in any letter case, and Gemini as `generation_config` too, so a second spelling would send two keys for the field the adapter merges into: `must be written <name>` names the one spelling, never the key it was given. A key that is no object has the one issue, `must be an object`. `sets the reply limit: use maxTokens` names a field by its path, `<id>.extraBody.generationConfig.maxOutputTokens` for one that is nested. `is required: ...` is the one issue of a `contextTokens` that is unset, and the two after it are the issues of one that is set. `must be more than <n>, ...` is checked against a valid `maxTokens` only, with `<r>` its value, and `<n>` that and 512; with `maxTokens` unset, the issue reads `must be more than <n>, the tokens kept for the chat template`, `<n>` being 512 (4096 for `claudeCode`).
+`is set by the adapter and cannot be replaced` names `anthropic`'s `anthropic-version`, in any letter case, as a header or as a custom `auth` header, and `gemini`'s `alt`, in any letter case, as a `query` name, since the adapter sets it for a stream. `must be prompt or schema` is `anthropic`'s, whose protocol has no JSON mode, and `claudeCode`'s. `maxTokensField` is checked by `openaiCompatible` only, `model`, a `key` query parameter and an `extraBody.generationConfig` that is no object or is not spelled `generationConfig`, by `gemini` only, and `options.num_ctx` in `extraBody`, with an `extraBody.options` that is no object or is not spelled `options`, by `ollama` only. Both servers read the key in any letter case, and Gemini as `generation_config` too, so a second spelling would send two keys for the field the adapter merges into: `must be written <name>` names the one spelling, never the key it was given. A key that is no object has the one issue, `must be an object`. `sets the reply limit: use maxTokens` names a field by its path, `<id>.extraBody.generationConfig.maxOutputTokens` for one that is nested. `is required: ...` is the one issue of a `contextTokens` that is unset, and the two after it are the issues of one that is set. `must be more than <n>, ...` is checked against a valid `maxTokens` only, with `<r>` its value, and `<n>` that and 512; with `maxTokens` unset, the issue reads `must be more than <n>, the tokens kept for the chat template`, `<n>` being 512 (4096 for `claudeCode`).
 
 These are the checks of the four HTTP adapters; `claudeCode`'s are its own: [Claude Code configuration errors](#claude-code-configuration-errors). A config file's schema reads `auth` for every protocol, so its message for a value no protocol takes is `<path>.auth: must be bearer, x-api-key, none, inherit, login, api-key or { header, prefix }`, where an HTTP adapter given `inherit`, `login` or `api-key` by the builder says the `<id>.auth` message above.
 
@@ -533,7 +544,6 @@ For any OpenAI-compatible `/chat/completions` endpoint. Ollama's `/v1` is one, a
 | Option | Type | Default | Does |
 | --- | --- | --- | --- |
 | `maxTokensField` | `'max_tokens' \| 'max_completion_tokens'` | `'max_tokens'` | The body field of the reply's limit. OpenAI's reasoning models need `max_completion_tokens` |
-| `stream` | `boolean` | Unset: streamed | The shared option, which this adapter acts on: [Streaming](#streaming) |
 
 The body of every request holds, in this order:
 
@@ -580,12 +590,16 @@ The body of every request holds, in this order:
 - `messages`: the request's messages, each `{ role, content }` with its text;
 - `temperature`, when set;
 - `output_config`: `format: { type: 'json_schema', schema: <output.schema> }` in `schema` mode, and `effort: 'low'` when `thinking` is `low`, in one object;
+- `stream: true`, unless `stream` is `false` or the core moved the provider to whole replies, which send none: [Streaming](#streaming);
 - then `extraBody`, merged: `{ output_config: { effort: 'low' } }` goes beside the format in `schema` mode. It cannot replace `model`, `messages`, `system` or `stream`, or set `max_tokens`, which `maxTokens` sets.
 
-A reply succeeds with the stop reason `end_turn` or `stop_sequence` and a text block. The stop reason is read first, since a refused or cut-off reply can still hold some text. The text is the `text` of the `type: 'text'` blocks, joined: `thinking` and `redacted_thinking` blocks are skipped, never read as the answer, as is every block of another type. `model` is the one the reply names, or the configured one. The input count is `usage.input_tokens`, plus `usage.cache_creation_input_tokens` and `usage.cache_read_input_tokens` when they are numbers; the output count is `usage.output_tokens`. A status outside 2xx is an `http` error that quotes Anthropic's `{ "type": "error", "error": { "type", "message" } }` body.
+A reply is read as a whole reply: a streamed one is assembled into it first ([Streaming](#streaming)), and a server that answers a streamed request whole is read as it is. It succeeds with the stop reason `end_turn` or `stop_sequence` and a text block. The stop reason is read first, since a refused or cut-off reply can still hold some text. The text is the `text` of the `type: 'text'` blocks, joined: `thinking` and `redacted_thinking` blocks are skipped, never read as the answer, as is every block of another type. `model` is the one the reply names, or the configured one. The input count is `usage.input_tokens`, plus `usage.cache_creation_input_tokens` and `usage.cache_read_input_tokens` when they are numbers; the output count is `usage.output_tokens`. A status outside 2xx is an `http` error that quotes Anthropic's `{ "type": "error", "error": { "type", "message" } }` body.
 
 | The reply | Kind | Message |
 | --- | --- | --- |
+| An `event: error` whose `error.type` is `invalid_request_error`, `authentication_error`, `billing_error`, `permission_error`, `not_found_error`, `request_too_large`, `rate_limit_error`, `api_error` or `overloaded_error` | `http`, status 400, 401, 402, 403, 404, 413, 429, 500 or 529 in that order, retried as the status is | `server error <status>: "<message>"` |
+| An `event: error` of another type, or of none | `invalid-response` | `server error: "<message>"` |
+| A stream that ends before `message_stop`, or at one that follows no stop reason | `network` | `the reply stream ended before its last event` |
 | `stop_reason` `refusal` | `refusal` | `model refused` |
 | `stop_reason` `max_tokens`, or `output_tokens` at or above the reply's limit | `truncated`, `reply` or `thinking` | What it lacked: [What a reply lacked](#what-a-reply-lacked) |
 | `stop_reason` `model_context_window_exceeded` | `truncated`, `window` | `a reply ended at the server's window after <i> input and <o> output tokens, below contextTokens <c>: set contextTokens to at most <i + o>`, or, when the counts are not all known or reach `contextTokens`, `a reply ended at the server's window, which is smaller than contextTokens: lower contextTokens` |
@@ -597,8 +611,8 @@ A reply succeeds with the stop reason `end_turn` or `stop_sequence` and a text b
 
 For the Gemini API's `generateContent`, which Google now calls a legacy API, still supported:
 
-- **The model goes in the URL**, `/v1beta/models/<model>:generateContent`. It is written with or without a leading `models/`, which is stripped, and the id that remains must match `[a-z0-9][a-z0-9.-]*` in any letter case, as `gemini-3.8-flash` does: that keeps a `/`, a `?` or a `:` out of the path. Another is a configuration error, `<id>.model: must be a Gemini model id, such as gemini-3.8-flash`. A tuned model (`tunedModels/...`) is not supported.
-- **The key goes in `x-goog-api-key`** by default, never in the `key` query parameter: a `query` entry named `key`, in any letter case, is a configuration error, since URLs get logged and error messages would not redact it.
+- **The model goes in the URL**, `/v1beta/models/<model>:streamGenerateContent`, with `alt=sse` added after the options' `query`, or `:generateContent` for a whole reply. It is written with or without a leading `models/`, which is stripped, and the id that remains must match `[a-z0-9][a-z0-9.-]*` in any letter case, as `gemini-3.8-flash` does: that keeps a `/`, a `?` or a `:` out of the path. Another is a configuration error, `<id>.model: must be a Gemini model id, such as gemini-3.8-flash`. A tuned model (`tunedModels/...`) is not supported.
+- **The key goes in `x-goog-api-key`** by default, never in the `key` query parameter: a `query` entry named `key`, in any letter case, is a configuration error, since URLs get logged and error messages would not redact it. A `query` entry named `alt` is one too, `<id>.query.alt: is set by the adapter and cannot be replaced`, since the adapter writes it.
 - **No temperature is sent unless one is set.** Current models ignore it, and Google says a future model will answer 400 to it.
 
 The body of every request holds, in this order:
@@ -608,10 +622,13 @@ The body of every request holds, in this order:
 - `generationConfig`: `temperature` when set, `maxOutputTokens`, the request's reply budget at most `maxTokens`, else `maxTokens`, else 16000, `responseMimeType: 'application/json'` in `json` and `schema` mode, `responseJsonSchema: <output.schema>` in `schema` mode, as Google's JavaScript SDK sends it (`responseSchema` is deprecated), and `thinkingConfig: { thinkingLevel }` when `thinking` is set: [Thinking](#thinking);
 - then `extraBody`, merged: `{ generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } }` goes beside the rest. It cannot replace `contents` or `systemInstruction`, or set `generationConfig.maxOutputTokens`, which `maxTokens` sets. Its `generationConfig` must be an object, written `generationConfig`: another spelling, such as `generation_config`, would send a second key, so it is refused.
 
-A reply succeeds with a first candidate whose `finishReason` is `STOP` and whose parts hold text. The text is the `text` of the first candidate's `content.parts`, joined, without the parts flagged as thoughts, which are never read as the answer. `model` is the reply's `modelVersion`, or the configured model. The input count is `usageMetadata.promptTokenCount`; the output count is `usageMetadata.candidatesTokenCount`, plus `usageMetadata.thoughtsTokenCount` when it is a number. Gemini leaves a zero count out of its JSON, so a candidates count the reply leaves out reads as 0: a thinking model cut off while it thinks reports only its prompt and thought counts. A reply without `promptTokenCount`, or with a prompt or candidates count that is not a number, reports no `usage`. A status outside 2xx is an `http` error that quotes Google's `{ "error": { "code", "message", "status", "details" } }` body; a 402, which Google sends for a depleted prepay balance, is not retryable, unlike a 429, and a 429 of a per-day quota is not either.
+A reply is read as a whole reply: a streamed one is assembled into it first ([Streaming](#streaming)), and a server that answers a streamed request whole is read as it is. It succeeds with a first candidate whose `finishReason` is `STOP` and whose parts hold text. The text is the `text` of the first candidate's `content.parts`, joined, without the parts flagged as thoughts, which are never read as the answer. `model` is the reply's `modelVersion`, or the configured model. The input count is `usageMetadata.promptTokenCount`; the output count is `usageMetadata.candidatesTokenCount`, plus `usageMetadata.thoughtsTokenCount` when it is a number. Gemini leaves a zero count out of its JSON, so a candidates count the reply leaves out reads as 0: a thinking model cut off while it thinks reports only its prompt and thought counts. A reply without `promptTokenCount`, or with a prompt or candidates count that is not a number, reports no `usage`. A status outside 2xx is an `http` error that quotes Google's `{ "error": { "code", "message", "status", "details" } }` body; a 402, which Google sends for a depleted prepay balance, is not retryable, unlike a 429, and a 429 of a per-day quota is not either.
 
 | The reply | Kind | Message |
 | --- | --- | --- |
+| A chunk's `error`, whose `code` is an error status (400 to 599) | `http`, retried as that status is, a `RetryInfo` and a per-day quota read as they are on a failed reply | `server error <status>: "<message>"` |
+| A chunk's `error` with no such code | `invalid-response` | `server error: "<message>"` |
+| A stream that ends with no finish reason and no block reason, or, for `openaiCompatible`, with none for choice index 0 whatever another choice shows | `network` | `the reply stream ended before its last event` |
 | `promptFeedback.blockReason` set | `refusal` | `prompt was blocked: "<reason>"` for a reason of 1 to 64 capital letters and underscores, such as `PROHIBITED_CONTENT`, and `prompt was blocked` for any other |
 | No first candidate | `invalid-response` | `reply has no candidates` |
 | `finishReason` `MAX_TOKENS` or `CONTINUATION`, or candidate and thought tokens at or above the reply's limit | `truncated`, `reply` or `thinking` | What it lacked: [What a reply lacked](#what-a-reply-lacked) |
@@ -635,17 +652,18 @@ For Ollama's native chat API, on a local server or Ollama's cloud, `https://olla
 The body of every request holds, in this order:
 
 - `model` and `messages`: the request's messages, with the system text first as a `system` message, or inline at the head of the first user message;
-- `stream: false`, `truncate: false` and `shift: false`;
+- `stream: true`, `false` for a whole reply, then `truncate: false` and `shift: false`;
 - `options`: `temperature`, unless it is `null`, `num_predict`, the request's reply budget at most `maxTokens`, else `maxTokens`, else 16000, and `num_ctx`, always, from `contextTokens`;
 - `format`: `'json'` in `json` mode, `<output.schema>` in `schema` mode;
 - `think`: `'low'` or `false`, when `thinking` is set;
 - then `extraBody`, merged: `{ options: { seed: 7 } }` goes beside the temperature. It cannot replace `model`, `messages`, `stream`, `truncate` or `shift`, or set `options.num_ctx`, which `contextTokens` sets, or `options.num_predict`, which `maxTokens` sets. Its `options` must be an object.
 
-A reply succeeds with `done: true`, the `done_reason` `stop` and a string `message.content`. The text is `message.content`, as it came: a `<think>` block left in it, by a model or a template Ollama cannot split, is for the core's reply parser to drop. `model` is the one the reply names, or the configured one; `usage` is read from `prompt_eval_count` and `eval_count`. A status outside 2xx is an `http` error that quotes Ollama's `{ "error": "<message>" }` body.
+A reply is read as a whole reply: a streamed one is assembled into it first ([Streaming](#streaming)), and a server that answers a streamed request whole, with a content type that is not `application/x-ndjson`, is read as it is. It succeeds with `done: true`, the `done_reason` `stop` and a string `message.content`. The text is `message.content`, as it came: a `<think>` block left in it, by a model or a template Ollama cannot split, is for the core's reply parser to drop. `model` is the one the reply names, or the configured one; `usage` is read from `prompt_eval_count` and `eval_count`. A status outside 2xx is an `http` error that quotes Ollama's `{ "error": "<message>" }` body.
 
 | The reply | Kind | Message |
 | --- | --- | --- |
-| A string `error` | `invalid-response` | `server error: "<message>"` |
+| A string `error`, in a stream a line that holds one | `invalid-response` | `server error: "<message>"` |
+| A stream that ends before the line that holds `done: true` | `network` | `the reply stream ended before its last event` |
 | `done: true` and `done_reason` `length`, or `eval_count` at or above the reply's limit | `truncated`, `reply`, `thinking` or `window` | What it lacked: [What a reply lacked](#what-a-reply-lacked). With `shift: false`, a reply that fills the context ends as `length` too, and is the window's when its input and output reach `num_ctx` |
 | No `done: true`, or a `done_reason` other than `stop` or `length` | `invalid-response` | `reply has not finished` |
 | No `message.content` text, and a `message.thinking` with text | `no-answer`, `thinking` | `reply has no answer, only reasoning: ...` |

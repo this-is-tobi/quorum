@@ -44,8 +44,8 @@ export interface CompletionRequest {
 
 /**
  * What an adapter reports of a streamed reply as it reads it, which the core reads as proof of life: the reply's headers
- * came, a data event came with the output tokens so far (the larger of the server's own count and a quarter of the
- * characters streamed) and whether an answer or reasoning has shown text yet, or a keep-alive came. Numbers and booleans only.
+ * came, a data event came with the output tokens so far, a whole number (the larger of the server's own count, floored,
+ * and a quarter of the characters streamed) and whether an answer or reasoning has shown text yet, or a keep-alive came. Numbers and booleans only.
  */
 export type StreamSignal
   = | { readonly kind: 'headers' }

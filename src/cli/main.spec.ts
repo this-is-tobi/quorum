@@ -237,7 +237,7 @@ describe('runCli', () => {
     expect(url).toBe('http://localhost:11434/api/chat')
     expect(body).toMatchObject({
       model: 'qwen3.6:27b',
-      stream: false,
+      stream: true,
       truncate: false,
       shift: false,
       options: { num_ctx: 32768 },

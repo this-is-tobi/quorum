@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ConfigError } from '../core/errors.ts'
+import { ConfigError, ProviderError } from '../core/errors.ts'
 import type { CompletionRequest, StreamSignal } from '../core/ports.ts'
 import { sent, stubFetch, textReply } from '../testing/http.ts'
-import { openAiStream, sse } from '../testing/streams.ts'
-import { openaiCompatible } from './openai-compatible.ts'
+import { chunkedBody, openAiStream, sse } from '../testing/streams.ts'
+import { assembleOpenAi, openaiCompatible } from './openai-compatible.ts'
+import { sseItems } from './stream.ts'
+import type { StreamItem } from './stream.ts'
 import type { OpenAICompatibleOptions } from './openai-compatible.ts'
 import { GATEWAY_MODEL, GATEWAY_ORIGIN, gatewayStream } from '../testing/fixtures/gateway-stream.ts'
 import { chatCompletion, countedOut, empty, groqBrowserSearch, mistralChunks, openRouterGenerationError, reasoningOnly, refusal, searchCitations, stringError, truncated } from '../testing/fixtures/openai-compatible.ts'
@@ -1289,5 +1291,284 @@ describe('openaiCompatible on a 400 that names a stream field', () => {
     // The streaming words come first: a body that names a structured-output field and the stream is the stream's.
     expect(await failure('{"error":{"message":"response_format and stream are unsupported"}}', 400)).toMatchObject({ refused: 'stream' })
     expect(await failure('{"error":{"message":"response_format is unsupported"}}', 400)).toMatchObject({ refused: 'structuredOutput' })
+  })
+})
+
+describe('openaiCompatible streams with a field of the wrong type', () => {
+  const lost = (error: unknown): ProviderError => new ProviderError({
+    providerId: 'local',
+    kind: 'network',
+    message: String(error),
+  })
+  const itemsOf = (...chunks: unknown[]): { items: AsyncGenerator<StreamItem>, cancelled: () => boolean } => {
+    const { body, cancelled } = chunkedBody(`${sse(chunks.map(data => ({ data })))}data: [DONE]\n\n`, 1)
+    return {
+      items: sseItems(body, { providerId: 'local', sentinel: '[DONE]', lost }),
+      cancelled,
+    }
+  }
+  const delta = (body: unknown): object => ({
+    choices: [
+      { index: 0, delta: body },
+    ],
+  })
+  const stop = {
+    choices: [
+      { index: 0, delta: {}, finish_reason: 'stop' },
+    ],
+  }
+
+  it.each<[string, unknown, string]>([
+    ['a chunk that is a number', 5, 'chunk is not an object'],
+    ['a chunk that is null', null, 'chunk is not an object'],
+    [
+      'a chunk whose model is no text',
+      { model: 7 },
+      'model is not text',
+    ],
+    [
+      'a chunk whose usage is no object',
+      { usage: 'x' },
+      'usage is not an object',
+    ],
+    [
+      'a chunk whose error is a number',
+      { error: 5 },
+      'error is not an object',
+    ],
+    [
+      'a chunk whose choices is no list',
+      {
+        choices: { 0: {} },
+      },
+      'choices is not a list',
+    ],
+    [
+      'a choice that is no object',
+      {
+        choices: ['x'],
+      },
+      'choice is not an object',
+    ],
+    [
+      'a choice whose delta is no object',
+      {
+        choices: [
+          { delta: 'x' },
+        ],
+      },
+      'delta is not an object',
+    ],
+    [
+      'a delta whose content is a number',
+      delta({ content: 7 }),
+      'content is not text',
+    ],
+    [
+      'a delta whose content part is no object',
+      delta({
+        content: ['x'],
+      }),
+      'content part is not an object',
+    ],
+    [
+      'a delta whose content part type is no text',
+      delta({
+        content: [
+          { type: 7 },
+        ],
+      }),
+      'content part type is not text',
+    ],
+    [
+      'a text part whose text is no text',
+      delta({
+        content: [
+          { type: 'text', text: 7 },
+        ],
+      }),
+      'text is not text',
+    ],
+    [
+      'a delta whose refusal is no text',
+      delta({ refusal: 7 }),
+      'refusal is not text',
+    ],
+    [
+      'a delta whose reasoning is no text',
+      delta({
+        reasoning: ['x'],
+      }),
+      'reasoning is not text',
+    ],
+    [
+      'a delta whose reasoning_content is no text',
+      delta({ reasoning_content: 7 }),
+      'reasoning_content is not text',
+    ],
+    [
+      'a delta whose annotations is no list',
+      delta({
+        annotations: { type: 'url_citation' },
+      }),
+      'annotations is not a list',
+    ],
+    [
+      'a delta whose annotation is no object',
+      delta({
+        annotations: ['url_citation'],
+      }),
+      'annotation is not an object',
+    ],
+    [
+      'an annotation whose type is no text',
+      delta({
+        annotations: [
+          { type: 7 },
+        ],
+      }),
+      'annotation type is not text',
+    ],
+    [
+      'a delta whose executed_tools is no list',
+      delta({
+        executed_tools: { name: 'search' },
+      }),
+      'executed_tools is not a list',
+    ],
+  ])('fails %s as invalid-response, never retried, and cancels the body', async (_name, chunk, field) => {
+    const { items, cancelled } = itemsOf(chunk, stop)
+    await expect(assembleOpenAi(items, 'local')).rejects.toMatchObject({
+      name: 'ProviderError',
+      kind: 'invalid-response',
+      retryable: false,
+      message: `local: the reply stream's ${field}`,
+    })
+    expect(cancelled()).toBe(true)
+  })
+
+  it('is complete only once choice index 0 finishes: another choice finishing, or index 0 never kept, is a stream that ended early', async () => {
+    const ended = { kind: 'network', retryable: true, message: 'local: the reply stream ended before its last event' }
+    const other = await assembleOpenAi(itemsOf(
+      delta({ content: '{"partial":' }),
+      {
+        choices: [
+          {
+            index: 1,
+            delta: { content: 'x' },
+            finish_reason: 'stop',
+          },
+        ],
+      },
+    ).items, 'local').catch((caught: unknown) => caught)
+    expect(other).toMatchObject(ended)
+    // Eight other choices fill the cap before index 0 shows: it is never kept, though it finishes.
+    const crowded = await assembleOpenAi(itemsOf(
+      {
+        choices: Array.from({ length: 8 }, (_, at) => ({
+          index: at + 1,
+          delta: { content: 'x' },
+          finish_reason: 'stop',
+        })),
+      },
+      {
+        choices: [
+          {
+            index: 0,
+            delta: { content: '{}' },
+            finish_reason: 'stop',
+          },
+        ],
+      },
+    ).items, 'local').catch((caught: unknown) => caught)
+    expect(crowded).toMatchObject(ended)
+    // Choice 0 finishing completes the stream, and its is the one choice the reply holds, whatever came before it.
+    const reply = await assembleOpenAi(itemsOf(
+      {
+        choices: [
+          {
+            index: 1,
+            delta: { content: 'other' },
+            finish_reason: 'stop',
+          },
+          {
+            index: 0,
+            delta: { content: '{}' },
+          },
+        ],
+      },
+      stop,
+    ).items, 'local')
+    expect(reply).toMatchObject({
+      choices: [
+        {
+          index: 0,
+          message: { content: '{}' },
+          finish_reason: 'stop',
+        },
+      ],
+    })
+    expect(reply.choices).toHaveLength(1)
+  })
+
+  it('ends its read at an error chunk, pulling none of the chunks after it, and cancels the body', async () => {
+    const { items, cancelled } = itemsOf(
+      delta({ content: '{}' }),
+      {
+        error: { message: 'Overloaded', code: 529 },
+      },
+      delta({ content: 'later' }),
+      stop,
+    )
+    let pulled = 0
+    const counted = async function* (): AsyncGenerator<StreamItem> {
+      for await (const item of items) {
+        pulled += 1
+        yield item
+      }
+    }
+    const reply = await assembleOpenAi(counted(), 'local')
+    // The content chunk and the error chunk: nothing after it is read, and what came before it is no answer.
+    expect(pulled).toBe(2)
+    expect(reply).toMatchObject({
+      error: { code: 529 },
+    })
+    expect(cancelled()).toBe(true)
+  })
+
+  it('tolerates an unknown content part type, an unknown field, and a field that is null or absent', async () => {
+    const reply = await assembleOpenAi(itemsOf(
+      {
+        model: null,
+        usage: null,
+        error: null,
+        choices: null,
+        system_fingerprint: 'fp',
+      },
+      delta({
+        content: null,
+        refusal: null,
+        reasoning: null,
+        annotations: null,
+        executed_tools: null,
+        tool_calls: [1],
+      }),
+      delta({
+        content: [
+          { type: 'image_url', image_url: {} },
+          { type: 'text', text: '{}' },
+          { type: 'text' },
+        ],
+      }),
+      stop,
+    ).items, 'local')
+    expect(reply).toMatchObject({
+      choices: [
+        {
+          message: { content: '{}' },
+          finish_reason: 'stop',
+        },
+      ],
+    })
   })
 })

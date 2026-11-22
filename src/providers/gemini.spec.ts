@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ConfigError } from '../core/errors.ts'
-import type { ProviderError, ProviderErrorKind } from '../core/errors.ts'
-import type { CompletionRequest } from '../core/ports.ts'
-import { jsonReply, sent, stubFetch, textReply } from '../testing/http.ts'
-import { gemini } from './gemini.ts'
+import { ConfigError, ProviderError } from '../core/errors.ts'
+import type { ProviderErrorKind } from '../core/errors.ts'
+import type { CompletionRequest, StreamSignal } from '../core/ports.ts'
+import { sent, stubFetch, textReply } from '../testing/http.ts'
+import { assembleGemini, gemini } from './gemini.ts'
 import type { GeminiOptions } from './gemini.ts'
+import { sseItems } from './stream.ts'
+import type { StreamItem } from './stream.ts'
 import { candidate, countedOut, empty, generateContentResponse, invalidKey, promptBlocked, reasoningOnly, thoughtsOnlyCutOff, truncated, withThoughts } from '../testing/fixtures/gemini.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
+import { chunkedBody, geminiStream, sse } from '../testing/streams.ts'
 
 const request: CompletionRequest = {
   system: 'instructions',
@@ -65,9 +68,10 @@ describeProviderContract({
       generationConfig: { responseMimeType: 'text/plain' },
     },
   },
-  streams: false,
+  streams: true,
   streamFields: {},
-  streamed: reply => jsonReply(reply),
+  streamQuery: '&alt=sse',
+  streamed: reply => geminiStream(reply),
   reservedBodyKeys: ['contents', 'systemInstruction'],
   toolBodyKeys: ['tools', 'toolConfig', 'cachedContent'],
   replyLimitPaths: [
@@ -125,11 +129,11 @@ describe('gemini', () => {
     expect(provider.thinking).toBe(thinking)
   })
 
-  it('posts the conversation, the system instruction and JSON mode to the model\'s generateContent, with the key in x-goog-api-key', async () => {
+  it('posts the conversation, the system instruction and JSON mode to the model\'s streamGenerateContent, with the key in x-goog-api-key', async () => {
     const fetchMock = stubFetch(generateContentResponse)
     await provider.complete(request)
     const { url, headers, body } = sent(fetchMock)
-    expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent')
+    expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse')
     expect(headers).toEqual({ 'content-type': 'application/json', 'x-goog-api-key': 'AIza-k' })
     expect(body).toEqual({
       ...conversation,
@@ -207,7 +211,7 @@ describe('gemini', () => {
     const fetchMock = stubFetch(generateContentResponse)
     const prefixed = gemini({ ...options, model: 'models/gemini-3.8-flash' })
     await prefixed.complete(request)
-    expect(sent(fetchMock).url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent')
+    expect(sent(fetchMock).url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse')
     expect(prefixed.model).toBe('models/gemini-3.8-flash')
   })
 
@@ -326,6 +330,7 @@ describe('gemini', () => {
       model: 'gemini-3.8-flash',
       usage: { inputTokens: 1840, outputTokens: 340 },
       reasoning: true,
+      whole: true,
     })
   })
 
@@ -357,6 +362,7 @@ describe('gemini', () => {
       model: 'gemini-3.8-flash',
       usage: undefined,
       reasoning: false,
+      whole: true,
     })
   })
 
@@ -758,5 +764,676 @@ describe('gemini on a 400 that names its structured-output field', () => {
     expect(await failure('{"error":{"message":"responseMimeType is bad"}}', 403)).toMatchObject({ refused: undefined })
     expect(await failure('{"error":{"message":"responseMimeType is bad"}}', 400, { structuredOutput: 'prompt' })).toMatchObject({ refused: undefined })
     expect(await failure('{"error":{"message":"responseMimeTypes"}}', 400)).toMatchObject({ refused: undefined })
+  })
+})
+
+describe('gemini streams', () => {
+  const base: GeminiOptions = {
+    id: 'gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com',
+    model: 'gemini-3.8-flash',
+    contextTokens: 131072,
+  }
+  const flash = gemini(base)
+  type Chunk = Record<string, unknown>
+  const streamText = (chunks: readonly Chunk[]): string => sse(chunks.map(data => ({ data })))
+  const streamOf = (chunks: readonly Chunk[]): Response => new Response(streamText(chunks), {
+    headers: { 'content-type': 'text/event-stream' },
+  })
+  /** A chunk holding parts of the first candidate, as the API streams them. */
+  const part = (...parts: unknown[]): Chunk => ({
+    candidates: [
+      {
+        content: { parts, role: 'model' },
+        index: 0,
+      },
+    ],
+    modelVersion: 'gemini-3.8-flash',
+  })
+  const finish = (finishReason = 'STOP', usageMetadata: unknown = { promptTokenCount: 41, candidatesTokenCount: 23 }): Chunk => ({
+    candidates: [
+      {
+        content: { role: 'model' },
+        finishReason,
+        index: 0,
+      },
+    ],
+    usageMetadata,
+    modelVersion: 'gemini-3.8-flash',
+  })
+  const serve = (...responses: Response[]): ReturnType<typeof vi.fn> => {
+    const fetchMock = vi.fn()
+    for (const response of responses) fetchMock.mockImplementationOnce(async () => response)
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+  const failed = async (chunks: readonly Chunk[], provider = flash): Promise<unknown> => {
+    serve(streamOf(chunks))
+    return await provider.complete(request).catch((error: unknown) => error)
+  }
+  const jsonOf = (body: unknown): Response => new Response(JSON.stringify(body), {
+    headers: { 'content-type': 'application/json' },
+  })
+  /** What a call came to, for comparing a stream with a whole reply. */
+  const outcome = async (reply: Response): Promise<unknown> => {
+    serve(reply)
+    return await flash.complete(request).then(
+      ({ whole: _whole, ...reached }) => reached,
+      (error: ProviderError) => ({
+        kind: error.kind,
+        message: error.message,
+        noAnswer: error.noAnswer,
+        usage: error.usage,
+      }),
+    )
+  }
+  const lost = (error: unknown): ProviderError => new ProviderError({
+    providerId: 'gemini',
+    kind: 'network',
+    message: String(error),
+  })
+  const itemsOf = (chunks: readonly Chunk[]): { items: AsyncGenerator<StreamItem>, cancelled: () => boolean } => {
+    const { body, cancelled } = chunkedBody(streamText(chunks), 1)
+    return {
+      items: sseItems(body, { providerId: 'gemini', lost }),
+      cancelled,
+    }
+  }
+
+  it('posts to streamGenerateContent with alt=sse, and to generateContent for a whole request', async () => {
+    const fetchMock = stubFetch(generateContentResponse)
+    const origin = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash'
+    await flash.complete(request)
+    await flash.complete({ ...request, stream: false })
+    await gemini({ ...base, stream: false }).complete(request)
+    await gemini({ ...base, stream: true }).complete({ ...request, stream: false })
+    await gemini({
+      ...base,
+      query: { 'api-version': '1' },
+    }).complete(request)
+    await gemini({
+      ...base,
+      query: { 'api-version': '1' },
+    }).complete({ ...request, stream: false })
+    expect([0, 1, 2, 3, 4, 5].map(call => sent(fetchMock, call).url)).toEqual([
+      `${origin}:streamGenerateContent?alt=sse`,
+      `${origin}:generateContent`,
+      `${origin}:generateContent`,
+      // A pinned stream ignores the request's change.
+      `${origin}:streamGenerateContent?alt=sse`,
+      // The alt comes after the options' own query.
+      `${origin}:streamGenerateContent?api-version=1&alt=sse`,
+      `${origin}:generateContent?api-version=1`,
+    ])
+    // The body is the same either way: the stream is the path's.
+    expect(sent(fetchMock, 0).body).toEqual(sent(fetchMock, 1).body)
+  })
+
+  it('refuses a query key alt in any letter case', () => {
+    for (const name of ['alt', 'ALT', 'Alt']) {
+      expect(() => gemini({
+        ...base,
+        query: { [name]: 'json' },
+      }), name).toThrow(new ConfigError([
+        { path: `gemini.query.${name}`, message: 'is set by the adapter and cannot be replaced' },
+      ]))
+    }
+    // It is refused beside a key parameter too, each at its own name, and a name that only holds alt is not it.
+    expect(() => gemini({
+      ...base,
+      query: { key: 'x', alt: 'sse' },
+    })).toThrow(new ConfigError([
+      { path: 'gemini.query.key', message: 'would carry a key in the URL: set apiKey instead' },
+      { path: 'gemini.query.alt', message: 'is set by the adapter and cannot be replaced' },
+    ]))
+    expect(() => gemini({
+      ...base,
+      query: { altitude: '1', 'alt-x': '2' },
+    })).not.toThrow()
+  })
+
+  it('assembles a stream into the reply its reader reads, the same as the whole reply', async () => {
+    serve(streamOf([
+      part({ text: 'The diff ', thought: true }),
+      part({ text: 'calls exec.', thought: true }),
+      part({ text: '{"findings"' }),
+      part({ text: ':[]}', thoughtSignature: 'CiQB' }),
+      finish('STOP', { promptTokenCount: 41, candidatesTokenCount: 4, thoughtsTokenCount: 19 }),
+    ]))
+    const streamed = await flash.complete(request)
+    expect(streamed).toEqual({
+      text: '{"findings":[]}',
+      model: 'gemini-3.8-flash',
+      usage: { inputTokens: 41, outputTokens: 23 },
+      reasoning: true,
+    })
+    stubFetch({
+      candidates: [
+        {
+          content: {
+            parts: [
+              { text: 'The diff calls exec.', thought: true },
+              { text: '{"findings":[]}' },
+            ],
+            role: 'model',
+          },
+          finishReason: 'STOP',
+        },
+      ],
+      usageMetadata: { promptTokenCount: 41, candidatesTokenCount: 4, thoughtsTokenCount: 19 },
+      modelVersion: 'gemini-3.8-flash',
+    })
+    expect(await flash.complete(request)).toEqual({ ...streamed, whole: true })
+    // Every recorded reply, as a whole reply and streamed through the helper, comes to the same.
+    for (const recorded of [
+      generateContentResponse,
+      withThoughts,
+      truncated,
+      thoughtsOnlyCutOff,
+      empty,
+      reasoningOnly,
+      promptBlocked,
+      countedOut,
+    ]) {
+      expect(await outcome(geminiStream(recorded))).toEqual(await outcome(jsonOf(recorded)))
+    }
+  })
+
+  it('reports its progress signals', async () => {
+    const signals: StreamSignal[] = []
+    serve(new Response(`: keep-alive\n\n${streamText([
+      part({
+        text: 'x'.repeat(10),
+        thought: true,
+      }),
+      part({ text: 'hello' }),
+      {
+        ...part({ text: '!' }),
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 30, thoughtsTokenCount: 10 },
+      },
+      finish('STOP', { promptTokenCount: 5, candidatesTokenCount: 30, thoughtsTokenCount: 10 }),
+    ])}`, {
+      headers: { 'content-type': 'text/event-stream' },
+    }))
+    await flash.complete({
+      ...request,
+      onProgress: signal => signals.push(signal),
+    })
+    const data = (outputTokens: number, answer: boolean, reasoning: boolean): StreamSignal => ({
+      kind: 'data',
+      outputTokens,
+      answer,
+      reasoning,
+    })
+    expect(signals).toEqual([
+      { kind: 'headers' },
+      { kind: 'keep-alive' },
+      data(3, false, true),
+      data(4, true, true),
+      // The running count of the candidates and the thoughts, 40, is more than a quarter of the 16 characters.
+      data(40, true, true),
+      data(40, true, true),
+    ])
+    // A stream of thoughts alone has shown no answer.
+    signals.length = 0
+    serve(streamOf([
+      part({ text: 'thinking about it', thought: true }),
+      finish('MAX_TOKENS'),
+    ]))
+    await flash.complete({
+      ...request,
+      onProgress: signal => signals.push(signal),
+    }).catch(() => undefined)
+    expect(signals.filter(signal => signal.kind === 'data').at(0)).toEqual(data(5, false, true))
+  })
+
+  it('marks a refusal naming its stream word refused stream, never quoting the body', async () => {
+    const failure = async (body: string, status: number, options: Partial<GeminiOptions> = {}, asked: CompletionRequest = request): Promise<unknown> => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply(body, status)))
+      return await gemini({
+        ...base,
+        ...options,
+      }).complete(asked).catch((caught: unknown) => caught)
+    }
+    const naming = (word: string): string => `{"error":{"code":400,"message":"Method ${word} is not supported","status":"INVALID_ARGUMENT"}}`
+    const error = await failure(naming('streamGenerateContent'), 400)
+    expect(error).toMatchObject({ kind: 'http', status: 400, refused: 'stream' })
+    expect(Object.entries(error as object).filter(([key, value]) => key !== 'message' && key !== 'name' && typeof value === 'string').flatMap(([, value]) => value as string)).toEqual(['gemini', 'http', 'stream'])
+    expect(await failure(naming('streamGenerateContent'), 422)).toMatchObject({ refused: 'stream' })
+    // Another status, the whole method's name, and a request that streamed nothing name no refusal.
+    expect(await failure(naming('streamGenerateContent'), 404)).toMatchObject({ refused: undefined })
+    expect(await failure(naming('generateContent'), 400)).toMatchObject({ refused: undefined })
+    expect(await failure(naming('streamGenerateContent'), 400, {}, { ...request, stream: false })).toMatchObject({ refused: undefined })
+    expect(await failure(naming('streamGenerateContent'), 400, { stream: false })).toMatchObject({ refused: undefined })
+    // A pinned stream is marked as well, which is how its fix reads set stream: false.
+    expect(await failure(naming('streamGenerateContent'), 400, { stream: true })).toMatchObject({ refused: 'stream' })
+    // The stream's word comes first: a body that names a structured-output field and the stream is the stream's.
+    expect(await failure('{"error":{"message":"responseMimeType and streamGenerateContent are unsupported"}}', 400)).toMatchObject({ refused: 'stream' })
+  })
+
+  it('reads a chunk holding Google\'s error body as its status, with its RetryInfo', async () => {
+    const error = (code: unknown, details?: unknown): Chunk => ({
+      error: {
+        code,
+        message: 'The model is overloaded.',
+        status: 'UNAVAILABLE',
+        details,
+      },
+    })
+    const retryInfo = { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '7s' }
+    const perDay = {
+      '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+      violations: [
+        { quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' },
+      ],
+    }
+    expect(await failed([
+      part({ text: '{"kee' }),
+      error(503),
+    ])).toMatchObject({
+      name: 'ProviderError',
+      kind: 'http',
+      status: 503,
+      retryable: true,
+      retryAfterMs: undefined,
+      message: 'gemini: server error 503: "The model is overloaded."',
+    })
+    expect(await failed([
+      error(429, [retryInfo]),
+    ])).toMatchObject({
+      status: 429,
+      retryable: true,
+      retryAfterMs: 7000,
+      exhausted: false,
+    })
+    expect(await failed([
+      error(429, [perDay, retryInfo]),
+    ])).toMatchObject({
+      status: 429,
+      retryable: false,
+      retryAfterMs: 7000,
+      exhausted: true,
+    })
+    expect(await failed([
+      error('quota_exceeded'),
+    ])).toMatchObject({
+      kind: 'invalid-response',
+      status: undefined,
+      retryable: false,
+      exhausted: true,
+    })
+    // A code that is no HTTP error status is no status, and the text is quoted redacted, or not at all.
+    expect(await failed([
+      error(200),
+    ])).toMatchObject({ kind: 'invalid-response', retryable: false, message: 'gemini: server error: "The model is overloaded."' })
+    expect(await failed([
+      { error: 'bad key AIza-k' },
+    ], gemini({ ...base, apiKey: 'AIza-k' }))).toMatchObject({ kind: 'invalid-response', message: 'gemini: server error: "bad key [redacted]"' })
+    expect(await failed([
+      {
+        error: { code: 500 },
+      },
+    ])).toMatchObject({ status: 500, message: 'gemini: server error 500' })
+  })
+
+  it('reads a prompt blocked in its first chunk as a refusal', async () => {
+    expect(await failed([
+      {
+        promptFeedback: { blockReason: 'PROHIBITED_CONTENT' },
+        usageMetadata: { promptTokenCount: 1840, totalTokenCount: 1840 },
+        modelVersion: 'gemini-3.8-flash',
+      },
+    ])).toMatchObject({
+      kind: 'refusal',
+      retryable: false,
+      message: 'gemini: prompt was blocked: "PROHIBITED_CONTENT"',
+      usage: { inputTokens: 1840, outputTokens: 0 },
+    })
+    // A later chunk that leaves the block out does not lift it, and the reason is read as a whole reply's is.
+    expect(await failed([
+      {
+        promptFeedback: { blockReason: 'SAFETY' },
+      },
+      {
+        promptFeedback: { safetyRatings: [] },
+        usageMetadata: { promptTokenCount: 7 },
+      },
+    ])).toMatchObject({ kind: 'refusal', message: 'gemini: prompt was blocked: "SAFETY"' })
+    // The feedback's other fields are never kept.
+    const items = itemsOf([
+      {
+        promptFeedback: {
+          blockReason: 'OTHER',
+          safetyRatings: [
+            { category: 'X' },
+          ],
+        },
+      },
+    ]).items
+    expect(await assembleGemini(items, 'gemini')).toEqual({
+      promptFeedback: { blockReason: 'OTHER' },
+    })
+  })
+
+  it('keeps the last usageMetadata it saw', async () => {
+    serve(streamOf([
+      {
+        ...part({ text: '{"a"' }),
+        usageMetadata: { promptTokenCount: 41, candidatesTokenCount: 2 },
+      },
+      {
+        ...part({ text: ':1}' }),
+        usageMetadata: { promptTokenCount: 41, candidatesTokenCount: 4, thoughtsTokenCount: 6 },
+      },
+      finish('STOP', { promptTokenCount: 41, candidatesTokenCount: 9, thoughtsTokenCount: 12 }),
+      // A chunk after the finish reason that holds no usage changes nothing.
+      part(),
+    ]))
+    await expect(flash.complete(request)).resolves.toMatchObject({
+      text: '{"a":1}',
+      usage: { inputTokens: 41, outputTokens: 21 },
+    })
+    // No usage in any chunk is no usage.
+    serve(streamOf([
+      part({ text: '{}' }),
+      {
+        candidates: [
+          { finishReason: 'STOP' },
+        ],
+      },
+    ]))
+    expect((await flash.complete(request)).usage).toBeUndefined()
+  })
+
+  it('keeps a thought part with no text, a text part joined, and leaves every other part out', async () => {
+    const items = itemsOf([
+      part({ text: 'secret ', thought: true }),
+      part({ text: 'thoughts', thought: true, thoughtSignature: 'CiQB' }),
+      part({ text: '{"a"' }),
+      part({
+        functionCall: { name: 'lookup' },
+      }),
+      part({ text: ':1}' }),
+      finish(),
+    ]).items
+    expect(await assembleGemini(items, 'gemini')).toEqual({
+      modelVersion: 'gemini-3.8-flash',
+      candidates: [
+        {
+          content: {
+            parts: [
+              { thought: true },
+              { text: '{"a":1}' },
+            ],
+            role: 'model',
+          },
+          finishReason: 'STOP',
+          index: 0,
+        },
+      ],
+      usageMetadata: { promptTokenCount: 41, candidatesTokenCount: 23 },
+    })
+  })
+
+  it('fails a stream with no finish reason as network', async () => {
+    const lastEvent = 'gemini: the reply stream ended before its last event'
+    for (const chunks of [
+      [
+        part({ text: '{"kee' }),
+      ],
+      [
+        part({ text: '{}' }),
+        {
+          usageMetadata: { promptTokenCount: 1 },
+        },
+      ],
+      [],
+    ]) {
+      expect(await failed(chunks), chunks.length.toString()).toMatchObject({ kind: 'network', retryable: true, message: lastEvent })
+    }
+    // A candidate that names no finish reason is no finish, though a null one is sent beside the text.
+    expect(await failed([
+      {
+        candidates: [
+          {
+            content: {
+              parts: [
+                { text: '{}' },
+              ],
+            },
+            finishReason: null,
+          },
+        ],
+      },
+    ])).toMatchObject({ kind: 'network' })
+  })
+
+  it('fails a part whose text is no text as invalid-response, never retried, and cancels the body', async () => {
+    const chunks: Chunk[] = [
+      part({ text: '{"a"' }),
+      part({ text: 7 }),
+      part({ text: ':1}' }),
+      finish(),
+    ]
+    const { items, cancelled } = itemsOf(chunks)
+    await expect(assembleGemini(items, 'gemini')).rejects.toMatchObject({ kind: 'invalid-response', retryable: false, message: 'gemini: the reply stream\'s text is not text' })
+    expect(cancelled()).toBe(true)
+    expect(await failed(chunks)).toMatchObject({ kind: 'invalid-response', retryable: false })
+    // A part with no text, a thought signature alone, is dropped as a whole reply's is.
+    serve(streamOf([
+      part({ text: '{}' }, { thoughtSignature: 'CiQB' }, { text: null }),
+      finish(),
+    ]))
+    await expect(flash.complete(request)).resolves.toMatchObject({ text: '{}' })
+  })
+
+  it('ends its read at an error chunk, pulling none of the chunks after it, and cancels the body', async () => {
+    const chunks: Chunk[] = [
+      part({ text: '{"kee' }),
+      {
+        error: { code: 503, message: 'overloaded', status: 'UNAVAILABLE' },
+      },
+      part({ text: '{}' }),
+      finish(),
+    ]
+    let pulled = 0
+    const counted = async function* (): AsyncGenerator<StreamItem> {
+      for await (const item of itemsOf(chunks).items) {
+        pulled += 1
+        yield item
+      }
+    }
+    await expect(assembleGemini(counted(), 'gemini')).rejects.toMatchObject({ status: 503 })
+    expect(pulled).toBe(2)
+    const { items, cancelled } = itemsOf(chunks)
+    await expect(assembleGemini(items, 'gemini')).rejects.toMatchObject({ status: 503 })
+    expect(cancelled()).toBe(true)
+  })
+})
+
+describe('gemini streams with a field of the wrong type', () => {
+  const lost = (error: unknown): ProviderError => new ProviderError({
+    providerId: 'gemini',
+    kind: 'network',
+    message: String(error),
+  })
+  const itemsOf = (...chunks: unknown[]): { items: AsyncGenerator<StreamItem>, cancelled: () => boolean } => {
+    const { body, cancelled } = chunkedBody(sse(chunks.map(data => ({ data }))), 1)
+    return {
+      items: sseItems(body, { providerId: 'gemini', lost }),
+      cancelled,
+    }
+  }
+  const withCandidate = (candidate: unknown): object => ({
+    candidates: [candidate],
+  })
+  const finished = {
+    candidates: [
+      { finishReason: 'STOP' },
+    ],
+  }
+
+  it.each<[string, unknown[], string]>([
+    [
+      'a chunk that is a number',
+      [5],
+      'chunk is not an object',
+    ],
+    [
+      'a chunk that is null',
+      [null],
+      'chunk is not an object',
+    ],
+    [
+      'a chunk whose modelVersion is no text',
+      [
+        { modelVersion: 7 },
+      ],
+      'modelVersion is not text',
+    ],
+    [
+      'a chunk whose usageMetadata is no object',
+      [
+        { usageMetadata: 'x' },
+      ],
+      'usageMetadata is not an object',
+    ],
+    [
+      'a chunk whose promptFeedback is no object',
+      [
+        { promptFeedback: [] },
+      ],
+      'promptFeedback is not an object',
+    ],
+    [
+      'a chunk whose error is a number',
+      [
+        { error: 5 },
+      ],
+      'error is not an object',
+    ],
+    [
+      'a chunk whose candidates is no list',
+      [
+        {
+          candidates: { 0: {} },
+        },
+      ],
+      'candidates is not a list',
+    ],
+    [
+      'a candidate that is no object',
+      [
+        withCandidate('x'),
+      ],
+      'candidate is not an object',
+    ],
+    [
+      'a candidate that is null',
+      [
+        withCandidate(null),
+      ],
+      'candidate is not an object',
+    ],
+    [
+      'a candidate whose content is no object',
+      [
+        withCandidate({ content: 'x' }),
+      ],
+      'content is not an object',
+    ],
+    [
+      'a content whose parts is no list',
+      [
+        withCandidate({
+          content: {
+            parts: { text: 'x' },
+          },
+        }),
+      ],
+      'parts is not a list',
+    ],
+    [
+      'a part that is no object',
+      [
+        withCandidate({
+          content: {
+            parts: ['x'],
+          },
+        }),
+      ],
+      'part is not an object',
+    ],
+    [
+      'a part that is null',
+      [
+        withCandidate({
+          content: {
+            parts: [null],
+          },
+        }),
+      ],
+      'part is not an object',
+    ],
+    [
+      'a part whose text is no text',
+      [
+        withCandidate({
+          content: {
+            parts: [
+              { text: 7 },
+            ],
+          },
+        }),
+      ],
+      'text is not text',
+    ],
+  ])('fails %s as invalid-response, never retried, and cancels the body', async (_name, chunks, field) => {
+    const { items, cancelled } = itemsOf(...chunks, finished)
+    await expect(assembleGemini(items, 'gemini')).rejects.toMatchObject({
+      name: 'ProviderError',
+      kind: 'invalid-response',
+      retryable: false,
+      message: `gemini: the reply stream's ${field}`,
+    })
+    expect(cancelled()).toBe(true)
+  })
+
+  it('tolerates an unknown part type, an empty candidates list and a field that is absent', async () => {
+    const reply = await assembleGemini(itemsOf(
+      { candidates: [] },
+      {
+        modelVersion: null,
+        usageMetadata: null,
+        promptFeedback: null,
+        error: null,
+      },
+      withCandidate({
+        content: {
+          parts: [
+            {
+              functionCall: { name: 'x' },
+            },
+            { inlineData: {} },
+            { text: '{}' },
+          ],
+        },
+      }),
+      finished,
+    ).items, 'gemini')
+    expect(reply).toEqual({
+      candidates: [
+        {
+          content: {
+            parts: [
+              { text: '{}' },
+            ],
+            role: 'model',
+          },
+          finishReason: 'STOP',
+          index: 0,
+        },
+      ],
+    })
   })
 })

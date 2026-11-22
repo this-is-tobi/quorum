@@ -68,6 +68,8 @@ export interface ContractSubject {
   streams: boolean
   /** The fields a streamed request adds to its body, which the body of a request holds when the adapter streams: none for an adapter that does not. */
   streamFields: Record<string, unknown>
+  /** What a streamed request adds to its URL's query, after the options' own and as written, such as `&alt=sse`; absent when it adds none. */
+  streamQuery?: string
   /** A recorded reply of `replies` as the protocol streams it: a response whose body is read once. An adapter that does not stream yet gives the reply whole. */
   streamed: (reply: unknown) => Response
   /** The body fields the adapter writes for the conversation, which `extraBody` cannot replace. */
@@ -213,7 +215,7 @@ export function describeProviderContract(subject: ContractSubject): void {
         query: { 'api-version': '2024-10-21', 'a b': 'c&d' },
       })
       expect(headers).toMatchObject({ 'x-team': 'security' })
-      expect(new URL(url).search).toBe('?api-version=2024-10-21&a+b=c%26d')
+      expect(new URL(url).search).toBe(`?api-version=2024-10-21&a+b=c%26d${subject.streamQuery ?? ''}`)
     })
 
     it('puts the system text in its own place natively, and at the head of the first user message inline', async () => {
@@ -349,7 +351,8 @@ export function describeProviderContract(subject: ContractSubject): void {
       expect((await send({ stream: true })).body).toMatchObject(subject.streamFields)
       if (!subject.streams) return
       const { body } = await send({ stream: false })
-      for (const field of Object.keys(subject.streamFields)) expect(body, field).not.toHaveProperty(field)
+      // A whole request leaves the fields out, or sets them to the value that asks for a whole reply: Ollama streams unless it is told `stream: false`.
+      for (const [field, value] of Object.entries(subject.streamFields)) expect(body[field], field).not.toEqual(value)
     })
 
     it('sends the reply\'s limit on every request: 16000 when maxTokens is unset, the budget the guard keeps', async () => {
