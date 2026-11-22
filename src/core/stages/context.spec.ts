@@ -3,6 +3,8 @@ import { describe, expect, it, onTestFinished } from 'vitest'
 import { fakeClock, settle } from '../../testing/clock.ts'
 import type { FakeClock } from '../../testing/clock.ts'
 import { streamingProvider } from '../../testing/streams.ts'
+import type { StreamPlan } from '../../testing/streams.ts'
+import type { ProfileBudgets } from '../budgets.ts'
 import { createAdaptations } from '../adapt.ts'
 import { createClocks } from '../clocks.ts'
 import { createLimiter } from '../concurrency.ts'
@@ -2632,6 +2634,114 @@ describe('the ceiling and the stall window of an attempt', () => {
         kind: 'timeout',
         calls: 3,
         stalledMs: 300_000,
+      },
+    ])
+  })
+})
+
+describe('the reply budgets a learned cut holds', () => {
+  /** What a path that ends any call at 900 s does to a stream of 45000 estimated tokens: the call fails as `network`, so a second such attempt teaches the cut, which holds 36000. */
+  const cut = (): StreamPlan => ({
+    script: [1, 2, 3, 4, 5].map(step => ({
+      afterMs: 180_000 * step,
+      signal: {
+        kind: 'data',
+        outputTokens: 9000 * step,
+        answer: false,
+        reasoning: true,
+      },
+    })),
+    end: new ProviderError({ providerId: 'p', kind: 'network', message: 'the reply stream ended before its last event' }),
+  })
+  const served = (replyTokens: number | undefined): ProfileBudgets => ({
+    research: {
+      provider: 'p',
+      replyTokens,
+      findings: 50,
+      findingsWithoutThinking: 50,
+    },
+    lenses: {
+      impact: { provider: 'p', replyTokens: 9216 },
+    },
+  })
+
+  /** Two attempts of one call cut at 900 s, under `budgets`: the events the cut and its lowering sent. */
+  async function learn(budgets: Readonly<Record<string, ProfileBudgets>>, facts: Parameters<typeof target>[1] = {}): Promise<QuorumEvent[]> {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const t = target(streamingProvider(clock, cut).complete, {
+      streams: true,
+      timeoutMs: 4_000_000,
+      retries: 1,
+      ...facts,
+    })
+    await settle(clock, callProvider({ ...ctx, budgets }, requester, t, () => request)).catch(() => {})
+    return events.filter(event => event.type === 'cut' || event.type === 'adapted')
+  }
+  const lowered = {
+    type: 'adapted',
+    adaptation: {
+      provider: 'p',
+      setting: 'replyTokens',
+      from: 'derived',
+      to: '36000',
+      cause: 'cut-on-the-way',
+    },
+  }
+
+  it('lowers a derived budget the cut is below, and records it', async () => {
+    expect(await learn({
+      security: served(50_000),
+    })).toEqual([
+      {
+        type: 'cut',
+        provider: 'p',
+        afterMs: 900_000,
+        holds: 36_000,
+        lowered: true,
+      },
+      lowered,
+    ])
+  })
+
+  it('counts a provider whose budgets are not known yet, or whose budget is not derived, as lowered', async () => {
+    expect(await learn({})).toMatchObject([
+      { type: 'cut', lowered: true },
+      lowered,
+    ])
+    expect(await learn({
+      security: served(undefined),
+    })).toMatchObject([
+      { type: 'cut', lowered: true },
+      lowered,
+    ])
+  })
+
+  it('lowers nothing and records nothing when every budget the provider serves is already under what the cut holds', async () => {
+    expect(await learn({
+      security: served(21_024),
+    })).toEqual([
+      {
+        type: 'cut',
+        provider: 'p',
+        afterMs: 900_000,
+        holds: 36_000,
+        lowered: false,
+        fits: true,
+      },
+    ])
+  })
+
+  it('keeps a maxTokens it is given, with no `fits`: the line names the value to lower it to', async () => {
+    expect(await learn({
+      security: served(150_000),
+    }, { maxTokens: 150_000 })).toEqual([
+      {
+        type: 'cut',
+        provider: 'p',
+        afterMs: 900_000,
+        holds: 36_000,
+        lowered: false,
       },
     ])
   })

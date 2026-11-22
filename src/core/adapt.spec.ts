@@ -452,6 +452,22 @@ describe('adaptations', () => {
     expect(adapt.sent(racing)).toEqual({ stream: false })
   })
 
+  it('records a move the call path made with no probe, in the order it happened, as a copy', () => {
+    const adapt = createAdaptations()
+    const lowered = {
+      provider: 'api',
+      setting: 'replyTokens',
+      from: 'derived',
+      to: '14400',
+      cause: 'cut-on-the-way',
+    } as const
+    adapt.answeredWhole(targetFor('api', { stream: true }))
+    adapt.recorded(lowered)
+    expect(adapt.record().map(({ setting }) => setting)).toEqual(['stream', 'replyTokens'])
+    expect(adapt.record()[1]).toEqual(lowered)
+    expect(adapt.record()[1]).not.toBe(lowered)
+  })
+
   it('never moves a provider whose stream is pinned', () => {
     const adapt = createAdaptations()
     // A pinned stream states no adapts.stream, whatever else the provider adapts.

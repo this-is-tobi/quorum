@@ -341,6 +341,95 @@ describe('renderEvent', () => {
     expect(renderEvent({ ...event, profile: `a${RLO}b` } as QuorumEvent, true)).toBe(`[a<U+202E>b] ${line}`)
   })
 
+  it.each<[string, QuorumEvent, string, string]>([
+    [
+      'lowered: the replies are held to what the cut holds',
+      {
+        type: 'cut',
+        provider: 'api',
+        afterMs: 900_000,
+        holds: 36_000,
+        lowered: true,
+      },
+      'api: its calls are cut after about 15m00s on the way: a call cut so is read as a reply cut off at its limit, and its replies are held to 36000 tokens for the rest of the review',
+      'api: its calls are cut after about 15m00s on the way: a call cut so is read as a reply cut off at its limit',
+    ],
+    [
+      'with every budget already under the cut: nothing moved, no advice',
+      {
+        type: 'cut',
+        provider: 'api',
+        afterMs: 900_000,
+        holds: 36_000,
+        lowered: false,
+        fits: true,
+      },
+      'api: its calls are cut after about 15m00s on the way: a call cut so is read as a reply cut off at its limit',
+      'api: its calls are cut after about 15m00s on the way: a call cut so is read as a reply cut off at its limit',
+    ],
+    [
+      'with maxTokens set: the value to lower it to',
+      {
+        type: 'cut',
+        provider: 'api',
+        afterMs: 900_000,
+        holds: 36_000,
+        lowered: false,
+      },
+      'api: its calls are cut after about 15m00s on the way: a call cut so is read as a reply cut off at its limit; lower maxTokens to about 36000 to keep each call under it',
+      'api: its calls are cut after about 15m00s on the way: a call cut so is read as a reply cut off at its limit',
+    ],
+    [
+      'with no rate measured: the advice',
+      {
+        type: 'cut',
+        provider: 'api',
+        afterMs: 600_150,
+        lowered: false,
+      },
+      'api: its calls are cut after about 10m00s on the way: a call cut so is read as a reply cut off at its limit; make replies shorter, with a lower maxTokens or partTokens',
+      'api: its calls are cut after about 10m00s on the way: a call cut so is read as a reply cut off at its limit',
+    ],
+  ])('writes a cut event %s, the public view leaving out the token counts', (_name, event, full, publicLine) => {
+    expect(renderEvent(event)).toBe(full)
+    expect(renderEvent(event, true)).toBe(full)
+    expect(renderEvent(event, true, 'public')).toBe(publicLine)
+    expect(renderEvent({ ...event, provider: `a${RLO}b` } as QuorumEvent, true, 'public')).toBe(publicLine.replace('api:', 'a<U+202E>b:'))
+  })
+
+  it('writes no line of its own for the reply budget a cut lowered: the cut\'s line says it', () => {
+    expect(renderEvent({
+      type: 'adapted',
+      adaptation: {
+        provider: 'api',
+        setting: 'replyTokens',
+        from: 'derived',
+        to: '36000',
+        cause: 'cut-on-the-way',
+      },
+    })).toBeUndefined()
+  })
+
+  it('writes a part split for a cut on the way with the length of the cut in place of a limit', () => {
+    const event = recoveredEvent({
+      part: 9,
+      noAnswer: 'thinking',
+      limit: undefined,
+      cutAfterMs: 900_000,
+      pieces: 2,
+      read: 2,
+    })
+    expect(renderEvent(event)).toBe('part 9 of 44: reply cut on the way after about 15m00s (thinking): split into 2 pieces, all read')
+    expect(renderEvent(recoveredEvent({
+      part: 9,
+      noAnswer: 'reply',
+      limit: undefined,
+      cutAfterMs: 600_000,
+      pieces: 2,
+      read: 1,
+    }))).toBe('part 9 of 44: reply cut on the way after about 10m00s (reply): split into 2 pieces; 1 not read, see the gaps')
+  })
+
   it('renders a flag with where it points', () => {
     expect(renderEvent({
       type: 'flag',

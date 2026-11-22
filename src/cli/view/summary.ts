@@ -59,8 +59,10 @@ function causeWords({ kind, status, stalledMs }: Cause): string {
  * and for `research-failed` and `provider-down` the fix of each cause the events gave, joined by `, or ` (a used-up
  * quota's is `QUOTA_FIX`, a call cut on the way's `CUT_ADVICE`, a stalled stream's `STALL_FIX`, a refused stream's `set stream: false`), `research-failed` with no cause pointing to the report.
  * A plain timeout's `raise timeoutMs` is left out beside `STALL_FIX`, which names it.
+ * A `reply-cut-off` gap is `CUT_ADVICE` once a cut on the way was learned (`cutSeen`): a larger limit would not help a call a path ends at a length.
  */
-export function gapFix(reason: IncompleteReason, causes: readonly Cause[]): string | undefined {
+export function gapFix(reason: IncompleteReason, causes: readonly Cause[], cutSeen = false): string | undefined {
+  if (reason === 'reply-cut-off' && cutSeen) return CUT_ADVICE
   if (reason !== 'research-failed' && reason !== 'provider-down') return FIXES[reason]
   const fixes = new Set(causes.map((cause) => {
     if (cause.exhausted === true) return QUOTA_FIX
@@ -181,7 +183,7 @@ function gapsLine(state: ViewState, view: ReportView): string | undefined {
       : known
     const fix = quota && fixed.length === 0
       ? undefined
-      : gapFix(reason, fixed)
+      : gapFix(reason, fixed, state.cutSeen)
     // A plain timeout is written only when no stalled one is beside it, whose cause covers it.
     const shown = known.some(cause => cause.stalledMs !== undefined)
       ? known.filter(cause => cause.kind !== 'timeout' || cause.stalledMs !== undefined)

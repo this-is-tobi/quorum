@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { attemptCeiling, createClocks } from './clocks.ts'
+import { attemptCeiling, createClocks, CUT_MARGIN } from './clocks.ts'
 import type { AttemptSeen } from './clocks.ts'
 import type { Provider } from './ports.ts'
 import { targetOf } from './stages/context.ts'
@@ -108,5 +108,159 @@ describe('the stall window', () => {
     clocks.answered(first, streamed(540_000))
     expect(clocks.window(first, 4_218_750, true)).toBe(1_620_000)
     expect(clocks.window(second, 4_218_750, true)).toBe(600_000)
+  })
+})
+
+describe('a learned cut', () => {
+  /** What a cut stream showed: reasoning and no answer, `outputTokens` of output, by an attempt of 900 s. */
+  const cutStream = (outputTokens: number, facts: Partial<AttemptSeen> = {}): AttemptSeen => ({
+    attemptMs: 900_000,
+    firstTokenMs: 1000,
+    longestSilenceMs: 300_000,
+    outputTokens,
+    answer: false,
+    reasoning: true,
+    ...facts,
+  })
+  /** An answered attempt of `attemptMs` that showed `outputTokens`. */
+  const answeredIn = (attemptMs: number, outputTokens: number, facts: Partial<AttemptSeen> = {}): AttemptSeen => ({
+    attemptMs,
+    firstTokenMs: 1000,
+    longestSilenceMs: 10_000,
+    outputTokens,
+    answer: true,
+    reasoning: false,
+    ...facts,
+  })
+
+  it.each<[number, number, boolean]>([
+    [900_120, 900_110, true],
+    [600_150, 600_140, true],
+    [900_000, 940_000, true],
+    [100_000, 104_000, true],
+    [100_000, 106_000, false],
+    [60_000, 600_000, false],
+  ])('learns a cut from two attempts of %i and %i ms: %s', (first, second, learns) => {
+    const clocks = createClocks()
+    const target = streaming()
+    expect(clocks.cut(target, first, undefined)).toEqual({})
+    expect(clocks.cut(target, second, undefined)).toEqual(learns
+      ? {
+          cutOff: 'reply',
+          learned: {
+            afterMs: Math.min(first, second),
+            lowered: false,
+          },
+        }
+      : {})
+  })
+
+  it('reads an attempt cut at the learned length less the tolerance or later as cut off: thinking with reasoning and no answer, else reply', () => {
+    const clocks = createClocks()
+    const target = streaming()
+    clocks.cut(target, 900_000, cutStream(10))
+    expect(clocks.cut(target, 900_000, cutStream(10))).toMatchObject({
+      cutOff: 'thinking',
+      learned: { afterMs: 900_000 },
+    })
+    // The lesson is told once, and the tolerance of 5 percent of 900 s is 45 s.
+    expect(clocks.cut(target, 900_000, cutStream(10))).toEqual({ cutOff: 'thinking' })
+    expect(clocks.cut(target, 855_000, cutStream(10))).toEqual({ cutOff: 'thinking' })
+    expect(clocks.cut(target, 954_000, cutStream(10, { answer: true }))).toEqual({ cutOff: 'reply' })
+    expect(clocks.cut(target, 900_000, cutStream(10, { reasoning: false }))).toEqual({ cutOff: 'reply' })
+    expect(clocks.cut(target, 900_000, undefined)).toEqual({ cutOff: 'reply' })
+    // A cut shorter than that, or a call that is another provider's, is no part of the lesson.
+    expect(clocks.cut(target, 854_999, cutStream(10))).toEqual({})
+    expect(clocks.cut(streaming(), 900_000, cutStream(10))).toEqual({})
+  })
+
+  it('measures the rate from the attempts cut at the learned length, the lowest, and holds four fifths of the cut, at least 1024', () => {
+    const clocks = createClocks()
+    const target = streaming()
+    expect(CUT_MARGIN).toBe(0.8)
+    // A cut stream of 45000 estimated tokens over 900 s: 0.05 a millisecond, so 900 s hold 45000 and four fifths of them 36000.
+    clocks.cut(target, 900_000, cutStream(45_000))
+    expect(clocks.cut(target, 900_000, cutStream(45_000))).toEqual({
+      cutOff: 'thinking',
+      learned: { afterMs: 900_000, holds: 36_000, lowered: true },
+    })
+    expect(clocks.ceiling(target)).toBe(36_000)
+
+    // The lowest of the two that taught the cut counts, over its own length: 30000 tokens over 910 s let 900 s through 29670, four fifths of it 23736.
+    const lowest = createClocks()
+    lowest.cut(target, 910_000, cutStream(30_000, { attemptMs: 910_000 }))
+    expect(lowest.cut(target, 900_000, cutStream(45_000))).toMatchObject({
+      learned: { afterMs: 900_000, holds: 23_736 },
+    })
+
+    // An attempt that showed no count is left out, as is one that streamed none.
+    const uncounted = createClocks()
+    uncounted.cut(target, 900_000, undefined)
+    expect(uncounted.cut(target, 900_000, cutStream(45_000))).toMatchObject({
+      learned: { holds: 36_000 },
+    })
+
+    const tiny = createClocks()
+    tiny.cut(target, 900_000, cutStream(5))
+    expect(tiny.cut(target, 900_000, cutStream(5))).toMatchObject({
+      learned: { holds: 1024 },
+    })
+  })
+
+  it('learns no rate from an answered attempt, whatever it waited for its first token', () => {
+    const clocks = createClocks()
+    const target = streaming()
+    // A part queued 120 s, then answered 2200 tokens at 164 s: 0.0134 a millisecond, which scaled up to the cut would hold 9658.
+    clocks.answered(target, answeredIn(164_000, 2200, { firstTokenMs: 120_000 }))
+    clocks.cut(target, 900_000, cutStream(45_000))
+    expect(clocks.cut(target, 900_000, cutStream(45_000))).toMatchObject({
+      learned: { holds: 36_000 },
+    })
+  })
+
+  it('holds what the cut streamed to the whole number, with no float rounding it down', () => {
+    const clocks = createClocks()
+    const target = streaming()
+    // 8535 tokens over 67919 ms, the cut's own length: four fifths of 8535 is 6828, where a float rate times the length reads 6827.
+    clocks.cut(target, 67_919, cutStream(8535, { attemptMs: 67_919 }))
+    expect(clocks.cut(target, 67_919, cutStream(8535, { attemptMs: 67_919 }))).toMatchObject({
+      learned: {
+        afterMs: 67_919,
+        holds: Math.floor(8535 * 0.8),
+      },
+    })
+    expect(Math.floor(8535 * 0.8)).toBe(6828)
+  })
+
+  it('holds nothing and lowers nothing when no rate was measured', () => {
+    const clocks = createClocks()
+    const target = streaming()
+    // A whole reply cut, a stream that showed no count, and an answered attempt, which teaches no rate: no rate.
+    clocks.answered(target, answeredIn(300_000, 500))
+    clocks.cut(target, 900_000, undefined)
+    const learned = clocks.cut(target, 900_000, cutStream(0))
+    expect(learned).toEqual({
+      cutOff: 'thinking',
+      learned: { afterMs: 900_000, lowered: false },
+    })
+    expect(learned.learned).not.toHaveProperty('holds')
+    expect(clocks.ceiling(target)).toBeUndefined()
+  })
+
+  it('lowers only a derived budget: maxTokens set keeps it, with holds for the advice', () => {
+    const set = streaming({ maxTokens: 150_000 })
+    const derived = streaming()
+    const clocks = createClocks()
+    for (const target of [set, derived]) clocks.cut(target, 900_000, cutStream(45_000))
+    expect(clocks.cut(set, 900_000, cutStream(45_000))).toMatchObject({
+      learned: { holds: 36_000, lowered: false },
+    })
+    expect(clocks.cut(derived, 900_000, cutStream(45_000))).toMatchObject({
+      learned: { holds: 36_000, lowered: true },
+    })
+    expect(clocks.ceiling(set)).toBeUndefined()
+    expect(clocks.ceiling(derived)).toBe(36_000)
+    // What was learned of one provider holds nothing for another that has learned nothing.
+    expect(clocks.ceiling(streaming())).toBeUndefined()
   })
 })

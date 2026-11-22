@@ -128,6 +128,8 @@ export interface ViewState {
   readonly made: { readonly research: number, readonly votes: number }
   readonly retried: { readonly research: number, readonly votes: number }
   readonly recovered: { readonly parts: number, readonly pieces: number }
+  /** Whether a provider's cut on the way was learned, which changes the fix of a reply cut off: shorter replies, not a larger limit. */
+  readonly cutSeen: boolean
   /** Each profile's interval in each stage, by stage then profile id. */
   readonly stages: ReadonlyMap<StageName, ReadonlyMap<string, Interval>>
   readonly gaps: ReadonlyMap<IncompleteReason, GapCount>
@@ -169,6 +171,7 @@ export function startState(facts: ViewFacts): ViewState {
     made: { research: 0, votes: 0 },
     retried: { research: 0, votes: 0 },
     recovered: { parts: 0, pieces: 0 },
+    cutSeen: false,
     stages: new Map(),
     gaps: new Map(),
     causes: new Map(),
@@ -574,6 +577,10 @@ export function fold(state: ViewState, event: QuorumEvent, now: number): ViewSta
         ...state,
         recovered: { parts: state.recovered.parts + 1, pieces: state.recovered.pieces + event.pieces },
       }
+    case 'cut':
+      return state.cutSeen
+        ? state
+        : { ...state, cutSeen: true }
     case 'provider-down':
       return withCause(state, 'provider-down', causeOf({
         kind: event.kind,

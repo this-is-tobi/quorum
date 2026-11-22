@@ -6,7 +6,7 @@ import { attemptCeiling, PROGRESS_MS } from '../clocks.ts'
 import type { AttemptSeen, Clocks } from '../clocks.ts'
 import type { Limiter } from '../concurrency.ts'
 import type { Health } from '../down.ts'
-import { NO_ANSWERS, PROVIDER_ERROR_KINDS, ProviderDownError, ProviderError } from '../errors.ts'
+import { cutOf, cutWords, NO_ANSWERS, PROVIDER_ERROR_KINDS, ProviderDownError, ProviderError } from '../errors.ts'
 import type { NoAnswer, ProviderErrorKind } from '../errors.ts'
 import { isLimit, settlementOf } from '../limits.ts'
 import type { Ledger } from '../limits.ts'
@@ -17,7 +17,7 @@ import { requestDigest } from '../prompts.ts'
 import { isTimeout, retryWait } from '../retry.ts'
 import type { FailureFacts } from '../retry.ts'
 import { DEFAULT_REPLY_TOKENS, replyLimit, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
-import type { FailOn, Position, ProviderRef, QuorumEvent, StageName, Thresholds, Usage } from '../types.ts'
+import type { Adaptation, FailOn, Position, ProviderRef, QuorumEvent, StageName, Thresholds, Usage } from '../types.ts'
 
 /**
  * A provider as a compiled profile holds it: the object it calls, the ref captured at creation that
@@ -727,13 +727,17 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
             ? undefined
             : { firstTokenMs: seen.firstTokenMs, longestSilenceMs: seen.longestSilenceMs }
           return reply
-        } catch (error) {
-          const attemptMs = Math.round(ctx.clock.now() - sentAt)
-          if (typeof error === 'object' && error !== null) ran.set(error, attemptMs)
-          const reported = failureUsage(error)
+        } catch (caught) {
+          const endedAt = ctx.clock.now()
+          const attemptMs = Math.round(endedAt - sentAt)
+          if (typeof caught === 'object' && caught !== null) ran.set(caught, attemptMs)
+          const reported = failureUsage(caught)
           usage = addUsage(usage, reported)
+          settle(settlementOf(reservation, reported, failureFacts(caught)))
+          // A call cut at the length its provider learned is read as a reply cut off at its limit, which is never retried as it was.
+          const error = cutReading(ctx, target, caught, attemptMs, () => seenOf(watch, sentAt, endedAt, undefined))
+          if (error !== caught && typeof error === 'object' && error !== null) ran.set(error, attemptMs)
           const facts = failureFacts(error)
-          settle(settlementOf(reservation, reported, facts))
           // A stopped review is asked as if it had time to spare, so a retry only the stop prevents is the stop's doing.
           const wait = retryWait(facts, {
             retried,
@@ -1286,6 +1290,71 @@ function seenOf(watch: Watch | undefined, sentAt: number, endedAt: number, reply
     answer: watch.answer,
     reasoning: watch.reasoning,
   }
+}
+
+/**
+ * Whether holding replies to `holds` tokens lowers a derived reply budget the provider `id` serves, read from the review's
+ * budgets: one that is above it, or that is not derived at all (a provider that states no window has none to hold down, and
+ * the held one is then its first). A provider whose budgets are not known yet counts as lowered.
+ */
+function lowersBudget(ctx: RunContext, id: string, holds: number): boolean {
+  const served = Object.values(ctx.budgets).flatMap(({ research, lenses }) => [
+    ...research.provider === id
+      ? [research.replyTokens]
+      : [],
+    ...Object.values(lenses).filter(lens => lens.provider === id).map(lens => lens.replyTokens),
+  ])
+  return served.length === 0 || served.some(tokens => tokens === undefined || tokens > holds)
+}
+
+/**
+ * What a failed attempt becomes once the review's clocks have read it as a cut on the way: a failure `cutOf` reads as one
+ * is told to `Clocks.cut`, which learns a provider's cut from two of them (one `cut` event, and with a lowered reply budget
+ * its `adapted` event), and one at the learned length is replaced by a `truncated` failure of the core's own, `thinking`
+ * when its stream showed reasoning and no answer, else `reply`, carrying the length (`cutAfterMs`), which carries no
+ * `retryable` and so is never retried as it was. Any other failure is returned as it is. `seen` is what the attempt's
+ * stream showed, when it streamed.
+ */
+function cutReading(ctx: RunContext, target: Target, error: unknown, attemptMs: number, seen: () => AttemptSeen | undefined): unknown {
+  const failure = providerFailure(error)
+  if (failure === undefined || cutOf(failure, attemptMs) === undefined) return error
+  const { cutOff, learned } = ctx.clocks.cut(target, attemptMs, seen())
+  if (learned !== undefined) {
+    // A cut lowers a derived budget only when it is below one the provider serves: else every budget already fits it.
+    const lowered = learned.lowered && learned.holds !== undefined && lowersBudget(ctx, target.ref.id, learned.holds)
+    ctx.emit({
+      type: 'cut',
+      provider: target.ref.id,
+      afterMs: learned.afterMs,
+      ...learned.holds === undefined
+        ? {}
+        : { holds: learned.holds },
+      lowered,
+      ...learned.lowered && !lowered
+        ? { fits: true as const }
+        : {},
+    })
+    if (lowered && learned.holds !== undefined) {
+      const adaptation: Adaptation = {
+        provider: target.ref.id,
+        setting: 'replyTokens',
+        from: 'derived',
+        to: String(learned.holds),
+        cause: 'cut-on-the-way',
+      }
+      ctx.adapt.recorded(adaptation)
+      ctx.emit({ type: 'adapted', adaptation })
+    }
+  }
+  return cutOff === undefined
+    ? error
+    : new ProviderError({
+        providerId: target.ref.id,
+        kind: 'truncated',
+        message: cutWords(attemptMs),
+        noAnswer: cutOff,
+        cutAfterMs: attemptMs,
+      })
 }
 
 /**

@@ -4,7 +4,7 @@
  */
 
 import { elapsedWords } from '../../core/duration.ts'
-import { downWords, lackWords } from '../../core/errors.ts'
+import { CUT_ADVICE, downWords, lackWords } from '../../core/errors.ts'
 import type { PartOutcome } from '../../core/parts.ts'
 import { inertLine } from '../../core/sanitize.ts'
 import type { Adaptation, CallFailure, LeftOutFile, QuorumEvent } from '../../core/types.ts'
@@ -93,6 +93,8 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
       return `${event.provider}: ${lackWords(event.kind, event)}`
     case 'adapted':
       return adaptedWords(event.adaptation)
+    case 'cut':
+      return cutWords(event, view)
     case 'stored-refused':
       return '--state: a stored reply failed its check: the call is made again'
     case 'recovered':
@@ -116,14 +118,16 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
  * pieces were not read, for the gaps to say why. It holds numbers and code words only.
  */
 function recoveredWords(event: Extract<QuorumEvent, { type: 'recovered' }>): string {
-  const { part, parts, noAnswer, limit, findings, pieces, read, unreadHunks, unreadFiles } = event
+  const { part, parts, noAnswer, limit, cutAfterMs, findings, pieces, read, unreadHunks, unreadFiles } = event
   const lacked = noAnswer === 'saturated'
     ? `its reply listed the ${findings} findings it was asked for at most`
     : noAnswer === 'window'
       ? 'reply cut off at the server\'s window (window)'
-      : limit === undefined
-        ? `reply cut off at its limit (${noAnswer})`
-        : `reply cut off at its limit of ${limit} tokens (${noAnswer})`
+      : cutAfterMs !== undefined
+        ? `reply cut on the way after about ${elapsedWords(cutAfterMs)} (${noAnswer})`
+        : limit === undefined
+          ? `reply cut off at its limit (${noAnswer})`
+          : `reply cut off at its limit of ${limit} tokens (${noAnswer})`
   const end = read === pieces
     ? ', all read'
     : unreadHunks > 0
@@ -192,6 +196,23 @@ function partWords(event: Extract<QuorumEvent, { type: 'part' }>, view: ReportVi
   return `${where}: ${OUTCOME_WORDS[outcome]}`
 }
 
+/**
+ * The line of a provider's learned cut: its calls are cut after about that long on the way, and a call cut so is read as a reply
+ * cut off at its limit. Then what is done about it: the replies are held to `holds` tokens for the rest of the review (a derived budget
+ * lowered), or the value to lower `maxTokens` to (the owner's setting stands), or, when no rate was measured, `CUT_ADVICE`.
+ * When every budget already fits the cut (`fits`) nothing moved and the line ends at the limit.
+ * The public view leaves out the token counts, so its line ends at the limit.
+ */
+function cutWords({ provider, afterMs, holds, lowered, fits }: Extract<QuorumEvent, { type: 'cut' }>, view: ReportView): string {
+  const line = `${provider}: its calls are cut after about ${elapsedWords(afterMs)} on the way: a call cut so is read as a reply cut off at its limit`
+  if (view === 'public') return line
+  if (holds === undefined) return `${line}; ${CUT_ADVICE}`
+  if (lowered) return `${line}, and its replies are held to ${holds} tokens for the rest of the review`
+  return fits === true
+    ? line
+    : `${line}; lower maxTokens to about ${holds} to keep each call under it`
+}
+
 /** What each cause of a setting moved says, in words the code writes: the reason the review gives for it. */
 const ADAPTED_BECAUSE: Readonly<Partial<Record<Adaptation['cause'], string>>> = {
   'cut-off-thinking': 'a reply ran out of room while reasoning',
@@ -257,6 +278,7 @@ function glyphOf(event: QuorumEvent): GlyphName | undefined {
     case 'stored-refused':
       return 'retry'
     case 'adapted':
+    case 'cut':
     case 'recovered':
     case 'reply-lacked':
       return 'adapted'

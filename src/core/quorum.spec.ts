@@ -4,6 +4,8 @@ import { securityProfile } from '../profiles/security.ts'
 import { fakeClock, settle } from '../testing/clock.ts'
 import { fakeCredential } from '../testing/credentials.ts'
 import * as git from '../testing/fixtures/git.ts'
+import { streamingProvider } from '../testing/streams.ts'
+import type { StreamPlan } from '../testing/streams.ts'
 import { ConfigError, ProviderDownError, ProviderError } from './errors.ts'
 import { outcome } from './outcome.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts, ReplyStore, StoredCall } from './ports.ts'
@@ -4714,11 +4716,15 @@ describe('a large change in parts', () => {
     it('tells a call cut on the way from a server that is down', async () => {
       const clock = fakeClock()
       const events: QuorumEvent[] = []
-      // Each attempt is cut by a gateway 600 s after it was sent: the provider's own deadline is longer.
-      const cut = (): Promise<string> => new Promise((_resolve, reject) => {
-        clock.timer(600_000, () => reject(new ProviderError({ providerId: 'finder', kind: 'network', message: 'fetch failed' })))
-      })
-      const finder = partsFinder(5000, cut, { retries: 2, timeoutMs: 1_000_000 })
+      // The n-th attempt is cut by a gateway at 600 s and 100 s more for each attempt before it, so no two cuts are of one length, and none is learned: the provider's own deadline is longer.
+      let sent = 0
+      const cut = (): Promise<string> => {
+        sent += 1
+        return new Promise((_resolve, reject) => {
+          clock.timer(600_000 + 100_000 * sent, () => reject(new ProviderError({ providerId: 'finder', kind: 'network', message: 'fetch failed' })))
+        })
+      }
+      const finder = partsFinder(5000, cut, { retries: 2, timeoutMs: 2_000_000 })
       const quorum = createQuorumWith({
         profiles: [securityProfile],
         concurrency: 3,
@@ -4735,22 +4741,34 @@ describe('a large change in parts', () => {
       for (const retry of retries) {
         expect(retry).toMatchObject({
           failure: { kind: 'network' },
-          attemptMs: 600_000,
         })
       }
-      expect(events.filter(event => event.type === 'part').map(event => event.failure)).toEqual(Array.from({ length: 3 }).fill({ kind: 'network', cutAfterMs: 600_000 }))
+      expect(retries.map(retry => retry.attemptMs)).toEqual([
+        700_000,
+        800_000,
+        900_000,
+        1_000_000,
+        1_100_000,
+        1_200_000,
+      ])
+      expect(events.filter(event => event.type === 'cut')).toEqual([])
+      expect(events.filter(event => event.type === 'part').map(event => event.failure)).toEqual([
+        { kind: 'network', cutAfterMs: 1_300_000 },
+        { kind: 'network', cutAfterMs: 1_400_000 },
+        { kind: 'network', cutAfterMs: 1_500_000 },
+      ])
       expect(downEvents(events)).toEqual([
         {
           type: 'provider-down',
           provider: 'finder',
           kind: 'network',
           calls: 3,
-          cutAfterMs: 600_000,
+          cutAfterMs: 1_300_000,
         },
       ])
-      expect(thrown).toMatchObject({ cutAfterMs: 600_000 })
+      expect(thrown).toMatchObject({ cutAfterMs: 1_300_000 })
       expect(thrown).toBeInstanceOf(ProviderDownError)
-      expect((thrown as ProviderDownError).message).toContain('each call was cut after about 10m00s')
+      expect((thrown as ProviderDownError).message).toContain('each call was cut after about 21m40s')
     })
 
     it('tells a call that failed at once from one cut on the way', async () => {
@@ -7227,5 +7245,287 @@ describe('room accounting', () => {
       findings: 15,
       rooms: { one: 22_446, part: 22_134 },
     })
+  })
+})
+
+describe('a path that cuts calls on the way', () => {
+  const FILES = [
+    'a.js',
+    'b.js',
+    'c.js',
+    'd.js',
+    'e.js',
+    'f.js',
+    'g.js',
+    'h.js',
+  ]
+  /** A file's section of one hunk of about 500 tokens: at a partTokens of 1024 a part holds two files. */
+  const wide = (file: string): string => [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    '@@ -1 +1 @@',
+    '-safe(input)',
+    `+exec(input) // ${file} ${'y'.repeat(400)}`,
+  ].join('\n')
+  const wideDiff = FILES.map(wide).join('\n')
+  const at = (file: string): unknown => ({ ...reported, file, quote: `exec(input) // ${file}` })
+  const filesOf = (request: CompletionRequest): string[] => [
+    ...request.messages[0].content.matchAll(/exec\(input\) \/\/ (\w+\.js)/g),
+  ].map(found => found[1])
+  const partOf = (request: CompletionRequest): number => Number(/Part (\d+) of \d+ of the change/.exec(request.messages[0].content)?.[1])
+  const asks = (request: CompletionRequest): number => Number(/List at most (\d+) findings/.exec(request.system)?.[1])
+  const keeps = (): Fake => fake('voter', () => vote(true))
+
+  /** What the path does to a call it cuts: a stream that shows reasoning, `tokens` of it by `ms`, a sign every fifth of the way, and then no last event. */
+  const cutAt = (ms: number, tokens: number): StreamPlan => ({
+    script: [1, 2, 3, 4, 5].map(step => ({
+      afterMs: Math.round(ms * step / 5),
+      signal: {
+        kind: 'data',
+        outputTokens: Math.round(tokens * step / 5),
+        answer: false,
+        reasoning: true,
+      },
+    })),
+    end: new ProviderError({ providerId: 'api', kind: 'network', message: 'the reply stream ended before its last event' }),
+  })
+  /** What a call the path lets through does: its reply at the 8th second. */
+  const answers = (request: CompletionRequest, text = findings(...filesOf(request).map(at))): StreamPlan => ({
+    script: [
+      {
+        afterMs: 8000,
+        signal: {
+          kind: 'data',
+          outputTokens: 800,
+          answer: true,
+          reasoning: true,
+        },
+      },
+    ],
+    end: { text, model: 'm' },
+  })
+
+  function reviewing(finder: Provider, voter: Provider, options: Omit<QuorumOptions, 'profiles'>, clock: ReturnType<typeof fakeClock>): { readonly events: QuorumEvent[], readonly review: (text: string) => Promise<QuorumResult> } {
+    const events: QuorumEvent[] = []
+    const quorum = createQuorumWith({
+      partTokens: 1024,
+      reviewTimeoutMs: 86_400_000,
+      maxReviewTokens: 100_000_000,
+      ...options,
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, finder, voter),
+      events: event => events.push(event),
+    }, clock)
+    return {
+      events,
+      review: text => settle(clock, quorum.review({ diff: text }), 5000),
+    }
+  }
+  const ofType = <T extends QuorumEvent['type']>(events: readonly QuorumEvent[], type: T): Array<Extract<QuorumEvent, { type: T }>> => events.filter((event): event is Extract<QuorumEvent, { type: T }> => event.type === type)
+
+  it('learns a 900 s cut from two attempts and lowers thinking, so the cut calls answer and no part splits', async () => {
+    const clock = fakeClock()
+    const requests: CompletionRequest[] = []
+    // At the server's own thinking level a call is cut at 900 s, mid-reasoning; at `low` it answers in 8 s.
+    const finder = streamingProvider(clock, (request) => {
+      requests.push(request)
+      return request.thinking === 'low'
+        ? answers(request)
+        : cutAt(900_000, 45_000)
+    }, {
+      id: 'api',
+      adapts: { thinking: 'low' },
+      maxTokens: 150_000,
+      retries: 2,
+      room: () => 100_000,
+    })
+    const { events, review } = reviewing(finder, keeps(), { concurrency: 4 }, clock)
+    const result = await review(wideDiff)
+    expect(ofType(events, 'stage:start').find(event => event.stage === 'research')?.parts).toBe(4)
+    // The first cut is retried; the second teaches the cut, with maxTokens set: holds is for the advice, and nothing is lowered.
+    expect(ofType(events, 'call:retry')).toMatchObject([
+      {
+        failure: { kind: 'network' },
+        attemptMs: 900_000,
+      },
+    ])
+    expect(ofType(events, 'cut')).toEqual([
+      {
+        type: 'cut',
+        provider: 'api',
+        afterMs: 900_000,
+        holds: 36_000,
+        lowered: false,
+      },
+    ])
+    // One thinking probe, whatever the number of calls: the others were in flight at the old level and are sent once more at the new one.
+    expect(ofType(events, 'adapted')).toEqual([
+      {
+        type: 'adapted',
+        adaptation: {
+          provider: 'api',
+          setting: 'thinking',
+          from: 'default',
+          to: 'low',
+          cause: 'cut-off-thinking',
+        },
+      },
+    ])
+    expect(events.findIndex(event => event.type === 'cut')).toBeLessThan(events.findIndex(event => event.type === 'adapted'))
+    expect(result.meta.adaptations).toEqual([
+      {
+        provider: 'api',
+        setting: 'thinking',
+        from: 'default',
+        to: 'low',
+        cause: 'cut-off-thinking',
+      },
+    ])
+    expect(ofType(events, 'part').map(event => event.outcome)).toEqual(Array.from({ length: 4 }).fill('reviewed'))
+    expect(ofType(events, 'recovered')).toEqual([])
+    expect(ofType(events, 'provider-down')).toEqual([])
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.kept.map(verdict => verdict.file)).toEqual(FILES)
+    // Four parts and the one retry went to the server's own level, and each part was sent once at `low`.
+    expect(requests.filter(request => request.thinking === undefined)).toHaveLength(5)
+    expect(requests.filter(request => request.thinking === 'low').map(partOf).sort()).toEqual([1, 2, 3, 4])
+  })
+
+  it('splits every cut part with no further probe when the gateway ignores the lowered thinking', async () => {
+    const clock = fakeClock()
+    const requests: CompletionRequest[] = []
+    // The path cuts any call that holds two files, whatever its thinking, and lets one file through.
+    const finder = streamingProvider(clock, (request) => {
+      requests.push(request)
+      return filesOf(request).length > 1
+        ? cutAt(900_000, 45_000)
+        : answers(request)
+    }, {
+      id: 'api',
+      adapts: { thinking: 'low' },
+      maxTokens: 150_000,
+      retries: 2,
+      room: () => 100_000,
+    })
+    const { events, review } = reviewing(finder, keeps(), { concurrency: 2 }, clock)
+    const result = await review(wideDiff)
+    expect(ofType(events, 'cut')).toHaveLength(1)
+    // The probe's part split: its re-send at `low` was cut again, which moved nothing back, and recorded the lowering.
+    expect(ofType(events, 'adapted').map(event => event.adaptation.setting)).toEqual(['thinking'])
+    const recovered = ofType(events, 'recovered')
+    expect(recovered).toHaveLength(4)
+    for (const event of recovered) {
+      expect(event).toMatchObject({
+        noAnswer: 'thinking',
+        cutAfterMs: 900_000,
+        thinkingLowered: true,
+        pieces: 2,
+        read: 2,
+      })
+      expect(event).not.toHaveProperty('limit')
+    }
+    // A part that began after the lesson was cut once at `low` and split at once: no probe, no retry.
+    for (const part of [3, 4]) {
+      const whole = requests.filter(request => partOf(request) === part && filesOf(request).length === 2)
+      expect(whole.map(request => request.thinking)).toEqual(['low'])
+    }
+    expect(requests.filter(request => request.thinking === 'low' && filesOf(request).length === 2).map(partOf).sort()).toEqual([1, 2, 3, 4])
+    expect(ofType(events, 'provider-down')).toEqual([])
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.kept.map(verdict => verdict.file)).toEqual(FILES)
+  })
+
+  it('budgets every later request of a provider whose budget is derived to what the cut holds', async () => {
+    const clock = fakeClock()
+    const requests: CompletionRequest[] = []
+    // maxTokens is unset, so the reply budget is derived from the window; the path cuts a call of two files at 500 s, with 18000 tokens shown.
+    const finder = streamingProvider(clock, (request) => {
+      requests.push(request)
+      return filesOf(request).length > 1
+        ? cutAt(500_000, 18_000)
+        : answers(request)
+    }, {
+      id: 'api',
+      window: 200_000,
+      retries: 2,
+      room: () => 100_000,
+    })
+    const { events, review } = reviewing(finder, keeps(), { concurrency: 1 }, clock)
+    const result = await review(wideDiff)
+    // 18000 tokens in 500 s are 0.036 a millisecond: the cut holds 18000, and four fifths of that are 14400.
+    expect(ofType(events, 'cut')).toEqual([
+      {
+        type: 'cut',
+        provider: 'api',
+        afterMs: 500_000,
+        holds: 14_400,
+        lowered: true,
+      },
+    ])
+    const lowered = {
+      provider: 'api',
+      setting: 'replyTokens',
+      from: 'derived',
+      to: '14400',
+      cause: 'cut-on-the-way',
+    }
+    expect(ofType(events, 'adapted')).toEqual([
+      { type: 'adapted', adaptation: lowered },
+    ])
+    expect(result.meta.adaptations).toEqual([lowered])
+    // The first part's two attempts were sent at the derived budget, and every request after the lesson at what the cut holds, asking fewer findings.
+    expect(requests.slice(0, 2).map(request => [
+      request.replyTokens,
+      asks(request),
+    ])).toEqual([
+      [21_024, 50],
+      [21_024, 50],
+    ])
+    expect(requests.length).toBeGreaterThan(8)
+    for (const request of requests.slice(2)) {
+      expect([
+        request.replyTokens,
+        asks(request),
+      ]).toEqual([14_400, 28])
+    }
+    expect(result.meta.incomplete).toEqual([])
+    expect(result.kept.map(verdict => verdict.file)).toEqual(FILES)
+  })
+
+  it('reads a vote cut at the learned length as a failed vote of truncated, after the thinking probe, as 3e reads one cut at its limit', async () => {
+    const clock = fakeClock()
+    const requests: CompletionRequest[] = []
+    const voter = streamingProvider(clock, (request) => {
+      requests.push(request)
+      return cutAt(500_000, 18_000)
+    }, {
+      id: 'judge',
+      adapts: { thinking: 'low' },
+      window: 200_000,
+      retries: 2,
+      room: () => 100_000,
+    })
+    const { events, review } = reviewing(fake('finder', () => findings(reported)), voter, { concurrency: 4 }, clock)
+    const result = await review(diff)
+    expect(ofType(events, 'cut')).toEqual([
+      {
+        type: 'cut',
+        provider: 'judge',
+        afterMs: 500_000,
+        holds: 14_400,
+        lowered: false,
+        fits: true,
+      },
+    ])
+    // A vote asks 9216 tokens at most, under what the cut holds: no budget moved, so no `replyTokens` is recorded.
+    expect(ofType(events, 'adapted').map(event => event.adaptation.setting)).toEqual(['thinking'])
+    // Each vote was cut at `low` too, and is a reject: a failed vote of kind truncated, which no flag lifts, and never a provider found down.
+    const [verdict] = result.unreviewed
+    expect(verdict.votes.map(lensVote => lensVote.failure)).toEqual(Array.from({ length: 3 }).fill({ kind: 'truncated' }))
+    expect(ofType(events, 'provider-down')).toEqual([])
+    expect(requests.filter(request => request.thinking === 'low')).toHaveLength(3)
+    expect(new Set(requests.map(request => request.replyTokens))).toEqual(new Set([9216]))
   })
 })

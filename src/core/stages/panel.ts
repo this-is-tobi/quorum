@@ -1,3 +1,4 @@
+import { factsOf, replyBudget } from '../budgets.ts'
 import { diffSectionFor, hunksOf, sectionFor } from '../diff.ts'
 import { ProviderDownError } from '../errors.ts'
 import { isLimit } from '../limits.ts'
@@ -206,10 +207,19 @@ async function castVote(ctx: RunContext, run: ProfileRun, finding: Finding, lens
  * request that describes them (see `nearestHunks`), when the cited hunk fits alone. A voter that states no
  * room has no request built to ask. `undefined` from `nearestHunks`, a cited line no hunk holds or a cited
  * hunk that does not fit alone, sends the whole context, which the provider refuses as too large if it is. The
- * request, and each request the choice of context asks the room of, carries the lens's reply budget.
+ * request, and each request the choice of context asks the room of, carries the lens's reply budget, held to what a cut on the way
+ * lets through once its provider learned one (`ctx.clocks.ceiling`).
  */
 function requestFor(ctx: RunContext, run: ProfileRun, finding: Finding, lens: LensRun, context: VoteContext): CompletionRequest {
-  const { replyTokens } = ctx.budgets[run.id].lenses[lens.id]
+  const stated = ctx.budgets[run.id].lenses[lens.id]
+  const ceiling = ctx.clocks.ceiling(lens)
+  // A voter whose calls are cut on the way, at a length it learned, has a derived budget held to what the cut lets through.
+  const replyTokens = ceiling === undefined
+    ? stated.replyTokens
+    : replyBudget({
+      ...factsOf(lens),
+      ceiling,
+    }, stated.window, ctx.maxFindings).vote
   const ask = { replyTokens }
   const nearest = lens.room === undefined
     ? undefined

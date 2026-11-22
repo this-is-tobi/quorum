@@ -24,6 +24,9 @@ import { longestFinding } from './verify.ts'
  *   reasoning, and the thinking allowance comes on top. `maxTokens` is a ceiling of the vote too, so a large
  *   one set for research no longer reserves that much for every vote.
  *
+ * A learned cut on the way gives the provider a `ceiling`, which `min`s into `R` and `V` when `maxTokens` is unset, and
+ * N follows from the lowered `R`. A provider that states no window then has a budget of the ceiling's size.
+ *
  * A term whose fact a provider does not state drops out: with neither a window nor `maxTokens`, `R` and `V`
  * are undefined, the request sizes nothing and `N` is `M`, so a provider object that states nothing is
  * reserved and asked as it always was.
@@ -63,11 +66,16 @@ export type ThinkingLevel = 'default' | 'low' | 'off'
 /** The tokens a reply is given for thinking, by level. */
 export const THINKING_TOKENS: Readonly<Record<ThinkingLevel, number>> = { off: 0, low: 4096, default: 8192 }
 
-/** What a provider states of its replies: its window and its `maxTokens` when it sets them, and its thinking level, `default` when unstated. */
+/**
+ * What a provider states of its replies: its window and its `maxTokens` when it sets them, and its thinking level, `default`
+ * when unstated. A `ceiling` is what a review learned: the reply a cut on the way lets through, which holds a derived
+ * research and vote budget down to it, and never a `maxTokens`, the owner's decision.
+ */
 export interface ReplyFacts {
   readonly window?: number
   readonly maxTokens?: number
   readonly thinking: ThinkingLevel
+  readonly ceiling?: number
 }
 
 /** The reply budgets of one provider, in tokens: undefined where nothing is stated to size a reply by. */
@@ -91,12 +99,17 @@ export function replyBudget(facts: ReplyFacts, window: number | undefined, maxFi
     ? Number.POSITIVE_INFINITY
     : Math.floor(window / 4)
   const { maxTokens } = facts
-  const research = maxTokens ?? (window === undefined
+  // A ceiling holds a derived budget down; a maxTokens the provider sets is never lowered.
+  const ceiling = maxTokens === undefined
+    ? facts.ceiling
+    : undefined
+  const limit = ceiling ?? Number.POSITIVE_INFINITY
+  const research = maxTokens ?? (window === undefined && ceiling === undefined
     ? undefined
-    : Math.min(maxFindings * FINDING_TOKENS + ENVELOPE_TOKENS + thinking, quarter))
-  const vote = maxTokens === undefined && window === undefined
+    : Math.min(maxFindings * FINDING_TOKENS + ENVELOPE_TOKENS + thinking, quarter, limit))
+  const vote = maxTokens === undefined && window === undefined && ceiling === undefined
     ? undefined
-    : Math.min(maxTokens ?? Number.POSITIVE_INFINITY, VOTE_TOKENS + thinking, quarter)
+    : Math.min(maxTokens ?? Number.POSITIVE_INFINITY, VOTE_TOKENS + thinking, quarter, limit)
   if (research === undefined) {
     return {
       research,
@@ -153,7 +166,7 @@ export interface ProfileBudgets {
 }
 
 /** The facts a target stated when the quorum was created. */
-function factsOf(target: Target): ReplyFacts {
+export function factsOf(target: Target): ReplyFacts {
   return {
     thinking: target.thinking,
     ...target.window === undefined

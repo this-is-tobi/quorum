@@ -634,6 +634,20 @@ describe('summaryLines', () => {
       '1 gap(s) reply-cut-off: raise maxTokens, set thinking: low, or lower partTokens',
     ],
     [
+      'reply-cut-off after a cut was learned',
+      [
+        {
+          type: 'cut',
+          provider: 'api',
+          afterMs: 900_000,
+          holds: 36_000,
+          lowered: false,
+        },
+        incomplete('reply-cut-off'),
+      ],
+      '1 gap(s) reply-cut-off: make replies shorter, with a lower maxTokens or partTokens',
+    ],
+    [
       'findings-capped',
       [
         incomplete('findings-capped'),

@@ -59,6 +59,26 @@ describe('replyBudget', () => {
   })
 })
 
+describe('a ceiling on a reply budget', () => {
+  it('lowers a derived research and vote budget to a ceiling, and asks fewer findings, never a set maxTokens', () => {
+    // At a window of 200000 the budgets are 21024 and 9216: a ceiling of 6000 holds both, and the thinking keeps half of it at most.
+    expect(replyBudget({ ...UNSET, ceiling: 6000 }, 200_000, 50)).toEqual({
+      research: 6000,
+      vote: 6000,
+      findings: 11,
+      findingsWithoutThinking: 23,
+    })
+    // A ceiling is the least a verdict may hold at the floor, and it lowers nothing it is above.
+    expect(replyBudget({ ...UNSET, ceiling: 1024 }, 200_000, 50)).toMatchObject({ research: 1024, vote: 1024, findings: 1 })
+    expect(replyBudget({ ...UNSET, ceiling: 50_000 }, 200_000, 50)).toEqual(replyBudget(UNSET, 200_000, 50))
+    // A provider that states no window has no derived budget: the ceiling is its budget.
+    expect(replyBudget({ ...UNSET, ceiling: 6000 }, undefined, 50)).toMatchObject({ research: 6000, vote: 6000, findings: 11 })
+    // A maxTokens the provider sets is the owner's decision, and the ceiling leaves it as it is.
+    const set = { ...UNSET, maxTokens: 100_000 }
+    expect(replyBudget({ ...set, ceiling: 6000 }, 240_000, 50)).toEqual(replyBudget(set, 240_000, 50))
+  })
+})
+
 describe('profileBudgets', () => {
   const settings: BudgetSettings = { maxFindings: 50, partTokens: 32_768, maxReviewTokens: 2_000_000 }
 

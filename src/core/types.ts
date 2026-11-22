@@ -373,15 +373,16 @@ export type ReviewSource
  * mode was empty (`empty-reply`) or the server refused the mode (`format-refused`); `stream` moves from `stream` to
  * `bare`, a stream with no stream options, when the server refused them, and from `stream` or `bare` to `whole`, whole
  * replies, when the server refused streaming (`stream-refused`) or answered a streamed call whole
- * (`stream-answered-whole`). The causes `byte-bound-refused`
+ * (`stream-answered-whole`); `replyTokens` moves from `derived`, a reply budget the core derives from the provider's facts, to the
+ * tokens a learned cut on the way lets through, which every later reply of the provider is held to (`cut-on-the-way`). The causes `byte-bound-refused`
  * and `loaded-window` belong to the settings `tokenCount` and `window`, which a later release moves.
  */
 export interface Adaptation {
   provider: string
-  setting: 'thinking' | 'structuredOutput' | 'stream' | 'tokenCount' | 'window'
+  setting: 'thinking' | 'structuredOutput' | 'stream' | 'replyTokens' | 'tokenCount' | 'window'
   from: string
   to: string
-  cause: 'cut-off-thinking' | 'no-answer-thinking' | 'empty-reply' | 'format-refused' | 'stream-refused' | 'stream-answered-whole' | 'byte-bound-refused' | 'loaded-window' | 'lowering-refused'
+  cause: 'cut-off-thinking' | 'no-answer-thinking' | 'empty-reply' | 'format-refused' | 'stream-refused' | 'stream-answered-whole' | 'cut-on-the-way' | 'byte-bound-refused' | 'loaded-window' | 'lowering-refused'
 }
 
 /** What a review records about itself, besides its verdicts. */
@@ -715,11 +716,22 @@ export type QuorumEvent
      * for at most, so it was split in two, each half researched as a part, to a floor of one hunk and three splits.
      * Sent once the part's pieces have answered. `noAnswer` is what the first reply lacked (`saturated` for a
      * saturated one), `limit` the reply limit it was cut at when the request carried one, `findings` the findings a
-     * saturated reply was asked for, `thinkingLowered` whether the provider's thinking had been lowered when recovery
+     * saturated reply was asked for, `cutAfterMs` in place of `limit` for a reply cut on the way at the length its provider learned (`cut`), `thinkingLowered` whether the provider's thinking had been lowered when recovery
      * began, `pieces` the final pieces the part ended with, each read or left at the floor, and `read` how many of them were read, and `unreadHunks` and
      * `unreadFiles` what the floor left unread. Every field is a count or a code word.
      */
-    | { type: 'recovered', profile: string, part: number, parts: number, noAnswer: Exclude<NoAnswer, 'empty'> | 'saturated', limit?: number, findings?: number, thinkingLowered: boolean, pieces: number, read: number, unreadHunks: number, unreadFiles: number }
+    | { type: 'recovered', profile: string, part: number, parts: number, noAnswer: Exclude<NoAnswer, 'empty'> | 'saturated', limit?: number, cutAfterMs?: number, findings?: number, thinkingLowered: boolean, pieces: number, read: number, unreadHunks: number, unreadFiles: number }
+    /**
+     * A provider's calls are cut on the way: two of its cut attempts, of any calls, ended at about the same length, so each
+     * later attempt cut there is read as a reply cut off at its limit, and 3e's path takes it, the thinking probe once, then the
+     * split. Sent once per provider and review. `afterMs` is the cut's length, `holds` the tokens a reply may hold at the lowest
+     * rate the two attempts that taught the cut streamed, four fifths of what the cut lets through (absent when no rate was measured), and `lowered`
+     * whether a derived reply budget it serves was held to it (`adapted` records it); with `maxTokens` set it is not, and `holds` is
+     * the value to lower it to. `fits` is `true` when `maxTokens` is unset and every derived budget the provider serves was
+     * already at or under `holds`, so nothing was lowered and there is nothing to advise. Every field is a provider's id, a
+     * number or a boolean.
+     */
+    | { type: 'cut', provider: string, afterMs: number, holds?: number, lowered: boolean, fits?: true }
     /**
      * Quorum moved a setting of a provider by itself for the rest of the review, said once per provider and
      * setting: the same record `meta.adaptations` holds. Every field is a provider's id or a code word.
