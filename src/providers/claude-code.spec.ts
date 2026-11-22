@@ -734,6 +734,16 @@ describe('claudeCodeIssues', () => {
         'systemPrompt',
       ].map(field => at(field, NOT_AN_OPTION)),
     ],
+    [
+      {
+        stream: false,
+        stallTimeoutMs: 300_000,
+      },
+      [
+        'stream',
+        'stallTimeoutMs',
+      ].map(field => at(field, NOT_AN_OPTION)),
+    ],
   ])('refuses %j', (fields, issues) => {
     expect(issuesOf(fields)).toEqual(issues)
   })

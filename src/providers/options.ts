@@ -84,8 +84,16 @@ export interface HttpProviderOptions {
    * the call; `false` asks for whole replies, as before streams.
    */
   stream?: boolean
-  /** The deadline of one attempt, in milliseconds, from 1000 to 86400000. Default 600000. */
+  /**
+   * The deadline of one attempt, in milliseconds, from 1000 to 86400000. Unset, each attempt's deadline grows with its
+   * reply budget, from 600000 to a day.
+   */
   timeoutMs?: number
+  /**
+   * How long a streamed attempt may show no progress before it fails as a timeout, in milliseconds, from 1000 to
+   * 86400000. Unset, it is learned from the provider's own streams in the review, 600000 until it has answered one.
+   */
+  stallTimeoutMs?: number
   /** The retries of a call that failed in passing, from 0 to 5. Default 2. */
   retries?: number
 }
@@ -355,10 +363,10 @@ export function contextTokensIssues(id: string, contextTokens: number | undefine
 }
 
 /**
- * The problems of the deadline and the retries an adapter takes, each at `<id>.<field>` when it is set
- * and out of range: the deadline first. No message repeats a value.
+ * The problems of the deadline, the retries and the stall window an adapter takes, each at `<id>.<field>` when it is set
+ * and out of range: the deadline first, the stall window last. No message repeats a value.
  */
-export function attemptIssues(id: string, timeoutMs: unknown, retries: unknown): ConfigIssue[] {
+export function attemptIssues(id: string, timeoutMs: unknown, retries: unknown, stallTimeoutMs?: unknown): ConfigIssue[] {
   const issues: ConfigIssue[] = []
   const deadline = timeoutMs === undefined
     ? undefined
@@ -368,7 +376,23 @@ export function attemptIssues(id: string, timeoutMs: unknown, retries: unknown):
     ? undefined
     : retriesProblem(retries)
   if (count !== undefined) issues.push({ path: `${id}.retries`, message: count })
+  const stall = stallTimeoutMs === undefined
+    ? undefined
+    : timeoutProblem(stallTimeoutMs)
+  if (stall !== undefined) issues.push({ path: `${id}.stallTimeoutMs`, message: stall })
   return issues
+}
+
+/** What an adapter states of its attempts: the `timeoutMs` and the `stallTimeoutMs` its options set, and nothing for one they leave unset, so the core derives it. */
+export function attemptFacts({ timeoutMs, stallTimeoutMs }: Pick<HttpProviderOptions, 'timeoutMs' | 'stallTimeoutMs'>): { readonly timeoutMs?: number, readonly stallTimeoutMs?: number } {
+  return {
+    ...timeoutMs === undefined
+      ? {}
+      : { timeoutMs },
+    ...stallTimeoutMs === undefined
+      ? {}
+      : { stallTimeoutMs },
+  }
 }
 
 /**
@@ -376,7 +400,7 @@ export function attemptIssues(id: string, timeoutMs: unknown, retries: unknown):
  * message repeats a value: a key, a header value or a URL can be a secret.
  */
 export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRules): ConfigIssue[] {
-  const { id, baseUrl, apiKey, headers, query, extraBody, temperature, maxTokens, contextTokens, systemPrompt, structuredOutput, stream, timeoutMs, retries } = options
+  const { id, baseUrl, apiKey, headers, query, extraBody, temperature, maxTokens, contextTokens, systemPrompt, structuredOutput, stream, timeoutMs, stallTimeoutMs, retries } = options
   const { auth, structuredOutputs } = rules
   const fixedHeaders = rules.fixedHeaders.map(name => name.toLowerCase())
   const issues = [
@@ -413,7 +437,7 @@ export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRul
     issues.push({ path: `${id}.structuredOutput`, message: `must be ${wordList(structuredOutputs)}` })
   }
   if (stream !== undefined && typeof stream !== 'boolean') issues.push({ path: `${id}.stream`, message: 'must be true or false' })
-  issues.push(...attemptIssues(id, timeoutMs, retries))
+  issues.push(...attemptIssues(id, timeoutMs, retries, stallTimeoutMs))
   return issues
 }
 

@@ -49,6 +49,8 @@ interface Counts {
   ended: number
   /** What `cutOf` made of each failure of the streak, in the order they ended: the attempt's length for a cut, else undefined. */
   cuts: Array<number | undefined>
+  /** The window each failure of the streak stalled at, in the order they ended: undefined for one that was no stall. */
+  stalls: Array<number | undefined>
   /** The last counted failure: its kind, status, whether it was a used-up quota, and thrown value. */
   last?: { readonly kind: ProviderErrorKind, readonly status?: number, readonly exhausted?: true, readonly refused?: 'stream', readonly noAnswer?: NoAnswer, readonly error: unknown }
   /** The error of the provider once it is found down. */
@@ -63,7 +65,7 @@ export interface Health {
   readonly answered: (provider: Provider) => void
   /**
    * A call ended with `error`, whose last attempt ran `attemptMs`: the provider's error the first time the failure
-   * finds it down, `undefined` otherwise. The error names a cut (`cutAfterMs`) when each failure of the streak was one.
+   * finds it down, `undefined` otherwise. The error names a cut (`cutAfterMs`) when each failure of the streak was one, and a stall (`stalledMs`) the same way.
    */
   readonly failed: (provider: Provider, id: string, error: unknown, attemptMs?: number) => ProviderDownError | undefined
   /**
@@ -94,6 +96,16 @@ function cutFacts({ cuts }: Counts): { readonly cutAfterMs?: number } {
     : {}
 }
 
+/** The stall of a record's streak as a fact for the provider's error: the shortest window, unless a failure of the streak was no stall. */
+function stallFacts({ stalls }: Counts): { readonly stalledMs?: number } {
+  const windows = stalls.filter(window => window !== undefined)
+  return windows.length === stalls.length && windows.length > 0
+    ? {
+        stalledMs: Math.min(...windows),
+      }
+    : {}
+}
+
 /** A review's own record of its providers' health. */
 export function createHealth(): Health {
   const records = new Map<Provider, Counts>()
@@ -105,6 +117,7 @@ export function createHealth(): Health {
       failures: 0,
       ended: 0,
       cuts: [],
+      stalls: [],
     }
     records.set(provider, fresh)
     return fresh
@@ -119,12 +132,17 @@ export function createHealth(): Health {
     failed: (provider, id, error, attemptMs) => {
       const record = recordOf(provider)
       record.ended += 1
-      const failure = providerFailure(error)
-      if (failure === undefined || !DOWN_KINDS.has(failure.kind)) return undefined
+      const read = providerFailure(error)
+      if (read === undefined || !DOWN_KINDS.has(read.kind)) return undefined
+      const { stalledMs, ...failure } = read
       record.streak += 1
       record.failures += 1
-      if (record.streak === 1) record.cuts = []
+      if (record.streak === 1) {
+        record.cuts = []
+        record.stalls = []
+      }
       record.cuts.push(cutOf(failure, attemptMs))
+      record.stalls.push(stalledMs)
       const facts = {
         ...failure,
         ...lackFacts(failure.kind, error),
@@ -135,6 +153,7 @@ export function createHealth(): Health {
         providerId: id,
         ...facts,
         ...cutFacts(record),
+        ...stallFacts(record),
         count: record.streak,
         streak: true,
         cause: error,
@@ -149,6 +168,7 @@ export function createHealth(): Health {
         providerId: id,
         ...failure,
         ...cutFacts(record),
+        ...stallFacts(record),
         count: record.failures,
         streak: false,
         cause: error,

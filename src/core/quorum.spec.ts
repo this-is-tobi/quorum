@@ -261,6 +261,34 @@ describe('createQuorum', () => {
     expect(() => create(stating(1000), stating(1000), stating(518_400_000), stating(1000))).not.toThrow()
   })
 
+  it('refuses a provider that states a stallTimeoutMs out of range or a streams that is not true', () => {
+    const stating = (facts: Record<string, unknown>): Provider => ({
+      ...provider,
+      ...facts,
+    }) as Provider
+    const create = (research: Provider, reachability: Provider, impact: Provider, defenses: Provider): Quorum => createQuorum({
+      profiles: [securityProfile],
+    }, {
+      profiles: {
+        security: {
+          research,
+          voters: { reachability, impact, defenses },
+        },
+      },
+    })
+    const range = 'must be a whole number of milliseconds from 1000 to 86400000'
+    expect(issuesOf(() => create(stating({ stallTimeoutMs: 999 }), stating({ stallTimeoutMs: 86_400_001 }), stating({ stallTimeoutMs: '300000' }), stating({ streams: false })))).toEqual([
+      `ports.profiles.security.research.stallTimeoutMs: ${range}`,
+      `ports.profiles.security.voters.reachability.stallTimeoutMs: ${range}`,
+      `ports.profiles.security.voters.impact.stallTimeoutMs: ${range}`,
+      'ports.profiles.security.voters.defenses.streams: must be true',
+    ])
+    expect(issuesOf(() => create(stating({ streams: 'yes' }), provider, provider, provider))).toEqual([
+      'ports.profiles.security.research.streams: must be true',
+    ])
+    expect(() => create(stating({ stallTimeoutMs: 1000, streams: true }), stating({ stallTimeoutMs: 86_400_000 }), provider, provider)).not.toThrow()
+  })
+
   it('refuses a provider\'s retries out of range at each port that holds it', () => {
     const stating = (retries: unknown): Provider => ({ ...provider, retries }) as Provider
     const create = (research: Provider, reachability: Provider, impact: Provider, defenses: Provider): Quorum => createQuorum({

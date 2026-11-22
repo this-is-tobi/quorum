@@ -140,8 +140,10 @@ export class ProviderError extends QuorumError {
    * whole replies.
    */
   readonly refused: 'structuredOutput' | 'streamOptions' | 'stream' | undefined
+  /** A `timeout` that is a stalled stream: the window it showed no progress for, in milliseconds. Set by the core, which watches the stream. */
+  readonly stalledMs: number | undefined
 
-  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, exhausted?: true, retryAfterMs?: number, usage?: Usage, noAnswer?: NoAnswer, refused?: 'structuredOutput' | 'streamOptions' | 'stream', cause?: unknown }) {
+  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, exhausted?: true, retryAfterMs?: number, usage?: Usage, noAnswer?: NoAnswer, refused?: 'structuredOutput' | 'streamOptions' | 'stream', stalledMs?: number, cause?: unknown }) {
     super(`${details.providerId}: ${details.message}`, details.cause === undefined
       ? undefined
       : { cause: details.cause })
@@ -154,6 +156,7 @@ export class ProviderError extends QuorumError {
     this.usage = details.usage
     this.noAnswer = details.noAnswer
     this.refused = details.refused
+    this.stalledMs = details.stalledMs
   }
 }
 
@@ -213,6 +216,9 @@ export const QUOTA_FIX = 'add credit or raise the limit at the provider, or wait
 
 /** What to do about a provider whose pinned stream the server refused: one imperative phrase. */
 export const STREAM_FIX = 'set stream: false'
+
+/** What to do about a provider whose streams stalled: one imperative phrase. The window never passes the attempt's ceiling, so `timeoutMs` raises it too. */
+export const STALL_FIX = 'raise stallTimeoutMs, or timeoutMs'
 
 /**
  * What to do about a provider whose calls ended with `kind`, and for an `http` failure its `status`: one imperative
@@ -288,6 +294,8 @@ export interface DownFacts {
   readonly cutAfterMs?: number
   /** The last failure was a refused stream of a provider that streams by setting: the fix is `STREAM_FIX`. */
   readonly refused?: 'stream'
+  /** Every call of the streak stalled (`ProviderError.stalledMs`): the shortest of their windows, in milliseconds. The fix is `STALL_FIX`. */
+  readonly stalledMs?: number
 }
 
 /**
@@ -298,8 +306,9 @@ export interface DownFacts {
  * answer, only reasoning: ...` or `had no answer and no reasoning: ...`. A provider whose quota is used up says
  * so, whatever the count, and names `QUOTA_FIX`: `<id>: the account's credit, quota or spend limit is used up
  * (<kind>[ <status>]): no more calls go to it in this review: <fix>`. A provider whose calls were each cut on the
- * way (`cutAfterMs`) names `CUT_FIX` in place of the fix of its kind, after the quota's. One whose last failure was a
- * refused stream (`refused`) names `STREAM_FIX` as the fix of its kind.
+ * way (`cutAfterMs`) names `CUT_FIX` in place of the fix of its kind, after the quota's, and one whose calls each stalled
+ * (`stalledMs`) names `STALL_FIX`. One whose last failure was a refused stream (`refused`) names `STREAM_FIX` as the fix
+ * of its kind.
  */
 export function downWords(facts: DownFacts): string {
   if (facts.exhausted === true) {
@@ -321,9 +330,11 @@ export function downWords(facts: DownFacts): string {
   const failure = facts.status === undefined
     ? facts.kind
     : `${facts.kind} ${facts.status}`
-  const fix = facts.cutAfterMs === undefined
-    ? failureFix(facts.kind, facts.status, facts.refused)
-    : CUT_FIX(facts.cutAfterMs)
+  const fix = facts.cutAfterMs !== undefined
+    ? CUT_FIX(facts.cutAfterMs)
+    : facts.stalledMs !== undefined
+      ? STALL_FIX
+      : failureFix(facts.kind, facts.status, facts.refused)
   if (facts.streak) return `${facts.providerId}: ${facts.count} calls in a row failed (${failure}): no more calls go to it in this review: ${fix}`
   return `${facts.providerId}: its ${facts.count === 1
     ? 'one call'
@@ -351,6 +362,8 @@ export class ProviderDownError extends QuorumError {
   readonly noAnswer: NoAnswer | undefined
   /** The last failure was a refused stream. */
   readonly refused: 'stream' | undefined
+  /** Every counted call stalled: the shortest of their windows, in milliseconds. */
+  readonly stalledMs: number | undefined
 
   constructor(facts: DownFacts & { readonly cause?: unknown }) {
     super(downWords(facts), facts.cause === undefined
@@ -365,5 +378,6 @@ export class ProviderDownError extends QuorumError {
     this.cutAfterMs = facts.cutAfterMs
     this.noAnswer = facts.noAnswer
     this.refused = facts.refused
+    this.stalledMs = facts.stalledMs
   }
 }

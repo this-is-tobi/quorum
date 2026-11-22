@@ -1,11 +1,11 @@
 import { issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
-import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
+import { DEFAULT_RETRIES } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider, StreamSignal } from '../core/ports.ts'
 import { postStream, snippet } from './http.ts'
 import type { PostStreamOptions } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { adaptsOf, bodyKeyForm, isRecord, mergeBody, prepareHttp, requestSettings, spellingIssues, streamFacts, thinkingIssues } from './options.ts'
+import { adaptsOf, attemptFacts, bodyKeyForm, isRecord, mergeBody, prepareHttp, requestSettings, spellingIssues, streamFacts, thinkingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput, Thinking, ThinkingControl } from './options.ts'
 import { MAX_MODEL_TEXT, readAnswer, replyFailure, STREAMED_REASONING, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
@@ -248,7 +248,7 @@ export async function assembleOllama(items: AsyncIterable<StreamItem>, providerI
  * @throws ConfigError with every problem of the options, before any request
  */
 export function ollama(options: OllamaOptions): Provider {
-  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json', thinking, timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES, stream: streamOption } = options
+  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json', thinking, retries = DEFAULT_RETRIES, stream: streamOption } = options
   const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/api/chat', [
     ...numCtxIssues(id, options.extraBody),
     ...thinkingIssues(id, thinking, options.extraBody, THINKING),
@@ -264,7 +264,7 @@ export function ollama(options: OllamaOptions): Provider {
   return {
     id,
     model,
-    timeoutMs,
+    ...attemptFacts(options),
     retries,
     ...streamFacts(streamOption),
     ...statedReply(contextTokens, maxTokens, thinking),

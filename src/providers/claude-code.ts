@@ -139,6 +139,7 @@ const HTTP_FIELDS = [
   'temperature',
   'systemPrompt',
   'stream',
+  'stallTimeoutMs',
 ] as const
 /** Why `thinking` is no option of the CLI: its effort is a flag it already takes. */
 const THINKING_REFUSAL = 'claude-code takes its effort from args: --effort low'

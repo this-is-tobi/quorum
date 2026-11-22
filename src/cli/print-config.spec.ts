@@ -189,8 +189,15 @@ describe('printConfig', () => {
 
   it('prints a provider\'s timeoutMs and retries after its system prompt when it sets them, and a provider object\'s after its model', () => {
     expect(printed({ ...SPEC, timeoutMs: 120000, retries: 0 })).toContain('    timeoutMs: 120000\n    retries: 0\n')
+    expect(printed({
+      ...SPEC,
+      timeoutMs: 120000,
+      stallTimeoutMs: 300000,
+      retries: 0,
+    })).toContain('    timeoutMs: 120000\n    stallTimeoutMs: 300000\n    retries: 0\n')
     const unset = printed(SPEC)
     expect(unset).not.toContain('timeoutMs')
+    expect(unset).not.toContain('stallTimeoutMs')
     expect(unset).not.toContain('retries')
     const complete: Provider['complete'] = async () => ({ text: '', model: 'm' })
     expect(printConfig(config({
@@ -202,6 +209,14 @@ describe('printConfig', () => {
         retries: 3,
       },
     }), undefined)).toContain('  mine:\n    implements: Provider\n    model: m\n    timeoutMs: 120000\n    retries: 3\nprofiles:\n')
+    expect(printConfig(config({
+      mine: {
+        id: 'mine',
+        model: 'm',
+        complete,
+        stallTimeoutMs: 300000,
+      },
+    }), undefined)).toContain('  mine:\n    implements: Provider\n    model: m\n    stallTimeoutMs: 300000\nprofiles:\n')
   })
 
   it('prints the timeoutMs and retries of a provider object that states its own only, and nothing a polluted prototype holds', () => {

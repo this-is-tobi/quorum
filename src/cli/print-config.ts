@@ -82,20 +82,22 @@ function specView(spec: ProviderSpec): Record<string, unknown> {
     systemPrompt: systemPromptView(own(spec, 'systemPrompt')),
     stream: own(spec, 'stream'),
     timeoutMs: own(spec, 'timeoutMs'),
+    stallTimeoutMs: own(spec, 'stallTimeoutMs'),
     retries: own(spec, 'retries'),
   }
 }
 
-/** A provider object by what it implements, its model when that is a string, and the `timeoutMs` and `retries` it states; never its function. */
+/** A provider object by what it implements, its model when that is a string, and the `timeoutMs`, `stallTimeoutMs` and `retries` it states; never its function. */
 function objectView(provider: Readonly<Provider>): Record<string, unknown> {
   const model = own(provider, 'model')
-  const { timeoutMs, retries } = statedFacts(provider).stated
+  const { timeoutMs, stallTimeoutMs, retries } = statedFacts(provider).stated
   return {
     implements: 'Provider',
     model: typeof model === 'string'
       ? model
       : undefined,
     timeoutMs,
+    stallTimeoutMs,
     retries,
   }
 }
@@ -171,7 +173,7 @@ function budgetWarnings(config: ResolvedConfig, budgets: Readonly<Record<string,
  * (`concurrency`, `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs`, defaults filled in), the
  * patterns it excludes, the files it sends though held as secrets, and the warnings. A key and every value of
  * `headers`, `query` and `extraBody` print as `[redacted]`, a base URL as its origin, and a prompt as its
- * SHA-256. A provider's `timeoutMs` and `retries` print when it sets them, a provider object's when it states
+ * SHA-256. A provider's `timeoutMs`, `stallTimeoutMs` and `retries` print when it sets them, a provider object's when it states
  * them. A `claude-code` provider prints its protocol, command, model, context size, key (redacted), auth mode and args, and no origin:
  * the command and the args are the user's own config. The view is an allowlist, so a field added to the
  * config prints nothing until it is added here on purpose.

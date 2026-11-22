@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto'
 import type { Adaptations, Fields, Probe, ProbeOutcome } from '../adapt.ts'
 import type { ProfileBudgets } from '../budgets.ts'
 import type { Clock } from '../clock.ts'
+import { attemptCeiling, PROGRESS_MS } from '../clocks.ts'
+import type { AttemptSeen, Clocks } from '../clocks.ts'
 import type { Limiter } from '../concurrency.ts'
 import type { Health } from '../down.ts'
 import { NO_ANSWERS, PROVIDER_ERROR_KINDS, ProviderDownError, ProviderError } from '../errors.ts'
@@ -9,7 +11,7 @@ import type { NoAnswer, ProviderErrorKind } from '../errors.ts'
 import { isLimit, settlementOf } from '../limits.ts'
 import type { Ledger } from '../limits.ts'
 import { isRecord } from '../output.ts'
-import { adaptsProblem, DEFAULT_TIMEOUT_MS, MAX_STATED_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../ports.ts'
+import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../ports.ts'
 import type { Adapts, CompletionRequest, CompletionResponse, EventSink, Provider, ReplyStore, StoredCall } from '../ports.ts'
 import { requestDigest } from '../prompts.ts'
 import { isTimeout, retryWait } from '../retry.ts'
@@ -25,8 +27,13 @@ import type { FailOn, Position, ProviderRef, QuorumEvent, StageName, Thresholds,
 export interface Target {
   readonly provider: Provider
   readonly ref: Readonly<ProviderRef>
-  /** The deadline of one attempt, in milliseconds: what the provider stated when the quorum was created, else the default. */
-  readonly timeoutMs: number
+  /**
+   * The deadline of one attempt, in milliseconds, as the provider stated it when the quorum was created, when it passes its
+   * check; none otherwise, and each attempt's ceiling is then derived from its reply budget (`attemptCeiling`).
+   */
+  readonly timeoutMs: number | undefined
+  /** How long a streamed attempt may show no progress, as the provider stated it when the quorum was created, when it passes its check; none otherwise, and the window is learned (`Clocks.window`). */
+  readonly stallTimeoutMs: number | undefined
   /** The retries of a call after its first attempt: what the provider stated when the quorum was created, else none. */
   readonly retries: number
   /** The worst case of one attempt the provider stated when the quorum was created, when it is a function; `reservationOf` reads its result. */
@@ -120,6 +127,8 @@ export interface RunContext {
   readonly budgets: Readonly<Record<string, ProfileBudgets>>
   /** The review's concurrency: how many parts of its research one profile has in flight at once. */
   readonly concurrency: number
+  /** What the review has learned of how its providers' streams pace: each stream's stall window. */
+  readonly clocks: Clocks
   /** The time and the randomness the call path reads: the system's, unless a spec injects its own. */
   readonly clock: Clock
   /** The last call number the review has given: a call that starts is numbered `++last`, from 1, whatever its profile. */
@@ -162,11 +171,18 @@ export function isTooLarge(error: unknown): boolean {
  * never runs a getter and never throws: any other value, a kind of no provider's included, is undefined. An
  * `http` failure whose own data `exhausted` is `true` says so, as `exhausted: true`; any other kind never does. An `http`
  * failure of status 400 or 422 whose own data `refused` is `stream` or `streamOptions` says `refused: 'stream'`: a refused
- * stream, to which a provider that may not step down has one fix.
+ * stream, to which a provider that may not step down has one fix. A `timeout` whose own data `stalledMs` is a positive safe
+ * integer says so, as `stalledMs`: a stream that showed no progress for that long.
  */
-export function providerFailure(error: unknown): { readonly kind: ProviderErrorKind, readonly status?: number, readonly exhausted?: true, readonly refused?: 'stream' } | undefined {
+export function providerFailure(error: unknown): { readonly kind: ProviderErrorKind, readonly status?: number, readonly exhausted?: true, readonly refused?: 'stream', readonly stalledMs?: number } | undefined {
   const kind = PROVIDER_ERROR_KINDS.find(known => known === ownData(error, 'kind'))
   if (kind === undefined) return undefined
+  if (kind === 'timeout') {
+    const stalledMs = ownData(error, 'stalledMs')
+    return typeof stalledMs === 'number' && Number.isSafeInteger(stalledMs) && stalledMs >= 1
+      ? { kind, stalledMs }
+      : { kind }
+  }
   if (kind !== 'http') return { kind }
   const status = ownData(error, 'status')
   const refused = ownData(error, 'refused')
@@ -308,8 +324,8 @@ export interface Requester {
 
 /**
  * A provider as a run holds it: the ref captured now, which events and meta report, and its
- * deadline and retries, each read as own data and taken only when it passes its check, else the
- * default: 600000 ms and no retry. The quorum's checks ran first, so a plain object's values are the
+ * deadline, stall window and retries, each read as own data and taken only when it passes its check, else
+ * none: no retry, and a deadline derived from each attempt's reply budget. The quorum's checks ran first, so a plain object's values are the
  * ones they passed; a proxy that answers the check and this read differently still gets an in-range
  * deadline and no retry, never an unbounded one. The worst case it states is its own data value when
  * that is a function, else none, and so is the room it states: a getter is never run, and an inherited method
@@ -319,6 +335,7 @@ export interface Requester {
  */
 export function targetOf(provider: Provider): Target {
   const timeoutMs = ownData(provider, 'timeoutMs')
+  const stallTimeoutMs = ownData(provider, 'stallTimeoutMs')
   const retries = ownData(provider, 'retries')
   const worstCase = ownData(provider, 'worstCase')
   const room = ownData(provider, 'room')
@@ -332,7 +349,10 @@ export function targetOf(provider: Provider): Target {
     ref: Object.freeze({ id: provider.id, model: provider.model }),
     timeoutMs: timeoutProblem(timeoutMs, MAX_STATED_TIMEOUT_MS) === undefined
       ? timeoutMs as number
-      : DEFAULT_TIMEOUT_MS,
+      : undefined,
+    stallTimeoutMs: timeoutProblem(stallTimeoutMs) === undefined
+      ? stallTimeoutMs as number
+      : undefined,
     retries: retriesProblem(retries) === undefined
       ? retries as number
       : 0,
@@ -439,7 +459,8 @@ export function elapsed(started: number): number {
  * review holds at once to its concurrency, whatever the number of findings and lenses (ADR-0009).
  * The call runs its attempts inside its slot, retried as `retryWait` decides, the waits between
  * them holding the slot: the review's abort ends a wait at once, and no failure is retried once the
- * review is aborted. Each attempt has the provider's deadline, and the provider is handed the
+ * review is aborted. Each attempt has its ceiling, the provider's deadline or the one its reply budget sizes
+ * (`attemptCeiling`), and a streamed attempt a stall window besides (`Clocks.window`), and the provider is handed the
  * attempt's own signal, so it can stop a call in flight: the review's abort settles the attempt at
  * once, without waiting for the provider.
  *
@@ -493,7 +514,8 @@ export function elapsed(started: number): number {
  * before the attempt is sent, numbering the call `++ctx.calls.last`; `call:retry` before each wait, once the wait is
  * known and the stop has not fired, saying how long the failed attempt ran (`attemptMs`, from the moment its request is
  * handed to the provider, after the slot, the ledger and any backoff, to its failure); then the one `call` event,
- * which repeats the call's number. A call that ends with a failure tells the health, its `onFailure` and its
+ * which repeats the call's number. A streamed call sends `call:progress` between them, at most once a second, and its ok
+ * `call` event carries the `firstTokenMs` and `longestSilenceMs` of its answered attempt. A call that ends with a failure tells the health, its `onFailure` and its
  * `provider-down` event how long the attempt that threw it ran, so a cut on the way (`cutOf`) is named. A call the store
  * answered, the down rule refused or a limit stopped before its first attempt sends no `call:start`; a refusal as too
  * large is sent after the reservation, so it does. Each attempt is counted in `ctx.flying` from its reservation until it settles.
@@ -569,6 +591,10 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     let spent = 0
     let timedOut = false
     let replied: Usage | undefined
+    /** When the call last sent a `call:progress`, on the review's clock: it sends at most one in `PROGRESS_MS`. */
+    let progressSentAt: number | undefined
+    /** What the attempt that answered showed of its stream, when it showed a data event: the `call` event carries it. */
+    let timings: { readonly firstTokenMs: number, readonly longestSilenceMs: number } | undefined
     /** Ends the call with `error`: its failed event when an attempt was made, then `onFailure`; the error to throw. */
     const end = (error: unknown): unknown => {
       if (attempts > 0 || reused) {
@@ -602,6 +628,9 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
             ...(found.cutAfterMs === undefined
               ? {}
               : { cutAfterMs: found.cutAfterMs }),
+            ...(found.stalledMs === undefined
+              ? {}
+              : { stalledMs: found.stalledMs }),
             ...(found.noAnswer === undefined
               ? {}
               : { noAnswer: found.noAnswer }),
@@ -625,11 +654,35 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       return error
     }
     /**
+     * Sends the call's `call:progress` for a streamed attempt that showed progress: `tokens` when its output grew since the
+     * call's last one, `keep-alive` when only keep-alives came, at most once in `PROGRESS_MS`.
+     */
+    const progressed = (watch: Watch, kind: 'data' | 'keep-alive'): void => {
+      if (number === undefined) return
+      if (kind === 'keep-alive') watch.keptAlive = true
+      const now = ctx.clock.now()
+      if (progressSentAt !== undefined && now - progressSentAt < PROGRESS_MS) return
+      const grew = watch.outputTokens > watch.reported
+      if (!grew && !watch.keptAlive) return
+      progressSentAt = now
+      watch.reported = watch.outputTokens
+      watch.keptAlive = false
+      ctx.emit({
+        type: 'call:progress',
+        call: number,
+        outputTokens: watch.outputTokens,
+        signal: grew
+          ? 'tokens'
+          : 'keep-alive',
+      })
+    }
+    /**
      * One request sent with its retries: its reply, or its failure after the retries. Each attempt reserves the
      * request's worst case in the ledger, before it is sent, and settles after.
      */
     const send = async (asked: CompletionRequest): Promise<CompletionResponse> => {
       const reservation = reservationOf(target, asked)
+      const streamed = streamsAttempt(target, asked)
       let retried = 0
       for (;;) {
         await ctx.ledger.reserve(reservation, ctx.stop)
@@ -642,12 +695,18 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
             ...requester,
             provider: target.ref,
             reserved: reservation,
-            timeoutMs: target.timeoutMs,
+            timeoutMs: ceilingOf(target, asked),
+            ...streamed
+              ? { stream: true as const }
+              : {},
           })
         }
         ctx.flying.count += 1
         /** When the request is handed to the provider: after the slot, the ledger and any backoff. */
         const sentAt = ctx.clock.now()
+        const watch = streamed
+          ? newWatch(sentAt, progressed)
+          : undefined
         /** Settles the attempt's reservation at `tokens`, which the call's `spent` adds. */
         const settle = (tokens: number): void => {
           ctx.flying.count -= 1
@@ -655,12 +714,18 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           spent += tokens
         }
         try {
-          const reply = await attempt(ctx, target, asked)
+          const reply = await attempt(ctx, target, asked, watch)
+          const endedAt = ctx.clock.now()
           if (typeof reply?.text !== 'string') throw new ProviderError({ providerId: target.ref.id, kind: 'invalid-response', message: 'returned no reply text' })
           // The reply's usage is read once, so its settlement and its event cannot disagree.
           replied = checkedUsage(reply.usage)
           settle(settlementOf(reservation, replied))
           ctx.health.answered(target.provider)
+          const seen = seenOf(watch, sentAt, endedAt, replied)
+          ctx.clocks.answered(target, seen)
+          timings = seen.firstTokenMs === undefined
+            ? undefined
+            : { firstTokenMs: seen.firstTokenMs, longestSilenceMs: seen.longestSilenceMs }
           return reply
         } catch (error) {
           const attemptMs = Math.round(ctx.clock.now() - sentAt)
@@ -803,6 +868,9 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       ...reasoning === undefined
         ? {}
         : { reasoning },
+      ...timings === undefined
+        ? {}
+        : timings,
     })
     options.onEnd?.({ spent, startedAt: started })
     if (read === undefined) {
@@ -1146,26 +1214,139 @@ function pause(ctx: RunContext, ms: number): Promise<void> {
   })
 }
 
+/** Whether an attempt of `request` is streamed: the target states that it streams and the request does not ask for a whole reply. */
+function streamsAttempt(target: Target, request: CompletionRequest): boolean {
+  return target.streams && request.stream !== false
+}
+
+/** The ceiling of an attempt of `request`: the deadline the provider stated, else the one its reply budget sizes. */
+function ceilingOf(target: Target, request: CompletionRequest): number {
+  return attemptCeiling(target.timeoutMs, replyLimit(request, target.maxTokens) ?? DEFAULT_REPLY_TOKENS)
+}
+
+/**
+ * What an attempt of a streamed call has seen of its stream, as the review's clock reads it: the stall timer, the call's
+ * `call:progress` and the attempt's timings read it. `progressAt` is the last headers or data event, which keep-alives are no
+ * part of, and the attempt's send before either.
+ */
+interface Watch {
+  readonly sentAt: number
+  progressAt: number
+  firstDataAt: number | undefined
+  longestSilenceMs: number
+  outputTokens: number
+  answer: boolean
+  reasoning: boolean
+  /** The output tokens the call's last `call:progress` of this attempt reported. */
+  reported: number
+  /** Whether a keep-alive came since the call's last `call:progress`. */
+  keptAlive: boolean
+  /** Told of each data event and keep-alive once it is counted: the call sends its `call:progress` from it. */
+  readonly counted: (watch: Watch, kind: 'data' | 'keep-alive') => void
+}
+
+function newWatch(sentAt: number, counted: Watch['counted']): Watch {
+  return {
+    sentAt,
+    progressAt: sentAt,
+    firstDataAt: undefined,
+    longestSilenceMs: 0,
+    outputTokens: 0,
+    answer: false,
+    reasoning: false,
+    reported: 0,
+    keptAlive: false,
+    counted,
+  }
+}
+
+/** What an attempt that answered at `endedAt` showed: its silence counts to its end, and a reply that did not stream is one silence as long as it ran. */
+function seenOf(watch: Watch | undefined, sentAt: number, endedAt: number, reply: Usage | undefined): AttemptSeen {
+  const attemptMs = Math.round(endedAt - sentAt)
+  if (watch === undefined) {
+    return {
+      attemptMs,
+      longestSilenceMs: attemptMs,
+      outputTokens: reply?.outputTokens ?? 0,
+      answer: false,
+      reasoning: false,
+    }
+  }
+  return {
+    attemptMs,
+    ...watch.firstDataAt === undefined
+      ? {}
+      : {
+          firstTokenMs: Math.round(watch.firstDataAt - watch.sentAt),
+        },
+    longestSilenceMs: Math.round(Math.max(watch.longestSilenceMs, endedAt - watch.progressAt)),
+    outputTokens: watch.firstDataAt === undefined
+      ? reply?.outputTokens ?? 0
+      : watch.outputTokens,
+    answer: watch.answer,
+    reasoning: watch.reasoning,
+  }
+}
+
+/**
+ * A sign of life of a stream as the core reads it, from a value an adapter handed over: own data, numbers and booleans
+ * alone; anything else is no signal. A count is any finite number of at least 0, read as a whole number, floored and
+ * clamped to a safe integer, so a server that counts in fractions is still a stream that makes progress.
+ */
+type Signal
+  = | { readonly kind: 'headers' }
+    | { readonly kind: 'keep-alive' }
+    | { readonly kind: 'data', readonly outputTokens: number, readonly answer: boolean, readonly reasoning: boolean }
+
+function signalOf(value: unknown): Signal | undefined {
+  const kind = ownData(value, 'kind')
+  if (kind === 'headers') return { kind }
+  if (kind === 'keep-alive') return { kind }
+  if (kind !== 'data') return undefined
+  const outputTokens = ownData(value, 'outputTokens')
+  const answer = ownData(value, 'answer')
+  const reasoning = ownData(value, 'reasoning')
+  return typeof outputTokens === 'number' && Number.isFinite(outputTokens) && outputTokens >= 0 && typeof answer === 'boolean' && typeof reasoning === 'boolean'
+    ? {
+        kind,
+        outputTokens: Math.min(Math.floor(outputTokens), Number.MAX_SAFE_INTEGER),
+        answer,
+        reasoning,
+      }
+    : undefined
+}
+
 /**
  * One attempt of a call, settled once, by the first of: the provider's reply or failure; its own
- * deadline, as a `timeout` error of the core's own with the attempt's signal aborted with it as the
- * reason; the review's halt (its abort, its deadline or the end of the interrupt's grace), with the halt's reason.
- * The attempt's timer and the join to the review's halt go when it settles, on every path. A provider that throws before
+ * ceiling (`ceilingOf`), as a `timeout` error of the core's own with the attempt's signal aborted with it as the
+ * reason; its stall, for a streamed attempt (`watch`), as a `timeout` error with `stalledMs`; the review's halt (its
+ * abort, its deadline or the end of the interrupt's grace), with the halt's reason.
+ * The attempt's timers and the join to the review's halt go when it settles, on every path. A provider that throws before
  * it returns a promise, or returns a plain object, is handled; whatever it does once the attempt
  * settled is caught and ignored, and it is never an unhandled rejection. The join is one listener,
  * not `AbortSignal.any`, so nothing builds up on a signal that outlives thousands of attempts.
+ *
+ * A streamed attempt is handed an `onProgress`, and stalls when no headers or data event has come for its window
+ * (`Clocks.window`): one timer at a time, which when it fires stalls the attempt if its last progress is a whole window
+ * old, and else is armed again for what is left, so a stream that keeps coming arms one timer however many events it
+ * sends; the first data event arms it again only when the window shrinks to the learned one. Keep-alives are no progress.
  */
-function attempt(ctx: RunContext, target: Target, request: CompletionRequest): Promise<CompletionResponse> {
+function attempt(ctx: RunContext, target: Target, request: CompletionRequest, watch?: Watch): Promise<CompletionResponse> {
   if (ctx.halt.aborted) return Promise.reject(ctx.halt.reason)
   const controller = new AbortController()
+  const ceiling = ceilingOf(target, request)
   return new Promise<CompletionResponse>((resolve, reject) => {
     let settled = false
     let cancel = (): void => {}
-    /** True the first time, when it clears the timer and the listener; false once the attempt has settled. */
+    let cancelStall = (): void => {}
+    /** When the stall timer is due, on the review's clock, while one is armed. */
+    let dueAt: number | undefined
+    /** True the first time, when it clears the timers and the listener; false once the attempt has settled. */
     function done(): boolean {
       if (settled) return false
       settled = true
       cancel()
+      cancelStall()
       ctx.halt.removeEventListener('abort', onAbort)
       return true
     }
@@ -1174,16 +1355,78 @@ function attempt(ctx: RunContext, target: Target, request: CompletionRequest): P
       controller.abort(ctx.halt.reason)
       reject(ctx.halt.reason)
     }
-    cancel = ctx.clock.timer(target.timeoutMs, () => {
+    function arm(ms: number): void {
+      cancelStall()
+      dueAt = ctx.clock.now() + ms
+      cancelStall = ctx.clock.timer(ms, onStall)
+    }
+    function onStall(): void {
+      if (settled || watch === undefined) return
+      const window = ctx.clocks.window(target, ceiling, watch.firstDataAt !== undefined)
+      const quiet = ctx.clock.now() - watch.progressAt
+      if (quiet < window) {
+        arm(Math.max(1, Math.ceil(window - quiet)))
+        return
+      }
       if (!done()) return
-      const error = new ProviderError({ providerId: target.ref.id, kind: 'timeout', message: `no reply within ${target.timeoutMs} ms` })
+      const error = new ProviderError({
+        providerId: target.ref.id,
+        kind: 'timeout',
+        message: `no reply progress within ${window} ms`,
+        stalledMs: window,
+      })
+      controller.abort(error)
+      reject(error)
+    }
+    function onProgress(value: unknown): void {
+      if (settled || watch === undefined) return
+      const signal = signalOf(value)
+      if (signal === undefined) return
+      try {
+        const now = ctx.clock.now()
+        if (signal.kind !== 'keep-alive') {
+          watch.longestSilenceMs = Math.max(watch.longestSilenceMs, now - watch.progressAt)
+          watch.progressAt = now
+        }
+        if (signal.kind === 'headers') return
+        if (signal.kind === 'keep-alive') {
+          watch.counted(watch, 'keep-alive')
+          return
+        }
+        const first = watch.firstDataAt === undefined
+        watch.firstDataAt ??= now
+        watch.outputTokens = Math.max(watch.outputTokens, signal.outputTokens)
+        watch.answer ||= signal.answer
+        watch.reasoning ||= signal.reasoning
+        if (first) {
+          const next = ctx.clocks.window(target, ceiling, true)
+          if (now + next < watch.sentAt + ceiling && (dueAt === undefined || now + next < dueAt)) arm(next)
+        }
+        watch.counted(watch, 'data')
+      } catch {
+        // A sink that throws has ended the review already (`emit`), and a signal is only advice: it never fails the adapter that reads the stream.
+      }
+    }
+    cancel = ctx.clock.timer(ceiling, () => {
+      if (!done()) return
+      const error = new ProviderError({ providerId: target.ref.id, kind: 'timeout', message: `no reply within ${ceiling} ms` })
       controller.abort(error)
       reject(error)
     })
+    if (watch !== undefined) {
+      const window = ctx.clocks.window(target, ceiling, false)
+      if (window < ceiling) arm(window)
+    }
     ctx.halt.addEventListener('abort', onAbort, { once: true })
     let call: Promise<CompletionResponse>
     try {
-      call = Promise.resolve(target.provider.complete({ ...request, signal: controller.signal }))
+      call = Promise.resolve(target.provider.complete({
+        ...request,
+        signal: controller.signal,
+        ...watch === undefined
+          ? {}
+          : { onProgress },
+      }))
     } catch (error) {
       if (done()) reject(error)
       return

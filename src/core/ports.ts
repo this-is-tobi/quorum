@@ -168,13 +168,19 @@ export interface Provider {
   readonly id: string
   readonly model: string
   /**
-   * The deadline of one attempt, in whole milliseconds from 1000 to 518400000; `DEFAULT_TIMEOUT_MS`
-   * when unset. At it the core aborts the attempt's signal and fails the attempt as a timeout,
-   * whatever the provider does. It is read when the quorum is created, as an own data
-   * property: a getter is never run and an inherited property states nothing, so a class sets it as
-   * a field.
+   * The deadline of one attempt, in whole milliseconds from 1000 to 518400000; unset, the core derives each attempt's
+   * ceiling from its reply budget, from `DEFAULT_TIMEOUT_MS` up to a day (`attemptCeiling`). At it the core aborts the
+   * attempt's signal and fails the attempt as a timeout, whatever the provider does. It is read when the quorum is
+   * created, as an own data property: a getter is never run and an inherited property states nothing, so a class
+   * sets it as a field.
    */
   readonly timeoutMs?: number
+  /**
+   * How long a streamed attempt may show no progress before the core fails it as a timeout, in whole milliseconds
+   * from 1000 to 86400000. Unset, the core learns the window from the provider's own streams in the review
+   * (`Clocks.window`). It applies only to a provider that states `streams`, and is read as `timeoutMs` is.
+   */
+  readonly stallTimeoutMs?: number
   /**
    * How often the core retries a call that failed in passing, after its first attempt: a whole
    * number from 0 to 5; none when unset, since a provider that retries by itself must not be

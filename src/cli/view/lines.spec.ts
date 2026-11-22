@@ -72,6 +72,16 @@ describe('renderEvent', () => {
     })).toBe('finder: 3 calls in a row failed (network): no more calls go to it in this review: each call was cut after about 10m00s, likely by a proxy or load balancer on the way: make replies shorter, with a lower maxTokens or partTokens')
   })
 
+  it('writes a provider-down event of calls that each stalled with the stall fix', () => {
+    expect(renderEvent({
+      type: 'provider-down',
+      provider: 'finder',
+      kind: 'timeout',
+      calls: 3,
+      stalledMs: 300_000,
+    })).toBe('finder: 3 calls in a row failed (timeout): no more calls go to it in this review: raise stallTimeoutMs, or timeoutMs')
+  })
+
   it('writes a used-up quota\'s provider-down as its line, and as the call failed under the public view', () => {
     const event: QuorumEvent = {
       type: 'provider-down',
@@ -795,6 +805,17 @@ describe('logLines', () => {
       undefined,
       { index: 7, count: 44 },
       'part 7 of 44: timeout after 600000 ms, retry 1 of 2 in 1s',
+    ],
+    [
+      'a stall',
+      {
+        failure: { kind: 'timeout', stalledMs: 300_000 },
+        attemptMs: 330_000,
+        waitMs: 1500,
+      },
+      undefined,
+      { index: 12, count: 44 },
+      'part 12 of 44: stalled, no progress for 300000 ms, retry 1 of 2 in 2s',
     ],
     [
       'a piece',

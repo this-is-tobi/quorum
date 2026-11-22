@@ -270,6 +270,7 @@ describe('fingerprint', () => {
   it('changes with a provider\'s timeoutMs or retries', () => {
     expect(same(of({ ...PROVIDER, retries: 0 }), of(PROVIDER))).toBe(false)
     expect(same(of({ ...PROVIDER, timeoutMs: 120000 }), of(PROVIDER))).toBe(false)
+    expect(same(of({ ...PROVIDER, stallTimeoutMs: 300000 }), of(PROVIDER))).toBe(false)
   })
 
   it('moves the fingerprint when thinking is set, and keeps it when it is not', () => {
@@ -439,6 +440,7 @@ describe('providerIdentity', () => {
     const base = identityOf(PROVIDER)
     expect(identityOf({ ...PROVIDER, timeoutMs: 120000 })).toBe(base)
     expect(identityOf({ ...PROVIDER, retries: 5 })).toBe(base)
+    expect(identityOf({ ...PROVIDER, stallTimeoutMs: 300000 })).toBe(base)
     expect(identityOf({
       ...PROVIDER,
       timeoutMs: 120000,
@@ -447,6 +449,7 @@ describe('providerIdentity', () => {
     })).toBe(base)
     expect(base).not.toContain('timeoutMs')
     expect(same(of({ ...PROVIDER, timeoutMs: 120000 }), of(PROVIDER))).toBe(false)
+    expect(same(of({ ...PROVIDER, stallTimeoutMs: 300000 }), of(PROVIDER))).toBe(false)
   })
 
   it('leaves out the timeoutMs and retries a provider object states, and keeps every other field', () => {
@@ -454,6 +457,7 @@ describe('providerIdentity', () => {
     expect(identityOf({
       ...object('m'),
       timeoutMs: 120000,
+      stallTimeoutMs: 300000,
       retries: 4,
     }, 'fake')).toBe(base)
     expect(identityOf({

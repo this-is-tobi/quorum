@@ -23,8 +23,8 @@ export function envValue(env: Env, name: string): string | undefined {
 }
 
 /**
- * What the variables of one role set: only the variables that are set. `contextTokens`, `timeoutMs` and
- * `retries` are `QUORUM_<ROLE>_CONTEXT_TOKENS`, `_TIMEOUT_MS` and `_RETRIES`, each read as a whole number, and
+ * What the variables of one role set: only the variables that are set. `contextTokens`, `timeoutMs`, `stallTimeoutMs` and
+ * `retries` are `QUORUM_<ROLE>_CONTEXT_TOKENS`, `_TIMEOUT_MS`, `_STALL_TIMEOUT_MS` and `_RETRIES`, each read as a whole number, and
  * `stream` is `QUORUM_<ROLE>_STREAM`, read as `true` or `false` exactly.
  */
 export interface RoleOverrides {
@@ -34,6 +34,7 @@ export interface RoleOverrides {
   readonly model?: string
   readonly contextTokens?: number
   readonly timeoutMs?: number
+  readonly stallTimeoutMs?: number
   readonly retries?: number
   readonly stream?: boolean
   readonly apiKey?: string
@@ -67,6 +68,7 @@ const VARIABLES: ReadonlyArray<{ readonly field: keyof RoleOverrides, readonly s
   { field: 'model', suffix: 'MODEL', aliased: true },
   { field: 'contextTokens', suffix: 'CONTEXT_TOKENS', aliased: false },
   { field: 'timeoutMs', suffix: 'TIMEOUT_MS', aliased: false },
+  { field: 'stallTimeoutMs', suffix: 'STALL_TIMEOUT_MS', aliased: false },
   { field: 'retries', suffix: 'RETRIES', aliased: false },
   { field: 'stream', suffix: 'STREAM', aliased: false },
   { field: 'apiKey', suffix: 'API_KEY', aliased: true },
@@ -137,6 +139,7 @@ const NUMBERS: ReadonlyMap<keyof RoleOverrides, NumberRule> = new Map([
     { form: /^[1-9]\d{0,8}$/, max: 999_999_999, message: 'must be a whole number of tokens, from 1 to 999999999' },
   ],
   ['timeoutMs', TIMEOUT_RULE],
+  ['stallTimeoutMs', TIMEOUT_RULE],
   [
     'retries',
     { form: /^[0-5]$/, max: MAX_RETRIES, message: `must be a whole number, from 0 to ${MAX_RETRIES}` },
@@ -282,7 +285,7 @@ function readClaudeCodeCommand(env: Env): Pick<EnvLayer, 'claudeCodeCommand' | '
  * `QUORUM_REVIEW_TIMEOUT_MS`, which belong to no role and are read as strictly as a role's numbers.
  * `RESEARCH_*` and `VOTER_*` are read as deprecated aliases of the base URL, model and key, and
  * the `QUORUM_` form wins; the context size (`QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS`),
- * the deadline (`_TIMEOUT_MS`) and the retries (`_RETRIES`) have no alias. Any other variable set under a
+ * the deadline (`_TIMEOUT_MS`), the stall window (`_STALL_TIMEOUT_MS`) and the retries (`_RETRIES`) have no alias. Any other variable set under a
  * `QUORUM_` name is named in one warning. No message repeats a value.
  */
 export function readEnv(env: Env): EnvLayer {

@@ -4,6 +4,7 @@ import { DEFAULT_MAX_FINDINGS, profileBudgets, roomIssues } from './budgets.ts'
 import type { ProfileBudgets } from './budgets.ts'
 import { systemClock } from './clock.ts'
 import type { Clock } from './clock.ts'
+import { createClocks } from './clocks.ts'
 import { createLimiter, DEFAULT_CONCURRENCY } from './concurrency.ts'
 import { leftOutGaps, reviewScope } from './coverage.ts'
 import type { ReviewScope } from './coverage.ts'
@@ -19,7 +20,7 @@ import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, INT
 import { isRecord } from './output.ts'
 import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap } from './parts.ts'
 import type { Packing, PartResult } from './parts.ts'
-import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
+import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, streamsProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts, ReplyStore } from './ports.ts'
 import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
 import { renderTemplate } from './prompts.ts'
@@ -86,7 +87,8 @@ interface Tally {
  * 86400000, a `partTokens` that is not a whole number of tokens from 1024 to 9007199254740991, an
  * `exclude` that is not a list of at most 100 patterns that can be taken, a missing or malformed
  * research provider or voter, a provider's stated `timeoutMs` that is not a
- * whole number of milliseconds from 1000 to 518400000, `retries` that is not a whole number from
+ * whole number of milliseconds from 1000 to 518400000, a `stallTimeoutMs` that is not one from 1000 to 86400000,
+ * a `streams` that is not `true`, `retries` that is not a whole number from
  * 0 to 5 or `worstCase` or `room` that is not a function, ports for a profile or a lens the run does not have
  * (a likely typo), and an event sink that is not a function. Ports are checked only for the profiles
  * that have no issue of their own, and not at all when `profiles` is not an array. Every record keyed
@@ -476,6 +478,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     maxFindings: compiled.maxFindings,
     budgets: compiled.budgets,
     concurrency: compiled.concurrency,
+    clocks: createClocks(),
     clock: compiled.clock,
     calls: { last: 0 },
     flying: { count: 0 },
@@ -881,8 +884,8 @@ function profilePortIssues(entries: Record<string, unknown>, profile: Profile): 
 }
 
 /**
- * The issues of one provider: it is missing, it is not one, the `timeoutMs` or the `retries` it
- * states, as own data, is out of range, the `window` or the `maxTokens` it states is not a whole number of
+ * The issues of one provider: it is missing, it is not one, the `timeoutMs`, the `stallTimeoutMs` or the `retries` it
+ * states, as own data, is out of range, the `streams` it states is not `true`, the `window` or the `maxTokens` it states is not a whole number of
  * tokens of at least 1, its `thinking` is not `default`, `low` or `off`, its `adapts` is not an object whose
  * `thinking` is `low` or `off` and whose `prompt` and `stream` are `true`, or the `worstCase` or the `room` it
  * states, as own data, is not a function.
@@ -904,6 +907,11 @@ function providerIssues(path: string, value: unknown): ConfigIssue[] {
     ? undefined
     : timeoutProblem(timeoutMs, MAX_STATED_TIMEOUT_MS)
   if (timeout !== undefined) issues.push({ path: `${path}.timeoutMs`, message: timeout })
+  const stallTimeoutMs = ownData(value, 'stallTimeoutMs')
+  const stall = stallTimeoutMs === undefined
+    ? undefined
+    : timeoutProblem(stallTimeoutMs)
+  if (stall !== undefined) issues.push({ path: `${path}.stallTimeoutMs`, message: stall })
   const retries = ownData(value, 'retries')
   const retry = retries === undefined
     ? undefined
@@ -926,6 +934,11 @@ function providerIssues(path: string, value: unknown): ConfigIssue[] {
     ? undefined
     : adaptsProblem(adapts)
   if (adaptsIssue !== undefined) issues.push({ path: `${path}.adapts`, message: adaptsIssue })
+  const streams = ownData(value, 'streams')
+  const streamsIssue = streams === undefined
+    ? undefined
+    : streamsProblem(streams)
+  if (streamsIssue !== undefined) issues.push({ path: `${path}.streams`, message: streamsIssue })
   const worstCase = ownData(value, 'worstCase')
   if (worstCase !== undefined && typeof worstCase !== 'function') issues.push({ path: `${path}.worstCase`, message: 'must be a function' })
   const room = ownData(value, 'room')
