@@ -149,7 +149,8 @@ function callsLine(state: ViewState): string | undefined {
       ? ` (${retried.votes} retried)`
       : ''}`)
   }
-  return `calls: ${parts.join(', ')}; ${state.facts.concurrency} at once`
+  const timings = [...state.timings].map(([id, { firstTokenMs, longestSilenceMs }]) => `${id}'s longest first token ${durationWords(firstTokenMs)}, its longest silence ${durationWords(longestSilenceMs)}`)
+  return `calls: ${parts.join(', ')}; ${[`${state.facts.concurrency} at once`, ...timings].join('; ')}`
 }
 
 /** What a reason's entries count, each unit named: `5 part(s)`, `3 vote(s)`, and `2 gap(s)` for entries that count neither. */

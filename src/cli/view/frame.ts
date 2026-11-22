@@ -212,8 +212,12 @@ function callLabel(state: ViewState, call: CallState): string {
   return `f${state.findings.get(call.finding ?? '') ?? '?'}`
 }
 
-/** One call in flight as an item of the calls line: its label and its time, or while it waits to retry, its failure and the seconds left. */
-function callItem(state: ViewState, call: CallState, now: number, glyphs: Glyphs): Row {
+/**
+ * One call in flight as an item of the calls line: its label and its time, or while it waits to retry, its failure and the
+ * seconds left. A streamed call has a spinner before it, which turns only when its output grows, so a still one is a silent
+ * call, and after its time the tokens it has shown (not under the public view) or that only keep-alives came, once it has progressed.
+ */
+function callItem(state: ViewState, call: CallState, now: number, glyphs: Glyphs, view: ReportView): Row {
   const label = callLabel(state, call)
   if (call.waitingUntil !== undefined && call.waitingUntil > now && call.failure !== undefined) {
     return [
@@ -221,7 +225,13 @@ function callItem(state: ViewState, call: CallState, now: number, glyphs: Glyphs
       { text: ` ${label} ${kindWords(call.failure)}, ${Math.ceil((call.waitingUntil - now) / 1000)}s` },
     ]
   }
-  return words(`${label} ${elapsedWords(now - call.startedAt)}`)
+  const elapsed = elapsedWords(now - call.startedAt)
+  if (!call.stream) return words(`${label} ${elapsed}`)
+  const spin = glyphs.spinner[call.turns % glyphs.spinner.length]
+  if (call.outputTokens > 0 && view !== 'public') return words(`${spin} ${label} ${elapsed} ~${tokenWords(call.outputTokens)}`)
+  return words(call.outputTokens === 0 && call.keepAlive
+    ? `${spin} ${label} ${elapsed} keep-alives only`
+    : `${spin} ${label} ${elapsed}`)
 }
 
 /** The research parts not yet started, and the votes not yet started of the panels that began. */
@@ -280,7 +290,7 @@ function callRows(state: ViewState, now: number, options: FrameOptions, maxRows:
     ...state.calls.values(),
   ]
     .sort((a, b) => a.startedAt - b.startedAt)
-    .map(call => callItem(state, call, now, options.glyphs))
+    .map(call => callItem(state, call, now, options.glyphs, options.view))
   const header = `calls     ${state.facts.concurrency} at once`
   const left = toGo(state)
   const tailOf = (held: number): Row[] => [
@@ -314,11 +324,16 @@ function callRows(state: ViewState, now: number, options: FrameOptions, maxRows:
   ]
 }
 
+/** The window the rate reads, and the least time it is told over, so the first seconds of a review do not read high. */
+const RATE_WINDOW_MS = 60_000
+const RATE_COVERED_MS = 10_000
+
 /**
- * The output tokens of the buckets, as the sparkline's cells and the rate of the last two, as of `now`. The two
- * cover one whole bucket and the part of the current one that has passed, or the time since the review began when
- * that is shorter, so the rate divides by those seconds; none while no time is covered, and none while the two hold no
- * tokens, since calls of minutes end rarely and a rate of 0 would be said most of the time.
+ * The output tokens of the buckets, as the sparkline's cells and the rate over the last minute, as of `now`. The window is
+ * the current cell and the one before it whole, and the oldest cell for the share of it still inside the minute, so the rate
+ * has no step as a cell rolls over; it divides by the time the window covers, that of the review when that is shorter and at
+ * least 10 s, so the first seconds do not read high. None while the window holds no tokens, since calls of minutes end
+ * rarely and a rate of 0 would be said most of the time.
  */
 function sparkline(state: ViewState, now: number, glyphs: Glyphs): { readonly spark: string, readonly rate?: number } {
   const { start, tokens } = state.buckets
@@ -331,12 +346,14 @@ function sparkline(state: ViewState, now: number, glyphs: Glyphs): { readonly sp
       ? glyphs.spark[0]
       : glyphs.spark[Math.min(top, Math.max(1, Math.ceil(cell / peak * top)))])
     .join('')
-  const coveredMs = now - (start + Math.max(0, last - 1) * BUCKET_MS)
-  const recent = cells[BUCKETS - 1] + cells[BUCKETS - 2]
-  return coveredMs > 0 && recent > 0
+  // the oldest cell's share still inside the window is what the current cell has left to run
+  const share = 1 - Math.max(0, Math.min(1, (now - (start + last * BUCKET_MS)) / BUCKET_MS))
+  const inWindow = cells[BUCKETS - 1] + cells[BUCKETS - 2] + cells[BUCKETS - 3] * share
+  const coveredMs = Math.max(RATE_COVERED_MS, Math.min(RATE_WINDOW_MS, now - (state.startedAt ?? now)))
+  return inWindow > 0
     ? {
         spark,
-        rate: Math.round(recent / (coveredMs / 1000)),
+        rate: Math.round(inWindow / (coveredMs / 1000)),
       }
     : { spark }
 }

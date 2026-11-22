@@ -91,7 +91,7 @@ describe('frameLines', () => {
       'security  research █████░░░░░░░░░░░░░░░  11/44 parts · 2 finding(s) listed',
       'calls     4 at once   ↻ p7 http 503, 2s   p12 2m50s   p14 2m05s   p15 40s',
       '          +29 to go',
-      'tokens    405k of 2.00M   ▁▁▁▁█▄▁▁▁▃▆▄▄▃▆▁▁▄▁▁',
+      'tokens    405k of 2.00M   ▁▁▁▁█▄▁▁▁▃▆▄▄▃▆▁▁▄▁▁  65 tok/s',
       'time      about 15–22m left for research, then up to 150 votes',
       'Ctrl-C stops the review and keeps what it read',
     ])
@@ -211,7 +211,7 @@ describe('frameLines', () => {
     expect(wide.find(line => line.startsWith('tokens'))).toMatch(spark)
     expect(cells(narrow[1])).toBe(10)
     expect(narrow.find(line => line.startsWith('tokens'))).not.toMatch(spark)
-    expect(narrow.find(line => line.startsWith('tokens'))).toBe('tokens    405k of 2.00M')
+    expect(narrow.find(line => line.startsWith('tokens'))).toBe('tokens    405k of 2.00M   65 tok/s')
     expect(frameOf(events, 600_000, { columns: 40 })).toHaveLength(7)
     expect(frameOf(events, 600_000, { columns: 39 })).toEqual(['research 11/44 · 4 calls · 10m00s'])
     expect(frameOf(events, 1_900_000, { columns: 39 })).toEqual(['panel 1/18 · 4 calls · 31m40s'])
@@ -342,15 +342,16 @@ describe('frameLines', () => {
     expect(over.join(' ')).toContain(`+${44 - sentBy(retry.at + 3700)} to go`)
   })
 
-  it('shows no tok/s while the last two buckets hold no tokens, and keeps the sparkline', () => {
+  it('shows no tok/s while the last minute holds no tokens, and keeps the sparkline', () => {
     const events = longReview()
     const tokens = (at: number): string => frameOf(events, at).find(line => line.startsWith('tokens'))!
-    // No call ended in the minute before 10m00s, so the rate would be 0 and is left out; one ended before 10m50s.
-    expect(tokens(600_000)).toBe('tokens    405k of 2.00M   ▁▁▁▁█▄▁▁▁▃▆▄▄▃▆▁▁▄▁▁')
-    expect(tokens(650_000)).toBe('tokens    435k of 2.00M   ▁▁▁█▄▁▁▁▃▆▄▄▃▆▁▁▄▁▄▁  84 tok/s')
-    // Before the first call ended there is no rate either, and below 80 columns the line is the tokens alone.
+    // No call ended in the minute before 9m10s, so the rate would be 0 and is left out; one ended at 9m20s, and the rate is told.
+    expect(tokens(550_000)).toBe('tokens    373k of 2.00M   ▁▁▁▁▁▁█▄▁▁▁▃▆▄▄▃▆▁▁▁')
+    expect(tokens(560_000)).toBe('tokens    405k of 2.00M   ▁▁▁▁▁▁█▄▁▁▁▃▆▄▄▃▆▁▁▄  65 tok/s')
+    expect(tokens(650_000)).toBe('tokens    435k of 2.00M   ▁▁▁█▄▁▁▁▃▆▄▄▃▆▁▁▄▁▄▁  70 tok/s')
+    // Before the first call ended there is no rate either, and below 80 columns the line is the tokens and the rate, with no sparkline.
     expect(tokens(100_000)).toBe('tokens    0 of 2.00M   ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁')
-    expect(frameOf(events, 600_000, { columns: 79 }).find(line => line.startsWith('tokens'))).toBe('tokens    405k of 2.00M')
+    expect(frameOf(events, 600_000, { columns: 79 }).find(line => line.startsWith('tokens'))).toBe('tokens    405k of 2.00M   65 tok/s')
   })
 
   it('leaves out the tokens line and every token count under the public view', () => {
@@ -484,7 +485,7 @@ describe('frameLines', () => {
       'security  research #####---------------  11/44 parts - 2 finding(s) listed',
       'calls     4 at once   ~ p7 http 503, 2s   p12 2m50s   p14 2m05s   p15 40s',
       '          +29 to go',
-      'tokens    405k of 2.00M   ____#=___-+==-*__=__',
+      'tokens    405k of 2.00M   ____#=___-+==-*__=__  65 tok/s',
       'time      about 15-22m left for research, then up to 150 votes',
       'Ctrl-C stops the review and keeps what it read',
     ])
@@ -534,50 +535,163 @@ describe('frameLines', () => {
     expect(frameOf(events, stopping.at, { columns: 39 })).toHaveLength(1)
   })
 
-  it('tells the rate over the seconds the last two buckets cover, not over a fixed minute', () => {
-    // one call ends at 40 s, in the bucket of 30 to 60 s, having written 3000 tokens
-    const state = stateOf([
-      ...started(['security'], 4),
+  /** A started review of one profile with call 1 streaming from 0, which folded `events` after. */
+  const streaming = (...events: Array<[number, QuorumEvent]>): ViewState => stateOf([
+    ...started(['security'], 4),
+    [
+      0,
+      {
+        type: 'call:start',
+        call: 1,
+        profile: 'security',
+        role: 'research',
+        provider: API,
+        part: { index: 1, count: 4 },
+        reserved: 6000,
+        timeoutMs: 600_000,
+        stream: true,
+      },
+    ],
+    ...events,
+  ])
+  const progress = (at: number, outputTokens: number, signal: 'tokens' | 'keep-alive' = 'tokens'): [number, QuorumEvent] => [
+    at,
+    {
+      type: 'call:progress',
+      call: 1,
+      outputTokens,
+      signal,
+    },
+  ]
+  const frameFor = (state: ViewState, at: number, overrides: Partial<FrameOptions> = {}): string[] => frameLines(state, at, {
+    columns: 80,
+    rows: 24,
+    glyphs: UNICODE_GLYPHS,
+    color: false,
+    view: 'full',
+    timeLeft: { kind: 'none' },
+    ...overrides,
+  })
+
+  it.each<[string, { stream?: boolean, tokens?: number, keepAlive?: boolean, turns?: number, now: number }, Partial<FrameOptions>, string]>([
+    [
+      'streamed with tokens',
+      { tokens: 6100, turns: 12, now: 41_000 },
+      {},
+      '⠹ p20 41s ~6.10k',
+    ],
+    [
+      'with keep-alives only',
+      { keepAlive: true, now: 130_000 },
+      {},
+      '⠋ p20 2m10s keep-alives only',
+    ],
+    [
+      'streamed before any progress',
+      { now: 3000 },
+      {},
+      '⠋ p20 3s',
+    ],
+    [
+      'not streamed',
+      { stream: false, now: 4000 },
+      {},
+      'p20 4s',
+    ],
+    [
+      'in ASCII',
+      { tokens: 6100, turns: 12, now: 41_000 },
+      { glyphs: ASCII_GLYPHS },
+      '| p20 41s ~6.10k',
+    ],
+    [
+      'under the public view',
+      { tokens: 6100, turns: 12, now: 41_000 },
+      { view: 'public' },
+      '⠹ p20 41s',
+    ],
+  ])('draws a call in flight %s', (_name, { stream = true, tokens, keepAlive, turns = 0, now }, overrides, item) => {
+    const events: Array<[number, QuorumEvent]> = [
+      ...started(['security'], 30),
       [
-        40_000,
+        0,
         {
-          type: 'call',
+          type: 'call:start',
           call: 1,
           profile: 'security',
           role: 'research',
           provider: API,
-          part: { index: 1, count: 4 },
-          durationMs: 30_000,
-          ok: true,
-          usage: { inputTokens: 1000, outputTokens: 3000 },
-          spent: 4000,
-          listed: 0,
+          part: { index: 20, count: 30 },
+          reserved: 6000,
+          timeoutMs: 600_000,
+          ...stream
+            ? { stream: true as const }
+            : {},
         },
       ],
-    ])
-    const rate = (at: number, columns = 80): string | undefined => frameLines(state, at, {
-      columns,
-      rows: 24,
-      glyphs: UNICODE_GLYPHS,
-      color: false,
-      view: 'full',
-      timeLeft: { kind: 'none' },
-    }).find(line => line.startsWith('tokens'))?.match(/(\d+) tok\/s$/)?.[1]
-    // late in the next bucket (60 to 90 s), the buckets cover 30 to 85 s: 55 s, and 3000 / 55 is 55
-    expect(rate(85_000)).toBe('55')
-    // just into it they cover 30 to 61 s, and 3000 / 31 is 97
-    expect(rate(61_000)).toBe('97')
-    // before the review is a bucket old they cover the time since it began: 3000 over 45 s is 67
-    expect(rate(45_000)).toBe('67')
+    ]
+    for (let turn = 1; turn <= turns; turn++) {
+      events.push([
+        turn * 1000,
+        {
+          type: 'call:progress',
+          call: 1,
+          outputTokens: Math.round((tokens ?? 0) * turn / turns),
+          signal: 'tokens',
+        },
+      ])
+    }
+    if (keepAlive === true) {
+      events.push([
+        1000,
+        {
+          type: 'call:progress',
+          call: 1,
+          outputTokens: 0,
+          signal: 'keep-alive',
+        },
+      ])
+    }
+    const calls = frameFor(stateOf(events), now, overrides).find(line => line.startsWith('calls'))!
+    expect(calls).toBe(`calls     4 at once   ${item}   +29 to go`)
+  })
+
+  it('turns a call\'s spinner only when its output grows', () => {
+    const spinner = (state: ViewState): string => frameFor(state, 20_000).find(line => line.startsWith('calls'))!.match(/at once {3}(\S) p1 /)![1]
+    const first = streaming()
+    const grown = fold(first, progress(1000, 100)[1], 1000)
+    const quiet = fold(grown, progress(2000, 100, 'keep-alive')[1], 2000)
+    const again = fold(quiet, progress(3000, 200)[1], 3000)
+    expect([first, grown, quiet, again].map(spinner)).toEqual(UNICODE_GLYPHS.spinner.slice(0, 2).concat(UNICODE_GLYPHS.spinner[1], UNICODE_GLYPHS.spinner[2]))
+    // the time that passes turns nothing
+    expect(frameFor(again, 21_000)[2]).toContain(`${UNICODE_GLYPHS.spinner[2]} p1 21s`)
+    // the spinner has one turn for each of its glyphs
+    const full = Array.from({ length: UNICODE_GLYPHS.spinner.length }, (_, turn) => progress(1000 * (turn + 1), 100 * (turn + 1)))
+    expect(spinner(streaming(...full))).toBe(UNICODE_GLYPHS.spinner[0])
+  })
+
+  it('reads the rate over a sliding minute, with no step at a bucket\'s rollover and no high reading in the first seconds', () => {
+    // 6000 tokens at 40 s, in the cell of 30 to 60 s
+    const burst = streaming(progress(40_000, 6000))
+    const rate = (state: ViewState, at: number, columns = 80): string | undefined => frameFor(state, at, { columns }).find(line => line.startsWith('tokens'))?.match(/(\d+) tok\/s$/)?.[1]
+    // before the review is a minute old the window covers the time since it began: 6000 over 45 s is 133
+    expect(rate(burst, 45_000)).toBe('133')
+    // across the rollover at 60 s there is no step: the window holds the burst whole, over the minute it covers
+    expect(rate(burst, 59_999)).toBe('100')
+    expect(rate(burst, 60_000)).toBe('100')
+    expect(rate(burst, 60_001)).toBe('100')
+    // the oldest cell counts for the share of it still inside the window, and goes as the window passes it
+    expect(rate(burst, 90_000)).toBe('100')
+    expect(rate(burst, 100_000)).toBe('67')
+    expect(rate(burst, 119_000)).toBe('3')
+    expect(rate(burst, 120_000)).toBeUndefined()
+    // the first seconds are read over at least 10 s: 500 tokens at 2 s is 50, not 250
+    const early = streaming(progress(2000, 500))
+    expect(rate(early, 2000)).toBe('50')
+    expect(rate(early, 10_000)).toBe('50')
+    expect(rate(early, 20_000)).toBe('25')
     // nothing is covered at the start, and no rate is told
-    expect(frameLines(stateOf(started(['security'], 4)), 0, {
-      columns: 80,
-      rows: 24,
-      glyphs: UNICODE_GLYPHS,
-      color: false,
-      view: 'full',
-      timeLeft: { kind: 'none' },
-    }).find(line => line.startsWith('tokens'))).toBe(`tokens    0 of 2.00M   ${UNICODE_GLYPHS.spark[0].repeat(20)}`)
+    expect(frameFor(stateOf(started(['security'], 4)), 0).find(line => line.startsWith('tokens'))).toBe(`tokens    0 of 2.00M   ${UNICODE_GLYPHS.spark[0].repeat(20)}`)
   })
 
   it.each<[number, string]>([

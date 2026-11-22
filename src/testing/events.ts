@@ -468,6 +468,84 @@ export function longReview(): Timed[] {
   return ordered(entries)
 }
 
+/** How often a streamed call of `streamedReview()` reports, in milliseconds: well above the core's own spacing of one second. */
+const PROGRESS_EVERY_MS = 10_000
+
+/**
+ * `longReview()` as a provider that streams would have lived it: every call starts streamed and reports its output so
+ * far every 10 s, growing to the call's own usage (a failed attempt's, to 2000 tokens), a retried call starting its
+ * second attempt again from 0; every third report of a call is a keep-alive, and every answered call ends with its first
+ * token and longest silence, which vary with its number. The events of `longReview()` are otherwise the same, in the
+ * same order.
+ */
+export function streamedReview(): Timed[] {
+  const base = longReview()
+  const ends = new Map<number, Timed>()
+  const retries = new Map<number, Timed>()
+  for (const entry of base) {
+    const { event } = entry
+    if (event.type === 'call' && event.call !== undefined) ends.set(event.call, entry)
+    if (event.type === 'call:retry') retries.set(event.call, entry)
+  }
+  const progress: Timed[] = []
+  const reports = (call: number, from: number, to: number, tokens: number): void => {
+    let output = 0
+    for (let at = from + PROGRESS_EVERY_MS, nth = 1; at < to; at += PROGRESS_EVERY_MS, nth++) {
+      const grown = nth % 3 !== 0
+      if (grown) output = Math.min(tokens, Math.round(tokens * (at - from) / (to - from)))
+      progress.push({
+        at,
+        event: {
+          type: 'call:progress',
+          call,
+          outputTokens: output,
+          signal: grown
+            ? 'tokens'
+            : 'keep-alive',
+        },
+      })
+    }
+  }
+  const streamedEvents = base.map(({ at, event }): Timed => {
+    if (event.type === 'call:start') {
+      const end = ends.get(event.call)!
+      const retry = retries.get(event.call)
+      const tokens = end.event.type === 'call' && end.event.usage !== undefined
+        ? end.event.usage.outputTokens
+        : 2000
+      if (retry === undefined) {
+        reports(event.call, at, end.at, tokens)
+      } else {
+        reports(event.call, at, retry.at, 2000)
+        const retryEvent = retry.event
+        const wait = retryEvent.type === 'call:retry'
+          ? retryEvent.waitMs
+          : 0
+        reports(event.call, retry.at + wait, end.at, tokens)
+      }
+      return {
+        at,
+        event: { ...event, stream: true },
+      }
+    }
+    if (event.type === 'call' && event.ok && event.call !== undefined) {
+      return {
+        at,
+        event: {
+          ...event,
+          firstTokenMs: 1000 * (2 + event.call % 5),
+          longestSilenceMs: 3000 + 500 * (event.call % 7),
+        },
+      }
+    }
+    return { at, event }
+  })
+  return [
+    ...streamedEvents,
+    ...progress,
+  ].sort((a, b) => a.at - b.at)
+}
+
 /**
  * `longReview()` interrupted as its twentieth part ends: `run:stopping` with the calls then in flight and the grace's
  * 5000 ms, those calls cancelled at its end, each part they held `interrupted`, the research's gap for the 24 parts the

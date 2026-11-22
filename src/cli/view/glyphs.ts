@@ -4,7 +4,7 @@
  * an emoji presentation, so a terminal never draws one wider than `width.ts` counts it.
  */
 
-/** The marks of the view: the log lines' glyphs, the bars' cells, the sparkline's levels, the rule and the separators. */
+/** The marks of the view: the log lines' glyphs, the bars' cells, the sparkline's levels, the spinner, the rule and the separators. */
 export interface Glyphs {
   readonly answered: string
   readonly retry: string
@@ -16,6 +16,8 @@ export interface Glyphs {
   readonly todo: string
   /** The sparkline's levels, from the lowest, which is also the glyph of a bucket that holds nothing. */
   readonly spark: readonly string[]
+  /** A streamed call's spinner, one glyph for each turn, which a call makes only when its output grows. */
+  readonly spinner: readonly string[]
   readonly rule: string
   readonly ellipsis: string
   /** The dash of a range. */
@@ -32,6 +34,18 @@ export const UNICODE_GLYPHS: Glyphs = {
   done: '█',
   todo: '░',
   spark: ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'],
+  spinner: [
+    '⠋',
+    '⠙',
+    '⠹',
+    '⠸',
+    '⠼',
+    '⠴',
+    '⠦',
+    '⠧',
+    '⠇',
+    '⠏',
+  ],
   rule: '─',
   ellipsis: '…',
   range: '–',
@@ -46,6 +60,7 @@ export const ASCII_GLYPHS: Glyphs = {
   done: '#',
   todo: '-',
   spark: ['_', '.', '-', '=', '+', '*', '#'],
+  spinner: ['|', '/', '-', '\\'],
   rule: '-',
   ellipsis: '...',
   range: '-',
