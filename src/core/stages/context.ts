@@ -604,9 +604,10 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           spent += tokens
         }
         try {
+          // A report the spacing held back goes with its attempt, before its lane's end.
           const reply = await attempt(ctx, target, asked, watch === undefined
             ? undefined
-            : { watch, progressed: reports.progressed }, inLane)
+            : { watch, progressed: reports.progressed }, inLane).finally(reports.ended)
           const endedAt = ctx.clock.now()
           // The lane reads a reply's headers even when the core refuses the reply, so they are read first.
           const headers = rateLimitFacts(ownData(reply, 'rateLimit'))
