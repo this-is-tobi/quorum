@@ -20,6 +20,7 @@ import { atProblem, pathProblem } from '../sources/paths.ts'
 import { parseRange } from '../sources/range.ts'
 import { readSource } from '../sources/read.ts'
 import type { SourceSpec } from '../sources/read.ts'
+import { defaultStateDirectory } from '../state/default.ts'
 import { openFileStore } from '../state/store.ts'
 import type { FileStore } from '../state/store.ts'
 import { runBench } from './bench.ts'
@@ -32,6 +33,7 @@ import { printConfig } from './print-config.ts'
 import { bannerLines, boundWarnings, estimateLines, viewFacts } from './render.ts'
 import type { Bounds } from './render.ts'
 import { runReport } from './report.ts'
+import { rerunCouldFill } from './view/summary.ts'
 import { progressMode, viewWriter } from './view/progress.ts'
 import type { CapOrigin } from './view/model.ts'
 import type { ProgressMode } from './view/progress.ts'
@@ -69,7 +71,8 @@ const USAGE = [
   '      --color <when>       Color the text report and the live view: auto, on a terminal unless NO_COLOR is set; always; or never',
   '      --progress <mode>    Show progress on stderr: auto, live on a terminal and plain lines elsewhere; live; plain; json; or none',
   '      --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage',
-  '      --state <dir>        Save every answered call in this directory, and reuse the calls it holds',
+  '      --state <dir>        Save every answered call in this directory, and reuse the calls it holds; a path review on a terminal keeps them in the user\'s cache by default',
+  '      --no-state           Keep no answered call, not even in a path review\'s default directory',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
   '  -v, --version            Print the version and exit',
@@ -96,6 +99,7 @@ const OPTIONS = {
   progress: { type: 'string', multiple: true },
   view: { type: 'string', multiple: true },
   state: { type: 'string', multiple: true },
+  'no-state': { type: 'boolean' },
   'print-config': { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
   version: { type: 'boolean', short: 'v' },
@@ -137,7 +141,7 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  *
  * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`, `--path`,
  * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--fail-on`, `--format`, `--output`,
- * `--color`, `--progress`, `--view`, `--state`, `--print-config`, `--help` and `--version`; a usage error prints the usage after its message. Its
+ * `--color`, `--progress`, `--view`, `--state`, `--no-state`, `--print-config`, `--help` and `--version`; a usage error prints the usage after its message. Its
  * settings are the config file `--config` or `QUORUM_CONFIG`
  * names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the `QUORUM_*`
  * variables of `io.env` with their deprecated aliases. Each warning is printed once, before the banner, and
@@ -191,6 +195,15 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * twice or with `--print-config`, and a directory the store refuses (a link, one another user owns or others can
  * write, one inside a git work tree, one that is not a state directory quorum made) exits 2 before any call, naming
  * the flag and never the path. Its warnings are inert `--state:` lines, and a write that fails never fails the review.
+ *
+ * A path review on a terminal (stderr a terminal and `CI` unset or empty, whatever `--progress` says) with neither `--state` nor
+ * `--no-state` keeps its answered calls all the same, in a directory of its own in the user's cache keyed by its repository (see
+ * `defaultStateDirectory`), whose missing parents are made, under the checks `--state` has. A rerun of the same command reuses them.
+ * A directory those checks refuse skips the default with one warning, and an environment that names no absolute cache skips it
+ * with none; the review goes on with no store, as a review with no state does. The directory is removed once the review, its `--output` files written, completes
+ * with nothing left for a rerun to fill (`rerunCouldFill`); a gap or an unreviewed finding that a rerun could fill keeps it, and the
+ * summary says so. A diff, a range, the local changes, CI and `--no-state` keep none, and `--no-state` is a usage error beside
+ * `--state` or `--print-config`.
  *
  * `--progress <mode>` (or `QUORUM_PROGRESS`, which the flag wins over) chooses how stderr shows the review: `auto`, the
  * default, is `live` when stderr is a terminal, `CI` is unset or empty and `TERM` is not `dumb`, else `plain`; `live`
@@ -249,6 +262,7 @@ export async function runCli(io: CliIO): Promise<number> {
   let plan: ReportPlan
   let mode: ProgressMode
   let state: string | undefined
+  let noState: boolean
   try {
     if (values.config === '') {
       throw new ConfigError([
@@ -266,6 +280,7 @@ export async function runCli(io: CliIO): Promise<number> {
       view: plan.view,
     })
     state = stateDirectory(values)
+    noState = values['no-state'] === true
     spec = await sourceSpec(io, values, positionals)
   } catch (error) {
     return usageError(io, error)
@@ -322,9 +337,8 @@ export async function runCli(io: CliIO): Promise<number> {
       io.stdout.write(printConfig(config, source, quorum.budgets))
       return EXIT.ok
     }
-    const store = state === undefined
-      ? undefined
-      : await openStore(io, view, resolve(io.cwd, state), config.providers)
+    const kept = await keptState(io, view, config.providers, { flag: state, off: noState, repository: read.repository })
+    const store = kept?.store
     writeWarnings(view, quorum.warnings)
     for (const line of bannerLines(config, plan.view)) view.line('banner', line)
     const bounded = spec?.kind === 'paths'
@@ -339,7 +353,13 @@ export async function runCli(io: CliIO): Promise<number> {
       return EXIT.interrupted
     }
     // From here the first signal is the review's interrupt, which resolves it with what it read, never its abort.
-    const result = await quorum.review({ ...read, send }, { interrupt: io.signal, store, ...bounded?.limits })
+    // The review's input is the diff and what it came from, never `read.repository`, which is a path.
+    const result = await quorum.review({
+      diff: read.diff,
+      source: read.source,
+      leftOut: read.leftOut,
+      send,
+    }, { interrupt: io.signal, store, ...bounded?.limits })
     reviewed = true
     const { reused } = result.meta
     if (reused !== undefined && reused.research + reused.votes > 0) view.line('notice', `reused from --state: ${reused.research} research call(s), ${reused.votes} vote(s)`)
@@ -350,16 +370,18 @@ export async function runCli(io: CliIO): Promise<number> {
       : result
     io.stdout.write(renderReport(input, { format: plan.format, color: plan.color, outcome: done }))
     await writeOutputs(plan.outputs, input, done)
+    // A default directory a rerun has nothing to fill is removed: it is the user's cache, and keeps nothing it need not.
+    if (kept?.kind === 'default' && !rerunCouldFill(result)) await kept.store.discard()
     view.summary({
       stdout: { format: plan.format, terminal: io.stdout.isTTY === true },
       stderr: { terminal: io.stderr.isTTY === true },
       outputs: plan.outputs.map(output => output.format),
       result,
-      state: store === undefined
+      state: kept === undefined
         ? { kind: 'none', kept: 0 }
         : {
-            kind: 'flag',
-            kept: store.kept(),
+            kind: kept.kind,
+            kept: kept.store.kept(),
           },
     })
     return done.exitCode
@@ -431,14 +453,18 @@ function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: st
 /**
  * The directory `--state` names, or undefined without the flag. It is checked with the other flags, before the source and
  * any config, and no message holds the value given: a second `--state`, an empty one, and one beside `--print-config`,
- * which reads no diff and calls no model, are usage errors.
+ * which reads no diff and calls no model, are usage errors, and so are `--no-state` beside `--state` or `--print-config`.
  */
 function stateDirectory(values: Flags['values']): string | undefined {
   const given = values.state
-  if (given === undefined) return undefined
   const refuse = (path: string, message: string): ConfigError => new ConfigError([
     { path, message },
   ])
+  if (values['no-state'] === true) {
+    if (given !== undefined) throw refuse('--no-state', 'cannot be given with --state')
+    if (values['print-config']) throw refuse('--print-config', 'reads no diff and calls no model, so it takes no --no-state')
+  }
+  if (given === undefined) return undefined
   if (given.length > 1) throw refuse('--state', 'takes one directory')
   if (given[0] === '') throw refuse('--state', 'must name a directory')
   if (values['print-config']) throw refuse('--print-config', 'reads no diff and calls no model, so it takes no --state')
@@ -446,10 +472,11 @@ function stateDirectory(values: Flags['values']): string | undefined {
 }
 
 /**
- * The file store `--state` opens, in `directory`: its providers' identities are the config's, so a changed provider is a miss,
- * and its warnings are inert `--state:` lines on stderr. A directory it refuses is a `ConfigError` at `--state`, exit 2.
+ * The file store in `directory`: its providers' identities are the config's, so a changed provider is a miss, and its warnings
+ * are inert `--state:` lines on stderr. A directory it refuses is a `ConfigError` at `--state`, exit 2, and `parents` makes the
+ * directory's missing parents, which only the default directory needs.
  */
-function openStore(io: CliIO, view: ViewWriter, directory: string, providers: ResolvedConfig['providers']): Promise<FileStore> {
+function openStore(io: CliIO, view: ViewWriter, directory: string, providers: ResolvedConfig['providers'], parents?: true): Promise<FileStore> {
   return openFileStore(directory, {
     identities: new Map(Object.entries(providers).map(([id, provider]) => [
       id,
@@ -458,8 +485,53 @@ function openStore(io: CliIO, view: ViewWriter, directory: string, providers: Re
     version: VERSION,
     owner: process.getuid?.(),
     platform: io.platform ?? process.platform,
+    parents,
     warn: line => view.line('warning', line),
   })
+}
+
+/** The state a review keeps its answered calls in, and whether `--state` named it or the CLI chose it. */
+interface KeptState {
+  readonly kind: 'flag' | 'default'
+  readonly store: FileStore
+}
+
+/** Whether stderr is a terminal and `CI` is unset or blank, as the live view reads them: where a person reruns a long review by hand. */
+function onTerminal(io: CliIO): boolean {
+  return io.stderr.isTTY === true && (io.env.CI?.trim() ?? '') === ''
+}
+
+/**
+ * The store of this review, or undefined for none. `--state` names a directory, which a refusal makes a usage error. Without it,
+ * and without `--no-state`, a path review (`repository` is set) on a terminal keeps its calls in its default directory in the
+ * user's cache: one that the store refuses, or that the environment names none of, is skipped with a warning that names no path,
+ * and the review goes on with no store, never failing for a cache.
+ */
+async function keptState(io: CliIO, view: ViewWriter, providers: ResolvedConfig['providers'], given: { readonly flag: string | undefined, readonly off: boolean, readonly repository: string | undefined }): Promise<KeptState | undefined> {
+  if (given.flag !== undefined) {
+    return {
+      kind: 'flag',
+      store: await openStore(io, view, resolve(io.cwd, given.flag), providers),
+    }
+  }
+  if (given.off || given.repository === undefined || !onTerminal(io)) return undefined
+  const directory = defaultStateDirectory({
+    env: io.env,
+    platform: io.platform ?? process.platform,
+    repository: given.repository,
+  })
+  if (directory === undefined) return undefined
+  try {
+    return {
+      kind: 'default',
+      store: await openStore(io, view, directory, providers, true),
+    }
+  } catch (error) {
+    if (!(error instanceof ConfigError)) throw error
+    const why = error.issues.map(({ message }) => message).join('; ')
+    view.line('warning', `warning: the default state directory ${why}: the review keeps no answered call; pass --state <dir> to keep them elsewhere`)
+    return undefined
+  }
 }
 
 /** Write each warning as an inert `warning:` line. */

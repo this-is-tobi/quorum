@@ -239,5 +239,6 @@ export async function pathsSource(paths: readonly string[], at: string | undefin
       objectFormat: repository.objectFormat,
     },
     leftOut,
+    repository: repository.top,
   }
 }

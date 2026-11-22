@@ -190,7 +190,8 @@ Options:
       --color <when>       Color the text report and the live view: auto, on a terminal unless NO_COLOR is set; always; or never
       --progress <mode>    Show progress on stderr: auto, live on a terminal and plain lines elsewhere; live; plain; json; or none
       --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage
-      --state <dir>        Save every answered call in this directory, and reuse the calls it holds
+      --state <dir>        Save every answered call in this directory, and reuse the calls it holds; a path review on a terminal keeps them in the user's cache by default
+      --no-state           Keep no answered call, not even in a path review's default directory
       --print-config       Print the resolved config, keys redacted, and exit
   -h, --help               Print this help and exit
   -v, --version            Print the version and exit

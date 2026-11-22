@@ -226,6 +226,18 @@ describe('the path source', () => {
     ].join('\n'))
   })
 
+  it('names the repository\'s top level in its read, and nowhere in the source it records', async () => {
+    const { context } = setup(TREE, {
+      base: { top: '/work/the-repository' },
+    })
+    const read = await pathsSource(['.'], undefined, true, context)
+
+    expect(read.repository).toBe('/work/the-repository')
+    expect(JSON.stringify(read.source)).not.toContain('the-repository')
+    expect(JSON.stringify(read.leftOut)).not.toContain('the-repository')
+    expect(read.diff).not.toContain('the-repository')
+  })
+
   it('lists each skipped file with its rule and each excluded one, in git\'s order, without reading them', async () => {
     const { fake, context, id } = setup(TREE, {
       exclude: ['a.ts'],

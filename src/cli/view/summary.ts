@@ -195,12 +195,20 @@ export function rerunCouldFill(result: Pick<QuorumResult, 'unreviewed' | 'meta'>
   return result.unreviewed.length > 0 || result.meta.incomplete.some(entry => RERUN_REASONS.has(entry.reason))
 }
 
-/** The resume line: with `--state`, how a rerun reuses the calls this review kept, naming the flag and the count, which may be 0, and never the directory; without it, how to keep them. */
+/**
+ * The resume line: with `--state`, how a rerun reuses the calls this review kept, naming the flag and the count, which may be 0;
+ * with the default directory, that the same command does, naming no flag; without a directory, how to keep them. It never names the directory.
+ */
 function resumeLine({ state, result }: SummaryFacts): string | undefined {
   if (!rerunCouldFill(result)) return undefined
-  return state.kind === 'flag'
-    ? `resume: rerun with the same --state: its ${state.kept} answered call(s) are reused`
-    : 'resume: to keep the answered calls for a rerun, pass --state <dir>; this review kept none'
+  switch (state.kind) {
+    case 'flag':
+      return `resume: rerun with the same --state: its ${state.kept} answered call(s) are reused`
+    case 'default':
+      return `resume: rerun the same command: its ${state.kept} answered call(s) are reused`
+    case 'none':
+      return 'resume: to keep the answered calls for a rerun, pass --state <dir>; this review kept none'
+  }
 }
 
 function resultLine(facts: SummaryFacts, view: ReportView): string {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -118,7 +118,8 @@ const USAGE = [
   '      --color <when>       Color the text report and the live view: auto, on a terminal unless NO_COLOR is set; always; or never',
   '      --progress <mode>    Show progress on stderr: auto, live on a terminal and plain lines elsewhere; live; plain; json; or none',
   '      --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage',
-  '      --state <dir>        Save every answered call in this directory, and reuse the calls it holds',
+  '      --state <dir>        Save every answered call in this directory, and reuse the calls it holds; a path review on a terminal keeps them in the user\'s cache by default',
+  '      --no-state           Keep no answered call, not even in a path review\'s default directory',
   '      --print-config       Print the resolved config, keys redacted, and exit',
   '  -h, --help               Print this help and exit',
   '  -v, --version            Print the version and exit',
@@ -3481,6 +3482,164 @@ describe('the sources', () => {
     }
   })
 
+  describe('the default state directory', () => {
+    /** The key of the repository `pathGit` makes: the first 12 hex characters of the SHA-256 of its top level, `/repo`. */
+    const KEY = createHash('sha256').update('/repo').digest('hex').slice(0, 12)
+    const TREE: Readonly<Record<string, string>> = { 'src/a.js': 'exec(cmd)\n' }
+    const CODE_FINDING = { ...FINDING, file: 'src/a.js' }
+    let home = ''
+    beforeEach(() => {
+      home = realpathSync(mkdtempSync(join(dir, 'home-')))
+    })
+    /** The place of the default directory under `home`, on Linux. */
+    const place = (): string => join(home, '.cache', 'quorum', 'state', KEY)
+    /** A path review on a fake terminal, plain so that no timer runs, in the environment of `home`. */
+    const review = (options: { readonly argv?: readonly string[], readonly env?: Record<string, string>, readonly signal?: AbortSignal, readonly terminal?: boolean } = {}): ReturnType<typeof harness> => harness({
+      argv: [
+        '--path',
+        'src',
+        '--progress',
+        'plain',
+        ...options.argv ?? [],
+      ],
+      env: {
+        ...MODEL,
+        HOME: home,
+        ...options.env,
+      },
+      git: pathGit(TREE).seam,
+      platform: 'linux',
+      signal: options.signal,
+      terminal: options.terminal === false
+        ? undefined
+        : fakeTerminal({ columns: 80, rows: 24 }),
+    })
+    /** A fetch whose first call, the research reply, waits for `release`, and whose later calls keep the finding. */
+    function heldReply(): { readonly fetchMock: ReturnType<typeof vi.fn>, readonly release: (content: string) => void } {
+      let release: (content: string) => void = () => {}
+      const fetchMock = vi.fn().mockImplementationOnce(() => new Promise<Response>((resolve) => {
+        release = content => resolve(chatReply(content))
+      })).mockImplementation(async () => chatReply(vote(true)))
+      vi.stubGlobal('fetch', fetchMock)
+      return {
+        fetchMock,
+        release: content => release(content),
+      }
+    }
+
+    it('keeps a path review\'s answered calls in the default directory on a terminal, and reuses them on a rerun of the same command', async () => {
+      const { fetchMock, release } = heldReply()
+      const controller = new AbortController()
+      const first = review({ signal: controller.signal })
+      const exit = runCli(first.io)
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+      controller.abort()
+      release(JSON.stringify({
+        findings: [CODE_FINDING],
+      }))
+      expect(await exit).toBe(EXIT.interrupted)
+      // The marker and the one reply that ended within the grace, in a directory made with its parents at mode 0700.
+      expect(readdirSync(place())).toHaveLength(2)
+      expect(statSync(place()).mode & 0o777).toBe(0o700)
+      expect(statSync(join(home, '.cache')).mode & 0o777).toBe(0o700)
+      expect(first.stderr().split('\n')).toContain('resume: rerun the same command: its 1 answered call(s) are reused')
+      expect(first.stderr()).not.toContain(home)
+      expect(first.stderr()).not.toContain('pass --state <dir>')
+      // The rerun asks for the votes alone: the research reply is read from the directory.
+      vi.unstubAllGlobals()
+      const second = stubChat(vote(true), vote(true), vote(true))
+      const rerun = review()
+      expect(await runCli(rerun.io)).toBe(EXIT.finding)
+      expect(second).toHaveBeenCalledTimes(3)
+      for (const call of second.mock.calls) expect(String(call[1].body)).toContain('One vote in a 3-voter panel')
+      expect(rerun.stderr()).toContain('reused from --state: 1 research call(s), 0 vote(s)\n')
+      expect(rerun.stderr()).not.toContain(home)
+    })
+
+    it('removes the default directory once the review completes with nothing left for a rerun', async () => {
+      let during = false
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        during = existsSync(place())
+        return chatReply('{"findings":[]}')
+      }))
+      const { io, stderr } = review()
+      expect(await runCli(io)).toBe(EXIT.ok)
+      expect(during).toBe(true)
+      expect(existsSync(place())).toBe(false)
+      expect(stderr()).not.toContain('resume:')
+      expect(stderr()).not.toContain('could not be removed')
+    })
+
+    it('keeps no default directory in CI, with --no-state, or for a diff', async () => {
+      for (const start of [
+        () => review({
+          env: { CI: 'true' },
+        }),
+        () => review({
+          argv: ['--no-state'],
+        }),
+        () => review({ terminal: false }),
+        () => harness({
+          env: { ...MODEL, HOME: home },
+          stdin: DIFF,
+          platform: 'linux',
+          terminal: fakeTerminal({ columns: 80, rows: 24 }),
+        }),
+      ]) {
+        stubChat('{"findings":[]}')
+        const { io, stderr } = start()
+        expect(await runCli(io), stderr()).toBe(EXIT.ok)
+        expect(existsSync(join(home, '.cache'))).toBe(false)
+      }
+      expect(readdirSync(home)).toEqual([])
+    })
+
+    it('warns and reviews without it when the default directory is refused, a home kept in git', async () => {
+      mkdirSync(join(home, '.git'))
+      stubChat('{"findings":[]}')
+      const { io, stderr } = review()
+      expect(await runCli(io)).toBe(EXIT.ok)
+      expect(stderr()).toContain('warning: the default state directory lies inside a git work tree, which a change could write to: name a directory outside every repository: the review keeps no answered call; pass --state <dir> to keep them elsewhere\n')
+      expect(stderr()).not.toContain(home)
+      // Nothing was made inside the work tree.
+      expect(readdirSync(home)).toEqual(['.git'])
+      // The review's exit code is the one it has with no store.
+      stubChat('{"findings":[]}')
+      const without = review({
+        argv: ['--no-state'],
+      })
+      expect(await runCli(without.io)).toBe(EXIT.ok)
+    })
+
+    it('refuses --no-state with --state or --print-config', async () => {
+      for (const [argv, issue] of [
+        [
+          [
+            '--no-state',
+            '--state',
+            join(home, 'calls'),
+          ],
+          '--no-state: cannot be given with --state',
+        ],
+        [
+          ['--no-state', '--print-config'],
+          '--print-config: reads no diff and calls no model, so it takes no --no-state',
+        ],
+      ] as const) {
+        const fetchMock = stubChat()
+        const { io, stderr } = harness({
+          argv: [...argv],
+          env: MODEL,
+          stdin: DIFF,
+        })
+        expect(await runCli(io)).toBe(EXIT.usage)
+        expect(stderr()).toBe(`Error: ${issue}\n${USAGE}`)
+        expect(fetchMock).not.toHaveBeenCalled()
+        expect(existsSync(join(home, 'calls'))).toBe(false)
+      }
+    })
+  })
+
   it('prints the usage of the sources, every description at column 27', async () => {
     const { io, stdout, stderr } = harness({
       argv: ['--help'],
@@ -3500,7 +3659,7 @@ describe('the sources', () => {
       '       quorum mcp [options]',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
-    expect(options).toHaveLength(22)
+    expect(options).toHaveLength(23)
     for (const line of options) {
       expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line.slice(25, 27), line).toBe('  ')
