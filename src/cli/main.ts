@@ -283,6 +283,11 @@ export async function runCli(io: CliIO): Promise<number> {
     noState = values['no-state'] === true
     spec = await sourceSpec(io, values, positionals)
   } catch (error) {
+    // The first signal ends the read of a diff at once: it is no usage error, and no usage follows it.
+    if (io.signal?.aborted) {
+      io.stderr.write('interrupted\n')
+      return EXIT.interrupted
+    }
     return usageError(io, error)
   }
 
@@ -639,5 +644,5 @@ async function sourceSpec(io: CliIO, values: Flags['values'], positionals: reado
   }
   const [file, ...extra] = positionals
   if (extra.length > 0) throw refuse('', `takes one diff file, and ${extra.length} more argument(s) were given`)
-  return { kind: 'diff', text: await readDiffInput(io.cwd, file, io.stdin) }
+  return { kind: 'diff', text: await readDiffInput(io.cwd, file, io.stdin, io.signal) }
 }

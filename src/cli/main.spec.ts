@@ -2195,7 +2195,7 @@ describe('interrupts', () => {
     expect(await exit).toBe(EXIT.interrupted)
     // The one reply that ended within the grace was saved, and a rerun reuses it.
     expect(readdirSync(directory)).toHaveLength(2)
-    expect(stderr().split('\n')).toContain('resume: rerun with the same --state: its 1 answered call(s) are reused')
+    expect(stderr().split('\n')).toContain('resume: rerun with the same --state: its 1 answered call(s) are kept, and the rerun reuses each one whose request is unchanged')
     expect(stderr()).not.toContain(directory)
     expect(stderr()).not.toContain('pass --state <dir>')
   })
@@ -2274,6 +2274,34 @@ describe('interrupts', () => {
     expect(clock.pending()).toBe(0)
   })
 
+  it('ends a run whose stdin never closes at the first signal: interrupted, exit 130', async () => {
+    const fetchMock = stubChat()
+    const destroy = vi.fn()
+    async function* open(): AsyncGenerator<string> {
+      await new Promise<never>(() => {})
+    }
+    const controller = new AbortController()
+    // A config that cannot be read: a run that read it would end on its error, not on `interrupted`.
+    const { io, stdout, stderr } = harness({
+      env: {
+        ...MODEL,
+        QUORUM_CONFIG: join(dir, 'missing.yaml'),
+      },
+      signal: controller.signal,
+    })
+    const exit = runCli({
+      ...io,
+      stdin: Object.assign(open(), { isTTY: false, destroy }),
+    })
+    await Promise.resolve()
+    controller.abort()
+    expect(await exit).toBe(EXIT.interrupted)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe('interrupted\n')
+    expect(destroy).toHaveBeenCalledTimes(1)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('exits 130 when its signal aborted before the review started, and calls no model', async () => {
     const fetchMock = stubChat()
     const controller = new AbortController()
@@ -2281,7 +2309,7 @@ describe('interrupts', () => {
     const { io, stdout, stderr } = harness({ env: MODEL, stdin: DIFF, signal: controller.signal })
     expect(await runCli(io)).toBe(EXIT.interrupted)
     expect(stdout()).toBe('')
-    expect(stderr()).toMatch(/\ninterrupted\n$/)
+    expect(stderr()).toBe('interrupted\n')
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -3547,7 +3575,7 @@ describe('the sources', () => {
       expect(readdirSync(place())).toHaveLength(2)
       expect(statSync(place()).mode & 0o777).toBe(0o700)
       expect(statSync(join(home, '.cache')).mode & 0o777).toBe(0o700)
-      expect(first.stderr().split('\n')).toContain('resume: rerun the same command: its 1 answered call(s) are reused')
+      expect(first.stderr().split('\n')).toContain('resume: rerun the same command: its 1 answered call(s) are kept, and the rerun reuses each one whose request is unchanged')
       expect(first.stderr()).not.toContain(home)
       expect(first.stderr()).not.toContain('pass --state <dir>')
       // The rerun asks for the votes alone: the research reply is read from the directory.
