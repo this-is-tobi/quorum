@@ -23,6 +23,19 @@ export const STREAM_LIMITS = {
 /** The characters of an answer, which each assembler checks: the core's own cap on a reply's text. */
 export const MAX_ANSWER_CHARS = 1_000_000
 
+/** The characters of streamed text one token is taken to hold, when the server counts none. */
+export const CHARS_PER_TOKEN = 4
+
+/** The output tokens a `data` signal reports, a whole number: the larger of the server's own running count, floored, and a quarter of the characters streamed. */
+export function streamedTokens(counted: number, chars: number): number {
+  return Math.max(Math.floor(counted), Math.ceil(chars / CHARS_PER_TOKEN))
+}
+
+/** The failure of an answer that passed `MAX_ANSWER_CHARS`, which each assembler throws. */
+export function answerTooLong(providerId: string): ProviderError {
+  return new ProviderError({ providerId, kind: 'invalid-response', message: `the reply stream's answer is over ${MAX_ANSWER_CHARS} characters` })
+}
+
 /**
  * What a reader gives: an event with its name (`message` when a server-sent event names none, `line` for an NDJSON
  * line) and its data parsed as JSON, the protocol's sentinel as `done`, and a comment or a blank line as `keep-alive`.
@@ -211,4 +224,43 @@ export async function* ndjsonItems(body: ReadableStream<Uint8Array>, options: Re
       }
     }
   }
+}
+
+/** What an assembler may take as given of a stream's fields: an absent one is `undefined` or `null`, which is tolerated; any other type than the one the protocol writes is not. */
+const EXPECTED = { text: 'text', object: 'an object', list: 'a list' } as const
+
+/**
+ * The failure of a known event, chunk or line whose field has the wrong type, which an assembler throws: an
+ * `invalid-response` that is never retried, in code words, quoting nothing the server wrote. A field that is dropped
+ * could let a partial answer be read as a whole one, so it ends the read instead.
+ */
+export function malformedStream(providerId: string, field: string, expected: keyof typeof EXPECTED): ProviderError {
+  return invalid(providerId, `the reply stream's ${field} is not ${EXPECTED[expected]}`)
+}
+
+/** `value` as the text it is, `undefined` when it is absent (`undefined` or `null`), and the failure `malformedStream` names when it is any other type. */
+export function textField(providerId: string, value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') throw malformedStream(providerId, field, 'text')
+  return value
+}
+
+/** `value` as the object it is, `undefined` when it is absent, and the failure `malformedStream` names when it is any other type. */
+export function objectField(providerId: string, value: unknown, field: string): Record<string, unknown> | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'object' || Array.isArray(value)) throw malformedStream(providerId, field, 'object')
+  return value as Record<string, unknown>
+}
+
+/** `value` as the list it is, `undefined` when it is absent, and the failure `malformedStream` names when it is any other type. */
+export function listField(providerId: string, value: unknown, field: string): unknown[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value)) throw malformedStream(providerId, field, 'list')
+  return value
+}
+
+/** `value` as the object it must be, a whole event, chunk or line: any other type, `null` included, is the failure `malformedStream` names. */
+export function objectValue(providerId: string, value: unknown, field: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw malformedStream(providerId, field, 'object')
+  return value as Record<string, unknown>
 }

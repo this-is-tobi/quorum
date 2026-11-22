@@ -1,15 +1,17 @@
-import { issuePath } from '../core/errors.ts'
+import { issuePath, ProviderError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
-import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
-import { postJson, snippet } from './http.ts'
-import type { ErrorHints } from './http.ts'
+import type { CompletionRequest, CompletionResponse, Provider, StreamSignal } from '../core/ports.ts'
+import { endpointUrl, postStream, snippet } from './http.ts'
+import type { ErrorHints, PostStreamOptions } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { adaptsOf, bodyKeyForm, isRecord, mergeBody, prepareHttp, requestSettings, spellingIssues, thinkingIssues } from './options.ts'
+import { adaptsOf, bodyKeyForm, isRecord, mergeBody, prepareHttp, requestSettings, spellingIssues, streamFacts, thinkingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput, Thinking, ThinkingControl } from './options.ts'
-import { endedEarly, joinedText, readAnswer, replyFailure, tokenUsage } from './reply.ts'
+import { endedEarly, joinedText, MAX_MODEL_TEXT, readAnswer, replyFailure, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
 import type { ContextBudget } from './size.ts'
+import { answerTooLong, listField, malformedStream, MAX_ANSWER_CHARS, objectField, objectValue, streamedTokens, streamEnded, textField } from './stream.ts'
+import type { StreamItem } from './stream.ts'
 
 /** The options of a Gemini provider: the ones every HTTP adapter takes, and no other. */
 export type GeminiOptions = HttpProviderOptions
@@ -30,6 +32,13 @@ const RULES: Omit<AdapterRules, 'auth'> = {
   fixedHeaders: [],
   structuredOutputs: ['prompt', 'json', 'schema'],
 }
+/** The path of the model's method that answers a whole reply, and of the one that streams it, which the query's `alt=sse` turns into server-sent events. */
+const WHOLE_METHOD = 'generateContent'
+const STREAM_METHOD = 'streamGenerateContent'
+/** The words a 400 may name when the server refuses streaming: the method's name, since this protocol streams by its path and has no body field for it. */
+const STREAM_WORDS: NonNullable<PostStreamOptions['streamWords']> = [
+  { word: STREAM_METHOD, refused: 'stream' },
+]
 /** The one spelling of the generation config's key that the adapter merges its own into. */
 const GENERATION_CONFIG = 'generationConfig'
 /** `generationConfig.thinkingConfig`, whose `thinkingLevel` is `LOW`, or `MINIMAL` for `off`, "little to no thinking": a level Gemini does not let a model turn off. Its `thinkingBudget` is the same control, so a config of either is one. */
@@ -119,6 +128,13 @@ function keyParameterIssues(id: string, query: Readonly<Record<string, unknown>>
   return Object.keys(query)
     .filter(name => name.toLowerCase() === 'key')
     .map(name => ({ path: `${id}.${issuePath(['query', name])}`, message: 'would carry a key in the URL: set apiKey instead' }))
+}
+
+/** An `alt` query parameter, in any letter case, would change the form of the reply the adapter reads: the adapter sets it for a stream. */
+function altParameterIssues(id: string, query: Readonly<Record<string, unknown>>): ConfigIssue[] {
+  return Object.keys(query)
+    .filter(name => name.toLowerCase() === 'alt')
+    .map(name => ({ path: `${id}.${issuePath(['query', name])}`, message: 'is set by the adapter and cannot be replaced' }))
 }
 
 /**
@@ -235,6 +251,156 @@ function readReply(reply: unknown, { id, model, budget }: Pick<GeminiOptions, 'i
   }
 }
 
+/** One part of the candidate a stream builds: a text joined from the chunks, or a thought known by the fact alone. */
+type Part = { text: string, thought?: undefined } | { thought: true }
+
+/** The error a chunk holds, as a failed reply's: Google's standard body, whose numeric `code` is the status, read through `errorHints`. */
+function streamError(chunk: Record<string, unknown>, providerId: string, redact: readonly string[]): ProviderError {
+  const { error } = chunk
+  const code = isRecord(error)
+    ? error.code
+    : undefined
+  const status = typeof code === 'number' && Number.isInteger(code) && code >= 400 && code <= 599
+    ? code
+    : undefined
+  const hints = errorHints(chunk)
+  const text = isRecord(error)
+    ? error.message
+    : error
+  const quoted = typeof text === 'string'
+    ? `: ${snippet(text, MAX_MODEL_TEXT, redact)}`
+    : ''
+  return new ProviderError({
+    providerId,
+    kind: status === undefined
+      ? 'invalid-response'
+      : 'http',
+    message: status === undefined
+      ? `server error${quoted}`
+      : `server error ${status}${quoted}`,
+    status,
+    retryAfterMs: hints.retryAfterMs,
+    retryable: hints.retryable,
+    ...hints.exhausted === true
+      ? { exhausted: true as const }
+      : {},
+  })
+}
+
+/** The output tokens `usageMetadata` has counted so far: the candidates' and the thoughts', each when it is a number. */
+function countedOutput(usageMetadata: unknown): number {
+  if (!isRecord(usageMetadata)) return 0
+  return ['candidatesTokenCount', 'thoughtsTokenCount'].reduce((sum, key) => {
+    const count = usageMetadata[key]
+    return typeof count === 'number' && Number.isFinite(count) && count >= 0
+      ? sum + count
+      : sum
+  }, 0)
+}
+
+/**
+ * The whole reply a `streamGenerateContent` stream amounts to, in the shape `readReply` reads, so every check of a whole
+ * reply runs on it unchanged: the `modelVersion` of the first chunk that names one; the prompt feedback's `blockReason`;
+ * the last `usageMetadata` seen, whose counts are cumulative; and `candidates[0]` of each chunk, its parts in order, the
+ * text parts joined, a `thought` part kept with no text, since only the fact that it showed is read, and any other part
+ * left out, with the last `finishReason` it names. Reasoning is counted and never kept. A chunk's `error` ends the read at
+ * once, as the failure `streamError` names, read through `errorHints`.
+ *
+ * The stream is complete at a candidate's `finishReason`, or a prompt's `blockReason`, and is read on to the body's end,
+ * since the usage may come in a chunk after it. A body that ends with neither is a broken stream, the `network` failure
+ * `streamEnded` names, never an answer. One rule holds for every field: an unknown part type, and an absent field, are
+ * tolerated, and a chunk whose field is present with the wrong type, a chunk, candidate or part that is no object, `parts`
+ * or `candidates` that is no list, or a text that is no text, ends the read as an `invalid-response` that is never retried,
+ * with the body cancelled, so a dropped field never lets a partial answer be read as a whole one. A text that passes
+ * 1 000 000 characters ends it the same way. Each chunk
+ * reports a `data` signal: the larger of the server's own output count and a quarter of the characters streamed so far,
+ * and whether an answer or reasoning has shown text.
+ */
+export async function assembleGemini(items: AsyncIterable<StreamItem>, providerId: string, onProgress?: (signal: StreamSignal) => void, redact: readonly string[] = []): Promise<Record<string, unknown>> {
+  const parts: Part[] = []
+  let modelVersion: string | undefined
+  let blockReason: unknown
+  let usageMetadata: Record<string, unknown> | undefined
+  let finishReason: unknown
+  let seenCandidate = false
+  let answerChars = 0
+  let reasoningChars = 0
+
+  const readPart = (part: Record<string, unknown>): void => {
+    const text = textField(providerId, part.text, 'text')
+    const last = parts.at(-1)
+    if (part.thought === true) {
+      if (text !== undefined) reasoningChars += text.length
+      if (last?.thought !== true) parts.push({ thought: true })
+      return
+    }
+    if (text === undefined) return
+    answerChars += text.length
+    if (answerChars > MAX_ANSWER_CHARS) throw answerTooLong(providerId)
+    if (last !== undefined && last.thought === undefined) last.text += text
+    else parts.push({ text })
+  }
+  const readChunk = (chunk: Record<string, unknown>): void => {
+    const version = textField(providerId, chunk.modelVersion, 'modelVersion')
+    if (modelVersion === undefined && version !== undefined && version !== '') modelVersion = version
+    usageMetadata = objectField(providerId, chunk.usageMetadata, 'usageMetadata') ?? usageMetadata
+    const feedback = objectField(providerId, chunk.promptFeedback, 'promptFeedback')
+    if (feedback !== undefined && blockReason === undefined) blockReason = feedback.blockReason ?? undefined
+    const candidates = listField(providerId, chunk.candidates, 'candidates')
+    if (candidates === undefined || candidates.length === 0) return
+    const candidate = objectValue(providerId, candidates[0], 'candidate')
+    seenCandidate = true
+    if (candidate.finishReason !== undefined && candidate.finishReason !== null) finishReason = candidate.finishReason
+    const content = objectField(providerId, candidate.content, 'content')
+    for (const part of listField(providerId, content?.parts, 'parts') ?? []) readPart(objectValue(providerId, part, 'part'))
+  }
+  const finished = (): boolean => finishReason !== undefined || (blockReason !== undefined && blockReason !== null)
+  const assembled = (): Record<string, unknown> => ({
+    ...modelVersion === undefined
+      ? {}
+      : { modelVersion },
+    ...blockReason === undefined
+      ? {}
+      : {
+          promptFeedback: { blockReason },
+        },
+    ...seenCandidate
+      ? {
+          candidates: [
+            {
+              content: { parts, role: 'model' },
+              ...finishReason === undefined
+                ? {}
+                : { finishReason },
+              index: 0,
+            },
+          ],
+        }
+      : {},
+    ...usageMetadata === undefined
+      ? {}
+      : { usageMetadata },
+  })
+
+  for await (const item of items) {
+    if (item.kind !== 'event') continue
+    const chunk = objectValue(providerId, item.value, 'chunk')
+    if (chunk.error !== undefined && chunk.error !== null) {
+      if (typeof chunk.error !== 'string' && !isRecord(chunk.error)) throw malformedStream(providerId, 'error', 'object')
+      throw streamError(chunk, providerId, redact)
+    }
+    readChunk(chunk)
+    onProgress?.({
+      kind: 'data',
+      outputTokens: streamedTokens(countedOutput(usageMetadata), answerChars + reasoningChars),
+      answer: answerChars > 0,
+      reasoning: reasoningChars > 0,
+    })
+  }
+  if (!finished()) throw streamEnded(providerId)
+  return assembled()
+}
+
 /**
  * A provider for the Gemini API's `generateContent`. The key, when there is one, travels only in the
  * header `auth` names, `x-goog-api-key` by default (invariant I1), never in the `key` query parameter. It
@@ -250,31 +416,49 @@ function readReply(reply: unknown, { id, model, budget }: Pick<GeminiOptions, 'i
  * 422 that names `responseMimeType` or `responseJsonSchema`, in either spelling, sent in `json` or `schema` mode, is
  * marked `refused` for the structured output.
  *
+ * It streams every reply, a whole request's too, through `postStream`: the model's `streamGenerateContent` with `alt=sse`
+ * added to the query, which `assembleGemini` reads into the whole reply `readReply` checks, complete at a finish reason.
+ * It states `streams` unless the option `stream` is `false`, and that it may step down, `adapts.stream`, when the option is
+ * unset: the request's `stream` `false`, and the option `false`, post to `generateContent` for a whole reply. A 400 or 422
+ * that names `streamGenerateContent` is marked `refused` as `stream`. A server that answers a streamed request whole gives
+ * a reply marked `whole`. The options' `query` may not set `alt`.
+ *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function gemini(options: GeminiOptions): Provider {
-  const { id, model, auth = { header: 'x-goog-api-key' } as Auth, query, temperature, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json', thinking, timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
+  const { id, model, auth = { header: 'x-goog-api-key' } as Auth, query, temperature, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json', thinking, timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES, stream: streamOption } = options
   const modelId = typeof model === 'string'
     ? model.replace(/^models\//, '')
     : ''
   const issues = [
     ...(isRecord(query)
-      ? keyParameterIssues(id, query)
+      ? [
+          ...keyParameterIssues(id, query),
+          ...altParameterIssues(id, query),
+        ]
       : []),
     ...generationConfigIssues(id, options.extraBody),
     ...thinkingIssues(id, thinking, options.extraBody, THINKING),
   ]
   if (!MODEL_ID.test(modelId)) issues.push({ path: `${id}.model`, message: 'must be a Gemini model id, such as gemini-3.8-flash' })
   // The path is built before the checks, harmlessly: nothing is sent when they fail.
-  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, `/v1beta/models/${modelId}:generateContent`, issues)
+  const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, `/v1beta/models/${modelId}:${WHOLE_METHOD}`, issues)
+  // The stream's URL is the same with its method and `alt=sse`, written after the options' own query, which holds no `alt`.
+  const streamUrl = endpointUrl(options.baseUrl, `/v1beta/models/${modelId}:${STREAM_METHOD}`, { ...query, alt: 'sse' })
   const budgetOf = (request: CompletionRequest): ContextBudget => contextBudget(contextTokens, replyBudgetOf(request, maxTokens))
-  const adapting = adaptsOf(options, { level: 'low', control: THINKING, format: FORMAT_PATHS })
+  const adapting = adaptsOf(options, {
+    level: 'low',
+    control: THINKING,
+    format: FORMAT_PATHS,
+    streams: true,
+  })
 
   return {
     id,
     model,
     timeoutMs,
     retries,
+    ...streamFacts(streamOption),
     ...statedReply(contextTokens, maxTokens, thinking),
     ...adapting,
     worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
@@ -284,10 +468,13 @@ export function gemini(options: GeminiOptions): Provider {
       const budget = budgetOf(request)
       checkFits(id, { system, messages }, request.output, budget)
       const settings = requestSettings({ thinking, structuredOutput }, adapting.adapts, request)
+      const streams = streamOption !== false && settings.stream !== false
       // JSON.stringify drops the undefined fields: no systemInstruction inline, no temperature unless set.
-      const reply = await postJson<unknown>({
+      const sentReply = await postStream({
         providerId: id,
-        url,
+        url: streams
+          ? streamUrl
+          : url,
         headers,
         body: mergeBody({
           contents: messages.map(message => ({
@@ -315,11 +502,23 @@ export function gemini(options: GeminiOptions): Provider {
         signal: request.signal,
         redact,
         errorHints,
+        format: 'sse',
+        onProgress: request.onProgress,
+        ...streams
+          ? { streamWords: STREAM_WORDS }
+          : {},
         ...settings.structuredOutput === 'prompt'
           ? {}
           : { formatFields: FORMAT_FIELDS },
       })
-      return readReply(reply, { id, model, budget }, redact)
+      const answered = 'whole' in sentReply
+      const reply = answered
+        ? sentReply.whole
+        : await assembleGemini(sentReply.items, id, request.onProgress, redact)
+      const read = readReply(reply, { id, model, budget }, redact)
+      return streams && answered
+        ? { ...read, whole: true }
+        : read
     },
   }
 }

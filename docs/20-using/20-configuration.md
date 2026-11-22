@@ -363,7 +363,7 @@ Quorum moves a setting by itself when a reply shows that it must, says so in one
 | Thinking lowered | A reply was cut off while it reasoned (`truncated`, `thinking`), or held only reasoning (`no-answer`, `thinking`) | `thinking` set, or the control in `extraBody` |
 | Prompt mode | A reply in JSON mode was empty (`no-answer`, `empty`), or the server answered a 400 or 422 whose body names the structured-output field | `structuredOutput` set, or the field in `extraBody` |
 | Stream without `stream_options` | The server answered a 400 or 422 whose body names `stream_options` | `stream` set (`true` or `false`) |
-| Whole replies | The server answered a 400 or 422 whose body names `stream`, or answered a streamed call with a whole reply | `stream` set (`true` or `false`) |
+| Whole replies | The server answered a 400 or 422 whose body names `stream`, `streamGenerateContent` for `gemini`, or answered a streamed call with a whole reply | `stream` set (`true` or `false`) |
 | Reply budgets per kind | Always | `maxTokens` ([Reply budgets](#reply-budgets)) |
 
 - **Thinking lowered** goes to `low`, and to `off` on `ollama`, and on `openaiCompatible` under the `vllm` and `llamacpp` presets, whose chat templates may not know `low` and can fall back to maximum reasoning. The line is `api: thinking lowered to low for the rest of the review: a reply ran out of room while reasoning; set thinking to choose it yourself`, or `a reply held only reasoning` for the second cause. It is sent as the protocol's own control ([Thinking](./30-providers.md#thinking)), with every later request of the provider, votes included.

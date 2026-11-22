@@ -8,7 +8,7 @@ import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput, Thinkin
 import { endedEarly, joinedText, MAX_MODEL_TEXT, readAnswer, replyFailure, STREAMED_REASONING, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
 import type { ContextBudget } from './size.ts'
-import { MAX_ANSWER_CHARS, streamEnded } from './stream.ts'
+import { answerTooLong, listField, malformedStream, MAX_ANSWER_CHARS, objectField, objectValue, streamedTokens, streamEnded, textField } from './stream.ts'
 import type { StreamItem } from './stream.ts'
 
 /** The options of an OpenAI-compatible provider. */
@@ -78,10 +78,8 @@ const STREAM_OPTIONS_WORD = { word: 'stream_options', refused: 'streamOptions' }
 const STREAM_WORD = { word: 'stream', refused: 'stream' } as const
 /** The data of the last event of a stream. */
 const SENTINEL = '[DONE]'
-/** The most choices an assembled stream keeps: a request asks for one, and the reader reads the first. */
+/** The most distinct choices an assembled stream keeps: a request asks for one, and the reader reads choice index 0, the one kept first or not at all. */
 const MAX_CHOICES = 8
-/** The characters of streamed text one token is taken to hold, when the server counts none. */
-const CHARS_PER_TOKEN = 4
 
 function responseFormat(mode: StructuredOutput, output: CompletionRequest['output']): unknown {
   if (mode === 'json') return { type: 'json_object' }
@@ -251,10 +249,14 @@ function thinkingChars(thinking: unknown): number {
  * the last `finish_reason` that is not null; the usage of the last chunk that holds one; and a chunk's `error`, which
  * ends the read as the reply's own `error`, read as a whole reply's is.
  *
- * The stream is complete at a choice's `finish_reason`, and is read on to `[DONE]` or the body's end, since a server sends
- * its usage after it. A `[DONE]` or an end with no finish reason and no error is a broken stream: the failure `streamEnded`
- * names, a `network` one, retried as a dropped connection is, never an answer. The text passes 1 000 000 characters
- * with an `invalid-response`. Each data event reports a `data` signal: the larger of the server's own output count and a
+ * The stream is complete at the `finish_reason` of choice index 0, the one `readReply` reads, and is read on to `[DONE]` or
+ * the body's end, since a server sends its usage after it; another choice's finish completes nothing. A `[DONE]` or an end
+ * where choice 0 never showed or never finished, with no error, is a broken stream: the failure `streamEnded` names, a
+ * `network` one, retried as a dropped connection is, never an answer. The reply holds that choice alone. One rule holds
+ * for every field: an unknown content part type, and an absent field, are tolerated, and a chunk, choice, delta or part that is no object, a `choices`,
+ * `annotations` or `executed_tools` that is no list, or a text field that is no text, ends the read as an `invalid-response`
+ * that is never retried, with the body cancelled, so a dropped field never lets a partial answer be read as a whole one.
+ * A text that passes 1 000 000 characters ends it the same way. Each data event reports a `data` signal: the larger of the server's own output count and a
  * quarter of the characters streamed so far, and whether an answer or reasoning has shown text.
  */
 export async function assembleOpenAi(items: AsyncIterable<StreamItem>, providerId: string, onProgress?: (signal: StreamSignal) => void): Promise<Record<string, unknown>> {
@@ -284,7 +286,7 @@ export async function assembleOpenAi(items: AsyncIterable<StreamItem>, providerI
   const answer = (choice: Streamed, field: 'content' | 'refusal', text: string): void => {
     choice[field] += text
     answerChars += text.length
-    if (answerChars > MAX_ANSWER_CHARS) throw replyFailure(providerId)('invalid-response', `the reply stream's answer is over ${MAX_ANSWER_CHARS} characters`)
+    if (answerChars > MAX_ANSWER_CHARS) throw answerTooLong(providerId)
   }
   const reasoning = (choice: Streamed, chars: number, shown: boolean): void => {
     reasoningChars += chars
@@ -295,47 +297,59 @@ export async function assembleOpenAi(items: AsyncIterable<StreamItem>, providerI
     if (typeof content === 'string') {
       answer(choice, 'content', content)
     } else if (Array.isArray(content)) {
-      for (const part of content) {
-        if (!isRecord(part)) continue
-        if (part.type === 'text' && typeof part.text === 'string') answer(choice, 'content', part.text)
-        else if (part.type === 'thinking') reasoning(choice, thinkingChars(part.thinking), true)
+      for (const entry of content) {
+        const part = objectValue(providerId, entry, 'content part')
+        const type = textField(providerId, part.type, 'content part type')
+        if (type === 'text') {
+          const text = textField(providerId, part.text, 'text')
+          if (text !== undefined) answer(choice, 'content', text)
+        } else if (type === 'thinking') {
+          reasoning(choice, thinkingChars(part.thinking), true)
+        }
       }
+    } else if (content !== undefined && content !== null) {
+      throw malformedStream(providerId, 'content', 'text')
     }
-    if (typeof delta.refusal === 'string') answer(choice, 'refusal', delta.refusal)
+    const refusal = textField(providerId, delta.refusal, 'refusal')
+    if (refusal !== undefined) answer(choice, 'refusal', refusal)
     for (const field of ['reasoning', 'reasoning_content'] as const) {
-      const text = delta[field]
-      if (typeof text === 'string') reasoning(choice, text.length, text.trim() !== '')
+      const text = textField(providerId, delta[field], field)
+      if (text !== undefined) reasoning(choice, text.length, text.trim() !== '')
     }
-    if (Array.isArray(delta.annotations)) {
-      for (const entry of delta.annotations) {
-        if (isRecord(entry) && typeof entry.type === 'string') choice.annotations.add(entry.type)
-      }
+    for (const entry of listField(providerId, delta.annotations, 'annotations') ?? []) {
+      const annotation = objectValue(providerId, entry, 'annotation')
+      const type = textField(providerId, annotation.type, 'annotation type')
+      if (type !== undefined) choice.annotations.add(type)
     }
-    if (Array.isArray(delta.executed_tools) && delta.executed_tools.length > 0) choice.ranTool = true
+    if ((listField(providerId, delta.executed_tools, 'executed_tools') ?? []).length > 0) choice.ranTool = true
   }
   const readChunk = (chunk: Record<string, unknown>): void => {
-    if (model === undefined && typeof chunk.model === 'string' && chunk.model !== '') model = chunk.model
-    if (isRecord(chunk.usage)) {
-      usage = chunk.usage
-      const tokens = chunk.usage.completion_tokens
+    const named = textField(providerId, chunk.model, 'model')
+    if (model === undefined && named !== undefined && named !== '') model = named
+    const reported = objectField(providerId, chunk.usage, 'usage')
+    if (reported !== undefined) {
+      usage = reported
+      const tokens = reported.completion_tokens
       if (typeof tokens === 'number' && Number.isFinite(tokens) && tokens >= 0) counted = tokens
     }
-    if (typeof chunk.error === 'string' || isRecord(chunk.error)) error = chunk.error
-    if (!Array.isArray(chunk.choices)) return
-    chunk.choices.forEach((entry: unknown, position) => {
-      if (!isRecord(entry)) return
-      const index = typeof entry.index === 'number' && Number.isSafeInteger(entry.index) && entry.index >= 0
-        ? entry.index
+    if (chunk.error !== undefined && chunk.error !== null) {
+      if (typeof chunk.error !== 'string' && !isRecord(chunk.error)) throw malformedStream(providerId, 'error', 'object')
+      error = chunk.error
+    }
+    const entries = listField(providerId, chunk.choices, 'choices')
+    entries?.forEach((entry: unknown, position) => {
+      const item = objectValue(providerId, entry, 'choice')
+      const index = typeof item.index === 'number' && Number.isSafeInteger(item.index) && item.index >= 0
+        ? item.index
         : position
       const choice = choiceOf(index)
       if (choice === undefined) return
-      if (isRecord(entry.delta)) readDelta(choice, entry.delta)
-      if (entry.finish_reason !== undefined && entry.finish_reason !== null) choice.finish = entry.finish_reason
+      const delta = objectField(providerId, item.delta, 'delta')
+      if (delta !== undefined) readDelta(choice, delta)
+      if (item.finish_reason !== undefined && item.finish_reason !== null) choice.finish = item.finish_reason
     })
   }
-  const finished = (): boolean => [
-    ...choices.values(),
-  ].some(choice => choice.finish !== undefined)
+  const finished = (): boolean => choices.get(0)?.finish !== undefined
   const assembled = (): Record<string, unknown> => ({
     ...model === undefined
       ? {}
@@ -345,7 +359,7 @@ export async function assembleOpenAi(items: AsyncIterable<StreamItem>, providerI
       : { error },
     choices: [
       ...choices.entries(),
-    ].sort(([a], [b]) => a - b).map(([index, choice]) => ({
+    ].filter(([index]) => index === 0).map(([index, choice]) => ({
       index,
       message: {
         role: 'assistant',
@@ -382,10 +396,10 @@ export async function assembleOpenAi(items: AsyncIterable<StreamItem>, providerI
       if (!finished()) throw streamEnded(providerId)
       return assembled()
     }
-    if (isRecord(item.value)) readChunk(item.value)
+    readChunk(objectValue(providerId, item.value, 'chunk'))
     onProgress?.({
       kind: 'data',
-      outputTokens: Math.max(counted, Math.ceil((answerChars + reasoningChars) / CHARS_PER_TOKEN)),
+      outputTokens: streamedTokens(counted, answerChars + reasoningChars),
       answer: answerChars > 0,
       reasoning: reasoningChars > 0,
     })

@@ -1,14 +1,17 @@
 import { issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
-import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
-import { postJson, snippet } from './http.ts'
+import type { CompletionRequest, CompletionResponse, Provider, StreamSignal } from '../core/ports.ts'
+import { postStream, snippet } from './http.ts'
+import type { PostStreamOptions } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { adaptsOf, bodyKeyForm, isRecord, mergeBody, prepareHttp, requestSettings, spellingIssues, thinkingIssues } from './options.ts'
+import { adaptsOf, bodyKeyForm, isRecord, mergeBody, prepareHttp, requestSettings, spellingIssues, streamFacts, thinkingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput, Thinking, ThinkingControl } from './options.ts'
-import { MAX_MODEL_TEXT, readAnswer, replyFailure, tokenUsage } from './reply.ts'
+import { MAX_MODEL_TEXT, readAnswer, replyFailure, STREAMED_REASONING, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
 import type { ContextBudget } from './size.ts'
+import { answerTooLong, malformedStream, MAX_ANSWER_CHARS, objectField, objectValue, streamedTokens, streamEnded, textField } from './stream.ts'
+import type { StreamItem } from './stream.ts'
 
 /** The options of an Ollama provider: the ones every HTTP adapter takes, and no other. */
 export type OllamaOptions = HttpProviderOptions
@@ -40,6 +43,10 @@ const THINKING: ThinkingControl = {
 const FORMAT_FIELDS = ['format']
 /** The one spelling of the options key that the adapter merges its own into. */
 const OPTIONS = 'options'
+/** The words a 400 may name when the server refuses streaming: the one body field this adapter sends for it. */
+const STREAM_WORDS: NonNullable<PostStreamOptions['streamWords']> = [
+  { word: 'stream', refused: 'stream' },
+]
 /** The done reasons of a finished reply: `length` is one cut off by the token limit, or by a context that filled. */
 const DONE: ReadonlySet<unknown> = new Set(['stop', 'length'])
 
@@ -123,6 +130,97 @@ function readReply(reply: unknown, { id, model, budget }: Pick<OllamaOptions, 'i
   }
 }
 
+/** A count of tokens as the server writes one, or nothing. */
+function countOf(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined
+}
+
+/**
+ * The whole reply an `/api/chat` stream amounts to, in the shape `readReply` reads, so every check of a whole reply runs
+ * on it unchanged: the `model` of the first line that names one; `message.content` joined from every line's; the
+ * thinking as the one word `STREAMED_REASONING` in `message.thinking` when any showed, its text never kept; and `done`,
+ * `done_reason`, `prompt_eval_count` and `eval_count` from the done line. A line's `error` ends the read at once as the
+ * reply's own `error`, which `readReply` reads as a whole reply's is.
+ *
+ * The stream is complete at the line that holds `done: true`: the read ends there, with the body cancelled. A body that
+ * ends without it is a broken stream, the `network` failure `streamEnded` names, never an answer. One rule holds for every
+ * field: an unknown field, and an absent one, are tolerated, and a line whose `message`, `content`, `thinking`, `model` or
+ * `error` is present with the wrong type, or that is no object, ends the read as an `invalid-response` that is never
+ * retried, with the body cancelled, so a dropped field never lets a partial answer be read as a whole one. A text that
+ * passes 1 000 000 characters ends it the same way. Each line reports a `data` signal: the larger of the done line's
+ * own output count and a quarter of the characters streamed so far, and whether an answer or reasoning has shown text. A
+ * blank line is a keep-alive, which `postStream` reports.
+ */
+export async function assembleOllama(items: AsyncIterable<StreamItem>, providerId: string, onProgress?: (signal: StreamSignal) => void): Promise<Record<string, unknown>> {
+  let model: string | undefined
+  let content = ''
+  let reasoned = false
+  let answerChars = 0
+  let reasoningChars = 0
+  let counted = 0
+  let error: string | undefined
+  let last: Record<string, unknown> = {}
+
+  const assembled = (done: boolean): Record<string, unknown> => ({
+    ...model === undefined
+      ? {}
+      : { model },
+    ...error === undefined
+      ? {}
+      : { error },
+    message: {
+      role: 'assistant',
+      content,
+      ...reasoned
+        ? { thinking: STREAMED_REASONING }
+        : {},
+    },
+    done,
+    done_reason: last.done_reason,
+    prompt_eval_count: last.prompt_eval_count,
+    eval_count: last.eval_count,
+  })
+
+  for await (const item of items) {
+    if (item.kind !== 'event') continue
+    const line = objectValue(providerId, item.value, 'line')
+    const named = textField(providerId, line.model, 'model')
+    if (model === undefined && named !== undefined && named !== '') model = named
+    if (line.error !== undefined && line.error !== null) {
+      if (typeof line.error !== 'string') throw malformedStream(providerId, 'error', 'text')
+      error = line.error
+    }
+    const message = objectField(providerId, line.message, 'message')
+    const text = textField(providerId, message?.content, 'content')
+    const thinking = textField(providerId, message?.thinking, 'thinking')
+    if (text !== undefined) {
+      content += text
+      answerChars += text.length
+      if (answerChars > MAX_ANSWER_CHARS) throw answerTooLong(providerId)
+    }
+    if (thinking !== undefined) {
+      reasoningChars += thinking.length
+      if (thinking.trim() !== '') reasoned = true
+    }
+    const done = line.done === true
+    if (done) {
+      last = line
+      counted = countOf(line.eval_count) ?? counted
+    }
+    onProgress?.({
+      kind: 'data',
+      outputTokens: streamedTokens(counted, answerChars + reasoningChars),
+      answer: answerChars > 0,
+      reasoning: reasoningChars > 0,
+    })
+    // An error ends the read at once: it is the reply, and nothing after it changes it.
+    if (error !== undefined || done) return assembled(done)
+  }
+  throw streamEnded(providerId)
+}
+
 /**
  * A provider for Ollama's native chat API, `/api/chat`, on a local server or Ollama's cloud. The key, when
  * there is one, travels only in the header `auth` names, `Authorization: Bearer` by default (invariant
@@ -141,10 +239,16 @@ function readReply(reply: unknown, { id, model, budget }: Pick<OllamaOptions, 'i
  * states that the core may move it from `json` to `prompt`, and honours the request's `structuredOutput`. A 400 or
  * 422 that names `format`, sent in `json` or `schema` mode, is marked `refused` for the structured output.
  *
+ * It streams every reply, a whole request's too, through `postStream`: `stream: true`, NDJSON, which `assembleOllama`
+ * reads into the whole reply `readReply` checks, complete at the done line. It states `streams` unless the option `stream`
+ * is `false`, and that it may step down, `adapts.stream`, when the option is unset: the request's `stream` `false`, and the
+ * option `false`, send `stream: false`, which the server needs to answer whole. A 400 or 422 that names `stream` is
+ * marked `refused` as `stream`. A server that answers a streamed request whole gives a reply marked `whole`.
+ *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function ollama(options: OllamaOptions): Provider {
-  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json', thinking, timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES } = options
+  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, systemPrompt = 'native', structuredOutput = 'json', thinking, timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES, stream: streamOption } = options
   const { url, headers, redact, extraBody } = prepareHttp(options, { ...RULES, auth }, '/api/chat', [
     ...numCtxIssues(id, options.extraBody),
     ...thinkingIssues(id, thinking, options.extraBody, THINKING),
@@ -154,6 +258,7 @@ export function ollama(options: OllamaOptions): Provider {
     level: 'off',
     control: THINKING,
     format: [FORMAT_FIELDS],
+    streams: true,
   })
 
   return {
@@ -161,6 +266,7 @@ export function ollama(options: OllamaOptions): Provider {
     model,
     timeoutMs,
     retries,
+    ...streamFacts(streamOption),
     ...statedReply(contextTokens, maxTokens, thinking),
     ...adapting,
     worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
@@ -170,8 +276,9 @@ export function ollama(options: OllamaOptions): Provider {
       const budget = budgetOf(request)
       checkFits(id, { system, messages }, request.output, budget)
       const settings = requestSettings({ thinking, structuredOutput }, adapting.adapts, request)
-      // JSON.stringify drops the undefined fields: no format for `prompt`, no temperature for null.
-      const reply = await postJson<unknown>({
+      const streams = streamOption !== false && settings.stream !== false
+      // JSON.stringify drops the undefined fields: no format for `prompt`, no temperature for null. A whole reply is asked for with `stream: false`, since the server streams by default.
+      const sentReply = await postStream({
         providerId: id,
         url,
         headers,
@@ -183,7 +290,7 @@ export function ollama(options: OllamaOptions): Provider {
                 { role: 'system', content: system },
                 ...messages,
               ],
-          stream: false,
+          stream: streams,
           truncate: false,
           shift: false,
           options: { temperature: temperature ?? undefined, num_predict: budget.replyTokens, num_ctx: contextTokens },
@@ -192,11 +299,23 @@ export function ollama(options: OllamaOptions): Provider {
         }, extraBody),
         signal: request.signal,
         redact,
+        format: 'ndjson',
+        onProgress: request.onProgress,
+        ...streams
+          ? { streamWords: STREAM_WORDS }
+          : {},
         ...settings.structuredOutput === 'prompt'
           ? {}
           : { formatFields: FORMAT_FIELDS },
       })
-      return readReply(reply, { id, model, budget }, redact)
+      const answered = 'whole' in sentReply
+      const reply = answered
+        ? sentReply.whole
+        : await assembleOllama(sentReply.items, id, request.onProgress)
+      const read = readReply(reply, { id, model, budget }, redact)
+      return streams && answered
+        ? { ...read, whole: true }
+        : read
     },
   }
 }
