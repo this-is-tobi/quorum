@@ -549,7 +549,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
         }
       }
       // Still inside the slot: a review aborted here never starts the queued call the slot goes to next.
-      options.onEnd?.({ spent, startedAt: started })
+      options.onEnd?.({ spent, startedAt: started, reused: reused && attempts === 0 })
       options.onFailure?.(error, attempts, ranFor(error))
       return error
     }
@@ -751,7 +751,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
         ? {}
         : timings,
     })
-    options.onEnd?.({ spent, startedAt: started })
+    options.onEnd?.({ spent, startedAt: started, reused: reused && attempts === 0 })
     if (read === undefined) {
       // The reply was no answer the stage could read: the failure goes to the stage as any other of the call.
       options.onFailure?.(unread!.error, attempts)
@@ -790,10 +790,10 @@ export interface CallOptions {
   readonly onFailure?: (error: unknown, attempts: number, attemptMs?: number) => void
   /**
    * Hears a call's end, once, inside its slot, for every call that built its request, whatever became of it (answered,
-   * reused, failed, or refused by its check), before it returns or rethrows: the tokens it spent and the clock's reading
-   * once its request was built.
+   * reused, failed, or refused by its check), before it returns or rethrows: the tokens it spent, the clock's reading
+   * once its request was built, and whether the store answered it with no attempt made.
    */
-  readonly onEnd?: (end: { readonly spent: number, readonly startedAt: number }) => void
+  readonly onEnd?: (end: { readonly spent: number, readonly startedAt: number, readonly reused: boolean }) => void
 }
 
 /** What a reply is read as, and what the stage's check listed of it. */

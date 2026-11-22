@@ -875,6 +875,48 @@ describe('logLines', () => {
     expect(textsOf(event, undefined, view)).toEqual([text])
   })
 
+  it.each<[string, QuorumEvent, 'full' | 'public', string]>([
+    [
+      '',
+      partEvent({
+        part: { index: 2, count: 121 },
+        durationMs: 0,
+        spent: 0,
+        listed: 3,
+        reused: true,
+      }),
+      'full',
+      'part 2 of 121: reused from the saved state, 3 finding(s) listed',
+    ],
+    [
+      ', split',
+      partEvent({
+        part: { index: 2, count: 121 },
+        durationMs: 0,
+        spent: 0,
+        listed: 3,
+        reused: true,
+        pieces: { count: 2, read: 2, unread: {} },
+      }),
+      'full',
+      'part 2 of 121: reused from the saved state, 3 finding(s) listed, in 2 pieces',
+    ],
+    [
+      'under the public view',
+      partEvent({
+        part: { index: 2, count: 121 },
+        durationMs: 0,
+        spent: 0,
+        listed: 3,
+        reused: true,
+      }),
+      'public',
+      'part 2 of 121: reused from the saved state',
+    ],
+  ])('writes a part answered from the saved state %s', (_name, event, view, text) => {
+    expect(textsOf(event, undefined, view)).toEqual([text])
+  })
+
   it.each<[string, Partial<Extract<QuorumEvent, { type: 'call:retry' }>>, number | undefined, Position, string]>([
     [
       'http 503',

@@ -191,7 +191,7 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * completes, and a cut-off or saturated research reply as a marker, so a rerun of a review that failed late pays for
  * none of it again, for a request sent as it was, checked as a fresh reply. It is opened once the config is read and
  * before the banner, with the identity of each of the config's providers, and the review says on stderr what it reused
- * (`reused from --state: <n> research call(s), <n> vote(s)`) when it reused any. It is a usage error when empty, given
+ * (`reused from the saved state: <n> research call(s), <n> vote(s)`) when it reused any. It is a usage error when empty, given
  * twice or with `--print-config`, and a directory the store refuses (a link, one another user owns or others can
  * write, one inside a git work tree, one that is not a state directory quorum made) exits 2 before any call, naming
  * the flag and never the path. Its warnings are inert `--state:` lines, and a write that fails never fails the review.
@@ -367,7 +367,7 @@ export async function runCli(io: CliIO): Promise<number> {
     }, { interrupt: io.signal, store, ...bounded?.limits })
     reviewed = true
     const { reused } = result.meta
-    if (reused !== undefined && reused.research + reused.votes > 0) view.line('notice', `reused from --state: ${reused.research} research call(s), ${reused.votes} vote(s)`)
+    if (reused !== undefined && reused.research + reused.votes > 0) view.line('notice', `reused from the saved state: ${reused.research} research call(s), ${reused.votes} vote(s)`)
     await view.close()
     const done = outcome(result, { allowIncomplete: values['allow-incomplete'] === true })
     const input = plan.view === 'public'

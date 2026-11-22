@@ -885,7 +885,7 @@ describe('--state', () => {
     expect(await runCli(run.io)).toBe(EXIT.finding)
     expect(first).toHaveBeenCalledTimes(4)
     // A first run reuses nothing and says nothing of it.
-    expect(run.stderr()).not.toContain('reused from --state')
+    expect(run.stderr()).not.toContain('reused from the saved state')
     expect(JSON.parse(run.stdout()).meta.reused).toEqual({ research: 0, votes: 0 })
     expect(readdirSync(directory)).toHaveLength(5)
     // The rerun asks no model, and spends nothing: its result is the first's.
@@ -898,7 +898,7 @@ describe('--state', () => {
     })
     expect(await runCli(rerun.io)).toBe(EXIT.finding)
     expect(second).not.toHaveBeenCalled()
-    expect(rerun.stderr()).toContain('reused from --state: 1 research call(s), 3 vote(s)\n')
+    expect(rerun.stderr()).toContain('reused from the saved state: 1 research call(s), 3 vote(s)\n')
     const result = JSON.parse(rerun.stdout())
     expect(result.meta.reused).toEqual({ research: 1, votes: 3 })
     expect(result.meta).not.toHaveProperty('usage')
@@ -3585,7 +3585,7 @@ describe('the sources', () => {
       expect(await runCli(rerun.io)).toBe(EXIT.finding)
       expect(second).toHaveBeenCalledTimes(3)
       for (const call of second.mock.calls) expect(String(call[1].body)).toContain('One vote in a 3-voter panel')
-      expect(rerun.stderr()).toContain('reused from --state: 1 research call(s), 0 vote(s)\n')
+      expect(rerun.stderr()).toContain('reused from the saved state: 1 research call(s), 0 vote(s)\n')
       expect(rerun.stderr()).not.toContain(home)
     })
 
