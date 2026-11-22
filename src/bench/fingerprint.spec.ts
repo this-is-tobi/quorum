@@ -474,6 +474,26 @@ describe('providerIdentity', () => {
     expect(identityOf(object('m'), 'other')).not.toBe(base)
   })
 
+  it('leaves stream out of a provider\'s identity and keeps it in the fingerprint', () => {
+    const base = identityOf(PROVIDER)
+    for (const stream of [true, false]) {
+      expect(identityOf({ ...PROVIDER, stream }), String(stream)).toBe(base)
+      expect(same(of({ ...PROVIDER, stream }), of(PROVIDER)), String(stream)).toBe(false)
+    }
+    expect(same(of({ ...PROVIDER, stream: true }), of({ ...PROVIDER, stream: false }))).toBe(false)
+    expect(base).not.toContain('stream')
+    // A provider object that states it streams is the same provider as one that states nothing: the stream decides whether a reply arrives, never what it says.
+    const objectBase = identityOf(object('m'), 'fake')
+    expect(identityOf({
+      ...object('m'),
+      streams: true,
+    }, 'fake')).toBe(objectBase)
+    expect(same(of({
+      ...object('m'),
+      streams: true,
+    }, 'fake'), of(object('m'), 'fake'))).toBe(false)
+  })
+
   it.each([
     [
       'the model',

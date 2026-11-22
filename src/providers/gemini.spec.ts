@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ProviderError, ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
-import { sent, stubFetch, textReply } from '../testing/http.ts'
+import { jsonReply, sent, stubFetch, textReply } from '../testing/http.ts'
 import { gemini } from './gemini.ts'
 import type { GeminiOptions } from './gemini.ts'
 import { candidate, countedOut, empty, generateContentResponse, invalidKey, promptBlocked, reasoningOnly, thoughtsOnlyCutOff, truncated, withThoughts } from '../testing/fixtures/gemini.ts'
@@ -65,6 +65,9 @@ describeProviderContract({
       generationConfig: { responseMimeType: 'text/plain' },
     },
   },
+  streams: false,
+  streamFields: {},
+  streamed: reply => jsonReply(reply),
   reservedBodyKeys: ['contents', 'systemInstruction'],
   toolBodyKeys: ['tools', 'toolConfig', 'cachedContent'],
   replyLimitPaths: [

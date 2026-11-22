@@ -1,12 +1,15 @@
 import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS } from '../core/ports.ts'
-import type { CompletionRequest, CompletionResponse, Provider } from '../core/ports.ts'
-import { postJson, snippet } from './http.ts'
+import type { CompletionRequest, CompletionResponse, Provider, StreamSignal } from '../core/ports.ts'
+import { postStream, snippet } from './http.ts'
+import type { PostStreamOptions } from './http.ts'
 import { shapeMessages } from './messages.ts'
-import { adaptsOf, isRecord, mergeBody, prepareHttp, requestSettings, thinkingIssues } from './options.ts'
+import { adaptsOf, isRecord, mergeBody, prepareHttp, requestSettings, streamFacts, thinkingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions, StructuredOutput, Thinking, ThinkingControl } from './options.ts'
-import { endedEarly, joinedText, MAX_MODEL_TEXT, readAnswer, replyFailure, tokenUsage } from './reply.ts'
+import { endedEarly, joinedText, MAX_MODEL_TEXT, readAnswer, replyFailure, STREAMED_REASONING, tokenUsage } from './reply.ts'
 import { checkFits, contextBudget, replyBudgetOf, roomTokens, statedReply, worstCaseTokens } from './size.ts'
 import type { ContextBudget } from './size.ts'
+import { MAX_ANSWER_CHARS, streamEnded } from './stream.ts'
+import type { StreamItem } from './stream.ts'
 
 /** The options of an OpenAI-compatible provider. */
 export interface OpenAICompatibleOptions extends HttpProviderOptions {
@@ -28,7 +31,12 @@ export interface OpenAICompatibleOptions extends HttpProviderOptions {
  * variables, such as turning thinking off on vLLM or Together, and runs nothing on the server.
  */
 const RULES: Omit<AdapterRules, 'auth'> = {
-  reservedBodyKeys: ['model', 'messages', 'stream'],
+  reservedBodyKeys: [
+    'model',
+    'messages',
+    'stream',
+    'stream_options',
+  ],
   toolBodyKeys: [
     'tools',
     'tool_choice',
@@ -65,6 +73,15 @@ const THINKING: ThinkingControl = {
 const MAX_TOKENS_FIELDS: ReadonlySet<unknown> = new Set(['max_tokens', 'max_completion_tokens'])
 /** The body field that sets the structured-output mode, which a 400 may name. */
 const FORMAT_FIELDS = ['response_format']
+/** The streaming fields a 400 may name: the options first, so a body that names them is no refusal of streaming itself. */
+const STREAM_OPTIONS_WORD = { word: 'stream_options', refused: 'streamOptions' } as const
+const STREAM_WORD = { word: 'stream', refused: 'stream' } as const
+/** The data of the last event of a stream. */
+const SENTINEL = '[DONE]'
+/** The most choices an assembled stream keeps: a request asks for one, and the reader reads the first. */
+const MAX_CHOICES = 8
+/** The characters of streamed text one token is taken to hold, when the server counts none. */
+const CHARS_PER_TOKEN = 4
 
 function responseFormat(mode: StructuredOutput, output: CompletionRequest['output']): unknown {
   if (mode === 'json') return { type: 'json_object' }
@@ -206,6 +223,179 @@ function readReply(reply: unknown, { id, model, budget }: Pick<OpenAICompatibleO
   }
 }
 
+/** One choice of a stream as it is built: its text joined, its reasoning only known to have shown, never kept. */
+interface Streamed {
+  content: string
+  refusal: string
+  reasoned: boolean
+  annotations: Set<string>
+  ranTool: boolean
+  finish: unknown
+}
+
+/** The characters of the text a part of a thinking content holds, nested as Mistral writes it, or a plain string. */
+function thinkingChars(thinking: unknown): number {
+  if (typeof thinking === 'string') return thinking.length
+  return Array.isArray(thinking)
+    ? thinking.reduce<number>((sum, part) => sum + (isRecord(part) && typeof part.text === 'string'
+        ? part.text.length
+        : 0), 0)
+    : 0
+}
+
+/**
+ * The whole reply a stream of chat completion chunks amounts to, in the shape `readReply` reads, so every check of a
+ * whole reply runs on it unchanged: the model of the first chunk that names one; per choice, `content` joined from
+ * string deltas and text parts, `refusal` joined, the annotation types and a non-empty `executed_tools` kept as markers
+ * (`ranTool` reads them), the reasoning as the one word `STREAMED_REASONING` when any showed, its text never kept, and
+ * the last `finish_reason` that is not null; the usage of the last chunk that holds one; and a chunk's `error`, which
+ * ends the read as the reply's own `error`, read as a whole reply's is.
+ *
+ * The stream is complete at a choice's `finish_reason`, and is read on to `[DONE]` or the body's end, since a server sends
+ * its usage after it. A `[DONE]` or an end with no finish reason and no error is a broken stream: the failure `streamEnded`
+ * names, a `network` one, retried as a dropped connection is, never an answer. The text passes 1 000 000 characters
+ * with an `invalid-response`. Each data event reports a `data` signal: the larger of the server's own output count and a
+ * quarter of the characters streamed so far, and whether an answer or reasoning has shown text.
+ */
+export async function assembleOpenAi(items: AsyncIterable<StreamItem>, providerId: string, onProgress?: (signal: StreamSignal) => void): Promise<Record<string, unknown>> {
+  const choices = new Map<number, Streamed>()
+  let model: string | undefined
+  let usage: Record<string, unknown> | undefined
+  let error: unknown
+  let answerChars = 0
+  let reasoningChars = 0
+  let counted = 0
+
+  const choiceOf = (index: number): Streamed | undefined => {
+    const known = choices.get(index)
+    if (known !== undefined) return known
+    if (choices.size >= MAX_CHOICES) return undefined
+    const fresh: Streamed = {
+      content: '',
+      refusal: '',
+      reasoned: false,
+      annotations: new Set(),
+      ranTool: false,
+      finish: undefined,
+    }
+    choices.set(index, fresh)
+    return fresh
+  }
+  const answer = (choice: Streamed, field: 'content' | 'refusal', text: string): void => {
+    choice[field] += text
+    answerChars += text.length
+    if (answerChars > MAX_ANSWER_CHARS) throw replyFailure(providerId)('invalid-response', `the reply stream's answer is over ${MAX_ANSWER_CHARS} characters`)
+  }
+  const reasoning = (choice: Streamed, chars: number, shown: boolean): void => {
+    reasoningChars += chars
+    if (shown) choice.reasoned = true
+  }
+  const readDelta = (choice: Streamed, delta: Record<string, unknown>): void => {
+    const { content } = delta
+    if (typeof content === 'string') {
+      answer(choice, 'content', content)
+    } else if (Array.isArray(content)) {
+      for (const part of content) {
+        if (!isRecord(part)) continue
+        if (part.type === 'text' && typeof part.text === 'string') answer(choice, 'content', part.text)
+        else if (part.type === 'thinking') reasoning(choice, thinkingChars(part.thinking), true)
+      }
+    }
+    if (typeof delta.refusal === 'string') answer(choice, 'refusal', delta.refusal)
+    for (const field of ['reasoning', 'reasoning_content'] as const) {
+      const text = delta[field]
+      if (typeof text === 'string') reasoning(choice, text.length, text.trim() !== '')
+    }
+    if (Array.isArray(delta.annotations)) {
+      for (const entry of delta.annotations) {
+        if (isRecord(entry) && typeof entry.type === 'string') choice.annotations.add(entry.type)
+      }
+    }
+    if (Array.isArray(delta.executed_tools) && delta.executed_tools.length > 0) choice.ranTool = true
+  }
+  const readChunk = (chunk: Record<string, unknown>): void => {
+    if (model === undefined && typeof chunk.model === 'string' && chunk.model !== '') model = chunk.model
+    if (isRecord(chunk.usage)) {
+      usage = chunk.usage
+      const tokens = chunk.usage.completion_tokens
+      if (typeof tokens === 'number' && Number.isFinite(tokens) && tokens >= 0) counted = tokens
+    }
+    if (typeof chunk.error === 'string' || isRecord(chunk.error)) error = chunk.error
+    if (!Array.isArray(chunk.choices)) return
+    chunk.choices.forEach((entry: unknown, position) => {
+      if (!isRecord(entry)) return
+      const index = typeof entry.index === 'number' && Number.isSafeInteger(entry.index) && entry.index >= 0
+        ? entry.index
+        : position
+      const choice = choiceOf(index)
+      if (choice === undefined) return
+      if (isRecord(entry.delta)) readDelta(choice, entry.delta)
+      if (entry.finish_reason !== undefined && entry.finish_reason !== null) choice.finish = entry.finish_reason
+    })
+  }
+  const finished = (): boolean => [
+    ...choices.values(),
+  ].some(choice => choice.finish !== undefined)
+  const assembled = (): Record<string, unknown> => ({
+    ...model === undefined
+      ? {}
+      : { model },
+    ...error === undefined
+      ? {}
+      : { error },
+    choices: [
+      ...choices.entries(),
+    ].sort(([a], [b]) => a - b).map(([index, choice]) => ({
+      index,
+      message: {
+        role: 'assistant',
+        ...choice.content === ''
+          ? {}
+          : { content: choice.content },
+        ...choice.refusal === ''
+          ? {}
+          : { refusal: choice.refusal },
+        ...choice.reasoned
+          ? { reasoning: STREAMED_REASONING }
+          : {},
+        ...choice.annotations.size === 0
+          ? {}
+          : {
+              annotations: [...choice.annotations].map(type => ({ type })),
+            },
+        ...choice.ranTool
+          ? {
+              executed_tools: [{}],
+            }
+          : {},
+      },
+      finish_reason: choice.finish,
+    })),
+    ...usage === undefined
+      ? {}
+      : { usage },
+  })
+
+  for await (const item of items) {
+    if (item.kind === 'keep-alive') continue
+    if (item.kind === 'done') {
+      if (!finished()) throw streamEnded(providerId)
+      return assembled()
+    }
+    if (isRecord(item.value)) readChunk(item.value)
+    onProgress?.({
+      kind: 'data',
+      outputTokens: Math.max(counted, Math.ceil((answerChars + reasoningChars) / CHARS_PER_TOKEN)),
+      answer: answerChars > 0,
+      reasoning: reasoningChars > 0,
+    })
+    // An error ends the read at once: it is the reply, and nothing after it changes it.
+    if (error !== undefined) return assembled()
+  }
+  if (!finished()) throw streamEnded(providerId)
+  return assembled()
+}
+
 /**
  * A provider for any OpenAI-compatible `/chat/completions` endpoint. The key, when there is one, travels
  * only in the header `auth` names, `Authorization: Bearer` by default (invariant I1). It refuses, before
@@ -221,10 +411,17 @@ function readReply(reply: unknown, { id, model, budget }: Pick<OpenAICompatibleO
  * `prompt`, and honours the request's `structuredOutput`. A 400 or 422 that names `response_format`, sent in
  * `json` or `schema` mode, is marked `refused` for the structured output.
  *
+ * It streams every reply, a whole request's too, through `postStream`: `stream: true` with `stream_options:
+ * { include_usage: true }`, which `assembleOpenAi` reads into the whole reply `readReply` checks. It states `streams`
+ * unless the option `stream` is `false`, and that it may step down, `adapts.stream`, when the option is unset: the
+ * request's `stream` `'bare'` leaves the options out, and `false` asks a whole reply, neither field sent. A 400 or 422
+ * that names `stream_options` is marked `refused` as `streamOptions`, and one that names `stream`, as `stream`. A server
+ * that answers a streamed request whole gives a reply marked `whole`.
+ *
  * @throws ConfigError with every problem of the options, before any request
  */
 export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
-  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, maxTokensField = 'max_tokens', thinking, systemPrompt = 'native', structuredOutput = 'json', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES, lowersThinkingTo } = options
+  const { id, model, auth = 'bearer' as Auth, temperature = 0, maxTokens, contextTokens, maxTokensField = 'max_tokens', thinking, systemPrompt = 'native', structuredOutput = 'json', timeoutMs = DEFAULT_TIMEOUT_MS, retries = DEFAULT_RETRIES, lowersThinkingTo, stream: streamOption } = options
   const fieldIssues = [
     ...MAX_TOKENS_FIELDS.has(maxTokensField)
       ? []
@@ -246,6 +443,7 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
     level: lowersThinkingTo ?? 'low',
     control: THINKING,
     format: [FORMAT_FIELDS],
+    streams: true,
   })
 
   return {
@@ -253,6 +451,7 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
     model,
     timeoutMs,
     retries,
+    ...streamFacts(streamOption),
     ...statedReply(contextTokens, maxTokens, thinking),
     ...adapting,
     worstCase: request => worstCaseTokens(shapeMessages(request, systemPrompt), request.output, budgetOf(request)),
@@ -262,8 +461,14 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
       const budget = budgetOf(request)
       checkFits(id, { system, messages }, request.output, budget)
       const settings = requestSettings({ thinking, structuredOutput }, adapting.adapts, request)
-      // JSON.stringify drops the undefined fields: no response_format for `prompt`, no temperature for null.
-      const reply = await postJson<unknown>({
+      const streams = streamOption !== false && settings.stream !== false
+      const streamWords: PostStreamOptions['streamWords'] = !streams
+        ? undefined
+        : settings.stream === 'bare'
+          ? [STREAM_WORD]
+          : [STREAM_OPTIONS_WORD, STREAM_WORD]
+      // JSON.stringify drops the undefined fields: no response_format for `prompt`, no temperature for null, no stream for whole replies.
+      const sentReply = await postStream({
         providerId: id,
         url,
         headers,
@@ -279,14 +484,33 @@ export function openaiCompatible(options: OpenAICompatibleOptions): Provider {
           temperature: temperature ?? undefined,
           reasoning_effort: reasoningEffort(settings.thinking),
           [maxTokensField]: budget.replyTokens,
+          stream: streams
+            ? true
+            : undefined,
+          stream_options: streams && settings.stream !== 'bare'
+            ? { include_usage: true }
+            : undefined,
         }, extraBody),
         signal: request.signal,
         redact,
+        format: 'sse',
+        sentinel: SENTINEL,
+        onProgress: request.onProgress,
+        ...streamWords === undefined
+          ? {}
+          : { streamWords },
         ...settings.structuredOutput === 'prompt'
           ? {}
           : { formatFields: FORMAT_FIELDS },
       })
-      return readReply(reply, { id, model, budget }, redact)
+      const answered = 'whole' in sentReply
+      const reply = answered
+        ? sentReply.whole
+        : await assembleOpenAi(sentReply.items, id, request.onProgress)
+      const read = readReply(reply, { id, model, budget }, redact)
+      return streams && answered
+        ? { ...read, whole: true }
+        : read
     },
   }
 }

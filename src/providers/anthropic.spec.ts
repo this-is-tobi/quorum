@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
-import { sent, stubFetch } from '../testing/http.ts'
+import { jsonReply, sent, stubFetch } from '../testing/http.ts'
 import { anthropic } from './anthropic.ts'
 import { contextWindowFull, countedOut, empty, message, notFound, reasoningOnly, refusal, toolUse, truncated } from '../testing/fixtures/anthropic.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
@@ -53,6 +53,9 @@ describeProviderContract({
     },
     lowersTo: 'low',
   },
+  streams: false,
+  streamFields: {},
+  streamed: reply => jsonReply(reply),
   reservedBodyKeys: [
     'model',
     'messages',

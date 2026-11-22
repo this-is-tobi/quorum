@@ -80,6 +80,7 @@ function specView(spec: ProviderSpec): Record<string, unknown> {
     maxTokensField: own(spec, 'maxTokensField'),
     thinking: own(spec, 'thinking'),
     systemPrompt: systemPromptView(own(spec, 'systemPrompt')),
+    stream: own(spec, 'stream'),
     timeoutMs: own(spec, 'timeoutMs'),
     retries: own(spec, 'retries'),
   }

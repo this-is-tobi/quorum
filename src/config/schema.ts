@@ -4,7 +4,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import { MAX_PATTERNS, patternProblem, TOO_MANY_PATTERNS } from '../core/exclude.ts'
 import { MIN_PART_TOKENS } from '../core/parts.ts'
 import type { Adapts, CompletionRequest, CompletionResponse, JsonSchema, Provider } from '../core/ports.ts'
-import { adaptsProblem, MAX_RETRIES, MAX_STATED_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, retriesProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../core/ports.ts'
+import { adaptsProblem, MAX_RETRIES, MAX_STATED_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, retriesProblem, streamsProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../core/ports.ts'
 import { FAIL_ON_LEVELS } from '../core/profile.ts'
 import { ownData } from '../core/stages/context.ts'
 import { securityProfile } from '../profiles/security.ts'
@@ -81,6 +81,7 @@ const providerShape = {
   maxTokens: z.int().min(1).optional().describe('The most tokens a reply may hold, thinking included: the ceiling of every reply, sent as the server\'s limit; with it unset, each request is sent the reply budget derived from the window, else 16000. On claude-code, Claude Code\'s own limit on each reply'),
   maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']).optional().describe('The body field that carries maxTokens, on the openai-compatible protocol'),
   systemPrompt: z.enum(['native', 'inline']).optional().describe('Where the instructions go: the protocol\'s system field, or inline in the first message'),
+  stream: z.boolean().optional().describe('Whether each reply is streamed: unset, it is, and quorum steps down by itself when the server refuses a stream\'s options, refuses streaming or answers a stream whole; true pins the stream, so a refusal fails the call; false asks for whole replies'),
   timeoutMs: z.int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe('The deadline of one attempt of a call, in milliseconds; 600000 when unset. On claude-code, Claude Code\'s wait for each attempt\'s response headers, and the whole run\'s deadline is timeoutMs times retries plus one'),
   retries: z.int().min(0).max(MAX_RETRIES).optional().describe('How many times a call that failed in passing is tried again; 2 when unset'),
   args: z.array(z.string()).optional().describe('On claude-code, extra claude flags, each with its value: --effort, --fallback-model, --max-budget-usd, or --betas with auth api-key'),
@@ -162,6 +163,7 @@ interface StatedFacts {
   readonly maxTokens?: number
   readonly thinking?: NonNullable<Provider['thinking']>
   readonly adapts?: Adapts
+  readonly streams?: true
 }
 
 /** Each fact a provider states, with the check of its value: a deadline up to what a provider may state, which is more than an option takes, and the window, the `maxTokens` and the thinking level the core sizes replies from, and what it lets the core adapt. */
@@ -175,12 +177,14 @@ const FACTS: ReadonlyArray<{ readonly field: keyof StatedFacts, readonly problem
   { field: 'maxTokens', problem: tokensProblem },
   { field: 'thinking', problem: thinkingProblem },
   { field: 'adapts', problem: adaptsProblem },
+  { field: 'streams', problem: streamsProblem },
 ]
 
 /** The `adapts` a provider states, copied once from its own data into a frozen object with no prototype that holds the stated fields alone. */
 function adaptsCopy(value: unknown): Adapts {
   const thinking = ownData(value, 'thinking')
   const prompt = ownData(value, 'prompt')
+  const stream = ownData(value, 'stream')
   return Object.freeze(withoutPrototype<Adapts>(Object.entries({
     ...thinking === undefined
       ? {}
@@ -188,6 +192,9 @@ function adaptsCopy(value: unknown): Adapts {
     ...prompt === undefined
       ? {}
       : { prompt },
+    ...stream === undefined
+      ? {}
+      : { stream },
   })))
 }
 

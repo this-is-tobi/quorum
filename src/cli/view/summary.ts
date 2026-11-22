@@ -56,14 +56,14 @@ function causeWords({ kind, status }: Cause): string {
 /**
  * What to do about a gap of `reason`, or undefined when there is nothing to say: a fixed phrase for most reasons,
  * and for `research-failed` and `provider-down` the fix of each cause the events gave, joined by `, or ` (a used-up
- * quota's is `QUOTA_FIX`, a call cut on the way's `CUT_ADVICE`), `research-failed` with no cause pointing to the report.
+ * quota's is `QUOTA_FIX`, a call cut on the way's `CUT_ADVICE`, a refused stream's `set stream: false`), `research-failed` with no cause pointing to the report.
  */
 export function gapFix(reason: IncompleteReason, causes: readonly Cause[]): string | undefined {
   if (reason !== 'research-failed' && reason !== 'provider-down') return FIXES[reason]
   const fixes = new Set(causes.map((cause) => {
     if (cause.exhausted === true) return QUOTA_FIX
     return cause.cutAfterMs === undefined
-      ? failureFix(cause.kind, cause.status)
+      ? failureFix(cause.kind, cause.status, cause.refused)
       : CUT_ADVICE
   }))
   if (fixes.size === 0) {

@@ -7,10 +7,13 @@ import type { Adaptation } from './types.ts'
 /**
  * What quorum moves by itself for the rest of one review, and how it finds out that a move helps: the probe.
  *
- * Two settings move, each only for a provider that states it can (`Provider.adapts`, which an explicit option
+ * Three settings move, each only for a provider that states it can (`Provider.adapts`, which an explicit option
  * or a control `extraBody` sets leaves unstated, so an explicit setting is never undone): `thinking`, lowered on
- * a reply that ran out of room while reasoning or held only reasoning, and `structuredOutput`, moved from JSON
- * mode to prompt mode on an empty reply or a 400 or 422 that names the structured-output field. A provider's
+ * a reply that ran out of room while reasoning or held only reasoning, `structuredOutput`, moved from JSON
+ * mode to prompt mode on an empty reply or a 400 or 422 that names the structured-output field, and `stream`, which
+ * steps down twice: to a stream with no stream options (`bare`) on a 400 or 422 that names them, and to whole replies on
+ * one that names streaming itself, each step with its own probe, and to whole replies at once, with no probe, when a
+ * server answered a streamed call whole (`answeredWhole`). A provider's
  * state is kept per provider object, as its health is, and per setting it goes through these phases, once:
  *
  * - none: no call has needed the setting, and every call sends the provider's own;
@@ -27,7 +30,7 @@ import type { Adaptation } from './types.ts'
  *   own level. Any other failure of a probe sent after a cut-off (`network`, a 429, a 401, 403 or 404, a 500, 502
  *   or 503) shows nothing of the server's level: it moves nothing and records nothing, and the call ends with its
  *   first failure, so the part splits. The prompt probe moves only when it answered, and a failed one leaves JSON
- *   mode and records nothing. A probe a limit or the stop ended never reached the server: it moves nothing and
+ *   mode and records nothing; a stream step's probe moves it on an answer alone, as the prompt probe does. A probe a limit or the stop ended never reached the server: it moves nothing and
  *   records nothing. Either way the setting counts as tried, so each setting is probed at most once per provider
  *   in a review.
  *
@@ -46,10 +49,21 @@ import type { Adaptation } from './types.ts'
 export interface Fields {
   readonly thinking?: 'low' | 'off'
   readonly structuredOutput?: 'prompt'
+  readonly stream?: false | 'bare'
 }
 
 /** A setting that moves. */
-export type Setting = 'thinking' | 'structuredOutput'
+export type Setting = 'thinking' | 'structuredOutput' | 'stream'
+
+/** One step of a setting that has its own phase: the stream has two, a bare stream and whole replies. */
+type Step = 'thinking' | 'structuredOutput' | 'streamBare' | 'streamWhole'
+
+/** The steps of each setting. */
+const STEPS: Readonly<Record<Setting, readonly Step[]>> = {
+  thinking: ['thinking'],
+  structuredOutput: ['structuredOutput'],
+  stream: ['streamBare', 'streamWhole'],
+}
 
 /**
  * How a probe's re-send ended: `answered`, the server returned a reply; `refused`, a 400 or 422; `failed`, the
@@ -78,6 +92,11 @@ export interface Adaptations {
   readonly reasoned: (target: Target, response: CompletionResponse) => void
   /** The findings a research request asks for: `budget.findings`, or `budget.findingsWithoutThinking` once a reply showed no reasoning. */
   readonly findings: (target: Target, budget: { readonly findings: number, readonly findingsWithoutThinking: number }) => number
+  /**
+   * A streamed call came back as a whole reply: the provider moves to whole replies for the rest of the review, with no
+   * probe, once, when it states that it may (`adapts.stream`) and has not moved there; the record it makes, else `undefined`.
+   */
+  readonly answeredWhole: (target: Target) => Adaptation | undefined
   /** What the review has moved, in the order it happened. */
   readonly record: () => readonly Adaptation[]
   /** Resolves once no probe of the provider is pending, so a call sends its request at the settled settings; `stop` ends the wait with its reason. */
@@ -93,17 +112,17 @@ export interface Adaptations {
 /** How low each level is: the lowering of a level to a higher one is none. */
 const LEVELS = { off: 0, low: 1, default: 2 } as const
 
-/** One setting's probe, from the call that began it to its settlement. */
+/** One step's probe, from the call that began it to its settlement. */
 interface Pending {
   readonly phase: 'pending'
   readonly cause: Adaptation['cause']
-  /** The level the thinking probe lowers to; absent for the structured output. */
+  /** The level the thinking probe lowers to; absent for the other steps. */
   readonly level?: 'low' | 'off'
   readonly wait: Promise<void>
   readonly release: () => void
 }
 
-/** A setting whose probe has ended: it is tried, and never probed again. */
+/** A step whose probe has ended: it is tried, and never probed again. */
 interface Tried {
   readonly phase: 'tried'
 }
@@ -112,8 +131,10 @@ interface Tried {
 interface State {
   thinking?: Pending | Tried
   structuredOutput?: Pending | Tried
+  streamBare?: Pending | Tried
+  streamWhole?: Pending | Tried
   /** What the settled probes moved. */
-  moved: { thinking?: 'low' | 'off', structuredOutput?: 'prompt' }
+  moved: { thinking?: 'low' | 'off', structuredOutput?: 'prompt', stream?: false | 'bare' }
   /** A research reply showed no reasoning. */
   noReasoning: boolean
 }
@@ -143,30 +164,52 @@ export function createAdaptations(): Adaptations {
     return fresh
   }
 
-  /** What `failure` asks of `target`, when the provider states it can, whatever the setting's phase: the setting, the cause, and the level a lowering goes to. */
-  const answer = (target: Target, failure: unknown): { readonly setting: Setting, readonly cause: Adaptation['cause'], readonly level?: 'low' | 'off' } | undefined => {
+  /** What `failure` asks of `target`, when the provider states it can, whatever the step's phase: the setting and its step, the cause, and the level a lowering goes to. */
+  const answer = (target: Target, failure: unknown): { readonly setting: Setting, readonly step: Step, readonly cause: Adaptation['cause'], readonly level?: 'low' | 'off' } | undefined => {
     const lack = lackOf(failure)
     const level = target.adapts?.thinking
     if (lack?.noAnswer === 'thinking' && level !== undefined && LEVELS[level] < LEVELS[target.thinking]) {
       return {
         setting: 'thinking',
+        step: 'thinking',
         cause: lack.kind === 'truncated'
           ? 'cut-off-thinking'
           : 'no-answer-thinking',
         level,
       }
     }
+    const refused = isRefusal(failure)
+      ? ownData(failure, 'refused')
+      : undefined
+    if (target.adapts?.stream === true && (refused === 'streamOptions' || refused === 'stream')) {
+      return {
+        setting: 'stream',
+        step: refused === 'streamOptions'
+          ? 'streamBare'
+          : 'streamWhole',
+        cause: 'stream-refused',
+      }
+    }
     if (target.adapts?.prompt !== true) return undefined
-    if (lack?.kind === 'no-answer' && lack.noAnswer === 'empty') return { setting: 'structuredOutput', cause: 'empty-reply' }
-    return ownData(failure, 'refused') === 'structuredOutput' && isRefusal(failure)
-      ? { setting: 'structuredOutput', cause: 'format-refused' }
+    if (lack?.kind === 'no-answer' && lack.noAnswer === 'empty') return { setting: 'structuredOutput', step: 'structuredOutput', cause: 'empty-reply' }
+    return refused === 'structuredOutput'
+      ? { setting: 'structuredOutput', step: 'structuredOutput', cause: 'format-refused' }
       : undefined
   }
 
   /** The fields a provider's settled probes have moved, as a copy. */
   const movedOf = (state: State): Fields => ({ ...state.moved })
 
-  const pendingOf = (state: State): Pending | undefined => [state.thinking, state.structuredOutput].find((setting): setting is Pending => setting?.phase === 'pending')
+  /** The probe pending on any step of `setting`, when there is one: the steps of a setting never probe at once. */
+  const pendingIn = (state: State, setting: Setting): { readonly step: Step, readonly pending: Pending } | undefined => {
+    for (const step of STEPS[setting]) {
+      const phase = state[step]
+      if (phase?.phase === 'pending') return { step, pending: phase }
+    }
+    return undefined
+  }
+
+  const pendingOf = (state: State): Pending | undefined => Object.values(STEPS).flat().map(step => state[step]).find((phase): phase is Pending => phase?.phase === 'pending')
 
   return {
     sent: target => movedOf(stateOf(target)),
@@ -174,12 +217,12 @@ export function createAdaptations(): Adaptations {
       const asked = answer(target, failure)
       if (asked === undefined) return undefined
       const state = stateOf(target)
-      if (state[asked.setting] !== undefined) return undefined
+      if (state[asked.step] !== undefined || pendingIn(state, asked.setting) !== undefined) return undefined
       let release = (): void => {}
       const wait = new Promise<void>((resolve) => {
         release = resolve
       })
-      state[asked.setting] = {
+      state[asked.step] = {
         phase: 'pending',
         cause: asked.cause,
         ...asked.level === undefined
@@ -193,14 +236,21 @@ export function createAdaptations(): Adaptations {
         cause: asked.cause,
         with: asked.setting === 'thinking'
           ? { thinking: asked.level }
-          : { structuredOutput: 'prompt' },
+          : asked.setting === 'stream'
+            ? {
+                stream: asked.step === 'streamBare'
+                  ? 'bare'
+                  : false,
+              }
+            : { structuredOutput: 'prompt' },
       }
     },
     settle: (target, setting, outcome) => {
       const state = stateOf(target)
-      const probe = state[setting]
-      if (probe?.phase !== 'pending') return undefined
-      state[setting] = { phase: 'tried' }
+      const found = pendingIn(state, setting)
+      if (found === undefined) return undefined
+      const { step, pending: probe } = found
+      state[step] = { phase: 'tried' }
       let record: Adaptation | undefined
       if (setting === 'thinking' && probe.level !== undefined) {
         // The call path settles `failed` only when the server showed it took the request, so the level moves on an answer or a failure.
@@ -231,12 +281,47 @@ export function createAdaptations(): Adaptations {
           to: 'prompt',
           cause: probe.cause,
         }
+      } else if (setting === 'stream' && outcome === 'answered' && state.moved.stream !== false && !(step === 'streamBare' && state.moved.stream === 'bare')) {
+        // A step moves on an answer alone, and never back up: a provider already moved to whole replies stays there.
+        record = {
+          provider: target.ref.id,
+          setting,
+          from: state.moved.stream === 'bare'
+            ? 'bare'
+            : 'stream',
+          to: step === 'streamBare'
+            ? 'bare'
+            : 'whole',
+          cause: probe.cause,
+        }
+        state.moved.stream = step === 'streamBare'
+          ? 'bare'
+          : false
       }
       if (record !== undefined) records.push(record)
       probe.release()
       return record === undefined
         ? undefined
         : { ...record }
+    },
+    answeredWhole: (target) => {
+      if (target.adapts?.stream !== true) return undefined
+      const state = stateOf(target)
+      // Moved already, or a probe of whole replies is pending: it settles the move itself.
+      if (state.moved.stream === false || state.streamWhole !== undefined) return undefined
+      const record: Adaptation = {
+        provider: target.ref.id,
+        setting: 'stream',
+        from: state.moved.stream === 'bare'
+          ? 'bare'
+          : 'stream',
+        to: 'whole',
+        cause: 'stream-answered-whole',
+      }
+      state.moved.stream = false
+      state.streamWhole = { phase: 'tried' }
+      records.push(record)
+      return { ...record }
     },
     reasoned: (target, response) => {
       if (ownData(response, 'reasoning') === false && !holdsReasoning(response.text)) stateOf(target).noReasoning = true
@@ -252,8 +337,8 @@ export function createAdaptations(): Adaptations {
       const asked = answer(target, failure)
       if (asked === undefined) return undefined
       const state = stateOf(target)
-      const probe = state[asked.setting]
-      if (probe?.phase === 'pending') await until(probe.wait, stop)
+      const found = pendingIn(state, asked.setting)
+      if (found !== undefined) await until(found.pending.wait, stop)
       const now = movedOf(state)
       return now[asked.setting] !== undefined && now[asked.setting] !== sent[asked.setting]
         ? now

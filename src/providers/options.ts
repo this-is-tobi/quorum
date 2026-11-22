@@ -78,6 +78,12 @@ export interface HttpProviderOptions {
    * lowers by itself when a reply runs out of room while reasoning. Refused beside the same control in `extraBody`.
    */
   thinking?: Thinking
+  /**
+   * Whether the adapter streams each reply. Unset, it streams, and quorum steps down by itself when the server refuses a
+   * stream's options, refuses streaming or answers a stream whole, each shown; `true` pins the stream, so a refusal fails
+   * the call; `false` asks for whole replies, as before streams.
+   */
+  stream?: boolean
   /** The deadline of one attempt, in milliseconds, from 1000 to 86400000. Default 600000. */
   timeoutMs?: number
   /** The retries of a call that failed in passing, from 0 to 5. Default 2. */
@@ -370,7 +376,7 @@ export function attemptIssues(id: string, timeoutMs: unknown, retries: unknown):
  * message repeats a value: a key, a header value or a URL can be a secret.
  */
 export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRules): ConfigIssue[] {
-  const { id, baseUrl, apiKey, headers, query, extraBody, temperature, maxTokens, contextTokens, systemPrompt, structuredOutput, timeoutMs, retries } = options
+  const { id, baseUrl, apiKey, headers, query, extraBody, temperature, maxTokens, contextTokens, systemPrompt, structuredOutput, stream, timeoutMs, retries } = options
   const { auth, structuredOutputs } = rules
   const fixedHeaders = rules.fixedHeaders.map(name => name.toLowerCase())
   const issues = [
@@ -406,6 +412,7 @@ export function httpOptionIssues(options: HttpProviderOptions, rules: AdapterRul
   if (structuredOutput !== undefined && !structuredOutputs.includes(structuredOutput)) {
     issues.push({ path: `${id}.structuredOutput`, message: `must be ${wordList(structuredOutputs)}` })
   }
+  if (stream !== undefined && typeof stream !== 'boolean') issues.push({ path: `${id}.stream`, message: 'must be true or false' })
   issues.push(...attemptIssues(id, timeoutMs, retries))
   return issues
 }
@@ -462,20 +469,23 @@ export interface Lowering {
   readonly control: ThinkingControl
   /** The paths of the body fields that set the structured-output mode, as an `extraBody` would set them; absent when the protocol's default is `prompt`. */
   readonly format?: readonly (readonly string[])[]
+  /** Set when the protocol streams its replies, so the core may step it down to a stream with no options and to whole replies. */
+  readonly streams?: true
 }
 
 /**
  * What an adapter states it lets the core change by itself (`Provider.adapts`), from its options: a `thinking`
  * level when the option leaves thinking unset and `extraBody` does not set the control, since `extraBody` is
- * merged last and would undo a lowering, and `prompt` when the protocol's default is `json`, the option leaves
- * the mode unset and `extraBody` sets none of its fields. An explicit setting is never undone. The result is
- * empty, to spread, when nothing adapts.
+ * merged last and would undo a lowering, `prompt` when the protocol's default is `json`, the option leaves
+ * the mode unset and `extraBody` sets none of its fields, and `stream` when the protocol streams and the option leaves
+ * `stream` unset. An explicit setting is never undone. The result is empty, to spread, when nothing adapts.
  */
-export function adaptsOf(options: Pick<HttpProviderOptions, 'thinking' | 'structuredOutput' | 'extraBody'>, { level, control, format }: Lowering): { readonly adapts?: Adapts } {
-  const { thinking, structuredOutput, extraBody } = options
+export function adaptsOf(options: Pick<HttpProviderOptions, 'thinking' | 'structuredOutput' | 'extraBody' | 'stream'>, { level, control, format, streams }: Lowering): { readonly adapts?: Adapts } {
+  const { thinking, structuredOutput, extraBody, stream } = options
   const lowers = thinking === undefined && !thinkingControl(extraBody, control.path)
   const prompts = format !== undefined && structuredOutput === undefined && !format.some(path => thinkingControl(extraBody, path))
-  if (!lowers && !prompts) return {}
+  const steps = streams === true && stream === undefined
+  if (!lowers && !prompts && !steps) return {}
   return {
     adapts: {
       ...lowers
@@ -484,16 +494,31 @@ export function adaptsOf(options: Pick<HttpProviderOptions, 'thinking' | 'struct
       ...prompts
         ? { prompt: true as const }
         : {},
+      ...steps
+        ? { stream: true as const }
+        : {},
     },
   }
 }
 
+/** What an adapter that streams states of its calls: `streams` unless the option asks for whole replies. */
+export function streamFacts(stream: boolean | undefined): { readonly streams?: true } {
+  return stream === false
+    ? {}
+    : { streams: true }
+}
+
 /**
- * The thinking level and the structured-output mode a request is sent with: the options' own, unless the provider
- * states it adapts (`adapts`) and the request carries the core's change, so a setting the options hold is never undone.
+ * The thinking level, the structured-output mode and the stream setting a request is sent with: the options' own, unless
+ * the provider states it adapts (`adapts`) and the request carries the core's change, so a setting the options hold is
+ * never undone. The stream setting is the request's alone, `false` for whole replies and `'bare'` for a stream with no
+ * options, and only under `adapts.stream`; else it is none.
  */
-export function requestSettings(settings: { readonly thinking: Thinking | undefined, readonly structuredOutput: StructuredOutput }, adapts: Adapts | undefined, request: Pick<CompletionRequest, 'thinking' | 'structuredOutput'>): { readonly thinking: Thinking | undefined, readonly structuredOutput: StructuredOutput } {
+export function requestSettings(settings: { readonly thinking: Thinking | undefined, readonly structuredOutput: StructuredOutput }, adapts: Adapts | undefined, request: Pick<CompletionRequest, 'thinking' | 'structuredOutput' | 'stream'>): { readonly thinking: Thinking | undefined, readonly structuredOutput: StructuredOutput, readonly stream: false | 'bare' | undefined } {
   return {
+    stream: adapts?.stream === true
+      ? request.stream
+      : undefined,
     thinking: settings.thinking ?? (adapts?.thinking === undefined
       ? undefined
       : request.thinking),

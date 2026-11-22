@@ -30,9 +30,27 @@ export interface CompletionRequest {
    * shape is then described in the prompt alone. An adapter honours it only when its `adapts` states `prompt`.
    */
   structuredOutput?: 'prompt'
+  /**
+   * `false` when the core moved the provider to whole replies, after a server refused streaming or answered a streamed
+   * call whole, and `'bare'` when it moved it to a stream with no stream options, after a server refused them. An
+   * adapter honours either only when its `adapts` states a `stream`, so a setting the options hold is never undone.
+   */
+  stream?: false | 'bare'
+  /** Hears each sign of life of a streamed reply, as the adapter reads it: the headers, each data event and each keep-alive. */
+  onProgress?: (signal: StreamSignal) => void
   /** The attempt's own signal: aborted with the review's, or at the attempt's deadline. */
   signal?: AbortSignal
 }
+
+/**
+ * What an adapter reports of a streamed reply as it reads it, which the core reads as proof of life: the reply's headers
+ * came, a data event came with the output tokens so far (the larger of the server's own count and a quarter of the
+ * characters streamed) and whether an answer or reasoning has shown text yet, or a keep-alive came. Numbers and booleans only.
+ */
+export type StreamSignal
+  = | { readonly kind: 'headers' }
+    | { readonly kind: 'data', readonly outputTokens: number, readonly answer: boolean, readonly reasoning: boolean }
+    | { readonly kind: 'keep-alive' }
 
 /**
  * What a provider returns: the reply text, the model that produced it and, when reported, its usage.
@@ -45,6 +63,8 @@ export interface CompletionResponse {
   model: string
   usage?: Usage
   reasoning?: boolean
+  /** `true` when the request streamed and the server answered it whole: the core then asks that provider for whole replies for the rest of the review. */
+  whole?: true
 }
 
 /** The deadline of an attempt when its provider states none: ten minutes. */
@@ -103,19 +123,20 @@ export function thinkingProblem(value: unknown): string | undefined {
     : 'must be default, low or off'
 }
 
-/** What a provider lets the core change by itself for the rest of a review: the level a lowering sends, and prompt mode. */
+/** What a provider lets the core change by itself for the rest of a review: the level a lowering sends, prompt mode, and the stream's two steps down. */
 export interface Adapts {
   readonly thinking?: 'low' | 'off'
   readonly prompt?: true
+  readonly stream?: true
 }
 
 /**
  * What is wrong with a stated `adapts`, worded with what to write, or undefined for an object whose `thinking`
- * is `low` or `off` and whose `prompt` is `true`, each optional. The fields are read as own data, so a getter
+ * is `low` or `off` and whose `prompt` and `stream` are `true`, each optional. The fields are read as own data, so a getter
  * never runs. The value is never quoted.
  */
 export function adaptsProblem(value: unknown): string | undefined {
-  const problem = 'must be an object whose thinking is low or off and whose prompt is true, each optional'
+  const problem = 'must be an object whose thinking is low or off and whose prompt and stream are true, each optional'
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return problem
   const field = (name: string): unknown => {
     const descriptor = Object.getOwnPropertyDescriptor(value, name)
@@ -125,9 +146,17 @@ export function adaptsProblem(value: unknown): string | undefined {
   }
   const thinking = field('thinking')
   const prompt = field('prompt')
-  return (thinking === undefined || thinking === 'low' || thinking === 'off') && (prompt === undefined || prompt === true)
+  const stream = field('stream')
+  return (thinking === undefined || thinking === 'low' || thinking === 'off') && (prompt === undefined || prompt === true) && (stream === undefined || stream === true)
     ? undefined
     : problem
+}
+
+/** What is wrong with a stated `streams`, worded with what to write, or undefined for `true`: a provider that does not stream states nothing. The value is never quoted. */
+export function streamsProblem(value: unknown): string | undefined {
+  return value === true
+    ? undefined
+    : 'must be true'
 }
 
 /**
@@ -195,13 +224,21 @@ export interface Provider {
   /**
    * What the core may change for the rest of a review, once, when a reply calls for it: `thinking`, the level it
    * lowers to (`low` or `off`) when a reply runs out of room while reasoning or holds only reasoning, and `prompt`,
-   * set when it may move the provider from JSON mode to prompt mode on an empty reply or a refused field. State
+   * set when it may move the provider from JSON mode to prompt mode on an empty reply or a refused field, and `stream`,
+   * set when it may move the provider from a stream to a stream with no stream options, then to whole replies, after a
+   * server refused either, or to whole replies when a server answered a streamed call whole. State
    * each only when it is automatic: a provider whose thinking or structured output is set, or whose body sets the
    * control itself, states none, and the core never moves it. A provider that states `adapts` honours the
    * request's `thinking` and `structuredOutput`. It is read when the quorum is created, as an own data
    * property, as `timeoutMs` is.
    */
   readonly adapts?: Adapts
+  /**
+   * `true` when the provider streams its replies: it reads each reply as it arrives and reports it through the request's
+   * `onProgress`. State it only when the provider streams as it is set up: one whose `stream` option is `false` states
+   * none. It is read when the quorum is created, as an own data property, as `timeoutMs` is.
+   */
+  readonly streams?: true
   /**
    * Answer one request. It should honour `request.signal`, settling soon after the signal aborts:
    * the core settles the call at its deadline or at the review's abort without waiting for the

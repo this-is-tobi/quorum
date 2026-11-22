@@ -102,6 +102,8 @@ function chat(model: string, temperature: number | undefined, field: string, mod
     response_format: RESPONSE_FORMATS[mode],
     temperature,
     [field]: 900,
+    stream: true,
+    stream_options: { include_usage: true },
   }
 }
 function ollamaChat(model: string): Body {
@@ -1013,7 +1015,7 @@ describe('what a built provider adapts', () => {
   const adaptsOf = (spec: Record<string, unknown>): unknown => Object.getOwnPropertyDescriptor(buildProvider(sized({ id: 'p', model: 'm', ...spec }) as unknown as ProviderSpec), 'adapts')?.value
 
   it('lowers thinking to off under the vllm and llamacpp presets, and to low under the others', () => {
-    for (const preset of ['vllm', 'llamacpp']) expect(adaptsOf({ preset }), preset).toEqual({ thinking: 'off', prompt: true })
+    for (const preset of ['vllm', 'llamacpp']) expect(adaptsOf({ preset }), preset).toEqual({ thinking: 'off', prompt: true, stream: true })
     for (const preset of [
       'openai',
       'groq',
@@ -1022,27 +1024,27 @@ describe('what a built provider adapts', () => {
       'together',
       'fireworks',
       'xai',
-    ]) expect(adaptsOf({ preset }), preset).toEqual({ thinking: 'low', prompt: true })
-    expect(adaptsOf({ preset: 'azure-openai', baseUrl: AZURE })).toEqual({ thinking: 'low', prompt: true })
+    ]) expect(adaptsOf({ preset }), preset).toEqual({ thinking: 'low', prompt: true, stream: true })
+    expect(adaptsOf({ preset: 'azure-openai', baseUrl: AZURE })).toEqual({ thinking: 'low', prompt: true, stream: true })
     expect(adaptsOf({ preset: 'gemini' })).toEqual({ thinking: 'low', prompt: true })
     // The protocols with a lowering of their own: anthropic lowers to low and has no json to leave, ollama lowers to off.
     expect(adaptsOf({ preset: 'anthropic' })).toEqual({ thinking: 'low' })
     expect(adaptsOf({ preset: 'ollama' })).toEqual({ thinking: 'off', prompt: true })
     // The level is the preset's knowledge: a spec cannot set it, and a thinking the spec sets is never lowered.
-    expect(adaptsOf({ preset: 'openai', lowersThinkingTo: 'off' })).toEqual({ thinking: 'low', prompt: true })
-    expect(adaptsOf({ preset: 'vllm', thinking: 'low' })).toEqual({ prompt: true })
-    expect(adaptsOf({ preset: 'vllm', thinking: 'off' })).toEqual({ prompt: true })
+    expect(adaptsOf({ preset: 'openai', lowersThinkingTo: 'off' })).toEqual({ thinking: 'low', prompt: true, stream: true })
+    expect(adaptsOf({ preset: 'vllm', thinking: 'low' })).toEqual({ prompt: true, stream: true })
+    expect(adaptsOf({ preset: 'vllm', thinking: 'off' })).toEqual({ prompt: true, stream: true })
   })
 
   it('leaves structuredOutput automatic under a json preset, and passes a schema or prompt preset\'s mode', async () => {
     // A json preset is the adapter's own start, so the provider may move from it; a schema or prompt one never moves.
     expect(adaptsOf({ preset: 'vllm' })).toMatchObject({ prompt: true })
-    expect(adaptsOf({ preset: 'lmstudio' })).toEqual({ thinking: 'low' })
-    expect(adaptsOf({ preset: 'openrouter' })).toEqual({ thinking: 'low' })
+    expect(adaptsOf({ preset: 'lmstudio' })).toEqual({ thinking: 'low', stream: true })
+    expect(adaptsOf({ preset: 'openrouter' })).toEqual({ thinking: 'low', stream: true })
     // A mode the spec sets never moves either, json included.
-    expect(adaptsOf({ preset: 'vllm', structuredOutput: 'json' })).toEqual({ thinking: 'off' })
-    expect(adaptsOf({ preset: 'vllm', structuredOutput: 'prompt' })).toEqual({ thinking: 'off' })
-    expect(adaptsOf({ protocol: 'openai-compatible', baseUrl: 'https://h.example/v1' })).toEqual({ thinking: 'low', prompt: true })
+    expect(adaptsOf({ preset: 'vllm', structuredOutput: 'json' })).toEqual({ thinking: 'off', stream: true })
+    expect(adaptsOf({ preset: 'vllm', structuredOutput: 'prompt' })).toEqual({ thinking: 'off', stream: true })
+    expect(adaptsOf({ protocol: 'openai-compatible', baseUrl: 'https://h.example/v1' })).toEqual({ thinking: 'low', prompt: true, stream: true })
     expect((await send({
       id: 'p',
       model: 'm',

@@ -1,6 +1,6 @@
 # Providers
 
-A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds its providers from its config, each from a preset or a protocol ([Configuration](./20-configuration.md)); a program builds its own, with one of the five shipped adapters or from scratch. This page covers the port, the deadline and the retries of a call, the adapters, the presets, the options the HTTP adapters share, the key header styles, the tool fields each of them refuses, the limits of a request, the body each sends and the replies it reads, the Claude Code adapter's command line, isolation and errors, the errors a provider raises, and writing a provider of your own.
+A provider is how quorum reaches a model: an object that takes one request and returns the text of the reply. The CLI builds its providers from its config, each from a preset or a protocol ([Configuration](./20-configuration.md)); a program builds its own, with one of the five shipped adapters or from scratch. This page covers the port, the deadline and the retries of a call, how replies are streamed, the adapters, the presets, the options the HTTP adapters share, the key header styles, the tool fields each of them refuses, the limits of a request, the body each sends and the replies it reads, the Claude Code adapter's command line, isolation and errors, the errors a provider raises, and writing a provider of your own.
 
 ## The port
 
@@ -15,7 +15,8 @@ interface Provider {
   readonly window?: number
   readonly maxTokens?: number
   readonly thinking?: 'default' | 'low' | 'off'
-  readonly adapts?: { readonly thinking?: 'low' | 'off', readonly prompt?: true }
+  readonly adapts?: { readonly thinking?: 'low' | 'off', readonly prompt?: true, readonly stream?: true }
+  readonly streams?: true
   complete: (request: CompletionRequest) => Promise<CompletionResponse>
 }
 
@@ -26,6 +27,8 @@ interface CompletionRequest {
   replyTokens?: number
   thinking?: 'low' | 'off'
   structuredOutput?: 'prompt'
+  stream?: false | 'bare'
+  onProgress?: (signal: StreamSignal) => void
   signal?: AbortSignal
 }
 
@@ -34,14 +37,21 @@ interface CompletionResponse {
   model: string
   usage?: Usage
   reasoning?: boolean
+  whole?: true
 }
+
+type StreamSignal
+  = | { readonly kind: 'headers' }
+    | { readonly kind: 'data', readonly outputTokens: number, readonly answer: boolean, readonly reasoning: boolean }
+    | { readonly kind: 'keep-alive' }
 ```
 
 - **Text in, text out.** A request carries the instructions in `system`, the fenced data in `messages` (one `user` message), the shape of the reply in `output` (named `research_findings` or `panel_vote`, with its JSON Schema), the tokens the core budgets for the reply in `replyTokens` when the provider states what to size it by, and the attempt's `signal`. The request has no field for a tool, a function, a file or a network capability, and quorum offers none to a model. Each shipped adapter refuses the body fields of its protocol that would offer one, so `extraBody` cannot add them, but a model id can bring tools of its own, which only a preset's list refuses, and `headers` are sent as given: [The tool fields](#the-tool-fields).
 - **No secret in a request.** No environment value, key or credential appears in a request: a key lives in the adapter that holds it.
 - **The core never trusts the reply.** It extracts and validates the JSON in `text` itself, whatever the provider did to get it, and reads `usage` (`inputTokens`, `outputTokens`, optional `costUsd`) only when its counts are finite numbers of at least 0.
 - **`reasoning` says whether the reply showed reasoning**: `true` when it did, `false` when the adapter could tell it showed none, absent when the provider cannot tell, as a provider object of your own states none. The four HTTP adapters state it; `claudeCode` does not. It is a fact about the reply, never its text.
-- **`thinking` and `structuredOutput` are what the core changes by itself**, for a provider that states `adapts`: a lowered thinking level after a reply ran out of room while reasoning, and prompt mode after an empty reply or a refused field. An adapter honours each only when it states the matching `adapts`, so a setting you set is never undone: [What quorum adapts by itself](./20-configuration.md#what-quorum-adapts-by-itself).
+- **`thinking`, `structuredOutput` and `stream` are what the core changes by itself**, for a provider that states `adapts`: a lowered thinking level after a reply ran out of room while reasoning, prompt mode after an empty reply or a refused field, and a stream moved to a bare stream or to whole replies after a server refused one or answered it whole. An adapter honours each only when it states the matching `adapts`, so a setting you set is never undone: [What quorum adapts by itself](./20-configuration.md#what-quorum-adapts-by-itself).
+- **A provider that streams says so** with `streams: true`, and reports each sign of life of a streamed reply through the request's `onProgress`: its headers, each data event with the output tokens so far and whether an answer or reasoning has shown, and each keep-alive. `whole: true` on a response says the server answered a streamed request whole: [Streaming](#streaming).
 - **`id` and `model` name the provider** in events and in `meta`, as they were when the quorum was created.
 - **A provider may state its deadline**, `timeoutMs`, and its `retries`: [Deadlines and retries](#deadlines-and-retries).
 - **A provider may state its worst case**, `worstCase(request)`: the most tokens one attempt of the request may spend, which the review's token cap reserves before it is sent ([The token cap](./20-configuration.md#the-token-cap)): [What a provider states](#what-a-provider-states).
@@ -86,8 +96,8 @@ A gateway or proxy between quorum and the server can cut a whole reply after a f
 - **A call cut on the way** is one whose attempt failed with `network`, or an HTTP 502, 504 or 524, after at least a minute, the shortest idle limit of the common proxies (nginx's and an AWS load balancer's). A server that is refused or unreachable fails within seconds.
 - **Each retry says how long its attempt ran**: `part 7 of 51: network after 10m00s, retry 1 of 2 in 2s`. Ten minutes, again and again, is a cut, and a `timeout` line keeps its own words, the deadline.
 - **A provider found down by cuts alone** gets the cut fix in place of the server's: `each call was cut after about 10m00s, likely by a proxy or load balancer on the way: make replies shorter, with a lower maxTokens or partTokens`, the shortest of the three calls' lengths. The summary's fix for its gaps is the same advice. A provider that failed any call of the streak quickly gets the fix of its kind, as before. A used-up quota keeps its own line, ahead of a cut.
-- **Streaming passes such a cut**, since the connection carries bytes all the while: replies are not streamed yet, and a later release will stream them.
-- **Until then, make replies shorter** so that each call ends under the gateway's limit: set a lower `maxTokens` or leave it unset, or a lower `partTokens`, which makes more, smaller parts: [The reply's limit](#the-replys-limit) and [Research in parts](./20-configuration.md#research-in-parts).
+- **Streaming passes such a cut**, since the connection carries bytes all the while: `openaiCompatible` streams every reply, [Streaming](#streaming), and the other adapters will stream theirs in a later release.
+- **Where a reply is not streamed, make replies shorter** so that each call ends under the gateway's limit: set a lower `maxTokens` or leave it unset, or a lower `partTokens`, which makes more, smaller parts: [The reply's limit](#the-replys-limit) and [Research in parts](./20-configuration.md#research-in-parts).
 
 ### What a provider states
 
@@ -103,9 +113,57 @@ A gateway or proxy between quorum and the server can cut a whole reply after a f
 - **`maxTokens`** is the most tokens a reply may hold, a whole number of at least 1, read as `window` is. It is the ceiling of every reply the core budgets: a research request is asked for it, and a vote for the lesser of it and the vote's own budget.
 - **`thinking`** is how much the provider thinks: `default`, `low` or `off`, read as `window` is. The core leaves room for the thinking the level allows when it sizes a reply: 8192 tokens for `default`, 4096 for `low` and none for `off`. A provider that states none thinks `default`.
 - **The shipped adapters state them**: `window` is their `contextTokens`, `maxTokens` is their option when it is set, and `thinking` is their `thinking` option, `default` when it is unset or `extraBody` sets the control ([Thinking](#thinking)).
-- **`adapts`** is what the core may change by itself for the rest of a review, an own data object read when the quorum is created: `thinking`, the level a lowering sends, `low` or `off`, and `prompt: true`, the move from JSON mode to prompt mode, each optional. State each only when the setting is automatic. A provider that states none, as one whose settings are explicit does, is never moved: quorum adapts only what a provider says it may.
-- **The shipped adapters state `adapts`** from their options: a `thinking` level when the `thinking` option is unset and `extraBody` does not set the protocol's control (`low`, `off` on `ollama`, and `off` on `openaiCompatible` under the `vllm` and `llamacpp` presets), and `prompt` when `structuredOutput` is unset on a protocol whose default is `json` (`openaiCompatible`, `gemini` and `ollama`, not `anthropic`) and `extraBody` sets none of its fields. `claudeCode` states none.
-- **A value out of range is refused** where the provider is given, as the issue `ports.profiles.<id>.research.<field>` or `ports.profiles.<id>.voters.<lens>.<field>`, `<field>` being `timeoutMs`, `retries`, `window`, `maxTokens`, `thinking` or `adapts`: `must be a whole number of milliseconds from 1000 to 518400000`, `must be a whole number from 0 to 5`, `must be a whole number of tokens of at least 1` (`window` and `maxTokens`), `must be default, low or off` and `must be an object whose thinking is low or off and whose prompt is true, each optional`. A `worstCase` or a `room` that is not a function is refused the same way: `must be a function`. The message never repeats the value.
+- **`adapts`** is what the core may change by itself for the rest of a review, an own data object read when the quorum is created: `thinking`, the level a lowering sends, `low` or `off`, `prompt: true`, the move from JSON mode to prompt mode, and `stream: true`, the two steps down from a stream, each optional. State each only when the setting is automatic. A provider that states none, as one whose settings are explicit does, is never moved: quorum adapts only what a provider says it may.
+- **`streams`** is `true` for a provider that streams its replies, read as `adapts` is. A provider that does not stream states none.
+- **The shipped adapters state `adapts`** from their options: a `thinking` level when the `thinking` option is unset and `extraBody` does not set the protocol's control (`low`, `off` on `ollama`, and `off` on `openaiCompatible` under the `vllm` and `llamacpp` presets), `prompt` when `structuredOutput` is unset on a protocol whose default is `json` (`openaiCompatible`, `gemini` and `ollama`, not `anthropic`) and `extraBody` sets none of its fields, and `stream` when the adapter streams and its `stream` option is unset. `claudeCode` states none.
+- **The shipped adapters state `streams`** when they stream and their `stream` option is not `false`: `openaiCompatible` today.
+- **A value out of range is refused** where the provider is given, as the issue `ports.profiles.<id>.research.<field>` or `ports.profiles.<id>.voters.<lens>.<field>`, `<field>` being `timeoutMs`, `retries`, `window`, `maxTokens`, `thinking` or `adapts`: `must be a whole number of milliseconds from 1000 to 518400000`, `must be a whole number from 0 to 5`, `must be a whole number of tokens of at least 1` (`window` and `maxTokens`), `must be default, low or off` and `must be an object whose thinking is low or off and whose prompt and stream are true, each optional`. A `worstCase` or a `room` that is not a function is refused the same way: `must be a function`. The message never repeats the value.
+
+## Streaming
+
+A whole reply waits in silence until it ends, and a proxy on the way can cut it, as a gateway did at 600 s. `openaiCompatible` streams every reply and assembles it into the whole reply its reader already checks, so every check of a reply, a cut-off, an empty one, a refusal or a tool the server ran included, runs unchanged on a streamed one. The other three HTTP adapters stream in a later release.
+
+### What is streamed
+
+- **Every call streams**: the body holds `stream: true` and `stream_options: { "include_usage": true }`, so the server sends its usage in a chunk of its own after the last choice. A whole request, which `stream: false` makes, sends neither field.
+- **The events are read as they arrive**, as server-sent events, by the rules of the WHATWG: a comment is a keep-alive, an event ends at a blank line, and an event the body leaves unclosed is dropped. The readers hold caps that fail closed: 16 MiB of body, 1,048,576 characters in a line, 4,194,304 characters and 1000 lines in an event, and 1,000,000 characters of answer. A body that passes one, or an event that is not JSON, is an `invalid-response` that is never retried, and the body is cancelled first.
+- **What is assembled**: the model of the first chunk that names one; per choice, the text of `content` (a string, or the `text` parts of an array), the `refusal`, the annotation types and a non-empty `executed_tools`, and the last finish reason that is not `null`; and the usage of the last chunk that holds one. A reasoning delta (`reasoning`, `reasoning_content`, a `thinking` part) is counted as it arrives and never kept or quoted: the reply only notes that it showed reasoning.
+- **A stream is complete at a finish reason**, and is read on to `[DONE]` or the body's end, since the usage comes after it. A stream that ends with no finish reason, or a `[DONE]` with none, is a `network` failure, `the reply stream ended before its last event`, retried as a dropped connection is, and never an answer. A chunk that holds an `error` ends the read as the reply's own `error`, which fails the call as a whole reply's does: an `error` with a status from 400 to 599 is an `http` failure of that status, retried as it is, and one without is an `invalid-response`.
+- **The usage is the last chunk's**, never a sum of deltas. A stream that reports none settles at the attempt's whole reservation, as a reply with no usage does: [The token cap](./20-configuration.md#the-token-cap).
+- **The attempt's signal ends a stream at once**: an abort in the middle of a body rejects the read, and the server sees its connection close. A read that rejects is `aborted` when the attempt's signal is aborted, else `network`.
+- **The adapter reports each sign of life** through the request's `onProgress`: one `headers` signal, a `data` signal for each data event with the output tokens so far, the larger of the server's own count and a quarter of the characters streamed, and whether an answer or reasoning has shown text, and a `keep-alive` signal for each comment.
+
+### `stream`
+
+| `stream` | The provider | A refusal |
+| --- | --- | --- |
+| Unset | Streams, and states `streams` and `adapts.stream` | Moved by itself, as below, and shown |
+| `true` | Streams, and states `streams` alone | Fails the call. A provider found down by it says `set stream: false` |
+| `false` | Asks for whole replies, as before streams, and states neither | None to refuse |
+
+`stream: false` is the choice for a server or a gateway that cannot stream, or when you would rather have a whole reply. A config sets it with the `stream` field of a provider, and `QUORUM_RESEARCH_STREAM` and `QUORUM_VOTER_STREAM` set it for a role, as `true` or `false` exactly: [The environment variables](./20-configuration.md#the-environment-variables).
+
+### When a server refuses
+
+A 400 or 422 whose body names a word of the request as a whole word is marked, as a code word and never a quote, and moves a provider whose `stream` is unset down two steps, each probed once per provider and review as [What quorum adapts by itself](./20-configuration.md#what-quorum-adapts-by-itself) describes:
+
+- **`stream_options`** moves the provider to a bare stream, with no stream options. Each call then settles at its reservation, since the server sends no usage: the line says so.
+- **`stream`** moves it to whole replies, with `stream: false` sent. A server that refuses the bare stream as a stream steps on to whole replies in the same call.
+- **A step moves only when its re-send answers.** A refused or failed one moves nothing and ends the call with the failure that began it.
+- **A word counts only when a request sent it**: a bare stream names no stream options, and a whole request names no stream. `streaming` or `stream_option` is another word.
+- **`stream_options` is refused in `extraBody`**, since the adapter writes it: `<id>.extraBody.stream_options: is written by the adapter and cannot be replaced`.
+
+### When a server answers whole
+
+A server that answers a streamed request with a JSON body, not a stream, is read as a whole reply. The content type decides, by its media type alone, the text before any `;`, trimmed and in lower case: `text/event-stream; charset=utf-8` is a stream, and `application/json`, or no content type, is a whole reply. A provider whose `stream` is unset is then moved to whole replies for the rest of the review, with no probe, and the line says `the server answered a streamed call whole`. A provider with `stream: true` reads the whole reply and moves nothing. A request that asked for a whole reply, as one moved to `stream: false` does, is no such answer.
+
+A whole reply is what a proxy can cut, as a gateway did in 0.7.0 at 600 s, so `stream: false` is a choice made knowing it.
+
+### What a gateway must pass
+
+- **`text/event-stream`**, unbuffered, with a content type whose media type is that: a charset after it is fine.
+- **Every event as it is written**: a gateway that holds the stream and sends it at the end gives an answer after the same wait as a whole reply, and passes no cut it was never going to pass.
+- **Comments** (`: ping`) are signs of life, and a keep-alive is no progress of its own.
 
 ## The adapters
 
@@ -244,6 +302,7 @@ These are the options of the four HTTP adapters. `claudeCode` takes `id`, `model
 | `systemPrompt` | `'native' \| 'inline'` | `'native'` | `native` sends the system text in the protocol's own place; `inline` puts it at the head of the first user message, joined by a blank line, for a chat template that rejects a system role |
 | `structuredOutput` | `'prompt' \| 'json' \| 'schema'` | The adapter's | How the reply's shape reaches the endpoint: [Structured output](#structured-output) |
 | `thinking` | `'low' \| 'off'` | The server's own | How much the model thinks, sent as the protocol's own control: [Thinking](#thinking) |
+| `stream` | `boolean` | Unset: streamed | `true` pins the stream, so a refusal fails the call; `false` asks for whole replies. Unset, quorum steps down by itself when a server refuses a stream's options, refuses streaming or answers a stream whole: [Streaming](#streaming). Only `openaiCompatible` streams today, and the others accept the option |
 
 `systemPrompt: 'inline'` sends the instructions in the same user message as the fenced data, so they lose the role that sets them apart from it: a weaker separation than the one [Prompts](./60-prompts.md#the-layout-of-a-request) describes. When the conversation does not start with a user message, `inline` sends the system text as a user message of its own.
 
@@ -447,6 +506,7 @@ Each adapter checks its options when it is called, before any request, and throw
 | `<id>.systemPrompt` | `must be native or inline` |
 | `<id>.structuredOutput` | `must be prompt, json or schema` |
 | `<id>.structuredOutput` | `must be prompt or schema` |
+| `<id>.stream` | `must be true or false` |
 | `<id>.timeoutMs` | `must be a whole number of milliseconds from 1000 to 86400000` |
 | `<id>.retries` | `must be a whole number from 0 to 5` |
 | `<id>.maxTokensField` | `must be max_tokens or max_completion_tokens` |
@@ -473,6 +533,7 @@ For any OpenAI-compatible `/chat/completions` endpoint. Ollama's `/v1` is one, a
 | Option | Type | Default | Does |
 | --- | --- | --- | --- |
 | `maxTokensField` | `'max_tokens' \| 'max_completion_tokens'` | `'max_tokens'` | The body field of the reply's limit. OpenAI's reasoning models need `max_completion_tokens` |
+| `stream` | `boolean` | Unset: streamed | The shared option, which this adapter acts on: [Streaming](#streaming) |
 
 The body of every request holds, in this order:
 
@@ -481,9 +542,10 @@ The body of every request holds, in this order:
 - `temperature`, unless it is `null`;
 - the reply's limit under `maxTokensField`, the request's reply budget at most `maxTokens`, else `maxTokens`, else 16000;
 - `reasoning_effort`, `low` or `none`, when `thinking` is set;
-- then `extraBody`, merged. It cannot replace `model`, `messages` or `stream`, or set `max_tokens` or `max_completion_tokens`, which `maxTokens` sets.
+- `stream: true` and `stream_options: { "include_usage": true }`, unless `stream` is `false` or the core moved the provider to whole replies, which send neither, and `stream_options` is left out for a bare stream: [Streaming](#streaming);
+- then `extraBody`, merged. It cannot replace `model`, `messages`, `stream` or `stream_options`, or set `max_tokens` or `max_completion_tokens`, which `maxTokens` sets.
 
-The text is the first choice's `message.content`: a string, or an array of parts whose `text` parts are joined, as Mistral sends it. Every other part is skipped, thinking parts included, and so is `message.reasoning` or `message.reasoning_content`: reasoning is never read as the answer, only noted: [What a reply lacked](#what-a-reply-lacked). `model` is the one the reply names, or the configured one when it names none. `usage` is read from `usage.prompt_tokens` and `usage.completion_tokens`.
+The reply is read as a whole reply: a streamed one is assembled into it first ([Streaming](#streaming)), and a server that answers a streamed request whole is read as it is. The text is the first choice's `message.content`: a string, or an array of parts whose `text` parts are joined, as Mistral sends it. Every other part is skipped, thinking parts included, and so is `message.reasoning` or `message.reasoning_content`: reasoning is never read as the answer, only noted: [What a reply lacked](#what-a-reply-lacked). `model` is the one the reply names, or the configured one when it names none. `usage` is read from `usage.prompt_tokens` and `usage.completion_tokens`.
 
 A top-level `error` in the reply fails the call before the choices are read, since some servers answer a failure with status 200 (OpenRouter does, for a failure during generation). The error is `{ message, code }` or a string. An `error` of `null` beside the choices is a success. A message that shows a tool the server ran fails next, before a refusal or a finish reason is read: a model or a gateway that ran a tool by itself leaves a review that cannot be trusted. An empty `executed_tools`, and `annotations` without a `url_citation`, are not one.
 

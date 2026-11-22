@@ -312,19 +312,19 @@ describe('createQuorum', () => {
       'adapts of 5',
       'adapts',
       5,
-      'must be an object whose thinking is low or off and whose prompt is true, each optional',
+      'must be an object whose thinking is low or off and whose prompt and stream are true, each optional',
     ],
     [
       'adapts with a thinking of high',
       'adapts',
       { thinking: 'high' },
-      'must be an object whose thinking is low or off and whose prompt is true, each optional',
+      'must be an object whose thinking is low or off and whose prompt and stream are true, each optional',
     ],
     [
       'adapts with a prompt of false',
       'adapts',
       { prompt: false },
-      'must be an object whose thinking is low or off and whose prompt is true, each optional',
+      'must be an object whose thinking is low or off and whose prompt and stream are true, each optional',
     ],
   ])('refuses a stated %s that is out of range, at its port', (_name, field, value, message) => {
     const stating = (stated: unknown): Provider => ({ ...provider, [field]: stated }) as Provider

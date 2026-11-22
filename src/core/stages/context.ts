@@ -41,6 +41,8 @@ export interface Target {
   readonly thinking: NonNullable<Provider['thinking']>
   /** What the provider lets the core change by itself, stated when the quorum was created, as own data, when it passes its check: a copy; none otherwise. */
   readonly adapts: Adapts | undefined
+  /** Whether the provider states, as own data, that it streams its replies. */
+  readonly streams: boolean
 }
 
 /** One lens of a compiled profile: its vote instructions, rendered once, and its own provider. */
@@ -158,13 +160,16 @@ export function isTooLarge(error: unknown): boolean {
  * and for an `http` failure its own data `status` when that is an integer from 100 to 599. A message, which can
  * quote a server, is never read. It is matched by those properties, not by class, as `isTooLarge` is, and it
  * never runs a getter and never throws: any other value, a kind of no provider's included, is undefined. An
- * `http` failure whose own data `exhausted` is `true` says so, as `exhausted: true`; any other kind never does.
+ * `http` failure whose own data `exhausted` is `true` says so, as `exhausted: true`; any other kind never does. An `http`
+ * failure of status 400 or 422 whose own data `refused` is `stream` or `streamOptions` says `refused: 'stream'`: a refused
+ * stream, to which a provider that may not step down has one fix.
  */
-export function providerFailure(error: unknown): { readonly kind: ProviderErrorKind, readonly status?: number, readonly exhausted?: true } | undefined {
+export function providerFailure(error: unknown): { readonly kind: ProviderErrorKind, readonly status?: number, readonly exhausted?: true, readonly refused?: 'stream' } | undefined {
   const kind = PROVIDER_ERROR_KINDS.find(known => known === ownData(error, 'kind'))
   if (kind === undefined) return undefined
   if (kind !== 'http') return { kind }
   const status = ownData(error, 'status')
+  const refused = ownData(error, 'refused')
   return {
     kind,
     ...(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
@@ -172,6 +177,9 @@ export function providerFailure(error: unknown): { readonly kind: ProviderErrorK
       : {}),
     ...(ownData(error, 'exhausted') === true
       ? { exhausted: true as const }
+      : {}),
+    ...((status === 400 || status === 422) && (refused === 'stream' || refused === 'streamOptions')
+      ? { refused: 'stream' as const }
       : {}),
   }
 }
@@ -307,7 +315,7 @@ export interface Requester {
  * that is a function, else none, and so is the room it states: a getter is never run, and an inherited method
  * states nothing. Its window and its `maxTokens` are taken as own data when each is a whole number of tokens of at
  * least 1, else it states none, its thinking when it is `default`, `low` or `off`, else `default`, and its `adapts` as
- * a copy of the own data it holds when it passes its check, else none.
+ * a copy of the own data it holds when it passes its check, else none. It streams when its own data `streams` is `true`.
  */
 export function targetOf(provider: Provider): Target {
   const timeoutMs = ownData(provider, 'timeoutMs')
@@ -318,6 +326,7 @@ export function targetOf(provider: Provider): Target {
   const maxTokens = ownData(provider, 'maxTokens')
   const thinking = ownData(provider, 'thinking')
   const adapts = ownData(provider, 'adapts')
+  const streams = ownData(provider, 'streams')
   return {
     provider,
     ref: Object.freeze({ id: provider.id, model: provider.model }),
@@ -345,6 +354,7 @@ export function targetOf(provider: Provider): Target {
     adapts: adapts !== undefined && adaptsProblem(adapts) === undefined
       ? adaptsOf(adapts)
       : undefined,
+    streams: streams === true,
   }
 }
 
@@ -352,7 +362,8 @@ export function targetOf(provider: Provider): Target {
 function adaptsOf(stated: unknown): Adapts | undefined {
   const thinking = ownData(stated, 'thinking')
   const prompt = ownData(stated, 'prompt')
-  if (thinking === undefined && prompt === undefined) return undefined
+  const stream = ownData(stated, 'stream')
+  if (thinking === undefined && prompt === undefined && stream === undefined) return undefined
   return {
     ...thinking === undefined
       ? {}
@@ -360,6 +371,9 @@ function adaptsOf(stated: unknown): Adapts | undefined {
     ...prompt === undefined
       ? {}
       : { prompt: true },
+    ...stream === undefined
+      ? {}
+      : { stream: true },
   }
 }
 
@@ -591,6 +605,9 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
             ...(found.noAnswer === undefined
               ? {}
               : { noAnswer: found.noAnswer }),
+            ...(found.refused === undefined
+              ? {}
+              : { refused: found.refused }),
           })
         }
         const lacked = lackedEvent(target.ref.id, error, {
@@ -747,8 +764,9 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
         const adaptation = ctx.adapt.settle(target, plan.setting, outcome)
         if (adaptation !== undefined) ctx.emit({ type: 'adapted', adaptation })
       }
-      // A refused lowering, a prompt mode that did not answer and a lowering the server showed no sign of taking end the call with the failure that began the probe.
-      if ('failure' in result && first) result = { failure }
+      // A refused lowering, a prompt mode that did not answer and a lowering the server showed no sign of taking end the call with the failure that began the probe,
+      // but a stream step the server refused as a stream goes on, with that failure, to the step of whole replies, which is probed once too.
+      if ('failure' in result && first && !(plan.setting === 'stream' && isStreamRefusal(result.failure))) result = { failure }
     }
     if ('failure' in result) throw end(result.failure)
     let read: Read | undefined
@@ -757,6 +775,11 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     if ('answered' in result) {
       read = result
     } else {
+      // A streamed call the server answered whole moves its provider to whole replies, shown once.
+      if (ownData(result.reply, 'whole') === true) {
+        const moved = ctx.adapt.answeredWhole(target)
+        if (moved !== undefined) ctx.emit({ type: 'adapted', adaptation: moved })
+      }
       if (requester.role === 'research') ctx.adapt.reasoned(target, result.reply)
       const shown = ownData(result.reply, 'reasoning')
       if (typeof shown === 'boolean') reasoning = shown
@@ -1038,9 +1061,14 @@ async function keepAnswer(ctx: RunContext, requester: Requester, target: Target,
 function probeEnd(ctx: RunContext, failure: unknown, plan: Probe): { readonly outcome: ProbeOutcome, readonly first: boolean } {
   if (ctx.stop.aborted || isLimit(failure) || isTooLarge(failure) || failure instanceof ProviderDownError) return { outcome: 'unsent', first: false }
   if (isRefusal(failure)) return { outcome: 'refused', first: true }
-  if (plan.setting === 'structuredOutput') return { outcome: 'failed', first: true }
+  if (plan.setting === 'structuredOutput' || plan.setting === 'stream') return { outcome: 'failed', first: true }
   if (plan.cause === 'cut-off-thinking' && !tookTheRequest(failure)) return { outcome: 'unsent', first: true }
   return { outcome: 'failed', first: false }
+}
+
+/** Whether `error` is a refusal that names streaming itself (`refused` is `stream`): the server takes no stream at all. */
+function isStreamRefusal(error: unknown): boolean {
+  return isRefusal(error) && ownData(error, 'refused') === 'stream'
 }
 
 /** Whether `error` is a failure of kind `http` with status 400 or 422, as own data: the server read the request and refused its value. */

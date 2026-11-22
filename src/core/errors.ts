@@ -133,13 +133,15 @@ export class ProviderError extends QuorumError {
   /** What a `truncated` or `no-answer` reply lacked, when the adapter read it. */
   readonly noAnswer: NoAnswer | undefined
   /**
-   * `structuredOutput` when the server refused the request's structured-output field: an HTTP 400 or 422 whose
-   * body names it as a whole word, which the adapter matched and never quoted. The core moves a provider in
-   * automatic JSON mode to prompt mode on it.
+   * What the server refused, when it is an HTTP 400 or 422 whose body names the field as a whole word, which the
+   * adapter matched and never quoted: `structuredOutput`, the request's structured-output field, on which the core
+   * moves a provider in automatic JSON mode to prompt mode; `streamOptions`, the stream's options, on which it moves a
+   * provider that streams automatically to a stream with none; `stream`, streaming itself, on which it moves it to
+   * whole replies.
    */
-  readonly refused: 'structuredOutput' | undefined
+  readonly refused: 'structuredOutput' | 'streamOptions' | 'stream' | undefined
 
-  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, exhausted?: true, retryAfterMs?: number, usage?: Usage, noAnswer?: NoAnswer, refused?: 'structuredOutput', cause?: unknown }) {
+  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, exhausted?: true, retryAfterMs?: number, usage?: Usage, noAnswer?: NoAnswer, refused?: 'structuredOutput' | 'streamOptions' | 'stream', cause?: unknown }) {
     super(`${details.providerId}: ${details.message}`, details.cause === undefined
       ? undefined
       : { cause: details.cause })
@@ -209,8 +211,15 @@ export function lackWords(kind: 'truncated' | 'no-answer', lack: ReplyLack): str
 /** What to do about a provider whose account's credit, quota or spend limit is used up: one imperative phrase. */
 export const QUOTA_FIX = 'add credit or raise the limit at the provider, or wait until it resets'
 
-/** What to do about a provider whose calls ended with `kind`, and for an `http` failure its `status`: one imperative phrase, never a word a server wrote. */
-export function failureFix(kind: ProviderErrorKind, status: number | undefined): string {
+/** What to do about a provider whose pinned stream the server refused: one imperative phrase. */
+export const STREAM_FIX = 'set stream: false'
+
+/**
+ * What to do about a provider whose calls ended with `kind`, and for an `http` failure its `status`: one imperative
+ * phrase, never a word a server wrote. An `http` failure of a stream the server `refused` is `STREAM_FIX`, which a
+ * provider with `stream: true` can only be told: one that streams by itself moves to whole replies without it.
+ */
+export function failureFix(kind: ProviderErrorKind, status: number | undefined, refused?: 'stream'): string {
   switch (kind) {
     case 'network':
       return 'check that the server at its origin is running'
@@ -221,6 +230,7 @@ export function failureFix(kind: ProviderErrorKind, status: number | undefined):
     case 'process':
       return 'check command'
     case 'http':
+      if (refused === 'stream') return STREAM_FIX
       if (status === 401 || status === 403) return 'check apiKey'
       if (status === 404) return 'check baseUrl and model'
       return status === 429 || (status !== undefined && status >= 500 && status <= 599)
@@ -276,6 +286,8 @@ export interface DownFacts {
   readonly exhausted?: true
   /** Every call of the streak was cut on the way (`cutOf`): the shortest of their last attempts, in milliseconds. */
   readonly cutAfterMs?: number
+  /** The last failure was a refused stream of a provider that streams by setting: the fix is `STREAM_FIX`. */
+  readonly refused?: 'stream'
 }
 
 /**
@@ -286,7 +298,8 @@ export interface DownFacts {
  * answer, only reasoning: ...` or `had no answer and no reasoning: ...`. A provider whose quota is used up says
  * so, whatever the count, and names `QUOTA_FIX`: `<id>: the account's credit, quota or spend limit is used up
  * (<kind>[ <status>]): no more calls go to it in this review: <fix>`. A provider whose calls were each cut on the
- * way (`cutAfterMs`) names `CUT_FIX` in place of the fix of its kind, after the quota's.
+ * way (`cutAfterMs`) names `CUT_FIX` in place of the fix of its kind, after the quota's. One whose last failure was a
+ * refused stream (`refused`) names `STREAM_FIX` as the fix of its kind.
  */
 export function downWords(facts: DownFacts): string {
   if (facts.exhausted === true) {
@@ -309,7 +322,7 @@ export function downWords(facts: DownFacts): string {
     ? facts.kind
     : `${facts.kind} ${facts.status}`
   const fix = facts.cutAfterMs === undefined
-    ? failureFix(facts.kind, facts.status)
+    ? failureFix(facts.kind, facts.status, facts.refused)
     : CUT_FIX(facts.cutAfterMs)
   if (facts.streak) return `${facts.providerId}: ${facts.count} calls in a row failed (${failure}): no more calls go to it in this review: ${fix}`
   return `${facts.providerId}: its ${facts.count === 1
@@ -336,6 +349,8 @@ export class ProviderDownError extends QuorumError {
   readonly cutAfterMs: number | undefined
   /** What the last failure lacked, for a `no-answer` kind. */
   readonly noAnswer: NoAnswer | undefined
+  /** The last failure was a refused stream. */
+  readonly refused: 'stream' | undefined
 
   constructor(facts: DownFacts & { readonly cause?: unknown }) {
     super(downWords(facts), facts.cause === undefined
@@ -349,5 +364,6 @@ export class ProviderDownError extends QuorumError {
     this.exhausted = facts.exhausted === true
     this.cutAfterMs = facts.cutAfterMs
     this.noAnswer = facts.noAnswer
+    this.refused = facts.refused
   }
 }

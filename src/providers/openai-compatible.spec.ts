@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
-import type { CompletionRequest } from '../core/ports.ts'
+import type { CompletionRequest, StreamSignal } from '../core/ports.ts'
 import { sent, stubFetch, textReply } from '../testing/http.ts'
+import { openAiStream, sse } from '../testing/streams.ts'
 import { openaiCompatible } from './openai-compatible.ts'
 import type { OpenAICompatibleOptions } from './openai-compatible.ts'
+import { GATEWAY_MODEL, GATEWAY_ORIGIN, gatewayStream } from '../testing/fixtures/gateway-stream.ts'
 import { chatCompletion, countedOut, empty, groqBrowserSearch, mistralChunks, openRouterGenerationError, reasoningOnly, refusal, searchCitations, stringError, truncated } from '../testing/fixtures/openai-compatible.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
 
@@ -67,7 +69,18 @@ describeProviderContract({
       response_format: { type: 'text' },
     },
   },
-  reservedBodyKeys: ['model', 'messages', 'stream'],
+  streams: true,
+  streamFields: {
+    stream: true,
+    stream_options: { include_usage: true },
+  },
+  streamed: reply => openAiStream(reply),
+  reservedBodyKeys: [
+    'model',
+    'messages',
+    'stream',
+    'stream_options',
+  ],
   toolBodyKeys: [
     'tools',
     'tool_choice',
@@ -144,6 +157,8 @@ describe('openaiCompatible', () => {
       response_format: { type: 'json_object' },
       temperature: 0,
       max_tokens: 16_000,
+      stream: true,
+      stream_options: { include_usage: true },
     })
   })
 
@@ -253,6 +268,7 @@ describe('openaiCompatible', () => {
       model: 'qwen:latest',
       usage: { inputTokens: 10, outputTokens: 2 },
       reasoning: false,
+      whole: true,
     })
   })
 
@@ -263,6 +279,7 @@ describe('openaiCompatible', () => {
       model: 'qwen',
       usage: undefined,
       reasoning: false,
+      whole: true,
     })
     stubFetch({
       ...ok,
@@ -274,6 +291,7 @@ describe('openaiCompatible', () => {
       model: 'qwen',
       usage: undefined,
       reasoning: false,
+      whole: true,
     })
   })
 
@@ -551,6 +569,7 @@ describe('openaiCompatible', () => {
       model: 'magistral-medium-2610',
       usage: { inputTokens: 40, outputTokens: 12 },
       reasoning: true,
+      whole: true,
     })
     stubFetch({
       choices: [
@@ -863,8 +882,8 @@ describe('openaiCompatible on a 400 that names its structured-output field', () 
       contextTokens: 8192,
       ...options,
     }), 'adapts')?.value
-    expect(adapts({})).toEqual({ thinking: 'low', prompt: true })
-    expect(adapts({ lowersThinkingTo: 'off' })).toEqual({ thinking: 'off', prompt: true })
+    expect(adapts({})).toEqual({ thinking: 'low', prompt: true, stream: true })
+    expect(adapts({ lowersThinkingTo: 'off' })).toEqual({ thinking: 'off', prompt: true, stream: true })
     const fetchMock = stubFetch(chatCompletion)
     await openaiCompatible({
       id: 'p',
@@ -875,5 +894,400 @@ describe('openaiCompatible on a 400 that names its structured-output field', () 
       lowersThinkingTo: 'off',
     }).complete({ ...request, thinking: 'off' })
     expect(sent(fetchMock).body.reasoning_effort).toBe('none')
+  })
+})
+
+describe('openaiCompatible streams', () => {
+  const base = {
+    id: 'local',
+    baseUrl: 'http://localhost:11434/v1',
+    model: 'qwen',
+    contextTokens: 131072,
+  }
+  const local = openaiCompatible(base)
+  /** The events as a server streams them, `[DONE]` last unless `done` says otherwise. */
+  const streamOf = (events: readonly unknown[], done = true): Response => new Response(sse([
+    ...events.map(data => ({ data })),
+    ...done
+      ? [
+          { data: '[DONE]' },
+        ]
+      : [],
+  ]), {
+    headers: { 'content-type': 'text/event-stream' },
+  })
+  const chunk = (delta: unknown, finish: unknown = null): Record<string, unknown> => ({
+    model: 'qwen-1',
+    choices: [
+      { index: 0, delta, finish_reason: finish },
+    ],
+  })
+  /** Answers each call of `fetch` with the next response. */
+  const serve = (...responses: Response[]): ReturnType<typeof vi.fn> => {
+    const fetchMock = vi.fn()
+    for (const response of responses) fetchMock.mockImplementationOnce(async () => response)
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it('sends stream and stream_options by default, stream_options left out for a bare stream, and neither for stream: false', async () => {
+    const fetchMock = stubFetch(ok)
+    await local.complete(request)
+    await local.complete({ ...request, stream: 'bare' })
+    await local.complete({ ...request, stream: false })
+    expect(sent(fetchMock, 0).body).toMatchObject({
+      stream: true,
+      stream_options: { include_usage: true },
+    })
+    expect(sent(fetchMock, 1).body).toMatchObject({ stream: true })
+    expect(sent(fetchMock, 1).body).not.toHaveProperty('stream_options')
+    expect(sent(fetchMock, 2).body).not.toHaveProperty('stream')
+    expect(sent(fetchMock, 2).body).not.toHaveProperty('stream_options')
+    // The option that asks for whole replies sends neither, and a pinned stream ignores the request's change.
+    await openaiCompatible({ ...base, stream: false }).complete(request)
+    expect(sent(fetchMock, 3).body).not.toHaveProperty('stream')
+    await openaiCompatible({ ...base, stream: true }).complete({ ...request, stream: false })
+    expect(sent(fetchMock, 4).body).toMatchObject({
+      stream: true,
+      stream_options: { include_usage: true },
+    })
+  })
+
+  it('assembles a stream into the reply its reader reads, the same as the whole reply', async () => {
+    const reply = {
+      model: 'qwen-3-2610',
+      choices: [
+        {
+          index: 0,
+          message: { role: 'assistant', content: '{"findings":[]}', reasoning_content: 'The diff calls exec.' },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: { prompt_tokens: 41, completion_tokens: 23, total_tokens: 64 },
+    }
+    serve(streamOf([
+      {
+        ...chunk({ role: 'assistant' }),
+        model: 'qwen-3-2610',
+      },
+      chunk({ reasoning_content: 'The diff ' }),
+      chunk({ reasoning_content: 'calls exec.' }),
+      chunk({ content: '{"findings"' }),
+      chunk({ content: ':[]}' }),
+      chunk({}, 'stop'),
+      { model: 'qwen-3-2610', choices: [], usage: reply.usage },
+    ]))
+    const streamed = await local.complete(request)
+    stubFetch(reply)
+    const whole = await local.complete(request)
+    expect(streamed).toEqual({
+      text: '{"findings":[]}',
+      model: 'qwen-3-2610',
+      usage: { inputTokens: 41, outputTokens: 23 },
+      reasoning: true,
+    })
+    expect(whole).toEqual({ ...streamed, whole: true })
+    // The recorded replies stream through the helper the same way.
+    for (const recorded of [chatCompletion, mistralChunks, reply]) {
+      serve(openAiStream(recorded))
+      const viaStream = await local.complete(request)
+      stubFetch(recorded)
+      expect(viaStream).toEqual({
+        ...await local.complete(request),
+        whole: undefined,
+      })
+    }
+  })
+
+  it.each<[string, () => Response, object]>([
+    [
+      'whose content comes as text parts',
+      () => streamOf([
+        chunk({
+          content: [
+            { type: 'text', text: '{"a"' },
+          ],
+        }),
+        chunk({
+          content: [
+            { type: 'text', text: ':1}' },
+          ],
+        }),
+        chunk({}, 'stop'),
+      ]),
+      { text: '{"a":1}' },
+    ],
+    [
+      'with a refusal',
+      () => streamOf([
+        chunk({ refusal: 'I will ' }),
+        chunk({ refusal: 'not' }),
+        chunk({}, 'stop'),
+      ]),
+      { kind: 'refusal', message: 'local: model refused: "I will not"' },
+    ],
+    [
+      'with a url_citation annotation',
+      () => streamOf([
+        chunk({ content: '{}' }),
+        chunk({
+          annotations: [
+            {
+              type: 'url_citation',
+              url_citation: { url: 'https://advisories.example/1' },
+            },
+          ],
+        }),
+        chunk({}, 'stop'),
+      ]),
+      { kind: 'invalid-response', retryable: false, message: 'local: the server ran a tool for this reply, which quorum never allows' },
+    ],
+    [
+      'ending at a finish reason with no [DONE]',
+      () => streamOf([
+        chunk({ content: '{}' }),
+        chunk({}, 'stop'),
+      ], false),
+      { text: '{}' },
+    ],
+    [
+      'ending with neither a finish reason nor [DONE]',
+      () => streamOf([
+        chunk({ content: '{"kee' }),
+      ], false),
+      { kind: 'network', retryable: true, message: 'local: the reply stream ended before its last event' },
+    ],
+    [
+      'with a chunk holding an error of code 503',
+      () => streamOf([
+        chunk({ content: '{"kee' }),
+        {
+          error: { code: 503, message: 'overloaded' },
+        },
+      ]),
+      {
+        kind: 'http',
+        status: 503,
+        retryable: true,
+        message: 'local: server error 503: "overloaded"',
+      },
+    ],
+    [
+      'with an error of no status',
+      () => streamOf([
+        {
+          error: { message: 'model not found' },
+        },
+      ]),
+      { kind: 'invalid-response', retryable: false, message: 'local: server error: "model not found"' },
+    ],
+    [
+      'ended by finish_reason: "error"',
+      () => streamOf([
+        chunk({ content: '' }, 'error'),
+      ]),
+      { kind: 'invalid-response', message: 'local: reply ended early: "error"' },
+    ],
+    [
+      'whose answer passes 1 000 000 characters',
+      () => streamOf([
+        chunk({
+          content: 'a'.repeat(600_000),
+        }),
+        chunk({
+          content: 'a'.repeat(600_000),
+        }),
+        chunk({}, 'stop'),
+      ]),
+      { kind: 'invalid-response', retryable: false, message: 'local: the reply stream\'s answer is over 1000000 characters' },
+    ],
+  ])('reads a streamed reply %s', async (_name, response, expected) => {
+    serve(response())
+    const result = await local.complete(request).catch((error: unknown) => error)
+    expect(result).toMatchObject(expected)
+  })
+
+  it('reads a [DONE] with no finish reason as a stream that ended too soon, and a finish reason with no content as an empty reply', async () => {
+    serve(streamOf([
+      chunk({ content: '{"kee' }),
+    ]))
+    await expect(local.complete(request)).rejects.toMatchObject({ kind: 'network', message: 'local: the reply stream ended before its last event' })
+    serve(streamOf([
+      chunk({ role: 'assistant' }),
+      chunk({}, 'stop'),
+    ]))
+    await expect(local.complete(request)).rejects.toMatchObject({ kind: 'no-answer', noAnswer: 'empty' })
+  })
+
+  it('reads a gateway\'s stream: a charset in its content type, reasoning deltas only, cut off at its limit while reasoning', async () => {
+    serve(gatewayStream())
+    const gateway = openaiCompatible({
+      id: 'gateway',
+      baseUrl: `${GATEWAY_ORIGIN}/v1`,
+      model: GATEWAY_MODEL,
+      contextTokens: 248_000,
+      maxTokens: 4000,
+    })
+    const signals: StreamSignal[] = []
+    const failed = await gateway.complete({
+      ...request,
+      onProgress: signal => signals.push(signal),
+    }).catch((error: unknown) => error)
+    expect(failed).toMatchObject({
+      kind: 'truncated',
+      noAnswer: 'thinking',
+      retryable: false,
+      usage: { inputTokens: 67, outputTokens: 4000 },
+    })
+    // The reasoning is counted as it streams and never kept or quoted.
+    expect(JSON.stringify(failed)).not.toContain('rrrr')
+    const data = signals.filter(signal => signal.kind === 'data')
+    expect(signals[0]).toEqual({ kind: 'headers' })
+    expect(data.at(-1)).toEqual({
+      kind: 'data',
+      outputTokens: 4000,
+      answer: false,
+      reasoning: true,
+    })
+    // A quarter of the 14 285 characters is less than the 4000 tokens the usage chunk then reports.
+    expect(data.at(-2)).toEqual({
+      kind: 'data',
+      outputTokens: 3572,
+      answer: false,
+      reasoning: true,
+    })
+  })
+
+  it('reports headers, data with the output so far and whether an answer or reasoning has shown, and keep-alives', async () => {
+    const signals: StreamSignal[] = []
+    const onProgress = (signal: StreamSignal): number => signals.push(signal)
+    const body = `: keep-alive\n\n${sse([
+      chunk({ role: 'assistant' }),
+      chunk({
+        reasoning: 'x'.repeat(10),
+      }),
+      chunk({ content: 'hello' }),
+      chunk({}, 'stop'),
+      {
+        model: 'qwen-1',
+        choices: [],
+        usage: { prompt_tokens: 5, completion_tokens: 40 },
+      },
+    ].map(data => ({ data })))}data: [DONE]\n\n`
+    serve(new Response(body, {
+      headers: { 'content-type': 'text/event-stream' },
+    }))
+    await local.complete({ ...request, onProgress })
+    expect(signals).toEqual([
+      { kind: 'headers' },
+      { kind: 'keep-alive' },
+      {
+        kind: 'data',
+        outputTokens: 0,
+        answer: false,
+        reasoning: false,
+      },
+      {
+        kind: 'data',
+        outputTokens: 3,
+        answer: false,
+        reasoning: true,
+      },
+      {
+        kind: 'data',
+        outputTokens: 4,
+        answer: true,
+        reasoning: true,
+      },
+      {
+        kind: 'data',
+        outputTokens: 4,
+        answer: true,
+        reasoning: true,
+      },
+      {
+        kind: 'data',
+        outputTokens: 40,
+        answer: true,
+        reasoning: true,
+      },
+    ])
+    // A stream of reasoning alone has shown no answer.
+    signals.length = 0
+    serve(streamOf([
+      chunk({ reasoning: 'thinking about it' }),
+      chunk({}, 'length'),
+    ]))
+    await local.complete({ ...request, onProgress }).catch(() => undefined)
+    expect(signals.filter(signal => signal.kind === 'data').at(-1)).toEqual({
+      kind: 'data',
+      outputTokens: 5,
+      answer: false,
+      reasoning: true,
+    })
+  })
+
+  it('answers a whole reply to a streamed request with whole: true, and a pinned stream: true too', async () => {
+    stubFetch(ok)
+    await expect(local.complete(request)).resolves.toMatchObject({ text: '{}', whole: true })
+    await expect(openaiCompatible({ ...base, stream: true }).complete(request)).resolves.toMatchObject({ text: '{}', whole: true })
+    await expect(local.complete({ ...request, stream: 'bare' })).resolves.toMatchObject({ whole: true })
+    // A request that asked for a whole reply, or a provider set to whole replies, is answered as it asked: no event.
+    await expect(local.complete({ ...request, stream: false })).resolves.not.toHaveProperty('whole')
+    await expect(openaiCompatible({ ...base, stream: false }).complete(request)).resolves.not.toHaveProperty('whole')
+  })
+
+  it('refuses stream_options and a stream that is no boolean in its options', () => {
+    expect(() => openaiCompatible({
+      ...base,
+      extraBody: {
+        stream_options: { include_usage: false },
+      },
+      stream: 'yes' as unknown as boolean,
+    })).toThrow(new ConfigError([
+      { path: 'local.extraBody.stream_options', message: 'is written by the adapter and cannot be replaced' },
+      { path: 'local.stream', message: 'must be true or false' },
+    ]))
+  })
+})
+
+describe('openaiCompatible on a 400 that names a stream field', () => {
+  const failure = async (body: string, status: number, options: Partial<OpenAICompatibleOptions> = {}, asked: CompletionRequest = request): Promise<unknown> => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply(body, status)))
+    return openaiCompatible({
+      id: 'p',
+      baseUrl: 'https://h.example/v1',
+      model: 'm',
+      contextTokens: 8192,
+      maxTokens: 1000,
+      ...options,
+    }).complete(asked).catch((caught: unknown) => caught)
+  }
+  const naming = (word: string): string => `{"error":{"message":"${word} is not supported"}}`
+
+  it('marks a 400 naming stream_options refused streamOptions, and one naming stream refused stream, never quoting the body', async () => {
+    const error = await failure(naming('stream_options'), 400)
+    expect(error).toMatchObject({ kind: 'http', status: 400, refused: 'streamOptions' })
+    // The word is matched, never copied: every string the error holds but its message is a code word.
+    expect(Object.entries(error as object).filter(([key, value]) => key !== 'message' && key !== 'name' && typeof value === 'string').flatMap(([, value]) => value as string)).toEqual(['p', 'http', 'streamOptions'])
+    expect(await failure(naming('stream'), 422)).toMatchObject({ refused: 'stream' })
+    expect(await failure(naming('"stream"'), 400)).toMatchObject({ refused: 'stream' })
+    // A body naming the options only is no refusal of streaming, and one naming both is the options' first.
+    expect(await failure(naming('stream_options'), 400)).not.toMatchObject({ refused: 'stream' })
+    expect(await failure('{"error":{"message":"stream_options needs stream"}}', 400)).toMatchObject({ refused: 'streamOptions' })
+    // Another status, a word that is only part of another, and a field no request sent name no refusal.
+    expect(await failure(naming('stream'), 500)).toMatchObject({ refused: undefined })
+    expect(await failure('{"error":{"message":"streaming is not supported"}}', 400)).toMatchObject({ refused: undefined })
+    expect(await failure(naming('stream_option'), 400)).toMatchObject({ refused: undefined })
+    // A request with no stream options names no refusal of them, and one asking for a whole reply none at all.
+    expect(await failure(naming('stream_options'), 400, {}, { ...request, stream: 'bare' })).toMatchObject({ refused: undefined })
+    expect(await failure(naming('stream'), 400, {}, { ...request, stream: 'bare' })).toMatchObject({ refused: 'stream' })
+    expect(await failure(naming('stream'), 400, {}, { ...request, stream: false })).toMatchObject({ refused: undefined })
+    expect(await failure(naming('stream'), 400, { stream: false })).toMatchObject({ refused: undefined })
+    // A pinned stream is marked as well, which is how its fix reads set stream: false.
+    expect(await failure(naming('stream_options'), 400, { stream: true })).toMatchObject({ refused: 'streamOptions' })
+    // The streaming words come first: a body that names a structured-output field and the stream is the stream's.
+    expect(await failure('{"error":{"message":"response_format and stream are unsupported"}}', 400)).toMatchObject({ refused: 'stream' })
+    expect(await failure('{"error":{"message":"response_format is unsupported"}}', 400)).toMatchObject({ refused: 'structuredOutput' })
   })
 })
