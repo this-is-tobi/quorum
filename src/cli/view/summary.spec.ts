@@ -881,7 +881,7 @@ describe('summaryLines', () => {
         reason: 'interrupted',
         state: { kind: 'flag', kept: 43 },
       },
-      'resume: rerun with the same --state: its 43 answered call(s) are reused',
+      'resume: rerun with the same --state: its 43 answered call(s) are kept, and the rerun reuses each one whose request is unchanged',
     ],
     [
       'naming --state when it kept none',
@@ -889,7 +889,7 @@ describe('summaryLines', () => {
         reason: 'interrupted',
         state: { kind: 'flag', kept: 0 },
       },
-      'resume: rerun with the same --state: its 0 answered call(s) are reused',
+      'resume: rerun with the same --state: its 0 answered call(s) are kept, and the rerun reuses each one whose request is unchanged',
     ],
     [
       'asking for --state when the review ran with none',
@@ -905,7 +905,7 @@ describe('summaryLines', () => {
         reason: 'research-failed',
         state: { kind: 'default', kept: 1 },
       },
-      'resume: rerun the same command: its 1 answered call(s) are reused',
+      'resume: rerun the same command: its 1 answered call(s) are kept, and the rerun reuses each one whose request is unchanged',
     ],
     [
       'after an unreviewed finding',

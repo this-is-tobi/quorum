@@ -33,7 +33,7 @@ export interface CliIO {
   readonly cwd: string
   /** Environment variables, e.g. `process.env`. */
   env: Env
-  stdin: AsyncIterable<Uint8Array | string> & { isTTY?: boolean }
+  stdin: AsyncIterable<Uint8Array | string> & { isTTY?: boolean, readonly destroy?: () => void }
   /** Where the report goes; `isTTY` is `true` on a terminal and absent on a pipe and a file, which is how the CLI chooses its format and its color. */
   stdout: { write: (text: string) => unknown, readonly isTTY?: boolean }
   /** Where the log goes: a terminal when `isTTY`, and then the size and the resize event the live view reads. */

@@ -41,23 +41,45 @@ function fileProblem(error: unknown): ConfigError {
 }
 
 /**
+ * What `read` settles with, or, once `signal` aborts, its reason at once, with `stream` destroyed: a stream that
+ * never ends (a pipe its producer holds open) would hold the process past the first signal. The read's own later
+ * settling is caught and dropped, and the listener is gone as soon as the read settles.
+ */
+function untilAbort<T>(stream: { readonly destroy?: () => void }, read: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return read
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      stream.destroy?.()
+      reject(signal.reason)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    read.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
+  })
+}
+
+/**
  * Reads the diff from the file `file` names, resolved against `cwd`, or from `stdin` when none is named.
  * Both are read as `decodeDiff` reads them, counted in bytes: a diff past 16 MiB is refused, and reading
  * stops at the chunk that crosses the cap. A terminal with no file is refused, not waited on. Each failure
  * is a `ConfigError` with an empty path, in a text that says what failed in this code's words, never the
- * path: no file, a directory, a file that cannot be read, no diff given, a diff over the cap.
+ * path: no file, a directory, a file that cannot be read, no diff given, a diff over the cap. When `signal`
+ * aborts, a read in progress rejects at once with the signal's reason, its stream destroyed; a signal aborted
+ * already rejects before any read.
  */
-export async function readDiffInput(cwd: string, file: string | undefined, stdin: AsyncIterable<Uint8Array | string> & { readonly isTTY?: boolean }): Promise<string> {
+export async function readDiffInput(cwd: string, file: string | undefined, stdin: AsyncIterable<Uint8Array | string> & { readonly isTTY?: boolean, readonly destroy?: () => void }, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted()
   if (!file && stdin.isTTY) throw problem('no diff given')
   let text: string | undefined
   if (file) {
+    const stream = createReadStream(resolve(cwd, file))
     try {
-      text = await decodeDiff(createReadStream(resolve(cwd, file)))
+      text = await untilAbort(stream, decodeDiff(stream), signal)
     } catch (error) {
+      if (signal?.aborted) throw error
       throw fileProblem(error)
     }
   } else {
-    text = await decodeDiff(stdin)
+    text = await untilAbort(stdin, decodeDiff(stdin), signal)
   }
   if (text === undefined) throw problem(OVER)
   return text

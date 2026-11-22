@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import { diffSource, readDiffInput } from './diff.ts'
 
@@ -91,5 +91,43 @@ describe('the diff source', () => {
     // A terminal is no reason to refuse a file: only stdin waits on a person.
     writeFileSync(join(dir, 'named.diff'), DIFF)
     await expect(readDiffInput(dir, 'named.diff', stdin([], true))).resolves.toBe(DIFF)
+  })
+
+  it('ends a read at the first abort, destroying the stream it reads, and reads to the end when no abort comes', async () => {
+    /** A stream that gives one chunk and then never resolves, with a spy for its `destroy`. */
+    function stalled(): AsyncIterable<string> & { destroy: () => void, read: () => number } {
+      let chunks = 0
+      const destroy = vi.fn()
+      async function* read(): AsyncGenerator<string> {
+        chunks += 1
+        yield DIFF
+        await new Promise<never>(() => {})
+      }
+      return Object.assign(read(), {
+        destroy,
+        read: () => chunks,
+      })
+    }
+    // An abort after a turn: the read rejects with the signal's reason, and the stream is destroyed once.
+    const held = stalled()
+    const controller = new AbortController()
+    const reading = readDiffInput(dir, undefined, held, controller.signal)
+    await Promise.resolve()
+    const reason = new Error('the first signal')
+    controller.abort(reason)
+    await expect(reading).rejects.toBe(reason)
+    expect(held.destroy).toHaveBeenCalledTimes(1)
+    // A signal aborted already: it rejects with no chunk read.
+    const before = stalled()
+    const aborted = new AbortController()
+    aborted.abort(reason)
+    await expect(readDiffInput(dir, undefined, before, aborted.signal)).rejects.toBe(reason)
+    expect(before.read()).toBe(0)
+    // No abort: a stream that ends gives its text, and nothing is destroyed.
+    const ending = Object.assign(stdin([DIFF]), {
+      destroy: vi.fn(),
+    })
+    await expect(readDiffInput(dir, undefined, ending, new AbortController().signal)).resolves.toBe(DIFF)
+    expect(ending.destroy).not.toHaveBeenCalled()
   })
 })
