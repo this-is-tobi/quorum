@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isTimeout, retryWait } from './retry.ts'
+import { isReasoningOnly, isTimeout, retryWait } from './retry.ts'
 import type { CallState, FailureFacts } from './retry.ts'
 
 const network: FailureFacts = {
@@ -7,12 +7,14 @@ const network: FailureFacts = {
   status: undefined,
   retryable: true,
   retryAfterMs: undefined,
+  noAnswer: undefined,
 }
 const timeout: FailureFacts = {
   kind: 'timeout',
   status: undefined,
   retryable: true,
   retryAfterMs: undefined,
+  noAnswer: undefined,
 }
 function http(status: number, retryAfterMs?: unknown): FailureFacts {
   return {
@@ -20,13 +22,23 @@ function http(status: number, retryAfterMs?: unknown): FailureFacts {
     status,
     retryable: true,
     retryAfterMs,
+    noAnswer: undefined,
   }
 }
 const first: CallState = {
   retried: 0,
   retries: 5,
   timedOut: false,
+  reasoningOnly: false,
+  lowersThinking: false,
   timeLeftMs: 1_800_000,
+}
+const onlyReasoning: FailureFacts = {
+  kind: 'no-answer',
+  status: undefined,
+  retryable: false,
+  retryAfterMs: undefined,
+  noAnswer: 'thinking',
 }
 
 describe('retryWait', () => {
@@ -95,12 +107,44 @@ describe('retryWait', () => {
       { ...first, retries: 0 },
     ],
     [
+      'an empty reply',
+      { ...onlyReasoning, noAnswer: 'empty' },
+      first,
+    ],
+    [
+      'a reply cut off while reasoning',
+      { ...onlyReasoning, kind: 'truncated' },
+      first,
+    ],
+    [
+      'a reply of only reasoning of a provider whose thinking the review may lower',
+      onlyReasoning,
+      { ...first, lowersThinking: true },
+    ],
+    [
+      'a second reply of only reasoning',
+      onlyReasoning,
+      { ...first, reasoningOnly: true },
+    ],
+    [
+      'a reply of only reasoning of a call whose retries are spent',
+      onlyReasoning,
+      { ...first, retried: 2, retries: 2 },
+    ],
+    [
+      'a reply of only reasoning of a provider that states no retries',
+      onlyReasoning,
+      { ...first, retries: 0 },
+    ],
+    [
       'a call whose retry count is not a number',
       network,
       {
         retried: 0,
         retries: Number.NaN,
         timedOut: false,
+        reasoningOnly: false,
+        lowersThinking: false,
         timeLeftMs: 1_800_000,
       },
     ],
@@ -167,6 +211,23 @@ describe('retryWait', () => {
       expect(retryWait(failure, first, () => 0.5)).toBe(250)
     }
     expect(retryWait(http(503), { ...first, timedOut: true }, () => 0.5)).toBe(250)
+  })
+
+  it('retries a call\'s first reply of only reasoning once, whatever its retryable, after the backoff of its retry count', () => {
+    expect(retryWait(onlyReasoning, first, () => 0.5)).toBe(250)
+    expect(retryWait({ ...onlyReasoning, retryable: true }, first, () => 0.5)).toBe(250)
+    expect(retryWait(onlyReasoning, { ...first, retried: 1 }, () => 0.5)).toBe(500)
+    expect(retryWait(onlyReasoning, { ...first, timedOut: true }, () => 0.5)).toBe(250)
+    expect(retryWait(timeout, { ...first, reasoningOnly: true }, () => 0.5)).toBe(250)
+  })
+})
+
+describe('isReasoningOnly', () => {
+  it('reads a reply of only reasoning as a no-answer failure whose noAnswer is thinking, and nothing else', () => {
+    expect(isReasoningOnly(onlyReasoning)).toBe(true)
+    expect(isReasoningOnly({ ...onlyReasoning, noAnswer: 'empty' })).toBe(false)
+    expect(isReasoningOnly({ ...onlyReasoning, kind: 'truncated' })).toBe(false)
+    expect(isReasoningOnly(network)).toBe(false)
   })
 })
 

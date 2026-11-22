@@ -117,6 +117,18 @@ export interface Adaptations {
 /** How low each level is: the lowering of a level to a higher one is none. */
 const LEVELS = { off: 0, low: 1, default: 2 } as const
 
+/**
+ * The level the review may lower `target`'s thinking to: the `adapts.thinking` the provider states when it is below its
+ * own level, else none. A level the config sets (an option or a control in `extraBody`) states none, so the review never
+ * lowers it.
+ */
+export function thinkingLowersTo(target: Pick<Target, 'thinking' | 'adapts'>): 'low' | 'off' | undefined {
+  const level = target.adapts?.thinking
+  return level !== undefined && LEVELS[level] < LEVELS[target.thinking]
+    ? level
+    : undefined
+}
+
 /** One step's probe, from the call that began it to its settlement. */
 interface Pending {
   readonly phase: 'pending'
@@ -172,8 +184,8 @@ export function createAdaptations(): Adaptations {
   /** What `failure` asks of `target`, when the provider states it can, whatever the step's phase: the setting and its step, the cause, and the level a lowering goes to. */
   const answer = (target: Target, failure: unknown): { readonly setting: Setting, readonly step: Step, readonly cause: Adaptation['cause'], readonly level?: 'low' | 'off' } | undefined => {
     const lack = lackOf(failure)
-    const level = target.adapts?.thinking
-    if (lack?.noAnswer === 'thinking' && level !== undefined && LEVELS[level] < LEVELS[target.thinking]) {
+    const level = thinkingLowersTo(target)
+    if (lack?.noAnswer === 'thinking' && level !== undefined) {
       return {
         setting: 'thinking',
         step: 'thinking',

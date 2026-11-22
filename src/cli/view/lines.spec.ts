@@ -998,6 +998,17 @@ describe('logLines', () => {
       'part 12 of 44: timeout after 10512000 ms, retry 1 of 2 in 2s',
     ],
     [
+      'a reply of only reasoning',
+      {
+        failure: { kind: 'no-answer' },
+        attemptMs: 250_000,
+        waitMs: 250,
+      },
+      undefined,
+      { index: 12, count: 44 },
+      'part 12 of 44: its reply held only reasoning after 4m10s, retry 1 of 2 in 1s',
+    ],
+    [
       'a piece',
       {},
       undefined,

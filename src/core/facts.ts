@@ -155,7 +155,7 @@ export function isRefusal(error: unknown): boolean {
 }
 
 /**
- * What the retry policy reads of a thrown value: its `kind`, `status`, `retryable` and `retryAfterMs` as own data, so a
+ * What the retry policy reads of a thrown value: its `kind`, `status`, `retryable`, `retryAfterMs` and `noAnswer` as own data, so a
  * getter decides nothing and never runs. An `http` failure whose own data `exhausted` is `true` is never retryable,
  * whatever it says of `retryable`, as a `ProviderError`'s own `exhausted` makes it.
  */
@@ -168,6 +168,7 @@ export function failureFacts(error: unknown): FailureFacts {
       ? false
       : ownData(error, 'retryable'),
     retryAfterMs: ownData(error, 'retryAfterMs'),
+    noAnswer: ownData(error, 'noAnswer'),
   }
 }
 
