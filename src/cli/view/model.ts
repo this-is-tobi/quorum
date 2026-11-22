@@ -75,6 +75,18 @@ export interface CallState {
   readonly waitingUntil?: number
   /** What its last failed attempt said of itself. */
   readonly failure?: CallFailure
+  /** Whether its first attempt streams, which gives it a spinner and progress. */
+  readonly stream: boolean
+  /** The output its current attempt has shown, from its last progress; an attempt's own count, so a retry starts it again at 0. */
+  readonly outputTokens: number
+  /** Whether its last progress was a keep-alive, and none has come since. */
+  readonly keepAlive: boolean
+  /** How many of its progress reports said its output grew, which is what turns its spinner. */
+  readonly turns: number
+  /** The output of its attempts that is in the buckets so far, the failed attempts' streamed growth included. */
+  readonly counted: number
+  /** What `counted` was when its current attempt began, which the attempt's growth is measured from. */
+  readonly base: number
 }
 
 /** Where one profile's review stands. */
@@ -105,7 +117,7 @@ export interface ViewState {
   /** Each finding a vote asked about, numbered from 1 in the order first seen. */
   readonly findings: ReadonlyMap<string, number>
   readonly spent: number
-  /** The output tokens of the calls that ended, in the last `BUCKETS` cells of `BUCKET_MS` from `start`. */
+  /** The output tokens of the calls, streamed as they come and the rest of their usage as they end, in the last `BUCKETS` cells of `BUCKET_MS` from `start`. */
   readonly buckets: { readonly start: number, readonly tokens: readonly number[] }
   /** One entry per research part answered fresh and per vote answered fresh. */
   readonly sample: { readonly parts: ReadonlyArray<{ readonly planned: number, readonly durationMs: number }>, readonly votes: readonly number[] }
@@ -121,6 +133,8 @@ export interface ViewState {
   readonly gaps: ReadonlyMap<IncompleteReason, GapCount>
   readonly causes: ReadonlyMap<'research-failed' | 'provider-down', readonly Cause[]>
   readonly usage: ReadonlyMap<string, Usage>
+  /** The longest first token and the longest silence of each provider's answered streamed calls, by provider id. */
+  readonly timings: ReadonlyMap<string, { readonly firstTokenMs: number, readonly longestSilenceMs: number }>
   /** The review began to stop: why, when, how many calls were in flight, and for an interrupt the grace they were given. */
   readonly stopping?: { readonly cause: 'interrupt' | 'review-deadline', readonly at: number, readonly inFlight: number, readonly graceMs?: number }
   /** The time left as it first read, at the answered part that passed the threshold. */
@@ -159,6 +173,7 @@ export function startState(facts: ViewFacts): ViewState {
     gaps: new Map(),
     causes: new Map(),
     usage: new Map(),
+    timings: new Map(),
   }
 }
 
@@ -367,6 +382,12 @@ function callStarted(state: ViewState, event: Extract<QuorumEvent, { type: 'call
       reserved: event.reserved,
       timeoutMs: event.timeoutMs,
       retried: false,
+      stream: event.stream === true,
+      outputTokens: 0,
+      keepAlive: false,
+      turns: 0,
+      counted: 0,
+      base: 0,
     }),
     findings: finding === undefined || state.findings.has(finding)
       ? state.findings
@@ -393,12 +414,54 @@ function callRetried(state: ViewState, event: Extract<QuorumEvent, { type: 'call
       retried: true,
       waitingUntil: now + event.waitMs,
       failure: event.failure,
+      // the next attempt streams its own count from 0; what the failed one streamed stays in the buckets
+      outputTokens: 0,
+      keepAlive: false,
+      base: call.counted,
     }),
   }
 }
 
+function callProgressed(state: ViewState, event: Extract<QuorumEvent, { type: 'call:progress' }>, now: number): ViewState {
+  const call = state.calls.get(event.call)
+  if (call === undefined) return state
+  if (event.signal === 'keep-alive') {
+    return {
+      ...state,
+      calls: set(state.calls, event.call, { ...call, outputTokens: event.outputTokens, keepAlive: true }),
+    }
+  }
+  // the attempt's own count less what it already put in the buckets: the growth, never below 0
+  const grown = Math.max(0, event.outputTokens - (call.counted - call.base))
+  return {
+    ...state,
+    calls: set(state.calls, event.call, {
+      ...call,
+      outputTokens: event.outputTokens,
+      keepAlive: false,
+      turns: call.turns + 1,
+      counted: call.counted + grown,
+    }),
+    buckets: bucketed(state.buckets, now, grown),
+  }
+}
+
+/** `timings` with the larger of each of its numbers and the answered call's of `id`, or `timings` when the call has none. */
+function withTimings(timings: ViewState['timings'], id: string, event: Extract<QuorumEvent, { type: 'call' }>): ViewState['timings'] {
+  const { firstTokenMs, longestSilenceMs } = event
+  if (!event.ok || firstTokenMs === undefined || longestSilenceMs === undefined) return timings
+  const known = timings.get(id)
+  return set(timings, id, {
+    firstTokenMs: Math.max(known?.firstTokenMs ?? 0, firstTokenMs),
+    longestSilenceMs: Math.max(known?.longestSilenceMs ?? 0, longestSilenceMs),
+  })
+}
+
 function callEnded(state: ViewState, event: Extract<QuorumEvent, { type: 'call' }>, now: number): ViewState {
   let calls = state.calls
+  const flying = event.call === undefined
+    ? undefined
+    : calls.get(event.call)
   if (event.call !== undefined && calls.has(event.call)) {
     const rest = new Map(calls)
     rest.delete(event.call)
@@ -424,7 +487,11 @@ function callEnded(state: ViewState, event: Extract<QuorumEvent, { type: 'call' 
             ? {}
             : { costUsd: (known?.costUsd ?? 0) + (usage.costUsd ?? 0) },
         }),
-    buckets: bucketed(state.buckets, now, usage?.outputTokens ?? 0),
+    // the answered attempt's streamed growth is in the buckets already: add only the rest of its reported output (`bucketed` takes nothing out)
+    buckets: bucketed(state.buckets, now, (usage?.outputTokens ?? 0) - (flying === undefined
+      ? 0
+      : flying.counted - flying.base)),
+    timings: withTimings(state.timings, event.provider.id, event),
     sample: event.role === 'vote' && event.ok
       ? {
           ...state.sample,
@@ -496,6 +563,8 @@ export function fold(state: ViewState, event: QuorumEvent, now: number): ViewSta
       return callStarted(state, event, now)
     case 'call:retry':
       return callRetried(state, event, now)
+    case 'call:progress':
+      return callProgressed(state, event, now)
     case 'call':
       return callEnded(state, event, now)
     case 'part':

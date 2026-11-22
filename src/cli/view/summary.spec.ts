@@ -311,6 +311,39 @@ describe('summaryLines', () => {
     expect(lines(none).some(line => line.startsWith('calls:'))).toBe(false)
   })
 
+  it('names each provider\'s longest first token and silence', () => {
+    const answered = (call: number, provider: string, firstTokenMs: number, longestSilenceMs: number, role: 'research' | 'vote' = 'research'): QuorumEvent => ({
+      type: 'call',
+      call,
+      profile: 'security',
+      role,
+      provider: { id: provider, model: 'm' },
+      durationMs: 1000,
+      ok: true,
+      usage: { inputTokens: 1, outputTokens: 1 },
+      spent: 2,
+      firstTokenMs,
+      longestSilenceMs,
+    })
+    const state = reviewed(
+      answered(1, 'api', 2000, 220_000),
+      answered(2, 'api', 190_000, 9000),
+      answered(3, 'api', 500, 500),
+      answered(4, 'api', 400, 400, 'vote'),
+      answered(5, 'api', 300, 300, 'vote'),
+      answered(6, 'api', 200, 200, 'vote'),
+      answered(7, 'api', 100, 100, 'vote'),
+      answered(8, 'api', 100, 100, 'vote'),
+      answered(9, 'api', 100, 100, 'vote'),
+    )
+    const calls = (of: ViewState): string | undefined => lines(of).find(line => line.startsWith('calls:'))
+    expect(calls(state)).toBe('calls: 3 research, 6 vote(s); 4 at once; api\'s longest first token 3m10s, its longest silence 3m40s')
+    // a provider with no timing has no clause, and each one that has gets its own, in the order they answered
+    const two = fold(state, answered(10, 'second', 1500, 800), 2000)
+    expect(calls(two)).toBe('calls: 4 research, 6 vote(s); 4 at once; api\'s longest first token 3m10s, its longest silence 3m40s; second\'s longest first token 1.5s, its longest silence 0.8s')
+    expect(calls(replay(longReview()))).toBe('calls: 46 research (2 retried, 1 recovered into 2 pieces), 18 vote(s); 4 at once')
+  })
+
   it.each<[string, QuorumEvent[], string]>([
     [
       'token-cap',

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { IncompleteReason, QuorumEvent } from '../../core/types.ts'
-import { longReview, providerDown, replay, twoProfiles } from '../../testing/events.ts'
+import { longReview, providerDown, replay, streamedReview, twoProfiles } from '../../testing/events.ts'
 import { BUCKET_MS, BUCKETS, DEFAULT_FACTS, fold, stageEnd, stageStart, stageTime, startState } from './model.ts'
 import type { ViewState } from './model.ts'
 
@@ -149,6 +149,256 @@ describe('fold', () => {
     ])
     const far = fold(later, ended(5_000_000, 7)[1], 5_000_000)
     expect(far.buckets.tokens.reduce((sum, tokens) => sum + tokens, 0)).toBe(7)
+  })
+
+  /** The start of a call, streamed unless `stream` is false. */
+  const callStart = (call: number, stream = true): QuorumEvent => ({
+    type: 'call:start',
+    call,
+    profile: 'security',
+    role: 'research',
+    provider: API,
+    part: { index: call, count: 4 },
+    reserved: 6000,
+    timeoutMs: 600_000,
+    ...stream
+      ? { stream: true as const }
+      : {},
+  })
+  const progress = (call: number, outputTokens: number, signal: 'tokens' | 'keep-alive' = 'tokens'): QuorumEvent => ({
+    type: 'call:progress',
+    call,
+    outputTokens,
+    signal,
+  })
+  const retry = (call: number): QuorumEvent => ({
+    type: 'call:retry',
+    call,
+    attempt: 1,
+    retries: 2,
+    failure: { kind: 'timeout' },
+    attemptMs: 1000,
+    waitMs: 1000,
+  })
+  const answeredCall = (call: number, outputTokens: number, timings: { firstTokenMs?: number, longestSilenceMs?: number } = {}, provider = API): QuorumEvent => ({
+    type: 'call',
+    call,
+    profile: 'security',
+    role: 'research',
+    provider,
+    durationMs: 1,
+    ok: true,
+    usage: { inputTokens: 1, outputTokens },
+    spent: outputTokens + 1,
+    ...timings,
+  })
+
+  it('keeps each streamed call\'s output so far, a keep-alive, and its turns', () => {
+    const state = folded([
+      0,
+      started(['security']),
+    ], [
+      0,
+      callStart(1),
+    ], [
+      0,
+      callStart(2, false),
+    ], [
+      1000,
+      progress(1, 100),
+    ], [
+      2000,
+      progress(1, 250),
+    ], [
+      3000,
+      progress(1, 250, 'keep-alive'),
+    ])
+    expect(state.calls.get(1)).toMatchObject({
+      stream: true,
+      outputTokens: 250,
+      keepAlive: true,
+      turns: 2,
+      counted: 250,
+    })
+    expect(state.calls.get(2)).toMatchObject({
+      stream: false,
+      outputTokens: 0,
+      keepAlive: false,
+      turns: 0,
+      counted: 0,
+    })
+    // tokens after a keep-alive turn it again, and a progress of a call that is not in flight changes nothing
+    const grown = fold(state, progress(1, 400), 4000)
+    expect(grown.calls.get(1)).toMatchObject({
+      outputTokens: 400,
+      keepAlive: false,
+      turns: 3,
+      counted: 400,
+    })
+    expect(fold(grown, progress(9, 10), 5000)).toBe(grown)
+    // a streamed review ends with no call in flight, and its calls were streamed on the way
+    const list = streamedReview()
+    const flying = [
+      ...replay(list, 600_000).calls.values(),
+    ]
+    expect(flying.length).toBeGreaterThan(0)
+    expect(flying.every(call => call.stream)).toBe(true)
+    expect(flying.some(call => call.turns > 0 && call.outputTokens > 0)).toBe(true)
+    expect(replay(list).calls.size).toBe(0)
+  })
+
+  it('restarts a call\'s output at a retry', () => {
+    const state = folded([
+      0,
+      started(['security']),
+    ], [
+      0,
+      callStart(1),
+    ], [
+      1000,
+      progress(1, 300),
+    ], [
+      2000,
+      progress(1, 300, 'keep-alive'),
+    ], [
+      3000,
+      retry(1),
+    ])
+    expect(state.calls.get(1)).toMatchObject({
+      outputTokens: 0,
+      keepAlive: false,
+      turns: 1,
+      counted: 300,
+      retried: true,
+    })
+    // the new attempt counts again from 0, and what it adds is counted on top of the failed attempt's
+    const again = fold(state, progress(1, 50), 5000)
+    expect(again.calls.get(1)).toMatchObject({ outputTokens: 50, turns: 2, counted: 350 })
+  })
+
+  it('adds streamed growth to the buckets as it comes and the rest of the usage at the end, never twice', () => {
+    const cells = (...events: Array<[number, QuorumEvent]>): number[] => folded([
+      0,
+      started(['security']),
+    ], ...events).buckets.tokens.slice(0, 3)
+    // growth lands in the cell of its progress, and the end adds the rest of what the reply reported
+    expect(cells([
+      0,
+      callStart(1),
+    ], [
+      10_000,
+      progress(1, 100),
+    ], [
+      40_000,
+      progress(1, 250),
+    ], [
+      70_000,
+      answeredCall(1, 300),
+    ])).toEqual([100, 150, 50])
+    // a call that streamed all it reported adds nothing at its end, and a keep-alive adds nothing
+    expect(cells([
+      0,
+      callStart(1),
+    ], [
+      10_000,
+      progress(1, 300),
+    ], [
+      20_000,
+      progress(1, 300, 'keep-alive'),
+    ], [
+      70_000,
+      answeredCall(1, 300),
+    ])).toEqual([300, 0, 0])
+    // a failed attempt's growth stays, and the answered attempt adds its own growth and the rest of its usage
+    expect(cells([
+      0,
+      callStart(1),
+    ], [
+      10_000,
+      progress(1, 250),
+    ], [
+      20_000,
+      retry(1),
+    ], [
+      40_000,
+      progress(1, 40),
+    ], [
+      70_000,
+      answeredCall(1, 300),
+    ])).toEqual([250, 40, 260])
+    // a streamed estimate above the reported count takes nothing out
+    expect(cells([
+      0,
+      callStart(1),
+    ], [
+      10_000,
+      progress(1, 500),
+    ], [
+      70_000,
+      answeredCall(1, 300),
+    ])).toEqual([500, 0, 0])
+    // a call that did not stream adds its whole usage at its end, as before
+    expect(cells([
+      0,
+      callStart(1, false),
+    ], [
+      70_000,
+      answeredCall(1, 300),
+    ])).toEqual([0, 0, 300])
+    // the spend and the usage are the replies' own, whatever the buckets hold
+    const state = folded([
+      0,
+      started(['security']),
+    ], [
+      0,
+      callStart(1),
+    ], [
+      10_000,
+      progress(1, 500),
+    ], [
+      70_000,
+      answeredCall(1, 300),
+    ])
+    expect(state.spent).toBe(301)
+    expect(state.usage.get('api')).toMatchObject({ outputTokens: 300 })
+  })
+
+  it('keeps the longest first token and silence of each provider', () => {
+    const other = { id: 'other', model: 'model' }
+    const state = folded(
+      [
+        0,
+        started(['security']),
+      ],
+      [
+        1000,
+        answeredCall(1, 10, { firstTokenMs: 2000, longestSilenceMs: 9000 }),
+      ],
+      [
+        2000,
+        answeredCall(2, 10, { firstTokenMs: 5000, longestSilenceMs: 4000 }),
+      ],
+      [
+        3000,
+        answeredCall(3, 10),
+      ],
+      [
+        4000,
+        answeredCall(4, 10, { firstTokenMs: 700, longestSilenceMs: 800 }, other),
+      ],
+    )
+    expect([...state.timings]).toEqual([
+      [
+        'api',
+        { firstTokenMs: 5000, longestSilenceMs: 9000 },
+      ],
+      [
+        'other',
+        { firstTokenMs: 700, longestSilenceMs: 800 },
+      ],
+    ])
+    expect(replay(streamedReview()).timings.get('api')).toEqual({ firstTokenMs: 6000, longestSilenceMs: 6000 })
+    expect(replay(longReview()).timings.size).toBe(0)
   })
 
   it('keeps the interval of each profile in a stage, and reads the union of the ones that ended as the stage\'s time', () => {

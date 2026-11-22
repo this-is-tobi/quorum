@@ -3,12 +3,13 @@ import { ASCII_GLYPHS, glyphsFor, UNICODE_GLYPHS } from './glyphs.ts'
 import type { Glyphs } from './glyphs.ts'
 import { widthOf } from './width.ts'
 
-/** Every mark of a set, the sparkline's levels each on its own. */
+/** Every mark of a set, the sparkline's levels and the spinner's turns each on its own. */
 function marks(glyphs: Glyphs): string[] {
-  const { spark, ...single } = glyphs
+  const { spark, spinner, ...single } = glyphs
   return [
     ...Object.values(single),
     ...spark,
+    ...spinner,
   ]
 }
 
@@ -84,8 +85,8 @@ describe('the glyph sets', () => {
   })
 
   it('pairs each Unicode glyph with an ASCII one of one column', () => {
-    const { spark: unicodeSpark, ...unicode } = UNICODE_GLYPHS
-    const { spark: asciiSpark, ...ascii } = ASCII_GLYPHS
+    const { spark: unicodeSpark, spinner: unicodeSpinner, ...unicode } = UNICODE_GLYPHS
+    const { spark: asciiSpark, spinner: asciiSpinner, ...ascii } = ASCII_GLYPHS
     expect(Object.keys(ascii)).toEqual(Object.keys(unicode))
     for (const name of Object.keys(unicode) as Array<keyof typeof unicode>) {
       expect(widthOf(unicode[name]), name).toBe(1)
@@ -98,8 +99,14 @@ describe('the glyph sets', () => {
     for (const level of [
       ...unicodeSpark,
       ...asciiSpark,
+      ...unicodeSpinner,
+      ...asciiSpinner,
     ]) expect(widthOf(level)).toBe(1)
     expect(new Set(unicodeSpark).size).toBe(unicodeSpark.length)
     expect(new Set(asciiSpark).size).toBe(asciiSpark.length)
+    // the spinner turns through ten glyphs, or four in ASCII, each its own
+    expect(unicodeSpinner.join('')).toBe('⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏')
+    expect(asciiSpinner).toEqual(['|', '/', '-', '\\'])
+    for (const turn of asciiSpinner) expect(turn).toMatch(/^[\x20-\x7E]$/)
   })
 })
