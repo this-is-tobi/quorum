@@ -242,7 +242,7 @@ Each entry is one `adapted` event, once per provider and setting in a review, an
 
 ### The lanes
 
-This fragment shows only the part of `meta` that holds the lanes. `meta.concurrency` has one entry per provider id that a request went to, in the order of their first requests. Two provider objects of one id are merged: the widest range, every cut, and whether either sent headers. The public view keeps it.
+This fragment shows only the part of `meta` that holds the lanes. `meta.concurrency` has one entry per provider id that a request went to, in the order their lanes began: at each provider's first call, before any wait for a slot, and whether or not `--state` answered that call. Two provider objects of one id are merged: the widest range, every cut, and whether either sent headers. The public view keeps it.
 
 | Field | Type | Holds |
 | --- | --- | --- |
