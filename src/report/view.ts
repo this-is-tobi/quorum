@@ -129,6 +129,11 @@ function publicMeta(result: QuorumResult): PublicMeta {
       : {
           reused: { ...meta.reused },
         },
+    ...meta.concurrency === undefined
+      ? {}
+      : {
+          concurrency: structuredClone(meta.concurrency),
+        },
   }
 }
 

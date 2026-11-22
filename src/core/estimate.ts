@@ -3,6 +3,7 @@ import type { ProfileBudgets } from './budgets.ts'
 import { reviewScope } from './coverage.ts'
 import { diffSections, splitDiff } from './diff.ts'
 import type { DiffSection } from './diff.ts'
+import { laneStart, REVIEW_CEILING } from './lanes.ts'
 import { cutSection, partText } from './parts.ts'
 import type { Cut, Slice } from './parts.ts'
 import type { CompletionRequest, Provider } from './ports.ts'
@@ -35,8 +36,8 @@ export interface EstimateSettings {
   readonly maxFindings: number
   /** The reply budgets of each profile, by profile id: what its requests carry and ask for, as the review sends them. */
   readonly budgets: Readonly<Record<string, ProfileBudgets>>
-  /** How many provider calls run at once in one review. */
-  readonly concurrency: number
+  /** How many provider calls run at once in one review, shared by every provider; unset, each provider has a lane of its own under the review's ceiling. */
+  readonly concurrency: number | undefined
   /** The token cap of one review. */
   readonly maxReviewTokens: number
   /** The deadline of one review, in milliseconds. */
@@ -72,7 +73,9 @@ interface Section {
  * what the ledger can reserve with one attempt per call, before any retry reserves again: each part's reservation and recovery's bound (`recoveryBound`), the votes at their
  * bound, and the calls an adaptation sends once more (`adaptationBound`). `inFlight` is the sum of the
  * `concurrency` largest bounds among the research parts and the votes, each lens's counted `maxFindings` times,
- * since the review's one limit shares its slots between every profile. `fits` is `expected + inFlight <=
+ * since the review's one limit shares its slots between every profile; with `concurrency` unset, each provider counts the
+ * largest bounds among its own calls up to where its lane starts (`laneStart`), and the `REVIEW_CEILING` largest of those
+ * count in all, as the lanes run at their start. `fits` is `expected + inFlight <=
  * maxReviewTokens`, and leaves recovery and the adaptations out, which only an adversarial or a failing review
  * reaches, and which would refuse every large path review. `held` is how many research parts the cap holds: the
  * parts of every profile, in profile order and then in the order they are sent, counted while their expected spends
@@ -95,7 +98,7 @@ export function estimateReview(runs: readonly ProfileRun[], settings: EstimateSe
   }))
   const profiles = planned.map(({ estimate }) => estimate)
   const expected = sum(profiles.map(profile => profile.expected))
-  const inFlight = reservedAtOnce(profiles, settings.maxFindings, settings.concurrency)
+  const inFlight = reservedAtOnce(planned, settings.maxFindings, settings.concurrency)
   return {
     profiles: Object.fromEntries(planned.map(({ id, estimate }) => [id, estimate])),
     expected,
@@ -174,7 +177,7 @@ function largestSection(sections: ReadonlyMap<string, string>, diff: string): Se
  * reply budget once, so the input is what it holds besides; a reservation a provider states below its reply
  * budget counts the reply at the reservation, and the part never expects more than it reserves.
  */
-function expectedOf(reservation: number, reply: number): number {
+export function expectedOf(reservation: number, reply: number): number {
   const held = Math.min(reply, reservation)
   return Math.ceil((reservation - held) / BOUND_OVER_CODE) + Math.min(held, EXPECTED_REPLY_TOKENS)
 }
@@ -327,30 +330,64 @@ interface Call {
   readonly count: number
 }
 
+/** The `slots` largest of `calls`, each counted as many times as it may be made: with fewer calls than slots, every call is taken. */
+function largestCalls(calls: readonly Call[], slots: number): Call[] {
+  let free = slots
+  const taken: Call[] = []
+  for (const { bound, count } of [...calls].sort((a, b) => b.bound - a.bound)) {
+    if (free === 0) break
+    const times = Math.min(count, free)
+    taken.push({ bound, count: times })
+    free -= times
+  }
+  return taken
+}
+
+/** The sum of the bounds of `calls`, each counted as many times as it may be made. */
+function reserved(calls: readonly Call[]): number {
+  return sum(calls.map(({ bound, count }) => bound * count))
+}
+
 /** The sum of the `slots` largest bounds among `calls`, each counted as many times as it may be made: with fewer calls than slots, every call counts. */
 function largestAtOnce(calls: readonly Call[], slots: number): number {
-  let free = slots
-  let reserved = 0
-  for (const { bound, count } of [...calls].sort((a, b) => b.bound - a.bound)) {
-    const taken = Math.min(count, free)
-    reserved += bound * taken
-    free -= taken
-    if (free === 0) break
-  }
-  return reserved
+  return reserved(largestCalls(calls, slots))
 }
 
 /**
- * What the calls that run at once reserve: the sum of the `concurrency` largest bounds among every research part
- * and every vote of every profile, a lens's vote counted `maxFindings` times, once per finding it may judge. The
- * review's concurrency limit is one for all its profiles, so the bounds are taken from all of them together; with
- * fewer calls than slots, every call counts.
+ * What the calls that run at once reserve: with `concurrency` set, the sum of the `concurrency` largest bounds among every research
+ * part and every vote of every profile, a lens's vote counted `maxFindings` times, once per finding it may judge, since the review's
+ * limit is one for all its profiles. With it unset, each provider's own calls are taken up to where its lane starts, the largest
+ * bounds first, and the `REVIEW_CEILING` largest of those among every provider count: the lanes at their start, under the ceiling.
+ * With fewer calls than slots, every call counts.
  */
-function reservedAtOnce(profiles: readonly ProfileEstimate[], maxFindings: number, concurrency: number): number {
-  return largestAtOnce(profiles.flatMap(({ parts, vote }) => [
-    ...parts.map(bound => ({ bound, count: 1 })),
-    ...Object.values(vote).map(bound => ({ bound, count: maxFindings })),
-  ]), concurrency)
+function reservedAtOnce(planned: ReadonlyArray<{ readonly run: ProfileRun, readonly estimate: ProfileEstimate }>, maxFindings: number, concurrency: number | undefined): number {
+  const calls = planned.flatMap(({ run, estimate }) => [
+    ...estimate.parts.map(bound => ({
+      target: run.research,
+      call: { bound, count: 1 },
+    })),
+    ...run.lenses.flatMap(lens => Object.hasOwn(estimate.vote, lens.id)
+      ? [
+          {
+            target: lens,
+            call: { bound: estimate.vote[lens.id], count: maxFindings },
+          },
+        ]
+      : []),
+  ])
+  if (concurrency !== undefined) return largestAtOnce(calls.map(({ call }) => call), concurrency)
+  const lanes = new Map<Provider, { readonly start: number, readonly calls: Call[] }>()
+  for (const { target, call } of calls) {
+    const lane = lanes.get(target.provider) ?? {
+      start: laneStart(target),
+      calls: [],
+    }
+    lane.calls.push(call)
+    lanes.set(target.provider, lane)
+  }
+  return largestAtOnce([
+    ...lanes.values(),
+  ].flatMap(lane => largestCalls(lane.calls, lane.start)), REVIEW_CEILING)
 }
 
 /** How many settings a provider states it can move by itself: its thinking, its structured output, and its stream, which steps down twice and counts as two. */
@@ -363,8 +400,8 @@ function settingsOf({ adapts }: Target): number {
 /**
  * What the calls an adaptation sends once more may reserve at most. A provider that states it can move a setting
  * sends, per setting and review, one probe, and the calls already in flight beside it at most once more each once
- * the setting has moved (at most `concurrency` calls in all), so the bound is, per provider and per setting its
- * `adapts` states, the `concurrency` largest bounds among its own calls: its research parts, each with what a piece's
+ * the setting has moved (at most `concurrency` calls in all, or, with lanes, the review's ceiling of 16 calls of the provider), so the bound is, per provider and per setting its
+ * `adapts` states, the `concurrency` (else `REVIEW_CEILING`) largest bounds among its own calls: its research parts, each with what a piece's
  * position adds, since a piece may be the call sent again, and its votes. A provider that states no `adapts`
  * (an explicit setting, a structured output that is no `json`, a provider object) sends no probe and adds nothing. A
  * provider is counted once across the profiles and roles that share it, as the review's one limit shares its slots.
@@ -390,5 +427,5 @@ function adaptationBound(planned: ReadonlyArray<{ readonly run: ProfileRun, read
   }
   return sum([
     ...providers.values(),
-  ].map(entry => entry.settings * largestAtOnce(entry.calls, settings.concurrency)))
+  ].map(entry => entry.settings * largestAtOnce(entry.calls, settings.concurrency ?? REVIEW_CEILING)))
 }

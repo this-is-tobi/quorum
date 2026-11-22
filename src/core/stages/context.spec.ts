@@ -7,9 +7,9 @@ import type { StreamPlan } from '../../testing/streams.ts'
 import type { ProfileBudgets } from '../budgets.ts'
 import { createAdaptations } from '../adapt.ts'
 import { createClocks } from '../clocks.ts'
-import { createLimiter } from '../concurrency.ts'
 import { createHealth } from '../down.ts'
 import { ProviderDownError, ProviderError } from '../errors.ts'
+import { createLanes } from '../lanes.ts'
 import { createLedger, DEFAULT_REVIEW_TIMEOUT_MS, LimitError } from '../limits.ts'
 import type { CompletionRequest, CompletionResponse, Provider, StoredCall, StreamSignal } from '../ports.ts'
 import { researchRequest } from '../prompts.ts'
@@ -33,14 +33,15 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
       deadline.abort(new LimitError('review-deadline', `the review reached its deadline of ${deadlineMs} ms`))
     })
   }
+  const emit: RunContext['emit'] = (event) => {
+    if (controller.signal.aborted) return
+    if (event.type === 'call:start' || event.type === 'call:retry' || event.type === 'call:progress') progress.push(event)
+    else events.push(event)
+  }
   const ctx: RunContext = {
-    limit: createLimiter(concurrency),
+    lanes: createLanes({ concurrency, clock, emit }),
     ledger: createLedger(limits.cap ?? 2_000_000),
-    emit: (event) => {
-      if (controller.signal.aborted) return
-      if (event.type === 'call:start' || event.type === 'call:retry' || event.type === 'call:progress') progress.push(event)
-      else events.push(event)
-    },
+    emit,
     signal: controller.signal,
     stop: AbortSignal.any([controller.signal, deadline.signal]),
     halt: AbortSignal.any([controller.signal, deadline.signal]),
@@ -61,7 +62,7 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
 }
 
 /** A target whose provider's own id is not the id of its ref, which is the one an error and an event name. */
-function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'stallTimeoutMs' | 'retries' | 'worstCase' | 'room' | 'window' | 'maxTokens' | 'thinking' | 'adapts' | 'streams'>> = {}): Target {
+function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'stallTimeoutMs' | 'retries' | 'worstCase' | 'room' | 'window' | 'maxTokens' | 'thinking' | 'adapts' | 'streams' | 'slots'>> = {}): Target {
   return {
     provider: { id: 'live-id', model: 'm', complete },
     ref: { id: 'p', model: 'm' },
@@ -75,6 +76,7 @@ function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'tim
     thinking: 'default',
     adapts: undefined,
     streams: false,
+    slots: undefined,
     ...facts,
   }
 }
@@ -2744,5 +2746,382 @@ describe('the reply budgets a learned cut holds', () => {
         lowered: false,
       },
     ])
+  })
+})
+
+describe('the lane of a call', () => {
+  const answer: CompletionResponse = { text: 'ok', model: 'm' }
+  const holding = { requests: 1000, tokens: 900_000, tokensLimit: 1_000_000 }
+
+  /** A context whose lanes are the adaptive ones, no `concurrency` set, on the context's clock and sink. */
+  function adaptive(clock: FakeClock): ReturnType<typeof context> {
+    const made = context(clock)
+    return {
+      ...made,
+      ctx: {
+        ...made.ctx,
+        lanes: createLanes({ clock, emit: made.ctx.emit }),
+      },
+    }
+  }
+
+  /** The lane a call ran in, as it told it: what each attempt was sent as, what its stream's headers said, and how it ended. */
+  function spy(): { readonly lanes: RunContext['lanes'], readonly told: unknown[] } {
+    const told: unknown[] = []
+    return {
+      told,
+      lanes: {
+        run: (_target, _stop, task) => task({
+          sent: (count) => {
+            told.push({ sent: count })
+            return {
+              headers: rateLimit => told.push({ headers: rateLimit }),
+              ended: end => told.push({ ended: end }),
+            }
+          },
+        }),
+        record: () => ({}),
+      },
+    }
+  }
+
+  it('sends each attempt with its reservation, its expected use and its reply budget, tells the lane its stream\'s headers as they come and how the attempt ended', async () => {
+    const clock = fakeClock()
+    const { ctx } = context(clock)
+    const { lanes, told } = spy()
+    const flaky = target(streamingProvider(clock, () => ({
+      script: [
+        {
+          afterMs: 0,
+          signal: {
+            kind: 'headers',
+            rateLimit: {
+              requests: 7,
+              tokens: 900,
+              tokensLimit: 1000,
+              requestsResetMs: 1500,
+              tokensResetMs: 0,
+            },
+          },
+        },
+        {
+          afterMs: 10,
+          signal: { kind: 'keep-alive' },
+        },
+      ],
+      end: new ProviderError({
+        providerId: 'p',
+        kind: 'http',
+        status: 429,
+        retryable: true,
+        retryAfterMs: 1,
+        rateLimit: { requests: 0 },
+        message: 'slow down',
+      }),
+    })).complete, {
+      streams: true,
+      retries: 1,
+      timeoutMs: undefined,
+      ...worst(10_000),
+    })
+    await settle(clock, callProvider({ ...ctx, lanes }, requester, flaky, () => ({ ...request, replyTokens: 9000 }))).catch(() => {})
+    // 10000 reserved, 9000 of it for the reply: a ninth of the input and the reply at 4096.
+    const count = { reservation: 10_000, expected: Math.ceil(1000 / 3) + 4096, replyTokens: 9000 }
+    const failure = {
+      answered: false,
+      failure: { kind: 'http', status: 429 },
+      retryAfterMs: 1,
+      rateLimit: { requests: 0 },
+    }
+    expect(told).toEqual([
+      { sent: count },
+      {
+        headers: {
+          requests: 7,
+          tokens: 900,
+          tokensLimit: 1000,
+          requestsResetMs: 1500,
+          tokensResetMs: 0,
+        },
+      },
+      { ended: failure },
+      { sent: count },
+      {
+        headers: {
+          requests: 7,
+          tokens: 900,
+          tokensLimit: 1000,
+          requestsResetMs: 1500,
+          tokensResetMs: 0,
+        },
+      },
+      { ended: failure },
+    ])
+  })
+
+  it('tells the lane no reply budget for a request that carries none, and counts its expected use at the default reply', async () => {
+    const clock = fakeClock()
+    const { ctx } = context(clock)
+    const { lanes, told } = spy()
+    await callProvider({ ...ctx, lanes }, requester, target(async () => answer, worst(10_000)), () => request)
+    // 10000 reserved, the reply counted at the default of 16000 tokens, so all of it: a third of nothing and 4096 of the reply.
+    expect(told[0]).toEqual({
+      sent: { reservation: 10_000, expected: 4096 },
+    })
+    expect(told[0]).not.toHaveProperty('sent.replyTokens')
+  })
+
+  it('reads a reply\'s rate-limit headers as numbers only, from own data, and tells the lane an answered attempt', async () => {
+    const clock = fakeClock()
+    const { ctx } = context(clock)
+    const { lanes, told } = spy()
+    const read = async (rateLimit: unknown): Promise<void> => {
+      await callProvider({ ...ctx, lanes }, requester, target(async () => ({ ...answer, rateLimit }) as CompletionResponse), () => request)
+    }
+    await read({
+      requests: 3,
+      tokens: -1,
+      tokensLimit: Number.NaN,
+      requestsResetMs: '5',
+      tokensResetMs: Number.POSITIVE_INFINITY,
+      extra: 1,
+    })
+    await read('headers')
+    const inherited = Object.create({ requests: 5 }) as object
+    await read(inherited)
+    let ran = false
+    await read(Object.defineProperty({}, 'requests', {
+      enumerable: true,
+      get: () => {
+        ran = true
+        return 9
+      },
+    }))
+    expect(told.filter(item => typeof item === 'object' && item !== null && 'ended' in item)).toEqual([
+      {
+        ended: {
+          answered: true,
+          rateLimit: { requests: 3 },
+        },
+      },
+      {
+        ended: { answered: true },
+      },
+      {
+        ended: { answered: true },
+      },
+      {
+        ended: { answered: true },
+      },
+    ])
+    expect(ran).toBe(false)
+  })
+
+  it('tells the lane the failure its provider threw, and not the core\'s own reading of it', async () => {
+    const clock = fakeClock()
+    const { ctx } = context(clock)
+    const { lanes, told } = spy()
+    const refused = new ProviderError({
+      providerId: 'p',
+      kind: 'http',
+      status: 400,
+      message: 'no',
+      refused: 'stream',
+    })
+    await callProvider({ ...ctx, lanes }, requester, target(async () => {
+      throw refused
+    }), () => request).catch(() => {})
+    await callProvider({ ...ctx, lanes }, requester, target(async () => {
+      throw new Error('boom')
+    }), () => request).catch(() => {})
+    const abort = new AbortController()
+    abort.abort(new LimitError('review-deadline', 'late'))
+    await callProvider({ ...ctx, halt: abort.signal, lanes }, requester, target(async () => answer), () => request).catch(() => {})
+    expect(told.filter(item => typeof item === 'object' && item !== null && 'ended' in item)).toEqual([
+      {
+        ended: {
+          answered: false,
+          failure: { kind: 'http', status: 400, refused: 'stream' },
+        },
+      },
+      {
+        ended: { answered: false },
+      },
+      {
+        ended: { answered: false },
+      },
+    ])
+  })
+
+  it('cuts a lane at a throttle and holds its new calls for the Retry-After, its next call waiting on the review\'s clock', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = adaptive(clock)
+    const limited = target(async () => {
+      throw new ProviderError({
+        providerId: 'p',
+        kind: 'http',
+        status: 429,
+        retryable: true,
+        retryAfterMs: 5000,
+        message: 'slow down',
+      })
+    })
+    await expect(settle(clock, callProvider(ctx, requester, limited, () => request))).rejects.toThrow('slow down')
+    expect(events.filter(event => event.type === 'concurrency')).toEqual([
+      {
+        type: 'concurrency',
+        provider: { id: 'p', model: 'm' },
+        limit: 2,
+        cause: 'cut',
+        from: 4,
+        failure: { kind: 'http', status: 429 },
+      },
+      {
+        type: 'concurrency',
+        provider: { id: 'p', model: 'm' },
+        limit: 2,
+        cause: 'paused',
+        waitMs: 5000,
+        failure: { kind: 'http', status: 429 },
+      },
+    ])
+    expect(clock.now()).toBe(0)
+    const ok = target(async () => answer)
+    await expect(settle(clock, callProvider(ctx, requester, limited, () => request))).rejects.toThrow('slow down')
+    expect(clock.now()).toBe(5000)
+    // Another provider's lane is not held.
+    await settle(clock, callProvider(ctx, requester, ok, () => request))
+    expect(clock.now()).toBe(5000)
+  })
+
+  it('reads a stall as a throttle signal, with the headers its stream sent before it', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = adaptive(clock)
+    const stalling = target(streamingProvider(clock, () => ({
+      script: [
+        {
+          afterMs: 0,
+          signal: { kind: 'headers', rateLimit: holding },
+        },
+        {
+          afterMs: 3_000_000,
+          signal: { kind: 'keep-alive' },
+        },
+      ],
+      end: answer,
+    })).complete, {
+      streams: true,
+      stallTimeoutMs: 1000,
+      timeoutMs: undefined,
+      maxTokens: 150_000,
+    })
+    await expect(settle(clock, callProvider(ctx, requester, stalling, () => request))).rejects.toThrow('no reply progress within 1000 ms')
+    expect(events.filter(event => event.type === 'concurrency')).toEqual([
+      {
+        type: 'concurrency',
+        provider: { id: 'p', model: 'm' },
+        limit: 2,
+        cause: 'cut',
+        from: 4,
+        failure: { kind: 'timeout', stalledMs: 1000 },
+      },
+    ])
+    expect(ctx.lanes.record()).toEqual({
+      p: {
+        limit: 'auto',
+        start: 4,
+        lowest: 2,
+        highest: 4,
+        cuts: 1,
+        headers: true,
+      },
+    })
+  })
+
+  it('grows a lane on the replies\' headers, and keeps a pinned concurrency\'s one limit', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = adaptive(clock)
+    const ok = target(async () => ({ ...answer, rateLimit: holding }))
+    for (let index = 0; index < 4; index++) await settle(clock, callProvider(ctx, requester, ok, () => request))
+    expect(events.filter(event => event.type === 'concurrency')).toEqual([
+      {
+        type: 'concurrency',
+        provider: { id: 'p', model: 'm' },
+        limit: 5,
+        cause: 'grown',
+      },
+    ])
+    const pinned = context(clock, new AbortController(), 3)
+    for (let index = 0; index < 8; index++) await settle(clock, callProvider(pinned.ctx, requester, ok, () => request))
+    expect(pinned.events.filter(event => event.type === 'concurrency')).toEqual([])
+    expect(pinned.ctx.lanes.record()).toEqual({
+      p: {
+        limit: 3,
+        start: 3,
+        lowest: 3,
+        highest: 3,
+        cuts: 0,
+        headers: true,
+      },
+    })
+  })
+
+  it('settles an answered attempt once when the sink throws on the lane\'s growth, and goes on with the reply', async () => {
+    const clock = fakeClock()
+    const made = context(clock)
+    const settled: number[] = []
+    const sink: Error = new Error('sink')
+    const emit: RunContext['emit'] = (event) => {
+      made.ctx.emit(event)
+      if (event.type === 'concurrency' && event.cause === 'grown') throw sink
+    }
+    const ctx: RunContext = {
+      ...made.ctx,
+      emit,
+      lanes: createLanes({ clock, emit }),
+      ledger: {
+        ...made.ctx.ledger,
+        settle: (reserved, spent) => {
+          settled.push(reserved)
+          made.ctx.ledger.settle(reserved, spent)
+        },
+      },
+    }
+    const ok = target(async () => ({ ...answer, rateLimit: holding }))
+    for (let index = 0; index < 4; index++) await expect(settle(clock, callProvider(ctx, requester, ok, () => request))).resolves.toMatchObject({ text: 'ok' })
+    // The fourth answer grew the lane and the sink threw on it: the attempt was settled once, with the others.
+    expect(settled).toHaveLength(4)
+    expect(ctx.flying.count).toBe(0)
+  })
+
+  it('reads the slots a provider states as own data, a whole number of at least 1', () => {
+    const provider: Provider = {
+      id: 'p',
+      model: 'm',
+      complete: async () => answer,
+    }
+    expect(targetOf({ ...provider, slots: 3 }).slots).toBe(3)
+    for (const slots of [
+      0,
+      -1,
+      1.5,
+      '2',
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ]) {
+      expect(targetOf({ ...provider, slots } as unknown as Provider).slots).toBeUndefined()
+    }
+    expect(targetOf(provider).slots).toBeUndefined()
+    const getter = { ...provider }
+    Object.defineProperty(getter, 'slots', {
+      enumerable: true,
+      get: () => 3,
+    })
+    expect(targetOf(getter).slots).toBeUndefined()
+    expect(targetOf(Object.create({ slots: 3 }, {
+      id: { value: 'p' },
+      model: { value: 'm' },
+      complete: { value: provider.complete },
+    }) as Provider).slots).toBeUndefined()
   })
 })

@@ -131,6 +131,13 @@ export function tokensProblem(value: unknown): string | undefined {
     : 'must be a whole number of tokens of at least 1'
 }
 
+/** What is wrong with a stated `slots`, worded with what to write, or undefined for a whole number of at least 1. The value is never quoted. */
+export function slotsProblem(value: unknown): string | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1
+    ? undefined
+    : 'must be a whole number of at least 1'
+}
+
 /** What is wrong with a stated `thinking`, worded with what to write, or undefined for `default`, `low` or `off`. The value is never quoted. */
 export function thinkingProblem(value: unknown): string | undefined {
   return value === 'default' || value === 'low' || value === 'off'
@@ -260,6 +267,13 @@ export interface Provider {
    * none. It is read when the quorum is created, as an own data property, as `timeoutMs` is.
    */
   readonly streams?: true
+  /**
+   * How many calls the server serves at once, a whole number of at least 1: a fact the provider states of its server, such as a llama.cpp
+   * server's `total_slots`. With the review's `concurrency` unset, the provider's lane starts and stays at the lesser of it and
+   * `REVIEW_CEILING`, and a throttle still halves it. No shipped adapter states it yet. It is read when the quorum is created, as an own data
+   * property, as `timeoutMs` is.
+   */
+  readonly slots?: number
   /**
    * Answer one request. It should honour `request.signal`, settling soon after the signal aborts:
    * the core settles the call at its deadline or at the review's abort without waiting for the

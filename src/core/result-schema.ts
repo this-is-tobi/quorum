@@ -110,6 +110,18 @@ const reused = z.strictObject({
   research: count,
   votes: count,
 })
+/** What each provider's lane did in a review, by provider id (`ConcurrencyRecord`). */
+const concurrency = z.record(z.string(), z.strictObject({
+  limit: z.union([
+    z.literal('auto'),
+    z.int().min(1),
+  ]),
+  start: z.int().min(1),
+  lowest: z.int().min(1),
+  highest: z.int().min(1),
+  cuts: count,
+  headers: z.boolean(),
+}))
 const coverageReason = z.enum([
   'binary',
   'submodule',
@@ -362,6 +374,7 @@ export const resultSchema = z.strictObject({
     flags: z.array(flag),
     adaptations: z.array(adaptation),
     reused: reused.optional(),
+    concurrency: concurrency.optional(),
   }),
 }).superRefine(checkResult)
 
@@ -387,5 +400,6 @@ export const publicViewSchema = z.strictObject({
     flags: z.array(flag),
     adaptations: z.array(adaptation),
     reused: reused.optional(),
+    concurrency: concurrency.optional(),
   }),
 }).superRefine(checkResult)

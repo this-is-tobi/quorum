@@ -6,7 +6,7 @@ import type { CompletionRequest, Provider, QuorumPorts } from './ports.ts'
 import { researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum } from './quorum.ts'
 import { requestTokens, tokenBound } from './tokens.ts'
-import type { Estimate, Finding, Profile, Quorum, QuorumEvent } from './types.ts'
+import type { Estimate, Finding, Profile, Quorum, QuorumEvent, QuorumOptions } from './types.ts'
 
 /** What a provider keeps over a request's own bound: 512 tokens for the chat template and 16000 for the reply, which the providers here state as an attempt's worst case. */
 const RESERVE = 512 + 16_000
@@ -577,6 +577,56 @@ describe('estimate', () => {
     // The limit is the review's, so the profiles share it.
     expect(inFlight([lone, other], 4)).toBe(200)
     expect(inFlight([lone, other], 100)).toBe(320)
+  })
+
+  it('counts in flight each provider\'s start of its largest bounds, at most 16 in all, and the adaptations at the ceiling', () => {
+    const wide: Profile = {
+      id: 'wide',
+      prompts: { research: 'Find bugs.', vote: 'Judge as {{lens.id}}.' },
+      lenses: ['l1', 'l2', 'l3', 'l4', 'l5'].map(id => ({ id, question: 'Is it real?' })),
+      policy: { high: 'unanimous', medium: 'off', low: 'off' },
+    }
+    /** The bound of each lens's vote: 10 for l1 up to 50 for l5, and 5 for the research part. */
+    const portsOf = (voters: Partial<Provider> = {}): QuorumPorts => ({
+      profiles: {
+        wide: {
+          research: silent(() => 5),
+          voters: Object.fromEntries(wide.lenses.map((lens, index) => [
+            lens.id,
+            {
+              ...silent(() => 10 * (index + 1)),
+              ...lens.id === 'l5'
+                ? voters
+                : {},
+            },
+          ])),
+        },
+      },
+    })
+    const estimateOf = (options: Partial<QuorumOptions>, ports: QuorumPorts = portsOf()): Estimate => createQuorum({
+      profiles: [wide],
+      ...options,
+    }, ports).estimate({
+      diff: addedFile('a.js', 3),
+    })
+
+    // Each lens may cast 4 votes: each provider's lane starts at 4, so each counts its four calls, and the 16 largest of the 21 are in flight: 50, 40, 30 and 20, four times each.
+    expect(estimateOf({ maxFindings: 4 }).inFlight).toBe(4 * (50 + 40 + 30 + 20))
+    // With one vote of each lens there are 6 calls, all in flight: a provider of one call counts it once.
+    expect(estimateOf({ maxFindings: 1 }).inFlight).toBe(5 + 10 + 20 + 30 + 40 + 50)
+    // A lane at the slots the server states starts there: l5's two calls, then the 14 largest of the rest.
+    expect(estimateOf({ maxFindings: 4 }, portsOf({ slots: 2 })).inFlight).toBe(2 * 50 + 4 * 40 + 4 * 30 + 4 * 20 + 2 * 10)
+    // concurrency set is today's one limit over every provider.
+    expect(estimateOf({ maxFindings: 4, concurrency: 3 }).inFlight).toBe(3 * 50)
+    expect(estimateOf({ maxFindings: 4, concurrency: 100 }).inFlight).toBe(4 * (50 + 40 + 30 + 20 + 10) + 5)
+
+    // The adaptations of a provider that states one are bounded at the ceiling of 16 of its calls, not at a lane's start.
+    const worstOf = (options: Partial<QuorumOptions>): number => estimateOf({ maxFindings: 30, ...options }, portsOf({
+      adapts: { prompt: true },
+    })).worst
+    expect(worstOf({})).toBe(worstOf({ concurrency: 16 }))
+    expect(worstOf({})).toBeGreaterThan(worstOf({ concurrency: 4 }))
+    expect(worstOf({ concurrency: 4 })).toBeGreaterThan(estimateOf({ maxFindings: 30 }, portsOf()).worst)
   })
 
   it('takes the largest section for a voter that states no room, and fills the room of one whose room it exceeds', () => {

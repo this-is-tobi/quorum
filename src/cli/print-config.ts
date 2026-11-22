@@ -5,7 +5,6 @@ import type { ResolvedProfile } from '../config/profiles.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider, statedFacts } from '../config/schema.ts'
 import type { ProfileBudgets } from '../core/budgets.ts'
-import { DEFAULT_CONCURRENCY } from '../core/concurrency.ts'
 import type { Provider } from '../core/ports.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../core/limits.ts'
 import { DEFAULT_PART_TOKENS } from '../core/parts.ts'
@@ -170,7 +169,7 @@ function budgetWarnings(config: ResolvedConfig, budgets: Readonly<Record<string,
 /**
  * The resolved config as the YAML `--print-config` writes, for a CI log that anyone can read: the file it
  * came from (`null` for none), the providers, the profiles that run, the limits the review applies
- * (`concurrency`, `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs`, defaults filled in), the
+ * (`concurrency`, `auto` when unset, `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs`, defaults filled in), the
  * patterns it excludes, the files it sends though held as secrets, and the warnings. A key and every value of
  * `headers`, `query` and `extraBody` print as `[redacted]`, a base URL as its origin, and a prompt as its
  * SHA-256. A provider's `timeoutMs`, `stallTimeoutMs` and `retries` print when it sets them, a provider object's when it states
@@ -205,7 +204,7 @@ export function printConfig(config: ResolvedConfig, source: string | undefined, 
           id,
           budgetsView(profile),
         ])),
-    concurrency: config.concurrency ?? DEFAULT_CONCURRENCY,
+    concurrency: config.concurrency ?? 'auto',
     maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,
     partTokens: config.partTokens ?? DEFAULT_PART_TOKENS,
     maxReviewTokens: config.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS,

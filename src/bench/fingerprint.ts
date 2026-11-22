@@ -9,7 +9,7 @@
  * `headers`, `query` and `extraBody` and the whole base URL included, `timeoutMs` and `retries` among them;
  * a provider object as its config key, its model and the `timeoutMs` and `retries` it states, so one that
  * states none keeps the form it had, and never the `worstCase` or the `room` it states, which are code like its
- * `complete`; `concurrency`, `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs` as the review applies
+ * `complete`; `concurrency` (`auto` when unset), `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs` as the review applies
  * them, defaults filled in, `exclude` when the config lists a pattern, and `send` when it lists a file. It
  * holds no config-file path, no warning and no provider name, so the same settings under other names are one
  * configuration, and a rotated key keeps a run. A `claude-code` provider's resolved command path is one of its
@@ -27,7 +27,6 @@ import { createHmac, randomBytes } from 'node:crypto'
 import { isPlainObject } from '../config/load.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider, statedFacts } from '../config/schema.ts'
-import { DEFAULT_CONCURRENCY } from '../core/concurrency.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../core/limits.ts'
 import { DEFAULT_PART_TOKENS } from '../core/parts.ts'
 import { DEFAULT_MAX_FINDINGS } from '../core/stages/research.ts'
@@ -53,8 +52,9 @@ function providerForm(provider: ResolvedProvider): Record<string, unknown> {
 
 /**
  * The fields of a provider's form that are no part of its identity: how long a call waits, how long a stream may show no
- * progress, how often it is tried again and whether its replies stream, which the provider states as `streams` too, each
- * decides whether a reply arrives, never what it says, so a call stored under one setting is reused under another.
+ * progress, how often it is tried again and whether its replies stream, which the provider states as `streams` too, and how many calls
+ * its server serves at once, which it states as `slots`, each decides whether a reply arrives, never what it says, so a call stored under
+ * one setting is reused under another.
  */
 const OUT_OF_IDENTITY = new Set([
   'timeoutMs',
@@ -62,11 +62,12 @@ const OUT_OF_IDENTITY = new Set([
   'retries',
   'stream',
   'streams',
+  'slots',
 ])
 
 /**
  * A provider's identity, as the saved state keys its entries by: the form `providerForm` gives it, less `timeoutMs`,
- * `stallTimeoutMs`, `retries`, `stream` and `streams` (a call stored under one deadline is reused under another; every other field still moves it), as JSON with the keys
+ * `stallTimeoutMs`, `retries`, `stream`, `streams` and `slots` (a call stored under one deadline is reused under another; every other field still moves it), as JSON with the keys
  * of every object sorted, so the same provider written in another order is one. The bench's fingerprint keeps them all.
  * It can hold a secret: only ever hash it.
  */
@@ -104,7 +105,7 @@ export function canonicalSettings(config: ResolvedConfig): string {
     ])),
   }))
   return JSON.stringify({
-    concurrency: config.concurrency ?? DEFAULT_CONCURRENCY,
+    concurrency: config.concurrency ?? 'auto',
     maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,
     partTokens: config.partTokens ?? DEFAULT_PART_TOKENS,
     maxReviewTokens: config.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS,

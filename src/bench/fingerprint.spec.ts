@@ -142,12 +142,23 @@ describe('fingerprint', () => {
   it('fills the defaults, so an unset limit and its default are alike', () => {
     expect(same(resolvedConfig({
       providers: { p: PROVIDER },
-      concurrency: 4,
       maxFindings: 50,
     }), of(PROVIDER))).toBe(true)
     expect(same(resolvedConfig({
       providers: { p: PROVIDER },
       concurrency: 2,
+    }), of(PROVIDER))).toBe(false)
+  })
+
+  it('holds concurrency auto when unset, so a set one, 4 included, is another configuration', () => {
+    expect(JSON.parse(canonicalSettings(of(PROVIDER)))).toMatchObject({ concurrency: 'auto' })
+    expect(JSON.parse(canonicalSettings(resolvedConfig({
+      providers: { p: PROVIDER },
+      concurrency: 4,
+    })))).toMatchObject({ concurrency: 4 })
+    expect(same(resolvedConfig({
+      providers: { p: PROVIDER },
+      concurrency: 4,
     }), of(PROVIDER))).toBe(false)
   })
 
@@ -307,7 +318,7 @@ describe('canonicalSettings', () => {
     const config = of({ ...PROVIDER, apiKey: 'sk-SECRET' })
     const text = canonicalSettings(config)
     expect(text).not.toContain('sk-SECRET')
-    expect(text.startsWith('{"concurrency":4,"maxFindings":50,"maxReviewTokens":2000000,"partTokens":32768,"profiles":[{"profile":{')).toBe(true)
+    expect(text.startsWith('{"concurrency":"auto","maxFindings":50,"maxReviewTokens":2000000,"partTokens":32768,"profiles":[{"profile":{')).toBe(true)
     expect(text.endsWith(',"reviewTimeoutMs":1800000}')).toBe(true)
     const provider = {
       baseUrl: PROVIDER.baseUrl,
@@ -316,7 +327,7 @@ describe('canonicalSettings', () => {
       protocol: 'openai-compatible',
     }
     expect(JSON.parse(text)).toEqual({
-      concurrency: 4,
+      concurrency: 'auto',
       maxFindings: 50,
       maxReviewTokens: 2000000,
       partTokens: 32768,
@@ -495,6 +506,15 @@ describe('providerIdentity', () => {
     expect(same(of({
       ...object('m'),
       streams: true,
+    }, 'fake'), of(object('m'), 'fake'))).toBe(false)
+    // Nor do the slots it states: they decide how many calls it takes at once, never what a reply says, and the fingerprint keeps them.
+    expect(identityOf({
+      ...object('m'),
+      slots: 2,
+    }, 'fake')).toBe(objectBase)
+    expect(same(of({
+      ...object('m'),
+      slots: 2,
     }, 'fake'), of(object('m'), 'fake'))).toBe(false)
   })
 

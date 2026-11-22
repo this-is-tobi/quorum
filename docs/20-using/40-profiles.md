@@ -139,7 +139,7 @@ const quorum = createQuorum({
 ```
 
 - **One pass each.** Every profile runs research, dedup and its panel on its own, all profiles at once: one research call per profile, then its own votes.
-- **One concurrency limit.** `concurrency` (4 by default) caps the provider calls in flight across every profile of the review.
+- **One set of lanes.** Each provider has a lane, shared by every profile that uses it, within a ceiling of 16 calls in flight across every profile of the review; `concurrency`, when it is set, is one limit for them all: [Lanes](./30-providers.md#lanes).
 - **Every finding is tagged with its profile**, and its `id` hashes the profile too, so a line two profiles flag is two findings with two ids, each judged by its own panel.
 - **Nothing is merged across profiles.** No request of one profile holds another profile's output. In each list of the result, a profile's verdicts follow the previous profile's, in the order of `profiles`, and `meta.profiles` has one entry per profile.
 - **A failure ends no profile.** A research call or reply that fails is its profile's own `research-failed` gap, a gating profile's too, and the other parts and profiles go on: [Gating](#gating). Only a review in which no research call of any profile answered ends with an error: [When the research call fails](./10-cli.md#when-the-research-call-fails).
