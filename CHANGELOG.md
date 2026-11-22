@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.11.0](https://github.com/this-is-tobi/quorum/compare/v0.10.0...v0.11.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* with thinking set, a reply that held only reasoning is sent once more, within the provider's retries, where it ended its call, so such a call makes one more attempt and a review can spend and last longer, and a path review's derived token cap counts every call of such a provider once more, up to twice its share; unset thinking to let quorum lower it instead, or set retries: 0, which retries no failure.
+* with maxFindings unset, a path review's panel reads up to one finding per research part, at least 50, where it read 50, so a review of more than 50 parts can cast more votes, spend more and exit otherwise; set maxFindings: 50 to keep the old cap.
+* with timeoutMs unset, a streamed attempt that keeps streaming is no longer cut at its derived ceiling: its deadline grows with its pace, up to its reply budget at 2 tokens a second, so a slow provider's review can read parts it lost and run hours longer; set timeoutMs to keep a fixed ceiling
+
+### Features
+
+* let a path review's finding cap follow its research parts, at least 50, unless set ([dea1e63](https://github.com/this-is-tobi/quorum/commit/dea1e63aa995c6ba07ed2fce4f443b9f744f1a71))
+* let a streamed attempt's deadline grow while it streams, down to 2 tokens a second ([533a94e](https://github.com/this-is-tobi/quorum/commit/533a94ea94d6e637ff0fe4e1b8c1322d55383bd7))
+* refuse a key sent over plain http to another machine under strict, an opt-in ([851362b](https://github.com/this-is-tobi/quorum/commit/851362bc23904ffdc7bcb8f9e815c664681b9924))
+* send a reply of only reasoning once more, as it is, when the config sets thinking ([57dd53b](https://github.com/this-is-tobi/quorum/commit/57dd53b2ca64cc9a38f6898f015d08a0136b585d))
+
+
+### Bug Fixes
+
+* advise a cut only for the provider that learned it, and count the panel's calls by its lenses ([0673bd6](https://github.com/this-is-tobi/quorum/commit/0673bd639f0deb0e09ca23365a485d8b32f61886))
+* decide a lane's counting only on a stream's headers, and keep a failed whole reply's headers ([5f05b01](https://github.com/this-is-tobi/quorum/commit/5f05b0159cc5bb97d9531144a3ee3ee61e645ad1))
+* end a setup's stdin read at the first interrupt, and word the resume line as the calls kept ([3624cd1](https://github.com/this-is-tobi/quorum/commit/3624cd1627b95fcb615c83918c7d823ded0a5298))
+* keep a call in view on a narrow terminal: a short calls head, and counts dropped first ([c748fb5](https://github.com/this-is-tobi/quorum/commit/c748fb5595c187cbbb479ca489da50a1c51f807e))
+* let a stream's event reach its data cap exactly, and hold the fake server to the spec files ([e735176](https://github.com/this-is-tobi/quorum/commit/e735176ae5df932ed25dcea2a0205b3bb847e666))
+* say a research part answered from the saved state was reused, not answered at once ([f8010b4](https://github.com/this-is-tobi/quorum/commit/f8010b43e4431695eb1f9764964f722f096a01b8))
+* send a call's progress held back by the one-second spacing once the spacing ends ([a00c913](https://github.com/this-is-tobi/quorum/commit/a00c913fcc27c990f50a98c188ea92904df2240f))
+
+
+### Code Refactoring
+
+* move the shared token counts into core/tokens.ts, which ends the core's import cycles ([c971960](https://github.com/this-is-tobi/quorum/commit/c97196022b615d1d537d6842db48c794b7163d9d))
+* read each adapter's reply through one helper, and share the adapters' spec helpers ([63e42ef](https://github.com/this-is-tobi/quorum/commit/63e42efc41cef023afa30f3eba3ec5b322d1c92f))
+* split the call path's watch, attempt, re-send loop and fact readers out of context.ts ([b2db5bb](https://github.com/this-is-tobi/quorum/commit/b2db5bbf4b12d128aebdf7bc61e5c3592a878f81))
+
+
+### Dependencies
+
+* **deps:** update gcr.io/distroless/cc-debian13:nonroot docker digest to 532c7a9 ([07a348b](https://github.com/this-is-tobi/quorum/commit/07a348bb703873a682c0d7841b3ad8c2301c04b2))
+
 ## [0.10.0](https://github.com/this-is-tobi/quorum/compare/v0.9.0...v0.10.0) (2026-11-22)
 
 
