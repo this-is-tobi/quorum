@@ -8,7 +8,6 @@ import type { AttemptSeen, Clocks } from '../clocks.ts'
 import type { Health } from '../down.ts'
 import { cutOf, cutWords, NO_ANSWERS, PROVIDER_ERROR_KINDS, ProviderDownError, ProviderError } from '../errors.ts'
 import type { NoAnswer, ProviderErrorKind } from '../errors.ts'
-import { expectedOf } from '../estimate.ts'
 import type { LaneAttempt, Lanes } from '../lanes.ts'
 import { isLimit, settlementOf } from '../limits.ts'
 import type { Ledger } from '../limits.ts'
@@ -18,7 +17,7 @@ import type { Adapts, CompletionRequest, CompletionResponse, EventSink, Provider
 import { requestDigest } from '../prompts.ts'
 import { isTimeout, retryWait } from '../retry.ts'
 import type { FailureFacts } from '../retry.ts'
-import { DEFAULT_REPLY_TOKENS, replyLimit, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
+import { DEFAULT_REPLY_TOKENS, expectedOf, replyLimit, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
 import type { Adaptation, FailOn, Position, ProviderRef, QuorumEvent, StageName, Thresholds, Usage } from '../types.ts'
 
 /**

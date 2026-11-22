@@ -1,4 +1,3 @@
-import { EXPECTED_REPLY_TOKENS } from './budgets.ts'
 import type { ProfileBudgets } from './budgets.ts'
 import { reviewScope } from './coverage.ts'
 import { diffSections, splitDiff } from './diff.ts'
@@ -14,17 +13,9 @@ import { reservationOf, roomOf } from './stages/context.ts'
 import type { LensRun, ProfileRun, Target } from './stages/context.ts'
 import { dispatchOrder, planResearch } from './stages/research.ts'
 import type { ResearchPlan } from './stages/research.ts'
-import { DEFAULT_REPLY_TOKENS, tokenBound } from './tokens.ts'
+import { DEFAULT_REPLY_TOKENS, expectedOf, tokenBound } from './tokens.ts'
 import type { Estimate, ProfileEstimate } from './types.ts'
 import { longestFinding } from './verify.ts'
-
-/**
- * How many times the bound of a research request over-counts the tokens of code. The bound is one token per
- * UTF-8 byte, and code diffs run 2.9 to 3.8 bytes per token across the tokenizers measured, so a third of the
- * bound is what code most likely takes, and a diff of prose or of encoded data takes more. It only scales the
- * expected spend of an estimate: the ledger reserves the whole bound at run time.
- */
-export const BOUND_OVER_CODE = 3
 
 /** What the estimate reads of a quorum's settings. */
 export interface EstimateSettings {
@@ -169,17 +160,6 @@ function largestSection(sections: ReadonlyMap<string, string>, diff: string): Se
     text: diff,
     tokens: tokenBound(diff),
   }
-}
-
-/**
- * A research part's expected spend: its input at a third of its bound, rounded up, which code takes about that
- * many tokens of, and its reply at the lesser of its budget and `EXPECTED_REPLY_TOKENS`. `reservation` holds the
- * reply budget once, so the input is what it holds besides; a reservation a provider states below its reply
- * budget counts the reply at the reservation, and the part never expects more than it reserves.
- */
-export function expectedOf(reservation: number, reply: number): number {
-  const held = Math.min(reply, reservation)
-  return Math.ceil((reservation - held) / BOUND_OVER_CODE) + Math.min(held, EXPECTED_REPLY_TOKENS)
 }
 
 /** The pieces of a part at its three depths: 2 + 4 + 8. */

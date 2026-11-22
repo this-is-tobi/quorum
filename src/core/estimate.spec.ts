@@ -2,11 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { securityProfile } from '../profiles/security.ts'
 import { splitDiff } from './diff.ts'
 import { ConfigError } from './errors.ts'
-import { expectedOf } from './estimate.ts'
 import type { CompletionRequest, Provider, QuorumPorts } from './ports.ts'
 import { researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum } from './quorum.ts'
-import { DEFAULT_REPLY_TOKENS, requestTokens, tokenBound } from './tokens.ts'
+import { DEFAULT_REPLY_TOKENS, expectedOf, requestTokens, tokenBound } from './tokens.ts'
 import type { Estimate, Finding, Profile, Quorum, QuorumEvent, QuorumOptions } from './types.ts'
 
 /** What a provider keeps over a request's own bound: 512 tokens for the chat template and 16000 for the reply, which the providers here state as an attempt's worst case. */
