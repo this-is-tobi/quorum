@@ -3,7 +3,7 @@
  * rate-limit headers, which are the provider's own replies alone (ADR-0013), read as numbers and never copied.
  */
 import { ProviderError } from '../core/errors.ts'
-import type { RateLimit, StreamSignal } from '../core/ports.ts'
+import type { CompletionResponse, RateLimit, StreamSignal } from '../core/ports.ts'
 import { ndjsonItems, sseItems } from './stream.ts'
 import type { StreamItem } from './stream.ts'
 
@@ -567,13 +567,6 @@ async function readWhole<T>(options: RequestOptions, response: Response): Promis
   }
 }
 
-/** `reply` with the rate-limit facts a `postStream` result carried, when it carried any: the field is left out otherwise. */
-export function withRateLimit<T extends object>(reply: T, sent: { readonly rateLimit?: RateLimit }): T & { rateLimit?: RateLimit } {
-  return sent.rateLimit === undefined
-    ? reply
-    : { ...reply, rateLimit: sent.rateLimit }
-}
-
 /** The media type of a content type header, as a reader compares it: the text before any `;`, trimmed and in lower case. */
 function mediaTypeOf(contentType: string | null): string {
   return (contentType ?? '').split(';')[0]!.trim().toLowerCase()
@@ -645,4 +638,27 @@ export async function postStream(options: PostStreamOptions): Promise<StreamRepl
     items: reported(),
     ...stated,
   }
+}
+
+/**
+ * The tail every adapter's `complete` ends with: the whole reply `postStream` answered, or `assemble`'s reading of its
+ * stream, read by `read`, marked `whole` when a streamed request was answered whole, and carrying the rate-limit facts the
+ * reply's headers stated when it stated any: the field is left out otherwise.
+ */
+export async function replyOf(
+  sent: StreamReply,
+  streamed: boolean,
+  assemble: (items: AsyncGenerator<StreamItem>) => Promise<unknown>,
+  read: (reply: unknown) => CompletionResponse,
+): Promise<CompletionResponse> {
+  const answered = 'whole' in sent
+  const reply = read(answered
+    ? sent.whole
+    : await assemble(sent.items))
+  const marked: CompletionResponse = streamed && answered
+    ? { ...reply, whole: true }
+    : reply
+  return sent.rateLimit === undefined
+    ? marked
+    : { ...marked, rateLimit: sent.rateLimit }
 }

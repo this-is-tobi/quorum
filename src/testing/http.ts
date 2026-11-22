@@ -58,6 +58,14 @@ export function stubOllamaChat(...contents: string[]): ReturnType<typeof vi.fn> 
   return stubReplies(ollamaReply, ...contents)
 }
 
+/** A stub put in place of the global `fetch`, answering each call with the next of `responses`. */
+export function stubResponses(...responses: Response[]): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn()
+  for (const response of responses) fetchMock.mockImplementationOnce(async () => response)
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
 /** What one call of a fetch stub sent, the first by default: the URL, the headers and the parsed body. */
 export function sent(fetchMock: ReturnType<typeof vi.fn>, call = 0): { url: string, headers: Record<string, string>, body: Record<string, unknown> } {
   const [url, init] = fetchMock.mock.calls[call]

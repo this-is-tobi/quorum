@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProviderError } from '../core/errors.ts'
-import type { StreamSignal } from '../core/ports.ts'
+import type { CompletionResponse, StreamSignal } from '../core/ports.ts'
 import { brokenReply, jsonReply, streamedReply, textReply } from '../testing/http.ts'
-import { endpointUrl, httpOrigin, originOf, postStream, rateLimitOf, redactionsOf, retryAfterHint, snippet } from './http.ts'
+import { endpointUrl, httpOrigin, originOf, postStream, rateLimitOf, redactionsOf, replyOf, retryAfterHint, snippet } from './http.ts'
 import type { ErrorHints } from './http.ts'
+import type { StreamItem } from './stream.ts'
 
 const options = {
   providerId: 'p',
@@ -1354,5 +1355,42 @@ describe('postStream', () => {
     expect(await refusal('response_format only', 400, ['response_format'])).toMatchObject({ refused: 'structuredOutput' })
     expect(await refusal('streaming is unsupported')).toMatchObject({ refused: undefined })
     expect(await refusal('stream is unsupported', 500)).toMatchObject({ refused: undefined })
+  })
+})
+
+describe('replyOf', () => {
+  const read = (reply: unknown): CompletionResponse => ({
+    text: JSON.stringify(reply),
+    model: 'm',
+  })
+  async function* none(): AsyncGenerator<StreamItem> {}
+
+  it('reads a whole reply or an assembled stream through one tail, marking a streamed request answered whole', async () => {
+    const assemble = vi.fn(async () => ({ assembled: true }))
+    const sent = {
+      whole: {},
+      rateLimit: { requests: 7 },
+    }
+    expect(await replyOf(sent, true, assemble, read)).toEqual({
+      ...read({}),
+      whole: true,
+      rateLimit: { requests: 7 },
+    })
+    expect(await replyOf(sent, false, assemble, read)).toEqual({
+      ...read({}),
+      rateLimit: { requests: 7 },
+    })
+    expect(assemble).not.toHaveBeenCalled()
+    const items = none()
+    expect(await replyOf({ items }, true, assemble, read)).toEqual(read({ assembled: true }))
+    expect(assemble).toHaveBeenCalledExactlyOnceWith(items)
+  })
+
+  it('adds no rateLimit field when the reply stated none', async () => {
+    const assemble = async (): Promise<unknown> => ({})
+    expect(await replyOf({ whole: {} }, true, assemble, read)).not.toHaveProperty('rateLimit')
+    expect(await replyOf({
+      items: none(),
+    }, false, assemble, read)).not.toHaveProperty('rateLimit')
   })
 })

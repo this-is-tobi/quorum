@@ -255,19 +255,19 @@ function toGo(state: ViewState): number {
 
 /**
  * Rows of `header` and then the pieces, three spaces apart, a row after the first indented under the header's text; undefined when
- * they need more than `maxRows`. A header that ends in a space has no text yet, so the first piece follows it with no gap.
+ * they need more than `maxRows`. A `bare` header holds no text yet, so the first piece follows it with no gap.
  */
-function place(pieces: readonly Row[], header: string, width: number, maxRows: number): Row[] | undefined {
+function place(pieces: readonly Row[], header: { readonly text: string, readonly bare: boolean }, width: number, maxRows: number): Row[] | undefined {
   const gap = '   '
   const rows: Piece[][] = [
     [
-      { text: header },
+      { text: header.text },
     ],
   ]
-  let used = widthOf(header)
+  let used = widthOf(header.text)
   for (const piece of pieces) {
     const size = widthOf(plain(piece))
-    const sep = rows.length === 1 && rows[0].length === 1 && header.endsWith(' ')
+    const sep = rows.length === 1 && rows[0].length === 1 && header.bare
       ? ''
       : gap
     if (used + sep.length + size <= width) {
@@ -329,7 +329,8 @@ function callRows(state: ViewState, now: number, options: FrameOptions, maxRows:
   ]
     .sort((a, b) => a.startedAt - b.startedAt)
     .map(call => callItem(state, call, now, options.glyphs, options.view))
-  const header = `calls     ${laneHead(state, now)}`
+  const head = laneHead(state, now)
+  const header = { text: `calls     ${head}`, bare: head === '' }
   const left = toGo(state)
   const tailOf = (held: number): Row[] => [
     ...held < items.length
@@ -353,7 +354,7 @@ function callRows(state: ViewState, now: number, options: FrameOptions, maxRows:
   // not even the tail fits: one row, which the cut shortens
   return [
     [
-      { text: header },
+      { text: header.text },
       ...tailOf(0).flatMap(piece => [
         { text: '   ' },
         ...piece,

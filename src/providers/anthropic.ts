@@ -1,7 +1,7 @@
 import { ProviderError } from '../core/errors.ts'
 import { DEFAULT_RETRIES } from '../core/ports.ts'
 import type { CompletionRequest, CompletionResponse, Provider, StreamSignal } from '../core/ports.ts'
-import { postStream, snippet, vendorExhausted, withRateLimit } from './http.ts'
+import { postStream, replyOf, snippet, vendorExhausted } from './http.ts'
 import type { PostStreamOptions } from './http.ts'
 import { shapeMessages } from './messages.ts'
 import { adaptsOf, attemptFacts, isRecord, mergeBody, prepareHttp, requestSettings, streamFacts, thinkingIssues } from './options.ts'
@@ -388,14 +388,7 @@ export function anthropic(options: AnthropicOptions): Provider {
           ? { streamWords: STREAM_WORDS }
           : {},
       })
-      const answered = 'whole' in sentReply
-      const reply = answered
-        ? sentReply.whole
-        : await assembleAnthropic(sentReply.items, id, request.onProgress, redact)
-      const read = readReply(reply, { id, model, budget }, redact)
-      return withRateLimit(streams && answered
-        ? { ...read, whole: true }
-        : read, sentReply)
+      return replyOf(sentReply, streams, items => assembleAnthropic(items, id, request.onProgress, redact), reply => readReply(reply, { id, model, budget }, redact))
     },
   }
 }

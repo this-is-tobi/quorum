@@ -74,7 +74,8 @@ export interface Clocks {
    * stream showed reasoning and no answer, else `reply`, as 3e reads a reply cut off at its limit. `learned` comes once,
    * with the cut's length, what a reply may be held to at the lowest rate the two attempts that taught it streamed
    * (`holds`, never under `VOTE_TOKENS`, absent when neither showed a count), and whether the provider's derived reply
-   * budget is lowered to it (`lowered`: it has no `maxTokens`, and a rate was measured).
+   * budget may be lowered to it (`lowered`, a candidate: it has no `maxTokens`, and a rate was measured). The context
+   * lowers a budget only where `holds` is below a derived budget the provider serves (`cutReading`).
    */
   readonly cut: (target: Target, attemptMs: number, seen: AttemptSeen | undefined) => {
     readonly cutOff?: 'thinking' | 'reply'

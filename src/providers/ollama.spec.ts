@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ConfigError, ProviderError } from '../core/errors.ts'
+import { ConfigError } from '../core/errors.ts'
 import type { ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest, StreamSignal } from '../core/ports.ts'
-import { jsonReply, sent, stubFetch, textReply } from '../testing/http.ts'
+import { jsonReply, sent, stubFetch, stubResponses, textReply } from '../testing/http.ts'
 import { assembleOllama, ollama } from './ollama.ts'
 import type { OllamaOptions } from './ollama.ts'
 import { ndjsonItems } from './stream.ts'
 import type { StreamItem } from './stream.ts'
 import { chatResponse, contextExceeded, countedOut, debugRender, empty, reasoningOnly, truncated } from '../testing/fixtures/ollama.ts'
 import { describeProviderContract } from '../testing/provider-contract.ts'
-import { chunkedBody, ollamaStream } from '../testing/streams.ts'
+import { chunkedBody, lostStream, ollamaStream, outcomeOf } from '../testing/streams.ts'
 
 const request: CompletionRequest = {
   system: 'instructions',
@@ -439,33 +439,11 @@ describe('ollama streams', () => {
     eval_count: 23,
     ...fields,
   })
-  const serve = (...responses: Response[]): ReturnType<typeof vi.fn> => {
-    const fetchMock = vi.fn()
-    for (const response of responses) fetchMock.mockImplementationOnce(async () => response)
-    vi.stubGlobal('fetch', fetchMock)
-    return fetchMock
-  }
   const failed = async (response: Response, provider = local): Promise<unknown> => {
-    serve(response)
+    stubResponses(response)
     return await provider.complete(request).catch((error: unknown) => error)
   }
-  const outcome = async (reply: Response): Promise<unknown> => {
-    serve(reply)
-    return await local.complete(request).then(
-      ({ whole: _whole, ...reached }) => reached,
-      (error: ProviderError) => ({
-        kind: error.kind,
-        message: error.message,
-        noAnswer: error.noAnswer,
-        usage: error.usage,
-      }),
-    )
-  }
-  const lost = (error: unknown): ProviderError => new ProviderError({
-    providerId: 'local',
-    kind: 'network',
-    message: String(error),
-  })
+  const lost = lostStream('local')
   const itemsOf = (lines: readonly Line[]): { items: AsyncGenerator<StreamItem>, cancelled: () => boolean } => {
     const { body, cancelled } = chunkedBody(lineText(lines), 1)
     return {
@@ -484,7 +462,7 @@ describe('ollama streams', () => {
   })
 
   it('reads application/x-ndjson as a stream and a JSON reply as whole', async () => {
-    serve(ollamaStream(chatResponse))
+    stubResponses(ollamaStream(chatResponse))
     const streamed = await local.complete(request)
     expect(streamed).toEqual({
       text: '{}',
@@ -493,20 +471,20 @@ describe('ollama streams', () => {
       reasoning: true,
     })
     // The media type decides, whatever follows it, and a JSON reply to a streamed request is read whole, and marked.
-    serve(streamOf([
+    stubResponses(streamOf([
       piece({ content: '{}' }),
       done(),
     ], 'Application/X-NDJSON; charset=utf-8'))
     expect(await local.complete(request)).not.toHaveProperty('whole')
-    serve(jsonReply(chatResponse))
+    stubResponses(jsonReply(chatResponse))
     expect(await local.complete(request)).toEqual({ ...streamed, whole: true })
     // A reply served as plain JSON text, with no content type, is whole too.
-    serve(new Response(JSON.stringify(chatResponse)))
+    stubResponses(new Response(JSON.stringify(chatResponse)))
     expect(await local.complete(request)).toHaveProperty('whole', true)
   })
 
   it('assembles a stream into the reply its reader reads, the same as the whole reply', async () => {
-    serve(streamOf([
+    stubResponses(streamOf([
       piece({ thinking: 'The diff ' }),
       piece({ thinking: 'calls exec.' }),
       piece({ content: '{"findings"' }),
@@ -543,13 +521,13 @@ describe('ollama streams', () => {
       countedOut,
       contextExceeded,
     ]) {
-      expect(await outcome(ollamaStream(recorded)), JSON.stringify(recorded).slice(0, 60)).toEqual(await outcome(jsonReply(recorded)))
+      expect(await outcomeOf(local, request, ollamaStream(recorded)), JSON.stringify(recorded).slice(0, 60)).toEqual(await outcomeOf(local, request, jsonReply(recorded)))
     }
   })
 
   it('reports its progress signals', async () => {
     const signals: StreamSignal[] = []
-    serve(streamOf([
+    stubResponses(streamOf([
       piece({
         thinking: 'x'.repeat(10),
       }),
@@ -577,7 +555,7 @@ describe('ollama streams', () => {
 
   it('reports a blank line as a keep-alive', async () => {
     const signals: StreamSignal[] = []
-    serve(new Response(`\n${JSON.stringify(piece({ content: '{}' }))}\n  \n\n${JSON.stringify(done())}\n`, {
+    stubResponses(new Response(`\n${JSON.stringify(piece({ content: '{}' }))}\n  \n\n${JSON.stringify(done())}\n`, {
       headers: { 'content-type': 'application/x-ndjson' },
     }))
     await expect(local.complete({
@@ -593,7 +571,7 @@ describe('ollama streams', () => {
       'data',
     ])
     // The last line may end with no line feed.
-    serve(new Response(`${JSON.stringify(piece({ content: '{}' }))}\n${JSON.stringify(done())}`, {
+    stubResponses(new Response(`${JSON.stringify(piece({ content: '{}' }))}\n${JSON.stringify(done())}`, {
       headers: { 'content-type': 'application/x-ndjson' },
     }))
     await expect(local.complete(request)).resolves.toMatchObject({ text: '{}' })
@@ -689,7 +667,7 @@ describe('ollama streams', () => {
     expect(cancelled()).toBe(true)
     expect(await failed(streamOf(lines))).toMatchObject({ kind: 'invalid-response', retryable: false })
     // A null content, as a done line may hold, is no text and no failure.
-    serve(streamOf([
+    stubResponses(streamOf([
       piece({ content: '{}' }),
       {
         ...done(),
@@ -733,11 +711,7 @@ describe('ollama streams', () => {
 })
 
 describe('ollama streams with a field of the wrong type', () => {
-  const lost = (error: unknown): ProviderError => new ProviderError({
-    providerId: 'local',
-    kind: 'network',
-    message: String(error),
-  })
+  const lost = lostStream('local')
   const itemsOf = (...lines: unknown[]): { items: AsyncGenerator<StreamItem>, cancelled: () => boolean } => {
     const { body, cancelled } = chunkedBody(lines.map(line => `${JSON.stringify(line)}\n`).join(''), 1)
     return {
