@@ -61,6 +61,15 @@ export interface ContractSubject {
     read: (body: Body) => unknown
     extraBody: Body
   }
+  /**
+   * Whether the adapter streams its replies by default: it states `streams` and, with `stream` unset, `adapts.stream`. An
+   * adapter that streams answers a JSON reply to a streamed request as a whole reply, marked `whole`.
+   */
+  streams: boolean
+  /** The fields a streamed request adds to its body, which the body of a request holds when the adapter streams: none for an adapter that does not. */
+  streamFields: Record<string, unknown>
+  /** A recorded reply of `replies` as the protocol streams it: a response whose body is read once. An adapter that does not stream yet gives the reply whole. */
+  streamed: (reply: unknown) => Response
   /** The body fields the adapter writes for the conversation, which `extraBody` cannot replace. */
   reservedBodyKeys: readonly string[]
   /** The body fields that would offer the model a tool or a server-side capability, which `extraBody` cannot set. */
@@ -77,6 +86,8 @@ export interface ContractSubject {
 }
 
 const MODES: readonly StructuredOutput[] = ['prompt', 'json', 'schema']
+/** How a recorded reply reaches the adapter: as the whole body, or as the protocol's stream. */
+const FORMS = ['whole', 'streamed'] as const
 
 const request: CompletionRequest = {
   system: 'instructions',
@@ -111,6 +122,15 @@ export function describeProviderContract(subject: ContractSubject): void {
     afterEach(() => {
       vi.unstubAllGlobals()
     })
+
+    /** `reply` as the server answers it in `form`. */
+    const answer = (form: typeof FORMS[number], reply: unknown): Response => form === 'whole'
+      ? jsonReply(reply)
+      : subject.streamed(reply)
+    /** What a request answered in whole reports: `whole` when the adapter streams, since it asked for a stream. */
+    const wholeFacts = subject.streams
+      ? { whole: true as const }
+      : {}
 
     /** Send one request through `provider` and return what reached fetch. */
     async function sendThrough(provider: Provider, asked: CompletionRequest = request): Promise<Sent> {
@@ -269,22 +289,67 @@ export function describeProviderContract(subject: ContractSubject): void {
         ...base,
         ...options,
       }), 'adapts')?.value
+      const steps = subject.streams
+        ? { stream: true as const }
+        : {}
+      /** `fields` with the stream step an adapter that streams adds, or nothing when there is none. */
+      const stated = (fields: object): unknown => Object.keys({
+        ...fields,
+        ...steps,
+      }).length === 0
+        ? undefined
+        : {
+            ...fields,
+            ...steps,
+          }
       const lowers = subject.thinking.lowersTo
       expect(adapts({})).toEqual(subject.jsonMode === undefined
-        ? { thinking: lowers }
-        : { thinking: lowers, prompt: true })
+        ? stated({ thinking: lowers })
+        : stated({ thinking: lowers, prompt: true }))
       // An option that sets a control is never undone: it states nothing for that control.
       expect(adapts({ thinking: 'low' })).toEqual(subject.jsonMode === undefined
-        ? undefined
-        : { prompt: true })
+        ? stated({})
+        : stated({ prompt: true }))
       expect(adapts({ extraBody: subject.thinking.extraBody })).toEqual(subject.jsonMode === undefined
-        ? undefined
-        : { prompt: true })
+        ? stated({})
+        : stated({ prompt: true }))
       for (const structuredOutput of subject.structuredOutputs) {
-        expect(adapts({ structuredOutput }), structuredOutput).toEqual({ thinking: lowers })
+        expect(adapts({ structuredOutput }), structuredOutput).toEqual(stated({ thinking: lowers }))
       }
-      if (subject.jsonMode !== undefined) expect(adapts({ extraBody: subject.jsonMode.extraBody })).toEqual({ thinking: lowers })
-      expect(adapts({ thinking: 'low', structuredOutput: 'prompt' })).toBeUndefined()
+      if (subject.jsonMode !== undefined) expect(adapts({ extraBody: subject.jsonMode.extraBody })).toEqual(stated({ thinking: lowers }))
+      expect(adapts({ thinking: 'low', structuredOutput: 'prompt' })).toEqual(stated({}))
+      // An option that sets the stream is never undone either: `true` pins it, `false` asks for whole replies.
+      expect(adapts({ thinking: 'low', structuredOutput: 'prompt', stream: true })).toBeUndefined()
+      expect(adapts({ thinking: 'low', structuredOutput: 'prompt', stream: false })).toBeUndefined()
+    })
+
+    it('states streams unless its stream option asks for whole replies', () => {
+      /** What `provider` holds as own data: a getter or an inherited field gives `undefined`, as the core reads it. */
+      const streams = (options: Partial<HttpProviderOptions>): unknown => Object.getOwnPropertyDescriptor(subject.make({
+        ...base,
+        ...options,
+      }), 'streams')?.value
+      expect(streams({})).toBe(subject.streams
+        ? true
+        : undefined)
+      expect(streams({ stream: true })).toBe(subject.streams
+        ? true
+        : undefined)
+      expect(streams({ stream: false })).toBeUndefined()
+    })
+
+    it('refuses a stream that is no boolean, at its field, repeating no value', () => {
+      expect(issuesOf({ stream: 'zz-yes' as unknown as boolean })).toEqual([
+        { path: 'p.stream', message: 'must be true or false' },
+      ])
+    })
+
+    it('sends the fields of its stream with every request, and none when its stream option asks for whole replies', async () => {
+      expect((await send()).body).toMatchObject(subject.streamFields)
+      expect((await send({ stream: true })).body).toMatchObject(subject.streamFields)
+      if (!subject.streams) return
+      const { body } = await send({ stream: false })
+      for (const field of Object.keys(subject.streamFields)) expect(body, field).not.toHaveProperty(field)
     })
 
     it('sends the reply\'s limit on every request: 16000 when maxTokens is unset, the budget the guard keeps', async () => {
@@ -549,17 +614,20 @@ export function describeProviderContract(subject: ContractSubject): void {
       expect((await send()).init.redirect).toBe('manual')
     })
 
-    it('returns the text, the model and the usage of a recorded reply', async () => {
-      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(subject.replies.ok)))
+    it.each(FORMS)('returns the text, the model and the usage of a recorded reply, %s', async (form) => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => answer(form, subject.replies.ok)))
       await expect(subject.make(base).complete(request)).resolves.toEqual({
         text: '{}',
         model: subject.replies.model,
         usage: subject.replies.usage,
         reasoning: subject.replies.reasoned,
+        ...form === 'whole'
+          ? wholeFacts
+          : {},
       })
     })
 
-    it('maps a recorded refusal, when the protocol has one, to a refusal and a recorded truncation to truncated, neither retryable', async () => {
+    it.each(FORMS)('maps a recorded refusal, when the protocol has one, to a refusal and a recorded truncation to truncated, neither retryable, %s', async (form) => {
       const cases: Array<[unknown, ProviderErrorKind, object]> = [
         [
           subject.replies.truncated,
@@ -569,7 +637,7 @@ export function describeProviderContract(subject: ContractSubject): void {
       ]
       if (subject.replies.refusal !== undefined) cases.unshift([subject.replies.refusal, 'refusal', {}])
       for (const [reply, kind, extra] of cases) {
-        vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(reply)))
+        vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => answer(form, reply)))
         await expect(subject.make(base).complete(request), kind).rejects.toMatchObject({
           name: 'ProviderError',
           kind,
@@ -580,8 +648,8 @@ export function describeProviderContract(subject: ContractSubject): void {
       }
     })
 
-    it('reads a finished reply with no text and no reasoning as no-answer empty, with its usage', async () => {
-      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(subject.replies.empty)))
+    it.each(FORMS)('reads a finished reply with no text and no reasoning as no-answer empty, with its usage, %s', async (form) => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => answer(form, subject.replies.empty)))
       await expect(subject.make(base).complete(request)).rejects.toMatchObject({
         name: 'ProviderError',
         kind: 'no-answer',
@@ -595,8 +663,8 @@ export function describeProviderContract(subject: ContractSubject): void {
       })
     })
 
-    it('reads a finished reply with reasoning and no answer as no-answer thinking, quoting none of it', async () => {
-      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(subject.replies.reasoningOnly)))
+    it.each(FORMS)('reads a finished reply with reasoning and no answer as no-answer thinking, quoting none of it, %s', async (form) => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => answer(form, subject.replies.reasoningOnly)))
       const error = await subject.make(base).complete(request).catch((caught: unknown) => caught)
       expect(error).toMatchObject({
         name: 'ProviderError',
@@ -612,8 +680,8 @@ export function describeProviderContract(subject: ContractSubject): void {
       expect(JSON.stringify(error)).not.toContain('bound parameter')
     })
 
-    it('reads a reply whose output tokens reach the limit sent as cut off, whatever its flag', async () => {
-      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(subject.replies.countedOut)))
+    it.each(FORMS)('reads a reply whose output tokens reach the limit sent as cut off, whatever its flag, %s', async (form) => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => answer(form, subject.replies.countedOut)))
       await expect(subject.make(base).complete(request)).rejects.toMatchObject({
         name: 'ProviderError',
         kind: 'truncated',
@@ -626,8 +694,8 @@ export function describeProviderContract(subject: ContractSubject): void {
       await expect(subject.make({ ...base, maxTokens: 16_001 }).complete(request)).resolves.toMatchObject({ text: '{}' })
     })
 
-    it('reports whether a reply showed reasoning', async () => {
-      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply(subject.replies.ok)))
+    it.each(FORMS)('reports whether a reply showed reasoning, %s', async (form) => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => answer(form, subject.replies.ok)))
       await expect(subject.make(base).complete(request)).resolves.toMatchObject({ reasoning: subject.replies.reasoned })
     })
 

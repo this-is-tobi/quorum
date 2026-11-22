@@ -232,10 +232,10 @@ A `secret-file` flag comes from `meta.leftOut`, not from the diff: one for each 
 | Field | Type | Holds |
 | --- | --- | --- |
 | `provider` | string | The id of the provider whose setting moved |
-| `setting` | `"thinking"` or `"structuredOutput"` | Which setting moved. A later release moves `"tokenCount"` and `"window"` too |
-| `from` | string | What it was: `default`, or for a lowering the server refused, the level tried (`low` or `off`); `json` for the structured output |
-| `to` | string | What it became: the level `low` or `off`, or `prompt`; for a lowering the server refused, `default`, the server's own level |
-| `cause` | string | Why, a code word: `cut-off-thinking` (a reply ran out of room while reasoning), `no-answer-thinking` (a reply held only reasoning), `empty-reply` (a reply in JSON mode was empty), `format-refused` (the server refused the request's JSON mode), `lowering-refused` (the server refused the lowered thinking). A later release writes `byte-bound-refused` and `loaded-window` |
+| `setting` | `"thinking"`, `"structuredOutput"` or `"stream"` | Which setting moved. A later release moves `"tokenCount"` and `"window"` too |
+| `from` | string | What it was: `default`, or for a lowering the server refused, the level tried (`low` or `off`); `json` for the structured output; `stream` or `bare` for the stream |
+| `to` | string | What it became: the level `low` or `off`, or `prompt`; `bare`, a stream with no stream options, or `whole`, whole replies, for the stream; for a lowering the server refused, `default`, the server's own level |
+| `cause` | string | Why, a code word: `cut-off-thinking` (a reply ran out of room while reasoning), `no-answer-thinking` (a reply held only reasoning), `empty-reply` (a reply in JSON mode was empty), `format-refused` (the server refused the request's JSON mode), `lowering-refused` (the server refused the lowered thinking), `stream-refused` (the server refused a stream's options, or streaming itself), `stream-answered-whole` (the server answered a streamed call whole). A later release writes `byte-bound-refused` and `loaded-window` |
 
 Each entry is one `adapted` event, once per provider and setting in a review, and the move holds for the rest of that review alone: [What quorum adapts by itself](../20-using/20-configuration.md#what-quorum-adapts-by-itself). A setting you set, and a provider that does not state it may move, never appears. `readResult` refuses a result whose `adaptations` it cannot read, since the schema is strict and the lists of settings and causes are closed.
 

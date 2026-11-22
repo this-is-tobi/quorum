@@ -208,6 +208,48 @@ describe('renderEvent', () => {
       },
       'api: the server refused thinking lowered to low: thinking stays as the server sets it for the rest of the review; set thinking to choose it yourself',
     ],
+    [
+      'a stream moved to a bare stream after the server refused its options',
+      {
+        type: 'adapted',
+        adaptation: {
+          provider: 'api',
+          setting: 'stream',
+          from: 'stream',
+          to: 'bare',
+          cause: 'stream-refused',
+        },
+      },
+      'api: its calls stream without stream_options for the rest of the review: the server refused the field, so each call settles at its reservation',
+    ],
+    [
+      'a stream moved to whole replies after the server refused streaming',
+      {
+        type: 'adapted',
+        adaptation: {
+          provider: 'api',
+          setting: 'stream',
+          from: 'bare',
+          to: 'whole',
+          cause: 'stream-refused',
+        },
+      },
+      'api: its calls ask for whole replies for the rest of the review: the server refused streaming; set stream: false to choose it yourself',
+    ],
+    [
+      'a stream moved to whole replies after the server answered a streamed call whole',
+      {
+        type: 'adapted',
+        adaptation: {
+          provider: 'api',
+          setting: 'stream',
+          from: 'stream',
+          to: 'whole',
+          cause: 'stream-answered-whole',
+        },
+      },
+      'api: its calls ask for whole replies for the rest of the review: the server answered a streamed call whole; set stream: false to choose it yourself',
+    ],
   ])('writes an adapted event as %s, one inert line whatever the view', (_name, event, line) => {
     expect(renderEvent(event)).toBe(line)
     expect(renderEvent(event, true, 'public')).toBe(line)

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ProviderErrorKind } from '../core/errors.ts'
 import type { CompletionRequest } from '../core/ports.ts'
-import { sent, stubFetch, textReply } from '../testing/http.ts'
+import { jsonReply, sent, stubFetch, textReply } from '../testing/http.ts'
 import { ollama } from './ollama.ts'
 import type { OllamaOptions } from './ollama.ts'
 import { chatResponse, contextExceeded, countedOut, debugRender, empty, reasoningOnly, truncated } from '../testing/fixtures/ollama.ts'
@@ -57,6 +57,9 @@ describeProviderContract({
     read: body => body.format,
     extraBody: { format: 'json' },
   },
+  streams: false,
+  streamFields: {},
+  streamed: reply => jsonReply(reply),
   reservedBodyKeys: [
     'model',
     'messages',

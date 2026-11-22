@@ -82,6 +82,9 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
         ...(event.cutAfterMs === undefined
           ? {}
           : { cutAfterMs: event.cutAfterMs }),
+        ...(event.refused === undefined
+          ? {}
+          : { refused: event.refused }),
       })
     case 'reply-lacked':
       return `${event.provider}: ${lackWords(event.kind, event)}`
@@ -194,6 +197,16 @@ const ADAPTED_BECAUSE: Readonly<Partial<Record<Adaptation['cause'], string>>> = 
   'format-refused': 'the server refused the request\'s JSON mode',
 }
 
+/** The line of a stream that stepped down: to a stream with no options, or to whole replies, by a refusal or by an answer. */
+function streamWords(provider: string, to: string, cause: Adaptation['cause']): string | undefined {
+  if (to === 'bare') return `${provider}: its calls stream without stream_options for the rest of the review: the server refused the field, so each call settles at its reservation`
+  if (to !== 'whole') return undefined
+  if (cause === 'stream-refused') return `${provider}: its calls ask for whole replies for the rest of the review: the server refused streaming; set stream: false to choose it yourself`
+  return cause === 'stream-answered-whole'
+    ? `${provider}: its calls ask for whole replies for the rest of the review: the server answered a streamed call whole; set stream: false to choose it yourself`
+    : undefined
+}
+
 /**
  * The line of a setting quorum moved by itself, which names the provider, the new setting, that it holds for the
  * rest of the review and how to choose it instead, or, for a lowering the server refused, that thinking stays as
@@ -201,6 +214,7 @@ const ADAPTED_BECAUSE: Readonly<Partial<Record<Adaptation['cause'], string>>> = 
  * count, a loaded window) has no line yet.
  */
 function adaptedWords({ provider, setting, from, to, cause }: Adaptation): string | undefined {
+  if (setting === 'stream') return streamWords(provider, to, cause)
   if (cause === 'lowering-refused') return `${provider}: the server refused thinking lowered to ${from}: thinking stays as the server sets it for the rest of the review; set thinking to choose it yourself`
   const because = ADAPTED_BECAUSE[cause]
   if (because === undefined) return undefined

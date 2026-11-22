@@ -250,10 +250,12 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * call failed for a reason of its own, though fewer than three did.
  *
  * A provider that states it can (`Provider.adapts`, which the shipped adapters state unless an option sets the
- * setting or `extraBody` sets its control) has two settings quorum moves by itself, once per review, so every
+ * setting or `extraBody` sets its control) has settings quorum moves by itself, once per review, so every
  * review starts from the provider's own: `thinking` is lowered when a reply ran out of room while reasoning or held
  * only reasoning, and `structuredOutput` moves from `json` to `prompt` when a reply in JSON mode was empty or the
- * server refused the mode. The first call whose failure a setting answers is its probe (see `createAdaptations`):
+ * server refused the mode. A third, `stream`, steps down for a provider that streams (`adapts.stream`): to a stream with
+ * no stream options when the server refused them, to whole replies when it refused streaming (each step probed once, as the
+ * others are), and to whole replies at once, with no probe, when it answered a streamed call whole. The first call whose failure a setting answers is its probe (see `createAdaptations`):
  * it is sent once more with the new setting while the provider's other calls in flight keep the old one and its
  * new calls wait, and each call in flight that fails the same way is then sent once more at the settled setting,
  * so no vote fails and no research part splits for a setting the review has already moved. Each move is one
@@ -882,7 +884,7 @@ function profilePortIssues(entries: Record<string, unknown>, profile: Profile): 
  * The issues of one provider: it is missing, it is not one, the `timeoutMs` or the `retries` it
  * states, as own data, is out of range, the `window` or the `maxTokens` it states is not a whole number of
  * tokens of at least 1, its `thinking` is not `default`, `low` or `off`, its `adapts` is not an object whose
- * `thinking` is `low` or `off` and whose `prompt` is `true`, or the `worstCase` or the `room` it
+ * `thinking` is `low` or `off` and whose `prompt` and `stream` are `true`, or the `worstCase` or the `room` it
  * states, as own data, is not a function.
  */
 function providerIssues(path: string, value: unknown): ConfigIssue[] {

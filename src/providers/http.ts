@@ -1,5 +1,7 @@
 import { ProviderError } from '../core/errors.ts'
-import type { ProviderErrorKind } from '../core/errors.ts'
+import type { StreamSignal } from '../core/ports.ts'
+import { ndjsonItems, sseItems } from './stream.ts'
+import type { StreamItem } from './stream.ts'
 
 const MAX_ERROR_BODY = 500
 /**
@@ -71,6 +73,22 @@ export interface PostJsonOptions {
    * body is only matched, never copied: the mark is a code word.
    */
   formatFields?: readonly string[]
+  /**
+   * The names of the streaming fields the request sent, each with what a 400 or 422 that names it refused. The first
+   * word the body names as a whole word marks the failure, before `formatFields` are read, so a body that names
+   * `stream_options` is `streamOptions` and not `stream`. The body is only matched, never copied.
+   */
+  streamWords?: ReadonlyArray<{ readonly word: string, readonly refused: 'streamOptions' | 'stream' }>
+}
+
+/** What `postStream` reads beside what `postJson` does: the body's format, its last event's sentinel, and who hears its signs of life. */
+export interface PostStreamOptions extends PostJsonOptions {
+  /** How a streamed body is read: as server-sent events, or as NDJSON. */
+  readonly format: 'sse' | 'ndjson'
+  /** The data a server-sent event holds when it is the protocol's last, such as OpenAI's `[DONE]`. */
+  readonly sentinel?: string
+  /** Hears the reply's headers once, and each keep-alive, as they are read. */
+  readonly onProgress?: (signal: StreamSignal) => void
 }
 
 /** Every form in which a server may echo the secret. */
@@ -369,6 +387,19 @@ function namesWord(text: string, word: string): boolean {
   return false
 }
 
+/**
+ * What a 400 or 422 whose body names a field the request sent refused: the first of the request's stream words, then its
+ * structured-output fields, matched as whole words. The body is matched and never copied: the mark is a code word.
+ */
+function refusalOf(options: PostJsonOptions, status: number, text: string): 'structuredOutput' | 'streamOptions' | 'stream' | undefined {
+  if (status !== 400 && status !== 422) return undefined
+  const streamed = options.streamWords?.find(({ word }) => namesWord(text, word))
+  if (streamed !== undefined) return streamed.refused
+  return options.formatFields?.some(field => namesWord(text, field)) === true
+    ? 'structuredOutput'
+    : undefined
+}
+
 /** A failed reply's error: its message quotes the body, and its hint and verdict are numbers and booleans, never text. */
 function httpFailure(options: PostJsonOptions, response: Response, text: string): ProviderError {
   const { providerId, redact } = options
@@ -394,7 +425,7 @@ function httpFailure(options: PostJsonOptions, response: Response, text: string)
   const redirect = status >= 300 && status < 400
     ? ' (redirects are not followed)'
     : ''
-  const refused = (status === 400 || status === 422) && options.formatFields?.some(field => namesWord(text, field)) === true
+  const refused = refusalOf(options, status, text)
   const exhausted = vendorExhausted(body, status) || extra.exhausted === true
   return new ProviderError({
     providerId,
@@ -406,10 +437,64 @@ function httpFailure(options: PostJsonOptions, response: Response, text: string)
     ...exhausted
       ? { exhausted: true as const }
       : {},
-    ...refused
-      ? { refused: 'structuredOutput' as const }
-      : {},
+    ...refused === undefined
+      ? {}
+      : { refused },
   })
+}
+
+/** The failure of a read or a request that fell through: `aborted` when the attempt's signal is aborted, else `network`, naming the origin and never the runtime's own text. */
+function lostOf(options: PostJsonOptions): (what: string, error: unknown) => ProviderError {
+  const { providerId, url, signal } = options
+  return (what, error) => signal?.aborted
+    ? new ProviderError({ providerId, kind: 'aborted', message: 'request aborted' })
+    : new ProviderError({ providerId, kind: 'network', message: `${what} ${originOf(url)} failed${codeSuffix(error)}` })
+}
+
+/**
+ * Send the request, with no redirect followed and the runtimes' own timers off, and return the response. The reply may
+ * be a failure: the caller reads its status. Only the request itself failing throws, as `aborted` or `network`.
+ */
+async function post(options: PostJsonOptions): Promise<Response> {
+  const { url, headers, body, signal } = options
+  // Outside the try: a body that cannot be serialized is a programming error, not a network failure to retry.
+  const payload = JSON.stringify(body)
+  try {
+    // `timeout: false` turns Bun's idle timer off. Node reads `dispatcher` when its fetch reads the
+    // init, which is the first moment its global dispatcher is certain to exist, so it is a getter.
+    // undici types the option as its whole `Dispatcher` class, which the delegate is not.
+    const init = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: payload,
+      redirect: 'manual',
+      signal,
+      timeout: false,
+      get dispatcher() {
+        return timersOff()
+      },
+    }
+    return await fetch(url, init as RequestInit)
+  } catch (error) {
+    throw lostOf(options)('request to', error)
+  }
+}
+
+/** The body of a response as JSON, read under the 16 MiB cap: an `invalid-response` when it is over it or is none. */
+async function readWhole<T>(options: PostJsonOptions, response: Response): Promise<T> {
+  const fail = (message: string): ProviderError => new ProviderError({ providerId: options.providerId, kind: 'invalid-response', message })
+  let reply: { text: string, complete: boolean }
+  try {
+    reply = await readCapped(response, MAX_REPLY_BYTES)
+  } catch (error) {
+    throw lostOf(options)('reading the reply from', error)
+  }
+  if (!reply.complete) throw fail('reply body is over 16 MiB')
+  try {
+    return JSON.parse(reply.text) as T
+  } catch {
+    throw fail('response body is not JSON')
+  }
 }
 
 /**
@@ -429,49 +514,59 @@ function httpFailure(options: PostJsonOptions, response: Response, text: string)
  * its provider at once.
  */
 export async function postJson<T>(options: PostJsonOptions): Promise<T> {
-  const { providerId, url, headers, body, signal } = options
-  const fail = (kind: ProviderErrorKind, message: string, status?: number): ProviderError =>
-    new ProviderError({ providerId, kind, message, status })
-  const lost = (what: string, error: unknown): ProviderError => signal?.aborted
-    ? fail('aborted', 'request aborted')
-    : fail('network', `${what} ${originOf(url)} failed${codeSuffix(error)}`)
-
-  // Outside the try: a body that cannot be serialized is a programming error, not a network failure to retry.
-  const payload = JSON.stringify(body)
-
-  let response: Response
-  try {
-    // `timeout: false` turns Bun's idle timer off. Node reads `dispatcher` when its fetch reads the
-    // init, which is the first moment its global dispatcher is certain to exist, so it is a getter.
-    // undici types the option as its whole `Dispatcher` class, which the delegate is not.
-    const init = {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...headers },
-      body: payload,
-      redirect: 'manual',
-      signal,
-      timeout: false,
-      get dispatcher() {
-        return timersOff()
-      },
-    }
-    response = await fetch(url, init as RequestInit)
-  } catch (error) {
-    throw lost('request to', error)
-  }
-
+  const response = await post(options)
   if (!response.ok) throw httpFailure(options, response, await readErrorText(response))
+  return readWhole<T>(options, response)
+}
 
-  let reply: { text: string, complete: boolean }
-  try {
-    reply = await readCapped(response, MAX_REPLY_BYTES)
-  } catch (error) {
-    throw lost('reading the reply from', error)
+/** The media type of a content type header, as a reader compares it: the text before any `;`, trimmed and in lower case. */
+function mediaTypeOf(contentType: string | null): string {
+  return (contentType ?? '').split(';')[0]!.trim().toLowerCase()
+}
+
+/** The content type that says a body is the stream `format` names. */
+const STREAM_TYPES = { sse: 'text/event-stream', ndjson: 'application/x-ndjson' } as const
+
+/**
+ * POST a JSON body the server may answer as a stream, and hand back what it answered: the events of a stream, read
+ * under the caps of `stream.ts`, or, for a server that answered a whole reply, its JSON, as `postJson` reads it. The
+ * request, its failures and the failed status are `postJson`'s. The reply's content type decides which it is, by its media
+ * type alone, so `text/event-stream; charset=utf-8` is a stream: `text/event-stream` for `sse` and `application/x-ndjson`
+ * for `ndjson`; anything else, or none, is a whole reply.
+ *
+ * `onProgress` hears one `headers` signal when the status is a success, and each keep-alive of a stream as it is read. A
+ * read that rejects is `aborted` when the attempt's signal is aborted, else `network`; a stream a consumer leaves
+ * early, by a throw or a return, cancels its body.
+ */
+export async function postStream(options: PostStreamOptions): Promise<{ readonly whole: unknown } | { readonly items: AsyncGenerator<StreamItem> }> {
+  const { format, sentinel, onProgress } = options
+  const response = await post(options)
+  if (!response.ok) throw httpFailure(options, response, await readErrorText(response))
+  onProgress?.({ kind: 'headers' })
+  if (mediaTypeOf(response.headers.get('content-type')) !== STREAM_TYPES[format]) return { whole: await readWhole<unknown>(options, response) }
+  const body = response.body ?? new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.close()
+    },
+  })
+  const read = format === 'sse'
+    ? sseItems
+    : ndjsonItems
+  const lost = lostOf(options)
+  const events = read(body, {
+    providerId: options.providerId,
+    ...sentinel === undefined
+      ? {}
+      : { sentinel },
+    lost: error => lost('reading the reply from', error),
+  })
+  async function* reported(): AsyncGenerator<StreamItem> {
+    for await (const item of events) {
+      if (item.kind === 'keep-alive') onProgress?.({ kind: 'keep-alive' })
+      yield item
+    }
   }
-  if (!reply.complete) throw fail('invalid-response', 'reply body is over 16 MiB')
-  try {
-    return JSON.parse(reply.text) as T
-  } catch {
-    throw fail('invalid-response', 'response body is not JSON')
+  return {
+    items: reported(),
   }
 }

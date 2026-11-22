@@ -83,7 +83,7 @@ function incomplete(reason: IncompleteReason, count = 1, profile = 'security'): 
   }
 }
 
-function failedPart(index: number, failure?: { kind: 'http' | 'timeout' | 'network', status?: number, exhausted?: true, cutAfterMs?: number }): QuorumEvent {
+function failedPart(index: number, failure?: { kind: 'http' | 'timeout' | 'network', status?: number, exhausted?: true, cutAfterMs?: number, refused?: 'stream' }): QuorumEvent {
   return {
     type: 'part',
     profile: 'security',
@@ -404,6 +404,38 @@ describe('summaryLines', () => {
         incomplete('research-failed'),
       ],
       '1 part(s) research-failed (network): make replies shorter, with a lower maxTokens or partTokens, or check that the server at its origin is running',
+    ],
+    [
+      'research-failed of a refused stream',
+      [
+        failedPart(1, { kind: 'http', status: 400, refused: 'stream' }),
+        incomplete('research-failed'),
+      ],
+      '1 part(s) research-failed (http 400): set stream: false',
+    ],
+    [
+      'research-failed of a refused stream and a plain 400',
+      [
+        failedPart(1, { kind: 'http', status: 400, refused: 'stream' }),
+        failedPart(2, { kind: 'http', status: 400 }),
+        incomplete('research-failed'),
+      ],
+      '1 part(s) research-failed (http 400): set stream: false, or check the provider\'s settings',
+    ],
+    [
+      'provider-down of a refused stream',
+      [
+        {
+          type: 'provider-down',
+          provider: 'api',
+          kind: 'http',
+          status: 422,
+          calls: 3,
+          refused: 'stream',
+        },
+        incomplete('provider-down'),
+      ],
+      '1 part(s) provider-down (http 422): set stream: false',
     ],
     [
       'provider-down of a cut',

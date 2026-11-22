@@ -50,7 +50,7 @@ interface Counts {
   /** What `cutOf` made of each failure of the streak, in the order they ended: the attempt's length for a cut, else undefined. */
   cuts: Array<number | undefined>
   /** The last counted failure: its kind, status, whether it was a used-up quota, and thrown value. */
-  last?: { readonly kind: ProviderErrorKind, readonly status?: number, readonly exhausted?: true, readonly noAnswer?: NoAnswer, readonly error: unknown }
+  last?: { readonly kind: ProviderErrorKind, readonly status?: number, readonly exhausted?: true, readonly refused?: 'stream', readonly noAnswer?: NoAnswer, readonly error: unknown }
   /** The error of the provider once it is found down. */
   down?: ProviderDownError
 }

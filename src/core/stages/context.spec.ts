@@ -10,7 +10,7 @@ import { createLedger, DEFAULT_REVIEW_TIMEOUT_MS, LimitError } from '../limits.t
 import type { CompletionRequest, CompletionResponse, Provider, StoredCall } from '../ports.ts'
 import { researchRequest } from '../prompts.ts'
 import type { QuorumEvent } from '../types.ts'
-import { callProvider, reservationOf, roomOf, targetOf } from './context.ts'
+import { callProvider, providerFailure, reservationOf, roomOf, targetOf } from './context.ts'
 import type { Requester, RunContext, Target } from './context.ts'
 
 /**
@@ -56,7 +56,7 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
 }
 
 /** A target whose provider's own id is not the id of its ref, which is the one an error and an event name. */
-function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'retries' | 'worstCase' | 'room' | 'window' | 'maxTokens' | 'thinking' | 'adapts'>> = {}): Target {
+function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'timeoutMs' | 'retries' | 'worstCase' | 'room' | 'window' | 'maxTokens' | 'thinking' | 'adapts' | 'streams'>> = {}): Target {
   return {
     provider: { id: 'live-id', model: 'm', complete },
     ref: { id: 'p', model: 'm' },
@@ -68,6 +68,7 @@ function target(complete: Provider['complete'], facts: Partial<Pick<Target, 'tim
     maxTokens: undefined,
     thinking: 'default',
     adapts: undefined,
+    streams: false,
     ...facts,
   }
 }
@@ -205,6 +206,7 @@ describe('the deadline of an attempt', () => {
       timeoutMs: 600_000,
       retries: 0,
       thinking: 'default',
+      streams: false,
     })
     expect(targetOf({ ...provider, timeoutMs: 1000 }).timeoutMs).toBe(1000)
     expect(targetOf({ ...provider, timeoutMs: 518_400_000 }).timeoutMs).toBe(518_400_000)
@@ -1960,5 +1962,203 @@ describe('the events of a call', () => {
     }
     await expect(callProvider(ctx, requester, down, () => request, { onEnd })).rejects.toBeInstanceOf(ProviderDownError)
     expect(ends).toHaveLength(5)
+  })
+})
+
+describe('the stream setting of a call', () => {
+  const streaming = {
+    streams: true,
+    adapts: { stream: true as const },
+  }
+  const answered = (whole?: true): CompletionResponse => ({
+    text: '{}',
+    model: 'm',
+    ...whole === undefined
+      ? {}
+      : { whole },
+  })
+  const refused = (refusedField: 'streamOptions' | 'stream', status = 400): ProviderError => new ProviderError({
+    providerId: 'p',
+    kind: 'http',
+    status,
+    refused: refusedField,
+    message: 'x',
+  })
+  /** The `adapted` events a context has sent, as the adaptations they carry. */
+  const adaptations = (events: readonly QuorumEvent[]): unknown[] => events.flatMap(event => event.type === 'adapted'
+    ? [event.adaptation]
+    : [])
+
+  it('sends the stream setting the review settled on, and adapts once on a whole reply', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const sent: Array<CompletionRequest['stream']> = []
+    const api = target(async (asked) => {
+      sent.push(asked.stream)
+      // A server that answers a streamed request whole, and answers the whole request it is then sent as it is asked.
+      return asked.stream === false
+        ? answered()
+        : answered(true)
+    }, streaming)
+    await settle(clock, callProvider(ctx, requester, api, () => request))
+    expect(events.map(event => event.type)).toEqual(['adapted', 'call'])
+    expect(events[0]).toEqual({
+      type: 'adapted',
+      adaptation: {
+        provider: 'p',
+        setting: 'stream',
+        from: 'stream',
+        to: 'whole',
+        cause: 'stream-answered-whole',
+      },
+    })
+    // The next calls are built at the settled setting, and a whole reply to a whole request adapts nothing more.
+    await settle(clock, callProvider(ctx, requester, api, () => request))
+    await settle(clock, callProvider(ctx, requester, api, () => request))
+    expect(sent).toEqual([undefined, false, false])
+    expect(adaptations(events)).toHaveLength(1)
+    expect(ctx.adapt.record()).toHaveLength(1)
+    // A provider whose stream is pinned reads the whole reply and moves nothing.
+    const pinned = target(async () => answered(true), { streams: true })
+    await settle(clock, callProvider(ctx, requester, pinned, () => request))
+    expect(adaptations(events)).toHaveLength(1)
+  })
+
+  it('moves a server that refuses stream_options to a bare stream, and one that refuses the bare stream as a stream to whole replies, each probed once', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const sent: Array<CompletionRequest['stream']> = []
+    const api = target(async (asked) => {
+      sent.push(asked.stream)
+      if (asked.stream === undefined) throw refused('streamOptions')
+      if (asked.stream === 'bare') throw refused('stream')
+      return answered()
+    }, streaming)
+    await expect(settle(clock, callProvider(ctx, requester, api, () => request))).resolves.toEqual({ text: '{}' })
+    // The bare probe was refused as a stream: its step is tried and nothing moved, then whole replies answered.
+    expect(sent).toEqual([undefined, 'bare', false])
+    expect(adaptations(events)).toEqual([
+      {
+        provider: 'p',
+        setting: 'stream',
+        from: 'stream',
+        to: 'whole',
+        cause: 'stream-refused',
+      },
+    ])
+    expect(events.at(-1)).toMatchObject({ type: 'call', ok: true, attempts: 3 })
+    await settle(clock, callProvider(ctx, requester, api, () => request))
+    expect(sent).toEqual([undefined, 'bare', false, false])
+
+    // A server that takes the bare stream stays on it.
+    const second = context(clock)
+    const bareSent: Array<CompletionRequest['stream']> = []
+    const bare = target(async (asked) => {
+      bareSent.push(asked.stream)
+      if (asked.stream === undefined) throw refused('streamOptions', 422)
+      return answered()
+    }, streaming)
+    await settle(clock, callProvider(second.ctx, requester, bare, () => request))
+    await settle(clock, callProvider(second.ctx, requester, bare, () => request))
+    expect(bareSent).toEqual([undefined, 'bare', 'bare'])
+    expect(adaptations(second.events)).toEqual([
+      {
+        provider: 'p',
+        setting: 'stream',
+        from: 'stream',
+        to: 'bare',
+        cause: 'stream-refused',
+      },
+    ])
+  })
+
+  it('ends a call whose stream probe failed with the failure that began it, and tells a pinned stream\'s refusal as a refused stream', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const first = refused('streamOptions')
+    const failing = target(async (asked) => {
+      throw asked.stream === undefined
+        ? first
+        : new ProviderError({
+            providerId: 'p',
+            kind: 'http',
+            status: 400,
+            message: 'something else',
+          })
+    }, streaming)
+    await expect(settle(clock, callProvider(ctx, requester, failing, () => request))).rejects.toBe(first)
+    expect(adaptations(events)).toEqual([])
+    // A refused stream or stream option is a refused stream to the call path, of status 400 or 422 alone.
+    expect(providerFailure(refused('streamOptions'))).toEqual({ kind: 'http', status: 400, refused: 'stream' })
+    expect(providerFailure(refused('stream', 422))).toEqual({ kind: 'http', status: 422, refused: 'stream' })
+    expect(providerFailure(refused('stream', 500))).toEqual({ kind: 'http', status: 500 })
+    expect(providerFailure(new ProviderError({
+      providerId: 'p',
+      kind: 'http',
+      status: 400,
+      refused: 'structuredOutput',
+      message: 'x',
+    }))).toEqual({ kind: 'http', status: 400 })
+  })
+
+  it('states a provider\'s streams and its adapts.stream as own data, and no stream a getter or an inherited field states', () => {
+    const base = {
+      id: 'p',
+      model: 'm',
+      complete: async () => answered(),
+    }
+    const stated = (provider: Provider): Pick<Target, 'streams' | 'adapts'> => {
+      const { streams, adapts } = targetOf(provider)
+      return { streams, adapts }
+    }
+    expect(stated({
+      ...base,
+      streams: true,
+      adapts: { stream: true },
+    })).toEqual({
+      streams: true,
+      adapts: { stream: true },
+    })
+    expect(stated({ ...base, streams: true })).toEqual({ streams: true, adapts: undefined })
+    expect(stated({ ...base, streams: 'yes' } as unknown as Provider)).toEqual({ streams: false, adapts: undefined })
+    const getter = Object.defineProperty({ ...base }, 'streams', {
+      get: () => true,
+      enumerable: true,
+    }) as Provider
+    expect(stated(getter)).toEqual({ streams: false, adapts: undefined })
+    expect(stated(Object.assign(Object.create({ streams: true }) as object, base) as Provider)).toEqual({ streams: false, adapts: undefined })
+  })
+
+  it('keys a stored call the same whatever its stream setting', async () => {
+    const clock = fakeClock()
+    const { ctx } = context(clock)
+    const kept = new Map<string, StoredCall>()
+    const keys = new Set<string>()
+    const store: NonNullable<RunContext['store']> = {
+      get: async ({ key }) => {
+        keys.add(key)
+        return kept.get(key)
+      },
+      put: async ({ key }, call) => {
+        kept.set(key, call)
+      },
+    }
+    const sent: Array<CompletionRequest['stream']> = []
+    const api = target(async (asked) => {
+      sent.push(asked.stream)
+      return answered(true)
+    }, streaming)
+    const request = researchRequest('look', 'a diff', undefined, undefined, { findings: 5 })
+    const keeping: RunContext = { ...ctx, store }
+    const researching: Requester = { profile: 'security', role: 'research' }
+    // The first send is a stream, which the server answered whole; the provider then asks for whole replies.
+    await settle(clock, callProvider(keeping, researching, api, () => request))
+    expect(sent).toEqual([undefined])
+    // The same call at `stream: false` finds what the first stored, under the one key, and sends nothing.
+    await settle(clock, callProvider(keeping, researching, api, () => request))
+    expect(sent).toEqual([undefined])
+    expect(ctx.adapt.sent(api)).toEqual({ stream: false })
+    expect(keys.size).toBe(1)
+    expect(kept.size).toBe(1)
   })
 })

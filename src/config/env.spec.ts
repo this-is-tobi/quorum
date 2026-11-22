@@ -301,6 +301,62 @@ describe('the deadline and retries variables', () => {
   })
 })
 
+describe('the stream variable', () => {
+  it.each<[string, Record<string, unknown>, unknown[]]>([
+    [
+      'true',
+      { stream: true },
+      [],
+    ],
+    [
+      'false',
+      { stream: false },
+      [],
+    ],
+    [
+      'yes',
+      {},
+      [
+        { path: 'QUORUM_RESEARCH_STREAM', message: 'must be true or false' },
+      ],
+    ],
+    [
+      'True',
+      {},
+      [
+        { path: 'QUORUM_RESEARCH_STREAM', message: 'must be true or false' },
+      ],
+    ],
+  ])('reads QUORUM_RESEARCH_STREAM %s', (value, research, issues) => {
+    const layer = readEnv({ QUORUM_RESEARCH_STREAM: value })
+    expect(layer).toEqual({
+      research,
+      voter: {},
+      warnings: [],
+      issues,
+    })
+    // A value that is no switch is never repeated.
+    if (issues.length > 0) expect(JSON.stringify(layer.issues)).not.toContain(value)
+  })
+
+  it('reads the voter\'s variable too, sets it on the provider the role is bound to, and counts it among the variables quorum reads', () => {
+    const layer = readEnv({ QUORUM_VOTER_STREAM: 'false' })
+    expect(layer.voter).toEqual({ stream: false })
+    expect(READ_VARIABLES.has('QUORUM_RESEARCH_STREAM')).toBe(true)
+    expect(READ_VARIABLES.has('QUORUM_VOTER_STREAM')).toBe(true)
+    expect(layer.warnings).toEqual([])
+    const { providers } = applyRoleOverrides(
+      {
+        main: { protocol: 'openai-compatible', baseUrl: 'https://h/v1', model: 'm' },
+      },
+      { research: 'main', voter: 'main' },
+      readEnv({ QUORUM_RESEARCH_STREAM: 'true', QUORUM_VOTER_STREAM: 'false' }),
+    )
+    expect(providers.main).toMatchObject({ stream: true })
+    expect(providers.voter).toMatchObject({ stream: false })
+  })
+})
+
 describe('the review\'s limits variables', () => {
   const TOKENS = 'must be a whole number of tokens, from 1 to 9007199254740991'
   const DEADLINE = 'must be a whole number of milliseconds, from 1000 to 86400000'

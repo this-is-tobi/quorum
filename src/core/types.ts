@@ -370,15 +370,18 @@ export type ReviewSource
  * word. `thinking` is lowered when a reply ran out of room while reasoning (`cut-off-thinking`) or held only
  * reasoning (`no-answer-thinking`), and put back to the server's default when the server refused the lowered value
  * (`lowering-refused`, `from` the level tried); `structuredOutput` moves from `json` to `prompt` when a reply in JSON
- * mode was empty (`empty-reply`) or the server refused the mode (`format-refused`). The causes `byte-bound-refused`
+ * mode was empty (`empty-reply`) or the server refused the mode (`format-refused`); `stream` moves from `stream` to
+ * `bare`, a stream with no stream options, when the server refused them, and from `stream` or `bare` to `whole`, whole
+ * replies, when the server refused streaming (`stream-refused`) or answered a streamed call whole
+ * (`stream-answered-whole`). The causes `byte-bound-refused`
  * and `loaded-window` belong to the settings `tokenCount` and `window`, which a later release moves.
  */
 export interface Adaptation {
   provider: string
-  setting: 'thinking' | 'structuredOutput' | 'tokenCount' | 'window'
+  setting: 'thinking' | 'structuredOutput' | 'stream' | 'tokenCount' | 'window'
   from: string
   to: string
-  cause: 'cut-off-thinking' | 'no-answer-thinking' | 'empty-reply' | 'format-refused' | 'byte-bound-refused' | 'loaded-window' | 'lowering-refused'
+  cause: 'cut-off-thinking' | 'no-answer-thinking' | 'empty-reply' | 'format-refused' | 'stream-refused' | 'stream-answered-whole' | 'byte-bound-refused' | 'loaded-window' | 'lowering-refused'
 }
 
 /** What a review records about itself, besides its verdicts. */
@@ -614,13 +617,15 @@ export interface Position {
  * it is an `http` failure with one, and `exhausted` when that failure said the account's credit, quota or spend
  * limit is used up. `cutAfterMs` is set only on the failure a call ends with (a `part` event's), when its last attempt
  * was cut on the way: a `network` failure, or an `http` 502, 504 or 524, after at least `CUT_AFTER_MS`, and holds the
- * attempt's length in milliseconds.
+ * attempt's length in milliseconds. `refused` is `stream` when an `http` 400 or 422 named the stream or its options,
+ * which a provider with `stream: true` can only be told to give up.
  */
 export interface CallFailure {
   kind: ProviderErrorKind
   status?: number
   exhausted?: true
   cutAfterMs?: number
+  refused?: 'stream'
 }
 
 /**
@@ -679,9 +684,10 @@ export type QuorumEvent
      * moment the third call ends; the calls in flight run to their end. `exhausted` is true when the failure said
      * the account's credit, quota or spend limit is used up: the provider is then found down at its first call
      * that failed so, `calls` is 1, and no retry was made. `cutAfterMs` is present only when every call of the streak
-     * was cut on the way, and holds the shortest of their last attempts' lengths, in milliseconds.
+     * was cut on the way, and holds the shortest of their last attempts' lengths, in milliseconds. `refused` is `stream`
+     * when the last failure was a stream the server refused.
      */
-    | { type: 'provider-down', provider: string, kind: ProviderErrorKind, status?: number, calls: number, noAnswer?: NoAnswer, exhausted?: true, cutAfterMs?: number }
+    | { type: 'provider-down', provider: string, kind: ProviderErrorKind, status?: number, calls: number, noAnswer?: NoAnswer, exhausted?: true, cutAfterMs?: number, refused?: 'stream' }
     /**
      * A reply lacked what a review needs, said once per provider and line in a review: `truncated` with
      * `noAnswer` `window` (the server's window ended it) or `reply` or `thinking` with `outputTokens` below the

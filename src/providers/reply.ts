@@ -8,6 +8,11 @@ import { isRecord } from './options.ts'
 export const MAX_MODEL_TEXT = 200
 /** The most characters of a stop reason that an error message quotes. */
 const MAX_REASON = 40
+/**
+ * What an assembled stream holds where a reader checks a reasoning field's text: a stream's reasoning is counted as it
+ * arrives and never kept, since only the fact that it showed is read, so the assembly writes this one word in its place.
+ */
+export const STREAMED_REASONING = 'streamed'
 
 /**
  * The failures of one provider: a `ProviderError` of `kind`, with its message and, for `http`, its status.

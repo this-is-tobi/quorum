@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ConfigError, CUT_ADVICE, CUT_AFTER_MS, CUT_FIX, cutOf, downWords, issuePath, lackWords, ProviderDownError, ProviderError, QuorumError, QUOTA_FIX } from './errors.ts'
+import { ConfigError, CUT_ADVICE, CUT_AFTER_MS, CUT_FIX, cutOf, downWords, failureFix, issuePath, lackWords, ProviderDownError, ProviderError, QuorumError, QUOTA_FIX } from './errors.ts'
 import type { ConfigIssue, ProviderErrorKind, ReplyLack } from './errors.ts'
 
 describe('provider errors', () => {
@@ -239,6 +239,39 @@ describe('a provider that is down', () => {
       streak: true,
       exhausted: true,
     })).toBe(line(402))
+  })
+
+  it('words a provider found down by a pinned stream\'s refusals with set stream: false, and the same calls refused another way with the status\'s fix', () => {
+    const facts = {
+      providerId: 'api',
+      kind: 'http',
+      status: 400,
+      count: 3,
+      streak: true,
+    } as const
+    expect(downWords({ ...facts, refused: 'stream' })).toBe('api: 3 calls in a row failed (http 400): no more calls go to it in this review: set stream: false')
+    expect(downWords({
+      ...facts,
+      count: 1,
+      streak: false,
+      refused: 'stream',
+    })).toBe('api: its one call failed (http 400): set stream: false')
+    expect(downWords(facts)).toBe('api: 3 calls in a row failed (http 400): no more calls go to it in this review: check the provider\'s settings')
+    // The fix is the failure's own, so a quota or a cut still names its fix.
+    expect(downWords({ ...facts, refused: 'stream', cutAfterMs: 600_000 })).toContain('each call was cut after about 10m00s')
+    expect(failureFix('http', 400, 'stream')).toBe('set stream: false')
+    expect(failureFix('http', 422, 'stream')).toBe('set stream: false')
+    expect(failureFix('http', 400)).toBe('check the provider\'s settings')
+    expect(new ProviderDownError({ ...facts, refused: 'stream' })).toMatchObject({ refused: 'stream' })
+    expect(new ProviderDownError(facts).refused).toBeUndefined()
+    // A provider error says what the server refused, a code word.
+    expect(new ProviderError({
+      providerId: 'api',
+      kind: 'http',
+      status: 400,
+      refused: 'streamOptions',
+      message: 'x',
+    }).refused).toBe('streamOptions')
   })
 
   it('words a provider whose calls were each cut on the way with the cut fix, and one that was not with the server fix', () => {

@@ -343,6 +343,47 @@ describe('estimate', () => {
     expect(packed.worst).toBe(security.worst + topSum(calls, 2))
   })
 
+  it('counts a provider\'s stream setting as two in the adaptation bound', () => {
+    const lone: Profile = {
+      id: 'lone',
+      prompts: { research: 'Find bugs.', vote: 'Judge as {{lens.id}}.' },
+      lenses: [
+        { id: 'only', question: 'Is it real?' },
+      ],
+      policy: { high: 'unanimous', medium: 'off', low: 'off' },
+    }
+    const reserve = (request: CompletionRequest): number => requestTokens(request) + RESERVE
+    /** The worst case of a review whose researcher states `adapts`, and whose voter states none. */
+    const worstWith = (adapts: Provider['adapts']): number => createQuorum({
+      profiles: [lone],
+      maxFindings: 3,
+      concurrency: 2,
+    }, {
+      profiles: {
+        lone: {
+          research: {
+            ...silent(reserve),
+            ...adapts === undefined
+              ? {}
+              : { adapts },
+          },
+          voters: {
+            only: silent(reserve),
+          },
+        },
+      },
+    }).estimate({
+      diff: addedFile('a.js', 3),
+    }).worst
+    const none = worstWith(undefined)
+    const one = worstWith({ thinking: 'low' })
+    // A stream steps down twice, a bare stream and whole replies, so it bounds two sends of each call, as two settings do.
+    expect(one).toBeGreaterThan(none)
+    expect(worstWith({ stream: true })).toBe(none + 2 * (one - none))
+    expect(worstWith({ stream: true })).toBe(worstWith({ thinking: 'low', prompt: true }))
+    expect(worstWith({ thinking: 'low', stream: true })).toBe(none + 3 * (one - none))
+  })
+
   it('counts a provider object that serves research and votes once in the adaptations\' bound', () => {
     const lone: Profile = {
       id: 'lone',

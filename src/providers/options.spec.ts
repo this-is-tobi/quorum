@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
-import { baseUrlIssues, httpOptionIssues, mergeBody, prepareHttp, requestHeaders, thinkingControl, thinkingIssues } from './options.ts'
+import { adaptsOf, baseUrlIssues, httpOptionIssues, mergeBody, prepareHttp, requestHeaders, requestSettings, streamFacts, thinkingControl, thinkingIssues } from './options.ts'
 import type { AdapterRules, Auth, HttpProviderOptions } from './options.ts'
 
 describe('baseUrlIssues', () => {
@@ -641,5 +641,38 @@ describe('mergeBody', () => {
       n: { two: 2 },
     })
     expect(mergeBody(body, undefined)).toBe(body)
+  })
+})
+
+describe('the stream setting', () => {
+  const lowering = {
+    level: 'low',
+    control: {
+      path: ['reasoning_effort'],
+    },
+    streams: true,
+  } as const
+  const settings = { thinking: undefined, structuredOutput: 'json' } as const
+
+  it('honours the request\'s stream only when the provider adapts it, and states streams by the stream option', () => {
+    // Unset, the provider states that it may step its stream down, and honours a request's `false` and `'bare'`.
+    const automatic = adaptsOf({}, lowering).adapts
+    expect(automatic).toEqual({ thinking: 'low', stream: true })
+    expect(requestSettings(settings, automatic, { stream: false }).stream).toBe(false)
+    expect(requestSettings(settings, automatic, { stream: 'bare' }).stream).toBe('bare')
+    expect(requestSettings(settings, automatic, {}).stream).toBeUndefined()
+    // `true` and `false` pin it: no `adapts.stream`, so the request's change is ignored.
+    for (const stream of [true, false]) {
+      const pinned = adaptsOf({ stream }, lowering).adapts
+      expect(pinned, String(stream)).toEqual({ thinking: 'low' })
+      expect(requestSettings(settings, pinned, { stream: false }).stream, String(stream)).toBeUndefined()
+      expect(requestSettings(settings, pinned, { stream: 'bare' }).stream, String(stream)).toBeUndefined()
+    }
+    // A protocol that does not stream states no step.
+    expect(adaptsOf({}, { ...lowering, streams: undefined }).adapts).toEqual({ thinking: 'low' })
+    // The facts: it streams unless the option asks for whole replies.
+    expect(streamFacts(undefined)).toEqual({ streams: true })
+    expect(streamFacts(true)).toEqual({ streams: true })
+    expect(streamFacts(false)).toEqual({})
   })
 })

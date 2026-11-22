@@ -24,7 +24,8 @@ export function envValue(env: Env, name: string): string | undefined {
 
 /**
  * What the variables of one role set: only the variables that are set. `contextTokens`, `timeoutMs` and
- * `retries` are `QUORUM_<ROLE>_CONTEXT_TOKENS`, `_TIMEOUT_MS` and `_RETRIES`, each read as a whole number.
+ * `retries` are `QUORUM_<ROLE>_CONTEXT_TOKENS`, `_TIMEOUT_MS` and `_RETRIES`, each read as a whole number, and
+ * `stream` is `QUORUM_<ROLE>_STREAM`, read as `true` or `false` exactly.
  */
 export interface RoleOverrides {
   readonly preset?: string
@@ -34,6 +35,7 @@ export interface RoleOverrides {
   readonly contextTokens?: number
   readonly timeoutMs?: number
   readonly retries?: number
+  readonly stream?: boolean
   readonly apiKey?: string
   readonly thinking?: string
 }
@@ -66,6 +68,7 @@ const VARIABLES: ReadonlyArray<{ readonly field: keyof RoleOverrides, readonly s
   { field: 'contextTokens', suffix: 'CONTEXT_TOKENS', aliased: false },
   { field: 'timeoutMs', suffix: 'TIMEOUT_MS', aliased: false },
   { field: 'retries', suffix: 'RETRIES', aliased: false },
+  { field: 'stream', suffix: 'STREAM', aliased: false },
   { field: 'apiKey', suffix: 'API_KEY', aliased: true },
   { field: 'thinking', suffix: 'THINKING', aliased: false },
 ]
@@ -140,6 +143,9 @@ const NUMBERS: ReadonlyMap<keyof RoleOverrides, NumberRule> = new Map([
   ],
 ])
 
+/** The variables of a role that hold `true` or `false`, each by the field it sets, written as those two words exactly. */
+const BOOLEANS: ReadonlySet<keyof RoleOverrides> = new Set(['stream'])
+
 /** The number a variable holds, or the issue at the variable when it is not a whole number in the rule's range, which never repeats it. */
 function readNumber(name: string, value: string, rule: NumberRule): { readonly number: number } | { readonly issue: ConfigIssue } {
   return rule.form.test(value) && Number(value) <= rule.max
@@ -154,10 +160,10 @@ function readNumber(name: string, value: string, rule: NumberRule): { readonly n
 /**
  * The variables of one role that are set, each as its field and value: the `QUORUM_` form, else its alias. A
  * number (the context size, the deadline, the retries) that is not a whole number in range sets nothing and is
- * an issue at its variable, which never repeats it.
+ * an issue at its variable, which never repeats it, and neither does a switch (the stream) that is not `true` or `false`.
  */
 function readRole(env: Env, role: Role): { overrides: RoleOverrides, issues: ConfigIssue[] } {
-  const entries: Array<[string, string | number]> = []
+  const entries: Array<[string, string | number | boolean]> = []
   const issues: ConfigIssue[] = []
   for (const { field, suffix, aliased } of VARIABLES) {
     const name = canonicalName(role, suffix)
@@ -165,6 +171,11 @@ function readRole(env: Env, role: Role): { overrides: RoleOverrides, issues: Con
       ? envValue(env, `${role}_${suffix}`)
       : undefined)
     if (value === undefined) continue
+    if (BOOLEANS.has(field)) {
+      if (value === 'true' || value === 'false') entries.push([field, value === 'true'])
+      else issues.push({ path: name, message: 'must be true or false' })
+      continue
+    }
     const rule = NUMBERS.get(field)
     if (rule === undefined) {
       entries.push([field, value])

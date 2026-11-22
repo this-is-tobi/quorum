@@ -265,6 +265,7 @@ const adaptation = z.strictObject({
   setting: z.enum([
     'thinking',
     'structuredOutput',
+    'stream',
     'tokenCount',
     'window',
   ]),
@@ -275,6 +276,8 @@ const adaptation = z.strictObject({
     'no-answer-thinking',
     'empty-reply',
     'format-refused',
+    'stream-refused',
+    'stream-answered-whole',
     'byte-bound-refused',
     'loaded-window',
     'lowering-refused',

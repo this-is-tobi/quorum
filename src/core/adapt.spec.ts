@@ -43,6 +43,15 @@ function refusedFormat(): ProviderError {
     message: 'x',
   })
 }
+function refusedStream(refused: 'streamOptions' | 'stream', status = 400): ProviderError {
+  return new ProviderError({
+    providerId: 'p',
+    kind: 'http',
+    status,
+    refused,
+    message: 'x',
+  })
+}
 const turn = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 const open = (): AbortSignal => new AbortController().signal
 
@@ -295,5 +304,171 @@ describe('adaptations', () => {
     const heldByLimit = adapt.ready(limited, open())
     adapt.settle(limited, 'thinking', 'unsent')
     await expect(heldByLimit).resolves.toBeUndefined()
+  })
+
+  it('moves a provider that refuses stream_options to a bare stream once, and keeps it streaming', async () => {
+    const adapt = createAdaptations()
+    const target = targetFor('api', { stream: true })
+    const before = adapt.sent(target)
+    expect(adapt.probe(target, refusedStream('streamOptions'))).toEqual({
+      setting: 'stream',
+      cause: 'stream-refused',
+      with: { stream: 'bare' },
+    })
+    // The probe is pending: no second call becomes one, and the old setting is still the one sent.
+    expect(adapt.probe(target, refusedStream('streamOptions'))).toBeUndefined()
+    expect(adapt.probe(target, refusedStream('stream'))).toBeUndefined()
+    expect(adapt.sent(target)).toEqual({})
+    let released = false
+    const waiting = adapt.ready(target, open()).then(() => {
+      released = true
+    })
+    const after = adapt.after(target, before, refusedStream('streamOptions'), open())
+    await turn()
+    expect(released).toBe(false)
+    expect(adapt.settle(target, 'stream', 'answered')).toEqual({
+      provider: 'api',
+      setting: 'stream',
+      from: 'stream',
+      to: 'bare',
+      cause: 'stream-refused',
+    })
+    await waiting
+    await expect(after).resolves.toEqual({ stream: 'bare' })
+    expect(adapt.sent(target)).toEqual({ stream: 'bare' })
+    // A second refusal of stream_options makes no probe: the step is tried, and a call sent at the bare stream meets no re-send.
+    expect(adapt.probe(target, refusedStream('streamOptions'))).toBeUndefined()
+    await expect(adapt.after(target, adapt.sent(target), refusedStream('streamOptions'), open())).resolves.toBeUndefined()
+    // A 422 is a refusal too, and another status is none.
+    const other = targetFor('other', { stream: true })
+    expect(adapt.probe(other, refusedStream('streamOptions', 500))).toBeUndefined()
+    expect(adapt.probe(other, refusedStream('streamOptions', 422))).toMatchObject({
+      with: { stream: 'bare' },
+    })
+  })
+
+  it('steps on to whole replies when the bare stream is refused too, each step probed once', () => {
+    const adapt = createAdaptations()
+    // The bare stream answers, then the server refuses streaming itself: the second step starts from the first.
+    const stepped = targetFor('stepped', { stream: true })
+    adapt.probe(stepped, refusedStream('streamOptions'))
+    adapt.settle(stepped, 'stream', 'answered')
+    expect(adapt.probe(stepped, refusedStream('stream'))).toEqual({
+      setting: 'stream',
+      cause: 'stream-refused',
+      with: { stream: false },
+    })
+    expect(adapt.probe(stepped, refusedStream('stream'))).toBeUndefined()
+    expect(adapt.settle(stepped, 'stream', 'answered')).toEqual({
+      provider: 'stepped',
+      setting: 'stream',
+      from: 'bare',
+      to: 'whole',
+      cause: 'stream-refused',
+    })
+    expect(adapt.sent(stepped)).toEqual({ stream: false })
+    expect(adapt.probe(stepped, refusedStream('stream'))).toBeUndefined()
+    expect(adapt.probe(stepped, refusedStream('streamOptions'))).toBeUndefined()
+
+    // The bare probe refused as a stream moves nothing, and its step is tried; whole replies are then probed, from the stream.
+    const refused = targetFor('refused', { stream: true })
+    adapt.probe(refused, refusedStream('streamOptions'))
+    expect(adapt.settle(refused, 'stream', 'refused')).toBeUndefined()
+    expect(adapt.sent(refused)).toEqual({})
+    expect(adapt.probe(refused, refusedStream('streamOptions'))).toBeUndefined()
+    expect(adapt.probe(refused, refusedStream('stream'))).toEqual({
+      setting: 'stream',
+      cause: 'stream-refused',
+      with: { stream: false },
+    })
+    expect(adapt.settle(refused, 'stream', 'answered')).toMatchObject({ from: 'stream', to: 'whole' })
+    expect(adapt.sent(refused)).toEqual({ stream: false })
+    expect(adapt.record().map(({ provider, from, to }) => [provider, from, to])).toEqual([
+      ['stepped', 'stream', 'bare'],
+      ['stepped', 'bare', 'whole'],
+      ['refused', 'stream', 'whole'],
+    ])
+
+    // A refusal of streaming goes straight to whole replies, with no bare step before it.
+    const direct = targetFor('direct', { stream: true })
+    expect(adapt.probe(direct, refusedStream('stream'))).toMatchObject({
+      with: { stream: false },
+    })
+    expect(adapt.settle(direct, 'stream', 'answered')).toMatchObject({ from: 'stream', to: 'whole' })
+  })
+
+  it('moves nothing when a stream probe fails or is refused, and ends the call with its first failure', async () => {
+    const adapt = createAdaptations()
+    for (const outcome of ['failed', 'refused', 'unsent'] as const) {
+      const target = targetFor(outcome, { stream: true })
+      const sent = adapt.sent(target)
+      const first = refusedStream('streamOptions')
+      expect(adapt.probe(target, first)).toMatchObject({
+        with: { stream: 'bare' },
+      })
+      const waiting = adapt.after(target, sent, first, open())
+      expect(adapt.settle(target, 'stream', outcome), outcome).toBeUndefined()
+      // The call that was in flight meets no re-send, so it ends with its own failure, and the step is tried.
+      await expect(waiting, outcome).resolves.toBeUndefined()
+      expect(adapt.sent(target), outcome).toEqual({})
+      expect(adapt.probe(target, first), outcome).toBeUndefined()
+      await expect(adapt.after(target, sent, first, open()), outcome).resolves.toBeUndefined()
+    }
+    expect(adapt.record()).toEqual([])
+  })
+
+  it('moves a provider that answered a streamed call whole to stream: false once, and records it', async () => {
+    const adapt = createAdaptations()
+    const target = targetFor('api', { stream: true })
+    expect(adapt.answeredWhole(target)).toEqual({
+      provider: 'api',
+      setting: 'stream',
+      from: 'stream',
+      to: 'whole',
+      cause: 'stream-answered-whole',
+    })
+    expect(adapt.sent(target)).toEqual({ stream: false })
+    // Once: a second whole reply moves nothing, and no refusal probes a step that is behind it.
+    expect(adapt.answeredWhole(target)).toBeUndefined()
+    expect(adapt.probe(target, refusedStream('stream'))).toBeUndefined()
+    expect(adapt.record().map(({ cause }) => cause)).toEqual(['stream-answered-whole'])
+    // A call sent before it, at the stream, is sent again as a whole one.
+    await expect(adapt.after(target, {}, refusedStream('stream'), open())).resolves.toEqual({ stream: false })
+
+    // From the bare stream the record says where it moved from; a whole-reply probe pending settles the move itself.
+    const bare = targetFor('bare', { stream: true })
+    adapt.probe(bare, refusedStream('streamOptions'))
+    adapt.settle(bare, 'stream', 'answered')
+    expect(adapt.answeredWhole(bare)).toMatchObject({ from: 'bare', to: 'whole' })
+    const probing = targetFor('probing', { stream: true })
+    adapt.probe(probing, refusedStream('stream'))
+    expect(adapt.answeredWhole(probing)).toBeUndefined()
+    expect(adapt.settle(probing, 'stream', 'answered')).toMatchObject({ from: 'stream', to: 'whole', cause: 'stream-refused' })
+    // A bare probe that ends after the provider moved to whole replies never moves it back up.
+    const racing = targetFor('racing', { stream: true })
+    adapt.probe(racing, refusedStream('streamOptions'))
+    expect(adapt.answeredWhole(racing)).toMatchObject({ from: 'stream', to: 'whole' })
+    expect(adapt.settle(racing, 'stream', 'answered')).toBeUndefined()
+    expect(adapt.sent(racing)).toEqual({ stream: false })
+  })
+
+  it('never moves a provider whose stream is pinned', () => {
+    const adapt = createAdaptations()
+    // A pinned stream states no adapts.stream, whatever else the provider adapts.
+    for (const target of [
+      targetFor('plain'),
+      targetFor('thinker', { thinking: 'low', prompt: true }),
+    ]) {
+      expect(adapt.probe(target, refusedStream('streamOptions'))).toBeUndefined()
+      expect(adapt.probe(target, refusedStream('stream'))).toBeUndefined()
+      expect(adapt.answeredWhole(target)).toBeUndefined()
+      expect(adapt.sent(target)).toEqual({})
+    }
+    // A provider that does adapt its stream leaves the other settings alone, and answers no other failure.
+    const target = targetFor('api', { stream: true })
+    expect(adapt.probe(target, refusedFormat())).toBeUndefined()
+    expect(adapt.probe(target, cutOff('thinking'))).toBeUndefined()
+    expect(adapt.probe(target, noAnswer('empty'))).toBeUndefined()
+    expect(adapt.record()).toEqual([])
   })
 })

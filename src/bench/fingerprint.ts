@@ -51,13 +51,22 @@ function providerForm(provider: ResolvedProvider): Record<string, unknown> {
   return Object.fromEntries(Object.entries(provider).filter(([field]) => field !== 'apiKey'))
 }
 
-/** The fields of a provider's form that are no part of its identity: how long a call waits and how often it is tried again change no reply a stored call holds. */
-const OUT_OF_IDENTITY = new Set(['timeoutMs', 'retries'])
+/**
+ * The fields of a provider's form that are no part of its identity: how long a call waits, how often it is tried again and
+ * whether its replies stream, which the provider states as `streams` too, each decides whether a reply arrives, never what
+ * it says, so a call stored under one setting is reused under another.
+ */
+const OUT_OF_IDENTITY = new Set([
+  'timeoutMs',
+  'retries',
+  'stream',
+  'streams',
+])
 
 /**
- * A provider's identity, as the saved state keys its entries by: the form `providerForm` gives it, less `timeoutMs` and
- * `retries` (a call stored under one deadline is reused under another; every other field still moves it), as JSON with the keys
- * of every object sorted, so the same provider written in another order is one. The bench's fingerprint keeps both fields.
+ * A provider's identity, as the saved state keys its entries by: the form `providerForm` gives it, less `timeoutMs`,
+ * `retries`, `stream` and `streams` (a call stored under one deadline is reused under another; every other field still moves it), as JSON with the keys
+ * of every object sorted, so the same provider written in another order is one. The bench's fingerprint keeps them all.
  * It can hold a secret: only ever hash it.
  */
 export function providerIdentity(provider: ResolvedProvider): string {

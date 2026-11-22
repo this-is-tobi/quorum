@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProviderError } from '../core/errors.ts'
+import type { StreamSignal } from '../core/ports.ts'
 import { brokenReply, jsonReply, streamedReply, textReply } from '../testing/http.ts'
-import { endpointUrl, httpOrigin, originOf, postJson, redactionsOf, retryAfterHint, snippet } from './http.ts'
+import { endpointUrl, httpOrigin, originOf, postJson, postStream, redactionsOf, retryAfterHint, snippet } from './http.ts'
 import type { ErrorHints } from './http.ts'
 
 const options = { providerId: 'p', url: 'http://h/x', body: {} }
@@ -980,5 +981,159 @@ describe('the runtimes\' timers', () => {
     scope[KEY] = global
     const init = await initOf()
     expect(init.dispatcher).toBeUndefined()
+  })
+})
+
+describe('postStream', () => {
+  const streamOptions = { ...options, format: 'sse' } as const
+  /** A response of `text` as bytes, which carries no content type of its own, with `contentType` when it is given. */
+  const served = (text: string, contentType?: string): Response => new Response(new TextEncoder().encode(text), {
+    headers: contentType === undefined
+      ? {}
+      : { 'content-type': contentType },
+  })
+  /** What every event of the stream holds, in order. */
+  async function drain(items: AsyncIterable<unknown>): Promise<unknown[]> {
+    const read: unknown[] = []
+    for await (const item of items) read.push(item)
+    return read
+  }
+
+  it('fails a streamed read aborted mid-body as aborted, and one whose body drops as network', async () => {
+    const controller = new AbortController()
+    const eventStream = { 'content-type': 'text/event-stream' }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(new ReadableStream({
+      pull(stream) {
+        controller.abort()
+        stream.error(new DOMException('aborted', 'AbortError'))
+      },
+    }), { headers: eventStream })))
+    const aborted = await postStream({ ...streamOptions, signal: controller.signal })
+    await expect(drain((aborted as { items: AsyncIterable<unknown> }).items)).rejects.toMatchObject({ kind: 'aborted', retryable: false, message: 'p: request aborted' })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(new ReadableStream({
+      pull(stream) {
+        stream.error(new TypeError('terminated'))
+      },
+    }), { headers: eventStream })))
+    const dropped = await postStream(streamOptions)
+    await expect(drain((dropped as { items: AsyncIterable<unknown> }).items)).rejects.toMatchObject({ kind: 'network', retryable: true, message: 'p: reading the reply from http://h failed' })
+  })
+
+  it.each([
+    ['text/event-stream', 'a stream'],
+    ['text/event-stream; charset=utf-8', 'a stream'],
+    ['Text/Event-Stream', 'a stream'],
+    ['application/json', 'whole'],
+    [undefined, 'whole'],
+  ])('reads a reply whose content type is %s as %s', async (contentType, read) => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => served(read === 'whole'
+      ? '{"a":1}'
+      : 'data: {"a":1}\n\n', contentType)))
+    const result = await postStream(streamOptions)
+    if (read === 'whole') {
+      expect(result).toEqual({
+        whole: { a: 1 },
+      })
+    } else {
+      expect(Object.keys(result)).toEqual(['items'])
+      expect(await drain((result as { items: AsyncIterable<unknown> }).items)).toEqual([
+        {
+          kind: 'event',
+          event: 'message',
+          value: { a: 1 },
+        },
+      ])
+    }
+  })
+
+  it('reads an NDJSON body for the ndjson format alone, and a stream of the other format as a whole reply', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => served('{"a":1}\n{"a":2}\n', 'application/x-ndjson')))
+    const ndjson = await postStream({ ...options, format: 'ndjson' })
+    expect(await drain((ndjson as { items: AsyncIterable<unknown> }).items)).toEqual([
+      {
+        kind: 'event',
+        event: 'line',
+        value: { a: 1 },
+      },
+      {
+        kind: 'event',
+        event: 'line',
+        value: { a: 2 },
+      },
+    ])
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => served('{"a":1}', 'application/x-ndjson')))
+    expect(await postStream(streamOptions)).toEqual({
+      whole: { a: 1 },
+    })
+  })
+
+  it('reports its headers once, and each keep-alive as it is read, to the one who hears them', async () => {
+    const signals: StreamSignal[] = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => served(': ping\n\ndata: [DONE]\n\n: ping\n\n', 'text/event-stream')))
+    const result = await postStream({
+      ...streamOptions,
+      sentinel: '[DONE]',
+      onProgress: signal => signals.push(signal),
+    })
+    expect(signals).toEqual([
+      { kind: 'headers' },
+    ])
+    expect(await drain((result as { items: AsyncIterable<unknown> }).items)).toEqual([
+      { kind: 'keep-alive' },
+      { kind: 'done' },
+      { kind: 'keep-alive' },
+    ])
+    expect(signals).toEqual([
+      { kind: 'headers' },
+      { kind: 'keep-alive' },
+      { kind: 'keep-alive' },
+    ])
+    // A whole reply reports its headers too, and a failed status none.
+    signals.length = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonReply({ a: 1 })))
+    await postStream({
+      ...streamOptions,
+      onProgress: signal => signals.push(signal),
+    })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('nope', 500)))
+    await expect(postStream({
+      ...streamOptions,
+      onProgress: signal => signals.push(signal),
+    })).rejects.toMatchObject({ kind: 'http', status: 500 })
+    expect(signals).toEqual([
+      { kind: 'headers' },
+    ])
+  })
+
+  it('fails a whole reply that is no JSON or that is over 16 MiB, and a failed status as postJson does', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('<html>', 200)))
+    await expect(postStream(streamOptions)).rejects.toMatchObject({ kind: 'invalid-response', message: 'p: response body is not JSON' })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => streamedReply('x'.repeat(1024 * 1024), 17).response))
+    await expect(postStream(streamOptions)).rejects.toMatchObject({ kind: 'invalid-response', message: 'p: reply body is over 16 MiB' })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply('{"error":"slow"}', 429, { 'retry-after': '2' })))
+    await expect(postStream(streamOptions)).rejects.toMatchObject({
+      kind: 'http',
+      status: 429,
+      retryable: true,
+      retryAfterMs: 2000,
+    })
+  })
+
+  it('marks a 400 or 422 by the first stream word its body names as a whole word, before the format fields', async () => {
+    const words = [
+      { word: 'stream_options', refused: 'streamOptions' },
+      { word: 'stream', refused: 'stream' },
+    ] as const
+    const refusal = async (text: string, status = 400, formatFields?: readonly string[]): Promise<unknown> => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => textReply(text, status)))
+      return postStream({ ...streamOptions, streamWords: words, formatFields }).catch((error: unknown) => error)
+    }
+    expect(await refusal('stream_options is unsupported')).toMatchObject({ refused: 'streamOptions' })
+    expect(await refusal('stream is unsupported', 422)).toMatchObject({ refused: 'stream' })
+    expect(await refusal('stream_options and stream')).toMatchObject({ refused: 'streamOptions' })
+    expect(await refusal('response_format and stream', 400, ['response_format'])).toMatchObject({ refused: 'stream' })
+    expect(await refusal('response_format only', 400, ['response_format'])).toMatchObject({ refused: 'structuredOutput' })
+    expect(await refusal('streaming is unsupported')).toMatchObject({ refused: undefined })
+    expect(await refusal('stream is unsupported', 500)).toMatchObject({ refused: undefined })
   })
 })

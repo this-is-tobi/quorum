@@ -182,6 +182,10 @@
               "inline"
             ]
           },
+          "stream": {
+            "description": "Whether each reply is streamed: unset, it is, and quorum steps down by itself when the server refuses a stream's options, refuses streaming or answers a stream whole; true pins the stream, so a refusal fails the call; false asks for whole replies",
+            "type": "boolean"
+          },
           "timeoutMs": {
             "description": "The deadline of one attempt of a call, in milliseconds; 600000 when unset. On claude-code, Claude Code's wait for each attempt's response headers, and the whole run's deadline is timeoutMs times retries plus one",
             "type": "integer",

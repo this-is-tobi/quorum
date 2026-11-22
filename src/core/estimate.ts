@@ -353,9 +353,11 @@ function reservedAtOnce(profiles: readonly ProfileEstimate[], maxFindings: numbe
   ]), concurrency)
 }
 
-/** How many settings a provider states it can move by itself: its thinking, and its structured output. */
+/** How many settings a provider states it can move by itself: its thinking, its structured output, and its stream, which steps down twice and counts as two. */
 function settingsOf({ adapts }: Target): number {
-  return Number(adapts?.thinking !== undefined) + Number(adapts?.prompt === true)
+  return Number(adapts?.thinking !== undefined) + Number(adapts?.prompt === true) + (adapts?.stream === true
+    ? 2
+    : 0)
 }
 
 /**

@@ -276,9 +276,9 @@ function withProfile(state: ViewState, id: string, patch: (profile: ProfileState
   }
 }
 
-/** Two causes are the same when they have the same kind, status and quota, and both were cut on the way or neither was. */
+/** Two causes are the same when they have the same kind, status, quota and refused stream, and both were cut on the way or neither was. */
 function sameCause(a: Cause, b: Cause): boolean {
-  return a.kind === b.kind && a.status === b.status && a.exhausted === b.exhausted && (a.cutAfterMs === undefined) === (b.cutAfterMs === undefined)
+  return a.kind === b.kind && a.status === b.status && a.exhausted === b.exhausted && a.refused === b.refused && (a.cutAfterMs === undefined) === (b.cutAfterMs === undefined)
 }
 
 /** `state` with `cause` among the causes of `reason`, once. */
@@ -291,7 +291,7 @@ function withCause(state: ViewState, reason: 'research-failed' | 'provider-down'
   }
 }
 
-/** `failure` as a cause: its kind, its status, its quota and its cut, each when it has one. */
+/** `failure` as a cause: its kind, its status, its quota, its cut and its refused stream, each when it has one. */
 function causeOf(failure: CallFailure): Cause {
   return {
     kind: failure.kind,
@@ -304,6 +304,9 @@ function causeOf(failure: CallFailure): Cause {
     ...failure.cutAfterMs === undefined
       ? {}
       : { cutAfterMs: failure.cutAfterMs },
+    ...failure.refused === undefined
+      ? {}
+      : { refused: failure.refused },
   }
 }
 
@@ -511,6 +514,9 @@ export function fold(state: ViewState, event: QuorumEvent, now: number): ViewSta
         ...event.cutAfterMs === undefined
           ? {}
           : { cutAfterMs: event.cutAfterMs },
+        ...event.refused === undefined
+          ? {}
+          : { refused: event.refused },
       }))
     case 'incomplete': {
       const known = state.gaps.get(event.entry.reason) ?? { parts: 0, votes: 0, other: 0 }

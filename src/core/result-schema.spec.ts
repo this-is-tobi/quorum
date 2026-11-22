@@ -220,6 +220,8 @@ describe('the schemas of a result', () => {
       'no-answer-thinking',
       'empty-reply',
       'format-refused',
+      'stream-refused',
+      'stream-answered-whole',
       'byte-bound-refused',
       'loaded-window',
       'lowering-refused',
@@ -234,6 +236,21 @@ describe('the schemas of a result', () => {
         },
       }).success, cause).toBe(true)
     }
+    expect(resultSchema.safeParse({
+      ...full,
+      meta: {
+        ...full.meta,
+        adaptations: [
+          {
+            provider: 'api',
+            setting: 'stream',
+            from: 'stream',
+            to: 'bare',
+            cause: 'stream-refused',
+          },
+        ],
+      },
+    }).success).toBe(true)
   })
 
   it('reads meta.reused strictly, in the public view too, and does not require it', () => {

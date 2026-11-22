@@ -761,7 +761,7 @@ describe('runCli', () => {
     })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(sent(fetchMock).url).toBe('https://team.example/v1/chat/completions')
-    expect(stderr()).toMatch(/^Research \(t @ https:\/\/team\.example\)\.\.\.\nPanel will use t @ https:\/\/team\.example\npart 1 of 1: answered in \d+(\.\d)?s, \d+ tokens, 0 finding\(s\) listed\n0 candidate\(s\) after dedup\n0 kept, 0 discarded, 0 unreviewed by panel\ntime: research \d+(\.\d)?s, dedup \d+(\.\d)?s, panel \d+(\.\d)?s; done in \d+s\ntokens: \d+ percent of the cap of 2000000, the default\ncalls: 1 research; 4 at once\nresult: json on stdout\n$/)
+    expect(stderr()).toMatch(/^Research \(t @ https:\/\/team\.example\)\.\.\.\nPanel will use t @ https:\/\/team\.example\nteam: its calls ask for whole replies for the rest of the review: the server answered a streamed call whole; set stream: false to choose it yourself\npart 1 of 1: answered in \d+(\.\d)?s, \d+ tokens, 0 finding\(s\) listed\n0 candidate\(s\) after dedup\n0 kept, 0 discarded, 0 unreviewed by panel\ntime: research \d+(\.\d)?s, dedup \d+(\.\d)?s, panel \d+(\.\d)?s; done in \d+s\ntokens: \d+ percent of the cap of 2000000, the default\ncalls: 1 research; 4 at once\nresult: json on stdout\n$/)
   })
 
   it('exits 2 when the file QUORUM_CONFIG names does not exist, naming it as given', async () => {
@@ -838,7 +838,11 @@ describe('runCli', () => {
         `[${profile}] 0 candidate(s) after dedup`,
       ])
     }
-    expect(lines.slice(5)).toHaveLength(10)
+    // The JSON stub answers each streamed request whole, so the provider the two profiles share is moved to whole replies, said once.
+    expect(lines.filter(line => line.includes('the server answered a streamed call whole'))).toEqual([
+      expect.stringMatching(/^[\w-]+: its calls ask for whole replies for the rest of the review: the server answered a streamed call whole; set stream: false to choose it yourself$/),
+    ])
+    expect(lines.slice(5)).toHaveLength(11)
     // The summary ends the review, after the totals line.
     expect(lines.slice(-6)).toEqual([
       '0 kept, 0 discarded, 0 unreviewed by panel',
