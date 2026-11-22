@@ -157,13 +157,25 @@ function laneWords(id: string, { start, lowest, highest, cuts, headers }: Concur
     : `${id} ran ${lowest} to ${highest} at once`
 }
 
+/** What the view knows of one provider's answered streamed calls. */
+type ProviderTimings = ViewState['timings'] extends ReadonlyMap<string, infer Timings>
+  ? Timings
+  : never
+
 /**
  * The calls line's clauses after the calls: with `concurrency` set, its calls at once; else each provider's lane, as `laneWords`
  * says it, in the order the lanes began, and none of them while the result holds no lane's record. A provider's longest first
- * token and silence come after its own lane's clause as `its longest ...`, else alone as `<id>'s longest ...`.
+ * token and silence come after its own lane's clause as `its longest ...`, else alone as `<id>'s longest ...`; then, when one of its
+ * streams grew its deadline, `its slowest stream grew its deadline to ...`, else `<id>'s slowest ...`.
  */
 function laneClauses(state: ViewState, lanes: QuorumMeta['concurrency']): string[] {
-  const timing = ({ firstTokenMs, longestSilenceMs }: { readonly firstTokenMs: number, readonly longestSilenceMs: number }): string => `longest first token ${durationWords(firstTokenMs)}, its longest silence ${durationWords(longestSilenceMs)}`
+  /** A provider's clauses after its lane's, each led by `owner`: its longest first token and silence, then how far its slowest stream grew its deadline, when one did. */
+  const timed = (owner: string, { firstTokenMs, longestSilenceMs, ceilingMs }: ProviderTimings): string[] => [
+    `${owner} longest first token ${durationWords(firstTokenMs)}, its longest silence ${durationWords(longestSilenceMs)}`,
+    ...ceilingMs === undefined
+      ? []
+      : [`${owner} slowest stream grew its deadline to ${durationWords(ceilingMs)}`],
+  ]
   const { concurrency } = state.facts
   const records = concurrency === 'auto'
     ? Object.entries(lanes ?? {})
@@ -174,10 +186,10 @@ function laneClauses(state: ViewState, lanes: QuorumMeta['concurrency']): string
   for (const [id, record] of records) {
     clauses.push(laneWords(id, record))
     const timings = state.timings.get(id)
-    if (timings !== undefined) clauses.push(`its ${timing(timings)}`)
+    if (timings !== undefined) clauses.push(...timed('its', timings))
   }
   for (const [id, timings] of state.timings) {
-    if (!records.some(([lane]) => lane === id)) clauses.push(`${id}'s ${timing(timings)}`)
+    if (!records.some(([lane]) => lane === id)) clauses.push(...timed(`${id}'s`, timings))
   }
   return clauses
 }

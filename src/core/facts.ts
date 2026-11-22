@@ -32,6 +32,11 @@ export function isTooLarge(error: unknown): boolean {
   return ownData(error, 'kind') === 'too-large'
 }
 
+/** Whether `value` is a length of time in whole milliseconds a failure can state: a positive safe integer. */
+function isMilliseconds(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1
+}
+
 /**
  * What a failed call says of itself, as facts: the own data `kind` when it is one of `PROVIDER_ERROR_KINDS`,
  * and for an `http` failure its own data `status` when that is an integer from 100 to 599. A message, which can
@@ -40,16 +45,24 @@ export function isTooLarge(error: unknown): boolean {
  * `http` failure whose own data `exhausted` is `true` says so, as `exhausted: true`; any other kind never does. An `http`
  * failure of status 400 or 422 whose own data `refused` is `stream` or `streamOptions` says `refused: 'stream'`: a refused
  * stream, to which a provider that may not step down has one fix. A `timeout` whose own data `stalledMs` is a positive safe
- * integer says so, as `stalledMs`: a stream that showed no progress for that long.
+ * integer says so, as `stalledMs`: a stream that showed no progress for that long; one whose own data `ceilingMs` is, says
+ * so as `ceilingMs`: the ceiling it reached while its stream progressed.
  */
-export function providerFailure(error: unknown): { readonly kind: ProviderErrorKind, readonly status?: number, readonly exhausted?: true, readonly refused?: 'stream', readonly stalledMs?: number } | undefined {
+export function providerFailure(error: unknown): { readonly kind: ProviderErrorKind, readonly status?: number, readonly exhausted?: true, readonly refused?: 'stream', readonly stalledMs?: number, readonly ceilingMs?: number } | undefined {
   const kind = PROVIDER_ERROR_KINDS.find(known => known === ownData(error, 'kind'))
   if (kind === undefined) return undefined
   if (kind === 'timeout') {
     const stalledMs = ownData(error, 'stalledMs')
-    return typeof stalledMs === 'number' && Number.isSafeInteger(stalledMs) && stalledMs >= 1
-      ? { kind, stalledMs }
-      : { kind }
+    const ceilingMs = ownData(error, 'ceilingMs')
+    return {
+      kind,
+      ...(isMilliseconds(stalledMs)
+        ? { stalledMs }
+        : {}),
+      ...(isMilliseconds(ceilingMs)
+        ? { ceilingMs }
+        : {}),
+    }
   }
   if (kind !== 'http') return { kind }
   const status = ownData(error, 'status')

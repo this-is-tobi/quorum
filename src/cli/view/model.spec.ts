@@ -335,7 +335,7 @@ describe('fold', () => {
     attemptMs: 1000,
     waitMs: 1000,
   })
-  const answeredCall = (call: number, outputTokens: number, timings: { firstTokenMs?: number, longestSilenceMs?: number } = {}, provider = API): QuorumEvent => ({
+  const answeredCall = (call: number, outputTokens: number, timings: { firstTokenMs?: number, longestSilenceMs?: number, ceilingMs?: number } = {}, provider = API): QuorumEvent => ({
     type: 'call',
     call,
     profile: 'security',
@@ -554,6 +554,47 @@ describe('fold', () => {
     ])
     expect(replay(streamedReview()).timings.get('api')).toEqual({ firstTokenMs: 6000, longestSilenceMs: 6000 })
     expect(replay(longReview()).timings.size).toBe(0)
+  })
+
+  it('keeps the largest ceiling a provider\'s answered calls grew to', () => {
+    const other = { id: 'other', model: 'model' }
+    const state = folded(
+      [
+        0,
+        started(['security']),
+      ],
+      [
+        1000,
+        answeredCall(1, 10, { firstTokenMs: 2000, longestSilenceMs: 9000, ceilingMs: 2_522_880 }),
+      ],
+      [
+        2000,
+        answeredCall(2, 10, { firstTokenMs: 5000, longestSilenceMs: 4000 }),
+      ],
+      [
+        3000,
+        answeredCall(3, 10, { firstTokenMs: 3000, longestSilenceMs: 1000, ceilingMs: 7_786_667 }),
+      ],
+      [
+        4000,
+        answeredCall(4, 10, { firstTokenMs: 3000, longestSilenceMs: 1000, ceilingMs: 1_000_000 }),
+      ],
+      [
+        5000,
+        answeredCall(5, 10, { firstTokenMs: 700, longestSilenceMs: 800 }, other),
+      ],
+    )
+    expect([...state.timings]).toEqual([
+      [
+        'api',
+        { firstTokenMs: 5000, longestSilenceMs: 9000, ceilingMs: 7_786_667 },
+      ],
+      [
+        'other',
+        { firstTokenMs: 700, longestSilenceMs: 800 },
+      ],
+    ])
+    expect(state.timings.get('other')).not.toHaveProperty('ceilingMs')
   })
 
   it('keeps the interval of each profile in a stage, and reads the union of the ones that ended as the stage\'s time', () => {

@@ -407,6 +407,31 @@ describe('summaryLines', () => {
       })).toBe('calls: 44 research, 42 vote(s); other ran 4 to 6 at once; api\'s longest first token 3m10s, its longest silence 3m40s')
     })
 
+    it('says how far a provider\'s slowest stream grew its deadline', () => {
+      const grown = (call: number, ceilingMs?: number): QuorumEvent => ({
+        ...answered(call, 'api', 5000, 100_000),
+        ...ceilingMs === undefined
+          ? {}
+          : { ceilingMs },
+      })
+      const slow = reviewed(grown(1, 1_000_000), grown(2, 2_522_880), grown(3), grown(4, 600_001))
+      expect(callsOf({
+        api: record('auto', 4, 2, 4, 1, true),
+      }, slow)).toBe('calls: 44 research, 42 vote(s); api ran 2 to 4 at once; its longest first token 5.0s, its longest silence 1m40s; its slowest stream grew its deadline to 42m03s')
+      // with concurrency set, or no lane record, the provider is named
+      const set = {
+        ...slow,
+        facts: { ...DEFAULT_FACTS, concurrency: 8 },
+      }
+      expect(callsOf({
+        api: record(8, 8, 8, 8, 0, false),
+      }, set)).toBe('calls: 44 research, 42 vote(s); 8 at once; api\'s longest first token 5.0s, its longest silence 1m40s; api\'s slowest stream grew its deadline to 42m03s')
+      // a provider whose calls grew no deadline has no such clause
+      expect(callsOf({
+        api: record('auto', 4, 2, 4, 1, true),
+      }, reviewed(grown(1), grown(2)))).toBe('calls: 44 research, 42 vote(s); api ran 2 to 4 at once; its longest first token 5.0s, its longest silence 1m40s')
+    })
+
     it('says a lane that stayed at its start sent no rate-limit headers, with the setting that runs more', () => {
       expect(callsOf({
         api: record('auto', 4, 4, 4, 0, false),

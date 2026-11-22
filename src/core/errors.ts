@@ -143,12 +143,14 @@ export class ProviderError extends QuorumError {
   readonly refused: 'structuredOutput' | 'streamOptions' | 'stream' | undefined
   /** A `timeout` that is a stalled stream: the window it showed no progress for, in milliseconds. Set by the core, which watches the stream. */
   readonly stalledMs: number | undefined
+  /** A `timeout` at a ceiling that grew while its stream progressed: the ceiling it reached, in milliseconds. Set by the core. */
+  readonly ceilingMs: number | undefined
   /** A `truncated` failure the core read from calls cut on the way at a learned length: how long the attempt ran, in milliseconds. Set by the core, never by an adapter. */
   readonly cutAfterMs: number | undefined
   /** What the failed reply's rate-limit headers stated, when the adapter read any: numbers only. */
   readonly rateLimit: RateLimit | undefined
 
-  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, exhausted?: true, retryAfterMs?: number, usage?: Usage, noAnswer?: NoAnswer, refused?: 'structuredOutput' | 'streamOptions' | 'stream', stalledMs?: number, cutAfterMs?: number, rateLimit?: RateLimit, cause?: unknown }) {
+  constructor(details: { providerId: string, kind: ProviderErrorKind, message: string, status?: number, retryable?: boolean, exhausted?: true, retryAfterMs?: number, usage?: Usage, noAnswer?: NoAnswer, refused?: 'structuredOutput' | 'streamOptions' | 'stream', stalledMs?: number, ceilingMs?: number, cutAfterMs?: number, rateLimit?: RateLimit, cause?: unknown }) {
     super(`${details.providerId}: ${details.message}`, details.cause === undefined
       ? undefined
       : { cause: details.cause })
@@ -162,6 +164,7 @@ export class ProviderError extends QuorumError {
     this.noAnswer = details.noAnswer
     this.refused = details.refused
     this.stalledMs = details.stalledMs
+    this.ceilingMs = details.ceilingMs
     this.cutAfterMs = details.cutAfterMs
     this.rateLimit = details.rateLimit
   }

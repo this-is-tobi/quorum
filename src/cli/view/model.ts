@@ -154,8 +154,8 @@ export interface ViewState {
   readonly gaps: ReadonlyMap<IncompleteReason, GapCount>
   readonly causes: ReadonlyMap<'research-failed' | 'provider-down', readonly Cause[]>
   readonly usage: ReadonlyMap<string, Usage>
-  /** The longest first token and the longest silence of each provider's answered streamed calls, by provider id. */
-  readonly timings: ReadonlyMap<string, { readonly firstTokenMs: number, readonly longestSilenceMs: number }>
+  /** The longest first token and the longest silence of each provider's answered streamed calls, and the largest ceiling any of them grew to, by provider id. */
+  readonly timings: ReadonlyMap<string, { readonly firstTokenMs: number, readonly longestSilenceMs: number, readonly ceilingMs?: number }>
   /** The review began to stop: why, when, how many calls were in flight, and for an interrupt the grace they were given. */
   readonly stopping?: { readonly cause: 'interrupt' | 'review-deadline', readonly at: number, readonly inFlight: number, readonly graceMs?: number }
   /** The time left as it first read, at the answered part that passed the threshold. */
@@ -486,12 +486,16 @@ function callProgressed(state: ViewState, event: Extract<QuorumEvent, { type: 'c
 
 /** `timings` with the larger of each of its numbers and the answered call's of `id`, or `timings` when the call has none. */
 function withTimings(timings: ViewState['timings'], id: string, event: Extract<QuorumEvent, { type: 'call' }>): ViewState['timings'] {
-  const { firstTokenMs, longestSilenceMs } = event
+  const { firstTokenMs, longestSilenceMs, ceilingMs } = event
   if (!event.ok || firstTokenMs === undefined || longestSilenceMs === undefined) return timings
   const known = timings.get(id)
+  const grown = Math.max(known?.ceilingMs ?? 0, ceilingMs ?? 0)
   return set(timings, id, {
     firstTokenMs: Math.max(known?.firstTokenMs ?? 0, firstTokenMs),
     longestSilenceMs: Math.max(known?.longestSilenceMs ?? 0, longestSilenceMs),
+    ...grown === 0
+      ? {}
+      : { ceilingMs: grown },
   })
 }
 
