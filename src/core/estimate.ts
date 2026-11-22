@@ -25,6 +25,8 @@ export interface EstimateSettings {
   readonly partTokens: number
   /** How many findings of a research reply each profile sends to the panel. */
   readonly maxFindings: number
+  /** How many findings of the research each profile sends to its panel: the votes are counted at it, and no request is sized by it. */
+  readonly findingsCap: number
   /** The reply budgets of each profile, by profile id: what its requests carry and ask for, as the review sends them. */
   readonly budgets: Readonly<Record<string, ProfileBudgets>>
   /** How many provider calls run at once in one review, shared by every provider; unset, each provider has a lane of its own under the review's ceiling. */
@@ -56,14 +58,14 @@ interface Section {
  * A vote's reservation depends on a finding that does not exist yet, so each lens's is a bound: the request for
  * a finding at the caps the harness cleans a finder's text to, citing the largest section of the filtered
  * diff, whole for a voter that states no room or whose room holds it, else the partial context filled to its
- * room. A review may cast `maxFindings` votes of each lens in each profile.
+ * room. A review may cast `findingsCap` votes of each lens in each profile.
  *
  * `expected` counts each research part at a third of its input, rounded up, plus its reply at the lesser of its
  * budget and `EXPECTED_REPLY_TOKENS` (`expectedOf`), and the votes not at all: how many findings research reports
  * is not known before it runs, so the votes are in `worst`, at their bound, alone. `worst` is an upper bound of
  * what the ledger can reserve with one attempt per call, before any retry reserves again: each part's reservation and recovery's bound (`recoveryBound`), the votes at their
  * bound, and the calls an adaptation sends once more (`adaptationBound`). `inFlight` is the sum of the
- * `concurrency` largest bounds among the research parts and the votes, each lens's counted `maxFindings` times,
+ * `concurrency` largest bounds among the research parts and the votes, each lens's counted `findingsCap` times,
  * since the review's one limit shares its slots between every profile; with `concurrency` unset, each provider counts the
  * largest bounds among its own calls up to where its lane starts (`laneStart`), and the `REVIEW_CEILING` largest of those
  * count in all, as the lanes run at their start. `fits` is `expected + inFlight <=
@@ -89,13 +91,14 @@ export function estimateReview(runs: readonly ProfileRun[], settings: EstimateSe
   }))
   const profiles = planned.map(({ estimate }) => estimate)
   const expected = sum(profiles.map(profile => profile.expected))
-  const inFlight = reservedAtOnce(planned, settings.maxFindings, settings.concurrency)
+  const inFlight = reservedAtOnce(planned, settings.findingsCap, settings.concurrency)
   return {
     profiles: Object.fromEntries(planned.map(({ id, estimate }) => [id, estimate])),
     expected,
     worst: sum(profiles.map(profile => profile.worst)) + adaptationBound(planned, settings),
     inFlight,
     maxFindings: settings.maxFindings,
+    findingsCap: settings.findingsCap,
     maxReviewTokens: settings.maxReviewTokens,
     reviewTimeoutMs: settings.reviewTimeoutMs,
     fits: expected + inFlight <= settings.maxReviewTokens,
@@ -209,7 +212,7 @@ function pieceExtra(run: ProfileRun, ask: Ask, part: PartOf | undefined): number
 
 /** One profile's estimate, from the plan its research follows. */
 function profileEstimate(run: ProfileRun, plan: ResearchPlan, diff: string, largest: Section, settings: EstimateSettings): Planned {
-  const { maxFindings } = settings
+  const { findingsCap } = settings
   const budgets = settings.budgets[run.id]
   const reply = budgets.research.replyTokens ?? DEFAULT_REPLY_TOKENS
   const research = researchCalls(run, plan, diff, { findings: budgets.research.findings, replyTokens: budgets.research.replyTokens })
@@ -220,10 +223,10 @@ function profileEstimate(run: ProfileRun, plan: ResearchPlan, diff: string, larg
   return {
     estimate: {
       parts,
-      votes: maxFindings * run.lenses.length,
+      votes: findingsCap * run.lenses.length,
       vote: Object.fromEntries(run.lenses.map((lens, index) => [lens.id, bounds[index]])),
       expected: sum(partsExpected),
-      worst: sum(research.map(call => call.reservation + recoveryBound(call.reservation, call.diff, call.header, call.extra))) + maxFindings * sum(bounds),
+      worst: sum(research.map(call => call.reservation + recoveryBound(call.reservation, call.diff, call.header, call.extra))) + findingsCap * sum(bounds),
       findings: budgets.research.findings,
       provider: budgets.research.provider,
     },
@@ -347,12 +350,12 @@ function largestAtOnce(calls: readonly Call[], slots: number): number {
 
 /**
  * What the calls that run at once reserve: with `concurrency` set, the sum of the `concurrency` largest bounds among every research
- * part and every vote of every profile, a lens's vote counted `maxFindings` times, once per finding it may judge, since the review's
+ * part and every vote of every profile, a lens's vote counted `findingsCap` times, once per finding it may judge, since the review's
  * limit is one for all its profiles. With it unset, each provider's own calls are taken up to where its lane starts, the largest
  * bounds first, and the `REVIEW_CEILING` largest of those among every provider count: the lanes at their start, under the ceiling.
  * With fewer calls than slots, every call counts.
  */
-function reservedAtOnce(planned: ReadonlyArray<{ readonly run: ProfileRun, readonly estimate: ProfileEstimate }>, maxFindings: number, concurrency: number | undefined): number {
+function reservedAtOnce(planned: ReadonlyArray<{ readonly run: ProfileRun, readonly estimate: ProfileEstimate }>, findingsCap: number, concurrency: number | undefined): number {
   const calls = planned.flatMap(({ run, estimate }) => [
     ...estimate.parts.map(bound => ({
       target: run.research,
@@ -362,7 +365,7 @@ function reservedAtOnce(planned: ReadonlyArray<{ readonly run: ProfileRun, reado
       ? [
           {
             target: lens,
-            call: { bound: estimate.vote[lens.id], count: maxFindings },
+            call: { bound: estimate.vote[lens.id], count: findingsCap },
           },
         ]
       : []),
@@ -413,7 +416,7 @@ function adaptationBound(planned: ReadonlyArray<{ readonly run: ProfileRun, read
       add(lens, estimate.parts.length === 0
         ? []
         : [
-            { bound: estimate.vote[lens.id], count: settings.maxFindings },
+            { bound: estimate.vote[lens.id], count: settings.findingsCap },
           ])
     }
   }

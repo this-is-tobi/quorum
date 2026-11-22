@@ -27,7 +27,7 @@ export interface ViewFacts {
   readonly concurrency: number | 'auto'
   readonly cap: { readonly tokens: number, readonly origin: CapOrigin }
   readonly deadlineMs: number
-  /** The findings a research reply sends the panel at most, which sizes the votes to come. */
+  /** The findings of the research each panel reads at most (a review's `findingsCap`), which sizes the votes to come. */
   readonly maxFindings: number
   /** A path review's estimate, which weighs the parts not yet started. */
   readonly estimate?: Estimate

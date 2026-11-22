@@ -528,13 +528,13 @@ export interface ReviewInput {
 export interface ProfileEstimate {
   /** What the ledger reserves for each research request of the profile, in order: one for a diff researched whole, else one per part that holds more than white space. Empty when research makes no call. */
   parts: number[]
-  /** The most votes the panel casts: `maxFindings` findings, each voted by every lens of the profile. 0 when research makes no call. */
+  /** The most votes the panel casts: `findingsCap` findings, each voted by every lens of the profile. 0 when research makes no call. */
   votes: number
   /** What the ledger reserves at most for one vote of each lens, keyed by lens id. Empty when research makes no call. */
   vote: Record<string, number>
   /** The research parts alone, each counted at a third of its input, rounded up (code takes about that many tokens, not one per byte), and its reply at the lesser of its budget and 4096 tokens, its usual size. The votes are not in it, since how many findings research reports is not known before it runs. */
   expected: number
-  /** The most the profile may reserve in all: each research part in full and every piece recovery may make of it, and `maxFindings` votes of every lens at its bound. The calls an adaptation sends once more are the provider's, and join `Estimate.worst` alone. */
+  /** The most the profile may reserve in all: each research part in full and every piece recovery may make of it, and `findingsCap` votes of every lens at its bound. The calls an adaptation sends once more are the provider's, and join `Estimate.worst` alone. */
   worst: number
   /** The findings its research requests ask for at most, the most serious first: `maxFindings`, or fewer when the research provider's reply budget holds fewer. */
   findings: number
@@ -558,6 +558,8 @@ export interface Estimate {
   inFlight: number
   /** How many findings of a research reply each profile sends to the panel, as `createQuorum` was given or defaulted it. */
   maxFindings: number
+  /** The most findings of the research each profile sends to its panel in the review the estimate is for: the `limits` it was given, else `maxFindings`. Every research request is still sized by `maxFindings`. */
+  findingsCap: number
   /** The token cap the estimate was made under: the `limits` it was given, else the quorum's, as `createQuorum` was given or defaulted it. */
   maxReviewTokens: number
   /** The deadline the estimate was made under, in milliseconds: the `limits` it was given, else the quorum's. */
@@ -585,8 +587,11 @@ export interface Quorum {
    * `maxReviewTokens` and `reviewTimeoutMs` are the token cap and the deadline of this review alone, in place of the
    * quorum's, each checked as `QuorumOptions` checks it: a caller that sizes a cap or a deadline to its input, as the
    * CLI does for a path review, gives them here and leaves the quorum's as its default for the reviews that give none.
+   * `findingsCap` is the most findings of the research each profile sends to its panel in this review, a positive
+   * integer, in place of `maxFindings`; every research request is still sized by `maxFindings`, so a `findingsCap`
+   * above it changes no request and splits no reply, and the findings past it are a `findings-capped` gap.
    */
-  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal, readonly interrupt?: AbortSignal, readonly store?: ReplyStore, readonly maxReviewTokens?: number, readonly reviewTimeoutMs?: number }) => Promise<QuorumResult>
+  readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal, readonly interrupt?: AbortSignal, readonly store?: ReplyStore, readonly maxReviewTokens?: number, readonly reviewTimeoutMs?: number, readonly findingsCap?: number }) => Promise<QuorumResult>
   /**
    * What a review of `input.diff` may cost, before any call: per profile, what the token ledger reserves for each
    * research part, and a bound for every vote. It makes no call and reads no file. The research parts are counted
@@ -596,11 +601,13 @@ export interface Quorum {
    * `maxReviewTokens`. It is an estimate, not a promise: a review still reserves each call against the cap.
    * A file held back as a secret costs nothing, and one `input.send` names is counted, as `review` sends it.
    * `limits` are the cap and the deadline the estimate is made under, in place of the quorum's, as `review`'s
-   * `maxReviewTokens` and `reviewTimeoutMs` are: `Estimate.maxReviewTokens`, `reviewTimeoutMs`, `fits` and `held` read them,
-   * and no other figure depends on them.
+   * `maxReviewTokens` and `reviewTimeoutMs` are: `Estimate.maxReviewTokens`, `reviewTimeoutMs`, `fits` and `held` read them.
+   * `findingsCap`, as `review` takes it, moves `Estimate.findingsCap`, each profile's `votes` and `worst`, and `inFlight`
+   * and what `fits` and `held` read of it, since it counts each lens's votes; the parts, their reservations and
+   * `expected` do not depend on it, as `maxFindings` sizes every request.
    * Throws a `ConfigError` for an input or a limit `review` would refuse.
    */
-  readonly estimate: (input: { readonly diff: string, readonly send?: readonly string[] }, limits?: { readonly maxReviewTokens?: number, readonly reviewTimeoutMs?: number }) => Estimate
+  readonly estimate: (input: { readonly diff: string, readonly send?: readonly string[] }, limits?: { readonly maxReviewTokens?: number, readonly reviewTimeoutMs?: number, readonly findingsCap?: number }) => Estimate
   /** Settings that cannot take full effect, such as a policy level that never applies; each starts at its profile id. */
   readonly warnings: readonly string[]
   /**

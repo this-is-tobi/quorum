@@ -172,17 +172,21 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
  * held back, so it is counted, as `review` sends it. It is an estimate, not a limit: a review reserves each call
  * against the cap, which still holds whatever `fits` says.
  *
- * `limits` are the cap and the deadline of the review the estimate is for, in place of the quorum's, and the
- * estimate's `maxReviewTokens`, `reviewTimeoutMs`, `fits` and `held` read them; every other figure is the same
- * whatever they are. `held` counts the research parts the cap holds.
+ * `limits` are the cap, the deadline and the findings cap of the review the estimate is for, in place of the quorum's, and the
+ * estimate's `maxReviewTokens`, `reviewTimeoutMs`, `fits` and `held` read the first two; `findingsCap` counts each lens's votes,
+ * so it moves `findingsCap`, each profile's `votes` and `worst`, `inFlight` and what `fits` and `held` read of it, and no request,
+ * part or `expected` figure, as `maxFindings` sizes them. `held` counts the research parts the cap holds.
  *
- * @throws ConfigError listing every issue of the input that `review` refuses: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take; and of the `limits`: a `maxReviewTokens` or a `reviewTimeoutMs` out of range
+ * @throws ConfigError listing every issue of the input that `review` refuses: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take; and of the `limits`: a `maxReviewTokens` or a `reviewTimeoutMs` out of range, a `findingsCap` that is no positive integer
  */
 function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimits = {}): Estimate {
   const issues = [
     ...reviewIssues(input, {}),
     ...isRecord(limits)
-      ? reviewLimitIssues(limits)
+      ? [
+          ...reviewLimitIssues(limits),
+          ...findingsCapIssues(limits),
+        ]
       : [
           { path: 'limits', message: 'must be an object' },
         ],
@@ -193,6 +197,7 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
     ...compiled,
     maxReviewTokens: limits.maxReviewTokens ?? compiled.maxReviewTokens,
     reviewTimeoutMs: limits.reviewTimeoutMs ?? compiled.reviewTimeoutMs,
+    findingsCap: limits.findingsCap ?? compiled.maxFindings,
   }, input.diff, path => sent.has(path))
 }
 
@@ -322,9 +327,11 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * `options.maxReviewTokens` and `options.reviewTimeoutMs` are the cap and the deadline of this review alone, in place of
  * the quorum's, and are checked as the quorum's are: a caller that knows the size of its input gives its review the
  * cap and the deadline that fit it, and the reviews that give none keep the quorum's. The gaps, the events and `meta`
- * read the limits the review kept to.
+ * read the limits the review kept to. `options.findingsCap` is the most findings of the research each profile sends to its
+ * panel in this review, `maxFindings` unless set: every research request is still sized by `maxFindings`, so a larger
+ * `findingsCap` changes no request and splits no reply, and the findings past it are one `findings-capped` gap.
  *
- * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take, options that are not an object, a `signal` that is not an AbortSignal, a `store` that is no object with a `get` and a `put` function, a `maxReviewTokens` or a `reviewTimeoutMs` out of range
+ * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take, options that are not an object, a `signal` that is not an AbortSignal, a `store` that is no object with a `get` and a `put` function, a `maxReviewTokens` or a `reviewTimeoutMs` out of range, a `findingsCap` that is no positive integer
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
  * @throws the error of a sink that throws
  * @throws ProviderDownError when no research call of any profile answered and a research provider was found down, or each of whose calls failed for a reason of its own
@@ -484,6 +491,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
       : { store: options.store },
     adapt: createAdaptations(),
     maxFindings: compiled.maxFindings,
+    findingsCap: options.findingsCap ?? compiled.maxFindings,
     budgets: compiled.budgets,
     concurrency: compiled.concurrency ?? REVIEW_CEILING,
     clocks: createClocks(),
@@ -681,7 +689,7 @@ function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
     if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) issues.push({ path: 'signal', message: 'must be an AbortSignal' })
     if (options.interrupt !== undefined && !(options.interrupt instanceof AbortSignal)) issues.push({ path: 'interrupt', message: 'must be an AbortSignal' })
     if (options.store !== undefined && !isReplyStore(options.store)) issues.push({ path: 'store', message: 'must be a reply store: an object with get and put functions' })
-    issues.push(...reviewLimitIssues(options))
+    issues.push(...reviewLimitIssues(options), ...findingsCapIssues(options))
   }
   return issues
 }
@@ -843,6 +851,16 @@ function reviewLimitIssues(options: Record<string, unknown>): ConfigIssue[] {
           { path: 'reviewTimeoutMs', message: timeout },
         ],
   ]
+}
+
+/** The problem of a `findingsCap`, which a review's options and an estimate's limits hold and the quorum's options do not: a positive integer when set. */
+function findingsCapIssues(options: Record<string, unknown>): ConfigIssue[] {
+  const value = options.findingsCap
+  return value === undefined || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 1)
+    ? []
+    : [
+        { path: 'findingsCap', message: 'must be a positive integer' },
+      ]
 }
 
 /** The ports of each checked profile in order, then the ports no profile of the run names, then the sink. */

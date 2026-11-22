@@ -3335,6 +3335,17 @@ describe('a review\'s own limits', () => {
     expect(clock.pending()).toBe(0)
   })
 
+  it('refuses a findingsCap that is no whole number of at least 1, in review and in estimate', async () => {
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, provider))
+    for (const findingsCap of [0, 1.5, '3']) {
+      await expect(quorum.review({ diff }, { findingsCap: findingsCap as number })).rejects.toThrow('findingsCap: must be a positive integer')
+      expect(issuesOf(() => quorum.estimate({ diff }, { findingsCap: findingsCap as number }))).toEqual(['findingsCap: must be a positive integer'])
+    }
+    expect(complete).not.toHaveBeenCalled()
+  })
+
   it('refuses a review\'s maxReviewTokens or reviewTimeoutMs out of range, and an estimate\'s', async () => {
     const quorum = createQuorum({
       profiles: [securityProfile],
@@ -3585,6 +3596,51 @@ describe('a large change in parts', () => {
     expect(silent.requests).toHaveLength(1)
     expect(hasParts(stating.requests[0])).toBe(false)
     expect(plain(stating.requests[0])).toEqual(plain(silent.requests[0]))
+  })
+
+  describe('with a findingsCap of the review\'s own', () => {
+    const at = (file: string): unknown => ({ ...reported, file, quote: `exec(input) // ${file}` })
+    /** A voter that keeps every finding and records its requests. */
+    const recording = (): Fake => fake('voter', () => vote(true))
+    const ofCap = (finder: Provider, voter: Provider): Quorum => createQuorum({
+      profiles: [securityProfile],
+      maxFindings: 2,
+    }, portsFor(securityProfile, finder, voter))
+    const asked = (request: CompletionRequest): number => Number(/List at most (\d+) findings/.exec(request.system)?.[1])
+
+    it('sends the panel at most the review\'s findingsCap of its research findings, the rest a findings-capped gap', async () => {
+      const finder = partsFinder(500, (request) => {
+        const part = partOf(request)
+        if (part === 1) return findings(at('a.js'), at('b.js'))
+        return part === 2
+          ? findings(at('c.js'), at('d.js'))
+          : findings()
+      })
+      const voter = recording()
+      const result = await ofCap(finder, voter).review({ diff: partsDiff }, { findingsCap: 3 })
+      // Three findings, each voted by the profile's three lenses.
+      expect(voter.requests).toHaveLength(9)
+      expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js', 'b.js', 'c.js'])
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'findings-capped', detail: '2 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: 1 of 4 reported findings were not reviewed (the cap is 3)' },
+      ])
+    })
+
+    it('asks each research request what maxFindings sizes, whatever the review\'s findingsCap, and splits no reply for it', async () => {
+      const finder = partsFinder(500, request => partOf(request) === 1
+        ? findings(at('a.js'), at('b.js'))
+        : findings())
+      const voter = recording()
+      const result = await ofCap(finder, voter).review({ diff: partsDiff }, { findingsCap: 50 })
+      expect(finder.requests.map(partOf)).toEqual([1, 2, 3, 4, 5, 6])
+      expect(finder.requests.map(asked)).toEqual([2, 2, 2, 2, 2, 2])
+      expect(finder.requests.map(pieceOf)).toEqual(Array.from({ length: 6 }).fill(undefined))
+      expect(voter.requests).toHaveLength(6)
+      expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js', 'b.js'])
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out' },
+      ])
+    })
   })
 
   it('researches a larger diff in parts, in order, each naming its part and the change\'s files, and covers every file reviewed', async () => {

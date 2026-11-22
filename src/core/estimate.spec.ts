@@ -531,6 +531,7 @@ describe('estimate', () => {
       worst: 0,
       inFlight: 0,
       maxFindings: 50,
+      findingsCap: 50,
       maxReviewTokens: 2_000_000,
       reviewTimeoutMs: 1_800_000,
       fits: true,
@@ -581,6 +582,60 @@ describe('estimate', () => {
     // The limit is the review's, so the profiles share it.
     expect(inFlight([lone, other], 4)).toBe(200)
     expect(inFlight([lone, other], 100)).toBe(320)
+  })
+
+  it('counts each lens\'s votes at the findingsCap its limits give, in votes, worst and inFlight, and sizes its requests by maxFindings', () => {
+    const finder = windowed(32_768, () => '{"findings":[]}')
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder))
+    const plain = quorum.estimate({ diff: DIFF })
+    const capped = quorum.estimate({ diff: DIFF }, { findingsCap: 60 })
+    const bounds = sum(Object.values(plain.profiles.security.vote))
+
+    expect(plain.findingsCap).toBe(50)
+    expect(capped.findingsCap).toBe(60)
+    expect(capped.maxFindings).toBe(50)
+    expect(plain.profiles.security.votes).toBe(50 * 3)
+    expect(capped.profiles.security.votes).toBe(60 * 3)
+    expect(capped.worst).toBe(plain.worst + (60 - 50) * bounds)
+    // The requests are sized by maxFindings: the parts' reservations, the findings they ask for and the expected spend do not move.
+    expect(capped.profiles.security.parts).toEqual(plain.profiles.security.parts)
+    expect(capped.profiles.security.findings).toBe(plain.profiles.security.findings)
+    expect(capped.expected).toBe(plain.expected)
+    expect(capped.profiles.security.vote).toEqual(plain.profiles.security.vote)
+
+    // With few findings asked, a lens's vote counts up to the cap in what runs at once: one research part of 10, and a vote of 50 counted findingsCap times.
+    const lone: Profile = {
+      id: 'lone',
+      prompts: { research: 'Find bugs.', vote: 'Judge as {{lens.id}}.' },
+      lenses: [
+        { id: 'only', question: 'Is it real?' },
+      ],
+      policy: { high: 'unanimous', medium: 'off', low: 'off' },
+    }
+    const small = createQuorum({
+      profiles: [lone],
+      maxFindings: 1,
+      concurrency: 4,
+    }, {
+      profiles: {
+        lone: {
+          research: silent(() => 10),
+          voters: {
+            only: silent(() => 50),
+          },
+        },
+      },
+    })
+    const input = {
+      diff: addedFile('a.js', 3),
+    }
+    expect(small.estimate(input).inFlight).toBe(10 + 50)
+    expect(small.estimate(input, { findingsCap: 3 }).inFlight).toBe(10 + 3 * 50)
+    expect(small.estimate(input, { findingsCap: 3 }).findingsCap).toBe(3)
+    expect(small.estimate(input).findingsCap).toBe(1)
+    expect(small.estimate(input, { findingsCap: 3 }).profiles.lone.parts).toEqual(small.estimate(input).profiles.lone.parts)
   })
 
   it('counts in flight each provider\'s start of its largest bounds, at most 16 in all, and the adaptations at the ceiling', () => {

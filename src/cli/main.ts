@@ -10,6 +10,7 @@ import { systemClock } from '../core/clock.ts'
 import { ConfigError } from '../core/errors.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS } from '../core/limits.ts'
 import { MAX_TIMEOUT_MS } from '../core/ports.ts'
+import { DEFAULT_MAX_FINDINGS } from '../core/prompts.ts'
 import { VERSION } from '../core/version.ts'
 import { outcome } from '../core/outcome.ts'
 import type { Estimate, Quorum } from '../core/types.ts'
@@ -30,7 +31,7 @@ import { runMcp } from './mcp.ts'
 import { checkOutputs, colorFor, reportPlan, writeOutputs } from './outputs.ts'
 import type { ColorWhen, ReportPlan } from './outputs.ts'
 import { printConfig } from './print-config.ts'
-import { bannerLines, boundWarnings, estimateLines, viewFacts } from './render.ts'
+import { bannerLines, boundWarnings, estimateLines, findingsCapOf, viewFacts } from './render.ts'
 import type { Bounds } from './render.ts'
 import { runReport } from './report.ts'
 import { rerunCouldFill } from './view/summary.ts'
@@ -132,8 +133,9 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  *
  * A path review is a codebase and not a change, so its size is the tree's, and its bounds follow it (see `pathBounds`). After
  * the banner and before any call it prints its estimate on stderr (see `Quorum.estimate`), ending with the review's token cap and
- * deadline: with `maxReviewTokens` unset the cap is the estimate's worst case, never below 2000000, and with `reviewTimeoutMs`
- * unset the deadline is 24 hours, the longest allowed; a set one is kept. A large review, whose expected research spend and calls in flight pass 2000000 under a cap that follows the
+ * deadline and finding cap: with `maxReviewTokens` unset the cap is the estimate's worst case, never below 2000000, with `reviewTimeoutMs`
+ * unset the deadline is 24 hours, the longest allowed, and with `maxFindings` unset the panel reads one finding per research part, at least 50, which the
+ * estimate's votes count; a set one is kept. A large review, whose expected research spend and calls in flight pass 2000000 under a cap that follows the
  * estimate, is warned of, and so is a cap the config sets below what the estimate expects, which the review runs to, the rest a `token-cap`
  * gap, exit 4. A path review is never held for its size, and `--large` warns that it does nothing. A diff, a range and the
  * local changes print no estimate and keep the quorum's bounds, 2000000 tokens and 30 minutes unless the config sets them, since
@@ -411,23 +413,29 @@ export async function runCli(io: CliIO): Promise<number> {
 interface PathBounds {
   /** The estimate made under the bounds, which the view weighs the parts not yet started with. */
   readonly estimate: Estimate
-  /** The cap and the deadline the review is given, in place of the quorum's. */
-  readonly limits: { readonly maxReviewTokens: number, readonly reviewTimeoutMs: number }
+  /** The cap and the deadline the review is given, in place of the quorum's, and its finding cap when the config sets no `maxFindings`. */
+  readonly limits: { readonly maxReviewTokens: number, readonly reviewTimeoutMs: number, readonly findingsCap?: number }
   /** The same, as the view's facts name them, the cap with where it came from. */
-  readonly facts: { readonly cap: { readonly tokens: number, readonly origin: CapOrigin }, readonly deadlineMs: number }
+  readonly facts: { readonly cap: { readonly tokens: number, readonly origin: CapOrigin }, readonly deadlineMs: number, readonly findingsCap: number }
 }
 
 /**
  * Derive a path review's bounds from its estimate and print them on stderr, before any call. A path review is a
  * codebase, so its size is the tree's: the first estimate is made under the quorum's own limits, and the cap is the
- * config's `maxReviewTokens` when it sets one, else that estimate's worst case, never below `DEFAULT_MAX_REVIEW_TOKENS`,
- * and the deadline the config's `reviewTimeoutMs`, else the longest a review may run. The estimate printed is a second
+ * config's `maxReviewTokens` when it sets one, else the worst case of an estimate that counts the panel's votes at the
+ * finding cap, never below `DEFAULT_MAX_REVIEW_TOKENS`, the deadline the config's `reviewTimeoutMs`, else the longest a
+ * review may run, and the finding cap the config's `maxFindings`, else one finding per research part, at least 50 (`findingsCapOf`). The estimate printed is a second
  * one, made under those bounds, with the warnings they call for: a large review, or a cap below what the estimate
  * expects. The review is never held for its size: it runs to its cap or its deadline, and what they stop is a gap.
  * `--large` warns and does nothing.
  */
 function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: string, readonly send: readonly string[] }, config: ResolvedConfig, large: boolean): PathBounds {
-  const { worst } = quorum.estimate(input)
+  const first = quorum.estimate(input)
+  const findingsCap = config.maxFindings ?? findingsCapOf(first)
+  // The first estimate counts the votes at the quorum's own cap: it serves when that is the review's too.
+  const { worst } = findingsCap === first.findingsCap
+    ? first
+    : quorum.estimate(input, { findingsCap })
   const cap = config.maxReviewTokens === undefined
     ? {
         tokens: Math.max(worst, DEFAULT_MAX_REVIEW_TOKENS),
@@ -437,13 +445,24 @@ function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: st
       } as const
     : { tokens: config.maxReviewTokens, origin: 'config' } as const
   const deadlineMs = config.reviewTimeoutMs ?? MAX_TIMEOUT_MS
-  const limits = { maxReviewTokens: cap.tokens, reviewTimeoutMs: deadlineMs }
+  const limits = {
+    maxReviewTokens: cap.tokens,
+    reviewTimeoutMs: deadlineMs,
+    ...config.maxFindings === undefined
+      ? { findingsCap }
+      : {},
+  }
   const estimate = quorum.estimate(input, limits)
   const bounds: Bounds = {
     cap: cap.origin,
     deadline: config.reviewTimeoutMs === undefined
       ? 'longest'
       : 'config',
+    findings: config.maxFindings !== undefined
+      ? 'config'
+      : findingsCap > DEFAULT_MAX_FINDINGS
+        ? 'parts'
+        : 'floor',
   }
   for (const line of estimateLines(estimate, bounds)) view.line('estimate', line)
   for (const line of boundWarnings(estimate, bounds)) view.line('warning', line)
@@ -451,7 +470,7 @@ function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: st
   return {
     estimate,
     limits,
-    facts: { cap, deadlineMs },
+    facts: { cap, deadlineMs, findingsCap },
   }
 }
 
