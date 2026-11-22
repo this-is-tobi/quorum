@@ -332,14 +332,14 @@ export default antfu(
             { regex: '(?:^|/)testing/', message: 'Only spec files import src/testing/.' },
             { regex: '^@modelcontextprotocol/', message: 'Only src/mcp/ imports the MCP SDK.' },
             { regex: '(?:^|/)mcp/', message: 'Only import() loads src/mcp/, so quorum and the library never load the MCP SDK.' },
-            { regex: '^node:https?$', message: 'Only src/testing/server.ts uses node:http.' },
+            { regex: '^(?:node:)?http[s2]?$', message: 'Only src/testing/server.ts uses node:http.' },
           ],
         },
       ],
     },
   },
   {
-    // The fake server of src/testing/server.ts alone uses node:http, which only spec files import.
+    // The fake server of src/testing/server.ts alone uses node:http, and only spec files import it.
     files: ['src/testing/**/*.ts'],
     ignores: ['src/testing/server.ts', 'src/**/*.spec.ts'],
     rules: {
@@ -347,7 +347,8 @@ export default antfu(
         'error',
         {
           patterns: [
-            { regex: '^node:https?$', message: 'Only src/testing/server.ts uses node:http.' },
+            { regex: '^(?:node:)?http[s2]?$', message: 'Only src/testing/server.ts uses node:http.' },
+            { regex: '^\\.{1,2}/server\\.ts$', message: 'Only spec files import src/testing/server.ts.' },
           ],
         },
       ],

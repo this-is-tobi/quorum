@@ -193,6 +193,33 @@ describe('sseItems', () => {
     expect(await collect(sseItems(body, OPTIONS))).toEqual([keepAlive])
   })
 
+  it('reads a body of exactly 16 777 216 bytes', async () => {
+    const { body, cancelled } = chunkedBody(`:${'x'.repeat(1022)}\n`.repeat(16_384), 262_144)
+    expect(await collect(sseItems(body, OPTIONS))).toEqual(Array.from({ length: 16_384 }).fill(keepAlive))
+    expect(cancelled()).toBe(false)
+  })
+
+  it('reads an event of exactly 1000 lines', async () => {
+    const { body } = chunkedBody(`${'x:1\n'.repeat(STREAM_LIMITS.eventLines - 1)}data: 1\n\n`, 4096)
+    expect(await collect(sseItems(body, OPTIONS))).toEqual([
+      event(1),
+    ])
+  })
+
+  it('reads an event whose data lines join to exactly 4 194 304 characters, and refuses one more', async () => {
+    // Each line holds at most the line cap. A data line drops its first space, so the spaces are JSON white space.
+    const lines = (last: number): string => `data:1\n${`data:${' '.repeat(1_048_571)}\n`.repeat(4)}data:${' '.repeat(last)}\n\n`
+    const fits = chunkedBody(lines(19), 262_144)
+    expect(await collect(sseItems(fits.body, OPTIONS))).toEqual([
+      event(1),
+    ])
+
+    const over = chunkedBody(lines(20), 262_144)
+    const error = await failureOf(sseItems(over.body, OPTIONS))
+    expect(error).toMatchObject({ kind: 'invalid-response', message: 'p: the reply stream holds an event over its cap', retryable: false })
+    expect(over.cancelled()).toBe(true)
+  })
+
   it.each<[string, string, number, string]>([
     [
       'a line holds 1 048 577 characters',

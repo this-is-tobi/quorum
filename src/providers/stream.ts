@@ -202,7 +202,10 @@ export async function* sseItems(body: ReadableStream<Uint8Array>, options: ReadO
       : line.slice(colon + 1)
     if (value.startsWith(' ')) value = value.slice(1)
     if (field === 'data') {
-      dataChars += value.length + 1
+      // The data lines are joined by a line feed: one before each line but the first.
+      dataChars += value.length + (data.length > 0
+        ? 1
+        : 0)
       if (dataChars > STREAM_LIMITS.eventChars) throw overCap()
       data.push(value)
     } else if (field === 'event') {
