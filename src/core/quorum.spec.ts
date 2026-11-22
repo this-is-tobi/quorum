@@ -3741,6 +3741,58 @@ describe('a large change in parts', () => {
     expect(clock.pending()).toBe(0)
   })
 
+  describe('with parts of uneven size', () => {
+    /** A file whose one hunk adds a line of `padding` characters and the line its finding quotes: with a partTokens of 1024, each file is a part of its own. */
+    const unevenSection = (file: string, padding: number): string => [
+      `diff --git a/${file} b/${file}`,
+      `--- a/${file}`,
+      `+++ b/${file}`,
+      '@@ -1 +1 @@',
+      '-safe(input)',
+      `+exec(input) // ${file}`,
+      `+${'y'.repeat(padding)}`,
+    ].join('\n')
+    /** The sizes of a.js to d.js: the second and the fourth are the largest and tie, the third is next, the first is the smallest. */
+    const unevenDiff = [
+      unevenSection('a.js', 1800),
+      unevenSection('b.js', 2700),
+      unevenSection('c.js', 2100),
+      unevenSection('d.js', 2700),
+    ].join('\n')
+    const files = ['a.js', 'b.js', 'c.js', 'd.js']
+    const atFile = (request: CompletionRequest): unknown => ({ ...reported, file: files[partOf(request) - 1], quote: `exec(input) // ${files[partOf(request) - 1]}` })
+    const started = (events: readonly QuorumEvent[]): unknown[] => events.filter(event => event.type === 'call:start' && event.role === 'research').map(event => event.type === 'call:start' && event.part?.index)
+
+    it('sends a profile\'s research parts largest first, ties in the plan\'s order, and reads them in the plan\'s order', async () => {
+      const finder = partsFinder(5000, request => findings(atFile(request)))
+      const events: QuorumEvent[] = []
+      const result = await quorumOf(finder, { concurrency: 1, partTokens: 1024 }, securityProfile, events).review({ diff: unevenDiff })
+      expect(started(events)).toEqual([2, 4, 3, 1])
+      expect(finder.requests.map(partOf)).toEqual([2, 4, 3, 1])
+      // The positions are the plan's, and the findings are read in the plan's order, whatever the order they came in.
+      expect(result.kept.map(verdict => verdict.file)).toEqual(files)
+      expect(result.meta.profiles.security.coverage).toEqual(reviewedFiles(files))
+    })
+
+    it('stops the parts not yet taken at a limit, whatever their order', async () => {
+      const finder = partsFinder(5000, () => findings(), {
+        worstCase: () => 1000,
+      })
+      const result = await quorumOf(finder, { concurrency: 1, partTokens: 1024, maxReviewTokens: 2000 }).review({ diff: unevenDiff })
+      // The two largest were sent, the others stopped, and the coverage names the files of the parts that were not taken.
+      expect(finder.requests.map(partOf)).toEqual([2, 4])
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'token-cap', detail: 'the review\'s token cap of 2000 tokens stopped 2 of its 4 research parts' },
+      ])
+      expect(result.meta.profiles.security.coverage).toEqual([
+        { file: 'a.js', status: 'unreviewed', reason: 'token-cap' },
+        { file: 'b.js', status: 'reviewed' },
+        { file: 'c.js', status: 'unreviewed', reason: 'token-cap' },
+        { file: 'd.js', status: 'reviewed' },
+      ])
+    })
+  })
+
   it('records a hunk no part can hold as a too-large gap before any call, and lists its range in the coverage', async () => {
     const z = [
       'diff --git a/z.js b/z.js',
@@ -3788,11 +3840,12 @@ describe('a large change in parts', () => {
     const diffWithBig = `${partsDiff}\n${wideSection('big.js', 69)}`
     expect(tokenBound(wideSection('big.js', 69))).toBe(140)
     const result = await quorumOf(finder).review({ diff: diffWithBig })
-    expect(finder.requests.map(partOf)).toEqual([1, 2, 3, 4, 5, 6, 7])
+    // The hunk of 140 tokens is the largest part, so it is sent first.
+    expect(finder.requests.map(partOf)).toEqual([7, 1, 2, 3, 4, 5, 6])
     for (const request of finder.requests) {
       expect(request.messages[0].content).toMatch(/^<untrusted-parts-[0-9a-f]{8}>\nPart \d of 7 of the change\.\nThe change's files, one per line:\nand 7 more\n<\/untrusted-parts-[0-9a-f]{8}>\n\n<untrusted-diff-/)
     }
-    expect(finder.requests[6].messages[0].content).toContain('y'.repeat(69))
+    expect(finder.requests[0].messages[0].content).toContain('y'.repeat(69))
     expect(result.meta.incomplete).toEqual([])
     expect(result.meta.profiles.security.coverage).toEqual(reviewedFiles([...FILES, 'big.js']))
   })
@@ -4539,8 +4592,9 @@ describe('a large change in parts', () => {
         ...splitVoters(finder),
         events: event => events.push(event),
       }).review({ diff: ownerDiff })
-      expect(finder.requests.map(partOf)).toEqual([1, 2, 2, 2, 3, 4, 5, 6])
-      expect(finder.requests.slice(1, 4).map(pieceOf)).toEqual([
+      // Part 2 holds the largest file, so it is sent first, and its pieces follow it in its own worker.
+      expect(finder.requests.map(partOf)).toEqual([2, 2, 2, 1, 3, 4, 5, 6])
+      expect(finder.requests.slice(0, 3).map(pieceOf)).toEqual([
         undefined,
         [1, 2],
         [2, 2],
