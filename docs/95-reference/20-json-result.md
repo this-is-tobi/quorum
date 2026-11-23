@@ -24,7 +24,7 @@ Each list keeps the order in which the finder listed its findings, the first pro
 | `profile` | string | The id of the profile that found it |
 | `file` | string | The diff's own path for the cited file. For a diff without per-file headers, the finder's name for it, cleaned and capped at 260 characters |
 | `line` | number | The cited line of the new file, inside a hunk of the diff |
-| `category` | string | The finder's category, cleaned and capped at 80 characters; the security profile asks for a CWE |
+| `category` | string | The finder's category, cleaned and capped at 80 characters; the security profile asks for a CWE. A finding whose category is absent, `null` or blank once cleaned reads `uncategorized`, and its `id` and `fingerprint` are taken of that word |
 | `summary` | string | The finder's claim, cleaned and capped at 500 characters |
 | `evidence` | string | The diff's lines around `line`, up to two on each side within its hunk, each with its `+`, `-` or space marker, read from the diff by the harness and capped at 2,000 characters |
 | `evidenceRow` | number | The index, from 0, of the row of `evidence` that shows `line`: a reader marks it and numbers the rows around it, a `+` or space row counting a new-file line and a `-` row none. The key is absent when no row shows the line, as for a hunk that only deletes lines, or when the evidence's cap of 2,000 characters cut that row |

@@ -18,7 +18,7 @@ import type { Profile } from '../core/types.ts'
 export const securityProfile: Profile = Object.freeze({
   id: 'security',
   prompts: Object.freeze({
-    research: 'Review this diff for security vulnerabilities. For each candidate, give the file and the new-file line number (for removed code, the nearest line that survives), copy the offending code (the sink) verbatim from the diff, without the leading +/- marker, into `quote`, name a category/CWE, and summarize why it looks wrong in `summary`.',
+    research: 'Review this diff for security vulnerabilities. A finding\'s quote is the offending code (the sink), and its category is its CWE id, such as CWE-89.',
     vote: [
       'One vote in a {{panel.size}}-voter panel - you do not see the other votes. Refutation angle: {{lens.id}}.',
       '{{lens.question}}',

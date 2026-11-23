@@ -11,7 +11,7 @@ import { outcome } from './outcome.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts, ReplyStore, StoredCall } from './ports.ts'
 import { researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum, createQuorumWith } from './quorum.ts'
-import { FINGERPRINT_PATTERN } from './stages/research.ts'
+import { findingId, FINGERPRINT_PATTERN } from './stages/research.ts'
 import { requestTokens, tokenBound } from './tokens.ts'
 import type { Finding, IncompleteEntry, LeftOutFile, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, ReviewSource, Usage, VoteFailure } from './types.ts'
 
@@ -618,6 +618,27 @@ describe('review', () => {
         detail: expect.stringMatching(/^findings\[2\]: /),
       },
     ])
+  })
+
+  it('reviews a finding of a profile of its own that gives no category, as uncategorized, with its id and its claim', async () => {
+    const naming: Profile = {
+      id: 'naming',
+      prompts: { research: 'Review this diff for names that mislead.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
+      lenses: [
+        { id: 'clarity', question: 'Does the name mislead?' },
+      ],
+      policy: { high: 'unanimous', medium: 'off', low: 'off' },
+    }
+    const { category: _, ...withoutCategory } = reported
+    complete.mockResolvedValueOnce(findings(withoutCategory)).mockResolvedValue(vote(true))
+    const result = await run(naming).review({ diff })
+    expect(result.kept).toHaveLength(1)
+    expect(result.kept[0].category).toBe('uncategorized')
+    expect(result.kept[0].id).toBe(findingId('naming', 'a.js', 1, 'uncategorized'))
+    const votes = complete.mock.calls.map(([request]) => request).filter(isVote)
+    expect(votes).toHaveLength(1)
+    expect(votes[0].messages[0].content).toContain('Finding: a.js:1 [uncategorized]')
+    expect(result.meta.incomplete.map(entry => entry.reason)).not.toContain('finding-unreadable')
   })
 
   it('drops a finding that cites code outside the diff, and says so', async () => {
@@ -7407,8 +7428,8 @@ describe('room accounting', () => {
     expect(error.issues).toHaveLength(1)
     const [issue] = error.issues
     expect(issue.path).toBe('profiles.security')
-    // A reply budget of 6000 and the fixed text leave 8192 - 1618 - 512 - 6000 tokens.
-    expect(issue.message).toBe('the research request on local leaves 62 tokens for the diff, less than the 1024 a hunk may need: contextTokens 8192 counts 1618 for the instructions, guidelines and rules, 512 for the chat template and 6000 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window')
+    // A reply budget of 6000 and the fixed text leave 8192 - 1791 - 512 - 6000 tokens, which is below zero.
+    expect(issue.message).toBe('the research request on local leaves -111 tokens for the diff, less than the 1024 a hunk may need: contextTokens 8192 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 6000 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window')
     const [room, window, fixed, template, reply] = figures(issue.message)
     expect(room + fixed + template + reply).toBe(window)
     expect(error.message).not.toContain('http')
@@ -7467,7 +7488,7 @@ describe('room accounting', () => {
       window: 32_768,
       replyTokens: 8192,
       findings: 15,
-      rooms: { one: 22_446, part: 22_134 },
+      rooms: { one: 22_273, part: 21_961 },
     })
   })
 })

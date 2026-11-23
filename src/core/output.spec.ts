@@ -329,6 +329,44 @@ describe('parseResearchReply', () => {
     ])
   })
 
+  it.each([
+    [
+      'absent',
+      (({ category: _, ...rest }) => rest)(finding),
+    ],
+    [
+      'null',
+      { ...finding, category: null },
+    ],
+  ])('reads a finding whose category is %s as one with an empty category', (_name, item) => {
+    const { findings, invalid } = parseResearchReply(JSON.stringify({
+      findings: [item],
+    }))
+    expect(findings).toEqual([
+      { ...finding, category: '' },
+    ])
+    expect(findings[0].category).toBe('')
+    expect(invalid).toEqual([])
+  })
+
+  it('leaves a finding unreadable whose category is a number, or whose file, line, quote or summary is missing', () => {
+    const without = (key: keyof typeof finding): object => Object.fromEntries(Object.entries(finding).filter(([name]) => name !== key))
+    for (const item of [
+      { ...finding, category: 89 },
+      without('file'),
+      without('line'),
+      without('quote'),
+      without('summary'),
+    ]) {
+      const { findings, invalid } = parseResearchReply(JSON.stringify({
+        findings: [item],
+      }))
+      expect(findings).toEqual([])
+      expect(invalid).toHaveLength(1)
+      expect(invalid[0]).toMatch(/^findings\[0\]: /)
+    }
+  })
+
   it('rejects a line below 1 and an empty file', () => {
     const { findings, invalid } = parseResearchReply(JSON.stringify({
       findings: [

@@ -173,10 +173,10 @@ describe('profileBudgets', () => {
   it('states the rooms of a one-request research, a part and a vote, and the worst part with how many the cap holds', () => {
     const run = realRun(guarded('local', 8192), guarded('local', 8192))
     const budgets = profileBudgets(run, target => target.window, { ...settings, maxReviewTokens: 100_000 })
-    // The figures computed from the real prompts at a window of 8192: 4014 tokens of diff for one request, 3702 for a part with three digits of position, and for each vote of the longest finding what its lens's text leaves of 8192 less 2048 for the reply and 512 for the template.
-    expect(budgets.research.rooms).toEqual({ one: 4014, part: 3702 })
+    // The figures computed from the real prompts at a window of 8192: 3841 tokens of diff for one request, 3529 for a part with three digits of position, and for each vote of the longest finding what its lens's text leaves of 8192 less 2048 for the reply and 512 for the template.
+    expect(budgets.research.rooms).toEqual({ one: 3841, part: 3529 })
     expect(Object.values(budgets.lenses).map(lens => lens.room)).toEqual([1610, 1658, 1662])
-    // A part holding the 3702 tokens the room leaves reserves the whole window, and the cap of 100000 holds 12 of them.
+    // A part holding the 3529 tokens the room leaves reserves the whole window, and the cap of 100000 holds 12 of them.
     expect(budgets.research.worstPart).toEqual({ tokens: 8192, holds: 12 })
     // A provider that states no room has none of it.
     const plain = profileBudgets(realRun(provider('plain', { window: 8192 }), provider('plain', { window: 8192 })), target => target.window, settings)
@@ -195,8 +195,8 @@ describe('profileBudgets', () => {
     const [issue, ...rest] = roomIssues('security', budgets, run, settings.maxFindings)
     expect(rest).toEqual([])
     expect(issue.path).toBe('profiles.security')
-    // 8192 less 1618 for the text, 4096 for the template and 2048 for the reply leaves 430.
-    expect(issue.message).toBe('the research request on cli leaves 430 tokens for the diff, less than the 1024 a hunk may need: contextTokens 8192 counts 1618 for the instructions, guidelines and rules, 4096 for the chat template and 2048 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window')
+    // 8192 less 1791 for the text, 4096 for the template and 2048 for the reply leaves 257.
+    expect(issue.message).toBe('the research request on cli leaves 257 tokens for the diff, less than the 1024 a hunk may need: contextTokens 8192 counts 1791 for the instructions, guidelines and rules, 4096 for the chat template and 2048 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window')
     // The same window with the usual 512 leaves room.
     const usual = realRun(guarded('local', 8192), guarded('local', 200_000))
     expect(roomIssues('security', profileBudgets(usual, target => target.window, settings), usual, settings.maxFindings)).toEqual([])

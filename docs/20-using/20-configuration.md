@@ -228,17 +228,17 @@ One token per byte is the price of a bound that holds for every tokenizer checke
 
 | `contextTokens` | The largest diff, in bytes | Before this release |
 | --- | --- | --- |
-| `8192` | 4,014 | refused |
-| `16384` | 10,158 | refused |
-| `32768` | 22,446 | 14,759 |
-| `65536` | 47,022 | 47,527 |
-| `131072` | 107,918 | 113,063 |
-| `200000` | 176,846 | 181,991 |
-| `1000000` | 976,846 | 981,991 |
+| `8192` | 3,841 | refused |
+| `16384` | 9,985 | refused |
+| `32768` | 22,273 | 14,759 |
+| `65536` | 46,849 | 47,527 |
+| `131072` | 107,745 | 113,063 |
+| `200000` | 176,673 | 181,991 |
+| `1000000` | 976,673 | 981,991 |
 
 A larger diff is reviewed in parts of at most that size, or of `partTokens` when it is smaller. A part's own request holds the parts block too, so a part takes a few hundred bytes less than the figure says.
 
-Each row is `contextTokens` less 1,618 for the instructions, the fences, the reply schema and the line that asks for at most 50 findings, less 512 tokens for the chat template, less the research reply's budget, which a row's window gives as [Reply budgets](#reply-budgets) says: 21,024 from 131072 tokens up, 16,384 at 65536, 8,192 at 32768, 4,096 at 16384 and 2,048 at 8192. A `maxTokens` replaces that budget, so `maxTokens: 4096` at 32768 tokens adds 4,096 bytes to the row, and the guidelines of a profile take room of their own. A vote request carries the diff section of the cited file (the whole diff when the file has no section of its own), up to five lines of evidence and the claim, and reserves a vote's own, smaller budget, and when that section does not fit the voter's window, the hunks nearest the cited line: [Research in parts](#research-in-parts). A panel on a smaller model refuses sooner.
+Each row is `contextTokens` less 1,791 for the instructions, the fences, the reply schema, the line that asks for at most 50 findings and the paragraph that names the fields of a finding, less 512 tokens for the chat template, less the research reply's budget, which a row's window gives as [Reply budgets](#reply-budgets) says: 21,024 from 131072 tokens up, 16,384 at 65536, 8,192 at 32768, 4,096 at 16384 and 2,048 at 8192. A `maxTokens` replaces that budget, so `maxTokens: 4096` at 32768 tokens adds 4,096 bytes to the row, and the guidelines of a profile take room of their own. A vote request carries the diff section of the cited file (the whole diff when the file has no section of its own), up to five lines of evidence and the claim, and reserves a vote's own, smaller budget, and when that section does not fit the voter's window, the hunks nearest the cited line: [Research in parts](#research-in-parts). A panel on a smaller model refuses sooner.
 
 ## Reply budgets
 
@@ -294,14 +294,14 @@ A research request is split into parts first, so its profile records a `request-
 
 ## Room accounting
 
-The window holds three things besides the diff: the request's fixed text (the instructions, the fences, the reply schema, the line that asks for at most `N` findings and the guidelines), the chat template, and the reply's budget ([Reply budgets](#reply-budgets)). What is left is the room for the diff. A profile that leaves a provider less than 1,024 tokens of it, the least a hunk may need, would run every request into a `request-too-large` gap, so quorum refuses it when it is created, before any call, with exit `2`: [Exit codes](./10-cli.md#exit-codes).
+The window holds three things besides the diff: the request's fixed text (the instructions, the fences, the reply schema, the line that asks for at most `N` findings, the paragraph that names the fields of a finding and the guidelines), the chat template, and the reply's budget ([Reply budgets](#reply-budgets)). What is left is the room for the diff. A profile that leaves a provider less than 1,024 tokens of it, the least a hunk may need, would run every request into a `request-too-large` gap, so quorum refuses it when it is created, before any call, with exit `2`: [Exit codes](./10-cli.md#exit-codes).
 
 Two requests are read, each over an empty diff, and each asks its provider's own `room`:
 
 - **The research request** of the one-request research, with `N` at `maxFindings`, the widest its line can be. Its message names the profile and the provider's id, then the figures, which add up to the window:
 
   ```text
-  profiles.security: the research request on local leaves -630 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1618 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window
+  profiles.security: the research request on local leaves -803 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window
   ```
 
 - **The vote request for the longest finding**, the one the [estimate](../95-reference/30-library-api.md#estimate) bounds a vote by, whose fixed text is the instructions of one lens, the guidelines and a finding at its caps. Its message reads `the vote request on <provider> for the longest finding leaves <room> tokens for the diff, less than the 1024 a hunk may need: contextTokens <window> counts <fixed> for the instructions, guidelines and finding, <template> for the chat template and <reply> for the reply: shorten the guidelines, lower maxTokens, or state a larger window`. Each lens whose voter is refused is a line.
@@ -324,10 +324,10 @@ budgets:
       findings: 50
       findingsWithoutThinking: 50
       rooms:
-        one: 107918
-        part: 107606
+        one: 107745
+        part: 107433
       worstPart:
-        tokens: 56234
+        tokens: 56407
         holds: 35
     lenses:
       reachability:
@@ -563,7 +563,7 @@ Quorum requires Claude Code 2.1.311 or newer. Before a provider's first request 
 
 `contextTokens` is what the model gives you, stated as for any provider: [The context size](#the-context-size). On Anthropic's API, `sonnet`, `opus` and `haiku` resolve to models with a 1M window, so `1000000`. On Bedrock and Vertex, `sonnet` and `haiku` resolve to the 4.5 models, whose window is `200000`. A 4.6 model has the 1M window only with the `[1m]` suffix, as in `opus[1m]`, and `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` in the environment holds the 1M models to 200K. When in doubt, state the smaller number.
 
-The guard keeps 4096 tokens for what Claude Code adds around the messages, and the request's reply budget ([Reply budgets](#reply-budgets)), so the window must be more than 4096 when `maxTokens` is unset, and more than 4096 and `maxTokens` together when it is set. The diff a research request of the `security` profile leaves room for is `contextTokens` less 1,618 bytes of instructions, fences, reply schema and findings line, less 4096 and the reply's budget. [The size of a Claude Code request](./30-providers.md#the-size-of-a-claude-code-request) has the rule.
+The guard keeps 4096 tokens for what Claude Code adds around the messages, and the request's reply budget ([Reply budgets](#reply-budgets)), so the window must be more than 4096 when `maxTokens` is unset, and more than 4096 and `maxTokens` together when it is set. The diff a research request of the `security` profile leaves room for is `contextTokens` less 1,791 bytes of instructions, fences, reply schema, findings line and the paragraph that names the fields of a finding, less 4096 and the reply's budget. [The size of a Claude Code request](./30-providers.md#the-size-of-a-claude-code-request) has the rule.
 
 ### The auth modes
 
@@ -675,7 +675,7 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `QUORUM_STRICT: must be true or false` | The variable is neither `true` nor `false`, written exactly: `1`, `yes` and `True` are refused, never read as a switch. The message never repeats the value |
 | `providers.local.contextTokens: must be more than 512, the tokens kept for the chat template` | A window that leaves no room even for the chat template, with `maxTokens` unset: raise the window. Set by a variable, the issue names the variable instead |
 | `providers.local.contextTokens: must be more than 1000, the 488 tokens of the reply budget and 512 for the chat template` | A window that leaves no room for a request beside the `maxTokens` set: lower `maxTokens`, or raise the window |
-| `profiles.security: the research request on local leaves -630 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1618 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window` | A profile whose research request, with an empty diff, leaves its provider less than 1024 tokens for the diff. It is refused before any diff is read, and before a source error: [Room accounting](#room-accounting) |
+| `profiles.security: the research request on local leaves -803 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window` | A profile whose research request, with an empty diff, leaves its provider less than 1024 tokens for the diff. It is refused before any diff is read, and before a source error: [Room accounting](#room-accounting) |
 | `profiles.security: the vote request on small for the longest finding leaves 188 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 800 for the instructions, guidelines and finding, 512 for the chat template and 500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window` | The same for a voter, the vote of the longest finding, one line for each lens refused: [Room accounting](#room-accounting) |
 | `--state: is a symbolic link`, `is not a directory`, `is owned by another user`, `can be written by its group or by others: chmod 700 it`, `lies inside a git work tree, which a change could write to: name a directory outside every repository`, `holds files but no quorum-state.json, so it is not a state directory quorum made: name an empty or new directory`, `holds a quorum-state.json quorum did not write`, or `cannot be created` or `cannot be read` with an error code | A state directory the store refuses, before any call. None names the path: [Saved state](#saved-state). A `--state` that is empty, given twice or given with `--print-config`, and a `--no-state` given with `--state` or `--print-config`, are usage errors, listed on [the CLI page](./10-cli.md#the-invocation). The default directory's refusals are the same words after `warning: the default state directory`, and skip it instead of failing the review |
 | `QUORUM_VOTER_MODEL: must be set when the voter variables name another endpoint than the research provider's` | A panel on another origin, a preset or a protocol, without a model of its own |

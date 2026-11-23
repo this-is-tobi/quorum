@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { profileIssues } from '../core/profile.ts'
+import { FINDING_FIELDS } from '../core/prompts.ts'
 import { securityProfile } from './security.ts'
 
 describe('securityProfile', () => {
@@ -10,7 +11,7 @@ describe('securityProfile', () => {
 
   it('keeps the wording, lenses and policy of the review it replaces', () => {
     expect(securityProfile.prompts).toEqual({
-      research: 'Review this diff for security vulnerabilities. For each candidate, give the file and the new-file line number (for removed code, the nearest line that survives), copy the offending code (the sink) verbatim from the diff, without the leading +/- marker, into `quote`, name a category/CWE, and summarize why it looks wrong in `summary`.',
+      research: 'Review this diff for security vulnerabilities. A finding\'s quote is the offending code (the sink), and its category is its CWE id, such as CWE-89.',
       vote: [
         'One vote in a {{panel.size}}-voter panel - you do not see the other votes. Refutation angle: {{lens.id}}.',
         '{{lens.question}}',
@@ -39,8 +40,12 @@ describe('securityProfile', () => {
     expect(Object.isFrozen(securityProfile.policy)).toBe(true)
   })
 
-  it('asks for the quote copied verbatim from the diff, without the diff markers', () => {
-    expect(securityProfile.prompts.research).toMatch(/verbatim from the diff[^.]*without the[^.]*markers?/)
+  it('says what its quote and its category hold, and leaves the fields to quorum\'s request', () => {
+    expect(securityProfile.prompts.research).toMatch(/the sink/)
+    expect(securityProfile.prompts.research).toMatch(/CWE-89/)
+    expect(securityProfile.prompts.research).not.toContain('`summary`')
+    expect(securityProfile.prompts.research).not.toContain('verbatim')
+    expect(FINDING_FIELDS).toMatch(/verbatim without the leading \+, - or space/)
   })
 
   it('is a valid profile', () => {

@@ -10,6 +10,8 @@ export type VerifiedFinding = Omit<Finding, 'id' | 'fingerprint' | 'profile'>
 export const MAX_SUMMARY = 500
 /** The most characters of a finding's category, which the finder writes, as the harness caps it. */
 export const MAX_CATEGORY = 80
+/** What a finding whose category is empty once cleaned is named: the finder gave none, and the panel judges it all the same. */
+export const UNCATEGORIZED = 'uncategorized'
 const MAX_FILE = 260
 /** The file name echoed in an `invalid` reason only has to identify the finding, so it is shorter than a stored one. */
 const MAX_REPORTED_FILE = 80
@@ -56,7 +58,7 @@ export function verifyFindings(details: readonly FindingDetails[], sections: Rea
     findings.push({
       file,
       line: detail.line,
-      category: plainText(detail.category, MAX_CATEGORY),
+      category: plainText(detail.category, MAX_CATEGORY) || UNCATEGORIZED,
       summary: plainText(detail.summary, MAX_SUMMARY),
       evidence,
       ...(evidenceRow === undefined

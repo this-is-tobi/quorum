@@ -105,6 +105,18 @@ export function findingsLine(findings: number): string {
 }
 
 /**
+ * The five fields of a finding, which code owns and which follow `findingsLine` in every research request: the
+ * reply format names them as keys, and this says what each holds, so a profile's instructions need not and say only
+ * what to look for, what its quote holds and what its category means. The quote is copied from the diff without
+ * the marker a diff row starts with, and the file and the line are read against the diff itself.
+ */
+export const FINDING_FIELDS
+  = 'Every finding has all five fields: `file`, its path as the diff names it; `line`, its line in the new file '
+    + '(for removed code, the nearest line that survives); `quote`, the code that shows it, copied verbatim without '
+    + 'the leading +, - or space; `category`, its kind, as the instructions above define it; and `summary`, why it is '
+    + 'a finding, in a sentence or two.'
+
+/**
  * Research call: instructions in the system message, the fenced diff as the user message. The
  * profile's guidelines, when they hold text, follow as one more fenced block: reference text the
  * caller loaded, treated as data like the diff and never part of the system message. The system
@@ -118,14 +130,15 @@ export function findingsLine(findings: number): string {
  * diff and is described as one part of it. Without `part`, the request is the whole change's.
  *
  * The system message asks for at most `ask.findings` findings (`DEFAULT_MAX_FINDINGS` when unset), the most
- * serious first, right after the instructions (`findingsLine`), and the request carries `ask.replyTokens` as
- * its reply budget when one is given.
+ * serious first, right after the instructions (`findingsLine`), then the five fields of a finding
+ * (`FINDING_FIELDS`), and the request carries `ask.replyTokens` as its reply budget when one is given.
  */
 export function researchRequest(instructions: string, diff: string, guidelines?: string, part?: PartOf, ask: Ask = {}): CompletionRequest {
   return buildRequest(
     instructions,
     [
       findingsLine(ask.findings ?? DEFAULT_MAX_FINDINGS),
+      FINDING_FIELDS,
     ],
     part === undefined
       ? [
