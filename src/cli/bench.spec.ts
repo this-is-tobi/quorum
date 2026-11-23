@@ -283,9 +283,9 @@ describe('quorum bench', () => {
     expect(stdout).toContain('| 2 | 3 of 3 | 0.0% [0.0%, 65.8%] over 2 cases | 0.0% [0.0%, 65.8%] over 2 cases | 0.00 / 0.00 | 0 | n/a |')
     expect(JSON.parse(readFileSync(join(out(), 'report.json'), 'utf8')).configurations).toHaveLength(2)
     expect(stderr.split('\n').filter(line => line.startsWith('['))).toHaveLength(6)
-    expect(stderr).toMatch(/^\[1\/6\] trial 1, case exec, configuration 1: caught by a kept finding; 1 kept, 0 discarded, 0 unreviewed, 0 gaps; \d+\.\d s$/m)
-    expect(stderr).toMatch(/^\[2\/6\] trial 1, case exec, configuration 2: missed; 0 kept, 0 discarded, 0 unreviewed, 0 gaps; \d+\.\d s$/m)
-    expect(stderr).toMatch(/^\[5\/6\] trial 1, case docs, configuration 1: control; 0 kept, 0 discarded, 0 unreviewed, 0 gaps; \d+\.\d s$/m)
+    expect(stderr).toMatch(/^\[1\/6\] trial 1, case exec, configuration 1 \(a\.yaml\): caught by a kept finding; 1 kept, 0 discarded, 0 unreviewed, 0 gaps; (?:\d+\.\ds|\d+s|\d+m\d\ds)$/m)
+    expect(stderr).toMatch(/^\[2\/6\] trial 1, case exec, configuration 2 \(b\.yaml\): missed; 0 kept, 0 discarded, 0 unreviewed, 0 gaps; (?:\d+\.\ds|\d+s|\d+m\d\ds)$/m)
+    expect(stderr).toMatch(/^\[5\/6\] trial 1, case docs, configuration 1 \(a\.yaml\): control; 0 kept, 0 discarded, 0 unreviewed, 0 gaps; (?:\d+\.\ds|\d+s|\d+m\d\ds)$/m)
   })
 
   it('runs an attack suite: its kinds in the plan, a forced keep scored against its twin, and the attack section', async () => {
@@ -557,7 +557,7 @@ describe('quorum bench', () => {
     })
     expect(failed.code).toBe(4)
     expect(lines()).toHaveLength(3)
-    expect(failed.stderr).toMatch(/^\[2\/6\] trial 1, case exec, configuration 2: failed: local: its one call failed \(http 500\): lower concurrency or wait/m)
+    expect(failed.stderr).toMatch(/^\[2\/6\] trial 1, case exec, configuration 2 \(b\.yaml\): failed: local: its one call failed \(http 500\): lower concurrency or wait/m)
     expect(failed.stdout).toBe(readFileSync(join(out(), 'report.md'), 'utf8'))
     const next = await bench(TWO)
     expect(next.code).toBe(0)
@@ -585,7 +585,7 @@ describe('quorum bench', () => {
     })
     expect(first.code).toBe(0)
     expect(lines()).toHaveLength(6)
-    expect(first.stderr).toMatch(/^\[1\/6\] trial 1, case exec, configuration 1: missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps; \d+\.\d s$/m)
+    expect(first.stderr).toMatch(/^\[1\/6\] trial 1, case exec, configuration 1 \(a\.yaml\): missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps; (?:\d+\.\ds|\d+s|\d+m\d\ds)$/m)
     expect(first.stderr).not.toContain('answer in JSON')
     expect(first.stdout).toContain(' | 0.00 / 0.00 | 3 | ')
     expect((await bench([...TWO, '--retry-incomplete', '--dry-run'])).stdout).toContain('Reviews: 6 planned, 6 recorded, 3 to run (3 of them again), at most 1 at a time\n')
@@ -627,10 +627,10 @@ describe('quorum bench', () => {
     })
     expect(await runCli(run.io)).toBe(0)
     const progress = run.stderr().split('\n').filter(line => line.startsWith('['))
-    expect(progress.map(line => line.replace(/; \d+\.\d s$/, ''))).toEqual([
-      '[1/3] trial 1, case exec, configuration 1: missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps',
-      '[2/3] trial 1, case sql, configuration 1: missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps',
-      '[3/3] trial 1, case docs, configuration 1: control; 0 kept, 0 discarded, 0 unreviewed, 1 gaps',
+    expect(progress.map(line => line.replace(/; (?:\d+\.\ds|\d+s|\d+m\d\ds)$/, ''))).toEqual([
+      '[1/3] trial 1, case exec, configuration 1 (a.yaml): missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps',
+      '[2/3] trial 1, case sql, configuration 1 (a.yaml): missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps',
+      '[3/3] trial 1, case docs, configuration 1 (a.yaml): control; 0 kept, 0 discarded, 0 unreviewed, 1 gaps',
     ])
     expect(run.stderr()).not.toContain('will not help')
     expect(readFileSync(join(out(), 'results.jsonl'), 'utf8')).not.toContain('will not help')
@@ -706,7 +706,7 @@ describe('quorum bench', () => {
       env: {},
     })
     expect(await runCli(run.io)).toBe(0)
-    expect(run.stderr()).toMatch(/^\[4\/4\] trial 1, case exec-comment, configuration 1: missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps; \d+\.\d s$/m)
+    expect(run.stderr()).toMatch(/^\[4\/4\] trial 1, case exec-comment, configuration 1 \(a\.yaml\): missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps; (?:\d+\.\ds|\d+s|\d+m\d\ds)$/m)
     const attack = lines().map(line => JSON.parse(line)).find(({ case: id }) => id === 'exec-comment')
     expect(attack).toMatchObject({
       case: 'exec-comment',
@@ -840,7 +840,51 @@ describe('quorum bench, its choices and its run directory', () => {
       env: { QUORUM_VOTER_MODLE: 'v' },
     })
     expect(code).toBe(0)
-    expect(stderr).toBe('warning: configuration 1: QUORUM_VOTER_MODLE is not a variable quorum reads\nwarning: configuration 2: QUORUM_VOTER_MODLE is not a variable quorum reads\n')
+    expect(stderr).toBe('warning: configuration 1 (a.yaml): QUORUM_VOTER_MODLE is not a variable quorum reads\nwarning: configuration 2 (b.yaml): QUORUM_VOTER_MODLE is not a variable quorum reads\n')
+  })
+
+  it('names each configuration by its file\'s base name in its progress lines and warnings, and the default one by its number alone', async () => {
+    mkdirSync(join(root, 'cfg'))
+    writeFileSync(join(root, 'cfg', 'one.yaml'), config('m1'))
+    writeFileSync(join(root, `two${RLO}.yaml`), config('m2'))
+    const named = [
+      'bench',
+      '-c',
+      'cfg/one.yaml',
+      '-c',
+      `two${RLO}.yaml`,
+      'demo',
+    ]
+    const typo = { QUORUM_VOTER_MODLE: 'v' }
+    const progress = (stderr: string): string[] => stderr.split('\n').filter(line => line.startsWith('[')).map(line => line.replace(/: .*$/, ''))
+
+    const warned = await bench([...named, '--dry-run'], { env: typo })
+    expect(warned.stderr).toBe('warning: configuration 1 (one.yaml): QUORUM_VOTER_MODLE is not a variable quorum reads\nwarning: configuration 2 (two<U+202E>.yaml): QUORUM_VOTER_MODLE is not a variable quorum reads\n')
+    const ran = await bench(named)
+    expect(progress(ran.stderr)).toEqual([
+      '[1/6] trial 1, case exec, configuration 1 (one.yaml)',
+      '[2/6] trial 1, case exec, configuration 2 (two<U+202E>.yaml)',
+      '[3/6] trial 1, case sql, configuration 1 (one.yaml)',
+      '[4/6] trial 1, case sql, configuration 2 (two<U+202E>.yaml)',
+      '[5/6] trial 1, case docs, configuration 1 (one.yaml)',
+      '[6/6] trial 1, case docs, configuration 2 (two<U+202E>.yaml)',
+    ])
+    expect(ran.stderr).not.toContain(RLO)
+
+    const env = { QUORUM_RESEARCH_MODEL: 'm1', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' }
+    rmSync(out(), { recursive: true, force: true })
+    const usual = await bench(['bench', 'demo', '--dry-run'], {
+      env: {
+        ...env,
+        ...typo,
+      },
+    })
+    expect(usual.stderr).toBe('warning: configuration 1: QUORUM_VOTER_MODLE is not a variable quorum reads\n')
+    expect(progress((await bench(['bench', 'demo'], { env })).stderr)).toEqual([
+      '[1/3] trial 1, case exec, configuration 1',
+      '[2/3] trial 1, case sql, configuration 1',
+      '[3/3] trial 1, case docs, configuration 1',
+    ])
   })
 
   it('refuses a configuration that cannot be built, after the warnings of the environment, before any call and any file', async () => {
@@ -1062,7 +1106,7 @@ describe('quorum bench, what it writes and how it ends', () => {
       },
     })
     expect(code).toBe(130)
-    expect(stderr).toMatch(/^\[1\/6\] trial 1, case exec, configuration 1: failed: /m)
+    expect(stderr).toMatch(/^\[1\/6\] trial 1, case exec, configuration 1 \(a\.yaml\): failed: /m)
     expect(stderr.endsWith('interrupted\n')).toBe(true)
   })
 

@@ -471,6 +471,9 @@ function comparisonText(comparison: Comparison): string {
     : 'unresolved'}`
 }
 
+/** What follows the comparison lines when none resolved: that no difference is told from chance, and what would let a line resolve (`ALPHA` is 0.05, so six cases that differ one way are the least). */
+const NONE_RESOLVED = 'No comparison resolved, so no difference above is told from chance: a sign test needs at least 6 cases that differ, all one way, so more cases give it more to count, and more trials steady each case\'s score.'
+
 function configurationText(summary: ConfigurationSummary, several: boolean): string {
   const name = summary.path ?? '(default configuration)'
   return `${summary.index}. ${name}${several && summary.index === 1
@@ -633,7 +636,7 @@ function rescoredLines({ scoringHash, firstScoringHash }: Report): string[] {
     : [`Re-scored: the run began under the scoring hash ${firstScoringHash}; its reviews, of the same patches, are scored here under the scoring hash above.`, '']
 }
 
-/** The report as Markdown: its counts and the two hashes it was scored under, the re-score line when the run was re-scored, the configurations and their table, the comparison lines when there are two or more configurations, the attack section when the selection holds an attack case, and the lenses' error correlation. Every line is inert. */
+/** The report as Markdown: its counts and the two hashes it was scored under, the re-score line when the run was re-scored, the configurations and their table, the comparison lines when there are two or more configurations, followed by one sentence when none resolved, the attack section when the selection holds an attack case, and the lenses' error correlation. Every line is inert. */
 export function reportMarkdown(report: Report): string {
   const several = report.configurations.length > 1
   const trials = report.trials === 1
@@ -666,6 +669,9 @@ export function reportMarkdown(report: Report): string {
       '',
       ...report.comparisons.map(comparisonText),
       '',
+      ...report.comparisons.some(({ resolved }) => resolved)
+        ? []
+        : [NONE_RESOLVED, ''],
     )
   }
   if (report.attacks !== null) lines.push(...attackLines(report.attacks))

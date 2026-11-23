@@ -83,21 +83,24 @@ Run directory: quorum-bench/bugs
 Dry run: no review was run, and nothing was written.
 ```
 
-On a run directory that holds records, `recorded` counts the reviews already there and `to run` those left, with `(<n> of them again)` for the recorded ones `--retry-incomplete` runs again. Each profile of a configuration names the provider that researches and the one that votes, by model and origin, as the banner of a review does ([stdout and stderr](./10-cli.md#stdout-and-stderr)). A configuration's own warnings print before the plan, one line each, as `warning: configuration <i>: <text>`. A line `Scoring:` follows when `suite.yaml` is not the one the run began with, so its recorded reviews are scored again: [Re-scoring](#re-scoring).
+On a run directory that holds records, `recorded` counts the reviews already there and `to run` those left, with `(<n> of them again)` for the recorded ones `--retry-incomplete` runs again. Each profile of a configuration names the provider that researches and the one that votes, by model and origin, as the banner of a review does ([stdout and stderr](./10-cli.md#stdout-and-stderr)). A configuration's own warnings print before the plan, one line each, as `warning: configuration <i> (<base name>): <text>`, which names the configuration as [the progress lines](#progress-and-the-report) do. A line `Scoring:` follows when `suite.yaml` is not the one the run began with, so its recorded reviews are scored again: [Re-scoring](#re-scoring).
 
 ### Progress and the report
 
 A run prints one line on stderr for each review that finishes, counted against the reviews it has to run:
 
 ```text
-[1/240] trial 1, case code-graph-rag-ghsa-vvr2-h2jp-838m, configuration 1: caught by a kept finding; 2 kept, 4 discarded, 0 unreviewed, 0 gaps; 96.0 s
-[2/240] trial 1, case code-graph-rag-ghsa-vvr2-h2jp-838m, configuration 2: caught by a proposed finding only; 0 kept, 3 discarded, 0 unreviewed, 0 gaps; 58.7 s
-[3/240] trial 1, case mistune-ghsa-h7ww-273w-6cm8, configuration 1: missed; 1 kept, 2 discarded, 0 unreviewed, 0 gaps; 41.2 s
-[4/240] trial 1, case mistune-ghsa-h7ww-273w-6cm8, configuration 2: missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps; 12.8 s
-[5/240] trial 1, case banks-ghsa-64vx-6h2c-rjh7, configuration 1: failed: local: request to http://localhost:11434 failed (ECONNREFUSED)
+[1/240] trial 1, case code-graph-rag-ghsa-vvr2-h2jp-838m, configuration 1 (qwen.yaml): caught by a kept finding; 2 kept, 4 discarded, 0 unreviewed, 0 gaps; 1m36s
+[2/240] trial 1, case code-graph-rag-ghsa-vvr2-h2jp-838m, configuration 2 (gpt-oss.yaml): caught by a proposed finding only; 0 kept, 3 discarded, 0 unreviewed, 0 gaps; 59s
+[3/240] trial 1, case mistune-ghsa-h7ww-273w-6cm8, configuration 1 (qwen.yaml): missed; 1 kept, 2 discarded, 0 unreviewed, 0 gaps; 41s
+[4/240] trial 1, case mistune-ghsa-h7ww-273w-6cm8, configuration 2 (gpt-oss.yaml): missed; 0 kept, 0 discarded, 0 unreviewed, 1 gaps; 13s
+[5/240] trial 1, case banks-ghsa-64vx-6h2c-rjh7, configuration 1 (qwen.yaml): failed: local: request to http://localhost:11434 failed (ECONNREFUSED)
 ```
 
 The numbers are an example. The lines follow the plan's order, which is by trial, then case, then configuration, and with `--jobs` above 1 they come in the order the reviews end.
+
+- **A configuration** is named by its number and the base name of its `--config` file, never the directories of its path: `configuration 2 (gpt-oss.yaml)`. Two paths can share a base name, so the number stays. The usual resolution, which has no file, is `configuration 1` alone.
+- **A review's time** is written as every line writes a duration: `<x.x>s` under ten seconds, `<n>s` under a minute, then minutes and seconds, as `4m05s`, and hours past an hour. The report's table keeps seconds, so that a column compares.
 
 - **A review that was recorded** says what it found of its case: `control` for a control, else `caught by a kept finding`, `caught by a proposed finding only` or `missed`, then its counts of kept, discarded and unreviewed findings, its gaps (`meta.incomplete`) and its time.
 - **A review that failed** is one whose provider was down: no research call of its profiles answered, and a provider was found down, or each of its calls failed for a reason of its own (an HTTP, network, timeout or process failure, or a reply the server shaped wrong). Its line ends with the error as the review command prints it for the same failure: [When the research call fails](./10-cli.md#when-the-research-call-fails). A review whose record would be over 16 MiB fails too. A failed review is not recorded, the other reviews run, and the next run on the same directory runs it again.
@@ -378,7 +381,7 @@ Each configuration is a row, numbered as in the list above it, which names it by
 | Unmatched kept per case, bug / control | The mean number of kept findings that catch no location, over the bug cases and over the controls |
 | Incomplete | The reviews with a gap or an unreviewed finding, in any profile: a profile whose research reply could not be used, was refused or was cut off, and a patch too large for a model's context, are among them |
 | Tokens per review | The median, and the total, of input plus output tokens, over the reviews that reported usage; `n/a` when none did. A call that failed adds the tokens its reply reported, as a reply cut off at its token limit or refused does; one that failed with no reply read, a network error or a status outside 2xx, adds none, so a configuration whose calls fail that way more often looks cheaper here |
-| Latency | A review's time, the waits between a call's attempts included, at the 50th and 95th percentile, by nearest rank |
+| Latency | A review's time in seconds, the waits between a call's attempts included, at the 50th and 95th percentile, by nearest rank |
 | Cost | The total in US dollars, only when every call of every counted review reported a cost; otherwise `n/a`. A provider that reports none, a local model for one, leaves it `n/a` |
 
 **Which reviews count.** A review counts when it is recorded for one of the selected cases and a trial from 1 to `--trials`. A case scores the share of its counted trials with the outcome, so a case with fewer counted trials, after an interrupt or a failure, scores the share of those, and a case with none counted is left out of the rates.
@@ -398,6 +401,8 @@ The interval after a recall is a 95% Wilson interval over the cases. In plain wo
 Each configuration after the reference gets five lines, one per measure: kept recall, proposed recall, unmatched kept findings per control, incomplete reviews, and tokens per review. A line pairs the cases both configurations scored, and gives the mean difference, the cases where the configuration is better, worse and tied, and the p of an exact sign test over the cases that differ. Ties are left out. Lower is better for the last three, and a line is resolved when p is below 0.05.
 
 **Each line is its own test**, so with several configurations and five measures some lines resolve by chance: with nothing behind them, up to one line in twenty does. Read a resolved line as a lead, and read the whole report before a conclusion. Few cases may differ: with fewer than six of them, no line can resolve, and six resolve only when all six differ the same way, on a suite of any size.
+
+When no line resolved, one sentence follows the lines and says so: `No comparison resolved, so no difference above is told from chance: a sign test needs at least 6 cases that differ, all one way, so more cases give it more to count, and more trials steady each case's score.` More cases give a test more to count, and more trials steady each case's score without adding a case. The report above has no such sentence, since one of its lines resolved, and a run of one configuration has none either. It is Markdown only: `report.json` holds the lines' numbers and no sentence.
 
 A configuration with no case scored by both reads `no case scored by both`, and a run of one configuration has no comparison section.
 

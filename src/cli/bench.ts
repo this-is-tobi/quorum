@@ -4,7 +4,7 @@
  * caught. It ties the bench modules to the CLI: the flags, the plan, the progress lines and the exit codes.
  */
 
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { flaggedCases } from '../bench/attacks.ts'
 import { fingerprint, newSalt } from '../bench/fingerprint.ts'
 import { MAX_CONFIGURATIONS, reviewKey, RUN_FORMAT } from '../bench/records.ts'
@@ -26,6 +26,7 @@ import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { inertLine } from '../core/sanitize.ts'
 import { VERSION } from '../core/version.ts'
+import { durationText } from '../report/lines.ts'
 import { errorLines, errorMessage, parseFlags } from './io.ts'
 import type { CliIO } from './io.ts'
 import { profileProviders } from './render.ts'
@@ -170,6 +171,17 @@ function nameOf({ path }: RunConfiguration): string {
   return path ?? DEFAULT_CONFIGURATION
 }
 
+/**
+ * How a progress line and a warning name the configuration at `index`: its number, then the base name of
+ * its file in parentheses, so a reader of four configurations knows which is which. The number stays since
+ * two paths can share a base name, and the usual resolution, which has no file, is named by its number alone.
+ */
+function configurationLabel(index: number, path: string | undefined): string {
+  return path === undefined
+    ? `configuration ${index + 1}`
+    : `configuration ${index + 1} (${basename(path)})`
+}
+
 /** The cases of `suite` the flags select, in the suite's order; every `--case` must be one of its cases. */
 function selectCases(suite: Suite, ids: readonly string[]): readonly SuiteCase[] {
   const unknown = ids.filter(id => !suite.cases.some(suiteCase => suiteCase.id === id))
@@ -232,11 +244,10 @@ function verdictOf(suiteCase: SuiteCase, score: ReviewScore): string {
     : 'missed'
 }
 
-/** The progress line of a review that was recorded, after `[<n>/<total>] trial <t>, case <id>, configuration <i>: `. */
+/** The progress line of a review that was recorded, after `[<n>/<total>] trial <t>, case <id>, <configuration label>: `; its latency is written as a person reads a duration. */
 function recordedText(record: ReviewRecord, suiteCase: SuiteCase, score: ReviewScore): string {
-  const latency = `${(record.latencyMs / 1000).toFixed(1)} s`
   const { kept, discarded, unreviewed, meta } = record.result
-  return `${verdictOf(suiteCase, score)}; ${kept.length} kept, ${discarded.length} discarded, ${unreviewed.length} unreviewed, ${meta.incomplete.length} gaps; ${latency}`
+  return `${verdictOf(suiteCase, score)}; ${kept.length} kept, ${discarded.length} discarded, ${unreviewed.length} unreviewed, ${meta.incomplete.length} gaps; ${durationText(record.latencyMs)}`
 }
 
 /** The plan a run prints before its first call; `rescored` adds the line that says its recorded reviews are scored again. */
@@ -444,7 +455,7 @@ async function execute(io: CliIO, { checked, scores, records, toRun, jobs, maxRu
         const text = event.type === 'recorded'
           ? recordedText(event.record, suiteCase, keepScore(scores, event.record, suiteCase, checked))
           : `failed: ${errorMessage(event.error)}`
-        writeLines(io.stderr, [`[${finished}/${toRun.length}] trial ${trial}, case ${caseId}, configuration ${configuration + 1}: ${text}`])
+        writeLines(io.stderr, [`[${finished}/${toRun.length}] trial ${trial}, case ${caseId}, ${configurationLabel(configuration, loaded[configuration].path)}: ${text}`])
       },
     })
   } catch (error) {
@@ -492,7 +503,7 @@ async function bench(io: CliIO, options: BenchOptions): Promise<number> {
         return recorded === undefined || (options.retryIncomplete && recorded.incomplete)
       })
 
-  writeLines(io.stderr, loaded.flatMap(({ warnings }, index) => warnings.map(warning => `warning: configuration ${index + 1}: ${warning}`)))
+  writeLines(io.stderr, loaded.flatMap(({ path, warnings }, index) => warnings.map(warning => `warning: ${configurationLabel(index, path)}: ${warning}`)))
   writeLines(options.dryRun ? io.stdout : io.stderr, planLines({
     suite,
     selected,
