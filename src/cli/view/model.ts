@@ -147,6 +147,8 @@ export interface ViewState {
   /** The calls sent once more after a bad reply, each once: among the `retried`. */
   readonly again: { readonly research: number, readonly votes: number }
   readonly recovered: { readonly parts: number, readonly pieces: number }
+  /** The votes that failed, each counted as a reject: every `vote` event whose `keep` is `null`. */
+  readonly failedVotes: number
   /** The providers whose cut on the way was learned, which changes the fix of their replies cut off: shorter replies, not a larger limit. */
   readonly cutSeen: ReadonlySet<string>
   /** The research providers of the profiles that have a `reply-cut-off` gap. */
@@ -197,6 +199,7 @@ export function startState(facts: ViewFacts): ViewState {
     retried: { research: 0, votes: 0 },
     again: { research: 0, votes: 0 },
     recovered: { parts: 0, pieces: 0 },
+    failedVotes: 0,
     cutSeen: new Set(),
     cutOffBy: new Set(),
     lensProviders: new Set(),
@@ -729,7 +732,12 @@ export function fold(state: ViewState, event: QuorumEvent, now: number): ViewSta
       }
     }
     case 'vote':
-      return withProfile(state, event.profile, profile => ({ ...profile, cast: profile.cast + 1 }))
+      return withProfile({
+        ...state,
+        failedVotes: state.failedVotes + (event.keep === null
+          ? 1
+          : 0),
+      }, event.profile, profile => ({ ...profile, cast: profile.cast + 1 }))
     case 'verdict':
       return event.status === 'kept'
         ? withProfile(state, event.profile, profile => ({ ...profile, kept: profile.kept + 1 }))

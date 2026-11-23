@@ -22,6 +22,7 @@
  */
 
 import { z } from 'zod'
+import { NO_ANSWERS } from './errors.ts'
 import { SKIP_RULES, sourceIssues } from './inputs.ts'
 import { FAIL_ON_LEVELS, PROFILE_ID_PATTERN } from './profile.ts'
 import { SECRET_RULES } from './secrets.ts'
@@ -58,6 +59,7 @@ const voteFailure = z.strictObject({
     'unknown',
   ]),
   status: z.int().min(100).max(599).optional(),
+  noAnswer: z.enum(NO_ANSWERS).optional(),
 })
 const lensVote = z.strictObject({
   angle: z.string(),

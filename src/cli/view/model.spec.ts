@@ -232,6 +232,38 @@ describe('fold', () => {
     expect(startState(DEFAULT_FACTS).again).toEqual({ research: 0, votes: 0 })
   })
 
+  it('counts the failed votes', () => {
+    const vote = (lens: string, keep: boolean | null): [number, QuorumEvent] => [
+      1000,
+      {
+        type: 'vote',
+        profile: 'security',
+        findingId: 'abc',
+        lens,
+        keep,
+        ...keep === null
+          ? {
+              error: 'x',
+              failure: { kind: 'timeout' as const },
+            }
+          : {},
+      },
+    ]
+    expect(startState(DEFAULT_FACTS).failedVotes).toBe(0)
+    const state = folded([
+      0,
+      started(['security']),
+    ], vote('impact', true), vote('reachability', null), vote('defenses', false))
+    expect(state.failedVotes).toBe(1)
+    // The count comes from the vote events, not from the calls: these votes made none.
+    expect(state.made.votes).toBe(0)
+    expect(state.profiles.get('security')).toMatchObject({ cast: 3 })
+    expect(folded([
+      0,
+      started(['security']),
+    ], vote('impact', null), vote('reachability', null)).failedVotes).toBe(2)
+  })
+
   it('records the research part\'s provider with each answered part\'s sample', () => {
     const state = replay(twoProfiles())
     expect(state.sample.parts.length).toBeGreaterThan(0)

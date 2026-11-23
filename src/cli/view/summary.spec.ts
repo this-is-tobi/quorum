@@ -337,6 +337,67 @@ describe('summaryLines', () => {
     })).toBe('calls: 131 research (3 retried, 1 of them after a bad reply, 1 recovered into 2 pieces), 342 vote(s) (1 retried)')
   })
 
+  it('counts the failed votes in the calls line, after the retried and those after a bad reply', () => {
+    const state = {
+      ...replay(longReview()),
+      made: { research: 131, votes: 342 },
+      retried: { research: 3, votes: 1 },
+      again: { research: 2, votes: 1 },
+      recovered: { parts: 0, pieces: 0 },
+      failedVotes: 2,
+    }
+    const calls = (of: ViewState): string | undefined => lines(of).find(line => line.startsWith('calls:'))
+    expect(calls(state)).toBe('calls: 131 research (3 retried, 2 of them after a bad reply), 342 vote(s) (1 retried, 1 of them after a bad reply, 2 failed)')
+    expect(calls({
+      ...state,
+      again: { research: 2, votes: 0 },
+    })).toBe('calls: 131 research (3 retried, 2 of them after a bad reply), 342 vote(s) (1 retried, 2 failed)')
+    expect(calls({
+      ...state,
+      retried: { research: 3, votes: 0 },
+      again: { research: 2, votes: 0 },
+    })).toBe('calls: 131 research (3 retried, 2 of them after a bad reply), 342 vote(s) (2 failed)')
+    expect(calls({
+      ...state,
+      failedVotes: 1,
+    })).toBe('calls: 131 research (3 retried, 2 of them after a bad reply), 342 vote(s) (1 retried, 1 of them after a bad reply, 1 failed)')
+    expect(calls({
+      ...state,
+      failedVotes: 0,
+    })).toBe('calls: 131 research (3 retried, 2 of them after a bad reply), 342 vote(s) (1 retried, 1 of them after a bad reply)')
+    expect(calls({
+      ...state,
+      retried: { research: 3, votes: 0 },
+      failedVotes: 0,
+    })).toBe('calls: 131 research (3 retried, 2 of them after a bad reply), 342 vote(s)')
+  })
+
+  it('counts the failed votes in the calls line when no vote call was made, and writes no votes clause when none failed either', () => {
+    const state = {
+      ...replay(longReview()),
+      made: { research: 131, votes: 0 },
+      retried: { research: 3, votes: 0 },
+      again: { research: 2, votes: 0 },
+      recovered: { parts: 0, pieces: 0 },
+      failedVotes: 3,
+    }
+    const calls = (of: ViewState): string | undefined => lines(of).find(line => line.startsWith('calls:'))
+    expect(calls(state)).toBe('calls: 131 research (3 retried, 2 of them after a bad reply), 0 vote(s) (3 failed)')
+    expect(calls({
+      ...state,
+      failedVotes: 0,
+    })).toBe('calls: 131 research (3 retried, 2 of them after a bad reply)')
+    expect(calls({
+      ...state,
+      made: { research: 0, votes: 0 },
+    })).toBe('calls: 0 vote(s) (3 failed)')
+    expect(calls({
+      ...state,
+      made: { research: 0, votes: 0 },
+      failedVotes: 0,
+    })).toBeUndefined()
+  })
+
   it('names each provider\'s longest first token and silence', () => {
     const answered = (call: number, provider: string, firstTokenMs: number, longestSilenceMs: number, role: 'research' | 'vote' = 'research'): QuorumEvent => ({
       type: 'call',

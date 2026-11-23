@@ -1874,6 +1874,23 @@ describe('a failed vote\'s failure', () => {
     expect(voteEvents.at(-1)?.failure).toStrictEqual(failure)
   })
 
+  it('records what a cut-off or empty vote lacked in its failure', async () => {
+    const lacking = (kind: 'truncated' | 'no-answer', noAnswer: 'thinking' | 'empty'): ProviderError => new ProviderError({
+      providerId: 'fake',
+      kind,
+      noAnswer,
+      message: 'x',
+    })
+    const cut = await reviewWith(() => Promise.reject(lacking('truncated', 'thinking')))
+    expect(cut.result.kept[0].votes[2].failure).toStrictEqual({ kind: 'truncated', noAnswer: 'thinking' })
+    expect(cut.events.filter(event => event.type === 'vote').at(-1)?.failure).toStrictEqual({ kind: 'truncated', noAnswer: 'thinking' })
+    const empty = await reviewWith(() => Promise.reject(lacking('no-answer', 'empty')))
+    expect(empty.result.kept[0].votes[2].failure).toStrictEqual({ kind: 'no-answer', noAnswer: 'empty' })
+    // A pair no adapter raises, or a value that is none of the four, is not recorded: the failure keeps its kind alone.
+    const forged = await reviewWith(() => Promise.reject(Object.assign(lacking('truncated', 'thinking'), { noAnswer: 'a model said so' })))
+    expect(forged.result.kept[0].votes[2].failure).toStrictEqual({ kind: 'truncated' })
+  })
+
   it('records a vote whose reply could not be read as unusable-reply, and a cast vote with a null failure', async () => {
     const { result, events } = await reviewWith(async () => 'not json')
     const votes = result.kept[0].votes
@@ -7812,7 +7829,7 @@ describe('a path that cuts calls on the way', () => {
     expect(ofType(events, 'adapted').map(event => event.adaptation.setting)).toEqual(['thinking'])
     // Each vote was cut at `low` too, and is a reject: a failed vote of kind truncated, which no flag lifts, and never a provider found down. A vote cut on the way is not sent once more: the same request would be cut again after as long.
     const [verdict] = result.unreviewed
-    expect(verdict.votes.map(lensVote => lensVote.failure)).toEqual(Array.from({ length: 3 }).fill({ kind: 'truncated' }))
+    expect(verdict.votes.map(lensVote => lensVote.failure)).toEqual(Array.from({ length: 3 }).fill({ kind: 'truncated', noAnswer: 'thinking' }))
     expect(ofType(events, 'provider-down')).toEqual([])
     expect(requests.filter(request => request.thinking === 'low')).toHaveLength(3)
     expect(new Set(requests.map(request => request.replyTokens))).toEqual(new Set([9216]))

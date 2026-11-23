@@ -9,7 +9,7 @@ import type { CompletionRequest } from '../ports.ts'
 import { voteRequest } from '../prompts.ts'
 import { tokenBound } from '../tokens.ts'
 import type { Confidence, Finding, IncompleteEntry, LensVote, Verdict, VerdictStatus, Vote, VoteFailure } from '../types.ts'
-import { isTooLarge, providerFailure, refusalMessage } from '../facts.ts'
+import { isTooLarge, lackOf, providerFailure, refusalMessage } from '../facts.ts'
 import { callProvider, roomOf } from './context.ts'
 import type { LensRun, ProfileRun, RunContext } from './context.ts'
 
@@ -242,12 +242,14 @@ function nearestContext(run: ProfileRun, finding: Finding, lens: LensRun, sectio
     : nearestHunks(section.text, hunksOf(sections, section.path, section.text), finding.line, partialRoom)
 }
 
-/** What a call that failed says of itself as a vote's failure: the limit that stopped it, `provider-down` for a vote its provider's being down kept from being sent, else its `kind` and `status` as `providerFailure` reads them, never its `exhausted`, else `unknown`. */
+/** What a call that failed says of itself as a vote's failure: the limit that stopped it, `provider-down` for a vote its provider's being down kept from being sent, else its `kind` and `status` as `providerFailure` reads them, never its `exhausted`, and a `truncated` or `no-answer` failure's `noAnswer` as `lackOf` reads it, else `unknown`. */
 function voteFailureOf(error: unknown): VoteFailure {
   if (isLimit(error)) return { kind: error.limit }
   if (error instanceof ProviderDownError) return { kind: 'provider-down' }
   const failure = providerFailure(error)
   if (failure === undefined) return { kind: 'unknown' }
+  const lack = lackOf(error)
+  if (lack !== undefined) return { kind: lack.kind, noAnswer: lack.noAnswer }
   // The result schema's vote failure is strict: a used-up quota is the provider-down event's fact, not the vote's.
   return failure.status === undefined
     ? { kind: failure.kind }

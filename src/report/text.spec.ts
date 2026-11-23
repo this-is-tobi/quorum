@@ -70,7 +70,7 @@ const MAIN = [
   '         -   return crypto.randomBytes(32).toString(\'hex\')',
   '   >  20 +   return Math.random().toString(36).slice(2)',
   '      21   }',
-  '  kept by 1 of 3 lenses, 1 vote failed',
+  '  kept by 1 of 3 lenses, 1 vote failed: a network error',
   '',
   'security (fail-on high): 1 kept, 1 unreviewed, 1 discarded',
   '  1 of 3 files reviewed, 1 in part, 1 not',

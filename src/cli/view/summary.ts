@@ -202,8 +202,8 @@ function retriedWords(retried: number, again: number): string {
 }
 
 function callsLine(state: ViewState, lanes: QuorumMeta['concurrency']): string | undefined {
-  const { made, retried, again, recovered } = state
-  if (made.research + made.votes === 0) return undefined
+  const { made, retried, again, recovered, failedVotes } = state
+  if (made.research + made.votes + failedVotes === 0) return undefined
   const parts: string[] = []
   if (made.research > 0) {
     const notes = [
@@ -220,10 +220,21 @@ function callsLine(state: ViewState, lanes: QuorumMeta['concurrency']): string |
       ? ''
       : ` (${notes.join(', ')})`}`)
   }
-  if (made.votes > 0) {
-    parts.push(`${made.votes} vote(s)${retried.votes > 0
-      ? ` (${retriedWords(retried.votes, again.votes)})`
-      : ''}`)
+  // A vote no call was made for, one a limit or a provider found down kept from being sent, still failed.
+  if (made.votes > 0 || failedVotes > 0) {
+    const notes = [
+      ...retried.votes > 0
+        ? [
+            retriedWords(retried.votes, again.votes),
+          ]
+        : [],
+      ...failedVotes > 0
+        ? [`${failedVotes} failed`]
+        : [],
+    ]
+    parts.push(`${made.votes} vote(s)${notes.length === 0
+      ? ''
+      : ` (${notes.join(', ')})`}`)
   }
   return `calls: ${[
     parts.join(', '),

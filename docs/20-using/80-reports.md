@@ -41,7 +41,7 @@ A format marked public only renders the public view of whatever it is given, a f
         43   return rows
   ```
 
-- **UNREVIEWED** security · `src/session.js` line 20 · `CWE-338` · kept by 1 of 3 lenses, 1 vote failed
+- **UNREVIEWED** security · `src/session.js` line 20 · `CWE-338` · kept by 1 of 3 lenses, 1 vote failed: a network error
 
   `Session tokens come from Math.random, which is not a cryptographic generator.`
 
@@ -71,7 +71,7 @@ quorum 0.6.0 · range `1f3a9c2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`...`7b2e4d0aaaaa
 - **The first line** is the marker, `<!-- quorum:summary:v1 -->`, the only raw HTML the summary holds. It names the summary and its version, so a program can find its own comment. It proves nothing without its author: anyone can write the marker, so check who wrote the comment too.
 - **The verdict** says what the exit code says, in the words of the last line of the text report: `exit 1, findings`, `exit 4, incomplete`, `exit 130, interrupted` or `exit 0, pass`. An interrupted review says `the review was stopped before its end; what it read is above`: its gaps are `interrupted`, which no flag lifts.
 - **The table** has a row for each profile: the level it fails at (`none` for an advisory profile), how many findings it kept and left unreviewed, how many the panel discarded (counted, never listed), how many findings it dropped for citing code outside the diff, and how much of the diff it reviewed.
-- **The findings** are the kept and the unreviewed ones, each with its level, its profile, its file and line, its category, how its lenses voted, its claim and its evidence, numbered as the text report numbers it: the cited row is marked `>`. A finding that fails its profile comes first, then the high ones, the medium, the unreviewed and the low, each group by file and then by line, so the budget drops the least important last.
+- **The findings** are the kept and the unreviewed ones, each with its level, its profile, its file and line, its category, how its lenses voted and, for a failed vote, what it failed with ([How a failed vote reads](#how-a-failed-vote-reads)), its claim and its evidence, numbered as the text report numbers it: the cited row is marked `>`. A finding that fails its profile comes first, then the high ones, the medium, the unreviewed and the low, each group by file and then by line, so the budget drops the least important last.
 - **The gaps** are one line for each profile and reason, in fixed words that say nothing of the diff, with a count in parentheses when a profile records a reason more than once.
 - **The files left out** and **the flags** list the first 20 each, then how many more. A file with no name, the part of a diff that no header names, is `(no path)`. A held file's line carries its reason and its rule: `(secret: name)`.
 - **The trailer** is the version and what was reviewed: a range's two commits, the commit a local or staged review sits on, the commit of a path review, or `diff`.
@@ -81,6 +81,24 @@ A section with nothing to list is left out, so the review of a blank diff is a h
 ### Why every text is in a code span
 
 A claim, a category, a file name, a row of code and a flag's detail are text that a model or the diff wrote, and an attacker can influence it. Written bare, a name or a claim could mention a person, link an issue or a commit, load an image, become an emoji or math, or hold HTML. A code span is the one Markdown construct that stops all of that at once, and a backslash does not stop a mention, so the summary puts each such text in a span, whose fence quorum computes to be longer than any run of backticks inside, and the evidence in a fenced block that no row can close. No such text is in a table cell, since a `|` splits a cell even inside a span. Every line passes `inertLine`, so a log that echoes the summary starts no workflow command. The rule, and what the summary never writes, are in [Markdown](../30-security/30-output-handling.md#markdown).
+
+### How a failed vote reads
+
+A finding's votes read `kept by <k> of <n> lenses`, then, when a vote failed, `, <f> vote failed: <why>` or `, <f> votes failed: <why>`. `<why>` holds what each failed vote failed with, in words quorum writes from the vote's `failure` alone and never a word a server or a model wrote, each distinct word once, in the order of the lenses: `kept by 0 of 3 lenses, 3 votes failed: a timeout, only reasoning`. A failed vote counts as a reject. The text report, the summary, a line comment of the payload and the message of a SARIF result write the same words, and so does the public view's, which keeps a vote's `failure`. Every profile's lenses read the same.
+
+| A vote failed with | It reads |
+| --- | --- |
+| `http` | `an http 503 error`, or `an http error` when its `status` is none |
+| `network`, `process`, `timeout`, `aborted` | `a network error`, `a process error`, `a timeout`, `aborted` |
+| `refusal`, `invalid-response`, `unsupported`, `too-large` | `a refusal by the model`, `an invalid response`, `unsupported by its provider`, `too large for its model` |
+| `truncated` | `cut off while reasoning` when its `noAnswer` is `thinking`, `cut off at the server's window` for `window`, else `cut off`: the words are true of a reply cut at its limit and of one cut on the way at a learned length |
+| `no-answer` | `only reasoning` when its `noAnswer` is `thinking`, `an empty reply` for `empty`, else `no answer` |
+| `token-cap`, `review-deadline`, `interrupted` | `stopped by the token cap`, `stopped by the deadline`, `stopped by the interrupt` |
+| `provider-down` | `its provider down` |
+| `unusable-reply` | `an unreadable reply` |
+| `unknown`, or a vote that records no failure | `an unknown error` |
+
+The JSON result holds the facts, `kind`, `status` and `noAnswer`: [A vote](../95-reference/20-json-result.md#a-vote).
 
 ### The size
 
@@ -105,7 +123,7 @@ quorum --range "$BASE...$HEAD" -f markdown >> "$GITHUB_STEP_SUMMARY"
 
 ## The payload
 
-`-f payload` writes the document that `quorum-action` posts as it is: one versioned JSON object that holds the commit the review is about (`head`), what it concluded (`conclusion`: `pass`, `findings`, `incomplete` or `interrupted`, the exit code's meaning), the summary above, and a line comment for each kept or unreviewed finding that sits on a file of the diff, with the count of the findings no line can hold (`unplaced`). Each comment's body starts with a marker that holds the finding's fingerprint, then the level, the profile, the category, how the lenses voted and the claim, the category and the claim in code spans. The JSON is written by `inertJson`, so every text in it is inert and the Action composes none of its own. It is the public view whatever `--view` says.
+`-f payload` writes the document that `quorum-action` posts as it is: one versioned JSON object that holds the commit the review is about (`head`), what it concluded (`conclusion`: `pass`, `findings`, `incomplete` or `interrupted`, the exit code's meaning), the summary above, and a line comment for each kept or unreviewed finding that sits on a file of the diff, with the count of the findings no line can hold (`unplaced`). Each comment's body starts with a marker that holds the finding's fingerprint, then the level, the profile, the category, how the lenses voted (with the words of its failed votes, [How a failed vote reads](#how-a-failed-vote-reads)) and the claim, the category and the claim in code spans. The JSON is written by `inertJson`, so every text in it is inert and the Action composes none of its own. It is the public view whatever `--view` says.
 
 ```bash
 quorum --range "$BASE...$HEAD" -f brief --output payload="$RUNNER_TEMP/payload.json"
@@ -118,7 +136,7 @@ Every field, the body and what the Action owns: [The Action's payload](../95-ref
 `-f sarif` writes SARIF 2.1.0, the format GitHub's code scanning reads, as one run of the public view:
 
 - **The tool** is `quorum`, with its version, and a rule for each profile, `quorum/<profile>`, whose texts quorum's code writes and whose help says what each level means for that profile's `failOn`.
-- **A result** for each kept or unreviewed finding that sits on a file of the diff, at its path, its line and the columns of its cited row. Its message is the level, how the lenses voted, the category and the claim, so a reviewer sees what the summary says. Its `quorumFingerprint/v1` is the finding's fingerprint. A kept finding also gets its confidence as `precision`. A finding that names no file of the diff, as a review of a diff with no per-file headers has, or a path that is not a clean relative path (it starts with `/`, or has an empty, `.` or `..` segment), has no place for a result and is counted in a notification.
+- **A result** for each kept or unreviewed finding that sits on a file of the diff, at its path, its line and the columns of its cited row. Its message is the level, how the lenses voted (with the words of its failed votes, [How a failed vote reads](#how-a-failed-vote-reads)), the category and the claim, so a reviewer sees what the summary says, as `UNREVIEWED, kept by 1 of 3 lenses, 1 vote failed: a network error. CWE-338: <claim>`, or `HIGH, kept by 3 of 3 lenses. CWE-89: <claim>`: the votes end with a full stop, so a failure's words are never read as the category's. Its `quorumFingerprint/v1` is the finding's fingerprint. A kept finding also gets its confidence as `precision`. A finding that names no file of the diff, as a review of a diff with no per-file headers has, or a path that is not a clean relative path (it starts with `/`, or has an empty, `.` or `..` segment), has no place for a result and is counted in a notification.
 - **The run's commit**, when the source has one: a range's head, a local or staged review's head, or a path review's commit.
 
 ```bash

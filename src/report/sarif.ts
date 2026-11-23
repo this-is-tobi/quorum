@@ -156,7 +156,7 @@ function resultOf(view: PublicView, ruleIds: readonly string[], verdict: PublicV
     ruleId: `quorum/${verdict.profile}`,
     ruleIndex: ruleIds.indexOf(verdict.profile),
     level: levelOf(view, verdict),
-    message: { text: `${levelWord(verdict)}, ${votesWords(verdict)}: ${inertPlain(`${verdict.category}: ${verdict.summary}`)}` },
+    message: { text: `${levelWord(verdict)}, ${votesWords(verdict)}. ${inertPlain(`${verdict.category}: ${verdict.summary}`)}` },
     locations: [location],
     partialFingerprints: { [FINGERPRINT_KEY]: verdict.fingerprint },
     ...isKept(verdict)

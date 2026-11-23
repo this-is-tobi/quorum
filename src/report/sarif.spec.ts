@@ -136,7 +136,7 @@ const MAIN = {
           ruleId: 'quorum/security',
           ruleIndex: 0,
           level: 'error',
-          message: { text: 'HIGH, kept by 3 of 3 lenses: CWE-89: SQL built from the request\'s id parameter reaches db.query' },
+          message: { text: 'HIGH, kept by 3 of 3 lenses. CWE-89: SQL built from the request\'s id parameter reaches db.query' },
           locations: [
             {
               physicalLocation: {
@@ -157,7 +157,7 @@ const MAIN = {
           ruleId: 'quorum/security',
           ruleIndex: 0,
           level: 'warning',
-          message: { text: 'UNREVIEWED, kept by 1 of 3 lenses, 1 vote failed: CWE-338: Session tokens come from Math.random, which is not a cryptographic generator.' },
+          message: { text: 'UNREVIEWED, kept by 1 of 3 lenses, 1 vote failed: a network error. CWE-338: Session tokens come from Math.random, which is not a cryptographic generator.' },
           locations: [
             {
               physicalLocation: {
@@ -521,7 +521,7 @@ describe('sarif', () => {
     const [{ message }] = runOf(reviewOf([
       { ...SQL, category: 'CWE-1', summary: '@octocat #12 https://e.example' },
     ])).results
-    expect(message.text).toBe('HIGH, kept by 3 of 3 lenses: CWE-1: <U+0040>octocat <U+0023>12 https<U+003A>//e.example')
+    expect(message.text).toBe('HIGH, kept by 3 of 3 lenses. CWE-1: <U+0040>octocat <U+0023>12 https<U+003A>//e.example')
     expect(message.text.endsWith('<U+0040>octocat <U+0023>12 https<U+003A>//e.example')).toBe(true)
     expect(render(reviewOf([SQL]))).not.toContain('"markdown"')
   })

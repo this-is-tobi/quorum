@@ -469,6 +469,29 @@ describe('the schemas of a result', () => {
     expect(publicViewSchema.parse(view)).toEqual(view)
   })
 
+  it('reads a vote failure\'s noAnswer, and refuses one outside the four', () => {
+    const lacking = (shape: 'full' | 'public', noAnswer: unknown): Forged => {
+      const value: Forged = saved(shape === 'full'
+        ? reportResult()
+        : publicView(reportResult()))
+      value.unreviewed[0].votes[1].failure = { kind: 'truncated', noAnswer }
+      return value
+    }
+    for (const shape of ['full', 'public'] as const) {
+      const schema = shape === 'full'
+        ? resultSchema
+        : publicViewSchema
+      for (const read of ['reply', 'thinking', 'window', 'empty']) expect(schema.parse(lacking(shape, read))).toEqual(lacking(shape, read))
+      for (const refused of [
+        '',
+        'Thinking',
+        'a model said so',
+        1,
+        null,
+      ]) expect(schema.safeParse(lacking(shape, refused)).success, JSON.stringify(refused)).toBe(false)
+    }
+  })
+
   it('reads a verdict\'s citedLine as a count, and refuses one that is no whole number of at least 0', () => {
     const cited = (shape: 'full' | 'public', citedLine: unknown): Forged => {
       const value: Forged = saved(shape === 'full'

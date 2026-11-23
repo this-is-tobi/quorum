@@ -621,7 +621,7 @@ describe('runCli', () => {
     expect(result.kept[0].votes.map((lensVote: { failure: unknown }) => lensVote.failure)).toEqual([
       null,
       null,
-      { kind: 'truncated' },
+      { kind: 'truncated', noAnswer: 'reply' },
     ])
     expect(result.meta.incomplete).toEqual([
       {

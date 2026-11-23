@@ -29,7 +29,7 @@ For the review of a range that kept one finding and left one unreviewed, with th
       "path": "src/session.js",
       "line": 20,
       "side": "RIGHT",
-      "body": "<!-- quorum:finding:v1 b1c2d3e4f5061728:1 -->\n**UNREVIEWED** security · `CWE-338` · kept by 1 of 3 lenses, 1 vote failed\n\n`Session tokens come from Math.random, which is not a cryptographic generator.`"
+      "body": "<!-- quorum:finding:v1 b1c2d3e4f5061728:1 -->\n**UNREVIEWED** security · `CWE-338` · kept by 1 of 3 lenses, 1 vote failed: a network error\n\n`Session tokens come from Math.random, which is not a cryptographic generator.`"
     }
   ],
   "unplaced": 0
@@ -90,7 +90,7 @@ A finding is a comment when its file is a clean relative path of its profile's c
 ```
 
 - **The marker** is the first line and the only raw HTML in the body. It holds the finding's fingerprint, which a push that moves the finding's line keeps, so the Action finds the comment it posted for a finding by the marker and never posts it twice. It proves nothing without its author: anyone can write the marker.
-- **The second line** is the level, the profile, the category and how the lenses voted. The category is in a code span.
+- **The second line** is the level, the profile, the category and how the lenses voted, with the words of its failed votes: [How a failed vote reads](../20-using/80-reports.md#how-a-failed-vote-reads). The category is in a code span.
 - **The claim** is in a code span. No evidence is written: the comment sits on the code.
 - **Every line passes `inertLine`,** and the category and the claim, the texts a model wrote, are in code spans, as [Markdown](../30-security/30-output-handling.md#markdown) describes.
 
