@@ -1,4 +1,3 @@
-import { thinkingLowersTo } from './adapt.ts'
 import type { ProfileBudgets } from './budgets.ts'
 import { reviewScope } from './coverage.ts'
 import { diffSections, splitDiff } from './diff.ts'
@@ -65,7 +64,7 @@ interface Section {
  * budget and `EXPECTED_REPLY_TOKENS` (`expectedOf`), and the votes not at all: how many findings research reports
  * is not known before it runs, so the votes are in `worst`, at their bound, alone. `worst` is an upper bound of
  * what the ledger can reserve with one attempt per call, before any retry reserves again: each part's reservation and recovery's bound (`recoveryBound`), the votes at their
- * bound, the calls an adaptation sends once more (`adaptationBound`), and each call once more of a provider that sends a reply of only reasoning once more (`reasoningBound`). `inFlight` is the sum of the
+ * bound, the calls an adaptation sends once more (`adaptationBound`), and each call once more of a provider that states a retry, which sends a bad reply once more (`onceMoreBound`). `inFlight` is the sum of the
  * `concurrency` largest bounds among the research parts and the votes, each lens's counted `findingsCap` times,
  * since the review's one limit shares its slots between every profile; with `concurrency` unset, each provider counts the
  * largest bounds among its own calls up to where its lane starts (`laneStart`), and the `REVIEW_CEILING` largest of those
@@ -96,7 +95,7 @@ export function estimateReview(runs: readonly ProfileRun[], settings: EstimateSe
   return {
     profiles: Object.fromEntries(planned.map(({ id, estimate }) => [id, estimate])),
     expected,
-    worst: sum(profiles.map(profile => profile.worst)) + adaptationBound(planned, settings) + reasoningBound(planned, settings),
+    worst: sum(profiles.map(profile => profile.worst)) + adaptationBound(planned, settings) + onceMoreBound(planned, settings),
     inFlight,
     maxFindings: settings.maxFindings,
     findingsCap: settings.findingsCap,
@@ -431,21 +430,21 @@ function adaptationBound(planned: ReadonlyArray<{ readonly run: ProfileRun, read
   ].map(entry => entry.settings * largestAtOnce(entry.calls, settings.concurrency ?? REVIEW_CEILING)))
 }
 
-/** Whether a call of `target` that gets a reply of only reasoning sends it once more as it is: its provider states a retry, and the review never lowers its thinking, which the config set. */
-function retriesReasoning(target: Target): boolean {
-  return target.retries >= 1 && thinkingLowersTo(target) === undefined
+/** Whether a call of `target` that gets a bad reply sends it once more as it is: its provider states a retry, which the once-more send is one of. */
+function sendsOnceMore(target: Target): boolean {
+  return target.retries >= 1
 }
 
 /**
- * What the calls a reply of only reasoning sends once more may reserve at most: every call of a provider that
- * retries such a reply (`retriesReasoning`) once more, since any of its calls may be the one. Per profile, its research
- * parts each with recovery's bound when its research provider retries it, and `findingsCap` votes of each lens whose
- * provider does, at their bound. A provider whose thinking the review may lower sends none: the adaptation answers its reply.
+ * What the calls a bad reply sends once more may reserve at most: every call of a provider that states a retry
+ * (`sendsOnceMore`) once more, whatever its thinking, since any of its calls may be the one. Per profile, its research
+ * parts each with recovery's bound when its research provider does, and `findingsCap` votes of each lens whose provider
+ * does, at their bound.
  */
-function reasoningBound(planned: ReadonlyArray<{ readonly run: ProfileRun, readonly estimate: ProfileEstimate, readonly researchWorst: number }>, settings: EstimateSettings): number {
-  return sum(planned.map(({ run, estimate, researchWorst }) => (retriesReasoning(run.research)
+function onceMoreBound(planned: ReadonlyArray<{ readonly run: ProfileRun, readonly estimate: ProfileEstimate, readonly researchWorst: number }>, settings: EstimateSettings): number {
+  return sum(planned.map(({ run, estimate, researchWorst }) => (sendsOnceMore(run.research)
     ? researchWorst
-    : 0) + sum(run.lenses.map(lens => retriesReasoning(lens) && Object.hasOwn(estimate.vote, lens.id)
+    : 0) + sum(run.lenses.map(lens => sendsOnceMore(lens) && Object.hasOwn(estimate.vote, lens.id)
     ? settings.findingsCap * estimate.vote[lens.id]
     : 0))))
 }

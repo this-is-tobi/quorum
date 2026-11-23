@@ -1009,6 +1009,17 @@ describe('logLines', () => {
       'part 12 of 44: its reply held only reasoning after 4m10s, retry 1 of 2 in 1s',
     ],
     [
+      'an unreadable reply',
+      {
+        failure: { kind: 'unusable-reply' },
+        attemptMs: 130_000,
+        waitMs: 250,
+      },
+      undefined,
+      { index: 117, count: 131 },
+      'part 117 of 131: its reply could not be read after 2m10s, retry 1 of 2 in 1s',
+    ],
+    [
       'a piece',
       {},
       undefined,

@@ -312,6 +312,31 @@ describe('summaryLines', () => {
     expect(lines(none).some(line => line.startsWith('calls:'))).toBe(false)
   })
 
+  it('names the calls sent again after a bad reply among the retried, for research and votes', () => {
+    const state = {
+      ...replay(longReview()),
+      made: { research: 131, votes: 342 },
+      retried: { research: 3, votes: 1 },
+      again: { research: 2, votes: 1 },
+      recovered: { parts: 0, pieces: 0 },
+    }
+    const calls = (of: ViewState): string | undefined => lines(of).find(line => line.startsWith('calls:'))
+    expect(calls(state)).toBe('calls: 131 research (3 retried, 2 of them after a bad reply), 342 vote(s) (1 retried, 1 of them after a bad reply)')
+    expect(calls({
+      ...state,
+      again: { research: 0, votes: 1 },
+    })).toBe('calls: 131 research (3 retried), 342 vote(s) (1 retried, 1 of them after a bad reply)')
+    expect(calls({
+      ...state,
+      again: { research: 0, votes: 0 },
+    })).toBe('calls: 131 research (3 retried), 342 vote(s) (1 retried)')
+    expect(calls({
+      ...state,
+      again: { research: 1, votes: 0 },
+      recovered: { parts: 1, pieces: 2 },
+    })).toBe('calls: 131 research (3 retried, 1 of them after a bad reply, 1 recovered into 2 pieces), 342 vote(s) (1 retried)')
+  })
+
   it('names each provider\'s longest first token and silence', () => {
     const answered = (call: number, provider: string, firstTokenMs: number, longestSilenceMs: number, role: 'research' | 'vote' = 'research'): QuorumEvent => ({
       type: 'call',

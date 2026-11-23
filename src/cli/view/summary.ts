@@ -194,14 +194,23 @@ function laneClauses(state: ViewState, lanes: QuorumMeta['concurrency']): string
   return clauses
 }
 
+/** The calls retried, and among them the calls sent again after a bad reply, when there were any: `3 retried, 2 of them after a bad reply`. */
+function retriedWords(retried: number, again: number): string {
+  return again > 0
+    ? `${retried} retried, ${again} of them after a bad reply`
+    : `${retried} retried`
+}
+
 function callsLine(state: ViewState, lanes: QuorumMeta['concurrency']): string | undefined {
-  const { made, retried, recovered } = state
+  const { made, retried, again, recovered } = state
   if (made.research + made.votes === 0) return undefined
   const parts: string[] = []
   if (made.research > 0) {
     const notes = [
       ...retried.research > 0
-        ? [`${retried.research} retried`]
+        ? [
+            retriedWords(retried.research, again.research),
+          ]
         : [],
       ...recovered.parts > 0
         ? [`${recovered.parts} recovered into ${recovered.pieces} pieces`]
@@ -213,7 +222,7 @@ function callsLine(state: ViewState, lanes: QuorumMeta['concurrency']): string |
   }
   if (made.votes > 0) {
     parts.push(`${made.votes} vote(s)${retried.votes > 0
-      ? ` (${retried.votes} retried)`
+      ? ` (${retriedWords(retried.votes, again.votes)})`
       : ''}`)
   }
   return `calls: ${[

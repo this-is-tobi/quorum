@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto'
-import { thinkingLowersTo } from '../adapt.ts'
 import type { Adaptations, Fields } from '../adapt.ts'
 import type { ProfileBudgets } from '../budgets.ts'
 import { wait } from '../clock.ts'
@@ -14,13 +13,13 @@ import type { Ledger } from '../limits.ts'
 import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, slotsProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../ports.ts'
 import type { Adapts, CompletionRequest, CompletionResponse, EventSink, Provider, ReplyStore, StoredCall } from '../ports.ts'
 import { requestDigest } from '../prompts.ts'
-import { isReasoningOnly, isTimeout, retryWait } from '../retry.ts'
+import { backoffMs, isTimeout, retryWait } from '../retry.ts'
 import { DEFAULT_REPLY_TOKENS, expectedOf, replyLimit, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
 import type { Adaptation, FailOn, Position, ProviderRef, QuorumEvent, StageName, Thresholds, Usage } from '../types.ts'
 import { newWatch, progressReports, seenOf } from '../watch.ts'
 import type { AttemptSeen } from '../watch.ts'
 import { attempt, ceilingOf, streamsAttempt } from './attempt.ts'
-import { sendAgain } from './resend.ts'
+import { badReplyOf, sendAgain } from './resend.ts'
 import type { Sent } from './resend.ts'
 
 /**
@@ -437,9 +436,16 @@ export function elapsed(started: number): number {
  * the health once, after its last send, and a probe's 400 or 422 counts toward nothing: a refused probe ends the
  * call with its first failure. A research reply goes through `ctx.adapt.reasoned`.
  *
- * A reply of only reasoning (a `no-answer` failure whose `noAnswer` is `thinking`) of a provider whose thinking the review
- * never lowers (`thinkingLowersTo`: a level the config sets) is no adaptation's: it is sent once more as it is, once per
- * call, as one of the provider's retries, and a second ends the call. The call's final failure alone says what the reply lacked.
+ * A bad reply (`badReplyOf`: a reply of only reasoning, a vote cut off at its reply budget, or a reply the stage's `check`
+ * refused with an `OutputError`) is sent once more, after the adaptations have had their try and the reply has been read: once per call, as the
+ * next retry of the send that drew it (a lowering whose probe was refused is no part of it), so a provider that states no
+ * retries or whose retries that send spent gets none, and its own failures retry with what is left. The call emits
+ * `call:retry` (`failure` `unusable-reply` for an unreadable reply, and an unread reply's usage joins the call's), waits the
+ * backoff of the retries that send made, and sends its request again, as it is, the adaptations answering it again from the
+ * settings it went with. The attempt reserves its worst case as every attempt does, so a cap with no room for it ends the
+ * call with the cap's `LimitError`; a review whose stop has fired sends none, and the call ends with the stop's reason,
+ * while a provider found down since gets none, and the call ends with its bad reply. A second bad reply ends the call as it
+ * would have. The call is told to the health once, after its last send, and its `call` event counts both sends.
  *
  * The stage's `check`, when it passes one, reads the reply once the call is over as a call that answered: after
  * its usage is settled and the down rule has seen the reply, and before the call's `call` event, which is sent as `ok`
@@ -499,8 +505,14 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     let usage: Usage | undefined
     let spent = 0
     let timedOut = false
-    /** Whether an attempt of the call ended with a reply of only reasoning: the call sends one such reply once more. */
-    let reasoningOnly = false
+    /** The retries the last attempt of the call came after, which `sendNow` takes for the send it ends. */
+    let lastRetried = 0
+    /** How long the last attempt that answered ran, in milliseconds. */
+    let lastAttemptMs = 0
+    /** What each send of the call went with and how many retries it had made when it ended, by the result it produced: the once-more send of a bad reply repeats the send that drew it, whichever the call's last was. */
+    const sends = new WeakMap<Sent, { readonly fields: Fields, readonly retried: number }>()
+    /** Whether the call has sent a bad reply once more: it sends one, across its sends. */
+    let sentOnceMore = false
     let replied: Usage | undefined
     /** What the attempt that answered showed of its stream, when it showed a data event: the `call` event carries it. */
     let timings: { readonly firstTokenMs: number, readonly longestSilenceMs: number, readonly ceilingMs?: number } | undefined
@@ -567,17 +579,18 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       if (number !== undefined) ctx.emit({ type: 'call:progress', call: number, ...report })
     })
     /**
-     * One request sent with its retries: its reply, or its failure after the retries. Each attempt reserves the
-     * request's worst case in the ledger, before it is sent, and settles after.
+     * One request sent with its retries, the first of them being retry `from` of the call's last send: its reply, or its
+     * failure after the retries. Each attempt reserves the request's worst case in the ledger, before it is sent, and settles after.
      */
-    const send = async (asked: CompletionRequest): Promise<CompletionResponse> => {
+    const send = async (asked: CompletionRequest, from = 0): Promise<CompletionResponse> => {
       const reservation = reservationOf(target, asked)
       const replyTokens = replyLimit(asked, target.maxTokens)
       const streamed = streamsAttempt(target, asked)
-      let retried = 0
+      let retried = from
       for (;;) {
         await ctx.ledger.reserve(reservation, ctx.stop)
         attempts += 1
+        lastRetried = retried
         if (number === undefined) {
           number = ++ctx.calls.last
           ctx.emit({
@@ -644,6 +657,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
             // The lane's event goes to the sink, which has ended the review already when it throws (`emit`): the attempt is settled, so it must not reach the `catch` below, which would settle it again.
           }
           ctx.health.answered(target.provider)
+          lastAttemptMs = Math.round(endedAt - sentAt)
           const seen = seenOf(watch, sentAt, endedAt, replied)
           ctx.clocks.answered(target, seen)
           timings = seen.firstTokenMs === undefined
@@ -665,7 +679,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           settle(settlementOf(reservation, reported, failureFacts(caught)))
           // The lane reads the provider's own failure, its Retry-After and its headers, before the core rewrites it as a cut or a stall.
           inLane.ended(endOf(caught))
-          // A call cut at the length its provider learned is read as a reply cut off at its limit, which is never retried as it was.
+          // A call cut at the length its provider learned is read as a reply cut off at its limit, which is neither retried nor, for a vote, sent once more as it was: the same request would be cut again after as long.
           const error = cutReading(ctx, target, caught, attemptMs, () => seenOf(watch, sentAt, endedAt, undefined))
           if (error !== caught && typeof error === 'object' && error !== null) ran.set(error, attemptMs)
           const facts = failureFacts(error)
@@ -674,8 +688,6 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
             retried,
             retries: target.retries,
             timedOut,
-            reasoningOnly,
-            lowersThinking: thinkingLowersTo(target) !== undefined,
             timeLeftMs: ctx.stop.aborted
               ? Number.POSITIVE_INFINITY
               : ctx.deadline.at - ctx.clock.now(),
@@ -683,14 +695,13 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           if (wait === undefined) throw error
           if (ctx.stop.aborted) throw ctx.stop.reason
           timedOut ||= isTimeout(facts)
-          reasoningOnly ||= isReasoningOnly(facts)
           retried += 1
           ctx.emit({
             type: 'call:retry',
             call: number,
             attempt: retried,
             retries: target.retries,
-            // A call retries only a `network`, `timeout`, `http` or `no-answer` failure, kinds `providerFailure` always reads.
+            // A call retries only a `network`, `timeout` or `http` failure, kinds `providerFailure` always reads.
             failure: providerFailure(error)!,
             attemptMs,
             waitMs: Math.round(wait),
@@ -701,9 +712,11 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     }
     /**
      * The result of a send: what the store answered with, else its reply, or its failure. A send's request is looked up
-     * under its own key before it is sent, and a send cut off is saved, as a marker, under the same key.
+     * under its own key before it is sent, and a send cut off is saved, as a marker, under the same key. A send that was made
+     * keeps, by its result, the settings it went with and the retries it made (`sends`).
      */
-    const sendNow = async (asked: CompletionRequest): Promise<Sent> => {
+    const sendNow = async (fields: Fields, from = 0): Promise<Sent> => {
+      const asked = withSettings(fields)
       request = asked
       key = storeKey(ctx, requester, built, asked)
       if (key !== undefined) {
@@ -714,37 +727,99 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           return found
         }
       }
+      let sent: Sent
       try {
-        return { reply: await send(asked) }
+        sent = { reply: await send(asked, from) }
       } catch (failure) {
+        sent = { failure }
         // Without a key nothing is awaited, so a review with no store takes no turn it never took.
         if (key !== undefined) await keepCutOff(ctx, requester, target, key, failure)
-        return { failure }
       }
+      sends.set(sent, { fields, retried: lastRetried })
+      return sent
     }
 
-    const result = await sendAgain(ctx, target, await sendNow(request), sentWith, fields => sendNow(withSettings(fields)))
-    if ('failure' in result) throw end(result.failure)
-    let read: Read | undefined
-    let unread: { readonly error: unknown } | undefined
-    let reasoning: boolean | undefined
-    if ('answered' in result) {
-      read = result
-    } else {
+    /** What a send's reply is read as, and what the stage's `check` listed of it; nothing for a failure. */
+    const readingOf = (sent: Sent): Reading => {
+      if ('failure' in sent) return {}
+      if ('answered' in sent) return { read: sent }
       // A streamed call the server answered whole moves its provider to whole replies, shown once.
-      if (ownData(result.reply, 'whole') === true) {
+      if (ownData(sent.reply, 'whole') === true) {
         const moved = ctx.adapt.answeredWhole(target)
         if (moved !== undefined) ctx.emit({ type: 'adapted', adaptation: moved })
       }
-      if (requester.role === 'research') ctx.adapt.reasoned(target, result.reply)
-      const shown = ownData(result.reply, 'reasoning')
-      if (typeof shown === 'boolean') reasoning = shown
+      if (requester.role === 'research') ctx.adapt.reasoned(target, sent.reply)
+      const shown = ownData(sent.reply, 'reasoning')
+      const reasoned = typeof shown === 'boolean'
+        ? { reasoning: shown }
+        : {}
       try {
-        read = readAs(result.reply.text, options.check)
+        return {
+          read: readAs(sent.reply.text, options.check),
+          ...reasoned,
+        }
       } catch (error) {
-        unread = { error }
+        return {
+          unread: { error },
+          ...reasoned,
+        }
       }
     }
+    /**
+     * The call's one more send of a bad reply, `sent` as `reading` read it: the send that drew it is sent again, as it went (a
+     * lowering whose probe was refused is not in it), as the next retry of that send. Its result, with the adaptations'
+     * re-sends that follow, or undefined when the call sends none. It sends none when the result is no bad reply
+     * (`badReplyOf`), when one has been sent, when that send's retries are spent or it made no attempt, or when
+     * the provider was found down since. A review whose stop has fired is sent none either, and the result is the stop's reason.
+     */
+    const sendOnceMore = async (sent: Sent, reading: Reading): Promise<Sent | undefined> => {
+      const call = number
+      const origin = sends.get(sent)
+      const outcome = 'failure' in sent
+        ? sent
+        : reading.unread === undefined
+          ? undefined
+          : { unread: reading.unread.error }
+      if (call === undefined || origin === undefined || outcome === undefined || sentOnceMore || !(origin.retried < target.retries) || badReplyOf(requester.role, outcome) === undefined || ctx.health.refused(target.provider) !== undefined) return undefined
+      // The unread reply's usage joins the call's before the next reply replaces it.
+      if ('unread' in outcome) {
+        usage = addUsage(usage, replied)
+        replied = undefined
+      }
+      if (ctx.stop.aborted) return { failure: ctx.stop.reason }
+      sentOnceMore = true
+      const wait = backoffMs(origin.retried, ctx.clock.random)
+      ctx.emit({
+        type: 'call:retry',
+        call,
+        attempt: origin.retried + 1,
+        retries: target.retries,
+        // A bad reply that failed is a `no-answer` or a `truncated` failure, kinds `providerFailure` always reads.
+        failure: 'failure' in outcome
+          ? providerFailure(outcome.failure)!
+          : { kind: 'unusable-reply' },
+        attemptMs: ('failure' in outcome
+          ? ranFor(outcome.failure)
+          : undefined) ?? lastAttemptMs,
+        waitMs: Math.round(wait),
+      })
+      try {
+        await pause(ctx, wait)
+      } catch (stopped) {
+        return { failure: stopped }
+      }
+      return sendAgain(ctx, target, await sendNow(origin.fields, origin.retried + 1), origin.fields, sendNow)
+    }
+
+    let result = await sendAgain(ctx, target, await sendNow(sentWith), sentWith, sendNow)
+    let reading = readingOf(result)
+    const more = await sendOnceMore(result, reading)
+    if (more !== undefined) {
+      result = more
+      reading = readingOf(result)
+    }
+    if ('failure' in result) throw end(result.failure)
+    const { read, unread, reasoning } = reading
     ctx.emit({
       type: 'call',
       ...numbered(number),
@@ -812,6 +887,13 @@ export interface CallOptions {
 export interface Read {
   readonly answered: Answered
   readonly listed?: number
+}
+
+/** What a call's reply came to once read: an answer, or the error the stage's `check` threw on it, and whether it showed reasoning, when the provider could tell. A failure is none of these. */
+interface Reading {
+  readonly read?: Read
+  readonly unread?: { readonly error: unknown }
+  readonly reasoning?: boolean
 }
 
 /** What `text` is read as: an answer, or a saturated reply, as the stage's `check` says, with what it listed; an answer when it passes none. A throw is the check's. */
@@ -1052,7 +1134,8 @@ function lowersBudget(ctx: RunContext, id: string, holds: number): boolean {
  * is told to `Clocks.cut`, which learns a provider's cut from two of them (one `cut` event, and with a lowered reply budget
  * its `adapted` event), and one at the learned length is replaced by a `truncated` failure of the core's own, `thinking`
  * when its stream showed reasoning and no answer, else `reply`, carrying the length (`cutAfterMs`), which carries no
- * `retryable` and so is never retried as it was. Any other failure is returned as it is. `seen` is what the attempt's
+ * `retryable` and so is never retried as it was, and which a vote's once-more leaves too (`badReplyOf`): the same request would be
+ * cut again after as long. Any other failure is returned as it is. `seen` is what the attempt's
  * stream showed, when it streamed.
  */
 function cutReading(ctx: RunContext, target: Target, error: unknown, attemptMs: number, seen: () => AttemptSeen | undefined): unknown {

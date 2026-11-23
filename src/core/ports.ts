@@ -207,8 +207,9 @@ export interface Provider {
    * How often the core retries a call that failed in passing, after its first attempt: a whole
    * number from 0 to 5; none when unset, since a provider that retries by itself must not be
    * retried again. The core retries only a `network`, `timeout` or `http` failure that says it may
-   * be retried, and never a call's second timeout. It is read when the quorum is created, as
-   * an own data property, as `timeoutMs` is.
+   * be retried, and never a call's second timeout. A bad reply (a reply of only reasoning, a vote cut off at its reply budget, a
+   * reply the stage could not read) is sent once more as the next of them, once per call. It is read when the
+   * quorum is created, as an own data property, as `timeoutMs` is.
    */
   readonly retries?: number
   /**

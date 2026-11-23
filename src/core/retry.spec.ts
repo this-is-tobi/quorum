@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isReasoningOnly, isTimeout, retryWait } from './retry.ts'
+import { backoffMs, isReasoningOnly, isTimeout, retryWait } from './retry.ts'
 import type { CallState, FailureFacts } from './retry.ts'
 
 const network: FailureFacts = {
@@ -29,8 +29,6 @@ const first: CallState = {
   retried: 0,
   retries: 5,
   timedOut: false,
-  reasoningOnly: false,
-  lowersThinking: false,
   timeLeftMs: 1_800_000,
 }
 const onlyReasoning: FailureFacts = {
@@ -117,24 +115,9 @@ describe('retryWait', () => {
       first,
     ],
     [
-      'a reply of only reasoning of a provider whose thinking the review may lower',
+      'a reply of only reasoning, which the call path sends once more',
       onlyReasoning,
-      { ...first, lowersThinking: true },
-    ],
-    [
-      'a second reply of only reasoning',
-      onlyReasoning,
-      { ...first, reasoningOnly: true },
-    ],
-    [
-      'a reply of only reasoning of a call whose retries are spent',
-      onlyReasoning,
-      { ...first, retried: 2, retries: 2 },
-    ],
-    [
-      'a reply of only reasoning of a provider that states no retries',
-      onlyReasoning,
-      { ...first, retries: 0 },
+      { ...first, retries: 2 },
     ],
     [
       'a call whose retry count is not a number',
@@ -143,8 +126,6 @@ describe('retryWait', () => {
         retried: 0,
         retries: Number.NaN,
         timedOut: false,
-        reasoningOnly: false,
-        lowersThinking: false,
         timeLeftMs: 1_800_000,
       },
     ],
@@ -177,6 +158,8 @@ describe('retryWait', () => {
     expect(waits).toEqual([250, 500, 1000, 2000, 4000])
     expect(retryWait(network, first, () => 0)).toBe(0)
     expect(retryWait(network, { ...first, retried: 4 }, () => 0.999)).toBe(7992)
+    expect(backoffMs(2, () => 0.5)).toBe(1000)
+    expect(backoffMs(9, () => 0.5)).toBe(4000)
   })
 
   it('waits a server hint above 0 and up to 60000 ms in place of the backoff, plus up to a second', () => {
@@ -211,14 +194,6 @@ describe('retryWait', () => {
       expect(retryWait(failure, first, () => 0.5)).toBe(250)
     }
     expect(retryWait(http(503), { ...first, timedOut: true }, () => 0.5)).toBe(250)
-  })
-
-  it('retries a call\'s first reply of only reasoning once, whatever its retryable, after the backoff of its retry count', () => {
-    expect(retryWait(onlyReasoning, first, () => 0.5)).toBe(250)
-    expect(retryWait({ ...onlyReasoning, retryable: true }, first, () => 0.5)).toBe(250)
-    expect(retryWait(onlyReasoning, { ...first, retried: 1 }, () => 0.5)).toBe(500)
-    expect(retryWait(onlyReasoning, { ...first, timedOut: true }, () => 0.5)).toBe(250)
-    expect(retryWait(timeout, { ...first, reasoningOnly: true }, () => 0.5)).toBe(250)
   })
 })
 

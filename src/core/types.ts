@@ -534,7 +534,7 @@ export interface ProfileEstimate {
   vote: Record<string, number>
   /** The research parts alone, each counted at a third of its input, rounded up (code takes about that many tokens, not one per byte), and its reply at the lesser of its budget and 4096 tokens, its usual size. The votes are not in it, since how many findings research reports is not known before it runs. */
   expected: number
-  /** The most the profile may reserve in all: each research part in full and every piece recovery may make of it, and `findingsCap` votes of every lens at its bound. The calls an adaptation sends once more, and the calls a reply of only reasoning sends once more, are the provider's, and join `Estimate.worst` alone. */
+  /** The most the profile may reserve in all: each research part in full and every piece recovery may make of it, and `findingsCap` votes of every lens at its bound. The calls an adaptation sends once more, and the calls a bad reply sends once more, are the provider's, and join `Estimate.worst` alone. */
   worst: number
   /** The findings its research requests ask for at most, the most serious first: `maxFindings`, or fewer when the research provider's reply budget holds fewer. */
   findings: number
@@ -546,8 +546,8 @@ export interface ProfileEstimate {
  * What a review of a diff may cost, as `Quorum.estimate` states it: no call is made. `profiles` is keyed by
  * profile id, in the run's order; `expected` sums the profiles', and `worst` too, plus what each provider's
  * adaptations may send once more: per setting its `adapts` states, the `concurrency` largest reservations of its
- * calls, plus each call once more of a provider that states a retry and whose thinking the review never lowers (a reply of only
- * reasoning is sent once more, and any of its calls may be the one). `worst` is an upper bound, never an average, with one attempt per call: a retry reserves again. `inFlight` is what the calls that run at once reserve, the
+ * calls, plus each call once more of a provider that states a retry, whatever its thinking (a bad reply is sent once
+ * more, and any of its calls may be the one). `worst` is an upper bound, never an average, with one attempt per call: a retry reserves again. `inFlight` is what the calls that run at once reserve, the
  * `concurrency` largest bounds among every research part and vote, and `fits` is whether `expected` and `inFlight`
  * together are within `maxReviewTokens`: recovery and the adaptations are in `worst` and not in `fits`. It is an
  * estimate: the review's ledger still holds the cap, whatever `fits` says.
@@ -598,7 +598,7 @@ export interface Quorum {
    * research part, and a bound for every vote. It makes no call and reads no file. The research parts are counted
    * in `expected` at a third of their input, code taking about three bytes a token, and their reply at its usual
    * size, and the votes in the worst case only, which also counts every part recovered, the calls an adaptation
-   * sends once more and the calls a reply of only reasoning sends once more; `fits` says whether `expected` and what the calls in flight reserve are within
+   * sends once more and the calls a bad reply sends once more; `fits` says whether `expected` and what the calls in flight reserve are within
    * `maxReviewTokens`. It is an estimate, not a promise: a review still reserves each call against the cap.
    * A file held back as a secret costs nothing, and one `input.send` names is counted, as `review` sends it.
    * `limits` are the cap and the deadline the estimate is made under, in place of the quorum's, as `review`'s
@@ -653,6 +653,14 @@ export interface CallFailure {
 }
 
 /**
+ * What a `call:retry` says of a reply that came back and could not be read: the stage's own check refused it, so no
+ * provider failure names it. The word is the one a failed vote has for the same reply (`VoteFailureKind`).
+ */
+export interface UnusableReply {
+  kind: 'unusable-reply'
+}
+
+/**
  * What a review reports while it runs, delivered synchronously to the event sink as it happens.
  * Events are plain data, which the review hands the sink as copies; a field that a structured
  * clone cannot copy, or whose class matters, does not belong in one.
@@ -695,10 +703,11 @@ export type QuorumEvent
      * its send, from 1, `retries` the retries its provider states, `failure` what the failure said of itself and
      * `attemptMs` how long the failed attempt ran, from its send to its failure, in whole milliseconds on the review's
      * clock, and `waitMs` the wait, in milliseconds. A failure the stop ends instead of a retry sends none. A `failure` of kind
-     * `no-answer` is a reply of only reasoning, the one `no-answer` the core retries: it is sent once more as it is, once per
-     * call, when the provider's thinking is a level the config sets.
+     * `no-answer`, a vote's `truncated` and an `unusable-reply` (a reply the stage could not read) is the call's one more send of
+     * a bad reply, as it is, once the adaptations had their try: a call sends one, within its provider's retries, and no other
+     * retry has these kinds.
      */
-    | { type: 'call:retry', call: number, attempt: number, retries: number, failure: CallFailure, attemptMs: number, waitMs: number }
+    | { type: 'call:retry', call: number, attempt: number, retries: number, failure: CallFailure | UnusableReply, attemptMs: number, waitMs: number }
     /**
      * One per provider call, failed ones included, sent when the call ends. The call runs its
      * attempts inside its slot, retried as the retry policy decides, so `durationMs` runs from its
