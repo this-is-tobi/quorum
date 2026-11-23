@@ -174,6 +174,64 @@ describe('fold', () => {
     expect(set.lanes.size).toBe(0)
   })
 
+  it('counts a call sent once more after a bad reply in again, once, beside retried', () => {
+    const start = (call: number, role: 'research' | 'vote'): QuorumEvent => ({
+      type: 'call:start',
+      call,
+      profile: 'security',
+      role,
+      provider: API,
+      ...role === 'research'
+        ? {
+            part: { index: call, count: 4 },
+          }
+        : { lens: 'impact', finding: 'abc' },
+      reserved: 6000,
+      timeoutMs: 600_000,
+    })
+    const retry = (call: number, failure: Extract<QuorumEvent, { type: 'call:retry' }>['failure']): QuorumEvent => ({
+      type: 'call:retry',
+      call,
+      attempt: 1,
+      retries: 2,
+      failure,
+      attemptMs: 1000,
+      waitMs: 1000,
+    })
+    const state = folded([
+      0,
+      started(['security']),
+    ], [
+      0,
+      start(1, 'research'),
+    ], [
+      1000,
+      retry(1, { kind: 'unusable-reply' }),
+    ], [
+      2000,
+      retry(1, { kind: 'network' }),
+    ])
+    expect(state.again).toEqual({ research: 1, votes: 0 })
+    expect(state.retried).toEqual({ research: 1, votes: 0 })
+    expect(state.calls.get(1)).toMatchObject({
+      retried: true,
+      again: true,
+      failure: { kind: 'network' },
+    })
+
+    // A call retried before its bad reply counts in both, as one retried call; a reply of only reasoning and a vote cut off count too, and a plain retry does not.
+    const later = fold(fold(fold(state, start(2, 'research'), 3000), retry(2, { kind: 'http', status: 503 }), 3500), retry(2, { kind: 'no-answer' }), 4000)
+    expect(later.again).toEqual({ research: 2, votes: 0 })
+    expect(later.retried).toEqual({ research: 2, votes: 0 })
+    const votes = fold(fold(later, start(3, 'vote'), 5000), retry(3, { kind: 'truncated' }), 5500)
+    expect(votes.again).toEqual({ research: 2, votes: 1 })
+    expect(votes.retried).toEqual({ research: 2, votes: 1 })
+    const plain = fold(fold(votes, start(4, 'vote'), 6000), retry(4, { kind: 'timeout' }), 6500)
+    expect(plain.again).toEqual({ research: 2, votes: 1 })
+    expect(plain.retried).toEqual({ research: 2, votes: 2 })
+    expect(startState(DEFAULT_FACTS).again).toEqual({ research: 0, votes: 0 })
+  })
+
   it('records the research part\'s provider with each answered part\'s sample', () => {
     const state = replay(twoProfiles())
     expect(state.sample.parts.length).toBeGreaterThan(0)

@@ -507,7 +507,8 @@ describe('runCli', () => {
 
   it('exits 0 with a research-failed gap when the one profile is advisory and its research reply cannot be read', async () => {
     const advisory = write('advisory.yaml', 'profiles:\n  security: {failOn: none}\n')
-    stubChat('No issues found.')
+    // The reply is sent once more as it is, and read again.
+    stubChat('No issues found.', 'No issues found.')
     const { io, stdout, stderr } = harness({
       cwd: dir,
       env: { ...MODEL, QUORUM_CONFIG: advisory },
@@ -597,16 +598,18 @@ describe('runCli', () => {
   })
 
   it('exits 4 with --allow-incomplete when a gating profile\'s vote was cut off at its token limit', async () => {
-    stubChat(JSON.stringify({
-      findings: [FINDING],
-    }), vote(true), vote(true)).mockImplementationOnce(async () => jsonReply({
+    // The vote is sent once more as it is, and cut off again.
+    const cutOff = async (): Promise<Response> => jsonReply({
       choices: [
         {
           finish_reason: 'length',
           message: { content: '' },
         },
       ],
-    }))
+    })
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true), vote(true)).mockImplementationOnce(cutOff).mockImplementationOnce(cutOff)
     const { io, stdout } = harness({
       argv: ['--allow-incomplete'],
       env: MODEL,

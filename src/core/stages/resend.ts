@@ -1,26 +1,56 @@
 import type { Fields, Probe, ProbeOutcome } from '../adapt.ts'
-import { ProviderDownError } from '../errors.ts'
+import { OutputError, ProviderDownError } from '../errors.ts'
 import type { ProviderErrorKind } from '../errors.ts'
 import { failureFacts, isRefusal, isTooLarge, ownData, providerFailure } from '../facts.ts'
 import { isLimit } from '../limits.ts'
 import type { CompletionResponse } from '../ports.ts'
-import { isTimeout } from '../retry.ts'
+import { isReasoningOnly, isTimeout } from '../retry.ts'
 import type { Read, RunContext, Target } from './context.ts'
 
 /** What a send of a call came to: the reply, the failure it ended with, or what the store answered with. */
 export type Sent = { readonly reply: CompletionResponse } | { readonly failure: unknown } | Read
 
+/** A reply a call sends once more as it is: one that held only reasoning, a vote cut off at its reply budget, or one the stage could not read. */
+export type BadReply = 'only-reasoning' | 'cut-off' | 'unreadable'
+
+/**
+ * What a call's last send came to, read as a bad reply, or undefined when it is not one:
+ * - `only-reasoning`: a `no-answer` failure whose `noAnswer` is `thinking`, of a research call or a vote;
+ * - `cut-off`: a vote's `truncated` failure, whatever it lacked, but for a cut on the way at a length the provider learned (it
+ *   carries `cutAfterMs`: the fix is a shorter reply, and the same request would be cut again after as long). A research reply
+ *   cut off goes to recovery, which splits it;
+ * - `unreadable`: a reply the stage's check refused with an `OutputError`. Any other throw of a check is a bug, and is never sent again.
+ *
+ * An empty reply is none: the prompt mode answers it. `end` is the failure the send ended with, or the error the check
+ * threw on a reply that came back, or none.
+ */
+export function badReplyOf(role: 'research' | 'vote', end: { readonly failure: unknown } | { readonly unread: unknown } | undefined): BadReply | undefined {
+  if (end === undefined) return undefined
+  if ('unread' in end) {
+    return end.unread instanceof OutputError
+      ? 'unreadable'
+      : undefined
+  }
+  const facts = failureFacts(end.failure)
+  if (isReasoningOnly(facts)) return 'only-reasoning'
+  return role === 'vote' && facts.kind === 'truncated' && ownData(end.failure, 'cutAfterMs') === undefined
+    ? 'cut-off'
+    : undefined
+}
+
 /**
  * The re-sends of a call whose send failed, as the adaptations answer it: while the result is a failure and the review is
  * not stopped, a failure a setting answers is sent again at that setting (`send`, with the settings to send with), as the
- * setting's probe when it is the provider's first such failure. The result is the call's last send. `settled` is the
- * settings the call's first send went with, and the loop keeps the ones it sent last.
+ * setting's probe when it is the provider's first such failure. The result is the call's last send, or, when a probe ends
+ * the call with the failure that began it, that earlier result itself, the same object. `settled` is the settings the
+ * call's first send went with, and the loop keeps the ones it sent last.
  */
 export async function sendAgain(ctx: RunContext, target: Target, first: Sent, settled: Fields, send: (fields: Fields) => Promise<Sent>): Promise<Sent> {
   let result = first
   let sentWith = settled
   while ('failure' in result && !ctx.stop.aborted) {
-    const { failure } = result
+    const before = result
+    const { failure } = before
     const plan = ctx.adapt.probe(target, failure)
     let again: Fields | undefined
     if (plan === undefined) {
@@ -64,7 +94,7 @@ export async function sendAgain(ctx: RunContext, target: Target, first: Sent, se
     }
     // A refused lowering, a prompt mode that did not answer and a lowering the server showed no sign of taking end the call with the failure that began the probe,
     // but a stream step the server refused as a stream goes on, with that failure, to the step of whole replies, which is probed once too.
-    if ('failure' in result && first && !(plan.setting === 'stream' && isStreamRefusal(result.failure))) result = { failure }
+    if ('failure' in result && first && !(plan.setting === 'stream' && isStreamRefusal(result.failure))) result = before
   }
   return result
 }

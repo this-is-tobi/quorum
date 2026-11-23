@@ -8,7 +8,7 @@ import type { ProfileBudgets } from '../budgets.ts'
 import { createAdaptations } from '../adapt.ts'
 import { createClocks } from '../clocks.ts'
 import { createHealth } from '../down.ts'
-import { ProviderDownError, ProviderError } from '../errors.ts'
+import { OutputError, ProviderDownError, ProviderError } from '../errors.ts'
 import { createLanes } from '../lanes.ts'
 import { createLedger, DEFAULT_REVIEW_TIMEOUT_MS, LimitError } from '../limits.ts'
 import type { CompletionRequest, CompletionResponse, Provider, StoredCall, StreamSignal } from '../ports.ts'
@@ -16,7 +16,7 @@ import { researchRequest } from '../prompts.ts'
 import type { QuorumEvent } from '../types.ts'
 import { providerFailure } from '../facts.ts'
 import { callProvider, reservationOf, roomOf, targetOf } from './context.ts'
-import type { Requester, RunContext, Target } from './context.ts'
+import type { Checked, Requester, RunContext, Target } from './context.ts'
 
 /**
  * A context of one review: its events as the sink would receive them, but for a call's start and retries, which it
@@ -794,6 +794,411 @@ describe('a reply of only reasoning', () => {
     }, { thinking: 'low', retries: 0 })
     await expect(settle(none, callProvider(context(none).ctx, researcher, unretried, () => request))).rejects.toMatchObject({ kind: 'no-answer' })
     expect(ran).toBe(1)
+  })
+})
+
+describe('a bad reply, sent once more', () => {
+  const researcher: Requester = {
+    profile: 'security',
+    role: 'research',
+    part: { index: 117, count: 131 },
+  }
+  const reasoningOnly = (): ProviderError => new ProviderError({
+    providerId: 'p',
+    kind: 'no-answer',
+    noAnswer: 'thinking',
+    message: 'only reasoning',
+    usage: { inputTokens: 100, outputTokens: 900 },
+  })
+  /** A check that refuses the text `bad` as a reply that repeats a key, and lists the errors it threw. */
+  const refusing = (thrown: OutputError[]) => (text: string): Checked => {
+    if (text !== 'bad') return { saturated: false }
+    const error = new OutputError('research', 'reply contains a JSON object that repeats a key', text)
+    thrown.push(error)
+    throw error
+  }
+  const reply = (text: string, usage?: { readonly inputTokens: number, readonly outputTokens: number }): CompletionResponse => ({
+    text,
+    model: 'm',
+    ...usage === undefined
+      ? {}
+      : { usage },
+  })
+
+  it('sends a reply the stage cannot read once more as it is, after the backoff of its retry count, and reads the second', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, events, progress } = context(clock)
+    const sent: CompletionRequest[] = []
+    const replies = [
+      reply('bad', { inputTokens: 100, outputTokens: 10 }),
+      reply('good', { inputTokens: 100, outputTokens: 20 }),
+    ]
+    const set = target(async (asked) => {
+      sent.push(asked)
+      return replies[sent.length - 1]
+    }, { retries: 2 })
+    await expect(settle(clock, callProvider(ctx, researcher, set, () => request, {
+      check: refusing([]),
+    }))).resolves.toEqual({ text: 'good' })
+    expect(sent.map(({ signal: _signal, ...asked }) => asked)).toEqual([request, request])
+    expect(progress.filter(event => event.type === 'call:retry')).toEqual([
+      {
+        type: 'call:retry',
+        call: 1,
+        attempt: 1,
+        retries: 2,
+        failure: { kind: 'unusable-reply' },
+        attemptMs: 0,
+        waitMs: 250,
+      },
+    ])
+    expect(events).toEqual([
+      {
+        type: 'call',
+        call: 1,
+        profile: 'security',
+        role: 'research',
+        part: { index: 117, count: 131 },
+        provider: { id: 'p', model: 'm' },
+        durationMs: 250,
+        ok: true,
+        attempts: 2,
+        usage: { inputTokens: 200, outputTokens: 30 },
+        spent: 230,
+      },
+    ])
+    expect(ctx.adapt.record()).toEqual([])
+  })
+
+  it('ends the call at its second unreadable reply with that reply\'s error, after one ok event, and sends none twice with no retries', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, events, progress } = context(clock)
+    const thrown: OutputError[] = []
+    let ran = 0
+    const stuck = target(async () => {
+      ran += 1
+      return reply('bad', { inputTokens: 100, outputTokens: 10 })
+    }, { retries: 2 })
+    const error = await settle(clock, callProvider(ctx, researcher, stuck, () => request, {
+      check: refusing(thrown),
+    })).catch((caught: unknown) => caught)
+    expect(ran).toBe(2)
+    expect(thrown).toHaveLength(2)
+    expect(error).toBe(thrown[1])
+    expect(progress.filter(event => event.type === 'call:retry')).toHaveLength(1)
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'call',
+        ok: true,
+        attempts: 2,
+        usage: { inputTokens: 200, outputTokens: 20 },
+      }),
+    ])
+    // The provider answered each time: two more calls of the same kind leave it up.
+    for (let call = 0; call < 2; call++) {
+      await settle(clock, callProvider(ctx, researcher, stuck, () => request, {
+        check: refusing([]),
+      })).catch(() => undefined)
+    }
+    expect(ran).toBe(6)
+    expect(ctx.health.refused(stuck.provider)).toBeUndefined()
+    expect(events.some(event => event.type === 'provider-down')).toBe(false)
+
+    const none = fakeClock(0.5)
+    const unretried = context(none)
+    const first: OutputError[] = []
+    let sent = 0
+    const once = target(async () => {
+      sent += 1
+      return reply('bad')
+    }, { retries: 0 })
+    const refused = await settle(none, callProvider(unretried.ctx, researcher, once, () => request, {
+      check: refusing(first),
+    })).catch((caught: unknown) => caught)
+    expect(sent).toBe(1)
+    expect(refused).toBe(first[0])
+    expect(unretried.progress.filter(event => event.type === 'call:retry')).toEqual([])
+  })
+
+  it('sends a reply of only reasoning once more after the thinking probe moved the level, at that level', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx } = context(clock)
+    const levels: Array<CompletionRequest['thinking']> = []
+    const lowering = target(async (asked) => {
+      levels.push(asked.thinking)
+      if (levels.length <= 2) throw reasoningOnly()
+      return reply('done')
+    }, {
+      adapts: { thinking: 'low' },
+      retries: 2,
+    })
+    await expect(settle(clock, callProvider(ctx, researcher, lowering, () => request))).resolves.toEqual({ text: 'done' })
+    expect(levels).toEqual([undefined, 'low', 'low'])
+    expect(ctx.adapt.record()).toMatchObject([
+      { setting: 'thinking', to: 'low', cause: 'no-answer-thinking' },
+    ])
+  })
+
+  it.each<[string, Requester, 'truncated' | 'no-answer', number, boolean]>([
+    [
+      'a vote cut off while reasoning, its lowering refused with a 400',
+      { profile: 'code-review', role: 'vote', lens: 'real' },
+      'truncated',
+      400,
+      true,
+    ],
+    [
+      'a research reply of only reasoning, its lowering refused with a 422',
+      researcher,
+      'no-answer',
+      422,
+      true,
+    ],
+    [
+      'a vote cut off while reasoning, its lowering failing with a 401 before the server took the request',
+      { profile: 'code-review', role: 'vote', lens: 'real' },
+      'truncated',
+      401,
+      false,
+    ],
+  ])('sends %s once more at the level that drew it, not at the refused one, and ends with its own failure when it is bad again', async (_name, who, kind, status, recorded) => {
+    const lacking = (): ProviderError => new ProviderError({
+      providerId: 'p',
+      kind,
+      noAnswer: 'thinking',
+      message: 'no answer while reasoning',
+      usage: { inputTokens: 100, outputTokens: 900 },
+    })
+    const run = async (thirdAnswers: boolean): Promise<{ readonly levels: Array<CompletionRequest['thinking']>, readonly outcome: unknown, readonly ctx: RunContext, readonly provider: Provider }> => {
+      const clock = fakeClock(0.5)
+      const { ctx } = context(clock)
+      const levels: Array<CompletionRequest['thinking']> = []
+      const lowering = target(async (asked) => {
+        levels.push(asked.thinking)
+        if (asked.thinking === 'low') {
+          throw new ProviderError({
+            providerId: 'p',
+            kind: 'http',
+            status,
+            message: 'refused the value',
+          })
+        }
+        if (levels.length === 3 && thirdAnswers) return reply('answer')
+        throw lacking()
+      }, {
+        adapts: { thinking: 'low' },
+        retries: 2,
+      })
+      const outcome = await settle(clock, callProvider(ctx, who, lowering, () => request)).catch((caught: unknown) => caught)
+      return {
+        levels,
+        outcome,
+        ctx,
+        provider: lowering.provider,
+      }
+    }
+    const answered = await run(true)
+    expect(answered.levels).toEqual([undefined, 'low', undefined])
+    expect(answered.outcome).toEqual({ text: 'answer' })
+    const ended = await run(false)
+    expect(ended.levels).toEqual([undefined, 'low', undefined])
+    expect(ended.outcome).toMatchObject({ kind })
+    // The refusal, or the failure, of the lowered request is the probe's: it ends no call and counts toward no provider being down.
+    expect(ended.ctx.health.refused(ended.provider)).toBeUndefined()
+    expect(ended.ctx.adapt.record()).toMatchObject(recorded
+      ? [
+          { setting: 'thinking', cause: 'lowering-refused' },
+        ]
+      : [])
+  })
+
+  it('sends a vote cut off at its reply budget once more, of any profile, and leaves a research reply cut off to recovery', async () => {
+    const cutOff = (): ProviderError => new ProviderError({
+      providerId: 'p',
+      kind: 'truncated',
+      noAnswer: 'reply',
+      message: 'cut off',
+      usage: { inputTokens: 100, outputTokens: 900 },
+    })
+    const lens: Requester = {
+      profile: 'code-review',
+      role: 'vote',
+      lens: 'real',
+    }
+    const run = async (requester: Requester): Promise<{ readonly sent: number, readonly outcome: unknown }> => {
+      const clock = fakeClock(0.5)
+      let sent = 0
+      const cut = target(async () => {
+        sent += 1
+        if (sent === 1) throw cutOff()
+        return reply('answer')
+      }, { retries: 2 })
+      const outcome = await settle(clock, callProvider(context(clock).ctx, requester, cut, () => request)).catch((caught: unknown) => caught)
+      return { sent, outcome }
+    }
+    expect(await run(lens)).toEqual({
+      sent: 2,
+      outcome: { text: 'answer' },
+    })
+    const research = await run(researcher)
+    expect(research.sent).toBe(1)
+    expect(research.outcome).toMatchObject({ kind: 'truncated' })
+  })
+
+  it('takes the once-more send from the last send\'s retries, so a call whose retries are spent sends none', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx } = context(clock)
+    let ran = 0
+    const spent = target(async () => {
+      ran += 1
+      if (ran <= 2) {
+        throw new ProviderError({ providerId: 'p', kind: 'network', message: 'dropped' })
+      }
+      throw reasoningOnly()
+    }, { retries: 2 })
+    await expect(settle(clock, callProvider(ctx, researcher, spent, () => request))).rejects.toMatchObject({ kind: 'no-answer' })
+    expect(ran).toBe(3)
+  })
+
+  it('gives the once-more send what is left of the retries, so its own failures and the bad reply make three attempts with 2 retries, not four', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, events, progress } = context(clock)
+    let ran = 0
+    const flaky = target(async () => {
+      ran += 1
+      if (ran === 1) return reply('bad', { inputTokens: 100, outputTokens: 10 })
+      throw new ProviderError({ providerId: 'p', kind: 'network', message: 'dropped' })
+    }, { retries: 2 })
+    const error = await settle(clock, callProvider(ctx, researcher, flaky, () => request, {
+      check: refusing([]),
+    })).catch((caught: unknown) => caught)
+    expect(error).toMatchObject({ kind: 'network' })
+    expect(ran).toBe(3)
+    // The bad reply was retry 1 of the call's 2, the once-more's failure retry 2, and its second failure ended the call.
+    expect(progress.filter(event => event.type === 'call:retry').map(event => event.type === 'call:retry' && [event.attempt, event.retries, event.failure.kind])).toEqual([
+      [1, 2, 'unusable-reply'],
+      [2, 2, 'network'],
+    ])
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'call', ok: false, attempts: 3 }),
+    ])
+  })
+
+  it('adds the usage of a vote cut off at its budget to the once-more answer\'s in the call event, as it adds an unread reply\'s', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, events } = context(clock)
+    let ran = 0
+    const cutThenAnswered = target(async () => {
+      ran += 1
+      if (ran === 1) {
+        throw new ProviderError({
+          providerId: 'p',
+          kind: 'truncated',
+          noAnswer: 'reply',
+          message: 'cut off',
+          usage: { inputTokens: 100, outputTokens: 900 },
+        })
+      }
+      return reply('answer', { inputTokens: 100, outputTokens: 20 })
+    }, { retries: 2 })
+    await expect(settle(clock, callProvider(ctx, { profile: 'code-review', role: 'vote', lens: 'real' }, cutThenAnswered, () => request))).resolves.toEqual({ text: 'answer' })
+    expect(ran).toBe(2)
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'call',
+        ok: true,
+        attempts: 2,
+        usage: { inputTokens: 200, outputTokens: 920 },
+        spent: 1120,
+      }),
+    ])
+  })
+
+  it('holds the usage of an unread reply in the failed call event when the stop fires before the once-more send', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, events, progress } = context(clock)
+    const interrupt = new AbortController()
+    const reason = new LimitError('interrupted', 'the review was interrupted')
+    let ran = 0
+    // The stop fires while the attempt is in flight; the reply still comes, and the check refuses it.
+    const slow = target(async () => {
+      ran += 1
+      interrupt.abort(reason)
+      return reply('bad', { inputTokens: 100, outputTokens: 10 })
+    }, { retries: 2 })
+    await expect(settle(clock, callProvider({ ...ctx, stop: interrupt.signal }, researcher, slow, () => request, {
+      check: refusing([]),
+    }))).rejects.toBe(reason)
+    expect(ran).toBe(1)
+    expect(progress.filter(event => event.type === 'call:retry')).toEqual([])
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'call',
+        ok: false,
+        usage: { inputTokens: 100, outputTokens: 10 },
+        spent: 110,
+      }),
+    ])
+  })
+
+  it('ends a call whose once-more send the token cap refuses with the cap\'s error', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, events } = context(clock, new AbortController(), 1, { cap: 1000 })
+    const thrown: OutputError[] = []
+    let ran = 0
+    const capped = target(async () => {
+      ran += 1
+      return reply('bad')
+    }, {
+      ...worst(600),
+      retries: 2,
+    })
+    const error = await settle(clock, callProvider(ctx, researcher, capped, () => request, {
+      check: refusing(thrown),
+    })).catch((caught: unknown) => caught)
+    expect(ran).toBe(1)
+    expect(error).toBeInstanceOf(LimitError)
+    expect(error).toMatchObject({ limit: 'token-cap' })
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'call', ok: false, spent: 600 }),
+    ])
+  })
+
+  it('sends no once-more once the review is stopped, and ends the call with the stop\'s reason', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, progress } = context(clock)
+    const interrupt = new AbortController()
+    const reason = new LimitError('interrupted', 'the review was interrupted')
+    let ran = 0
+    // The stop fires while the attempt is in flight, and the halt does not: an interrupt's grace leaves the attempt to end.
+    const slow = target(async () => {
+      ran += 1
+      interrupt.abort(reason)
+      throw reasoningOnly()
+    }, { retries: 2 })
+    await expect(settle(clock, callProvider({ ...ctx, stop: interrupt.signal }, researcher, slow, () => request))).rejects.toBe(reason)
+    expect(ran).toBe(1)
+    expect(progress.filter(event => event.type === 'call:retry')).toEqual([])
+  })
+
+  it('sends no once-more to a provider found down since, and ends the call with its bad reply', async () => {
+    const clock = fakeClock(0.5)
+    const { ctx, progress } = context(clock)
+    let ran = 0
+    // Three calls of other callers end in a row while this one's attempt is in flight: the provider is found down when its reply comes.
+    const found: ProviderDownError[] = []
+    const failing = target(async () => {
+      ran += 1
+      for (let call = 0; call < 3; call++) {
+        const down = ctx.health.failed(failing.provider, 'p', reasoningOnly())
+        if (down !== undefined) found.push(down)
+      }
+      throw reasoningOnly()
+    }, { retries: 2 })
+    await expect(settle(clock, callProvider(ctx, researcher, failing, () => request))).rejects.toMatchObject({ kind: 'no-answer' })
+    expect(found).toHaveLength(1)
+    expect(ran).toBe(1)
+    expect(progress.filter(event => event.type === 'call:retry')).toEqual([])
   })
 })
 

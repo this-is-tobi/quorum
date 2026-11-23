@@ -11,7 +11,7 @@
 import { LANE_START } from '../../core/lanes.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../../core/limits.ts'
 import { DEFAULT_MAX_FINDINGS } from '../../core/prompts.ts'
-import type { CallFailure, Estimate, IncompleteReason, Position, QuorumEvent, StageName, Usage } from '../../core/types.ts'
+import type { CallFailure, Estimate, IncompleteReason, Position, QuorumEvent, StageName, UnusableReply, Usage } from '../../core/types.ts'
 import { plannedOf, researchTotal, sampleNeeded, timeLeft } from './eta.ts'
 
 /** How wide one cell of the token buckets is, and how many cells they keep. */
@@ -82,10 +82,12 @@ export interface CallState {
   readonly timeoutMs: number
   /** Whether an attempt of it failed and was retried. */
   readonly retried: boolean
+  /** Whether it was sent once more after a bad reply: a reply of only reasoning, a vote cut off at its reply budget or a reply that could not be read. */
+  readonly again: boolean
   /** When its wait before the next attempt ends, while it waits. */
   readonly waitingUntil?: number
-  /** What its last failed attempt said of itself. */
-  readonly failure?: CallFailure
+  /** What its last failed attempt said of itself, or that its reply could not be read. */
+  readonly failure?: CallFailure | UnusableReply
   /** Whether its first attempt streams, which gives it a spinner and progress. */
   readonly stream: boolean
   /** The output its current attempt has shown, from its last progress; an attempt's own count, so a retry starts it again at 0. */
@@ -142,6 +144,8 @@ export interface ViewState {
   readonly partsEnded: ReadonlySet<string>
   readonly made: { readonly research: number, readonly votes: number }
   readonly retried: { readonly research: number, readonly votes: number }
+  /** The calls sent once more after a bad reply, each once: among the `retried`. */
+  readonly again: { readonly research: number, readonly votes: number }
   readonly recovered: { readonly parts: number, readonly pieces: number }
   /** The providers whose cut on the way was learned, which changes the fix of their replies cut off: shorter replies, not a larger limit. */
   readonly cutSeen: ReadonlySet<string>
@@ -191,6 +195,7 @@ export function startState(facts: ViewFacts): ViewState {
     partsEnded: new Set(),
     made: { research: 0, votes: 0 },
     retried: { research: 0, votes: 0 },
+    again: { research: 0, votes: 0 },
     recovered: { parts: 0, pieces: 0 },
     cutSeen: new Set(),
     cutOffBy: new Set(),
@@ -417,6 +422,7 @@ function callStarted(state: ViewState, event: Extract<QuorumEvent, { type: 'call
       reserved: event.reserved,
       timeoutMs: event.timeoutMs,
       retried: false,
+      again: false,
       stream: event.stream === true,
       outputTokens: 0,
       keepAlive: false,
@@ -436,20 +442,32 @@ function callStarted(state: ViewState, event: Extract<QuorumEvent, { type: 'call
   }
 }
 
+/** The kinds of a `call:retry` that are a call's one more send of a bad reply: a reply of only reasoning, a vote cut off at its reply budget, a reply that could not be read. */
+const BAD_REPLY_KINDS: ReadonlySet<string> = new Set(['no-answer', 'truncated', 'unusable-reply'])
+
+/** `counts` with one more call of `role`. */
+function plusOne(counts: { readonly research: number, readonly votes: number }, role: 'research' | 'vote'): { readonly research: number, readonly votes: number } {
+  return role === 'research'
+    ? { ...counts, research: counts.research + 1 }
+    : { ...counts, votes: counts.votes + 1 }
+}
+
 function callRetried(state: ViewState, event: Extract<QuorumEvent, { type: 'call:retry' }>, now: number): ViewState {
   const call = state.calls.get(event.call)
   if (call === undefined) return state
-  const counts = call.retried
-    ? state.retried
-    : call.role === 'research'
-      ? { ...state.retried, research: state.retried.research + 1 }
-      : { ...state.retried, votes: state.retried.votes + 1 }
+  const again = !call.again && BAD_REPLY_KINDS.has(event.failure.kind)
   return {
     ...state,
-    retried: counts,
+    retried: call.retried
+      ? state.retried
+      : plusOne(state.retried, call.role),
+    again: again
+      ? plusOne(state.again, call.role)
+      : state.again,
     calls: set(state.calls, event.call, {
       ...call,
       retried: true,
+      again: call.again || again,
       waitingUntil: now + event.waitMs,
       failure: event.failure,
       // the next attempt streams its own count from 0; what the failed one streamed stays in the buckets

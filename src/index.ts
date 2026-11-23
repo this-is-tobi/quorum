@@ -77,6 +77,7 @@ export type {
   SkipRule,
   StageName,
   Thresholds,
+  UnusableReply,
   Usage,
   Verdict,
   VerdictStatus,

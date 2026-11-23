@@ -324,7 +324,7 @@ describe('frameLines', () => {
 
   it('shows a call waiting to retry counting down, and the parts still to go', () => {
     const events = longReview()
-    const retry = events.find(({ event }) => event.type === 'call:retry' && event.failure.status === 503)!
+    const retry = events.find(({ event }) => event.type === 'call:retry' && 'status' in event.failure && event.failure.status === 503)!
     expect(retry.event).toMatchObject({ waitMs: 3600 })
     const calls = (at: number): string[] => frameOf(events, at).filter(line => line.startsWith('calls') || line.startsWith('          '))
     const sentBy = (at: number): number => new Set(events
@@ -340,6 +340,46 @@ describe('frameLines', () => {
     expect(over[0]).not.toContain(UNICODE_GLYPHS.retry)
     expect(over[0]).toMatch(/p7 \d+m\d{2}s/)
     expect(over.join(' ')).toContain(`+${44 - sentBy(retry.at + 3700)} to go`)
+  })
+
+  it('shows a call waiting to be sent once more after a reply that could not be read', () => {
+    const state = stateOf([
+      ...started(['security'], 131),
+      [
+        0,
+        {
+          type: 'call:start',
+          call: 1,
+          profile: 'security',
+          role: 'research',
+          provider: API,
+          part: { index: 117, count: 131 },
+          reserved: 6000,
+          timeoutMs: 600_000,
+        },
+      ],
+      [
+        130_000,
+        {
+          type: 'call:retry',
+          call: 1,
+          attempt: 1,
+          retries: 2,
+          failure: { kind: 'unusable-reply' },
+          attemptMs: 130_000,
+          waitMs: 1000,
+        },
+      ],
+    ])
+    const lines = frameLines(state, 130_000, {
+      columns: 80,
+      rows: 24,
+      glyphs: UNICODE_GLYPHS,
+      color: false,
+      view: 'full',
+      timeLeft: { kind: 'none' },
+    })
+    expect(lines.join('\n')).toContain(`${UNICODE_GLYPHS.retry} p117 unusable-reply, 1s`)
   })
 
   it('shows no tok/s while the last minute holds no tokens, and keeps the sparkline', () => {

@@ -7766,7 +7766,7 @@ describe('a path that cuts calls on the way', () => {
     ])
     // A vote asks 9216 tokens at most, under what the cut holds: no budget moved, so no `replyTokens` is recorded.
     expect(ofType(events, 'adapted').map(event => event.adaptation.setting)).toEqual(['thinking'])
-    // Each vote was cut at `low` too, and is a reject: a failed vote of kind truncated, which no flag lifts, and never a provider found down.
+    // Each vote was cut at `low` too, and is a reject: a failed vote of kind truncated, which no flag lifts, and never a provider found down. A vote cut on the way is not sent once more: the same request would be cut again after as long.
     const [verdict] = result.unreviewed
     expect(verdict.votes.map(lensVote => lensVote.failure)).toEqual(Array.from({ length: 3 }).fill({ kind: 'truncated' }))
     expect(ofType(events, 'provider-down')).toEqual([])

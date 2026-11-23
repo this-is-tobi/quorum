@@ -7,7 +7,7 @@ import { elapsedWords } from '../../core/duration.ts'
 import { CUT_ADVICE, downWords, lackWords } from '../../core/errors.ts'
 import type { PartOutcome } from '../../core/parts.ts'
 import { inertLine } from '../../core/sanitize.ts'
-import type { Adaptation, CallFailure, LeftOutFile, QuorumEvent } from '../../core/types.ts'
+import type { Adaptation, CallFailure, LeftOutFile, QuorumEvent, UnusableReply } from '../../core/types.ts'
 import { flagWhere, leftOutEntry } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords, researchRuns, timeLeft } from './eta.ts'
@@ -162,10 +162,10 @@ const PIECE_WORDS: ReadonlyArray<readonly [Unread, string]> = [
 ]
 
 /** A failure as the part's line words it: its kind, then its status when it has one. */
-export function kindWords({ kind, status }: CallFailure): string {
-  return status === undefined
-    ? kind
-    : `${kind} ${status}`
+export function kindWords(failure: CallFailure | UnusableReply): string {
+  return 'status' in failure && failure.status !== undefined
+    ? `${failure.kind} ${failure.status}`
+    : failure.kind
 }
 
 /**
@@ -316,9 +316,12 @@ function glyphOf(event: QuorumEvent): GlyphName | undefined {
  * A retry's failure as its line words it: `timeout after 600000 ms`, whose length is the deadline's, `stalled, no progress
  * for 300000 ms` for a stream that stalled, whose length is its window, `timeout after 10512000 ms` with the ceiling a
  * stream grew to when the failure names it, `its reply held only reasoning after 4m10s` for a reply of only reasoning (the
- * one `no-answer` a call retries), else its kind (`http 503`, `network`) and how long the attempt ran: `network after 10m00s`.
+ * one `no-answer` a call sends once more), `its reply could not be read after 2m10s` for a reply the stage refused, else its kind
+ * (`http 503`, `network`) and how long the attempt ran: `network after 10m00s`.
  */
-function retryFailure({ kind, status, stalledMs, ceilingMs }: CallFailure, timeoutMs: number, attemptMs: number): string {
+function retryFailure(failure: CallFailure | UnusableReply, timeoutMs: number, attemptMs: number): string {
+  if (failure.kind === 'unusable-reply') return `its reply could not be read after ${elapsedWords(attemptMs)}`
+  const { kind, status, stalledMs, ceilingMs } = failure
   if (kind === 'timeout' && stalledMs !== undefined) return `stalled, no progress for ${stalledMs} ms`
   if (kind === 'timeout') return `timeout after ${ceilingMs ?? timeoutMs} ms`
   if (kind === 'no-answer') return `its reply held only reasoning after ${elapsedWords(attemptMs)}`

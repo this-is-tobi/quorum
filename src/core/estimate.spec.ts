@@ -388,7 +388,7 @@ describe('estimate', () => {
     expect(worstWith({ thinking: 'low', stream: true })).toBe(none + 3 * (one - none))
   })
 
-  it('counts each call once more, in the review\'s worst alone, for a provider that sends a reply of only reasoning once more', () => {
+  it('counts each call once more, in the review\'s worst alone, for every provider that states a retry, whatever its thinking', () => {
     const lone: Profile = {
       id: 'lone',
       prompts: { research: 'Find bugs.', vote: 'Judge as {{lens.id}}.' },
@@ -431,11 +431,12 @@ describe('estimate', () => {
     expect(estimateOf({ retries: 2 }, {}).worst).toBe(plain.worst + profileWorst - 3 * vote.only)
     expect(estimateOf({}, { retries: 1 }).worst).toBe(plain.worst + 3 * vote.only)
 
-    // A provider whose thinking the review may lower leaves a reply of only reasoning to that, and adds none of its own.
+    // A provider whose thinking the review may lower sends a call once more too, after the adaptation's own try.
     const lowers = {
       adapts: { thinking: 'low' as const },
     }
-    expect(estimateOf({ retries: 2, ...lowers }, { retries: 2, ...lowers }).worst).toBe(estimateOf(lowers, lowers).worst)
+    const lowered = estimateOf(lowers, lowers)
+    expect(estimateOf({ retries: 2, ...lowers }, { retries: 2, ...lowers }).worst).toBe(lowered.worst + lowered.profiles.lone.worst)
     expect(estimateOf({ retries: 0 }, { retries: 0 }).worst).toBe(plain.worst)
     for (const estimate of [
       both,
@@ -444,6 +445,44 @@ describe('estimate', () => {
       expect(estimate.inFlight).toBe(plain.inFlight)
       expect(estimate.expected).toBe(plain.expected)
     }
+  })
+
+  it('counts the once-more sends of two profiles, each by its own providers\' retries', () => {
+    const naming: Profile = { ...securityProfile, id: 'naming' }
+    const reserve = (request: CompletionRequest): number => requestTokens(request) + RESERVE
+    const estimateOf = (retries: Partial<Provider>): Estimate => createQuorum({
+      profiles: [securityProfile, naming],
+      maxFindings: 3,
+      concurrency: 2,
+    }, {
+      profiles: Object.fromEntries([securityProfile, naming].map(profile => [
+        profile.id,
+        {
+          research: {
+            ...silent(reserve),
+            ...profile.id === 'naming'
+              ? retries
+              : {},
+          },
+          voters: Object.fromEntries(profile.lenses.map(lens => [
+            lens.id,
+            {
+              ...silent(reserve),
+              ...profile.id === 'naming'
+                ? retries
+                : {},
+            },
+          ])),
+        },
+      ])),
+    }).estimate({
+      diff: addedFile('a.js', 3),
+    })
+    const plain = estimateOf({})
+    expect(plain.worst).toBe(plain.profiles.security.worst + plain.profiles.naming.worst)
+    const retried = estimateOf({ retries: 2 })
+    expect(retried.worst).toBe(plain.worst + plain.profiles.naming.worst)
+    expect(retried.profiles.naming.worst).toBe(plain.profiles.naming.worst)
   })
 
   it('counts a provider object that serves research and votes once in the adaptations\' bound', () => {
