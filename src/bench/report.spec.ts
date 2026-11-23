@@ -4,9 +4,11 @@ import { reviewKey } from './records.ts'
 import { buildReport, reportJson, reportMarkdown, reviewScore } from './report.ts'
 import type { Comparison, ConfigurationIndependence, Measure, ReportInput, ReviewScore } from './report.ts'
 import type { JudgedFinding } from './score.ts'
+import { ALPHA, signTest } from './stats.ts'
 import type { SuiteCase } from './suite.ts'
 
 const CASES = SUITE.cases as unknown as SuiteCase[]
+const NONE_RESOLVED = 'No comparison resolved, so no difference above is told from chance: a sign test needs at least 6 cases that differ, all one way, so more cases give it more to count, and more trials steady each case\'s score.'
 const A = 'a'.repeat(64)
 const B = 'b'.repeat(64)
 function score(fields: Partial<ReviewScore>): ReviewScore {
@@ -403,6 +405,8 @@ describe('reportMarkdown', () => {
       '- 2, incomplete reviews: -33.3 points; 1 better, 0 worse, 2 tied; p = 1.0000, unresolved',
       '- 2, tokens per review: -250; 3 better, 0 worse, 0 tied; p = 0.2500, unresolved',
       '',
+      NONE_RESOLVED,
+      '',
       '## Inter-voter error correlation',
       '',
       'A finding of known truth catches a location, and is true, or a decoy, and is false. A lens errs when it discards a true finding or keeps a false one. The mean phi is the correlation of two lenses\' errors over the findings both voted on, a failed vote left out, averaged over the pairs whose errors both vary; k lenses whose errors correlate that much are worth k / (1 + (k - 1) x the mean phi) votes.',
@@ -411,6 +415,60 @@ describe('reportMarkdown', () => {
       '- 2: no finding of known truth',
       '',
     ].join('\n'))
+  })
+
+  it('says in one sentence that no comparison resolved, and what would resolve one', () => {
+    const after = '- 2, tokens per review: -250; 3 better, 0 worse, 0 tied; p = 0.2500, unresolved\n\n'
+    const markdown = reportMarkdown(buildReport(INPUT))
+    expect(markdown).toContain(`${after}${NONE_RESOLVED}\n\n## Inter-voter error correlation\n`)
+    expect(markdown.split(NONE_RESOLVED)).toHaveLength(2)
+    // The sentence's six cases are the least a two-sided exact sign test at ALPHA can resolve on.
+    expect(signTest(6, 0)).toBeLessThan(ALPHA)
+    expect(signTest(5, 0)).toBeGreaterThanOrEqual(ALPHA)
+    const three = reportMarkdown(buildReport({
+      ...INPUT,
+      configurations: [
+        ...INPUT.configurations,
+        {
+          path: 'c.yaml',
+          fingerprint: 'c'.repeat(64),
+        },
+      ],
+    }))
+    expect(three.split(NONE_RESOLVED)).toHaveLength(2)
+    expect(reportJson(buildReport(INPUT))).not.toContain('No comparison resolved')
+  })
+
+  it('writes no such sentence when a comparison resolves, or for one configuration', () => {
+    const cases = Array.from({ length: 6 }, (_, index): SuiteCase => ({
+      id: `bug-${index + 1}`,
+      kind: 'bug',
+      patch: 'bug.patch',
+      locations: [
+        { file: 'a.js', start: 1, end: 1 },
+      ],
+    }))
+    const resolving = reportMarkdown(buildReport({
+      ...INPUT,
+      cases,
+      trials: 1,
+      scores: new Map(cases.flatMap(({ id }) => [
+        [
+          reviewKey(A, id, 1),
+          score({}),
+        ],
+        [
+          reviewKey(B, id, 1),
+          score({ keptCatch: true, proposedCatch: true }),
+        ],
+      ] as const)),
+    }))
+    expect(resolving).toContain(', resolved\n')
+    expect(resolving).not.toContain('No comparison resolved')
+    expect(reportMarkdown(buildReport({
+      ...INPUT,
+      configurations: [INPUT.configurations[0]],
+    }))).not.toContain('No comparison resolved')
   })
 
   it('writes the mean phi and the effective votes of each configuration, from the findings of known truth of its counted reviews', () => {
