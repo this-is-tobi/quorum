@@ -215,6 +215,17 @@ describe('publicView', () => {
     expect(view.meta.adaptations[0]).not.toBe(result.meta.adaptations[0])
   })
 
+  it('keeps a moved finding\'s citedLine in the public view', () => {
+    const moved = publicView(reportResult({
+      kept: [
+        { ...SQL, citedLine: 11 },
+      ],
+      unreviewed: [TOKEN],
+    }))
+    expect(moved.kept[0].citedLine).toBe(11)
+    expect(Object.hasOwn(moved.unreviewed[0], 'citedLine')).toBe(false)
+  })
+
   it('keeps a vote\'s lens, its keep, null when it failed, and its failure', () => {
     const votes: LensVote[] = [
       cast(true),

@@ -3,7 +3,8 @@
  *
  * 1. a header, what was reviewed;
  * 2. the findings, kept and unreviewed together, grouped by file and then by line, each with its claim, its
- *    evidence rows and how its lenses voted; the discarded ones are only counted;
+ *    evidence rows and how its lenses voted, and, under its head, the line its finder cited when the harness
+ *    moved it to its quote; the discarded ones are only counted;
  * 3. each profile's level, counts and coverage;
  * 4. the files left out;
  * 5. the gaps;
@@ -166,7 +167,16 @@ function evidenceLines(verdict: Verdict | PublicVerdict, color: boolean): string
   })
 }
 
-/** A finding's block: its head, its claim, its evidence rows, its votes and a blank line. */
+/** Where the finder cited a finding the harness moved to its quote, which is its line: the line right under its head, none for a finding that stayed where it was cited. */
+function citedLines(verdict: Verdict | PublicVerdict): string[] {
+  return verdict.citedLine === undefined
+    ? []
+    : [
+        inertLine(`  cited at line ${verdict.citedLine}; its quote is at ${verdict.line}`),
+      ]
+}
+
+/** A finding's block: its head, where it was cited when it moved, its claim, its evidence rows, its votes and a blank line. */
 function findingLines(verdict: Verdict | PublicVerdict, kept: boolean, color: boolean): string[] {
   return [
     line([
@@ -175,6 +185,7 @@ function findingLines(verdict: Verdict | PublicVerdict, kept: boolean, color: bo
       { text: `${pathText(verdict.file)}:${verdict.line}`, style: 'bold' },
       { text: `  ${verdict.category}` },
     ], color),
+    ...citedLines(verdict),
     ...wrap('  ', verdict.summary).map(inertLine),
     ...evidenceLines(verdict, color),
     inertLine(`  ${votesWords(verdict)}`),

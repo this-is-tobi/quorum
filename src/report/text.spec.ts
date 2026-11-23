@@ -155,6 +155,18 @@ describe('text', () => {
     ])
   })
 
+  it('says where the finder cited a moved finding, right under its head', () => {
+    const moved = keeping({ line: 30, citedLine: 11 })
+    expect(render(moved).slice(2, 5)).toEqual([
+      'HIGH  security  src/auth/login.ts:30  CWE-89',
+      '  cited at line 11; its quote is at 30',
+      '  SQL built from the request\'s id parameter reaches db.query',
+    ])
+    expect(render(publicView(moved)).slice(3, 4)).toEqual(['  cited at line 11; its quote is at 30'])
+    expect(render(keeping({ line: 30 }))).not.toContain('  cited at line 11; its quote is at 30')
+    expect(render(reportResult()).some(line => line.includes('cited at line'))).toBe(false)
+  })
+
   it('marks the cited row and numbers the + and context rows from the cited line, never a - row', () => {
     expect(rowsShown('+a()\n+b()\n c()', 0, 9)).toEqual([
       '   >   9 + a()',

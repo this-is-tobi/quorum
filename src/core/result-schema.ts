@@ -79,6 +79,7 @@ function verdictOf<Votes extends z.ZodType>(votes: Votes) {
     profile: profileId,
     file: z.string(),
     line: count,
+    citedLine: count.optional(),
     category: z.string().max(MAX_CATEGORY),
     summary: z.string().max(MAX_SUMMARY),
     evidence: z.string().max(MAX_EVIDENCE),

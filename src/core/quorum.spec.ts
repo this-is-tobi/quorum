@@ -131,6 +131,16 @@ const style: Profile = {
   policy: { high: 'unanimous', medium: 'off', low: 'off' },
 }
 
+/** A profile of its own, which is not the security profile and has one lens. */
+const naming: Profile = {
+  id: 'naming',
+  prompts: { research: 'Review this diff for names that mislead.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
+  lenses: [
+    { id: 'clarity', question: 'Does the name mislead?' },
+  ],
+  policy: { high: 'unanimous', medium: 'off', low: 'off' },
+}
+
 beforeEach(() => {
   complete.mockReset()
 })
@@ -621,14 +631,6 @@ describe('review', () => {
   })
 
   it('reviews a finding of a profile of its own that gives no category, as uncategorized, with its id and its claim', async () => {
-    const naming: Profile = {
-      id: 'naming',
-      prompts: { research: 'Review this diff for names that mislead.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
-      lenses: [
-        { id: 'clarity', question: 'Does the name mislead?' },
-      ],
-      policy: { high: 'unanimous', medium: 'off', low: 'off' },
-    }
     const { category: _, ...withoutCategory } = reported
     complete.mockResolvedValueOnce(findings(withoutCategory)).mockResolvedValue(vote(true))
     const result = await run(naming).review({ diff })
@@ -639,6 +641,48 @@ describe('review', () => {
     expect(votes).toHaveLength(1)
     expect(votes[0].messages[0].content).toContain('Finding: a.js:1 [uncategorized]')
     expect(result.meta.incomplete.map(entry => entry.reason)).not.toContain('finding-unreadable')
+  })
+
+  it('votes on a moved finding at its quote, of a profile of its own, its id and dedup taken at its final line', async () => {
+    const sink = `db.query(\`SELECT * FROM t WHERE id = \${id}\`)`
+    const added = Array.from({ length: 40 }, (_, at) => `+${at === 29
+      ? sink
+      : `const value${at + 1} = compute(${at + 1})`}`)
+    const anchored = [
+      'diff --git a/a.js b/a.js',
+      '--- /dev/null',
+      '+++ b/a.js',
+      '@@ -0,0 +1,40 @@',
+      ...added,
+    ].join('\n')
+    const misanchored = {
+      file: 'a.js',
+      line: 11,
+      category: 'misleading-name',
+      quote: sink,
+      summary: 'the name hides a query',
+    }
+    complete.mockResolvedValueOnce(findings(misanchored)).mockResolvedValue(vote(true))
+    const result = await run(naming).review({ diff: anchored })
+    expect(result.kept).toHaveLength(1)
+    expect(result.kept[0]).toMatchObject({
+      line: 30,
+      citedLine: 11,
+      quoteMatched: true,
+      id: findingId('naming', 'a.js', 30, 'misleading-name'),
+    })
+    const votes = complete.mock.calls.map(([request]) => request).filter(isVote)
+    expect(votes).toHaveLength(1)
+    for (const { messages: [{ content }] } of votes) {
+      expect(content).toContain('Finding: a.js:30 [misleading-name]')
+      expect(/<untrusted-evidence-[0-9a-f]{8}>\n([\s\S]*?)\n<\/untrusted-evidence-/.exec(content)?.[1].split('\n')).toContain(`+${sink}`)
+    }
+
+    complete.mockReset()
+    complete.mockResolvedValueOnce(findings({ ...misanchored, line: 30 }, misanchored)).mockResolvedValue(vote(true))
+    const twice = await run(naming).review({ diff: anchored })
+    expect(twice.kept).toHaveLength(1)
+    expect(complete.mock.calls.map(([request]) => request).filter(isVote)).toHaveLength(1)
   })
 
   it('drops a finding that cites code outside the diff, and says so', async () => {

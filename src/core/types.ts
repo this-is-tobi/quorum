@@ -28,6 +28,11 @@ export interface Finding {
   /** The diff's own path; for a diff without per-file headers, the finder's name for it, cleaned. */
   file: string
   line: number
+  /**
+   * The line the finder cited, when the harness moved the finding to the nearest occurrence of its quote, which `line` is
+   * then. Absent, never `undefined`, for a finding that stayed where it was cited.
+   */
+  citedLine?: number
   /** The finder's category, cleaned and capped like the summary. */
   category: string
   /** The finder's claim, stripped of control, format and other invisible characters and capped. */
@@ -41,7 +46,7 @@ export interface Finding {
    * or when the evidence's cap cut that row.
    */
   evidenceRow?: number
-  /** Whether the finder's quote appears in the evidence: a measure of hallucinated citations. */
+  /** Whether the finder's quote appears in the evidence, which is read at the final `line`: a measure of hallucinated citations. */
   quoteMatched: boolean
 }
 
