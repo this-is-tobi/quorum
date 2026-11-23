@@ -6,9 +6,10 @@
  * `inertLine` whole.
  */
 
+import { ownData } from '../core/facts.ts'
 import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
 import { failsItsProfile } from '../core/outcome.ts'
-import type { CoverageEntry, CoverageStatus, Flag, IncompleteReason, LeftOutFile, PublicVerdict, PublicView, ReviewSource, Verdict } from '../core/types.ts'
+import type { CoverageEntry, CoverageStatus, Flag, IncompleteReason, LeftOutFile, PublicVerdict, PublicView, ReviewSource, Verdict, VoteFailure } from '../core/types.ts'
 import { voteFailed } from './view.ts'
 
 /** `1 gap`, `2 gaps`: the count, then the noun in the form the count takes. */
@@ -128,12 +129,91 @@ export function verdictWhy(outcome: Outcome): string {
     : WHY[outcome.status]
 }
 
-/** How a finding's lenses voted: how many kept it, and how many votes failed, as `kept by 1 of 3 lenses, 1 vote failed`. */
+/** An HTTP status a failure can state: an integer from 100 to 599, as the result schema takes it. */
+function isHttpStatus(status: unknown): status is number {
+  return typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
+}
+
+/** A `truncated` vote's words: `cut off while reasoning` for reasoning that used the limit, `cut off at the server's window` for the window, else `cut off`, true of a reply cut at a learned length too. */
+function cutOffWords(noAnswer: unknown): string {
+  switch (noAnswer) {
+    case 'thinking':
+      return 'cut off while reasoning'
+    case 'window':
+      return 'cut off at the server\'s window'
+    default:
+      return 'cut off'
+  }
+}
+
+/** A `no-answer` vote's words: `only reasoning` for a reply of nothing else, `an empty reply` for one that held nothing, else `no answer`. */
+function noAnswerWords(noAnswer: unknown): string {
+  switch (noAnswer) {
+    case 'thinking':
+      return 'only reasoning'
+    case 'empty':
+      return 'an empty reply'
+    default:
+      return 'no answer'
+  }
+}
+
+/**
+ * What a failed vote failed with, in words quorum wrote, read from the failure's own data alone and never a word
+ * a server or a model said: `an http 503 error`, `a timeout`, `cut off while reasoning`, `an unreadable reply`.
+ * `an unknown error` stands for a vote that records no failure and for a kind no release knows.
+ */
+export function voteFailureWords(failure: VoteFailure | null): string {
+  switch (ownData(failure, 'kind')) {
+    case 'http': {
+      const status = ownData(failure, 'status')
+      return isHttpStatus(status)
+        ? `an http ${status} error`
+        : 'an http error'
+    }
+    case 'network':
+      return 'a network error'
+    case 'process':
+      return 'a process error'
+    case 'timeout':
+      return 'a timeout'
+    case 'aborted':
+      return 'aborted'
+    case 'refusal':
+      return 'a refusal by the model'
+    case 'invalid-response':
+      return 'an invalid response'
+    case 'unsupported':
+      return 'unsupported by its provider'
+    case 'too-large':
+      return 'too large for its model'
+    case 'truncated':
+      return cutOffWords(ownData(failure, 'noAnswer'))
+    case 'no-answer':
+      return noAnswerWords(ownData(failure, 'noAnswer'))
+    case 'token-cap':
+      return 'stopped by the token cap'
+    case 'review-deadline':
+      return 'stopped by the deadline'
+    case 'interrupted':
+      return 'stopped by the interrupt'
+    case 'provider-down':
+      return 'its provider down'
+    case 'unusable-reply':
+      return 'an unreadable reply'
+    default:
+      return 'an unknown error'
+  }
+}
+
+/** How a finding's lenses voted: how many kept it, how many votes failed and what each failed with, once each, in lens order, as `kept by 1 of 3 lenses, 1 vote failed: cut off while reasoning`. */
 export function votesWords(verdict: Verdict | PublicVerdict): string {
-  const failed = verdict.votes.filter(voteFailed).length
-  const failures = failed === 0
+  const failed = verdict.votes.filter(voteFailed)
+  const failures = failed.length === 0
     ? ''
-    : `, ${plural(failed, 'vote')} failed`
+    : `, ${plural(failed.length, 'vote')} failed: ${[
+      ...new Set(failed.map(({ failure }) => voteFailureWords(failure))),
+    ].join(', ')}`
   return `kept by ${verdict.keptVotes} of ${plural(verdict.totalVotes, 'lens', 'lenses')}${failures}`
 }
 

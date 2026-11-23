@@ -43,7 +43,7 @@ const MAIN = [
   '        43   return rows',
   '  ```',
   '',
-  '- **UNREVIEWED** security · `src/session.js` line 20 · `CWE-338` · kept by 1 of 3 lenses, 1 vote failed',
+  '- **UNREVIEWED** security · `src/session.js` line 20 · `CWE-338` · kept by 1 of 3 lenses, 1 vote failed: a network error',
   '',
   '  `Session tokens come from Math.random, which is not a cryptographic generator.`',
   '',

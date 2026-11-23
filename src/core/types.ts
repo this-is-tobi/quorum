@@ -80,6 +80,8 @@ export interface VoteFailure {
   kind: VoteFailureKind
   /** An `http` failure's HTTP status, an integer from 100 to 599; absent for every other kind, and for an `http` failure that states none. */
   status?: number
+  /** What a `truncated` or `no-answer` vote's reply lacked, when its failure said it: its visible answer cut off (`reply`), reasoning that used the limit or a reply of only reasoning (`thinking`), the server's window (`window`), or nothing at all (`empty`). Absent for every other kind. */
+  noAnswer?: NoAnswer
 }
 
 /**
@@ -808,7 +810,7 @@ export type QuorumEvent
      * undone an `interrupted` gap. `inFlight` counts the attempts sent and not settled when it began.
      */
     | { type: 'run:stopping', cause: 'interrupt' | 'review-deadline', inFlight: number, graceMs?: number }
-    /** One lens voted on one finding; `keep` is null, with the error and the failure's kind and status, when the vote failed. */
+    /** One lens voted on one finding; `keep` is null, with the error and the failure's kind, status and `noAnswer`, when the vote failed. */
     | { type: 'vote', profile: string, findingId: string, lens: string, keep: boolean | null, error?: string, failure?: VoteFailure }
     /** The panel decided one finding: its vote split, the confidence it earned and where it lands. */
     | { type: 'verdict', profile: string, findingId: string, keptVotes: number, totalVotes: number, confidence?: Confidence, status: VerdictStatus }
