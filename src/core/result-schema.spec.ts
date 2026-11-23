@@ -469,6 +469,23 @@ describe('the schemas of a result', () => {
     expect(publicViewSchema.parse(view)).toEqual(view)
   })
 
+  it('reads a verdict\'s citedLine as a count, and refuses one that is no whole number of at least 0', () => {
+    const cited = (shape: 'full' | 'public', citedLine: unknown): Forged => {
+      const value: Forged = saved(shape === 'full'
+        ? reportResult()
+        : publicView(reportResult()))
+      value.kept[0].citedLine = citedLine
+      return value
+    }
+    for (const shape of ['full', 'public'] as const) {
+      const schema = shape === 'full'
+        ? resultSchema
+        : publicViewSchema
+      for (const read of [11, 0]) expect(schema.parse(cited(shape, read))).toEqual(cited(shape, read))
+      for (const refused of [-1, 1.5, '11']) expect(schema.safeParse(cited(shape, refused)).success).toBe(false)
+    }
+  })
+
   it.each<[string, 'full' | 'public', (value: Forged) => void]>([
     [
       'a profile key in capitals',

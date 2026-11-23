@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { splitDiff } from './diff.ts'
+import { locate, splitDiff } from './diff.ts'
 import type { FindingDetails } from './types.ts'
-import { UNCATEGORIZED, verifyFindings } from './verify.ts'
+import { MAX_ANCHOR_OCCURRENCES, MIN_ANCHOR_QUOTE, UNCATEGORIZED, verifyFindings } from './verify.ts'
+import type { VerifiedFinding } from './verify.ts'
 
 const diff = [
   'diff --git a/src/a.js b/src/a.js',
@@ -338,5 +339,242 @@ describe('verifyFindings', () => {
       { ...reported, file: 'a\u200B.js' },
     ], plain).findings
     expect(finding.file).toBe('a.js')
+  })
+})
+
+describe('a finding anchored on its quote', () => {
+  /** The line a quote is searched for: a template literal, whose `${` stays in the code as written. */
+  const SINK = `db.query(\`SELECT * FROM t WHERE id = \${id}\`)`
+  const plainLine = (line: number): string => `const value${line} = compute(${line})`
+
+  /** One added file of `count` lines, each `const value<i> = compute(<i>)` but those `lines` replace. */
+  function addedFile(name: string, count: number, lines: Readonly<Record<number, string>> = {}): string {
+    return [
+      `diff --git a/${name} b/${name}`,
+      '--- /dev/null',
+      `+++ b/${name}`,
+      `@@ -0,0 +1,${count} @@`,
+      ...Array.from({ length: count }, (_, at) => `+${lines[at + 1] ?? plainLine(at + 1)}`),
+    ].join('\n')
+  }
+
+  const file = (lines: Readonly<Record<number, string>> = {}): ReadonlyMap<string, string> => splitDiff(addedFile('a.js', 40, lines))
+  const sinkAt30 = file({ 30: SINK })
+  const cite = (sections: ReadonlyMap<string, string>, line: number, quote: string, name = 'a.js'): VerifiedFinding => verifyFindings([
+    { ...reported, file: name, line, quote },
+  ], sections).findings[0]
+
+  it('moves a finding cited 19 lines from its quote to the quote, keeping the cited line, its evidence read there', () => {
+    const finding = cite(sinkAt30, 11, SINK)
+    expect(finding).toMatchObject({
+      line: 30,
+      citedLine: 11,
+      quoteMatched: true,
+      evidenceRow: 2,
+    })
+    expect(finding.evidence).toBe(locate(sinkAt30, 'a.js', 30)?.evidence)
+    expect(finding.evidence.split('\n')[2]).toBe(`+${SINK}`)
+  })
+
+  it('moves a finding to the nearer of two occurrences of its quote, whichever side of the cited line it stands', () => {
+    const twice = file({ 2: SINK, 30: SINK })
+    expect(cite(twice, 18, SINK)).toMatchObject({ line: 30, citedLine: 18 })
+    expect(cite(twice, 14, SINK)).toMatchObject({ line: 2, citedLine: 14 })
+  })
+
+  it('reads the evidence of a moved finding from the diff, never from the quote the finder wrote', () => {
+    const spaced = `  ${SINK.replace('SELECT *', 'SELECT   *')}\n`
+    const finding = cite(sinkAt30, 11, spaced)
+    expect(finding).toMatchObject({ line: 30, citedLine: 11 })
+    expect(finding.evidence).toBe(locate(sinkAt30, 'a.js', 30)?.evidence)
+    expect(JSON.stringify(finding)).not.toContain('SELECT   *')
+  })
+
+  it.each<[string, ReadonlyMap<string, string>, number, string, boolean]>([
+    [
+      'shorter than 10 characters that are not white space',
+      file({ 30: 'exec(cmd)' }),
+      11,
+      'exec(cmd)',
+      false,
+    ],
+    [
+      'at two lines at the same distance',
+      file({ 2: SINK, 30: SINK }),
+      16,
+      SINK,
+      false,
+    ],
+    [
+      'nowhere in its file\'s section',
+      sinkAt30,
+      11,
+      'nothing of the kind is written here',
+      false,
+    ],
+    [
+      'only in another file\'s section',
+      splitDiff([
+        addedFile('a.js', 40),
+        addedFile('b.js', 40, { 30: SINK }),
+      ].join('\n')),
+      11,
+      SINK,
+      false,
+    ],
+    [
+      'four rows, one more than the evidence at its first row holds',
+      file({ 30: SINK }),
+      11,
+      [28, 29, 30, 31].map(line => line === 30
+        ? SINK
+        : plainLine(line)).join('\n'),
+      false,
+    ],
+    [
+      'longer than the evidence of one line holds',
+      file({ 30: SINK }),
+      11,
+      [28, 29, 30, 31, 32, 33].map(line => line === 30
+        ? SINK
+        : plainLine(line)).join('\n'),
+      false,
+    ],
+    [
+      'in its evidence already',
+      file({ 2: SINK, 30: SINK }),
+      29,
+      SINK,
+      true,
+    ],
+  ])('keeps a finding at its cited line, with no citedLine, when its quote is %s', (_name, sections, cited, quote, matched) => {
+    const finding = cite(sections, cited, quote)
+    expect(finding.line).toBe(cited)
+    expect(Object.hasOwn(finding, 'citedLine')).toBe(false)
+    expect(finding.quoteMatched).toBe(matched)
+  })
+
+  it('moves a finding whose quote spans three rows, the most the evidence at its first row holds', () => {
+    const quote = [28, 29, 30].map(line => line === 30
+      ? SINK
+      : plainLine(line)).join('\n')
+    expect(cite(sinkAt30, 11, quote)).toMatchObject({
+      line: 28,
+      citedLine: 11,
+      quoteMatched: true,
+    })
+  })
+
+  it('moves a quote of exactly 10 characters that are not white space, its spaces not counted', () => {
+    expect(MIN_ANCHOR_QUOTE).toBe(10)
+    const spaced = file({ 30: 'exec( cmdA )' })
+    expect(cite(spaced, 11, 'exec( cmdA )')).toMatchObject({ line: 30, citedLine: 11 })
+    expect(cite(spaced, 11, 'exec( cmd )').line).toBe(11)
+  })
+
+  it('moves a finding whose quote is a removed row to the next line its hunk shows', () => {
+    const removed = splitDiff([
+      'diff --git a/a.js b/a.js',
+      '--- a/a.js',
+      '+++ b/a.js',
+      '@@ -1,40 +1,40 @@',
+      ...Array.from({ length: 29 }, (_, at) => ` ${plainLine(at + 1)}`),
+      '-legacyCheck(token)',
+      `+${SINK}`,
+      ...Array.from({ length: 10 }, (_, at) => ` ${plainLine(at + 31)}`),
+    ].join('\n'))
+    expect(cite(removed, 11, 'legacyCheck(token)')).toMatchObject({
+      line: 30,
+      citedLine: 11,
+      quoteMatched: true,
+    })
+  })
+
+  it('reads at most 16 000 characters of code around the cited line, the nearest rows first', () => {
+    const rows = Object.fromEntries(Array.from({ length: 250 }, (_, at) => [at + 1, `filler${String(at + 1).padStart(4, '0')}${'.'.repeat(90)}`]))
+    const needleAt = (line: number): ReadonlyMap<string, string> => splitDiff(addedFile('a.js', 250, {
+      ...rows,
+      [line]: `needle-anchor${'.'.repeat(87)}`,
+    }))
+    expect(cite(needleAt(151), 1, 'needle-anchor')).toMatchObject({ line: 151, citedLine: 1 })
+    const beyond = cite(needleAt(201), 1, 'needle-anchor')
+    expect(beyond.line).toBe(1)
+    expect(Object.hasOwn(beyond, 'citedLine')).toBe(false)
+  })
+
+  it('keeps a finding where it was cited when its quote stands more than 64 times in its window, and moves one that stands 64', () => {
+    expect(MAX_ANCHOR_OCCURRENCES).toBe(64)
+    const standing = (count: number): ReadonlyMap<string, string> => splitDiff(addedFile('a.js', 100, Object.fromEntries(Array.from({ length: count }, (_, at) => [30 + at, SINK]))))
+    expect(cite(standing(64), 11, SINK)).toMatchObject({ line: 30, citedLine: 11, quoteMatched: true })
+    const frequent = cite(standing(65), 11, SINK)
+    expect(frequent.line).toBe(11)
+    expect(Object.hasOwn(frequent, 'citedLine')).toBe(false)
+    expect(frequent.quoteMatched).toBe(false)
+  })
+
+  it('searches a periodic quote in a window of one repeated character in under 1000 ms for 131 findings, each staying where it was cited', () => {
+    const periodic = splitDiff(addedFile('a.js', 12, {
+      5: 'a'.repeat(15_800),
+    }))
+    const quote = 'a'.repeat(2000)
+    const details = Array.from({ length: 131 }, (): FindingDetails => ({
+      ...reported,
+      file: 'a.js',
+      line: 1,
+      quote,
+    }))
+    const started = performance.now()
+    const { findings } = verifyFindings(details, periodic)
+    expect(performance.now() - started).toBeLessThan(1000)
+    expect(findings.map(({ line, quoteMatched }) => [line, quoteMatched])).toEqual(details.map(() => [1, false]))
+  })
+
+  it.each([
+    ['above', 95, 105],
+    ['below', 105, 95],
+  ])('takes a round of the window only when both its rows fit, so a tie is never seen on one side (the longer row %s)', (_side, longAt, shortAt) => {
+    const needle = 'NEEDLE-ANCHOR-X'
+    const tied = splitDiff(addedFile('a.js', 200, {
+      [longAt]: `${needle}${'.'.repeat(15_900)}`,
+      [shortAt]: needle,
+    }))
+    const tie = cite(tied, 100, needle)
+    expect(tie.line).toBe(100)
+    expect(Object.hasOwn(tie, 'citedLine')).toBe(false)
+    expect(tie.quoteMatched).toBe(false)
+    // The same two rows, each short, both fit: the round is taken whole and the tie is seen, so the finding stays too.
+    const both = splitDiff(addedFile('a.js', 200, {
+      [longAt]: needle,
+      [shortAt]: needle,
+    }))
+    expect(cite(both, 100, needle).line).toBe(100)
+    // One row short of the tie moves to the nearer one.
+    const nearer = splitDiff(addedFile('a.js', 200, {
+      [longAt]: `${needle}${'.'.repeat(15_900)}`,
+      [shortAt === 95
+        ? 96
+        : 104]: needle,
+    }))
+    expect(cite(nearer, 100, needle)).toMatchObject({
+      line: shortAt === 95
+        ? 96
+        : 104,
+      citedLine: 100,
+    })
+  })
+
+  it('anchors 50 findings in a section of 20 000 rows of 500 characters in under 1000 ms', () => {
+    const rows = Object.fromEntries(Array.from({ length: 20_000 }, (_, at) => [at + 1, `row-${at + 1}-${'x'.repeat(490)}`]))
+    const sections = splitDiff(addedFile('a.js', 20_000, rows))
+    const details = Array.from({ length: 50 }, (_, at): FindingDetails => ({
+      ...reported,
+      file: 'a.js',
+      line: 1000 + at * 300,
+      quote: `row-${1010 + at * 300}-xxxxxxxxxx`,
+    }))
+    const started = performance.now()
+    const { findings } = verifyFindings(details, sections)
+    expect(performance.now() - started).toBeLessThan(1000)
+    expect(findings.map(({ line, citedLine }) => [line, citedLine])).toEqual(details.map(({ line }) => [line + 10, line]))
   })
 })

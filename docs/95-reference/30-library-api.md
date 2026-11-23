@@ -146,6 +146,8 @@ It resolves with the [result](./20-json-result.md), or rejects:
 
 A failed research part, its call or its reply, never rejects a review: it is its profile's `research-failed` gap, a gating profile's too. A failed vote never rejects a review either: it is recorded in its verdict. A provider that is down is called no more, and the research parts and votes it was never sent are `provider-down` gaps: the review rejects only when no part of any profile was read.
 
+A finding's `line` is the line its finder cited, unless the harness moved the finding to the nearest occurrence of its quote in the cited file's section before the panel voted: `Finding.citedLine` then holds the cited line, and the key is absent, never `undefined`, for a finding that stayed where it was cited. `quoteMatched` is of the final line. [A verdict](./20-json-result.md#a-verdict) lists the fields, and [the quote check](../30-security/10-threat-model.md#code-derived-evidence-and-the-quote-check) says when a finding moves.
+
 ## Events
 
 The sink receives every event of a review, synchronously and in order, as each thing happens:

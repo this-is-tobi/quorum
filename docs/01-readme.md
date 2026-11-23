@@ -63,7 +63,7 @@ flowchart LR
     P --> U["unreviewed"]
 ```
 
-Research is one call to the finder, whose reply lists candidate findings. Dedup is plain code that drops a finding repeating the file, line and category of an earlier one. The panel sends every finding to every lens of the profile, one call each, and the verdict follows from the votes.
+Research is one call to the finder, whose reply lists candidate findings. Dedup is plain code that drops a finding repeating the file, line and category of an earlier one, keeping the one the finder anchored itself over one the harness moved. The panel sends every finding to every lens of the profile, one call each, and the verdict follows from the votes.
 
 Three things are worth knowing early:
 

@@ -1,5 +1,5 @@
-import { locate } from './diff.ts'
-import type { FindingLocation } from './diff.ts'
+import { hunksOf, locate, sectionFor } from './diff.ts'
+import type { FindingLocation, Hunk } from './diff.ts'
 import { stripHidden } from './sanitize.ts'
 import type { Finding, FindingDetails } from './types.ts'
 
@@ -22,11 +22,28 @@ const MAX_QUOTE = 2000
 /**
  * The quote is searched for in this many leading characters of the evidence at most, which keeps
  * the search cheap on a hostile line. A hit further along a very long line is reported as
- * unmatched, which only affects the informational `quoteMatched` flag.
+ * unmatched, which only affects the informational `quoteMatched` flag. The anchor's search is
+ * bounded by it twice: each row's code is read to this many characters, and the rows around the
+ * cited line are taken while their code sums to at most this many.
  */
 const MAX_SEARCH = 16_000
+/**
+ * The fewest characters, white space not counted, a quote holds for the harness to move a finding
+ * to it. A shorter one (a brace, `end`, `return`) stands in too many places of a file to say which
+ * line the finder meant, so the finding stays where it was cited.
+ */
+export const MIN_ANCHOR_QUOTE = 10
+/**
+ * The most occurrences of a quote the search examines in its window. A quote that stands more often is not distinctive
+ * (a periodic quote in a long run of one character stands thousands of times), so it is ambiguous and the finding stays
+ * where it was cited. The cap keeps the search from costing a quote's length for each of a hostile window's occurrences.
+ */
+export const MAX_ANCHOR_OCCURRENCES = 64
 /** Only the first `max * SCAN_FACTOR` characters of finder-written text are read, so cleaning stays cheap on hostile input. */
 const SCAN_FACTOR = 4
+
+/** `text` with each run of white space one space and both ends trimmed. */
+export const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
 /**
  * Check what the finder reported against the diff itself. A finding must cite a file of the diff
@@ -36,6 +53,12 @@ const SCAN_FACTOR = 4
  * them. The summary and category are the only finder-written text left, cleaned and capped. The
  * row of the evidence that shows the cited line is kept only when the cap left that row as
  * `locate` read it, so a row cut short is never marked.
+ *
+ * A finding whose quote is not in that evidence but is elsewhere in the cited file's section moves
+ * to the nearest occurrence of the quote (`anchorOf`), before the panel votes: its `line`, evidence
+ * and `evidenceRow` are then read from the diff there, `citedLine` keeps the line the finder cited,
+ * and `quoteMatched` is true. Every other finding stays where it was cited, and the quote still
+ * reaches no voter.
  */
 export function verifyFindings(details: readonly FindingDetails[], sections: ReadonlyMap<string, string>): { findings: VerifiedFinding[], invalid: string[] } {
   const findings: VerifiedFinding[] = []
@@ -53,18 +76,26 @@ export function verifyFindings(details: readonly FindingDetails[], sections: Rea
       invalid.push(`line ${detail.line} names no file`)
       continue
     }
-    const evidence = cap(located.evidence, MAX_EVIDENCE)
-    const evidenceRow = citedRow(located, evidence)
+    const matched = quoteAppearsIn(located.evidence, detail.quote)
+    const anchor = matched
+      ? undefined
+      : anchorOf(sections, detail.file, detail.line, detail.quote)
+    const read = anchor?.located ?? located
+    const evidence = cap(read.evidence, MAX_EVIDENCE)
+    const evidenceRow = citedRow(read, evidence)
     findings.push({
       file,
-      line: detail.line,
+      line: anchor?.line ?? detail.line,
+      ...(anchor === undefined
+        ? {}
+        : { citedLine: detail.line }),
       category: plainText(detail.category, MAX_CATEGORY) || UNCATEGORIZED,
       summary: plainText(detail.summary, MAX_SUMMARY),
       evidence,
       ...(evidenceRow === undefined
         ? {}
         : { evidenceRow }),
-      quoteMatched: quoteAppearsIn(located.evidence, detail.quote),
+      quoteMatched: matched || anchor !== undefined,
     })
   }
   return { findings, invalid }
@@ -82,8 +113,155 @@ function citedRow(located: FindingLocation, capped: string): number | undefined 
     : undefined
 }
 
-/** `text` with each run of white space one space and both ends trimmed. */
-export const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim()
+/** What `anchorOf` reads of a file's section: its rows that hold code, in the diff's order. */
+interface AnchorRows {
+  /** The new-file line each row stands at: its own, or, for a removed row, the next line its hunk shows, else the last, else the hunk's start. */
+  readonly lines: readonly number[]
+  /** Each row's code: the first `MAX_SEARCH` characters after its marker, white space collapsed. Never empty, so a row with no code is left out. */
+  readonly codes: readonly string[]
+  /** The index of the hunk each row is in. */
+  readonly hunks: readonly number[]
+  /** The highest line among the rows up to each one, which only rises, so the first row at or after a line is a binary search away. */
+  readonly reach: readonly number[]
+}
+
+/** The rows of each section's hunks, read once, in a cache keyed by the list `hunksOf` caches, so it is dropped with the sections map. */
+const anchorRows = new WeakMap<readonly Hunk[], AnchorRows>()
+
+/** The new-file line each row of `hunk` stands at: a shown row at its own line, a removed row at the next line the hunk shows, else the last it shows, else its start. */
+function linesOfRows(hunk: Hunk): number[] {
+  const shown: Array<number | undefined> = Array.from({ length: hunk.rows.length })
+  for (const [offset, at] of hunk.rowOfLine.entries()) shown[at] = hunk.start + offset
+  let next = hunk.start + Math.max(hunk.rowOfLine.length - 1, 0)
+  return shown.toReversed().map((line) => {
+    next = line ?? next
+    return next
+  }).toReversed()
+}
+
+/** The rows of a file's hunks that hold code, with the line each stands at, read once per list of hunks. */
+function rowsOf(hunks: readonly Hunk[]): AnchorRows {
+  const known = anchorRows.get(hunks)
+  if (known) return known
+  const rows: { lines: number[], codes: string[], hunks: number[], reach: number[] } = {
+    lines: [],
+    codes: [],
+    hunks: [],
+    reach: [],
+  }
+  for (const [hunkAt, hunk] of hunks.entries()) {
+    const lines = linesOfRows(hunk)
+    for (const [at, row] of hunk.rows.entries()) {
+      const code = collapse(row.slice(1, MAX_SEARCH + 1))
+      if (code === '') continue
+      rows.lines.push(lines[at])
+      rows.codes.push(code)
+      rows.hunks.push(hunkAt)
+      rows.reach.push(Math.max(lines[at], rows.reach.at(-1) ?? lines[at]))
+    }
+  }
+  anchorRows.set(hunks, rows)
+  return rows
+}
+
+/**
+ * The rows around the first one at or after `cited`, as a first and a last index: from that row, a round adds the row
+ * above and the row below, only when both fit while the code taken sums to at most `MAX_SEARCH`, so the nearest rows come
+ * first and a tie is always seen on both sides: a round that only one row of fits is not taken. At an edge of the
+ * section a round has one row, taken when it fits. Each row holds code, so a window holds at most `MAX_SEARCH` rows.
+ */
+function windowAround(rows: AnchorRows, cited: number): { first: number, last: number } {
+  let low = 0
+  let high = rows.reach.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (rows.reach[middle] >= cited) high = middle
+    else low = middle + 1
+  }
+  let first = Math.min(low, rows.reach.length - 1)
+  let last = first
+  let size = rows.codes[first].length
+  for (;;) {
+    const above = first > 0
+    const below = last + 1 < rows.codes.length
+    if (!above && !below) return { first, last }
+    const taken = (above
+      ? rows.codes[first - 1].length
+      : 0) + (below
+      ? rows.codes[last + 1].length
+      : 0)
+    if (size + taken > MAX_SEARCH) return { first, last }
+    size += taken
+    if (above) first -= 1
+    if (below) last += 1
+  }
+}
+
+/**
+ * The line of the occurrence of `wanted`, a collapsed quote, nearest `cited` in the window around it,
+ * or undefined when there is none, when two stand at the same distance, or when it stands more than
+ * `MAX_ANCHOR_OCCURRENCES` times, which the search stops counting at. The window's rows are joined by
+ * a space within a hunk and a line feed between two, so no quote spans two hunks, and an occurrence
+ * stands at the line of the row it starts in.
+ */
+function nearestOccurrence(rows: AnchorRows, cited: number, wanted: string): number | undefined {
+  if (rows.codes.length === 0) return undefined
+  const { first, last } = windowAround(rows, cited)
+  let text = ''
+  const starts: number[] = []
+  for (let at = first; at <= last; at++) {
+    if (at > first) {
+      text += rows.hunks[at] === rows.hunks[at - 1]
+        ? ' '
+        : '\n'
+    }
+    starts.push(text.length)
+    text += rows.codes[at]
+  }
+  let best: number | undefined
+  let bestDistance = Number.POSITIVE_INFINITY
+  let tied = false
+  let rowAt = 0
+  let seen = 0
+  for (let at = text.indexOf(wanted); at !== -1; at = text.indexOf(wanted, at + 1)) {
+    seen += 1
+    if (seen > MAX_ANCHOR_OCCURRENCES) return undefined
+    while (rowAt + 1 < starts.length && starts[rowAt + 1] <= at) rowAt++
+    const line = rows.lines[first + rowAt]
+    const distance = Math.abs(line - cited)
+    if (distance < bestDistance) {
+      best = line
+      bestDistance = distance
+      tied = false
+    } else if (distance === bestDistance && line !== best) {
+      tied = true
+    }
+  }
+  return tied ? undefined : best
+}
+
+/**
+ * Where the finding's quote stands in the cited file's section, when it is not at the cited line: the
+ * line of the occurrence nearest `cited`, and what `locate` reads there. Undefined, so the finding stays
+ * where it was cited, when the quote holds fewer than `MIN_ANCHOR_QUOTE` characters that are not white
+ * space (or more than `MAX_QUOTE`), when it is in the section nowhere, when two occurrences stand at the
+ * nearest distance, when it stands more than `MAX_ANCHOR_OCCURRENCES` times in the window, or when the evidence
+ * at the line holds no more than a part of it. The search reads
+ * the window around the cited line that `windowAround` takes, so it stays cheap on a hostile file, and
+ * only ever within the one section the finding cites.
+ */
+function anchorOf(sections: ReadonlyMap<string, string>, file: string, cited: number, quote: string): { readonly line: number, readonly located: FindingLocation } | undefined {
+  const wanted = collapse(quote)
+  if (wanted.length > MAX_QUOTE || wanted.replaceAll(' ', '').length < MIN_ANCHOR_QUOTE) return undefined
+  const section = sectionFor(sections, file)
+  if (!section) return undefined
+  const line = nearestOccurrence(rowsOf(hunksOf(sections, section.path, section.text)), cited, wanted)
+  if (line === undefined) return undefined
+  const located = locate(sections, file, line)
+  return located !== undefined && quoteAppearsIn(located.evidence, quote)
+    ? { line, located }
+    : undefined
+}
 
 /**
  * Whether the quote appears in the evidence's code: the leading +, - or space marker is removed
