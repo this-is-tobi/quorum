@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { LensVote, Verdict, VoteFailure } from '../core/types.ts'
 import { cast, reportResult, SQL } from '../testing/report.ts'
-import { voteFailureWords, votesWords } from './lines.ts'
+import { durationText, tokenWords, voteFailureWords, votesWords } from './lines.ts'
 import { publicView } from './view.ts'
 
 /** A failed vote of the lens `angle`, which failed with `failure`. */
@@ -199,5 +199,39 @@ describe('votesWords', () => {
     }))
     expect(votesWords(view.unreviewed[0])).toBe(votesWords(lacking))
     expect(votesWords(view.unreviewed[0])).toBe('kept by 1 of 3 lenses, 2 votes failed: cut off at the server\'s window, an unreadable reply')
+  })
+})
+
+describe('tokenWords', () => {
+  it.each<[number, string]>([
+    [999, '999'],
+    [1234, '1.23k'],
+    [12_345, '12.3k'],
+    [812_000, '812k'],
+    [9_864_619, '9.86M'],
+  ])('writes %s tokens as %s', (tokens, words) => {
+    expect(tokenWords(tokens)).toBe(words)
+  })
+})
+
+describe('durationText', () => {
+  it.each<[number, string]>([
+    [-5, '0.0s'],
+    [0, '0.0s'],
+    [850, '0.9s'],
+    [999, '1.0s'],
+    [4300, '4.3s'],
+    [9949, '9.9s'],
+    [9950, '10s'],
+    [42_400, '42s'],
+    [59_500, '1m00s'],
+    [59_950, '1m00s'],
+    [60_000, '1m00s'],
+    [134_000, '2m14s'],
+    [468_000, '7m48s'],
+    [3_729_000, '1h02m09s'],
+    [86_400_000, '24h00m00s'],
+  ])('writes %i ms as %s, one form for every line a person reads', (ms, words) => {
+    expect(durationText(ms)).toBe(words)
   })
 })

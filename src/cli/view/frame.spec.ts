@@ -4,7 +4,7 @@ import type { QuorumEvent } from '../../core/types.ts'
 import { interrupted, longReview, replay, twoProfiles } from '../../testing/events.ts'
 import type { Timed } from '../../testing/events.ts'
 import { timeLeft } from './eta.ts'
-import { frameLines, tokenWords } from './frame.ts'
+import { frameLines } from './frame.ts'
 import type { FrameOptions } from './frame.ts'
 import { ASCII_GLYPHS, UNICODE_GLYPHS } from './glyphs.ts'
 import { DEFAULT_FACTS, fold, startState } from './model.ts'
@@ -548,10 +548,10 @@ describe('frameLines', () => {
     expect(frameOf(events, stopping.at - 1).at(-1)).toBe(hint)
     expect(frameOf(events, stopping.at - 1, { view: 'public' }).at(-1)).toBe(hint)
     // after it the hint is the stopping hint, with the calls in flight and the seconds of the grace left, rounded up
-    expect(frameOf(events, stopping.at).at(-1)).toBe(`stopping: ${flying} call(s) end within 5 s; Ctrl-C again quits without the result`)
+    expect(frameOf(events, stopping.at).at(-1)).toBe(`stopping: ${flying} call(s) end within 5s; Ctrl-C again quits without the result`)
     expect(frameOf(events, stopping.at + 1000)).toHaveLength(frameOf(events, stopping.at).length)
-    expect(frameOf(events, stopping.at + 1000).at(-1)).toBe(`stopping: ${flying} call(s) end within 4 s; Ctrl-C again quits without the result`)
-    expect(frameOf(events, stopping.at + 4500).at(-1)).toBe(`stopping: ${flying} call(s) end within 1 s; Ctrl-C again quits without the result`)
+    expect(frameOf(events, stopping.at + 1000).at(-1)).toBe(`stopping: ${flying} call(s) end within 4s; Ctrl-C again quits without the result`)
+    expect(frameOf(events, stopping.at + 4500).at(-1)).toBe(`stopping: ${flying} call(s) end within 1s; Ctrl-C again quits without the result`)
     // the deadline's stopping keeps the plain hint, and a line cut to the terminal ends in the ellipsis
     const deadline = [
       ...events.slice(0, events.indexOf(stopping)),
@@ -561,7 +561,7 @@ describe('frameLines', () => {
       },
     ]
     expect(frameOf(deadline, stopping.at).at(-1)).toBe(hint)
-    expect(frameOf(events, stopping.at, { columns: 60 }).at(-1)).toBe(`stopping: ${flying} call(s) end within 5 s; Ctrl-C again quits wit${UNICODE_GLYPHS.ellipsis}`)
+    expect(frameOf(events, stopping.at, { columns: 60 }).at(-1)).toBe(`stopping: ${flying} call(s) end within 5s; Ctrl-C again quits with${UNICODE_GLYPHS.ellipsis}`)
     // the hint is the first line to go: the rows less two hold the lines of this block, and one row fewer holds all but the hint; the
     // calls line's second row is the 7th line of the block before the interrupt, when a fourth call in flight has no room on the first
     for (const at of [stopping.at - 1, stopping.at]) {
@@ -1058,15 +1058,5 @@ describe('frameLines', () => {
       expect(headOf(state, 20_000)).toBe('a<U+001B>b 5 at once, growing')
       expect(callsOf(state, 20_000)).not.toContain(ESC)
     })
-  })
-
-  it.each<[number, string]>([
-    [999, '999'],
-    [1234, '1.23k'],
-    [12_345, '12.3k'],
-    [812_000, '812k'],
-    [9_864_619, '9.86M'],
-  ])('writes %s tokens as %s', (tokens, words) => {
-    expect(tokenWords(tokens)).toBe(words)
   })
 })

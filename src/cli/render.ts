@@ -9,12 +9,13 @@ import type { Estimate } from '../core/types.ts'
 import { isClaudeCode } from '../providers/build.ts'
 import { originOf } from '../providers/http.ts'
 import { presetOf } from '../providers/presets.ts'
+import { durationText, tokenWords } from '../report/lines.ts'
 import type { ReportView } from '../report/view.ts'
 import { profilePrefix } from './view/lines.ts'
 import type { ViewFacts } from './view/model.ts'
 
 /**
- * Where a path review's token cap, deadline and finding cap came from, which the estimate's last line says: the token cap
+ * Where a path review's token cap, deadline and finding cap came from, which the estimate's bounds line says: the token cap
  * is the estimate's own worst case (`estimate`), the default floor that holds it (`floor`), or the config's `maxReviewTokens`
  * (`config`); the deadline is the longest allowed (`longest`) or the config's `reviewTimeoutMs` (`config`); the finding cap is
  * the config's `maxFindings` (`config`), one per research part (`parts`), or the default, which holds one per research part (`floor`).
@@ -33,44 +34,63 @@ export function findingsCapOf(estimate: Estimate): number {
   return Math.max(DEFAULT_MAX_FINDINGS, ...Object.values(estimate.profiles).map(profile => profile.parts.length))
 }
 
+/** How the estimate writes a token count and a duration: for a person, or as the exact integers a program parses. */
+export interface NumberWords {
+  readonly tokens: (count: number) => string
+  readonly duration: (ms: number) => string
+}
+
+/** What a person reads: a count scaled as the live view scales it (`1.85M`), a duration as every line writes one (`1.5s`, `42s`, `24h00m00s`), so a deadline under a minute is never rounded to a whole second. */
+export const PERSON_WORDS: NumberWords = { tokens: tokenWords, duration: durationText }
+
+/** What a program parses, under `--progress json`: a count as its integer, a duration in milliseconds. */
+export const EXACT_WORDS: NumberWords = {
+  tokens: String,
+  duration: ms => `${ms} ms`,
+}
+
 /**
  * The lines a path review prints once its estimate is made, before any call: one per profile, starting with
- * `[<id>] ` when several run, then the total, which belongs to the whole review and is never prefixed and ends with
- * the review's token cap, deadline and finding cap and where each came from (`bounds`). The expected figure is the research's
- * alone, as the votes are in the worst case only, and the worst counts every part recovered. When research alone
- * expects over half of the token cap, one line follows that says what cap the review needs (`needed`), and then one
- * for each research provider whose reply asks for fewer findings than `maxFindings`, since the parts with more
- * split. Each line is inert.
+ * `[<id>] ` when several run, then the whole review's two lines, never prefixed: its cost (the research's expected
+ * spend, the worst case with every vote and every part recovered, and what its calls in flight reserve) and its
+ * bounds (the review's token cap, deadline and finding cap, where each came from, and that the config sets none of
+ * them when it sets none). The expected figure is the research's alone, as the votes are in the worst case only, and
+ * the worst counts every part recovered. When research alone expects over half of the token cap, one line follows that
+ * says what cap the review needs (`needed`, always exact, as it is the value to set), and then one for each research
+ * provider whose reply asks for fewer findings than `maxFindings`, since the parts with more split. Each count and
+ * duration is written by `words`, scaled for a person unless a program is to parse it. Each line is inert.
  */
-export function estimateLines(estimate: Estimate, bounds: Bounds): string[] {
+export function estimateLines(estimate: Estimate, bounds: Bounds, words: NumberWords = PERSON_WORDS): string[] {
   const entries = Object.entries(estimate.profiles)
   const prefixed = entries.length > 1
+  const noneSet = bounds.cap !== 'config' && bounds.deadline === 'longest' && bounds.findings !== 'config'
   return [
     ...entries.map(([id, { parts, expected, votes, worst }]) => {
       const prefix = prefixed
         ? profilePrefix(id)
         : ''
-      return `${prefix}estimate: ${parts.length} research part(s), about ${expected} tokens expected for them; then up to ${votes} vote(s), at most ${worst} tokens in all`
+      return `${prefix}estimate: ${parts.length} research part(s), about ${words.tokens(expected)} tokens expected for them; then up to ${votes} vote(s), at most ${words.tokens(worst)} tokens in all`
     }),
-    `estimate: research about ${estimate.expected} tokens expected, at most ${estimate.worst} with every vote and every part recovered, ${estimate.inFlight} of them reserved at once; the review's token cap is ${capWords(estimate, bounds)}, its deadline ${deadlineWords(estimate, bounds)}, and its finding cap ${findingsWords(estimate, bounds)}${bounds.cap !== 'config' && bounds.deadline === 'longest' && bounds.findings !== 'config'
-      ? ': the config sets none of them'
+    `estimate: research about ${words.tokens(estimate.expected)} tokens expected, at most ${words.tokens(estimate.worst)} with every vote and every part recovered, ${words.tokens(estimate.inFlight)} of them reserved at once`,
+    `bounds: the token cap ${capWords(estimate, bounds, words)}; the deadline ${deadlineWords(estimate, bounds, words)}; the finding cap ${findingsWords(estimate, bounds)}${noneSet
+      ? '; the config sets none of them'
       : ''}`,
-    ...capLine(estimate),
+    ...capLine(estimate, words),
     ...findingsLines(estimate),
   ].map(inertLine)
 }
 
-function capWords({ maxReviewTokens: cap }: Estimate, { cap: origin }: Bounds): string {
-  if (origin === 'config') return `${cap} (maxReviewTokens)`
+function capWords({ maxReviewTokens: cap }: Estimate, { cap: origin }: Bounds, words: NumberWords): string {
+  if (origin === 'config') return `${words.tokens(cap)} (maxReviewTokens)`
   return origin === 'estimate'
-    ? `${cap}, this estimate's worst case`
-    : `${cap}, the default, which holds this estimate's worst case`
+    ? `${words.tokens(cap)}, this estimate's worst case`
+    : `${words.tokens(cap)}, the default, which holds this estimate's worst case`
 }
 
-function deadlineWords({ reviewTimeoutMs: ms }: Estimate, { deadline }: Bounds): string {
+function deadlineWords({ reviewTimeoutMs: ms }: Estimate, { deadline }: Bounds, words: NumberWords): string {
   return deadline === 'config'
-    ? `${ms} ms (reviewTimeoutMs)`
-    : `${ms} ms, the longest allowed`
+    ? `${words.duration(ms)} (reviewTimeoutMs)`
+    : `${words.duration(ms)}, the longest allowed`
 }
 
 function findingsWords({ findingsCap: cap }: Estimate, { findings: origin }: Bounds): string {
@@ -81,24 +101,24 @@ function findingsWords({ findingsCap: cap }: Estimate, { findings: origin }: Bou
 }
 
 /**
- * The warnings a path review's bounds call for, each inert: for a cap that follows the estimate (the config sets none), a
- * large review when its research's expected spend and what its calls in flight reserve pass the default cap, the review
- * that 0.8.0 held at exit 2, which Ctrl-C stops and keeps what it read; a small review says nothing, though recovery's
- * bound puts its worst case past the default too. For a cap the config sets that the estimate does not fit under, the
- * research parts it holds, since the review runs to the cap and the rest is a `token-cap` gap.
+ * The warnings a path review's bounds call for, each inert and its counts written by `words`: for a cap that follows the
+ * estimate (the config sets none), a large review when its research's expected spend and what its calls in flight reserve
+ * pass the default cap, the review that 0.8.0 held at exit 2, which Ctrl-C stops and keeps what it read; a small review says
+ * nothing, though recovery's bound puts its worst case past the default too. For a cap the config sets that the estimate does
+ * not fit under, the research parts it holds, since the review runs to the cap and the rest is a `token-cap` gap.
  */
-export function boundWarnings(estimate: Estimate, bounds: Bounds): string[] {
+export function boundWarnings(estimate: Estimate, bounds: Bounds, words: NumberWords = PERSON_WORDS): string[] {
   const profiles = Object.values(estimate.profiles)
   const parts = profiles.reduce((total, profile) => total + profile.parts.length, 0)
   const votes = profiles.reduce((total, profile) => total + profile.votes, 0)
   if (bounds.cap !== 'config' && estimate.expected + estimate.inFlight > DEFAULT_MAX_REVIEW_TOKENS) {
     return [
-      inertLine(`warning: a large review: ${parts} research part(s) and up to ${votes} vote(s), about ${estimate.expected} tokens expected and at most ${estimate.worst}: Ctrl-C stops it and keeps what it read`),
+      inertLine(`warning: a large review: ${parts} research part(s) and up to ${votes} vote(s), about ${words.tokens(estimate.expected)} tokens expected and at most ${words.tokens(estimate.worst)}: Ctrl-C stops it and keeps what it read`),
     ]
   }
   if (bounds.cap === 'config' && !estimate.fits) {
     return [
-      inertLine(`warning: the token cap of ${estimate.maxReviewTokens} (maxReviewTokens) holds about ${estimate.held} of the ${parts} research parts this estimate expects: the review runs to the cap, and what it cannot pay for is a token-cap gap; unset maxReviewTokens to let a path review's cap follow its estimate`),
+      inertLine(`warning: the token cap of ${words.tokens(estimate.maxReviewTokens)} (maxReviewTokens) holds about ${estimate.held} of the ${parts} research parts this estimate expects: the review runs to the cap, and what it cannot pay for is a token-cap gap; unset maxReviewTokens to let a path review's cap follow its estimate`),
     ]
   }
   return []
@@ -110,16 +130,16 @@ const roundedUp = (tokens: number): number => Math.ceil(tokens / 100_000) * 100_
 /**
  * The line that says research alone takes most of the token cap, and what cap the review needs: what its research
  * expects and its calls in flight reserve, and every vote at a third of its bound (the research's `expected`
- * counts each reply at a third as well), rounded up to the next 100 000. None when research expects half the cap
- * or less.
+ * counts each reply at a third as well), rounded up to the next 100 000. The needed cap is the value to set, so it stays
+ * the exact integer whatever `words` write. None when research expects half the cap or less.
  */
-function capLine(estimate: Estimate): string[] {
+function capLine(estimate: Estimate, words: NumberWords): string[] {
   const { expected, inFlight, findingsCap, maxReviewTokens: cap } = estimate
   if (expected * 2 <= cap) return []
   const votes = Object.values(estimate.profiles).reduce((total, profile) => total + findingsCap * Object.values(profile.vote).reduce((bounds, bound) => bounds + bound, 0), 0)
   const needed = roundedUp(expected + inFlight + votes / 3)
   return [
-    `estimate: research alone expects about ${expected} of the review's token cap of ${cap} (${Math.round(expected * 100 / cap)}%): a review of this size needs a cap of about ${needed}: raise maxReviewTokens, or narrow the path`,
+    `estimate: research alone expects about ${words.tokens(expected)} of the review's token cap of ${words.tokens(cap)} (${Math.round(expected * 100 / cap)}%): a review of this size needs a cap of about ${needed}: raise maxReviewTokens, or narrow the path`,
   ]
 }
 

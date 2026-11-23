@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { HIDDEN_CLASS } from '../../core/sanitize.ts'
 import type { LeftOutFile, Position, QuorumEvent } from '../../core/types.ts'
+import { durationText } from '../../report/lines.ts'
 import { longReview, replay } from '../../testing/events.ts'
-import { durationWords, elapsedWords, heartbeatLine, logLines, renderEvent } from './lines.ts'
+import { elapsedWords, heartbeatLine, logLines, renderEvent } from './lines.ts'
 import { DEFAULT_FACTS, fold, startState } from './model.ts'
 import type { ViewState } from './model.ts'
 
@@ -767,7 +768,7 @@ describe('logLines', () => {
       'answered',
       partEvent(),
       'full',
-      'part 7 of 44: answered in 4.3s, 41200 tokens, 2 finding(s) listed',
+      'part 7 of 44: answered in 4.3s, 41.2k tokens, 2 finding(s) listed',
     ],
     [
       'answered, under the public view',
@@ -835,7 +836,7 @@ describe('logLines', () => {
         pieces: { count: 2, read: 2, unread: {} },
       }),
       'full',
-      'part 7 of 44: answered in 4.3s, 41200 tokens, 2 finding(s) listed, in 2 pieces',
+      'part 7 of 44: answered in 4.3s, 41.2k tokens, 2 finding(s) listed, in 2 pieces',
     ],
     [
       'answered in 2 pieces, under the public view',
@@ -923,7 +924,7 @@ describe('logLines', () => {
       {},
       undefined,
       { index: 7, count: 44 },
-      'part 7 of 44: http 503 after 3s, retry 1 of 2 in 4s',
+      'part 7 of 44: http 503 after 3.0s, retry 1 of 2 in 4s',
     ],
     [
       'network',
@@ -933,7 +934,7 @@ describe('logLines', () => {
       },
       undefined,
       { index: 7, count: 44 },
-      'part 7 of 44: network after 3s, retry 2 of 2 in 4s',
+      'part 7 of 44: network after 3.0s, retry 2 of 2 in 4s',
     ],
     [
       'a network failure after ten minutes',
@@ -962,7 +963,7 @@ describe('logLines', () => {
       {},
       undefined,
       { index: 7, count: 51 },
-      'part 7 of 51: http 503 after 3s, retry 1 of 2 in 4s',
+      'part 7 of 51: http 503 after 3.0s, retry 1 of 2 in 4s',
     ],
     [
       'a timeout',
@@ -973,7 +974,7 @@ describe('logLines', () => {
       },
       undefined,
       { index: 7, count: 44 },
-      'part 7 of 44: timeout after 600000 ms, retry 1 of 2 in 1s',
+      'part 7 of 44: timeout after 10m00s, retry 1 of 2 in 1s',
     ],
     [
       'a stall',
@@ -984,7 +985,7 @@ describe('logLines', () => {
       },
       undefined,
       { index: 12, count: 44 },
-      'part 12 of 44: stalled, no progress for 300000 ms, retry 1 of 2 in 2s',
+      'part 12 of 44: stalled, no progress for 5m00s, retry 1 of 2 in 2s',
     ],
     [
       'a timeout at a ceiling that grew',
@@ -995,7 +996,7 @@ describe('logLines', () => {
       },
       undefined,
       { index: 12, count: 44 },
-      'part 12 of 44: timeout after 10512000 ms, retry 1 of 2 in 2s',
+      'part 12 of 44: timeout after 2h55m12s, retry 1 of 2 in 2s',
     ],
     [
       'a reply of only reasoning',
@@ -1028,7 +1029,7 @@ describe('logLines', () => {
         count: 44,
         piece: { index: 3, count: 4 },
       },
-      'part 7 of 44, piece 3 of 4: http 503 after 3s, retry 1 of 2 in 4s',
+      'part 7 of 44, piece 3 of 4: http 503 after 3.0s, retry 1 of 2 in 4s',
     ],
   ])('writes a research retry of %s', (_name, over, _unused, part, text) => {
     expect(textsOf(retryEvent(over), [
@@ -1068,10 +1069,10 @@ describe('logLines', () => {
 
   it('writes the deadline\'s stopping line with the review\'s deadline', () => {
     const event: QuorumEvent = { type: 'run:stopping', cause: 'review-deadline', inFlight: 3 }
-    expect(textsOf(event)).toEqual(['stopping: the review reached its deadline of 1800000 ms: the calls in flight are stopped, and what is left is a review-deadline gap'])
+    expect(textsOf(event)).toEqual(['stopping: the review reached its deadline of 30m00s: the calls in flight are stopped, and what is left is a review-deadline gap'])
     const state = fold(startState({ ...DEFAULT_FACTS, deadlineMs: 90_000 }), started(['a', 'b']), 0)
     expect(logLines(event, fold(state, event, 5), 'full')).toEqual([
-      { text: 'stopping: the review reached its deadline of 90000 ms: the calls in flight are stopped, and what is left is a review-deadline gap' },
+      { text: 'stopping: the review reached its deadline of 1m30s: the calls in flight are stopped, and what is left is a review-deadline gap' },
     ])
   })
 
@@ -1082,12 +1083,12 @@ describe('logLines', () => {
       inFlight: 3,
       graceMs: 5000,
     }
-    expect(textsOf(event)).toEqual(['stopping: no new calls; the 3 call(s) in flight have 5 s to end; press Ctrl-C again to quit at once, without the result'])
+    expect(textsOf(event)).toEqual(['stopping: no new calls; the 3 call(s) in flight have 5.0s to end; press Ctrl-C again to quit at once, without the result'])
     const state = fold(startState(DEFAULT_FACTS), started(['a', 'b']), 0)
     expect(logLines(event, fold(state, event, 5), 'full')).toEqual([
-      { text: 'stopping: no new calls; the 3 call(s) in flight have 5 s to end; press Ctrl-C again to quit at once, without the result' },
+      { text: 'stopping: no new calls; the 3 call(s) in flight have 5.0s to end; press Ctrl-C again to quit at once, without the result' },
     ])
-    expect(textsOf({ ...event, inFlight: 1, graceMs: 2500 })).toEqual(['stopping: no new calls; the 1 call(s) in flight have 2.5 s to end; press Ctrl-C again to quit at once, without the result'])
+    expect(textsOf({ ...event, inFlight: 1, graceMs: 2500 })).toEqual(['stopping: no new calls; the 1 call(s) in flight have 2.5s to end; press Ctrl-C again to quit at once, without the result'])
     expect(textsOf(partEvent({ outcome: 'interrupted' }))).toEqual(['part 7 of 44: stopped by the interrupt'])
     expect(textsOf(partEvent({
       outcome: 'interrupted',
@@ -1222,8 +1223,8 @@ describe('logLines', () => {
         callStart(1, { profile: 'style' }),
       ],
     ]
-    expect(textsOf(partEvent({ profile: 'style' }), several)).toEqual(['[style] part 7 of 44: answered in 4.3s, 41200 tokens, 2 finding(s) listed'])
-    expect(textsOf(retryEvent(), several)).toEqual(['[style] part 7 of 44: http 503 after 3s, retry 1 of 2 in 4s'])
+    expect(textsOf(partEvent({ profile: 'style' }), several)).toEqual(['[style] part 7 of 44: answered in 4.3s, 41.2k tokens, 2 finding(s) listed'])
+    expect(textsOf(retryEvent(), several)).toEqual(['[style] part 7 of 44: http 503 after 3.0s, retry 1 of 2 in 4s'])
     expect(textsOf({ type: 'run:stopping', cause: 'review-deadline', inFlight: 1 }, several)[0]).toMatch(/^stopping: /)
   })
 
@@ -1389,22 +1390,33 @@ describe('heartbeatLine', () => {
 
   it('writes the heartbeat with the elapsed time, the parts, the calls in flight, the retried, the tokens and the time left', () => {
     const state = tenthMinute()
-    expect(heartbeatLine(state, 600_000, 'full')).toBe('[10m00s] research 19 of 44 part(s), 4 call(s) in flight, 1 retried; 812000 of 2000000 tokens; about 12-16m left')
-    expect(heartbeatLine(replay(longReview(), 120_000), 120_000, 'full')).toBe('[2m00s] research 0 of 44 part(s), 4 call(s) in flight, 0 retried; 0 of 2000000 tokens; estimating the time left')
+    expect(heartbeatLine(state, 600_000, 'full')).toBe('[10m00s] research 19 of 44 part(s), 4 call(s) in flight, 1 retried; 812k of 2.00M tokens; about 12-16m left')
+    expect(heartbeatLine(replay(longReview(), 120_000), 120_000, 'full')).toBe('[2m00s] research 0 of 44 part(s), 4 call(s) in flight, 0 retried; 0 of 2.00M tokens; estimating the time left')
     expect(heartbeatLine(state, 42_000, 'public')).toMatch(/^\[42s\] research 19 of 44 part\(s\), 4 call\(s\) in flight, 1 retried; about /)
-    // The elapsed time counts whole seconds throughout, and a duration under 10 s keeps its decimal.
+    // The panel's own clock counts whole seconds throughout (`elapsedWords`); a duration a line writes keeps its decimal under 10 s (`durationText`).
     expect([
       elapsedWords(4300),
       elapsedWords(3_729_000),
       elapsedWords(59_600),
     ]).toEqual(['4s', '1h02m09s', '1m00s'])
     expect([
-      durationWords(4300),
-      durationWords(42_400),
-      durationWords(134_000),
-      durationWords(9960),
-      durationWords(-5),
+      durationText(4300),
+      durationText(42_400),
+      durationText(134_000),
+      durationText(9960),
+      durationText(-5),
     ]).toEqual(['4.3s', '42s', '2m14s', '10s', '0.0s'])
+  })
+
+  it('writes a part\'s tokens and the heartbeat\'s spend scaled', () => {
+    const answered = partEvent({
+      part: { index: 2, count: 121 },
+      durationMs: 250_000,
+      spent: 39_800,
+      listed: 3,
+    })
+    expect(textsOf(answered)).toEqual(['part 2 of 121: answered in 4m10s, 39.8k tokens, 3 finding(s) listed'])
+    expect(heartbeatLine(tenthMinute(), 600_000, 'full')).toContain('; 812k of 2.00M tokens; ')
   })
 
   it('writes the panel\'s heartbeat, and no tokens under the public view', () => {
@@ -1413,9 +1425,9 @@ describe('heartbeatLine', () => {
     const state = replay(list, at)
     // 8 votes cast in 85 to 100 s, 10 left: the 25th and 75th percentile durations are 85 and 95 s, over 4 at once.
     const full = heartbeatLine(state, at, 'full')
-    expect(full).toBe('[33m32s] panel 8 of 18 vote(s), 4 call(s) in flight, 0 retried; 1439700 of 2000000 tokens; about 4m left')
+    expect(full).toBe('[33m32s] panel 8 of 18 vote(s), 4 call(s) in flight, 0 retried; 1.43M of 2.00M tokens; about 4m left')
     const secret = heartbeatLine(state, at, 'public')
-    expect(secret).toBe(full.replace(/; \d+ of 2000000 tokens/, ''))
+    expect(secret).toBe(full.replace(/; [\d.]+[kM]? of 2\.00M tokens/, ''))
     expect(secret).not.toContain('tokens')
   })
 })

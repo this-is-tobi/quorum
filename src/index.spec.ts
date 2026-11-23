@@ -215,7 +215,7 @@ describe('runQuorum', () => {
     // The JSON stub answers a streamed request whole, so the provider is moved to whole replies, said once.
     expect(lines).toEqual([
       'default: its calls ask for whole replies for the rest of the review: the server answered a streamed call whole; set stream: false to choose it yourself',
-      expect.stringMatching(/^part 1 of 1: answered in \d+(\.\d)?s, \d+ tokens, 1 finding\(s\) listed$/),
+      expect.stringMatching(/^part 1 of 1: answered in \d+(\.\d)?s, \d+(\.\d+)?[kM]? tokens, 1 finding\(s\) listed$/),
       '1 candidate(s) after dedup',
       '1 kept, 0 discarded, 0 unreviewed by panel',
     ])

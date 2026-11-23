@@ -28,7 +28,7 @@ import { profileFailOn } from '../core/outcome.ts'
 import type { Outcome } from '../core/outcome.ts'
 import { inertLine, showHidden } from '../core/sanitize.ts'
 import type { IncompleteEntry, LeftOutFile, PublicGap, PublicMeta, PublicVerdict, QuorumMeta, Verdict } from '../core/types.ts'
-import { byLocation, coverageWords, evidenceRows, flagWhere, GAP_WORDS, leftOutEntry, levelWord, plural, rowParts, sourcePhrase, verdictWhy, votesWords } from './lines.ts'
+import { byLocation, coverageWords, durationText, evidenceRows, flagWhere, GAP_WORDS, leftOutEntry, levelWord, plural, rowParts, sourcePhrase, tokenWords, verdictWhy, votesWords } from './lines.ts'
 import type { Reporter, ReportInput } from './reporter.ts'
 import { discardedOf, isPublicView } from './view.ts'
 
@@ -228,15 +228,6 @@ function leftOutLines(leftOut: readonly LeftOutFile[]): string[] {
   ].map(inertLine)
 }
 
-/** A duration for a person: milliseconds under a second, one decimal of a second under ten, else whole seconds. */
-function durationText(ms: number): string {
-  if (ms < 1000) return `${ms} ms`
-  const tenths = Math.round(ms / 100)
-  return tenths < 100
-    ? `${(tenths / 10).toFixed(1)} s`
-    : `${Math.round(ms / 1000)} s`
-}
-
 /** How long the review took and what it used: the tokens in and out, and the cost when the usage holds one, or that none was reported. A public view has no usage, so its line is the time alone. */
 function timeLine(input: ReportInput): string {
   const { meta } = input
@@ -247,7 +238,7 @@ function timeLine(input: ReportInput): string {
     : `, $${usage.costUsd.toFixed(4)}`
   const used = usage === undefined
     ? 'no token count reported'
-    : `${usage.inputTokens} tokens in and ${usage.outputTokens} out${cost}`
+    : `${tokenWords(usage.inputTokens)} tokens in and ${tokenWords(usage.outputTokens)} out${cost}`
   return inertLine(`took ${durationText(meta.durationMs)}, ${used}`)
 }
 

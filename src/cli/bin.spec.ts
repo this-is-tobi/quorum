@@ -125,7 +125,7 @@ export default { providers: { mine: { model: 'm', complete: ({ output }) => new 
       expect(result.meta.incomplete).toEqual([
         { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 3 vote(s)' },
       ])
-      expect(stderr()).toContain('stopping: no new calls; the 1 call(s) in flight have 5 s to end; press Ctrl-C again to quit at once, without the result\n')
+      expect(stderr()).toContain('stopping: no new calls; the 1 call(s) in flight have 5.0s to end; press Ctrl-C again to quit at once, without the result\n')
       expect(stderr().endsWith('interrupted\n')).toBe(false)
     } finally {
       child.kill('SIGKILL')

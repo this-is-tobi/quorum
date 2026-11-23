@@ -103,7 +103,7 @@ describe('summaryLines', () => {
     const state = replay(longReview())
     // Research spans 0 to 1 811 600 ms, dedup nothing, the panel 1 811 600 to 2 271 600 ms. The first estimate was read
     // 310 000 ms in, put 1 455 000 to 1 545 937 ms more: research at 1 765 000 to 1 855 937 ms, 30 to 31 minutes.
-    expect(lines(state)[0]).toBe('time: research 30m12s, dedup 0.0s, panel 7m40s; the first estimate, 5m10s in, put research at 30-31m; done in 38m05s, 2412833 tokens in and 312094 out')
+    expect(lines(state)[0]).toBe('time: research 30m12s, dedup 0.0s, panel 7m40s; the first estimate, 5m10s in, put research at 30-31m; done in 38m05s, 2.41M tokens in and 312k out')
     expect(lines(state, factsOf({
       stdout: { format: 'text', terminal: true },
       stderr: { terminal: true },
@@ -127,15 +127,17 @@ describe('summaryLines', () => {
       'this review\'s estimated worst case',
       'estimate',
       9_864_619,
+      '9.86M',
       'this review\'s estimated worst case',
     ],
     [
       'the default, which holds this review\'s estimated worst case',
       'floor',
       2_000_000,
+      '2.00M',
       'the default, which holds this review\'s estimated worst case',
     ],
-  ] as const)('names a cap that is %s', (_name, origin, tokens, words) => {
+  ] as const)('names a cap that is %s', (_name, origin, tokens, scaled, words) => {
     const state = replay(longReview())
     const derived = {
       ...state,
@@ -145,12 +147,12 @@ describe('summaryLines', () => {
         cap: { tokens, origin },
       },
     }
-    expect(lines(derived)[1]).toBe(`tokens: ${Math.floor(1_000_000 * 100 / tokens)} percent of the cap of ${tokens}, ${words}`)
+    expect(lines(derived)[1]).toBe(`tokens: ${Math.floor(1_000_000 * 100 / tokens)} percent of the cap of ${scaled}, ${words}`)
   })
 
   it('writes the share of the cap spent and where the cap came from, and each provider\'s usage when several answered', () => {
     const state = replay(longReview())
-    expect(lines(state)[1]).toBe('tokens: 74 percent of the cap of 2000000, the default')
+    expect(lines(state)[1]).toBe('tokens: 74 percent of the cap of 2.00M, the default')
 
     const set = {
       ...state,
@@ -160,7 +162,7 @@ describe('summaryLines', () => {
         cap: { tokens: 2_000_000, origin: 'config' as const },
       },
     }
-    expect(lines(set)[1]).toBe('tokens: 12 percent of the cap of 2000000, maxReviewTokens')
+    expect(lines(set)[1]).toBe('tokens: 12 percent of the cap of 2.00M, maxReviewTokens')
 
     const several = {
       ...state,
@@ -175,7 +177,7 @@ describe('summaryLines', () => {
         ],
       ]),
     }
-    expect(lines(several)[1]).toBe('tokens: 74 percent of the cap of 2000000, the default; api 200000 in and 40000 out, local 1000 in and 200 out')
+    expect(lines(several)[1]).toBe('tokens: 74 percent of the cap of 2.00M, the default; api 200k in and 40.0k out, local 1.00k in and 200 out')
   })
 
   it('leaves the tokens line out under the public view, and a used-up quota\'s words with it', () => {
@@ -280,10 +282,10 @@ describe('summaryLines', () => {
   it('never says 100 percent of a cap that was not reached', () => {
     const state = replay(longReview())
     const spent = (tokens: number): string => lines({ ...state, spent: tokens })[1]
-    expect(spent(1_992_000)).toBe('tokens: 99 percent of the cap of 2000000, the default')
-    expect(spent(1_999_999)).toBe('tokens: 99 percent of the cap of 2000000, the default')
-    expect(spent(2_000_000)).toBe('tokens: 100 percent of the cap of 2000000, the default')
-    expect(spent(580_000)).toBe('tokens: 29 percent of the cap of 2000000, the default')
+    expect(spent(1_992_000)).toBe('tokens: 99 percent of the cap of 2.00M, the default')
+    expect(spent(1_999_999)).toBe('tokens: 99 percent of the cap of 2.00M, the default')
+    expect(spent(2_000_000)).toBe('tokens: 100 percent of the cap of 2.00M, the default')
+    expect(spent(580_000)).toBe('tokens: 29 percent of the cap of 2.00M, the default')
   })
 
   it('writes the calls: research and votes, retried and recovered, leaving out what is 0, and no limit while no lane has a record', () => {
@@ -1099,6 +1101,24 @@ describe('summaryLines', () => {
     }).at(-1)).toBe('result: the text report above; --output json written')
   })
 
+  it('writes the review\'s time in the form every line writes, a decimal under ten seconds', () => {
+    const state = reviewed({
+      type: 'stage:end',
+      profile: 'security',
+      stage: 'research',
+      durationMs: 4,
+      count: 0,
+    })
+    const short = reportResult({
+      unreviewed: [],
+      meta: {
+        durationMs: 8_460,
+        usage: { inputTokens: 100, outputTokens: 20 },
+      },
+    })
+    expect(lines(state, factsOf({ result: short }))[0]).toBe('time: research 0.0s; done in 8.5s, 100 tokens in and 20 out')
+  })
+
   it('adds the totals to the time line when stderr is a log beside a terminal\'s text report', () => {
     const state = reviewed({
       type: 'stage:end',
@@ -1112,7 +1132,7 @@ describe('summaryLines', () => {
     expect(lines(state, factsOf({
       stdout: text,
       stderr: { terminal: false },
-    }))[0]).toBe('time: research 0.0s; done in 38m05s, 2412833 tokens in and 312094 out')
+    }))[0]).toBe('time: research 0.0s; done in 38m05s, 2.41M tokens in and 312k out')
     expect(lines(state, factsOf({
       stdout: text,
       stderr: { terminal: false },
@@ -1131,11 +1151,11 @@ describe('summaryLines', () => {
       durationMs: 4,
       count: 0,
     })
-    expect(lines(state)[0]).toBe('time: research 0.0s; done in 38m05s, 2412833 tokens in and 312094 out')
+    expect(lines(state)[0]).toBe('time: research 0.0s; done in 38m05s, 2.41M tokens in and 312k out')
     expect(lines(state, factsOf(), 'public')[0]).toBe('time: research 0.0s; done in 38m05s')
     expect(lines(state, factsOf({
       stdout: { format: 'text', terminal: false },
-    }))[0]).toBe('time: research 0.0s; done in 38m05s, 2412833 tokens in and 312094 out')
+    }))[0]).toBe('time: research 0.0s; done in 38m05s, 2.41M tokens in and 312k out')
     expect(lines(state, factsOf({
       stdout: { format: 'text', terminal: true },
       stderr: { terminal: true },
@@ -1189,7 +1209,7 @@ describe('summaryLines', () => {
       ]),
     }
     const shown = lines(hostile)
-    expect(shown[1]).toBe('tokens: 74 percent of the cap of 2000000, the default; api<U+001B>[2J 1 in and 2 out, local 3 in and 4 out')
+    expect(shown[1]).toBe('tokens: 74 percent of the cap of 2.00M, the default; api<U+001B>[2J 1 in and 2 out, local 3 in and 4 out')
     for (const line of shown) expect(line).not.toContain(ESC)
   })
 

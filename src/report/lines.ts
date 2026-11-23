@@ -1,16 +1,51 @@
 /**
  * The pieces of a line that the text report, the Markdown summary and the progress lines of the CLI write one
  * way: how many of a thing, a file left out, where a flag points, the words of a gap, the words of a verdict, a
- * source, a finding's level and votes, its place among the findings and its evidence's rows. None makes its text
+ * source, a finding's level and votes, its place among the findings and its evidence's rows, and the numbers a person
+ * reads: a token count scaled and a duration in one form (past a minute in minutes). None makes its text
  * inert: a file name is a diff's and a flag's detail a diff's too, so the line that holds them passes through
  * `inertLine` whole.
  */
 
+import { elapsedWords } from '../core/duration.ts'
 import { ownData } from '../core/facts.ts'
 import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
 import { failsItsProfile } from '../core/outcome.ts'
 import type { CoverageEntry, CoverageStatus, Flag, IncompleteReason, LeftOutFile, PublicVerdict, PublicView, ReviewSource, Verdict, VoteFailure } from '../core/types.ts'
 import { voteFailed } from './view.ts'
+
+/** A token count told in three significant digits at most, floored: `999`, `1.23k`, `12.3k`, `812k`, `9.86M`. */
+export function tokenWords(tokens: number): string {
+  const count = Math.max(0, Math.floor(tokens))
+  if (count < 1000) return String(count)
+  const units = ['k', 'M', 'B', 'T']
+  let scale = 1000
+  let unit = 0
+  while (unit < units.length - 1 && count >= scale * 1000) {
+    scale *= 1000
+    unit += 1
+  }
+  const whole = Math.floor(count / scale)
+  const decimals = whole < 10
+    ? 2
+    : whole < 100
+      ? 1
+      : 0
+  const steps = 10 ** decimals
+  return `${(Math.floor(count / (scale / steps)) / steps).toFixed(decimals)}${units[unit]}`
+}
+
+/**
+ * A duration for a person, in one form wherever a person reads it: one decimal of a second under ten seconds, then
+ * `elapsedWords`, whole seconds throughout: `0.9s`, `4.3s`, `42s`, `7m48s`, `1h02m09s`, `24h00m00s`. A duration a program
+ * parses stays in milliseconds in its own format.
+ */
+export function durationText(ms: number): string {
+  const tenths = Math.max(0, Math.round(ms / 100))
+  return tenths < 100
+    ? `${(tenths / 10).toFixed(1)}s`
+    : elapsedWords(ms)
+}
 
 /** `1 gap`, `2 gaps`: the count, then the noun in the form the count takes. */
 export function plural(count: number, word: string, many = `${word}s`): string {
