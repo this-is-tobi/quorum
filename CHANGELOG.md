@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.12.0](https://github.com/this-is-tobi/quorum/compare/v0.11.0...v0.12.0) (2026-11-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* a finding whose quote sits elsewhere in its file's section moves there before its vote, so its line, id, fingerprint, evidence and verdict can change, a review can exit otherwise, and a pull request's comment or alert for it moves to the quote; a verdict gains citedLine.
+* a reply that held only reasoning, a vote cut off at its reply budget and a reply quorum could not read are each sent once more within the provider's retries, so a review can make one more call for each, spend and last longer, and a path review's derived token cap counts each call of a provider that states a retry twice; a call:retry event's failure may be of kind unusable-reply; set retries: 0 to send no call twice.
+
+### Features
+
+* move a finding whose quote is elsewhere in its file to the quote before the panel votes ([e3e16bf](https://github.com/this-is-tobi/quorum/commit/e3e16bf85297a11c9ae0eba0b4fa57ed907679b1))
+* name a bench configuration by its file in its lines, and say when no comparison resolved ([44e5a03](https://github.com/this-is-tobi/quorum/commit/44e5a0330acce73b816d128c0adfe5e3f6dde003))
+* say why a vote failed beside its count, and count the failed votes in the summary ([c25c2a8](https://github.com/this-is-tobi/quorum/commit/c25c2a8896c00b84142c237e57c87d94a4d7467a))
+* send a bad reply once more, within its call's retries, once the adaptations had their try ([efe0e1c](https://github.com/this-is-tobi/quorum/commit/efe0e1c854d6f761d97c2d7451d1029321464817))
+* write a person's token counts scaled and durations past a minute in minutes ([0a8e93b](https://github.com/this-is-tobi/quorum/commit/0a8e93b15a91848d17bb735f2c75daf9e1b013b0))
+
+
+### Bug Fixes
+
+* name the five fields of a finding in quorum's own request, for every profile ([cb2214f](https://github.com/this-is-tobi/quorum/commit/cb2214f8e67a991203ec82e7d5ad273d269b1ac0))
+
 ## [0.11.0](https://github.com/this-is-tobi/quorum/compare/v0.10.0...v0.11.0) (2026-11-22)
 
 
