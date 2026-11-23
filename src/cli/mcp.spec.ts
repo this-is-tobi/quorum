@@ -379,7 +379,7 @@ describe('quorum mcp', () => {
     streams.input.end()
     expect(await run).toBe(EXIT.usage)
     expect(streams.lines()).toEqual([])
-    expect(streams.stderr()).toContain('Error: profiles.security: the research request on local leaves -630 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1618 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window\n')
+    expect(streams.stderr()).toContain('Error: profiles.security: the research request on local leaves -803 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window\n')
     expect(streams.stderr()).not.toContain('serving the review tool')
     expect(fetchMock).not.toHaveBeenCalled()
   })

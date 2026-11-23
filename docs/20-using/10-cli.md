@@ -532,10 +532,10 @@ budgets:
       findings: 50
       findingsWithoutThinking: 50
       rooms:
-        one: 107918
-        part: 107606
+        one: 107745
+        part: 107433
       worstPart:
-        tokens: 56234
+        tokens: 56407
         holds: 35
     lenses:
       reachability:

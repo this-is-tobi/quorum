@@ -1208,8 +1208,8 @@ describe('the diff byte cap', () => {
 })
 
 describe('the room accounting', () => {
-  /** The refusal of the research request, for the one provider `local` of 2000 tokens: 2000 less 1618 of text, 512 of template and 500 of reply. */
-  const RESEARCH = 'profiles.security: the research request on local leaves -630 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1618 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window\n'
+  /** The refusal of the research request, for the one provider `local` of 2000 tokens: 2000 less 1791 of text, 512 of template and 500 of reply. */
+  const RESEARCH = 'profiles.security: the research request on local leaves -803 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window\n'
 
   it('refuses before any call, exit 2, a profile whose research request leaves its model no room for a diff', async () => {
     const config = write('small.yaml', 'providers:\n  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 2000}\n')
@@ -1942,10 +1942,10 @@ describe('--print-config', () => {
       '      findings: 50',
       '      findingsWithoutThinking: 50',
       '      rooms:',
-      '        one: 107918',
-      '        part: 107606',
+      '        one: 107745',
+      '        part: 107433',
       '      worstPart:',
-      '        tokens: 56234',
+      '        tokens: 56407',
       '        holds: 35',
       '    lenses:',
       '      reachability:',

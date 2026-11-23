@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { splitDiff } from './diff.ts'
 import type { FindingDetails } from './types.ts'
-import { verifyFindings } from './verify.ts'
+import { UNCATEGORIZED, verifyFindings } from './verify.ts'
 
 const diff = [
   'diff --git a/src/a.js b/src/a.js',
@@ -157,6 +157,23 @@ describe('verifyFindings', () => {
     ], sections).findings
     expect(finding.summary).toBe('injection with newline')
     expect(finding.category).toBe('CWE-78')
+  })
+
+  it.each([
+    ['empty', ''],
+    ['white space', '   '],
+    [
+      'hidden characters',
+      String.fromCharCode(0x200B, 0x200B),
+    ],
+  ])('names a finding whose category is %s uncategorized', (_name, category) => {
+    expect(UNCATEGORIZED).toBe('uncategorized')
+    expect(verifyFindings([
+      { ...reported, category },
+    ], sections).findings[0].category).toBe('uncategorized')
+    expect(verifyFindings([
+      { ...reported, category: 'CWE-89' },
+    ], sections).findings[0].category).toBe('CWE-89')
   })
 
   it('removes a tag character that only appears once another one is removed', () => {

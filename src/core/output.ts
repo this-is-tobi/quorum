@@ -347,16 +347,28 @@ function repeatsKey(json: string): boolean {
   return false
 }
 
-/** Local models often quote numbers: accept "42" for line, reject anything else non-numeric. */
+/**
+ * Local models often quote numbers: accept "42" for line, reject anything else non-numeric. A category that is
+ * absent or null reads as an empty one, which the harness then names `uncategorized`, since the panel judges the
+ * finding all the same; a category of any other type, like any other mistyped or missing field, stays for the
+ * schema to refuse.
+ */
 function normalizeFinding(item: unknown): unknown {
-  if (!isRecord(item) || typeof item.line !== 'string') return item
-  const line = item.line.trim()
-  return DIGITS.test(line)
-    ? {
-        ...item,
-        line: Number(line),
-      }
-    : item
+  if (!isRecord(item)) return item
+  const line = typeof item.line === 'string'
+    ? item.line.trim()
+    : ''
+  return {
+    ...item,
+    ...DIGITS.test(line)
+      ? {
+          line: Number(line),
+        }
+      : {},
+    ...!Object.hasOwn(item, 'category') || item.category === null
+      ? { category: '' }
+      : {},
+  }
 }
 
 /** Accept "true" / "false" strings for keep; anything else is left for the schema to reject. */

@@ -4,13 +4,14 @@ Every model call quorum makes has the same layout: the profile's instructions an
 
 ## The layout of a request
 
-The system message is four parts, and five in a research request, joined by blank lines, and only the first comes from the profile:
+The system message is four parts, and six in a research request, joined by blank lines, and only the first comes from the profile:
 
 1. **The profile's instructions**: the research template as written, or the vote template rendered for one lens.
 2. **The findings line**, in a research request only: `List at most <N> findings, the most serious first. For each, quote the shortest verbatim span of the diff that shows it.` `N` is what the research reply's budget holds, 50 at most ([Reply budgets](./20-configuration.md#reply-budgets)); a request of a provider that states no budget asks for `maxFindings`. The quote is only checked against the diff, so a shorter one costs nothing and bounds the largest part of a finding. A vote request has no such line.
-3. **The reply format**: `Respond with ONLY a JSON object matching this JSON Schema:`, then the schema of the reply this call expects.
-4. **The [data notice](#the-data-notice)**, naming each block of the user message.
-5. **The [untrusted-content notice](#the-untrusted-content-notice)**, always last.
+3. **The fields of a finding**, in a research request only, for every profile: ``Every finding has all five fields: `file`, its path as the diff names it; `line`, its line in the new file (for removed code, the nearest line that survives); `quote`, the code that shows it, copied verbatim without the leading +, - or space; `category`, its kind, as the instructions above define it; and `summary`, why it is a finding, in a sentence or two.`` So a profile's instructions say what to look for, what a quote holds and what a category means, and name no field otherwise ([Writing a profile](./40-profiles.md#writing-a-profile)). A vote request has no such paragraph.
+4. **The reply format**: `Respond with ONLY a JSON object matching this JSON Schema:`, then the schema of the reply this call expects.
+5. **The [data notice](#the-data-notice)**, naming each block of the user message.
+6. **The [untrusted-content notice](#the-untrusted-content-notice)**, always last.
 
 The user message holds the data, each block in its own fence, joined by blank lines:
 
@@ -68,7 +69,7 @@ index 3b18e51..a9f4c2d 100644
 </untrusted-diff-d21e0b79>
 ```
 
-The research request of a profile has the same layout: its research instructions, the findings line, the research reply's schema (a `findings` array whose entries hold `file`, `line`, `category`, `quote` and `summary`, and nothing else), a data notice naming its blocks, and the same last notice.
+The research request of a profile has the same layout: its research instructions, the findings line, the fields of a finding, the research reply's schema (a `findings` array whose entries hold `file`, `line`, `category`, `quote` and `summary`, and nothing else), a data notice naming its blocks, and the same last notice.
 
 A change too large for one request is researched in parts ([Research in parts](./20-configuration.md#research-in-parts)), and the request of each part carries a block of its own before the part's diff, the parts block. It says where the request stands in the change, then lists the change's files, so a model that reads one part knows what the others hold:
 
@@ -89,7 +90,7 @@ A request that recovery makes for a piece of a part names the piece in the posit
 Its research template, used as written:
 
 ```text
-Review this diff for security vulnerabilities. For each candidate, give the file and the new-file line number (for removed code, the nearest line that survives), copy the offending code (the sink) verbatim from the diff, without the leading +/- marker, into `quote`, name a category/CWE, and summarize why it looks wrong in `summary`.
+Review this diff for security vulnerabilities. A finding's quote is the offending code (the sink), and its category is its CWE id, such as CWE-89.
 ```
 
 Its vote template, rendered once per lens:
@@ -151,7 +152,7 @@ A profile sets its instructions, its lenses, its policy, its `failOn` and its gu
 | Fixed | Why |
 | --- | --- |
 | The fences, and data only in the user message | Every block of attacker-influenced data, and the guidelines, is fenced as data: no template can put data in the system message, or take it out of its fence |
-| The findings line, the piece's position line, the data notice and the untrusted-content notice | Only the code knows which blocks a request carries, how many findings its reply can hold and which piece of a split part a request is, and a template has no logic to say so; the notices and the findings line come after the profile's instructions, which cannot remove or reword them, and the position line is in the parts block, which the profile does not write |
+| The findings line, the fields of a finding, the piece's position line, the data notice and the untrusted-content notice | Only the code knows which blocks a request carries, how many findings its reply can hold and which piece of a split part a request is, and a template has no logic to say so; the notices, the findings line and the fields come after the profile's instructions, which cannot remove or reword them, and the position line is in the parts block, which the profile does not write. The fields are the one contract every profile shares, so a profile cannot leave one unnamed |
 | The reply schemas | The research reply is `{ findings }` with five fields per finding, and a vote is `{ keep, reasoning }`, with no confidence field to fill |
 | Blind votes | A vote request is built from the finding, the lens, the diff context and the profile's guidelines, and no template variable exposes another vote |
 | Arithmetic confidence | Confidence is computed by the policy from the kept and total votes |

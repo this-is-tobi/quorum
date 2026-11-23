@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CompletionRequest } from './ports.ts'
 import { securityProfile } from '../profiles/security.ts'
-import { fence, renderTemplate, requestDigest, researchRequest, UNTRUSTED_CONTENT_NOTICE, voteRequest } from './prompts.ts'
+import { fence, FINDING_FIELDS, renderTemplate, requestDigest, researchRequest, UNTRUSTED_CONTENT_NOTICE, voteRequest } from './prompts.ts'
 
 const finding = {
   id: '0123456789ab',
@@ -250,6 +250,7 @@ describe('the findings line and the reply budget', () => {
     expect(request.system).toBe([
       'Review this diff.',
       findingsLine(7),
+      FINDING_FIELDS,
       REPLY_FORMAT,
       `The user message holds this block:\n- <${diffTag}>: the diff under review.`,
       UNTRUSTED_CONTENT_NOTICE,
@@ -258,11 +259,31 @@ describe('the findings line and the reply budget', () => {
     expect(researchRequest('R', 'd').system).toContain(`\n\n${findingsLine(50)}\n\n`)
   })
 
+  it('names the five fields of a finding right after the findings line in every research request, whatever the profile\'s instructions say', () => {
+    const part = {
+      index: 1,
+      count: 2,
+      files: ['a.js'],
+      unlisted: 0,
+    }
+    for (const instructions of ['Review this diff for names that mislead.', securityProfile.prompts.research]) {
+      for (const ofPart of [undefined, part]) {
+        const paragraphs = researchRequest(instructions, 'diff --git a/x b/x', undefined, ofPart, { findings: 9 }).system.split('\n\n')
+        const at = paragraphs.indexOf(findingsLine(9))
+        expect(at).toBeGreaterThan(0)
+        expect(paragraphs[at + 1]).toBe(FINDING_FIELDS)
+        expect(paragraphs.filter(paragraph => paragraph === FINDING_FIELDS)).toHaveLength(1)
+      }
+    }
+    expect(voteRequest('V', finding, 'd').system).not.toContain(FINDING_FIELDS)
+  })
+
   it('builds a profile\'s research request byte for byte, the N line aside', () => {
     const request = researchRequest(securityProfile.prompts.research, 'diff --git a/x b/x\n+exec(cmd)', undefined, undefined, { findings: 31 })
     const withoutLine = unfenced(request.system).replace(`${findingsLine(31)}\n\n`, '')
     expect(withoutLine).toBe([
-      'Review this diff for security vulnerabilities. For each candidate, give the file and the new-file line number (for removed code, the nearest line that survives), copy the offending code (the sink) verbatim from the diff, without the leading +/- marker, into `quote`, name a category/CWE, and summarize why it looks wrong in `summary`.',
+      'Review this diff for security vulnerabilities. A finding\'s quote is the offending code (the sink), and its category is its CWE id, such as CWE-89.',
+      FINDING_FIELDS,
       REPLY_FORMAT,
       'The user message holds this block:\n- <untrusted-diff-NONCE>: the diff under review.',
       UNTRUSTED_CONTENT_NOTICE,

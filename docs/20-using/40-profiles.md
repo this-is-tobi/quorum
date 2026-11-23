@@ -44,7 +44,9 @@ const security = { ...securityProfile, guidelines: 'Queries go through db.query 
 | `gating` | `boolean` | Deprecated: `true` is `failOn: 'high'`, `false` is `'none'`; not with `failOn` |
 | `guidelines` | `string` | Optional: [Guidelines](#guidelines) |
 
-The reply the finder must give is fixed, whatever the profile: a `findings` array whose every entry holds `file`, `line` (a line of the new file), `category`, `quote` (the code, copied verbatim from the diff) and `summary`. The system message carries that schema, but your research instructions should say what each field means for what you review, as the security profile's do.
+The reply the finder must give is fixed, whatever the profile: a `findings` array whose every entry holds `file`, `line`, `category`, `quote` and `summary`. quorum's request names those five fields itself, in a paragraph of its own right after the line that asks for at most `N` findings, so every profile gets the same contract, yours included: `file` as the diff names it, `line` in the new file (for removed code, the nearest line that survives), `quote` the code that shows the finding, copied verbatim without the leading `+`, `-` or space, `category` the finding's kind, as your instructions define it, and `summary` why it is a finding. Your research instructions say what to look for, what a quote holds and what a category means for what you review, as the security profile's do (the sink, and a CWE id), and need not name a field otherwise.
+
+A finding that leaves its category out, or gives `null` or a blank one, is reviewed all the same, as `uncategorized`: its head reads `<file>:<line>  uncategorized`, and the voters read `[uncategorized]` in the claim. Any other field left out, or a category that is not text, makes the finding unreadable, a `finding-unreadable` gap.
 
 A naming review that reports but never gates:
 
@@ -54,7 +56,7 @@ import type { Profile } from '@tobi-or-not/quorum'
 export const naming: Profile = {
   id: 'naming',
   prompts: {
-    research: 'Review this diff for names that mislead: a function, variable or type whose name says something its code does not do. For each, give the file and the new-file line number, copy the code verbatim from the diff, without the leading +/- marker, into `quote`, name the kind of problem in `category`, and say in `summary` what the name promises and what the code does.',
+    research: 'Review this diff for names that mislead: a function, variable or type whose name says something its code does not do. A finding\'s quote is the declaration that carries the name, and its category is the kind of problem: `overpromises`, `underpromises` or `wrong-verb`.',
     vote: [
       'One vote in a {{panel.size}}-voter panel on a naming finding - you do not see the other votes. Lens: {{lens.id}}.',
       '{{lens.question}}',
