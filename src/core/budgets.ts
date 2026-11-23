@@ -271,10 +271,17 @@ function freezeBudgets(budgets: ProfileBudgets): ProfileBudgets {
 const RESEARCH_FIX = 'shorten the guidelines or rules, lower maxTokens, or state a larger window'
 const VOTE_FIX = 'shorten the guidelines, lower maxTokens, or state a larger window'
 
-/** One refusal: the request `subject` names leaves `room` tokens for the diff of a window whose other tokens are `fixed`, the chat template, and the reply. */
+/**
+ * One refusal: the request `subject` names leaves `room` tokens for the diff of a window whose other tokens are `fixed`, the chat template, and the reply.
+ * A room below 0 is no number of tokens a person reads as one: its other tokens pass the window by `-room`, which the refusal says instead.
+ * Every figure stays the integer a person compares with a setting.
+ */
 function refusal(subject: string, facts: { readonly room: number, readonly window: number, readonly fixed: number, readonly reply: number, readonly counts: string, readonly fix: string }): string {
   const template = facts.window - facts.fixed - facts.reply - facts.room
-  return `${subject} leaves ${facts.room} tokens for the diff, less than the ${MIN_PART_TOKENS} a hunk may need: contextTokens ${facts.window} counts ${facts.fixed} for ${facts.counts}, ${template} for the chat template and ${facts.reply} for the reply: ${facts.fix}`
+  const leaves = facts.room < 0
+    ? `leaves no tokens for the diff, its other tokens ${-facts.room} over the window, where a hunk may need ${MIN_PART_TOKENS}`
+    : `leaves ${facts.room} tokens for the diff, less than the ${MIN_PART_TOKENS} a hunk may need`
+  return `${subject} ${leaves}: contextTokens ${facts.window} counts ${facts.fixed} for ${facts.counts}, ${template} for the chat template and ${facts.reply} for the reply: ${facts.fix}`
 }
 
 /**

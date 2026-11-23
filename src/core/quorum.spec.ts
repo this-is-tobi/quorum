@@ -7480,8 +7480,10 @@ describe('room accounting', () => {
 
   /** The figures a refusal's message states, in order: the room, the window, the fixed text, the template and the reply. */
   const figures = (message: string): number[] => [
-    ...message.matchAll(/(-?\d+) (?:tokens for the diff|for the instructions|for the chat template|for the reply)|contextTokens (\d+)/g),
-  ].map(found => Number(found[1] ?? found[2]))
+    ...message.matchAll(/leaves (\d+) tokens for the diff|its other tokens (\d+) over the window|(\d+) (?:for the instructions|for the chat template|for the reply)|contextTokens (\d+)/g),
+  ].map(found => found[2] === undefined
+    ? Number(found[1] ?? found[3] ?? found[4])
+    : -Number(found[2]))
 
   it('refuses a profile whose fixed text leaves its research provider less than 1024 tokens of diff, naming the figures', () => {
     const error = thrown(guarded('local', 8192, { thinking: 'default', maxTokens: 6000 }), guarded('big', 1_000_000))
@@ -7490,7 +7492,7 @@ describe('room accounting', () => {
     const [issue] = error.issues
     expect(issue.path).toBe('profiles.security')
     // A reply budget of 6000 and the fixed text leave 8192 - 1791 - 512 - 6000 tokens, which is below zero.
-    expect(issue.message).toBe('the research request on local leaves -111 tokens for the diff, less than the 1024 a hunk may need: contextTokens 8192 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 6000 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window')
+    expect(issue.message).toBe('the research request on local leaves no tokens for the diff, its other tokens 111 over the window, where a hunk may need 1024: contextTokens 8192 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 6000 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window')
     const [room, window, fixed, template, reply] = figures(issue.message)
     expect(room + fixed + template + reply).toBe(window)
     expect(error.message).not.toContain('http')
@@ -7500,7 +7502,7 @@ describe('room accounting', () => {
     const error = thrown(guarded('big', 1_000_000), guarded('small', 6000))
     expect(error.issues.map(issue => issue.path)).toEqual(['profiles.security', 'profiles.security', 'profiles.security'])
     for (const issue of error.issues) {
-      expect(issue.message).toMatch(/^the vote request on small for the longest finding leaves -?\d+ tokens for the diff, less than the 1024 a hunk may need: contextTokens 6000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and 1500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window$/)
+      expect(issue.message).toMatch(/^the vote request on small for the longest finding leaves (?:no tokens for the diff, its other tokens \d+ over the window, where a hunk may need 1024|\d+ tokens for the diff, less than the 1024 a hunk may need): contextTokens 6000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and 1500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window$/)
       const [room, window, fixed, template, reply] = figures(issue.message)
       expect(room + fixed + template + reply).toBe(window)
       expect(room).toBeLessThan(1024)

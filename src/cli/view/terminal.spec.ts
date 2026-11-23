@@ -175,7 +175,7 @@ describe('liveWriter', () => {
     await writer.close()
     expect(filled(terminal.screen())).toEqual([
       'Research (m @ http://localhost:11434)...',
-      '+ part 1 of 44: answered in 1.0s, 1000 tokens, 1 finding(s) listed',
+      '+ part 1 of 44: answered in 1.0s, 1.00k tokens, 1 finding(s) listed',
       '0 kept, 0 discarded, 0 unreviewed by panel',
     ])
     expect(terminal.written()).not.toContain(ESC)
@@ -187,7 +187,7 @@ describe('liveWriter', () => {
     const coloured = rig({ color: true })
     coloured.writer.sink(started('security'))
     coloured.writer.sink(answered(1))
-    expect(coloured.terminal.written()).toBe(`${CSI}32m${UNICODE_GLYPHS.answered}${CSI}0m part 1 of 44: answered in 1.0s, 1000 tokens, 1 finding(s) listed\n`)
+    expect(coloured.terminal.written()).toBe(`${CSI}32m${UNICODE_GLYPHS.answered}${CSI}0m part 1 of 44: answered in 1.0s, 1.00k tokens, 1 finding(s) listed\n`)
   })
 
   it('draws the first frame at 500 ms in one write, wrapped in synchronized output, the cursor hidden', () => {
@@ -264,7 +264,7 @@ describe('liveWriter', () => {
       const before = writes.length
       writer.sink(answered(part))
       advance(clock, FRAME_MS)
-      const line = `part ${part} of 44: answered in 1.0s, 1000 tokens, 1 finding(s) listed`
+      const line = `part ${part} of 44: answered in 1.0s, 1.00k tokens, 1 finding(s) listed`
       lines.push(`${UNICODE_GLYPHS.answered} ${line}`)
       const holding = writes.slice(before).filter(write => write.includes(line))
       expect(holding).toHaveLength(1)
@@ -299,7 +299,7 @@ describe('liveWriter', () => {
       ({ writer }) => writer.restore(),
     ],
   ])('starts each erase at the line\'s start, so an echoed ^C leaves nothing of the old block: %s', async (_name, finish) => {
-    const line = `${UNICODE_GLYPHS.answered} part 1 of 44: answered in 1.0s, 1000 tokens, 1 finding(s) listed`
+    const line = `${UNICODE_GLYPHS.answered} part 1 of 44: answered in 1.0s, 1.00k tokens, 1 finding(s) listed`
     const live = rig()
     live.writer.sink(started('security'))
     live.writer.sink(researching())
@@ -552,7 +552,7 @@ describe('liveWriter', () => {
     expect(writes).toHaveLength(5)
     expect(terminal.written()).not.toContain(ESC)
     expect(terminal.cursorVisible()).toBe(true)
-    const lines = [1, 2, 3, 4, 5].map(part => `${UNICODE_GLYPHS.answered} part ${part} of 44: answered in 1.0s, 1000 tokens, 1 finding(s) listed`)
+    const lines = [1, 2, 3, 4, 5].map(part => `${UNICODE_GLYPHS.answered} part ${part} of 44: answered in 1.0s, 1.00k tokens, 1 finding(s) listed`)
     expect(filled([
       ...terminal.history(),
       ...terminal.screen(),
@@ -681,7 +681,7 @@ describe('liveWriter', () => {
     writer.sink(ended)
     const rows = filled(terminal.screen())
     expect(rows.slice(-3)).toEqual([
-      `${UNICODE_GLYPHS.answered} part 1 of 44: answered in 1.0s, 1000 tokens, 1 finding(s) listed`,
+      `${UNICODE_GLYPHS.answered} part 1 of 44: answered in 1.0s, 1.00k tokens, 1 finding(s) listed`,
       'a later line',
       '0 kept, 0 discarded, 0 unreviewed by panel',
     ])

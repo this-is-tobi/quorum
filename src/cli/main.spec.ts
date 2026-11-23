@@ -260,7 +260,7 @@ describe('runCli', () => {
     }), vote(true), vote(true), vote(true))
     const { io, stderr } = harness({ env: DEFAULT, stdin: DIFF })
     expect(await runCli(io)).toBe(EXIT.finding)
-    expect(stderr()).toMatch(/^part 1 of 1: answered in \d+(\.\d)?s, \d+ tokens, 1 finding\(s\) listed$/m)
+    expect(stderr()).toMatch(/^part 1 of 1: answered in \d+(\.\d)?s, \d+(\.\d+)?[kM]? tokens, 1 finding\(s\) listed$/m)
   })
 
   it('refuses a voter on another endpoint that states no context size of its own', async () => {
@@ -764,7 +764,7 @@ describe('runCli', () => {
     })
     expect(await runCli(io)).toBe(EXIT.ok)
     expect(sent(fetchMock).url).toBe('https://team.example/v1/chat/completions')
-    expect(stderr()).toMatch(/^Research \(t @ https:\/\/team\.example\)\.\.\.\nPanel will use t @ https:\/\/team\.example\nteam: its calls ask for whole replies for the rest of the review: the server answered a streamed call whole; set stream: false to choose it yourself\npart 1 of 1: answered in \d+(\.\d)?s, \d+ tokens, 0 finding\(s\) listed\n0 candidate\(s\) after dedup\n0 kept, 0 discarded, 0 unreviewed by panel\ntime: research \d+(\.\d)?s, dedup \d+(\.\d)?s, panel \d+(\.\d)?s; done in \d+s\ntokens: \d+ percent of the cap of 2000000, the default\ncalls: 1 research; team sent no rate-limit headers, so it ran at most 4 at once: set concurrency to run more, if its gateway has room\nresult: json on stdout\n$/)
+    expect(stderr()).toMatch(/^Research \(t @ https:\/\/team\.example\)\.\.\.\nPanel will use t @ https:\/\/team\.example\nteam: its calls ask for whole replies for the rest of the review: the server answered a streamed call whole; set stream: false to choose it yourself\npart 1 of 1: answered in \d+(\.\d)?s, \d+(\.\d+)?[kM]? tokens, 0 finding\(s\) listed\n0 candidate\(s\) after dedup\n0 kept, 0 discarded, 0 unreviewed by panel\ntime: research \d+(\.\d)?s, dedup \d+(\.\d)?s, panel \d+(\.\d)?s; done in \d+(\.\d)?s\ntokens: \d+ percent of the cap of 2\.00M, the default\ncalls: 1 research; team sent no rate-limit headers, so it ran at most 4 at once: set concurrency to run more, if its gateway has room\nresult: json on stdout\n$/)
   })
 
   it('exits 2 when the file QUORUM_CONFIG names does not exist, naming it as given', async () => {
@@ -837,7 +837,7 @@ describe('runCli', () => {
     // Each profile's part line comes before its dedup line, with its prefix; how the two profiles interleave depends on scheduling.
     for (const profile of ['security', 'team']) {
       expect(lines.filter(line => line.startsWith(`[${profile}] `) && /part \d|dedup/.test(line))).toEqual([
-        expect.stringMatching(new RegExp(`^\\[${profile}\\] part 1 of 1: answered in \\d+(\\.\\d)?s, \\d+ tokens, 0 finding\\(s\\) listed$`)),
+        expect.stringMatching(new RegExp(`^\\[${profile}\\] part 1 of 1: answered in \\d+(\\.\\d)?s, \\d+(\\.\\d+)?[kM]? tokens, 0 finding\\(s\\) listed$`)),
         `[${profile}] 0 candidate(s) after dedup`,
       ])
     }
@@ -849,8 +849,8 @@ describe('runCli', () => {
     // The summary ends the review, after the totals line.
     expect(lines.slice(-6)).toEqual([
       '0 kept, 0 discarded, 0 unreviewed by panel',
-      expect.stringMatching(/^time: research \d+(\.\d)?s, dedup \d+(\.\d)?s, panel \d+(\.\d)?s; done in \d+s$/),
-      expect.stringMatching(/^tokens: \d+ percent of the cap of 2000000, the default$/),
+      expect.stringMatching(/^time: research \d+(\.\d)?s, dedup \d+(\.\d)?s, panel \d+(\.\d)?s; done in \d+(\.\d)?s$/),
+      expect.stringMatching(/^tokens: \d+ percent of the cap of 2\.00M, the default$/),
       'calls: 2 research; local sent no rate-limit headers, so it ran at most 4 at once: set concurrency to run more, if its gateway has room',
       'result: json on stdout',
       '',
@@ -1212,7 +1212,7 @@ describe('the diff byte cap', () => {
 
 describe('the room accounting', () => {
   /** The refusal of the research request, for the one provider `local` of 2000 tokens: 2000 less 1791 of text, 512 of template and 500 of reply. */
-  const RESEARCH = 'profiles.security: the research request on local leaves -803 tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window\n'
+  const RESEARCH = 'profiles.security: the research request on local leaves no tokens for the diff, its other tokens 803 over the window, where a hunk may need 1024: contextTokens 2000 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window\n'
 
   it('refuses before any call, exit 2, a profile whose research request leaves its model no room for a diff', async () => {
     const config = write('small.yaml', 'providers:\n  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 2000}\n')
@@ -1226,7 +1226,7 @@ describe('the room accounting', () => {
     expect(stdout()).toBe('')
     // The one provider holds the votes too, whose fixed text leaves no room either: both are refused at once.
     expect(stderr()).toContain(`Error: ${RESEARCH}`)
-    expect(stderr()).toMatch(/\nprofiles\.security: the vote request on local for the longest finding leaves -\d+ tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and 500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window\n/)
+    expect(stderr()).toMatch(/\nprofiles\.security: the vote request on local for the longest finding leaves no tokens for the diff, its other tokens \d+ over the window, where a hunk may need 1024: contextTokens 2000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and 500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window\n/)
     expect(stderr()).not.toContain('http')
   })
 
@@ -1277,7 +1277,7 @@ describe('the room accounting', () => {
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(fetchMock).not.toHaveBeenCalled()
     expect(stdout()).toBe('')
-    expect(stderr()).toMatch(/^Error: profiles\.security: the vote request on small for the longest finding leaves -\d+ tokens for the diff, less than the 1024 a hunk may need: contextTokens 2000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and 500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window\n/)
+    expect(stderr()).toMatch(/^Error: profiles\.security: the vote request on small for the longest finding leaves no tokens for the diff, its other tokens \d+ over the window, where a hunk may need 1024: contextTokens 2000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and 500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window\n/)
     expect(stderr()).not.toContain('the research request')
   })
 })
@@ -2170,7 +2170,7 @@ describe('interrupts', () => {
       { profile: 'security', reason: 'interrupted', detail: 'the interrupt stopped 3 vote(s)' },
     ])
     const lines = stderr().split('\n')
-    const stopping = lines.indexOf('stopping: no new calls; the 1 call(s) in flight have 5 s to end; press Ctrl-C again to quit at once, without the result')
+    const stopping = lines.indexOf('stopping: no new calls; the 1 call(s) in flight have 5.0s to end; press Ctrl-C again to quit at once, without the result')
     const resume = lines.indexOf('resume: to keep the answered calls for a rerun, pass --state <dir>; this review kept none')
     expect(stopping).toBeGreaterThan(-1)
     expect(resume).toBeGreaterThan(stopping)
@@ -3281,6 +3281,8 @@ describe('the sources', () => {
           '--path',
           'src',
           ...send.flatMap(path => ['--send', path]),
+          '--progress',
+          'json',
         ],
         git: pathGit(tree).seam,
         platform: 'linux',
@@ -3328,17 +3330,37 @@ describe('the sources', () => {
     }
   }
 
-  /** The lines of the estimate a run printed, and the numbers of the first and the total's. */
-  function estimateOf(stderr: string): { lines: string[], parts: number, votes: number, expected: number, inFlight: number } {
-    const lines = stderr.split('\n').filter(line => line.startsWith('estimate: '))
-    const total = /^estimate: research about (\d+) tokens expected, at most \d+ with every vote and every part recovered, (\d+) of them reserved at once; the review's token cap is .+$/.exec(lines[1] ?? '')
-    const parts = /^estimate: (\d+) research part\(s\), about \d+ tokens expected for them; then up to (\d+) vote\(s\), at most \d+ tokens in all$/.exec(lines[0] ?? '')
+  /** The text of each line of stderr: a JSON line's `cli:line` text under `--progress json`, any other line as it is. */
+  function cliTexts(stderr: string): string[] {
+    return stderr.split('\n').map((line) => {
+      if (!line.startsWith('{')) return line
+      const parsed = JSON.parse(line) as { type?: string, text?: string }
+      return parsed.type === 'cli:line' && parsed.text !== undefined
+        ? parsed.text
+        : line
+    })
+  }
+
+  /** The number a count of the estimate says: an integer as `--progress json` keeps it, else scaled as `tokenWords` writes it (`16.6k`, `1.85M`), read back to its value. */
+  function countOf(words = ''): number {
+    const [, digits, unit] = /^(\d+(?:\.\d+)?)([kMBT]?)$/.exec(words) ?? []
+    return Number(digits) * (unit === ''
+      ? 1
+      : 1000 ** ('kMBT'.indexOf(unit) + 1))
+  }
+
+  /** The lines of the estimate a run printed (a profile's, the cost and the bounds, then the cap line and the findings lines), the counts of the first and the cost's, and the worst case as written. */
+  function estimateOf(stderr: string): { lines: string[], parts: number, votes: number, expected: number, inFlight: number, worst: string } {
+    const lines = cliTexts(stderr).filter(line => line.startsWith('estimate: ') || line.startsWith('bounds: '))
+    const cost = /^estimate: research about (\S+) tokens expected, at most (\S+) with every vote and every part recovered, (\S+) of them reserved at once$/.exec(lines[1] ?? '')
+    const parts = /^estimate: (\d+) research part\(s\), about \S+ tokens expected for them; then up to (\d+) vote\(s\), at most \S+ tokens in all$/.exec(lines[0] ?? '')
     return {
       lines,
       parts: Number(parts?.[1]),
       votes: Number(parts?.[2]),
-      expected: Number(total?.[1]),
-      inFlight: Number(total?.[2]),
+      expected: countOf(cost?.[1]),
+      inFlight: countOf(cost?.[3]),
+      worst: cost?.[2] ?? '',
     }
   }
 
@@ -3359,10 +3381,11 @@ describe('the sources', () => {
     expect(await runCli(io)).toBe(EXIT.ok)
 
     const estimate = estimateOf(beforeTheCall)
-    expect(estimate.lines).toHaveLength(2)
+    expect(estimate.lines).toHaveLength(3)
     // The cap follows the estimate's worst case, which recovery's bound puts over the default even for one part, and the deadline is the longest allowed: the config sets neither.
-    const worst = /at most (\d+) with every vote/.exec(estimate.lines[1])?.[1]
-    expect(estimate.lines[1]).toMatch(new RegExp(`; the review's token cap is ${worst}, this estimate's worst case, its deadline 86400000 ms, the longest allowed, and its finding cap 50, the default, which holds one per research part: the config sets none of them$`))
+    expect(estimate.lines[2]).toBe(`bounds: the token cap ${estimate.worst}, this estimate's worst case; the deadline 24h00m00s, the longest allowed; the finding cap 50, the default, which holds one per research part; the config sets none of them`)
+    // A person reads the counts scaled, never as a run of digits.
+    expect(estimate.worst).toMatch(/^\d+(\.\d+)?[kMBT]$/)
     expect(estimate.parts).toBe(1)
     expect(estimate.votes).toBe(150)
     expect(estimate.expected).toBeGreaterThan(0)
@@ -3370,9 +3393,28 @@ describe('the sources', () => {
     // The banner, then the estimate, then whatever the review says: all before the first request.
     const lines = beforeTheCall.split('\n')
     expect(lines.slice(0, 2)).toEqual(['Research (m @ http://localhost:11434)...', 'Panel will use m @ http://localhost:11434'])
-    expect(lines.slice(2, 4)).toEqual(estimate.lines)
+    expect(lines.slice(2, 5)).toEqual(estimate.lines)
     // Printed once, and no later line repeats it.
     expect(estimateOf(stderr()).lines).toEqual(estimate.lines)
+  })
+
+  it('keeps the estimate\'s numbers exact under --progress json, in its two lines', async () => {
+    stubChat(JSON.stringify({ findings: [] }))
+    const { io, stderr } = harness({
+      argv: ['--path', 'src', '--progress', 'json'],
+      env: MODEL,
+      git: pathGit().seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    // Each line is a `cli:line` a program may parse: every count an integer and the deadline in milliseconds.
+    const texts = stderr().split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line) as { type: string, level?: string, text?: string }).filter(line => line.type === 'cli:line' && line.level === 'estimate').map(line => line.text)
+    expect(texts).toHaveLength(3)
+    expect(texts[0]).toMatch(/^estimate: 1 research part\(s\), about \d+ tokens expected for them; then up to 150 vote\(s\), at most \d+ tokens in all$/)
+    const cost = /^estimate: research about \d+ tokens expected, at most (\d+) with every vote and every part recovered, \d+ of them reserved at once$/.exec(texts[1] ?? '')
+    expect(cost).not.toBeNull()
+    expect(Number(cost?.[1])).toBeGreaterThan(2_000_000)
+    expect(texts[2]).toBe(`bounds: the token cap ${cost?.[1]}, this estimate's worst case; the deadline 86400000 ms, the longest allowed; the finding cap 50, the default, which holds one per research part; the config sets none of them`)
   })
 
   it('runs a path review that 0.8.0 would have held, its expected spend and calls in flight past 2000000, to its end, under its worst case as cap and a deadline of 24 hours, after the large review\'s warning', async () => {
@@ -3387,18 +3429,17 @@ describe('the sources', () => {
     expect([EXIT.ok, EXIT.finding]).toContain(await runCli(io))
 
     const { lines, parts, votes } = estimateOf(stderr())
-    const warning = /^warning: a large review: (\d+) research part\(s\) and up to (\d+) vote\(s\), about (\d+) tokens expected and at most (\d+): Ctrl-C stops it and keeps what it read$/m.exec(stderr())
+    const warning = /^warning: a large review: (\d+) research part\(s\) and up to (\d+) vote\(s\), about (\S+) tokens expected and at most (\S+): Ctrl-C stops it and keeps what it read$/m.exec(stderr())
     expect(warning).not.toBeNull()
     expect(Number(warning?.[1])).toBe(parts)
     expect(parts).toBe(109)
     // The panel reads one finding per research part: its three lenses vote 109 findings, and the estimate and its warning count them.
     expect(votes).toBe(327)
     expect(Number(warning?.[2])).toBe(327)
-    const worst = Number(warning?.[4])
-    expect(worst).toBeGreaterThan(2_000_000)
-    // The cap is the estimate's worst case, the deadline the longest allowed and the finding cap one per part, all said on the estimate's last line.
-    expect(lines[1]).toMatch(new RegExp(`; the review's token cap is ${worst}, this estimate's worst case, its deadline 86400000 ms, the longest allowed, and its finding cap 109, one per research part: the config sets none of them$`))
-    expect(stderr().indexOf(lines[1])).toBeLessThan(stderr().indexOf('warning: a large review'))
+    expect(countOf(warning?.[4])).toBeGreaterThan(2_000_000)
+    // The cap is the estimate's worst case, the deadline the longest allowed and the finding cap one per part, all said on the bounds line.
+    expect(lines[2]).toBe(`bounds: the token cap ${warning?.[4]}, this estimate's worst case; the deadline 24h00m00s, the longest allowed; the finding cap 109, one per research part; the config sets none of them`)
+    expect(stderr().indexOf(lines[2])).toBeLessThan(stderr().indexOf('warning: a large review'))
     expect(stderr()).not.toContain('Error:')
     // The review is never held: every part's request is sent, and no cap stops it.
     expect(parts).toBeGreaterThan(2)
@@ -3420,8 +3461,8 @@ describe('the sources', () => {
     // The cap is the one the config sets, however many parts there are, and the votes are counted at it.
     expect(parts).toBeGreaterThan(3)
     expect(votes).toBe(3 * 3)
-    expect(lines[1]).toMatch(/, and its finding cap 3 \(maxFindings\)$/)
-    expect(lines[1]).not.toContain('the config sets none of them')
+    expect(lines[2]).toMatch(/; the finding cap 3 \(maxFindings\)$/)
+    expect(lines[2]).not.toContain('the config sets none of them')
     expect(fetchMock).toHaveBeenCalledTimes(parts)
   })
 
@@ -3434,11 +3475,10 @@ describe('the sources', () => {
       platform: 'linux',
     })
     expect(await runCli(io)).toBe(EXIT.ok)
-    const { lines, expected, inFlight } = estimateOf(stderr())
-    const worst = Number(/at most (\d+) with every vote/.exec(lines[1])?.[1])
-    expect(worst).toBeGreaterThan(2_000_000)
+    const { lines, expected, inFlight, worst } = estimateOf(stderr())
+    expect(countOf(worst)).toBeGreaterThan(2_000_000)
     expect(expected + inFlight).toBeLessThanOrEqual(2_000_000)
-    expect(lines[1]).toContain(`token cap is ${worst}, this estimate's worst case`)
+    expect(lines[2]).toContain(`the token cap ${worst}, this estimate's worst case`)
     expect(stderr()).not.toContain('warning:')
   })
 
@@ -3454,17 +3494,17 @@ describe('the sources', () => {
     expect(await runCli(io)).toBe(EXIT.incomplete)
 
     const { lines, parts, expected, inFlight } = estimateOf(stderr())
-    expect(lines).toHaveLength(3)
-    expect(lines[1]).toMatch(/; the review's token cap is 120000 \(maxReviewTokens\), its deadline 86400000 ms, the longest allowed, and its finding cap \d+(, one per research part|, the default, which holds one per research part)$/)
-    expect(lines[2]).toContain('research alone expects about')
+    expect(lines).toHaveLength(4)
+    expect(lines[2]).toMatch(/^bounds: the token cap 120k \(maxReviewTokens\); the deadline 24h00m00s, the longest allowed; the finding cap \d+(, one per research part|, the default, which holds one per research part)$/)
+    expect(lines[3]).toContain('research alone expects about')
     // The estimate says the review may pass the cap, and the warning says how much of it the cap holds.
     expect(parts).toBeGreaterThan(2)
     expect(expected + inFlight).toBeGreaterThan(120_000)
-    const warning = /^warning: the token cap of 120000 \(maxReviewTokens\) holds about (\d+) of the (\d+) research parts this estimate expects: the review runs to the cap, and what it cannot pay for is a token-cap gap; unset maxReviewTokens to let a path review's cap follow its estimate$/m.exec(stderr())
+    const warning = /^warning: the token cap of 120k \(maxReviewTokens\) holds about (\d+) of the (\d+) research parts this estimate expects: the review runs to the cap, and what it cannot pay for is a token-cap gap; unset maxReviewTokens to let a path review's cap follow its estimate$/m.exec(stderr())
     expect(warning).not.toBeNull()
     expect(Number(warning?.[2])).toBe(parts)
     expect(Number(warning?.[1])).toBeLessThan(parts)
-    expect(stderr().indexOf(lines[2])).toBeLessThan(stderr().indexOf('warning: the token cap'))
+    expect(stderr().indexOf(lines[3])).toBeLessThan(stderr().indexOf('warning: the token cap'))
     expect(stderr()).not.toContain('Error:')
     expect(stderr()).not.toContain('a large review')
     // What the cap funds is sent, and the parts it cannot fund are not, and are a gap.

@@ -1,6 +1,7 @@
 /**
- * The words the view writes about a review: the log line of an event, the heartbeat, and the durations and the
- * time left in words. Every line holds numbers, ids and code words, and passes `inertLine` whole.
+ * The words the view writes about a review: the log line of an event and the heartbeat. Every duration in them is
+ * `durationText`'s, the one form every line a person reads writes. Every line holds numbers, ids and code words, and passes
+ * `inertLine` whole.
  */
 
 import { elapsedWords } from '../../core/duration.ts'
@@ -8,7 +9,7 @@ import { CUT_ADVICE, downWords, lackWords } from '../../core/errors.ts'
 import type { PartOutcome } from '../../core/parts.ts'
 import { inertLine } from '../../core/sanitize.ts'
 import type { Adaptation, CallFailure, LeftOutFile, QuorumEvent, UnusableReply } from '../../core/types.ts'
-import { flagWhere, leftOutEntry } from '../../report/lines.ts'
+import { durationText, flagWhere, leftOutEntry, tokenWords } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords, researchRuns, timeLeft } from './eta.ts'
 import type { ViewState } from './model.ts'
@@ -186,8 +187,8 @@ function partWords(event: Extract<QuorumEvent, { type: 'part' }>, view: ReportVi
         : `${where}: reused from the saved state, ${event.listed ?? 0} finding(s) listed${split}`
     }
     return view === 'public'
-      ? `${where}: answered in ${durationWords(event.durationMs)}${split}`
-      : `${where}: answered in ${durationWords(event.durationMs)}, ${event.spent} tokens, ${event.listed ?? 0} finding(s) listed${split}`
+      ? `${where}: answered in ${durationText(event.durationMs)}${split}`
+      : `${where}: answered in ${durationText(event.durationMs)}, ${tokenWords(event.spent)} tokens, ${event.listed ?? 0} finding(s) listed${split}`
   }
   if (pieces !== undefined) {
     const unread = PIECE_WORDS.flatMap(([name, words]) => pieces.unread[name] === undefined
@@ -313,21 +314,21 @@ function glyphOf(event: QuorumEvent): GlyphName | undefined {
 }
 
 /**
- * A retry's failure as its line words it: `timeout after 600000 ms`, whose length is the deadline's, `stalled, no progress
- * for 300000 ms` for a stream that stalled, whose length is its window, `timeout after 10512000 ms` with the ceiling a
+ * A retry's failure as its line words it: `timeout after 10m00s`, whose length is the deadline's, `stalled, no progress
+ * for 5m00s` for a stream that stalled, whose length is its window, `timeout after 2h55m12s` with the ceiling a
  * stream grew to when the failure names it, `its reply held only reasoning after 4m10s` for a reply of only reasoning (the
  * one `no-answer` a call sends once more), `its reply could not be read after 2m10s` for a reply the stage refused, else its kind
- * (`http 503`, `network`) and how long the attempt ran: `network after 10m00s`.
+ * (`http 503`, `network`) and how long the attempt ran: `network after 10m00s`. Every length is written as every duration is.
  */
 function retryFailure(failure: CallFailure | UnusableReply, timeoutMs: number, attemptMs: number): string {
-  if (failure.kind === 'unusable-reply') return `its reply could not be read after ${elapsedWords(attemptMs)}`
+  if (failure.kind === 'unusable-reply') return `its reply could not be read after ${durationText(attemptMs)}`
   const { kind, status, stalledMs, ceilingMs } = failure
-  if (kind === 'timeout' && stalledMs !== undefined) return `stalled, no progress for ${stalledMs} ms`
-  if (kind === 'timeout') return `timeout after ${ceilingMs ?? timeoutMs} ms`
-  if (kind === 'no-answer') return `its reply held only reasoning after ${elapsedWords(attemptMs)}`
+  if (kind === 'timeout' && stalledMs !== undefined) return `stalled, no progress for ${durationText(stalledMs)}`
+  if (kind === 'timeout') return `timeout after ${durationText(ceilingMs ?? timeoutMs)}`
+  if (kind === 'no-answer') return `its reply held only reasoning after ${durationText(attemptMs)}`
   return `${kind === 'http' && status !== undefined
     ? `http ${status}`
-    : kind} after ${elapsedWords(attemptMs)}`
+    : kind} after ${durationText(attemptMs)}`
 }
 
 /** The line of a research call's retry, read against the call in the state; a vote's retry, and a call the state does not hold, write none. */
@@ -360,8 +361,8 @@ export function logLines(event: QuorumEvent, state: ViewState, view: ReportView)
     return [
       {
         text: inertLine(event.cause === 'interrupt'
-          ? `stopping: no new calls; the ${event.inFlight} call(s) in flight have ${(event.graceMs ?? 0) / 1000} s to end; press Ctrl-C again to quit at once, without the result`
-          : `stopping: the review reached its deadline of ${state.facts.deadlineMs} ms: the calls in flight are stopped, and what is left is a review-deadline gap`),
+          ? `stopping: no new calls; the ${event.inFlight} call(s) in flight have ${durationText(event.graceMs ?? 0)} to end; press Ctrl-C again to quit at once, without the result`
+          : `stopping: the review reached its deadline of ${durationText(state.facts.deadlineMs)}: the calls in flight are stopped, and what is left is a review-deadline gap`),
       },
     ]
   }
@@ -375,14 +376,6 @@ export function logLines(event: QuorumEvent, state: ViewState, view: ReportView)
     : [
         { glyph, text },
       ]
-}
-
-/** A duration in words: one decimal under 10 s (`4.3s`), whole seconds under a minute (`42s`), then `2m14s`, then `1h02m09s`. */
-export function durationWords(ms: number): string {
-  const tenths = Math.max(0, Math.round(ms / 100))
-  return tenths < 100
-    ? `${(tenths / 10).toFixed(1)}s`
-    : elapsedWords(ms)
 }
 
 /**
@@ -403,10 +396,10 @@ export function heartbeatLine(state: ViewState, now: number, view: ReportView): 
     : state.retried.votes
   const spent = view === 'public'
     ? ''
-    : `; ${state.spent} of ${state.facts.cap.tokens} tokens`
+    : `; ${tokenWords(state.spent)} of ${tokenWords(state.facts.cap.tokens)} tokens`
   const left = timeLeft(state, now)
   const words = left.kind === 'range'
     ? `about ${rangeWords(left.lowMs, left.highMs, '-')} left`
     : 'estimating the time left'
-  return inertLine(`[${elapsedWords(now - (state.startedAt ?? now))}] ${progress}, ${state.calls.size} call(s) in flight, ${retried} retried${spent}; ${words}`)
+  return inertLine(`[${durationText(now - (state.startedAt ?? now))}] ${progress}, ${state.calls.size} call(s) in flight, ${retried} retried${spent}; ${words}`)
 }

@@ -16,6 +16,7 @@
 
 import { REVIEW_CEILING } from '../../core/lanes.ts'
 import { inertLine } from '../../core/sanitize.ts'
+import { tokenWords } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
 import { partsOf, rangeWords, researchRuns } from './eta.ts'
 import type { TimeLeft } from './eta.ts'
@@ -71,27 +72,6 @@ function words(text: string): Row {
   return [
     { text },
   ]
-}
-
-/** A token count told in three significant digits at most, floored: `999`, `1.23k`, `12.3k`, `812k`, `9.86M`. */
-export function tokenWords(tokens: number): string {
-  const count = Math.max(0, Math.floor(tokens))
-  if (count < 1000) return String(count)
-  const units = ['k', 'M', 'B', 'T']
-  let scale = 1000
-  let unit = 0
-  while (unit < units.length - 1 && count >= scale * 1000) {
-    scale *= 1000
-    unit += 1
-  }
-  const whole = Math.floor(count / scale)
-  const decimals = whole < 10
-    ? 2
-    : whole < 100
-      ? 1
-      : 0
-  const steps = 10 ** decimals
-  return `${(Math.floor(count / (scale / steps)) / steps).toFixed(decimals)}${units[unit]}`
 }
 
 /** `row` as a terminal line: its text cut to `columns - 1`, then its glyphs coloured when `color` is set. */
@@ -456,7 +436,7 @@ function hintRow(state: ViewState, now: number): Row {
   const { stopping } = state
   if (stopping?.cause !== 'interrupt') return words(HINT)
   const seconds = Math.max(0, Math.ceil((stopping.at + (stopping.graceMs ?? 0) - now) / 1000))
-  return words(`stopping: ${state.calls.size} call(s) end within ${seconds} s; Ctrl-C again quits without the result`)
+  return words(`stopping: ${state.calls.size} call(s) end within ${elapsedWords(seconds * 1000)}; Ctrl-C again quits without the result`)
 }
 
 /**

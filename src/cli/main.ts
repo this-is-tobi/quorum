@@ -31,8 +31,8 @@ import { runMcp } from './mcp.ts'
 import { checkOutputs, colorFor, reportPlan, writeOutputs } from './outputs.ts'
 import type { ColorWhen, ReportPlan } from './outputs.ts'
 import { printConfig } from './print-config.ts'
-import { bannerLines, boundWarnings, estimateLines, findingsCapOf, viewFacts } from './render.ts'
-import type { Bounds } from './render.ts'
+import { bannerLines, boundWarnings, estimateLines, EXACT_WORDS, findingsCapOf, viewFacts } from './render.ts'
+import type { Bounds, NumberWords } from './render.ts'
 import { runReport } from './report.ts'
 import { rerunCouldFill } from './view/summary.ts'
 import { progressMode, viewWriter } from './view/progress.ts'
@@ -349,7 +349,9 @@ export async function runCli(io: CliIO): Promise<number> {
     writeWarnings(view, quorum.warnings)
     for (const line of bannerLines(config, plan.view)) view.line('banner', line)
     const bounded = spec?.kind === 'paths'
-      ? pathBounds(view, quorum, { diff: read.diff, send }, config, values.large === true)
+      ? pathBounds(view, quorum, { diff: read.diff, send }, config, values.large === true, mode === 'json'
+          ? EXACT_WORDS
+          : undefined)
       : undefined
     if (read.diff.trim() === '') view.line('notice', 'empty diff: nothing to review')
     view.begin(viewFacts(config, bounded?.estimate, bounded?.facts))
@@ -427,9 +429,10 @@ interface PathBounds {
  * review may run, and the finding cap the config's `maxFindings`, else one finding per research part, at least 50 (`findingsCapOf`). The estimate printed is a second
  * one, made under those bounds, with the warnings they call for: a large review, or a cap below what the estimate
  * expects. The review is never held for its size: it runs to its cap or its deadline, and what they stop is a gap.
- * `--large` warns and does nothing.
+ * `--large` warns and does nothing. The estimate's counts and durations are scaled for a person, and exact (`words`) under `--progress json`,
+ * where a program may parse them.
  */
-function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: string, readonly send: readonly string[] }, config: ResolvedConfig, large: boolean): PathBounds {
+function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: string, readonly send: readonly string[] }, config: ResolvedConfig, large: boolean, words?: NumberWords): PathBounds {
   const first = quorum.estimate(input)
   const findingsCap = config.maxFindings ?? findingsCapOf(first)
   // The first estimate counts the votes at the quorum's own cap: it serves when that is the review's too.
@@ -464,8 +467,8 @@ function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: st
         ? 'parts'
         : 'floor',
   }
-  for (const line of estimateLines(estimate, bounds)) view.line('estimate', line)
-  for (const line of boundWarnings(estimate, bounds)) view.line('warning', line)
+  for (const line of estimateLines(estimate, bounds, words)) view.line('estimate', line)
+  for (const line of boundWarnings(estimate, bounds, words)) view.line('warning', line)
   if (large) view.line('warning', 'warning: --large is no longer needed and does nothing: a path review\'s token cap follows its estimate')
   return {
     estimate,

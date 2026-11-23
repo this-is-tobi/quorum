@@ -201,4 +201,28 @@ describe('profileBudgets', () => {
     const usual = realRun(guarded('local', 8192), guarded('local', 200_000))
     expect(roomIssues('security', profileBudgets(usual, target => target.window, settings), usual, settings.maxFindings)).toEqual([])
   })
+
+  it('says there are no tokens for the diff, and how far over the window the other tokens are, below a room of 0', () => {
+    /** The refusal of a research request whose provider has `window` tokens, a reply of 2000 and 512 for the chat template. */
+    const refused = (window: number): string => {
+      const run = realRun({
+        ...guarded('local', window),
+        maxTokens: 2000,
+      }, guarded('big', 200_000))
+      const [issue, ...rest] = roomIssues('security', profileBudgets(run, target => target.window, settings), run, settings.maxFindings)
+      expect(rest).toEqual([])
+      return issue.message
+    }
+    // 1791 tokens of text, 512 for the template and 2000 for the reply fill a window of 4303, which leaves a room of 0.
+    expect(refused(4303)).toBe('the research request on local leaves 0 tokens for the diff, less than the 1024 a hunk may need: contextTokens 4303 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 2000 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window')
+    // One token fewer is a room of -1: the other tokens are 1 over, and every figure stays exact.
+    expect(refused(4302)).toBe('the research request on local leaves no tokens for the diff, its other tokens 1 over the window, where a hunk may need 1024: contextTokens 4302 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 2000 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window')
+    // A voter's refusal reads the same way.
+    const run = realRun(guarded('local', 200_000), {
+      ...guarded('small', 1000),
+    })
+    const messages = roomIssues('security', profileBudgets(run, target => target.window, settings), run, settings.maxFindings).map(issue => issue.message)
+    expect(messages).toHaveLength(3)
+    for (const message of messages) expect(message).toMatch(/^the vote request on small for the longest finding leaves no tokens for the diff, its other tokens \d+ over the window, where a hunk may need 1024: contextTokens 1000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and \d+ for the reply: shorten the guidelines, lower maxTokens, or state a larger window$/)
+  })
 })

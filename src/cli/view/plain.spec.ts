@@ -109,7 +109,7 @@ describe('plainWriter', () => {
     expect(lines).toEqual(['a line'])
 
     expect(clock.fireNext()).toBe(true)
-    expect(lines).toEqual(['a line', '[1m00s] research 0 of 44 part(s), 0 call(s) in flight, 0 retried; 0 of 2000000 tokens; estimating the time left'])
+    expect(lines).toEqual(['a line', '[1m00s] research 0 of 44 part(s), 0 call(s) in flight, 0 retried; 0 of 2.00M tokens; estimating the time left'])
     // The heartbeat arms the next one, 60 s later again.
     expect(clock.pending()).toBe(1)
     expect(clock.fireNext()).toBe(true)
@@ -251,7 +251,7 @@ describe('plainWriter', () => {
     expect(lines).toHaveLength(before + 6)
     expect(lines.slice(before)).toEqual([
       'time: research 30m12s, dedup 0.0s, panel 7m40s; the first estimate, 5m10s in, put research at 30-31m',
-      'tokens: 74 percent of the cap of 2000000, the default',
+      'tokens: 74 percent of the cap of 2.00M, the default',
       'calls: 46 research (2 retried, 1 recovered into 2 pieces), 18 vote(s)',
       'gaps: 1 part(s) research-failed (timeout): raise timeoutMs',
       'result: the text report above; --output json written',
@@ -291,7 +291,7 @@ describe('plainWriter', () => {
     expect(lines.filter(line => /^part \d+ of 44: (?:answered|failed|split)/.test(line))).toHaveLength(44)
     expect(lines.filter(line => /retry 1 of 2 in/.test(line))).toEqual([
       'part 7 of 44: http 503 after 7m08s, retry 1 of 2 in 4s',
-      'part 12 of 44: timeout after 600000 ms, retry 1 of 2 in 2s',
+      'part 12 of 44: timeout after 10m00s, retry 1 of 2 in 2s',
     ])
     expect(lines.slice(-2)).toEqual(['6 candidate(s) after dedup', '4 kept, 2 discarded, 0 unreviewed by panel'])
     for (const line of lines) {

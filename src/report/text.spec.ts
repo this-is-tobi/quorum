@@ -79,7 +79,7 @@ const MAIN = [
   'gap: security binary, the diff carries no content for 1 binary file(s), listed',
   '  in meta.leftOut',
   'flag: hidden-characters at "src/session.js":20, U+202E on 1 added line(s)',
-  'took 41 s, 48120 tokens in and 4190 out',
+  'took 41s, 48.1k tokens in and 4.19k out',
   'exit 1, findings: a gating profile kept a finding at or above its fail-on level',
   '',
 ]
@@ -136,7 +136,7 @@ describe('text', () => {
     expect(lines).toEqual(MAIN.filter(line => line !== '  in meta.leftOut').map(line => line.startsWith('gap: ')
       ? 'gap: security binary, the diff carries no content for a binary file'
       : line.startsWith('took ')
-        ? 'took 41 s'
+        ? 'took 41s'
         : line))
 
     const held = blankResult({
@@ -304,7 +304,7 @@ describe('text', () => {
       '  check that it belongs in the change',
       'flag: secret-file at "old/.env", deletes a file named as a secret, so no model',
       '  was sent any of it: the history still holds the file, so rotate what it held',
-      'took 1.2 s, no token count reported',
+      'took 1.2s, no token count reported',
       'exit 4, incomplete: a gating profile has a gap or an unreviewed finding',
       '',
     ])
@@ -422,22 +422,33 @@ describe('text', () => {
   })
 
   it('writes the time and the tokens, a cost when the usage holds one, and says when none was reported', () => {
-    expect(render(blankResult(), PASS).at(-3)).toBe('took 3 ms, no token count reported')
-    expect(render(blankResult({ durationMs: 1234 }), PASS).at(-3)).toBe('took 1.2 s, no token count reported')
+    expect(render(blankResult(), PASS).at(-3)).toBe('took 0.0s, no token count reported')
+    expect(render(blankResult({ durationMs: 1234 }), PASS).at(-3)).toBe('took 1.2s, no token count reported')
     const costly = reportResult({
       meta: {
         usage: { inputTokens: 48_120, outputTokens: 4190, costUsd: 0.0423 },
       },
     })
-    expect(render(costly).at(-3)).toBe('took 41 s, 48120 tokens in and 4190 out, $0.0423')
+    expect(render(costly).at(-3)).toBe('took 41s, 48.1k tokens in and 4.19k out, $0.0423')
+  })
+
+  it('writes the review\'s time past a minute in minutes, and its tokens scaled', () => {
+    const long = reportResult({
+      meta: {
+        durationMs: 468_000,
+        usage: { inputTokens: 3_208_096, outputTokens: 541_818 },
+      },
+    })
+    expect(render(long).at(-3)).toBe('took 7m48s, 3.20M tokens in and 541k out')
   })
 
   it.each<[number, string]>([
-    [999, '999 ms'],
-    [1000, '1.0 s'],
-    [9949, '9.9 s'],
-    [9950, '10 s'],
-    [59_600, '60 s'],
+    [999, '1.0s'],
+    [1000, '1.0s'],
+    [9949, '9.9s'],
+    [9950, '10s'],
+    [59_400, '59s'],
+    [59_600, '1m00s'],
   ])('writes %i ms as %s', (durationMs, duration) => {
     expect(render(blankResult({ durationMs }), PASS).at(-3)).toBe(`took ${duration}, no token count reported`)
   })
@@ -448,7 +459,7 @@ describe('text', () => {
       '',
       'security (fail-on high): 0 kept, 0 unreviewed, 0 discarded',
       '  the diff holds no file',
-      'took 3 ms, no token count reported',
+      'took 0.0s, no token count reported',
       'exit 0, pass: no gating profile kept a finding to fail on, and none has a gap',
       '',
     ])

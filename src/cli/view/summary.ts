@@ -10,9 +10,9 @@ import { CUT_ADVICE, failureFix, QUOTA_FIX, STALL_FIX } from '../../core/errors.
 import { inertLine } from '../../core/sanitize.ts'
 import type { ConcurrencyRecord } from '../../core/lanes.ts'
 import type { IncompleteReason, QuorumMeta, QuorumResult, StageName } from '../../core/types.ts'
+import { durationText, tokenWords } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords } from './eta.ts'
-import { durationWords, elapsedWords } from './lines.ts'
 import { stageStart, stageTime } from './model.ts'
 import type { CapOrigin, Cause, GapCount, ViewState } from './model.ts'
 import type { SummaryFacts } from './writer.ts'
@@ -117,19 +117,19 @@ function timeLine(state: ViewState, facts: SummaryFacts, view: ReportView, dash:
   const names: readonly StageName[] = ['research', 'dedup', 'panel']
   for (const name of names) {
     const time = stageTime(state, name)
-    if (time !== undefined) spans.push(`${name} ${durationWords(time)}`)
+    if (time !== undefined) spans.push(`${name} ${durationText(time)}`)
   }
   if (spans.length === 0) return undefined
   let line = `time: ${spans.join(', ')}`
   const researchStart = stageStart(state, 'research')
   if (state.firstEstimate !== undefined && researchStart !== undefined) {
     const at = state.firstEstimate.at - researchStart
-    line += `; the first estimate, ${elapsedWords(at)} in, put research at ${rangeWords(at + state.firstEstimate.lowMs, at + state.firstEstimate.highMs, dash)}`
+    line += `; the first estimate, ${durationText(at)} in, put research at ${rangeWords(at + state.firstEstimate.lowMs, at + state.firstEstimate.highMs, dash)}`
   }
   if (reportAbove(facts)) return line
   const { durationMs, usage } = facts.result.meta
-  line += `; done in ${elapsedWords(durationMs)}`
-  if (view !== 'public' && usage !== undefined) line += `, ${usage.inputTokens} tokens in and ${usage.outputTokens} out`
+  line += `; done in ${durationText(durationMs)}`
+  if (view !== 'public' && usage !== undefined) line += `, ${tokenWords(usage.inputTokens)} tokens in and ${tokenWords(usage.outputTokens)} out`
   return line
 }
 
@@ -144,8 +144,8 @@ const CAP_WORDS: Readonly<Record<CapOrigin, string>> = {
 function tokensLine(state: ViewState): string {
   const { tokens, origin } = state.facts.cap
   const percent = Math.floor(state.spent * 100 / tokens)
-  let line = `tokens: ${percent} percent of the cap of ${tokens}, ${CAP_WORDS[origin]}`
-  if (state.usage.size > 1) line += `; ${[...state.usage].map(([id, usage]) => `${id} ${usage.inputTokens} in and ${usage.outputTokens} out`).join(', ')}`
+  let line = `tokens: ${percent} percent of the cap of ${tokenWords(tokens)}, ${CAP_WORDS[origin]}`
+  if (state.usage.size > 1) line += `; ${[...state.usage].map(([id, usage]) => `${id} ${tokenWords(usage.inputTokens)} in and ${tokenWords(usage.outputTokens)} out`).join(', ')}`
   return line
 }
 
@@ -171,10 +171,10 @@ type ProviderTimings = ViewState['timings'] extends ReadonlyMap<string, infer Ti
 function laneClauses(state: ViewState, lanes: QuorumMeta['concurrency']): string[] {
   /** A provider's clauses after its lane's, each led by `owner`: its longest first token and silence, then how far its slowest stream grew its deadline, when one did. */
   const timed = (owner: string, { firstTokenMs, longestSilenceMs, ceilingMs }: ProviderTimings): string[] => [
-    `${owner} longest first token ${durationWords(firstTokenMs)}, its longest silence ${durationWords(longestSilenceMs)}`,
+    `${owner} longest first token ${durationText(firstTokenMs)}, its longest silence ${durationText(longestSilenceMs)}`,
     ...ceilingMs === undefined
       ? []
-      : [`${owner} slowest stream grew its deadline to ${durationWords(ceilingMs)}`],
+      : [`${owner} slowest stream grew its deadline to ${durationText(ceilingMs)}`],
   ]
   const { concurrency } = state.facts
   const records = concurrency === 'auto'
