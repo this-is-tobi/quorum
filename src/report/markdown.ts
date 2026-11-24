@@ -4,13 +4,15 @@
  *
  * 1. the marker, `<!-- quorum:summary:v1 -->`, on the first line, and the heading `### quorum review`;
  * 2. the verdict, which says what the exit code says;
- * 3. a table of each profile's fail-on level, counts and coverage;
- * 4. `#### Findings`: the kept and unreviewed findings, each with its claim and its evidence;
+ * 3. a table of each profile's fail-on level, counts and coverage, the coverage cell of a profile that asked nothing (it requires
+ *    a rule and was sent none) ending with the rules it was sent and that its research asks nothing;
+ * 4. `#### Findings`: the kept and unreviewed findings, each with its claim and its evidence, its head naming the review rule it
+ *    cites in a code span;
  * 5. `#### Gaps`: one line per profile and reason, in fixed words;
  * 6. `#### Files left out`;
  * 7. `#### Flags`;
- * 8. `#### Documents read`: one item for each guidelines or do-not-report document the review read, in the words of the
- *    log's line, its path, commit and hash in code spans;
+ * 8. `#### Documents read`: one item for each guidelines, do-not-report or rules document the review read, in the words of
+ *    the log's line, its path, commit and hash in code spans;
  * 9. the note that some evidence is left out, when it is, then `---` and the trailer: the version and the source.
  *
  * A section with nothing to list is left out.
@@ -32,7 +34,7 @@ import { profileFailOn } from '../core/outcome.ts'
 import type { Outcome } from '../core/outcome.ts'
 import { codeSpan, fencedBlock, inertLine } from '../core/sanitize.ts'
 import type { ContextDocument, Flag, IncompleteReason, LeftOutFile, PublicVerdict, PublicView } from '../core/types.ts'
-import { coverageWords, documentWords, evidenceRows, GAP_WORDS, levelWord, plural, rankedFindings, rowText, sourcePhrase, verdictWhy, votesWords } from './lines.ts'
+import { coverageWords, documentWords, evidenceRows, GAP_WORDS, levelWord, plural, rankedFindings, rowText, ruleCountWords, ruleWords, sourcePhrase, verdictWhy, votesWords } from './lines.ts'
 import type { Reporter } from './reporter.ts'
 import { discardedOf, publicView } from './view.ts'
 
@@ -170,7 +172,14 @@ function profileTable(view: PublicView): Listing {
   return listing(`${TABLE_HEAD}\n${TABLE_RULE}`, {
     headSep: '\n',
     countSep: '\n\n',
-  }, Object.entries(view.meta.profiles).map(([id, profile]) => textItem(`| ${id} | ${profileFailOn(view, id)} | ${kept.get(id) ?? 0} | ${unreviewed.get(id) ?? 0} | ${discardedOf(view, id)} | ${profile.invalidFindings} | ${coverageWords(profile.coverage)} |`)))
+  }, Object.entries(view.meta.profiles).map(([id, profile]) => textItem(`| ${id} | ${profileFailOn(view, id)} | ${kept.get(id) ?? 0} | ${unreviewed.get(id) ?? 0} | ${discardedOf(view, id)} | ${profile.invalidFindings} | ${coverageWords(profile.coverage)}${askedNothing(profile)} |`)))
+}
+
+/** What a profile that asked nothing adds to its coverage cell, `; rules 0 of 0 sent, so its research asks nothing`, since its files read as reviewed: nothing for any other profile. No `|` and no text of a model or a diff. */
+function askedNothing({ rules, asksNothing }: PublicView['meta']['profiles'][string]): string {
+  return asksNothing === true
+    ? `; rules ${ruleCountWords(rules, true)}`
+    : ''
 }
 
 /** A finding's evidence as a fenced block inside its list item, each line indented two spaces, after a blank line; empty when it cites no row. */
@@ -181,11 +190,19 @@ function evidenceBlock(verdict: PublicVerdict): string {
   return `\n\n${block.map(line => written(`  ${line}`)).join('\n')}`
 }
 
+/** The review rule a finding cites as the end of its head, ` · rule `<id>``, the id in a code span, or nothing for a finding that cites none. The finding's line comment shares it. */
+export function ruleSpan(verdict: PublicVerdict): string {
+  const rule = ruleWords(verdict, codeSpan)
+  return rule === ''
+    ? ''
+    : ` · ${rule}`
+}
+
 /** The findings, the ones that fail their profile first, then high, medium, unreviewed and low, each group by file and then by line. */
 function findingsListing(view: PublicView): Listing {
   const items = rankedFindings(view).map((verdict): Item => {
     const level = levelWord(verdict)
-    const head = `- **${level}** ${verdict.profile} · ${codeSpan(verdict.file)} line ${verdict.line} · ${codeSpan(verdict.category)} · ${votesWords(verdict)}`
+    const head = `- **${level}** ${verdict.profile} · ${codeSpan(verdict.file)} line ${verdict.line} · ${codeSpan(verdict.category)}${ruleSpan(verdict)} · ${votesWords(verdict)}`
     const evidence = evidenceBlock(verdict)
     return {
       text: `${written(head)}\n\n${written(`  ${codeSpan(verdict.summary)}`)}`,

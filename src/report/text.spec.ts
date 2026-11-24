@@ -380,6 +380,122 @@ describe('text', () => {
     ])
   })
 
+  it('ends a finding\'s head with its rule, and a profile\'s line with its rules and refused citations', () => {
+    const { security } = reportResult().meta.profiles
+    const ruled = (rules: { listed: number, sent: number }, invalidRules: number): QuorumResult => reportResult({
+      kept: [
+        { ...SQL, rule: 'tests-for-new-code' },
+      ],
+      meta: {
+        profiles: {
+          security: { ...security, rules, invalidRules },
+        },
+      },
+    })
+    const lines = render(ruled({ listed: 5, sent: 3 }, 1))
+    expect(lines[2]).toBe('HIGH  security  src/auth/login.ts:42  CWE-89  rule tests-for-new-code')
+    expect(lines.slice(16, 19)).toEqual([
+      'security (fail-on high): 1 kept, 1 unreviewed, 1 discarded; rules: 3 of 5 sent,',
+      '  1 citation(s) refused',
+      '  1 of 3 files reviewed, 1 in part, 1 not',
+    ])
+    // Joined back at its wrap, the line is the one `; rules: <sent> of <listed> sent, <k> citation(s) refused` ends.
+    expect(`${lines[16]} ${lines[17].trim()}`).toBe('security (fail-on high): 1 kept, 1 unreviewed, 1 discarded; rules: 3 of 5 sent, 1 citation(s) refused')
+    // The citations refused come last, only when there are some; the line of a profile that has none refused ends at its rules.
+    expect(render(ruled({ listed: 5, sent: 3 }, 0))[16]).toBe('security (fail-on high): 1 kept, 1 unreviewed, 1 discarded; rules: 3 of 5 sent')
+    expect(render(ruled({ listed: 2, sent: 0 }, 2)).slice(16, 18)).toEqual([
+      'security (fail-on high): 1 kept, 1 unreviewed, 1 discarded; rules: 0 of 2 sent,',
+      '  2 citation(s) refused',
+    ])
+    // The outside-the-diff count stays where it was, before the rules: the two never merge.
+    const both = reportResult({
+      meta: {
+        profiles: {
+          team: {
+            ...security,
+            failOn: 'none',
+            gating: false,
+            invalidFindings: 2,
+            rules: { listed: 1, sent: 1 },
+            invalidRules: 1,
+          },
+        },
+      },
+    })
+    expect(render(both).filter(line => line.startsWith('team ') || line.startsWith('  rules:'))).toEqual([
+      'team (fail-on none): 0 kept, 0 unreviewed, 0 discarded, 2 outside the diff;',
+      '  rules: 1 of 1 sent, 1 citation(s) refused',
+    ])
+    // The public view says the same, its counts being its own.
+    expect(render(publicView(ruled({ listed: 5, sent: 3 }, 1))).slice(2, 3)).toEqual(['HIGH  security  src/auth/login.ts:42  CWE-89  rule tests-for-new-code'])
+    expect(render(publicView(ruled({ listed: 5, sent: 3 }, 1))).slice(16, 18)).toEqual(lines.slice(16, 18))
+    // Every line of it stays within 80 columns: a path and a category never cut are the only ones that pass it.
+    for (const line of lines.filter(entry => !entry.startsWith('HIGH'))) expect([...line].length).toBeLessThanOrEqual(80)
+    // A colored head keeps the rule uncolored, after the category.
+    const colored = render(ruled({ listed: 5, sent: 3 }, 1), FINDINGS, true)[2]
+    expect(colored.replaceAll(QUORUM_SEQUENCE, '')).toBe(lines[2])
+    expect(colored.endsWith('  CWE-89  rule tests-for-new-code')).toBe(true)
+  })
+
+  it('says on the line of a profile that asked nothing that its research asks nothing, whether it lists rules or none, and on no other profile\'s', () => {
+    const { security } = reportResult().meta.profiles
+    /** A review of one file whose profile `asksNothing`: it requires a rule and was sent none, so nothing was found and every file reads as reviewed. */
+    const asked = (rules: { listed: number, sent: number }): QuorumResult => blankResult({
+      profiles: {
+        security: {
+          ...security,
+          rules,
+          asksNothing: true,
+          coverage: [
+            { file: 'a.js', status: 'reviewed' },
+          ],
+        },
+      },
+    })
+    // It requires a rule and lists none.
+    expect(render(asked({ listed: 0, sent: 0 }), PASS).slice(2, 5)).toEqual([
+      'security (fail-on high): 0 kept, 0 unreviewed, 0 discarded; rules: 0 of 0 sent,',
+      '  so its research asks nothing',
+      '  1 of 1 file reviewed',
+    ])
+    // It lists rules and none applies to the change.
+    expect(render(asked({ listed: 5, sent: 0 }), PASS).slice(2, 5)).toEqual([
+      'security (fail-on high): 0 kept, 0 unreviewed, 0 discarded; rules: 0 of 5 sent,',
+      '  so its research asks nothing',
+      '  1 of 1 file reviewed',
+    ])
+    // The public view, which `quorum report` writes a saved result by, says the same, and every line stays within 80 columns.
+    expect(render(publicView(asked({ listed: 0, sent: 0 })), PASS).slice(0, 5)).toEqual(render(asked({ listed: 0, sent: 0 }), PASS).slice(0, 5))
+    for (const line of render(asked({ listed: 5, sent: 0 }), PASS)) expect([...line].length).toBeLessThanOrEqual(80)
+    // A profile that lists no rule and requires none says nothing of rules, and one that lists rules and was sent some says no more than it did.
+    expect(render(blankResult(), PASS)[2]).toBe('security (fail-on high): 0 kept, 0 unreviewed, 0 discarded')
+    expect(render(blankResult({
+      profiles: {
+        security: {
+          ...security,
+          rules: { listed: 5, sent: 3 },
+          coverage: [],
+        },
+      },
+    }), PASS)[2]).toBe('security (fail-on high): 0 kept, 0 unreviewed, 0 discarded; rules: 3 of 5 sent')
+    expect(render(reportResult())).toEqual(MAIN)
+  })
+
+  it('writes no rules words for a profile that lists no rule, nor for a finding that cites none', () => {
+    const lines = render(reportResult())
+    expect(lines).toEqual(MAIN)
+    expect(lines.join('\n')).not.toContain('rule')
+    // A profile that lists none, kept finding or not, has its line as before.
+    expect(render(blankResult(), PASS)[2]).toBe('security (fail-on high): 0 kept, 0 unreviewed, 0 discarded')
+    expect(render(keeping({ rule: undefined }))[2]).toBe('HIGH  security  src/auth/login.ts:42  CWE-89')
+  })
+
+  it('makes the rule id inert as every part of a line is', () => {
+    // The id is the configuration's, and the result schema holds it to a rule id's pattern: a hand-built result is made inert all the same.
+    const lines = render(keeping({ rule: `a${RLO}b` }))
+    expect(lines[2]).toBe('HIGH  security  src/auth/login.ts:42  CWE-89  rule a<U+202E>b')
+  })
+
   it.each<[string, ReviewSource, string]>([
     [
       'diff',

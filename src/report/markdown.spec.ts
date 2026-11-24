@@ -124,6 +124,63 @@ describe('markdown', () => {
     expect(render(reportResult())).toEqual(MAIN)
   })
 
+  it('writes a finding\'s rule in a code span in the summary, after its category, and none for a finding that cites none', () => {
+    const result = reportResult({
+      kept: [
+        { ...SQL, rule: 'tests-for-new-code' },
+      ],
+      unreviewed: [
+        { ...TOKEN, rule: 'no-any' },
+      ],
+    })
+    const lines = render(result)
+    expect(lines).toContain('- **HIGH** security · `src/auth/login.ts` line 42 · `CWE-89` · rule `tests-for-new-code` · kept by 3 of 3 lenses')
+    expect(lines).toContain('- **UNREVIEWED** security · `src/session.js` line 20 · `CWE-338` · rule `no-any` · kept by 1 of 3 lenses, 1 vote failed: a network error')
+    expectCodeWritten(lines.join('\n'))
+    // The rest of the summary is the one a review with no rule reads: the table holds no rule words, and neither does a finding with none.
+    expect(lines.filter(line => !line.startsWith('- **'))).toEqual(MAIN.filter(line => !line.startsWith('- **')))
+    expect(render(reportResult())).toEqual(MAIN)
+    expect(render(reportResult()).join('\n')).not.toContain('rule `')
+    // The public view the summary is written from keeps the id, and a result given as that view reads the same.
+    expect(render(publicView(result))).toEqual(lines)
+  })
+
+  it('ends the coverage cell of a profile that asked nothing with the rules it was sent and that its research asks nothing, and no other profile\'s', () => {
+    const { security } = reportResult().meta.profiles
+    const asked = (rules: { listed: number, sent: number }): QuorumResult => blankResult({
+      profiles: {
+        security: {
+          ...security,
+          rules,
+          asksNothing: true,
+          coverage: [
+            { file: 'a.js', status: 'reviewed' },
+          ],
+        },
+      },
+    })
+    expect(render(asked({ listed: 0, sent: 0 }), PASS).slice(5, 8)).toEqual([
+      TABLE_HEAD,
+      TABLE_RULE,
+      '| security | high | 0 | 0 | 0 | 0 | 1 of 1 file reviewed; rules 0 of 0 sent, so its research asks nothing |',
+    ])
+    expect(render(asked({ listed: 5, sent: 0 }), PASS)[7]).toBe('| security | high | 0 | 0 | 0 | 0 | 1 of 1 file reviewed; rules 0 of 5 sent, so its research asks nothing |')
+    // The view the summary is written from keeps the flag, so a result given as that view reads the same, and the cell holds no `|` and nothing a model wrote.
+    expect(render(publicView(asked({ listed: 5, sent: 0 })), PASS)).toEqual(render(asked({ listed: 5, sent: 0 }), PASS))
+    expectCodeWritten(render(asked({ listed: 0, sent: 0 }), PASS).join('\n'))
+    // A profile that lists no rule and requires none has the row it always had, and so has one that was sent some of its rules.
+    expect(render(reportResult())).toEqual(MAIN)
+    expect(render(blankResult({
+      profiles: {
+        security: {
+          ...security,
+          rules: { listed: 5, sent: 3 },
+          coverage: [],
+        },
+      },
+    }), PASS)[7]).toBe('| security | high | 0 | 0 | 0 | 0 | the diff holds no file |')
+  })
+
   it('writes the verdict of an interrupted review', () => {
     const lines = render(blankResult({
       incomplete: [

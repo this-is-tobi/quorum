@@ -31,7 +31,7 @@ import { failsItsProfile, isIncomplete, isInterrupted, profileFailOn } from '../
 import { inertJson, inertPlain } from '../core/sanitize.ts'
 import { ownData } from '../core/facts.ts'
 import type { Confidence, FailOn, PublicGap, PublicProfileMeta, PublicVerdict, PublicView } from '../core/types.ts'
-import { commitOf, evidenceRows, GAP_WORDS, isCleanRelativePath, levelWord, placedFindings, plural, votesWords } from './lines.ts'
+import { commitOf, evidenceRows, GAP_WORDS, isCleanRelativePath, levelWord, placedFindings, plural, ruleWords, votesWords } from './lines.ts'
 import type { Reporter } from './reporter.ts'
 import { publicView } from './view.ts'
 
@@ -142,6 +142,14 @@ function regionOf(verdict: PublicVerdict): NonNullable<Location['physicalLocatio
   }
 }
 
+/** The review rule a finding cites as the words after its category, `, rule <id>`, or nothing for a finding that cites none. */
+function ruleClause(verdict: PublicVerdict): string {
+  const rule = ruleWords(verdict)
+  return rule === ''
+    ? ''
+    : `, ${rule}`
+}
+
 /** The result of a finding on a file of the diff. */
 function resultOf(view: PublicView, ruleIds: readonly string[], verdict: PublicVerdict): object {
   const location: Location = {
@@ -156,7 +164,7 @@ function resultOf(view: PublicView, ruleIds: readonly string[], verdict: PublicV
     ruleId: `quorum/${verdict.profile}`,
     ruleIndex: ruleIds.indexOf(verdict.profile),
     level: levelOf(view, verdict),
-    message: { text: `${levelWord(verdict)}, ${votesWords(verdict)}. ${inertPlain(`${verdict.category}: ${verdict.summary}`)}` },
+    message: { text: `${levelWord(verdict)}, ${votesWords(verdict)}. ${inertPlain(`${verdict.category}${ruleClause(verdict)}: ${verdict.summary}`)}` },
     locations: [location],
     partialFingerprints: { [FINGERPRINT_KEY]: verdict.fingerprint },
     ...isKept(verdict)

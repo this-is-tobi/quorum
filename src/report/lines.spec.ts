@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ContextDocument, LensVote, Verdict, VoteFailure } from '../core/types.ts'
 import { cast, contextDocument, reportResult, SQL } from '../testing/report.ts'
-import { contextSummary, documentLine, documentLineParts, durationText, tokenWords, voteFailureWords, votesWords } from './lines.ts'
+import { contextSummary, documentLine, documentLineParts, durationText, ruleCountWords, ruleWords, tokenWords, voteFailureWords, votesWords } from './lines.ts'
 import { publicView } from './view.ts'
 
 /** A failed vote of the lens `angle`, which failed with `failure`. */
@@ -202,6 +202,28 @@ describe('votesWords', () => {
   })
 })
 
+describe('ruleWords', () => {
+  it('words a finding\'s rule, and none for a finding that cites none', () => {
+    expect(ruleWords({ rule: 'tests-for-new-code' })).toBe('rule tests-for-new-code')
+    expect(ruleWords({ ...SQL, rule: 'no-any' })).toBe('rule no-any')
+    expect(ruleWords(SQL)).toBe('')
+    expect(ruleWords({})).toBe('')
+    expect(ruleWords({ rule: '' })).toBe('')
+    // A report that writes the id another way, in a code span, passes its writer.
+    expect(ruleWords({ rule: 'no-any' }, id => `\`${id}\``)).toBe('rule `no-any`')
+    expect(ruleWords({}, id => `\`${id}\``)).toBe('')
+  })
+})
+
+describe('ruleCountWords', () => {
+  it('words the rules a review sent of those a profile lists, and that its research asks nothing when it did', () => {
+    expect(ruleCountWords({ listed: 5, sent: 3 })).toBe('3 of 5 sent')
+    expect(ruleCountWords({ listed: 5, sent: 3 }, false)).toBe('3 of 5 sent')
+    expect(ruleCountWords({ listed: 5, sent: 0 }, true)).toBe('0 of 5 sent, so its research asks nothing')
+    expect(ruleCountWords({ listed: 0, sent: 0 }, true)).toBe('0 of 0 sent, so its research asks nothing')
+  })
+})
+
 describe('tokenWords', () => {
   it.each<[number, string]>([
     [999, '999'],
@@ -358,6 +380,88 @@ describe('documentLine', () => {
         removed: { characters: 0, comments: 1, entities: 2 },
       }),
     ],
+    [
+      'a rules document of the profile',
+      'context: naming rules of the profile, 2 rule(s)',
+      contextDocument({
+        profile: 'naming',
+        kind: 'rules',
+        bytes: 120,
+        rules: 2,
+      }),
+    ],
+    [
+      'a rule written in the config, with no hash',
+      'context: naming rules written in the config, 1 rule(s)',
+      contextDocument({
+        profile: 'naming',
+        kind: 'rules',
+        origin: 'config',
+        bytes: 60,
+        rules: 1,
+      }),
+    ],
+    [
+      'a rules file, with the first 12 digits of its hash',
+      'context: naming rules from a file, sha256 3f2a9c1d0b7e, 3 rule(s)',
+      contextDocument({
+        profile: 'naming',
+        kind: 'rules',
+        origin: 'config',
+        sha256: HASH,
+        bytes: 400,
+        rules: 3,
+      }),
+    ],
+    [
+      'a rules file of the repository, with its path and the commit\'s first 7 characters',
+      'context: naming rules ".quorum/rules.yaml" at 1f3a9c2, 4 rule(s)',
+      repositoryDocument({
+        profile: 'naming',
+        kind: 'rules',
+        path: '.quorum/rules.yaml',
+        bytes: 500,
+        rules: 4,
+      }),
+    ],
+    [
+      'a rules file that holds no rule',
+      'context: naming rules from a file, sha256 3f2a9c1d0b7e, 0 rule(s)',
+      contextDocument({
+        profile: 'naming',
+        kind: 'rules',
+        origin: 'config',
+        sha256: HASH,
+        bytes: 0,
+        rules: 0,
+      }),
+    ],
+    [
+      'a rules file of the repository, optional and not found',
+      'context: naming rules ".quorum/rules.yaml" at 1f3a9c2: missing, and optional',
+      repositoryDocument({
+        profile: 'naming',
+        kind: 'rules',
+        path: '.quorum/rules.yaml',
+        sha256: undefined,
+        status: 'missing',
+        bytes: 0,
+        rules: 0,
+      }),
+    ],
+    [
+      'a rules file the cleaner removed a comment from',
+      'context: naming rules from a file, sha256 3f2a9c1d0b7e, 3 rule(s); the cleaner removed 1 comment(s)',
+      contextDocument({
+        profile: 'naming',
+        kind: 'rules',
+        origin: 'config',
+        sha256: HASH,
+        bytes: 400,
+        rules: 3,
+        removed: { characters: 0, comments: 1, entities: 0 },
+      }),
+    ],
   ])('writes a document of %s as %j', (_name, line, record) => {
     expect(documentLine(record)).toBe(line)
   })
@@ -388,6 +492,16 @@ describe('documentLineParts', () => {
     expect(documentLineParts(contextDocument({ origin: 'config', sha256: HASH }))).toEqual({
       head: 'context: security guidelines from a file, sha256 3f2a9c1d0b7e,',
       tail: '1830 bytes',
+    })
+    expect(documentLineParts(contextDocument({
+      profile: 'naming',
+      kind: 'rules',
+      origin: 'config',
+      sha256: HASH,
+      rules: 3,
+    }))).toEqual({
+      head: 'context: naming rules from a file, sha256 3f2a9c1d0b7e,',
+      tail: '3 rule(s)',
     })
     for (const record of [
       contextDocument(),
@@ -470,5 +584,212 @@ describe('contextSummary', () => {
       ],
     })).toEqual(['context: security: guidelines 0 bytes'])
     expect(contextSummary({ documents: [] })).toEqual([])
+  })
+
+  /** A rules document of `profile`: its entries as the rules block holds them. */
+  function rulesDocument(profile: string, changes: Partial<ContextDocument> = {}): ContextDocument {
+    return contextDocument({
+      profile,
+      kind: 'rules',
+      origin: 'config',
+      bytes: 120,
+      rules: 2,
+      ...changes,
+    })
+  }
+
+  it('names the rules a profile sent of those it lists, after the kinds of text it read and before the missing and the cleaned', () => {
+    const naming = contextDocument({ profile: 'naming', bytes: 4100 })
+    expect(contextSummary({
+      documents: [
+        naming,
+        rulesDocument('naming'),
+        rulesDocument('naming', { rules: 3 }),
+      ],
+    }, {
+      naming: {
+        rules: { listed: 5, sent: 3 },
+      },
+    })).toEqual(['context: naming: guidelines 4100 bytes, rules 3 of 5 sent'])
+    // The kinds come guidelines, do-not-report text, then rules, whatever order the documents are in.
+    expect(contextSummary({
+      documents: [
+        rulesDocument('naming'),
+        contextDocument({ profile: 'naming', kind: 'do-not-report', bytes: 40 }),
+        naming,
+        repositoryDocument({
+          profile: 'naming',
+          kind: 'rules',
+          path: '.quorum/rules.yaml',
+          status: 'missing',
+          sha256: undefined,
+          bytes: 0,
+          rules: 0,
+        }),
+        contextDocument({
+          profile: 'naming',
+          bytes: 9,
+          removed: { characters: 1, comments: 0, entities: 0 },
+        }),
+      ],
+    }, {
+      naming: {
+        rules: { listed: 2, sent: 2 },
+      },
+    })).toEqual(['context: naming: guidelines 4109 bytes, do-not-report text 40 bytes, rules 2 of 2 sent, 1 optional document(s) missing, hidden text removed from 1'])
+    // Each profile has its own counts, and a profile that sent none of its rules says so.
+    expect(contextSummary({
+      documents: [
+        naming,
+        rulesDocument('naming'),
+        contextDocument(),
+        rulesDocument('security'),
+      ],
+    }, {
+      naming: {
+        rules: { listed: 2, sent: 0 },
+      },
+      security: {
+        rules: { listed: 1, sent: 1 },
+      },
+    })).toEqual([
+      'context: naming: guidelines 4100 bytes, rules 0 of 2 sent',
+      'context: security: guidelines 1830 bytes, rules 1 of 1 sent',
+    ])
+  })
+
+  it('joins the rules of a profile with no text read as it joins any first part, with no leading comma', () => {
+    expect(contextSummary({
+      documents: [
+        rulesDocument('naming'),
+      ],
+    }, {
+      naming: {
+        rules: { listed: 5, sent: 3 },
+      },
+    })).toEqual(['context: naming: rules 3 of 5 sent'])
+    expect(contextSummary({
+      documents: [
+        rulesDocument('naming', {
+          removed: { characters: 0, comments: 2, entities: 0 },
+        }),
+        repositoryDocument({
+          profile: 'naming',
+          kind: 'do-not-report',
+          path: 'REVIEW-skip.md',
+          status: 'missing',
+          sha256: undefined,
+          bytes: 0,
+        }),
+      ],
+    }, {
+      naming: {
+        rules: { listed: 5, sent: 3 },
+      },
+    })).toEqual(['context: naming: rules 3 of 5 sent, 1 optional document(s) missing, hidden text removed from 1'])
+  })
+
+  it('says that a profile\'s research asks nothing in its rules part, whether it lists rules or none, with a line of its own when it has no document', () => {
+    const naming = contextDocument({ profile: 'naming', bytes: 4100 })
+    const asks = (listed: number, sent = 0): { rules: { listed: number, sent: number }, asksNothing: true } => ({
+      rules: { listed, sent },
+      asksNothing: true,
+    })
+    // It lists rules and none applies, beside the text it read.
+    expect(contextSummary({
+      documents: [
+        naming,
+        rulesDocument('naming'),
+      ],
+    }, {
+      naming: asks(5),
+    })).toEqual(['context: naming: guidelines 4100 bytes, rules 0 of 5 sent, so its research asks nothing'])
+    // The clause ends the rules part, which the missing and the cleaned follow.
+    expect(contextSummary({
+      documents: [
+        rulesDocument('naming', {
+          removed: { characters: 0, comments: 1, entities: 0 },
+        }),
+        repositoryDocument({
+          profile: 'naming',
+          kind: 'do-not-report',
+          path: 'REVIEW-skip.md',
+          status: 'missing',
+          sha256: undefined,
+          bytes: 0,
+        }),
+      ],
+    }, {
+      naming: asks(2),
+    })).toEqual(['context: naming: rules 0 of 2 sent, so its research asks nothing, 1 optional document(s) missing, hidden text removed from 1'])
+    // It requires a rule and lists none, with no document at all: a line of its own, after the lines of the profiles that have a document.
+    expect(contextSummary({ documents: [] }, {
+      naming: asks(0),
+    })).toEqual(['context: naming: rules 0 of 0 sent, so its research asks nothing'])
+    expect(contextSummary({
+      documents: [
+        contextDocument(),
+      ],
+    }, {
+      strict: asks(0),
+      security: {
+        rules: { listed: 0, sent: 0 },
+      },
+      naming: asks(0),
+    })).toEqual([
+      'context: security: guidelines 1830 bytes',
+      'context: strict: rules 0 of 0 sent, so its research asks nothing',
+      'context: naming: rules 0 of 0 sent, so its research asks nothing',
+    ])
+    // A profile that lists no rule and requires none, and one with no entry, has no line of its own, and a name the object inherits reads as none.
+    expect(contextSummary({ documents: [] }, {
+      naming: {
+        rules: { listed: 0, sent: 0 },
+      },
+    })).toEqual([])
+    expect(contextSummary({ documents: [] }, {})).toEqual([])
+    expect(contextSummary({
+      documents: [
+        contextDocument({ profile: 'constructor' }),
+      ],
+    }, {})).toEqual(['context: constructor: guidelines 1830 bytes'])
+  })
+
+  it('writes no rules words for a profile that lists no rule, whatever it holds, and no line for a profile with nothing to say', () => {
+    const naming = contextDocument({ profile: 'naming', bytes: 4100 })
+    const empty = rulesDocument('naming', { bytes: 0, rules: 0 })
+    // The profile's counts say it lists none: a rules file that held none, beside text.
+    expect(contextSummary({
+      documents: [naming, empty],
+    }, {
+      naming: {
+        rules: { listed: 0, sent: 0 },
+      },
+    })).toEqual(['context: naming: guidelines 4100 bytes'])
+    // No counts at all, as a caller that has none passes, say nothing of rules.
+    expect(contextSummary({
+      documents: [
+        naming,
+        rulesDocument('naming'),
+      ],
+    })).toEqual(['context: naming: guidelines 4100 bytes'])
+    // A profile whose only record is a rules file with no rule has nothing to summarize.
+    expect(contextSummary({
+      documents: [
+        empty,
+        contextDocument(),
+      ],
+    }, {
+      naming: {
+        rules: { listed: 0, sent: 0 },
+      },
+    })).toEqual(['context: security: guidelines 1830 bytes'])
+    // A name that is no profile of the counts, and one the object inherits, read as no counts.
+    expect(contextSummary({
+      documents: [
+        contextDocument({ profile: 'constructor' }),
+        rulesDocument('constructor'),
+      ],
+    }, {})).toEqual(['context: constructor: guidelines 1830 bytes'])
   })
 })

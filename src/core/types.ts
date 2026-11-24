@@ -461,10 +461,18 @@ export interface ProfileMeta {
   /** How many citations failed their check: a finding's `rule` that names no rule the review sent whose `paths` match its file, and, in a profile that requires a rule, a finding that cites none. Counted apart from `invalidFindings`. */
   invalidRules: number
   /**
+   * `true` for a profile whose research asked nothing: it requires a rule (`Profile.requireRule`) and the review sent none, so its
+   * finder was never called, its files read as reviewed and it reports nothing, which no count of findings can tell from a review
+   * that found nothing. Absent, never `false`, for every other profile, so a result with none is unchanged. The `context` event
+   * and the profile's `stage:start` (`parts: 0`) say the same.
+   */
+  asksNothing?: true
+  /**
    * Every file of the input diff once, in its order, with how much of it this profile's research
-   * reviewed: `reviewed` when a research request that carried all of the file's text was answered with a
-   * valid envelope, whatever it found; the other statuses, and the ranges a `partial` file left, say what
-   * was not. Each profile has its own, since each has its own research model.
+   * reviewed: `reviewed` when no research part of the file failed or was left unsent, that is when each request that carried
+   * all of its text was answered with a valid envelope, whatever it found, or when the profile asked its research nothing
+   * (`asksNothing`), whose every file reads `reviewed` though no model read it; the other statuses, and the ranges a
+   * `partial` file left, say what was not. Each profile has its own, since each has its own research model.
    */
   coverage: CoverageEntry[]
   /**
@@ -815,11 +823,13 @@ export type QuorumEvent
     | { type: 'left-out', files: LeftOutFile[] }
     /**
      * The documents the review sends as policy, as `meta.context` holds them: sent once, right after `run:start` and `left-out`
-     * and before the gaps, when a profile has one. Counts, hashes, paths, commits and code words only, never a text. `rules` is
-     * present when a profile lists a review rule, and holds, for each profile that does, how many it lists and how many the review
-     * sends (`meta.profiles.<id>.rules`).
+     * and before the gaps, when a profile has one, or lists or requires a review rule. Counts, hashes, paths, commits and code
+     * words only, never a text. `rules` is present when a profile lists a review rule or requires one (`Profile.requireRule`), and
+     * holds, for each profile that does, how many it lists and how many the review sends (`meta.profiles.<id>.rules`, `{ listed: 0,
+     * sent: 0 }` for a profile that requires a rule and lists none), and `asksNothing: true` for a profile whose research asks nothing:
+     * one that requires a rule and sends none, which the later `stage:start` says too, with `parts: 0`.
      */
-    | { type: 'context', context: ContextRecord, rules?: Record<string, { listed: number, sent: number }> }
+    | { type: 'context', context: ContextRecord, rules?: Record<string, { listed: number, sent: number, asksNothing?: true }> }
     /** An advisory flag, read from the diff or from the files left out as secrets, sent before any stage starts. */
     | { type: 'flag', flag: Flag }
     /**

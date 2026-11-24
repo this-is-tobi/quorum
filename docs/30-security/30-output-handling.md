@@ -114,6 +114,7 @@ Under `--view public` a CI log, which a stranger may read, carries less than the
 - **The banner** names each provider by its config key alone: `Research (default)...`, then `Panel will use voter` when every lens shares a provider, else `Panel will use grounded (default), significant (voter)`. It holds no model and no origin.
 - **A gap** is `incomplete: <reason>`, then ` at "<file>"` when it has a file, with no detail.
 - **A finding the harness dropped** is `invalid finding dropped`, with no reason, since the reason quotes the finder's file name and the text of a finding the review dropped: the same oracle as a discarded finding.
+- **A rule citation that failed its check** is `rule citation refused`, bare as well, since its reason quotes the finding's file name and line: `invalid finding dropped`'s own oracle, for a finding that cited a rule the review did not send.
 - **A failure after the config is read** is written in fixed words after `Error: `. An unusable reply is `<stage> reply unusable: <reason>`, with the reason quorum wrote and no word of the reply. A provider's failure is `<provider>: the call failed (<kind>)`, with ` <status>` after the kind when it has one, as `default: the call failed (http 500)`, with none of the server's text and no origin. A failed git command is `git <operation> failed`, then ` (exit <code>)` when it has one. Any other failure is `the review failed`. A configuration error is written as it is: it holds config paths and words quorum wrote. So is an `--output` file that cannot be written, `--output <format>: cannot be written (<code>)`, which names the format and the error's code and never a path.
 - **A `warning:` line** is as the full view writes it, and none names a URL, a host, a model or a key: each names a config path, a provider key, a profile id, a variable name or a preset.
 - **Every other line** is as the full view writes it: the `left out:` line, the `flag:` lines and the totals.
@@ -132,8 +133,8 @@ An AI agent that calls quorum, such as Claude Code through `quorum mcp`, reads t
 | --- | --- |
 | `status` | `pass`, `findings` or `incomplete`, as the exit code says it |
 | `source` | What was reviewed, as the result records it. A path review's `paths` are replaced by `pathCount`, their number |
-| `profiles` | Per profile, in order: its `id`, its `failOn` level, how many findings it `kept`, left `unreviewed` and `discarded`, how many it dropped for citing code `outsideDiff`, and its `files` counted by status: `reviewed`, `partial`, `unreviewed` and `excluded` |
-| `findings` | The kept and unreviewed findings, each with its `profile`, `file`, `line`, `confidence` (`unreviewed` for a finding a failed vote left undecided), `votes` (`kept` and `asked`) and `fingerprint`, then its `category` and `summary` |
+| `profiles` | Per profile, in order: its `id`, its `failOn` level, how many findings it `kept`, left `unreviewed` and `discarded`, how many it dropped for citing code `outsideDiff`, how many citations of a review rule failed their check (`invalidRules`), `asksNothing` as `true` when its research asked nothing (it requires a rule and was sent none), and its `files` counted by status: `reviewed`, `partial`, `unreviewed` and `excluded` |
+| `findings` | The kept and unreviewed findings, each with its `profile`, `file`, `line`, `confidence` (`unreviewed` for a finding a failed vote left undecided), `votes` (`kept` and `asked`) and `fingerprint`, then the `rule` it cites when it cites one, the id the configuration gives a review rule that code checked, and last its `category` and `summary` |
 | `gaps` | Each gap's `profile`, `reason` and `file`, when it has one |
 | `leftOut` | How many `files` the review left out, how many of them are `secrets`, and the first 20 as `listed`, each with its `file`, `reason` and `rule`, when it has one |
 | `flags` | Each flag's `code`, `file` and `line`, when it has them, and its `detail`, which quorum's code wrote |
@@ -142,7 +143,7 @@ An AI agent that calls quorum, such as Claude Code through `quorum mcp`, reads t
 
 The findings come in the order of the summary: the ones that fail their profile first, then high, medium, unreviewed and low, each group by file and line, so what the budget drops is the least.
 
-Under `--code-fields-only`, a launch flag of `quorum mcp`, each finding holds its `profile`, `file`, `line`, `confidence`, `votes` and `fingerprint` and leaves its `category` and `summary` out, so the result carries no text a model wrote: [Limits](../20-using/90-mcp.md#limits).
+Under `--code-fields-only`, a launch flag of `quorum mcp`, each finding holds its `profile`, `file`, `line`, `confidence`, `votes`, `fingerprint` and `rule` (when it cites one) and leaves its `category` and `summary` out, so the result carries no text a model wrote: [Limits](../20-using/90-mcp.md#limits).
 
 ### What it withholds besides the view
 
