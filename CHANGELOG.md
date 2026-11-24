@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.13.0](https://github.com/this-is-tobi/quorum/compare/v0.12.0...v0.13.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* a profile's meta may hold asksNothing, and the context event's rules name a profile that requires a rule even when it lists none, new for a strict reader.
+* each profile's meta holds rules and invalidRules, a verdict may hold rule, meta.context may hold a rules document, and a finding:invalid event may carry a cause, new for a strict reader.
+* quorum mcp refuses to start when its config names a prompt file inside the project, which 0.12.0 read, or a document file there; move the file outside the project.
+* guideline-edited is a new flag code, and a flag may hold a profile, new values for a strict reader of the result.
+* a result holds meta.context and a review sends a context event, new for a strict reader, and quorum report and readResult refuse a 0.12.0 result that lacks it; a profile's guidelines are now cleaned and refused over 16 KiB.
+* a template with a {{ that opens no placeholder, such as {{lens.id}, is refused at startup where 0.12.0 sent it as written; \{{ now renders as {{, where 0.12.0 sent the backslash, and the research template is rendered for it too.
+
+### Features
+
+* add cleanProse, which removes the text a renderer hides from what a model reads as policy ([65797b7](https://github.com/this-is-tobi/quorum/commit/65797b79005ec398475e23039eb80c935df4bccc))
+* check each finding's rule citation by code, and send its voters the rule it cites ([a6a3bb3](https://github.com/this-is-tobi/quorum/commit/a6a3bb38a35b2875e84998642830506f03e3d532))
+* flag a change that edits a document its review reads from the repository ([7111cd5](https://github.com/this-is-tobi/quorum/commit/7111cd505bcd6811788cc8794d7ffc54860bcef4))
+* read a profile's documents from the commit a review's source names, never the change's ([e8071a1](https://github.com/this-is-tobi/quorum/commit/e8071a1309aba56fab27b8f1f3d0e77a7800a8c0))
+* read a profile's guidelines and do-not-report text from files the config names ([196ba38](https://github.com/this-is-tobi/quorum/commit/196ba380d7bf566d91d2c87d1b835c6208ca28b7))
+* read a profile's review rules from its config, its files and its repository ([2ca90af](https://github.com/this-is-tobi/quorum/commit/2ca90af695bd6586bcea408abde2f77df9e537a6))
+* refuse a half-open {{ in a template, read \{{ as a literal {{, and quote a refused name ([d1bda31](https://github.com/this-is-tobi/quorum/commit/d1bda3109b1b63906bb650d04ac11c56bc39c668))
+* say what a profile's documents add to each request, and name them in the room refusal ([e9a482d](https://github.com/this-is-tobi/quorum/commit/e9a482dd8a5e737edc625dd66c4a0e3de45084af))
+* send a profile's guidelines and do-not-report text as documents the core cleans and records ([3ab60ba](https://github.com/this-is-tobi/quorum/commit/3ab60ba14a5560c4899f73858634a400b8dd9ae9))
+* send a profile's review rules to its finder and ask each finding which rule it breaks ([c371d85](https://github.com/this-is-tobi/quorum/commit/c371d8549dca21775d12cd5e2938e44c00627136))
+* show each document a review read, where it came from and what the cleaner removed ([8a1c940](https://github.com/this-is-tobi/quorum/commit/8a1c940828030ab1a4626cc9d6e6f6405858168a))
+* show the rule a finding cites, the rules each profile sent and the citations refused ([9760de2](https://github.com/this-is-tobi/quorum/commit/9760de2208fcabbd6073dce992644af5adf7de1c))
+
+
+### Bug Fixes
+
+* refuse at quorum mcp's launch a prompt or document file inside the project it serves ([e14309e](https://github.com/this-is-tobi/quorum/commit/e14309e5286720e28fc5fb8bcf11275d78a9adf6))
+
 ## [0.12.0](https://github.com/this-is-tobi/quorum/compare/v0.11.0...v0.12.0) (2026-11-23)
 
 
