@@ -51,6 +51,7 @@ const OPTIONS = {
 const ROOT_MESSAGE = 'must be an absolute path to a directory'
 const TERMINAL_MESSAGE = 'reads MCP messages on standard input, which is a terminal here: let an MCP client start it, as claude mcp add quorum -- quorum mcp does'
 const INSIDE_MESSAGE = 'names a file inside the project, which the calling agent can change: keep the server\'s config outside the project'
+const REPOSITORY_MESSAGE = 'reads a document of the repository, which the calling agent can commit to: name the file with { file }, kept outside the project'
 const TOKENS_FLAG = '--max-session-tokens'
 const TOKENS_MESSAGE = 'must be a whole number of tokens, from 1'
 const NOT_STREAMS = 'needs standard input and output as streams'
@@ -156,7 +157,9 @@ function streamOf<T extends Readable | Writable>(value: unknown): T {
  *    and only then is the file read. The check comes first because reading a config can run it as code, with the
  *    operator's keys in the environment, and a config inside the root is one the calling agent could have written;
  * 8. the profiles' resolution, `--profile` the selection, so a config whose provider cannot be built, or whose
- *    selection runs nothing, is refused before the client is served, and the session budget, which
+ *    selection runs nothing, is refused before the client is served; so is a profile that lists a `{ repository }`
+ *    document, at its entry, since the calling agent can commit to the repository that document is read from;
+ *    and the session budget, which
  *    `--max-session-tokens` sets and which may not be below the config's `maxReviewTokens`, since no review
  *    could start: four times that cap when it is not given;
  * 9. the banner on stderr, as the review command prints it;
@@ -201,6 +204,9 @@ export async function runMcp(io: CliIO, argv: readonly string[]): Promise<number
       ? undefined
       : { ids: values.profile, path: '--profile' }
     const config = resolveConfig(input, { env: io.env, selection })
+    // A document of the repository is read from a commit the calling agent can write, so no profile of the server may list one.
+    const reads = config.profiles.flatMap(({ repository }) => repository)
+    if (reads.length > 0) throw new ConfigError(reads.map(({ at }) => ({ path: at, message: REPOSITORY_MESSAGE })))
     const cap = config.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS
     if (requestedTokens !== undefined && requestedTokens < cap) {
       throw refusal(TOKENS_FLAG, `is below the config's maxReviewTokens of ${cap}, so no review could start: raise it, or name a config with a lower cap`)

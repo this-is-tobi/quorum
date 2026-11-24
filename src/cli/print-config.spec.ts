@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
+import type { RepositoryEntry } from '../config/profiles.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import type { ProfileBudgets } from '../core/budgets.ts'
 import { documentSha256 } from '../core/documents.ts'
@@ -22,7 +23,12 @@ function config(providers: Record<string, ResolvedProvider>, rest: Partial<Resol
   return {
     providers,
     profiles: [
-      { profile: securityProfile, research: name, voters },
+      {
+        profile: securityProfile,
+        research: name,
+        voters,
+        repository: [],
+      },
     ],
     warnings: [],
     ...rest,
@@ -114,16 +120,23 @@ describe('printConfig', () => {
     const warning = 'profiles.quiet.gating is deprecated: set failOn instead, high for true and none for false'
     const text = printConfig(config({ a: SPEC }, {
       profiles: [
-        { profile: securityProfile, research: 'a', voters },
+        {
+          profile: securityProfile,
+          research: 'a',
+          voters,
+          repository: [],
+        },
         {
           profile: { ...securityProfile, id: 'quiet', failOn: 'none' },
           research: 'a',
           voters,
+          repository: [],
         },
         {
           profile: { ...securityProfile, id: 'strict', failOn: 'low' },
           research: 'a',
           voters,
+          repository: [],
         },
       ],
       warnings: [warning],
@@ -194,7 +207,12 @@ describe('printConfig', () => {
     const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, 'a']))
     const text = printConfig(config({ a: SPEC }, {
       profiles: [
-        { profile, research: 'a', voters },
+        {
+          profile,
+          research: 'a',
+          voters,
+          repository: [],
+        },
       ],
     }), undefined)
     const hash = (value: string): string => `sha256:${documentSha256(value)}`
@@ -222,6 +240,7 @@ describe('printConfig', () => {
           },
           research: 'a',
           voters,
+          repository: [],
         },
       ],
     }), undefined)
@@ -248,6 +267,88 @@ describe('printConfig', () => {
         },
       ],
     })).toContain(`    guidelines:\n      - ${hash(second)}\n`)
+  })
+
+  it('prints a repository entry as its path and optional, in its place among the hashes', () => {
+    const first = 'Name things for what they do.'
+    const last = 'Prefer early returns.'
+    const base = 'Style and formatting.'
+    const document = (text: string): ReviewDocument => ({
+      profile: 'conventions',
+      kind: 'guidelines',
+      origin: {
+        kind: 'config',
+        sha256: documentSha256(text),
+      },
+      text,
+    })
+    const entry = (kind: RepositoryEntry['kind'], path: string, index: number, optional = false): RepositoryEntry => ({
+      kind,
+      path,
+      optional,
+      at: `profiles.conventions.${kind === 'guidelines'
+        ? 'guidelines'
+        : 'doNotReport'}.${index}.repository`,
+      index,
+    })
+    const profile: Profile = {
+      ...securityProfile,
+      id: 'conventions',
+      doNotReport: base,
+      documents: [
+        document(first),
+        document(last),
+      ],
+    }
+    const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, 'a']))
+    const text = printConfig(config({ a: SPEC }, {
+      profiles: [
+        {
+          profile,
+          research: 'a',
+          voters,
+          repository: [
+            entry('guidelines', 'REVIEW.md', 1),
+            entry('guidelines', 'docs/EXTRA.md', 3, true),
+            entry('do-not-report', '.github/SKIP.md', 0, true),
+          ],
+        },
+      ],
+    }), undefined)
+    const hash = (value: string): string => `sha256:${documentSha256(value)}`
+    // Each entry of a field sits where the config wrote it: the documents fill the places the repository entries leave, in order.
+    expect(text).toContain([
+      '    guidelines:',
+      `      - ${hash(first)}`,
+      '      - repository: REVIEW.md',
+      `      - ${hash(last)}`,
+      '      - repository: docs/EXTRA.md',
+      '        optional: true',
+      '    doNotReport:',
+      `      - builtIn: ${hash(base)}`,
+      '      - repository: .github/SKIP.md',
+      '        optional: true',
+      'concurrency: auto',
+    ].join('\n'))
+    // A profile with a repository entry alone prints it alone, and optional: false prints no optional.
+    const alone = printConfig(config({ a: SPEC }, {
+      profiles: [
+        {
+          profile: securityProfile,
+          research: 'a',
+          voters,
+          repository: [
+            {
+              ...entry('guidelines', 'REVIEW.md', 0),
+              optional: false,
+            },
+          ],
+        },
+      ],
+    }), undefined)
+    expect(alone).toContain('    guidelines:\n      - repository: REVIEW.md\nconcurrency: auto\n')
+    expect(alone).not.toContain('optional')
+    expect(alone).not.toContain('doNotReport')
   })
 
   it('prints a config with no document as 0.12.0 did', () => {

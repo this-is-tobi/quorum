@@ -298,6 +298,25 @@ export default antfu(
     },
   },
   {
+    // The context reader reads a review's documents from a commit of the repository, through the git runner and the one
+    // module that opens a repository (sources/repository.ts), with the types of the sources' reader and none of its values: it
+    // never reads the working tree, the environment or the network, nor the global object. Only the CLI and the library import it.
+    files: ['src/context/**/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'ts/no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./(core|git|config)/(?!.*\\.\\.)|\\.\\./sources/(repository|read)\\.ts$|node:(fs|fs/promises|path)$)', message: 'A context module imports only context modules, the core, the git runner, the config layer, the sources\' repository opener, the types of the sources\' reader, node:fs, node:fs/promises and node:path.' },
+            { regex: '^\\.\\./sources/read\\.ts$', allowTypeImports: true, message: 'A context module imports only the types of the sources\' reader.' },
+          ],
+        },
+      ],
+      'no-restricted-globals': ['error', ...ENVIRONMENT_GLOBALS],
+    },
+  },
+  {
     // The MCP server is the one place that imports the MCP SDK, and only on request: it reads files and the
     // repository through the layers below it, and never the process, the network or another thread, nor the
     // global object. The first segment of the pattern admits a module of its own, the layers it builds on

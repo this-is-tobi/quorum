@@ -27,7 +27,7 @@ afterEach(() => {
 })
 
 describe('the public API', () => {
-  it('exports createQuorum, defineConfig, fileStore, fromConfig, loadConfig, outcome, readSource, renderReport, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer, cleanProse, publicView, readResult and runQuorum', () => {
+  it('exports createQuorum, defineConfig, fileStore, fromConfig, loadConfig, outcome, readContext, readSource, renderReport, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer, cleanProse, publicView, readResult and runQuorum', () => {
     expect(Object.keys(api).sort()).toEqual([
       'ConfigError',
       'GitError',
@@ -58,6 +58,7 @@ describe('the public API', () => {
       'outcome',
       'presets',
       'publicView',
+      'readContext',
       'readResult',
       'readSource',
       'renderReport',
@@ -191,6 +192,36 @@ describe('runQuorum', () => {
       }
       expect(await bodiesOf(undefined)).not.toContain('MODE=production')
       expect(await bodiesOf('send:\n  - .env\n')).toContain('+MODE=production')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a config that lists a repository document, at each entry and before any call, since it can pass no context', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'quorum-index-'))
+    try {
+      const file = join(dir, 'quorum.yaml')
+      writeFileSync(file, [
+        'profiles:',
+        '  security:',
+        '    guidelines: [{repository: REVIEW.md}]',
+        '    doNotReport: [{repository: SKIP.md, optional: true}]',
+        '',
+      ].join('\n'))
+      isolateEnv({ RESEARCH_MODEL: 'env-model', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_CONFIG: file })
+      const fetchMock = vi.fn().mockImplementation(async () => chatReply('{"findings":[]}'))
+      vi.stubGlobal('fetch', fetchMock)
+      const message = 'reads a document of the repository, which runQuorum cannot read: build the quorum with fromConfig and pass readContext\'s context to review'
+      const refusal = {
+        name: 'ConfigError',
+        issues: [
+          { path: 'profiles.security.guidelines.0.repository', message },
+          { path: 'profiles.security.doNotReport.0.repository', message },
+        ],
+      }
+      await expect(runQuorum(diff)).rejects.toMatchObject(refusal)
+      await expect(runQuorum('  \n')).rejects.toMatchObject(refusal)
+      expect(fetchMock).not.toHaveBeenCalled()
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

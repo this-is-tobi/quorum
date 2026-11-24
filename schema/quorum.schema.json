@@ -382,39 +382,81 @@
             "additionalProperties": false
           },
           "guidelines": {
-            "description": "The guidelines the review judges by, each a { file } read when the config loads: at most 16 KiB each and in all once cleaned, sent in every request of the profile",
+            "description": "The guidelines the review judges by, each a { file } read when the config loads or a { repository } file read at the commit the review reads its documents from: at most 16 KiB each and in all once cleaned, sent in every request of the profile",
             "maxItems": 16,
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "file": {
-                  "type": "string",
-                  "description": "The file that holds the text, relative to the directory of the config file"
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "file": {
+                      "type": "string",
+                      "description": "The file that holds the text, relative to the directory of the config file"
+                    }
+                  },
+                  "required": [
+                    "file"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "repository": {
+                      "type": "string",
+                      "description": "The file, as a path from the top level of the repository, read at the commit the review reads its documents from: a range's base, a path review's commit, HEAD for local changes; never the working tree"
+                    },
+                    "optional": {
+                      "description": "true records the file as missing when that commit has none, and the review goes on; false, the default, refuses a review whose commit lacks it",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "repository"
+                  ],
+                  "additionalProperties": false
                 }
-              },
-              "required": [
-                "file"
-              ],
-              "additionalProperties": false
+              ]
             }
           },
           "doNotReport": {
-            "description": "What the research is told not to report, each a { file } read when the config loads: at most 8 KiB each and in all once cleaned, sent in the research requests alone",
+            "description": "What the research is told not to report, each a { file } read when the config loads or a { repository } file read at the commit the review reads its documents from: at most 8 KiB each and in all once cleaned, sent in the research requests alone",
             "maxItems": 16,
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "file": {
-                  "type": "string",
-                  "description": "The file that holds the text, relative to the directory of the config file"
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "file": {
+                      "type": "string",
+                      "description": "The file that holds the text, relative to the directory of the config file"
+                    }
+                  },
+                  "required": [
+                    "file"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "repository": {
+                      "type": "string",
+                      "description": "The file, as a path from the top level of the repository, read at the commit the review reads its documents from: a range's base, a path review's commit, HEAD for local changes; never the working tree"
+                    },
+                    "optional": {
+                      "description": "true records the file as missing when that commit has none, and the review goes on; false, the default, refuses a review whose commit lacks it",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "repository"
+                  ],
+                  "additionalProperties": false
                 }
-              },
-              "required": [
-                "file"
-              ],
-              "additionalProperties": false
+              ]
             }
           },
           "builtInDoNotReport": {

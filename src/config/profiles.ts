@@ -1,4 +1,4 @@
-import { bytesOf, capProblem, documentSha256, totalProblem, UNSETTLED } from '../core/documents.ts'
+import { bytesOf, capProblem, documentSha256, repositoryPathProblem, totalProblem, UNSETTLED } from '../core/documents.ts'
 import { ConfigError, isSafeSegment, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { defaultPolicy } from '../core/policy.ts'
@@ -14,6 +14,22 @@ import type { ConfigInput } from './schema.ts'
 
 type ProfileEntry = NonNullable<ConfigInput['profiles']>[string]
 
+/**
+ * A `{ repository }` entry of a profile's documents: a file of the repository, which a review reads at the commit its source names
+ * (`readContext`) and never from the working tree or the change under review.
+ */
+export interface RepositoryEntry {
+  readonly kind: DocumentKind
+  /** The path from the repository's top level, as the entry wrote it. */
+  readonly path: string
+  /** Whether the review goes on, the document recorded as missing, when the commit has no such file. */
+  readonly optional: boolean
+  /** Where an issue with the entry goes: `profiles.<id>.<field>.<n>.repository`. */
+  readonly at: string
+  /** The entry's position among its field's entries, where `--print-config` prints it. */
+  readonly index: number
+}
+
 /** A profile that runs, with the providers it is bound to. */
 export interface ResolvedProfile {
   readonly profile: Profile
@@ -21,6 +37,8 @@ export interface ResolvedProfile {
   readonly research: string
   /** The provider each lens votes with, by lens id. */
   readonly voters: Readonly<Record<string, string>>
+  /** The profile's `{ repository }` entries, `guidelines` then `doNotReport`, each in the order it is written: the files `readContext` reads for a review. */
+  readonly repository: readonly RepositoryEntry[]
 }
 
 /** The profiles a caller selects to run: `QUORUM_PROFILES`, or the flag of the CLI. `path` is what an issue with the ids names. */
@@ -51,6 +69,13 @@ const DOCUMENT_FIELDS = [
   { field: 'guidelines', kind: 'guidelines' },
   { field: 'doNotReport', kind: 'do-not-report' },
 ] as const satisfies ReadonlyArray<{ readonly field: 'guidelines' | 'doNotReport', readonly kind: DocumentKind }>
+
+/** One entry of a document list, whichever form it takes: `{ text }`, or `{ repository, optional }`. */
+interface DocumentItem {
+  readonly text?: string
+  readonly repository?: string
+  readonly optional?: boolean
+}
 
 /** A lens as the config gives it, or as a built-in profile holds it, which names no provider. */
 interface LensEntry {
@@ -209,20 +234,42 @@ interface Bindings {
 
 /**
  * The documents the entry lists, `guidelines` then `doNotReport`, each cleaned as the core cleans one, with what the
- * cleaner removed and the hash of the text as read, and the issue of each entry that cannot be kept, at its own path:
+ * cleaner removed and the hash of the text as read, its `{ repository }` entries (read for a review, so only named here, each at
+ * its own path, `.repository`), and the issue of each entry that cannot be kept, at its own path: a repository path that is none,
  * a text the cleaner cannot settle, one over its kind's cap once cleaned, and the first whose bytes take the kind's total
  * (`start` counts the profile's own text, which comes first) over what the profile may hold in all. An entry with an issue
  * is left out, so the profile the check reads holds none the core would refuse again.
  */
-function documentsOf(id: string, entry: ProfileEntry, start: Readonly<Record<DocumentKind, number>>, at: (...segments: PropertyKey[]) => string): { readonly documents: ReviewDocument[], readonly issues: ConfigIssue[] } {
+function documentsOf(id: string, entry: ProfileEntry, start: Readonly<Record<DocumentKind, number>>, at: (...segments: PropertyKey[]) => string): { readonly documents: ReviewDocument[], readonly repository: RepositoryEntry[], readonly issues: ConfigIssue[] } {
   const documents: ReviewDocument[] = []
+  const repository: RepositoryEntry[] = []
   const issues: ConfigIssue[] = []
   for (const { field, kind } of DOCUMENT_FIELDS) {
     let total = start[kind]
     // Once a document takes the total over its cap, it is reported and no later one is counted: only the first is the one to shorten or drop.
     let fits = true
-    for (const [index, item] of (own(entry, field) ?? []).entries()) {
-      // The schema holds every entry to `{ text }` of a string.
+    for (const [index, entryItem] of (own(entry, field) ?? []).entries()) {
+      // The schema holds every entry to `{ text }` or `{ repository, optional }`, the fields read as own fields only.
+      const item: DocumentItem = entryItem
+      const path = own(item, 'repository')
+      if (path !== undefined) {
+        const problem = repositoryPathProblem(path)
+        if (problem === undefined) {
+          repository.push({
+            kind,
+            path,
+            optional: own(item, 'optional') === true,
+            at: at(field, index, 'repository'),
+            index,
+          })
+        } else {
+          issues.push({
+            path: at(field, index, 'repository'),
+            message: problem,
+          })
+        }
+        continue
+      }
       const text = own(item, 'text') as string
       const cleaned = cleanProse(text)
       const bytes = bytesOf(cleaned.text)
@@ -259,7 +306,7 @@ function documentsOf(id: string, entry: ProfileEntry, start: Readonly<Record<Doc
       }))
     }
   }
-  return { documents, issues }
+  return { documents, repository, issues }
 }
 
 /** What one profile of the config resolves to, or every issue that keeps it from running, and the warnings its fields earn. */
@@ -311,7 +358,7 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
   const ownText = doNotReport === undefined
     ? undefined
     : cleanProse(doNotReport)
-  const { documents, issues: documentIssues } = documentsOf(id, entry, {
+  const { documents, repository, issues: documentIssues } = documentsOf(id, entry, {
     guidelines: 0,
     'do-not-report': ownText?.settled === true
       ? bytesOf(ownText.text)
@@ -366,6 +413,7 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
       profile,
       research: own(entryRoles, 'research') ?? roles.research,
       voters: Object.freeze(Object.fromEntries(lenses.map(lens => [lens.id, lens.provider ?? voter]))),
+      repository: Object.freeze(repository.map(found => Object.freeze(found))),
     }),
     issues,
     warnings,
@@ -388,7 +436,9 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
  * an issue at its `path`: a typo must not leave a gate weaker or missing. A profile holds the documents its
  * entry lists as `documents`, `guidelines` then `doNotReport`, each cleaned, with what the cleaner removed and the
  * SHA-256 of the text as read; one the cleaner cannot settle, or over its cap once cleaned, or the first that takes
- * a kind over the cap of all of them, is an issue at its entry (`profiles.<id>.<field>.<n>`). Its `doNotReport` is
+ * a kind over the cap of all of them, is an issue at its entry (`profiles.<id>.<field>.<n>`). A `{ repository }` entry is no
+ * document yet: the profile lists it in `repository`, at `profiles.<id>.<field>.<n>.repository`, for `readContext` to read at
+ * the commit a review's source names, and a path that is none is an issue there. Its `doNotReport` is
  * the base's own text, unless the entry sets `builtInDoNotReport: false`, and counts first toward that cap. A profile
  * with no document holds neither key. `inputs.builtIn` is the map of the profiles a config can run or extend, the
  * security profile alone by default. `research` is bound to

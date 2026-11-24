@@ -214,6 +214,43 @@ What `createQuorum` and `review` refuse of documents, each message at its path:
 
 A review records every document in [`meta.context`](./20-json-result.md#the-context) and sends one [`context` event](#events); neither holds a text. The types `ReviewDocument`, `ReviewContext`, `DocumentKind`, `DocumentOrigin`, `ContextDocument` and `ContextRecord` are exported.
 
+## `readContext`
+
+```ts
+declare function readContext(config: ResolvedConfig, options: {
+  readonly source: ReviewSource
+  readonly cwd: string
+  readonly env: Env
+  readonly signal?: AbortSignal
+}): Promise<ReviewContext>
+```
+
+`readContext` reads the documents a review takes from the repository, as the CLI does: the `{ repository }` entries of the profiles of a `ResolvedConfig`, which a profile holds as `ResolvedProfile.repository`, each read from the commit `options.source` names, never from the working tree or the change. `options.source` is the `source` of `readSource`'s answer. It gives the `context` of `review` and `estimate`, which `fromConfig` refuses an input without, as below.
+
+```ts
+import { fromConfig, loadConfig, readContext, readSource } from '@tobi-or-not/quorum'
+
+const { config } = await loadConfig({ configPath: 'quorum.yaml' })
+const quorum = await fromConfig(config)
+const env = process.env
+const input = await readSource({ kind: 'range', range: 'main...feature' }, {
+  cwd: process.cwd(),
+  env
+})
+const context = await readContext(config, {
+  source: input.source,
+  cwd: process.cwd(),
+  env
+})
+const result = await quorum.review({ ...input, context })
+```
+
+- **The commit** is `documentCommit(source)`: a range's `base`, a path review's `commit`, the `head` of a local or staged source. A `diff` source names none and a local source before a first commit has none, so each entry is refused at its `repository` path, before any git runs: `"REVIEW.md" needs a commit to read it from, which a diff file or standard input does not name: review with --range, --local, --staged or --path, or name the file with { file }`, or `..., and the repository has none yet: make a first commit, or name the file with { file }`.
+- **One listing and one read.** The profiles' entries are listed in one `git ls-tree` of that commit and their files read in one `git cat-file --batch`, every problem reported at once as one `ConfigError` with an issue for each refused entry: a path the commit lacks (unless `optional`), a link, a submodule, a file over 64 KiB, a text that is no UTF-8 or holds a NUL among its first 8000 bytes, one the cleaner cannot settle and one over a cap: [Rules and guidelines](../20-using/45-rules-and-guidelines.md#one-read-and-every-message) has each message. A git command that fails is a `GitError`.
+- **A config with no entry** gives `{}` and runs no git. Otherwise each document is a `ReviewDocument` of origin `repository`, in the order of the entries, with the SHA-256 of its text as read and what the cleaner removed; an optional file the commit lacks is a document with no `text`. The package fills in the platform and takes no other git than the system's, as `readSource` does.
+- **The completeness check.** A quorum `fromConfig` builds refuses a `review` or an `estimate` whose `context` holds no document for a `{ repository }` entry of its config, or holds one with no `text` for an entry that is not `optional` (only an optional entry may be missing), with its profile, kind and path, as a `ConfigError` before any call, one issue at each entry's `repository` path: `"REVIEW.md" was not read for this review: pass the context readContext reads to the estimate and the review`. So a program that forgets `readContext` never runs a profile without its policy. A quorum from `createQuorum` has no entries to check: its profiles hold no repository entry, since a `{ repository }` entry lives beside a `Profile` in `ResolvedProfile.repository`, so a profile a program hands `createQuorum` reads no repository document. Build such a quorum with `fromConfig`, or pass `readContext`'s documents in the review's context; its input is checked as [Documents](#documents) says.
+- **`ResolvedProfile.repository`** lists a profile's entries, `guidelines` then `doNotReport`, each as a `RepositoryEntry`: its `kind`, `path`, `optional`, `at`, the config path of its `repository` field, and `index`, its place among its field's entries. The type `RepositoryEntry` is exported.
+
 ## Events
 
 The sink receives every event of a review, synchronously and in order, as each thing happens:
@@ -631,7 +668,7 @@ declare function defineConfig(config: QuorumConfig): QuorumConfig
 
 - **`QuorumConfig`** types what a TS or JS config exports as its default: `$schema`, for an editor, `version`, `providers`, `roles`, `concurrency`, `maxFindings`, `partTokens`, `maxReviewTokens`, `reviewTimeoutMs`, `strict`, `exclude`, `send` and `profiles`, every one optional. `send` is a list of non-empty file paths, the files to send the models though they are held back as secrets: [Sending a held file](../20-using/20-configuration.md#sending-a-held-file). A provider is an object implementing `Provider`, or its settings, every one optional too: `preset`, `protocol`, `baseUrl`, `model`, `contextTokens`, `apiKeyEnv` and `apiKey`, then `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField`, `systemPrompt`, `stream`, `timeoutMs`, `stallTimeoutMs` and `retries`, as [Providers](../20-using/30-providers.md#options) and [Deadlines and retries](../20-using/30-providers.md#deadlines-and-retries) describe them, and the fields of a `claude-code` provider, `args` and, in a code config only, `command`: [Claude Code options](../20-using/30-providers.md#claude-code-options).
 - **`QuorumConfigFile`** types what a YAML or JSON config holds: the same settings, as data only, so a provider is always its settings, and names the environment variable that holds its key in `apiKeyEnv`, never holding one.
-- **`ConfigInput`** types what `fromConfig` takes: the settings of `QuorumConfig`, with every prompt a string and every document a `{ text }`, since a program's config reads no file and so holds no `{ file }`: the config loader puts the text of a file in the same place.
+- **`ConfigInput`** types what `fromConfig` takes: the settings of `QuorumConfig`, with every prompt a string and every document a `{ text }` or a `{ repository, optional }`, since a program's config reads no file and so holds no `{ file }`: the config loader puts the text of a file in the same place. A `{ repository }` entry is read by [`readContext`](#readcontext), not by `fromConfig`.
 - **`defineConfig`** returns the config it is given, as it is. Wrapping a default export in it has the editor check every field.
 
 A config that imports nothing from quorum when it runs types its object with `import type` and `satisfies` instead, since `import type` is erased:
@@ -709,7 +746,7 @@ const result = await quorum.review({ diff })
 - **A process imports a TS or JS config once.** A second `loadConfig` of the same file gets the module the first import cached, since Node and Bun cache a module by its URL.
 - **A program passes its config's `send` itself.** `fromConfig` builds a quorum, and `send` belongs to one review's input, so a program that reads `config.send` of a `ResolvedConfig` gives it to `readSource`'s context and to `review` (and `estimate`) itself, as the CLI does, with whatever it adds of its own: `const send = [...config.send ?? [], ...mine]`. A review that is not given it holds the file back.
 - **A named config is trusted input.** It chooses where each key goes, and a TS or JS one runs code: in CI it must come from the base branch or from outside the pull request's checkout, never from the pull request under review, and its prompt files with it ([Layering](#layering)).
-- **A `ResolvedConfig`** holds `providers`, the ones a profile that runs uses, by name: a spec with its key read into `apiKey`, or the snapshot of an object implementing `Provider`; `profiles`, each a `ResolvedProfile`: its `profile`, `research`, the name of its research provider, and `voters`, the name of each lens's provider, by lens id; `concurrency`, `maxFindings`, `maxReviewTokens` and `reviewTimeoutMs` when the variables or the config set them, `strict`, `true`, when the config's `strict` or `QUORUM_STRICT` is `true`, `partTokens` when the config sets it, `exclude` when the config lists a pattern, `send` when it lists a file, and `warnings`. It is a copy, frozen all the way down: a provider object is a frozen snapshot of the program's, with no prototype, named by its config key as its `id`, and holding the `timeoutMs`, `retries`, `window`, `maxTokens`, `thinking`, `worstCase` and `room` it states.
+- **A `ResolvedConfig`** holds `providers`, the ones a profile that runs uses, by name: a spec with its key read into `apiKey`, or the snapshot of an object implementing `Provider`; `profiles`, each a `ResolvedProfile`: its `profile`, `research`, the name of its research provider, `voters`, the name of each lens's provider, by lens id, and `repository`, its `{ repository }` entries, which [`readContext`](#readcontext) reads; `concurrency`, `maxFindings`, `maxReviewTokens` and `reviewTimeoutMs` when the variables or the config set them, `strict`, `true`, when the config's `strict` or `QUORUM_STRICT` is `true`, `partTokens` when the config sets it, `exclude` when the config lists a pattern, `send` when it lists a file, and `warnings`. It is a copy, frozen all the way down: a provider object is a frozen snapshot of the program's, with no prototype, named by its config key as its `id`, and holding the `timeoutMs`, `retries`, `window`, `maxTokens`, `thinking`, `worstCase` and `room` it states.
 - **A `ResolvedConfig` holds the keys it read**, as a code config does: never print or log one. The CLI's [`--print-config`](../20-using/10-cli.md#printing-the-resolved-config) redacts them.
 - **`fromConfig` of a `ResolvedConfig` reads no environment**: what `loadConfig` resolved is what runs, whatever `options.env` holds, except that a `claude-code` provider's child still starts from `options.env`, else `process.env`.
 - **A config is read as its own fields, with one limit.** A field planted on `Object.prototype` is a prototype pollution bug in the same process. An enumerable one is a field of every object, so it is refused as `is not a known field` wherever the schema does not know it: a planted `baseUrl` is refused at the top level, while a planted `concurrency`, `maxFindings`, `partTokens`, `maxReviewTokens`, `reviewTimeoutMs`, `strict`, `exclude`, `send` or `version` passes when the config holds no object that refuses it, and a planted `exclude` is the one that widens what passes unread, and a planted `send` what a provider is sent. One planted with `Object.defineProperty` is not enumerable, and the schema reads each field it knows through the prototype, so it becomes a field of the config, or of every provider that leaves it unset. Code that can plant either can read the keys directly: quorum does not defend against it.
@@ -905,7 +942,7 @@ The stages and the profile checks are not exported: a program reaches the stages
 declare function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult>
 ```
 
-Deprecated: use `loadConfig` and `fromConfig`. `runQuorum` reviews `diff` as the CLI does with no flag: it calls `loadConfig()` and `fromConfig` on the result, so it reads the file `QUORUM_CONFIG` names, if any, which must be an absolute path, and the `QUORUM_*` variables of `process.env` with their `RESEARCH_*` and `VOTER_*` aliases, and it runs the profiles they select, the security profile alone by default: [Configuration](../20-using/20-configuration.md). It gives the review the config's `send`, so a file that list names is sent though held as a secret, and it takes no `send` of its own. `onProgress` receives the CLI's progress lines, the `left out:` and `flag:` lines included, each one inert and each profile's line starting with `[<id>] ` when several run, but neither the banner, nor a warning, nor `empty diff: nothing to review`, which the CLI writes itself. A configuration error, a missing model included, rejects with a `ConfigError`, for an empty diff too.
+Deprecated: use `loadConfig` and `fromConfig`. `runQuorum` reviews `diff` as the CLI does with no flag: it calls `loadConfig()` and `fromConfig` on the result, so it reads the file `QUORUM_CONFIG` names, if any, which must be an absolute path, and the `QUORUM_*` variables of `process.env` with their `RESEARCH_*` and `VOTER_*` aliases, and it runs the profiles they select, the security profile alone by default: [Configuration](../20-using/20-configuration.md). It gives the review the config's `send`, so a file that list names is sent though held as a secret, and it takes no `send` of its own. `onProgress` receives the CLI's progress lines, the `left out:` and `flag:` lines included, each one inert and each profile's line starting with `[<id>] ` when several run, but neither the banner, nor a warning, nor `empty diff: nothing to review`, which the CLI writes itself. A configuration error, a missing model included, rejects with a `ConfigError`, for an empty diff too. It passes no context, so a config that lists a `{ repository }` entry is refused before any call, at the entry, with `reads a document of the repository, which runQuorum cannot read: build the quorum with fromConfig and pass readContext's context to review`.
 
 ## A complete example
 

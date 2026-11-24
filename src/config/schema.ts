@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { MAX_DOCUMENTS } from '../core/documents.ts'
+import { MAX_DOCUMENTS, repositoryPathProblem } from '../core/documents.ts'
 import { ConfigError, isSafeSegment, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { MAX_PATTERNS, patternProblem, TOO_MANY_PATTERNS } from '../core/exclude.ts'
@@ -107,6 +107,23 @@ const documentText = z.strictObject({
   text: z.string().describe('The text itself, as a program that loaded it hands it over'),
 })
 
+/** A path of the repository, refused in the words `resolveProfiles` uses, since both ask `repositoryPathProblem`. */
+const repositoryPath = z.string().check((ctx) => {
+  const problem = repositoryPathProblem(ctx.value)
+  if (problem !== undefined) ctx.issues.push({ code: 'custom', message: problem, input: ctx.value })
+})
+
+/** A document of the repository, in every variant: a file read at the commit the review's source names, never from the working tree or the change under review. */
+const documentRepository = z.strictObject({
+  repository: repositoryPath.describe('The file, as a path from the top level of the repository, read at the commit the review reads its documents from: a range\'s base, a path review\'s commit, HEAD for local changes; never the working tree'),
+  optional: z.boolean().optional().describe('true records the file as missing when that commit has none, and the review goes on; false, the default, refuses a review whose commit lacks it'),
+})
+
+/** One entry of a document list: the variant's own form, or a file of the repository. `own` is how the variant's form is written in the message of an entry that is neither. */
+function documentOf<D extends z.ZodType>(form: D, own: string) {
+  return z.union([form, documentRepository], { error: `must be ${own} or { repository }` })
+}
+
 const rule = z.union([
   z.enum(['unanimous', 'majority', 'any', 'off']),
   z.literal(false),
@@ -134,8 +151,8 @@ function profileSchema<R extends z.ZodType, D extends z.ZodType>(promptForm: R, 
       research: promptForm.optional().describe('The research instructions: a template, or { file }'),
       vote: promptForm.optional().describe('The vote instructions, which take {{lens.id}}, {{lens.question}} and {{panel.size}}: a template, or { file }'),
     }).optional().describe('The instruction templates of the profile'),
-    guidelines: documentList(documentForm).optional().describe('The guidelines the review judges by, each a { file } read when the config loads: at most 16 KiB each and in all once cleaned, sent in every request of the profile'),
-    doNotReport: documentList(documentForm).optional().describe('What the research is told not to report, each a { file } read when the config loads: at most 8 KiB each and in all once cleaned, sent in the research requests alone'),
+    guidelines: documentList(documentForm).optional().describe('The guidelines the review judges by, each a { file } read when the config loads or a { repository } file read at the commit the review reads its documents from: at most 16 KiB each and in all once cleaned, sent in every request of the profile'),
+    doNotReport: documentList(documentForm).optional().describe('What the research is told not to report, each a { file } read when the config loads or a { repository } file read at the commit the review reads its documents from: at most 8 KiB each and in all once cleaned, sent in the research requests alone'),
     builtInDoNotReport: z.boolean().optional().describe('false drops the do-not-report text of the built-in profile this one starts from; true, the default, keeps it ahead of the documents'),
     lenses: z.array(z.strictObject({
       id: name.describe('Names the lens'),
@@ -373,7 +390,7 @@ export function nameSnapshot(id: string, entry: unknown): unknown {
  * one. Every object is strict, so a typo is an issue. It checks shapes only: a field a later layer can
  * fill is optional, and the references between fields are checked once the layers are merged.
  */
-export const configFileSchema = configSchema(z.strictObject(providerShape), prompt, documentFile)
+export const configFileSchema = configSchema(z.strictObject(providerShape), prompt, documentOf(documentFile, '{ file }'))
 
 /** The settings of a provider in a code config: those of a file, which may also hold the key itself and the executable. */
 const codeSettings = z.strictObject({
@@ -402,10 +419,10 @@ const codeProvider = z.union([
 ], { error: 'must be the settings of a provider, or an object whose complete is a function' })
 
 /** A TS or JS config: the file variant, where a provider may also hold its key, or be an object implementing `Provider`. */
-export const configCodeSchema = configSchema(codeProvider, prompt, documentFile)
+export const configCodeSchema = configSchema(codeProvider, prompt, documentOf(documentFile, '{ file }'))
 
 /** The code variant a program hands over, which reads no file: a prompt is its text, never a `{ file }`, and a document is `{ text }`. */
-export const configInputSchema = configSchema(codeProvider, z.string(), documentText)
+export const configInputSchema = configSchema(codeProvider, z.string(), documentOf(documentText, '{ text }'))
 
 /**
  * The JSON Schema of a YAML or JSON config, for editors: draft-07, which the YAML language server and

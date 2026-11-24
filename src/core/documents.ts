@@ -91,6 +91,19 @@ export function documentCommit(source: ReviewSource): string | null | undefined 
   }
 }
 
+const REPOSITORY_PATH = 'must be a path of the repository: relative to its top level, /-separated, with no empty, . or .. segment, and at most 4096 characters'
+
+/**
+ * What is wrong with a path that names a file of the repository, or undefined when it is one: relative to the repository's top
+ * level (so never absolute), `/`-separated with no empty, `.` or `..` segment, and at most 4096 characters. The path is never
+ * repeated, and git is never handed it: a reader matches it against a listing.
+ */
+export function repositoryPathProblem(path: string): string | undefined {
+  return path.length <= MAX_DOCUMENT_PATH && path.split('/').every(segment => segment !== '' && segment !== '.' && segment !== '..')
+    ? undefined
+    : REPOSITORY_PATH
+}
+
 /** A path as a message holds it: JSON-quoted, cut at 100 code points with a `…` inside the quotes when it is cut. */
 export function quotedPath(path: string): string {
   const points = Array.from(path)

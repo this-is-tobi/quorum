@@ -4,9 +4,12 @@ import { plainWriter } from './cli/view/plain.ts'
 import { fromConfig } from './config/from-config.ts'
 import { loadConfig } from './config/load.ts'
 import type { ResolvedConfig } from './config/resolve.ts'
+import { readContext as readContextOf } from './context/read.ts'
+import type { ContextOptions } from './context/read.ts'
+import { ConfigError } from './core/errors.ts'
 import { inertLine } from './core/sanitize.ts'
 import type { ReplyStore } from './core/ports.ts'
-import type { QuorumResult } from './core/types.ts'
+import type { QuorumResult, ReviewContext } from './core/types.ts'
 import { VERSION } from './core/version.ts'
 import { openFileStore } from './state/store.ts'
 import { readSource as readSourceOf } from './sources/read.ts'
@@ -16,7 +19,7 @@ export { defineConfig } from './config/define.ts'
 export type { Env } from './config/env.ts'
 export { fromConfig } from './config/from-config.ts'
 export { loadConfig } from './config/load.ts'
-export type { FailOnOverride, ProfileSelection, ResolvedProfile } from './config/profiles.ts'
+export type { FailOnOverride, ProfileSelection, RepositoryEntry, ResolvedProfile } from './config/profiles.ts'
 export type { ResolvedConfig, ResolvedProvider } from './config/resolve.ts'
 export type { ConfigInput, QuorumConfig, QuorumConfigFile } from './config/schema.ts'
 export type { ProfileBudgets, ReplyFacts, ThinkingLevel } from './core/budgets.ts'
@@ -180,20 +183,59 @@ export async function readSource(spec: SourceSpec, context: Omit<SourceContext, 
 }
 
 /**
+ * Read the documents a review takes from the repository, as the CLI does: the `{ repository }` entries of the profiles of
+ * `config` (`ResolvedProfile.repository`), each read from the commit `options.source` names, never from the working tree or the
+ * change under review. `options.source` is `SourceRead.source`, the `source` the diff came from: a range's base, a path review's
+ * commit, HEAD for local and staged changes. A config with no entry reads nothing, runs no git and gives `{}`. The result is the
+ * `context` of `review` and `estimate`, which refuse an input without it when a profile lists such a document, and refuse a document
+ * read at another commit than the source's. Every entry's problem is reported at once, before any call.
+ * A git run is the system's git, on the platform of this process: it needs git 2.41 or later, and Linux or macOS.
+ *
+ * @throws ConfigError, at each entry's `profiles.<id>.<field>.<n>.repository`, when the source names no commit to read from (a diff,
+ * or local changes before a first commit) or a file is absent (unless optional), a link, a submodule, no UTF-8 text, over 64 KiB or
+ * over its cap once cleaned
+ * @throws GitError when a git command fails
+ *
+ * @example
+ * const input = await readSource({ kind: 'range', range: 'main...feature' }, { cwd: process.cwd(), env: process.env })
+ * const context = await readContext(config, { source: input.source, cwd: process.cwd(), env: process.env })
+ * const result = await quorum.review({ ...input, context })
+ */
+export async function readContext(config: ResolvedConfig, options: Omit<ContextOptions, 'platform' | 'git'>): Promise<ReviewContext> {
+  return readContextOf(config, {
+    source: options.source,
+    cwd: options.cwd,
+    env: options.env,
+    signal: options.signal,
+    platform: process.platform,
+  })
+}
+
+/** What `runQuorum` says of a `{ repository }` entry: it passes no context, so it cannot read the document the entry names. */
+const REPOSITORY_REFUSAL = 'reads a document of the repository, which runQuorum cannot read: build the quorum with fromConfig and pass readContext\'s context to review'
+
+/**
  * Review a diff as the CLI does with no flag: with the file `QUORUM_CONFIG` names, if any (an absolute
  * path), and the `QUORUM_*` variables of `process.env` with their `RESEARCH_*` and `VOTER_*` aliases, on the profiles
  * they select, the security profile alone by default, sending the files the config's `send` names though
  * they are held as secrets. `onProgress` receives the progress lines the CLI
  * prints on stderr after its banner, never the banner or a warning. A configuration error, a missing
- * model included, rejects with a `ConfigError`, even for an empty diff.
+ * model included, rejects with a `ConfigError`, even for an empty diff. It cannot read the documents of the
+ * repository that a `{ repository }` entry names, so a config that lists one is refused, before any call, at
+ * the entry: build the quorum with `fromConfig` and pass `readContext`'s context to `review`.
  *
  * @deprecated Use loadConfig and fromConfig
+ *
+ * @throws ConfigError when the config is invalid, or lists a `{ repository }` document, at its entry's
+ * `profiles.<id>.<field>.<n>.repository`
  *
  * @example
  * const { kept } = await runQuorum(diffText)
  */
 export async function runQuorum(diff: string, onProgress?: (message: string) => void): Promise<QuorumResult> {
   const { config } = await loadConfig()
+  const unreadable = config.profiles.flatMap(({ repository }) => repository.map(entry => ({ path: entry.at, message: REPOSITORY_REFUSAL })))
+  if (unreadable.length > 0) throw new ConfigError(unreadable)
   const quorum = await fromConfig(config, {
     events: onProgress === undefined
       ? undefined

@@ -381,6 +381,7 @@ describe('bannerLines', () => {
       profile: { ...securityProfile, id },
       research,
       voters,
+      repository: [],
     })),
     warnings: [],
   }) satisfies ResolvedConfig

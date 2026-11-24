@@ -5,7 +5,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
 import { researchRequest } from '../core/prompts.ts'
 import { requestTokens } from '../core/tokens.ts'
-import type { Quorum, QuorumEvent } from '../core/types.ts'
+import type { Quorum, QuorumEvent, ReviewDocument } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { isolateEnv } from '../testing/env.ts'
 import { chatReply, ollamaReply, sent } from '../testing/http.ts'
@@ -257,8 +257,7 @@ describe('fromConfig', () => {
         },
       },
     })).toEqual([
-      { path: 'profiles.team.guidelines.0.text', message: 'is required' },
-      { path: 'profiles.team.guidelines.0.file', message: 'is not a known field' },
+      { path: 'profiles.team.guidelines.0', message: 'must be { text } or { repository }' },
     ])
     expect(await issuesOf({
       providers,
@@ -275,6 +274,158 @@ describe('fromConfig', () => {
     })).toEqual([
       { path: 'profiles.team.guidelines.0', message: 'holds 16385 bytes once cleaned, over the 16 KiB a guidelines document may hold' },
     ])
+  })
+
+  it('refuses a review whose context lacks a document for a repository entry, and takes one with it', async () => {
+    const fetchMock = stubReview(ollamaReply)
+    const quorum = await fromConfig({
+      profiles: {
+        naming: {
+          prompts: { research: 'Find naming issues.', vote: 'Judge from {{lens.id}}: {{lens.question}}' },
+          lenses: [
+            { id: 'grounded', question: 'Is it backed by a convention?' },
+          ],
+          guidelines: [
+            { repository: 'REVIEW.md' },
+            { repository: 'ADDENDUM.md', optional: true },
+          ],
+          doNotReport: [
+            { repository: 'SKIP.md' },
+          ],
+        },
+      },
+    }, {
+      env: { QUORUM_RESEARCH_MODEL: 'local', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
+    })
+    const commit = 'a'.repeat(40)
+    const source = { kind: 'local', head: commit, objectFormat: 'sha1' } as const
+    const document = (path: string, kind: ReviewDocument['kind'], text?: string, profile = 'naming'): ReviewDocument => ({
+      profile,
+      kind,
+      origin: { kind: 'repository', path, commit },
+      ...text === undefined
+        ? {}
+        : { text },
+    })
+    const unread = (path: string): string => `"${path}" was not read for this review: pass the context readContext reads to the estimate and the review`
+    const refused = [
+      {
+        path: 'profiles.naming.guidelines.0.repository',
+        message: unread('REVIEW.md'),
+      },
+      {
+        path: 'profiles.naming.guidelines.1.repository',
+        message: unread('ADDENDUM.md'),
+      },
+      {
+        path: 'profiles.naming.doNotReport.0.repository',
+        message: unread('SKIP.md'),
+      },
+    ]
+    const issuesOfCall = async (call: () => unknown): Promise<readonly ConfigIssue[]> => {
+      const error: unknown = await Promise.resolve().then(call).then(() => undefined, (thrown: unknown) => thrown)
+      expect(error).toBeInstanceOf(ConfigError)
+      return (error as ConfigError).issues
+    }
+
+    // No context, an empty one, one that is no object, and documents of another kind, path or profile each leave every entry unread.
+    for (const context of [
+      undefined,
+      {},
+      { documents: [] },
+      'REVIEW.md',
+      {
+        documents: [
+          document('REVIEW.md', 'do-not-report'),
+          document('OTHER.md', 'guidelines'),
+          document('SKIP.md', 'do-not-report', 'x', 'other'),
+        ],
+      },
+    ]) {
+      expect(await issuesOfCall(() => quorum.review({ diff, source, context: context as never }))).toEqual(refused)
+      expect(await issuesOfCall(() => quorum.estimate({ diff, context: context as never }))).toEqual(refused)
+    }
+    expect(await issuesOfCall(() => quorum.review(diff as never))).toEqual(refused)
+    // One entry left unread is named alone.
+    expect(await issuesOfCall(() => quorum.review({
+      diff,
+      source,
+      context: {
+        documents: [
+          document('REVIEW.md', 'guidelines', 'Name things.'),
+          document('SKIP.md', 'do-not-report', 'Generated files.'),
+        ],
+      },
+    }))).toEqual([
+      {
+        path: 'profiles.naming.guidelines.1.repository',
+        message: unread('ADDENDUM.md'),
+      },
+    ])
+    // A required entry whose document holds no text is as unread as one with no document, for a review and an estimate; only an
+    // optional entry may be missing.
+    const unfound = {
+      documents: [
+        document('REVIEW.md', 'guidelines'),
+        document('ADDENDUM.md', 'guidelines'),
+        document('SKIP.md', 'do-not-report'),
+      ],
+    }
+    const required = [
+      {
+        path: 'profiles.naming.guidelines.0.repository',
+        message: unread('REVIEW.md'),
+      },
+      {
+        path: 'profiles.naming.doNotReport.0.repository',
+        message: unread('SKIP.md'),
+      },
+    ]
+    expect(await issuesOfCall(() => quorum.review({ diff, source, context: unfound }))).toEqual(required)
+    expect(await issuesOfCall(() => quorum.estimate({ diff, context: unfound }))).toEqual(required)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    // A document for every entry, one of them missing while optional, is a context the review takes.
+    const context = {
+      documents: [
+        document('REVIEW.md', 'guidelines', 'Name things.'),
+        document('ADDENDUM.md', 'guidelines'),
+        document('SKIP.md', 'do-not-report', 'Generated files.'),
+      ],
+    }
+    expect(() => quorum.estimate({ diff, context })).not.toThrow()
+    const result = await quorum.review({ diff, source, context })
+    const none = { characters: 0, comments: 0, entities: 0 }
+    const record = {
+      profile: 'naming',
+      origin: 'repository',
+      commit,
+      removed: none,
+    }
+    expect(result.meta.context.documents).toEqual([
+      {
+        ...record,
+        kind: 'guidelines',
+        path: 'REVIEW.md',
+        status: 'read',
+        bytes: 12,
+      },
+      {
+        ...record,
+        kind: 'guidelines',
+        path: 'ADDENDUM.md',
+        status: 'missing',
+        bytes: 0,
+      },
+      {
+        ...record,
+        kind: 'do-not-report',
+        path: 'SKIP.md',
+        status: 'read',
+        bytes: 16,
+      },
+    ])
+    expect(fetchMock).toHaveBeenCalled()
   })
 
   it('refuses a __proto__ key in a ConfigInput, and changes no prototype', async () => {
