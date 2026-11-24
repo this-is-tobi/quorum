@@ -61,6 +61,7 @@ A failed vote counts as a reject. Its `failure` holds only what the code read, n
 | `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's gaps for the files left out first, then its `too-large` gap, then its research gaps, then its panel's, then its limits'. A review is complete when this list and `unreviewed` are both empty |
 | `leftOut` | entry[] | Every file the review left out, once per file, reason and rule: the files its source left out before it made the diff first, then the diff's own in its order: [A file left out](#a-file-left-out). Empty when it left none out, a blank diff included |
 | `flags` | flag[] | The advisory flags, the `secret-file` flags of the files left out first, in the order `leftOut` lists them, then those read from the diff, file by file in its order: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
+| `context` | object | The documents the review read as policy and sent, `documents`, one record for each: [The context](#the-context). Required, and empty when no profile has a document, a blank diff included. A result of 0.12.0 has none, and `readResult` refuses it |
 | `adaptations` | entry[] | What the review moved by itself, in the order it happened: [The adaptations](#the-adaptations). Required, and empty when nothing moved, a blank diff included |
 | `concurrency` | object | Only when the review made a call: what each provider's lane did, one entry per provider id, keyed by it: [The lanes](#the-lanes) |
 | `reused` | object | Only when the review was given a state directory (`--state`, or a `store` in the library), even when nothing was reused: `research`, the research calls, and `votes`, the votes, that the store answered instead of a provider, whole numbers of at least 0, counted from the `call` events that say `reused`: [Saved state](../20-using/20-configuration.md#saved-state). A call the store answered spends nothing and adds nothing to `usage` |
@@ -229,6 +230,24 @@ A file raises at most one flag for each row of this table, in this order:
 
 A `secret-file` flag comes from `meta.leftOut`, not from the diff: one for each `skipped` file of the rule `secret`, `secret` file and `deleted-secret` file, in its order, ahead of the diff's flags. The detail of a held file by a credential names the kind in words (`a private key`, `an AWS key`, `a GitHub token`, `a Slack token or webhook`, `a Google API key`, `a Stripe key`, `an Anthropic key` or `an OpenAI key`), and a `deleted-secret` entry that names a kind, which only the input's `leftOut` can hold, reads `deletes a file that holds what reads as an AWS key, so no model was sent any of it: the history still holds it, so rotate it`. A flag quotes no line of the file. A secret that an `exclude` pattern matched first is listed as `excluded` and raises none. A detail names at most eight code points or patterns, then `and N more`. [Advisory flags](../30-security/30-output-handling.md#advisory-flags) says what each code looks for. A flag never changes a verdict, a gap or the exit code.
 
+### The context
+
+`meta.context` records the documents each profile read as policy and the review sent: a profile's guidelines and do-not-report text, its documents and the repository documents the review brought ([Documents](./30-library-api.md#documents)). It holds one key, `documents`, a list with one record for each document, in the order of the review's profiles and, for a profile, its guidelines then its do-not-report text, each in the order they were joined: the profile's own text, its config documents, then the repository's. The same record is the `context` event the review sent before its stages ([Events](./30-library-api.md#events)). A record holds a hash, a path, a commit and counts, never a document's text.
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `profile` | string | The id of the profile the document was sent with |
+| `kind` | `"guidelines"` or `"do-not-report"` | What the document tells the model: the criteria to judge by, or what the research does not report |
+| `origin` | `"profile"`, `"config"` or `"repository"` | `profile` for the text a program set on the profile, `config` for a document of its configuration, `repository` for a file of the commit the review read |
+| `path` | string | A repository document's path, of at most 4,096 characters. The key is there for `repository` alone |
+| `commit` | string | The full id of the commit a repository document was read at: 40 lowercase hexadecimal digits, or 64 for a `sha256` repository. The key is there for `repository` alone |
+| `sha256` | string | The SHA-256 of the document's text as read, in UTF-8, before it was cleaned, 64 lowercase hexadecimal digits: the hash `sha256sum` gives a file with no byte-order mark. The key is there when the document's reader computed one, and never for a missing document |
+| `status` | `"read"` or `"missing"` | `missing` for an optional document the commit does not hold |
+| `bytes` | number | The UTF-8 bytes of the cleaned text as it was sent: 0 for a blank text and a missing document |
+| `removed` | object | What the cleaner removed from the text, `characters`, `comments` and `entities`: the hidden characters by code point, the HTML comments and the numeric character references by construct, counting what the document's reader removed and what the core removed again: [Prose a model reads as policy](../30-security/30-output-handling.md#prose-a-review-reads-as-policy) |
+
+A review whose profiles have no document records `{ "documents": [] }` and sends no `context` event. The record is schema-strict: `readResult` refuses a `kind`, an `origin` or a `status` it does not know, a hash that is not 64 lowercase hexadecimal digits, a record of a repository document with no path or commit, and a record of any other origin with one. The public view keeps `meta.context` whole.
+
 ### The adaptations
 
 | Field | Type | Holds |
@@ -300,12 +319,13 @@ Each gap makes the review incomplete, as an unreviewed finding does: the CLI exi
 | `meta.profiles.<id>.discarded` | The number of findings of the profile that were discarded, after `gating` |
 | `meta.profiles.<id>.providers` | Absent: no provider and no model is named |
 | `meta.usage` | Absent |
+| `meta.context` | Kept whole, as it is: each document's hash, path, commit and counts, never a text |
 | `meta.adaptations` | Kept as it is: a provider's id and code words, nothing a server or a model wrote |
 | `meta.reused` | Kept as it is, when the review has one: two counts |
 | `meta.profiles.<id>.recovery` | Kept as it is, when the profile has one: four counts |
 | An incomplete entry | `profile`, `reason`, then `file` when it has one, and no `detail`: a report describes a gap by its reason, in fixed words |
 
-Everything else is as in the full result: the findings with their evidence, the profiles' policy, `failOn`, `gating`, `invalidFindings` and coverage, the files left out, a held file's name, reason and rule included, and the flags with their details. `meta` is written in this order: `version`, `view`, `startedAt`, `durationMs`, `source`, `profiles`, `incomplete`, `leftOut`, `flags`, `adaptations`, then `reused` when the review has one; a profile in this one: `policy`, `failOn`, `gating`, `discarded`, `invalidFindings`, `coverage`.
+Everything else is as in the full result: the findings with their evidence, the profiles' policy, `failOn`, `gating`, `invalidFindings` and coverage, the files left out, a held file's name, reason and rule included, and the flags with their details. `meta` is written in this order: `version`, `view`, `startedAt`, `durationMs`, `source`, `profiles`, `incomplete`, `leftOut`, `flags`, `context`, `adaptations`, then `reused` when the review has one; a profile in this one: `policy`, `failOn`, `gating`, `discarded`, `invalidFindings`, `coverage`.
 
 ```json
 {
@@ -353,7 +373,7 @@ Everything else is as in the full result: the findings with their evidence, the 
 }
 ```
 
-The example leaves out the fields of `meta` that do not change, `startedAt`, `durationMs`, `source`, `leftOut`, `flags` and `adaptations`. `outcome` reads a view as the result it came from, so a program that holds only the view gets the review's exit code: [`outcome`](./30-library-api.md#outcome).
+The example leaves out the fields of `meta` that do not change, `startedAt`, `durationMs`, `source`, `leftOut`, `flags`, `context` and `adaptations`. `outcome` reads a view as the result it came from, so a program that holds only the view gets the review's exit code: [`outcome`](./30-library-api.md#outcome).
 
 ## An example
 
@@ -563,6 +583,7 @@ A review of a diff that touches three files, run on the one provider, named `def
     ],
     "leftOut": [],
     "flags": [],
+    "context": { "documents": [] },
     "adaptations": []
   }
 }

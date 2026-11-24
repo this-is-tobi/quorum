@@ -53,7 +53,9 @@ interface Section {
  * nothing.
  *
  * Each request is built as the review builds it, with the reply budget and the findings its provider's budgets
- * give it, so a reservation is the one the review takes.
+ * give it, so a reservation is the one the review takes. `runs` are the review's own: a profile that a review's
+ * repository documents name is a run with them in its guidelines and its research instructions, so each part and each
+ * vote bound here counts them.
  *
  * A vote's reservation depends on a finding that does not exist yet, so each lens's is a bound: the request for
  * a finding at the caps the harness cleans a finder's text to, citing the largest section of the filtered

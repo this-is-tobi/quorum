@@ -18,7 +18,8 @@
  *   profile, the reason and the file, and a reporter writes the reason's fixed words (`GAP_WORDS`).
  *
  * Everything else stays: the findings with their evidence, the files left out, a held file's name, reason and
- * rule included, and the flags with their details, which quorum's code writes. `meta.view` says it is the
+ * rule included, the flags with their details, which quorum's code writes, and the documents the review read as policy
+ * (`meta.context`), each a hash, a path, a commit and counts and never a text. `meta.view` says it is the
  * public view, so no reader mistakes it for the full result.
  *
  * The functions are pure. A view is made of new arrays and objects, the parts kept whole copied with
@@ -123,6 +124,7 @@ function publicMeta(result: QuorumResult): PublicMeta {
     incomplete: meta.incomplete.map(publicGap),
     leftOut: structuredClone(meta.leftOut),
     flags: structuredClone(meta.flags),
+    context: structuredClone(meta.context),
     adaptations: structuredClone(meta.adaptations),
     ...meta.reused === undefined
       ? {}

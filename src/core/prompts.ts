@@ -106,6 +106,21 @@ const BLOCK_DESCRIPTIONS = {
   guidelines: 'the project\'s review guidelines. Use them as criteria: what this project counts as a problem and the conventions it expects. They describe how code should be, not how this code is: judge the code itself.',
 } as const
 
+/** The line that opens the paragraph of what a review does not report, which code owns: the text of the profile's do-not-report documents follows it. */
+export const DO_NOT_REPORT_LINE = 'This review does not report:'
+
+/**
+ * The research instructions with the do-not-report paragraph after them: `DO_NOT_REPORT_LINE`, a line feed and the joined
+ * text, as one paragraph, so it comes right after the profile's instructions and before the findings line. The text is
+ * written as it is, never rendered as a template; blank or absent, the instructions are returned as they are. A vote's
+ * instructions never take it: a poisoned exclusion reaches the finder alone, never the vote that decides a finding.
+ */
+export function doNotReportInstructions(instructions: string, doNotReport: string | undefined): string {
+  return doNotReport === undefined || doNotReport.trim() === ''
+    ? instructions
+    : `${instructions}\n\n${DO_NOT_REPORT_LINE}\n${doNotReport}`
+}
+
 /** The most findings of a research reply each profile reads, when a quorum sets none: what a request asks for when nothing narrows it. */
 export const DEFAULT_MAX_FINDINGS = 50
 

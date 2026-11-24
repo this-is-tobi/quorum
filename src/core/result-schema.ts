@@ -22,6 +22,7 @@
  */
 
 import { z } from 'zod'
+import { COMMIT_ID, MAX_DOCUMENT_PATH, SHA256 } from './documents.ts'
 import { NO_ANSWERS } from './errors.ts'
 import { SKIP_RULES, sourceIssues } from './inputs.ts'
 import { FAIL_ON_LEVELS, PROFILE_ID_PATTERN } from './profile.ts'
@@ -272,6 +273,35 @@ const flag = z.strictObject({
 })
 
 /**
+ * What a review recorded of one document it read as policy (`ContextDocument`): the closed lists of its kind, its origin and
+ * its status, its hash and its commit as the digits quorum writes them, a path, and what the cleaner removed. A repository document
+ * has a path and a commit and no other has, and a missing one has no bytes and no hash, so no record of another shape is
+ * one a reporter writes. It never holds a text.
+ */
+const contextDocument = z.strictObject({
+  profile: profileId,
+  kind: z.enum(['guidelines', 'do-not-report']),
+  origin: z.enum(['profile', 'config', 'repository']),
+  path: z.string().min(1).max(MAX_DOCUMENT_PATH).optional(),
+  commit: z.string().regex(COMMIT_ID).optional(),
+  sha256: z.string().regex(SHA256).optional(),
+  status: z.enum(['read', 'missing']),
+  bytes: count,
+  removed: z.strictObject({
+    characters: count,
+    comments: count,
+    entities: count,
+  }),
+}).refine(document => (document.origin === 'repository') === (document.path !== undefined && document.commit !== undefined)
+  && (document.origin === 'repository' || (document.path === undefined && document.commit === undefined))
+  && (document.status === 'read' || (document.bytes === 0 && document.sha256 === undefined)))
+
+/** What a review read as policy: every document it sent, in the order it sent them. */
+const contextRecord = z.strictObject({
+  documents: z.array(contextDocument),
+})
+
+/**
  * What a review moved by itself: a provider's id, the setting, what it moved from and to, and the cause, each setting
  * and cause one of the closed lists of `Adaptation`, the ones a later release moves included.
  */
@@ -375,6 +405,7 @@ export const resultSchema = z.strictObject({
     incomplete: z.array(incompleteEntry),
     leftOut: z.array(leftOutFile),
     flags: z.array(flag),
+    context: contextRecord,
     adaptations: z.array(adaptation),
     reused: reused.optional(),
     concurrency: concurrency.optional(),
@@ -401,6 +432,7 @@ export const publicViewSchema = z.strictObject({
     incomplete: z.array(publicGap),
     leftOut: z.array(leftOutFile),
     flags: z.array(flag),
+    context: contextRecord,
     adaptations: z.array(adaptation),
     reused: reused.optional(),
     concurrency: concurrency.optional(),

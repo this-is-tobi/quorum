@@ -43,6 +43,8 @@ const security = { ...securityProfile, guidelines: 'Queries go through db.query 
 | `failOn` | `'high' \| 'medium' \| 'low' \| 'none'` | Optional, `high` when unset: [Gating](#gating) |
 | `gating` | `boolean` | Deprecated: `true` is `failOn: 'high'`, `false` is `'none'`; not with `failOn` |
 | `guidelines` | `string` | Optional: [Guidelines](#guidelines) |
+| `doNotReport` | `string` | Optional: what the research does not report, [Guidelines](#guidelines) |
+| `documents` | `ReviewDocument[]` | Optional: the guidelines and do-not-report documents of the profile's configuration, [Guidelines](#guidelines) |
 
 The reply the finder must give is fixed, whatever the profile: a `findings` array whose every entry holds `file`, `line`, `category`, `quote` and `summary`. quorum's request names those five fields itself, in a paragraph of its own right after the line that asks for at most `N` findings, so every profile gets the same contract, yours included: `file` as the diff names it, `line` in the new file (for removed code, the nearest line that survives), `quote` the code that shows the finding, copied verbatim without the leading `+`, `-` or space, `category` the finding's kind, as your instructions define it, and `summary` why it is a finding. Your research instructions say what to look for, what a quote holds and what a category means for what you review, as the security profile's do (the sink, and a CWE id), and need not name a field otherwise.
 
@@ -96,7 +98,8 @@ With two lenses, that policy makes 2 of 2 kept votes `high` and 1 of 2 `medium`.
 | `<id>.prompts.vote` | `the placeholder "lens.name" is not allowed: the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}` |
 | `<id>.failOn` | `must be one of high, medium, low or none` |
 | `<id>.gating` | `must be true or false`, or `is deprecated and cannot be set with failOn: remove it` |
-| `<id>.guidelines` | `must be a string` |
+| `<id>.guidelines`, `<id>.doNotReport` | `must be a string`, `holds <n> bytes once cleaned, over the 16 KiB a guidelines document may hold` (8 KiB for a do-not-report document), or `nests HTML comments or character references too deep to clean in 16 passes: remove them` |
+| `<id>.documents` and below | A document's own issues, its cap and the caps of a kind in all: [Documents](../95-reference/30-library-api.md#documents) |
 
 A template gets one line for its first `{{` that opens no placeholder, then one per distinct variable it may not use, in the order they first appear, and a blank one gets `must not be empty` alone. The name is JSON-quoted and cut at 64 characters, with `…` inside the quotes when it is cut. [Templates](./60-prompts.md#templates) says what is a placeholder and how to write a literal `{{`. The checks read the shape first, so a program without types that passes a malformed profile gets these lines, never a `TypeError`.
 
@@ -171,7 +174,9 @@ A result records each profile's level in `meta.profiles.<id>.failOn`, and `gatin
 
 Guidelines are reference text for one profile: a project's conventions, what it counts as a problem. Quorum reads no guidelines file of its own: a program loads the text and sets it as the profile's `guidelines`. The CLI sets none.
 
-- **They are fenced as data**, one more block at the end of the user message of every request of the profile, the research call and every vote, when the text is not blank. They are never part of the system message.
+The core treats the text as a document: it cleans it (the hidden characters, the HTML comments and the numeric character references go, so a model reads what a person reading the rendered text sees), refuses it over 16 KiB once cleaned, and records it in the result's `meta.context`, never as text. A profile also holds `doNotReport`, reference text for what its research does not report, cleaned and capped at 8 KiB the same way, and a list of `documents`, each a guidelines or a do-not-report document that names the profile: they come after the profile's own text, in order, and a review can add the repository's own ([Documents](../95-reference/30-library-api.md#documents)). The do-not-report text reaches the finder alone, as a paragraph right after the instructions ([The layout of a request](./60-prompts.md#the-layout-of-a-request)), and no vote carries it.
+
+- **They are fenced as data**, one more block at the end of the user message of every request of the profile, the research call and every vote, when the text is not blank. They are never part of the system message. The block holds the profile's guidelines documents joined by a blank line.
 - **The model reads them as criteria.** The [data notice](./60-prompts.md#the-data-notice) describes the block in these words: "the project's review guidelines. Use them as criteria: what this project counts as a problem and the conventions it expects. They describe how code should be, not how this code is: judge the code itself."
 - **They are still data.** Text in them that asks to skip or approve without checking falls under the same notice as the diff, which tells the model to treat it as suspicious and report it as its own finding rather than comply.
 

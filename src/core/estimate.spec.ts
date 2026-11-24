@@ -987,6 +987,63 @@ describe('estimate', () => {
     expect(fits && held > 0).toBe(true)
   })
 
+  it('counts a review\'s repository guidelines in each research part and vote', () => {
+    const naming: Profile = {
+      id: 'naming',
+      prompts: { research: 'Review this diff for names that mislead.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
+      lenses: [
+        { id: 'clarity', question: 'Does the name mislead?' },
+        { id: 'brevity', question: 'Is the name longer than it needs to be?' },
+      ],
+    }
+    const finder = windowed(200_000, () => '{"findings":[]}')
+    const quorum = createQuorum({
+      profiles: [naming],
+    }, portsFor(naming, finder))
+    const guideline = (text: string): NonNullable<Parameters<Quorum['estimate']>[0]['context']> => ({
+      documents: [
+        {
+          profile: 'naming',
+          kind: 'guidelines',
+          origin: {
+            kind: 'repository',
+            path: 'REVIEW.md',
+            commit: 'c'.repeat(40),
+          },
+          text,
+        },
+      ],
+    })
+    const none = quorum.estimate({ diff: DIFF }).profiles.naming
+    const given = quorum.estimate({
+      diff: DIFF,
+      context: guideline('g'.repeat(4096)),
+    }).profiles.naming
+    expect(none.parts.length).toBeGreaterThan(1)
+    expect(given.parts).toHaveLength(none.parts.length)
+    // A byte of the guideline is a token of the bound, and its block's description line and fence come with it.
+    const deltas = given.parts.map((part, index) => part - none.parts[index])
+    expect(new Set(deltas).size).toBe(1)
+    expect(deltas[0]).toBeGreaterThan(4096)
+    expect(deltas[0]).toBeLessThan(4096 + 600)
+    const voteDeltas = Object.entries(given.vote).map(([lens, bound]) => bound - none.vote[lens])
+    expect(voteDeltas).toHaveLength(2)
+    expect(new Set(voteDeltas).size).toBe(1)
+    expect(voteDeltas[0]).toBeGreaterThan(4096)
+    expect(voteDeltas[0]).toBeLessThan(4096 + 600)
+    expect(given.worst).toBeGreaterThan(none.worst)
+    // A blank document, and one that is missing, add nothing, and the quorum's own estimate is unchanged by them.
+    expect(quorum.estimate({
+      diff: DIFF,
+      context: guideline('  \n'),
+    }).profiles.naming).toEqual(none)
+    expect(quorum.estimate({
+      diff: DIFF,
+      context: { documents: [] },
+    }).profiles.naming).toEqual(none)
+    expect(finder.requests).toEqual([])
+  })
+
   it('refuses an input a review would refuse, as a ConfigError', () => {
     const quorum = createQuorum({
       profiles: [securityProfile],

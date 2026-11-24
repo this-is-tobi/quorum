@@ -419,6 +419,7 @@ export function resultWith(parts: {
       incomplete: [...incomplete],
       leftOut: [],
       flags: [],
+      context: { documents: [] },
       adaptations: [],
     },
   }
@@ -427,7 +428,7 @@ export function resultWith(parts: {
 /**
  * A result that fills every field the type has: a kept verdict with a confidence and a failed vote
  * among its votes, whose failure holds a status, a discarded and an unreviewed one, a gap with a file
- * and one without, a file left out, a flag with a file and a line, usage with a cost, and a summary
+ * and one without, a file left out, a flag with a file and a line, two documents read as policy, usage with a cost, and a summary
  * that holds `##[` and U+2028.
  */
 export const RESULT: QuorumResult = (() => {
@@ -523,6 +524,29 @@ export const RESULT: QuorumResult = (() => {
           detail: 'U+202E',
         },
       ],
+      context: {
+        documents: [
+          {
+            profile: 'security',
+            kind: 'guidelines',
+            origin: 'profile',
+            status: 'read',
+            bytes: 40,
+            removed: { characters: 1, comments: 0, entities: 0 },
+          },
+          {
+            profile: 'security',
+            kind: 'do-not-report',
+            origin: 'repository',
+            path: 'REVIEW.md',
+            commit: 'a'.repeat(40),
+            sha256: 'b'.repeat(64),
+            status: 'read',
+            bytes: 120,
+            removed: { characters: 0, comments: 2, entities: 3 },
+          },
+        ],
+      },
     },
   }
 })()
