@@ -185,3 +185,49 @@ export function fakeGit(reply: (call: GitCall) => GitReply | undefined, base: Gi
   }
   return { spawn, calls }
 }
+
+/** One file of the tree a fake commit holds: its path, its content (a string, or bytes for a binary file), and the mode it is listed with, `100644` by default. */
+export interface TreeFile {
+  readonly path: string
+  readonly content?: string | Uint8Array
+  readonly mode?: '100644' | '100755' | '120000' | '160000'
+}
+
+/**
+ * The replies of a fake git whose every commit holds `files`: `ls-tree` lists them as `git ls-tree -r -z --long` prints them
+ * (a gitlink with no size) and `cat-file --batch` gives the blob of each id asked, as `git cat-file --batch` prints it. Any other
+ * call is left to the caller's own reply, so a spec adds the replies it needs around it. A file's id is its position, in
+ * hexadecimal, padded to 40 digits.
+ */
+export function treeReply(files: readonly TreeFile[]): (call: GitCall) => GitReply | undefined {
+  const encoder = new TextEncoder()
+  const entries = files.map((file, index) => ({
+    path: file.path,
+    mode: file.mode ?? '100644',
+    id: (index + 1).toString(16).padStart(40, '0'),
+    body: typeof file.content === 'string'
+      ? encoder.encode(file.content)
+      : file.content ?? new Uint8Array(0),
+  }))
+  return ({ command, stdin }) => {
+    if (command[0] === 'ls-tree') {
+      return {
+        stdout: entries.map(({ path, mode, id, body }) => mode === '160000'
+          ? `${mode} commit ${id} ${'-'.padStart(7)}\t${path}\0`
+          : `${mode} blob ${id} ${String(body.length).padStart(7)}\t${path}\0`).join(''),
+      }
+    }
+    if (command[0] !== 'cat-file') return undefined
+    const blobs = stdin.split('\n').filter(id => id !== '').flatMap((id) => {
+      const entry = entries.find(candidate => candidate.id === id)
+      return entry === undefined
+        ? []
+        : [
+            encoder.encode(`${id} blob ${entry.body.length}\n`),
+            entry.body,
+            encoder.encode('\n'),
+          ]
+    })
+    return { stdout: blobs }
+  }
+}

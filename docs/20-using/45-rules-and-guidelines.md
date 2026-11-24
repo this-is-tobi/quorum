@@ -1,6 +1,6 @@
 # Rules and guidelines
 
-A review judges a change by what its profile asks for, and a project can say more: the conventions it expects, and what it does not want reported. quorum reads that policy as documents, texts a person wrote, and a profile takes them from its config as files. This page covers what a document is, how a config names one, what every request carries of it, the caps and the cleaner, what `--print-config` shows, and what they cost.
+A review judges a change by what its profile asks for, and a project can say more: the conventions it expects, and what it does not want reported. quorum reads that policy as documents, texts a person wrote, and a profile takes them from its config as files, or from the repository the change is in, at a commit quorum chooses and the change cannot. This page covers what a document is, how a config names one, how a file of the repository is read and from which commit, what every request carries of it, the caps and the cleaner, what `--print-config` shows, and what they cost.
 
 ## What a document is
 
@@ -42,6 +42,66 @@ profiles:
 - **At most 16 entries** a field, and the order is the order of the list: the profile's own text, then its documents in the order they are listed, joined by a blank line.
 - **A file that cannot be read is a configuration error,** exit `2`, before any call, at the entry's file path: `review.yaml: profiles.security.guidelines.0.file: is over 64 KiB`. A file that does not exist, is not a file, is over 64 KiB or is not UTF-8 text is refused the same way, and every one is reported at once.
 - **A file is as trusted as the config.** In CI a document comes from the base branch, never from the pull request's checkout, as a prompt file does: [Trust](./20-configuration.md#trust).
+
+## Naming a file of the repository
+
+A project often keeps its policy in its repository, a `REVIEW.md` say, and a pull request can edit it. A `{ repository }` entry names such a file by its path from the repository's top level, and quorum reads it from a commit the review's source names, never from the change under review:
+
+```yaml
+profiles:
+  security:
+    guidelines:
+    - repository: REVIEW.md
+    doNotReport:
+    - repository: .github/review-skip.md
+      optional: true
+```
+
+It takes the same two fields, under the same names, as `{ file }`, for any profile, a built-in one included, and the two forms mix in one list.
+
+- **The path** is relative to the top level of the repository, whatever directory quorum runs in, `/`-separated, with no empty, `.` or `..` segment, and at most 4096 characters. Anything else is refused when the config is read, at the entry's `repository`: `must be a path of the repository: relative to its top level, /-separated, with no empty, . or .. segment, and at most 4096 characters`.
+- **`optional: true`** lets the commit lack the file: the review goes on, and `meta.context` records the document as `missing`, with no bytes. Without it a file the commit lacks is a configuration error. It excuses an absent file alone: a link, a submodule or a file over 64 KiB is refused whether it is optional or not.
+- **The order is fixed by the kind of entry.** A profile's texts of a kind are joined as its own text, then its `{ file }` documents in the order they are listed, then its `{ repository }` documents in theirs, each pair separated by a blank line.
+- **The caps are the files'.** A repository document is cleaned and capped as a file is, 16 KiB of guidelines and 8 KiB of do-not-report text, counted in all with the profile's own text and its `{ file }` documents: [The caps and the cleaner](#the-caps-and-the-cleaner).
+- **The result records it.** `meta.context` holds one record for it, with `origin: 'repository'`, its `path`, the full `commit` it was read at and the SHA-256 of its text, and no text: [The context](../95-reference/20-json-result.md#the-context).
+
+### The commit a document is read from
+
+The policy that judges a change never comes from that change. A pull request controls every file of its branch, `REVIEW.md` included, so a review that read the head's copy, or the working tree's, would let a change write the rules it is judged by: a guideline that calls its own code allowed, or a do-not-report line that hides it. quorum reads the document from the commit its source names:
+
+| The source | The commit |
+| --- | --- |
+| `--range <base>...<head>` | The range's base, the commit `<base>` names: the project as it was before the change |
+| `--path <path>`, with `--at <rev>` or without | The commit the review reads, `--at`'s, else `HEAD`: a path review is a codebase and not a change, so its documents are the codebase's |
+| `--local`, `--staged` | `HEAD`, never the working tree or the index. Before a repository's first commit there is none, and the entry is refused |
+| A diff file, standard input | None: the entry is refused, since a diff names no commit |
+
+The change's own edit of the file is in the diff, to be reviewed as code, and reaches no request as policy. The core checks each document against the commit its review's source names, so a program that hands over a document read at another commit is refused: [Documents](../95-reference/30-library-api.md#documents).
+
+### One read, and every message
+
+Once the source is read, and before any call, quorum lists the commit's tree once, keeping the paths the profiles name, and reads the files it keeps in one more call, with its own git and the protections of every git source ([Sources](./15-sources.md)): it reads no working tree, and hands git an id it has checked, never a path or a revision. A file two profiles name is read once. Every entry is checked, and every problem is reported at once, exit `2`, each at its entry's `repository` path, with `<path>` the path as JSON, cut at 100 characters, and `<short id>` the first 7 characters of the commit:
+
+```text
+Error: profiles.security.guidelines.0.repository: "REVIEW.md" needs a commit to read it from, which a diff file or standard input does not name: review with --range, --local, --staged or --path, or name the file with { file }
+```
+
+| Message | Means |
+| --- | --- |
+| `<path> needs a commit to read it from, which a diff file or standard input does not name: review with --range, --local, --staged or --path, or name the file with { file }` | The source is a diff file or standard input |
+| `<path> needs a commit to read it from, and the repository has none yet: make a first commit, or name the file with { file }` | `--local` or `--staged` in a repository with no commit |
+| `<path> is not a file of the commit <short id> the review reads it from` | The commit has no such path, or it is a directory, and the entry is not optional |
+| `<path> is a symbolic link at <short id>, which quorum does not follow` | The path is a link, optional or not |
+| `<path> is a submodule's commit at <short id>, which quorum does not read` | The path is a submodule, optional or not |
+| `<path> is not UTF-8 text at <short id>` | The file does not decode as UTF-8, or holds a NUL byte among its first 8000, which is what git itself counts as binary |
+| `<path> holds <n> bytes at <short id>, over the 64 KiB quorum reads of a document` | The file is over 64 KiB, which is known from the listing, before it is read |
+| `<path> at <short id> holds 17020 bytes once cleaned, over the 16 KiB a guidelines document may hold` | The file is over a cap once cleaned; the messages of [the caps](#the-caps-and-the-cleaner), the in-all one and the unsettled one included, follow the path and the commit |
+
+A program that builds the quorum itself reads the documents with `readContext` and passes the result to `estimate` and `review`: [`readContext`](../95-reference/30-library-api.md#readcontext). One that does not is refused, before any call, at each entry it skipped: `profiles.security.guidelines.0.repository: "REVIEW.md" was not read for this review: pass the context readContext reads to the estimate and the review`.
+
+### A commit you do not trust
+
+A repository document is as trusted as the commit it is read from. The base of a pull request is a commit the project already merged, and `HEAD` of your own clone is yours; a commit that a stranger, or an agent working in the project, can write is not. Under a git hook, an agent can write `HEAD`, so a config that runs there names `{ file }` documents kept outside the project instead, as the server's config is kept: [Git hooks](../90-recipes/30-git-hooks.md), [Claude Code](../90-recipes/20-claude-code.md). `quorum mcp` refuses a `{ repository }` document for the same reason ([The MCP server](./90-mcp.md#starting-it)), and `quorum bench` refuses one because a case is a patch with no commit ([Running a bench](./70-bench.md#running-a-bench)).
 
 ## What each request carries
 
@@ -87,7 +147,7 @@ profiles:
 
 ## What `--print-config` shows
 
-[`--print-config`](./10-cli.md#printing-the-resolved-config) prints each document as the SHA-256 of its text as read, never the text, and a built-in profile's own text as `builtIn`:
+[`--print-config`](./10-cli.md#printing-the-resolved-config) prints each document as the SHA-256 of its text as read, never the text, a built-in profile's own text as `builtIn`, and a `{ repository }` entry as its path, with `optional: true` when it is, each at its place in the list:
 
 ```text
 profiles:
@@ -97,15 +157,19 @@ profiles:
       vote: sha256:10b0e7f4…
     guidelines:
       - sha256:ec3b5f71…
+      - repository: REVIEW.md
       - sha256:3f2a0c6d…
     doNotReport:
       - builtIn: sha256:13ddc203…
       - sha256:35fcffa9…
+      - repository: .github/review-skip.md
+        optional: true
 ```
 
 The hashes are cut here; the output holds all 64 hexadecimal digits of each.
 
 - **The hash is of the text as read,** before cleaning, in UTF-8: `sha256sum` of the file gives the same hex, a byte-order mark aside (the decoder drops one), so a job can compare it with the hash of the file on the base branch.
+- **A repository file has no hash to print,** since quorum reads it from a commit only when a review runs: `--print-config` reads no diff and runs no git, so it prints the path.
 - **A list is left out when empty,** so a config with no document prints as it did before documents.
 - **The rooms count the documents.** The `budgets` it prints already leave out what the guidelines and the do-not-report text take of the window: [Room accounting](./20-configuration.md#room-accounting).
 
@@ -123,7 +187,7 @@ A reservation counts one token per byte, while English prose takes about four by
 
 ## In a bench
 
-A document is part of a configuration's [fingerprint](./70-bench.md#the-fingerprint), its text and hash, so `quorum bench` measures the effect of a guideline: the same suite under the same configuration with and without it is two configurations, and another text is another one. A configuration with no document keeps the fingerprint it had.
+A document is part of a configuration's [fingerprint](./70-bench.md#the-fingerprint), its text and hash, so `quorum bench` measures the effect of a guideline: the same suite under the same configuration with and without it is two configurations, and another text is another one. A configuration with no document keeps the fingerprint it had. A `{ repository }` document is refused, since a bench case is a patch with no commit to read a file from: name the file with `{ file }`, and the bench measures it.
 
 ## Next
 

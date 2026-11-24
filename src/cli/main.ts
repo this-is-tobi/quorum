@@ -6,6 +6,7 @@ import { loadConfig } from '../config/load.ts'
 import { parseFailOn } from '../config/profiles.ts'
 import type { FailOnOverride } from '../config/profiles.ts'
 import type { ResolvedConfig } from '../config/resolve.ts'
+import { readContext } from '../context/read.ts'
 import { systemClock } from '../core/clock.ts'
 import { ConfigError } from '../core/errors.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS } from '../core/limits.ts'
@@ -13,7 +14,7 @@ import { MAX_TIMEOUT_MS } from '../core/ports.ts'
 import { DEFAULT_MAX_FINDINGS } from '../core/prompts.ts'
 import { VERSION } from '../core/version.ts'
 import { outcome } from '../core/outcome.ts'
-import type { Estimate, Quorum } from '../core/types.ts'
+import type { Estimate, Quorum, ReviewContext } from '../core/types.ts'
 import { renderReport } from '../report/registry.ts'
 import { publicView } from '../report/view.ts'
 import { readDiffInput } from '../sources/diff.ts'
@@ -129,7 +130,11 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * checked first, before any git and any config, the form of a range included (`parseRange`), and a diff file
  * or stdin is read then. A git source is read once the config is: it needs the config's `exclude` and `send`,
  * and a source git refuses, or a repository whose own config names a filter without `--trust-repo-config`, exits 2
- * before the banner, a git command that fails exits 3.
+ * before the banner, a git command that fails exits 3. The documents a profile lists as `{ repository }` are read once the source
+ * is (`readContext`), from the commit it names and never from the working tree or the change: a range's base, a path review's
+ * commit, HEAD for `--local` and `--staged`. A diff file or standard input, a repository with no commit yet, and a file the
+ * commit lacks (unless the entry is optional), or one that is a link, a submodule, binary or over its cap, exit 2 before the
+ * banner, naming the entry and the fix.
  *
  * A path review is a codebase and not a change, so its size is the tree's, and its bounds follow it (see `pathBounds`). After
  * the banner and before any call it prints its estimate on stderr (see `Quorum.estimate`), ending with the review's token cap and
@@ -338,18 +343,28 @@ export async function runCli(io: CliIO): Promise<number> {
           send,
           git: io.git,
         })
-    // Only now is the review built: an error from the source above still writes the environment's warnings, as before.
-    quorum = built
     if (read === undefined) {
+      quorum = built
       io.stdout.write(printConfig(config, source, quorum.budgets))
       return EXIT.ok
     }
+    // The documents a profile reads from the repository come from the commit the source names, once the source is read and before any call: a source with no commit, or a file the commit lacks, is refused here.
+    const context = await readContext(config, {
+      source: read.source,
+      cwd: io.cwd,
+      env: io.env,
+      platform: io.platform ?? process.platform,
+      signal: io.signal,
+      git: io.git,
+    })
+    // Only now is the review built: an error from the source or the context above still writes the environment's warnings, as before.
+    quorum = built
     const kept = await keptState(io, view, config.providers, { flag: state, off: noState, repository: read.repository })
     const store = kept?.store
     writeWarnings(view, quorum.warnings)
     for (const line of bannerLines(config, plan.view)) view.line('banner', line)
     const bounded = spec?.kind === 'paths'
-      ? pathBounds(view, quorum, { diff: read.diff, send }, config, values.large === true, mode === 'json'
+      ? pathBounds(view, quorum, { diff: read.diff, send, context }, config, values.large === true, mode === 'json'
           ? EXACT_WORDS
           : undefined)
       : undefined
@@ -368,6 +383,7 @@ export async function runCli(io: CliIO): Promise<number> {
       source: read.source,
       leftOut: read.leftOut,
       send,
+      context,
     }, { interrupt: io.signal, store, ...bounded?.limits })
     reviewed = true
     const { reused } = result.meta
@@ -432,7 +448,7 @@ interface PathBounds {
  * `--large` warns and does nothing. The estimate's counts and durations are scaled for a person, and exact (`words`) under `--progress json`,
  * where a program may parse them.
  */
-function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: string, readonly send: readonly string[] }, config: ResolvedConfig, large: boolean, words?: NumberWords): PathBounds {
+function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: string, readonly send: readonly string[], readonly context: ReviewContext }, config: ResolvedConfig, large: boolean, words?: NumberWords): PathBounds {
   const first = quorum.estimate(input)
   const findingsCap = config.maxFindings ?? findingsCapOf(first)
   // The first estimate counts the votes at the quorum's own cap: it serves when that is the review's too.

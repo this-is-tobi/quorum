@@ -4,8 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { findExecutable } from '../config/command.ts'
+import { resolveProfiles } from '../config/profiles.ts'
+import type { ResolvedConfig } from '../config/resolve.ts'
+import { readContext } from '../context/read.ts'
 import { decodeDiff, diffSections } from '../core/diff.ts'
 import { ConfigError } from '../core/errors.ts'
+import type { ConfigIssue } from '../core/errors.ts'
 import { addedDiff } from '../sources/added.ts'
 import { readSource } from '../sources/read.ts'
 import { gitEnvironment, GitError, GLOBAL_PINS, openRepository } from './run.ts'
@@ -754,5 +758,218 @@ describe('the real git', { concurrent: false, timeout: 30_000 }, () => {
     ws.git(repo, 'add', '-A')
     const theirs = ws.git(repo, 'diff', '--cached', '--no-renames').split('\n').filter(line => !line.startsWith('index '))
     expect(read.diff).toBe(`${theirs.join('\n')}\n`)
+  })
+})
+
+/** A resolved config of one profile of its own, whose guidelines are the repository files `guidelines` names. */
+function configOf(guidelines: Array<{ repository: string, optional?: boolean }>): ResolvedConfig {
+  const result = resolveProfiles({
+    profiles: {
+      naming: {
+        prompts: { research: 'Find naming issues.', vote: 'Judge from {{lens.id}}: {{lens.question}}' },
+        lenses: [
+          { id: 'grounded', question: 'Is it backed by a stated convention?' },
+        ],
+        guidelines,
+      },
+    },
+    roles: { research: 'main', voter: 'main' },
+    providers: ['main'],
+  })
+  expect(result.issues).toEqual([])
+  return { providers: {}, profiles: result.profiles, warnings: [] }
+}
+
+async function issuesOf(promise: Promise<unknown>): Promise<readonly ConfigIssue[]> {
+  const error: unknown = await promise.then(() => undefined, (caught: unknown) => caught)
+  expect(error).toBeInstanceOf(ConfigError)
+  return (error as ConfigError).issues
+}
+
+describe('repository documents', { concurrent: false, timeout: 30_000 }, () => {
+  beforeEach(() => {
+    expect(GIT, 'git 2.41 or later must be on PATH').toBeDefined()
+  })
+
+  afterEach(() => {
+    for (const root of made.splice(0)) rmSync(root, { recursive: true, force: true })
+  })
+
+  it('reads a range\'s repository guideline from its base, never the head\'s edit of it', async () => {
+    const ws = workspace()
+    const repo = init(ws, 'repo')
+    const base = commit(ws, repo, { 'REVIEW.md': 'base rule', 'a.js': 'safe()\n' }, 'base')
+    ws.git(repo, 'checkout', '-q', '-b', 'feature')
+    const head = commit(ws, repo, { 'REVIEW.md': 'head rule', 'a.js': 'exec(cmd)\n' }, 'head')
+    // A third copy, in the working tree, which no source reads.
+    writeFileSync(join(repo, 'REVIEW.md'), 'working tree rule')
+    // The control: the head holds the edit, and a plain git reads it there.
+    expect(ws.git(repo, 'show', `${head}:REVIEW.md`)).toBe('head rule')
+
+    const context = { cwd: repo, env: ws.env, platform: process.platform }
+    const read = await readSource({ kind: 'range', range: 'main...feature' }, context)
+    const documents = (await readContext(configOf([
+      { repository: 'REVIEW.md' },
+    ]), { ...context, source: read.source })).documents ?? []
+
+    expect(documents).toHaveLength(1)
+    expect(documents[0]).toMatchObject({
+      profile: 'naming',
+      kind: 'guidelines',
+      origin: { kind: 'repository', path: 'REVIEW.md', commit: base },
+      text: 'base rule',
+    })
+    // The change's own edit of the file is in the diff the review reads, and in no document.
+    expect(read.diff).toContain('+head rule')
+    expect(JSON.stringify(documents)).not.toContain('head rule')
+    expect(JSON.stringify(documents)).not.toContain('working tree rule')
+  })
+
+  it.each<[string, (ws: Workspace, repo: string) => string, (short: string) => string]>([
+    [
+      'absent',
+      (ws, repo) => commit(ws, repo, { 'README.md': 'x' }, 'readme'),
+      short => `"REVIEW.md" is not a file of the commit ${short} the review reads it from`,
+    ],
+    [
+      'a link',
+      (ws, repo) => {
+        symlinkSync('README.md', join(repo, 'REVIEW.md'))
+        return commit(ws, repo, { 'README.md': 'x' }, 'link')
+      },
+      short => `"REVIEW.md" is a symbolic link at ${short}, which quorum does not follow`,
+    ],
+    [
+      'a gitlink',
+      (ws, repo) => {
+        const first = commit(ws, repo, { 'README.md': 'x' }, 'first')
+        ws.git(repo, 'update-index', '--add', '--cacheinfo', `160000,${first},REVIEW.md`)
+        ws.git(repo, 'commit', '-q', '-m', 'submodule')
+        return ws.git(repo, 'rev-parse', 'HEAD')
+      },
+      short => `"REVIEW.md" is a submodule's commit at ${short}, which quorum does not read`,
+    ],
+    [
+      'a binary blob',
+      (ws, repo) => commit(ws, repo, { 'REVIEW.md': `a${String.fromCharCode(0)}b` }, 'binary'),
+      short => `"REVIEW.md" is not UTF-8 text at ${short}`,
+    ],
+    [
+      'over its cap',
+      (ws, repo) => commit(ws, repo, {
+        'REVIEW.md': 'x'.repeat(17_020),
+      }, 'big'),
+      short => `"REVIEW.md" at ${short} holds 17020 bytes once cleaned, over the 16 KiB a guidelines document may hold`,
+    ],
+  ])('refuses a repository document that is %s at the commit', async (name, build, message) => {
+    const ws = workspace()
+    const repo = init(ws, 'repo')
+    const head = build(ws, repo)
+    const source = { kind: 'staged', head, objectFormat: 'sha1' } as const
+    const context = {
+      cwd: repo,
+      env: ws.env,
+      platform: process.platform,
+      source,
+    }
+    expect(await issuesOf(readContext(configOf([
+      { repository: 'REVIEW.md' },
+    ]), context))).toEqual([
+      {
+        path: 'profiles.naming.guidelines.0.repository',
+        message: message(head.slice(0, 7)),
+      },
+    ])
+    // Optional says a file may be absent, never that it may be a link, a submodule, binary or over its cap.
+    if (name !== 'absent') {
+      expect(await issuesOf(readContext(configOf([
+        { repository: 'REVIEW.md', optional: true },
+      ]), context))).toEqual([
+        {
+          path: 'profiles.naming.guidelines.0.repository',
+          message: message(head.slice(0, 7)),
+        },
+      ])
+    }
+  })
+
+  it('reads a path review\'s documents at the commit --at names', async () => {
+    const ws = workspace()
+    const repo = init(ws, 'repo')
+    const first = commit(ws, repo, { 'REVIEW.md': 'old rule', 'src/a.js': 'a()\n' }, 'first')
+    const second = commit(ws, repo, { 'REVIEW.md': 'new rule', 'src/a.js': 'b()\n' }, 'second')
+    const context = { cwd: repo, env: ws.env, platform: process.platform }
+    const config = configOf([
+      { repository: 'REVIEW.md' },
+    ])
+
+    const old = await readSource({
+      kind: 'paths',
+      paths: ['src'],
+      at: first,
+    }, context)
+    expect(old.source).toMatchObject({ kind: 'paths', commit: first })
+    expect((await readContext(config, { ...context, source: old.source })).documents).toEqual([
+      expect.objectContaining({
+        origin: {
+          kind: 'repository',
+          path: 'REVIEW.md',
+          commit: first,
+          sha256: expect.any(String),
+        },
+        text: 'old rule',
+      }),
+    ])
+    // With no --at, the commit is HEAD.
+    const current = await readSource({
+      kind: 'paths',
+      paths: ['src'],
+    }, context)
+    expect((await readContext(config, { ...context, source: current.source })).documents).toEqual([
+      expect.objectContaining({
+        origin: {
+          kind: 'repository',
+          path: 'REVIEW.md',
+          commit: second,
+          sha256: expect.any(String),
+        },
+        text: 'new rule',
+      }),
+    ])
+  })
+
+  it('reads local and staged changes\' documents at HEAD, a path below the top level, and a file the index and the working tree have since changed', async () => {
+    const ws = workspace()
+    const repo = init(ws, 'repo')
+    const head = commit(ws, repo, { 'docs/review/RULES.md': 'committed rule', 'src/a.js': 'a()\n' }, 'head')
+    // The index holds one edit of the document and the working tree another: neither is read, only HEAD's copy.
+    writeFileSync(join(repo, 'docs', 'review', 'RULES.md'), 'staged rule')
+    ws.git(repo, 'add', 'docs/review/RULES.md')
+    writeFileSync(join(repo, 'docs', 'review', 'RULES.md'), 'working tree rule')
+    // The control: git reads each copy where it is, and HEAD's is a third.
+    expect(ws.git(repo, 'show', ':docs/review/RULES.md')).toBe('staged rule')
+    expect(ws.git(repo, 'show', `${head}:docs/review/RULES.md`)).toBe('committed rule')
+    // The repository is entered below its top level: the path is still the top level's.
+    const context = {
+      cwd: join(repo, 'src'),
+      env: ws.env,
+      platform: process.platform,
+    }
+    for (const kind of ['local', 'staged'] as const) {
+      const read = await readSource({ kind }, context)
+      expect(read.source).toEqual({ kind, head, objectFormat: 'sha1' })
+      // The source itself sees the edit it reviews, the index's copy for staged changes and the working tree's for local ones.
+      expect(read.diff).toContain(kind === 'staged'
+        ? '+staged rule'
+        : '+working tree rule')
+      expect((await readContext(configOf([
+        { repository: 'docs/review/RULES.md' },
+      ]), { ...context, source: read.source })).documents).toEqual([
+        expect.objectContaining({
+          origin: expect.objectContaining({ commit: head }),
+          text: 'committed rule',
+        }),
+      ])
+    }
   })
 })

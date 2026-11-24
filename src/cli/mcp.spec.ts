@@ -384,6 +384,26 @@ describe('quorum mcp', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('refuses to launch with a profile that reads a repository document, at its entry, before it serves anything and with no call', async () => {
+    const fetchMock = stubModels({})
+    const kept = directory()
+    write(kept, 'guide.md', 'Name things for what they do.')
+    const config = write(kept, 'q.yaml', `${CONFIG}profiles:\n  security:\n    guidelines: [{repository: REVIEW.md}, {file: guide.md}]\n    doNotReport: [{repository: .github/SKIP.md, optional: true}]\n`)
+    const root = directory()
+    const streams = streamIO({ cwd: root, git: fakeRepository(root).seam })
+    const run = runMcp(streams.io, ['--config', config])
+    streams.input.end()
+    expect(await run).toBe(EXIT.usage)
+    expect(streams.lines()).toEqual([])
+    // The calling agent can commit to the repository, so every entry is refused at its own place, and the { file } one is not.
+    expect(streams.stderr()).toBe([
+      'Error: profiles.security.guidelines.0.repository: reads a document of the repository, which the calling agent can commit to: name the file with { file }, kept outside the project',
+      'profiles.security.doNotReport.0.repository: reads a document of the repository, which the calling agent can commit to: name the file with { file }, kept outside the project',
+      '',
+    ].join('\n'))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('writes nothing on stdout but protocol messages, one a line, and exits 0 when the client closes stdin', async () => {
     stubModels({
       m: {

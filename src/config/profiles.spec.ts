@@ -50,6 +50,7 @@ describe('resolveProfiles', () => {
           profile: { ...securityProfile, failOn: 'high' },
           research: 'main',
           voters: all('main'),
+          repository: [],
         },
       ],
       issues: [],
@@ -96,6 +97,7 @@ describe('resolveProfiles', () => {
           },
           research: 'main',
           voters: { reach: 'claude' },
+          repository: [],
         },
       ],
       issues: [],
@@ -114,6 +116,7 @@ describe('resolveProfiles', () => {
         },
         research: 'main',
         voters: { grounded: 'main' },
+        repository: [],
       },
     ])
   })
@@ -725,5 +728,144 @@ describe('resolveProfiles with documents', () => {
       expect('documents' in profile).toBe(false)
       expect('doNotReport' in profile).toBe(false)
     }
+  })
+
+  it('resolves each repository entry with its kind, path, optional and config path, and keeps it out of the profile\'s documents', () => {
+    const { profiles, issues } = resolveWith({
+      naming: {
+        ...TEAM,
+        guidelines: [
+          { text: 'Prefer early returns.' },
+          { repository: 'REVIEW.md' },
+          { repository: 'docs/RULES.md', optional: true },
+          { repository: 'docs/OTHER.md', optional: false },
+        ],
+        doNotReport: [
+          { repository: '.github/SKIP.md', optional: true },
+        ],
+      },
+    })
+    expect(issues).toEqual([])
+    const [naming] = profiles
+    expect(naming.repository).toEqual([
+      {
+        kind: 'guidelines',
+        path: 'REVIEW.md',
+        optional: false,
+        at: 'profiles.naming.guidelines.1.repository',
+        index: 1,
+      },
+      {
+        kind: 'guidelines',
+        path: 'docs/RULES.md',
+        optional: true,
+        at: 'profiles.naming.guidelines.2.repository',
+        index: 2,
+      },
+      {
+        kind: 'guidelines',
+        path: 'docs/OTHER.md',
+        optional: false,
+        at: 'profiles.naming.guidelines.3.repository',
+        index: 3,
+      },
+      {
+        kind: 'do-not-report',
+        path: '.github/SKIP.md',
+        optional: true,
+        at: 'profiles.naming.doNotReport.0.repository',
+        index: 0,
+      },
+    ])
+    // The { text } document is the profile's own document; a repository file is read for a review, at a commit.
+    expect(naming.profile.documents).toEqual([
+      expect.objectContaining({ text: 'Prefer early returns.' }),
+    ])
+    expect(Object.isFrozen(naming.repository)).toBe(true)
+    expect(naming.repository.every(entry => Object.isFrozen(entry))).toBe(true)
+  })
+
+  it('resolves the repository entries of a profile of every kind, and none for a profile that lists none', () => {
+    const entry = [
+      { repository: 'REVIEW.md' },
+    ]
+    const { profiles, issues } = resolveWith({
+      naming: { ...TEAM, guidelines: entry },
+      conventions: { guidelines: entry },
+    }, ['naming', 'conventions'])
+    expect(issues).toEqual([])
+    expect(profiles.map(resolved => resolved.repository.map(found => found.at))).toEqual([
+      ['profiles.naming.guidelines.0.repository'],
+      ['profiles.conventions.guidelines.0.repository'],
+    ])
+    // The security profile, in the default map, takes one too, and a profile with none holds an empty list.
+    const [security] = resolve({
+      security: {
+        doNotReport: [
+          { repository: 'SKIP.md' },
+        ],
+      },
+    }).profiles
+    expect(security.repository.map(found => found.at)).toEqual(['profiles.security.doNotReport.0.repository'])
+    expect(resolveWith({ naming: TEAM }).profiles[0].repository).toEqual([])
+    expect(resolve(undefined).profiles[0].repository).toEqual([])
+  })
+
+  it.each<[string, string]>([
+    ['"/abs"', '/abs'],
+    ['"a//b"', 'a//b'],
+    ['"./a"', './a'],
+    ['"a/../b"', 'a/../b'],
+    ['"a/"', 'a/'],
+    ['""', ''],
+    [
+      'of 4097 characters',
+      'a'.repeat(4097),
+    ],
+  ])('refuses the repository path %s, at its entry', (_name, path) => {
+    const { profiles, issues } = resolveWith({
+      naming: {
+        ...TEAM,
+        guidelines: [
+          { repository: path },
+        ],
+      },
+    })
+    expect(issues).toEqual([
+      { path: 'profiles.naming.guidelines.0.repository', message: 'must be a path of the repository: relative to its top level, /-separated, with no empty, . or .. segment, and at most 4096 characters' },
+    ])
+    expect(profiles).toEqual([])
+  })
+
+  it('takes a path of 4096 characters and one that holds a dot inside a name', () => {
+    const { issues } = resolveWith({
+      naming: {
+        ...TEAM,
+        guidelines: [
+          {
+            repository: 'a'.repeat(4096),
+          },
+          { repository: '.github/..hidden/a.b.md' },
+        ],
+      },
+    })
+    expect(issues).toEqual([])
+  })
+
+  it('reads a repository entry\'s fields as its own, never one a prototype supplies', () => {
+    const inherited = Object.assign(Object.create({ repository: 'INHERITED.md', optional: true }) as object, {
+      text: 'Use the house style.',
+    }) as { text: string }
+    const { profiles, issues } = resolveWith({
+      naming: {
+        ...TEAM,
+        guidelines: [inherited],
+      },
+    })
+    expect(issues).toEqual([])
+    expect(profiles[0].repository).toEqual([])
+    expect(profiles[0].profile.documents).toEqual([
+      expect.objectContaining({ text: 'Use the house style.' }),
+    ])
   })
 })

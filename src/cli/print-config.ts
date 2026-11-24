@@ -11,7 +11,7 @@ import { DEFAULT_PART_TOKENS } from '../core/parts.ts'
 import { thresholdsFor } from '../core/profile.ts'
 import { inertLine } from '../core/sanitize.ts'
 import { DEFAULT_MAX_FINDINGS } from '../core/stages/research.ts'
-import type { DocumentKind, Profile } from '../core/types.ts'
+import type { DocumentKind } from '../core/types.ts'
 import { isClaudeCode } from '../providers/build.ts'
 import { providerOrigin } from './render.ts'
 
@@ -104,29 +104,41 @@ function objectView(provider: Readonly<Provider>): Record<string, unknown> {
 
 /**
  * The documents of one kind a profile holds, as the list `--print-config` prints: the text the profile itself carries (a built-in
- * profile's own, which the config did not write) as `{ builtIn: <hash> }`, then each document as the hash of its text as read. Never
+ * profile's own, which the config did not write) as `{ builtIn: <hash> }`, then each entry of the config in the order it is written:
+ * a document as the hash of its text as read, a `{ repository }` entry as `{ repository: <path> }` and `optional: true` when it is. Never
  * a text. Undefined when the profile holds none, so the list is left out.
  */
-function documentsView(profile: Profile, kind: DocumentKind, profileText: string | undefined): unknown[] | undefined {
-  const listed = [
-    ...profileText === undefined
-      ? []
-      : [
-          {
-            builtIn: sha256(profileText),
-          },
-        ],
-    ...(profile.documents ?? []).filter(document => document.kind === kind).map(document => document.origin.sha256 === undefined
-      ? sha256(document.text ?? '')
-      : `sha256:${document.origin.sha256}`),
-  ]
+function documentsView({ profile, repository }: ResolvedProfile, kind: DocumentKind, profileText: string | undefined): unknown[] | undefined {
+  const documents = (profile.documents ?? []).filter(document => document.kind === kind).map(document => document.origin.sha256 === undefined
+    ? sha256(document.text ?? '')
+    : `sha256:${document.origin.sha256}`)
+  const files = new Map(repository.filter(entry => entry.kind === kind).map(entry => [
+    entry.index,
+    {
+      repository: entry.path,
+      ...entry.optional
+        ? { optional: true }
+        : {},
+    },
+  ]))
+  const listed: unknown[] = profileText === undefined
+    ? []
+    : [
+        {
+          builtIn: sha256(profileText),
+        },
+      ]
+  // A `{ repository }` entry sits at its own position among the field's entries, and the documents fill the others in order.
+  let next = 0
+  for (let position = 0; position < documents.length + files.size; position++) listed.push(files.get(position) ?? documents[next++])
   return listed.length === 0
     ? undefined
     : listed
 }
 
-/** A profile that runs: the level its kept findings fail the review at (`none` for an advisory profile), its providers, the votes its policy needs, each prompt as its hash, and each document as its hash. */
-function profileView({ profile, research, voters }: ResolvedProfile): Record<string, unknown> {
+/** A profile that runs: the level its kept findings fail the review at (`none` for an advisory profile), its providers, the votes its policy needs, each prompt as its hash, and each document as its hash or, for a `{ repository }` entry, its path. */
+function profileView(resolved: ResolvedProfile): Record<string, unknown> {
+  const { profile, research, voters } = resolved
   return {
     failOn: profile.failOn ?? 'high',
     research,
@@ -136,8 +148,8 @@ function profileView({ profile, research, voters }: ResolvedProfile): Record<str
       research: sha256(profile.prompts.research),
       vote: sha256(profile.prompts.vote),
     },
-    guidelines: documentsView(profile, 'guidelines', profile.guidelines),
-    doNotReport: documentsView(profile, 'do-not-report', profile.doNotReport),
+    guidelines: documentsView(resolved, 'guidelines', profile.guidelines),
+    doNotReport: documentsView(resolved, 'do-not-report', profile.doNotReport),
   }
 }
 
@@ -199,7 +211,7 @@ function budgetWarnings(config: ResolvedConfig, budgets: Readonly<Record<string,
  * patterns it excludes, the files it sends though held as secrets, and the warnings. A key and every value of
  * `headers`, `query` and `extraBody` print as `[redacted]`, a base URL as its origin, and a prompt as its
  * SHA-256, as does each of a profile's guidelines and do-not-report documents (the hash of its text as read, and a built-in
- * profile's own text as `{ builtIn: <hash> }`), never a text. A provider's `timeoutMs`, `stallTimeoutMs` and `retries` print when it sets them, a provider object's when it states
+ * profile's own text as `{ builtIn: <hash> }`), never a text; a `{ repository }` entry prints as its path, with `optional: true` when it is. A provider's `timeoutMs`, `stallTimeoutMs` and `retries` print when it sets them, a provider object's when it states
  * them. A `claude-code` provider prints its protocol, command, model, context size, key (redacted), auth mode and args, and no origin:
  * the command and the args are the user's own config. The view is an allowlist, so a field added to the
  * config prints nothing until it is added here on purpose.

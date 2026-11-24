@@ -246,6 +246,30 @@ describe('quorum bench', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
+  it('refuses a configuration that names a repository document, before any review', async () => {
+    writeFileSync(join(root, 'c.yaml'), `${config('m1')}profiles:\n  security:\n    guidelines: [{repository: REVIEW.md}]\n    doNotReport: [{repository: SKIP.md, optional: true}]\n`)
+    const { code, stdout, stderr, fetch } = await bench([
+      'bench',
+      '-c',
+      'a.yaml',
+      '-c',
+      'c.yaml',
+      'demo',
+    ])
+    // A case is a patch with no commit to read a file from: each entry is refused at its place, and nothing is run or written.
+    expect([code, stdout, stderr]).toEqual([
+      2,
+      '',
+      [
+        'Error: profiles.security.guidelines.0.repository: names a document of the repository, which a bench case\'s patch has no commit to read it from: name the file with { file }',
+        'profiles.security.doNotReport.0.repository: names a document of the repository, which a bench case\'s patch has no commit to read it from: name the file with { file }',
+        '',
+      ].join('\n'),
+    ])
+    expect(fetch).not.toHaveBeenCalled()
+    expect(existsSync(join(root, 'quorum-bench'))).toBe(false)
+  })
+
   it('refuses two configurations that resolve to the same settings, naming both', async () => {
     const { code, stderr } = await bench(TWO, {
       env: { QUORUM_RESEARCH_MODEL: 'x', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },

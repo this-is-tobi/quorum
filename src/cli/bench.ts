@@ -65,6 +65,7 @@ const BENCH_EXIT = {
 } as const
 
 const MAX_JOBS = 16
+const REPOSITORY_MESSAGE = 'names a document of the repository, which a bench case\'s patch has no commit to read it from: name the file with { file }'
 const DEFAULT_CONFIGURATION = '(default configuration)'
 const UNPLANNED_CASE = 'a review names a case the plan does not hold'
 const TORN_LINE = 'warning: results.jsonl: its last line was cut short, as a stopped run leaves it: that review runs again'
@@ -195,7 +196,8 @@ function selectCases(suite: Suite, ids: readonly string[]): readonly SuiteCase[]
  * Each configuration, in order: loaded with the run's `--profile` selection, then built once, as a review
  * builds it, so one that cannot be built is refused before any call, and its warnings are known. With no
  * `--config`, the usual resolution is the one configuration. The first that fails ends the run, after the
- * environment's warnings, since a deprecated or mistyped variable is often what caused the error.
+ * environment's warnings, since a deprecated or mistyped variable is often what caused the error. A configuration whose profile
+ * lists a `{ repository }` document is refused, each at its entry: a case is a patch, with no commit to read the file from.
  */
 async function loadConfigurations(io: CliIO, options: BenchOptions): Promise<LoadedConfiguration[]> {
   const selection = options.profiles === undefined
@@ -213,6 +215,9 @@ async function loadConfigurations(io: CliIO, options: BenchOptions): Promise<Loa
         configPath: path,
         selection,
       })
+      // A bench case is a patch: it names no commit to read a document of the repository from.
+      const reads = config.profiles.flatMap(({ repository }) => repository)
+      if (reads.length > 0) throw new ConfigError(reads.map(({ at }) => ({ path: at, message: REPOSITORY_MESSAGE })))
       const quorum = await fromConfig(config, { env: io.env })
       loaded.push({ path, config, warnings: quorum.warnings })
     }

@@ -933,8 +933,7 @@ describe('configFileSchema', () => {
         ],
       },
       [
-        at('profiles.team.guidelines.0.file', 'is required'),
-        at('profiles.team.guidelines.0.text', 'is not a known field'),
+        at('profiles.team.guidelines.0', 'must be { file } or { repository }'),
       ],
     ],
     [
@@ -954,9 +953,83 @@ describe('configFileSchema', () => {
         guidelines: ['g.md'],
       },
       [
-        at('profiles.team.guidelines.0', 'must be an object'),
+        at('profiles.team.guidelines.0', 'must be { file } or { repository }'),
       ],
     ],
+    [
+      'guidelines entry that is empty',
+      {
+        guidelines: [{}],
+      },
+      [
+        at('profiles.team.guidelines.0', 'must be { file } or { repository }'),
+      ],
+    ],
+    [
+      'do-not-report entry that adds optional to a { file }',
+      {
+        doNotReport: [
+          { file: 'd.md', optional: true },
+        ],
+      },
+      [
+        at('profiles.team.doNotReport.0.optional', 'is not a known field'),
+      ],
+    ],
+    [
+      'guidelines entry whose repository is no string',
+      {
+        guidelines: [
+          { repository: 5 },
+        ],
+      },
+      [
+        at('profiles.team.guidelines.0.repository', 'must be a string'),
+      ],
+    ],
+    [
+      'do-not-report entry whose optional is no boolean',
+      {
+        doNotReport: [
+          { repository: 'SKIP.md', optional: 'yes' },
+        ],
+      },
+      [
+        at('profiles.team.doNotReport.0.optional', 'must be true or false'),
+      ],
+    ],
+    [
+      'guidelines entry that names a file and a repository path',
+      {
+        guidelines: [
+          { file: 'g.md', repository: 'REVIEW.md' },
+        ],
+      },
+      [
+        at('profiles.team.guidelines.0', 'must be { file } or { repository }'),
+      ],
+    ],
+    ...[
+      '/abs',
+      'a//b',
+      './a',
+      'a/../b',
+      '',
+      'a/',
+      'a'.repeat(4097),
+    ].map((path): [string, Record<string, unknown>, ConfigIssue[]] => [
+      `guidelines entry whose repository path is ${path.length > 20
+        ? `${path.length} characters long`
+        : JSON.stringify(path)}`,
+      {
+        guidelines: [
+          { repository: path },
+        ],
+      },
+      [
+        at('profiles.team.guidelines.0.repository', 'must be a path of the repository: relative to its top level, /-separated, with no empty, . or .. segment, and at most 4096 characters'),
+      ],
+    ]),
     [
       'guidelines value that is no list',
       {
@@ -976,6 +1049,25 @@ describe('configFileSchema', () => {
   ])('refuses a %s', (_name, fields, issues) => {
     expect(issuesOf(profile(fields))).toEqual(issues)
     expect(issuesOf(profile(fields), configCodeSchema)).toEqual(issues)
+  })
+
+  it('takes a { repository } entry, optional or not, beside { file } ones, in a file config and a code config', () => {
+    const mixed = {
+      guidelines: [
+        { file: 'g.md' },
+        { repository: 'REVIEW.md' },
+        { repository: 'docs/review/RULES.md', optional: true },
+        {
+          repository: 'a'.repeat(4096),
+          optional: false,
+        },
+      ],
+      doNotReport: [
+        { repository: '.github/SKIP.md', optional: true },
+      ],
+    }
+    expect(issuesOf(profile(mixed))).toEqual([])
+    expect(issuesOf(profile(mixed), configCodeSchema)).toEqual([])
   })
 
   it('takes 16 guidelines and 16 do-not-report entries, each { file }, in a file config and a code config', () => {
@@ -1739,10 +1831,14 @@ describe('configInputSchema', () => {
     })
     expect(issuesOf(entry({ text: 'Use parameters.' }), configInputSchema)).toEqual([])
     expect(issuesOf(entry({ file: 'g.md' }), configInputSchema)).toEqual([
-      at('profiles.team.guidelines.0.text', 'is required'),
-      at('profiles.team.guidelines.0.file', 'is not a known field'),
-      at('profiles.team.doNotReport.0.text', 'is required'),
-      at('profiles.team.doNotReport.0.file', 'is not a known field'),
+      at('profiles.team.guidelines.0', 'must be { text } or { repository }'),
+      at('profiles.team.doNotReport.0', 'must be { text } or { repository }'),
+    ])
+    // A document of the repository is read at the commit of a review, so a program hands it over as the entry itself.
+    expect(issuesOf(entry({ repository: 'REVIEW.md', optional: true }), configInputSchema)).toEqual([])
+    expect(issuesOf(entry({ repository: '/abs' }), configInputSchema)).toEqual([
+      at('profiles.team.guidelines.0.repository', 'must be a path of the repository: relative to its top level, /-separated, with no empty, . or .. segment, and at most 4096 characters'),
+      at('profiles.team.doNotReport.0.repository', 'must be a path of the repository: relative to its top level, /-separated, with no empty, . or .. segment, and at most 4096 characters'),
     ])
     expect(issuesOf(entry({ text: 7 }), configInputSchema)).toEqual([
       at('profiles.team.guidelines.0.text', 'must be a string'),
@@ -1885,7 +1981,7 @@ describe('configJsonSchema', () => {
     })
   })
 
-  it('advertises guidelines and doNotReport as at most 16 described { file } entries, and builtInDoNotReport as a boolean', () => {
+  it('advertises guidelines and doNotReport as at most 16 described entries, each a { file } or a { repository } with optional, and builtInDoNotReport as a boolean', () => {
     const profile = [
       'properties',
       'profiles',
@@ -1897,12 +1993,25 @@ describe('configJsonSchema', () => {
         type: 'array',
         maxItems: 16,
         items: {
-          type: 'object',
-          properties: {
-            file: { type: 'string' },
-          },
-          required: ['file'],
-          additionalProperties: false,
+          anyOf: [
+            {
+              type: 'object',
+              properties: {
+                file: { type: 'string' },
+              },
+              required: ['file'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              properties: {
+                repository: { type: 'string' },
+                optional: { type: 'boolean' },
+              },
+              required: ['repository'],
+              additionalProperties: false,
+            },
+          ],
         },
       })
     }

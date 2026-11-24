@@ -1,11 +1,14 @@
+import { quotedPath } from '../core/documents.ts'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
+import { isRecord } from '../core/output.ts'
 import type { EventSink, ProfilePorts, Provider } from '../core/ports.ts'
 import { createQuorum } from '../core/quorum.ts'
 import type { Quorum } from '../core/types.ts'
 import { buildProvider } from '../providers/build.ts'
 import type { Env } from './env.ts'
 import { checkCodeValue } from './load.ts'
+import type { ResolvedProfile } from './profiles.ts'
 import { isResolvedConfig, resolveConfig } from './resolve.ts'
 import type { ResolvedConfig, ResolvedProvider } from './resolve.ts'
 import { configInputSchema, configPath, isProvider, statedFacts, statedRoom, statedWorstCase } from './schema.ts'
@@ -74,13 +77,39 @@ function buildProviders(providers: ResolvedConfig['providers'], env: Env): Reado
 }
 
 /**
+ * The issue of each `{ repository }` entry of the profiles that `context`, a review's or an estimate's, holds no document for: one of
+ * its profile, its kind and its path, with a text, or with none (missing) only for an entry that is `optional`. A required entry
+ * whose document holds no text is as unread as one with no document, so a program's reader that could not find a file never
+ * runs a profile without its policy. An untyped caller may hand over anything, so a context that is no object holds none, and the
+ * core checks the documents it holds.
+ */
+function incompleteIssues(profiles: readonly ResolvedProfile[], context: unknown): ConfigIssue[] {
+  const documents = isRecord(context) && Array.isArray(context.documents)
+    ? context.documents as unknown[]
+    : []
+  return profiles.flatMap(({ profile, repository }) => repository.filter(entry => !documents.some(document => isRecord(document)
+    && document.profile === profile.id
+    && document.kind === entry.kind
+    && isRecord(document.origin)
+    && document.origin.kind === 'repository'
+    && document.origin.path === entry.path
+    && (typeof document.text === 'string' || entry.optional))).map(entry => ({
+    path: entry.at,
+    message: `${quotedPath(entry.path)} was not read for this review: pass the context readContext reads to the estimate and the review`,
+  })))
+}
+
+/**
  * Build a quorum from a config: the providers it defines, the profiles it runs and the environment over
  * them. A `ConfigInput` is checked as a code config is (so a program gets issues, never a `TypeError`, and
  * nothing its objects throw is printed) and resolved with `options.env`, which defaults to `process.env`; a
  * `ResolvedConfig` is used as it is, and the environment is not read again, but it is still the one a
  * `claude-code` provider's CLI inherits. Each provider defined as data is built by the builder, and each
  * provider object is wrapped under the name the config gives it. Every issue is thrown at once, before
- * anything is sent. `warnings` lists the config's, then the core's.
+ * anything is sent. `warnings` lists the config's, then the core's. A profile that lists a `{ repository }` document is read from
+ * the repository by `readContext`, and the quorum's `review` and `estimate` refuse an input whose `context` holds no document
+ * (read, or missing while optional) for one of them, at the entry: a program that skips `readContext` never runs a profile without
+ * its policy.
  *
  * @throws ConfigError listing every issue of the config's check, or else of its resolution and its providers
  *
@@ -115,9 +144,23 @@ export async function fromConfig(config: ConfigInput | ResolvedConfig, options: 
     reviewTimeoutMs: resolved.reviewTimeoutMs,
     exclude: resolved.exclude,
   }, { profiles: ports, events: options.events })
+  const complete = (input: unknown): void => {
+    const issues = incompleteIssues(resolved.profiles, isRecord(input)
+      ? input.context
+      : undefined)
+    if (issues.length > 0) throw new ConfigError(issues)
+  }
+  const review: Quorum['review'] = async (input, reviewOptions) => {
+    complete(input)
+    return quorum.review(input, reviewOptions)
+  }
+  const estimate: Quorum['estimate'] = (input, limits) => {
+    complete(input)
+    return quorum.estimate(input, limits)
+  }
   return Object.freeze({
-    review: quorum.review,
-    estimate: quorum.estimate,
+    review,
+    estimate,
     warnings: Object.freeze([
       ...resolved.warnings,
       ...quorum.warnings,
