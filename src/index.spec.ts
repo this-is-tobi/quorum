@@ -206,6 +206,7 @@ describe('runQuorum', () => {
         '  security:',
         '    guidelines: [{repository: REVIEW.md}]',
         '    doNotReport: [{repository: SKIP.md, optional: true}]',
+        '    rules: [{id: inline, text: Written in the config.}, {repository: RULES.yaml}]',
         '',
       ].join('\n'))
       isolateEnv({ RESEARCH_MODEL: 'env-model', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072', QUORUM_CONFIG: file })
@@ -217,6 +218,7 @@ describe('runQuorum', () => {
         issues: [
           { path: 'profiles.security.guidelines.0.repository', message },
           { path: 'profiles.security.doNotReport.0.repository', message },
+          { path: 'profiles.security.rules.1.repository', message },
         ],
       }
       await expect(runQuorum(diff)).rejects.toMatchObject(refusal)

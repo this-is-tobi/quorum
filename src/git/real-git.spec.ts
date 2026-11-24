@@ -761,8 +761,8 @@ describe('the real git', { concurrent: false, timeout: 30_000 }, () => {
   })
 })
 
-/** A resolved config of one profile of its own, whose guidelines are the repository files `guidelines` names. */
-function configOf(guidelines: Array<{ repository: string, optional?: boolean }>): ResolvedConfig {
+/** A resolved config of one profile of its own, whose guidelines and rules are the repository files `guidelines` and `rules` name. */
+function configOf(guidelines: Array<{ repository: string, optional?: boolean }>, rules: Array<{ repository: string, optional?: boolean }> = []): ResolvedConfig {
   const result = resolveProfiles({
     profiles: {
       naming: {
@@ -771,6 +771,7 @@ function configOf(guidelines: Array<{ repository: string, optional?: boolean }>)
           { id: 'grounded', question: 'Is it backed by a stated convention?' },
         ],
         guidelines,
+        rules,
       },
     },
     roles: { research: 'main', voter: 'main' },
@@ -823,6 +824,36 @@ describe('repository documents', { concurrent: false, timeout: 30_000 }, () => {
     expect(read.diff).toContain('+head rule')
     expect(JSON.stringify(documents)).not.toContain('head rule')
     expect(JSON.stringify(documents)).not.toContain('working tree rule')
+  })
+
+  it('reads a range\'s repository rules file from its base', async () => {
+    const ws = workspace()
+    const repo = init(ws, 'repo')
+    const base = commit(ws, repo, { '.quorum/rules.yaml': '- id: base-rule\n  text: The base rule.\n', 'a.js': 'safe()\n' }, 'base')
+    ws.git(repo, 'checkout', '-q', '-b', 'feature')
+    commit(ws, repo, { '.quorum/rules.yaml': '- id: head-rule\n  text: The head rule.\n', 'a.js': 'exec(cmd)\n' }, 'head')
+    // A third copy, in the working tree, which no source reads.
+    writeFileSync(join(repo, '.quorum', 'rules.yaml'), '- id: tree-rule\n  text: The working tree rule.\n')
+
+    const context = { cwd: repo, env: ws.env, platform: process.platform }
+    const read = await readSource({ kind: 'range', range: 'main...feature' }, context)
+    const documents = (await readContext(configOf([], [
+      { repository: '.quorum/rules.yaml' },
+    ]), { ...context, source: read.source })).documents ?? []
+
+    expect(documents).toHaveLength(1)
+    expect(documents[0]).toMatchObject({
+      profile: 'naming',
+      kind: 'rules',
+      origin: { kind: 'repository', path: '.quorum/rules.yaml', commit: base },
+      rules: [
+        { id: 'base-rule', text: 'The base rule.' },
+      ],
+    })
+    // The change's own edit of the file is in the diff the review reads, and in no document.
+    expect(read.diff).toContain('+- id: head-rule')
+    expect(JSON.stringify(documents)).not.toContain('head-rule')
+    expect(JSON.stringify(documents)).not.toContain('tree-rule')
   })
 
   it.each<[string, (ws: Workspace, repo: string) => string, (short: string) => string]>([

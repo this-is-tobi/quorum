@@ -103,6 +103,17 @@ const FULL: QuorumConfigFile = {
         { file: './guidelines/skip.md' },
       ],
       builtInDoNotReport: false,
+      rules: [
+        {
+          id: 'no-any',
+          text: 'No any outside tests.',
+          paths: ['src/**', '*.test.ts'],
+        },
+        { file: './rules/license.yaml' },
+        { repository: '.quorum/rules.yaml', optional: true },
+      ],
+      builtInRules: false,
+      requireRule: true,
       lenses: [
         { id: 'grounded', question: 'Is it backed by a convention?' },
         { id: 'significant', question: 'Would a maintainer block on it?', provider: 'x-api' },
@@ -1046,6 +1057,15 @@ describe('configFileSchema', () => {
         at('profiles.team.builtInDoNotReport', 'must be true or false'),
       ],
     ],
+    [
+      'rules value that is no list',
+      {
+        rules: { id: 'a', text: 'x' },
+      },
+      [
+        at('profiles.team.rules', 'must be an array'),
+      ],
+    ],
   ])('refuses a %s', (_name, fields, issues) => {
     expect(issuesOf(profile(fields))).toEqual(issues)
     expect(issuesOf(profile(fields), configCodeSchema)).toEqual(issues)
@@ -1079,6 +1099,144 @@ describe('configFileSchema', () => {
     expect(issuesOf(profile(full))).toEqual([])
     expect(issuesOf(profile(full), configCodeSchema)).toEqual([])
     expect(issuesOf(profile({ guidelines: [], doNotReport: [] }))).toEqual([])
+  })
+
+  it.each<[string, Record<string, unknown>, ConfigIssue[]]>([
+    [
+      '101 entries',
+      {
+        rules: Array.from({ length: 101 }, (_, index) => ({ id: `r${index}`, text: 'x' })),
+      },
+      [
+        at('profiles.team.rules', 'must hold at most 100 rules'),
+      ],
+    ],
+    [
+      'inline rule with an unknown key',
+      {
+        rules: [
+          { id: 'no-any', text: 'x', colour: 'blue' },
+        ],
+      },
+      [
+        at('profiles.team.rules.0.colour', 'is not a known field'),
+      ],
+    ],
+    [
+      'inline rule whose id is no id',
+      {
+        rules: [
+          { id: 'No Any', text: 'x' },
+        ],
+      },
+      [
+        at('profiles.team.rules.0.id', 'must match ^[a-z][a-z0-9._-]{0,63}$'),
+      ],
+    ],
+    [
+      'inline rule with no text',
+      {
+        rules: [
+          { id: 'no-any' },
+        ],
+      },
+      [
+        at('profiles.team.rules.0.text', 'is required'),
+      ],
+    ],
+    [
+      'inline rule whose paths hold a pattern that negates',
+      {
+        rules: [
+          {
+            id: 'no-any',
+            text: 'x',
+            paths: ['src/**', '!src/a.ts'],
+          },
+        ],
+      },
+      [
+        at('profiles.team.rules.0.paths.1', 'holds !, which negates nothing here: list only the paths to leave out'),
+      ],
+    ],
+    [
+      'entry that names a file and a repository path',
+      {
+        rules: [
+          { file: 'r.yaml', repository: 'RULES.yaml' },
+        ],
+      },
+      [
+        at('profiles.team.rules.0', 'must be a rule, { file } or { repository }'),
+      ],
+    ],
+    [
+      'entry that adds optional to a { file }',
+      {
+        rules: [
+          { file: 'r.yaml', optional: true },
+        ],
+      },
+      [
+        at('profiles.team.rules.0.optional', 'is not a known field'),
+      ],
+    ],
+    [
+      'entry whose repository path is no path',
+      {
+        rules: [
+          { repository: '/abs/RULES.yaml' },
+        ],
+      },
+      [
+        at('profiles.team.rules.0.repository', 'must be a path of the repository: relative to its top level, /-separated, with no empty, . or .. segment, and at most 4096 characters'),
+      ],
+    ],
+    [
+      '17 files',
+      {
+        rules: Array.from({ length: 17 }, (_, index) => ({ file: `r${index}.yaml` })),
+      },
+      [
+        at('profiles.team.rules', 'must hold at most 16 rules files'),
+      ],
+    ],
+    [
+      'builtInRules that is no boolean',
+      { builtInRules: 'no' },
+      [
+        at('profiles.team.builtInRules', 'must be true or false'),
+      ],
+    ],
+    [
+      'requireRule that is no boolean',
+      { requireRule: 'yes' },
+      [
+        at('profiles.team.requireRule', 'must be true or false'),
+      ],
+    ],
+  ])('refuses a %s rules entry', (_name, fields, issues) => {
+    expect(issuesOf(profile(fields))).toEqual(issues)
+    expect(issuesOf(profile(fields), configCodeSchema)).toEqual(issues)
+  })
+
+  it('takes 100 inline rules, or 16 files among them, and a repository entry, optional or not, in a file config and a code config', () => {
+    const inline = Array.from({ length: 100 }, (_, index) => ({ id: `r${index}`, text: 'x' }))
+    expect(issuesOf(profile({ rules: inline }))).toEqual([])
+    expect(issuesOf(profile({ rules: inline }), configCodeSchema)).toEqual([])
+    const mixed = {
+      rules: [
+        ...Array.from({ length: 14 }, (_, index) => ({ file: `r${index}.yaml` })),
+        { repository: 'RULES.yaml' },
+        { repository: '.quorum/rules.json', optional: true },
+        ...inline,
+      ].slice(0, 100),
+      builtInRules: true,
+      requireRule: false,
+    }
+    expect(issuesOf(profile(mixed))).toEqual([])
+    expect(issuesOf(profile(mixed), configCodeSchema)).toEqual([])
+    expect(issuesOf(profile({ rules: [] }))).toEqual([])
   })
 
   it('refuses a lens list that is empty', () => {
@@ -1854,6 +2012,42 @@ describe('configInputSchema', () => {
       at('profiles.team.guidelines', 'must hold at most 16 documents'),
     ])
   })
+
+  it('takes a rules file as { text, format } only, an inline rule and a repository entry as the file variants do', () => {
+    const entry = (fields: Record<string, unknown>): unknown => ({
+      profiles: {
+        team: {
+          rules: [fields],
+        },
+      },
+    })
+    expect(issuesOf(entry({ text: '- id: a\n  text: x\n', format: 'yaml' }), configInputSchema)).toEqual([])
+    expect(issuesOf(entry({ text: '[]', format: 'json' }), configInputSchema)).toEqual([])
+    expect(issuesOf(entry({
+      id: 'no-any',
+      text: 'x',
+      paths: ['src/**'],
+    }), configInputSchema)).toEqual([])
+    expect(issuesOf(entry({ repository: 'RULES.yaml', optional: true }), configInputSchema)).toEqual([])
+    expect(issuesOf(entry({ file: 'r.yaml' }), configInputSchema)).toEqual([
+      at('profiles.team.rules.0', 'must be a rule, { text, format } or { repository }'),
+    ])
+    expect(issuesOf(entry({ text: 'x', format: 'toml' }), configInputSchema)).toEqual([
+      at('profiles.team.rules.0.format', 'must be one of yaml or json'),
+    ])
+    expect(issuesOf(entry({ text: 'x' }), configInputSchema)).toEqual([
+      at('profiles.team.rules.0', 'must be a rule, { text, format } or { repository }'),
+    ])
+    expect(issuesOf({
+      profiles: {
+        team: {
+          rules: Array.from({ length: 17 }, () => ({ text: '[]', format: 'json' })),
+        },
+      },
+    }, configInputSchema)).toEqual([
+      at('profiles.team.rules', 'must hold at most 16 rules files'),
+    ])
+  })
 })
 
 describe('unknownName', () => {
@@ -2016,6 +2210,55 @@ describe('configJsonSchema', () => {
       })
     }
     expect(node(...profile, 'builtInDoNotReport')).toMatchObject({ type: 'boolean' })
+  })
+
+  it('advertises rules as at most 100 described entries, each an inline rule, a { file } or a { repository } with optional, and builtInRules and requireRule as booleans', () => {
+    const profile = [
+      'properties',
+      'profiles',
+      'additionalProperties',
+      'properties',
+    ]
+    expect(node(...profile, 'rules')).toMatchObject({
+      type: 'array',
+      maxItems: 100,
+      items: {
+        anyOf: [
+          {
+            type: 'object',
+            properties: {
+              id: { type: 'string', pattern: '^[a-z][a-z0-9._-]{0,63}$' },
+              text: { type: 'string' },
+              paths: {
+                type: 'array',
+                items: { type: 'string' },
+              },
+            },
+            required: ['id', 'text'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              file: { type: 'string' },
+            },
+            required: ['file'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              repository: { type: 'string' },
+              optional: { type: 'boolean' },
+            },
+            required: ['repository'],
+            additionalProperties: false,
+          },
+        ],
+      },
+    })
+    expect(node(...profile, 'builtInRules')).toMatchObject({ type: 'boolean' })
+    expect(node(...profile, 'requireRule')).toMatchObject({ type: 'boolean' })
   })
 
   it('is what schema/quorum.schema.json holds, byte for byte', () => {

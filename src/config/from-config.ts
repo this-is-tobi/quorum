@@ -78,8 +78,8 @@ function buildProviders(providers: ResolvedConfig['providers'], env: Env): Reado
 
 /**
  * The issue of each `{ repository }` entry of the profiles that `context`, a review's or an estimate's, holds no document for: one of
- * its profile, its kind and its path, with a text, or with none (missing) only for an entry that is `optional`. A required entry
- * whose document holds no text is as unread as one with no document, so a program's reader that could not find a file never
+ * its profile, its kind and its path, with a text (a list of rules for a rules file), or with none (missing) only for an entry that is
+ * `optional`. A required entry whose document holds no text, or no rules, is as unread as one with no document, so a program's reader that could not find a file never
  * runs a profile without its policy. An untyped caller may hand over anything, so a context that is no object holds none, and the
  * core checks the documents it holds.
  */
@@ -93,7 +93,9 @@ function incompleteIssues(profiles: readonly ResolvedProfile[], context: unknown
     && isRecord(document.origin)
     && document.origin.kind === 'repository'
     && document.origin.path === entry.path
-    && (typeof document.text === 'string' || entry.optional))).map(entry => ({
+    && (entry.optional || (entry.kind === 'rules'
+      ? Array.isArray(document.rules)
+      : typeof document.text === 'string')))).map(entry => ({
     path: entry.at,
     message: `${quotedPath(entry.path)} was not read for this review: pass the context readContext reads to the estimate and the review`,
   })))

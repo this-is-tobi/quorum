@@ -5,11 +5,13 @@ import type { ConfigIssue } from '../core/errors.ts'
 import { defaultPolicy } from '../core/policy.ts'
 import type { PolicyRules, Rule } from '../core/policy.ts'
 import { FAIL_ON_LEVELS, profileIssues } from '../core/profile.ts'
+import { cleanedRules, ruleIssues } from '../core/rules.ts'
 import { cleanProse } from '../core/sanitize.ts'
-import type { FailOn, Profile, ReviewDocument } from '../core/types.ts'
+import type { DocumentKind, FailOn, Profile, ReviewDocument, ReviewRule } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { PROFILE_ID } from './env.ts'
 import type { RoleBinding } from './env.ts'
+import { parseRules, rulePlace } from './parse.ts'
 import { unknownName } from './schema.ts'
 import type { ConfigInput } from './schema.ts'
 
@@ -20,7 +22,7 @@ type ProfileEntry = NonNullable<ConfigInput['profiles']>[string]
  * (`readContext`) and never from the working tree or the change under review.
  */
 export interface RepositoryEntry {
-  readonly kind: ProseKind
+  readonly kind: DocumentKind
   /** The path from the repository's top level, as the entry wrote it. */
   readonly path: string
   /** Whether the review goes on, the document recorded as missing, when the commit has no such file. */
@@ -38,8 +40,10 @@ export interface ResolvedProfile {
   readonly research: string
   /** The provider each lens votes with, by lens id. */
   readonly voters: Readonly<Record<string, string>>
-  /** The profile's `{ repository }` entries, `guidelines` then `doNotReport`, each in the order it is written: the files `readContext` reads for a review. */
+  /** The profile's `{ repository }` entries, `guidelines`, `doNotReport` then `rules`, each in the order it is written: the files `readContext` reads for a review. */
   readonly repository: readonly RepositoryEntry[]
+  /** `false` when the entry drops the rules of the built-in profile it starts from (`builtInRules: false`), which the profile no longer lists; absent otherwise. */
+  readonly builtInRules?: false
 }
 
 /** The profiles a caller selects to run: `QUORUM_PROFILES`, or the flag of the CLI. `path` is what an issue with the ids names. */
@@ -74,6 +78,16 @@ const DOCUMENT_FIELDS = [
 /** One entry of a document list, whichever form it takes: `{ text }`, or `{ repository, optional }`. */
 interface DocumentItem {
   readonly text?: string
+  readonly repository?: string
+  readonly optional?: boolean
+}
+
+/** One entry of `rules`, whichever form it takes: a rule written in the config, `{ text, format }`, or `{ repository, optional }`. */
+interface RuleItem {
+  readonly id?: string
+  readonly text?: string
+  readonly paths?: readonly string[]
+  readonly format?: 'yaml' | 'json'
   readonly repository?: string
   readonly optional?: boolean
 }
@@ -310,6 +324,153 @@ function documentsOf(id: string, entry: ProfileEntry, start: Readonly<Record<Pro
   return { documents, repository, issues }
 }
 
+/** Where a run of a profile's rules comes from: the entry that wrote them, none for the base's, and the SHA-256 of the file they were read from, none for a rule written in the config. */
+interface RuleSource {
+  readonly entry?: number
+  readonly rules: readonly ReviewRule[]
+  readonly sha256?: string
+}
+
+/**
+ * The issue `ruleIssues` found, which names a rule by its place in the profile's whole list (`rules.<k>` and the field below it),
+ * put where the config wrote the rule: a rule written in the config at its own entry and field, with the message as it is; a
+ * rule of a file at the entry that names the file, the message starting with the rule's place in the file and its field
+ * (`3.id must match ...`); and one of the base's, which no config entry wrote, at `rules`, worded the same way. An issue of
+ * the list as a whole, or of the cap that a rule takes the total over (which names no field), keeps its words alone.
+ */
+function placedAt(issue: ConfigIssue, sources: readonly RuleSource[], at: (...segments: PropertyKey[]) => string): ConfigIssue {
+  const { place, field } = rulePlace(issue)
+  if (place === undefined) {
+    return {
+      path: at('rules'),
+      message: issue.message,
+    }
+  }
+  let first = 0
+  for (const source of sources) {
+    const local = place - first
+    first += source.rules.length
+    if (local >= source.rules.length) continue
+    const words = field.length === 0
+      ? issue.message
+      : `${[local, ...field].join('.')} ${issue.message}`
+    if (source.entry === undefined) {
+      return {
+        path: at('rules'),
+        message: words,
+      }
+    }
+    if (source.sha256 === undefined) {
+      return {
+        path: at('rules', source.entry, ...field),
+        message: issue.message,
+      }
+    }
+    return {
+      path: at('rules', source.entry),
+      message: words,
+    }
+  }
+  return {
+    path: at('rules'),
+    message: issue.message,
+  }
+}
+
+/**
+ * The rules the entry lists, after `base`, the rules of the built-in profile it keeps: a rule written in the config as a document
+ * of its own (no SHA-256), a rules file read by the loader (`{ text, format }`) as a document of its own, parsed, its texts cleaned
+ * and its SHA-256 that of the text as read, and each `{ repository }` entry named, at its own path, for `readContext` to read; and
+ * the issue of each that cannot be kept, at its entry. Every rule of the profile is checked together, the base's first
+ * (`ruleIssues`): ids unique across them all, the texts, the patterns and the caps of all of them, so the entry that makes a
+ * repeat or takes a cap over is the one that is told. A profile with an issue holds none of these documents, so the profile the
+ * core checks next holds none it would refuse again.
+ */
+function rulesOf(id: string, entry: ProfileEntry, base: readonly ReviewRule[], at: (...segments: PropertyKey[]) => string): { readonly documents: ReviewDocument[], readonly repository: RepositoryEntry[], readonly issues: ConfigIssue[] } {
+  const sources: RuleSource[] = [
+    { rules: base },
+  ]
+  const repository: RepositoryEntry[] = []
+  const issues: ConfigIssue[] = []
+  for (const [index, entryItem] of (own(entry, 'rules') ?? []).entries()) {
+    // The schema holds every entry to a rule, `{ text, format }` or `{ repository, optional }`, the fields read as own fields only.
+    const item: RuleItem = entryItem
+    const path = own(item, 'repository')
+    if (path !== undefined) {
+      const problem = repositoryPathProblem(path)
+      if (problem === undefined) {
+        repository.push({
+          kind: 'rules',
+          path,
+          optional: own(item, 'optional') === true,
+          at: at('rules', index, 'repository'),
+          index,
+        })
+      } else {
+        issues.push({
+          path: at('rules', index, 'repository'),
+          message: problem,
+        })
+      }
+      continue
+    }
+    const format = own(item, 'format')
+    if (format !== undefined) {
+      const text = own(item, 'text') as string
+      const parsed = parseRules(text, format)
+      if ('problem' in parsed) {
+        issues.push({
+          path: at('rules', index),
+          message: parsed.problem,
+        })
+      } else {
+        sources.push({
+          entry: index,
+          rules: parsed.value,
+          sha256: documentSha256(text),
+        })
+      }
+      continue
+    }
+    const paths = own(item, 'paths')
+    sources.push({
+      entry: index,
+      rules: [
+        {
+          id: own(item, 'id') as string,
+          text: own(item, 'text') as string,
+          ...paths === undefined
+            ? {}
+            : { paths },
+        },
+      ],
+    })
+  }
+  const found = ruleIssues(sources.flatMap(source => source.rules), 'rules').map(issue => placedAt(issue, sources, at))
+  issues.push(...found)
+  const documents = found.length > 0
+    ? []
+    : sources.flatMap((source) => {
+        if (source.entry === undefined) return []
+        const cleaned = cleanedRules(source.rules)
+        return [
+          Object.freeze({
+            profile: id,
+            kind: 'rules' as const,
+            origin: Object.freeze({
+              kind: 'config' as const,
+              ...source.sha256 === undefined
+                ? {}
+                : { sha256: source.sha256 },
+            }),
+            rules: cleaned.rules,
+            removed: Object.freeze(cleaned.removed),
+          }),
+        ]
+      })
+  return { documents, repository, issues }
+}
+
 /** What one profile of the config resolves to, or every issue that keeps it from running, and the warnings its fields earn. */
 function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known, builtIn }: Bindings): { readonly resolved?: ResolvedProfile, readonly issues: ConfigIssue[], readonly warnings: string[] } {
   const at = (...segments: PropertyKey[]): string => issuePath(['profiles', id, ...segments])
@@ -359,12 +520,27 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
   const ownText = doNotReport === undefined
     ? undefined
     : cleanProse(doNotReport)
-  const { documents, repository, issues: documentIssues } = documentsOf(id, entry, {
+  const { documents: prose, repository: proseRepository, issues: documentIssues } = documentsOf(id, entry, {
     guidelines: 0,
     'do-not-report': ownText?.settled === true
       ? bytesOf(ownText.text)
       : 0,
   }, at)
+  // The base's own rules come first, unless the entry drops them; then the entry's, each a document, ids unique across them all.
+  const dropsRules = own(entry, 'builtInRules') === false
+  const baseRules = dropsRules
+    ? []
+    : base?.rules ?? []
+  const { documents: ruleDocuments, repository: ruleRepository, issues: ruleProblems } = rulesOf(id, entry, baseRules, at)
+  const documents = [
+    ...prose,
+    ...ruleDocuments,
+  ]
+  const repository = [
+    ...proseRepository,
+    ...ruleRepository,
+  ]
+  const requireRule = own(entry, 'requireRule') ?? base?.requireRule
 
   const profile: Profile = Object.freeze({
     id,
@@ -380,11 +556,18 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
       : {
           documents: Object.freeze(documents),
         },
+    ...baseRules.length === 0
+      ? {}
+      : { rules: baseRules },
+    ...requireRule === true
+      ? { requireRule }
+      : {},
   })
   // `profileIssues` starts its paths at the id given as the fallback root, which is the profile's own id here.
   const issues = [
     ...both,
     ...documentIssues,
+    ...ruleProblems,
     ...profileIssues(profile, id).map(issue => ({ path: `${at()}${issue.path.slice(id.length)}`, message: issue.message })),
   ]
 
@@ -415,6 +598,9 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
       research: own(entryRoles, 'research') ?? roles.research,
       voters: Object.freeze(Object.fromEntries(lenses.map(lens => [lens.id, lens.provider ?? voter]))),
       repository: Object.freeze(repository.map(found => Object.freeze(found))),
+      ...dropsRules
+        ? { builtInRules: false as const }
+        : {},
     }),
     issues,
     warnings,
@@ -441,7 +627,11 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
  * document yet: the profile lists it in `repository`, at `profiles.<id>.<field>.<n>.repository`, for `readContext` to read at
  * the commit a review's source names, and a path that is none is an issue there. Its `doNotReport` is
  * the base's own text, unless the entry sets `builtInDoNotReport: false`, and counts first toward that cap. A profile
- * with no document holds neither key. `inputs.builtIn` is the map of the profiles a config can run or extend, the
+ * with no document holds neither key. Its `rules` are the base's own, unless the entry sets `builtInRules: false` (the resolved
+ * profile then says so in `builtInRules`), then the entry's `rules`, each rule written in the config and each rules file a
+ * document of kind `rules`, checked together with the base's (`ruleIssues`) and told at the entry that repeats an id or takes a
+ * cap over, as `rulesOf` words it; a `{ repository }` rules file joins `repository`, kind `rules`. Its `requireRule` is the
+ * entry's, else the base's, and is set only when `true`. `inputs.builtIn` is the map of the profiles a config can run or extend, the
  * security profile alone by default. `research` is bound to
  * `roles.research`, and each lens to its own provider, else the profile's voter, else `roles.voter`; every provider a profile names
  * must be in `providers`. A selection that runs nothing is an issue, and a profile with an issue does not run.

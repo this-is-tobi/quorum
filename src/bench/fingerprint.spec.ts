@@ -187,6 +187,92 @@ describe('fingerprint', () => {
     }), guided)).toBe(false)
   })
 
+  it('moves a configuration\'s fingerprint with a rule\'s id, text or paths and with requireRule, and keeps it for one that lists no rule', () => {
+    const team = {
+      prompts: { research: 'Find style issues.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
+      lenses: [
+        { id: 'grounded', question: 'Backed by a convention?' },
+      ],
+    }
+    const configured = (fields: Record<string, unknown>): ResolvedConfig => resolvedConfig({
+      providers: { p: PROVIDER },
+      profiles: {
+        team: {
+          ...team,
+          ...fields,
+        },
+      },
+    } as ConfigInput)
+    const none = configured({})
+    // The form of a configuration that lists no rule holds no key for one, so its fingerprint is the one it had before rules.
+    expect(canonicalSettings(none)).not.toContain('"rules"')
+    expect(canonicalSettings(none)).not.toContain('"requireRule"')
+    expect(fingerprint(none, SALT)).toBe('a420b59732101ceda4e6e9b3645f35183a944adcb7dd11339a4ab85837a874ad')
+    expect(same(configured({ rules: [], requireRule: false, builtInRules: false }), none)).toBe(true)
+
+    const rule = {
+      id: 'no-any',
+      text: 'No any outside tests.',
+      paths: ['src/**'],
+    }
+    const ruled = configured({
+      rules: [rule],
+    })
+    expect(same(ruled, none)).toBe(false)
+    expect(canonicalSettings(ruled)).toContain('"id":"no-any"')
+    expect(same(ruled, configured({
+      rules: [
+        { ...rule },
+      ],
+    }))).toBe(true)
+    // Each part of a rule moves it: its id, its text, its paths, and a rule written as a file by the hash and the rules of its text.
+    for (const changed of [
+      { ...rule, id: 'no-any-type' },
+      { ...rule, text: 'No any anywhere.' },
+      {
+        ...rule,
+        paths: ['lib/**'],
+      },
+      { id: rule.id, text: rule.text },
+    ]) {
+      expect(same(configured({
+        rules: [changed],
+      }), ruled)).toBe(false)
+    }
+    const file = configured({
+      rules: [
+        {
+          text: JSON.stringify([rule]),
+          format: 'json',
+        },
+      ],
+    })
+    expect(same(file, ruled)).toBe(false)
+    expect(canonicalSettings(file)).toContain(documentSha256(JSON.stringify([rule])))
+    expect(same(file, configured({
+      rules: [
+        {
+          text: JSON.stringify([
+            { ...rule, text: 'No any anywhere.' },
+          ]),
+          format: 'json',
+        },
+      ],
+    }))).toBe(false)
+    // requireRule moves it, and a value that changes nothing does not.
+    const required = configured({
+      rules: [rule],
+      requireRule: true,
+    })
+    expect(same(required, ruled)).toBe(false)
+    expect(canonicalSettings(required)).toContain('"requireRule":true')
+    expect(same(configured({
+      rules: [rule],
+      requireRule: false,
+    }), ruled)).toBe(true)
+    expect(same(configured({ requireRule: true }), none)).toBe(false)
+  })
+
   it('fills the defaults, so an unset limit and its default are alike', () => {
     expect(same(resolvedConfig({
       providers: { p: PROVIDER },

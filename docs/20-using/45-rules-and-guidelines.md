@@ -1,17 +1,18 @@
 # Rules and guidelines
 
-A review judges a change by what its profile asks for, and a project can say more: the conventions it expects, and what it does not want reported. quorum reads that policy as documents, texts a person wrote, and a profile takes them from its config as files, or from the repository the change is in, at a commit quorum chooses and the change cannot. This page covers what a document is, how a config names one, how a file of the repository is read and from which commit, the flag a change raises when it edits one, what every request carries of it, the caps and the cleaner, what a person sees of the documents a review read, what `--print-config` shows, and what they cost.
+A review judges a change by what its profile asks for, and a project can say more: the conventions it expects, what it does not want reported, and the rules a finding may cite. quorum reads that policy as documents, texts a person wrote, and a profile takes them from its config as text or files, or from the repository the change is in, at a commit quorum chooses and the change cannot. This page covers what a document is, how a config names one, how a file of the repository is read and from which commit, the flag a change raises when it edits one, what every request carries of it, the caps and the cleaner, review rules, what a person sees of the documents a review read, what `--print-config` shows, and what they cost.
 
 ## What a document is
 
-A document is a text a review reads as policy, in one of two kinds:
+A document is a text a review reads as policy, in one of three kinds:
 
 | Kind | A model reads it as | Field |
 | --- | --- | --- |
 | `guidelines` | The criteria to judge by: what this project counts as a problem and the conventions it expects | `guidelines` |
 | `do-not-report` | What the finder is told not to report | `doNotReport` |
+| `rules` | The review rules a finding may cite by their ids: a list of rules, in place of a text | `rules`: [Review rules](#review-rules) |
 
-A profile holds its own text of each kind, which a program sets ([Profiles](./40-profiles.md#guidelines)), and the documents its configuration names. Each is cleaned and capped by the core, and recorded in the result's `meta.context` by its hash and counts, never its text: [The context](../95-reference/20-json-result.md#the-context).
+A profile holds its own text of each prose kind, which a program sets ([Profiles](./40-profiles.md#guidelines)), and the documents its configuration names. Each is cleaned and capped by the core, and recorded in the result's `meta.context` by its hash and counts, never its text: [The context](../95-reference/20-json-result.md#the-context).
 
 ## Naming a file in a config
 
@@ -162,6 +163,85 @@ profiles:
 
 `true` is the default. No built-in profile carries a do-not-report text yet, so the field changes nothing for the security profile today.
 
+## Review rules
+
+A review rule is a criterion a finding may cite by its id: `no-any`, say, with the text `No any outside tests.` A profile that lists rules sends each research request the ones that apply to the change, asks every finding for the id of the rule it breaks, and checks that id by code. A config gives a profile rules three ways, in one `rules` list, whatever the profile is: one of your own, or the entry of a built-in profile, `security` included.
+
+```yaml
+profiles:
+  team:
+    extends: security
+    rules:
+    - id: no-any
+      text: No any outside tests.
+      paths: [src/**, lib/**]
+    - file: ./rules/license.yaml
+    - repository: .quorum/rules.yaml
+      optional: true
+    requireRule: true
+```
+
+A rule has the shape of a `ReviewRule` ([the library page](../95-reference/30-library-api.md#documents)):
+
+| Field | Holds |
+| --- | --- |
+| `id` | Matches `^[a-z][a-z0-9._-]{0,63}$`, and is unique across every rule of the profile, the built-in profile's included |
+| `text` | 1 to 1,024 characters once cleaned, as a guideline is cleaned |
+| `paths` | Optional, 1 to 20 path patterns in the syntax of [`exclude`](./20-configuration.md#excludes): the rule applies when a file of the change matches one of them, and to every file when there are none |
+
+- **A rule written in the config** is an entry of `rules` with its `id`, its `text` and its `paths`, and nothing else: an unknown key is an issue at the entry. It is a document of its own, with no hash, since the config is the only place it exists.
+- **`{ file }`** names a rules file, read when the config loads as a guideline file is: relative to the directory of the config file, at most 64 KiB, the distinct files 1 MiB in all with the prompt and document files, and as trusted as the config ([Trust](./20-configuration.md#trust)). Its extension says its format: `.yaml` and `.yml` are YAML, `.json` is JSON, and any other extension (the case of a letter counts) is refused before the file is read, at the entry's file path: `review.yaml: profiles.team.rules.1.file: must end in .yaml, .yml or .json`.
+- **`{ repository, optional? }`** names a rules file of the repository, read at the commit the review's source names and never from the change, as a repository guideline is: [Naming a file of the repository](#naming-a-file-of-the-repository), with the same `optional`, the same refusals and the same `guideline-edited` flag when a change edits the file. It is read when the review runs, by the same extension rule, so a `.quorum/rules.yaml` of the base branch is the project's rules and a pull request cannot change them. The messages of [One read, and every message](#one-read-and-every-message) apply, and a rules file adds its own below.
+- **At most 100 rules** in all, of at most 16 entries that name a file, `{ file }` or `{ repository }`, and the order is the order of the list: the built-in profile's own rules, then the entries in the order they are written, then the repository's files, each file's rules in the order it holds them.
+
+### A rules file
+
+A rules file is a list of rules, read as a config file is: YAML 1.2 or JSON, no alias, no tag, no repeated key, and a strict shape, every rule an object of `id`, `text` and `paths` and nothing else:
+
+```yaml
+- id: license
+  text: Each file starts with the license header.
+- id: io-errors
+  text: Every I/O call handles its error.
+  paths: [src/**]
+```
+
+- **A file that is not valid is refused at the entry,** in the parser's own words or as `<n>.<field> <problem>` for the rule at position `<n>` of the file, counted from 0, and no message holds a word of the file: `profiles.team.rules.0: 3.id must match ^[a-z][a-z0-9._-]{0,63}$`. A file that is no list reads `must be a list of rules`, and a key that is not a safe name is never repeated.
+- **A file with no rule is no problem.** A file that holds `[]`, or nothing at all (a YAML file of comments alone, an empty file, or white space alone in JSON), reads as a list of no rules, as an empty guidelines file reads as no text and `rules: []` in the config lists none: a `{ file }` and a `{ repository }` entry, optional or not, take it, `meta.context` records it with `rules: 0`, and `--print-config` prints it with `ids: []`. A profile that sets `requireRule` and lists no rule at all sends none, and asks its finder nothing ([The citation](./60-prompts.md#the-citation)).
+- **Each rule is checked as every rule is,** by the one check a program's rules pass too: the id's pattern, the text's length once cleaned (a text of hidden characters is blank), the patterns, the caps below, and ids unique across the profile. The first rule that repeats an id or takes a cap over is the one told, at the entry that wrote it: `profiles.team.rules.1: 0.id repeats the rule id "no-any"`, or `profiles.team.rules.3.id: repeats the rule id "no-any"` for a rule written in the config.
+- **A repository file is checked the same way when the review runs,** before any call, each message at the entry's `repository` path and after the file's path and the commit's first 7 characters: `profiles.team.rules.2.repository: ".quorum/rules.yaml" at 1f3a9c2 repeats the rule id "no-any"`. A file over the 32 KiB alone is told there too, with the profile's own rules and its config's counted first, and so is one that makes the profile hold more than 100 rules.
+- **The hash is of the text as read,** as for a guideline: `--print-config` prints it with the ids a file holds, and `meta.context` records it.
+
+### `builtInRules` and `requireRule`
+
+- **`builtInRules: false`** drops the rules of the built-in profile this one starts from. By default they come first, counted in the same caps, and an id of the config that repeats one of theirs is refused. A profile with no built-in profile has none to drop. No built-in profile lists a rule yet, so the field changes nothing for the security profile today.
+- **`requireRule: true`** makes the profile report only what a rule asks for: a finding that cites no rule, or whose citation fails its check, is dropped and counted in `invalidRules`. `false` is the default, and the built-in profile's own value holds unless the entry sets one. With no rule sent for a change, such a profile asks its finder nothing: [The citation](./60-prompts.md#the-citation).
+
+### Which rules a review sends, and the citation
+
+Each research request carries the rules whose `paths` match a file of the change, and every rule with none, in a block after the diff; a change researched in parts sends the same block in every part. A profile that lists any rule, sent or not, asks each finding for a sixth field, `rule`. Once a finding is anchored, code checks that its trimmed `rule` names a rule this review sent whose `paths` match the finding's file: a citation that holds stays as the rule's own id, and its votes read that rule alone; any other is dropped, with its finding when the profile requires a rule. A refusal never holds what the finder cited, and a wrong citation sends no reply again: [Review rules](./60-prompts.md#review-rules) has the block, the notice and the reasons.
+
+### The limits
+
+| What | Limit |
+| --- | --- |
+| The rules of a profile, whatever their origin | 100 |
+| The entries of `rules` that name a file | 16 |
+| A rule's text | 1,024 characters once cleaned |
+| The patterns of a rule | 20 |
+| The cleaned texts of a profile's rules in all | 32 KiB (32,768 bytes) |
+| A rules file as read, before it is cleaned | 64 KiB (65,536 bytes) |
+
+| Path and message | Means |
+| --- | --- |
+| `profiles.team.rules: must hold at most 100 rules` | More than 100 entries, or files that make more than 100 rules in all |
+| `profiles.team.rules: must hold at most 16 rules files` | More than 16 entries name a file |
+| `profiles.team.rules.1.id: must match ^[a-z][a-z0-9._-]{0,63}$` | A rule written in the config has an id that is no id |
+| `profiles.team.rules.0.text: must hold 1 to 1024 characters once cleaned` | A text that is blank or too long once cleaned (`0.text must hold ...` for a rule of a file) |
+| `profiles.team.rules.1: takes the profile's rules to 33000 bytes once cleaned, over the 32 KiB they may hold in all` | The first rule that takes the cleaned texts of the profile over the cap, the built-in profile's own counted first |
+
+Rules are never split into groups. A profile whose rules, beside its guidelines and do-not-report text, leave a research provider less than 1,024 tokens of diff is refused before any call, and the message names the tokens the rules take: at the full 56 KiB of documents, a window under about 80,000 tokens. Every research request carries the whole block of the rules it sends, so a profile whose rules do not fit beside a hunk would need a request for each group of them, and a change's findings would no longer come from one pass over each part. The fix is shorter rules, a larger window, or two profiles that each hold part of the rules, which a config already lets you write: [Room accounting](./20-configuration.md#room-accounting).
+
 ## What a person sees of the documents
 
 A review records each document it read in `meta.context` and says so, one line for each, so a person sees which policy it judged by, where each document came from and what the cleaner changed. The line is one sentence, written once, which the log, the text report and the Markdown summary each use:
@@ -200,7 +280,7 @@ SARIF holds no document, and the payload holds them only in its summary, as the 
 
 ## What `--print-config` shows
 
-[`--print-config`](./10-cli.md#printing-the-resolved-config) prints each document as the SHA-256 of its text as read, never the text, a built-in profile's own text as `builtIn`, and a `{ repository }` entry as its path, with `optional: true` when it is, each at its place in the list:
+[`--print-config`](./10-cli.md#printing-the-resolved-config) prints each document as the SHA-256 of its text as read, never the text, a built-in profile's own text as `builtIn`, and a `{ repository }` entry as its path, with `optional: true` when it is, each at its place in the list. A profile's rules print as ids, never a text: a rule written in the config as its id, a rules file as the hash of its text and the ids it holds, a built-in profile's own rules as `builtIn` with their ids, a `{ repository }` file as its path, then `builtInRules: false` and `requireRule: true` when the profile sets them (a profile that sets `builtInRules: false` has no `builtIn` rules to print, so the example below sets `requireRule` alone):
 
 ```text
 profiles:
@@ -217,6 +297,16 @@ profiles:
       - sha256:35fcffa9…
       - repository: .github/review-skip.md
         optional: true
+    rules:
+      - builtIn:
+          - license
+      - no-any
+      - sha256: 6a1d09c4…
+        ids:
+          - io-errors
+          - naming
+      - repository: .quorum/rules.yaml
+    requireRule: true
 ```
 
 The hashes are cut here; the output holds all 64 hexadecimal digits of each.
@@ -240,7 +330,7 @@ A reservation counts one token per byte, while English prose takes about four by
 
 ## In a bench
 
-A document is part of a configuration's [fingerprint](./70-bench.md#the-fingerprint), its text and hash, so `quorum bench` measures the effect of a guideline: the same suite under the same configuration with and without it is two configurations, and another text is another one. A configuration with no document keeps the fingerprint it had. A `{ repository }` document is refused, since a bench case is a patch with no commit to read a file from: name the file with `{ file }`, and the bench measures it.
+A document is part of a configuration's [fingerprint](./70-bench.md#the-fingerprint), its text and hash, so `quorum bench` measures the effect of a guideline: the same suite under the same configuration with and without it is two configurations, and another text is another one. So is a rule: its id, its text and its patterns are in the fingerprint, and `requireRule` with them, so the same suite with and without a rule, or with one more word in it, is two configurations. A configuration with no document and no rule keeps the fingerprint it had. A `{ repository }` document is refused, since a bench case is a patch with no commit to read a file from: name the file with `{ file }`, and the bench measures it.
 
 ## Next
 

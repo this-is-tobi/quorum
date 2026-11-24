@@ -389,7 +389,7 @@ describe('quorum mcp', () => {
     const fetchMock = stubModels({})
     const kept = directory()
     write(kept, 'guide.md', 'Name things for what they do.')
-    const config = write(kept, 'q.yaml', `${CONFIG}profiles:\n  security:\n    guidelines: [{repository: REVIEW.md}, {file: guide.md}]\n    doNotReport: [{repository: .github/SKIP.md, optional: true}]\n`)
+    const config = write(kept, 'q.yaml', `${CONFIG}profiles:\n  security:\n    guidelines: [{repository: REVIEW.md}, {file: guide.md}]\n    doNotReport: [{repository: .github/SKIP.md, optional: true}]\n    rules: [{id: inline, text: Written in the config.}, {repository: .quorum/rules.yaml}]\n`)
     const root = directory()
     const streams = streamIO({ cwd: root, git: fakeRepository(root).seam })
     const run = runMcp(streams.io, ['--config', config])
@@ -400,6 +400,7 @@ describe('quorum mcp', () => {
     expect(streams.stderr()).toBe([
       'Error: profiles.security.guidelines.0.repository: reads a document of the repository, which the calling agent can commit to: name the file with { file }, kept outside the project',
       'profiles.security.doNotReport.0.repository: reads a document of the repository, which the calling agent can commit to: name the file with { file }, kept outside the project',
+      'profiles.security.rules.1.repository: reads a document of the repository, which the calling agent can commit to: name the file with { file }, kept outside the project',
       '',
     ].join('\n'))
     expect(fetchMock).not.toHaveBeenCalled()
@@ -431,6 +432,15 @@ describe('quorum mcp', () => {
       (root) => {
         write(root, 'skip.md', 'Generated files.')
         return join(root, 'skip.md')
+      },
+    ],
+    [
+      'rules file',
+      'rules: [{id: inline, text: Written in the config.}, {file: NAME}]',
+      'profiles.security.rules.1.file',
+      (root) => {
+        write(root, 'rules.yaml', '- id: no-any\n  text: No any outside tests.\n')
+        return join(root, 'rules.yaml')
       },
     ],
     [

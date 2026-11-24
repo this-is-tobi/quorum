@@ -498,6 +498,71 @@ describe('the documents of a profile', () => {
     expect(profileIssues({ ...naming, documents })).toEqual([])
   })
 
+  it('counts a rules file toward the 16 documents of its kind and an inline rule toward the 100 rules, one document each', () => {
+    const rule = (id: string): { id: string, text: string } => ({ id, text: 'x' })
+    const inline = (index: number): NonNullable<Profile['documents']>[number] => ({
+      profile: 'naming',
+      kind: 'rules',
+      origin: { kind: 'config' },
+      rules: [
+        rule(`i${index}`),
+      ],
+    })
+    const file = (index: number): NonNullable<Profile['documents']>[number] => ({
+      profile: 'naming',
+      kind: 'rules',
+      origin: {
+        kind: 'config',
+        sha256: 'a'.repeat(64),
+      },
+      rules: [
+        rule(`f${index}`),
+      ],
+    })
+    const files = (count: number) => Array.from({ length: count }, (_, index) => file(index))
+    const inlines = (count: number) => Array.from({ length: count }, (_, index) => inline(index))
+    // A hundred inline rules are a hundred documents, and a rules file is one more: the 100 rules bound them, never the 16.
+    expect(profileIssues({
+      ...naming,
+      documents: inlines(100),
+    })).toEqual([])
+    expect(profileIssues({
+      ...naming,
+      documents: [
+        ...files(16),
+        ...inlines(84),
+      ],
+    })).toEqual([])
+    expect(profileIssues({
+      ...naming,
+      documents: files(17),
+    })).toEqual([
+      { path: 'naming.documents', message: 'must hold at most 16 documents of one kind' },
+    ])
+    expect(profileIssues({
+      ...naming,
+      documents: inlines(101),
+    })).toEqual([
+      { path: 'naming.documents.100', message: 'must hold at most 100 rules' },
+    ])
+    // A rules document with no hash that holds more than one rule is a file as far as the 16 go.
+    const several = (index: number): NonNullable<Profile['documents']>[number] => ({
+      profile: 'naming',
+      kind: 'rules',
+      origin: { kind: 'config' },
+      rules: [
+        rule(`s${index}`),
+        rule(`t${index}`),
+      ],
+    })
+    expect(profileIssues({
+      ...naming,
+      documents: Array.from({ length: 17 }, (_, index) => several(index)),
+    })).toEqual([
+      { path: 'naming.documents', message: 'must hold at most 16 documents of one kind' },
+    ])
+  })
+
   it('accepts a profile at its caps once cleaned, comments not counted', () => {
     const comments = `<!-- ${'c'.repeat(1991)} -->`
     expect(comments).toHaveLength(2000)

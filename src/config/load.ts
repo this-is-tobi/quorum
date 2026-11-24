@@ -4,14 +4,14 @@ import { lstat, open, rename, unlink } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { isMap, isPair, isScalar, isSeq, LineCounter, parseDocument } from 'yaml'
-import type { Document, YAMLError } from 'yaml'
 import type { z } from 'zod'
 import { DOCUMENT_READ_LIMIT } from '../core/documents.ts'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { envValue } from './env.ts'
 import type { Env } from './env.ts'
+import { decode, MAX_DEPTH, parseJson, parseYaml, RULES_EXTENSION, rulesFormat } from './parse.ts'
+import type { Read } from './parse.ts'
 import type { FailOnOverride, ProfileSelection } from './profiles.ts'
 import { resolveConfig } from './resolve.ts'
 import type { ResolvedConfig } from './resolve.ts'
@@ -22,8 +22,6 @@ import type { ConfigInput, QuorumConfig } from './schema.ts'
 const CONFIG_LIMIT = 1024 * 1024
 /** The most the distinct prompt and document files of a config may hold together, whatever the number of profiles and entries that name them. */
 const NAMED_FILES_TOTAL_LIMIT = 1024 * 1024
-/** How many keys deep a value of a config may sit: deeper data could overflow the stack of a walk over it. */
-const MAX_DEPTH = 64
 /** How many values a config may hold: more would be a walk and a schema check of unbounded work, and issues of unbounded number. */
 const MAX_VALUES = 10_000
 
@@ -42,7 +40,7 @@ const FORMATS: ReadonlyMap<string, Format> = new Map([
 /** A name a message may give what a config threw: a class name, never text the config could have written a secret into. */
 const ERROR_NAME = /^[A-Z][A-Za-z]{0,63}$/
 const STAGES = ['research', 'vote'] as const
-/** The fields of a profile that list documents, each entry a `{ file }` in a file or a code config and a `{ text }` once read. */
+/** The fields of a profile that list prose documents, each entry a `{ file }` in a file or a code config and a `{ text }` once read. The `rules` list is read apart: its file entries become `{ text, format }`. */
 const DOCUMENT_FIELDS = ['guidelines', 'doNotReport'] as const
 /** An error code worth printing: `EACCES`, never text. */
 const ERROR_CODE = /^E[A-Z]+$/
@@ -59,16 +57,17 @@ export interface NamedFile {
 
 /** A config file once read and checked. */
 export interface LoadedConfig {
-  /** The checked config, with the text of every prompt file in place of its `{ file }`, and of every document file as a `{ text }`. */
+  /** The checked config, with the text of every prompt file in place of its `{ file }`, of every document file as a `{ text }` and of every rules file as a `{ text, format }`. */
   readonly config: ConfigInput
   /** The absolute path of the file. */
   readonly source: string
-  /** The prompt and document files it read, each distinct path once, at the config path of the entry that first named it, in the order read. */
+  /** The prompt, document and rules files it read, each distinct path once, at the config path of the entry that first named it, in the order read. */
   readonly files: readonly NamedFile[]
 }
 
-/** What a read found, or the problem with the file, as an issue words it, and how many bytes the problem counts toward a total. */
-export type Read<T> = { readonly value: T } | { readonly problem: string, readonly counted?: number }
+// The readers moved to `parse.ts`, which the profile resolution and `readContext` share; the modules that read through them import them here.
+export { decode, parseYaml }
+export type { Read }
 
 function fail(path: string, message: string): never {
   throw new ConfigError([
@@ -165,151 +164,12 @@ export async function readHandle(handle: FileHandle, limit: number, size: string
   }
 }
 
-/** The UTF-8 text of `bytes`, a leading byte-order mark dropped (the decoder's default). */
-export function decode(bytes: Uint8Array): Read<string> {
-  try {
-    return {
-      value: new TextDecoder('utf-8', { fatal: true }).decode(bytes),
-    }
-  } catch {
-    return { problem: 'is not UTF-8 text' }
-  }
-}
-
 /** The UTF-8 text of a regular file of at most `limit` bytes. */
 async function readText(absolute: string, limit: number, size: string): Promise<Read<string>> {
   const bytes = await readBounded(absolute, limit, size)
   return 'problem' in bytes
     ? bytes
     : decode(bytes.value)
-}
-
-/** Where `offset` sits in the text, as a line and a column. */
-function position(lines: LineCounter, offset: number): string {
-  const { line, col } = lines.linePos(offset)
-  return `line ${line}, column ${col}`
-}
-
-/** What an error of the yaml package says, by its code and where it points: its message can quote the source, and is never used. */
-function yamlProblem(error: YAMLError, lines: LineCounter): string {
-  return error.code === 'TAG_RESOLVE_FAILED'
-    ? `uses a tag quorum does not read at ${position(lines, error.pos[0])} (TAG_RESOLVE_FAILED)`
-    : `is not valid YAML at ${position(lines, error.pos[0])} (${error.code})`
-}
-
-/**
- * Where the first key of a document that repeats a key of its own mapping starts, or undefined. The yaml
- * package's `uniqueKeys` compares each key with every earlier key of its mapping, which takes seconds on
- * a mapping of tens of thousands of keys; a set per mapping takes one pass. Every key is a scalar here,
- * compared by its value as the package compares them: `stringKeys` refuses any other key in YAML, and
- * JSON has no other. The walk keeps its own stack, in the order of the package's `visit` (which copies its
- * path at every node, so it takes seconds on a document thousands deep), and enters no node more than
- * `MAX_DEPTH` keys deep: `dataIssues` refuses that data whatever the walk finds there.
- */
-function repeatedKeyAt(doc: Document): number | undefined {
-  const stack: { node: unknown, depth: number }[] = [
-    { node: doc.contents, depth: 0 },
-  ]
-  for (let entry = stack.pop(); entry !== undefined; entry = stack.pop()) {
-    const { node, depth } = entry
-    if (depth > MAX_DEPTH) continue
-    if (isPair(node)) {
-      stack.push({ node: node.value, depth }, { node: node.key, depth })
-    } else if (isMap(node) || isSeq(node)) {
-      if (isMap(node)) {
-        const seen = new Set<unknown>()
-        for (const { key } of node.items) {
-          const value = isScalar(key)
-            ? key.value
-            : key
-          if (seen.has(value)) {
-            return (isScalar(key)
-              ? key.range?.[0]
-              : undefined) ?? 0
-          }
-          seen.add(value)
-        }
-      }
-      for (let index = node.items.length - 1; index >= 0; index--) stack.push({ node: node.items[index], depth: depth + 1 })
-    }
-  }
-  return undefined
-}
-
-/**
- * One YAML 1.2 document of the core schema, as plain data. The schema is given explicitly, since a
- * `%YAML 1.1` directive overrides the version alone (and 1.1 reads `off` as false); the YAML 1.1 tags
- * are not resolved; any error, any warning (an unknown tag is only a warning to the parser), a key that
- * repeats one of its mapping and any alias refuse the file; no problem carries source text.
- */
-export function parseYaml(text: string): Read<unknown> {
-  const lines = new LineCounter()
-  try {
-    const doc = parseDocument(text, {
-      schema: 'core',
-      version: '1.2',
-      merge: false,
-      resolveKnownTags: false,
-      uniqueKeys: false,
-      stringKeys: true,
-      prettyErrors: false,
-      logLevel: 'error',
-      strict: true,
-      lineCounter: lines,
-    })
-    const first = doc.errors[0] ?? doc.warnings[0]
-    if (first !== undefined) {
-      return {
-        problem: yamlProblem(first, lines),
-      }
-    }
-    const repeated = repeatedKeyAt(doc)
-    if (repeated !== undefined) return { problem: `is not valid YAML at ${position(lines, repeated)} (DUPLICATE_KEY)` }
-    const value: unknown = doc.toJS({ maxAliasCount: 0 })
-    return value === null
-      ? { problem: 'is empty' }
-      : { value }
-  } catch (error) {
-    // An alias throws a ReferenceError once aliases are disabled; deep nesting can throw a RangeError.
-    return {
-      problem: error instanceof ReferenceError
-        ? 'uses an alias, which quorum does not read'
-        : 'is not valid YAML',
-    }
-  }
-}
-
-/**
- * JSON, refusing a duplicate key, which `JSON.parse` resolves silently to the last value: the same text
- * goes through the yaml package's JSON schema, whose document shows the repeat. `JSON.parse` stays the
- * authority for syntax and values, and its message, which quotes the source, is never used.
- */
-function parseJson(text: string): Read<unknown> {
-  if (text.trim() === '') return { problem: 'is empty' }
-  let value: unknown
-  try {
-    value = JSON.parse(text)
-  } catch {
-    return { problem: 'is not valid JSON' }
-  }
-  const lines = new LineCounter()
-  try {
-    const doc = parseDocument(text, {
-      schema: 'json',
-      uniqueKeys: false,
-      prettyErrors: false,
-      logLevel: 'error',
-      lineCounter: lines,
-    })
-    const first = doc.errors[0]
-    if (first !== undefined) return { problem: `is not valid JSON at ${position(lines, first.pos[0])} (${first.code})` }
-    const repeated = repeatedKeyAt(doc)
-    return repeated === undefined
-      ? { value }
-      : { problem: `has a duplicate key at ${position(lines, repeated)}` }
-  } catch {
-    return { problem: 'is not valid JSON' }
-  }
 }
 
 /** Whether `value` is an object of data: an object whose prototype is `Object.prototype` or none, never a class instance. */
@@ -496,10 +356,12 @@ function checkData(parsed: Read<unknown>, path: string): QuorumConfig {
 interface FileEntry {
   readonly segments: readonly PropertyKey[]
   readonly file: string
+  /** What is wrong with the name itself, found before the file is read: a rules file whose extension names no format. */
+  readonly problem?: string
   readonly put: (text: string) => void
 }
 
-/** The files a profile names, in the order they are read: its prompts, then its guidelines, then its do-not-report documents, each as the entry holds them. */
+/** The files a profile names, in the order they are read: its prompts, then its guidelines, then its do-not-report documents, then its rules files, each as the entry holds them. */
 function fileEntries(id: string, profile: NonNullable<QuorumConfig['profiles']>[string]): FileEntry[] {
   const named: FileEntry[] = []
   // A profile with no prompts names no prompt file, so nothing is ever put into this empty object.
@@ -535,12 +397,32 @@ function fileEntries(id: string, profile: NonNullable<QuorumConfig['profiles']>[
       })
     })
   }
+  // An entry of `rules` is an inline rule, a `{ repository }` or a `{ file }`, and only the last names a file here: it is read as a
+  // document is, and its text takes its place with the format its extension names, which no other extension has.
+  const rules = profile.rules as Array<Record<string, unknown>> | undefined
+  rules?.forEach((entry, index) => {
+    if (!('file' in entry)) return
+    const file = entry.file as string
+    const format = rulesFormat(file)
+    named.push({
+      segments: ['profiles', id, 'rules', index, 'file'],
+      file,
+      ...format === undefined
+        ? { problem: RULES_EXTENSION }
+        : {},
+      put: (text) => {
+        rules[index] = { text, format }
+      },
+    })
+  })
   return named
 }
 
 /**
  * Put the text of every prompt file in place of its `{ file }`, and the text of every guidelines and
- * do-not-report file as the `{ text }` of its entry, each read relative to `directory` (an absolute path stays
+ * do-not-report file as the `{ text }` of its entry, and that of every rules file with the format its extension names
+ * (`.yaml` and `.yml` YAML, `.json` JSON, another extension an issue at its file path, and the file is not read) as
+ * `{ text, format }`, each read relative to `directory` (an absolute path stays
  * absolute) as UTF-8 text of at most 64 KiB. Each distinct path is read once, so a file named by many
  * profiles or entries costs once and every place holds the same text, and the distinct files may hold 1 MiB
  * in all, counted in bytes as read, an oversized file as 64 KiB: the file that takes the total over it is
@@ -558,8 +440,12 @@ async function readNamedFiles(config: QuorumConfig, directory: string, path: str
   const files: NamedFile[] = []
   let total = 0
   for (const [id, profile] of Object.entries(config.profiles ?? {})) {
-    for (const { segments, file, put } of fileEntries(id, profile)) {
+    for (const { segments, file, problem, put } of fileEntries(id, profile)) {
       const at = configPath(segments, path)
+      if (problem !== undefined) {
+        issues.push({ path: at, message: problem })
+        continue
+      }
       const absolute = resolve(directory, file)
       let text = reads.get(absolute)
       if (text === undefined) {
@@ -597,8 +483,8 @@ async function readNamedFiles(config: QuorumConfig, directory: string, path: str
  * `.json` for JSON, both data only, and `.mts`, `.mjs`, `.ts` or `.js` for a module whose default export
  * is the config, which runs as code. The file must be a regular file of at most 1 MiB, in UTF-8. A data
  * file's value must be a mapping of plain data, a module's default a plain object; neither may hold a
- * `__proto__` key; then the schema of its variant checks it, and every prompt file and every guidelines and
- * do-not-report file it names is read, once however many profiles and entries name it: each of at most 64 KiB, and the distinct files 1 MiB in all. Issues name
+ * `__proto__` key; then the schema of its variant checks it, and every prompt file and every guidelines, do-not-report and
+ * rules file it names is read, once however many profiles and entries name it: each of at most 64 KiB, and the distinct files 1 MiB in all. Issues name
  * the path as the caller gave it, and never quote a file, repeat the runtime's message or repeat what a
  * config threw.
  *

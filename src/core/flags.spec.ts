@@ -476,14 +476,21 @@ describe('documentFlags', () => {
   const READ = 'the guidelines this review read for the profile from 1f3a9c2, not the change\'s version'
   const MISSING = 'the guidelines this review looked for at 1f3a9c2 and did not find, not the change\'s version'
 
-  /** A repository document of `profile` at `path`, read at `COMMIT`, or with no text when `found` is false: an optional one the commit lacked. */
+  /** A repository document of `profile` at `path`, read at `COMMIT` (its text, or its rules for a rules document), or with neither when `found` is false: an optional one the commit lacked. */
   function document(path: string, profile = 'security', kind: DocumentKind = 'guidelines', found = true): ReviewDocument {
+    const content = kind === 'rules'
+      ? {
+          rules: [
+            { id: 'no-any', text: 'No any outside tests.' },
+          ],
+        }
+      : { text: 'Rules.' }
     return {
       profile,
       kind,
       origin: { kind: 'repository', path, commit: COMMIT },
       ...found
-        ? { text: 'Rules.' }
+        ? content
         : {},
     }
   }
@@ -605,6 +612,39 @@ describe('documentFlags', () => {
       document('skip.md', 'security', 'do-not-report', false),
     ], RANGE)).toEqual([
       flag('the do-not-report text this review looked for at 1f3a9c2 and did not find, not the change\'s version', { file: 'skip.md' }),
+    ])
+  })
+
+  it('reads a repository rules document as found when it holds rules, an empty list included, and as looked for when it is missing', () => {
+    const FOUND = 'the rules this review read for the profile from 1f3a9c2, not the change\'s version'
+    const LOOKED_FOR = 'the rules this review looked for at 1f3a9c2 and did not find, not the change\'s version'
+    expect(documentFlags(edit('.quorum/rules.yaml'), [
+      document('.quorum/rules.yaml', 'security', 'rules'),
+    ], RANGE)).toEqual([
+      flag(FOUND, { file: '.quorum/rules.yaml' }),
+    ])
+    // A rules file that holds no rule was read all the same: an empty list is not a file the commit lacked.
+    expect(documentFlags(edit('.quorum/rules.yaml'), [
+      {
+        profile: 'security',
+        kind: 'rules',
+        origin: { kind: 'repository', path: '.quorum/rules.yaml', commit: COMMIT },
+        rules: [],
+      },
+    ], RANGE)).toEqual([
+      flag(FOUND, { file: '.quorum/rules.yaml' }),
+    ])
+    expect(documentFlags(edit('.quorum/rules.yaml'), [
+      document('.quorum/rules.yaml', 'security', 'rules', false),
+    ], RANGE)).toEqual([
+      flag(LOOKED_FOR, { file: '.quorum/rules.yaml' }),
+    ])
+    // One path read as guidelines and as rules is one flag, found when either was.
+    expect(documentFlags(edit('REVIEW.md'), [
+      document('REVIEW.md', 'security', 'guidelines'),
+      document('REVIEW.md', 'security', 'rules'),
+    ], RANGE)).toEqual([
+      flag('the guidelines and rules this review read for the profile from 1f3a9c2, not the change\'s version'),
     ])
   })
 

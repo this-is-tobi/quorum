@@ -520,3 +520,326 @@ describe('readRepositoryDocuments', () => {
     expect((error as GitError).message).toBe('git ls-tree printed more file names than quorum reads')
   })
 })
+
+describe('readRepositoryDocuments with rules files', () => {
+  const LICENSE = { id: 'license', text: 'Each file starts with the license header.' }
+  const IO_ERRORS = { id: 'io-errors', text: 'Every I/O call handles its error.' }
+  /** A built-in profile of the test's own, with two rules of its own: `security` has none. */
+  const RULED: Profile = {
+    id: 'ruled',
+    prompts: NAMING.prompts,
+    lenses: NAMING.lenses,
+    rules: [LICENSE, IO_ERRORS],
+  }
+  function resolvedRules(profiles: ConfigInput['profiles']): ResolvedProfile[] {
+    const result = resolveProfiles({
+      profiles,
+      roles: { research: 'main', voter: 'main' },
+      providers: ['main'],
+      builtIn: new Map([
+        [RULED.id, RULED],
+      ]),
+    })
+    expect(result.issues).toEqual([])
+    return [...result.profiles]
+  }
+  const YAML = '- id: no-any\n  text: No any outside tests.\n  paths: ["src/**"]\n- id: naming\n  text: Names say what a value is.\n'
+  const JSON_RULES = '[{"id": "errors", "text": "Handle the error."}]'
+  const place = `"RULES.yaml" at ${SHORT}`
+  /** The issues a rules file of `content` at RULES.yaml is refused with, as the profile `fields` names it. */
+  async function refusedWith(content: string, fields: Record<string, unknown> = {
+    rules: [
+      { repository: 'RULES.yaml' },
+    ],
+  }, profile = 'ruled'): Promise<readonly ConfigIssue[]> {
+    const profiles = resolvedRules({ [profile]: fields } as ConfigInput['profiles'])
+    const { repository } = await open([
+      { path: 'RULES.yaml', content },
+    ])
+    return issuesOf(readRepositoryDocuments(entriesOf(profiles), repository, COMMIT))
+  }
+
+  it('reads a repository rules file by its extension, and refuses an id the config already holds', async () => {
+    const profiles = resolvedRules({
+      ruled: {
+        rules: [
+          { repository: 'RULES.yaml' },
+          { repository: 'rules/more.json' },
+          { repository: 'rules/optional.yml', optional: true },
+          { repository: 'rules/absent.yaml', optional: true },
+        ],
+      },
+    })
+    const { repository, calls } = await open([
+      { path: 'RULES.yaml', content: `${YAML}# note\n` },
+      { path: 'rules/more.json', content: JSON_RULES },
+      { path: 'rules/optional.yml', content: `- id: optional\n  text: Kept.${String.fromCharCode(0x200B)}\n` },
+      { path: 'src/unrelated.ts', content: 'export {}\n' },
+    ])
+    const documents = await readRepositoryDocuments(entriesOf(profiles), repository, COMMIT)
+    const origin = (path: string, text: string): object => ({
+      kind: 'repository',
+      path,
+      commit: COMMIT,
+      sha256: documentSha256(text),
+    })
+    // Each file is parsed by its extension, its texts cleaned and its hash taken of the text as read; a missing optional file is a document with no rules.
+    expect(documents).toStrictEqual([
+      {
+        profile: 'ruled',
+        kind: 'rules',
+        origin: origin('RULES.yaml', `${YAML}# note\n`),
+        rules: [
+          {
+            id: 'no-any',
+            text: 'No any outside tests.',
+            paths: ['src/**'],
+          },
+          { id: 'naming', text: 'Names say what a value is.' },
+        ],
+        removed: NO_REMOVED,
+      },
+      {
+        profile: 'ruled',
+        kind: 'rules',
+        origin: origin('rules/more.json', JSON_RULES),
+        rules: [
+          { id: 'errors', text: 'Handle the error.' },
+        ],
+        removed: NO_REMOVED,
+      },
+      {
+        profile: 'ruled',
+        kind: 'rules',
+        origin: origin('rules/optional.yml', `- id: optional\n  text: Kept.${String.fromCharCode(0x200B)}\n`),
+        rules: [
+          { id: 'optional', text: 'Kept.' },
+        ],
+        removed: { characters: 1, comments: 0, entities: 0 },
+      },
+      {
+        profile: 'ruled',
+        kind: 'rules',
+        origin: { kind: 'repository', path: 'rules/absent.yaml', commit: COMMIT },
+      },
+    ])
+    expect(documents.every(document => Object.isFrozen(document) && Object.isFrozen(document.origin))).toBe(true)
+    expect(documents.flatMap(document => document.rules ?? []).every(rule => Object.isFrozen(rule))).toBe(true)
+    // One listing and one read of the three blobs, as for any document.
+    expect(calls.map(call => call.command[0])).toEqual(['ls-tree', 'cat-file'])
+
+    // Any other extension is refused, a file that is absent and optional too, and no blob is read for it.
+    const txt = resolvedRules({
+      ruled: {
+        rules: [
+          { repository: 'rules.txt' },
+          { repository: 'rules.YAML', optional: true },
+          { repository: 'rules' },
+        ],
+      },
+    })
+    const none = await open([
+      { path: 'rules.txt', content: YAML },
+    ])
+    expect(await issuesOf(readRepositoryDocuments(entriesOf(txt), none.repository, COMMIT))).toEqual([
+      { path: 'profiles.ruled.rules.0.repository', message: `"rules.txt" at ${SHORT} must end in .yaml, .yml or .json` },
+      { path: 'profiles.ruled.rules.1.repository', message: `"rules.YAML" at ${SHORT} must end in .yaml, .yml or .json` },
+      { path: 'profiles.ruled.rules.2.repository', message: `"rules" at ${SHORT} must end in .yaml, .yml or .json` },
+    ])
+    expect(none.calls.map(call => call.command[0])).toEqual(['ls-tree'])
+
+    // An id the profile's own rules (the built-in's), its config documents or an earlier repository file holds is refused, at the later file.
+    expect(await refusedWith('- id: license\n  text: Again.\n')).toEqual([
+      { path: 'profiles.ruled.rules.0.repository', message: `${place} repeats the rule id "license"` },
+    ])
+    expect(await refusedWith('- id: shared\n  text: In the file.\n', {
+      rules: [
+        { id: 'shared', text: 'In the config.' },
+        { repository: 'RULES.yaml' },
+      ],
+    })).toEqual([
+      { path: 'profiles.ruled.rules.1.repository', message: `${place} repeats the rule id "shared"` },
+    ])
+    const twice = resolvedRules({
+      ruled: {
+        rules: [
+          { repository: 'RULES.yaml' },
+          { repository: 'rules/more.json' },
+        ],
+      },
+    })
+    const both = await open([
+      { path: 'RULES.yaml', content: '- id: errors\n  text: First.\n- id: other\n  text: Second.\n' },
+      { path: 'rules/more.json', content: JSON_RULES },
+    ])
+    expect(await issuesOf(readRepositoryDocuments(entriesOf(twice), both.repository, COMMIT))).toEqual([
+      { path: 'profiles.ruled.rules.1.repository', message: `"rules/more.json" at ${SHORT} repeats the rule id "errors"` },
+    ])
+    // The built-in's rules are the profile's own only until the entry drops them.
+    const dropped = resolvedRules({
+      ruled: {
+        builtInRules: false,
+        rules: [
+          { repository: 'RULES.yaml' },
+        ],
+      },
+    })
+    const reused = await open([
+      { path: 'RULES.yaml', content: '- id: license\n  text: Again.\n' },
+    ])
+    expect(await readRepositoryDocuments(entriesOf(dropped), reused.repository, COMMIT)).toHaveLength(1)
+  })
+
+  it('reads a repository rules file that holds no rule as a document of no rules, optional or not, never an issue', async () => {
+    const profiles = resolvedRules({
+      ruled: {
+        rules: [
+          { repository: 'rules/empty.json', optional: true },
+          { repository: 'rules/notes.yaml' },
+          { repository: 'rules/blank.yml' },
+          { repository: 'rules/required.json' },
+        ],
+      },
+    })
+    const { repository } = await open([
+      { path: 'rules/empty.json', content: '[]' },
+      { path: 'rules/notes.yaml', content: '# nothing yet\n' },
+      { path: 'rules/blank.yml', content: '' },
+      { path: 'rules/required.json', content: '[]' },
+    ])
+    const documents = await readRepositoryDocuments(entriesOf(profiles), repository, COMMIT)
+    expect(documents).toStrictEqual([
+      ['rules/empty.json', '[]'],
+      ['rules/notes.yaml', '# nothing yet\n'],
+      ['rules/blank.yml', ''],
+      ['rules/required.json', '[]'],
+    ].map(([path, text]) => ({
+      profile: 'ruled',
+      kind: 'rules',
+      origin: {
+        kind: 'repository',
+        path,
+        commit: COMMIT,
+        sha256: documentSha256(text),
+      },
+      rules: [],
+      removed: NO_REMOVED,
+    })))
+    // The profile's own rules and the ids of the files after them are as they were: an empty file takes none, and repeats none.
+    const mixed = resolvedRules({
+      ruled: {
+        rules: [
+          { repository: 'rules/empty.json' },
+          { repository: 'RULES.yaml' },
+        ],
+      },
+    })
+    const both = await open([
+      { path: 'rules/empty.json', content: '[]' },
+      { path: 'RULES.yaml', content: YAML },
+    ])
+    expect(await readRepositoryDocuments(entriesOf(mixed), both.repository, COMMIT)).toHaveLength(2)
+  })
+
+  it('refuses a rules file that is no list, holds a rule that is not valid or is not YAML or JSON, at its entry, in the file\'s own words', async () => {
+    const at = (message: string): ConfigIssue[] => [
+      { path: 'profiles.ruled.rules.0.repository', message: `${place} ${message}` },
+    ]
+    expect(await refusedWith('id: a\ntext: x\n')).toEqual(at('must be a list of rules'))
+    expect(await refusedWith('- {id: a, text: x}\n- {id: b, text: x}\n- {id: c, text: x}\n- {id: Bad Id, text: x}\n')).toEqual(at('3.id must match ^[a-z][a-z0-9._-]{0,63}$'))
+    expect(await refusedWith('- id: a\n  text: x\n  colour: blue\n')).toEqual(at('0.colour is not a known field'))
+    expect(await refusedWith('- id: a\n  text: x\n  text: y\n')).toEqual(at('is not valid YAML at line 3, column 3 (DUPLICATE_KEY)'))
+    expect(await refusedWith('- &a {id: a, text: x}\n- *a\n')).toEqual(at('uses an alias, which quorum does not read'))
+    expect(await refusedWith('- id: a\n  text: !!binary aGVsbG8=\n')).toEqual(at('uses a tag quorum does not read at line 2, column 9 (TAG_RESOLVE_FAILED)'))
+    expect(await refusedWith('- {id: a, text: "<!-- hidden -->"}\n')).toEqual(at('0.text must hold 1 to 1024 characters once cleaned'))
+    expect(await refusedWith('- {id: a, text: x, paths: []}\n')).toEqual(at('0.paths must hold 1 to 20 patterns'))
+    expect(await refusedWith(`- id: a\n  text: ${'<'.repeat(16) + '!---->'.repeat(16)}\n`)).toEqual(at('0.text nests HTML comments or character references too deep to clean in 16 passes: remove them'))
+    expect(await refusedWith('- id: a\n  text: x\n- id: b\n  text: y\n- id: a\n  text: z\n')).toEqual(at('2.id repeats the rule id "a"'))
+    // A document's text is never repeated in what refuses it.
+    expect(JSON.stringify(await refusedWith('- id: a\n  text: [planted]\n'))).not.toContain('planted')
+  })
+
+  it('refuses a rules file over the 32 KiB alone, which the totals do not tell, and one that makes more than 100 rules, at its entry', async () => {
+    const rules = (count: number, bytes: number): string => JSON.stringify(Array.from({ length: count }, (_, index) => ({
+      id: `r${index}`,
+      text: 'x'.repeat(bytes),
+    })))
+    // 33 rules of 1000 bytes: no rule is over its 1024 characters and the file is under 64 KiB, but the cleaned texts come to 33000 bytes, over the cap, in one document.
+    const alone = await open([
+      {
+        path: 'RULES.json',
+        content: rules(33, 1000),
+      },
+    ])
+    const profiles = resolvedRules({
+      naming: {
+        ...NAMING,
+        rules: [
+          { repository: 'RULES.json' },
+        ],
+      },
+    })
+    expect(await issuesOf(readRepositoryDocuments(entriesOf(profiles), alone.repository, COMMIT))).toEqual([
+      { path: 'profiles.naming.rules.0.repository', message: `"RULES.json" at ${SHORT} takes the profile's rules to 33000 bytes once cleaned, over the 32 KiB they may hold in all` },
+    ])
+    // The profile's own rules and config documents count first: the built-in's two rules take 74 bytes, an inline rule 1000, so 32 more of 1000 are the rule that takes them over.
+    const held = resolvedRules({
+      ruled: {
+        rules: [
+          {
+            id: 'inline',
+            text: 'y'.repeat(1000),
+          },
+          { repository: 'RULES.json' },
+        ],
+      },
+    })
+    const near = await open([
+      {
+        path: 'RULES.json',
+        content: rules(32, 1000),
+      },
+    ])
+    expect(await issuesOf(readRepositoryDocuments(entriesOf(held), near.repository, COMMIT))).toEqual([
+      { path: 'profiles.ruled.rules.1.repository', message: `"RULES.json" at ${SHORT} takes the profile's rules to 33074 bytes once cleaned, over the 32 KiB they may hold in all` },
+    ])
+    const count = await open([
+      {
+        path: 'RULES.json',
+        content: rules(101, 1),
+      },
+    ])
+    expect(await issuesOf(readRepositoryDocuments(entriesOf(profiles), count.repository, COMMIT))).toEqual([
+      { path: 'profiles.naming.rules.0.repository', message: `"RULES.json" at ${SHORT} must hold at most 100 rules` },
+    ])
+    // Two files that fit alone and take the profile's rules over the caps together: the second is refused, in the words of the total.
+    const two = resolvedRules({
+      naming: {
+        ...NAMING,
+        rules: [
+          { repository: 'ONE.json' },
+          { repository: 'TWO.json' },
+        ],
+      },
+    })
+    const together = await open([
+      {
+        path: 'ONE.json',
+        content: JSON.stringify(Array.from({ length: 20 }, (_, index) => ({
+          id: `a${index}`,
+          text: 'x'.repeat(1000),
+        }))),
+      },
+      {
+        path: 'TWO.json',
+        content: JSON.stringify(Array.from({ length: 20 }, (_, index) => ({
+          id: `b${index}`,
+          text: 'x'.repeat(1000),
+        }))),
+      },
+    ])
+    expect(await issuesOf(readRepositoryDocuments(entriesOf(two), together.repository, COMMIT))).toEqual([
+      { path: 'profiles.naming.rules.1.repository', message: `"TWO.json" at ${SHORT} takes the profile's rules to 33000 bytes once cleaned, over the 32 KiB they may hold in all` },
+    ])
+  })
+})

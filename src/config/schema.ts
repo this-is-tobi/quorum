@@ -8,6 +8,7 @@ import type { Adapts, CompletionRequest, CompletionResponse, JsonSchema, Provide
 import { adaptsProblem, MAX_RETRIES, MAX_STATED_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, retriesProblem, slotsProblem, streamsProblem, thinkingProblem, timeoutProblem, tokensProblem } from '../core/ports.ts'
 import { FAIL_ON_LEVELS } from '../core/profile.ts'
 import { ownData } from '../core/facts.ts'
+import { MAX_RULES, RULE_ID } from '../core/rules.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { ProviderProtocol } from '../providers/build.ts'
 import { wordList } from '../providers/options.ts'
@@ -33,6 +34,8 @@ const STRUCTURED_OUTPUTS: Readonly<Record<StructuredOutput, true>> = { prompt: t
 
 const VERSION = 'must be 1, the only config version this quorum reads: upgrade quorum to read a later one'
 const TOO_MANY_DOCUMENTS = `must hold at most ${MAX_DOCUMENTS} documents`
+const TOO_MANY_RULES = `must hold at most ${MAX_RULES} rules`
+const TOO_MANY_RULE_FILES = `must hold at most ${MAX_DOCUMENTS} rules files`
 
 const name = z.string().regex(NAME)
 
@@ -124,6 +127,32 @@ function documentOf<D extends z.ZodType>(form: D, own: string) {
   return z.union([form, documentRepository], { error: `must be ${own} or { repository }` })
 }
 
+/** A rule written in the config: its id, its text and the files it applies to. The id's pattern is checked here for an editor, and the text, the patterns' count and the caps with every other rule of the profile once it resolves. */
+const reviewRule = z.strictObject({
+  id: z.string().regex(RULE_ID).describe('The rule\'s id, which a finding names to cite it: a lowercase letter, then lowercase letters, digits, dots, underscores or hyphens, at most 64 characters, unique across the rules of the profile'),
+  text: z.string().describe('The rule: the criterion a finding that cites it breaks, 1 to 1024 characters once cleaned'),
+  paths: z.array(pattern.describe('A path pattern: * and ? within a name, ** for whole directories, no / to match a file name in any directory, a leading / for the root')).optional().describe('The files the rule applies to, by path pattern as exclude takes them, 1 to 20 of them; a rule with none applies to every file'),
+})
+
+/** A rules file of the input a program hands over, which reads no file: its text and the format it is written in, as the loader gives them. */
+const rulesText = z.strictObject({
+  text: z.string().describe('The text of the rules file, as a program that loaded it hands it over'),
+  format: z.enum(['yaml', 'json']).describe('The format the text is written in: yaml or json'),
+})
+
+/** The entries of a profile's `rules`: a rule, the variant's form of a rules file, or a rules file of the repository. `own` is how the variant's form is written in the message of an entry that is none of them. */
+function ruleEntryOf<D extends z.ZodType>(form: D, own: string) {
+  return z.union([reviewRule, form, documentRepository], { error: `must be a rule, ${own} or { repository }` })
+}
+
+/** The rules of a profile: at most `MAX_RULES` entries, of which at most `MAX_DOCUMENTS` name a file, in the config or the repository. */
+function ruleList<D extends z.ZodType>(entry: D) {
+  return z.array(entry).max(MAX_RULES, { error: TOO_MANY_RULES }).check((ctx) => {
+    const files = (ctx.value as readonly unknown[]).filter(item => typeof item === 'object' && item !== null && ('file' in item || 'format' in item || 'repository' in item))
+    if (files.length > MAX_DOCUMENTS) ctx.issues.push({ code: 'custom', message: TOO_MANY_RULE_FILES, input: ctx.value })
+  })
+}
+
 const rule = z.union([
   z.enum(['unanimous', 'majority', 'any', 'off']),
   z.literal(false),
@@ -140,8 +169,8 @@ function documentList<D extends z.ZodType>(documentForm: D) {
   return z.array(documentForm).max(MAX_DOCUMENTS, { error: TOO_MANY_DOCUMENTS })
 }
 
-/** A profile entry, around the schema of one prompt and of one document: a string or `{ file }` and `{ file }` in a file, a string and `{ text }` in what a program hands over. */
-function profileSchema<R extends z.ZodType, D extends z.ZodType>(promptForm: R, documentForm: D) {
+/** A profile entry, around the schema of one prompt, of one document and of one rules file: a string or `{ file }`, `{ file }` and `{ file }` in a file, a string, `{ text }` and `{ text, format }` in what a program hands over. */
+function profileSchema<R extends z.ZodType, D extends z.ZodType, F extends z.ZodType>(promptForm: R, documentForm: D, rulesFileForm: F, rulesFileWords: string) {
   return z.strictObject({
     extends: z.enum([securityProfile.id]).optional().describe('The built-in profile this one starts from'),
     failOn: z.enum(FAIL_ON_LEVELS).optional().describe('The confidence at or above which a kept finding fails the review with exit 1: high, medium or low; none for an advisory profile, whose findings and gaps change no exit code. high when unset'),
@@ -154,6 +183,9 @@ function profileSchema<R extends z.ZodType, D extends z.ZodType>(promptForm: R, 
     guidelines: documentList(documentForm).optional().describe('The guidelines the review judges by, each a { file } read when the config loads or a { repository } file read at the commit the review reads its documents from: at most 16 KiB each and in all once cleaned, sent in every request of the profile'),
     doNotReport: documentList(documentForm).optional().describe('What the research is told not to report, each a { file } read when the config loads or a { repository } file read at the commit the review reads its documents from: at most 8 KiB each and in all once cleaned, sent in the research requests alone'),
     builtInDoNotReport: z.boolean().optional().describe('false drops the do-not-report text of the built-in profile this one starts from; true, the default, keeps it ahead of the documents'),
+    rules: ruleList(ruleEntryOf(rulesFileForm, rulesFileWords)).optional().describe('The review rules a finding may cite, at most 100 in all: each a rule written here, a { file } of rules read when the config loads (.yaml, .yml or .json), or a { repository } file of rules read at the commit the review reads its documents from; at most 16 of them name a file. Ids are unique across the profile'),
+    builtInRules: z.boolean().optional().describe('false drops the rules of the built-in profile this one starts from; true, the default, keeps them ahead of the entries'),
+    requireRule: z.boolean().optional().describe('true makes every finding cite a rule the review sent, and drops one that cites none or whose citation fails its check; false, the default, keeps a finding whose citation fails and drops the citation'),
     lenses: z.array(z.strictObject({
       id: name.describe('Names the lens'),
       question: z.string().describe('What the voter judging from this lens is asked'),
@@ -167,8 +199,8 @@ function profileSchema<R extends z.ZodType, D extends z.ZodType>(promptForm: R, 
   })
 }
 
-/** A config of either variant, around the schema of one provider entry, of one prompt and of one document, in the order editors show the fields. */
-function configSchema<P extends z.ZodType, R extends z.ZodType, D extends z.ZodType>(provider: P, promptForm: R, documentForm: D) {
+/** A config of either variant, around the schema of one provider entry, of one prompt, of one document and of one rules file, in the order editors show the fields. */
+function configSchema<P extends z.ZodType, R extends z.ZodType, D extends z.ZodType, F extends z.ZodType>(provider: P, promptForm: R, documentForm: D, rulesFileForm: F, rulesFileWords: string) {
   return z.strictObject({
     $schema: z.string().optional().describe('The JSON Schema of this file, for editors; quorum does not read it'),
     version: z.literal(1, { error: VERSION }).optional().describe('The version of the config format: 1'),
@@ -182,7 +214,7 @@ function configSchema<P extends z.ZodType, R extends z.ZodType, D extends z.ZodT
     strict: z.boolean().optional().describe('Refuse, before any call, what is otherwise a warning that a key may be exposed: today, a key sent over plain http to a host other than this machine. QUORUM_STRICT=true turns it on too; neither turns the other off'),
     exclude: z.array(pattern.describe('A path pattern: * and ? within a name, ** for whole directories, no / to match a file name in any directory, a leading / for the root')).max(MAX_PATTERNS, { error: TOO_MANY_PATTERNS }).optional().describe('The files left out of every request, by path pattern, each listed as excluded in meta.leftOut; nothing is excluded by default'),
     send: z.array(file.describe('A file\'s path as the diff writes it, decoded')).optional().describe('The files sent to the models though held as secrets, each the path as the diff writes it and meta.leftOut lists it; none by default'),
-    profiles: z.record(name, profileSchema(promptForm, documentForm)).optional().describe('The review profiles, by id: a built-in profile, one that extends it, or one of your own. The ones --profile names run, else the ones QUORUM_PROFILES names, else every one listed here, else the security profile alone'),
+    profiles: z.record(name, profileSchema(promptForm, documentForm, rulesFileForm, rulesFileWords)).optional().describe('The review profiles, by id: a built-in profile, one that extends it, or one of your own. The ones --profile names run, else the ones QUORUM_PROFILES names, else every one listed here, else the security profile alone'),
   })
 }
 
@@ -390,7 +422,7 @@ export function nameSnapshot(id: string, entry: unknown): unknown {
  * one. Every object is strict, so a typo is an issue. It checks shapes only: a field a later layer can
  * fill is optional, and the references between fields are checked once the layers are merged.
  */
-export const configFileSchema = configSchema(z.strictObject(providerShape), prompt, documentOf(documentFile, '{ file }'))
+export const configFileSchema = configSchema(z.strictObject(providerShape), prompt, documentOf(documentFile, '{ file }'), documentFile, '{ file }')
 
 /** The settings of a provider in a code config: those of a file, which may also hold the key itself and the executable. */
 const codeSettings = z.strictObject({
@@ -419,10 +451,10 @@ const codeProvider = z.union([
 ], { error: 'must be the settings of a provider, or an object whose complete is a function' })
 
 /** A TS or JS config: the file variant, where a provider may also hold its key, or be an object implementing `Provider`. */
-export const configCodeSchema = configSchema(codeProvider, prompt, documentOf(documentFile, '{ file }'))
+export const configCodeSchema = configSchema(codeProvider, prompt, documentOf(documentFile, '{ file }'), documentFile, '{ file }')
 
-/** The code variant a program hands over, which reads no file: a prompt is its text, never a `{ file }`, and a document is `{ text }`. */
-export const configInputSchema = configSchema(codeProvider, z.string(), documentOf(documentText, '{ text }'))
+/** The code variant a program hands over, which reads no file: a prompt is its text, never a `{ file }`, a document is `{ text }` and a rules file `{ text, format }`. */
+export const configInputSchema = configSchema(codeProvider, z.string(), documentOf(documentText, '{ text }'), rulesText, '{ text, format }')
 
 /**
  * The JSON Schema of a YAML or JSON config, for editors: draft-07, which the YAML language server and

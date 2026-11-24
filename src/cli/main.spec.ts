@@ -964,6 +964,101 @@ describe('a profile\'s documents', () => {
   })
 })
 
+describe('a profile\'s rules', () => {
+  const RULES_YAML = [
+    '- id: no-any',
+    '  text: No any outside tests.',
+    '  paths: ["src/**"]',
+    '- id: license',
+    '  text: Each file starts with the license header.',
+    '',
+  ].join('\n')
+  const SRC_DIFF = 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-const x: string = a\n+const x: any = a\n'
+  const CITING = {
+    file: 'src/x.ts',
+    line: 1,
+    category: 'CWE-20',
+    quote: 'const x: any = a',
+    summary: 'any defeats the checker',
+    rule: 'no-any',
+  }
+  const TEAM_RULES = [
+    'profiles:',
+    '  team:',
+    '    extends: security',
+    '    rules: [{file: rules/team.yaml}]',
+    '',
+  ].join('\n')
+
+  it('reviews with a rules file of a profile that extends a built-in one, the rule cited and checked', async () => {
+    mkdirSync(join(dir, 'rules'), { recursive: true })
+    write('rules/team.yaml', RULES_YAML)
+    const config = write('team-rules.yaml', TEAM_RULES)
+    const fetchMock = stubChat(JSON.stringify({
+      findings: [CITING],
+    }), vote(true), vote(true), vote(true))
+    const { io, stdout, stderr } = harness({
+      env: { ...MODEL, QUORUM_CONFIG: config },
+      stdin: SRC_DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    const result = JSON.parse(stdout()) as { kept: Array<Record<string, unknown>>, meta: { profiles: Record<string, { rules: unknown, invalidRules: number }> } }
+    // The finder cited a rule of the file, which matches the file the finding is in: the verdict keeps its id, and each vote carries that rule alone.
+    expect(result.kept).toHaveLength(1)
+    expect(result.kept[0]).toMatchObject({ file: 'src/x.ts', rule: 'no-any' })
+    expect(result.meta.profiles.team).toMatchObject({
+      rules: { listed: 2, sent: 2 },
+      invalidRules: 0,
+    })
+    const research = sent(fetchMock, 0).body.messages as Array<{ role: string, content: string }>
+    expect(research.filter(message => message.role === 'user')[0].content).toMatch(/<untrusted-rules-[0-9a-f]{8}>\nno-any, for src\/\*\*:\nNo any outside tests\.\n\nlicense, for every file:\nEach file starts with the license header\.\n<\/untrusted-rules-[0-9a-f]{8}>/)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    for (const call of [1, 2, 3]) {
+      const vote = (sent(fetchMock, call).body.messages as Array<{ role: string, content: string }>).filter(message => message.role === 'user')[0].content
+      expect(vote).toMatch(/<untrusted-rule-[0-9a-f]{8}>\nno-any, for src\/\*\*:\nNo any outside tests\.\n<\/untrusted-rule-[0-9a-f]{8}>/)
+      expect(vote).not.toContain('license header')
+    }
+    // No text of a rule is in the log.
+    expect(stderr()).not.toContain('No any outside tests')
+  })
+
+  it('exits 2 before any call for a rules file of another extension or one that is not valid, at its path', async () => {
+    mkdirSync(join(dir, 'rules'), { recursive: true })
+    write('rules/team.toml', 'x = 1\n')
+    write('rules/bad.yaml', '- id: a\n  text: x\n- id: Bad Id\n  text: y\n')
+    const toml = write('team-toml.yaml', TEAM_RULES.replace('team.yaml', 'team.toml'))
+    const bad = write('team-bad.yaml', TEAM_RULES.replace('team.yaml', 'bad.yaml'))
+    const fetchMock = stubChat()
+    const refused = harness({
+      env: { ...MODEL, QUORUM_CONFIG: toml },
+      stdin: SRC_DIFF,
+    })
+    expect(await runCli(refused.io)).toBe(EXIT.usage)
+    expect(refused.stderr()).toBe(`Error: ${toml}: profiles.team.rules.0.file: must end in .yaml, .yml or .json\n`)
+    const invalid = harness({
+      env: { ...MODEL, QUORUM_CONFIG: bad },
+      stdin: SRC_DIFF,
+    })
+    expect(await runCli(invalid.io)).toBe(EXIT.usage)
+    expect(invalid.stderr()).toBe('Error: profiles.team.rules.0: 1.id must match ^[a-z][a-z0-9._-]{0,63}$\n')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('prints a profile\'s rules as ids and a file\'s hash with its ids with --print-config, never a text', async () => {
+    mkdirSync(join(dir, 'rules'), { recursive: true })
+    write('rules/team.yaml', RULES_YAML)
+    const config = write('team-rules-print.yaml', TEAM_RULES.replace('rules: [{file: rules/team.yaml}]', 'rules: [{id: inline, text: PLANTED-RULE}, {file: rules/team.yaml}, {repository: .quorum/rules.yaml}]\n    requireRule: true'))
+    const { io, stdout } = harness({
+      argv: ['--print-config'],
+      env: { ...MODEL, QUORUM_CONFIG: config },
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stdout()).toContain(`\n    rules:\n      - inline\n      - sha256: ${documentSha256(RULES_YAML)}\n        ids:\n          - no-any\n          - license\n      - repository: .quorum/rules.yaml\n    requireRule: true\n`)
+    expect(stdout()).not.toContain('PLANTED')
+    expect(stdout()).not.toContain('No any outside tests')
+  })
+})
+
 describe('a profile\'s repository documents', () => {
   const GUIDELINE = 'Name things for what they do.'
   const BASE = 'a'.repeat(40)
