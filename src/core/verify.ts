@@ -1,7 +1,8 @@
 import { hunksOf, locate, sectionFor } from './diff.ts'
 import type { FindingLocation, Hunk } from './diff.ts'
+import { excludeMatcher } from './exclude.ts'
 import { stripHidden } from './sanitize.ts'
-import type { Finding, FindingDetails } from './types.ts'
+import type { Finding, FindingDetails, ReviewRule } from './types.ts'
 
 /** A finding as the harness verified it, before the research stage names it and tags its profile. */
 export type VerifiedFinding = Omit<Finding, 'id' | 'fingerprint' | 'profile'>
@@ -59,6 +60,9 @@ export const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim
  * and `evidenceRow` are then read from the diff there, `citedLine` keeps the line the finder cited,
  * and `quoteMatched` is true. Every other finding stays where it was cited, and the quote still
  * reaches no voter.
+ *
+ * The rule a finding cites, when the finder wrote one that is not blank, is carried as it is, trimmed: it is the finder's text
+ * and not yet a rule, until `checkCitations` has read it against the rules the review sent.
  */
 export function verifyFindings(details: readonly FindingDetails[], sections: ReadonlyMap<string, string>): { findings: VerifiedFinding[], invalid: string[] } {
   const findings: VerifiedFinding[] = []
@@ -83,6 +87,7 @@ export function verifyFindings(details: readonly FindingDetails[], sections: Rea
     const read = anchor?.located ?? located
     const evidence = cap(read.evidence, MAX_EVIDENCE)
     const evidenceRow = citedRow(read, evidence)
+    const cited = detail.rule?.trim() ?? ''
     findings.push({
       file,
       line: anchor?.line ?? detail.line,
@@ -90,6 +95,9 @@ export function verifyFindings(details: readonly FindingDetails[], sections: Rea
         ? {}
         : { citedLine: detail.line }),
       category: plainText(detail.category, MAX_CATEGORY) || UNCATEGORIZED,
+      ...(cited === ''
+        ? {}
+        : { rule: cited }),
       summary: plainText(detail.summary, MAX_SUMMARY),
       evidence,
       ...(evidenceRow === undefined
@@ -99,6 +107,48 @@ export function verifyFindings(details: readonly FindingDetails[], sections: Rea
     })
   }
   return { findings, invalid }
+}
+
+/**
+ * Check the rule each of `findings` cites, once `verifyFindings` has anchored it, so on the finding's final file and line: a citation
+ * holds when it names a rule of `rules`, the rules the review sent, whose `paths` match the finding's file (a rule with none applies to
+ * every file), and the finding then carries that rule's own id, never the finder's text. Any other citation fails, with the reason
+ * `"<file>":<line> cites no rule this review sent`: its finding goes on with no `rule`, or, with `requireRule`, is dropped. With
+ * `requireRule`, a finding that cites none is dropped too, with the reason `"<file>":<line> cites no rule, which the profile requires`;
+ * without it, it is kept as it is. The file is JSON-quoted and cut at 80 characters, and no reason holds what the finder cited.
+ */
+export function checkCitations(findings: readonly VerifiedFinding[], rules: readonly ReviewRule[], requireRule: boolean): { findings: VerifiedFinding[], invalid: string[] } {
+  const kept: VerifiedFinding[] = []
+  const invalid: string[] = []
+  const matchers = new Map<ReviewRule, (path: string) => boolean>()
+  const applies = (rule: ReviewRule, file: string): boolean => {
+    if (rule.paths === undefined) return true
+    const matcher = matchers.get(rule) ?? excludeMatcher(rule.paths)
+    matchers.set(rule, matcher)
+    return matcher(file)
+  }
+  for (const finding of findings) {
+    const where = `${JSON.stringify(cap(finding.file, MAX_REPORTED_FILE))}:${finding.line}`
+    if (finding.rule === undefined) {
+      if (!requireRule) {
+        kept.push(finding)
+        continue
+      }
+      invalid.push(`${where} cites no rule, which the profile requires`)
+      continue
+    }
+    const cited = finding.rule
+    const rule = rules.find(each => each.id === cited && applies(each, finding.file))
+    if (rule !== undefined) {
+      kept.push({ ...finding, rule: rule.id })
+      continue
+    }
+    invalid.push(`${where} cites no rule this review sent`)
+    if (requireRule) continue
+    const { rule: _refused, ...rest } = finding
+    kept.push(rest)
+  }
+  return { findings: kept, invalid }
 }
 
 /**

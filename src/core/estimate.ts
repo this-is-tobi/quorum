@@ -11,7 +11,8 @@ import type { CompletionRequest, Provider } from './ports.ts'
 import { researchRequest, voteRequest } from './prompts.ts'
 import type { Ask, PartOf } from './prompts.ts'
 import { MAX_DEPTH } from './recovery.ts'
-import { reservationOf, roomOf, withSent } from './stages/context.ts'
+import { largestRule } from './rules.ts'
+import { asksNothing, reservationOf, roomOf, withSent } from './stages/context.ts'
 import type { LensRun, ProfileRun, Target } from './stages/context.ts'
 import { dispatchOrder, planResearch } from './stages/research.ts'
 import type { ResearchPlan } from './stages/research.ts'
@@ -58,11 +59,13 @@ interface Section {
  * give it, so a reservation is the one the review takes. `given` are the review's own runs: a profile that a review's
  * repository documents name is a run with them in its guidelines, its research instructions and its rules, so each part and
  * each vote bound here counts them. A run that lists rules sends the ones whose paths match a file of the filtered diff
- * (`withSent`), so each part counts that block and a vote counts none.
+ * (`withSent`), so each part counts that block and each vote the largest rule sent, which a vote of a finding that cites one holds. A run that
+ * requires a rule and sends none asks its research nothing (`asksNothing`): it makes no call, and costs nothing as a profile with nothing
+ * left to read does.
  *
  * A vote's reservation depends on a finding that does not exist yet, so each lens's is a bound: the request for
  * a finding at the caps the harness cleans a finder's text to, citing the largest section of the filtered
- * diff, whole for a voter that states no room or whose room holds it, else the partial context filled to its
+ * diff and the largest rule the review sends, whole for a voter that states no room or whose room holds it, else the partial context filled to its
  * room. A review may cast `findingsCap` votes of each lens in each profile.
  *
  * `expected` counts each research part at a third of its input, rounded up, plus its reply at the lesser of its
@@ -92,7 +95,7 @@ export function estimateReview(given: readonly ProfileRun[], settings: EstimateS
   const planned = runs.map(run => ({
     id: run.id,
     run,
-    ...largest === undefined
+    ...largest === undefined || asksNothing(run)
       ? noCall(settings.budgets[run.id])
       : profileEstimate(run, planResearch(run, scope.diff, filtered, { partTokens: settings.partTokens, maxFindings: settings.maxFindings, replyTokens: settings.budgets[run.id].research.replyTokens }), scope.diff, largest, settings),
   }))
@@ -342,7 +345,9 @@ function researchCalls(run: ProfileRun, plan: ResearchPlan, diff: string, ask: A
  */
 function voteBound(run: ProfileRun, lens: LensRun, largest: Section, replyTokens: number | undefined): number {
   const finding = longestFinding(largest.path)
-  const request = (context: string, partial = false): CompletionRequest => voteRequest(lens.instructions, finding, context, run.guidelines, partial, { replyTokens })
+  // The finding does not exist yet: its vote holds, at most, the largest rule the review sends.
+  const rule = largestRule(run.sent ?? [])
+  const request = (context: string, partial = false): CompletionRequest => voteRequest(lens.instructions, finding, context, run.guidelines, partial, { replyTokens }, rule)
   const room = roomOf(lens, request(''))
   if (room !== undefined && largest.tokens > room) {
     const partialRoom = roomOf(lens, request('', true))

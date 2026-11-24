@@ -97,6 +97,17 @@ export interface ProfileRun {
    * whole block; in a review's run, the rules whose paths match a file of the review's filtered diff (`withSent`).
    */
   readonly sent?: readonly ReviewRule[]
+  /** Whether every finding must cite a rule the review sent (`Profile.requireRule`): a finding that cites none, or whose citation fails its check, is dropped. */
+  readonly requireRule: boolean
+}
+
+/**
+ * Whether `run` asks its research nothing: it requires a rule and sends none, so every finding would be dropped for want of one.
+ * A profile that lists no rule sends none. Such a run's research makes no call and reads every part as `reviewed`, and its estimate
+ * is one of a profile that makes no call.
+ */
+export function asksNothing(run: ProfileRun): boolean {
+  return run.requireRule && (run.sent?.length ?? 0) === 0
 }
 
 /**

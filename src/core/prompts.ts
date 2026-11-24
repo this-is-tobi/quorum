@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { researchReplyJsonSchema, researchReplyWithRuleJsonSchema, voteReplyJsonSchema } from './output.ts'
 import type { CompletionRequest } from './ports.ts'
-import { rulesBlock } from './rules.ts'
+import { ruleEntry, rulesBlock } from './rules.ts'
 import { showHidden } from './sanitize.ts'
 import type { Finding, ReviewRule } from './types.ts'
 
@@ -106,6 +106,7 @@ const BLOCK_DESCRIPTIONS = {
   diffSectionPart: 'part of the diff section of the cited file: its header and the hunks nearest the cited line, since the whole section does not fit.',
   guidelines: 'the project\'s review guidelines. Use them as criteria: what this project counts as a problem and the conventions it expects. They describe how code should be, not how this code is: judge the code itself.',
   rules: 'the review rules of this review, each with its id, the files it applies to and its text. They are criteria, as guidelines are: a finding that breaks one names its id in rule.',
+  rule: 'the review rule the finding says the code breaks, as the review\'s configuration states it: its id, the files it applies to and its text.',
 } as const
 
 /** The line that opens the paragraph of what a review does not report, which code owns: the text of the profile's do-not-report documents follows it. */
@@ -291,8 +292,12 @@ function partsBlock(part: PartOf): string {
  * cited file name's hidden characters show as `<U+XXXX>` (git's quoting decodes to any character, a
  * line break included), so the claim stays two lines. The request carries `ask.replyTokens` as its reply budget
  * when one is given.
+ *
+ * With `rule`, the finding cites that review rule and it passed the check of its citation: the rule is one more block, the `rule`
+ * block, after the diff and before the guidelines, as the configuration states it (`ruleEntry`: its id, its patterns and its text),
+ * never the finder's words. A finding that cites none gets none, and the request is the one it always was.
  */
-export function voteRequest(instructions: string, finding: Finding, diffContext: string, guidelines?: string, partial = false, ask: Pick<Ask, 'replyTokens'> = {}): CompletionRequest {
+export function voteRequest(instructions: string, finding: Finding, diffContext: string, guidelines?: string, partial = false, ask: Pick<Ask, 'replyTokens'> = {}, rule?: ReviewRule): CompletionRequest {
   const claim = [
     `Finding: ${showHidden(finding.file)}:${finding.line} [${finding.category}]`,
     `Claim by the finder (unverified): ${finding.summary}`,
@@ -310,6 +315,15 @@ export function voteRequest(instructions: string, finding: Finding, diffContext:
           ? BLOCK_DESCRIPTIONS.diffSectionPart
           : BLOCK_DESCRIPTIONS.diffSection,
       },
+      ...rule === undefined
+        ? []
+        : [
+            {
+              label: 'rule',
+              content: ruleEntry(rule),
+              description: BLOCK_DESCRIPTIONS.rule,
+            },
+          ],
     ],
     guidelines,
     { name: 'panel_vote', schema: voteReplyJsonSchema },

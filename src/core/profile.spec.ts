@@ -255,6 +255,21 @@ describe('profileIssues', () => {
     } as unknown as Profile)).toEqual([issue])
   })
 
+  it('refuses a requireRule that is not a boolean', () => {
+    for (const requireRule of ['yes', 'true', 1, 0, null, [], {}]) {
+      expect(profileIssues({
+        ...valid,
+        id: 'loose',
+        requireRule,
+      } as unknown as Profile), JSON.stringify(requireRule)).toEqual([
+        { path: 'loose.requireRule', message: 'must be true or false' },
+      ])
+    }
+    for (const requireRule of [true, false, undefined]) {
+      expect(profileIssues({ ...valid, requireRule }), String(requireRule)).toEqual([])
+    }
+  })
+
   it('reports missing prompts and lenses as issues', () => {
     expect(profileIssues({ id: 'bare' } as unknown as Profile)).toEqual([
       { path: 'bare.lenses', message: 'must be an array of lenses' },

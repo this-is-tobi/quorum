@@ -9,8 +9,8 @@
  * It is stricter than the types where a reporter writes a value as code, bare, and an attacker could
  * otherwise choose its bytes: every profile id, as a key of `meta.profiles` and as a verdict's or a gap's
  * `profile`, matches the core's pattern and names a profile of the result, and there is at least one; a
- * finding's `id` is 12 hexadecimal digits and its `fingerprint` is the core's, and its summary, category and
- * evidence keep the core's caps; and a kept finding has a `confidence` while a discarded or an unreviewed one has
+ * finding's `id` is 12 hexadecimal digits and its `fingerprint` is the core's, its `rule`, when it cites one, matches the
+ * pattern of a rule id, and its summary, category and evidence keep the core's caps; and a kept finding has a `confidence` while a discarded or an unreviewed one has
  * none, which the panel guarantees (`verdictStatus`: a finding reaches a level exactly when it is kept). The
  * core writes all of it, so a result a review wrote passes.
  *
@@ -26,6 +26,7 @@ import { COMMIT_ID, MAX_DOCUMENT_PATH, SHA256 } from './documents.ts'
 import { NO_ANSWERS } from './errors.ts'
 import { SKIP_RULES, sourceIssues } from './inputs.ts'
 import { FAIL_ON_LEVELS, PROFILE_ID_PATTERN } from './profile.ts'
+import { RULE_ID } from './rules.ts'
 import { SECRET_RULES } from './secrets.ts'
 import { FINGERPRINT_PATTERN } from './stages/research.ts'
 import { MAX_CATEGORY, MAX_EVIDENCE, MAX_SUMMARY } from './verify.ts'
@@ -84,6 +85,7 @@ function verdictOf<Votes extends z.ZodType>(votes: Votes) {
     line: count,
     citedLine: count.optional(),
     category: z.string().max(MAX_CATEGORY),
+    rule: z.string().regex(RULE_ID).optional(),
     summary: z.string().max(MAX_SUMMARY),
     evidence: z.string().max(MAX_EVIDENCE),
     evidenceRow: z.int().min(0).max(2).optional(),
@@ -164,6 +166,11 @@ const recovery = z.strictObject({
   saturated: count,
   unreadHunks: count,
 })
+/** How many review rules a profile lists and how many its review sent. */
+const ruleCounts = z.strictObject({
+  listed: count,
+  sent: count,
+})
 /** What a profile's meta records of a review. The keys of each shape are in the order the core writes them, so a result read back is written as it was. */
 const profileMeta = z.strictObject({
   providers: z.strictObject({
@@ -174,6 +181,8 @@ const profileMeta = z.strictObject({
   failOn,
   gating: z.boolean(),
   invalidFindings: count,
+  rules: ruleCounts,
+  invalidRules: count,
   coverage: z.array(coverageEntry),
   recovery: recovery.optional(),
 })
@@ -184,6 +193,8 @@ const publicProfileMeta = z.strictObject({
   gating: z.boolean(),
   discarded: count,
   invalidFindings: count,
+  rules: ruleCounts,
+  invalidRules: count,
   coverage: z.array(coverageEntry),
   recovery: recovery.optional(),
 })

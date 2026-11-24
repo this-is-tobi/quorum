@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { locate, splitDiff } from './diff.ts'
-import type { FindingDetails } from './types.ts'
-import { MAX_ANCHOR_OCCURRENCES, MIN_ANCHOR_QUOTE, UNCATEGORIZED, verifyFindings } from './verify.ts'
+import type { FindingDetails, ReviewRule } from './types.ts'
+import { checkCitations, MAX_ANCHOR_OCCURRENCES, MIN_ANCHOR_QUOTE, UNCATEGORIZED, verifyFindings } from './verify.ts'
 import type { VerifiedFinding } from './verify.ts'
 
 const diff = [
@@ -576,5 +576,142 @@ describe('a finding anchored on its quote', () => {
     const { findings } = verifyFindings(details, sections)
     expect(performance.now() - started).toBeLessThan(1000)
     expect(findings.map(({ line, citedLine }) => [line, citedLine])).toEqual(details.map(({ line }) => [line + 10, line]))
+  })
+})
+
+describe('a rule citation', () => {
+  const SINK = `db.query(\`SELECT * FROM t WHERE id = \${id}\`)`
+  const noAny: ReviewRule = {
+    id: 'no-any',
+    text: 'No any outside tests.',
+    paths: ['src/**'],
+  }
+  const license: ReviewRule = { id: 'license', text: 'Each file starts with the license header.' }
+
+  /** One added file of `count` lines, each `const value<i> = compute(<i>)` but those `lines` replace. */
+  function addedFile(name: string, count: number, lines: Readonly<Record<number, string>> = {}): string {
+    return [
+      `diff --git a/${name} b/${name}`,
+      '--- /dev/null',
+      `+++ b/${name}`,
+      `@@ -0,0 +1,${count} @@`,
+      ...Array.from({ length: count }, (_, at) => `+${lines[at + 1] ?? `const value${at + 1} = compute(${at + 1})`}`),
+    ].join('\n')
+  }
+
+  /** 3j's file of 40 added lines in a.js, its sink at 30, and a section of src/x.ts. */
+  const sections = splitDiff([
+    addedFile('a.js', 40, { 30: SINK }),
+    addedFile('src/x.ts', 5),
+  ].join('\n'))
+  const citing = (file: string, line: number, quote: string, rule?: string): FindingDetails => ({
+    ...reported,
+    file,
+    line,
+    quote,
+    ...rule === undefined
+      ? {}
+      : { rule },
+  })
+  /** The findings and the reasons a profile's check of `details` comes to, after the anchor. */
+  const checked = (details: FindingDetails[], rules: readonly ReviewRule[], requireRule: boolean): { findings: VerifiedFinding[], invalid: string[] } => checkCitations(verifyFindings(details, sections).findings, rules, requireRule)
+
+  it.each([
+    [
+      'without requireRule',
+      false,
+      [30, 3],
+    ],
+    [
+      'with requireRule',
+      true,
+      [3],
+    ],
+  ])('checks a citation after the anchor, in a profile %s', (_name, requireRule, lines) => {
+    const { findings, invalid } = checked([
+      citing('a.js', 11, SINK, 'no-any'),
+      citing('src/x.ts', 3, 'const value3 = compute(3)', 'no-any'),
+    ], [noAny], requireRule)
+    // The anchor moves the first to line 30 of a.js, which no pattern of the rule matches, so its citation fails there.
+    expect(invalid).toEqual(['"a.js":30 cites no rule this review sent'])
+    expect(findings.map(finding => finding.line)).toEqual(lines)
+    const kept = findings.find(finding => finding.file === 'src/x.ts')
+    expect(kept).toMatchObject({ rule: 'no-any' })
+    const moved = findings.find(finding => finding.file === 'a.js')
+    if (requireRule) {
+      expect(moved).toBeUndefined()
+    } else {
+      expect(moved).toMatchObject({ line: 30, citedLine: 11 })
+      expect(Object.hasOwn(moved ?? {}, 'rule')).toBe(false)
+    }
+  })
+
+  it('drops a finding that cites none in a profile that requires a rule, and keeps it in one that does not', () => {
+    const details = [
+      citing('src/x.ts', 3, 'const value3 = compute(3)'),
+    ]
+    const without = checked(details, [noAny], false)
+    expect(without.invalid).toEqual([])
+    expect(without.findings).toHaveLength(1)
+    expect(Object.hasOwn(without.findings[0], 'rule')).toBe(false)
+    const required = checked(details, [noAny], true)
+    expect(required.findings).toEqual([])
+    expect(required.invalid).toEqual(['"src/x.ts":3 cites no rule, which the profile requires'])
+    // A citation of white space alone is none.
+    expect(checked([
+      citing('src/x.ts', 3, 'const value3 = compute(3)', ' \n\t'),
+    ], [noAny], true).invalid).toEqual(['"src/x.ts":3 cites no rule, which the profile requires'])
+  })
+
+  it('reads a cited id trimmed, and refuses one that names a rule this review did not send', () => {
+    const [held] = verifyFindings([
+      citing('src/x.ts', 3, 'const value3 = compute(3)', ' no-any '),
+    ], sections).findings
+    expect(held.rule).toBe('no-any')
+    const trimmed = checked([
+      citing('src/x.ts', 3, 'const value3 = compute(3)', ' no-any '),
+    ], [noAny], true)
+    expect(trimmed.invalid).toEqual([])
+    expect(trimmed.findings.map(finding => finding.rule)).toEqual(['no-any'])
+    // A rule the review did not send fails, whether or not it exists elsewhere.
+    for (const cited of ['license', 'No-Any', 'no-any extra']) {
+      const refused = checked([
+        citing('src/x.ts', 3, 'const value3 = compute(3)', cited),
+      ], [noAny], false)
+      expect(refused.invalid).toEqual(['"src/x.ts":3 cites no rule this review sent'])
+      expect(refused.findings).toHaveLength(1)
+      expect(Object.hasOwn(refused.findings[0], 'rule')).toBe(false)
+    }
+  })
+
+  it('keeps a citation of a rule with no paths for any file, and matches a rule\'s paths against the finding\'s file', () => {
+    const both = checked([
+      citing('a.js', 30, SINK, 'license'),
+      citing('src/x.ts', 3, 'const value3 = compute(3)', 'license'),
+      citing('src/x.ts', 4, 'const value4 = compute(4)', 'no-any'),
+    ], [noAny, license], true)
+    expect(both.invalid).toEqual([])
+    expect(both.findings.map(finding => finding.rule)).toEqual(['license', 'license', 'no-any'])
+  })
+
+  it('keeps the rule\'s own id, never the finder\'s text, and a finding that cites a rule of an empty list fails as one that names none was sent', () => {
+    const none = checked([
+      citing('src/x.ts', 3, 'const value3 = compute(3)', 'no-any'),
+    ], [], false)
+    expect(none.invalid).toEqual(['"src/x.ts":3 cites no rule this review sent'])
+    expect(JSON.stringify(none)).not.toContain('no-any')
+  })
+
+  it('names a file in a reason as JSON, cut at 80 characters', () => {
+    const name = `src/${'d'.repeat(120)}.ts`
+    const long = splitDiff(addedFile(name, 3))
+    const { findings, invalid } = checkCitations(verifyFindings([
+      citing(name, 2, 'const value2 = compute(2)', 'nothing-here'),
+    ], long).findings, [noAny], true)
+    expect(findings).toEqual([])
+    expect(invalid).toHaveLength(1)
+    const [quoted] = invalid
+    expect(quoted).toBe(`${JSON.stringify(`${name.slice(0, 79)}…`)}:2 cites no rule this review sent`)
+    expect(quoted.indexOf(':2 cites')).toBe(82)
   })
 })

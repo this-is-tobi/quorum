@@ -17,8 +17,8 @@
  * - **each gap's detail:** a detail quotes a file name, a finder's text or a server's, so the view keeps the
  *   profile, the reason and the file, and a reporter writes the reason's fixed words (`GAP_WORDS`).
  *
- * Everything else stays: the findings with their evidence, the files left out, a held file's name, reason and
- * rule included, the flags with their details, which quorum's code writes, and the documents the review read as policy
+ * Everything else stays: the findings with their evidence and the id of the review rule each cites, the files left out, a held file's name, reason and
+ * rule included, each profile's counts of its rules and of the citations refused, the flags with their details, which quorum's code writes, and the documents the review read as policy
  * (`meta.context`), each a hash, a path, a commit and counts and never a text. `meta.view` says it is the
  * public view, so no reader mistakes it for the full result.
  *
@@ -99,6 +99,8 @@ function publicProfile(entry: unknown, discarded: number): PublicProfileMeta {
     gating: ownData(entry, 'gating') as boolean,
     discarded,
     invalidFindings: ownData(entry, 'invalidFindings') as number,
+    rules: structuredClone(ownData(entry, 'rules')) as PublicProfileMeta['rules'],
+    invalidRules: ownData(entry, 'invalidRules') as number,
     coverage: structuredClone(ownData(entry, 'coverage')) as PublicProfileMeta['coverage'],
     ...recovery === undefined
       ? {}
