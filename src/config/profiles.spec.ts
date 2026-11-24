@@ -869,3 +869,512 @@ describe('resolveProfiles with documents', () => {
     ])
   })
 })
+
+describe('resolveProfiles with rules', () => {
+  const ZWSP = String.fromCharCode(0x200B)
+  const LICENSE = { id: 'license', text: 'Each file starts with the license header.' }
+  const IO_ERRORS = {
+    id: 'io-errors',
+    text: 'Every I/O call handles its error.',
+    paths: ['src/**'],
+  }
+  /** A built-in profile of the test's own, with two rules of its own and `requireRule`: `security` has none. */
+  const CONVENTIONS: Profile = {
+    id: 'conventions',
+    prompts: TEAM.prompts,
+    lenses: TEAM.lenses,
+    rules: [LICENSE, IO_ERRORS],
+    requireRule: true,
+  }
+  const BUILT_IN = new Map([
+    [CONVENTIONS.id, CONVENTIONS],
+  ])
+  function resolveWith(profiles: ConfigInput['profiles'], ids?: string[]): ReturnType<typeof resolveProfiles> {
+    return resolveProfiles({
+      profiles,
+      selection: ids === undefined
+        ? undefined
+        : { ids, path: 'QUORUM_PROFILES' },
+      roles,
+      providers,
+      builtIn: BUILT_IN,
+    })
+  }
+  const YAML = `- id: no-any\n  text: No any outside tests.${ZWSP}\n  paths: ["src/**"]\n- id: naming\n  text: Names say what a value is.\n`
+  const JSON_RULES = '[{"id": "errors", "text": "Handle the error."}]'
+  const NONE = { characters: 0, comments: 0, entities: 0 }
+
+  it('builds a profile\'s rules from its base, its inline rules and its files, in order, each a document', () => {
+    const { profiles, issues } = resolveWith({
+      conventions: {
+        rules: [
+          { id: 'named-exports', text: `Use named exports.${ZWSP}` },
+          { text: YAML, format: 'yaml' },
+          {
+            id: 'no-default',
+            text: 'No default exports.',
+            paths: ['src/**'],
+          },
+          { text: JSON_RULES, format: 'json' },
+          { repository: '.quorum/rules.yaml', optional: true },
+        ],
+      },
+    })
+    expect(issues).toEqual([])
+    const [conventions] = profiles
+    // The base's own rules are the profile's own; every other rule is a document of the config, in the order the entries are written.
+    expect(conventions.profile.rules).toEqual([LICENSE, IO_ERRORS])
+    expect(conventions.profile.documents).toStrictEqual([
+      {
+        profile: 'conventions',
+        kind: 'rules',
+        origin: { kind: 'config' },
+        rules: [
+          { id: 'named-exports', text: 'Use named exports.' },
+        ],
+        removed: { characters: 1, comments: 0, entities: 0 },
+      },
+      {
+        profile: 'conventions',
+        kind: 'rules',
+        origin: {
+          kind: 'config',
+          sha256: documentSha256(YAML),
+        },
+        rules: [
+          {
+            id: 'no-any',
+            text: 'No any outside tests.',
+            paths: ['src/**'],
+          },
+          { id: 'naming', text: 'Names say what a value is.' },
+        ],
+        removed: { characters: 1, comments: 0, entities: 0 },
+      },
+      {
+        profile: 'conventions',
+        kind: 'rules',
+        origin: { kind: 'config' },
+        rules: [
+          {
+            id: 'no-default',
+            text: 'No default exports.',
+            paths: ['src/**'],
+          },
+        ],
+        removed: NONE,
+      },
+      {
+        profile: 'conventions',
+        kind: 'rules',
+        origin: {
+          kind: 'config',
+          sha256: documentSha256(JSON_RULES),
+        },
+        rules: [
+          { id: 'errors', text: 'Handle the error.' },
+        ],
+        removed: NONE,
+      },
+    ])
+    // A repository file is read for a review, at a commit: the entry keeps its place among the field's entries.
+    expect(conventions.repository).toEqual([
+      {
+        kind: 'rules',
+        path: '.quorum/rules.yaml',
+        optional: true,
+        at: 'profiles.conventions.rules.4.repository',
+        index: 4,
+      },
+    ])
+    const { documents } = conventions.profile
+    expect(Object.isFrozen(documents)).toBe(true)
+    expect(documents?.every(document => Object.isFrozen(document) && Object.isFrozen(document.origin) && Object.isFrozen(document.rules))).toBe(true)
+    expect(documents?.flatMap(document => document.rules ?? []).every(rule => Object.isFrozen(rule))).toBe(true)
+  })
+
+  it('takes the rules of a profile of every kind: one of its own, the entry of a built-in one and the security profile', () => {
+    const rules = [
+      { id: 'no-any', text: 'No any outside tests.' },
+    ]
+    const { profiles, issues } = resolveWith({
+      naming: { ...TEAM, rules },
+      conventions: { rules },
+    }, ['naming', 'conventions'])
+    expect(issues).toEqual([])
+    expect(profiles.map(({ profile }) => [
+      profile.id,
+      profile.rules?.length,
+      profile.documents?.map(document => document.profile),
+    ])).toEqual([
+      [
+        'naming',
+        undefined,
+        ['naming'],
+      ],
+      [
+        'conventions',
+        2,
+        ['conventions'],
+      ],
+    ])
+    const [security] = resolve({
+      security: { rules },
+    }).profiles
+    expect(security.profile.documents).toEqual([
+      expect.objectContaining({ profile: 'security', kind: 'rules', rules }),
+    ])
+    expect('rules' in security.profile).toBe(false)
+  })
+
+  it('drops the base\'s rules with builtInRules: false, and keeps its requireRule unless the entry sets one', () => {
+    const inline = [
+      { id: 'no-any', text: 'No any outside tests.' },
+    ]
+    const [kept] = resolveWith({
+      conventions: { rules: inline },
+    }).profiles
+    expect(kept.profile.rules).toEqual([LICENSE, IO_ERRORS])
+    expect(kept.profile.requireRule).toBe(true)
+    expect('builtInRules' in kept).toBe(false)
+    const [explicit] = resolveWith({
+      conventions: { rules: inline, builtInRules: true },
+    }).profiles
+    expect(explicit.profile.rules).toEqual([LICENSE, IO_ERRORS])
+    expect('builtInRules' in explicit).toBe(false)
+    const [bare] = resolveWith(undefined, ['conventions']).profiles
+    expect(bare.profile.rules).toEqual([LICENSE, IO_ERRORS])
+    expect(bare.profile.requireRule).toBe(true)
+
+    const [dropped] = resolveWith({
+      conventions: { rules: inline, builtInRules: false },
+    }).profiles
+    expect('rules' in dropped.profile).toBe(false)
+    expect(dropped.profile.documents).toEqual([
+      expect.objectContaining({ kind: 'rules', rules: inline }),
+    ])
+    expect(dropped.builtInRules).toBe(false)
+    // Dropping the base's rules keeps its requireRule: only the entry's own value changes it.
+    expect(dropped.profile.requireRule).toBe(true)
+
+    const [relaxed] = resolveWith({
+      conventions: { requireRule: false },
+    }).profiles
+    expect('requireRule' in relaxed.profile).toBe(false)
+    const [required] = resolveWith({
+      naming: { ...TEAM, requireRule: true, rules: inline },
+    }).profiles
+    expect(required.profile.requireRule).toBe(true)
+    // A profile with no base has no rules to drop, and requires none unless the entry says so.
+    const [plain] = resolveWith({
+      naming: { ...TEAM, builtInRules: false, requireRule: false },
+    }).profiles
+    expect('rules' in plain.profile).toBe(false)
+    expect('requireRule' in plain.profile).toBe(false)
+  })
+
+  it('refuses an id an inline rule and a file share, at the second', () => {
+    const shared = '- id: shared\n  text: In a file.\n'
+    const inline = { id: 'shared', text: 'Inline.' }
+    expect(resolveWith({
+      naming: {
+        ...TEAM,
+        rules: [
+          inline,
+          { text: shared, format: 'yaml' },
+        ],
+      },
+    }).issues).toEqual([
+      { path: 'profiles.naming.rules.1', message: '0.id repeats the rule id "shared"' },
+    ])
+    expect(resolveWith({
+      naming: {
+        ...TEAM,
+        rules: [
+          { text: shared, format: 'yaml' },
+          inline,
+        ],
+      },
+    }).issues).toEqual([
+      { path: 'profiles.naming.rules.1.id', message: 'repeats the rule id "shared"' },
+    ])
+    expect(resolveWith({
+      naming: {
+        ...TEAM,
+        rules: [
+          { text: shared, format: 'yaml' },
+          { text: shared, format: 'yaml' },
+        ],
+      },
+    }).issues).toEqual([
+      { path: 'profiles.naming.rules.1', message: '0.id repeats the rule id "shared"' },
+    ])
+    // The base's rules count: an id of the built-in profile is taken, until the entry drops them.
+    expect(resolveWith({
+      conventions: {
+        rules: [
+          { id: 'license', text: 'Again.' },
+        ],
+      },
+    }).issues).toEqual([
+      { path: 'profiles.conventions.rules.0.id', message: 'repeats the rule id "license"' },
+    ])
+    expect(resolveWith({
+      conventions: {
+        builtInRules: false,
+        rules: [
+          { id: 'license', text: 'Again.' },
+        ],
+      },
+    }).issues).toEqual([])
+    // A rule that repeats an id inside one file is told at the file, with the rule's place in it.
+    expect(resolveWith({
+      naming: {
+        ...TEAM,
+        rules: [
+          { text: `${shared}- id: other\n  text: x\n- id: shared\n  text: y\n`, format: 'yaml' },
+        ],
+      },
+    }).issues).toEqual([
+      { path: 'profiles.naming.rules.0', message: '2.id repeats the rule id "shared"' },
+    ])
+  })
+
+  it.each<[string, Record<string, unknown>[], string, string]>([
+    [
+      'a file whose fourth rule has an id that is no id',
+      [
+        { text: '- {id: a, text: x}\n- {id: b, text: x}\n- {id: c, text: x}\n- {id: Bad Id, text: x}\n', format: 'yaml' },
+      ],
+      'profiles.naming.rules.0',
+      '3.id must match ^[a-z][a-z0-9._-]{0,63}$',
+    ],
+    [
+      'a file that is no list',
+      [
+        { text: 'id: a\ntext: x\n', format: 'yaml' },
+      ],
+      'profiles.naming.rules.0',
+      'must be a list of rules',
+    ],
+    [
+      'a file that holds an unknown key',
+      [
+        { text: '[{"id": "a", "text": "x", "colour": "blue"}]', format: 'json' },
+      ],
+      'profiles.naming.rules.0',
+      '0.colour is not a known field',
+    ],
+    [
+      'a file that holds an alias',
+      [
+        { text: '- &a {id: a, text: x}\n- *a\n', format: 'yaml' },
+      ],
+      'profiles.naming.rules.0',
+      'uses an alias, which quorum does not read',
+    ],
+    [
+      'a file whose rule text is blank once cleaned',
+      [
+        { text: '- {id: a, text: "<!-- hidden -->"}\n', format: 'yaml' },
+      ],
+      'profiles.naming.rules.0',
+      '0.text must hold 1 to 1024 characters once cleaned',
+    ],
+    [
+      'a file whose rule has too many patterns',
+      [
+        {
+          text: JSON.stringify([
+            {
+              id: 'a',
+              text: 'x',
+              paths: Array.from({ length: 21 }, (_, index) => `d${index}/**`),
+            },
+          ]),
+          format: 'json',
+        },
+      ],
+      'profiles.naming.rules.0',
+      '0.paths must hold 1 to 20 patterns',
+    ],
+    [
+      'a file whose rule has a pattern that negates',
+      [
+        { text: '- {id: a, text: x, paths: ["!a"]}\n', format: 'yaml' },
+      ],
+      'profiles.naming.rules.0',
+      '0.paths.0 holds !, which negates nothing here: list only the paths to leave out',
+    ],
+    [
+      'an inline rule whose text is blank once cleaned',
+      [
+        { id: 'a', text: '<!-- hidden -->' },
+      ],
+      'profiles.naming.rules.0.text',
+      'must hold 1 to 1024 characters once cleaned',
+    ],
+    [
+      'an inline rule whose text the cleaner cannot settle',
+      [
+        { id: 'a', text: '<'.repeat(16) + '!---->'.repeat(16) },
+      ],
+      'profiles.naming.rules.0.text',
+      'nests HTML comments or character references too deep to clean in 16 passes: remove them',
+    ],
+    [
+      'an inline rule with no pattern in its paths',
+      [
+        { id: 'a', text: 'x', paths: [] },
+      ],
+      'profiles.naming.rules.0.paths',
+      'must hold 1 to 20 patterns',
+    ],
+    [
+      'two files that make more than 100 rules',
+      [
+        {
+          text: JSON.stringify(Array.from({ length: 51 }, (_, index) => ({ id: `a${index}`, text: 'x' }))),
+          format: 'json',
+        },
+        {
+          text: JSON.stringify(Array.from({ length: 50 }, (_, index) => ({ id: `b${index}`, text: 'x' }))),
+          format: 'json',
+        },
+      ],
+      'profiles.naming.rules',
+      'must hold at most 100 rules',
+    ],
+    [
+      'a file whose rules come to more than 32 KiB',
+      [
+        {
+          text: JSON.stringify(Array.from({ length: 33 }, (_, index) => ({
+            id: `a${index}`,
+            text: 'x'.repeat(1000),
+          }))),
+          format: 'json',
+        },
+      ],
+      'profiles.naming.rules.0',
+      'takes the profile\'s rules to 33000 bytes once cleaned, over the 32 KiB they may hold in all',
+    ],
+  ])('refuses a profile whose rules hold %s, at the entry', (_name, rules, path, message) => {
+    const { profiles, issues } = resolveWith({
+      naming: {
+        ...TEAM,
+        rules: rules as never,
+      },
+    })
+    expect(issues).toEqual([
+      { path, message },
+    ])
+    expect(profiles).toEqual([])
+  })
+
+  it('counts the base\'s rules and every entry\'s toward the 32 KiB of all of them, and names the profile\'s total', () => {
+    const big = (id: string, bytes: number): { id: string, text: string } => ({
+      id,
+      text: 'x'.repeat(bytes),
+    })
+    const rules = Array.from({ length: 16 }, (_, index) => big(`r${index}`, 1024))
+    // 16 KiB in 16 rules, then 16 more: the 32nd takes the total to the cap, the 33rd over it.
+    const { issues } = resolveWith({
+      naming: {
+        ...TEAM,
+        rules: [
+          ...rules,
+          ...rules.map(rule => ({ ...rule, id: `s${rule.id}` })),
+          big('last', 1024),
+        ],
+      },
+    })
+    expect(issues).toEqual([
+      { path: 'profiles.naming.rules.32', message: 'takes the profile\'s rules to 33792 bytes once cleaned, over the 32 KiB they may hold in all' },
+    ])
+  })
+
+  it('reads a rules file that holds no rule as a document of no rules, never an issue, and takes the rules after it as it does', () => {
+    const files = [
+      { text: '[]', format: 'json' },
+      { text: '# nothing yet\n', format: 'yaml' },
+      { text: '', format: 'yaml' },
+      { text: '[]\n', format: 'yaml' },
+    ] as const
+    const { profiles, issues } = resolveWith({
+      naming: {
+        ...TEAM,
+        rules: [
+          ...files,
+          { id: 'no-any', text: 'No any outside tests.' },
+        ],
+      },
+    })
+    expect(issues).toEqual([])
+    expect(profiles[0].profile.documents).toStrictEqual([
+      ...files.map(file => ({
+        profile: 'naming',
+        kind: 'rules',
+        origin: {
+          kind: 'config',
+          sha256: documentSha256(file.text),
+        },
+        rules: [],
+        removed: NONE,
+      })),
+      {
+        profile: 'naming',
+        kind: 'rules',
+        origin: { kind: 'config' },
+        rules: [
+          { id: 'no-any', text: 'No any outside tests.' },
+        ],
+        removed: NONE,
+      },
+    ])
+    // `rules: []` in the config lists nothing, and a repository entry names its file whether or not that file holds a rule.
+    expect(resolveWith({
+      naming: { ...TEAM, rules: [] },
+    }).issues).toEqual([])
+  })
+
+  it('reads an entry\'s fields as its own, never one a prototype supplies', () => {
+    const inherited = Object.assign(Object.create({ repository: 'INHERITED.yaml', format: 'json', text: 'inherited' }) as object, {
+      id: 'no-any',
+      text: 'No any outside tests.',
+    }) as { id: string, text: string }
+    const { profiles, issues } = resolveWith({
+      naming: {
+        ...TEAM,
+        rules: [inherited],
+      },
+    })
+    expect(issues).toEqual([])
+    expect(profiles[0].repository).toEqual([])
+    expect(profiles[0].profile.documents).toEqual([
+      expect.objectContaining({
+        kind: 'rules',
+        rules: [
+          { id: 'no-any', text: 'No any outside tests.' },
+        ],
+      }),
+    ])
+  })
+
+  it('holds no rules, requireRule or builtInRules key for a profile that sets none', () => {
+    const resolved = [
+      ...resolveWith({ naming: TEAM }).profiles,
+      ...resolveWith({
+        naming: { ...TEAM, rules: [] },
+      }).profiles,
+      ...resolve({ security: {} }).profiles,
+    ]
+    expect(resolved).toHaveLength(3)
+    for (const { profile, ...rest } of resolved) {
+      expect('rules' in profile).toBe(false)
+      expect('requireRule' in profile).toBe(false)
+      expect('documents' in profile).toBe(false)
+      expect('builtInRules' in rest).toBe(false)
+    }
+  })
+})

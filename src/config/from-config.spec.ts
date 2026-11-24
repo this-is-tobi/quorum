@@ -292,6 +292,10 @@ describe('fromConfig', () => {
           doNotReport: [
             { repository: 'SKIP.md' },
           ],
+          rules: [
+            { repository: 'RULES.yaml' },
+            { repository: 'MORE.json', optional: true },
+          ],
         },
       },
     }, {
@@ -307,6 +311,15 @@ describe('fromConfig', () => {
         ? {}
         : { text },
     })
+    // A rules document holds `rules` where another holds `text`: absent for a file the commit lacks.
+    const rulesDocument = (path: string, rules?: Array<{ id: string, text: string }>): ReviewDocument => ({
+      profile: 'naming',
+      kind: 'rules',
+      origin: { kind: 'repository', path, commit },
+      ...rules === undefined
+        ? {}
+        : { rules },
+    })
     const unread = (path: string): string => `"${path}" was not read for this review: pass the context readContext reads to the estimate and the review`
     const refused = [
       {
@@ -320,6 +333,14 @@ describe('fromConfig', () => {
       {
         path: 'profiles.naming.doNotReport.0.repository',
         message: unread('SKIP.md'),
+      },
+      {
+        path: 'profiles.naming.rules.0.repository',
+        message: unread('RULES.yaml'),
+      },
+      {
+        path: 'profiles.naming.rules.1.repository',
+        message: unread('MORE.json'),
       },
     ]
     const issuesOfCall = async (call: () => unknown): Promise<readonly ConfigIssue[]> => {
@@ -339,6 +360,9 @@ describe('fromConfig', () => {
           document('REVIEW.md', 'do-not-report'),
           document('OTHER.md', 'guidelines'),
           document('SKIP.md', 'do-not-report', 'x', 'other'),
+          // A text is no rules: a guidelines document at the rules file's path reads none of it.
+          document('RULES.yaml', 'guidelines', 'x'),
+          document('MORE.json', 'do-not-report', 'x'),
         ],
       },
     ]) {
@@ -354,6 +378,10 @@ describe('fromConfig', () => {
         documents: [
           document('REVIEW.md', 'guidelines', 'Name things.'),
           document('SKIP.md', 'do-not-report', 'Generated files.'),
+          rulesDocument('RULES.yaml', [
+            { id: 'no-any', text: 'No any.' },
+          ]),
+          rulesDocument('MORE.json'),
         ],
       },
     }))).toEqual([
@@ -369,6 +397,8 @@ describe('fromConfig', () => {
         document('REVIEW.md', 'guidelines'),
         document('ADDENDUM.md', 'guidelines'),
         document('SKIP.md', 'do-not-report'),
+        rulesDocument('RULES.yaml'),
+        rulesDocument('MORE.json'),
       ],
     }
     const required = [
@@ -379,6 +409,10 @@ describe('fromConfig', () => {
       {
         path: 'profiles.naming.doNotReport.0.repository',
         message: unread('SKIP.md'),
+      },
+      {
+        path: 'profiles.naming.rules.0.repository',
+        message: unread('RULES.yaml'),
       },
     ]
     expect(await issuesOfCall(() => quorum.review({ diff, source, context: unfound }))).toEqual(required)
@@ -391,6 +425,10 @@ describe('fromConfig', () => {
         document('REVIEW.md', 'guidelines', 'Name things.'),
         document('ADDENDUM.md', 'guidelines'),
         document('SKIP.md', 'do-not-report', 'Generated files.'),
+        rulesDocument('RULES.yaml', [
+          { id: 'no-any', text: 'No any.' },
+        ]),
+        rulesDocument('MORE.json'),
       ],
     }
     expect(() => quorum.estimate({ diff, context })).not.toThrow()
@@ -423,6 +461,22 @@ describe('fromConfig', () => {
         path: 'SKIP.md',
         status: 'read',
         bytes: 16,
+      },
+      {
+        ...record,
+        kind: 'rules',
+        path: 'RULES.yaml',
+        status: 'read',
+        bytes: 31,
+        rules: 1,
+      },
+      {
+        ...record,
+        kind: 'rules',
+        path: 'MORE.json',
+        status: 'missing',
+        bytes: 0,
+        rules: 0,
       },
     ])
     expect(fetchMock).toHaveBeenCalled()

@@ -5,7 +5,7 @@ import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import type { ProfileBudgets } from '../core/budgets.ts'
 import { documentSha256 } from '../core/documents.ts'
 import type { Provider } from '../core/ports.ts'
-import type { Profile, ReviewDocument } from '../core/types.ts'
+import type { Profile, ReviewDocument, ReviewRule } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { printConfig } from './print-config.ts'
 
@@ -349,6 +349,112 @@ describe('printConfig', () => {
     expect(alone).toContain('    guidelines:\n      - repository: REVIEW.md\nconcurrency: auto\n')
     expect(alone).not.toContain('optional')
     expect(alone).not.toContain('doNotReport')
+  })
+
+  it('prints each rule\'s id, a file\'s hash and ids, never a text', () => {
+    const planted = 'PLANTED-RULE-TEXT'
+    const rule = (id: string, paths?: string[]): ReviewRule => ({
+      id,
+      text: `${planted} ${id}`,
+      ...paths === undefined
+        ? {}
+        : { paths },
+    })
+    const document = (rules: ReviewRule[], sha256?: string): ReviewDocument => ({
+      profile: 'conventions',
+      kind: 'rules',
+      origin: sha256 === undefined
+        ? { kind: 'config' }
+        : { kind: 'config', sha256 },
+      rules,
+    })
+    const read = documentSha256('- id: license\n  text: from the file\n')
+    const entry = (path: string, index: number, optional = false): RepositoryEntry => ({
+      kind: 'rules',
+      path,
+      optional,
+      at: `profiles.conventions.rules.${index}.repository`,
+      index,
+    })
+    const profile: Profile = {
+      ...securityProfile,
+      id: 'conventions',
+      rules: [
+        rule('license'),
+        rule('io-errors'),
+      ],
+      requireRule: true,
+      documents: [
+        document([
+          rule('no-any', ['src/**']),
+        ]),
+        document([
+          rule('shared'),
+          rule('naming'),
+        ], read),
+        document([
+          rule('last'),
+        ]),
+      ],
+    }
+    const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, 'a']))
+    const print = (fields: Partial<ResolvedConfig['profiles'][number]> & { profile?: Profile }): string => printConfig(config({ a: SPEC }, {
+      profiles: [
+        {
+          profile,
+          research: 'a',
+          voters,
+          repository: [],
+          ...fields,
+        },
+      ],
+    }), undefined)
+    // Each entry sits where the config wrote it: an inline rule as its id, a file as its hash and the ids it holds, a repository entry as its path; the profile's own rules (the base's) first.
+    const text = print({
+      repository: [
+        entry('.quorum/rules.yaml', 3),
+        entry('docs/more.json', 4, true),
+      ],
+      builtInRules: false,
+    })
+    expect(text).toContain([
+      '    prompts:',
+      `      research: sha256:${documentSha256(securityProfile.prompts.research)}`,
+      `      vote: sha256:${documentSha256(securityProfile.prompts.vote)}`,
+      '    rules:',
+      '      - builtIn:',
+      '          - license',
+      '          - io-errors',
+      '      - no-any',
+      `      - sha256: ${read}`,
+      '        ids:',
+      '          - shared',
+      '          - naming',
+      '      - last',
+      '      - repository: .quorum/rules.yaml',
+      '      - repository: docs/more.json',
+      '        optional: true',
+      '    builtInRules: false',
+      '    requireRule: true',
+      'concurrency: auto',
+    ].join('\n'))
+    expect(text).not.toContain('PLANTED')
+    expect(text).not.toContain('src/**')
+    // A profile that requires no rule and keeps the base's prints neither flag; one with no rule prints neither list nor flag, and a repository entry alone prints alone.
+    const plain = print({
+      profile: { ...profile, requireRule: undefined, documents: undefined },
+    })
+    expect(plain).toContain('    rules:\n      - builtIn:\n          - license\n          - io-errors\nconcurrency: auto\n')
+    expect(plain).not.toContain('requireRule')
+    expect(plain).not.toContain('builtInRules')
+    const alone = print({
+      profile: securityProfile,
+      repository: [
+        entry('RULES.yaml', 0),
+      ],
+    })
+    expect(alone).toContain('    rules:\n      - repository: RULES.yaml\nconcurrency: auto\n')
+    expect(print({ profile: securityProfile })).not.toMatch(/\brules\b|requireRule|builtInRules/)
   })
 
   it('prints a config with no document as 0.12.0 did', () => {

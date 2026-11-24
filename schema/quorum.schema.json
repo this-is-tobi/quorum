@@ -463,6 +463,80 @@
             "description": "false drops the do-not-report text of the built-in profile this one starts from; true, the default, keeps it ahead of the documents",
             "type": "boolean"
           },
+          "rules": {
+            "description": "The review rules a finding may cite, at most 100 in all: each a rule written here, a { file } of rules read when the config loads (.yaml, .yml or .json), or a { repository } file of rules read at the commit the review reads its documents from; at most 16 of them name a file. Ids are unique across the profile",
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9._-]{0,63}$",
+                      "description": "The rule's id, which a finding names to cite it: a lowercase letter, then lowercase letters, digits, dots, underscores or hyphens, at most 64 characters, unique across the rules of the profile"
+                    },
+                    "text": {
+                      "type": "string",
+                      "description": "The rule: the criterion a finding that cites it breaks, 1 to 1024 characters once cleaned"
+                    },
+                    "paths": {
+                      "description": "The files the rule applies to, by path pattern as exclude takes them, 1 to 20 of them; a rule with none applies to every file",
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "description": "A path pattern: * and ? within a name, ** for whole directories, no / to match a file name in any directory, a leading / for the root"
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "text"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "file": {
+                      "type": "string",
+                      "description": "The file that holds the text, relative to the directory of the config file"
+                    }
+                  },
+                  "required": [
+                    "file"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "repository": {
+                      "type": "string",
+                      "description": "The file, as a path from the top level of the repository, read at the commit the review reads its documents from: a range's base, a path review's commit, HEAD for local changes; never the working tree"
+                    },
+                    "optional": {
+                      "description": "true records the file as missing when that commit has none, and the review goes on; false, the default, refuses a review whose commit lacks it",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "repository"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "builtInRules": {
+            "description": "false drops the rules of the built-in profile this one starts from; true, the default, keeps them ahead of the entries",
+            "type": "boolean"
+          },
+          "requireRule": {
+            "description": "true makes every finding cite a rule the review sent, and drops one that cites none or whose citation fails its check; false, the default, keeps a finding whose citation fails and drops the citation",
+            "type": "boolean"
+          },
           "lenses": {
             "description": "The angles of the panel: at least one",
             "minItems": 1,

@@ -4,9 +4,11 @@
  * configurations that resolve alike.
  *
  * The form holds every setting a review uses but the key: the profiles that run, in run order, each with
- * its id, prompts, lenses, policy and failOn, the do-not-report text it starts from and the documents its
+ * its id, prompts, lenses, policy and failOn, the do-not-report text it starts from, the documents its
  * config names (each its cleaned text and the hash of the text as read, and no key when it has none, so a
- * profile with no document keeps the form it had), and its research provider and each lens's provider written
+ * profile with no document keeps the form it had), its review rules (each its id, text and paths, a rules
+ * file's with the hash of its text as read) and `requireRule` when it is set, so a profile with no rule keeps
+ * the form it had, and its research provider and each lens's provider written
  * out in place of their names; every field of a provider defined as data but its key, the values of
  * `headers`, `query` and `extraBody` and the whole base URL included, `timeoutMs` and `retries` among them;
  * a provider object as its config key, its model and the `timeoutMs` and `retries` it states, so one that

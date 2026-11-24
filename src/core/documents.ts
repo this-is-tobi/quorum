@@ -29,7 +29,7 @@ export const DOCUMENT_READ_LIMIT = 65_536
 /** The most UTF-8 bytes of cleaned text a document of each prose kind may hold, one document and the profile's documents of that kind in all. The rules have their own cap (`RULES_CAP`) in all, and one for each rule's text. */
 export const DOCUMENT_CAPS: Readonly<Record<ProseKind, number>> = Object.freeze({ guidelines: 16_384, 'do-not-report': 8192 })
 
-/** The most documents of one kind a profile holds. */
+/** The most documents of one kind a profile holds, each rule written in a configuration (one rules document of one rule and no hash) not counted: the 100 rules bound those. */
 export const MAX_DOCUMENTS = 16
 
 /** The most documents a review's context holds, whatever their profiles and kinds. */
@@ -503,10 +503,20 @@ export function bytesOf(text: string): number {
 }
 
 /**
+ * Whether `document` is an inline rule: a rules document that holds one rule and no hash, which is what a rule written in a
+ * configuration is. The 100 rules a profile holds bound these, so they are no part of the 16 documents of their kind: a rules
+ * file, which holds a hash or more than one rule, is.
+ */
+function isInlineRule(document: Record<string, unknown>): boolean {
+  return document.kind === 'rules' && isRecord(document.origin) && document.origin.sha256 === undefined && Array.isArray(document.rules) && document.rules.length === 1
+}
+
+/**
  * Every problem with `documents`, which an untyped caller can hand over as anything: a list of at most 256 documents for a
  * review's context, of documents for a profile's own, then each document's own problems at `<root>.<n>` (see `DocumentRule`
  * for the commit, and the bytes of rules each profile holds before the list). A profile's own list holds at most 16 documents of
- * one kind.
+ * one kind, the rules written in a configuration (a rules document of one rule and no hash, one for each rule) not counted: the
+ * 100 rules of a profile bound them.
  */
 export function documentIssues(documents: unknown, root: string, rule: DocumentRule): ConfigIssue[] {
   const limit = rule.origin === 'repository'
@@ -536,7 +546,7 @@ export function documentIssues(documents: unknown, root: string, rule: DocumentR
     if (rules !== undefined) held.set(rules.profile, before + rules.bytes)
     return oneDocumentIssues(document, `${root}.${index}`, rule, before)
   })
-  if (rule.origin === 'config' && DOCUMENT_KINDS.some(kind => list.filter(document => isRecord(document) && document.kind === kind).length > MAX_DOCUMENTS)) {
+  if (rule.origin === 'config' && DOCUMENT_KINDS.some(kind => list.filter(document => isRecord(document) && document.kind === kind && !isInlineRule(document)).length > MAX_DOCUMENTS)) {
     issues.push({ path: root, message: `must hold at most ${MAX_DOCUMENTS} documents of one kind` })
   }
   return issues

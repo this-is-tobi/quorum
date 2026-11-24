@@ -251,7 +251,7 @@ interface DocumentRead {
 /** The repository documents grouped by profile and path, in the order each pair first appears. */
 function documentReads(documents: readonly ReviewDocument[]): DocumentRead[] {
   const reads = new Map<string, DocumentRead>()
-  for (const { profile, kind, origin, text } of documents) {
+  for (const { profile, kind, origin, text, rules } of documents) {
     if (origin.kind !== 'repository') continue
     // A profile id holds no NUL, so the key tells the pairs apart whatever the path holds.
     const key = `${profile}\0${origin.path}`
@@ -263,7 +263,8 @@ function documentReads(documents: readonly ReviewDocument[]): DocumentRead[] {
       found: false,
     }
     read.kinds.add(kind)
-    if (text !== undefined) read.found = true
+    // A document the commit held has its text, or its rules for a rules document, an empty list too; a missing one has neither.
+    if (text !== undefined || rules !== undefined) read.found = true
     reads.set(key, read)
   }
   return [

@@ -1,8 +1,10 @@
-import { decode } from '../config/load.ts'
+import { decode, parseRules, rulePlace, RULES_EXTENSION, rulesFormat } from '../config/parse.ts'
 import type { RepositoryEntry, ResolvedProfile } from '../config/profiles.ts'
 import { bytesOf, capProblem, contextTotalIssues, DOCUMENT_READ_LIMIT, documentSha256, profileTexts, quotedPath, UNSETTLED } from '../core/documents.ts'
+import type { ProseKind } from '../core/documents.ts'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
+import { cleanedRules, ruleIssues, ruleTextBytes } from '../core/rules.ts'
 import { cleanProse } from '../core/sanitize.ts'
 import type { ReviewDocument } from '../core/types.ts'
 import { GitError } from '../git/run.ts'
@@ -23,12 +25,20 @@ interface Named {
   readonly entry: RepositoryEntry
 }
 
+/** An entry that names a prose document, guidelines or do-not-report text, and not a rules file. */
+type ProseNamed = Named & { readonly entry: { readonly kind: ProseKind } }
+
+function isProse(named: Named): named is ProseNamed {
+  return named.entry.kind !== 'rules'
+}
+
 /**
- * Where an entry stands as it is read: refused with its problem, absent while optional, listed as a file to read, read to a
- * text, or made a document (the last two once the blobs are read). A refused entry says why, every refusal at once.
+ * Where an entry stands as it is read: refused with its problems (one, or every rule a rules file holds that is not valid),
+ * absent while optional, listed as a file to read, read to a text, or made a document (the last two once the blobs are read). A
+ * refused entry says why, every refusal at once.
  */
 type Slot
-  = | { readonly problem: string }
+  = | { readonly problems: readonly string[] }
     | { readonly absent: true }
     | { readonly listed: TreeEntry }
     | { readonly text: string }
@@ -42,18 +52,30 @@ function pathOf(bytes: Uint8Array): string | undefined {
   }
 }
 
-/** The slot of an entry once the tree is listed: its listing if it is a file quorum reads (the size is the listing's, so a blob over the limit is refused before it is read), absent when optional, else its problem. */
+/** The slot of an entry that is refused for one problem. */
+function refused(problem: string): Slot {
+  return {
+    problems: [problem],
+  }
+}
+
+/**
+ * The slot of an entry once the tree is listed: its listing if it is a file quorum reads (the size is the listing's, so a blob over
+ * the limit is refused before it is read), absent when optional, else its problem. A rules file whose extension names no format
+ * is refused first, present or not, since no read could make it rules.
+ */
 function listedSlot({ entry }: Named, listed: TreeEntry | undefined, short: string): Slot {
   const name = quotedPath(entry.path)
+  if (entry.kind === 'rules' && rulesFormat(entry.path) === undefined) return refused(`${name} at ${short} ${RULES_EXTENSION}`)
   if (listed === undefined) {
     return entry.optional
       ? { absent: true }
-      : { problem: `${name} is not a file of the commit ${short} the review reads it from` }
+      : refused(`${name} is not a file of the commit ${short} the review reads it from`)
   }
-  if (listed.mode === '120000') return { problem: `${name} is a symbolic link at ${short}, which quorum does not follow` }
-  if (listed.mode === '160000' || listed.size === undefined) return { problem: `${name} is a submodule's commit at ${short}, which quorum does not read` }
+  if (listed.mode === '120000') return refused(`${name} is a symbolic link at ${short}, which quorum does not follow`)
+  if (listed.mode === '160000' || listed.size === undefined) return refused(`${name} is a submodule's commit at ${short}, which quorum does not read`)
   return listed.size > DOCUMENT_READ_LIMIT
-    ? { problem: `${name} holds ${listed.size} bytes at ${short}, over the ${DOCUMENT_READ_LIMIT / 1024} KiB quorum reads of a document` }
+    ? refused(`${name} holds ${listed.size} bytes at ${short}, over the ${DOCUMENT_READ_LIMIT / 1024} KiB quorum reads of a document`)
     : { listed }
 }
 
@@ -64,11 +86,52 @@ function textSlot({ entry }: Named, bytes: Uint8Array, short: string): Slot {
     : decode(bytes)
   return text !== undefined && 'value' in text
     ? { text: text.value }
-    : { problem: `${quotedPath(entry.path)} is not UTF-8 text at ${short}` }
+    : refused(`${quotedPath(entry.path)} is not UTF-8 text at ${short}`)
+}
+
+/**
+ * The slot of an entry whose text is a rules file's: the document, its rules parsed by the extension of the path, checked one by
+ * one (`ruleIssues`: the id's pattern, the text's length once cleaned, the patterns, and the 100 rules and 32 KiB of cleaned texts
+ * a file may hold alone, counted from `held`, the bytes of rule text the profile holds before the file) and cleaned, or every
+ * problem that keeps it from being sent, in the file's own words, after its path and the commit's first 7 characters. What the
+ * file takes the profile's rules to, with the ids the profile already holds, is the caps across origins, which
+ * `readRepositoryDocuments` checks once every document is read.
+ */
+function rulesSlot({ profile, entry }: Named, text: string, commit: string, held: number): Slot {
+  const place = `${quotedPath(entry.path)} at ${commit.slice(0, 7)} `
+  // `listedSlot` refused every path whose extension names no format.
+  const parsed = parseRules(text, rulesFormat(entry.path) as 'yaml' | 'json')
+  if ('problem' in parsed) return refused(`${place}${parsed.problem}`)
+  const found = ruleIssues(parsed.value, 'rules', held)
+  if (found.length > 0) {
+    return {
+      problems: found.map((issue) => {
+        const { place: rule, field } = rulePlace(issue)
+        return rule === undefined || field.length === 0
+          ? `${place}${issue.message}`
+          : `${place}${rule}.${field.join('.')} ${issue.message}`
+      }),
+    }
+  }
+  const cleaned = cleanedRules(parsed.value)
+  return {
+    document: Object.freeze({
+      profile: profile.profile.id,
+      kind: 'rules' as const,
+      origin: Object.freeze({
+        kind: 'repository' as const,
+        path: entry.path,
+        commit,
+        sha256: documentSha256(text),
+      }),
+      rules: cleaned.rules,
+      removed: Object.freeze(cleaned.removed),
+    }),
+  }
 }
 
 /** The slot of an entry whose text is read: the document, cleaned as the core cleans one, or the problem that keeps it from being sent: a text the cleaner cannot settle, or one over its kind's cap. */
-function documentSlot({ profile, entry }: Named, text: string, commit: string): Slot {
+function documentSlot({ profile, entry }: ProseNamed, text: string, commit: string): Slot {
   const cleaned = cleanProse(text)
   const problem = cleaned.settled
     ? capProblem(entry.kind, bytesOf(cleaned.text))
@@ -89,7 +152,7 @@ function documentSlot({ profile, entry }: Named, text: string, commit: string): 
           removed: Object.freeze(cleaned.removed),
         }),
       }
-    : { problem: `${quotedPath(entry.path)} at ${short} ${problem}` }
+    : refused(`${quotedPath(entry.path)} at ${short} ${problem}`)
 }
 
 /**
@@ -136,8 +199,21 @@ export async function readRepositoryDocuments(entries: readonly Named[], reposit
   for (const [index, slot] of slots.entries()) {
     if ('listed' in slot) slots[index] = textSlot(entries[index], bytes.get(slot.listed) as Uint8Array, short)
   }
+  // The bytes of rule text each profile holds before the rules file in hand: its own rules and its config documents', and the files read before it.
+  const held = new Map<ResolvedProfile, number>()
   for (const [index, slot] of slots.entries()) {
-    if ('text' in slot) slots[index] = documentSlot(entries[index], slot.text, commit)
+    if (!('text' in slot)) continue
+    const named = entries[index]
+    if (isProse(named)) {
+      slots[index] = documentSlot(named, slot.text, commit)
+      continue
+    }
+    const before = held.get(named.profile) ?? ruleTextBytes(profileTexts(named.profile.profile, '').rules) ?? 0
+    slots[index] = rulesSlot(named, slot.text, commit, before)
+    const read = slots[index]
+    held.set(named.profile, before + ('document' in read
+      ? ruleTextBytes(read.document.rules) ?? 0
+      : 0))
   }
 
   // The caps of all of a profile's documents of a kind, its own texts and its `{ file }` documents counted first: the first document over them is refused.
@@ -150,19 +226,26 @@ export async function readRepositoryDocuments(entries: readonly Named[], reposit
           ]
         : []
     })
-    // `contextTotalIssues` names each document by its index, at `context.documents.<index>`.
+    // `contextTotalIssues` names each document by its index, at `context.documents.<index>`, and a rule below it.
+    const found = new Map<number, string[]>()
     for (const { path, message } of contextTotalIssues(profileTexts(profile.profile, ''), own)) {
-      const index = Number(path.slice('context.documents.'.length))
-      slots[index] = { problem: `${quotedPath(entries[index].entry.path)} at ${short} ${message}` }
+      const index = Number(/^context\.documents\.(\d+)/.exec(path)?.[1])
+      // A repeated rule id is worded with its place already.
+      const place = `${quotedPath(entries[index].entry.path)} at ${short} `
+      found.set(index, [
+        ...found.get(index) ?? [],
+        message.startsWith(place)
+          ? message
+          : `${place}${message}`,
+      ])
     }
+    for (const [index, problems] of found) slots[index] = { problems }
   }
 
   const issues: ConfigIssue[] = entries.flatMap(({ entry }, index) => {
     const slot = slots[index]
-    return 'problem' in slot
-      ? [
-          { path: entry.at, message: slot.problem },
-        ]
+    return 'problems' in slot
+      ? slot.problems.map(message => ({ path: entry.at, message }))
       : []
   })
   if (issues.length > 0) throw new ConfigError(issues)

@@ -9394,6 +9394,68 @@ describe('documents', () => {
       expect(excluded.meta.flags.filter(flag => flag.code === 'guideline-edited')).toEqual([guideline])
     })
 
+    it('raises the flag for a rules file the change edits, as read when the commit held it and as looked for when it did not', async () => {
+      const profile: Profile = {
+        ...naming,
+        rules: [
+          { id: 'license', text: 'Each file starts with the license header.' },
+        ],
+      }
+      const rules = (found: boolean): ReviewDocument => ({
+        profile: 'naming',
+        kind: 'rules',
+        origin: { kind: 'repository', path: '.quorum/rules.yaml', commit: COMMIT },
+        ...found
+          ? {
+              rules: [
+                { id: 'no-any', text: 'No any outside tests.' },
+              ],
+            }
+          : {},
+      })
+      const changed = [
+        diff,
+        'diff --git a/.quorum/rules.yaml b/.quorum/rules.yaml',
+        '--- a/.quorum/rules.yaml',
+        '+++ b/.quorum/rules.yaml',
+        '@@ -1 +1 @@',
+        '-- {id: no-any, text: No any outside tests.}',
+        '+- {id: no-any, text: Any is fine.}',
+      ].join('\n')
+      const edit = (detail: string): unknown => ({
+        code: 'guideline-edited',
+        profile: 'naming',
+        file: '.quorum/rules.yaml',
+        detail,
+      })
+      // The review read the base's copy, so the flag says it read the file and from which commit: never that it looked for one and found none.
+      const read = await build(profile).quorum.review({
+        diff: changed,
+        source: RANGE,
+        context: {
+          documents: [
+            rules(true),
+          ],
+        },
+      })
+      expect(read.meta.flags).toEqual([
+        edit(`the rules this review read for the profile from ${COMMIT.slice(0, 7)}, not the change's version`),
+      ])
+      // An optional rules file the base lacked, which the change adds, is looked for.
+      const added = await build(profile).quorum.review({
+        diff: changed,
+        source: RANGE,
+        context: {
+          documents: [
+            rules(false),
+          ],
+        },
+      })
+      expect(added.meta.flags).toEqual([
+        edit(`the rules this review looked for at ${COMMIT.slice(0, 7)} and did not find, not the change's version`),
+      ])
+    })
+
     it('raises one flag for a missing optional document the change adds, and none for a path review of a file of that name', async () => {
       const added = [
         'diff --git a/REVIEW.md b/REVIEW.md',

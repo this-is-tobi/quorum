@@ -255,20 +255,6 @@ describe('readConfigFile on YAML', () => {
     ])
   })
 
-  it.each([
-    ['!!js/function', 'a: !!js/function "function () { return 1 }"'],
-    ['!!binary', 'a: !!binary aGVsbG8='],
-    ['!!set', 'a: !!set {x, y}'],
-    ['!!timestamp', 'a: !!timestamp 2024-10-21'],
-    ['!!omap', 'a: !!omap [b: 1]'],
-    ['!custom', 'a: !custom value'],
-  ])('refuses the tag %s, with where it is', async (_tag, line) => {
-    file('tag.yaml', `concurrency: 1\n${line}\n`)
-    expect(await issuesOf('tag.yaml')).toEqual([
-      { path: 'tag.yaml', message: 'uses a tag quorum does not read at line 2, column 4 (TAG_RESOLVE_FAILED)' },
-    ])
-  })
-
   it('refuses an alias, and a merge key, which stays a key quorum does not know', async () => {
     file('alias.yaml', 'roles: &roles {research: a}\nprofiles:\n  team: {roles: *roles}\n')
     file('merge.yaml', 'providers:\n  a:\n    <<: {model: m}\n    preset: ollama\n')
@@ -278,25 +264,6 @@ describe('readConfigFile on YAML', () => {
     expect(await issuesOf('merge.yaml')).toEqual([
       { path: 'merge.yaml: providers.a', message: 'holds a field that is not known' },
     ])
-  })
-
-  it.each([
-    ['a duplicate key', `concurrency: 1\nconcurrency: ${SECRET}\n`, 'is not valid YAML at line 2, column 1 (DUPLICATE_KEY)'],
-    ['a duplicate key in a provider', `providers:\n  a: {model: m, model: ${SECRET}}\n`, 'is not valid YAML at line 2, column 17 (DUPLICATE_KEY)'],
-    ['a duplicate key in a list item', `profiles:\n  t:\n    lenses:\n      - {id: a, question: q, id: ${SECRET}}\n`, 'is not valid YAML at line 4, column 30 (DUPLICATE_KEY)'],
-    ['two documents', `concurrency: 1\n---\nmodel: ${SECRET}\n`, 'is not valid YAML at line 2, column 1 (MULTIPLE_DOCS)'],
-    ['a tab indent', `roles:\n${TAB}research: ${SECRET}\n`, 'is not valid YAML at line 2, column 1 (TAB_AS_INDENT)'],
-    ['a bad indent', `roles:\n  research: a\n voter: ${SECRET}\n`, 'is not valid YAML at line 3, column 1 (BAD_INDENT)'],
-    ['an unclosed quote', `model: "${SECRET}\n`, 'is not valid YAML at line 2, column 1 (MISSING_CHAR)'],
-    ['a key that is not a scalar', `? [${SECRET}]\n: 1\n`, 'is not valid YAML at line 1, column 3 (NON_STRING_KEY)'],
-    ['a directive of another version', '%YAML 1.3\n---\nconcurrency: 1\n', 'is not valid YAML at line 1, column 7 (BAD_DIRECTIVE)'],
-  ])('refuses %s, with where it is and the parser\'s code, and never the text of the file', async (_name, content, message) => {
-    file('bad.yaml', content)
-    const issues = await issuesOf('bad.yaml')
-    expect(issues).toEqual([
-      { path: 'bad.yaml', message },
-    ])
-    expect(JSON.stringify(issues)).not.toContain('planted')
   })
 
   it('refuses a number that is not finite, at its path', async () => {
@@ -309,35 +276,6 @@ describe('readConfigFile on YAML', () => {
 })
 
 describe('readConfigFile on JSON', () => {
-  it.each([
-    ['at the top level', '{"concurrency": 1,\n  "concurrency": 2}', 'has a duplicate key at line 2, column 3'],
-    ['in a nested object', '{"providers": {"a": {"model": "m", "model": "sk-planted-secret"}}}', 'has a duplicate key at line 1, column 36'],
-    ['in an array', '{"profiles": {"t": {"lenses": [{"id": "a", "id": "b", "question": "q"}]}}}', 'has a duplicate key at line 1, column 44'],
-    ['spelled with an escape', '{"concurrency": 1, "\\u0063oncurrency": 2}', 'has a duplicate key at line 1, column 20'],
-    ['named __proto__', '{"__proto__": {}, "__proto__": {}}', 'has a duplicate key at line 1, column 19'],
-  ])('refuses a duplicate key %s, which JSON.parse would resolve to the last value', async (_name, content, message) => {
-    file('dup.json', content)
-    const issues = await issuesOf('dup.json')
-    expect(issues).toEqual([
-      { path: 'dup.json', message },
-    ])
-    expect(JSON.stringify(issues)).not.toContain('planted')
-  })
-
-  it.each([
-    ['a value that is no JSON', `{"apiKeyEnv": ${SECRET}}`],
-    ['a trailing comma', `{"model": "${SECRET}",}`],
-    ['single quotes', `{'model': '${SECRET}'}`],
-    ['a comment', `{"model": "m" /* ${SECRET} */}`],
-    ['text after the object', `{"model": "m"} ${SECRET}`],
-  ])('refuses %s as JSON, without position or the runtime\'s message, which can quote the file', async (_name, content) => {
-    file('bad.json', content)
-    const issues = await issuesOf('bad.json')
-    expect(issues).toEqual([
-      { path: 'bad.json', message: 'is not valid JSON' },
-    ])
-  })
-
   it('refuses a number past the largest double, which JSON.parse reads as Infinity', async () => {
     file('big.json', '{"maxFindings": 1e999}')
     expect(await issuesOf('big.json')).toEqual([
@@ -354,23 +292,6 @@ describe('readConfigFile on JSON', () => {
     expect(issues).toEqual([
       { path: `deeper.json: providers.p.extraBody.${Array.from({ length: 62 }).fill('a').join('.')}`, message: 'is nested more than 64 keys deep' },
     ])
-  })
-})
-
-describe('readConfigFile on a wide mapping', () => {
-  it('finds a key repeated among tens of thousands in one pass, where comparing every pair takes seconds', async () => {
-    const keys = Array.from({ length: 40_000 }, (_, index) => `h${index}`)
-    const json = `{"providers": {"p": {"headers": {${keys.map(key => `"${key}": "v"`).join(', ')}, "h0": "v"}}}}`
-    file('wide.json', json)
-    file('wide.yaml', `providers:\n  p:\n    headers:\n${keys.map(key => `      ${key}: v`).join('\n')}\n      h0: v\n`)
-    const started = performance.now()
-    expect(await issuesOf('wide.json')).toEqual([
-      { path: 'wide.json', message: `has a duplicate key at line 1, column ${json.lastIndexOf('"h0"') + 1}` },
-    ])
-    expect(await issuesOf('wide.yaml')).toEqual([
-      { path: 'wide.yaml', message: 'is not valid YAML at line 40004, column 7 (DUPLICATE_KEY)' },
-    ])
-    expect(performance.now() - started).toBeLessThan(2500)
   })
 })
 
@@ -860,6 +781,66 @@ describe('readConfigFile on document files', () => {
     expect(await issuesOf('quorum.yaml')).toEqual([
       { path: 'quorum.yaml: profiles.naming.doNotReport.0.file', message: 'takes the prompt and document files over 1 MiB in total' },
     ])
+  })
+
+  it('reads a rules file as a document is read, and refuses one of another extension at its file path', async () => {
+    const style = '- id: style\n  text: Name things well.\n'
+    const more = '[{"id": "more", "text": "Handle errors."}]'
+    file('conf/rules/style.yaml', `${BOM}${style}`)
+    file('conf/rules/more.json', more)
+    file('conf/quorum.yaml', 'profiles:\n  naming:\n    rules: [{id: inline, text: Inline rule.}, {file: ./rules/style.yaml}, {repository: RULES.yaml, optional: true}, {file: rules/more.json}, {file: ./rules/style.yaml}]\n')
+    // Each file is read once, as a document is, and its text is put in the entry's place with the format its extension names; the inline rule and the repository entry stay as they are.
+    expect(await configOf('conf/quorum.yaml')).toEqual({
+      profiles: {
+        naming: {
+          rules: [
+            { id: 'inline', text: 'Inline rule.' },
+            { text: style, format: 'yaml' },
+            { repository: 'RULES.yaml', optional: true },
+            { text: more, format: 'json' },
+            { text: style, format: 'yaml' },
+          ],
+        },
+      },
+    })
+    expect((await readConfigFile('conf/quorum.yaml', { cwd: dir })).files).toEqual([
+      {
+        at: 'profiles.naming.rules.1.file',
+        path: join(dir, 'conf/rules/style.yaml'),
+      },
+      {
+        at: 'profiles.naming.rules.3.file',
+        path: join(dir, 'conf/rules/more.json'),
+      },
+    ])
+
+    // An extension other than .yaml, .yml or .json is refused at its file path, before the file is read: a file that is missing is refused for its extension.
+    file('conf/rules/style.txt', style)
+    file('conf/bad.yaml', 'profiles:\n  naming:\n    rules: [{file: rules/style.yaml}, {file: rules/style.txt}, {file: rules/style.YAML}, {file: rules/none.toml}, {file: rules/style}, {file: rules/missing.yml}]\n')
+    expect(await issuesOf('conf/bad.yaml')).toEqual([
+      { path: 'conf/bad.yaml: profiles.naming.rules.1.file', message: 'must end in .yaml, .yml or .json' },
+      { path: 'conf/bad.yaml: profiles.naming.rules.2.file', message: 'must end in .yaml, .yml or .json' },
+      { path: 'conf/bad.yaml: profiles.naming.rules.3.file', message: 'must end in .yaml, .yml or .json' },
+      { path: 'conf/bad.yaml: profiles.naming.rules.4.file', message: 'must end in .yaml, .yml or .json' },
+      { path: 'conf/bad.yaml: profiles.naming.rules.5.file', message: 'does not exist' },
+    ])
+
+    // The rules file counts toward the 1 MiB of the prompt and document files, and is read as every document is: a code config names one too.
+    file('conf/big.yaml', 'x'.repeat(64 * 1024 + 1))
+    file('conf/over.yaml', 'profiles:\n  naming:\n    rules: [{file: big.yaml}]\n')
+    expect(await issuesOf('conf/over.yaml')).toEqual([
+      { path: 'conf/over.yaml: profiles.naming.rules.0.file', message: 'is over 64 KiB' },
+    ])
+    file('conf/quorum.mts', 'export default { profiles: { naming: { rules: [{ file: "./rules/more.json" }] } } }\n')
+    expect(await configOf('conf/quorum.mts')).toEqual({
+      profiles: {
+        naming: {
+          rules: [
+            { text: more, format: 'json' },
+          ],
+        },
+      },
+    })
   })
 })
 

@@ -44,7 +44,9 @@ const security = { ...securityProfile, guidelines: 'Queries go through db.query 
 | `gating` | `boolean` | Deprecated: `true` is `failOn: 'high'`, `false` is `'none'`; not with `failOn` |
 | `guidelines` | `string` | Optional: [Guidelines](#guidelines) |
 | `doNotReport` | `string` | Optional: what the research does not report, [Guidelines](#guidelines) |
-| `documents` | `ReviewDocument[]` | Optional: the guidelines and do-not-report documents of the profile's configuration, [Guidelines](#guidelines) |
+| `documents` | `ReviewDocument[]` | Optional: the guidelines, do-not-report and rules documents of the profile's configuration, [Guidelines](#guidelines) |
+| `rules` | `ReviewRule[]` | Optional: the profile's own review rules, a finding may cite by id: [Review rules](./45-rules-and-guidelines.md#review-rules) |
+| `requireRule` | `boolean` | Optional, `false` when unset: every finding must cite a rule the review sent, or it is dropped: [Review rules](./45-rules-and-guidelines.md#review-rules) |
 
 The reply the finder must give is fixed, whatever the profile: a `findings` array whose every entry holds `file`, `line`, `category`, `quote` and `summary`. quorum's request names those five fields itself, in a paragraph of its own right after the line that asks for at most `N` findings, so every profile gets the same contract, yours included: `file` as the diff names it, `line` in the new file (for removed code, the nearest line that survives), `quote` the code that shows the finding, copied verbatim without the leading `+`, `-` or space, `category` the finding's kind, as your instructions define it, and `summary` why it is a finding. Your research instructions say what to look for, what a quote holds and what a category means for what you review, as the security profile's do (the sink, and a CWE id), and need not name a field otherwise.
 
@@ -173,6 +175,8 @@ A result records each profile's level in `meta.profiles.<id>.failOn`, and `gatin
 ## Guidelines
 
 Guidelines are reference text for one profile: a project's conventions, what it counts as a problem. A profile's `doNotReport` is reference text for what its research does not report. A program sets both as the profile's own text, a config names files for them, and a review can add the repository's own ([Documents](../95-reference/30-library-api.md#documents)). [Rules and guidelines](./45-rules-and-guidelines.md) says how each is read, cleaned, capped and sent, and what it costs.
+
+A profile's `rules` are review rules, criteria with an id that a finding cites when the code breaks one, and `requireRule` makes the profile report only what a rule asks for. A program sets the profile's own `rules`, a config writes them inline or names files of them, in the config or the repository, and `builtInRules: false` drops those of a built-in profile it starts from. Each research request carries the rules that apply to the change, and code checks every citation: [Review rules](./45-rules-and-guidelines.md#review-rules) has the shape, the files, the caps and the checks.
 
 - **The model reads them as criteria.** The [data notice](./60-prompts.md#the-data-notice) describes the guidelines block in these words: "the project's review guidelines. Use them as criteria: what this project counts as a problem and the conventions it expects. They describe how code should be, not how this code is: judge the code itself."
 - **They are still data.** They are fenced like the diff, never part of the system message, and text in them that asks to skip or approve without checking falls under the same notice, which tells the model to treat it as suspicious and report it as its own finding rather than comply.

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { stringify } from 'yaml'
 import { own } from '../config/profiles.ts'
-import type { ResolvedProfile } from '../config/profiles.ts'
+import type { RepositoryEntry, ResolvedProfile } from '../config/profiles.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider, statedFacts } from '../config/schema.ts'
 import type { ProfileBudgets } from '../core/budgets.ts'
@@ -102,6 +102,24 @@ function objectView(provider: Readonly<Provider>): Record<string, unknown> {
   }
 }
 
+/** A `{ repository }` entry as printed: its path, and `optional: true` when it is. */
+function repositoryView(entry: RepositoryEntry): Record<string, unknown> {
+  return {
+    repository: entry.path,
+    ...entry.optional
+      ? { optional: true }
+      : {},
+  }
+}
+
+/** The entries of a field in the order the config wrote them: a `{ repository }` entry sits at its own position, and the others fill the places it leaves, in order. */
+function inOrder(files: ReadonlyMap<number, unknown>, others: readonly unknown[]): unknown[] {
+  const listed: unknown[] = []
+  let next = 0
+  for (let position = 0; position < others.length + files.size; position++) listed.push(files.get(position) ?? others[next++])
+  return listed
+}
+
 /**
  * The documents of one kind a profile holds, as the list `--print-config` prints: the text the profile itself carries (a built-in
  * profile's own, which the config did not write) as `{ builtIn: <hash> }`, then each entry of the config in the order it is written:
@@ -114,12 +132,7 @@ function documentsView({ profile, repository }: ResolvedProfile, kind: DocumentK
     : `sha256:${document.origin.sha256}`)
   const files = new Map(repository.filter(entry => entry.kind === kind).map(entry => [
     entry.index,
-    {
-      repository: entry.path,
-      ...entry.optional
-        ? { optional: true }
-        : {},
-    },
+    repositoryView(entry),
   ]))
   const listed: unknown[] = profileText === undefined
     ? []
@@ -129,14 +142,45 @@ function documentsView({ profile, repository }: ResolvedProfile, kind: DocumentK
         },
       ]
   // A `{ repository }` entry sits at its own position among the field's entries, and the documents fill the others in order.
-  let next = 0
-  for (let position = 0; position < documents.length + files.size; position++) listed.push(files.get(position) ?? documents[next++])
+  listed.push(...inOrder(files, documents))
   return listed.length === 0
     ? undefined
     : listed
 }
 
-/** A profile that runs: the level its kept findings fail the review at (`none` for an advisory profile), its providers, the votes its policy needs, each prompt as its hash, and each document as its hash or, for a `{ repository }` entry, its path. */
+/**
+ * The rules a profile holds, as the list `--print-config` prints: the rules the profile itself carries (a built-in profile's own,
+ * which the config did not write) as `{ builtIn: [<id>, ...] }`, then each entry of the config in the order it is written: a rule
+ * written in the config as its id, a rules file as `{ sha256: <hex>, ids: [<id>, ...] }`, the hash being that of its text as read,
+ * and a `{ repository }` entry as its path, with `optional: true` when it is. Never a text. Undefined when the profile holds none,
+ * so the list is left out.
+ */
+function rulesView({ profile, repository }: ResolvedProfile): unknown[] | undefined {
+  const idsOf = (rules: readonly { readonly id: string }[] | undefined): string[] => (rules ?? []).map(rule => rule.id)
+  const documents = (profile.documents ?? []).filter(document => document.kind === 'rules').map((document) => {
+    const ids = idsOf(document.rules)
+    if (document.origin.sha256 !== undefined) return { sha256: document.origin.sha256, ids }
+    return ids.length === 1
+      ? ids[0]
+      : { ids }
+  })
+  const files = new Map(repository.filter(entry => entry.kind === 'rules').map(entry => [
+    entry.index,
+    repositoryView(entry),
+  ]))
+  const own = idsOf(profile.rules)
+  const listed: unknown[] = own.length === 0
+    ? []
+    : [
+        { builtIn: own },
+      ]
+  listed.push(...inOrder(files, documents))
+  return listed.length === 0
+    ? undefined
+    : listed
+}
+
+/** A profile that runs: the level its kept findings fail the review at (`none` for an advisory profile), its providers, the votes its policy needs, each prompt as its hash, each document as its hash or, for a `{ repository }` entry, its path, and its rules by their ids, with `builtInRules: false` and `requireRule: true` when it sets them. */
 function profileView(resolved: ResolvedProfile): Record<string, unknown> {
   const { profile, research, voters } = resolved
   return {
@@ -150,6 +194,11 @@ function profileView(resolved: ResolvedProfile): Record<string, unknown> {
     },
     guidelines: documentsView(resolved, 'guidelines', profile.guidelines),
     doNotReport: documentsView(resolved, 'do-not-report', profile.doNotReport),
+    rules: rulesView(resolved),
+    builtInRules: resolved.builtInRules,
+    requireRule: profile.requireRule === true
+      ? true
+      : undefined,
   }
 }
 
@@ -211,7 +260,9 @@ function budgetWarnings(config: ResolvedConfig, budgets: Readonly<Record<string,
  * patterns it excludes, the files it sends though held as secrets, and the warnings. A key and every value of
  * `headers`, `query` and `extraBody` print as `[redacted]`, a base URL as its origin, and a prompt as its
  * SHA-256, as does each of a profile's guidelines and do-not-report documents (the hash of its text as read, and a built-in
- * profile's own text as `{ builtIn: <hash> }`), never a text; a `{ repository }` entry prints as its path, with `optional: true` when it is. A provider's `timeoutMs`, `stallTimeoutMs` and `retries` print when it sets them, a provider object's when it states
+ * profile's own text as `{ builtIn: <hash> }`), never a text; a `{ repository }` entry prints as its path, with `optional: true` when it is.
+ * A profile's rules print as their ids, a rules file as the hash of its text and the ids it holds, never a rule's text, then
+ * `builtInRules: false` and `requireRule: true` when the profile sets them. A provider's `timeoutMs`, `stallTimeoutMs` and `retries` print when it sets them, a provider object's when it states
  * them. A `claude-code` provider prints its protocol, command, model, context size, key (redacted), auth mode and args, and no origin:
  * the command and the args are the user's own config. The view is an allowlist, so a field added to the
  * config prints nothing until it is added here on purpose.

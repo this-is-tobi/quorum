@@ -247,7 +247,7 @@ describe('quorum bench', () => {
   })
 
   it('refuses a configuration that names a repository document, before any review', async () => {
-    writeFileSync(join(root, 'c.yaml'), `${config('m1')}profiles:\n  security:\n    guidelines: [{repository: REVIEW.md}]\n    doNotReport: [{repository: SKIP.md, optional: true}]\n`)
+    writeFileSync(join(root, 'c.yaml'), `${config('m1')}profiles:\n  security:\n    guidelines: [{repository: REVIEW.md}]\n    doNotReport: [{repository: SKIP.md, optional: true}]\n    rules: [{id: inline, text: Written in the config.}, {repository: .quorum/rules.yaml}]\n`)
     const { code, stdout, stderr, fetch } = await bench([
       'bench',
       '-c',
@@ -263,6 +263,7 @@ describe('quorum bench', () => {
       [
         'Error: profiles.security.guidelines.0.repository: names a document of the repository, which a bench case\'s patch has no commit to read it from: name the file with { file }',
         'profiles.security.doNotReport.0.repository: names a document of the repository, which a bench case\'s patch has no commit to read it from: name the file with { file }',
+        'profiles.security.rules.1.repository: names a document of the repository, which a bench case\'s patch has no commit to read it from: name the file with { file }',
         '',
       ].join('\n'),
     ])
