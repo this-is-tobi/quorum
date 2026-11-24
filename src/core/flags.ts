@@ -32,6 +32,7 @@ const SHORT_COMMIT = 7
 const KIND_WORDS: Readonly<Record<DocumentKind, string>> = {
   guidelines: 'guidelines',
   'do-not-report': 'do-not-report text',
+  rules: 'rules',
 }
 /** A one-character prefix and its slash, as `diff.mnemonicPrefix` writes them (`a/`, `b/`, `i/`, `w/`, `c/`, `o/`). */
 const PREFIX = /^[^/]\//u

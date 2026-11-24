@@ -4,6 +4,7 @@ import type { ProfileBudgets } from '../budgets.ts'
 import { wait } from '../clock.ts'
 import type { Clock } from '../clock.ts'
 import type { Clocks } from '../clocks.ts'
+import type { DiffSection } from '../diff.ts'
 import type { ProfileTexts } from '../documents.ts'
 import type { Health } from '../down.ts'
 import { cutOf, cutWords, ProviderDownError, ProviderError } from '../errors.ts'
@@ -15,8 +16,9 @@ import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, slotsProblem, thi
 import type { Adapts, CompletionRequest, CompletionResponse, EventSink, Provider, ReplyStore, StoredCall } from '../ports.ts'
 import { requestDigest } from '../prompts.ts'
 import { backoffMs, isTimeout, retryWait } from '../retry.ts'
+import { rulesSent } from '../rules.ts'
 import { DEFAULT_REPLY_TOKENS, expectedOf, replyLimit, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
-import type { Adaptation, FailOn, Position, ProviderRef, QuorumEvent, StageName, Thresholds, Usage } from '../types.ts'
+import type { Adaptation, FailOn, Position, ProviderRef, QuorumEvent, ReviewRule, StageName, Thresholds, Usage } from '../types.ts'
 import { newWatch, progressReports, seenOf } from '../watch.ts'
 import type { AttemptSeen } from '../watch.ts'
 import { attempt, ceilingOf, streamsAttempt } from './attempt.ts'
@@ -86,6 +88,29 @@ export interface ProfileRun {
   readonly guidelines?: string
   /** What the profile's research does not report, joined as the guidelines are: it is in `research.instructions`, as the paragraph after the instructions, and in no vote. None when it holds none. */
   readonly doNotReport?: string
+  /** Every review rule the profile lists, its own, its documents' and the review's repository documents', in the order they are sent. */
+  readonly rules: readonly ReviewRule[]
+  /**
+   * The rules every research request of the profile carries: undefined for a profile that lists none, whose requests ask for five
+   * fields and carry no rules block. For a profile that lists some, it is a list that makes its requests ask for six fields,
+   * and carry the block when the list holds a rule: in the compiled run, every rule listed, so the startup refusal counts the
+   * whole block; in a review's run, the rules whose paths match a file of the review's filtered diff (`withSent`).
+   */
+  readonly sent?: readonly ReviewRule[]
+}
+
+/**
+ * `run` with the rules its review sends: those of the rules it lists (`rulesSent`) that apply to a file of the filtered diff,
+ * whose `sections` name the files, each section a path of its own or the empty name when its header names none. A run of a
+ * profile that lists no rule is returned as it is.
+ */
+export function withSent(run: ProfileRun, sections: readonly DiffSection[]): ProfileRun {
+  return run.sent === undefined
+    ? run
+    : Object.freeze({
+        ...run,
+        sent: Object.freeze(rulesSent(run.rules, sections.map(section => section.path ?? ''))),
+      })
 }
 
 /** What every stage of one review shares. */

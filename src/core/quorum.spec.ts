@@ -10,8 +10,9 @@ import type { StreamPlan } from '../testing/streams.ts'
 import { ConfigError, ProviderDownError, ProviderError } from './errors.ts'
 import { outcome } from './outcome.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts, ReplyStore, StoredCall } from './ports.ts'
-import { researchRequest, voteRequest } from './prompts.ts'
+import { FINDING_FIELDS, FINDING_FIELDS_WITH_RULE, researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum, createQuorumWith } from './quorum.ts'
+import { rulesBlock } from './rules.ts'
 import { findingId, FINGERPRINT_PATTERN } from './stages/research.ts'
 import { requestTokens, tokenBound } from './tokens.ts'
 import type { Finding, IncompleteEntry, LeftOutFile, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, ReviewDocument, ReviewSource, Usage, VoteFailure } from './types.ts'
@@ -8570,6 +8571,308 @@ describe('documents', () => {
       },
     ])
     expect(events.filter(event => event.type === 'context')).toHaveLength(1)
+  })
+
+  describe('review rules', () => {
+    const noAny = {
+      id: 'no-any',
+      text: 'No any outside tests.',
+      paths: ['src/**'],
+    }
+    const license = { id: 'license', text: 'Each file starts with the license header.' }
+    const BLOCK = 'no-any, for src/**:\nNo any outside tests.\n\nlicense, for every file:\nEach file starts with the license header.'
+    const LICENSE_BLOCK = 'license, for every file:\nEach file starts with the license header.'
+    /** `naming`, with the two rules of a team. */
+    const ruled: Profile = {
+      ...naming,
+      rules: [noAny, license],
+    }
+    const rulesBlocks = (request: CompletionRequest): string[] => [
+      ...request.messages[0].content.matchAll(/<(untrusted-rules-[0-9a-f]{8})>\n([\s\S]*?)\n<\/\1>/g),
+    ].map(match => match[2])
+    /** A file whose hunks each add a line of 700 characters: with a partTokens of 1024, no two hunks share a part. */
+    const hunky = (file: string, hunks: number): string => [
+      `diff --git a/${file} b/${file}`,
+      `--- a/${file}`,
+      `+++ b/${file}`,
+      ...Array.from({ length: hunks }, (_, index) => [
+        `@@ -${index * 10 + 1} +${index * 10 + 1} @@`,
+        '-old',
+        `+${'y'.repeat(700)}`,
+      ]).flat(),
+    ].join('\n')
+    const change = [
+      hunky('src/x.ts', 2),
+      hunky('docs/a.md', 1),
+    ].join('\n')
+
+    it('sends a profile of its own the rules its change\'s files call for, the same block in every part', async () => {
+      const send = async (diffText: string, options: Omit<QuorumOptions, 'profiles'> = {}): Promise<Fake> => {
+        const finder = guarded('finder', 200_000, () => findings())
+        await build(ruled, finder, fake('voter', () => vote(true)), { partTokens: 1024, ...options }).quorum.review({ diff: diffText })
+        return finder
+      }
+      // Both kinds of file: every one of the three parts holds one block of both rules, and asks for the sixth field.
+      const both = await send(change)
+      expect(both.requests).toHaveLength(3)
+      for (const request of both.requests) {
+        expect(rulesBlocks(request)).toEqual([BLOCK])
+        expect(request.system.split('\n\n')).toContain(FINDING_FIELDS_WITH_RULE)
+      }
+      // A change of docs alone sends the rule that has no paths, in its one request.
+      const docs = await send(hunky('docs/a.md', 1))
+      expect(docs.requests).toHaveLength(1)
+      expect(rulesBlocks(docs.requests[0])).toEqual([LICENSE_BLOCK])
+      // A pattern is matched against the files the finder reads: `exclude` takes src out of them, so the rule of src is not sent.
+      const excluded = await send(change, {
+        exclude: ['src/**'],
+      })
+      expect(excluded.requests).toHaveLength(1)
+      expect(rulesBlocks(excluded.requests[0])).toEqual([LICENSE_BLOCK])
+    })
+
+    it('asks for the sixth field of a profile that lists rules when none is sent, and sends a profile with none the five fields', async () => {
+      const onlySrc = {
+        ...ruled,
+        rules: [noAny],
+      }
+      const finder = guarded('finder', 200_000, () => findings())
+      await build(onlySrc, finder).quorum.review({
+        diff: hunky('docs/a.md', 1),
+      })
+      expect(finder.requests).toHaveLength(1)
+      expect(rulesBlocks(finder.requests[0])).toEqual([])
+      expect(finder.requests[0].system.split('\n\n')).toContain(FINDING_FIELDS_WITH_RULE)
+      expect(finder.requests[0].messages[0].content).not.toContain('untrusted-rules')
+      const plain = guarded('plain', 200_000, () => findings())
+      await build(naming, plain).quorum.review({
+        diff: hunky('docs/a.md', 1),
+      })
+      expect(plain.requests[0].system.split('\n\n')).toContain(FINDING_FIELDS)
+      expect(plain.requests[0].system).not.toContain(FINDING_FIELDS_WITH_RULE)
+      expect(rulesBlocks(plain.requests[0])).toEqual([])
+    })
+
+    it('reads a finding that cites a rule, or none, as it reads one of a profile with none, and sends no rule to a vote', async () => {
+      const cited = fake('finder', () => findings({ ...reported, rule: 'no-any' }, {
+        ...reported,
+        line: 1,
+        category: 'naming',
+        rule: null,
+      }))
+      const voter = fake('voter', () => vote(true))
+      const result = await build(ruled, cited, voter).quorum.review({ diff })
+      expect(result.kept.map(verdict => verdict.category).toSorted()).toEqual(['CWE-78', 'naming'])
+      expect(result.meta.incomplete).toEqual([])
+      for (const request of voter.requests) expect(request.messages[0].content).not.toContain('untrusted-rules')
+    })
+
+    it('records the rules in meta.context and sends them in the context event, rules of the repository included', async () => {
+      const profile: Profile = { ...ruled, guidelines: 'Own.' }
+      const { quorum, events } = build(profile)
+      const rules = (rows: Array<{ id: string, text: string }>): ReviewDocument => ({
+        profile: 'naming',
+        kind: 'rules',
+        origin: { kind: 'repository', path: 'RULES.yaml', commit: COMMIT },
+        rules: rows,
+      })
+      const finder = guarded('finder', 200_000, () => findings())
+      const result = await build(profile, finder).quorum.review({
+        diff: hunky('docs/a.md', 1),
+        source: PATHS,
+        context: {
+          documents: [
+            rules([
+              { id: 'naming', text: 'Names say what a value is.' },
+            ]),
+          ],
+        },
+      })
+      // The repository's rule is listed and sent with the profile's: its paths are none, so it applies to every file.
+      expect(rulesBlocks(finder.requests[0])).toEqual([`${LICENSE_BLOCK}\n\nnaming, for every file:\nNames say what a value is.`])
+      expect(result.meta.context.documents.map(document => [
+        document.kind,
+        document.origin,
+        document.status,
+        document.rules,
+      ])).toEqual([
+        [
+          'guidelines',
+          'profile',
+          'read',
+          undefined,
+        ],
+        ['rules', 'profile', 'read', 2],
+        ['rules', 'repository', 'read', 1],
+      ])
+      expect(result.meta.context.documents[1].bytes).toBe(Buffer.byteLength(BLOCK) - 2)
+      expect(JSON.stringify(result.meta.context)).not.toContain('Each file starts')
+      // The compiled quorum alone records its own two.
+      const alone = await quorum.review({ diff })
+      expect(alone.meta.context.documents.map(document => [document.kind, document.rules])).toEqual([
+        ['guidelines', undefined],
+        ['rules', 2],
+      ])
+      expect(events.filter(event => event.type === 'context')).toHaveLength(1)
+    })
+
+    it('refuses a rule id repeated by a repository document, before any call', async () => {
+      const finder = guarded('finder', 200_000, () => findings())
+      const { quorum } = build(ruled, finder)
+      const input = {
+        diff,
+        source: PATHS,
+        context: {
+          documents: [
+            {
+              profile: 'naming',
+              kind: 'rules',
+              origin: { kind: 'repository', path: 'RULES.yaml', commit: COMMIT },
+              rules: [
+                { id: 'license', text: 'Another header.' },
+              ],
+            },
+          ] as ReviewDocument[],
+        },
+      }
+      const words = ['context.documents.0.rules.0.id: "RULES.yaml" at ccccccc repeats the rule id "license"']
+      const error = await quorum.review(input).catch((caught: unknown) => caught)
+      expect((error as ConfigError).issues.map(issue => `${issue.path}: ${issue.message}`)).toEqual(words)
+      expect(() => quorum.estimate(input)).toThrow(words[0])
+      expect(finder.requests).toHaveLength(0)
+    })
+
+    it('refuses, before any call, a review whose repository rules take the profile over its 100 rules or its 32 KiB', async () => {
+      const finder = guarded('finder', 200_000, () => findings())
+      const { quorum } = build(ruled, finder)
+      const rows = (count: number, bytes = 10): Array<{ id: string, text: string }> => Array.from({ length: count }, (_, index) => ({
+        id: `repo-${index}`,
+        text: 'r'.repeat(bytes),
+      }))
+      const inputOf = (rules: Array<{ id: string, text: string }>): Parameters<Quorum['review']>[0] => ({
+        diff,
+        source: PATHS,
+        context: {
+          documents: [
+            {
+              profile: 'naming',
+              kind: 'rules',
+              origin: { kind: 'repository', path: 'RULES.yaml', commit: COMMIT },
+              rules,
+            },
+          ],
+        },
+      })
+      const refused = async (rules: Array<{ id: string, text: string }>): Promise<string[]> => {
+        const error = await quorum.review(inputOf(rules)).catch((caught: unknown) => caught)
+        expect(error).toBeInstanceOf(ConfigError)
+        expect(() => quorum.estimate(inputOf(rules))).toThrow(ConfigError)
+        return (error as ConfigError).issues.map(issue => `${issue.path}: ${issue.message}`)
+      }
+      // The profile lists two rules of its own: 99 more are 101, and 32 of 1024 bytes take its texts, 62 bytes, to 32830.
+      expect(await refused(rows(99))).toEqual(['context.documents.0: must hold at most 100 rules'])
+      expect(await refused(rows(32, 1024))).toEqual(['context.documents.0: takes the profile\'s rules to 32830 bytes once cleaned, over the 32 KiB they may hold in all'])
+      expect(finder.requests).toHaveLength(0)
+      // 98 more are the 100 it may list.
+      await expect(quorum.review(inputOf(rows(98)))).resolves.toBeDefined()
+      expect(finder.requests).toHaveLength(1)
+    })
+
+    it('names the profile\'s total, its compiled rules counted first, for a repository rules document over 32 KiB by itself', async () => {
+      const finder = guarded('finder', 200_000, () => findings())
+      // The profile's own two rules take 62 bytes, and a rule of its config's 938 more: 1000 bytes before the review's documents.
+      const profile: Profile = {
+        ...ruled,
+        documents: [
+          {
+            profile: 'naming',
+            kind: 'rules',
+            origin: { kind: 'config' },
+            rules: [
+              {
+                id: 'file-0',
+                text: 'f'.repeat(938),
+              },
+            ],
+          },
+        ],
+      }
+      const { quorum } = build(profile, finder)
+      const input: Parameters<Quorum['review']>[0] = {
+        diff,
+        source: PATHS,
+        context: {
+          documents: [
+            {
+              profile: 'naming',
+              kind: 'rules',
+              origin: { kind: 'repository', path: 'RULES.yaml', commit: COMMIT },
+              rules: Array.from({ length: 33 }, (_, index) => ({
+                id: `repo-${index}`,
+                text: 'r'.repeat(1024),
+              })),
+            },
+          ],
+        },
+      }
+      // The 1000 bytes and the document's 33 792 at the rule that takes it over by itself, the 33rd.
+      const words = ['context.documents.0.rules.32: "RULES.yaml" at ccccccc takes the profile\'s rules to 34792 bytes once cleaned, over the 32 KiB they may hold in all']
+      const error = await quorum.review(input).catch((caught: unknown) => caught)
+      expect((error as ConfigError).issues.map(issue => `${issue.path}: ${issue.message}`)).toEqual(words)
+      expect(() => quorum.estimate(input)).toThrow(words[0])
+      expect(finder.requests).toHaveLength(0)
+    })
+
+    it('plans the research in parts on the room the rules block leaves, which a profile with no rules plans on its own', async () => {
+      const WINDOW = 14_000
+      const rules = Array.from({ length: 5 }, (_, index) => ({
+        id: `rule-${index}`,
+        text: 'r'.repeat(1000),
+      }))
+      // Seven files of some 780 tokens each: 5500 tokens, which the room of a request with no rules holds whole.
+      const change = Array.from({ length: 7 }, (_, index) => hunky(`src/f${index}.ts`, 1)).join('\n')
+      const fits = (request: CompletionRequest): boolean => WINDOW - requestTokens(request) - 512 - (request.replyTokens ?? 16_000) >= 0
+      const plain = guarded('plain', WINDOW, () => findings())
+      await build(naming, plain).quorum.review({ diff: change })
+      expect(plain.requests).toHaveLength(1)
+      // The block of 5000 bytes leaves each request a room the change does not fit, so it is researched in parts, each of which fits the window with the block in it.
+      const ruled = guarded('ruled', WINDOW, () => findings())
+      await build({ ...naming, rules }, ruled).quorum.review({ diff: change })
+      expect(ruled.requests.length).toBeGreaterThan(1)
+      for (const request of ruled.requests) {
+        expect(rulesBlocks(request)).toEqual([
+          rulesBlock(rules),
+        ])
+        expect(fits(request)).toBe(true)
+        expect(request.messages[0].content).toContain('untrusted-parts-')
+      }
+    })
+
+    it('refuses at creation a profile whose rules leave its research no room, naming the whole block listed', () => {
+      const finder = guarded('finder', 8192, () => findings())
+      const many = Array.from({ length: 6 }, (_, index) => ({
+        id: `rule-${index}`,
+        text: 'r'.repeat(1000),
+        paths: [`dir${index}/**`],
+      }))
+      let thrown: unknown
+      try {
+        build({ ...naming, rules: many }, finder)
+      } catch (caught) {
+        thrown = caught
+      }
+      expect(thrown).toBeInstanceOf(ConfigError)
+      const { issues } = thrown as ConfigError
+      expect(issues.map(issue => issue.path)).toEqual(['profiles.naming'])
+      const found = /^the research request on finder leaves (?:no tokens for the diff, its other tokens \d+ over the window|\d+ tokens for the diff), (?:where a hunk may need|less than the) 1024.*counts (\d+) for the instructions \((\d+)\) and the rules \((\d+)\), 512 for the chat template and \d+ for the reply: shorten the rules, lower maxTokens, or state a larger window$/.exec(issues[0].message)
+      expect(found).not.toBeNull()
+      const [fixed, instructions, rules] = (found as RegExpExecArray).slice(1).map(Number)
+      expect(instructions + rules).toBe(fixed)
+      // Every rule listed is counted, though a review of one file would send two of them.
+      expect(rules).toBeGreaterThan(6000)
+      expect(issues[0].message).not.toMatch(/r{20}/)
+      expect(finder.requests).toHaveLength(0)
+    })
   })
 
   describe('a change that edits a document its review reads', () => {

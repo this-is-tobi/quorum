@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { OutputError } from './errors.ts'
-import { extractJsonObject, holdsReasoning, parseResearchReply, parseVoteReply, researchReplyJsonSchema, voteReplyJsonSchema } from './output.ts'
+import { extractJsonObject, holdsReasoning, parseResearchReply, parseVoteReply, researchReplyJsonSchema, researchReplyWithRuleJsonSchema, voteReplyJsonSchema } from './output.ts'
 
 const finding = {
   file: 'a.js',
@@ -367,6 +367,63 @@ describe('parseResearchReply', () => {
     }
   })
 
+  it.each([
+    [
+      'no-any',
+      { ...finding, rule: 'no-any' },
+      'no-any',
+    ],
+    ['absent', finding, ''],
+    [
+      'null',
+      { ...finding, rule: null },
+      '',
+    ],
+    [
+      'empty',
+      { ...finding, rule: '' },
+      '',
+    ],
+  ])('reads a finding whose rule is %s as citing %j', (_name, item, cited) => {
+    const { findings, invalid } = parseResearchReply(JSON.stringify({
+      findings: [item],
+    }), Infinity, true)
+    expect(findings).toEqual([
+      { ...finding, rule: cited },
+    ])
+    expect(invalid).toEqual([])
+  })
+
+  it('reads no rule unless the reply is read with one, whatever the finding holds', () => {
+    const { findings, invalid } = parseResearchReply(JSON.stringify({
+      findings: [
+        { ...finding, rule: 'no-any' },
+        { ...finding, rule: 7 },
+      ],
+    }))
+    expect(findings).toEqual([finding, finding])
+    expect(findings[0]).not.toHaveProperty('rule')
+    expect(invalid).toEqual([])
+  })
+
+  it('leaves a finding unreadable whose rule is no string', () => {
+    for (const rule of [
+      7,
+      true,
+      ['no-any'],
+      { id: 'no-any' },
+    ]) {
+      const { findings, invalid } = parseResearchReply(JSON.stringify({
+        findings: [
+          { ...finding, rule },
+        ],
+      }), Infinity, true)
+      expect(findings).toEqual([])
+      expect(invalid).toHaveLength(1)
+      expect(invalid[0]).toMatch(/^findings\[0\]: rule: /)
+    }
+  })
+
   it('rejects a line below 1 and an empty file', () => {
     const { findings, invalid } = parseResearchReply(JSON.stringify({
       findings: [
@@ -569,6 +626,29 @@ describe('reply JSON Schemas', () => {
       invalid: ['findings[0]: line: Too big: expected int to be <=9007199254740991'],
       listed: 1,
     })
+  })
+
+  it('add a required rule to the finding of the research reply a profile with rules gets, and change nothing else', () => {
+    const withRule = researchReplyWithRuleJsonSchema as { properties: { findings: { items: { properties: Record<string, unknown>, required: string[] } } } }
+    const { properties, required } = withRule.properties.findings.items
+    expect(properties.rule).toEqual({ type: 'string' })
+    expect(required).toEqual([
+      'file',
+      'line',
+      'category',
+      'quote',
+      'summary',
+      'rule',
+    ])
+    expect(researchReplyWithRuleJsonSchema).toMatchObject({
+      type: 'object',
+      required: ['findings'],
+      additionalProperties: false,
+    })
+    expect(researchReplyWithRuleJsonSchema).not.toHaveProperty('$schema')
+    const { rule: _rule, ...rest } = properties
+    expect(rest).toEqual((researchReplyJsonSchema as typeof withRule).properties.findings.items.properties)
+    expect(JSON.stringify(researchReplyJsonSchema)).not.toContain('"rule"')
   })
 
   it('asks the finder for a quote, not a sink', () => {

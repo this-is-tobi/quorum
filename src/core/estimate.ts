@@ -1,7 +1,9 @@
+import { presentOf, researchProbe, voteProbe } from './budgets.ts'
 import type { ProfileBudgets } from './budgets.ts'
 import { reviewScope } from './coverage.ts'
 import { diffSections, splitDiff } from './diff.ts'
 import type { DiffSection } from './diff.ts'
+import { DOCUMENT_KINDS } from './documents.ts'
 import { laneStart, REVIEW_CEILING } from './lanes.ts'
 import { cutSection, partText } from './parts.ts'
 import type { Cut, Slice } from './parts.ts'
@@ -9,12 +11,12 @@ import type { CompletionRequest, Provider } from './ports.ts'
 import { researchRequest, voteRequest } from './prompts.ts'
 import type { Ask, PartOf } from './prompts.ts'
 import { MAX_DEPTH } from './recovery.ts'
-import { reservationOf, roomOf } from './stages/context.ts'
+import { reservationOf, roomOf, withSent } from './stages/context.ts'
 import type { LensRun, ProfileRun, Target } from './stages/context.ts'
 import { dispatchOrder, planResearch } from './stages/research.ts'
 import type { ResearchPlan } from './stages/research.ts'
 import { DEFAULT_REPLY_TOKENS, expectedOf, tokenBound } from './tokens.ts'
-import type { Estimate, ProfileEstimate } from './types.ts'
+import type { DocumentKind, Estimate, ProfileEstimate } from './types.ts'
 import { longestFinding } from './verify.ts'
 
 /** What the estimate reads of a quorum's settings. */
@@ -45,7 +47,7 @@ interface Section {
 }
 
 /**
- * What a review of `diff` by `runs` may cost, before any call: nothing is sent, and no provider's `complete` is
+ * What a review of `diff` by the runs `given` may cost, before any call: nothing is sent, and no provider's `complete` is
  * called, only the `room` and the `worstCase` it states, which are what the ledger reserves with. It reads the
  * diff as `review` does, less the sections `excluded` leaves out and the files held back as secrets, except the
  * ones `sent` names, and plans each profile's research the same way, so the reservation it states for each
@@ -53,9 +55,10 @@ interface Section {
  * nothing.
  *
  * Each request is built as the review builds it, with the reply budget and the findings its provider's budgets
- * give it, so a reservation is the one the review takes. `runs` are the review's own: a profile that a review's
- * repository documents name is a run with them in its guidelines and its research instructions, so each part and each
- * vote bound here counts them.
+ * give it, so a reservation is the one the review takes. `given` are the review's own runs: a profile that a review's
+ * repository documents name is a run with them in its guidelines, its research instructions and its rules, so each part and
+ * each vote bound here counts them. A run that lists rules sends the ones whose paths match a file of the filtered diff
+ * (`withSent`), so each part counts that block and a vote counts none.
  *
  * A vote's reservation depends on a finding that does not exist yet, so each lens's is a bound: the request for
  * a finding at the caps the harness cleans a finder's text to, citing the largest section of the filtered
@@ -78,9 +81,11 @@ interface Section {
  * estimate under its quorum's and another under limits of its own: `worst`, `expected` and `inFlight` do not depend
  * on them. It is an estimate: the ledger still holds the cap at run time, whatever it says.
  */
-export function estimateReview(runs: readonly ProfileRun[], settings: EstimateSettings, diff: string, sent: (path: string) => boolean = () => false): Estimate {
+export function estimateReview(given: readonly ProfileRun[], settings: EstimateSettings, diff: string, sent: (path: string) => boolean = () => false): Estimate {
   const scope = reviewScope(diff, settings.excluded, sent)
   const filtered = diffSections(scope.diff)
+  // Each run sends the rules whose paths match a file of the filtered diff, as the review does.
+  const runs = given.map(run => withSent(run, filtered))
   const largest = scope.diff.trim() === ''
     ? undefined
     : largestSection(splitDiff(scope.diff), scope.diff)
@@ -206,7 +211,7 @@ function largestHeader(sections: readonly DiffSection[], cuts: ReadonlyMap<numbe
  */
 function pieceExtra(run: ProfileRun, ask: Ask, part: PartOf | undefined): number {
   const { instructions } = run.research
-  const reserve = (position: PartOf | undefined): number => reservationOf(run.research, researchRequest(instructions, '', run.guidelines, position, ask))
+  const reserve = (position: PartOf | undefined): number => reservationOf(run.research, researchRequest(instructions, '', run.guidelines, position, ask, run.sent))
   const piece = { index: 2 ** MAX_DEPTH, count: 2 ** MAX_DEPTH }
   return Math.max(0, reserve({
     files: [],
@@ -218,18 +223,19 @@ function pieceExtra(run: ProfileRun, ask: Ask, part: PartOf | undefined): number
 
 /**
  * What the profile's documents add to the reservation of one research request and of one vote: each is the reservation of the
- * request over no diff with the run's documents less that of the same request without them (the research instructions without
- * the do-not-report paragraph, no guidelines block), and a vote's is the largest among the lenses, whose providers may reserve
- * differently. A profile with no document adds nothing.
+ * request over no diff with the run's documents less that of the same request without them (the probes of the startup refusal:
+ * the research instructions without the do-not-report paragraph, no guidelines block, no rules in the rules block), and a vote's
+ * is the largest among the lenses, whose providers may reserve differently. A profile with no document adds nothing.
  */
 function documentsAdd(run: ProfileRun, budgets: ProfileBudgets): ProfileEstimate['documents'] {
-  if (run.guidelines === undefined && run.doNotReport === undefined) return { research: 0, vote: 0 }
-  const ask = { findings: budgets.research.findings, replyTokens: budgets.research.replyTokens }
-  const research = (instructions: string, guidelines: string | undefined): number => reservationOf(run.research, researchRequest(instructions, '', guidelines, undefined, ask))
-  const vote = (lens: LensRun, guidelines: string | undefined): number => reservationOf(lens, voteRequest(lens.instructions, longestFinding(''), '', guidelines, false, { replyTokens: budgets.lenses[lens.id].replyTokens }))
+  const present = presentOf(run, DOCUMENT_KINDS)
+  if (present.length === 0) return { research: 0, vote: 0 }
+  const { findings, replyTokens } = budgets.research
+  const research = (without: readonly DocumentKind[]): number => reservationOf(run.research, researchProbe(run, replyTokens, findings, undefined, without))
+  const vote = (lens: LensRun, without: readonly DocumentKind[]): number => reservationOf(lens, voteProbe(run, lens, budgets.lenses[lens.id].replyTokens, without))
   return {
-    research: Math.max(0, research(run.research.instructions, run.guidelines) - research(run.texts.prompt, undefined)),
-    vote: Math.max(0, ...run.lenses.map(lens => vote(lens, run.guidelines) - vote(lens, undefined))),
+    research: Math.max(0, research([]) - research(present)),
+    vote: Math.max(0, ...run.lenses.map(lens => vote(lens, []) - vote(lens, present))),
   }
 }
 
@@ -294,7 +300,7 @@ function researchCalls(run: ProfileRun, plan: ResearchPlan, diff: string, ask: A
     return [
       {
         part: 0,
-        reservation: reserve(researchRequest(instructions, diff, run.guidelines, undefined, ask)),
+        reservation: reserve(researchRequest(instructions, diff, run.guidelines, undefined, ask, run.sent)),
         diff: tokenBound(diff),
         header: largestHeader(plan.sections, new Map(), plan.sections.map((_, section) => ({ section }))),
         extra: pieceExtra(run, ask, undefined),
@@ -317,7 +323,7 @@ function researchCalls(run: ProfileRun, plan: ResearchPlan, diff: string, ask: A
     return [
       {
         part: index,
-        reservation: reserve(researchRequest(instructions, text, run.guidelines, position, ask)),
+        reservation: reserve(researchRequest(instructions, text, run.guidelines, position, ask, run.sent)),
         diff: part.tokens,
         header: largestHeader(plan.sections, packing.cuts, part.slices),
         extra: pieceExtra(run, ask, position),

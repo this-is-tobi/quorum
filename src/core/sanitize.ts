@@ -214,6 +214,9 @@ function escapeUnits(char: string): string {
  */
 export const MAX_CLEAN_PASSES = 16
 
+/** What a text the cleaner cannot settle is refused with, whichever reads it: its reader says the fix. */
+export const UNSETTLED = `nests HTML comments or character references too deep to clean in ${MAX_CLEAN_PASSES} passes: remove them`
+
 /** What `cleanProse` removed: hidden characters by code point, comments and character references by construct. */
 export interface Removed {
   readonly characters: number

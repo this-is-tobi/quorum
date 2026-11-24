@@ -89,7 +89,7 @@ One provider object may fill several ports: the research provider of a profile c
 | `ports.profiles.<id>.research.worstCase`, `ports.profiles.<id>.voters.<lens>.worstCase` | `must be a function` |
 | `ports.profiles.<id>.research.room`, `ports.profiles.<id>.voters.<lens>.room` | `must be a function` |
 | `ports.events` | `must be a function` |
-| `profiles.<id>` | `the research request on <provider> leaves <room> tokens for the diff, less than the 1024 a hunk may need: contextTokens <window> counts <fixed> for <parts>, <template> for the chat template and <reply> for the reply: <fix>` (for a room below 0, `leaves no tokens for the diff, its other tokens <n> over the window, where a hunk may need 1024`, `<n>` being the room's absolute value), and the same for `the vote request on <provider> for the longest finding`: a profile whose fixed text leaves a provider that states its `room` and its `window` no room for a diff, checked once the ports pass. `<parts>` is `the instructions` alone for a profile with no document, else the instructions and each document the request carries with its tokens (`the instructions (1685), the guidelines (16308) and the do-not-report text (5259)`), and `<fix>` names those documents, the largest first, before `lower maxTokens, or state a larger window` ([Room accounting](../20-using/20-configuration.md#room-accounting)) |
+| `profiles.<id>` | `the research request on <provider> leaves <room> tokens for the diff, less than the 1024 a hunk may need: contextTokens <window> counts <fixed> for <parts>, <template> for the chat template and <reply> for the reply: <fix>` (for a room below 0, `leaves no tokens for the diff, its other tokens <n> over the window, where a hunk may need 1024`, `<n>` being the room's absolute value), and the same for `the vote request on <provider> for the longest finding`: a profile whose fixed text leaves a provider that states its `room` and its `window` no room for a diff, checked once the ports pass. `<parts>` is `the instructions` alone for a profile with no document, else the instructions and each document the request carries with its tokens (`the instructions (1685), the guidelines (16308), the do-not-report text (5259) and the rules (3140)`, the rules being the whole block of every rule the profile lists, whatever files a change holds), and `<fix>` names those documents, the largest first, before `lower maxTokens, or state a larger window` ([Room accounting](../20-using/20-configuration.md#room-accounting)) |
 
 A port for a profile or a lens the review does not have is refused, as a likely typo. A profile's ports are checked only when the profile itself has no issue, and no port is checked when `profiles` is not an array. Every record keyed by an id is read through its own properties, so `constructor` is as valid an id as any other. For the security profile with `concurrency: 0`, `maxFindings: 2.5`, a research port that is not a provider, its `defenses` voter missing and one named `typo` instead, a port for a profile named `other`, and a sink that is a string, the message reads:
 
@@ -152,21 +152,29 @@ A finding's `line` is the line its finder cited, unless the harness moved the fi
 
 ## Documents
 
-A profile reads policy as documents: text a person wrote, which a model reads as the criteria to judge by (`guidelines`) or as what the finder is told not to report (`do-not-report`). The core cleans, caps, joins, sends and records them, and reads no file: a program, or the CLI's readers, hand it the text.
+A profile reads policy as documents: text a person wrote, which a model reads as the criteria to judge by (`guidelines`), as what the finder is told not to report (`do-not-report`), or as review rules a finding may cite (`rules`). The core cleans, caps, joins, sends and records them, and reads no file: a program, or the CLI's readers, hand it the text.
 
 ```ts
 interface Profile {
   guidelines?: string
   doNotReport?: string
+  rules?: readonly ReviewRule[]
   documents?: readonly ReviewDocument[]
   // ...
 }
 
+interface ReviewRule {
+  readonly id: string
+  readonly text: string
+  readonly paths?: readonly string[]
+}
+
 interface ReviewDocument {
   readonly profile: string
-  readonly kind: 'guidelines' | 'do-not-report'
+  readonly kind: 'guidelines' | 'do-not-report' | 'rules'
   readonly origin: DocumentOrigin
   readonly text?: string
+  readonly rules?: readonly ReviewRule[]
   readonly removed?: Removed
 }
 
@@ -181,28 +189,40 @@ interface ReviewContext {
 
 - **Where a profile's documents come from.** `Profile.guidelines` and `Profile.doNotReport` are its own text. `Profile.documents` holds documents of origin `config`, each naming the profile that holds it. `ReviewInput.context.documents` holds documents of origin `repository`, each naming a profile of the quorum and the commit its text was read at, and `Quorum.estimate` takes the same `context`. The texts of a kind are joined by a blank line in that order: the profile's own, its documents, then the review's. A blank one is recorded and sent as nothing, and a repository document with no `text` is an optional one that was not found; a config document with none is refused (`.text: must be a string: a config document is never missing`).
 - **What the core does to each text**, whoever read it: it cleans it with [`cleanProse`](#cleanprose), adds what its pass removed to the `removed` its reader gave, and refuses it over its cap once cleaned. A profile's own `guidelines`, which 0.12.0 sent as given, are cleaned and capped too.
-- **Where each kind goes.** The guidelines are a block of every request of the profile, the research call and every vote. The do-not-report text is a paragraph of the research system message, right after the instructions, and no vote carries it: [The layout of a request](../20-using/60-prompts.md#the-layout-of-a-request).
+- **Where each kind goes.** The guidelines are a block of every request of the profile, the research call and every vote. The do-not-report text is a paragraph of the research system message, right after the instructions, and no vote carries it. The rules are a block of every research request, after the diff: [The layout of a request](../20-using/60-prompts.md#the-layout-of-a-request).
+- **Review rules.** A `ReviewRule` is an `id` that matches `^[a-z][a-z0-9._-]{0,63}$`, a `text` of 1 to 1,024 code points once cleaned, and `paths`, when set, 1 to 20 patterns of [`exclude`'s syntax](../20-using/20-configuration.md#excludes). A profile's rules are `Profile.rules`, then the rules of its `documents` of kind `rules` (each such document holds `rules` in place of `text`), then those of the review's repository documents of that kind, all ids unique, at most 100 rules in all. A research request carries the rules whose `paths` match a file of the filtered diff, and every rule with no `paths`, the same block in every part of a change researched in parts; a profile that lists a rule asks each finding for a sixth field, `rule`, the id of the rule it breaks or an empty string, and a profile that lists none sends the requests it always did. A reply whose `rule` is absent or `null` reads as citing none, and one whose `rule` is no string leaves its finding unreadable. A rules document's [record](./20-json-result.md#the-context) holds its count of `rules` and the `bytes` of its entries as the block sends them.
 - **The caps**, in UTF-8 bytes of the cleaned text:
 
 | What | Cap |
 | --- | --- |
 | A guidelines document, and a profile's guidelines in all | 16 KiB (16,384 bytes) |
 | A do-not-report document, and a profile's do-not-report text in all | 8 KiB (8,192 bytes) |
+| A rule's text, in code points once cleaned | 1,024 |
+| The cleaned texts of a profile's rules in all | 32 KiB (32,768 bytes) |
+| The rules of a profile, and the patterns of one rule | 100, and 20 |
 | A document's text before it is cleaned, as a reader decodes it | 64 KiB (65,536 bytes) |
 | The documents of one kind a profile holds | 16 |
 | The documents of a review's context | 256 |
 
 - **Nothing is cut.** A document over a cap, one the cleaner still changes after 16 passes, a review whose repository documents leave a research provider less than 1,024 tokens of diff ([Room accounting](../20-using/20-configuration.md#room-accounting)), and an input that is no context are refused as a `ConfigError` before any call, and no message holds a text, only counts and a path. The room check runs again on the run a review builds for a profile its context names a document of, since a repository document only adds to the profile's fixed text; a profile the context names none of keeps the run it was created with.
-- **Every document is in the request's key.** The guidelines are a block of the request and the do-not-report text is in its instructions, so a rerun with a store after a document changed reuses no stored reply of a request that carries it.
+- **Every document is in the request's key.** The guidelines and the rules are blocks of the request and the do-not-report text is in its instructions, and the sixth field is in its reply schema, so a rerun with a store after a document changed reuses no stored reply of a request that carries it.
 
 What `createQuorum` and `review` refuse of documents, each message at its path:
 
 | Path | Message |
 | --- | --- |
 | `<id>.guidelines`, `<id>.doNotReport` | `must be a string`, `holds <n> bytes once cleaned, over the 16 KiB a guidelines document may hold` (`8 KiB a do-not-report document`), or `nests HTML comments or character references too deep to clean in 16 passes: remove them` |
+| `<id>.rules` | `must be an array of rules`, or `must hold at most 100 rules` |
+| `<id>.rules.<index>` | `must be an object with an id and a text` |
+| `<id>.rules.<index>.id` | `must match ^[a-z][a-z0-9._-]{0,63}$`, or `repeats the rule id "no-any"` |
+| `<id>.rules.<index>.text` | `must be a string`, `must hold 1 to 1024 characters once cleaned`, or `nests HTML comments or character references too deep to clean in 16 passes: remove them` |
+| `<id>.rules.<index>.paths`, `<id>.rules.<index>.paths.<n>` | `must be an array of patterns`, `must hold 1 to 20 patterns`, `must be a string`, or what `exclude.<index>` is told to write instead |
+| `<id>.rules.<index>` | `takes the profile's rules to <n> bytes once cleaned, over the 32 KiB they may hold in all`, at the first rule that takes the cleaned texts over the cap |
 | `<id>.documents` | `must be an array of documents`, or `must hold at most 16 documents of one kind` |
 | `<id>.documents.<index>` | `must be an object`; the cap and unsettled messages above; or `takes the profile's guidelines to <n> bytes once cleaned, over the 16 KiB they may hold in all` (`do-not-report text`, `8 KiB it may hold in all`), at the first document that takes the profile's texts of its kind over the cap, its own text counted first |
-| `<id>.documents.<index>.profile`, `.kind`, `.origin`, `.origin.sha256`, `.text`, `.removed` | `must name the profile that holds it`; `must be guidelines or do-not-report`; `must be a config document: a { repository } document comes from the review's context`; `must be 64 lowercase hexadecimal digits`; `must be a string`, or `holds <n> bytes, over the 64 KiB quorum reads of a document`; `must hold counts of characters, comments and entities` |
+| `<id>.documents.<index>` of kind `rules` | `must hold at most 100 rules`, or `takes the profile's rules to <n> bytes once cleaned, over the 32 KiB they may hold in all`, at the first rules document that takes the profile's rules over either cap, counting its own rules and the rules documents before it; a document over a cap by itself is told at its own `.rules` or the rule that takes it over, and never twice. The `<n>` of the bytes message is always the profile's total at the rule that takes it over: its own rules, the rules documents before it, then the document's rules up to that rule |
+| `<id>.documents.<index>.profile`, `.kind`, `.origin`, `.origin.sha256`, `.text`, `.rules`, `.removed` | `must name the profile that holds it`; `must be guidelines, do-not-report or rules`; `must be a config document: a { repository } document comes from the review's context`; `must be 64 lowercase hexadecimal digits`; `must be a string`, or `holds <n> bytes, over the 64 KiB quorum reads of a document`, or, for a rules document, `must be absent: a rules document holds rules`; `must be an array of rules: a config document is never missing`, or, for another kind, `must be absent: only a rules document holds rules`; `must hold counts of characters, comments and entities` |
+| `<id>.documents.<index>.rules.<n>` | The rule messages above at the rule's own field, and `repeats the rule id "no-any"` at the rule's `id` when an earlier rule of the profile, its own or a document's, has that id |
 | `context` | `must be an object holding documents` |
 | `context.documents` | `must be an array of at most 256 documents` |
 | `context.documents.<index>.profile` | `names no profile of the quorum` |
@@ -210,9 +230,11 @@ What `createQuorum` and `review` refuse of documents, each message at its path:
 | `context.documents.<index>.origin.commit` | `must be the commit the review's source reads documents from`, or, for an estimate, which names no source, `must be a full commit id: 40 or 64 lowercase hexadecimal digits` |
 | `context.documents.<index>.origin.path` | `must be a path of at most 4096 characters` |
 | `context.documents.<index>` | `needs a commit to read it from, which the review's source does not name` (a `diff` source, or local changes before a first commit); `"REVIEW.md" at 1f3a9c2 holds 17020 bytes once cleaned, over the 16 KiB a guidelines document may hold`, the path JSON-quoted and cut at 100 characters and the first 7 characters of the commit before the cap, unsettled and in-all messages above; or the shape messages of `.profile` to `.removed` above |
+| `context.documents.<index>` of kind `rules` | `must hold at most 100 rules` or `takes the profile's rules to <n> bytes once cleaned, over the 32 KiB they may hold in all`, at the first rules document that takes the profile's rules, its own and its config documents' counted first, over either cap |
+| `context.documents.<index>.rules.<n>` | The rule messages above, and `repeats the rule id "no-any"` at a rule whose id the profile's rules or an earlier document's already hold, each after the document's path and commit as above |
 | `profiles.<id>` | The room message of [Input checks](#input-checks), for a review whose repository documents leave a provider no room |
 
-A review records every document in [`meta.context`](./20-json-result.md#the-context) and sends one [`context` event](#events); neither holds a text. The types `ReviewDocument`, `ReviewContext`, `DocumentKind`, `DocumentOrigin`, `ContextDocument` and `ContextRecord` are exported.
+A review records every document in [`meta.context`](./20-json-result.md#the-context) and sends one [`context` event](#events); neither holds a text. The types `ReviewRule`, `ReviewDocument`, `ReviewContext`, `DocumentKind`, `DocumentOrigin`, `ContextDocument` and `ContextRecord` are exported.
 
 ## `readContext`
 

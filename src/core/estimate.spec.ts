@@ -4,9 +4,11 @@ import { splitDiff } from './diff.ts'
 import { ConfigError } from './errors.ts'
 import type { CompletionRequest, Provider, QuorumPorts } from './ports.ts'
 import { doNotReportInstructions, researchRequest, voteRequest } from './prompts.ts'
+import type { PartOf } from './prompts.ts'
 import { createQuorum } from './quorum.ts'
+import { rulesBlock } from './rules.ts'
 import { DEFAULT_REPLY_TOKENS, expectedOf, requestTokens, tokenBound } from './tokens.ts'
-import type { Estimate, Finding, Profile, Quorum, QuorumEvent, QuorumOptions } from './types.ts'
+import type { Estimate, Finding, Profile, Quorum, QuorumEvent, QuorumOptions, ReviewRule } from './types.ts'
 import { longestFinding } from './verify.ts'
 
 /** What a provider keeps over a request's own bound: 512 tokens for the chat template and 16000 for the reply, which the providers here state as an attempt's worst case. */
@@ -1101,6 +1103,72 @@ describe('estimate', () => {
     }).documents).toEqual(guided)
     // A profile whose research makes no call adds nothing to any.
     expect(estimateOf({ ...naming, guidelines }, { diff: '' }).documents).toEqual({ research: 0, vote: 0 })
+  })
+
+  it('counts the rules sent in each research part, and in documents.research', () => {
+    const rules: ReviewRule[] = [
+      {
+        id: 'no-any',
+        text: 'No any outside tests.',
+        paths: ['src/**'],
+      },
+      { id: 'license', text: 'Each file starts with the license header.' },
+    ]
+    const bare: Profile = {
+      id: 'naming',
+      prompts: { research: 'Review this diff for names that mislead.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
+      lenses: [
+        { id: 'clarity', question: 'Does the name mislead?' },
+        { id: 'brevity', question: 'Is the name longer than it needs to be?' },
+      ],
+    }
+    const listed: Profile = { ...bare, rules }
+    // A window that holds a part by `partTokens` alone, so rules or none, a diff is packed into the same parts.
+    const estimateOf = (profile: Profile, diff: string): Estimate['profiles'][string] => createQuorum({
+      profiles: [profile],
+      partTokens: 8192,
+    }, portsFor(profile, windowed(200_000, () => '{"findings":[]}'))).estimate({ diff }).profiles[profile.id]
+    const reserved = (request: CompletionRequest): number => requestTokens(request) + RESERVE
+    const ask = { findings: 50, replyTokens: 21_024 }
+    /** The request over no diff of a profile that sends `sent`, or of one that lists none, whole or as a part of a change. */
+    const research = (sent?: readonly ReviewRule[], part?: PartOf): number => reserved(researchRequest(bare.prompts.research, '', undefined, part, ask, sent))
+    // A part's request holds a parts block, so the rules block is a third block beside it, where a whole request's is a second.
+    const inPart = {
+      index: 1,
+      count: 2,
+      files: [],
+      unlisted: 0,
+    }
+    const mixed = [
+      addedFile('src/x.ts', 400),
+      addedFile('docs/a.md', 200),
+    ].join('\n')
+    const docs = addedFile('docs/a.md', 200)
+
+    const both = estimateOf(listed, mixed)
+    const plain = estimateOf(bare, mixed)
+    expect(plain.parts.length).toBeGreaterThan(1)
+    expect(both.parts).toHaveLength(plain.parts.length)
+    // A change of both kinds of file sends both rules in every part, whatever the part holds: the same block, so the same bound over the parts' own.
+    const added = research(rules, inPart) - research(undefined, inPart)
+    expect(added).toBeGreaterThan(Buffer.byteLength(rulesBlock(rules)))
+    expect(both.parts.map((part, index) => part - plain.parts[index])).toEqual(plain.parts.map(() => added))
+    // A change of docs alone sends the license rule alone.
+    const onlyDocs = estimateOf(listed, docs)
+    const plainDocs = estimateOf(bare, docs)
+    expect(plainDocs.parts.length).toBeGreaterThan(1)
+    const addedDocs = research([rules[1]], inPart) - research(undefined, inPart)
+    expect(addedDocs).toBeLessThan(added)
+    expect(onlyDocs.parts.map((part, index) => part - plainDocs.parts[index])).toEqual(plainDocs.parts.map(() => addedDocs))
+    // documents.research is the block alone, the sixth field being part of the instructions: the request with the rules sent less the one with an empty block.
+    expect(both.documents).toEqual({ research: research(rules) - research([]), vote: 0 })
+    expect(onlyDocs.documents).toEqual({ research: research([rules[1]]) - research([]), vote: 0 })
+    expect(plain.documents).toEqual({ research: 0, vote: 0 })
+    expect(both.documents.research).toBeGreaterThan(Buffer.byteLength(rulesBlock(rules)))
+    // No vote carries a rule: the votes' bounds are those of the profile with none.
+    expect(both.vote).toEqual(plain.vote)
+    // A profile whose research makes no call adds nothing to any.
+    expect(estimateOf(listed, '').documents).toEqual({ research: 0, vote: 0 })
   })
 
   it('refuses an input a review would refuse, as a ConfigError', () => {

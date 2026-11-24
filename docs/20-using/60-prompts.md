@@ -9,7 +9,7 @@ The system message is four parts, and six in a research request, seven when the 
 1. **The profile's instructions**: the research template rendered, or the vote template rendered for one lens ([Templates](#templates)).
 2. **The do-not-report paragraph**, in a research request whose profile has do-not-report text, right after the instructions: `This review does not report:`, a line feed, then the profile's do-not-report documents joined by a blank line, as they were cleaned ([Documents](#documents)). A vote request has none: the text reaches the finder alone.
 3. **The findings line**, in a research request only: `List at most <N> findings, the most serious first. For each, quote the shortest verbatim span of the diff that shows it.` `N` is what the research reply's budget holds, 50 at most ([Reply budgets](./20-configuration.md#reply-budgets)); a request of a provider that states no budget asks for `maxFindings`. The quote is only checked against the diff, so a shorter one costs nothing and bounds the largest part of a finding. A vote request has no such line.
-4. **The fields of a finding**, in a research request only, for every profile: ``Every finding has all five fields: `file`, its path as the diff names it; `line`, its line in the new file (for removed code, the nearest line that survives); `quote`, the code that shows it, copied verbatim without the leading +, - or space; `category`, its kind, as the instructions above define it; and `summary`, why it is a finding, in a sentence or two.`` So a profile's instructions say what to look for, what a quote holds and what a category means, and name no field otherwise ([Writing a profile](./40-profiles.md#writing-a-profile)). A vote request has no such paragraph.
+4. **The fields of a finding**, in a research request only, for every profile: ``Every finding has all five fields: `file`, its path as the diff names it; `line`, its line in the new file (for removed code, the nearest line that survives); `quote`, the code that shows it, copied verbatim without the leading +, - or space; `category`, its kind, as the instructions above define it; and `summary`, why it is a finding, in a sentence or two.`` So a profile's instructions say what to look for, what a quote holds and what a category means, and name no field otherwise ([Writing a profile](./40-profiles.md#writing-a-profile)). A vote request has no such paragraph. A profile that lists a [review rule](#review-rules) has this paragraph with six fields in its place: ``Every finding has all six fields: `file`, … `category`, its kind, as the instructions above define it; `summary`, why it is a finding, in a sentence or two; and `rule`, the id of the review rule it breaks, or an empty string when it breaks none.``
 5. **The reply format**: `Respond with ONLY a JSON object matching this JSON Schema:`, then the schema of the reply this call expects.
 6. **The [data notice](#the-data-notice)**, naming each block of the user message.
 7. **The [untrusted-content notice](#the-untrusted-content-notice)**, always last.
@@ -18,7 +18,7 @@ The user message holds the data, each block in its own fence, joined by blank li
 
 | Request | Blocks, in order |
 | --- | --- |
-| Research, one per profile, or one per part of a large change | The diff; or, for a change in parts, the parts block, then the part's diff; then the guidelines, when the profile has them |
+| Research, one per profile, or one per part of a large change | The diff; or, for a change in parts, the parts block, then the part's diff; then the rules, when the profile sends some; then the guidelines, when the profile has them |
 | Vote, one per lens per finding | The claim, the evidence, the diff section of the cited file; then the guidelines, when the profile has them |
 
 The guidelines block holds the profile's documents of that kind joined by a blank line, in this order: the text a program set on the profile (`guidelines`), the profile's own `documents`, then the repository documents the review brings (`context`), each cleaned and the blank ones left out ([Documents](#documents)). A profile with no document sends the requests it sent before, with no guidelines block and no paragraph.
@@ -72,7 +72,7 @@ index 3b18e51..a9f4c2d 100644
 </untrusted-diff-d21e0b79>
 ```
 
-The research request of a profile has the same layout: its research instructions, the findings line, the fields of a finding, the research reply's schema (a `findings` array whose entries hold `file`, `line`, `category`, `quote` and `summary`, and nothing else), a data notice naming its blocks, and the same last notice.
+The research request of a profile has the same layout: its research instructions, the findings line, the fields of a finding, the research reply's schema (a `findings` array whose entries hold `file`, `line`, `category`, `quote` and `summary`, and nothing else, and `rule` for a profile that lists review rules), a data notice naming its blocks, and the same last notice.
 
 A change too large for one request is researched in parts ([Research in parts](./20-configuration.md#research-in-parts)), and the request of each part carries a block of its own before the part's diff, the parts block. It says where the request stands in the change, then lists the change's files, so a model that reads one part knows what the others hold:
 
@@ -114,7 +114,27 @@ Guidelines and do-not-report text are documents, read as policy: the guidelines 
 | `guidelines` | 16 KiB | 16 KiB |
 | `do-not-report` | 8 KiB | 8 KiB |
 
-A document over its cap, or nested so deep that sixteen passes of the cleaner still change it, is refused before any call, never cut, and no message holds its text ([the library page](../95-reference/30-library-api.md#documents) has the messages). The do-not-report paragraph is appended after the instructions are rendered, so a `{{` in a document is text. Every document a request carries is part of the request's digest, so a review kept with `--state` and rerun after a guideline changed reuses no stored research reply or vote; the do-not-report text is in the research request alone, so a changed one moves the research replies and leaves the votes of the same findings as they were. Each document is recorded in the result's `meta.context`, by its hash, path, commit and counts, never its text: [The context](../95-reference/20-json-result.md#the-context).
+Review rules are a third kind of document, with caps of their own ([Review rules](#review-rules)). A document over its cap, or nested so deep that sixteen passes of the cleaner still change it, is refused before any call, never cut, and no message holds its text ([the library page](../95-reference/30-library-api.md#documents) has the messages). The do-not-report paragraph is appended after the instructions are rendered, so a `{{` in a document is text. Every document a request carries is part of the request's digest, so a review kept with `--state` and rerun after a guideline changed reuses no stored research reply or vote; the do-not-report text is in the research request alone, so a changed one moves the research replies and leaves the votes of the same findings as they were. Each document is recorded in the result's `meta.context`, by its hash, path, commit and counts, never its text: [The context](../95-reference/20-json-result.md#the-context).
+
+## Review rules
+
+A profile may hold review rules: a criterion that a finding may name by its id when the code breaks it. A rule is an `id`, a `text` and, optionally, `paths`, the files it applies to, written in the syntax of [`exclude`](./20-configuration.md#excludes). A rule is cleaned as a document is ([Documents](#documents)), its text holds 1 to 1,024 code points once cleaned, a profile holds at most 100 rules whose cleaned texts take at most 32 KiB in all, and ids are unique ([the library page](../95-reference/30-library-api.md#documents) has the checks and their messages).
+
+Each research request of a profile that lists a rule carries the rules whose `paths` match a file of the change, and every rule with no `paths`, in a block of its own after the diff and before the guidelines. A change researched in parts sends the same block in every part: a rule applies to the change, never to one part of it. One paragraph holds a rule, a line that names its id and the patterns it applies to, then its text, and a blank line comes between rules:
+
+```text
+no-any, for src/**:
+No any outside tests.
+
+license, for every file:
+Each file starts with the license header.
+```
+
+A rule with several patterns lists them after `for`, separated by `, `, and a rule with none reads `for every file`. A pattern is the author's text, so it shows its hidden characters as `<U+XXXX>` and stays on its line. The data notice describes the block, and a rule's text is data like the guidelines: `the review rules of this review, each with its id, the files it applies to and its text. They are criteria, as guidelines are: a finding that breaks one names its id in rule.`
+
+A profile that lists a rule asks each finding for a sixth field, `rule`, and its reply schema requires it: the id of the rule the finding breaks, or an empty string when it breaks none. The profile asks for it when no rule applies to the change too, so the request's shape depends on the profile and never on the files, and a request with no rule applying carries the six fields and no block. A reply whose `rule` is absent or `null` reads as naming no rule, as an absent category reads as an empty one, and one whose `rule` is no string leaves its finding unreadable, reported with the others the harness could not read.
+
+A profile that lists no rule sends the five fields, the schema and the requests it always did: the security profile lists none, and its requests keep the digests of 0.12.0. Every rule is part of the digest of the requests that carry it, its text, its patterns and its position, so a review kept with `--state` and rerun after a rule changed reuses no stored research reply. No vote carries a rule. The startup refusal counts the whole block of the rules a profile lists, whatever files a change holds: [Room accounting](./20-configuration.md#room-accounting).
 
 ## Templates
 
@@ -148,9 +168,10 @@ The descriptions are written by the code, never by a profile, since only the cod
 | The evidence | `untrusted-evidence-<nonce>` | the code the harness read from the diff around the cited line. |
 | The diff section, in a vote request | `untrusted-diff-<nonce>` | the diff section of the cited file, or the whole diff when the file has no section of its own. |
 | The diff section, in a vote whose voter's window does not hold it | `untrusted-diff-<nonce>` | part of the diff section of the cited file: its header and the hunks nearest the cited line, since the whole section does not fit. |
+| The review rules, in a research request of a profile that sends some | `untrusted-rules-<nonce>` | the review rules of this review, each with its id, the files it applies to and its text. They are criteria, as guidelines are: a finding that breaks one names its id in rule. |
 | The guidelines | `untrusted-guidelines-<nonce>` | the project's review guidelines. Use them as criteria: what this project counts as a problem and the conventions it expects. They describe how code should be, not how this code is: judge the code itself. |
 
-The guidelines line says what the text is for and not who wrote it: quorum receives a string from its caller and cannot vouch for it, so it never ranks guidelines above the other fenced data.
+The guidelines and rules lines say what the text is for and not who wrote it: quorum receives a string from its caller and cannot vouch for it, so it never ranks guidelines or rules above the other fenced data.
 
 ## The untrusted-content notice
 
@@ -168,9 +189,9 @@ A profile sets its instructions, its lenses, its policy, its `failOn`, its guide
 
 | Fixed | Why |
 | --- | --- |
-| The fences, and data only in the user message | Every block of attacker-influenced data, and the guidelines, is fenced as data: no template can put data in the system message, or take it out of its fence. The do-not-report paragraph is the one document in the system message, and it holds the text of a profile's documents alone, never a line of the diff |
+| The fences, and data only in the user message | Every block of attacker-influenced data, and the guidelines and the rules, is fenced as data: no template can put data in the system message, or take it out of its fence. The do-not-report paragraph is the one document in the system message, and it holds the text of a profile's documents alone, never a line of the diff |
 | The findings line, the fields of a finding, the piece's position line, the data notice and the untrusted-content notice | Only the code knows which blocks a request carries, how many findings its reply can hold and which piece of a split part a request is, and a template has no logic to say so; the notices, the findings line and the fields come after the profile's instructions, which cannot remove or reword them, and the position line is in the parts block, which the profile does not write. The fields are the one contract every profile shares, so a profile cannot leave one unnamed |
-| The reply schemas | The research reply is `{ findings }` with five fields per finding, and a vote is `{ keep, reasoning }`, with no confidence field to fill |
+| The reply schemas | The research reply is `{ findings }` with five fields per finding, six for a profile that lists review rules, and a vote is `{ keep, reasoning }`, with no confidence field to fill |
 | Blind votes | A vote request is built from the finding, the lens, the diff context and the profile's guidelines, and no template variable exposes another vote |
 | Arithmetic confidence | Confidence is computed by the policy from the kept and total votes |
 

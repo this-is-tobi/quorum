@@ -132,9 +132,9 @@ export interface Profile {
   readonly gating?: boolean
   /**
    * Reference text the caller already loaded; the core never reads files. The core cleans it as it cleans every document
-   * (`cleanProse`: hidden characters, HTML comments and numeric character references go) and refuses it over 16 KiB cleaned
-   * or nested too deep to clean, so what a model reads is what a person sees. It is the first of the profile's guidelines:
-   * its `documents` of kind `guidelines` follow it, then the review's own, joined by a blank line.
+   * (`cleanProse` removes the hidden characters, the HTML comments and the numeric character references, and leaves other
+   * Markdown a renderer hides) and refuses it over 16 KiB cleaned or nested too deep to clean. It is the first of the
+   * profile's guidelines: its `documents` of kind `guidelines` follow it, then the review's own, joined by a blank line.
    */
   readonly guidelines?: string
   /**
@@ -149,10 +149,28 @@ export interface Profile {
    * most 16 of each kind. A review's repository documents come in `ReviewInput.context`, and follow these.
    */
   readonly documents?: readonly ReviewDocument[]
+  /**
+   * The profile's own review rules, the first of its rules: its `documents` of kind `rules` follow them, then the review's own.
+   * Each research request carries the rules whose `paths` match a file of the change, in a block of its own, and a profile
+   * that lists a rule asks each finding for a sixth field, `rule`. At most 100 rules in all, ids unique across them. A
+   * profile that lists none sends its requests as it always did.
+   */
+  readonly rules?: readonly ReviewRule[]
 }
 
-/** What a document tells a model: the project's guidelines, to judge by, or what the research does not report. */
-export type DocumentKind = 'guidelines' | 'do-not-report'
+/**
+ * One review rule: a criterion a finding may cite by its `id`, which matches `^[a-z][a-z0-9._-]{0,63}$`. Its `text` holds 1 to
+ * 1024 code points once cleaned, and its `paths`, when set, 1 to 20 patterns of `exclude`'s syntax: the rule is sent when a
+ * file of the change matches one of them, and for every file when it has none.
+ */
+export interface ReviewRule {
+  readonly id: string
+  readonly text: string
+  readonly paths?: readonly string[]
+}
+
+/** What a document tells a model: the project's guidelines, to judge by, what the research does not report, or the review rules a finding may cite. */
+export type DocumentKind = 'guidelines' | 'do-not-report' | 'rules'
 
 /**
  * Where a document comes from: `config`, an operator's file or text the profile holds, or `repository`, a file read from
@@ -172,8 +190,10 @@ export interface ReviewDocument {
   readonly profile: string
   readonly kind: DocumentKind
   readonly origin: DocumentOrigin
-  /** The text, at most 64 KiB; absent only for an optional repository document that was not found, never for a config document. */
+  /** The text, at most 64 KiB; absent only for an optional repository document that was not found, never for a config document. A rules document holds `rules` instead. */
   readonly text?: string
+  /** The rules of a document of kind `rules`, in place of `text`: absent only for an optional repository document that was not found, never for a config document. */
+  readonly rules?: readonly ReviewRule[]
   /** What its reader removed from the text before handing it over, added to what the core removes. */
   readonly removed?: Removed
 }
@@ -201,12 +221,14 @@ export interface ContextDocument {
   /** The SHA-256 of the text as read, before it was cleaned: 64 lowercase hexadecimal digits. */
   sha256?: string
   status: 'read' | 'missing'
-  /** The UTF-8 bytes of the cleaned text as it is sent: 0 for a blank or a missing document. */
+  /** The UTF-8 bytes of the cleaned text as it is sent, a rules document's entries as the rules block holds them: 0 for a blank or a missing document. */
   bytes: number
+  /** How many rules a document of kind `rules` holds: absent for any other kind. */
+  rules?: number
   removed: Removed
 }
 
-/** What `meta.context` and the `context` event hold: one record per document the review sends, each profile's guidelines then its do-not-report text, each in the order they are joined. */
+/** What `meta.context` and the `context` event hold: one record per document the review sends, each profile's guidelines, then its do-not-report text, then its rules, each in the order they are joined. */
 export interface ContextRecord {
   documents: ContextDocument[]
 }
@@ -928,6 +950,8 @@ export interface FindingDetails {
   /** The code the finder says the finding is about. It is only compared with the evidence and is never forwarded. */
   quote: string
   summary: string
+  /** The id of the review rule the finder says the finding breaks, '' when it names none: set only in the reply of a profile that lists rules. */
+  rule?: string
 }
 
 /** Token counts, and the cost when the adapter knows it, for one provider call. */

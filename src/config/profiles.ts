@@ -1,11 +1,12 @@
 import { bytesOf, capProblem, documentSha256, repositoryPathProblem, totalProblem, UNSETTLED } from '../core/documents.ts'
+import type { ProseKind } from '../core/documents.ts'
 import { ConfigError, isSafeSegment, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { defaultPolicy } from '../core/policy.ts'
 import type { PolicyRules, Rule } from '../core/policy.ts'
 import { FAIL_ON_LEVELS, profileIssues } from '../core/profile.ts'
 import { cleanProse } from '../core/sanitize.ts'
-import type { DocumentKind, FailOn, Profile, ReviewDocument } from '../core/types.ts'
+import type { FailOn, Profile, ReviewDocument } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { PROFILE_ID } from './env.ts'
 import type { RoleBinding } from './env.ts'
@@ -19,7 +20,7 @@ type ProfileEntry = NonNullable<ConfigInput['profiles']>[string]
  * (`readContext`) and never from the working tree or the change under review.
  */
 export interface RepositoryEntry {
-  readonly kind: DocumentKind
+  readonly kind: ProseKind
   /** The path from the repository's top level, as the entry wrote it. */
   readonly path: string
   /** Whether the review goes on, the document recorded as missing, when the commit has no such file. */
@@ -68,7 +69,7 @@ const LEVELS = ['high', 'medium', 'low'] as const
 const DOCUMENT_FIELDS = [
   { field: 'guidelines', kind: 'guidelines' },
   { field: 'doNotReport', kind: 'do-not-report' },
-] as const satisfies ReadonlyArray<{ readonly field: 'guidelines' | 'doNotReport', readonly kind: DocumentKind }>
+] as const satisfies ReadonlyArray<{ readonly field: 'guidelines' | 'doNotReport', readonly kind: ProseKind }>
 
 /** One entry of a document list, whichever form it takes: `{ text }`, or `{ repository, optional }`. */
 interface DocumentItem {
@@ -240,7 +241,7 @@ interface Bindings {
  * (`start` counts the profile's own text, which comes first) over what the profile may hold in all. An entry with an issue
  * is left out, so the profile the check reads holds none the core would refuse again.
  */
-function documentsOf(id: string, entry: ProfileEntry, start: Readonly<Record<DocumentKind, number>>, at: (...segments: PropertyKey[]) => string): { readonly documents: ReviewDocument[], readonly repository: RepositoryEntry[], readonly issues: ConfigIssue[] } {
+function documentsOf(id: string, entry: ProfileEntry, start: Readonly<Record<ProseKind, number>>, at: (...segments: PropertyKey[]) => string): { readonly documents: ReviewDocument[], readonly repository: RepositoryEntry[], readonly issues: ConfigIssue[] } {
   const documents: ReviewDocument[] = []
   const repository: RepositoryEntry[] = []
   const issues: ConfigIssue[] = []
