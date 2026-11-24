@@ -10,7 +10,7 @@ import { CUT_ADVICE, failureFix, QUOTA_FIX, STALL_FIX } from '../../core/errors.
 import { inertLine } from '../../core/sanitize.ts'
 import type { ConcurrencyRecord } from '../../core/lanes.ts'
 import type { IncompleteReason, QuorumMeta, QuorumResult, StageName } from '../../core/types.ts'
-import { durationText, tokenWords } from '../../report/lines.ts'
+import { contextSummary, durationText, listed, tokenWords } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords } from './eta.ts'
 import { stageStart, stageTime } from './model.ts'
@@ -99,12 +99,6 @@ export function gapFix(reason: IncompleteReason, causes: readonly Cause[], provi
       : undefined
   }
   return [...fixes].join(', or ')
-}
-
-/** `names` as `a`, `a and b` or `a, b and c`. */
-function listed(names: readonly string[]): string {
-  if (names.length < 2) return names.join('')
-  return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
 }
 
 /** Whether the text report is above the summary: stdout and stderr are both terminals, and the format is `text`. */
@@ -328,8 +322,8 @@ function resultLine(facts: SummaryFacts, view: ReportView): string {
 
 /**
  * The summary's lines for a review whose events were folded into `state`, in this order, each left out when it has
- * nothing to say: the time, the tokens (not under the public view), the calls, the gaps with their fixes, where the
- * report went and, when a rerun could fill what is missing, how to resume it. A review whose stages never started has no summary. `dash` is the glyph set's.
+ * nothing to say: the time, the tokens (not under the public view), the calls, a line for each profile that has a document,
+ * the gaps with their fixes, where the report went and, when a rerun could fill what is missing, how to resume it. A review whose stages never started has no summary. `dash` is the glyph set's.
  */
 export function summaryLines(state: ViewState, facts: SummaryFacts, view: ReportView, dash: string): string[] {
   if (state.stages.size === 0) return []
@@ -339,6 +333,7 @@ export function summaryLines(state: ViewState, facts: SummaryFacts, view: Report
       ? undefined
       : tokensLine(state),
     callsLine(state, facts.result.meta.concurrency),
+    ...contextSummary(facts.result.meta.context),
     gapsLine(state, view),
     resultLine(facts, view),
     resumeLine(facts),

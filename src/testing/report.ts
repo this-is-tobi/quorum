@@ -1,7 +1,7 @@
 /** The results the reporters' specs render: a review of a range with one kept, one unreviewed and one discarded finding, and a blank one. */
 
 import type { Outcome } from '../core/outcome.ts'
-import type { LensVote, QuorumMeta, QuorumResult, ReviewSource, Verdict } from '../core/types.ts'
+import type { ContextDocument, LensVote, QuorumMeta, QuorumResult, ReviewSource, Verdict } from '../core/types.ts'
 
 const id = (start: string, length = 40): string => start.padEnd(length, 'a')
 export function cast(keep: boolean): LensVote {
@@ -134,6 +134,19 @@ export function reportResult(changes: { readonly kept?: Verdict[], readonly unre
       ...reportMeta(),
       ...changes.meta,
     },
+  }
+}
+
+/** A document the review read: `security`'s guidelines as its own text, 1830 bytes, nothing removed from it; `changes` replaces its fields. */
+export function contextDocument(changes: Partial<ContextDocument> = {}): ContextDocument {
+  return {
+    profile: 'security',
+    kind: 'guidelines',
+    origin: 'profile',
+    status: 'read',
+    bytes: 1830,
+    removed: { characters: 0, comments: 0, entities: 0 },
+    ...changes,
   }
 }
 

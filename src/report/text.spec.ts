@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
 import type { Flag, IncompleteEntry, LeftOutFile, PublicView, QuorumResult, ReviewSource, Verdict } from '../core/types.ts'
-import { blankResult, FINDINGS, INCOMPLETE, INTERRUPTED, LIFTED, PASS, reportResult, SQL, TOKEN } from '../testing/report.ts'
+import { blankResult, contextDocument, FINDINGS, INCOMPLETE, INTERRUPTED, LIFTED, PASS, reportResult, SQL, TOKEN } from '../testing/report.ts'
+import { documentLine } from './lines.ts'
 import { text } from './text.ts'
 import { publicView } from './view.ts'
 
@@ -125,6 +126,32 @@ function secrets(): QuorumResult {
     ],
   })
 }
+
+/** The documents of two profiles: one over 80 columns with a cleaner clause, which wraps, one missing and one that fits. */
+const DOCUMENTS = [
+  contextDocument({
+    origin: 'repository',
+    path: 'docs/threat-model.md',
+    commit: '1f3a9c2'.padEnd(40, 'a'),
+    sha256: 'a'.repeat(64),
+  }),
+  contextDocument({
+    profile: 'naming',
+    origin: 'config',
+    sha256: '3f2a9c1d0b7e'.padEnd(64, '0'),
+    bytes: 4100,
+    removed: { characters: 3, comments: 1, entities: 0 },
+  }),
+  contextDocument({
+    profile: 'naming',
+    kind: 'do-not-report',
+    origin: 'repository',
+    path: 'REVIEW-skip.md',
+    commit: '1f3a9c2'.padEnd(40, 'a'),
+    status: 'missing',
+    bytes: 0,
+  }),
+]
 
 describe('text', () => {
   it('renders a review for a person: the header, each finding with its numbered evidence, the profiles, what was left out, the gaps, the flags, the time and the outcome', () => {
@@ -466,9 +493,20 @@ describe('text', () => {
   })
 
   it('keeps every line within 80 columns but for a path, a category or a row of code longer than that', () => {
+    const documents = render(reportResult({
+      meta: {
+        context: { documents: DOCUMENTS },
+      },
+    }))
+    // A fixture the test can fail on: one document's line, written whole, passes 80 columns with its cleaner clause.
+    expect([
+      ...documentLine(DOCUMENTS[1]),
+    ].length).toBeGreaterThan(80)
+    expect(documents.filter(line => line.startsWith('context:'))).toHaveLength(3)
     for (const lines of [
       render(reportResult()),
       render(secrets(), INCOMPLETE),
+      documents,
     ]) {
       for (const line of lines) expect([...line].length).toBeLessThanOrEqual(80)
     }
@@ -499,6 +537,75 @@ describe('text', () => {
       'flag: guideline-edited at "REVIEW.md" for security, the guidelines this review',
       '  read for the profile from 1f3a9c2, not the change\'s version',
       'flag: guideline-edited for naming, the rules this review read',
+    ])
+  })
+
+  it('writes each document\'s line after the profiles, from meta.context', () => {
+    const documentLines = [
+      'context: security guidelines "docs/threat-model.md" at 1f3a9c2, 1830 bytes',
+      'context: naming guidelines from a file, sha256 3f2a9c1d0b7e, 4100 bytes; the',
+      '  cleaner removed 3 hidden character(s) and 1 comment(s)',
+      'context: naming do-not-report text "REVIEW-skip.md" at 1f3a9c2: missing, and',
+      '  optional',
+    ]
+    const result = reportResult({
+      meta: {
+        context: { documents: DOCUMENTS },
+      },
+    })
+    // The lines are the records' own, in order, after the last profile's coverage and before the files left out, a long one wrapped at spaces as a flag's detail is.
+    expect(render(result)).toEqual([
+      ...MAIN.slice(0, MAIN.indexOf('left out: 1 file')),
+      ...documentLines,
+      ...MAIN.slice(MAIN.indexOf('left out: 1 file')),
+    ])
+    // Joined back, the lines read as each record's line in the log does.
+    expect(documentLines.join('\n').replaceAll('\n  ', ' ').split('\n')).toEqual(DOCUMENTS.map(documentLine))
+    // A public view keeps them, and a review with no document writes none.
+    expect(render(publicView(result))).toContain(documentLines[1])
+    expect(render(reportResult()).filter(line => line.startsWith('context:'))).toEqual([])
+    // Each line is inert: a path of a hostile name shows its hidden character.
+    const hostilePath = reportResult({
+      meta: {
+        context: {
+          documents: [
+            contextDocument({
+              origin: 'repository',
+              path: `docs/${RLO}x.md`,
+              commit: '1f3a9c2'.padEnd(40, 'a'),
+            }),
+          ],
+        },
+      },
+    })
+    expect(render(hostilePath)).toContain('context: security guidelines "docs/<U+202E>x.md" at 1f3a9c2, 1830 bytes')
+  })
+
+  it('keeps a document\'s long path whole on the line that holds it, and wraps what follows', () => {
+    // The path is cut at 100 code points by the line's own rule: its head is far over 80 columns, and stays one line.
+    const path = `${'d/'.repeat(60)}x.md`
+    const head = `context: security guidelines "${'d/'.repeat(50)}…" at 1f3a9c2,`
+    const lines = render(reportResult({
+      meta: {
+        context: {
+          documents: [
+            contextDocument({
+              origin: 'repository',
+              path,
+              commit: '1f3a9c2'.padEnd(40, 'a'),
+              removed: { characters: 3, comments: 1, entities: 0 },
+            }),
+          ],
+        },
+      },
+    }))
+    const at = lines.indexOf(head)
+    expect(at).toBeGreaterThan(0)
+    expect([...head].length).toBeGreaterThan(80)
+    expect(lines.slice(at, at + 3)).toEqual([
+      head,
+      '  1830 bytes; the cleaner removed 3 hidden character(s) and 1 comment(s)',
+      'left out: 1 file',
     ])
   })
 
