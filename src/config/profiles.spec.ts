@@ -260,7 +260,7 @@ describe('resolveProfiles', () => {
         prompts: { ...TEAM.prompts, research: 'Look at {{diff}}' },
       },
     }).issues).toEqual([
-      { path: 'profiles.team.prompts.research', message: '{{diff}} is not allowed: the diff is appended automatically as fenced data' },
+      { path: 'profiles.team.prompts.research', message: 'the placeholder "diff" is not allowed: the diff is appended automatically as fenced data' },
     ])
     expect(resolve({
       team: {

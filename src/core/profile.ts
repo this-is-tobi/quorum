@@ -1,7 +1,7 @@
 import type { ConfigIssue } from './errors.ts'
 import { isRecord } from './output.ts'
 import { defaultPolicy, resolvePolicy } from './policy.ts'
-import { PLACEHOLDER } from './prompts.ts'
+import { templateParts } from './prompts.ts'
 import type { FailOn, Profile, Thresholds } from './types.ts'
 
 /** What a profile id matches: the core's own pattern. */
@@ -11,6 +11,11 @@ export const PROFILE_ID_PATTERN = /^[a-z][a-z0-9_-]*$/
 export const FAIL_ON_LEVELS = ['high', 'medium', 'low', 'none'] as const satisfies readonly FailOn[]
 
 const VOTE_VARIABLES: ReadonlySet<string> = new Set(['lens.id', 'lens.question', 'panel.size'])
+
+/** The most code points of a refused placeholder name an issue prints. */
+const NAME_CODE_POINTS = 64
+
+const OPEN_PART_ISSUE = 'holds a {{ that opens no placeholder: write \\{{ for a literal {{'
 
 /**
  * Every problem that keeps a profile from running, all at once. Each field is checked by shape
@@ -167,25 +172,40 @@ function voteVariableProblem(name: string): string | undefined {
     : 'the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}'
 }
 
-/** A blank template is one issue; otherwise one issue per distinct refused variable, in order of first appearance. */
+/**
+ * A blank template is one issue; otherwise one issue for its first `{{` that opens no placeholder, then one per
+ * distinct refused name, in order of first appearance.
+ */
 function templateIssues(path: string, template: string, problem: (name: string) => string | undefined): ConfigIssue[] {
   if (template.trim() === '') {
     return [
       { path, message: 'must not be empty' },
     ]
   }
+  const parts = templateParts(template)
   const issues: ConfigIssue[] = []
+  if (parts.some(part => part.kind === 'open')) issues.push({ path, message: OPEN_PART_ISSUE })
   const reported = new Set<string>()
-  for (const name of placeholderNames(template)) {
-    if (reported.has(name)) continue
-    reported.add(name)
-    const reason = problem(name)
-    if (reason) issues.push({ path, message: `{{${name}}} is not allowed: ${reason}` })
+  for (const part of parts) {
+    if (part.kind !== 'placeholder' || reported.has(part.name)) continue
+    reported.add(part.name)
+    const reason = problem(part.name)
+    if (reason) issues.push({ path, message: `the placeholder ${quotedName(part.name)} is not allowed: ${reason}` })
   }
   return issues
 }
 
-/** The trimmed name of every placeholder, in order, repeats included. Scans a copy of `PLACEHOLDER`, never its shared `lastIndex`. */
+/** A refused name is the author's text: JSON-quoted, and cut at 64 code points with a `…` inside the quotes. */
+function quotedName(name: string): string {
+  const points = Array.from(name)
+  return JSON.stringify(points.length > NAME_CODE_POINTS
+    ? `${points.slice(0, NAME_CODE_POINTS).join('')}…`
+    : name)
+}
+
+/** The trimmed name of every placeholder, in order, repeats included. */
 function placeholderNames(template: string): string[] {
-  return Array.from(template.matchAll(new RegExp(PLACEHOLDER.source, 'g')), match => match[1].trim())
+  return templateParts(template).flatMap(part => part.kind === 'placeholder'
+    ? [part.name]
+    : [])
 }

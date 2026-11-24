@@ -91,13 +91,14 @@ With two lenses, that policy makes 2 of 2 kept votes `high` and 1 of 2 `medium`.
 | `<id>.policy.<level>` | A rule that is malformed, or that needs more votes than a level above it: [Validation](./50-lenses-and-policy.md#validation) |
 | `<id>.prompts` | `must be an object holding the research and vote templates` |
 | `<id>.prompts.research`, `<id>.prompts.vote` | `must be a string`, or `must not be empty` |
-| `<id>.prompts.research` | `{{diff}} is not allowed: the diff is appended automatically as fenced data`, or `{{file}} is not allowed: the research template takes no variables` |
-| `<id>.prompts.vote` | `{{lens.name}} is not allowed: the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}` |
+| `<id>.prompts.research`, `<id>.prompts.vote` | `holds a {{ that opens no placeholder: write \{{ for a literal {{` |
+| `<id>.prompts.research` | `the placeholder "diff" is not allowed: the diff is appended automatically as fenced data`, or `the placeholder "file" is not allowed: the research template takes no variables` |
+| `<id>.prompts.vote` | `the placeholder "lens.name" is not allowed: the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}` |
 | `<id>.failOn` | `must be one of high, medium, low or none` |
 | `<id>.gating` | `must be true or false`, or `is deprecated and cannot be set with failOn: remove it` |
 | `<id>.guidelines` | `must be a string` |
 
-A template gets one line per distinct variable it may not use, in the order they first appear, and a blank one gets `must not be empty` alone. The checks read the shape first, so a program without types that passes a malformed profile gets these lines, never a `TypeError`.
+A template gets one line for its first `{{` that opens no placeholder, then one per distinct variable it may not use, in the order they first appear, and a blank one gets `must not be empty` alone. The name is JSON-quoted and cut at 64 characters, with `…` inside the quotes when it is cut. [Templates](./60-prompts.md#templates) says what is a placeholder and how to write a literal `{{`. The checks read the shape first, so a program without types that passes a malformed profile gets these lines, never a `TypeError`.
 
 ### Warnings
 

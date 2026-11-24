@@ -6,7 +6,7 @@ Every model call quorum makes has the same layout: the profile's instructions an
 
 The system message is four parts, and six in a research request, joined by blank lines, and only the first comes from the profile:
 
-1. **The profile's instructions**: the research template as written, or the vote template rendered for one lens.
+1. **The profile's instructions**: the research template rendered, or the vote template rendered for one lens ([Templates](#templates)).
 2. **The findings line**, in a research request only: `List at most <N> findings, the most serious first. For each, quote the shortest verbatim span of the diff that shows it.` `N` is what the research reply's budget holds, 50 at most ([Reply budgets](./20-configuration.md#reply-budgets)); a request of a provider that states no budget asks for `maxFindings`. The quote is only checked against the diff, so a shorter one costs nothing and bounds the largest part of a finding. A vote request has no such line.
 3. **The fields of a finding**, in a research request only, for every profile: ``Every finding has all five fields: `file`, its path as the diff names it; `line`, its line in the new file (for removed code, the nearest line that survives); `quote`, the code that shows it, copied verbatim without the leading +, - or space; `category`, its kind, as the instructions above define it; and `summary`, why it is a finding, in a sentence or two.`` So a profile's instructions say what to look for, what a quote holds and what a category means, and name no field otherwise ([Writing a profile](./40-profiles.md#writing-a-profile)). A vote request has no such paragraph.
 4. **The reply format**: `Respond with ONLY a JSON object matching this JSON Schema:`, then the schema of the reply this call expects.
@@ -111,10 +111,13 @@ A template is text with `{{name}}` placeholders, and no logic: no condition, no 
 | `prompts.research` | None. The diff is appended to the request as fenced data, so `{{diff}}` is refused with its own message |
 | `prompts.vote` | `{{lens.id}}`, the lens's id; `{{lens.question}}`, its question; `{{panel.size}}`, the number of lenses of the profile |
 
-- **Anything else is refused**, by `createQuorum`, before any call: a misspelled variable never reaches a model as literal text. Only a well-formed `{{name}}` is a variable, so text that never closes, such as `{{lens.id}`, is sent as written. [The checks](./40-profiles.md#the-checks) has the messages.
+- **Anything else is refused**, by `createQuorum`, before any call: a misspelled variable never reaches a model as literal text. [The checks](./40-profiles.md#the-checks) has the messages.
 - **A placeholder is anything between `{{` and `}}` that holds no brace**, and its name is trimmed, so `{{ lens.id }}` is `{{lens.id}}`.
-- **There is no escape for literal braces.** A template that needs `{{…}}` text of its own is refused.
-- **Templates are rendered once**, when the quorum is created: the vote template once per lens, the research template not at all.
+- **A `{{` that opens no placeholder is refused**, with its fix: `{{lens.id}` and `{{ never closed` are each one issue, `holds a {{ that opens no placeholder: write \{{ for a literal {{`, since a typo of that kind would reach a model as text.
+- **`\{{` is a literal `{{`.** The backslash is dropped and no placeholder opens, so `\{{name}}` is sent as `{{name}}`. A lone `}}` is text as written, and so is a backslash before anything else.
+- **Two edges follow.** `{{{lens.id}}}` is refused, since its first `{{` meets a brace before it closes. `\\{{` is a backslash and a literal `{{`, as each `\{{` is an escape, so a template cannot send a backslash right before a placeholder.
+- **Both templates are rendered**, when the quorum is created: the vote template once per lens, the research template once, with no variable. Its `\{{` reads as `{{` too, where 0.12.0 sent the research template as written.
+- **Guidelines are no template.** A `{{` in them is text, and a `\{{` is sent as written.
 
 ## The data notice
 

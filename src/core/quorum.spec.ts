@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
 import { securityProfile } from '../profiles/security.ts'
@@ -177,7 +178,7 @@ describe('createQuorum', () => {
       profiles: [misnamed, leaky],
     }, { profiles: {} }))).toEqual([
       'profiles.0.id: must match ^[a-z][a-z0-9_-]*$, got "Style"',
-      'security.prompts.research: {{diff}} is not allowed: the diff is appended automatically as fenced data',
+      'security.prompts.research: the placeholder "diff" is not allowed: the diff is appended automatically as fenced data',
     ])
   })
 
@@ -948,7 +949,7 @@ describe('review', () => {
       ...securityProfile,
       prompts: { ...securityProfile.prompts, research: 'Review {{diff}}.' },
     }
-    expect(issuesOf(() => run(broken))).toEqual(['security.prompts.research: {{diff}} is not allowed: the diff is appended automatically as fenced data'])
+    expect(issuesOf(() => run(broken))).toEqual(['security.prompts.research: the placeholder "diff" is not allowed: the diff is appended automatically as fenced data'])
     expect(complete).not.toHaveBeenCalled()
   })
 
@@ -967,6 +968,18 @@ describe('review', () => {
     await run().review({ diff })
     expect(complete).toHaveBeenCalledTimes(4)
     for (const [request] of complete.mock.calls) expect(request.messages[0].content).not.toContain('untrusted-guidelines')
+  })
+
+  it('sends a research template\'s \\{{ as a literal {{, of a profile of its own', async () => {
+    complete.mockResolvedValue(findings())
+    const literal: Profile = {
+      ...naming,
+      prompts: { ...naming.prompts, research: `${naming.prompts.research} Write \\{{name}} literally.` },
+    }
+    await run(literal).review({ diff })
+    const { system } = complete.mock.calls[0][0]
+    expect(system).toContain('Write {{name}} literally.')
+    expect(system).not.toContain('\\{{')
   })
 
   it('never has more than four model calls in flight', async () => {
@@ -8068,5 +8081,48 @@ describe('the lanes of a review', () => {
     expect(() => createQuorum({
       profiles: [securityProfile],
     }, portsFor(securityProfile, stating(1), stating(16)))).not.toThrow()
+  })
+})
+
+describe('the security profile\'s requests through a review', () => {
+  const pinned = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -0,0 +1 @@\n+exec(cmd)\n'
+
+  /** The key a call is kept under: the SHA-256 of its role, its request's digest and what it was sent with (`storeKey`). */
+  const keyOf = (role: 'research' | 'vote', digest: string, sent: CompletionRequest): string => createHash('sha256').update(JSON.stringify([
+    role,
+    digest,
+    sent.replyTokens ?? null,
+    sent.thinking ?? null,
+    sent.structuredOutput ?? null,
+  ])).digest('hex')
+
+  it('sends the research request and the reachability vote of 0.12.0, digest for digest', async () => {
+    // The provider is handed a copy of each request a builder made, which has no digest of its own, so each call's store key,
+    // which holds its digest, is the pin: a change in `compile`, in a stage or in a builder moves it.
+    const both = fake('both', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
+    const kept = memory()
+    const looked: string[] = []
+    const store: ReplyStore = {
+      get: async (entry) => {
+        looked.push(entry.key)
+        return kept.get(entry)
+      },
+      put: kept.put,
+    }
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, both)).review({ diff: pinned }, { store })
+    expect(result.kept).toHaveLength(1)
+    const research = both.requests.find(request => !isVote(request))
+    const reachability = both.requests.find(request => isVote(request) && request.system.includes('Refutation angle: reachability.'))
+    expect(research).toBeDefined()
+    expect(reachability).toBeDefined()
+    // The research request is the one `prompts.spec.ts` pins from its builder at 50 findings, one part. The vote carries the evidence
+    // a review makes of this diff, `+exec(cmd)`, where that pin states `>    1 + exec(cmd)` of its own, so its digest is another
+    // value, which the 0.12.0 sources give for the same review.
+    expect(looked).toContain(keyOf('research', '9332a0a8136fce260d587532024e35f86770b01eca89c4fbf8f5467d327ea63f', research!))
+    expect(looked).toContain(keyOf('vote', 'fe469cddd24059068c2f23e261a56dce57d0d262ba03bb18040463909015542d', reachability!))
   })
 })

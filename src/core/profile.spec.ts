@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { securityProfile } from '../profiles/security.ts'
 import { defaultPolicy } from './policy.ts'
 import { profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
-import { PLACEHOLDER } from './prompts.ts'
 import type { Profile } from './types.ts'
 
 const valid: Profile = {
@@ -101,24 +100,75 @@ describe('profileIssues', () => {
       ...valid,
       prompts: { ...valid.prompts, research },
     })).toEqual([
-      { path: 'p.prompts.research', message: '{{diff}} is not allowed: the diff is appended automatically as fenced data' },
-      { path: 'p.prompts.research', message: '{{lens.id}} is not allowed: the research template takes no variables' },
+      { path: 'p.prompts.research', message: 'the placeholder "diff" is not allowed: the diff is appended automatically as fenced data' },
+      { path: 'p.prompts.research', message: 'the placeholder "lens.id" is not allowed: the research template takes no variables' },
     ])
   })
 
-  it('still refuses {{diff}} in the research template after a stray test() moved the shared regex', () => {
-    try {
-      PLACEHOLDER.test('xx {{diff}}')
-      expect(PLACEHOLDER.lastIndex).toBeGreaterThan(0)
+  it('refuses {{diff}} in the research template alike each time the profile is checked', () => {
+    const profile: Profile = {
+      ...valid,
+      prompts: { ...valid.prompts, research: '{{diff}}' },
+    }
+    const issues = [
+      { path: 'p.prompts.research', message: 'the placeholder "diff" is not allowed: the diff is appended automatically as fenced data' },
+    ]
+    expect(profileIssues(profile)).toEqual(issues)
+    expect(profileIssues(profile)).toEqual(issues)
+  })
+
+  it.each([
+    ['closes a placeholder with one brace', '{{lens.id}'],
+    ['never closes a {{', '{{ never closed'],
+    ['opens with three braces', '{{{lens.id}}}'],
+  ])('refuses a template that %s, once, with the fix', (_, template) => {
+    for (const field of ['vote', 'research'] as const) {
       expect(profileIssues({
         ...valid,
-        prompts: { ...valid.prompts, research: '{{diff}}' },
+        id: 'naming',
+        prompts: { ...valid.prompts, [field]: template },
       })).toEqual([
-        { path: 'p.prompts.research', message: '{{diff}} is not allowed: the diff is appended automatically as fenced data' },
+        { path: `naming.prompts.${field}`, message: 'holds a {{ that opens no placeholder: write \\{{ for a literal {{' },
       ])
-    } finally {
-      PLACEHOLDER.lastIndex = 0
     }
+  })
+
+  it('reports the first open part once, then each distinct refused name, in order', () => {
+    const vote = '{{x}} {{a {{b}} {{ c {{x}} {{lens.id}}'
+    expect(profileIssues({
+      ...valid,
+      id: 'naming',
+      prompts: { ...valid.prompts, vote },
+    })).toEqual([
+      { path: 'naming.prompts.vote', message: 'holds a {{ that opens no placeholder: write \\{{ for a literal {{' },
+      { path: 'naming.prompts.vote', message: 'the placeholder "x" is not allowed: the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}' },
+      { path: 'naming.prompts.vote', message: 'the placeholder "b" is not allowed: the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}' },
+    ])
+  })
+
+  it('accepts \\{{ as a literal {{, and a lone }} as text', () => {
+    expect(profileIssues({
+      ...valid,
+      prompts: { ...valid.prompts, vote: 'Judge {{lens.id}}. Literal \\{{braces}} and }}.' },
+    })).toEqual([])
+  })
+
+  it('quotes a refused name, cut at 64 code points', () => {
+    const voteReason = 'the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}'
+    const refusedVote = (name: string): string[] => profileIssues({
+      ...valid,
+      prompts: { ...valid.prompts, vote: `{{${name}}}` },
+    }).map(issue => issue.message)
+    expect(refusedVote('lens.name')).toEqual([`the placeholder "lens.name" is not allowed: ${voteReason}`])
+    expect(refusedVote('x'.repeat(70))).toEqual([`the placeholder "${'x'.repeat(64)}…" is not allowed: ${voteReason}`])
+    expect(refusedVote('x'.repeat(64))).toEqual([`the placeholder "${'x'.repeat(64)}" is not allowed: ${voteReason}`])
+    const face = String.fromCodePoint(0x1F600)
+    expect(refusedVote(face.repeat(70))).toEqual([`the placeholder "${face.repeat(64)}…" is not allowed: ${voteReason}`])
+    expect(refusedVote(' a"b\nc ')).toEqual([`the placeholder ${JSON.stringify('a"b\nc')} is not allowed: ${voteReason}`])
+    expect(profileIssues({
+      ...valid,
+      prompts: { ...valid.prompts, research: 'Review {{diff}}.' },
+    }).map(issue => issue.message)).toEqual(['the placeholder "diff" is not allowed: the diff is appended automatically as fenced data'])
   })
 
   it('refuses a vote variable outside the allowlist, a typo included, once per name', () => {
@@ -127,9 +177,9 @@ describe('profileIssues', () => {
       ...valid,
       prompts: { ...valid.prompts, vote },
     })).toEqual([
-      { path: 'p.prompts.vote', message: '{{lens-id}} is not allowed: the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}' },
-      { path: 'p.prompts.vote', message: '{{lens.name}} is not allowed: the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}' },
-      { path: 'p.prompts.vote', message: '{{diff}} is not allowed: the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}' },
+      { path: 'p.prompts.vote', message: 'the placeholder "lens-id" is not allowed: the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}' },
+      { path: 'p.prompts.vote', message: 'the placeholder "lens.name" is not allowed: the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}' },
+      { path: 'p.prompts.vote', message: 'the placeholder "diff" is not allowed: the vote template takes {{lens.id}}, {{lens.question}} and {{panel.size}}' },
     ])
   })
 
@@ -146,7 +196,7 @@ describe('profileIssues', () => {
       { path: 'profile.id', message: 'must match ^[a-z][a-z0-9_-]*$, got "Security"' },
       { path: 'profile.lenses.0.id', message: 'must match ^[a-z][a-z0-9_-]*$, got "Bad Id"' },
       { path: 'profile.lenses.1.id', message: 'must match ^[a-z][a-z0-9_-]*$, got "Bad Id"' },
-      { path: 'profile.prompts.research', message: '{{diff}} is not allowed: the diff is appended automatically as fenced data' },
+      { path: 'profile.prompts.research', message: 'the placeholder "diff" is not allowed: the diff is appended automatically as fenced data' },
       { path: 'profile.prompts.vote', message: 'must not be empty' },
     ])
   })
