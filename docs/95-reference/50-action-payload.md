@@ -90,9 +90,9 @@ A finding is a comment when its file is a clean relative path of its profile's c
 ```
 
 - **The marker** is the first line and the only raw HTML in the body. It holds the finding's fingerprint, which a push that moves the finding's line keeps, so the Action finds the comment it posted for a finding by the marker and never posts it twice. It proves nothing without its author: anyone can write the marker.
-- **The second line** is the level, the profile, the category and how the lenses voted, with the words of its failed votes: [How a failed vote reads](../20-using/80-reports.md#how-a-failed-vote-reads). The category is in a code span.
+- **The second line** is the level, the profile, the category, `` · rule `<id>` `` when the finding cites a review rule (``**MEDIUM** naming · `test_gap` · rule `tests-for-new-code` · kept by 2 of 3 lenses``), and how the lenses voted, with the words of its failed votes: [How a failed vote reads](../20-using/80-reports.md#how-a-failed-vote-reads). The category and the rule's id are in code spans, the id the configuration gives the rule and never the finder's text: [What a person sees of the rules](../20-using/45-rules-and-guidelines.md#what-a-person-sees-of-the-rules).
 - **The claim** is in a code span. No evidence is written: the comment sits on the code.
-- **Every line passes `inertLine`,** and the category and the claim, the texts a model wrote, are in code spans, as [Markdown](../30-security/30-output-handling.md#markdown) describes.
+- **Every line passes `inertLine`,** and the category, the rule's id and the claim are in code spans, as [Markdown](../30-security/30-output-handling.md#markdown) describes.
 
 **`side` is always `RIGHT`:** the line is a line of the new file. **A line of 0** stays 0: a finding on a file the change empties has no line. GitHub refuses a comment on line 0, so the Action turns it into a comment on the file.
 

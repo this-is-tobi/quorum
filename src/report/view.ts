@@ -101,6 +101,11 @@ function publicProfile(entry: unknown, discarded: number): PublicProfileMeta {
     invalidFindings: ownData(entry, 'invalidFindings') as number,
     rules: structuredClone(ownData(entry, 'rules')) as PublicProfileMeta['rules'],
     invalidRules: ownData(entry, 'invalidRules') as number,
+    ...ownData(entry, 'asksNothing') === undefined
+      ? {}
+      : {
+          asksNothing: ownData(entry, 'asksNothing') as true,
+        },
     coverage: structuredClone(ownData(entry, 'coverage')) as PublicProfileMeta['coverage'],
     ...recovery === undefined
       ? {}

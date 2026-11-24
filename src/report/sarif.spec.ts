@@ -188,6 +188,29 @@ describe('sarif', () => {
     expect(render(reportResult()).endsWith('\n')).toBe(true)
   })
 
+  it('writes a finding\'s rule in its message, after the category, and none for a finding that cites none', () => {
+    const cited = reviewOf([
+      { ...SQL, rule: 'tests-for-new-code' },
+    ], [
+      { ...TOKEN, rule: 'no-any' },
+    ])
+    expect(runOf(cited).results.map(result => result.message.text)).toEqual([
+      'HIGH, kept by 3 of 3 lenses. CWE-89, rule tests-for-new-code: SQL built from the request\'s id parameter reaches db.query',
+      'UNREVIEWED, kept by 1 of 3 lenses, 1 vote failed: a network error. CWE-338, rule no-any: Session tokens come from Math.random, which is not a cryptographic generator.',
+    ])
+    // Only the message changes: the review rule is no SARIF rule, whose id stays the profile's.
+    const plain = runOf(reviewOf([SQL], [TOKEN]))
+    expect(plain.results.map(result => result.message.text)).toEqual([
+      'HIGH, kept by 3 of 3 lenses. CWE-89: SQL built from the request\'s id parameter reaches db.query',
+      'UNREVIEWED, kept by 1 of 3 lenses, 1 vote failed: a network error. CWE-338: Session tokens come from Math.random, which is not a cryptographic generator.',
+    ])
+    // The document still passes the schema of the fields GitHub reads, and a rule that is no rule id never reaches it: the public view refuses it.
+    expect(githubSarif.parse(JSON.parse(render(cited)))).toBeDefined()
+    expect(() => render(reviewOf([
+      { ...SQL, rule: `a${RLO}b` },
+    ]))).toThrow(TypeError)
+  })
+
   it('passes the schema of the fields GitHub reads for every fixture', () => {
     const hostile = reviewOf([HOSTILE])
     for (const result of [

@@ -194,6 +194,48 @@ describe('publicView', () => {
     expect(publicView(reportResult()).meta.profiles.security).not.toHaveProperty('recovery')
   })
 
+  it('keeps meta.profiles.<id>.asksNothing in the public view, and leaves it out of a profile that has none, so such a view is unchanged', () => {
+    const base = reportMeta()
+    const asked = reportResult({
+      meta: {
+        ...base,
+        profiles: {
+          security: {
+            ...base.profiles.security,
+            asksNothing: true,
+          },
+        },
+      },
+    })
+    const view = publicView(asked)
+    expect(view.meta.profiles.security.asksNothing).toBe(true)
+    expect(Object.keys(view.meta.profiles.security)).toEqual([
+      'policy',
+      'failOn',
+      'gating',
+      'discarded',
+      'invalidFindings',
+      'rules',
+      'invalidRules',
+      'asksNothing',
+      'coverage',
+    ])
+    expect(publicView(view)).toBe(view)
+    expect(inertJson(view)).toContain('"asksNothing": true')
+    expect(publicView(reportResult()).meta.profiles.security).not.toHaveProperty('asksNothing')
+    expect(inertJson(publicView(reportResult()))).not.toContain('asksNothing')
+    // A flag that is no `true` is no view quorum writes.
+    expect(() => publicView({
+      ...asked,
+      meta: {
+        ...asked.meta,
+        profiles: {
+          security: { ...asked.meta.profiles.security, asksNothing: false as never },
+        },
+      },
+    })).toThrow('the public view is not one quorum writes, at meta.profiles.security.asksNothing')
+  })
+
   it('keeps a finding\'s rule and a profile\'s rule counts in the public view', () => {
     const base = reportMeta()
     const cited: Verdict = {

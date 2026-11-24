@@ -1,10 +1,10 @@
 /**
  * The pieces of a line that the text report, the Markdown summary and the progress lines of the CLI write one
  * way: how many of a thing, a file left out, where a flag points, the words of a gap, the words of a verdict, a
- * source, a finding's level and votes, its place among the findings and its evidence's rows, a document a review read
- * and each profile's summary of them, and the numbers a person reads: a token count scaled and a duration in one form
- * (past a minute in minutes). None makes its text inert: a file name is a diff's and a flag's detail a diff's too, so
- * the line that holds them passes through `inertLine` whole.
+ * source, a finding's level, votes and rule, its place among the findings and its evidence's rows, a document a review read
+ * and each profile's summary of them, how many rules a profile sent, and the numbers a person reads: a token count
+ * scaled and a duration in one form (past a minute in minutes). None makes its text inert: a file name is a diff's and a
+ * flag's detail a diff's too, so the line that holds them passes through `inertLine` whole.
  */
 
 import { DOCUMENT_KINDS, quotedPath } from '../core/documents.ts'
@@ -12,7 +12,7 @@ import { elapsedWords } from '../core/duration.ts'
 import { ownData } from '../core/facts.ts'
 import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
 import { failsItsProfile } from '../core/outcome.ts'
-import type { ContextDocument, ContextRecord, CoverageEntry, CoverageStatus, DocumentKind, Flag, IncompleteReason, LeftOutFile, PublicVerdict, PublicView, ReviewSource, Verdict, VoteFailure } from '../core/types.ts'
+import type { ContextDocument, ContextRecord, CoverageEntry, CoverageStatus, DocumentKind, Flag, IncompleteReason, LeftOutFile, ProfileMeta, PublicVerdict, PublicView, ReviewSource, Verdict, VoteFailure } from '../core/types.ts'
 import { voteFailed } from './view.ts'
 
 /** A token count told in three significant digits at most, floored: `999`, `1.23k`, `12.3k`, `812k`, `9.86M`. */
@@ -149,6 +149,13 @@ function removedWords({ characters, comments, entities }: ContextDocument['remov
     : `; the cleaner removed ${listed(removed)}`
 }
 
+/** What a document read holds, as a person compares it: its bytes as sent, an integer, since the caps are in bytes, or, for a rules document, its count of rules. */
+function documentSize(record: ContextDocument): string {
+  return record.kind === 'rules'
+    ? `${record.rules ?? 0} rule(s)`
+    : `${record.bytes} bytes`
+}
+
 /** A document's words in two parts: the `head`, which ends at the first comma or colon and holds the path, the commit or the hash whole, and the `tail`, the rest. `head`, a space and `tail` are the sentence. */
 export interface DocumentParts {
   readonly head: string
@@ -157,10 +164,10 @@ export interface DocumentParts {
 
 /**
  * A document a review read, in words quorum wrote: its profile and kind, where it came from and a comma (a colon for a
- * missing one), which are the head; then its bytes as sent, or that an optional one was missing, then what the cleaner
- * removed from it, which are the tail. `show` writes the path, the commit and the hash a place names, so the log and
- * the Markdown summary write one sentence. It never holds the document's text, and bytes are integers, since a person
- * compares them with the caps.
+ * missing one), which are the head; then its bytes as sent (a rules document's count of rules), or that an optional one was
+ * missing, then what the cleaner removed from it, which are the tail. `show` writes the path, the commit and the hash a
+ * place names, so the log and the Markdown summary write one sentence. It never holds the document's text, and bytes are
+ * integers, since a person compares them with the caps.
  */
 function documentParts(record: ContextDocument, show: DocumentShow): DocumentParts {
   const missing = record.status === 'missing'
@@ -170,17 +177,17 @@ function documentParts(record: ContextDocument, show: DocumentShow): DocumentPar
       : ','}`,
     tail: `${missing
       ? 'missing, and optional'
-      : `${record.bytes} bytes`}${removedWords(record.removed)}`,
+      : documentSize(record)}${removedWords(record.removed)}`,
   }
 }
 
-/** A document as the sentence `documentParts` splits: `<profile> <kind> <where from>, <bytes> bytes`. */
+/** A document as the sentence `documentParts` splits: `<profile> <kind> <where from>, <bytes> bytes`, or `<k> rule(s)` for a rules document. */
 export function documentWords(record: ContextDocument, show: DocumentShow): string {
   const { head, tail } = documentParts(record, show)
   return `${head} ${tail}`
 }
 
-/** The line a document has in the log: `context: <profile> <kind> <where from>, <bytes> bytes`, as `documentWords` says it. */
+/** The line a document has in the log: `context: <profile> <kind> <where from>, <bytes> bytes` (`, <k> rule(s)` for a rules document), as `documentWords` says it. */
 export function documentLine(record: ContextDocument): string {
   return `context: ${documentWords(record, PLAIN)}`
 }
@@ -191,9 +198,43 @@ export function documentLineParts(record: ContextDocument): DocumentParts {
   return { head: `context: ${head}`, tail }
 }
 
-/** The parts of one profile's summary line: the bytes of each kind it read, its optional documents missing and the documents the cleaner removed text from. */
-function summaryParts(documents: readonly ContextDocument[]): string[] {
-  const kinds = DOCUMENT_KINDS.flatMap((kind) => {
+/** How many rules a profile lists and how many its review sent, as `ProfileMeta.rules` and the `context` event hold them. */
+export type RuleCounts = ProfileMeta['rules']
+
+/**
+ * `3 of 5 sent`: the rules a review sent of those a profile lists, then `, so its research asks nothing` when `asksNothing`:
+ * the profile requires a rule and was sent none, so its finder was never called and its files read as reviewed. `0 of 0 sent` is
+ * a profile that requires a rule and lists none.
+ */
+export function ruleCountWords({ listed, sent }: RuleCounts, asksNothing = false): string {
+  return `${sent} of ${listed} sent${asksNothing
+    ? ', so its research asks nothing'
+    : ''}`
+}
+
+/** What a result records of a profile's rules, as `contextSummary` and the text report read it. */
+export type ProfileRules = Pick<ProfileMeta, 'rules' | 'asksNothing'>
+
+/** A profile's rules from `profiles` (a result's `meta.profiles`, read as own data): none for a profile with no entry. */
+function rulesOf(profiles: Readonly<Record<string, ProfileRules>>, profile: string): ProfileRules | undefined {
+  return ownData(profiles, profile) as ProfileRules | undefined
+}
+
+/** Whether a profile's rules are worth words: it lists a rule, or its research asked nothing (it requires a rule and lists none, or sent none). */
+function hasRulesToTell(rules: ProfileRules | undefined): rules is ProfileRules {
+  return rules !== undefined && (rules.rules.listed > 0 || rules.asksNothing === true)
+}
+
+/** The rules part of a profile's summary line, `rules 3 of 5 sent` and `, so its research asks nothing` for a profile that asked nothing: none for a profile that lists no rule and requires none. */
+function rulesPart(rules: ProfileRules | undefined): string[] {
+  return hasRulesToTell(rules)
+    ? [`${KIND_WORDS.rules} ${ruleCountWords(rules.rules, rules.asksNothing === true)}`]
+    : []
+}
+
+/** The parts of one profile's summary line: the bytes of each kind of text it read, the rules it sent, its optional documents missing and the documents the cleaner removed text from. A profile that lists no rule and requires none has no rules part. */
+function summaryParts(documents: readonly ContextDocument[], rules: ProfileRules | undefined): string[] {
+  const kinds = DOCUMENT_KINDS.filter(kind => kind !== 'rules').flatMap((kind) => {
     const read = documents.filter(document => document.kind === kind && document.status === 'read')
     return read.length === 0
       ? []
@@ -203,6 +244,7 @@ function summaryParts(documents: readonly ContextDocument[]): string[] {
   const cleaned = documents.filter(({ removed }) => removed.characters + removed.comments + removed.entities > 0).length
   return [
     ...kinds,
+    ...rulesPart(rules),
     ...missing > 0
       ? [`${missing} optional document(s) missing`]
       : [],
@@ -212,8 +254,15 @@ function summaryParts(documents: readonly ContextDocument[]): string[] {
   ]
 }
 
-/** One summary line for each profile that has a document, in the order the review's records first name them: `context: <profile>: guidelines 1830 bytes, 1 optional document(s) missing, hidden text removed from 1`. */
-export function contextSummary(record: ContextRecord): string[] {
+/**
+ * One summary line for each profile that has something to summarize, in the order the review's records first name them, then
+ * those with no record in the order of `profiles`: `context: <profile>: guidelines 1830 bytes, rules 3 of 5 sent, 1 optional document(s)
+ * missing, hidden text removed from 1`. The rules part, `rules <sent> of <listed> sent`, is read from the profile's entry in
+ * `profiles` (a result's `meta.profiles`) and written for a profile that lists a rule, and with `, so its research asks nothing` for
+ * a profile that asked nothing, which has a line of its own, `context: <profile>: rules 0 of 0 sent, so its research asks nothing`,
+ * when it has no document. A profile whose only record is a rules file that holds none has no line.
+ */
+export function contextSummary(record: ContextRecord, profiles: Readonly<Record<string, ProfileRules>> = {}): string[] {
   const byProfile = new Map<string, ContextDocument[]>()
   for (const document of record.documents) {
     byProfile.set(document.profile, [
@@ -221,7 +270,15 @@ export function contextSummary(record: ContextRecord): string[] {
       document,
     ])
   }
-  return [...byProfile].map(([profile, documents]) => `context: ${profile}: ${summaryParts(documents).join(', ')}`)
+  for (const profile of Object.keys(profiles)) {
+    if (!byProfile.has(profile) && rulesOf(profiles, profile)?.asksNothing === true) byProfile.set(profile, [])
+  }
+  return [...byProfile].flatMap(([profile, documents]) => {
+    const parts = summaryParts(documents, rulesOf(profiles, profile))
+    return parts.length === 0
+      ? []
+      : [`context: ${profile}: ${parts.join(', ')}`]
+  })
 }
 
 /**
@@ -411,6 +468,17 @@ export function levelWord(verdict: Verdict | PublicVerdict): 'HIGH' | 'MEDIUM' |
     default:
       return 'UNREVIEWED'
   }
+}
+
+/**
+ * The words that name the rule a finding cites: `rule <id>`, or nothing for a finding that cites none. The id is the
+ * configuration's, checked by code, never the finder's text. `id` writes it, as `sourcePhrase`'s does a commit's: a
+ * report that puts it in a code span passes `codeSpan`.
+ */
+export function ruleWords({ rule }: Pick<Verdict, 'rule'>, id: (name: string) => string = name => name): string {
+  return rule === undefined || rule === ''
+    ? ''
+    : `rule ${id(rule)}`
 }
 
 /** `a` before `b` by the order of their UTF-16 code units, which no locale changes. */

@@ -364,6 +364,114 @@ describe('summaryLines', () => {
     ])
   })
 
+  it('names each profile\'s rules sent in the context line', () => {
+    const { security } = reportResult().meta.profiles
+    const documents = [
+      contextDocument({
+        profile: 'naming',
+        origin: 'config',
+        sha256: '3f2a9c1d0b7e'.padEnd(64, '0'),
+        bytes: 4100,
+      }),
+      contextDocument({
+        profile: 'naming',
+        kind: 'rules',
+        origin: 'config',
+        bytes: 300,
+        rules: 5,
+      }),
+      contextDocument({ bytes: 1830 }),
+      contextDocument({
+        profile: 'team',
+        kind: 'rules',
+        origin: 'config',
+        bytes: 80,
+        rules: 2,
+      }),
+    ]
+    const facts = factsOf({
+      result: reportResult({
+        unreviewed: [],
+        meta: {
+          context: { documents },
+          profiles: {
+            naming: {
+              ...security,
+              rules: { listed: 5, sent: 3 },
+            },
+            security,
+            team: {
+              ...security,
+              rules: { listed: 2, sent: 0 },
+            },
+          },
+        },
+      }),
+    })
+    const state = replay(longReview())
+    const written = lines(state, facts)
+    const calls = written.findIndex(line => line.startsWith('calls:'))
+    // The rules come after the text kinds, a profile with rules alone has no leading comma, and a profile that lists none has no rules words.
+    expect(written.slice(calls + 1, calls + 4)).toEqual([
+      'context: naming: guidelines 4100 bytes, rules 3 of 5 sent',
+      'context: security: guidelines 1830 bytes',
+      'context: team: rules 0 of 2 sent',
+    ])
+    // The public view says the same: the line holds counts and code words only.
+    expect(lines(state, facts, 'public').filter(line => line.startsWith('context:'))).toEqual([
+      'context: naming: guidelines 4100 bytes, rules 3 of 5 sent',
+      'context: security: guidelines 1830 bytes',
+      'context: team: rules 0 of 2 sent',
+    ])
+  })
+
+  it('says in the context line that a profile\'s research asks nothing, with a line of its own for a profile that has no document', () => {
+    const { security } = reportResult().meta.profiles
+    const facts = factsOf({
+      result: reportResult({
+        unreviewed: [],
+        meta: {
+          context: {
+            documents: [
+              contextDocument({ bytes: 1830 }),
+              contextDocument({
+                profile: 'naming',
+                kind: 'rules',
+                origin: 'config',
+                bytes: 300,
+                rules: 5,
+              }),
+            ],
+          },
+          profiles: {
+            security,
+            naming: {
+              ...security,
+              rules: { listed: 5, sent: 0 },
+              asksNothing: true,
+            },
+            strict: {
+              ...security,
+              rules: { listed: 0, sent: 0 },
+              asksNothing: true,
+            },
+            team: security,
+          },
+        },
+      }),
+    })
+    const state = replay(longReview())
+    const wanted = [
+      'context: security: guidelines 1830 bytes',
+      'context: naming: rules 0 of 5 sent, so its research asks nothing',
+      'context: strict: rules 0 of 0 sent, so its research asks nothing',
+    ]
+    const calls = lines(state, facts).findIndex(line => line.startsWith('calls:'))
+    expect(lines(state, facts).slice(calls + 1, calls + 4)).toEqual(wanted)
+    // The public view says the same, and a profile that lists no rule and requires none has no line of its own.
+    expect(lines(state, facts, 'public').filter(line => line.startsWith('context:'))).toEqual(wanted)
+  })
+
   it('names the calls sent again after a bad reply among the retried, for research and votes', () => {
     const state = {
       ...replay(longReview()),

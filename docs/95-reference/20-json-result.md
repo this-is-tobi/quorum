@@ -80,6 +80,7 @@ A usage count is valid when it is a finite number of at least 0. A failed call's
 | `invalidFindings` | number | How many findings it dropped for citing code outside the diff |
 | `rules` | object | `listed`, how many review rules the profile lists, whatever their origin, and `sent`, how many of them the review sent: those whose `paths` match a file of the filtered diff, and every rule with none, when the filtered diff has a file: a change with no file at all, a blank diff or one whose every file `exclude` leaves out, sends no request, so `sent` is 0 for it, the rules with no `paths` too. `{ "listed": 0, "sent": 0 }` for a profile that lists none. Required in every result of this release |
 | `invalidRules` | number | How many rule citations failed their check: a finding's `rule` that names no rule the review sent whose `paths` match its file, and, in a profile that requires a rule, a finding that cites none. Each is a [`finding:invalid` event](./30-library-api.md#events) of cause `rule`, which counts here, and a finding outside the diff is one without a cause, which counts in `invalidFindings`: the two stay apart. In a profile that requires a rule, each of them dropped its finding; in any other, the finding went on with no `rule` |
+| `asksNothing` | `true` | Present, and `true`, for a profile whose research asked nothing: it requires a rule (`requireRule`) and the review sent it none, either because it lists none or because none applies to the change, so its finder was never called, its files read as reviewed, and it reports nothing, which a review that found nothing cannot be told from by the counts of findings and of files. It is the same fact as `parts: 0` in the profile's research `stage:start` and `asksNothing` in the [`context` event](./30-library-api.md#events). Absent, never `false`, for every other profile, so a result with none is as it was. The reports say it: `; rules: <sent> of <listed> sent, so its research asks nothing`, [What a person sees of the rules](../20-using/45-rules-and-guidelines.md#what-a-person-sees-of-the-rules) |
 | `coverage` | entry[] | Every file of the diff once, in its order, with how much of it the profile's research reviewed: [Coverage](#coverage) |
 | `recovery` | object | What recovery did for the profile's research, present only when it split a research part ([Recovering a cut-off part](../20-using/20-configuration.md#recovering-a-cut-off-part)): `parts`, how many parts it split, `pieces`, how many final pieces they ended with, each read or left at the floor, not every piece asked on the way, `saturated`, how many of those splits were of a reply that listed as many findings as it was asked for at most, and `unreadHunks`, how many hunks the floor left unread in the parts it split, cut off even alone: a part cut off at the floor at once was not split, so it has no entry here, and its hunks are in the `reply-cut-off` gap. The key is absent for a profile that split none, and a result of an earlier release has none |
 
@@ -102,7 +103,7 @@ A usage count is valid when it is a finite number of at least 0. A failed call's
 
 ### Coverage
 
-A review lists, for each profile, every file of the input diff once, in the diff's order, and how much of it that profile's research reviewed. A gap says that something was not reviewed and the coverage says what, so a reader can tell the files a model read from the lines it did not.
+A review lists, for each profile, every file of the input diff once, in the diff's order, and how much of it that profile's research reviewed. A gap says that something was not reviewed and the coverage says what, so a reader can tell the files research read from the lines it did not. A profile whose research asked nothing ([`asksNothing`](#per-profile)) has every file `reviewed`, though no model was asked: `reviewed` says no research part of the file failed or was left unsent.
 
 | Field | Type | Holds |
 | --- | --- | --- |
@@ -113,7 +114,7 @@ A review lists, for each profile, every file of the input diff once, in the diff
 
 | `status` | What the profile's research reviewed of the file |
 | --- | --- |
-| `reviewed` | All of it |
+| `reviewed` | All of it: no research part of the file failed or was left unsent, a profile whose research asked nothing ([`asksNothing`](#per-profile)) included |
 | `partial` | Some of it: `left` lists the ranges that were not |
 | `unreviewed` | None of it: `reason` says why |
 | `excluded` | None of it, by choice: an `exclude` pattern leaves all of it out of every request, and it is no gap |
@@ -133,7 +134,7 @@ A review lists, for each profile, every file of the input diff once, in the diff
 | `provider-down` | The research part that held it was never sent, since its provider was found down |
 | `reply-cut-off` | The reply for the hunk was cut off at its limit, though recovery had split its part as far as it goes (three splits deep, or down to one hunk): it is the `reply-cut-off` gap's, and no flag lifts it |
 
-- **Reviewed means read by research.** A research request that carried the file's text was answered with a valid findings envelope, whatever it found. The votes read only what a finding cites.
+- **Reviewed means no research part of the file failed or was left unsent.** Each research request that carried the file's text was answered with a valid findings envelope, whatever it found. A profile whose research asked nothing, one that requires a rule and was sent none, made no request, so no part failed: every file of its coverage is `reviewed` though no model read it, and its [`asksNothing`](#per-profile) is the field that says so. The votes read only what a finding cites.
 - **A `binary` or `submodule` file is unreviewed** with that reason, though its section is sent, whatever became of its part. A `secret` or `deleted-secret` file is unreviewed with that reason too, and none of it is sent.
 - **A recovered part is read by its pieces.** When recovery split a research part ([Recovering a cut-off part](../20-using/20-configuration.md#recovering-a-cut-off-part)), a hunk is reviewed when the piece that held it was read, so a section split between its hunks is `partial` when some of its pieces were not, with the range of each hunk left and the reason of its piece. A file is never `reviewed` while a piece of it was not read.
 - **A file is `excluded`** when `exclude` left all of it out of the diff the research read.
@@ -240,7 +241,7 @@ A `guideline-edited` flag comes from the repository documents of the review, not
 
 ### The context
 
-`meta.context` records the documents each profile read as policy and the review sent: a profile's guidelines, do-not-report text and review rules, its documents and the repository documents the review brought ([Documents](./30-library-api.md#documents)). It holds one key, `documents`, a list with one record for each document, in the order of the review's profiles and, for a profile, its guidelines, then its do-not-report text, then its rules, each in the order they were joined: the profile's own text, its config documents, then the repository's. The same record is the `context` event the review sent before its stages ([Events](./30-library-api.md#events)), which holds besides it `rules`, how many rules each profile that lists one lists and sent, as `meta.profiles.<id>.rules` records them. A record holds a hash, a path, a commit and counts, never a document's text.
+`meta.context` records the documents each profile read as policy and the review sent: a profile's guidelines, do-not-report text and review rules, its documents and the repository documents the review brought ([Documents](./30-library-api.md#documents)). It holds one key, `documents`, a list with one record for each document, in the order of the review's profiles and, for a profile, its guidelines, then its do-not-report text, then its rules, each in the order they were joined: the profile's own text, its config documents, then the repository's. The same record is the `context` event the review sent before its stages ([Events](./30-library-api.md#events)), which holds besides it `rules`, how many rules each profile that lists one or requires one lists and sent, as `meta.profiles.<id>.rules` records them, and `asksNothing: true` for a profile whose research asks nothing. A record holds a hash, a path, a commit and counts, never a document's text.
 
 | Field | Type | Holds |
 | --- | --- | --- |
@@ -334,7 +335,7 @@ Each gap makes the review incomplete, as an unreviewed finding does: the CLI exi
 | `meta.profiles.<id>.recovery` | Kept as it is, when the profile has one: four counts |
 | An incomplete entry | `profile`, `reason`, then `file` when it has one, and no `detail`: a report describes a gap by its reason, in fixed words |
 
-Everything else is as in the full result: the findings with their evidence and the id of the rule each cites, the profiles' policy, `failOn`, `gating`, `invalidFindings`, `rules`, `invalidRules` and coverage, the files left out, a held file's name, reason and rule included, and the flags with their details. `meta` is written in this order: `version`, `view`, `startedAt`, `durationMs`, `source`, `profiles`, `incomplete`, `leftOut`, `flags`, `context`, `adaptations`, then `reused` when the review has one; a profile in this one: `policy`, `failOn`, `gating`, `discarded`, `invalidFindings`, `rules`, `invalidRules`, `coverage`.
+Everything else is as in the full result: the findings with their evidence and the id of the rule each cites, the profiles' policy, `failOn`, `gating`, `invalidFindings`, `rules`, `invalidRules`, `asksNothing` and coverage, the files left out, a held file's name, reason and rule included, and the flags with their details. `meta` is written in this order: `version`, `view`, `startedAt`, `durationMs`, `source`, `profiles`, `incomplete`, `leftOut`, `flags`, `context`, `adaptations`, then `reused` when the review has one; a profile in this one: `policy`, `failOn`, `gating`, `discarded`, `invalidFindings`, `rules`, `invalidRules`, `asksNothing` when the profile asked nothing, `coverage`.
 
 ```json
 {

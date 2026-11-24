@@ -102,6 +102,57 @@ describe('payload', () => {
     ].join('\n'))
   })
 
+  it('writes a finding\'s rule in a code span in the summary and its comment, and none for a finding that cites none', () => {
+    const result = reportResult({
+      kept: [
+        { ...SQL, rule: 'tests-for-new-code' },
+      ],
+      unreviewed: [],
+    })
+    const [comment] = document(result).comments
+    expect(comment.body).toBe([
+      '<!-- quorum:finding:v1 a1b2c3d4e5f60718:1 -->',
+      '**HIGH** security · `CWE-89` · rule `tests-for-new-code` · kept by 3 of 3 lenses',
+      '',
+      '`SQL built from the request\'s id parameter reaches db.query`',
+    ].join('\n'))
+    expectCodeWritten(comment.body, '<!-- quorum:finding:v1 a1b2c3d4e5f60718:1 -->')
+    // The summary the payload carries says it the same way, in the finding's head.
+    expect(document(result).summary.split('\n')).toContain('- **HIGH** security · `src/auth/login.ts` line 42 · `CWE-89` · rule `tests-for-new-code` · kept by 3 of 3 lenses')
+    expect(commentBody(publicView(result).kept[0])).toBe(comment.body)
+    // A finding that cites none has the body it always had.
+    expect(commentBody(publicView(reportResult()).kept[0])).toBe([
+      '<!-- quorum:finding:v1 a1b2c3d4e5f60718:1 -->',
+      '**HIGH** security · `CWE-89` · kept by 3 of 3 lenses',
+      '',
+      '`SQL built from the request\'s id parameter reaches db.query`',
+    ].join('\n'))
+  })
+
+  it('carries, in the summary it posts, that a profile\'s research asked nothing, and changes no comment', () => {
+    const { security } = reportResult().meta.profiles
+    const result = reportResult({
+      kept: [],
+      unreviewed: [],
+      meta: {
+        profiles: {
+          security: {
+            ...security,
+            rules: { listed: 0, sent: 0 },
+            asksNothing: true,
+            coverage: [
+              { file: 'a.js', status: 'reviewed' },
+            ],
+          },
+        },
+      },
+    })
+    const posted = document(result)
+    expect(posted.comments).toEqual([])
+    expect(posted.summary.split('\n')).toContain('| security | high | 0 | 0 | 1 | 0 | 1 of 1 file reviewed; rules 0 of 0 sent, so its research asks nothing |')
+    expect(posted.summary).toBe(summaryMarkdown(publicView(result), FINDINGS))
+  })
+
   it('puts every text a model or the diff wrote in a code span, and no marker but on the first line', () => {
     const [comment] = document(hostileResult([HOSTILE])).comments
     expect(comment.path).toBe(HOSTILE.file)

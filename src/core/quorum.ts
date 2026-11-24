@@ -849,14 +849,23 @@ function ruleCountOf(run: ProfileRun): { listed: number, sent: number } {
   return { listed: run.rules.length, sent: run.sent?.length ?? 0 }
 }
 
-/** The rules each profile that lists one lists and sends, as the `context` event holds them, by profile id; undefined when no profile lists a rule. */
-function ruleCounts(runs: readonly ProfileRun[]): Record<string, { listed: number, sent: number }> | undefined {
-  const listing = runs.filter(run => run.rules.length > 0)
+/**
+ * The rules each profile that lists one or requires one lists and sends, as the `context` event holds them, by profile id, with
+ * `asksNothing` for a profile whose research asks nothing (it requires a rule and sends none, `{ listed: 0, sent: 0 }` when it lists
+ * none); undefined when no profile lists or requires a rule.
+ */
+function ruleCounts(runs: readonly ProfileRun[]): Record<string, { listed: number, sent: number, asksNothing?: true }> | undefined {
+  const listing = runs.filter(run => run.rules.length > 0 || run.requireRule)
   return listing.length === 0
     ? undefined
     : Object.fromEntries(listing.map(run => [
         run.id,
-        ruleCountOf(run),
+        {
+          ...ruleCountOf(run),
+          ...asksNothing(run)
+            ? { asksNothing: true as const }
+            : {},
+        },
       ]))
 }
 
@@ -869,6 +878,9 @@ function profileMeta(run: ProfileRun, invalidFindings: number, invalidRules: num
     invalidFindings,
     rules: ruleCountOf(run),
     invalidRules,
+    ...asksNothing(run)
+      ? { asksNothing: true as const }
+      : {},
     coverage,
     ...recovery === undefined
       ? {}

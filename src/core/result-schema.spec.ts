@@ -402,6 +402,82 @@ describe('the schemas of a result', () => {
     }
   })
 
+  it('reads a profile\'s asksNothing as true alone, after its invalidRules, in the public view too, and does not require it', () => {
+    const base = reportResult().meta
+    // The profile as the core writes it: the flag after the counts of rules, before the coverage.
+    const { coverage, ...counted } = base.profiles.security
+    const asked = reportResult({
+      meta: {
+        ...base,
+        profiles: {
+          security: {
+            ...counted,
+            asksNothing: true,
+            coverage,
+          },
+        },
+      },
+    })
+    const full = saved(asked)
+    const view = saved(publicView(asked))
+    expect(resultSchema.parse(full)).toEqual(full)
+    expect(JSON.stringify(resultSchema.parse(full))).toBe(JSON.stringify(full))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(JSON.stringify(publicViewSchema.parse(view))).toBe(JSON.stringify(view))
+    // It sits after the counts of rules, where the core writes it, so a result read back is written as it was.
+    expect(Object.keys(full.meta.profiles.security).slice(4, 8)).toEqual([
+      'invalidFindings',
+      'rules',
+      'invalidRules',
+      'asksNothing',
+    ])
+    expect(Object.keys(view.meta.profiles.security).slice(4, 8)).toEqual([
+      'invalidFindings',
+      'rules',
+      'invalidRules',
+      'asksNothing',
+    ])
+    // A result that holds none is read as it always was, the field absent in what the schema returns.
+    const plain = saved(reportResult())
+    expect(resultSchema.parse(plain).meta.profiles.security).not.toHaveProperty('asksNothing')
+    expect(publicViewSchema.parse(saved(publicView(reportResult()))).meta.profiles.security).not.toHaveProperty('asksNothing')
+    // Only `true` is a value: it is a flag the core sets, absent otherwise, never `false` or another word.
+    for (const forged of [
+      { asksNothing: false },
+      { asksNothing: 'true' },
+      { asksNothing: 1 },
+      { asksNothing: null },
+      {
+        asksNothing: { listed: 0 },
+      },
+    ] as Forged[]) {
+      expect(resultSchema.safeParse({
+        ...full,
+        meta: {
+          ...full.meta,
+          profiles: {
+            security: {
+              ...full.meta.profiles.security,
+              ...forged,
+            },
+          },
+        },
+      }).success, JSON.stringify(forged)).toBe(false)
+      expect(publicViewSchema.safeParse({
+        ...view,
+        meta: {
+          ...view.meta,
+          profiles: {
+            security: {
+              ...view.meta.profiles.security,
+              ...forged,
+            },
+          },
+        },
+      }).success, JSON.stringify(forged)).toBe(false)
+    }
+  })
+
   it('reads meta.reused strictly, in the public view too, and does not require it', () => {
     const result = reportResult({
       meta: {

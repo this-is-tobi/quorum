@@ -183,6 +183,7 @@ const profileMeta = z.strictObject({
   invalidFindings: count,
   rules: ruleCounts,
   invalidRules: count,
+  asksNothing: z.literal(true).optional(),
   coverage: z.array(coverageEntry),
   recovery: recovery.optional(),
 })
@@ -195,6 +196,7 @@ const publicProfileMeta = z.strictObject({
   invalidFindings: count,
   rules: ruleCounts,
   invalidRules: count,
+  asksNothing: z.literal(true).optional(),
   coverage: z.array(coverageEntry),
   recovery: recovery.optional(),
 })

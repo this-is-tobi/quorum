@@ -17,6 +17,11 @@
  *   the result keeps their number, `pathCount`;
  * - **the version, the start and the duration of the review:** nothing an agent acts on.
  *
+ * Each finding's `rule` (the id of the review rule it cites, the configuration's, checked by code) and each profile's
+ * `invalidRules` (how many citations failed their check) and `asksNothing` (`true` when it requires a rule and was sent none,
+ * so its finder was never asked and its empty list of findings is no review's) are code-checked fields: a rule's id matches a
+ * fixed pattern, and `codeFieldsOnly` keeps all three.
+ *
  * Text from the change reaches the agent in four places and no other. A file name, in a finding, a gap, a
  * file left out and a flag, passes `showHidden`, so a hidden character shows as `<U+XXXX>` and the agent can
  * still open the file. A category and a summary, the model's claims, pass `inertPlain` at `CLAIM_CAP` code
@@ -30,6 +35,7 @@ import { z } from 'zod'
 import { profileFailOn } from '../core/outcome.ts'
 import { FAIL_ON_LEVELS } from '../core/profile.ts'
 import { flagCode, gapReason, leftOutFile } from '../core/result-schema.ts'
+import { RULE_ID } from '../core/rules.ts'
 import { inertPlain, showHidden } from '../core/sanitize.ts'
 import { utf8Length } from '../core/tokens.ts'
 import { isSecret, rankedFindings } from '../report/lines.ts'
@@ -84,6 +90,8 @@ const profile = z.strictObject({
   unreviewed: count,
   discarded: count,
   outsideDiff: count,
+  invalidRules: count,
+  asksNothing: z.literal(true).optional(),
   files: z.strictObject({
     reviewed: count,
     partial: count,
@@ -103,6 +111,7 @@ const finding = z.strictObject({
     asked: count,
   }),
   fingerprint: z.string(),
+  rule: z.string().regex(RULE_ID).optional(),
   category: z.string().optional(),
   summary: z.string().optional(),
 })
@@ -219,6 +228,10 @@ function profilesOf(view: PublicView): AgentResult['profiles'] {
       unreviewed: unreviewed.get(id) ?? 0,
       discarded: meta.discarded,
       outsideDiff: meta.invalidFindings,
+      invalidRules: meta.invalidRules,
+      ...meta.asksNothing === true
+        ? { asksNothing: true as const }
+        : {},
       files: {
         reviewed: files('reviewed'),
         partial: files('partial'),
@@ -237,6 +250,9 @@ function findingOf(verdict: PublicVerdict, codeFieldsOnly: boolean): AgentResult
     confidence: verdict.confidence ?? 'unreviewed',
     votes: { kept: verdict.keptVotes, asked: verdict.totalVotes },
     fingerprint: verdict.fingerprint,
+    ...verdict.rule === undefined
+      ? {}
+      : { rule: verdict.rule },
     ...codeFieldsOnly
       ? {}
       : {

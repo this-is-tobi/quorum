@@ -250,33 +250,84 @@ A review records each document it read in `meta.context` and says so, one line f
 context: security guidelines "docs/threat-model.md" at 1f3a9c2, 1830 bytes
 context: naming guidelines from a file, sha256 3f2a9c1d0b7e, 4100 bytes; the cleaner removed 3 hidden character(s) and 1 comment(s)
 context: naming do-not-report text "REVIEW-skip.md" at 1f3a9c2: missing, and optional
+context: naming rules from a file, sha256 8d48c37e1a02, 4 rule(s)
 ```
 
 The figures here are an example: a line holds the counts of its own review. A line has these parts, in this order:
 
 | Part | Reads |
 | --- | --- |
-| `context: <profile> <kind>` | The profile's id, then `guidelines` or `do-not-report text`. Every profile with a document has its lines, a built-in one included |
+| `context: <profile> <kind>` | The profile's id, then `guidelines`, `do-not-report text` or `rules`. Every profile with a document has its lines, a built-in one included |
 | Where it came from | `of the profile` for the text a program set on the profile. `from a file, sha256 <12 hex>` for a document of the config, with the first 12 hexadecimal digits of the SHA-256 of its text as read, which [`--print-config`](#what---print-config-shows) prints whole. `<path> at <short id>` for a `{ repository }` document: its path as JSON, cut at 100 characters, and the first 7 characters of the commit it was read at. `written in the config` for a text the config holds with no hash |
-| Its size | `, <bytes> bytes`: the UTF-8 bytes of the cleaned text as sent, an integer, so a person compares it with [the caps](#the-caps-and-the-cleaner). An optional document its commit lacks is `: missing, and optional`, with no bytes |
+| Its size | `, <bytes> bytes`: the UTF-8 bytes of the cleaned text as sent, an integer, so a person compares it with [the caps](#the-caps-and-the-cleaner). A rules document has `, <k> rule(s)` in its place, the number of rules it holds, since its entries are no text to count in bytes. An optional document its commit lacks is `: missing, and optional`, with no bytes |
 | What the cleaner removed | `; the cleaner removed <c> hidden character(s), <m> comment(s) and <e> character reference(s)`, only the counts above 0, joined by `, ` and ` and `. A document with nothing removed has no such clause. The counts are what the reader removed and what the core removed again: [Prose a review reads as policy](../30-security/30-output-handling.md#prose-a-review-reads-as-policy) |
 
 A line holds ids, a hash's first digits, a path, a commit's first characters and counts: never a word of the document, whatever it says. It is inert, as every line is, so a path with a hidden character shows it as `<U+XXXX>`.
 
 Where the lines are:
 
-- **The log, before the stages.** Plain mode and the live view's log write one line for each document, once, right after the `left out:` line and before the research starts, in the order `meta.context` holds them: each profile's guidelines, then its do-not-report text, each in the order they are joined. They come from the `context` event, start with no `[<id>] `, since a line names its profile itself, and carry no glyph. `--view public` writes the same lines. A review with no document writes none. `--progress json` writes the event as it is: [Events](../95-reference/30-library-api.md#events).
+- **The log, before the stages.** Plain mode and the live view's log write one line for each document, once, right after the `left out:` line and before the research starts, in the order `meta.context` holds them: each profile's guidelines, then its do-not-report text, then its rules, each in the order they are joined, followed by one line for each profile that lists or requires a rule ([What a person sees of the rules](#what-a-person-sees-of-the-rules)). They come from the `context` event, start with no `[<id>] `, since a line names its profile itself, and carry no glyph. `--view public` writes the same lines. A review with no document writes none. `--progress json` writes the event as it is: [Events](../95-reference/30-library-api.md#events).
 - **The text report,** after the profiles' lines and before the files left out, one line for each record of `meta.context`, in the same words, wrapped at 80 columns as a flag's detail is: the head, which holds the path, the hash or the commit, stays whole on one line, and what follows wraps at spaces. `quorum report` writes them from a saved result, since the result holds the records: [The context](../95-reference/20-json-result.md#the-context).
-- **The summary,** after the `calls:` line, one line for each profile that has a document: the bytes of each kind it read, the optional documents missing and how many documents the cleaner removed text from. A kind it read none of, and a count of 0, are left out:
+- **The summary,** after the `calls:` line, one line for each profile that has a document: the bytes of each kind of text it read, the rules it sent of those it lists, the optional documents missing and how many documents the cleaner removed text from. A kind it read none of, and a count of 0, are left out:
 
   ```text
   context: security: guidelines 1830 bytes
   context: naming: guidelines 4100 bytes, 1 optional document(s) missing, hidden text removed from 1
+  context: team: guidelines 4100 bytes, rules 3 of 5 sent
   ```
 
 - **The Markdown summary** lists them under `#### Documents read`, after the flags, each as an item in the same words with its path, its commit and its hash in code spans, the first 20 and then how many more, the first cut when the summary is over its budget: [The summary](./80-reports.md#the-summary).
 
 SARIF holds no document, and the payload holds them only in its summary, as the Markdown summary does: a document is no result and no comment.
+
+## What a person sees of the rules
+
+A rule is read in four places: on a finding that cites it, on the line of the profile that sent it, in the log before the stages, and in the summary. The figures in the examples are illustrative: a line holds the counts of its own review.
+
+**A finding's rule.** A finding that cites a rule its review sent, and whose citation held ([The citation](./60-prompts.md#the-citation)), names it by its id, the one the configuration gives the rule, never the finder's text. A finding that cites none, or whose citation failed its check, names none, and a profile that lists no rule and requires none writes no rules words anywhere. Each report writes it where it writes the finding's category:
+
+| Report | Reads |
+| --- | --- |
+| The text report | `MEDIUM  naming  src/api/users.ts:40  test_gap  rule tests-for-new-code`: the head of the finding ends with two spaces and `rule <id>` |
+| The Markdown summary | ``- **MEDIUM** naming · `src/api/users.ts` line 40 · `test_gap` · rule `tests-for-new-code` · kept by 2 of 3 lenses``: after the category, the id in a code span |
+| A line comment | ``**MEDIUM** naming · `test_gap` · rule `tests-for-new-code` · kept by 2 of 3 lenses``: the summary's words, in the body of the comment the Action posts |
+| SARIF | `MEDIUM, kept by 2 of 3 lenses. test_gap, rule tests-for-new-code: <claim>`: `, rule <id>` after the category in the message of the result, whose `ruleId` stays `quorum/<profile>` |
+| The MCP result | `rule` in the finding, after its `fingerprint` and before its `category`: a code-checked field, so `--code-fields-only` keeps it |
+| The JSON result | `rule` in the finding, absent when it cites none |
+
+**A profile's rules.** The text report ends a profile's line with the rules it sent and the citations that failed, and wraps it at 80 columns after `<id> (fail-on <level>):`:
+
+```text
+naming (fail-on none): 1 kept, 0 unreviewed, 2 discarded; rules: 3 of 5 sent, 1
+  citation(s) refused
+  3 of 3 files reviewed
+```
+
+`rules: <sent> of <listed> sent` says how many of the profile's rules the review sent, those whose `paths` match a file of the change and those with none. `, <k> citation(s) refused` follows when `<k>`, `invalidRules`, is above 0: the findings whose `rule` named no rule this review sent whose `paths` match their file, and, in a profile that requires a rule, the findings that cited none. A refused citation is counted apart from `, <n> outside the diff`, the findings that cite code the diff does not hold. The MCP result carries the same count as the profile's `invalidRules`. A profile that lists no rule has neither clause, unless it requires one, as the next paragraph says.
+
+**A profile that asked nothing.** A profile that requires a rule (`requireRule`) and was sent none asks its finder nothing, whether it lists none or lists rules that apply to no file of the change: its parts read as reviewed, so its line would read `0 kept` and its files `reviewed`, as a review that found nothing does. The reports say what happened, on the profile's line, from `meta.profiles.<id>.asksNothing`, which is `true` for such a profile and absent for every other:
+
+```text
+strict (fail-on high): 0 kept, 0 unreviewed, 0 discarded; rules: 0 of 0 sent,
+  so its research asks nothing
+  3 of 3 files reviewed
+```
+
+The same clause ends the rules part of the summary's context line (`context: strict: rules 0 of 0 sent, so its research asks nothing`, a line of its own when the profile has no document), the profile's coverage cell in the Markdown summary and so in the Action's comment (`3 of 3 files reviewed; rules 0 of 0 sent, so its research asks nothing`), and the profile's entry in the MCP result (`asksNothing: true`, kept under `--code-fields-only`). `quorum report` writes it from a saved result, since the result holds it. A profile that lists no rule and requires none writes no rules words anywhere.
+
+**The log.** Plain mode and the live view's log write, right after the documents' lines and before the research starts, one line for each profile that lists a rule or requires one, and a line for each citation that fails:
+
+```text
+context: naming rules: 3 of 5 sent
+context: naming rules: 0 of 5 sent, so its research asks nothing
+rule citation refused: "src/a.ts":40 cites no rule this review sent
+```
+
+- **`context: <profile> rules: <sent> of <listed> sent`** is written once per profile, from the `context` event, with no `[<id>] ` and no glyph, under `--view public` too. A profile that sends none of its rules, and does not require one, still asks its research, and the line says nothing more.
+- **`, so its research asks nothing`** ends the line of a profile that requires a rule and sends none for this change: its finder is never asked, since every finding it could report would be dropped for want of a rule, and its parts read as reviewed. `0 of 0 sent` is the line of a profile that requires a rule and lists none: it reports nothing, and the line is how a person sees why. `parts: 0` in the profile's `stage:start` says it to a program.
+- **`rule citation refused: <reason>`** is written once for each citation that fails its check, whether the finding goes on with no rule or, in a profile that requires one, is dropped with it. The reason names the finding's file as JSON and its line, `"src/a.ts":40 cites no rule this review sent` or `"src/a.ts":40 cites no rule, which the profile requires`, and never the rule the finder cited. Under `--view public` it is `rule citation refused`, with no reason, as a dropped finding's line is. In a review of several profiles it starts with `[<id>] `. The count is the profile's `invalidRules`.
+
+**The summary.** The context line of a profile that lists a rule adds `rules <sent> of <listed> sent`, after the kinds of text it read and before the optional documents missing: `context: naming: guidelines 4100 bytes, rules 3 of 5 sent`. A profile with rules and no text reads `context: naming: rules 3 of 5 sent`, and one that asked nothing ends the part with `, so its research asks nothing`.
 
 ## What `--print-config` shows
 

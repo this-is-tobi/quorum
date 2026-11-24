@@ -14,7 +14,7 @@ import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
 import { codeSpan, inertJson, inertLine } from '../core/sanitize.ts'
 import type { Confidence, PublicVerdict, PublicView } from '../core/types.ts'
 import { commitOf, levelWord, placedFindings, votesWords } from './lines.ts'
-import { summaryMarkdown } from './markdown.ts'
+import { ruleSpan, summaryMarkdown } from './markdown.ts'
 import type { Reporter } from './reporter.ts'
 import { publicView } from './view.ts'
 
@@ -45,17 +45,17 @@ export interface ActionPayload {
 }
 
 /**
- * The body of a finding's line comment: the marker, then its level, profile, category and votes, a blank line and
- * its claim. The marker holds the fingerprint, which survives a push that moves the line, so the Action finds
+ * The body of a finding's line comment: the marker, then its level, profile, category, the review rule it cites when it
+ * cites one, and its votes, a blank line and its claim. The marker holds the fingerprint, which survives a push that moves the line, so the Action finds
  * the comment it posted for a finding by that text, whatever the comment's line has become, and never posts it
- * twice. Only the first line holds raw HTML; the category and the claim, a model's text, are code spans, and no
+ * twice. Only the first line holds raw HTML; the category, the rule's id and the claim are code spans, and no
  * evidence is written, since the comment sits on the code. Every line passes `inertLine`, and there is no line
  * feed after the last.
  */
 export function commentBody(verdict: PublicVerdict): string {
   return [
     `<!-- quorum:finding:v1 ${verdict.fingerprint} -->`,
-    `**${levelWord(verdict)}** ${verdict.profile} · ${codeSpan(verdict.category)} · ${votesWords(verdict)}`,
+    `**${levelWord(verdict)}** ${verdict.profile} · ${codeSpan(verdict.category)}${ruleSpan(verdict)} · ${votesWords(verdict)}`,
     '',
     codeSpan(verdict.summary),
   ].map(inertLine).join('\n')

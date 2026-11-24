@@ -13,6 +13,7 @@ import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts, Repl
 import { FINDING_FIELDS, FINDING_FIELDS_WITH_RULE, researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum, createQuorumWith } from './quorum.ts'
 import { rulesBlock } from './rules.ts'
+import { resultSchema } from './result-schema.ts'
 import { findingId, FINGERPRINT_PATTERN } from './stages/research.ts'
 import { requestTokens, tokenBound } from './tokens.ts'
 import type { Finding, IncompleteEntry, LeftOutFile, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, ReviewDocument, ReviewSource, Usage, VoteFailure } from './types.ts'
@@ -9291,6 +9292,166 @@ describe('documents', () => {
       const plain = build({ ...naming, guidelines: 'Own.' })
       await plain.quorum.review({ diff })
       expect(plain.events.filter(event => event.type === 'context').map(event => Object.hasOwn(event, 'rules'))).toEqual([false])
+    })
+
+    it('sends a profile that requires a rule in the context event whatever it lists, and says when its research asks nothing', async () => {
+      const finder = fake('finder', () => findings())
+      /** The `rules` of each `context` event a review of `input` sends, for a quorum of `profiles`. */
+      const rulesOf = async (profiles: Profile[], input: string): Promise<unknown[]> => {
+        const events: QuorumEvent[] = []
+        const quorum = createQuorum({ profiles }, {
+          profiles: Object.assign({}, ...profiles.map(profile => portsFor(profile, finder).profiles)) as QuorumPorts['profiles'],
+          events: event => events.push(event),
+        })
+        await quorum.review({ diff: input })
+        return events.filter(event => event.type === 'context').map(event => event.type === 'context' && event.rules)
+      }
+      // A profile that requires a rule and lists none sends none, so it asks its research nothing: it is in the event, with no rule listed.
+      expect(await rulesOf([
+        { ...naming, requireRule: true },
+      ], docs)).toEqual([
+        {
+          naming: { listed: 0, sent: 0, asksNothing: true },
+        },
+      ])
+      // One that lists rules and requires one asks nothing only when no rule applies to the change: `docs` sends the rule of every file alone.
+      expect(await rulesOf([required], docs)).toEqual([
+        {
+          naming: { listed: 2, sent: 1 },
+        },
+      ])
+      expect(await rulesOf([
+        {
+          ...required,
+          rules: [noAny],
+        },
+      ], docs)).toEqual([
+        {
+          naming: { listed: 1, sent: 0, asksNothing: true },
+        },
+      ])
+      // One that lists a rule and requires none still asks its research when it sends none.
+      expect(await rulesOf([
+        {
+          ...ruled,
+          rules: [noAny],
+        },
+      ], docs)).toEqual([
+        {
+          naming: { listed: 1, sent: 0 },
+        },
+      ])
+      // Every profile that lists or requires a rule is in the event, in the quorum's order; one that does neither is not.
+      const requiring: Profile = { ...naming, id: 'strict', requireRule: true }
+      expect(await rulesOf([style, requiring, ruled], docs)).toEqual([
+        {
+          strict: { listed: 0, sent: 0, asksNothing: true },
+          naming: { listed: 2, sent: 1 },
+        },
+      ])
+      // No profile lists or requires a rule, and none holds a document: no event, as before.
+      expect(await rulesOf([
+        style,
+        { ...naming, requireRule: false },
+      ], docs)).toEqual([])
+    })
+
+    it('records asksNothing in meta.profiles exactly for a profile whose research asked nothing, the one fact stage:start and the context event state too', async () => {
+      const finder = fake('finder', () => findings())
+      /** The profile's meta after a review of `input`, and its research `stage:start`'s parts and `context` event's entry. */
+      const reviewOf = async (profile: Profile, input: string): Promise<{ meta: unknown, parts: number | undefined, entry: unknown }> => {
+        const reviewed = build(profile, finder)
+        const result = await reviewed.quorum.review({ diff: input })
+        const start = reviewed.events.find(event => event.type === 'stage:start' && event.stage === 'research')
+        const context = reviewed.events.find(event => event.type === 'context')
+        return {
+          meta: result.meta.profiles.naming,
+          parts: start?.type === 'stage:start'
+            ? start.parts
+            : undefined,
+          entry: context?.type === 'context'
+            ? context.rules?.naming
+            : undefined,
+        }
+      }
+      // It requires a rule and lists none: nothing is sent, so nothing is asked.
+      const unlisted = await reviewOf({ ...naming, requireRule: true }, docs)
+      expect(unlisted.meta).toMatchObject({
+        rules: { listed: 0, sent: 0 },
+        invalidRules: 0,
+        asksNothing: true,
+      })
+      expect(unlisted.parts).toBe(0)
+      expect(unlisted.entry).toEqual({ listed: 0, sent: 0, asksNothing: true })
+      // It requires a rule and lists some, none of which applies to the change.
+      const none = await reviewOf({
+        ...required,
+        rules: [noAny],
+      }, docs)
+      expect(none.meta).toMatchObject({
+        rules: { listed: 1, sent: 0 },
+        asksNothing: true,
+      })
+      expect(none.parts).toBe(0)
+      expect(none.entry).toEqual({ listed: 1, sent: 0, asksNothing: true })
+      // The flag sits after the counts of rules and before the coverage, where the schema keeps it.
+      expect(Object.keys(none.meta as object).slice(4, 9)).toEqual([
+        'invalidFindings',
+        'rules',
+        'invalidRules',
+        'asksNothing',
+        'coverage',
+      ])
+      // Every other profile has no such key, so its result is the one it always was: a rule sent, a rule not required, no rule at all.
+      for (const [name, profile] of [
+        ['a rule sent', required],
+        [
+          'a rule listed and not required',
+          {
+            ...ruled,
+            rules: [noAny],
+          },
+        ],
+        ['no rule', naming],
+        [
+          'requireRule false and no rule',
+          { ...naming, requireRule: false },
+        ],
+      ] as Array<[string, Profile]>) {
+        const asked = await reviewOf(profile, docs)
+        expect(Object.hasOwn(asked.meta as object, 'asksNothing'), name).toBe(false)
+        expect(asked.parts, name).not.toBe(0)
+      }
+      // A blank diff runs no stage, and the profile's meta says the same as for any change: it would have asked nothing.
+      const blank = await build({ ...naming, requireRule: true }).quorum.review({ diff: '' })
+      expect(blank.meta.profiles.naming.asksNothing).toBe(true)
+      // The result reads back through the strict schema.
+      expect(resultSchema.safeParse(JSON.parse(JSON.stringify(blank))).success).toBe(true)
+      // A change with no file at all sends no rule, the one with no paths included: a profile that lists it and requires one asks
+      // nothing then too, on a blank diff and on one whose every file `exclude` leaves out, and says so in the log as it does elsewhere.
+      const idle = fake('finder', () => findings())
+      const blankRule = await build(required, idle).quorum.review({ diff: '' })
+      expect(blankRule.meta.profiles.naming).toMatchObject({
+        rules: { listed: 2, sent: 0 },
+        asksNothing: true,
+      })
+      const left = build(required, idle, undefined, {
+        exclude: ['docs/**'],
+      })
+      const leftRule = await left.quorum.review({ diff: docs })
+      expect(leftRule.meta.profiles.naming).toMatchObject({
+        rules: { listed: 2, sent: 0 },
+        asksNothing: true,
+      })
+      expect(left.events.find(event => event.type === 'context')).toMatchObject({
+        rules: {
+          naming: { listed: 2, sent: 0, asksNothing: true },
+        },
+      })
+      expect(idle.requests).toHaveLength(0)
+      // A profile that requires no rule is never marked, whatever it sends.
+      const lenient = await build(ruled, idle).quorum.review({ diff: '' })
+      expect(Object.hasOwn(lenient.meta.profiles.naming, 'asksNothing')).toBe(false)
     })
   })
 

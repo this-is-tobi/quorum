@@ -162,6 +162,7 @@ describe('agentResult', () => {
         unreviewed: 1,
         discarded: 1,
         outsideDiff: 0,
+        invalidRules: 0,
         files: {
           reviewed: 1,
           partial: 1,
@@ -312,6 +313,156 @@ describe('agentResult', () => {
     }
     expect({ ...limited, findings: [] }).toEqual({ ...full, findings: [] })
     expect(limited.findings.map(({ file, fingerprint }) => ({ file, fingerprint }))).toEqual(full.findings.map(({ file, fingerprint }) => ({ file, fingerprint })))
+  })
+
+  it('gives the agent each finding\'s rule and each profile\'s invalidRules, with --code-fields-only too', () => {
+    const { security } = reportMeta().profiles
+    const result = reportResult({
+      kept: [
+        { ...SQL, rule: 'tests-for-new-code' },
+      ],
+      unreviewed: [],
+      meta: {
+        profiles: {
+          security: {
+            ...security,
+            rules: { listed: 5, sent: 3 },
+            invalidRules: 2,
+          },
+        },
+      },
+    })
+    const full = received(result)
+    // The rule is a code-checked field, the configuration's own id, so it sits before the model's text.
+    expect(Object.keys(full.findings[0])).toEqual([
+      'profile',
+      'file',
+      'line',
+      'confidence',
+      'votes',
+      'fingerprint',
+      'rule',
+      'category',
+      'summary',
+    ])
+    expect(full.findings[0].rule).toBe('tests-for-new-code')
+    expect(full.profiles[0].invalidRules).toBe(2)
+    expect(Object.keys(full.profiles[0])).toEqual([
+      'id',
+      'failOn',
+      'kept',
+      'unreviewed',
+      'discarded',
+      'outsideDiff',
+      'invalidRules',
+      'files',
+    ])
+    // Under codeFieldsOnly it keeps both, and loses the category and the summary alone.
+    const limited = received(result, FINDINGS, { codeFieldsOnly: true })
+    expect(Object.keys(limited.findings[0])).toEqual([
+      'profile',
+      'file',
+      'line',
+      'confidence',
+      'votes',
+      'fingerprint',
+      'rule',
+    ])
+    expect(limited.findings[0].rule).toBe('tests-for-new-code')
+    expect(limited.profiles).toEqual(full.profiles)
+    // A finding that cites none has no `rule` key at all, whatever its profile counts.
+    const none = received(reportResult({
+      meta: {
+        profiles: {
+          security: { ...security, invalidRules: 1 },
+        },
+      },
+    }))
+    for (const entry of none.findings) expect(entry).not.toHaveProperty('rule')
+    expect(none.profiles[0].invalidRules).toBe(1)
+    // The strict schema reads both back, and refuses a rule that is no id.
+    for (const agent of [full, limited, none]) expect(agentResultSchema.parse(JSON.parse(JSON.stringify(agent)))).toEqual(agent)
+    expect(() => agentResultSchema.parse({
+      ...full,
+      findings: [
+        { ...full.findings[0], rule: 'No Rule' },
+      ],
+    })).toThrow()
+    // The public view refuses a rule that is no rule id, so none reaches the agent.
+    expect(() => received(reportResult({
+      kept: [
+        { ...SQL, rule: `a${BIDI}b` },
+      ],
+    }))).toThrow(TypeError)
+  })
+
+  it('tells the agent that a profile\'s research asked nothing, with --code-fields-only too, and writes nothing for a profile that did', () => {
+    const { security } = reportMeta().profiles
+    // The profile as the core writes it: the flag after the counts of rules, before the coverage.
+    const { coverage: _coverage, ...counted } = security
+    const asked = (rules: { listed: number, sent: number }): QuorumResult => reportResult({
+      kept: [],
+      unreviewed: [],
+      meta: {
+        profiles: {
+          security: {
+            ...counted,
+            rules,
+            asksNothing: true,
+            coverage: [
+              { file: 'a.js', status: 'reviewed' },
+            ],
+          },
+        },
+      },
+    })
+    for (const rules of [
+      { listed: 0, sent: 0 },
+      { listed: 5, sent: 0 },
+    ]) {
+      const full = received(asked(rules), PASS)
+      expect(full.profiles).toEqual([
+        {
+          id: 'security',
+          failOn: 'high',
+          kept: 0,
+          unreviewed: 0,
+          discarded: 1,
+          outsideDiff: 0,
+          invalidRules: 0,
+          asksNothing: true,
+          files: {
+            reviewed: 1,
+            partial: 0,
+            unreviewed: 0,
+            excluded: 0,
+          },
+        },
+      ])
+      expect(Object.keys(full.profiles[0])).toEqual([
+        'id',
+        'failOn',
+        'kept',
+        'unreviewed',
+        'discarded',
+        'outsideDiff',
+        'invalidRules',
+        'asksNothing',
+        'files',
+      ])
+      // The flag is a profile's, so --code-fields-only keeps it as it keeps every code-checked field.
+      expect(received(asked(rules), PASS, { codeFieldsOnly: true }).profiles).toEqual(full.profiles)
+      expect(agentResultSchema.parse(JSON.parse(JSON.stringify(full)))).toEqual(full)
+    }
+    // A profile that did ask has no such key, whatever it lists, and the schema refuses a flag that is not `true`.
+    for (const profile of received(reportResult()).profiles) expect(profile).not.toHaveProperty('asksNothing')
+    const full = received(asked({ listed: 0, sent: 0 }), PASS)
+    expect(agentResultSchema.safeParse({
+      ...full,
+      profiles: [
+        { ...full.profiles[0], asksNothing: false },
+      ],
+    }).success).toBe(false)
   })
 
   it('counts the files left out and the secrets among them, and lists the first 20', () => {

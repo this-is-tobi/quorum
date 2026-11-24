@@ -3,9 +3,9 @@
  *
  * 1. a header, what was reviewed;
  * 2. the findings, kept and unreviewed together, grouped by file and then by line, each with its claim, its
- *    evidence rows and how its lenses voted, and, under its head, the line its finder cited when the harness
- *    moved it to its quote; the discarded ones are only counted;
- * 3. each profile's level, counts and coverage;
+ *    evidence rows and how its lenses voted, its head ending with the review rule it cites, and, under its head, the
+ *    line its finder cited when the harness moved it to its quote; the discarded ones are only counted;
+ * 3. each profile's level, counts, rules sent and citations refused, and coverage;
  * 4. the documents the review read, one line each, as the log writes them, its tail wrapped as a flag's detail is;
  * 5. the files left out;
  * 6. the gaps;
@@ -29,7 +29,7 @@ import { profileFailOn } from '../core/outcome.ts'
 import type { Outcome } from '../core/outcome.ts'
 import { inertLine, showHidden } from '../core/sanitize.ts'
 import type { ContextDocument, IncompleteEntry, LeftOutFile, PublicGap, PublicMeta, PublicVerdict, QuorumMeta, Verdict } from '../core/types.ts'
-import { byLocation, coverageWords, documentLineParts, durationText, evidenceRows, flagWhere, GAP_WORDS, leftOutEntry, levelWord, plural, rowParts, sourcePhrase, tokenWords, verdictWhy, votesWords } from './lines.ts'
+import { byLocation, coverageWords, documentLineParts, durationText, evidenceRows, flagWhere, GAP_WORDS, leftOutEntry, levelWord, plural, rowParts, ruleCountWords, ruleWords, sourcePhrase, tokenWords, verdictWhy, votesWords } from './lines.ts'
 import type { Reporter, ReportInput } from './reporter.ts'
 import { discardedOf, isPublicView } from './view.ts'
 
@@ -177,7 +177,17 @@ function citedLines(verdict: Verdict | PublicVerdict): string[] {
       ]
 }
 
-/** A finding's block: its head, where it was cited when it moved, its claim, its evidence rows, its votes and a blank line. */
+/** The rule a finding cites, as the end of its head: two spaces and `rule <id>`, or no piece for a finding that cites none. The id is the configuration's, so no style marks it. */
+function rulePieces(verdict: Verdict | PublicVerdict): Piece[] {
+  const rule = ruleWords(verdict)
+  return rule === ''
+    ? []
+    : [
+        { text: `  ${rule}` },
+      ]
+}
+
+/** A finding's block: its head, which ends with the rule it cites, where it was cited when it moved, its claim, its evidence rows, its votes and a blank line. */
 function findingLines(verdict: Verdict | PublicVerdict, kept: boolean, color: boolean): string[] {
   return [
     line([
@@ -185,6 +195,7 @@ function findingLines(verdict: Verdict | PublicVerdict, kept: boolean, color: bo
       { text: `  ${verdict.profile}  ` },
       { text: `${pathText(verdict.file)}:${verdict.line}`, style: 'bold' },
       { text: `  ${verdict.category}` },
+      ...rulePieces(verdict),
     ], color),
     ...citedLines(verdict),
     ...wrap('  ', verdict.summary).map(inertLine),
@@ -202,7 +213,21 @@ function orderedFindings(input: ReportInput): Array<{ verdict: Verdict | PublicV
   ].sort((a, b) => byLocation(a.verdict, b.verdict))
 }
 
-/** Each profile in run order: its fail-on level and its counts, with the findings it dropped for citing code outside the diff, then its coverage. A public view's discarded count is the one it records. */
+/**
+ * What a profile that lists a rule says of its rules, after its counts: `; rules: 3 of 5 sent`, then `, 1 citation(s) refused` when
+ * some were. A profile that asked nothing (it requires a rule and was sent none) says so, `; rules: 0 of 0 sent, so its research
+ * asks nothing`, whether it lists rules or none, since its counts of findings and of files reviewed read as a review that found nothing.
+ * Nothing for a profile that lists no rule and requires none.
+ */
+function rulesClause({ rules, invalidRules, asksNothing }: QuorumMeta['profiles'][string] | PublicMeta['profiles'][string]): string {
+  if (rules.listed === 0 && asksNothing !== true) return ''
+  const refused = invalidRules > 0
+    ? `, ${invalidRules} citation(s) refused`
+    : ''
+  return `; rules: ${ruleCountWords(rules, asksNothing === true)}${refused}`
+}
+
+/** Each profile in run order: its fail-on level and its counts, with the findings it dropped for citing code outside the diff and the rules it sent and the citations refused, wrapped at 80 columns after its head, then its coverage. A public view's discarded count is the one it records. */
 function profileLines(result: ReportInput): string[] {
   return Object.entries(result.meta.profiles).flatMap(([id, profile]) => {
     const count = (verdicts: ReadonlyArray<Verdict | PublicVerdict>): number => verdicts.filter(verdict => verdict.profile === id).length
@@ -210,7 +235,7 @@ function profileLines(result: ReportInput): string[] {
       ? `, ${profile.invalidFindings} outside the diff`
       : ''
     return [
-      inertLine(`${id} (fail-on ${profileFailOn(result, id)}): ${count(result.kept as ReadonlyArray<Verdict | PublicVerdict>)} kept, ${count(result.unreviewed as ReadonlyArray<Verdict | PublicVerdict>)} unreviewed, ${discardedOf(result, id)} discarded${outside}`),
+      ...wrap(`${id} (fail-on ${profileFailOn(result, id)}):`, `${count(result.kept as ReadonlyArray<Verdict | PublicVerdict>)} kept, ${count(result.unreviewed as ReadonlyArray<Verdict | PublicVerdict>)} unreviewed, ${discardedOf(result, id)} discarded${outside}${rulesClause(profile)}`).map(inertLine),
       inertLine(`  ${coverageWords(profile.coverage)}`),
     ]
   })

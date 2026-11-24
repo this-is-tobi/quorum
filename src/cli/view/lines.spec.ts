@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { HIDDEN_CLASS } from '../../core/sanitize.ts'
-import type { LeftOutFile, Position, QuorumEvent } from '../../core/types.ts'
+import type { ContextDocument, LeftOutFile, Position, QuorumEvent } from '../../core/types.ts'
 import { durationText } from '../../report/lines.ts'
 import { longReview, replay } from '../../testing/events.ts'
 import { contextDocument } from '../../testing/report.ts'
@@ -569,6 +569,79 @@ describe('renderEvent', () => {
       ],
     }))
       .toBe('left out: 1 file(s): <no path> (secret: aws-key)')
+  })
+
+  /** A citation of a rule that failed its check, as the core says it. */
+  const refused = (reason: string, profile = 'naming'): QuorumEvent => ({
+    type: 'finding:invalid',
+    profile,
+    reason,
+    cause: 'rule',
+  })
+
+  it.each<[string, QuorumEvent, boolean, 'full' | 'public', string]>([
+    [
+      'refused citation of a rule the review did not send, with its reason',
+      refused('"src/a.ts":40 cites no rule this review sent'),
+      false,
+      'full',
+      'rule citation refused: "src/a.ts":40 cites no rule this review sent',
+    ],
+    [
+      'refused citation, with no reason under the public view',
+      refused('"src/a.ts":40 cites no rule this review sent'),
+      false,
+      'public',
+      'rule citation refused',
+    ],
+    [
+      'refused citation of a profile that requires a rule, with its reason',
+      refused('"src/a.ts":40 cites no rule, which the profile requires'),
+      false,
+      'full',
+      'rule citation refused: "src/a.ts":40 cites no rule, which the profile requires',
+    ],
+    [
+      'refused citation of a profile that requires a rule, with no reason under the public view',
+      refused('"src/a.ts":40 cites no rule, which the profile requires'),
+      false,
+      'public',
+      'rule citation refused',
+    ],
+    [
+      'refused citation under its profile\'s prefix when several profiles run',
+      refused('"src/a.ts":40 cites no rule this review sent'),
+      true,
+      'full',
+      '[naming] rule citation refused: "src/a.ts":40 cites no rule this review sent',
+    ],
+    [
+      'refused citation under its profile\'s prefix, with no reason under the public view',
+      refused('"src/a.ts":40 cites no rule this review sent'),
+      true,
+      'public',
+      '[naming] rule citation refused',
+    ],
+    [
+      'dropped finding, which is no refused citation, as it always was',
+      {
+        type: 'finding:invalid',
+        profile: 'naming',
+        reason: 'missing.js:1 is not in the diff',
+      },
+      false,
+      'full',
+      'invalid finding dropped: missing.js:1 is not in the diff',
+    ],
+    [
+      'refused citation whose reason holds a hostile file name, inert',
+      refused(`"a${RLO}.js":40 cites no rule this review sent`),
+      false,
+      'full',
+      'rule citation refused: "a<U+202E>.js":40 cites no rule this review sent',
+    ],
+  ])('writes a %s', (_name, event, prefixed, view, line) => {
+    expect(renderEvent(event, prefixed, view)).toBe(line)
   })
 
   it('renders the text a line carries inert', () => {
@@ -1368,6 +1441,93 @@ describe('logLines', () => {
       },
     }
     expect(textsOf(hostile)).toEqual(['context: security guidelines "a<U+202E>b.md" at 1f3a9c2, 1830 bytes'])
+  })
+
+  /** A `context` event holding the rules each profile lists and sends, and the documents given. */
+  type ContextRules = Extract<QuorumEvent, { type: 'context' }>['rules']
+
+  const rulesEvent = (rules: ContextRules, documents: ContextDocument[] = []): QuorumEvent => ({
+    type: 'context',
+    context: { documents },
+    ...rules === undefined
+      ? {}
+      : { rules },
+  })
+
+  const NAMING_RULES = contextDocument({
+    profile: 'naming',
+    kind: 'rules',
+    origin: 'config',
+    bytes: 120,
+    rules: 5,
+  })
+
+  it.each<[string, ContextRules, string[]]>([
+    [
+      'line for the rules a profile sent of those it lists',
+      {
+        naming: { listed: 5, sent: 3 },
+      },
+      ['context: naming rules: 3 of 5 sent'],
+    ],
+    [
+      'line for a profile that sends none of its rules and still asks its research',
+      {
+        naming: { listed: 5, sent: 0 },
+      },
+      ['context: naming rules: 0 of 5 sent'],
+    ],
+    [
+      'line for a profile that requires a rule and sends none, whose research asks nothing',
+      {
+        naming: { listed: 5, sent: 0, asksNothing: true },
+      },
+      ['context: naming rules: 0 of 5 sent, so its research asks nothing'],
+    ],
+    [
+      'line for a profile that requires a rule and lists none, whose research asks nothing',
+      {
+        naming: { listed: 0, sent: 0, asksNothing: true },
+      },
+      ['context: naming rules: 0 of 0 sent, so its research asks nothing'],
+    ],
+    [
+      'line for each profile that lists or requires a rule, in the order the event holds them, the one that asks nothing among them',
+      {
+        security: { listed: 2, sent: 2 },
+        naming: { listed: 0, sent: 0, asksNothing: true },
+      },
+      [
+        'context: security rules: 2 of 2 sent',
+        'context: naming rules: 0 of 0 sent, so its research asks nothing',
+      ],
+    ],
+  ])('writes a %s, after the documents of the event, in the full and the public view', (_name, rules, lines) => {
+    const event = rulesEvent(rules, [NAMING_RULES])
+    for (const view of ['full', 'public'] as const) {
+      expect(textsOf(event, undefined, view)).toEqual([
+        'context: naming rules written in the config, 5 rule(s)',
+        ...lines,
+      ])
+    }
+    // With no document, the rules' lines stand alone, and no profile's prefix starts one when several run: a line names its profile itself.
+    const several: Array<[number, QuorumEvent]> = [
+      [
+        0,
+        started(['security', 'naming']),
+      ],
+    ]
+    expect(logLines(rulesEvent(rules), folded(...several, [
+      1000,
+      rulesEvent(rules),
+    ]), 'full')).toEqual(lines.map(text => ({ text })))
+  })
+
+  it('writes no rules line for an event that holds no rules, and one for each document alone', () => {
+    expect(textsOf(rulesEvent(undefined, [
+      contextDocument(),
+    ]))).toEqual(['context: security guidelines of the profile, 1830 bytes'])
+    expect(textsOf(rulesEvent({}))).toEqual([])
   })
 })
 

@@ -9,7 +9,7 @@ import { CUT_ADVICE, downWords, lackWords } from '../../core/errors.ts'
 import type { PartOutcome } from '../../core/parts.ts'
 import { inertLine } from '../../core/sanitize.ts'
 import type { Adaptation, CallFailure, LeftOutFile, QuorumEvent, UnusableReply } from '../../core/types.ts'
-import { documentLine, durationText, flagWhere, leftOutEntry, tokenWords } from '../../report/lines.ts'
+import { documentLine, durationText, flagWhere, leftOutEntry, ruleCountWords, tokenWords } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords, researchRuns, timeLeft } from './eta.ts'
 import type { ViewState } from './model.ts'
@@ -29,9 +29,9 @@ export const profilePrefix = (profile: string): string => `[${profile}] `
  *
  * Under the public view, whose log a stranger may read, three lines leave out what a person alone needs: a
  * gap is `incomplete: <reason>`, then ` at <file as a JSON string>` when it has a file, with no detail, and a
- * dropped finding is `invalid finding dropped`, with no reason, since the reason quotes the file name and the text
- * of a finding the harness dropped, the oracle a discarded finding would be, and an answered research part is
- * `part <i> of <n>: answered in <time>`, with no tokens and no findings. A provider-down line of a used-up
+ * dropped finding is `invalid finding dropped`, a refused rule citation `rule citation refused`, with no reason, since the
+ * reason quotes the file name and the text of a finding the harness dropped, the oracle a discarded finding would be, and
+ * an answered research part is `part <i> of <n>: answered in <time>`, with no tokens and no findings. A provider-down line of a used-up
  * quota is `<id>: the call failed (<kind>[ <status>])`, since it tells a stranger the account is out of money.
  * Every other line is the full view's.
  */
@@ -55,9 +55,7 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
         ? of(event.profile, `${event.count} candidate(s) after dedup`)
         : undefined
     case 'finding:invalid':
-      return of(event.profile, view === 'public'
-        ? 'invalid finding dropped'
-        : `invalid finding dropped: ${event.reason}`)
+      return of(event.profile, invalidWords(event, view))
     case 'incomplete':
       return of(event.entry.profile, view === 'public'
         ? `incomplete: ${event.entry.reason}${event.entry.file === undefined
@@ -113,6 +111,25 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
     default:
       return undefined
   }
+}
+
+/**
+ * What a `finding:invalid` event says: `invalid finding dropped` for a finding that cited code outside the diff, or `rule citation
+ * refused` for one whose rule failed its check (the finding goes on with no rule, or is dropped with it in a profile that requires
+ * one), each followed by `: <reason>` in the full view. The public view leaves the reason out: it names a file and a line of the diff.
+ */
+function invalidWords({ cause, reason }: Extract<QuorumEvent, { type: 'finding:invalid' }>, view: ReportView): string {
+  const what = cause === 'rule'
+    ? 'rule citation refused'
+    : 'invalid finding dropped'
+  return view === 'public'
+    ? what
+    : `${what}: ${reason}`
+}
+
+/** The line of each profile that lists a review rule or requires one: `context: <profile> rules: <sent> of <listed> sent`, then `, so its research asks nothing` when it requires a rule and sends none. */
+function ruleLines(rules: Extract<QuorumEvent, { type: 'context' }>['rules']): string[] {
+  return Object.entries(rules ?? {}).map(([profile, counts]) => `context: ${profile} rules: ${ruleCountWords(counts, counts.asksNothing === true)}`)
 }
 
 /**
@@ -353,9 +370,9 @@ function retryLines(event: Extract<QuorumEvent, { type: 'call:retry' }>, state: 
 /**
  * The lines of `event`, read against the state that folded it: `renderEvent`'s line with its glyph, a research
  * retry's line, with its position from the call the state holds, the stopping line of the deadline or of the
- * interrupt, which has no glyph, and a line for each document of a `context` event, in its order, the same under the
- * public view and with no prefix, since a document's line names its profile itself. Each text is inert, and starts
- * with `[<profile>] ` when several profiles run, but for a document's.
+ * interrupt, which has no glyph, and a line for each document of a `context` event, in its order, then one for each profile
+ * that lists or requires a rule, the same under the public view and with no prefix, since each names its profile itself.
+ * Each text is inert, and starts with `[<profile>] ` when several profiles run, but for those of a `context` event.
  */
 export function logLines(event: QuorumEvent, state: ViewState, view: ReportView): Line[] {
   if (event.type === 'call:retry') return retryLines(event, state)
@@ -369,8 +386,11 @@ export function logLines(event: QuorumEvent, state: ViewState, view: ReportView)
     ]
   }
   if (event.type === 'context') {
-    return event.context.documents.map(record => ({
-      text: inertLine(documentLine(record)),
+    return [
+      ...event.context.documents.map(documentLine),
+      ...ruleLines(event.rules),
+    ].map(text => ({
+      text: inertLine(text),
     }))
   }
   const text = renderEvent(event, state.prefixed, view)

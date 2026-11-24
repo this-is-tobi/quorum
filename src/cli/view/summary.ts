@@ -322,7 +322,7 @@ function resultLine(facts: SummaryFacts, view: ReportView): string {
 
 /**
  * The summary's lines for a review whose events were folded into `state`, in this order, each left out when it has
- * nothing to say: the time, the tokens (not under the public view), the calls, a line for each profile that has a document,
+ * nothing to say: the time, the tokens (not under the public view), the calls, a line for each profile that has a document or a rule,
  * the gaps with their fixes, where the report went and, when a rerun could fill what is missing, how to resume it. A review whose stages never started has no summary. `dash` is the glyph set's.
  */
 export function summaryLines(state: ViewState, facts: SummaryFacts, view: ReportView, dash: string): string[] {
@@ -333,7 +333,7 @@ export function summaryLines(state: ViewState, facts: SummaryFacts, view: Report
       ? undefined
       : tokensLine(state),
     callsLine(state, facts.result.meta.concurrency),
-    ...contextSummary(facts.result.meta.context),
+    ...contextSummary(facts.result.meta.context, facts.result.meta.profiles),
     gapsLine(state, view),
     resultLine(facts, view),
     resumeLine(facts),
