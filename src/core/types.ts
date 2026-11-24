@@ -635,6 +635,12 @@ export interface ProfileEstimate {
   findings: number
   /** The id of the profile's research provider. */
   provider: string
+  /**
+   * What the profile's documents add to what the ledger reserves for one research request and for one vote, each the difference of
+   * the request built over no diff with them and without them: the research's holds the guidelines and the do-not-report text, a
+   * vote's the guidelines alone, at the lens that adds most. 0 for a profile with no document, and when research makes no call.
+   */
+  documents: { research: number, vote: number }
 }
 
 /**

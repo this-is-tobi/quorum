@@ -1,11 +1,14 @@
+import { DOCUMENT_KINDS } from './documents.ts'
 import { issuePath } from './errors.ts'
 import type { ConfigIssue } from './errors.ts'
 import { MIN_PART_TOKENS } from './parts.ts'
+import type { CompletionRequest } from './ports.ts'
 import { DEFAULT_MAX_FINDINGS, researchRequest, voteRequest } from './prompts.ts'
 import type { PartOf } from './prompts.ts'
 import { reservationOf, roomOf } from './stages/context.ts'
 import type { LensRun, ProfileRun, Target } from './stages/context.ts'
 import { requestTokens, VOTE_TOKENS } from './tokens.ts'
+import type { DocumentKind } from './types.ts'
 import { longestFinding } from './verify.ts'
 
 /**
@@ -188,14 +191,29 @@ const PART_POSITION: PartOf = {
   unlisted: 0,
 }
 
-/** The research request of `run` over an empty diff, one request or, with `part`, a part's, asking for `maxFindings` findings, the widest its N line can be. */
-function researchProbe(run: ProfileRun, replyTokens: number | undefined, maxFindings: number, part?: PartOf): ReturnType<typeof researchRequest> {
-  return researchRequest(run.research.instructions, '', run.guidelines, part, { findings: maxFindings, replyTokens })
+/**
+ * The research request of `run` over an empty diff, one request or, with `part`, a part's, asking for `maxFindings` findings, the widest its N line can be.
+ * With `without`, the same request built without the documents of that kind, which is how a refusal tells what they add.
+ */
+function researchProbe(run: ProfileRun, replyTokens: number | undefined, maxFindings: number, part?: PartOf, without?: DocumentKind): ReturnType<typeof researchRequest> {
+  const instructions = without === 'do-not-report'
+    ? run.texts.prompt
+    : run.research.instructions
+  const guidelines = without === 'guidelines'
+    ? undefined
+    : run.guidelines
+  return researchRequest(instructions, '', guidelines, part, { findings: maxFindings, replyTokens })
 }
 
-/** The vote request of `lens` for the longest finding, over an empty diff: the one the estimate's bound and the startup refusal size a vote by. */
-function voteProbe(run: ProfileRun, lens: LensRun, replyTokens: number | undefined): ReturnType<typeof voteRequest> {
-  return voteRequest(lens.instructions, longestFinding(''), '', run.guidelines, false, { replyTokens })
+/**
+ * The vote request of `lens` for the longest finding, over an empty diff: the one the estimate's bound and the startup refusal size a vote by.
+ * With `without`, the same request built without the documents of that kind, of which a vote carries the guidelines alone.
+ */
+function voteProbe(run: ProfileRun, lens: LensRun, replyTokens: number | undefined, without?: DocumentKind): ReturnType<typeof voteRequest> {
+  const guidelines = without === 'guidelines'
+    ? undefined
+    : run.guidelines
+  return voteRequest(lens.instructions, longestFinding(''), '', guidelines, false, { replyTokens })
 }
 
 /** The rooms of a profile's research and the worst case of its parts, or none when its research provider states no room. */
@@ -267,21 +285,67 @@ function freezeBudgets(budgets: ProfileBudgets): ProfileBudgets {
   return Object.freeze(budgets)
 }
 
-/** The words every refusal ends on, by what it says to lower. */
-const RESEARCH_FIX = 'shorten the guidelines or rules, lower maxTokens, or state a larger window'
-const VOTE_FIX = 'shorten the guidelines, lower maxTokens, or state a larger window'
+/** What a refusal calls each kind of document. */
+const DOCUMENT_WORDS: Readonly<Record<DocumentKind, string>> = {
+  guidelines: 'the guidelines',
+  'do-not-report': 'the do-not-report text',
+}
+
+/** What every refusal ends on, after the documents it names to shorten, when it names any. */
+const LOWER = 'lower maxTokens, or state a larger window'
+
+/** One term of a request's fixed tokens, as a refusal names it. */
+interface Part {
+  readonly words: string
+  readonly tokens: number
+}
+
+/** The kinds of document of `kinds` that `run` holds text of. */
+function presentOf(run: ProfileRun, kinds: readonly DocumentKind[]): DocumentKind[] {
+  return kinds.filter(kind => (kind === 'guidelines'
+    ? run.guidelines
+    : run.doNotReport) !== undefined)
+}
+
+/**
+ * The `fixed` tokens of a request as terms that add up to them: each document `present` is what the request holds more than the
+ * one `probe` builds without it, and the instructions, named `words`, are the rest, the finding or the fences included.
+ */
+function partsOf(fixed: number, words: string, present: readonly DocumentKind[], probe: (without: DocumentKind) => CompletionRequest): Part[] {
+  const documents = present.map(kind => ({ words: DOCUMENT_WORDS[kind], tokens: fixed - requestTokens(probe(kind)) }))
+  return [
+    { words, tokens: fixed - documents.reduce((total, document) => total + document.tokens, 0) },
+    ...documents,
+  ]
+}
+
+/** The terms of a refusal's fixed tokens as it counts them: the first alone, when it is the only one, else each with its tokens, joined by `, ` and ` and `. */
+function countedParts(parts: readonly Part[]): string {
+  if (parts.length === 1) return parts[0].words
+  const terms = parts.map(part => `${part.words} (${part.tokens})`)
+  return `${terms.slice(0, -1).join(', ')} and ${terms.at(-1)}`
+}
+
+/** What a refusal says to lower: the documents among `parts`, the largest first, then the reply and the window. */
+function fixOf(parts: readonly Part[]): string {
+  const documents = parts.slice(1).toSorted((first, second) => second.tokens - first.tokens)
+  return documents.length === 0
+    ? LOWER
+    : `shorten ${documents.map(document => document.words).join(' or ')}, ${LOWER}`
+}
 
 /**
  * One refusal: the request `subject` names leaves `room` tokens for the diff of a window whose other tokens are `fixed`, the chat template, and the reply.
  * A room below 0 is no number of tokens a person reads as one: its other tokens pass the window by `-room`, which the refusal says instead.
+ * The `parts` split `fixed` into the instructions and each document the request carries, and the fix names those documents, the largest first.
  * Every figure stays the integer a person compares with a setting.
  */
-function refusal(subject: string, facts: { readonly room: number, readonly window: number, readonly fixed: number, readonly reply: number, readonly counts: string, readonly fix: string }): string {
+function refusal(subject: string, facts: { readonly room: number, readonly window: number, readonly fixed: number, readonly reply: number, readonly parts: readonly Part[] }): string {
   const template = facts.window - facts.fixed - facts.reply - facts.room
   const leaves = facts.room < 0
     ? `leaves no tokens for the diff, its other tokens ${-facts.room} over the window, where a hunk may need ${MIN_PART_TOKENS}`
     : `leaves ${facts.room} tokens for the diff, less than the ${MIN_PART_TOKENS} a hunk may need`
-  return `${subject} ${leaves}: contextTokens ${facts.window} counts ${facts.fixed} for ${facts.counts}, ${template} for the chat template and ${facts.reply} for the reply: ${facts.fix}`
+  return `${subject} ${leaves}: contextTokens ${facts.window} counts ${facts.fixed} for ${countedParts(facts.parts)}, ${template} for the chat template and ${facts.reply} for the reply: ${fixOf(facts.parts)}`
 }
 
 /**
@@ -293,6 +357,11 @@ function refusal(subject: string, facts: { readonly room: number, readonly windo
  * budget, the room, and the chat template, which is what the stated room leaves of the window besides them, so the
  * adapter's own reserve (512, or 4096 for `claude-code`) is read, never assumed.
  *
+ * The fixed text is split in the figures that add up to it: the instructions, and each document the request carries, which is
+ * the tokens of the request less those of the same request built without that document, so a person reads what to shorten. A
+ * research request carries the guidelines and the do-not-report text, a vote the guidelines; a profile with none names the
+ * instructions alone.
+ *
  * A provider that states no room is checked by nothing here, and neither is one that states a room and no window or reply
  * budget, whose message could not name its figures: the size guard of each of its requests stays.
  */
@@ -301,25 +370,26 @@ export function roomIssues(id: string, budgets: ProfileBudgets, run: ProfileRun,
   const messages = new Set<string>()
   const { research } = budgets
   if (research.rooms !== undefined && research.rooms.one < MIN_PART_TOKENS && research.window !== undefined && research.replyTokens !== undefined) {
+    const { replyTokens } = research
+    const fixed = requestTokens(researchProbe(run, replyTokens, maxFindings))
     messages.add(refusal(`the research request on ${research.provider}`, {
       room: research.rooms.one,
       window: research.window,
-      fixed: requestTokens(researchProbe(run, research.replyTokens, maxFindings)),
-      reply: research.replyTokens,
-      counts: 'the instructions, guidelines and rules',
-      fix: RESEARCH_FIX,
+      fixed,
+      reply: replyTokens,
+      parts: partsOf(fixed, 'the instructions', presentOf(run, DOCUMENT_KINDS), without => researchProbe(run, replyTokens, maxFindings, undefined, without)),
     }))
   }
   for (const lens of run.lenses) {
     const { room, window, replyTokens, provider } = budgets.lenses[lens.id]
     if (room === undefined || room >= MIN_PART_TOKENS || window === undefined || replyTokens === undefined) continue
+    const fixed = requestTokens(voteProbe(run, lens, replyTokens))
     messages.add(refusal(`the vote request on ${provider} for the longest finding`, {
       room,
       window,
-      fixed: requestTokens(voteProbe(run, lens, replyTokens)),
+      fixed,
       reply: replyTokens,
-      counts: 'the instructions, guidelines and finding',
-      fix: VOTE_FIX,
+      parts: partsOf(fixed, 'the instructions and the finding', presentOf(run, ['guidelines']), without => voteProbe(run, lens, replyTokens, without)),
     }))
   }
   return [...messages].map(message => ({ path, message }))

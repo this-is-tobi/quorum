@@ -149,6 +149,7 @@ function noCall(budgets: ProfileBudgets): Planned {
       worst: 0,
       findings: budgets.research.findings,
       provider: budgets.research.provider,
+      documents: { research: 0, vote: 0 },
     },
     extras: [],
     partsExpected: [],
@@ -215,6 +216,23 @@ function pieceExtra(run: ProfileRun, ask: Ask, part: PartOf | undefined): number
   }) - reserve(part))
 }
 
+/**
+ * What the profile's documents add to the reservation of one research request and of one vote: each is the reservation of the
+ * request over no diff with the run's documents less that of the same request without them (the research instructions without
+ * the do-not-report paragraph, no guidelines block), and a vote's is the largest among the lenses, whose providers may reserve
+ * differently. A profile with no document adds nothing.
+ */
+function documentsAdd(run: ProfileRun, budgets: ProfileBudgets): ProfileEstimate['documents'] {
+  if (run.guidelines === undefined && run.doNotReport === undefined) return { research: 0, vote: 0 }
+  const ask = { findings: budgets.research.findings, replyTokens: budgets.research.replyTokens }
+  const research = (instructions: string, guidelines: string | undefined): number => reservationOf(run.research, researchRequest(instructions, '', guidelines, undefined, ask))
+  const vote = (lens: LensRun, guidelines: string | undefined): number => reservationOf(lens, voteRequest(lens.instructions, longestFinding(''), '', guidelines, false, { replyTokens: budgets.lenses[lens.id].replyTokens }))
+  return {
+    research: Math.max(0, research(run.research.instructions, run.guidelines) - research(run.texts.prompt, undefined)),
+    vote: Math.max(0, ...run.lenses.map(lens => vote(lens, run.guidelines) - vote(lens, undefined))),
+  }
+}
+
 /** One profile's estimate, from the plan its research follows. */
 function profileEstimate(run: ProfileRun, plan: ResearchPlan, diff: string, largest: Section, settings: EstimateSettings): Planned {
   const { findingsCap } = settings
@@ -235,6 +253,7 @@ function profileEstimate(run: ProfileRun, plan: ResearchPlan, diff: string, larg
       worst: researchWorst + findingsCap * sum(bounds),
       findings: budgets.research.findings,
       provider: budgets.research.provider,
+      documents: documentsAdd(run, budgets),
     },
     extras: research.map(call => call.extra),
     partsExpected,

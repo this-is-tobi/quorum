@@ -21,6 +21,7 @@ describe('estimateLines', () => {
         worst: 1_850_000,
         findings: 50,
         provider: 'api',
+        documents: { research: 0, vote: 0 },
       },
     },
     expected: 16_667,
@@ -51,6 +52,7 @@ describe('estimateLines', () => {
       worst: 608_000,
       findings: 50,
       provider: 'api',
+      documents: { research: 0, vote: 0 },
     }
     expect(estimateLines({
       ...estimate,
@@ -67,6 +69,43 @@ describe('estimateLines', () => {
       profiles: { [`a${RLO}b`]: estimate.profiles.security, team },
     }, bounds)
     expect(first).toBe('[a<U+202E>b] estimate: 2 research part(s), about 16.6k tokens expected for them; then up to 150 vote(s), at most 1.85M tokens in all')
+  })
+
+  it('ends a profile\'s estimate line with what its documents add, when they add anything', () => {
+    const clause = (research: string, vote: string): string => `; its documents add ${research} tokens to each research request and ${vote} to each vote`
+    const profile = (documents: { research: number, vote: number }): Estimate['profiles'][string] => ({ ...estimate.profiles.security, documents })
+    const first = (profiles: Estimate['profiles'], words?: Parameters<typeof estimateLines>[2]): string => estimateLines({ ...estimate, profiles }, bounds, words)[0]
+    const line = 'estimate: 2 research part(s), about 16.6k tokens expected for them; then up to 150 vote(s), at most 1.85M tokens in all'
+    // A person reads the counts scaled, a program under --progress json reads the integers.
+    expect(first({
+      security: profile({ research: 4402, vote: 4402 }),
+    })).toBe(`${line}${clause('4.40k', '4.40k')}`)
+    expect(first({
+      security: profile({ research: 4402, vote: 4402 }),
+    }, EXACT_WORDS)).toBe(`estimate: 2 research part(s), about 16667 tokens expected for them; then up to 150 vote(s), at most 1850000 tokens in all${clause('4402', '4402')}`)
+    // Each count is its own: the do-not-report text reaches research alone, so a vote's is 0, and the clause is written while either is above 0.
+    expect(first({
+      security: profile({ research: 1500, vote: 0 }),
+    })).toBe(`${line}${clause('1.50k', '0')}`)
+    expect(first({
+      security: profile({ research: 0, vote: 1500 }),
+    })).toBe(`${line}${clause('0', '1.50k')}`)
+    // No clause at 0, for either: the line is as it was.
+    expect(first({
+      security: profile({ research: 0, vote: 0 }),
+    })).toBe(line)
+    // Each profile's line holds its own, prefixed when several run, and the review's two lines hold none.
+    const lines = estimateLines({
+      ...estimate,
+      profiles: {
+        security: profile({ research: 0, vote: 0 }),
+        naming: profile({ research: 4402, vote: 1500 }),
+      },
+    }, bounds)
+    expect(lines[0]).toBe(`[security] ${line}`)
+    expect(lines[1]).toBe(`[naming] ${line}${clause('4.40k', '1.50k')}`)
+    expect(lines[2]).toBe(cost)
+    expect(lines.filter(entry => entry.includes('its documents add'))).toHaveLength(1)
   })
 
   it('writes the cap line when research expects over half the cap, with the cap the review needs', () => {
@@ -301,6 +340,7 @@ describe('findingsCapOf', () => {
     worst: 0,
     findings: 50,
     provider: 'api',
+    documents: { research: 0, vote: 0 },
   })
   const estimateOf = (...parts: number[]): Estimate => ({
     profiles: Object.fromEntries(parts.map((count, index) => [

@@ -1212,7 +1212,7 @@ describe('the diff byte cap', () => {
 
 describe('the room accounting', () => {
   /** The refusal of the research request, for the one provider `local` of 2000 tokens: 2000 less 1791 of text, 512 of template and 500 of reply. */
-  const RESEARCH = 'profiles.security: the research request on local leaves no tokens for the diff, its other tokens 803 over the window, where a hunk may need 1024: contextTokens 2000 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 500 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window\n'
+  const RESEARCH = 'profiles.security: the research request on local leaves no tokens for the diff, its other tokens 803 over the window, where a hunk may need 1024: contextTokens 2000 counts 1791 for the instructions, 512 for the chat template and 500 for the reply: lower maxTokens, or state a larger window\n'
 
   it('refuses before any call, exit 2, a profile whose research request leaves its model no room for a diff', async () => {
     const config = write('small.yaml', 'providers:\n  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 2000}\n')
@@ -1226,7 +1226,7 @@ describe('the room accounting', () => {
     expect(stdout()).toBe('')
     // The one provider holds the votes too, whose fixed text leaves no room either: both are refused at once.
     expect(stderr()).toContain(`Error: ${RESEARCH}`)
-    expect(stderr()).toMatch(/\nprofiles\.security: the vote request on local for the longest finding leaves no tokens for the diff, its other tokens \d+ over the window, where a hunk may need 1024: contextTokens 2000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and 500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window\n/)
+    expect(stderr()).toMatch(/\nprofiles\.security: the vote request on local for the longest finding leaves no tokens for the diff, its other tokens \d+ over the window, where a hunk may need 1024: contextTokens 2000 counts \d+ for the instructions and the finding, 512 for the chat template and 500 for the reply: lower maxTokens, or state a larger window\n/)
     expect(stderr()).not.toContain('http')
   })
 
@@ -1277,7 +1277,7 @@ describe('the room accounting', () => {
     expect(await runCli(io)).toBe(EXIT.usage)
     expect(fetchMock).not.toHaveBeenCalled()
     expect(stdout()).toBe('')
-    expect(stderr()).toMatch(/^Error: profiles\.security: the vote request on small for the longest finding leaves no tokens for the diff, its other tokens \d+ over the window, where a hunk may need 1024: contextTokens 2000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and 500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window\n/)
+    expect(stderr()).toMatch(/^Error: profiles\.security: the vote request on small for the longest finding leaves no tokens for the diff, its other tokens \d+ over the window, where a hunk may need 1024: contextTokens 2000 counts \d+ for the instructions and the finding, 512 for the chat template and 500 for the reply: lower maxTokens, or state a larger window\n/)
     expect(stderr()).not.toContain('the research request')
   })
 })

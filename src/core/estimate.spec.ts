@@ -3,10 +3,11 @@ import { securityProfile } from '../profiles/security.ts'
 import { splitDiff } from './diff.ts'
 import { ConfigError } from './errors.ts'
 import type { CompletionRequest, Provider, QuorumPorts } from './ports.ts'
-import { researchRequest, voteRequest } from './prompts.ts'
+import { doNotReportInstructions, researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum } from './quorum.ts'
 import { DEFAULT_REPLY_TOKENS, expectedOf, requestTokens, tokenBound } from './tokens.ts'
 import type { Estimate, Finding, Profile, Quorum, QuorumEvent, QuorumOptions } from './types.ts'
+import { longestFinding } from './verify.ts'
 
 /** What a provider keeps over a request's own bound: 512 tokens for the chat template and 16000 for the reply, which the providers here state as an attempt's worst case. */
 const RESERVE = 512 + 16_000
@@ -622,6 +623,7 @@ describe('estimate', () => {
           worst: 0,
           findings: 50,
           provider: 'windowed',
+          documents: { research: 0, vote: 0 },
         },
       },
       expected: 0,
@@ -1042,6 +1044,63 @@ describe('estimate', () => {
       context: { documents: [] },
     }).profiles.naming).toEqual(none)
     expect(finder.requests).toEqual([])
+  })
+
+  it('states what a profile\'s documents add to each research request and each vote', () => {
+    const naming: Profile = {
+      id: 'naming',
+      prompts: { research: 'Review this diff for names that mislead.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
+      lenses: [
+        { id: 'clarity', question: 'Does the name mislead?' },
+        { id: 'brevity', question: 'Is the name longer than it needs to be?' },
+      ],
+    }
+    const estimateOf = (profile: Profile, input: Parameters<Quorum['estimate']>[0] = { diff: DIFF }): Estimate['profiles'][string] => createQuorum({
+      profiles: [profile],
+    }, portsFor(profile, windowed(200_000, () => '{"findings":[]}'))).estimate(input).profiles[profile.id]
+    // The reservation of a request is its own bound and the provider's reserve, so what a document adds is the difference of the requests built with and without it.
+    const reserved = (request: CompletionRequest): number => requestTokens(request) + RESERVE
+    const ask = { findings: 50, replyTokens: 21_024 }
+    const research = (guidelines?: string, doNotReport?: string): number => reserved(researchRequest(doNotReportInstructions(naming.prompts.research, doNotReport), '', guidelines, undefined, ask))
+    const vote = (guidelines?: string): number => reserved(voteRequest('Judge', longestFinding(''), '', guidelines, false, { replyTokens: 9216 }))
+    const guidelines = 'g'.repeat(4096)
+    const doNotReport = 'd'.repeat(1000)
+
+    // No document adds nothing, for a profile of any kind.
+    expect(estimateOf(naming).documents).toEqual({ research: 0, vote: 0 })
+    expect(estimateOf(securityProfile).documents).toEqual({ research: 0, vote: 0 })
+    // A guideline adds its bytes and its block's own words to a research request and to a vote.
+    const guided = estimateOf({ ...naming, guidelines }).documents
+    expect(guided).toEqual({ research: research(guidelines) - research(), vote: vote(guidelines) - vote() })
+    expect(guided.research).toBeGreaterThan(4096)
+    expect(guided.research).toBeLessThan(4096 + 600)
+    expect(guided.vote).toBeGreaterThan(4096)
+    expect(guided.vote).toBeLessThan(4096 + 600)
+    // The do-not-report text reaches the research alone: it adds to the request and never to a vote.
+    const both = estimateOf({ ...naming, guidelines, doNotReport }).documents
+    expect(both).toEqual({ research: research(guidelines, doNotReport) - research(), vote: guided.vote })
+    expect(both.research).toBeGreaterThan(guided.research + 1000)
+    expect(estimateOf({ ...naming, doNotReport }).documents).toEqual({ research: research(undefined, doNotReport) - research(), vote: 0 })
+    // A document a review brings counts as the profile's own does.
+    expect(estimateOf(naming, {
+      diff: DIFF,
+      context: {
+        documents: [
+          {
+            profile: 'naming',
+            kind: 'guidelines',
+            origin: {
+              kind: 'repository',
+              path: 'REVIEW.md',
+              commit: 'c'.repeat(40),
+            },
+            text: guidelines,
+          },
+        ],
+      },
+    }).documents).toEqual(guided)
+    // A profile whose research makes no call adds nothing to any.
+    expect(estimateOf({ ...naming, guidelines }, { diff: '' }).documents).toEqual({ research: 0, vote: 0 })
   })
 
   it('refuses an input a review would refuse, as a ConfigError', () => {

@@ -7509,7 +7509,7 @@ describe('room accounting', () => {
     const [issue] = error.issues
     expect(issue.path).toBe('profiles.security')
     // A reply budget of 6000 and the fixed text leave 8192 - 1791 - 512 - 6000 tokens, which is below zero.
-    expect(issue.message).toBe('the research request on local leaves no tokens for the diff, its other tokens 111 over the window, where a hunk may need 1024: contextTokens 8192 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 6000 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window')
+    expect(issue.message).toBe('the research request on local leaves no tokens for the diff, its other tokens 111 over the window, where a hunk may need 1024: contextTokens 8192 counts 1791 for the instructions, 512 for the chat template and 6000 for the reply: lower maxTokens, or state a larger window')
     const [room, window, fixed, template, reply] = figures(issue.message)
     expect(room + fixed + template + reply).toBe(window)
     expect(error.message).not.toContain('http')
@@ -7519,7 +7519,7 @@ describe('room accounting', () => {
     const error = thrown(guarded('big', 1_000_000), guarded('small', 6000))
     expect(error.issues.map(issue => issue.path)).toEqual(['profiles.security', 'profiles.security', 'profiles.security'])
     for (const issue of error.issues) {
-      expect(issue.message).toMatch(/^the vote request on small for the longest finding leaves (?:no tokens for the diff, its other tokens \d+ over the window, where a hunk may need 1024|\d+ tokens for the diff, less than the 1024 a hunk may need): contextTokens 6000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and 1500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window$/)
+      expect(issue.message).toMatch(/^the vote request on small for the longest finding leaves (?:no tokens for the diff, its other tokens \d+ over the window, where a hunk may need 1024|\d+ tokens for the diff, less than the 1024 a hunk may need): contextTokens 6000 counts \d+ for the instructions and the finding, 512 for the chat template and 1500 for the reply: lower maxTokens, or state a larger window$/)
       const [room, window, fixed, template, reply] = figures(issue.message)
       expect(room + fixed + template + reply).toBe(window)
       expect(room).toBeLessThan(1024)
@@ -8361,6 +8361,47 @@ describe('documents', () => {
       },
     })).resolves.toBeDefined()
     expect(finder.requests).toHaveLength(1)
+  })
+
+  it('refuses at creation a profile whose config documents leave its research no room, with the documents\' figures', () => {
+    const finder = guarded('finder', 16_384, () => findings(reported))
+    const profile: Profile = {
+      ...naming,
+      guidelines: 'g'.repeat(6000),
+      doNotReport: 'd'.repeat(2000),
+      documents: [
+        {
+          profile: 'naming',
+          kind: 'guidelines',
+          origin: { kind: 'config' },
+          text: 'h'.repeat(4000),
+        },
+      ],
+    }
+    let thrown: unknown
+    try {
+      build(profile, finder, guarded('voter', 1_000_000, () => vote(true)))
+    } catch (caught) {
+      thrown = caught
+    }
+    expect(thrown).toBeInstanceOf(ConfigError)
+    const { issues } = thrown as ConfigError
+    expect(issues.map(issue => issue.path)).toEqual(['profiles.naming'])
+    const [message] = issues.map(issue => issue.message)
+    // A window of 16384 less 512 for the template and 4096 for the reply is 11776 tokens, and the documents' 12000 bytes pass it.
+    const found = /^the research request on finder leaves no tokens for the diff, its other tokens (\d+) over the window, where a hunk may need 1024: contextTokens 16384 counts (\d+) for the instructions \((\d+)\), the guidelines \((\d+)\) and the do-not-report text \((\d+)\), 512 for the chat template and 4096 for the reply: shorten the guidelines or the do-not-report text, lower maxTokens, or state a larger window$/.exec(message)
+    expect(found).not.toBeNull()
+    const [over, fixed, instructions, guidelines, doNotReport] = (found as RegExpExecArray).slice(1).map(Number)
+    expect(instructions + guidelines + doNotReport).toBe(fixed)
+    expect(fixed + 512 + 4096 - over).toBe(16_384)
+    // The guidelines are the profile's own and the file's together, and the text is what a document's words add to the instructions.
+    expect(guidelines).toBeGreaterThan(10_000)
+    expect(guidelines).toBeLessThan(10_000 + 600)
+    expect(doNotReport).toBeGreaterThan(2000)
+    expect(doNotReport).toBeLessThan(2000 + 100)
+    // No message holds a document's text.
+    expect(message).not.toMatch(/g{20}|d{20}|h{20}/)
+    expect(finder.requests).toHaveLength(0)
   })
 
   it('refuses a context document of a diff source, and one whose commit is not the source\'s', async () => {
