@@ -11,6 +11,7 @@ import { MCP_USAGE, runMcp } from './mcp.ts'
 
 const CONFIG = 'providers:\n  local: {protocol: openai-compatible, baseUrl: "https://example.invalid/v1", model: m, contextTokens: 131072}\n'
 const INSIDE = 'names a file inside the project, which the calling agent can change: keep the server\'s config outside the project'
+const FILE_INSIDE = 'names a file inside the project, which the calling agent can change: keep it outside the project, as the server\'s config is'
 
 /** The directories these tests made. */
 const made: string[] = []
@@ -402,6 +403,114 @@ describe('quorum mcp', () => {
       '',
     ].join('\n'))
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it.each<[string, string, string, (root: string, kept: string) => string]>([
+    [
+      'research prompt file',
+      'prompts: {research: {file: NAME}}',
+      'profiles.security.prompts.research.file',
+      (root) => {
+        write(root, 'research.md', 'Look for naming problems.')
+        return join(root, 'research.md')
+      },
+    ],
+    [
+      'guideline file',
+      'guidelines: [{file: NAME}]',
+      'profiles.security.guidelines.0.file',
+      (root) => {
+        write(root, 'guide.md', 'Name things for what they do.')
+        return join(root, 'guide.md')
+      },
+    ],
+    [
+      'do-not-report file',
+      'doNotReport: [{file: NAME}]',
+      'profiles.security.doNotReport.0.file',
+      (root) => {
+        write(root, 'skip.md', 'Generated files.')
+        return join(root, 'skip.md')
+      },
+    ],
+    [
+      'file a link outside the root leads to',
+      'guidelines: [{file: NAME}]',
+      'profiles.security.guidelines.0.file',
+      (root, kept) => {
+        write(root, 'guide.md', 'Name things for what they do.')
+        symlinkSync(join(root, 'guide.md'), join(kept, 'link.md'))
+        return 'link.md'
+      },
+    ],
+    [
+      'file in a directory a link outside the root leads to',
+      'guidelines: [{file: NAME}]',
+      'profiles.security.guidelines.0.file',
+      (root, kept) => {
+        // The file itself leads outside, but it lies in a directory of the project: the agent can repoint it.
+        mkdirSync(join(root, 'docs'))
+        symlinkSync(write(directory(), 'guide.md', 'Name things for what they do.'), join(root, 'docs', 'guide.md'))
+        symlinkSync(join(root, 'docs'), join(kept, 'dir-link'))
+        return join('dir-link', 'guide.md')
+      },
+    ],
+  ])('refuses to launch with a %s inside the root, at its config path', async (_kind, entry, at, place) => {
+    const fetchMock = stubModels({})
+    const kept = directory()
+    const root = directory()
+    const name = place(root, kept)
+    const config = write(kept, 'q.yaml', `${CONFIG}profiles:\n  security:\n    ${entry.replace('NAME', JSON.stringify(name))}\n`)
+    const streams = streamIO({ cwd: root, git: fakeRepository(root).seam })
+    const run = runMcp(streams.io, ['--config', config])
+    streams.input.end()
+    expect(await run).toBe(EXIT.usage)
+    expect(streams.lines()).toEqual([])
+    expect(streams.stderr()).toBe(`Error: ${at}: ${FILE_INSIDE}\n`)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('refuses every file inside the root at once, before the profiles resolve and before a repository document', async () => {
+    const fetchMock = stubModels({})
+    const kept = directory()
+    const root = directory()
+    write(kept, 'outside.md', 'Kept outside.')
+    const config = write(kept, 'q.yaml', [
+      CONFIG,
+      'profiles:',
+      '  security:',
+      `    guidelines: [{file: ${JSON.stringify(write(root, 'a.md', 'a'))}}, {repository: REVIEW.md}, {file: outside.md}]`,
+      `    doNotReport: [{file: outside.md}, {file: ${JSON.stringify(write(root, 'b.md', 'b'))}}]`,
+      '',
+    ].join('\n'))
+    const streams = streamIO({ cwd: root, git: fakeRepository(root).seam })
+    const run = runMcp(streams.io, ['--config', config])
+    streams.input.end()
+    expect(await run).toBe(EXIT.usage)
+    expect(streams.stderr()).toBe([
+      `Error: profiles.security.guidelines.0.file: ${FILE_INSIDE}`,
+      `profiles.security.doNotReport.1.file: ${FILE_INSIDE}`,
+      '',
+    ].join('\n'))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('serves a config whose prompt and document files lie outside the root', async () => {
+    stubModels({
+      m: {
+        findings: [CHANGE_FINDING],
+      },
+    })
+    const kept = directory()
+    write(kept, 'research.md', 'Look for naming problems.')
+    write(kept, 'guide.md', 'Name things for what they do.')
+    write(kept, 'skip.md', 'Generated files.')
+    const config = write(kept, 'q.yaml', `${CONFIG}profiles:\n  security:\n    prompts: {research: {file: research.md}}\n    guidelines: [{file: guide.md}]\n    doNotReport: [{file: skip.md}]\n`)
+    const root = directory()
+    const streams = streamIO({ cwd: root, git: fakeRepository(root).seam })
+    const run = runMcp(streams.io, ['--config', config])
+    expect(await converse(streams, run)).toBe(EXIT.ok)
+    expect(streams.stderr()).toContain('quorum mcp: serving the review tool\n')
   })
 
   it('writes nothing on stdout but protocol messages, one a line, and exits 0 when the client closes stdin', async () => {

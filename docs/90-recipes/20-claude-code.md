@@ -10,7 +10,7 @@ Register `quorum mcp` in your own settings, with the config outside the project,
 claude mcp add --scope user quorum -- quorum mcp --config "$HOME/.config/quorum/mcp.yaml"
 ```
 
-[Starting it](../20-using/90-mcp.md#starting-it) says what the config is, why it lies outside the project, and why a repository's own `.mcp.json` is never the way to start it. The skill below calls this tool, so the server comes first.
+[Starting it](../20-using/90-mcp.md#starting-it) says what the config is, why it lies outside the project, and why a repository's own `.mcp.json` is never the way to start it. The skill below calls this tool, so the server comes first. Keep the prompt, guidelines and do-not-report files the config names outside the project too, beside the config: `quorum mcp` refuses a `{ file }` inside the project when it starts, as it refuses the config there.
 
 ## The /quorum-review skill
 

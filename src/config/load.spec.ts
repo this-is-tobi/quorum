@@ -76,6 +76,7 @@ describe('readConfigFile', () => {
         roles: { research: 'local' },
       },
       source: join(dir, 'quorum.yaml'),
+      files: [],
     })
   })
 
@@ -488,6 +489,7 @@ describe('readConfigFile on a TS or JS config', () => {
         },
       },
       source: join(dir, name),
+      files: [],
     })
   })
 
@@ -757,6 +759,36 @@ describe('readConfigFile on document files', () => {
     expect(profiles.naming.doNotReport).toHaveLength(16)
   })
 
+  it('returns each file it read with its config path and absolute path, once per path', async () => {
+    file('conf/prompts/research.md', 'Look.\n')
+    file('conf/guides/style.md', 'Name things well.\n')
+    file('conf/skip.md', 'Skip generated files.\n')
+    file('conf/quorum.yaml', 'profiles:\n  team:\n    prompts: {research: {file: ./prompts/research.md}, vote: inline vote}\n  naming:\n    guidelines: [{file: ./guides/style.md}, {file: skip.md}]\n    doNotReport: [{file: skip.md}]\n')
+    expect((await readConfigFile('conf/quorum.yaml', { cwd: dir })).files).toEqual([
+      {
+        at: 'profiles.team.prompts.research.file',
+        path: join(dir, 'conf/prompts/research.md'),
+      },
+      {
+        at: 'profiles.naming.guidelines.0.file',
+        path: join(dir, 'conf/guides/style.md'),
+      },
+      {
+        at: 'profiles.naming.guidelines.1.file',
+        path: join(dir, 'conf/skip.md'),
+      },
+    ])
+    // The named config carries them too, and a config naming no file, or none at all, none.
+    const named = await readNamedConfig({ cwd: dir, env: {}, configPath: 'conf/quorum.yaml' })
+    expect(named.files.map(({ at }) => at)).toEqual([
+      'profiles.team.prompts.research.file',
+      'profiles.naming.guidelines.0.file',
+      'profiles.naming.guidelines.1.file',
+    ])
+    file('plain.yaml', 'profiles:\n  team:\n    prompts: {research: inline}\n')
+    expect((await readConfigFile('plain.yaml', { cwd: dir })).files).toEqual([])
+  })
+
   it('reads a document file of a code config, and leaves the module\'s own object as it was', async () => {
     file('guide.md', 'from a file')
     file('quorum.mts', 'export const guidelines = [{ file: "./guide.md" }]\nexport default { profiles: { naming: { guidelines } } }\n')
@@ -948,7 +980,7 @@ describe('readNamedConfig', () => {
         { path: 'QUORUM_CONFIG', message: 'must be an absolute path' },
       ],
     })
-    expect(await readNamedConfig({ cwd: dir, env: {} })).toEqual({ input: {}, source: undefined })
+    expect(await readNamedConfig({ cwd: dir, env: {} })).toEqual({ input: {}, source: undefined, files: [] })
   })
 })
 

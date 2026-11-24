@@ -49,12 +49,22 @@ const ERROR_CODE = /^E[A-Z]+$/
 /** A new file, which `O_EXCL` never makes through a link. */
 const NEW_FILE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
 
+/** A prompt or document file a config named and `readConfigFile` read: where the config names it, and the absolute path it was read from. */
+export interface NamedFile {
+  /** The config path of its `{ file }`, such as `profiles.security.guidelines.0.file`. */
+  readonly at: string
+  /** Its path as resolved: relative to the config file's directory, or absolute as given. */
+  readonly path: string
+}
+
 /** A config file once read and checked. */
 export interface LoadedConfig {
   /** The checked config, with the text of every prompt file in place of its `{ file }`, and of every document file as a `{ text }`. */
   readonly config: ConfigInput
   /** The absolute path of the file. */
   readonly source: string
+  /** The prompt and document files it read, each distinct path once, at the config path of the entry that first named it, in the order read. */
+  readonly files: readonly NamedFile[]
 }
 
 /** What a read found, or the problem with the file, as an issue words it, and how many bytes the problem counts toward a total. */
@@ -483,15 +493,15 @@ function checkData(parsed: Read<unknown>, path: string): QuorumConfig {
 }
 
 /** A file a profile names, where its issue goes, and how its text takes the place of the name. */
-interface NamedFile {
+interface FileEntry {
   readonly segments: readonly PropertyKey[]
   readonly file: string
   readonly put: (text: string) => void
 }
 
 /** The files a profile names, in the order they are read: its prompts, then its guidelines, then its do-not-report documents, each as the entry holds them. */
-function namedFiles(id: string, profile: NonNullable<QuorumConfig['profiles']>[string]): NamedFile[] {
-  const named: NamedFile[] = []
+function fileEntries(id: string, profile: NonNullable<QuorumConfig['profiles']>[string]): FileEntry[] {
+  const named: FileEntry[] = []
   // A profile with no prompts names no prompt file, so nothing is ever put into this empty object.
   const prompts = profile.prompts ?? {}
   for (const stage of STAGES) {
@@ -535,21 +545,28 @@ function namedFiles(id: string, profile: NonNullable<QuorumConfig['profiles']>[s
  * profiles or entries costs once and every place holds the same text, and the distinct files may hold 1 MiB
  * in all, counted in bytes as read, an oversized file as 64 KiB: the file that takes the total over it is
  * an issue, and reading stops there. A document is neither cleaned nor capped here: that is the profile's
- * resolution. `config` is the schema's output, a copy, so the caller's own objects are never changed.
+ * resolution. `config` is the schema's output, a copy, so the caller's own objects are never changed. The
+ * files read come back with the config, each distinct path once, at the config path of the entry that named
+ * it first, as `NamedFile` says.
  *
  * @throws ConfigError with the problem of every file that cannot be read, at its path, or with
  * those found so far and the file that takes the files over 1 MiB in total
  */
-async function readNamedFiles(config: QuorumConfig, directory: string, path: string): Promise<ConfigInput> {
+async function readNamedFiles(config: QuorumConfig, directory: string, path: string): Promise<{ readonly config: ConfigInput, readonly files: readonly NamedFile[] }> {
   const issues: ConfigIssue[] = []
   const reads = new Map<string, Read<string>>()
+  const files: NamedFile[] = []
   let total = 0
   for (const [id, profile] of Object.entries(config.profiles ?? {})) {
-    for (const { segments, file, put } of namedFiles(id, profile)) {
+    for (const { segments, file, put } of fileEntries(id, profile)) {
       const at = configPath(segments, path)
       const absolute = resolve(directory, file)
       let text = reads.get(absolute)
       if (text === undefined) {
+        files.push({
+          at: configPath(segments),
+          path: absolute,
+        })
         const bytes = await readBounded(absolute, DOCUMENT_READ_LIMIT, '64 KiB')
         total += 'problem' in bytes
           ? bytes.counted ?? 0
@@ -571,7 +588,7 @@ async function readNamedFiles(config: QuorumConfig, directory: string, path: str
   }
   if (issues.length > 0) throw new ConfigError(issues)
   // The loop above replaced every `{ file }` in the profiles, the only place one can be.
-  return config as ConfigInput
+  return { config: config as ConfigInput, files }
 }
 
 /**
@@ -598,7 +615,10 @@ export async function readConfigFile(path: string, options: { readonly cwd?: str
     : checkData(format === 'yaml'
         ? parseYaml(text.value)
         : parseJson(text.value), path)
-  return { config: await readNamedFiles(config, dirname(source), path), source }
+  return {
+    ...await readNamedFiles(config, dirname(source), path),
+    source,
+  }
 }
 
 /**
@@ -609,11 +629,12 @@ export async function readConfigFile(path: string, options: { readonly cwd?: str
  * once, a relative one would resolve inside whatever checkout quorum runs in and load that checkout's file,
  * which is the search ADR-0014 forbids. `options.configPath` is named per call, so it may be relative.
  * `options.env` defaults to `process.env`. The input holds the file's data and its prompt files' text, and no
- * key: the caller resolves it, as often as it needs, with `resolveConfig`.
+ * key: the caller resolves it, as often as it needs, with `resolveConfig`. `files` are the prompt and document
+ * files it read, as `readConfigFile` returns them, none without a file.
  *
  * @throws ConfigError with every problem of the file, or the one issue of a `QUORUM_CONFIG` that is not absolute
  */
-export async function readNamedConfig(options: { readonly cwd?: string, readonly env?: Env, readonly configPath?: string } = {}): Promise<{ readonly input: ConfigInput, readonly source: string | undefined }> {
+export async function readNamedConfig(options: { readonly cwd?: string, readonly env?: Env, readonly configPath?: string } = {}): Promise<{ readonly input: ConfigInput, readonly source: string | undefined, readonly files: readonly NamedFile[] }> {
   const env = options.env ?? process.env
   const named = envValue(env, 'QUORUM_CONFIG')
   if (named !== undefined && !isAbsolute(named)) fail('QUORUM_CONFIG', 'must be an absolute path')
@@ -621,7 +642,7 @@ export async function readNamedConfig(options: { readonly cwd?: string, readonly
   const loaded = path === undefined
     ? undefined
     : await readConfigFile(path, { cwd: options.cwd })
-  return { input: loaded?.config ?? {}, source: loaded?.source }
+  return { input: loaded?.config ?? {}, source: loaded?.source, files: loaded?.files ?? [] }
 }
 
 /**
