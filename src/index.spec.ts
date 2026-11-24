@@ -27,7 +27,7 @@ afterEach(() => {
 })
 
 describe('the public API', () => {
-  it('exports createQuorum, defineConfig, fileStore, fromConfig, loadConfig, outcome, readSource, renderReport, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer, publicView, readResult and runQuorum', () => {
+  it('exports createQuorum, defineConfig, fileStore, fromConfig, loadConfig, outcome, readSource, renderReport, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer, cleanProse, publicView, readResult and runQuorum', () => {
     expect(Object.keys(api).sort()).toEqual([
       'ConfigError',
       'GitError',
@@ -40,6 +40,7 @@ describe('the public API', () => {
       'REVIEW_CEILING',
       'anthropic',
       'claudeCode',
+      'cleanProse',
       'codeSpan',
       'createQuorum',
       'defaultPolicy',

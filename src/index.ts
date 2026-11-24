@@ -31,7 +31,8 @@ export { defaultPolicy } from './core/policy.ts'
 export type { PolicyRules, Rule } from './core/policy.ts'
 export type { Adapts, ChatMessage, CompletionRequest, CompletionResponse, EventSink, JsonSchema, ProfilePorts, Provider, QuorumPorts, RateLimit, ReplyStore, StoredCall, StreamSignal } from './core/ports.ts'
 export { createQuorum } from './core/quorum.ts'
-export { codeSpan, fencedBlock, inertJson, inertLine, inertPlain } from './core/sanitize.ts'
+export { cleanProse, codeSpan, fencedBlock, inertJson, inertLine, inertPlain } from './core/sanitize.ts'
+export type { CleanedProse, Removed } from './core/sanitize.ts'
 export type {
   Adaptation,
   CallFailure,

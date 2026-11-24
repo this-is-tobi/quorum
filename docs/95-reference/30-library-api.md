@@ -485,6 +485,40 @@ const result = readResult(await readFile('result.json', 'utf8'))
 process.stdout.write(renderReport(result, { format: 'markdown' }))
 ```
 
+## `cleanProse`
+
+```ts
+declare function cleanProse(text: string): CleanedProse
+
+interface CleanedProse {
+  readonly text: string
+  readonly removed: Removed
+  readonly settled: boolean
+}
+
+interface Removed {
+  readonly characters: number
+  readonly comments: number
+  readonly entities: number
+}
+```
+
+`cleanProse` removes from prose a model reads as policy, a guideline or a rules file, three kinds of text a renderer does not show: the HTML comments, the numeric character references and the hidden characters but the line feed and the tab, in passes until one removes nothing, at most 16. Other Markdown a renderer hides, a link reference definition such as `[//]: # (...)`, passes untouched, and the hidden characters include joiners and variation selectors a reader sees (ZWJ, ZWNJ, U+FE0F). It makes the text well formed and every line end a line feed first. What it removes, in what order and why one pass is not enough: [Prose a review reads as policy](../30-security/30-output-handling.md#prose-a-review-reads-as-policy).
+
+- **`text`** is the cleaned text, and `removed` counts the hidden characters (by code point), the comments and the references removed. A line end it rewrites and a lone surrogate it replaces count nothing.
+- **`settled`** is `false` when the text was still changing in the 16th pass, which nesting deeper than 15 levels causes. Refuse such a text, and never send it: `text` is what the passes left of it.
+- **It is pure.** It reads no profile, file or setting, and it cleans prose, never code: the diff and the evidence do not pass through it.
+
+```ts
+import { readFile } from 'node:fs/promises'
+import { cleanProse } from '@tobi-or-not/quorum'
+
+const { text, removed, settled } = cleanProse(await readFile('guidelines.md', 'utf8'))
+if (!settled) throw new Error('guidelines.md nests comments or references too deep to clean: remove them')
+console.error(`removed ${removed.characters} hidden characters, ${removed.comments} comments and ${removed.entities} references`)
+// `text` is what a model may read as policy.
+```
+
 ## Errors
 
 | Class | Extends | Fields | Thrown for |
@@ -789,9 +823,10 @@ The warnings, each but the first two starting at the path it is about:
 | `readResult` | Read a saved result or public view back from its JSON text, of this release only, through a strict schema and a cap: [`readResult`](#readresult) |
 | `QuorumError`, `ConfigError`, `ProviderError`, `ProviderDownError`, `OutputError`, `GitError` | The error classes |
 | `inertLine`, `inertJson`, `codeSpan`, `fencedBlock`, `inertPlain` | Render a line for a terminal or a log, a value as JSON, text in Markdown and plain text a viewer may link, inert: [Output handling](../30-security/30-output-handling.md#printing-a-review-yourself) |
+| `cleanProse` | Remove the HTML comments, numeric character references and hidden characters from prose a model reads as policy, to a fixpoint of at most 16 passes: [`cleanProse`](#cleanprose) |
 | `runQuorum` | Deprecated: [below](#runquorum) |
 
-The types: `ActionComment`, `ActionPayload`, `Adaptation`, `ConcurrencyRecord`, `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `CredentialKind`, `Estimate`, `FailOn`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `ObjectFormat`, `Outcome`, `OutcomeStatus`, `Profile`, `ProfileEstimate`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `PublicGap`, `PublicMeta`, `PublicProfileMeta`, `PublicVerdict`, `PublicView`, `PublicVote`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `ReportFormat`, `ReportInput`, `ReportOptions`, `ReportView`, `ReviewInput`, `ReviewSource`, `SecretRule`, `SkipRule`, `SourceRead`, `SourceSpec`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `Adapts`, `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider`, `QuorumPorts`, `ReplyStore`, `StoredCall` and `StreamSignal`; `ConfigIssue`, `NoAnswer`, `ProviderErrorKind` and `ReplyLack`; `ProfileBudgets`, `ReplyFacts` and `ThinkingLevel`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `FailOnOverride`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
+The types: `ActionComment`, `ActionPayload`, `Adaptation`, `CleanedProse`, `ConcurrencyRecord`, `Confidence`, `CoverageEntry`, `CoverageReason`, `CoverageStatus`, `CredentialKind`, `Estimate`, `FailOn`, `Finding`, `Flag`, `FlagCode`, `IncompleteEntry`, `IncompleteReason`, `LeftOutFile`, `LeftOutReason`, `LeftRange`, `Lens`, `LensVote`, `ObjectFormat`, `Outcome`, `OutcomeStatus`, `Profile`, `ProfileEstimate`, `ProfileMeta`, `ProfileProviders`, `Prompts`, `ProviderRef`, `PublicGap`, `PublicMeta`, `PublicProfileMeta`, `PublicVerdict`, `PublicView`, `PublicVote`, `Quorum`, `QuorumEvent`, `QuorumMeta`, `QuorumOptions`, `QuorumResult`, `Removed`, `ReportFormat`, `ReportInput`, `ReportOptions`, `ReportView`, `ReviewInput`, `ReviewSource`, `SecretRule`, `SkipRule`, `SourceRead`, `SourceSpec`, `StageName`, `Thresholds`, `Usage`, `Verdict`, `VerdictStatus`, `Vote`, `VoteFailure` and `VoteFailureKind`; `Adapts`, `ChatMessage`, `CompletionRequest`, `CompletionResponse`, `EventSink`, `JsonSchema`, `ProfilePorts`, `Provider`, `QuorumPorts`, `ReplyStore`, `StoredCall` and `StreamSignal`; `ConfigIssue`, `NoAnswer`, `ProviderErrorKind` and `ReplyLack`; `ProfileBudgets`, `ReplyFacts` and `ThinkingLevel`; `PolicyRules` and `Rule`; `AnthropicOptions`, `Auth`, `ClaudeCodeAuth`, `ClaudeCodeOptions`, `GeminiOptions`, `HttpProviderOptions`, `OllamaOptions`, `OpenAICompatibleOptions`, `StructuredOutput` and `SystemPrompt`; `Preset`, `PresetName` and `Protocol`; `ConfigInput`, `QuorumConfig` and `QuorumConfigFile`; `Env`, `FailOnOverride`, `ProfileSelection`, `ResolvedConfig`, `ResolvedProfile` and `ResolvedProvider`. `HttpProviderOptions` holds the options an HTTP provider takes, `OpenAICompatibleOptions` adds `maxTokensField`, and `AnthropicOptions`, `GeminiOptions` and `OllamaOptions` are `HttpProviderOptions` as it is: [Providers](../20-using/30-providers.md#options). `ClaudeCodeOptions` holds the options of `claudeCode` and `ClaudeCodeAuth` its three auth modes. `Preset` types a row of `presets`, `PresetName` names one, and `Protocol` names the four wire protocols.
 
 The stages and the profile checks are not exported: a program reaches the stages through `createQuorum`. The exit-code rule is `outcome`.
 
