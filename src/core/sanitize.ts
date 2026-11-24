@@ -3,7 +3,8 @@
  * terminal, a CI log, the JSON result, Markdown and the plain text a viewer may link. The text is
  * stored as it came, and each sink renders it inert (invariant I3): nothing in it acts on a
  * terminal or a GitHub Actions runner, and no character of the hidden class below hides from the
- * reader.
+ * reader. `cleanProse` goes the other way: it removes three kinds of hidden text from what a person
+ * wrote as policy, so that a model reads none of them.
  *
  * @see ../../docs/30-security/30-output-handling.md
  */
@@ -204,4 +205,141 @@ function escapeJson(json: string | undefined): string {
 /** The \uXXXX escape of each UTF-16 code unit of `char`. */
 function escapeUnits(char: string): string {
   return Array.from({ length: char.length }, (_, index) => `\\u${char.charCodeAt(index).toString(16).padStart(4, '0')}`).join('')
+}
+
+/**
+ * The most passes `cleanProse` makes. A removal can join two halves into a new construct, and each
+ * level of nesting needs a pass of its own, so a text nested 15 levels deep settles in the 16th, and
+ * a deeper one is still changing after it.
+ */
+export const MAX_CLEAN_PASSES = 16
+
+/** What `cleanProse` removed: hidden characters by code point, comments and character references by construct. */
+export interface Removed {
+  readonly characters: number
+  readonly comments: number
+  readonly entities: number
+}
+
+/** The result of `cleanProse`. */
+export interface CleanedProse {
+  readonly text: string
+  readonly removed: Removed
+  /** `false` when the text was still changing in the last of `MAX_CLEAN_PASSES` passes: its reader refuses it, and never sends it. */
+  readonly settled: boolean
+}
+
+/** A CRLF or a lone CR: CommonMark reads each as a line end, so a person sees a break and no hidden character. */
+const CARRIAGE_RETURN = /\r\n?/g
+
+/**
+ * A numeric character reference, its `;` optional: the HTML parser decodes `&#xE0041` as it does
+ * `&#xE0041;`, so a tag character spelled without one hides from a reader and reaches a model.
+ * Named entities are left alone.
+ */
+const NUMERIC_REFERENCE = /&#(?:x[0-9A-F]+|\d+);?/gi
+
+/** The hidden class but the line feed and the tab, which prose keeps. */
+const HIDDEN_BUT_LINE_BREAK_AND_TAB = new RegExp(String.raw`(?![\n\t])[${HIDDEN_CLASS}]`, 'gu')
+
+/** A text with what was removed from it taken out, and how many pieces that was. */
+interface Stripped {
+  readonly text: string
+  readonly count: number
+}
+
+function stripMatches(text: string, pattern: RegExp): Stripped {
+  let count = 0
+  const stripped = text.replace(pattern, () => {
+    count++
+    return ''
+  })
+  return { text: stripped, count }
+}
+
+/**
+ * A search for `needle` in `text` that a caller only ever moves forward. It keeps the last hit while
+ * the hit still lies ahead, so a needle the text holds once, or never, is searched for once, not once
+ * for every comment.
+ */
+function forwardSearch(text: string, needle: string): (from: number) => number {
+  let found: number | undefined
+  return (from) => {
+    if (found === undefined || (found !== -1 && found < from)) found = text.indexOf(needle, from)
+    return found
+  }
+}
+
+/**
+ * The text without its HTML comments. A comment runs from `<!--` to the first `-->`, searched from
+ * the opener's third character, so `<!-->` and `<!--->` are whole comments, as the HTML parser reads
+ * them. With no `-->` ahead it runs to the first `--!>` searched from the opener's fifth
+ * character, never the opener's own dashes (`<!--!>` is no comment end), and with neither to the end
+ * of the text. That is the longer of CommonMark's reading, which ends a comment at `-->` alone, and
+ * the HTML parser's, which also ends it at `--!>`, so a renderer that follows either hides no more
+ * than is removed here: a mismatch can only remove visible text, and that is counted.
+ */
+function stripComments(text: string): Stripped {
+  const nextClose = forwardSearch(text, '-->')
+  const nextBangClose = forwardSearch(text, '--!>')
+  let kept = ''
+  let from = 0
+  let count = 0
+  for (let open = text.indexOf('<!--', from); open !== -1; open = text.indexOf('<!--', from)) {
+    count++
+    kept += text.slice(from, open)
+    const close = nextClose(open + 2)
+    const bangClose = close === -1
+      ? nextBangClose(open + '<!--'.length)
+      : -1
+    if (close !== -1) from = close + '-->'.length
+    else if (bangClose !== -1) from = bangClose + '--!>'.length
+    else from = text.length
+  }
+  return { text: kept + text.slice(from), count }
+}
+
+/**
+ * `text` without the HTML comments, numeric references and hidden characters that can spell an
+ * instruction in what a model reads as policy, a guideline or a rules file, where a person reading
+ * the rendered page sees none of them. It makes the text well formed (a lone surrogate becomes
+ * U+FFFD), makes each CRLF and lone CR a line feed, then runs passes, each removing the comments,
+ * then the numeric references, then the hidden characters but the line feed and the tab, until a
+ * pass removes nothing. Passes repeat because a removal can join two halves into a construct
+ * (`&#x4<!-- -->1;`), and nesting needs one pass a level. The line ends and the surrogates count as
+ * nothing removed.
+ *
+ * It removes those three kinds and no other Markdown a renderer hides: a link reference definition
+ * (`[//]: # (a note)`) passes untouched. The hidden class holds joiners and variation selectors
+ * whose effect a reader sees (ZWJ, ZWNJ, U+FE0F in Persian or Hindi text and emoji), and they go too.
+ *
+ * A text still changing after `MAX_CLEAN_PASSES` passes comes back with `settled: false` and
+ * what the passes made of it: it is nested too deep to trust, and its reader refuses it.
+ */
+export function cleanProse(text: string): CleanedProse {
+  let current = text.toWellFormed().replace(CARRIAGE_RETURN, '\n')
+  let characters = 0
+  let comments = 0
+  let entities = 0
+  for (let pass = 0; pass < MAX_CLEAN_PASSES; pass++) {
+    const withoutComments = stripComments(current)
+    const withoutReferences = stripMatches(withoutComments.text, NUMERIC_REFERENCE)
+    const withoutHidden = stripMatches(withoutReferences.text, HIDDEN_BUT_LINE_BREAK_AND_TAB)
+    current = withoutHidden.text
+    comments += withoutComments.count
+    entities += withoutReferences.count
+    characters += withoutHidden.count
+    if (withoutComments.count + withoutReferences.count + withoutHidden.count === 0) {
+      return {
+        text: current,
+        removed: { characters, comments, entities },
+        settled: true,
+      }
+    }
+  }
+  return {
+    text: current,
+    removed: { characters, comments, entities },
+    settled: false,
+  }
 }
