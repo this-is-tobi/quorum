@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { CompletionRequest } from './ports.ts'
 import { securityProfile } from '../profiles/security.ts'
-import { fence, FINDING_FIELDS, renderTemplate, requestDigest, researchRequest, UNTRUSTED_CONTENT_NOTICE, voteRequest } from './prompts.ts'
+import type { TemplatePart } from './prompts.ts'
+import { fence, FINDING_FIELDS, renderTemplate, requestDigest, researchRequest, templateParts, UNTRUSTED_CONTENT_NOTICE, voteRequest } from './prompts.ts'
 
 const finding = {
   id: '0123456789ab',
@@ -385,7 +386,133 @@ describe('requestDigest', () => {
   })
 })
 
+describe('the digests of 0.12.0', () => {
+  const diff = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -0,0 +1 @@\n+exec(cmd)\n'
+
+  it('builds the security profile\'s requests as 0.12.0 did, digest for digest', () => {
+    expect(requestDigest(researchRequest(securityProfile.prompts.research, diff, undefined, undefined, { findings: 50 }))).toBe('9332a0a8136fce260d587532024e35f86770b01eca89c4fbf8f5467d327ea63f')
+    const part = {
+      index: 2,
+      count: 3,
+      files: ['a.js'],
+      unlisted: 0,
+    }
+    expect(requestDigest(researchRequest(securityProfile.prompts.research, diff, undefined, part, { findings: 50, replyTokens: 4096 }))).toBe('35141cc7686074ff0401d3151656abdc8a4d4b1ff97bd9c8bef3787e216c128d')
+    const lens = securityProfile.lenses[0]
+    const instructions = renderTemplate(securityProfile.prompts.vote, { 'lens.id': lens.id, 'lens.question': lens.question, 'panel.size': '3' })
+    const cited = {
+      id: 'x',
+      fingerprint: 'y',
+      profile: 'security',
+      file: 'a.js',
+      line: 1,
+      category: 'CWE-78',
+      summary: 'command injection',
+      evidence: '>    1 + exec(cmd)',
+      quoteMatched: true,
+    }
+    expect(lens.id).toBe('reachability')
+    expect(requestDigest(voteRequest(instructions, cited, diff, undefined, false, { replyTokens: 1024 }))).toBe('063c31adfa479898b3d30c174cd3a34654623b203d708ebedc9e71c7d9c644eb')
+    expect(renderTemplate(securityProfile.prompts.research, {})).toBe(securityProfile.prompts.research)
+  })
+})
+
+describe('templateParts', () => {
+  const text = (value: string): TemplatePart => ({ kind: 'text', text: value })
+  const placeholder = (name: string, raw = name): TemplatePart => ({ kind: 'placeholder', name, raw })
+  const open: TemplatePart = { kind: 'open' }
+
+  it.each<[string, TemplatePart[]]>([
+    [
+      'a {{lens.id}} b',
+      [
+        text('a '),
+        placeholder('lens.id'),
+        text(' b'),
+      ],
+    ],
+    [
+      '{{ lens.id }}',
+      [
+        placeholder('lens.id', ' lens.id '),
+      ],
+    ],
+    [
+      '{{}}',
+      [
+        placeholder(''),
+      ],
+    ],
+    [
+      '\\{{lens.id}}',
+      [
+        text('{{lens.id}}'),
+      ],
+    ],
+    [
+      '\\\\{{x}}',
+      [
+        text('\\{{x}}'),
+      ],
+    ],
+    [
+      '{{lens.id}',
+      [
+        open,
+        text('lens.id}'),
+      ],
+    ],
+    [
+      '{{ never closed',
+      [
+        open,
+        text(' never closed'),
+      ],
+    ],
+    [
+      '{{{lens.id}}}',
+      [
+        open,
+        text('{lens.id}}}'),
+      ],
+    ],
+    [
+      '{{a {{b}} {{ c',
+      [
+        open,
+        text('a '),
+        placeholder('b'),
+        text(' '),
+        open,
+        text(' c'),
+      ],
+    ],
+    [
+      '}} and \\n',
+      [
+        text('}} and \\n'),
+      ],
+    ],
+    ['', []],
+  ])('reads the template %j as %j', (template, parts) => {
+    expect(templateParts(template)).toEqual(parts)
+  })
+
+  it('reads a template alike each time it is read', () => {
+    const template = 'xx {{diff}} {{lens.id}}'
+    expect(templateParts(template)).toEqual(templateParts(template))
+  })
+})
+
 describe('renderTemplate', () => {
+  it('renders an escape as a literal {{, and leaves a name with no value as written', () => {
+    expect(renderTemplate('\\{{x}} {{lens.id}} {{other}}', { 'lens.id': 'impact' })).toBe('{{x}} impact {{other}}')
+  })
+
+  it('writes a {{ that opens no placeholder as it is', () => {
+    expect(renderTemplate('{{lens.id} and {{ never closed', { 'lens.id': 'impact' })).toBe('{{lens.id} and {{ never closed')
+  })
+
   it('fills known placeholders and leaves unknown ones untouched', () => {
     const values = { 'lens.id': 'impact', 'lens.question': 'Real?' }
     expect(renderTemplate('{{ lens.id }}: {{lens.question}} {{other}}', values)).toBe('impact: Real? {{other}}')

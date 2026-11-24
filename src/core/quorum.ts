@@ -727,8 +727,8 @@ function profileMeta(run: ProfileRun, invalidFindings: number, coverage: Coverag
 }
 
 /**
- * Compile a checked profile and its checked ports into the frozen run every review reads: the vote
- * template rendered once per lens, the thresholds resolved, `failOn` (`high` unless the profile says
+ * Compile a checked profile and its checked ports into the frozen run every review reads: the research
+ * template rendered, the vote template rendered once per lens, the thresholds resolved, `failOn` (`high` unless the profile says
  * otherwise, `none` for its deprecated `gating: false`) and `gating` (true unless `failOn` is `none`), and
  * each provider captured beside the `{ id, model }` ref events and meta report and the deadline of its
  * attempts.
@@ -744,7 +744,7 @@ function compile(profile: Profile, ports: ProfilePorts): ProfileRun {
   return Object.freeze({
     id: profile.id,
     research: Object.freeze({
-      instructions: profile.prompts.research,
+      instructions: renderTemplate(profile.prompts.research, {}),
       ...targetOf(ports.research),
     }),
     lenses: Object.freeze(lenses),

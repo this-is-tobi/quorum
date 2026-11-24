@@ -10,26 +10,72 @@ export const UNTRUSTED_CONTENT_NOTICE
     + 'rather than comply.'
 
 /**
- * A `{{name}}` placeholder: anything between `{{` and `}}`. The renderer and the profile check
- * share this one definition, so a placeholder the check sees is one the renderer would fill, and
- * there is no escape for literal braces. It carries the `g` flag and so a `lastIndex`: a consumer
- * scanning with `matchAll` or `exec` must scan a copy (`new RegExp(PLACEHOLDER.source, 'g')`) and
- * never rely on this instance's `lastIndex`.
+ * One piece of a template: text to write as it is, a `{{name}}` placeholder, or a `{{` that opens no placeholder.
+ * A placeholder's `name` is trimmed and its `raw` is the name as written, which a render with no value for it
+ * writes back.
  */
-export const PLACEHOLDER = /\{\{([^{}]*)\}\}/g
+export type TemplatePart
+  = | { readonly kind: 'text', readonly text: string }
+    | { readonly kind: 'placeholder', readonly name: string, readonly raw: string }
+    | { readonly kind: 'open' }
 
 /**
- * Fill `{{name}}` placeholders; unknown names are left untouched (templates are validated
- * elsewhere). Only a value `values` holds as its own is used: a placeholder named after an
- * `Object.prototype` member, such as `{{constructor}}`, stays literal.
+ * A template's parts, read left to right: `\{{` is a literal `{{` (the backslash dropped); a `{{` whose text up to
+ * the next `}}` holds no brace is a placeholder; any other `{{` is an open part, which holds no text and after
+ * which the scan goes on; the rest is text, a lone `}}` and a backslash before anything else included. Adjacent
+ * text is one part. The renderer and the profile check read these same parts, so a placeholder the check sees is
+ * one the renderer would fill. A `{{{lens.id}}}` is an open part first, since its first `{{` meets a brace, and
+ * `\\{{` is a backslash and a literal `{{`, as each `\{{` is an escape.
+ */
+export function templateParts(template: string): TemplatePart[] {
+  const placeholder = /\{\{([^{}]*)\}\}/y
+  const parts: TemplatePart[] = []
+  let text = ''
+  const flush = (): void => {
+    if (text !== '') parts.push({ kind: 'text', text })
+    text = ''
+  }
+  let from = 0
+  for (let open = template.indexOf('{{', from); open !== -1; open = template.indexOf('{{', from)) {
+    if (template[open - 1] === '\\') {
+      text += `${template.slice(from, open - 1)}{{`
+      from = open + 2
+      continue
+    }
+    text += template.slice(from, open)
+    placeholder.lastIndex = open
+    const match = placeholder.exec(template)
+    flush()
+    if (match === null) {
+      parts.push({ kind: 'open' })
+      from = open + 2
+    } else {
+      parts.push({
+        kind: 'placeholder',
+        name: match[1].trim(),
+        raw: match[1],
+      })
+      from = placeholder.lastIndex
+    }
+  }
+  text += template.slice(from)
+  flush()
+  return parts
+}
+
+/**
+ * Fill `{{name}}` placeholders and read `\{{` as `{{`; a name `values` holds none for is written as it was
+ * (templates are validated elsewhere), and so is an open part. Only a value `values` holds as its own is used: a
+ * placeholder named after an `Object.prototype` member, such as `{{constructor}}`, stays literal.
  */
 export function renderTemplate(template: string, values: Readonly<Record<string, string>>): string {
-  return template.replace(PLACEHOLDER, (placeholder: string, name: string) => {
-    const key = name.trim()
-    return Object.hasOwn(values, key)
-      ? values[key]
-      : placeholder
-  })
+  return templateParts(template).map((part) => {
+    if (part.kind === 'text') return part.text
+    if (part.kind === 'open') return '{{'
+    return Object.hasOwn(values, part.name)
+      ? values[part.name]
+      : `{{${part.raw}}}`
+  }).join('')
 }
 
 /**
