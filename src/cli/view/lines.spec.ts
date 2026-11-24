@@ -493,6 +493,22 @@ describe('renderEvent', () => {
     })).toBe('flag: hidden-characters at "a\\nb.js" (the file name holds U+000A)')
   })
 
+  it('names a flag\'s profile', () => {
+    expect(renderEvent({
+      type: 'flag',
+      flag: {
+        code: 'guideline-edited',
+        profile: 'security',
+        file: 'REVIEW.md',
+        detail: 'the guidelines this review read for the profile from 1f3a9c2, not the change\'s version',
+      },
+    })).toBe('flag: guideline-edited at "REVIEW.md" for security (the guidelines this review read for the profile from 1f3a9c2, not the change\'s version)')
+    expect(renderEvent({
+      type: 'flag',
+      flag: { code: 'guideline-edited', profile: 'naming', detail: 'the rules this review read' },
+    })).toBe('flag: guideline-edited for naming (the rules this review read)')
+  })
+
   it('renders the files left out in one line: five at most, each a JSON string with its reason, the empty name as <no path>, inert, never prefixed', () => {
     const file = (name: string, reason: 'excluded' | 'binary' | 'submodule' = 'binary'): LeftOutFile => ({ file: name, reason })
     expect(renderEvent({

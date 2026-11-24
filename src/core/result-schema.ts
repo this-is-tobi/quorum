@@ -264,9 +264,15 @@ const reviewSource = z.discriminatedUnion('kind', [
   }),
 ]).refine(source => sourceIssues(source).length === 0)
 /** What an advisory flag points at: the closed list of `FlagCode`. */
-export const flagCode = z.enum(['hidden-characters', 'ai-addressed-text', 'secret-file'])
+export const flagCode = z.enum([
+  'hidden-characters',
+  'ai-addressed-text',
+  'secret-file',
+  'guideline-edited',
+])
 const flag = z.strictObject({
   code: flagCode,
+  profile: profileId.optional(),
   file: z.string().optional(),
   line: count.optional(),
   detail: z.string(),

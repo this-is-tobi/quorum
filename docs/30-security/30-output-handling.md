@@ -218,8 +218,11 @@ The harness reads the diff by code, before any model sees it, and raises a flag 
 | `hidden-characters` | A hidden character, as the class above defines it, in the name of a file or in an added line |
 | `ai-addressed-text` | In an added line, text that speaks to an AI reviewer instead of a person |
 | `secret-file` | A file held back from the review as a secret, because its name is a secret's, such as `.env` or `id_ed25519`, or because a line of it reads as a credential; and a file a path review skipped, for its name or for a credential in its text |
+| `guideline-edited` | A section of the diff that edits, renames, copies, adds or deletes the path of a `{ repository }` document a profile's review read from the commit its source names |
 
 The third code is raised for a file whose name a secret scanner would look for, or that holds a credential quorum recognizes, and that no model was sent: a person should look at whether the file belongs in the change. Every source holds such a file back: [Files held back as secrets](../20-using/15-sources.md#files-held-back-as-secrets). The flag comes from the list of files left out, not from the diff's lines, and it quotes none of them, nor the credential. A change that deletes a file named as a secret whole raises it too, and says that the history still holds the file. A [path review](../20-using/15-sources.md#what-a-path-review-skips) skips a file by its name before it reads it, and by a credential in its text once it has, whatever `--no-default-skips` says, and flags either: a template is no secret by name, so a `.env.example` is read and sent unless its text holds a credential, which is flagged as one that holds a credential. A secret that `exclude` matched first is listed as `excluded` and raises no flag, since the operator chose to leave it out. A file that `--send`, the config's `send` or a program's `send` names is neither held nor flagged.
+
+The fourth code is raised for a change that touches a document the review read as policy: the review read it from the commit its source names, never the change's copy, and the flag says so, with the profile and the commit. It is read from the diff's section headers and naming lines and from the documents the review read, and it quotes none of the file: [When the change edits a document](../20-using/45-rules-and-guidelines.md#when-the-change-edits-a-document).
 
 The second code knows nine kinds of text, and a flag names each by these words:
 
@@ -237,7 +240,7 @@ Each kind is matched on one added line at a time, in two forms: with the line's 
 
 ### Where they look
 
-Added lines and file names only. That leaves out removed and context lines, and the commit message of a `git format-patch` series. A `secret-file` flag reads no line: it is about a file the review left out, by its name or a credential in it, and names none of its lines.
+Added lines and file names only. That leaves out removed and context lines, and the commit message of a `git format-patch` series. A `secret-file` flag reads no line: it is about a file the review left out, by its name or a credential in it, and names none of its lines. A `guideline-edited` flag reads the paths a section names, its header's and those of its `---`, `+++`, rename and copy lines, and no line of code.
 
 A diff section whose `diff --git` header quorum cannot read raises no flag of its lines: a section of that kind that is held back as a secret still raises a `secret-file` flag, with no `file`. Today that means a renamed file under git's `--no-prefix` or `diff.mnemonicPrefix` settings. The model still reads those lines.
 
@@ -254,7 +257,7 @@ Everything else in the class is flagged, a lone joiner and variation selectors s
 
 ### The shape
 
-Quorum raises at most one flag per file, code and subject, so a file raises at most three, in this order: its name holds hidden characters, its added lines do, and its added lines address an AI reviewer. A flag about lines points at the first such line and counts them. Its `detail` names at most eight code points or patterns, then `and N more`. The code writes every word of a detail: the only text of the diff that a flag carries is `file`, the diff's own path, which is absent for a diff without per-file headers. [A flag](../95-reference/20-json-result.md#a-flag) lists the fields.
+Quorum raises at most one flag per file, code and subject, so a file raises at most three of the first two codes, in this order: its name holds hidden characters, its added lines do, and its added lines address an AI reviewer. A flag about lines points at the first such line and counts them. Its `detail` names at most eight code points or patterns, then `and N more`. The code writes every word of a detail: the only text of the diff that a flag carries is `file`, the diff's own path, which is absent for a diff without per-file headers. [A flag](../95-reference/20-json-result.md#a-flag) lists the fields.
 
 | Code | About | Example `detail` |
 | --- | --- | --- |
@@ -266,12 +269,16 @@ Quorum raises at most one flag per file, code and subject, so a file raises at m
 | `secret-file` | A file named as a secret that the change deletes whole | `deletes a file named as a secret, so no model was sent any of it: the history still holds the file, so rotate what it held` |
 | `secret-file` | A file a path review skipped by its name | `named as a secret, so a path review sent none of it: check that it belongs in the repository` |
 | `secret-file` | A file a path review skipped by a credential in its text | `holds what reads as a credential, so a path review sent none of it: remove it from the repository, and rotate it if it is real` |
+| `guideline-edited` | A change that touches a document the review read | `the guidelines this review read for the profile from 1f3a9c2, not the change's version` |
+| `guideline-edited` | A change that adds an optional document the commit lacked | `the guidelines this review looked for at 1f3a9c2 and did not find, not the change's version` |
+
+A `guideline-edited` flag is one for each profile and path of the repository documents, not for each file of the diff, and it carries the `profile`. The detail's kind is `guidelines`, `do-not-report text` or both, joined by `and`.
 
 ### Where they appear
 
 | Where | What it holds |
 | --- | --- |
-| `meta.flags` | Every flag, the `secret-file` flags of the files left out first, then the diff's, file by file in its order: [A flag](../95-reference/20-json-result.md#a-flag) |
+| `meta.flags` | Every flag, the `secret-file` flags of the files left out first, then the diff's, file by file in its order, then the `guideline-edited` flags, in the order of the review's documents: [A flag](../95-reference/20-json-result.md#a-flag) |
 | A `flag` event | One per flag, after `run:start` and before any stage: [Events](../95-reference/30-library-api.md#events) |
 | A `flag:` line on stderr | One per flag, before the research starts: [Progress lines](../20-using/10-cli.md#progress-lines) |
 

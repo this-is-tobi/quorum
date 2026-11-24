@@ -1,5 +1,6 @@
-import type { Flag, FlagCode, LeftOutFile } from './types.ts'
-import { addedLines } from './diff.ts'
+import type { DiffSection } from './diff.ts'
+import type { DocumentKind, Flag, FlagCode, LeftOutFile, ReviewDocument, ReviewSource } from './types.ts'
+import { addedLines, diffSections, headerNames, namedPaths } from './diff.ts'
 import { hiddenLabels, spaceHidden, stripHidden } from './sanitize.ts'
 import { CREDENTIAL_PHRASES, isSecretName } from './secrets.ts'
 
@@ -24,6 +25,16 @@ const SKIPPED_BY_NAME = 'named as a secret, so a path review sent none of it: ch
 const SKIPPED_BY_CONTENT = 'holds what reads as a credential, so a path review sent none of it: remove it from the repository, and rotate it if it is real'
 const HELD_BY_NAME = 'named as a secret, so no model was sent any of it: check that it belongs in the change'
 const DELETED_BY_NAME = 'deletes a file named as a secret, so no model was sent any of it: the history still holds the file, so rotate what it held'
+
+/** How many characters of a commit id a flag's detail gives. */
+const SHORT_COMMIT = 7
+/** What a flag's detail calls each kind of document, in the order it lists the kinds. */
+const KIND_WORDS: Readonly<Record<DocumentKind, string>> = {
+  guidelines: 'guidelines',
+  'do-not-report': 'do-not-report text',
+}
+/** A one-character prefix and its slash, as `diff.mnemonicPrefix` writes them (`a/`, `b/`, `i/`, `w/`, `c/`, `o/`). */
+const PREFIX = /^[^/]\//u
 
 /** One kind of text addressed to an AI reviewer, and the name a flag's detail gives it. */
 interface Pattern {
@@ -206,6 +217,116 @@ export function secretFlags(leftOut: readonly LeftOutFile[]): Flag[] {
       : { file: entry.file }
     return [
       { code: 'secret-file' as const, ...where, detail },
+    ]
+  })
+}
+
+/** The paths a section of a diff names, each as written and, with a one-character prefix and its slash, once more without them. */
+function sectionNames(section: DiffSection): Set<string> {
+  const names = new Set<string>()
+  const written = [
+    ...section.path === undefined
+      ? []
+      : [section.path],
+    ...headerNames(section.text),
+    ...namedPaths(section.text),
+  ]
+  for (const name of written) {
+    names.add(name)
+    if (PREFIX.test(name)) names.add(name.slice(2))
+  }
+  return names
+}
+
+/** What one profile read of one path of the repository: the kinds it read the path as, the commit, and whether the commit held the file. */
+interface DocumentRead {
+  readonly profile: string
+  readonly path: string
+  readonly commit: string
+  readonly kinds: Set<DocumentKind>
+  found: boolean
+}
+
+/** The repository documents grouped by profile and path, in the order each pair first appears. */
+function documentReads(documents: readonly ReviewDocument[]): DocumentRead[] {
+  const reads = new Map<string, DocumentRead>()
+  for (const { profile, kind, origin, text } of documents) {
+    if (origin.kind !== 'repository') continue
+    // A profile id holds no NUL, so the key tells the pairs apart whatever the path holds.
+    const key = `${profile}\0${origin.path}`
+    const read = reads.get(key) ?? {
+      profile,
+      path: origin.path,
+      commit: origin.commit,
+      kinds: new Set<DocumentKind>(),
+      found: false,
+    }
+    read.kinds.add(kind)
+    if (text !== undefined) read.found = true
+    reads.set(key, read)
+  }
+  return [
+    ...reads.values(),
+  ]
+}
+
+/** `words` as a list: the first alone, else joined by `, ` and ` and ` before the last. */
+function joinedWords(words: readonly string[]): string {
+  return words.length === 1
+    ? words[0] as string
+    : `${words.slice(0, -1).join(', ')} and ${words.at(-1)}`
+}
+
+/** What a `guideline-edited` flag says: the kinds of document, the commit the review read, or looked for, them at, and that the change's version is never applied. */
+function documentDetail({ kinds, commit, found }: DocumentRead): string {
+  const words = joinedWords((Object.keys(KIND_WORDS) as DocumentKind[]).filter(kind => kinds.has(kind)).map(kind => KIND_WORDS[kind]))
+  const short = commit.slice(0, SHORT_COMMIT)
+  return found
+    ? `the ${words} this review read for the profile from ${short}, not the change's version`
+    : `the ${words} this review looked for at ${short} and did not find, not the change's version`
+}
+
+/**
+ * The flags of a change that edits a document its review read from the repository: one `guideline-edited` flag for
+ * each profile and path of the repository `documents`, in the order they first list them, at the first section of
+ * `diff` that names the path. A section names it when its own path, a word of its header or a path its `---`, `+++`,
+ * rename or copy lines name is the path, as written or once a one-character prefix and its slash (`a/`, `b/`, `i/`,
+ * `w/`) are dropped, so a section that edits the file, renames or copies onto it, adds it or deletes it names it.
+ * The lines are read with no hunk parsing, so a hunk row that reads like one of them names a path too: the answer is
+ * generous and fails closed. The whole diff is read, the files left out of the review included.
+ *
+ * The review never reads the change's copy of a document: it reads the commit its source names, and the flag tells
+ * a person that. Its `file` is the section's own path, absent for a section whose header names none it can read; it
+ * has no line; and its `detail` is in words the code writes, the kinds of document the profile reads at the path
+ * (one flag names them all) and the commit's first 7 characters, or, for an optional document the commit lacked, that
+ * the review looked for it there and did not find it. A path review raises none, since its documents are the
+ * codebase's own at the commit it reviews, and a document of the config is no file of the repository. Like every flag,
+ * it changes no verdict and no exit code.
+ */
+export function documentFlags(diff: string, documents: readonly ReviewDocument[], source: ReviewSource): Flag[] {
+  if (source.kind === 'paths') return []
+  const reads = documentReads(documents)
+  if (reads.length === 0) return []
+  const wanted = new Set(reads.map(read => read.path))
+  const first = new Map<string, DiffSection>()
+  for (const section of diffSections(diff)) {
+    for (const name of sectionNames(section)) {
+      if (wanted.has(name) && !first.has(name)) first.set(name, section)
+    }
+    if (first.size === wanted.size) break
+  }
+  return reads.flatMap((read) => {
+    const section = first.get(read.path)
+    if (section === undefined) return []
+    return [
+      {
+        code: 'guideline-edited' as const,
+        profile: read.profile,
+        ...section.path === undefined || section.path === ''
+          ? {}
+          : { file: section.path },
+        detail: documentDetail(read),
+      },
     ]
   })
 }

@@ -441,6 +441,77 @@ describe('the schemas of a result', () => {
     }
   })
 
+  it('reads a flag\'s profile and the guideline-edited code, strictly, in the public view too', () => {
+    const flag = {
+      code: 'guideline-edited',
+      profile: 'security',
+      file: 'REVIEW.md',
+      detail: 'the guidelines this review read for the profile from 1f3a9c2, not the change\'s version',
+    } as const
+    const result = reportResult({
+      meta: {
+        ...reportResult().meta,
+        flags: [
+          { ...flag },
+          {
+            code: 'hidden-characters',
+            file: 'a.js',
+            line: 2,
+            detail: 'U+200B on 1 added line(s)',
+          },
+        ],
+      },
+    })
+    const full = saved(result)
+    expect(resultSchema.parse(full)).toEqual(full)
+    expect(JSON.stringify(resultSchema.parse(full))).toBe(JSON.stringify(full))
+    const view = saved(publicView(result))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(JSON.stringify(publicViewSchema.parse(view))).toBe(JSON.stringify(view))
+    // The profile is optional, and a profile id when it is there; a code outside the closed list is refused.
+    for (const [forged, ok] of [
+      [
+        { ...flag },
+        true,
+      ],
+      [
+        (({ profile: _profile, ...rest }) => rest)(flag),
+        true,
+      ],
+      [
+        { ...flag, profile: 'Bad Id' },
+        false,
+      ],
+      [
+        { ...flag, profile: 7 },
+        false,
+      ],
+      [
+        { ...flag, code: 'guideline-changed' },
+        false,
+      ],
+      [
+        { ...flag, extra: 1 },
+        false,
+      ],
+    ] as Array<[Forged, boolean]>) {
+      expect(resultSchema.safeParse({
+        ...full,
+        meta: {
+          ...full.meta,
+          flags: [forged],
+        },
+      }).success, JSON.stringify(forged)).toBe(ok)
+      expect(publicViewSchema.safeParse({
+        ...view,
+        meta: {
+          ...view.meta,
+          flags: [forged],
+        },
+      }).success, JSON.stringify(forged)).toBe(ok)
+    }
+  })
+
   it('reads meta.concurrency strictly, in the public view too, and does not require it', () => {
     const lane = {
       limit: 'auto',

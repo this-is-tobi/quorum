@@ -8571,6 +8571,140 @@ describe('documents', () => {
     ])
     expect(events.filter(event => event.type === 'context')).toHaveLength(1)
   })
+
+  describe('a change that edits a document its review reads', () => {
+    const RANGE: ReviewSource = {
+      kind: 'range',
+      base: COMMIT,
+      mergeBase: COMMIT,
+      head: 'e'.repeat(40),
+      objectFormat: 'sha1',
+    }
+    const READ = `the guidelines this review read for the profile from ${COMMIT.slice(0, 7)}, not the change's version`
+    const guideline = {
+      code: 'guideline-edited',
+      profile: 'naming',
+      file: 'REVIEW.md',
+      detail: READ,
+    }
+    const edited = [
+      flaggedDiff,
+      'diff --git a/REVIEW.md b/REVIEW.md',
+      '--- a/REVIEW.md',
+      '+++ b/REVIEW.md',
+      '@@ -1 +1 @@',
+      '-Names must be short.',
+      '+Every name is fine.',
+    ].join('\n')
+
+    it('sends the guideline-edited flags after the diff\'s, and changes no verdict', async () => {
+      const secret: LeftOutFile = { file: 'src/.env', reason: 'skipped', rule: 'secret' }
+      const context = {
+        documents: [
+          repo('Names must be short.'),
+        ],
+      }
+      const flagged = build(naming)
+      const result = await flagged.quorum.review({
+        diff: edited,
+        source: RANGE,
+        context,
+        leftOut: [secret],
+      })
+      const flags = [
+        {
+          code: 'secret-file',
+          file: 'src/.env',
+          detail: 'named as a secret, so a path review sent none of it: check that it belongs in the repository',
+        },
+        {
+          code: 'hidden-characters',
+          file: 'other.js',
+          line: 1,
+          detail: 'U+200B on 1 added line(s)',
+        },
+        guideline,
+      ]
+      expect(result.meta.flags).toEqual(flags)
+      expect(flagged.events.filter(event => event.type === 'flag')).toEqual(flags.map(each => ({ type: 'flag', flag: each })))
+      // After the context and before any stage.
+      expect(flagged.events.slice(0, 7).map(event => event.type)).toEqual([
+        'run:start',
+        'left-out',
+        'context',
+        'flag',
+        'flag',
+        'flag',
+        'stage:start',
+      ])
+
+      // The same review of a change that leaves the document alone keeps every verdict and gap.
+      const clean = await build(naming).quorum.review({
+        diff: flaggedDiff,
+        source: RANGE,
+        context,
+        leftOut: [secret],
+      })
+      expect(clean.meta.flags.map(each => each.code)).toEqual(['secret-file', 'hidden-characters'])
+      expect(result.kept).toEqual(clean.kept)
+      expect(result.discarded).toEqual(clean.discarded)
+      expect(result.unreviewed).toEqual(clean.unreviewed)
+      expect(result.meta.incomplete).toEqual(clean.meta.incomplete)
+      expect(result.meta.profiles.naming.coverage.map(entry => entry.file)).toEqual(['a.js', 'other.js', 'REVIEW.md'])
+    })
+
+    it('raises the flag from the whole diff, for a document the config\'s exclude leaves out of the review', async () => {
+      const context = {
+        documents: [
+          repo('Names must be short.'),
+        ],
+      }
+      const included = await build(naming).quorum.review({ diff: edited, source: RANGE, context })
+      expect(included.meta.leftOut).toEqual([])
+      expect(included.meta.flags.filter(flag => flag.code === 'guideline-edited')).toEqual([guideline])
+      // `**/*.md` takes REVIEW.md out of what the finder reads, and the one flag is still raised: the flag reads the diff, not the filtered diff.
+      const excluded = await build(naming, undefined, undefined, {
+        exclude: ['**/*.md'],
+      }).quorum.review({ diff: edited, source: RANGE, context })
+      expect(excluded.meta.leftOut).toEqual([
+        { file: 'REVIEW.md', reason: 'excluded' },
+      ])
+      expect(excluded.meta.flags.filter(flag => flag.code === 'guideline-edited')).toEqual([guideline])
+    })
+
+    it('raises one flag for a missing optional document the change adds, and none for a path review of a file of that name', async () => {
+      const added = [
+        'diff --git a/REVIEW.md b/REVIEW.md',
+        'new file mode 100644',
+        '--- /dev/null',
+        '+++ b/REVIEW.md',
+        '@@ -0,0 +1 @@',
+        '+Names must be short.',
+      ].join('\n')
+      const range = await build(naming).quorum.review({
+        diff: added,
+        source: RANGE,
+        context: {
+          documents: [
+            repo(undefined),
+          ],
+        },
+      })
+      expect(range.meta.flags).toEqual([
+        { ...guideline, detail: `the guidelines this review looked for at ${COMMIT.slice(0, 7)} and did not find, not the change's version` },
+      ])
+      const paths = await build(naming).quorum.review({
+        diff: added,
+        source: PATHS,
+        context: {
+          documents: [
+            repo('Names must be short.'),
+          ],
+        },
+      })
+      expect(paths.meta.flags).toEqual([])
+    })
+  })
 })
 
 describe('the security profile\'s requests through a review', () => {

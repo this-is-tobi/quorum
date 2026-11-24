@@ -69,8 +69,16 @@ export function leftOutEntry(entry: LeftOutFile): string {
   return `${file} (${reason})`
 }
 
-/** Where a flag points: the file as a JSON string, with the line when it has one, else the line alone. */
-export function flagWhere({ file, line }: Flag): string {
+/** Where a flag points: the file as a JSON string, with the line when it has one, else the line alone, then ` for <profile>` when the flag is about one. */
+export function flagWhere({ file, line, profile }: Flag): string {
+  const place = flagFile(file, line)
+  return profile === undefined
+    ? place
+    : `${place} for ${profile}`
+}
+
+/** The place a flag names in the file it is about: the file as a JSON string, with the line when it has one, else the line alone. */
+function flagFile(file: string | undefined, line: number | undefined): string {
   if (file !== undefined && line !== undefined) return ` at ${JSON.stringify(file)}:${line}`
   if (file !== undefined) return ` at ${JSON.stringify(file)}`
   if (line !== undefined) return ` at line ${line}`

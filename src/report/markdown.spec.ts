@@ -189,6 +189,22 @@ describe('markdown', () => {
     ])
   })
 
+  it('names a flag\'s profile', () => {
+    const flags: Flag[] = [
+      {
+        code: 'guideline-edited',
+        profile: 'security',
+        file: 'REVIEW.md',
+        detail: 'the guidelines this review read for the profile from 1f3a9c2, not the change\'s version',
+      },
+      { code: 'guideline-edited', profile: 'naming', detail: 'the do-not-report text this review read' },
+    ]
+    expect(render(blankResult({ flags }), PASS).filter(line => line.startsWith('- guideline-edited'))).toEqual([
+      '- guideline-edited at `REVIEW.md` (security): `the guidelines this review read for the profile from 1f3a9c2, not the change\'s version`',
+      '- guideline-edited (naming): `the do-not-report text this review read`',
+    ])
+  })
+
   it('lists the findings that fail their profile first, then high, medium, unreviewed and low, each by file and line', () => {
     const base = reportResult().meta.profiles.security
     const finding = (profile: string, file: string, line: number, confidence: Verdict['confidence']): Verdict => ({

@@ -231,8 +231,16 @@ function leftOutEntry(entry: LeftOutFile): string {
   return `- ${file} (${reason})`
 }
 
-/** Where a flag points: its file in a span, with the line when it has one, else the line alone. */
-function flagPlace({ file, line }: Flag): string {
+/** Where a flag points: its file in a span, with the line when it has one, else the line alone, then its profile in parentheses when the flag is about one. */
+function flagPlace({ file, line, profile }: Flag): string {
+  const place = flagFile(file, line)
+  return profile === undefined
+    ? place
+    : `${place} (${profile})`
+}
+
+/** The place a flag names in the file it is about: its file in a span, with the line when it has one, else the line alone. */
+function flagFile(file: string | undefined, line: number | undefined): string {
   if (file !== undefined && line !== undefined) return ` at ${codeSpan(file)} line ${line}`
   if (file !== undefined) return ` at ${codeSpan(file)}`
   if (line !== undefined) return ` at line ${line}`

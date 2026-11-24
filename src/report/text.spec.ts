@@ -485,6 +485,23 @@ describe('text', () => {
     ])
   })
 
+  it('names a flag\'s profile', () => {
+    const flags: Flag[] = [
+      {
+        code: 'guideline-edited',
+        profile: 'security',
+        file: 'REVIEW.md',
+        detail: 'the guidelines this review read for the profile from 1f3a9c2, not the change\'s version',
+      },
+      { code: 'guideline-edited', profile: 'naming', detail: 'the rules this review read' },
+    ]
+    expect(render(blankResult({ flags }), PASS).slice(-6, -3)).toEqual([
+      'flag: guideline-edited at "REVIEW.md" for security, the guidelines this review',
+      '  read for the profile from 1f3a9c2, not the change\'s version',
+      'flag: guideline-edited for naming, the rules this review read',
+    ])
+  })
+
   it('writes a gap with an empty detail, or one of white space, with no comma after its reason', () => {
     const incomplete: IncompleteEntry[] = [
       { profile: 'security', reason: 'binary', detail: '' },
