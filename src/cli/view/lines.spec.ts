@@ -3,6 +3,7 @@ import { HIDDEN_CLASS } from '../../core/sanitize.ts'
 import type { LeftOutFile, Position, QuorumEvent } from '../../core/types.ts'
 import { durationText } from '../../report/lines.ts'
 import { longReview, replay } from '../../testing/events.ts'
+import { contextDocument } from '../../testing/report.ts'
 import { elapsedWords, heartbeatLine, logLines, renderEvent } from './lines.ts'
 import { DEFAULT_FACTS, fold, startState } from './model.ts'
 import type { ViewState } from './model.ts'
@@ -1304,6 +1305,69 @@ describe('logLines', () => {
       expect(line).toContain('<U+202E>')
       expect(line).not.toMatch(hidden)
     }
+  })
+
+  it('writes one line per document of the context event, in the full and the public view', () => {
+    const commit = '1f3a9c2'.padEnd(40, 'a')
+    const event: QuorumEvent = {
+      type: 'context',
+      context: {
+        documents: [
+          contextDocument({
+            origin: 'repository',
+            path: 'docs/threat-model.md',
+            commit,
+            sha256: 'a'.repeat(64),
+          }),
+          contextDocument({
+            profile: 'naming',
+            origin: 'config',
+            sha256: '3f2a9c1d0b7e'.padEnd(64, '0'),
+            bytes: 4100,
+            removed: { characters: 3, comments: 1, entities: 0 },
+          }),
+          contextDocument({
+            profile: 'naming',
+            kind: 'do-not-report',
+            origin: 'repository',
+            path: 'REVIEW-skip.md',
+            commit,
+            status: 'missing',
+            bytes: 0,
+          }),
+        ],
+      },
+    }
+    const lines = [
+      'context: security guidelines "docs/threat-model.md" at 1f3a9c2, 1830 bytes',
+      'context: naming guidelines from a file, sha256 3f2a9c1d0b7e, 4100 bytes; the cleaner removed 3 hidden character(s) and 1 comment(s)',
+      'context: naming do-not-report text "REVIEW-skip.md" at 1f3a9c2: missing, and optional',
+    ]
+    for (const view of ['full', 'public'] as const) {
+      expect(textsOf(event, undefined, view)).toEqual(lines)
+    }
+    // One line each, with no glyph, and no profile's prefix when several run: a line names its profile itself.
+    const several: Array<[number, QuorumEvent]> = [
+      [
+        0,
+        started(['security', 'naming']),
+      ],
+    ]
+    expect(logLines(event, folded(...several, [1000, event]), 'full')).toEqual(lines.map(text => ({ text })))
+    // Each line is inert: a path of a hostile name shows its hidden character.
+    const hostile: QuorumEvent = {
+      type: 'context',
+      context: {
+        documents: [
+          contextDocument({
+            origin: 'repository',
+            path: `a${RLO}b.md`,
+            commit,
+          }),
+        ],
+      },
+    }
+    expect(textsOf(hostile)).toEqual(['context: security guidelines "a<U+202E>b.md" at 1f3a9c2, 1830 bytes'])
   })
 })
 

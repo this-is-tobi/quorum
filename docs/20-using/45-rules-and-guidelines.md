@@ -1,6 +1,6 @@
 # Rules and guidelines
 
-A review judges a change by what its profile asks for, and a project can say more: the conventions it expects, and what it does not want reported. quorum reads that policy as documents, texts a person wrote, and a profile takes them from its config as files, or from the repository the change is in, at a commit quorum chooses and the change cannot. This page covers what a document is, how a config names one, how a file of the repository is read and from which commit, the flag a change raises when it edits one, what every request carries of it, the caps and the cleaner, what `--print-config` shows, and what they cost.
+A review judges a change by what its profile asks for, and a project can say more: the conventions it expects, and what it does not want reported. quorum reads that policy as documents, texts a person wrote, and a profile takes them from its config as files, or from the repository the change is in, at a commit quorum chooses and the change cannot. This page covers what a document is, how a config names one, how a file of the repository is read and from which commit, the flag a change raises when it edits one, what every request carries of it, the caps and the cleaner, what a person sees of the documents a review read, what `--print-config` shows, and what they cost.
 
 ## What a document is
 
@@ -161,6 +161,42 @@ profiles:
 ```
 
 `true` is the default. No built-in profile carries a do-not-report text yet, so the field changes nothing for the security profile today.
+
+## What a person sees of the documents
+
+A review records each document it read in `meta.context` and says so, one line for each, so a person sees which policy it judged by, where each document came from and what the cleaner changed. The line is one sentence, written once, which the log, the text report and the Markdown summary each use:
+
+```text
+context: security guidelines "docs/threat-model.md" at 1f3a9c2, 1830 bytes
+context: naming guidelines from a file, sha256 3f2a9c1d0b7e, 4100 bytes; the cleaner removed 3 hidden character(s) and 1 comment(s)
+context: naming do-not-report text "REVIEW-skip.md" at 1f3a9c2: missing, and optional
+```
+
+The figures here are an example: a line holds the counts of its own review. A line has these parts, in this order:
+
+| Part | Reads |
+| --- | --- |
+| `context: <profile> <kind>` | The profile's id, then `guidelines` or `do-not-report text`. Every profile with a document has its lines, a built-in one included |
+| Where it came from | `of the profile` for the text a program set on the profile. `from a file, sha256 <12 hex>` for a document of the config, with the first 12 hexadecimal digits of the SHA-256 of its text as read, which [`--print-config`](#what---print-config-shows) prints whole. `<path> at <short id>` for a `{ repository }` document: its path as JSON, cut at 100 characters, and the first 7 characters of the commit it was read at. `written in the config` for a text the config holds with no hash |
+| Its size | `, <bytes> bytes`: the UTF-8 bytes of the cleaned text as sent, an integer, so a person compares it with [the caps](#the-caps-and-the-cleaner). An optional document its commit lacks is `: missing, and optional`, with no bytes |
+| What the cleaner removed | `; the cleaner removed <c> hidden character(s), <m> comment(s) and <e> character reference(s)`, only the counts above 0, joined by `, ` and ` and `. A document with nothing removed has no such clause. The counts are what the reader removed and what the core removed again: [Prose a review reads as policy](../30-security/30-output-handling.md#prose-a-review-reads-as-policy) |
+
+A line holds ids, a hash's first digits, a path, a commit's first characters and counts: never a word of the document, whatever it says. It is inert, as every line is, so a path with a hidden character shows it as `<U+XXXX>`.
+
+Where the lines are:
+
+- **The log, before the stages.** Plain mode and the live view's log write one line for each document, once, right after the `left out:` line and before the research starts, in the order `meta.context` holds them: each profile's guidelines, then its do-not-report text, each in the order they are joined. They come from the `context` event, start with no `[<id>] `, since a line names its profile itself, and carry no glyph. `--view public` writes the same lines. A review with no document writes none. `--progress json` writes the event as it is: [Events](../95-reference/30-library-api.md#events).
+- **The text report,** after the profiles' lines and before the files left out, one line for each record of `meta.context`, in the same words, wrapped at 80 columns as a flag's detail is: the head, which holds the path, the hash or the commit, stays whole on one line, and what follows wraps at spaces. `quorum report` writes them from a saved result, since the result holds the records: [The context](../95-reference/20-json-result.md#the-context).
+- **The summary,** after the `calls:` line, one line for each profile that has a document: the bytes of each kind it read, the optional documents missing and how many documents the cleaner removed text from. A kind it read none of, and a count of 0, are left out:
+
+  ```text
+  context: security: guidelines 1830 bytes
+  context: naming: guidelines 4100 bytes, 1 optional document(s) missing, hidden text removed from 1
+  ```
+
+- **The Markdown summary** lists them under `#### Documents read`, after the flags, each as an item in the same words with its path, its commit and its hash in code spans, the first 20 and then how many more, the first cut when the summary is over its budget: [The summary](./80-reports.md#the-summary).
+
+SARIF holds no document, and the payload holds them only in its summary, as the Markdown summary does: a document is no result and no comment.
 
 ## What `--print-config` shows
 

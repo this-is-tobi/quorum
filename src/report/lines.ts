@@ -1,17 +1,18 @@
 /**
  * The pieces of a line that the text report, the Markdown summary and the progress lines of the CLI write one
  * way: how many of a thing, a file left out, where a flag points, the words of a gap, the words of a verdict, a
- * source, a finding's level and votes, its place among the findings and its evidence's rows, and the numbers a person
- * reads: a token count scaled and a duration in one form (past a minute in minutes). None makes its text
- * inert: a file name is a diff's and a flag's detail a diff's too, so the line that holds them passes through
- * `inertLine` whole.
+ * source, a finding's level and votes, its place among the findings and its evidence's rows, a document a review read
+ * and each profile's summary of them, and the numbers a person reads: a token count scaled and a duration in one form
+ * (past a minute in minutes). None makes its text inert: a file name is a diff's and a flag's detail a diff's too, so
+ * the line that holds them passes through `inertLine` whole.
  */
 
+import { DOCUMENT_KINDS, quotedPath } from '../core/documents.ts'
 import { elapsedWords } from '../core/duration.ts'
 import { ownData } from '../core/facts.ts'
 import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
 import { failsItsProfile } from '../core/outcome.ts'
-import type { CoverageEntry, CoverageStatus, Flag, IncompleteReason, LeftOutFile, PublicVerdict, PublicView, ReviewSource, Verdict, VoteFailure } from '../core/types.ts'
+import type { ContextDocument, ContextRecord, CoverageEntry, CoverageStatus, DocumentKind, Flag, IncompleteReason, LeftOutFile, PublicVerdict, PublicView, ReviewSource, Verdict, VoteFailure } from '../core/types.ts'
 import { voteFailed } from './view.ts'
 
 /** A token count told in three significant digits at most, floored: `999`, `1.23k`, `12.3k`, `812k`, `9.86M`. */
@@ -83,6 +84,143 @@ function flagFile(file: string | undefined, line: number | undefined): string {
   if (file !== undefined) return ` at ${JSON.stringify(file)}`
   if (line !== undefined) return ` at line ${line}`
   return ''
+}
+
+/** `names` as `a`, `a and b` or `a, b and c`. */
+export function listed(names: readonly string[]): string {
+  if (names.length < 2) return names.join('')
+  return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
+}
+
+/** What a line calls each kind of document. */
+const KIND_WORDS: Readonly<Record<DocumentKind, string>> = {
+  guidelines: 'guidelines',
+  'do-not-report': 'do-not-report text',
+}
+
+/** How many characters of a commit's id, and of a document's hash, a line shows. */
+const SHORT_COMMIT = 7
+const SHORT_HASH = 12
+
+/** How a line writes what it names of a document that has a place: its path, its commit and its hash. */
+export interface DocumentShow {
+  readonly path: (path: string) => string
+  readonly commit: (id: string) => string
+  readonly hash: (digits: string) => string
+}
+
+/** The log's and the text report's way: a path as JSON, cut at 100 code points, the rest as it is. */
+const PLAIN: DocumentShow = {
+  path: quotedPath,
+  commit: id => id,
+  hash: digits => digits,
+}
+
+/** Where a document came from: the profile's own text, a file and its hash, text the config holds, or a path of the repository at a commit. */
+function documentOrigin(record: ContextDocument, show: DocumentShow): string {
+  switch (record.origin) {
+    case 'profile':
+      return 'of the profile'
+    case 'config':
+      return record.sha256 === undefined
+        ? 'written in the config'
+        : `from a file, sha256 ${show.hash(record.sha256.slice(0, SHORT_HASH))}`
+    default:
+      return `${show.path(record.path ?? '')} at ${show.commit((record.commit ?? '').slice(0, SHORT_COMMIT))}`
+  }
+}
+
+/** What the cleaner removed from a document, as `; the cleaner removed 3 hidden character(s) and 1 comment(s)`, and nothing when it removed none. */
+function removedWords({ characters, comments, entities }: ContextDocument['removed']): string {
+  const removed = [
+    ...characters > 0
+      ? [`${characters} hidden character(s)`]
+      : [],
+    ...comments > 0
+      ? [`${comments} comment(s)`]
+      : [],
+    ...entities > 0
+      ? [`${entities} character reference(s)`]
+      : [],
+  ]
+  return removed.length === 0
+    ? ''
+    : `; the cleaner removed ${listed(removed)}`
+}
+
+/** A document's words in two parts: the `head`, which ends at the first comma or colon and holds the path, the commit or the hash whole, and the `tail`, the rest. `head`, a space and `tail` are the sentence. */
+export interface DocumentParts {
+  readonly head: string
+  readonly tail: string
+}
+
+/**
+ * A document a review read, in words quorum wrote: its profile and kind, where it came from and a comma (a colon for a
+ * missing one), which are the head; then its bytes as sent, or that an optional one was missing, then what the cleaner
+ * removed from it, which are the tail. `show` writes the path, the commit and the hash a place names, so the log and
+ * the Markdown summary write one sentence. It never holds the document's text, and bytes are integers, since a person
+ * compares them with the caps.
+ */
+function documentParts(record: ContextDocument, show: DocumentShow): DocumentParts {
+  const missing = record.status === 'missing'
+  return {
+    head: `${record.profile} ${KIND_WORDS[record.kind]} ${documentOrigin(record, show)}${missing
+      ? ':'
+      : ','}`,
+    tail: `${missing
+      ? 'missing, and optional'
+      : `${record.bytes} bytes`}${removedWords(record.removed)}`,
+  }
+}
+
+/** A document as the sentence `documentParts` splits: `<profile> <kind> <where from>, <bytes> bytes`. */
+export function documentWords(record: ContextDocument, show: DocumentShow): string {
+  const { head, tail } = documentParts(record, show)
+  return `${head} ${tail}`
+}
+
+/** The line a document has in the log: `context: <profile> <kind> <where from>, <bytes> bytes`, as `documentWords` says it. */
+export function documentLine(record: ContextDocument): string {
+  return `context: ${documentWords(record, PLAIN)}`
+}
+
+/** The line of `documentLine` in two parts, for a report that wraps its tail and keeps its head whole: the path stays on one line. */
+export function documentLineParts(record: ContextDocument): DocumentParts {
+  const { head, tail } = documentParts(record, PLAIN)
+  return { head: `context: ${head}`, tail }
+}
+
+/** The parts of one profile's summary line: the bytes of each kind it read, its optional documents missing and the documents the cleaner removed text from. */
+function summaryParts(documents: readonly ContextDocument[]): string[] {
+  const kinds = DOCUMENT_KINDS.flatMap((kind) => {
+    const read = documents.filter(document => document.kind === kind && document.status === 'read')
+    return read.length === 0
+      ? []
+      : [`${KIND_WORDS[kind]} ${read.reduce((bytes, document) => bytes + document.bytes, 0)} bytes`]
+  })
+  const missing = documents.filter(document => document.status === 'missing').length
+  const cleaned = documents.filter(({ removed }) => removed.characters + removed.comments + removed.entities > 0).length
+  return [
+    ...kinds,
+    ...missing > 0
+      ? [`${missing} optional document(s) missing`]
+      : [],
+    ...cleaned > 0
+      ? [`hidden text removed from ${cleaned}`]
+      : [],
+  ]
+}
+
+/** One summary line for each profile that has a document, in the order the review's records first name them: `context: <profile>: guidelines 1830 bytes, 1 optional document(s) missing, hidden text removed from 1`. */
+export function contextSummary(record: ContextRecord): string[] {
+  const byProfile = new Map<string, ContextDocument[]>()
+  for (const document of record.documents) {
+    byProfile.set(document.profile, [
+      ...byProfile.get(document.profile) ?? [],
+      document,
+    ])
+  }
+  return [...byProfile].map(([profile, documents]) => `context: ${profile}: ${summaryParts(documents).join(', ')}`)
 }
 
 /**

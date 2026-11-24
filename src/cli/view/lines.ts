@@ -9,7 +9,7 @@ import { CUT_ADVICE, downWords, lackWords } from '../../core/errors.ts'
 import type { PartOutcome } from '../../core/parts.ts'
 import { inertLine } from '../../core/sanitize.ts'
 import type { Adaptation, CallFailure, LeftOutFile, QuorumEvent, UnusableReply } from '../../core/types.ts'
-import { durationText, flagWhere, leftOutEntry, tokenWords } from '../../report/lines.ts'
+import { documentLine, durationText, flagWhere, leftOutEntry, tokenWords } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords, researchRuns, timeLeft } from './eta.ts'
 import type { ViewState } from './model.ts'
@@ -352,8 +352,10 @@ function retryLines(event: Extract<QuorumEvent, { type: 'call:retry' }>, state: 
 
 /**
  * The lines of `event`, read against the state that folded it: `renderEvent`'s line with its glyph, a research
- * retry's line, with its position from the call the state holds, and the stopping line of the deadline or of the
- * interrupt, which has no glyph. Each text is inert, and starts with `[<profile>] ` when several profiles run.
+ * retry's line, with its position from the call the state holds, the stopping line of the deadline or of the
+ * interrupt, which has no glyph, and a line for each document of a `context` event, in its order, the same under the
+ * public view and with no prefix, since a document's line names its profile itself. Each text is inert, and starts
+ * with `[<profile>] ` when several profiles run, but for a document's.
  */
 export function logLines(event: QuorumEvent, state: ViewState, view: ReportView): Line[] {
   if (event.type === 'call:retry') return retryLines(event, state)
@@ -365,6 +367,11 @@ export function logLines(event: QuorumEvent, state: ViewState, view: ReportView)
           : `stopping: the review reached its deadline of ${durationText(state.facts.deadlineMs)}: the calls in flight are stopped, and what is left is a review-deadline gap`),
       },
     ]
+  }
+  if (event.type === 'context') {
+    return event.context.documents.map(record => ({
+      text: inertLine(documentLine(record)),
+    }))
   }
   const text = renderEvent(event, state.prefixed, view)
   if (text === undefined) return []

@@ -3,7 +3,7 @@ import type { ConcurrencyRecord } from '../../core/lanes.ts'
 import type { IncompleteReason, QuorumEvent, StageName } from '../../core/types.ts'
 import type { ReportView } from '../../report/view.ts'
 import { longReview, replay } from '../../testing/events.ts'
-import { reportResult, SQL, TOKEN } from '../../testing/report.ts'
+import { contextDocument, reportResult, SQL, TOKEN } from '../../testing/report.ts'
 import { DEFAULT_FACTS, fold, startState } from './model.ts'
 import type { ViewState } from './model.ts'
 import { rerunCouldFill, summaryLines } from './summary.ts'
@@ -312,6 +312,56 @@ describe('summaryLines', () => {
       made: { research: 0, votes: 0 },
     }
     expect(lines(none).some(line => line.startsWith('calls:'))).toBe(false)
+  })
+
+  it('writes the context lines after the calls line, and none for a review with no document', () => {
+    const documents = [
+      contextDocument(),
+      contextDocument({
+        profile: 'naming',
+        origin: 'config',
+        sha256: '3f2a9c1d0b7e'.padEnd(64, '0'),
+        bytes: 4100,
+        removed: { characters: 3, comments: 1, entities: 0 },
+      }),
+      contextDocument({
+        profile: 'naming',
+        kind: 'do-not-report',
+        origin: 'repository',
+        path: 'REVIEW-skip.md',
+        commit: '1f3a9c2'.padEnd(40, 'a'),
+        status: 'missing',
+        bytes: 0,
+      }),
+    ]
+    const facts = factsOf({
+      result: reportResult({
+        unreviewed: [],
+        meta: {
+          durationMs: 2_285_000,
+          usage: { inputTokens: 2_412_833, outputTokens: 312_094 },
+          context: { documents },
+        },
+      }),
+    })
+    const state = replay(longReview())
+    const written = lines(state, facts)
+    const calls = written.findIndex(line => line.startsWith('calls:'))
+    expect(written.slice(calls + 1, calls + 4)).toEqual([
+      'context: security: guidelines 1830 bytes',
+      'context: naming: guidelines 4100 bytes, 1 optional document(s) missing, hidden text removed from 1',
+      'gaps: 1 part(s) research-failed (timeout): raise timeoutMs',
+    ])
+    expect(written).toHaveLength(lines(state).length + 2)
+    // The public view says the same: the line holds counts and code words only.
+    expect(lines(state, facts, 'public').filter(line => line.startsWith('context:'))).toHaveLength(2)
+    // A review with no document writes none, and a review with no calls line still writes them, before where the report went.
+    expect(lines(state).some(line => line.startsWith('context:'))).toBe(false)
+    expect(lines(reviewed(), facts).filter(line => /^(?:context|result):/.test(line))).toEqual([
+      'context: security: guidelines 1830 bytes',
+      'context: naming: guidelines 4100 bytes, 1 optional document(s) missing, hidden text removed from 1',
+      'result: json on stdout',
+    ])
   })
 
   it('names the calls sent again after a bad reply among the retried, for research and votes', () => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
 import type { Flag, LeftOutFile, PublicView, QuorumResult, Verdict } from '../core/types.ts'
 import { expectCodeWritten as expectWritten, HOSTILE, RLO } from '../testing/markdown.ts'
-import { blankResult, cast, FINDINGS, INCOMPLETE, INTERRUPTED, PASS, reportResult, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
+import { blankResult, cast, contextDocument, FINDINGS, INCOMPLETE, INTERRUPTED, PASS, reportResult, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
 import { LISTED, markdown, SUMMARY_BUDGET, summaryMarkdown } from './markdown.ts'
 import { renderReport } from './registry.ts'
 import { publicView } from './view.ts'
@@ -203,6 +203,109 @@ describe('markdown', () => {
       '- guideline-edited at `REVIEW.md` (security): `the guidelines this review read for the profile from 1f3a9c2, not the change\'s version`',
       '- guideline-edited (naming): `the do-not-report text this review read`',
     ])
+  })
+
+  it('lists the documents read, each path, commit and hash in a code span', () => {
+    const commit = '1f3a9c2'.padEnd(40, 'a')
+    const documents = [
+      contextDocument(),
+      contextDocument({
+        origin: 'repository',
+        path: 'docs/threat-model.md',
+        commit,
+        sha256: 'a'.repeat(64),
+        bytes: 2000,
+      }),
+      contextDocument({
+        profile: 'naming',
+        origin: 'config',
+        sha256: '3f2a9c1d0b7e'.padEnd(64, '0'),
+        bytes: 4100,
+        removed: { characters: 3, comments: 1, entities: 0 },
+      }),
+      contextDocument({
+        profile: 'naming',
+        kind: 'do-not-report',
+        origin: 'repository',
+        path: 'REVIEW-skip.md',
+        commit,
+        status: 'missing',
+        bytes: 0,
+      }),
+    ]
+    const lines = render(reportResult({
+      meta: {
+        context: { documents },
+      },
+    }))
+    // The section follows the flags, and each record is an item in the words of its line, its path, commit and hash in spans.
+    expect(lines.slice(lines.indexOf('#### Flags'))).toEqual([
+      '#### Flags',
+      '',
+      '- hidden-characters at `src/session.js` line 20: `U+202E on 1 added line(s)`',
+      '',
+      '#### Documents read',
+      '',
+      '- security guidelines of the profile, 1830 bytes',
+      '- security guidelines `docs/threat-model.md` at `1f3a9c2`, 2000 bytes',
+      '- naming guidelines from a file, sha256 `3f2a9c1d0b7e`, 4100 bytes; the cleaner removed 3 hidden character(s) and 1 comment(s)',
+      '- naming do-not-report text `REVIEW-skip.md` at `1f3a9c2`: missing, and optional',
+      '',
+      '---',
+      '',
+      TRAILER,
+      '',
+    ])
+    // A review with no document has no section, and a path that holds Markdown stays in its span.
+    expect(render(reportResult())).toEqual(MAIN)
+    const hostile = render(reportResult({
+      meta: {
+        context: {
+          documents: [
+            contextDocument({
+              origin: 'repository',
+              path: '`@octocat` #1 |![x](https://e.example/x.png)',
+              commit,
+            }),
+          ],
+        },
+      },
+    }))
+    expect(hostile).toContain('- security guidelines `` `@octocat` #1 |![x](https://e.example/x.png) `` at `1f3a9c2`, 1830 bytes')
+    expectCodeWritten(hostile.join('\n'))
+  })
+
+  it('lists twenty documents then how many more, and cuts them before the flags when the budget is short', () => {
+    const documents = Array.from({ length: 25 }, (_, index) => contextDocument({
+      origin: 'repository',
+      path: `docs/${index}.md`,
+      commit: '1f3a9c2'.padEnd(40, 'a'),
+    }))
+    const result = blankResult({
+      context: { documents },
+      flags: [
+        {
+          code: 'hidden-characters',
+          file: 'a.js',
+          line: 1,
+          detail: 'U+202E on 1 added line(s)',
+        },
+      ],
+    })
+    const view = publicView(result)
+    const full = summaryMarkdown(view, PASS)
+    expect(listUnder(full.split('\n'), '#### Documents read')).toEqual([
+      ...Array.from({ length: 20 }, (_, index) => `- security guidelines \`docs/${index}.md\` at \`1f3a9c2\`, 1830 bytes`),
+      `- and 5 more, ${MORE}`,
+    ])
+    // One code unit short of the whole, the documents lose their last entry, and the flag stays.
+    const short = summaryMarkdown(view, PASS, full.length - 1).split('\n')
+    expect(listUnder(short, '#### Documents read').at(-1)).toBe(`- and 6 more, ${MORE}`)
+    expect(listUnder(short, '#### Flags')).toEqual(['- hidden-characters at `a.js` line 1: `U+202E on 1 added line(s)`'])
+    // With no room at all, each section keeps its heading and a count of what it cut.
+    const none = summaryMarkdown(view, PASS, 0).split('\n')
+    expect(listUnder(none, '#### Documents read')).toEqual([`- and 25 more, ${MORE}`])
+    expect(listUnder(none, '#### Flags')).toEqual([`- and 1 more, ${MORE}`])
   })
 
   it('lists the findings that fail their profile first, then high, medium, unreviewed and low, each by file and line', () => {

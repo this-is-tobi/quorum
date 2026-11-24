@@ -9,7 +9,9 @@
  * 5. `#### Gaps`: one line per profile and reason, in fixed words;
  * 6. `#### Files left out`;
  * 7. `#### Flags`;
- * 8. the note that some evidence is left out, when it is, then `---` and the trailer: the version and the source.
+ * 8. `#### Documents read`: one item for each guidelines or do-not-report document the review read, in the words of the
+ *    log's line, its path, commit and hash in code spans;
+ * 9. the note that some evidence is left out, when it is, then `---` and the trailer: the version and the source.
  *
  * A section with nothing to list is left out.
  *
@@ -29,15 +31,15 @@
 import { profileFailOn } from '../core/outcome.ts'
 import type { Outcome } from '../core/outcome.ts'
 import { codeSpan, fencedBlock, inertLine } from '../core/sanitize.ts'
-import type { Flag, IncompleteReason, LeftOutFile, PublicVerdict, PublicView } from '../core/types.ts'
-import { coverageWords, evidenceRows, GAP_WORDS, levelWord, plural, rankedFindings, rowText, sourcePhrase, verdictWhy, votesWords } from './lines.ts'
+import type { ContextDocument, Flag, IncompleteReason, LeftOutFile, PublicVerdict, PublicView } from '../core/types.ts'
+import { coverageWords, documentWords, evidenceRows, GAP_WORDS, levelWord, plural, rankedFindings, rowText, sourcePhrase, verdictWhy, votesWords } from './lines.ts'
 import type { Reporter } from './reporter.ts'
 import { discardedOf, publicView } from './view.ts'
 
 /** The most UTF-16 code units a summary holds, so GitHub's limit on a comment and the job summary's both hold, and no string is ever cut to fit it. */
 export const SUMMARY_BUDGET = 60_000
 
-/** How many of the files left out, and how many of the flags, the summary lists; the JSON result lists every one. */
+/** How many of the files left out, of the flags and of the documents read, the summary lists; the JSON result lists every one. */
 export const LISTED = 20
 
 const MARKER = '<!-- quorum:summary:v1 -->'
@@ -247,6 +249,15 @@ function flagFile(file: string | undefined, line: number | undefined): string {
   return ''
 }
 
+/** A document read as an item: the words of its log line, with its path, its commit and its hash in code spans. */
+function documentItem(record: ContextDocument): string {
+  return `- ${documentWords(record, {
+    path: codeSpan,
+    commit: codeSpan,
+    hash: codeSpan,
+  })}`
+}
+
 /** The first `LISTED` of a list as items, and how many it holds beyond them. */
 function listed<T>(heading: string, all: readonly T[], entry: (value: T) => string): Listing {
   return listing(heading, {
@@ -263,8 +274,8 @@ const evidenceNote = (count: number): string => written(`The evidence of ${plura
  * quorum wrote, numbers, a version and commit ids, so they fit any budget a person would give.
  *
  * What is over the budget is dropped whole, in this order, until the text fits: the evidence of the findings, from
- * the last one listed up; the flags, the files left out and the findings, each from its last entry up; the gap
- * lines; the profiles' rows. The findings are listed with those that fail their profile first, so the budget
+ * the last one listed up; the documents read, the flags, the files left out and the findings, each from its last entry
+ * up; the gap lines; the profiles' rows. The findings are listed with those that fail their profile first, so the budget
  * drops them last. Each list that lost entries ends with a line that counts them (and, for the findings, names
  * their levels), and a note says how many findings lost their evidence. No string is ever cut, so a code span or a
  * fenced block is whole or gone, and the work is linear in what the view holds.
@@ -278,9 +289,16 @@ export function summaryMarkdown(view: PublicView, outcome: Outcome, budget = SUM
   const gaps = gapsListing(view)
   const leftOut = listed('#### Files left out', view.meta.leftOut, leftOutEntry)
   const flags = listed('#### Flags', view.meta.flags, flag => `- ${flag.code}${flagPlace(flag)}: ${codeSpan(flag.detail)}`)
+  const documents = listed('#### Documents read', view.meta.context.documents, documentItem)
   const sections = [
     table,
-    ...[findings, gaps, leftOut, flags].filter(present),
+    ...[
+      findings,
+      gaps,
+      leftOut,
+      flags,
+      documents,
+    ].filter(present),
   ]
   let evidenceCut = 0
 
@@ -298,7 +316,14 @@ export function summaryMarkdown(view: PublicView, outcome: Outcome, budget = SUM
     item.evidenceShown = false
     evidenceCut += 1
   }
-  for (const section of [flags, leftOut, findings, gaps, table]) {
+  for (const section of [
+    documents,
+    flags,
+    leftOut,
+    findings,
+    gaps,
+    table,
+  ]) {
     while (section.shown > 0 && length() > budget) {
       const item = dropLast(section)
       if (section === findings && !item.evidenceShown && item.evidence !== '') evidenceCut -= 1

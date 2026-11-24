@@ -894,6 +894,41 @@ describe('a profile\'s documents', () => {
     expect(stderr()).not.toContain(GUIDELINE)
   })
 
+  it('shows a file guideline\'s line before the stages and in the summary, with what the cleaner removed', async () => {
+    mkdirSync(join(dir, 'guides'), { recursive: true })
+    // A tag character no one sees in the file, which the cleaner removes: the line says so, and the file's hash is of the text as read.
+    const text = `Name things${String.fromCodePoint(0xE0041)} for what they do.`
+    write('guides/naming.md', text)
+    const config = write('naming-lines.yaml', NAMING_YAML)
+    stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true))
+    const { io, stderr, stdout } = harness({
+      argv: ['--format', 'text'],
+      env: { ...MODEL, QUORUM_CONFIG: config },
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    const line = `context: naming guidelines from a file, sha256 ${documentSha256(text).slice(0, 12)}, 29 bytes; the cleaner removed 1 hidden character(s)`
+    const lines = stderr().split('\n')
+    expect(lines.filter(entry => entry.startsWith('context:'))).toEqual([line, 'context: naming: guidelines 29 bytes, hidden text removed from 1'])
+    // The document's line comes after the banner and before the first stage's lines, and the summary's after the calls line.
+    expect(lines.indexOf(line)).toBeGreaterThan(lines.findIndex(entry => entry.startsWith('Panel will use')))
+    expect(lines.indexOf(line)).toBeLessThan(lines.findIndex(entry => entry.startsWith('part 1 of 1')))
+    const summary = lines.indexOf('context: naming: guidelines 29 bytes, hidden text removed from 1')
+    expect(lines[summary - 1]).toMatch(/^calls: /)
+    expect(lines[summary + 1]).toMatch(/^result: /)
+    expect(stderr()).not.toContain('for what they do')
+    // The text report on stdout writes the same words, from meta.context, after the profile's lines, wrapped at 80 columns as a flag's detail is.
+    const report = stdout().split('\n')
+    const at = report.findIndex(entry => entry.startsWith('context:'))
+    expect(at).toBeGreaterThan(report.findIndex(entry => entry.startsWith('naming (fail-on')))
+    expect(report.filter(entry => entry.startsWith('context:'))).toHaveLength(1)
+    expect([...report[at]].length).toBeLessThanOrEqual(80)
+    expect(report[at + 1]).toMatch(/^ {2}\S/)
+    expect(`${report[at]} ${report[at + 1].trim()}`).toBe(line)
+  })
+
   it('exits 2 before any call for a document file that cannot be read, at its path, and for one over its cap once cleaned', async () => {
     const missing = write('missing-guide.yaml', NAMING_YAML.replace('guides/naming.md', 'guides/missing.md'))
     const over = write('over-guide.yaml', NAMING_YAML.replace('guides/naming.md', 'guides/over.md'))

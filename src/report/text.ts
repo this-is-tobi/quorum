@@ -6,11 +6,12 @@
  *    evidence rows and how its lenses voted, and, under its head, the line its finder cited when the harness
  *    moved it to its quote; the discarded ones are only counted;
  * 3. each profile's level, counts and coverage;
- * 4. the files left out;
- * 5. the gaps;
- * 6. the flags;
- * 7. the time and the tokens;
- * 8. the verdict, which says what the exit code says.
+ * 4. the documents the review read, one line each, as the log writes them, its tail wrapped as a flag's detail is;
+ * 5. the files left out;
+ * 6. the gaps;
+ * 7. the flags;
+ * 8. the time and the tokens;
+ * 9. the verdict, which says what the exit code says.
  *
  * The report of a public view (`publicView`) is the same but for two lines: a gap is written in the fixed words of
  * its reason, as it has no detail, and the time has no token count, as the view has no usage.
@@ -27,8 +28,8 @@
 import { profileFailOn } from '../core/outcome.ts'
 import type { Outcome } from '../core/outcome.ts'
 import { inertLine, showHidden } from '../core/sanitize.ts'
-import type { IncompleteEntry, LeftOutFile, PublicGap, PublicMeta, PublicVerdict, QuorumMeta, Verdict } from '../core/types.ts'
-import { byLocation, coverageWords, durationText, evidenceRows, flagWhere, GAP_WORDS, leftOutEntry, levelWord, plural, rowParts, sourcePhrase, tokenWords, verdictWhy, votesWords } from './lines.ts'
+import type { ContextDocument, IncompleteEntry, LeftOutFile, PublicGap, PublicMeta, PublicVerdict, QuorumMeta, Verdict } from '../core/types.ts'
+import { byLocation, coverageWords, documentLineParts, durationText, evidenceRows, flagWhere, GAP_WORDS, leftOutEntry, levelWord, plural, rowParts, sourcePhrase, tokenWords, verdictWhy, votesWords } from './lines.ts'
 import type { Reporter, ReportInput } from './reporter.ts'
 import { discardedOf, isPublicView } from './view.ts'
 
@@ -215,6 +216,12 @@ function profileLines(result: ReportInput): string[] {
   })
 }
 
+/** A document's line, as the log writes it: its head, which holds its path, hash or commit whole, then its tail wrapped at spaces as a flag's detail is. */
+function documentLines(record: ContextDocument): string[] {
+  const { head, tail } = documentLineParts(record)
+  return wrap(head, tail).map(inertLine)
+}
+
 /** The files left out, when there are some: their count, the first five and how many more. */
 function leftOutLines(leftOut: readonly LeftOutFile[]): string[] {
   if (leftOut.length === 0) return []
@@ -268,7 +275,7 @@ function verdictLine(outcome: Outcome, color: boolean): string {
 
 /**
  * The review as a person reads it on a terminal: the header, the findings with their evidence, the profiles'
- * counts and coverage, what was left out, the gaps, the flags, the time and the tokens, and last the verdict. See
+ * counts and coverage, the documents read, what was left out, the gaps, the flags, the time and the tokens, and last the verdict. See
  * the module's comment for the order. With `color`, only the words quorum wrote are colored: the level, the
  * location, the marker of the cited row, a row's `+` or `-`, and the status word of the verdict. It reads a public
  * view as the result it came from, but for the two lines the module's comment names.
@@ -284,6 +291,7 @@ export const text: Reporter = {
       '',
       ...orderedFindings(result).flatMap(({ verdict, kept }) => findingLines(verdict, kept, color)),
       ...profileLines(result),
+      ...meta.context.documents.flatMap(documentLines),
       ...leftOutLines(meta.leftOut),
       ...gaps.map(inertLine),
       ...meta.flags.flatMap(flag => wrap(`flag: ${flag.code}${flagWhere(flag)},`, flag.detail)).map(inertLine),

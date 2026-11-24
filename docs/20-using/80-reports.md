@@ -74,6 +74,7 @@ quorum 0.6.0 · range `1f3a9c2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`...`7b2e4d0aaaaa
 - **The findings** are the kept and the unreviewed ones, each with its level, its profile, its file and line, its category, how its lenses voted and, for a failed vote, what it failed with ([How a failed vote reads](#how-a-failed-vote-reads)), its claim and its evidence, numbered as the text report numbers it: the cited row is marked `>`. A finding that fails its profile comes first, then the high ones, the medium, the unreviewed and the low, each group by file and then by line, so the budget drops the least important last.
 - **The gaps** are one line for each profile and reason, in fixed words that say nothing of the diff, with a count in parentheses when a profile records a reason more than once.
 - **The files left out** and **the flags** list the first 20 each, then how many more. A file with no name, the part of a diff that no header names, is `(no path)`. A held file's line carries its reason and its rule: `(secret: name)`.
+- **The documents read** are one item for each guidelines or do-not-report document the review read, in the words of the log's `context:` line without its first word, its path, commit and hash in code spans, the first 20 and then how many more: ``- security guidelines `docs/threat-model.md` at `1f3a9c2`, 1830 bytes``, ``- naming guidelines from a file, sha256 `3f2a9c1d0b7e`, 4100 bytes; the cleaner removed 3 hidden character(s) and 1 comment(s)``, ``- naming do-not-report text `REVIEW-skip.md` at `1f3a9c2`: missing, and optional`` (the figures are an example). The commit shows its first 7 characters and the hash its first 12 digits. They come under `#### Documents read`, after the flags: [What a person sees of the documents](./45-rules-and-guidelines.md#what-a-person-sees-of-the-documents).
 - **The trailer** is the version and what was reviewed: a range's two commits, the commit a local or staged review sits on, the commit of a path review, or `diff`.
 
 A section with nothing to list is left out, so the review of a blank diff is a heading, a verdict, a table and a trailer.
@@ -105,11 +106,12 @@ The JSON result holds the facts, `kind`, `status` and `noAnswer`: [A vote](../95
 A summary is at most 60,000 UTF-16 code units, inside GitHub's limit on a comment and the job summary's. A large review can hold more: 100 findings with their evidence are about 280,000 characters. The summary drops whole pieces until it fits, in this order, and counts what it dropped:
 
 1. the evidence of the findings, from the last one up, with a note that says how many findings lost theirs;
-2. the flags, last first;
-3. the files left out, last first;
-4. the findings, last first, so those that fail their profile go last;
-5. the gap lines;
-6. the profiles' rows.
+2. the documents read, last first;
+3. the flags, last first;
+4. the files left out, last first;
+5. the findings, last first, so those that fail their profile go last;
+6. the gap lines;
+7. the profiles' rows.
 
 Each list that lost entries ends with a line that counts them, as `- and 5 more, listed in the review's JSON result`, and the findings' line names their levels. The marker, the heading, the verdict, the section headings, the count lines, the note and the trailer stay whatever the budget, since they hold only words quorum wrote, numbers, the version and commit ids. A string is never cut, so a code span or a block is whole or gone.
 

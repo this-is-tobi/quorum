@@ -3,7 +3,7 @@ import type { Clock } from '../../core/clock.ts'
 import type { QuorumEvent } from '../../core/types.ts'
 import { fakeClock } from '../../testing/clock.ts'
 import { longReview, replay } from '../../testing/events.ts'
-import { reportResult } from '../../testing/report.ts'
+import { contextDocument, reportResult } from '../../testing/report.ts'
 import { DEFAULT_FACTS } from './model.ts'
 import { HEARTBEAT_MS, plainWriter } from './plain.ts'
 import type { LineLevel } from './writer.ts'
@@ -299,5 +299,59 @@ describe('plainWriter', () => {
       expect([...line].every(char => char.charCodeAt(0) >= 0x20 && char.charCodeAt(0) <= 0x7E)).toBe(true)
     }
     expect(replay(list).ended).toBe(true)
+  })
+
+  it('writes a review\'s documents as one line each before its stages, with no glyph and no prefix', () => {
+    const lines: string[] = []
+    const sink = plainWriter({
+      write: line => lines.push(line),
+    }).sink
+    sink(started(['security', 'naming']))
+    sink({
+      type: 'context',
+      context: {
+        documents: [
+          contextDocument({
+            origin: 'repository',
+            path: 'docs/threat-model.md',
+            commit: '1f3a9c2'.padEnd(40, 'a'),
+            sha256: 'a'.repeat(64),
+          }),
+          contextDocument({
+            profile: 'naming',
+            origin: 'config',
+            sha256: '3f2a9c1d0b7e'.padEnd(64, '0'),
+            bytes: 4100,
+            removed: { characters: 3, comments: 1, entities: 0 },
+          }),
+          contextDocument({
+            profile: 'naming',
+            kind: 'do-not-report',
+            origin: 'repository',
+            path: 'REVIEW-skip.md',
+            commit: '1f3a9c2'.padEnd(40, 'a'),
+            status: 'missing',
+            bytes: 0,
+          }),
+        ],
+      },
+    })
+    sink({
+      type: 'stage:end',
+      profile: 'naming',
+      stage: 'dedup',
+      durationMs: 1,
+      count: 2,
+    })
+    expect(lines).toEqual([
+      'context: security guidelines "docs/threat-model.md" at 1f3a9c2, 1830 bytes',
+      'context: naming guidelines from a file, sha256 3f2a9c1d0b7e, 4100 bytes; the cleaner removed 3 hidden character(s) and 1 comment(s)',
+      'context: naming do-not-report text "REVIEW-skip.md" at 1f3a9c2: missing, and optional',
+      '[naming] 2 candidate(s) after dedup',
+    ])
+    for (const line of lines) {
+      expect(line).not.toContain(ESC)
+      expect([...line].every(char => char.charCodeAt(0) >= 0x20 && char.charCodeAt(0) <= 0x7E)).toBe(true)
+    }
   })
 })
