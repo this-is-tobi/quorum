@@ -15,6 +15,7 @@ import { ConfigError } from './errors.ts'
 import type { ConfigIssue, ProviderDownError } from './errors.ts'
 import { estimateReview } from './estimate.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
+import { ruleTextBytes } from './rules.ts'
 import { diffFlags, documentFlags, secretFlags } from './flags.ts'
 import { leftOutIssues, mergeLeftOut, sendIssues, sourceIssues, sourceOf } from './inputs.ts'
 import { createLanes, REVIEW_CEILING } from './lanes.ts'
@@ -27,7 +28,7 @@ import type { EventSink, ProfilePorts, Provider, QuorumPorts, ReplyStore } from 
 import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
 import { doNotReportInstructions, renderTemplate } from './prompts.ts'
 import { ownData } from './facts.ts'
-import { addUsage, elapsed, stage, targetOf } from './stages/context.ts'
+import { addUsage, elapsed, stage, targetOf, withSent } from './stages/context.ts'
 import type { ProfileRun, RunContext } from './stages/context.ts'
 import { dedup } from './stages/dedup.ts'
 import { panel } from './stages/panel.ts'
@@ -55,6 +56,8 @@ interface Compiled {
   readonly partTokens: number
   /** The reply budgets of each profile at its providers' stated windows, by profile id, computed once. */
   readonly budgets: Readonly<Record<string, ProfileBudgets>>
+  /** The bytes the cleaned rule texts of each profile take as it was compiled, by profile id, computed once: where the rules of a review's repository documents are counted from. */
+  readonly heldRules: ReadonlyMap<string, number>
   /** The time and the randomness every review reads: the system's, unless a spec injects its own through `createQuorumWith`. */
   readonly clock: Clock
   /** Whether a file's path is left out of every request, built once from `exclude`. */
@@ -146,6 +149,7 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
     concurrency: options.concurrency,
     ...settings,
     budgets,
+    heldRules: new Map(runs.map(run => [run.id, ruleTextBytes(run.texts.rules) ?? 0])),
     reviewTimeoutMs: options.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
     clock,
     excluded: excludeMatcher(options.exclude ?? []),
@@ -187,7 +191,7 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
  */
 function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimits = {}): Estimate {
   const issues = [
-    ...reviewIssues(input, {}, new Set(compiled.runs.map(run => run.id)), false),
+    ...reviewIssues(input, {}, new Set(compiled.runs.map(run => run.id)), false, compiled.heldRules),
     ...isRecord(limits)
       ? [
           ...reviewLimitIssues(limits),
@@ -347,13 +351,18 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * research system message alone, right after the instructions. `meta.context` records each document, never its text, and one
  * `context` event says the same. A profile the context gives no document keeps the run it was compiled to.
  *
+ * A profile may also list review rules (`Profile.rules`, its `documents` of kind `rules` and the repository's), and each
+ * research request of such a profile carries the rules whose `paths` match a file of the review's filtered diff, the same block
+ * in every part, after the diff and before the guidelines, and asks for a sixth field of each finding, `rule`. A rule without
+ * `paths` applies to every file. A profile that lists none sends its requests as it always did.
+ *
  * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut`, a `send` or a `context` it cannot take (a repository document of a profile the quorum lacks, of another origin, at a commit the source does not read documents from, of a `diff` source, over its cap once cleaned or too deep to clean), repository documents that leave a research provider less than 1024 tokens of diff, options that are not an object, a `signal` that is not an AbortSignal, a `store` that is no object with a `get` and a `put` function, a `maxReviewTokens` or a `reviewTimeoutMs` out of range, a `findingsCap` that is no positive integer
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
  * @throws the error of a sink that throws
  * @throws ProviderDownError when no research call of any profile answered and a research provider was found down, or each of whose calls failed for a reason of its own
  */
 async function review(compiled: Compiled, input: ReviewInput, options: ReviewOptions = {}): Promise<QuorumResult> {
-  const issues = reviewIssues(input, options, new Set(compiled.runs.map(run => run.id)), true)
+  const issues = reviewIssues(input, options, new Set(compiled.runs.map(run => run.id)), true, compiled.heldRules)
   if (issues.length > 0) throw new ConfigError(issues)
   const reviewed = reviewRuns(compiled, input.context)
   options.signal?.throwIfAborted()
@@ -423,7 +432,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
   const startedAt = new Date().toISOString()
   const started = performance.now()
   const { sink } = compiled
-  const { runs, record } = reviewed
+  const { record } = reviewed
   const whole = input.diff.trim() === ''
     ? undefined
     : splitDiff(input.diff)
@@ -452,6 +461,8 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
   const filtered = sections === undefined
     ? []
     : diffSections(scope.diff)
+  // Each profile that lists rules sends those whose paths match a file of the filtered diff, once for the whole review.
+  const runs = reviewed.runs.map(run => withSent(run, filtered))
   const plans = sections === undefined
     ? []
     : runs.map(run => planResearch(run, scope.diff, filtered, { partTokens: compiled.partTokens, maxFindings: compiled.maxFindings, replyTokens: compiled.budgets[run.id].research.replyTokens }))
@@ -695,10 +706,11 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPla
  * mistake is the diff text passed on its own, as `runQuorum` takes it. The `source`, the `leftOut`, the
  * `send` and the `context`, when set, are checked after the diff, so a caller sees every issue of the input at once. The
  * context's documents must name one of `profiles` and, when `commit` is set, the commit the source reads documents from, as
- * `documentCommit` says: a source that is itself refused names none to check against. The signal
+ * `documentCommit` says: a source that is itself refused names none to check against. The `held` bytes are what the rules of
+ * each profile take as it was compiled, which the rules of a context's documents are counted after. The signal
  * and the interrupt must be real AbortSignals: `AbortSignal.any` accepts nothing else.
  */
-function reviewIssues(input: unknown, options: unknown, profiles: ReadonlySet<string>, commit: boolean): ConfigIssue[] {
+function reviewIssues(input: unknown, options: unknown, profiles: ReadonlySet<string>, commit: boolean, held: ReadonlyMap<string, number>): ConfigIssue[] {
   const issues: ConfigIssue[] = []
   if (!isRecord(input)) {
     issues.push({ path: 'input', message: 'must be an object holding the diff string' })
@@ -706,9 +718,12 @@ function reviewIssues(input: unknown, options: unknown, profiles: ReadonlySet<st
     if (typeof input.diff !== 'string') issues.push({ path: 'diff', message: 'must be a string' })
     const source = sourceIssues(input.source)
     issues.push(...source, ...leftOutIssues(input.leftOut), ...sendIssues(input.send))
-    issues.push(...contextIssues(input.context, profiles, commit && source.length === 0
-      ? { commit: documentCommit(sourceOf(input.source as ReviewSource | undefined)) ?? null }
-      : {}))
+    issues.push(...contextIssues(input.context, profiles, {
+      held,
+      ...commit && source.length === 0
+        ? { commit: documentCommit(sourceOf(input.source as ReviewSource | undefined)) ?? null }
+        : {},
+    }))
   }
   if (!isRecord(options)) {
     issues.push({ path: 'options', message: 'must be an object' })
@@ -722,7 +737,7 @@ function reviewIssues(input: unknown, options: unknown, profiles: ReadonlySet<st
 }
 
 /** The problems of a review's `context`: it is an object, and its documents are repository documents of the quorum's profiles, at the commit `rule` names. */
-function contextIssues(context: unknown, profiles: ReadonlySet<string>, rule: { readonly commit?: string | null }): ConfigIssue[] {
+function contextIssues(context: unknown, profiles: ReadonlySet<string>, rule: { readonly commit?: string | null, readonly held?: ReadonlyMap<string, number> }): ConfigIssue[] {
   if (context === undefined) return []
   if (!isRecord(context)) {
     return [
@@ -734,7 +749,11 @@ function contextIssues(context: unknown, profiles: ReadonlySet<string>, rule: { 
     : documentIssues(context.documents, 'context.documents', { origin: 'repository', profiles, ...rule })
 }
 
-/** What a review runs: each profile's run, as compiled or with the review's repository documents, and the record of every document they send. */
+/**
+ * What a review runs: each profile's run, as compiled or with the review's repository documents, and the record of every
+ * document they send. A run that lists rules sends every one of them here, which the room check counts whole: the review
+ * narrows them to its change's files once it knows the filtered diff (`withSent`).
+ */
 interface Reviewed {
   readonly runs: readonly ProfileRun[]
   readonly record: ContextRecord
@@ -744,10 +763,11 @@ interface Reviewed {
  * The runs of one review: each profile's compiled run, kept as it is when the context gives it no document, else a run of
  * its own with the profile's repository documents added to its texts, so its guidelines, its research instructions and every
  * request, plan and estimate built from them hold the documents. The review's context is checked (`reviewIssues`) before this.
- * Two things refuse it, as one `ConfigError`, before any call: a repository document that takes the profile's guidelines or do-not-report
- * text over what they may hold in all (at the document that does), and a changed run whose research or votes leave their provider
- * less than 1024 tokens of diff, as `createQuorum` refuses a profile for its own documents. The record is every run's, in run
- * order, as new objects the review's result and event may hold.
+ * Two things refuse it, as one `ConfigError`, before any call: a repository document that takes the profile's guidelines, do-not-report
+ * text or rules over what they may hold in all (at the document that does) or gives a rule id the profile's rules already hold, and a
+ * changed run whose research or votes leave their provider less than 1024 tokens of diff, as `createQuorum` refuses a profile for its own
+ * documents: the research is counted with every rule the run lists, the repository's included, and not the rules a change sends. The
+ * record is every run's, in run order, as new objects the review's result and event may hold.
  */
 function reviewRuns(compiled: Compiled, context: ReviewContext | undefined): Reviewed {
   const given = new Map<string, Array<{ readonly index: number, readonly document: ReviewDocument }>>()
@@ -840,18 +860,26 @@ function compile(profile: Profile, ports: ProfilePorts): ProfileRun {
   })
 }
 
-/** What follows from a profile's texts: the texts themselves, its joined guidelines and do-not-report text, and the research instructions with the do-not-report paragraph after them. */
-function fromTexts(texts: ProfileTexts): Pick<ProfileRun, 'texts' | 'guidelines' | 'doNotReport'> & { readonly instructions: string } {
+/**
+ * What follows from a profile's texts: the texts themselves, its joined guidelines and do-not-report text, the research
+ * instructions with the do-not-report paragraph after them, and its rules, every one of which the run sends until a review
+ * narrows them to its change's files (`withSent`): none for a profile that lists none, whose requests keep five fields.
+ */
+function fromTexts(texts: ProfileTexts): Pick<ProfileRun, 'texts' | 'guidelines' | 'doNotReport' | 'rules' | 'sent'> & { readonly instructions: string } {
   const doNotReport = joined(texts.doNotReport)
   return {
     texts,
     guidelines: joined(texts.guidelines),
     doNotReport,
     instructions: doNotReportInstructions(texts.prompt, doNotReport),
+    rules: texts.rules,
+    sent: texts.rules.length === 0
+      ? undefined
+      : texts.rules,
   }
 }
 
-/** `run` with `texts` in place of the ones it was compiled with: the guidelines, the do-not-report text and the research instructions follow from them. */
+/** `run` with `texts` in place of the ones it was compiled with: the guidelines, the do-not-report text, the rules and the research instructions follow from them. */
 function runWith(run: ProfileRun, texts: ProfileTexts): ProfileRun {
   const { instructions, ...derived } = fromTexts(texts)
   return Object.freeze({

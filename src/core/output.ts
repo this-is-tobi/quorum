@@ -35,12 +35,23 @@ const VoteReplySchema = z.object({
   reasoning: z.string(),
 })
 
+/** Wire shape of one finding of a profile that lists review rules: the five fields and the id of the rule it breaks, `''` for none. */
+const FindingWithRuleReplySchema = FindingReplySchema.extend({
+  rule: z.string(),
+})
+
 const ResearchReplySchema = z.object({
   findings: z.array(FindingReplySchema),
 })
 
+const ResearchReplyWithRuleSchema = z.object({
+  findings: z.array(FindingWithRuleReplySchema),
+})
+
 /** JSON Schemas shown to the model; they stay free of transforms so zod can always emit them. */
 export const researchReplyJsonSchema = toWireSchema(ResearchReplySchema)
+/** The research reply's schema for a profile that lists review rules: each finding has a required `rule` beside its five fields. */
+export const researchReplyWithRuleJsonSchema = toWireSchema(ResearchReplyWithRuleSchema)
 export const voteReplyJsonSchema = toWireSchema(VoteReplySchema)
 
 const MAX_REPLY_CHARS = 1_000_000
@@ -136,8 +147,13 @@ export interface ResearchReply {
  * since the schema strips unknown keys), is reported with its index, and the count of listed
  * findings lets the caller record what was not read. `limit` must be a positive integer, or
  * Infinity to read every listed finding.
+ *
+ * With `withRule`, the reply is a profile's that lists review rules, and each finding is read with a sixth field, `rule`:
+ * a string, `''` when the finding names no rule. An absent or `null` one reads as `''`, as an absent category does, and a
+ * `rule` of any other type leaves the finding unreadable. Without it, a finding holds no `rule`, and one a reply
+ * carries anyway is dropped as any other key the schema does not name.
  */
-export function parseResearchReply(text: string, limit = Infinity): ResearchReply {
+export function parseResearchReply(text: string, limit = Infinity, withRule = false): ResearchReply {
   if (limit !== Infinity && (!Number.isInteger(limit) || limit < 1)) throw new RangeError(`limit must be a positive integer or Infinity, got ${limit}`)
   const reply = extractJsonObject(text, 'research')
   if (!Array.isArray(reply.findings)) {
@@ -149,13 +165,16 @@ export function parseResearchReply(text: string, limit = Infinity): ResearchRepl
   }
   const findings: FindingDetails[] = []
   const invalid: string[] = []
+  const schema = withRule
+    ? FindingWithRuleReplySchema
+    : FindingReplySchema
   reply.findings.slice(0, limit).forEach((item: unknown, index: number) => {
-    const result = FindingReplySchema.safeParse(normalizeFinding(item))
+    const result = schema.safeParse(normalizeFinding(item, withRule))
     if (!result.success) {
       invalid.push(`findings[${index}]: ${describeIssue(result.error)}`)
     } else if (result.data.line < 1 || result.data.file.trim() === '') {
       invalid.push(`findings[${index}]: file must be non-empty and line at least 1`)
-    } else if (hasNestedExtra(item)) {
+    } else if (hasNestedExtra(item, schema.shape)) {
       invalid.push(`findings[${index}]: carries a nested object or array outside the reply schema`)
     } else {
       findings.push(result.data)
@@ -165,13 +184,13 @@ export function parseResearchReply(text: string, limit = Infinity): ResearchRepl
 }
 
 /**
- * Whether a finding holds an object or array under a key the reply schema does not name. The schema
+ * Whether a finding holds an object or array under a key the reply schema, whose fields are `shape`, does not name. The schema
  * strips unknown keys, and a scalar extra (a self-reported confidence) is harmless, but planted text
  * that closes a string early can open such a field and let the model's own later findings be written
  * inside it, where stripping would drop them without a trace.
  */
-function hasNestedExtra(item: unknown): boolean {
-  return isRecord(item) && Object.entries(item).some(([key, value]) => !Object.hasOwn(FindingReplySchema.shape, key) && typeof value === 'object' && value !== null)
+function hasNestedExtra(item: unknown, shape: object): boolean {
+  return isRecord(item) && Object.entries(item).some(([key, value]) => !Object.hasOwn(shape, key) && typeof value === 'object' && value !== null)
 }
 
 /** Validate one vote reply; unknown fields such as a self-reported confidence are dropped. */
@@ -351,9 +370,10 @@ function repeatsKey(json: string): boolean {
  * Local models often quote numbers: accept "42" for line, reject anything else non-numeric. A category that is
  * absent or null reads as an empty one, which the harness then names `uncategorized`, since the panel judges the
  * finding all the same; a category of any other type, like any other mistyped or missing field, stays for the
- * schema to refuse.
+ * schema to refuse. A rule, in a reply that asks for one (`withRule`), is read the same way: absent or null is `''`, and
+ * any other type than a string stays for the schema to refuse.
  */
-function normalizeFinding(item: unknown): unknown {
+function normalizeFinding(item: unknown, withRule: boolean): unknown {
   if (!isRecord(item)) return item
   const line = typeof item.line === 'string'
     ? item.line.trim()
@@ -367,6 +387,9 @@ function normalizeFinding(item: unknown): unknown {
       : {},
     ...!Object.hasOwn(item, 'category') || item.category === null
       ? { category: '' }
+      : {},
+    ...withRule && (!Object.hasOwn(item, 'rule') || item.rule === null)
+      ? { rule: '' }
       : {},
   }
 }

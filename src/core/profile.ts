@@ -22,10 +22,10 @@ const OPEN_PART_ISSUE = 'holds a {{ that opens no placeholder: write \\{{ for a 
  * Every problem that keeps a profile from running, all at once. Each field is checked by shape
  * first, because an untyped caller can hand over anything and a `TypeError` is no report: the
  * profile itself, the id, the lenses (and each lens), the policy, both prompts, `failOn`, `gating` and
- * the documents (`guidelines`, `doNotReport` and `documents`, which are cleaned as a review sends them and refused over
- * their caps or too deep to clean: see `profileDocumentIssues`). The rules follow the shape: the policy for the lens count
- * and both templates, so a library caller gets the checks a config file gets, and a typo in a template is refused here
- * instead of reaching a model as literal text. A profile that sets both `failOn` and the deprecated `gating`
+ * the documents (`guidelines`, `doNotReport`, `rules` and `documents`, which are cleaned as a review sends them and refused
+ * over their caps, too deep to clean or, for the rules, a repeated id: see `profileDocumentIssues`). What follows the shape
+ * is the policy for the lens count and both templates, so a library caller gets the checks a config file gets, and a typo
+ * in a template is refused here instead of reaching a model as literal text. A profile that sets both `failOn` and the deprecated `gating`
  * is refused at `gating`, since each says what the other does. Paths start at the profile id, or at `fallbackRoot`
  * (the profile's place in a larger input, `profile` by default) while the id is invalid.
  */

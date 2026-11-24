@@ -82,6 +82,7 @@ export type {
   ReviewContext,
   ReviewDocument,
   ReviewInput,
+  ReviewRule,
   ReviewSource,
   SecretRule,
   SkipRule,

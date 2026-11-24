@@ -157,12 +157,12 @@ export function planResearch(run: ProfileRun, diff: string, sections: readonly D
   const { instructions } = run.research
   const { partTokens } = settings
   const ask: Ask = { findings: settings.maxFindings, replyTokens: settings.replyTokens }
-  const one = roomOf(run.research, researchRequest(instructions, '', run.guidelines, undefined, ask))
+  const one = roomOf(run.research, researchRequest(instructions, '', run.guidelines, undefined, ask, run.sent))
   if (one === undefined || one < 0) return whole
   const tokens = tokenBound(diff)
   if (tokens <= Math.min(partTokens, one)) return whole
   const widest = lineCount(diff)
-  const roomWith = (names: ListedFiles): number | undefined => roomOf(run.research, researchRequest(instructions, '', run.guidelines, { index: widest, count: widest, ...names }, ask))
+  const roomWith = (names: ListedFiles): number | undefined => roomOf(run.research, researchRequest(instructions, '', run.guidelines, { index: widest, count: widest, ...names }, ask, run.sent))
   let listed: ListedFiles = listedFiles(sections, Math.floor(Math.min(partTokens, one) / 4))
   const room = roomWith(listed)
   if (room === undefined || room < 0) return whole
@@ -228,10 +228,13 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
  * profile never has two of one reason. A saturated reply below `maxFindings` is split and never gets here, unless
  * its piece is at the floor.
  *
+ * With `withRule`, the replies are a profile's that lists review rules, and each finding is read with its sixth field,
+ * `rule` (see `parseResearchReply`).
+ *
  * @throws OutputError when a reply is not one JSON object holding a `findings` array and nothing else
  * @throws RangeError when `maxFindings` is not a positive integer
  */
-export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMap<string, string>, profile: string, maxFindings = DEFAULT_MAX_FINDINGS): Reading {
+export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMap<string, string>, profile: string, maxFindings = DEFAULT_MAX_FINDINGS, withRule = false): Reading {
   if (!Number.isInteger(maxFindings) || maxFindings < 1) {
     throw new RangeError(`maxFindings must be a positive integer, got ${maxFindings}`)
   }
@@ -242,7 +245,7 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
   for (const { text, label, asked } of replies) {
     // A reply past the cap is parsed for its envelope and its count alone: its entries are not read.
     const left = maxFindings - details.length - unreadable.length
-    const parsed = parseResearchReply(text, Math.max(left, 1))
+    const parsed = parseResearchReply(text, Math.max(left, 1), withRule)
     listed += parsed.listed
     if (asked !== undefined && parsed.listed >= asked) saturated.push(asked)
     if (left < 1) continue
@@ -280,9 +283,9 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
 
 /**
  * The research stage of one profile, as `plan` lays it out: a change within one request is researched by one
- * call to its research provider, with the profile's research instructions, the diff and the guidelines, and a
- * large change is researched in parts, one call each, whose replies `checkReplies` turns into what the panel
- * receives. Each finding dropped for citing code outside the diff is reported by a `finding:invalid` event,
+ * call to its research provider, with the profile's research instructions, the diff, the rules the review sends it
+ * (`run.sent`) and the guidelines, and a large change is researched in parts, one call each, whose replies
+ * `checkReplies` turns into what the panel receives. Each finding dropped for citing code outside the diff is reported by a `finding:invalid` event,
  * and each gap by an `incomplete` event.
  *
  * A change in one request (no packing, or a packing of one part, whatever its text) goes through one call, or none for
@@ -761,7 +764,7 @@ async function researchInOne(ctx: RunContext, run: ProfileRun, plan: ResearchPla
         piece: positionOf(piece),
         files: [],
         unlisted: 0,
-      }, ask))
+      }, ask, run.sent))
   if (part.recovered !== undefined) {
     return concluded(ctx, run, scope, {
       parts: packing?.parts ?? [
@@ -789,7 +792,7 @@ async function researchInOne(ctx: RunContext, run: ProfileRun, plan: ResearchPla
   return reported(ctx, run, {
     ...checkReplies([
       { text: leaf.text, asked: leaf.asked },
-    ], sections, run.id, ctx.findingsCap),
+    ], sections, run.id, ctx.findingsCap, run.sent !== undefined),
     parts: ['reviewed'],
   })
 }
@@ -830,7 +833,7 @@ async function researchInParts(ctx: RunContext, run: ProfileRun, plan: ResearchP
             },
         files,
         unlisted,
-      }, ask))
+      }, ask, run.sent))
     }
   }
   await Promise.all(Array.from({
@@ -857,7 +860,7 @@ function concluded(ctx: RunContext, run: ProfileRun, scope: Scope, packing: Pack
         },
       ]
     : []))
-  const read = checkReplies(replies, sections, run.id, ctx.findingsCap)
+  const read = checkReplies(replies, sections, run.id, ctx.findingsCap, run.sent !== undefined)
   const cutOff = cutOffGap(run.id, scope, runs.flatMap(({ leaves }) => leaves))
   return reported(ctx, run, {
     ...read,

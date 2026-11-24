@@ -542,3 +542,145 @@ describe('the documents of a profile', () => {
     ])
   })
 })
+
+describe('the rules of a profile', () => {
+  const naming: Profile = { ...valid, id: 'naming' }
+  const noAny = {
+    id: 'no-any',
+    text: 'No any outside tests.',
+    paths: ['src/**'],
+  }
+  const license = { id: 'license', text: 'Each file starts with the license header.' }
+  const rulesFile = (rules: unknown): unknown => ({
+    profile: 'naming',
+    kind: 'rules',
+    origin: { kind: 'config' },
+    rules,
+  })
+
+  it('accepts a profile whose own rules and rules documents are within their checks', () => {
+    expect(profileIssues({
+      ...naming,
+      rules: [noAny, license],
+    })).toEqual([])
+    expect(profileIssues({
+      ...naming,
+      rules: [noAny],
+      documents: [
+        rulesFile([license]),
+      ],
+    } as unknown as Profile)).toEqual([])
+    expect(profileIssues({ ...naming, rules: [] })).toEqual([])
+  })
+
+  it('refuses a rule id a profile repeats, at the rule that repeats it', () => {
+    expect(profileIssues({
+      ...naming,
+      rules: [
+        noAny,
+        { ...license, id: 'no-any' },
+      ],
+    })).toEqual([
+      { path: 'naming.rules.1.id', message: 'repeats the rule id "no-any"' },
+    ])
+    expect(profileIssues({
+      ...naming,
+      rules: [noAny],
+      documents: [
+        rulesFile([
+          license,
+          { ...license, id: 'no-any' },
+        ]),
+      ],
+    } as unknown as Profile)).toEqual([
+      { path: 'naming.documents.0.rules.1.id', message: 'repeats the rule id "no-any"' },
+    ])
+  })
+
+  it('refuses the rules that are none of the right shape, as issues, never a TypeError', () => {
+    expect(profileIssues({ ...naming, rules: 'no-any' } as unknown as Profile)).toEqual([
+      { path: 'naming.rules', message: 'must be an array of rules' },
+    ])
+    expect(profileIssues({
+      ...naming,
+      rules: [
+        { id: 'No-any', text: 'x' },
+        null,
+      ],
+    } as unknown as Profile)).toEqual([
+      { path: 'naming.rules.0.id', message: 'must match ^[a-z][a-z0-9._-]{0,63}$' },
+      { path: 'naming.rules.1', message: 'must be an object with an id and a text' },
+    ])
+    expect(profileIssues({
+      ...naming,
+      documents: [
+        rulesFile(undefined),
+      ],
+    } as unknown as Profile)).toEqual([
+      { path: 'naming.documents.0.rules', message: 'must be an array of rules: a config document is never missing' },
+    ])
+  })
+
+  it('refuses a profile whose own rules and rules documents list more than 100 in all, at the document that takes it over', () => {
+    const many = (count: number, prefix: string): unknown[] => Array.from({ length: count }, (_, index) => ({ id: `${prefix}-${index}`, text: 'Keep it short.' }))
+    expect(profileIssues({
+      ...naming,
+      rules: many(60, 'own'),
+      documents: [
+        rulesFile(many(40, 'file')),
+      ],
+    } as unknown as Profile)).toEqual([])
+    expect(profileIssues({
+      ...naming,
+      rules: many(60, 'own'),
+      documents: [
+        rulesFile(many(41, 'file')),
+      ],
+    } as unknown as Profile)).toEqual([
+      { path: 'naming.documents.0', message: 'must hold at most 100 rules' },
+    ])
+    expect(profileIssues({
+      ...naming,
+      rules: many(101, 'own'),
+    } as unknown as Profile)).toEqual([
+      { path: 'naming.rules', message: 'must hold at most 100 rules' },
+    ])
+  })
+
+  it('tells a rules document over 32 KiB by itself once, at the rule that takes it over', () => {
+    const wide = Array.from({ length: 33 }, (_, index) => ({
+      id: `file-${index}`,
+      text: 'a'.repeat(1024),
+    }))
+    expect(profileIssues({
+      ...naming,
+      documents: [
+        rulesFile(wide),
+      ],
+    } as unknown as Profile)).toEqual([
+      { path: 'naming.documents.0.rules.32', message: 'takes the profile\'s rules to 33792 bytes once cleaned, over the 32 KiB they may hold in all' },
+    ])
+  })
+
+  it('refuses rules whose texts take the profile over 32 KiB in all, at the first rule or document that does', () => {
+    const full = Array.from({ length: 32 }, (_, index) => ({
+      id: `rule-${index}`,
+      text: 'a'.repeat(1024),
+    }))
+    expect(profileIssues({
+      ...naming,
+      rules: [...full, license],
+    })).toEqual([
+      { path: 'naming.rules.32', message: 'takes the profile\'s rules to 32809 bytes once cleaned, over the 32 KiB they may hold in all' },
+    ])
+    expect(profileIssues({
+      ...naming,
+      rules: full,
+      documents: [
+        rulesFile([license]),
+      ],
+    } as unknown as Profile)).toEqual([
+      { path: 'naming.documents.0', message: 'takes the profile\'s rules to 32809 bytes once cleaned, over the 32 KiB they may hold in all' },
+    ])
+  })
+})

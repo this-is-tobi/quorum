@@ -354,6 +354,8 @@ describe('the schemas of a result', () => {
     // Each record is strict, and a kind, an origin, a status or a hash outside the closed lists is refused.
     const [own, file, repository, missing] = documents.map(document => ({ ...document })) as Forged[]
     for (const forged of [
+      { ...own, kind: 'notes' },
+      // A record of kind rules holds its count of rules, which this one lacks: another case than an unknown kind.
       { ...own, kind: 'rules' },
       { ...own, origin: 'file' },
       { ...own, status: 'unreadable' },
@@ -437,6 +439,99 @@ describe('the schemas of a result', () => {
       expect(resultSchema.safeParse({
         ...full,
         meta: { ...full.meta, context: forged },
+      }).success, JSON.stringify(forged)).toBe(false)
+    }
+  })
+
+  it('reads a rules document\'s record and its count', () => {
+    const none = { characters: 0, comments: 0, entities: 0 }
+    const commit = 'c'.repeat(40)
+    const documents = [
+      {
+        profile: 'security',
+        kind: 'rules',
+        origin: 'profile',
+        status: 'read',
+        bytes: 120,
+        rules: 2,
+        removed: none,
+      },
+      {
+        profile: 'security',
+        kind: 'rules',
+        origin: 'config',
+        sha256: 'a'.repeat(64),
+        status: 'read',
+        bytes: 60,
+        rules: 1,
+        removed: { characters: 1, comments: 0, entities: 0 },
+      },
+      {
+        profile: 'security',
+        kind: 'rules',
+        origin: 'repository',
+        path: 'RULES.yaml',
+        commit,
+        status: 'missing',
+        bytes: 0,
+        rules: 0,
+        removed: none,
+      },
+      {
+        profile: 'security',
+        kind: 'guidelines',
+        origin: 'profile',
+        status: 'read',
+        bytes: 12,
+        removed: none,
+      },
+    ] as const
+    const result = reportResult({
+      meta: {
+        ...reportResult().meta,
+        context: {
+          documents: documents.map(document => ({
+            ...document,
+            removed: { ...document.removed },
+          })),
+        },
+      },
+    })
+    const full = saved(result)
+    expect(resultSchema.parse(full)).toEqual(full)
+    expect(JSON.stringify(resultSchema.parse(full))).toBe(JSON.stringify(full))
+    const view = saved(publicView(result))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(view.meta.context).toEqual(full.meta.context)
+    // A rules record holds its count and no other kind does, a missing one holds none, and a count is a whole number.
+    const [own, file, missing, guidelines] = documents.map(document => ({ ...document })) as Forged[]
+    for (const forged of [
+      (({ rules: _rules, ...rest }) => rest)(own),
+      { ...guidelines, rules: 1 },
+      { ...missing, rules: 3 },
+      { ...own, rules: -1 },
+      { ...own, rules: 1.5 },
+      { ...own, rules: '2' },
+      { ...file, extra: 1 },
+      { ...file, text: 'No any.' },
+    ] as Forged[]) {
+      expect(resultSchema.safeParse({
+        ...full,
+        meta: {
+          ...full.meta,
+          context: {
+            documents: [forged],
+          },
+        },
+      }).success, JSON.stringify(forged)).toBe(false)
+      expect(publicViewSchema.safeParse({
+        ...view,
+        meta: {
+          ...view.meta,
+          context: {
+            documents: [forged],
+          },
+        },
       }).success, JSON.stringify(forged)).toBe(false)
     }
   })

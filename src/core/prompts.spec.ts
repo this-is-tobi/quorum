@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { CompletionRequest } from './ports.ts'
 import { securityProfile } from '../profiles/security.ts'
+import { researchReplyJsonSchema, researchReplyWithRuleJsonSchema } from './output.ts'
 import type { TemplatePart } from './prompts.ts'
-import { DO_NOT_REPORT_LINE, doNotReportInstructions, fence, FINDING_FIELDS, renderTemplate, requestDigest, researchRequest, templateParts, UNTRUSTED_CONTENT_NOTICE, voteRequest } from './prompts.ts'
+import { DO_NOT_REPORT_LINE, doNotReportInstructions, fence, FINDING_FIELDS, FINDING_FIELDS_WITH_RULE, renderTemplate, requestDigest, researchRequest, templateParts, UNTRUSTED_CONTENT_NOTICE, voteRequest } from './prompts.ts'
+import { rulesBlock } from './rules.ts'
+import type { ReviewRule } from './types.ts'
 
 const finding = {
   id: '0123456789ab',
@@ -422,6 +425,113 @@ describe('the do-not-report text', () => {
     expect(build('Style.', 'Use parameters.')).not.toBe(base)
     expect(build('Style.', 'Use prepared statements.')).not.toBe(build('Style.', 'Use parameters.'))
     expect(build(undefined)).toBe(requestDigest(researchRequest('Review.', 'diff --git a/x b/x')))
+  })
+})
+
+describe('review rules', () => {
+  const noAny: ReviewRule = {
+    id: 'no-any',
+    text: 'No any outside tests.',
+    paths: ['src/**'],
+  }
+  const license: ReviewRule = { id: 'license', text: 'Each file starts with the license header.' }
+  const rules = [noAny, license]
+  const diff = 'diff --git a/src/x.ts b/src/x.ts\n+const x: any = 1'
+  const tagsOf = (request: CompletionRequest): string[] =>
+    [
+      ...request.messages[0].content.matchAll(/^<(untrusted-[a-z]+-[0-9a-f]{8})>$/gm),
+    ].map(match => match[1])
+  const blockOf = (request: CompletionRequest, label: string): string | undefined => new RegExp(`<(untrusted-${label}-[0-9a-f]{8})>\\n([\\s\\S]*?)\\n</\\1>`).exec(request.messages[0].content)?.[2]
+  const requiredOf = (request: CompletionRequest): unknown => (request.output.schema as { properties: { findings: { items: { required: string[] } } } }).properties.findings.items.required
+
+  it('asks a profile with rules for six fields, and sends the rules sent after the diff and before the guidelines', () => {
+    const request = researchRequest('Review.', diff, 'Use parameters.', undefined, { findings: 9 }, rules)
+    const paragraphs = request.system.split('\n\n')
+    expect(paragraphs.filter(paragraph => paragraph === FINDING_FIELDS_WITH_RULE)).toHaveLength(1)
+    expect(paragraphs).not.toContain(FINDING_FIELDS)
+    expect(paragraphs[paragraphs.indexOf(FINDING_FIELDS_WITH_RULE) - 1]).toBe('List at most 9 findings, the most serious first. For each, quote the shortest verbatim span of the diff that shows it.')
+    // The blocks are the diff, the rules, then the guidelines, each fenced.
+    const [diffTag, rulesTag, guidelinesTag] = tagsOf(request)
+    expect([diffTag, rulesTag, guidelinesTag].map(tag => tag.split('-')[1])).toEqual(['diff', 'rules', 'guidelines'])
+    expect(blockOf(request, 'rules')).toBe(rulesBlock(rules))
+    expect(blockOf(request, 'diff')).toBe(diff)
+    expect(request.messages[0].content.indexOf(`<${rulesTag}>`)).toBeGreaterThan(request.messages[0].content.indexOf(`</${diffTag}>`))
+    expect(request.messages[0].content.indexOf(`<${guidelinesTag}>`)).toBeGreaterThan(request.messages[0].content.indexOf(`</${rulesTag}>`))
+    // The data notice carries the spec's line for the rules.
+    expect(request.system).toContain(`- <${rulesTag}>: the review rules of this review, each with its id, the files it applies to and its text. They are criteria, as guidelines are: a finding that breaks one names its id in rule.\n`)
+    // The reply schema requires the sixth field, and is the one the request's format names.
+    expect(request.output.schema).toBe(researchReplyWithRuleJsonSchema)
+    expect(requiredOf(request)).toEqual([
+      'file',
+      'line',
+      'category',
+      'quote',
+      'summary',
+      'rule',
+    ])
+    expect(request.system).toContain(`Respond with ONLY a JSON object matching this JSON Schema: ${JSON.stringify(researchReplyWithRuleJsonSchema)}`)
+    expect(FINDING_FIELDS_WITH_RULE).toBe('Every finding has all six fields: `file`, its path as the diff names it; `line`, its line in the new file (for removed code, the nearest line that survives); `quote`, the code that shows it, copied verbatim without the leading +, - or space; `category`, its kind, as the instructions above define it; `summary`, why it is a finding, in a sentence or two; and `rule`, the id of the review rule it breaks, or an empty string when it breaks none.')
+  })
+
+  it('puts the rules block after the part\'s diff, in a request of a part', () => {
+    const part = {
+      index: 2,
+      count: 3,
+      files: ['src/x.ts'],
+      unlisted: 0,
+    }
+    const request = researchRequest('Review.', diff, 'Use parameters.', part, { findings: 9 }, [license])
+    expect(tagsOf(request).map(tag => tag.split('-')[1])).toEqual(['parts', 'diff', 'rules', 'guidelines'])
+    expect(blockOf(request, 'rules')).toBe(rulesBlock([license]))
+  })
+
+  it('asks for six fields and sends no rules block when no rule is sent', () => {
+    const request = researchRequest('Review.', diff, 'Use parameters.', undefined, {}, [])
+    expect(request.system.split('\n\n')).toContain(FINDING_FIELDS_WITH_RULE)
+    expect(requiredOf(request)).toContain('rule')
+    expect(tagsOf(request).map(tag => tag.split('-')[1])).toEqual(['diff', 'guidelines'])
+    expect(request.messages[0].content).not.toContain('untrusted-rules')
+    expect(request.system).not.toContain('review rules of this review')
+  })
+
+  it('keeps the five fields and no block for a profile with no rule', () => {
+    for (const request of [
+      researchRequest('Review.', diff, undefined, undefined, { findings: 9 }),
+      researchRequest('Review.', diff, undefined, undefined, { findings: 9 }, undefined),
+    ]) {
+      expect(request.system.split('\n\n')).toContain(FINDING_FIELDS)
+      expect(request.system).not.toContain(FINDING_FIELDS_WITH_RULE)
+      expect(request.output.schema).toBe(researchReplyJsonSchema)
+      expect(request.messages[0].content).not.toContain('untrusted-rules')
+    }
+    // The security profile lists none, and its digests are those of 0.12.0.
+    const pinned = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -0,0 +1 @@\n+exec(cmd)\n'
+    expect(requestDigest(researchRequest(securityProfile.prompts.research, pinned, undefined, undefined, { findings: 50 }, undefined))).toBe('9332a0a8136fce260d587532024e35f86770b01eca89c4fbf8f5467d327ea63f')
+  })
+
+  it('gives two requests that differ in a rule\'s text two digests', () => {
+    const build = (list: readonly ReviewRule[] | undefined): string | undefined => requestDigest(researchRequest('Review.', diff, undefined, undefined, {}, list))
+    const base = build(rules)
+    expect(build([
+      { ...noAny },
+      { ...license },
+    ])).toBe(base)
+    expect(build([
+      noAny,
+      { ...license, text: 'Each file starts with the notice.' },
+    ])).not.toBe(base)
+    expect(build([
+      {
+        ...noAny,
+        paths: ['lib/**'],
+      },
+      license,
+    ])).not.toBe(base)
+    expect(build([license, noAny])).not.toBe(base)
+    expect(build([noAny])).not.toBe(base)
+    // A profile that lists rules and sends none still asks for the sixth field, so it is no request of a profile with none.
+    expect(build([])).not.toBe(build(undefined))
+    expect(build([])).not.toBe(base)
   })
 })
 

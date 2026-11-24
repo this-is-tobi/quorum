@@ -7,8 +7,9 @@ import { thresholdsFor } from './profile.ts'
 import { doNotReportInstructions, renderTemplate, researchRequest } from './prompts.ts'
 import { targetOf } from './stages/context.ts'
 import type { ProfileRun } from './stages/context.ts'
-import { replyLimit, requestTokens } from './tokens.ts'
-import type { Profile } from './types.ts'
+import { rulesBlock } from './rules.ts'
+import { replyLimit, requestTokens, utf8Length } from './tokens.ts'
+import type { Profile, ReviewRule } from './types.ts'
 
 const UNSET: ReplyFacts = { thinking: 'default' }
 
@@ -111,8 +112,10 @@ describe('profileBudgets', () => {
         prompt: 'R',
         guidelines: [],
         doNotReport: [],
+        rules: [],
         records: [],
       },
+      rules: [],
     }
   }
 
@@ -243,8 +246,8 @@ describe('profileBudgets', () => {
     ],
   }
 
-  /** The run `createQuorum` compiles for `naming`, `documents` being its joined guidelines and do-not-report text: the research instructions end with the do-not-report paragraph, and a vote carries the guidelines alone. */
-  function documented(research: Provider, voter: Provider, documents: { readonly guidelines?: string, readonly doNotReport?: string } = {}): ProfileRun {
+  /** The run `createQuorum` compiles for `naming`, `documents` being its joined guidelines and do-not-report text and its rules: the research instructions end with the do-not-report paragraph, a vote carries the guidelines alone, and a profile that lists rules sends every one of them. */
+  function documented(research: Provider, voter: Provider, documents: { readonly guidelines?: string, readonly doNotReport?: string, readonly rules?: readonly ReviewRule[] } = {}): ProfileRun {
     const prompt = naming.prompts.research
     const panel = String(naming.lenses.length)
     return {
@@ -269,8 +272,13 @@ describe('profileBudgets', () => {
         doNotReport: documents.doNotReport === undefined
           ? []
           : [documents.doNotReport],
+        rules: documents.rules ?? [],
         records: [],
       },
+      rules: documents.rules ?? [],
+      ...documents.rules === undefined || documents.rules.length === 0
+        ? {}
+        : { sent: documents.rules },
       ...documents.guidelines === undefined
         ? {}
         : { guidelines: documents.guidelines },
@@ -356,5 +364,80 @@ describe('profileBudgets', () => {
       expect(guidelines).toBeLessThan(2500 + 600)
       expect(message).not.toContain('do-not-report')
     }
+  })
+
+  /** Two rules of different sizes, which a profile that lists them sends whole. */
+  const listed: ReviewRule[] = [
+    {
+      id: 'no-any',
+      text: 'a'.repeat(3000),
+      paths: ['src/**'],
+    },
+    {
+      id: 'license',
+      text: 'b'.repeat(2000),
+    },
+  ]
+
+  it('counts the whole block of the rules listed in the research refusal', () => {
+    const prompt = naming.prompts.research
+    const ask = { findings: 50, replyTokens: 2000 }
+    // The request of a profile that lists rules, and the same with an empty block: what the rules add is the block, its description line and its fence.
+    const fixed = requestTokens(researchRequest(prompt, '', undefined, undefined, ask, listed))
+    const rules = fixed - requestTokens(researchRequest(prompt, '', undefined, undefined, ask, []))
+    const block = utf8Length(rulesBlock(listed))
+    expect(rules).toBeGreaterThan(block)
+    expect(rules).toBeLessThan(block + 600)
+    // A window that leaves the diff 800 tokens, with a reply of 2000 and 512 for the chat template.
+    const window = fixed + 512 + 2000 + 800
+    const run = documented({
+      ...guarded('local', window),
+      maxTokens: 2000,
+    }, guarded('big', 1_000_000), { rules: listed })
+    const [message, ...rest] = refusals(run)
+    expect(rest).toEqual([])
+    expect(message).toBe(`the research request on local leaves 800 tokens for the diff, less than the 1024 a hunk may need: contextTokens ${window} counts ${fixed} for the instructions (${fixed - rules}) and the rules (${rules}), 512 for the chat template and 2000 for the reply: shorten the rules, lower maxTokens, or state a larger window`)
+    // Both rules are counted, never the largest alone: the block is the sum of the two entries.
+    expect(rules).toBeGreaterThan(5000)
+    // No rule's text is in the message.
+    expect(message).not.toMatch(/a{20}|b{20}/)
+  })
+
+  it('names the rules among the other documents, and the largest first in the fix', () => {
+    const [message] = refusals(documented({
+      ...guarded('local', 9000),
+      maxTokens: 2000,
+    }, guarded('big', 1_000_000), {
+      guidelines: 'g'.repeat(900),
+      doNotReport: 'd'.repeat(400),
+      rules: listed,
+    }))
+    const found = /counts (\d+) for the instructions \((\d+)\), the guidelines \((\d+)\), the do-not-report text \((\d+)\) and the rules \((\d+)\), 512 for the chat template and 2000 for the reply: shorten the rules or the guidelines or the do-not-report text, lower maxTokens, or state a larger window$/.exec(message)
+    expect(found).not.toBeNull()
+    const [fixed, instructions, guidelines, doNotReport, rules] = (found as RegExpExecArray).slice(1).map(Number)
+    expect(instructions + guidelines + doNotReport + rules).toBe(fixed)
+    expect(rules).toBeGreaterThan(5000)
+  })
+
+  it('names no rule in a vote\'s refusal, which carries none', () => {
+    const run = documented(guarded('big', 1_000_000), guarded('small', 1000), { rules: listed })
+    const messages = refusals(run)
+    expect(messages).toHaveLength(2)
+    for (const message of messages) {
+      expect(message).toMatch(/^the vote request on small for the longest finding /)
+      expect(message).toContain('for the instructions and the finding, 512 for the chat template')
+      expect(message).not.toContain('rules')
+    }
+  })
+
+  it('names no rules when a run lists some and sends none: there is no block to shorten', () => {
+    const run: ProfileRun = {
+      ...documented(guarded('local', 3200), guarded('big', 200_000), { rules: listed }),
+      sent: [],
+    }
+    const [message, ...rest] = refusals(run)
+    expect(rest).toEqual([])
+    expect(message).toMatch(/counts \d+ for the instructions, 512 for the chat template and 800 for the reply: lower maxTokens, or state a larger window$/)
+    expect(message).not.toContain('rules')
   })
 })

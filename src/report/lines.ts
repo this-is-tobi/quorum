@@ -96,6 +96,7 @@ export function listed(names: readonly string[]): string {
 const KIND_WORDS: Readonly<Record<DocumentKind, string>> = {
   guidelines: 'guidelines',
   'do-not-report': 'do-not-report text',
+  rules: 'rules',
 }
 
 /** How many characters of a commit's id, and of a document's hash, a line shows. */

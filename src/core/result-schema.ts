@@ -281,18 +281,19 @@ const flag = z.strictObject({
 /**
  * What a review recorded of one document it read as policy (`ContextDocument`): the closed lists of its kind, its origin and
  * its status, its hash and its commit as the digits quorum writes them, a path, and what the cleaner removed. A repository document
- * has a path and a commit and no other has, and a missing one has no bytes and no hash, so no record of another shape is
- * one a reporter writes. It never holds a text.
+ * has a path and a commit and no other has, a missing one has no bytes and no hash, and a rules document holds its count of rules
+ * (none when it is missing) and no other kind does, so no record of another shape is one a reporter writes. It never holds a text.
  */
 const contextDocument = z.strictObject({
   profile: profileId,
-  kind: z.enum(['guidelines', 'do-not-report']),
+  kind: z.enum(['guidelines', 'do-not-report', 'rules']),
   origin: z.enum(['profile', 'config', 'repository']),
   path: z.string().min(1).max(MAX_DOCUMENT_PATH).optional(),
   commit: z.string().regex(COMMIT_ID).optional(),
   sha256: z.string().regex(SHA256).optional(),
   status: z.enum(['read', 'missing']),
   bytes: count,
+  rules: count.optional(),
   removed: z.strictObject({
     characters: count,
     comments: count,
@@ -300,7 +301,8 @@ const contextDocument = z.strictObject({
   }),
 }).refine(document => (document.origin === 'repository') === (document.path !== undefined && document.commit !== undefined)
   && (document.origin === 'repository' || (document.path === undefined && document.commit === undefined))
-  && (document.status === 'read' || (document.bytes === 0 && document.sha256 === undefined)))
+  && (document.status === 'read' || (document.bytes === 0 && document.sha256 === undefined && (document.rules ?? 0) === 0))
+  && (document.kind === 'rules') === (document.rules !== undefined))
 
 /** What a review read as policy: every document it sent, in the order it sent them. */
 const contextRecord = z.strictObject({
