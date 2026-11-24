@@ -9,6 +9,8 @@ import { leftOutGaps, reviewScope } from './coverage.ts'
 import type { ReviewScope } from './coverage.ts'
 import { diffSections, splitDiff } from './diff.ts'
 import { createHealth } from './down.ts'
+import { contextTotalIssues, documentCommit, documentIssues, joined, profileTexts, withRepository } from './documents.ts'
+import type { ProfileTexts } from './documents.ts'
 import { ConfigError } from './errors.ts'
 import type { ConfigIssue, ProviderDownError } from './errors.ts'
 import { estimateReview } from './estimate.ts'
@@ -23,7 +25,7 @@ import type { Packing, PartResult } from './parts.ts'
 import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, slotsProblem, streamsProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts, ReplyStore } from './ports.ts'
 import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
-import { renderTemplate } from './prompts.ts'
+import { doNotReportInstructions, renderTemplate } from './prompts.ts'
 import { ownData } from './facts.ts'
 import { addUsage, elapsed, stage, targetOf } from './stages/context.ts'
 import type { ProfileRun, RunContext } from './stages/context.ts'
@@ -32,7 +34,7 @@ import { panel } from './stages/panel.ts'
 import type { PanelOutcome } from './stages/panel.ts'
 import { planResearch, research } from './stages/research.ts'
 import type { ResearchPlan } from './stages/research.ts'
-import type { CoverageEntry, Estimate, Profile, ProfileMeta, ProfileProviders, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ReviewInput, Usage } from './types.ts'
+import type { ContextRecord, CoverageEntry, Estimate, Profile, ProfileMeta, ProfileProviders, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ReviewContext, ReviewDocument, ReviewInput, ReviewSource, Usage } from './types.ts'
 
 const PROVIDER_SHAPE = 'must be a provider: an object with a string id, a string model and a complete function'
 
@@ -177,11 +179,15 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
  * so it moves `findingsCap`, each profile's `votes` and `worst`, `inFlight` and what `fits` and `held` read of it, and no request,
  * part or `expected` figure, as `maxFindings` sizes them. `held` counts the research parts the cap holds.
  *
- * @throws ConfigError listing every issue of the input that `review` refuses: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take; and of the `limits`: a `maxReviewTokens` or a `reviewTimeoutMs` out of range, a `findingsCap` that is no positive integer
+ * `input.context` is the review's repository documents, each sent with the profile it names after the profile's own and its
+ * config documents, so the estimate counts them in each part's reservation and each vote's bound as `review` sends them. An
+ * estimate names no source, so it checks no document's commit.
+ *
+ * @throws ConfigError listing every issue of the input that `review` refuses: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut`, a `send` or a `context` it cannot take, repository documents that leave a research provider less than 1024 tokens of diff or take a profile's texts over their caps; and of the `limits`: a `maxReviewTokens` or a `reviewTimeoutMs` out of range, a `findingsCap` that is no positive integer
  */
 function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimits = {}): Estimate {
   const issues = [
-    ...reviewIssues(input, {}),
+    ...reviewIssues(input, {}, new Set(compiled.runs.map(run => run.id)), false),
     ...isRecord(limits)
       ? [
           ...reviewLimitIssues(limits),
@@ -193,7 +199,8 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
   ]
   if (issues.length > 0) throw new ConfigError(issues)
   const sent = new Set(input.send)
-  return estimateReview(compiled.runs, {
+  const { runs } = reviewRuns(compiled, input.context)
+  return estimateReview(runs, {
     ...compiled,
     maxReviewTokens: limits.maxReviewTokens ?? compiled.maxReviewTokens,
     reviewTimeoutMs: limits.reviewTimeoutMs ?? compiled.reviewTimeoutMs,
@@ -221,7 +228,7 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * rule `secret`, and the `secret` and `deleted-secret` files `meta.leftOut` lists, each raise one `secret-file`
  * flag, as many as `meta.leftOut` lists, ahead of the diff's flags and whatever the diff is.
  * Everything it knows before a call is sent in this order: `run:start`, then a `left-out` event naming those files when it leaves one
- * out, then the gaps' `incomplete` events (each profile's `binary`, `submodule` and `secret` gaps, then its
+ * out, then a `context` event holding `meta.context` when a profile has a document, then the gaps' `incomplete` events (each profile's `binary`, `submodule` and `secret` gaps, then its
  * `too-large` gap), then the `flag` events of the advisory flags, the `secret-file` flags first,
  * kept in `meta.flags`, none of which changes a verdict, then the stages. Each event is handed to the sink
  * as a copy, so a sink that changes one changes nothing else. The review reports itself through
@@ -331,14 +338,21 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * panel in this review, `maxFindings` unless set: every research request is still sized by `maxFindings`, so a larger
  * `findingsCap` changes no request and splits no reply, and the findings past it are one `findings-capped` gap.
  *
- * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut` or a `send` it cannot take, options that are not an object, a `signal` that is not an AbortSignal, a `store` that is no object with a `get` and a `put` function, a `maxReviewTokens` or a `reviewTimeoutMs` out of range, a `findingsCap` that is no positive integer
+ * Each profile reads documents as policy: its own `guidelines` and `doNotReport`, its `documents`, then the repository documents
+ * of `input.context` that name it, each cleaned (`cleanProse`), capped and joined with the others of its kind in that order by a
+ * blank line. The joined guidelines are a block of every request of the profile, the joined do-not-report text a paragraph of the
+ * research system message alone, right after the instructions. `meta.context` records each document, never its text, and one
+ * `context` event says the same. A profile the context gives no document keeps the run it was compiled to.
+ *
+ * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut`, a `send` or a `context` it cannot take (a repository document of a profile the quorum lacks, of another origin, at a commit the source does not read documents from, of a `diff` source, over its cap once cleaned or too deep to clean), repository documents that leave a research provider less than 1024 tokens of diff, options that are not an object, a `signal` that is not an AbortSignal, a `store` that is no object with a `get` and a `put` function, a `maxReviewTokens` or a `reviewTimeoutMs` out of range, a `findingsCap` that is no positive integer
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
  * @throws the error of a sink that throws
  * @throws ProviderDownError when no research call of any profile answered and a research provider was found down, or each of whose calls failed for a reason of its own
  */
 async function review(compiled: Compiled, input: ReviewInput, options: ReviewOptions = {}): Promise<QuorumResult> {
-  const issues = reviewIssues(input, options)
+  const issues = reviewIssues(input, options, new Set(compiled.runs.map(run => run.id)), true)
   if (issues.length > 0) throw new ConfigError(issues)
+  const reviewed = reviewRuns(compiled, input.context)
   options.signal?.throwIfAborted()
   const { clock } = compiled
   const reviewTimeoutMs = options.reviewTimeoutMs ?? compiled.reviewTimeoutMs
@@ -349,7 +363,7 @@ async function review(compiled: Compiled, input: ReviewInput, options: ReviewOpt
   })
   const interrupt = armInterrupt(options.interrupt, clock)
   try {
-    return await reviewUntil(compiled, input, options, deadline, expired.signal, interrupt)
+    return await reviewUntil(compiled, reviewed, input, options, deadline, expired.signal, interrupt)
   } finally {
     cancel()
     interrupt.release()
@@ -398,14 +412,15 @@ function armInterrupt(source: AbortSignal | undefined, clock: Clock): Interrupt 
  * `expired`, the deadline's own signal, and the interrupt's joined to the review's into the `stop` and the `halt` the
  * call path reads.
  */
-async function reviewUntil(compiled: Compiled, input: ReviewInput, options: ReviewOptions, deadline: RunContext['deadline'], expired: AbortSignal, interrupt: Interrupt): Promise<QuorumResult> {
+async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: ReviewInput, options: ReviewOptions, deadline: RunContext['deadline'], expired: AbortSignal, interrupt: Interrupt): Promise<QuorumResult> {
   const internal = new AbortController()
   const signal = options.signal === undefined
     ? internal.signal
     : AbortSignal.any([options.signal, internal.signal])
   const startedAt = new Date().toISOString()
   const started = performance.now()
-  const { runs, sink } = compiled
+  const { sink } = compiled
+  const { runs, record } = reviewed
   const whole = input.diff.trim() === ''
     ? undefined
     : splitDiff(input.diff)
@@ -508,6 +523,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     ])),
   })
   if (leftOut.length > 0) emit({ type: 'left-out', files: leftOut })
+  if (record.documents.length > 0) emit({ type: 'context', context: record })
   for (const run of runs) {
     for (const entry of gaps.get(run.id) ?? []) emit({ type: 'incomplete', entry })
   }
@@ -572,6 +588,7 @@ async function reviewUntil(compiled: Compiled, input: ReviewInput, options: Revi
     incomplete,
     leftOut,
     flags,
+    context: record,
     adaptations: [
       ...ctx.adapt.record(),
     ],
@@ -671,17 +688,23 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPla
 /**
  * Every problem with one review's input and options, so an untyped caller gets issues, never a
  * TypeError. An input that is not an object is named as the input, not as its diff: the likely
- * mistake is the diff text passed on its own, as `runQuorum` takes it. The `source`, the `leftOut` and the
- * `send`, when set, are checked after the diff, so a caller sees every issue of the input at once. The signal
+ * mistake is the diff text passed on its own, as `runQuorum` takes it. The `source`, the `leftOut`, the
+ * `send` and the `context`, when set, are checked after the diff, so a caller sees every issue of the input at once. The
+ * context's documents must name one of `profiles` and, when `commit` is set, the commit the source reads documents from, as
+ * `documentCommit` says: a source that is itself refused names none to check against. The signal
  * and the interrupt must be real AbortSignals: `AbortSignal.any` accepts nothing else.
  */
-function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
+function reviewIssues(input: unknown, options: unknown, profiles: ReadonlySet<string>, commit: boolean): ConfigIssue[] {
   const issues: ConfigIssue[] = []
   if (!isRecord(input)) {
     issues.push({ path: 'input', message: 'must be an object holding the diff string' })
   } else {
     if (typeof input.diff !== 'string') issues.push({ path: 'diff', message: 'must be a string' })
-    issues.push(...sourceIssues(input.source), ...leftOutIssues(input.leftOut), ...sendIssues(input.send))
+    const source = sourceIssues(input.source)
+    issues.push(...source, ...leftOutIssues(input.leftOut), ...sendIssues(input.send))
+    issues.push(...contextIssues(input.context, profiles, commit && source.length === 0
+      ? { commit: documentCommit(sourceOf(input.source as ReviewSource | undefined)) ?? null }
+      : {}))
   }
   if (!isRecord(options)) {
     issues.push({ path: 'options', message: 'must be an object' })
@@ -692,6 +715,63 @@ function reviewIssues(input: unknown, options: unknown): ConfigIssue[] {
     issues.push(...reviewLimitIssues(options), ...findingsCapIssues(options))
   }
   return issues
+}
+
+/** The problems of a review's `context`: it is an object, and its documents are repository documents of the quorum's profiles, at the commit `rule` names. */
+function contextIssues(context: unknown, profiles: ReadonlySet<string>, rule: { readonly commit?: string | null }): ConfigIssue[] {
+  if (context === undefined) return []
+  if (!isRecord(context)) {
+    return [
+      { path: 'context', message: 'must be an object holding documents' },
+    ]
+  }
+  return context.documents === undefined
+    ? []
+    : documentIssues(context.documents, 'context.documents', { origin: 'repository', profiles, ...rule })
+}
+
+/** What a review runs: each profile's run, as compiled or with the review's repository documents, and the record of every document they send. */
+interface Reviewed {
+  readonly runs: readonly ProfileRun[]
+  readonly record: ContextRecord
+}
+
+/**
+ * The runs of one review: each profile's compiled run, kept as it is when the context gives it no document, else a run of
+ * its own with the profile's repository documents added to its texts, so its guidelines, its research instructions and every
+ * request, plan and estimate built from them hold the documents. The review's context is checked (`reviewIssues`) before this.
+ * Two things refuse it, as one `ConfigError`, before any call: a repository document that takes the profile's guidelines or do-not-report
+ * text over what they may hold in all (at the document that does), and a changed run whose research or votes leave their provider
+ * less than 1024 tokens of diff, as `createQuorum` refuses a profile for its own documents. The record is every run's, in run
+ * order, as new objects the review's result and event may hold.
+ */
+function reviewRuns(compiled: Compiled, context: ReviewContext | undefined): Reviewed {
+  const given = new Map<string, Array<{ readonly index: number, readonly document: ReviewDocument }>>()
+  for (const [index, document] of (context?.documents ?? []).entries()) {
+    given.set(document.profile, [
+      ...given.get(document.profile) ?? [],
+      { index, document },
+    ])
+  }
+  const changed = new Set<string>()
+  const issues: ConfigIssue[] = []
+  const runs = compiled.runs.map((run) => {
+    const documents = given.get(run.id)
+    if (documents === undefined) return run
+    changed.add(run.id)
+    issues.push(...contextTotalIssues(run.texts, documents))
+    return runWith(run, withRepository(run.texts, documents.map(({ document }) => document)))
+  })
+  for (const run of runs) {
+    if (changed.has(run.id)) issues.push(...roomIssues(run.id, profileBudgets(run, target => target.window, compiled), run, compiled.maxFindings))
+  }
+  if (issues.length > 0) throw new ConfigError(issues)
+  return {
+    runs,
+    record: {
+      documents: runs.flatMap(run => run.texts.records.map(record => structuredClone(record))),
+    },
+  }
 }
 
 /** Whether `value` is an object with a `get` and a `put` function, which is all a review asks of a store before it calls it. */
@@ -741,17 +821,39 @@ function compile(profile: Profile, ports: ProfilePorts): ProfileRun {
     instructions: renderTemplate(profile.prompts.vote, { 'lens.id': lens.id, 'lens.question': lens.question, 'panel.size': panelSize }),
     ...targetOf(ports.voters[lens.id]),
   }))
+  const { instructions, ...texts } = fromTexts(profileTexts(profile, renderTemplate(profile.prompts.research, {})))
   return Object.freeze({
     id: profile.id,
     research: Object.freeze({
-      instructions: renderTemplate(profile.prompts.research, {}),
+      instructions,
       ...targetOf(ports.research),
     }),
     lenses: Object.freeze(lenses),
     thresholds: Object.freeze(thresholdsFor(profile)),
     failOn,
     gating: failOn !== 'none',
-    guidelines: profile.guidelines,
+    ...texts,
+  })
+}
+
+/** What follows from a profile's texts: the texts themselves, its joined guidelines and do-not-report text, and the research instructions with the do-not-report paragraph after them. */
+function fromTexts(texts: ProfileTexts): Pick<ProfileRun, 'texts' | 'guidelines' | 'doNotReport'> & { readonly instructions: string } {
+  const doNotReport = joined(texts.doNotReport)
+  return {
+    texts,
+    guidelines: joined(texts.guidelines),
+    doNotReport,
+    instructions: doNotReportInstructions(texts.prompt, doNotReport),
+  }
+}
+
+/** `run` with `texts` in place of the ones it was compiled with: the guidelines, the do-not-report text and the research instructions follow from them. */
+function runWith(run: ProfileRun, texts: ProfileTexts): ProfileRun {
+  const { instructions, ...derived } = fromTexts(texts)
+  return Object.freeze({
+    ...run,
+    research: Object.freeze({ ...run.research, instructions }),
+    ...derived,
   })
 }
 

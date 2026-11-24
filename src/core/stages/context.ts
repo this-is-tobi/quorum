@@ -4,6 +4,7 @@ import type { ProfileBudgets } from '../budgets.ts'
 import { wait } from '../clock.ts'
 import type { Clock } from '../clock.ts'
 import type { Clocks } from '../clocks.ts'
+import type { ProfileTexts } from '../documents.ts'
 import type { Health } from '../down.ts'
 import { cutOf, cutWords, ProviderDownError, ProviderError } from '../errors.ts'
 import { checkedUsage, failureFacts, failureUsage, lackOf, ownData, ownUsage, providerFailure, rateLimitFacts } from '../facts.ts'
@@ -79,7 +80,12 @@ export interface ProfileRun {
   readonly failOn: FailOn
   /** Whether the profile gates: `failOn` is not `none`. A failed research part is its profile's gap, gating or not; a gating profile's gap exits 4. */
   readonly gating: boolean
+  /** What the requests are made of, as compiled: the research template rendered, the cleaned guidelines and do-not-report texts and the record of each document. A review's repository documents add to them, in a run of its own (`withRepository`). */
+  readonly texts: ProfileTexts
+  /** The profile's guidelines, its documents' joined in order by a blank line: the block every request of the profile carries. None when it holds none. */
   readonly guidelines?: string
+  /** What the profile's research does not report, joined as the guidelines are: it is in `research.instructions`, as the paragraph after the instructions, and in no vote. None when it holds none. */
+  readonly doNotReport?: string
 }
 
 /** What every stage of one review shares. */

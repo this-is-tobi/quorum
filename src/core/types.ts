@@ -11,6 +11,7 @@ import type { ConcurrencyRecord } from './lanes.ts'
 import type { PartOutcome } from './parts.ts'
 import type { PolicyRules } from './policy.ts'
 import type { ReplyStore } from './ports.ts'
+import type { Removed } from './sanitize.ts'
 
 /**
  * A candidate issue after the harness checked it against the diff. The finder supplies the file,
@@ -129,8 +130,85 @@ export interface Profile {
    * @deprecated Set `failOn`.
    */
   readonly gating?: boolean
-  /** Reference text the caller already loaded; the core never reads files. */
+  /**
+   * Reference text the caller already loaded; the core never reads files. The core cleans it as it cleans every document
+   * (`cleanProse`: hidden characters, HTML comments and numeric character references go) and refuses it over 16 KiB cleaned
+   * or nested too deep to clean, so what a model reads is what a person sees. It is the first of the profile's guidelines:
+   * its `documents` of kind `guidelines` follow it, then the review's own, joined by a blank line.
+   */
   readonly guidelines?: string
+  /**
+   * What the profile's research is told not to report, as reference text the caller already loaded: cleaned and capped at
+   * 8 KiB as `guidelines` are. It reaches the research request alone, in the system message after the instructions, never a
+   * vote, so a poisoned exclusion never reaches the vote that decides a finding. It is the first of the profile's do-not-report
+   * text: its `documents` of kind `do-not-report` follow it, then the review's own.
+   */
+  readonly doNotReport?: string
+  /**
+   * The profile's documents of origin `config`, in the order they are sent, after its own `guidelines` and `doNotReport`: at
+   * most 16 of each kind. A review's repository documents come in `ReviewInput.context`, and follow these.
+   */
+  readonly documents?: readonly ReviewDocument[]
+}
+
+/** What a document tells a model: the project's guidelines, to judge by, or what the research does not report. */
+export type DocumentKind = 'guidelines' | 'do-not-report'
+
+/**
+ * Where a document comes from: `config`, an operator's file or text the profile holds, or `repository`, a file read from
+ * the commit the review's source reads documents from. `sha256` is the hash of the text as read, before it was cleaned,
+ * 64 lowercase hexadecimal digits, when its reader computed one.
+ */
+export type DocumentOrigin
+  = | { readonly kind: 'config', readonly sha256?: string }
+    | { readonly kind: 'repository', readonly path: string, readonly commit: string, readonly sha256?: string }
+
+/**
+ * A document a review reads as policy, for one profile. The core cleans its text again (`cleanProse`), refuses it over its
+ * cap once cleaned, and joins it with the profile's other documents of its kind: a blank text is recorded and sent none.
+ */
+export interface ReviewDocument {
+  /** The id of the profile the document belongs to. */
+  readonly profile: string
+  readonly kind: DocumentKind
+  readonly origin: DocumentOrigin
+  /** The text, at most 64 KiB; absent only for an optional repository document that was not found, never for a config document. */
+  readonly text?: string
+  /** What its reader removed from the text before handing it over, added to what the core removes. */
+  readonly removed?: Removed
+}
+
+/** The documents a review reads besides its profiles' own: the files of the repository a source reads them from. */
+export interface ReviewContext {
+  /** Documents of origin `repository` only, at most 256, each naming the commit the review's source reads documents from. */
+  readonly documents?: readonly ReviewDocument[]
+}
+
+/**
+ * What a review records of one document, in `meta.context` and the `context` event: where it came from, its hash,
+ * path and commit, whether it was read or an optional one was missing, its bytes as sent and what the cleaner removed.
+ * It never holds the text.
+ */
+export interface ContextDocument {
+  profile: string
+  kind: DocumentKind
+  /** `profile` for the text a program set on the profile, `config` for a document of its configuration, `repository` for a file of the commit the review reads. */
+  origin: 'profile' | 'config' | 'repository'
+  /** The repository path of a `repository` document. */
+  path?: string
+  /** The full id of the commit a `repository` document was read at. */
+  commit?: string
+  /** The SHA-256 of the text as read, before it was cleaned: 64 lowercase hexadecimal digits. */
+  sha256?: string
+  status: 'read' | 'missing'
+  /** The UTF-8 bytes of the cleaned text as it is sent: 0 for a blank or a missing document. */
+  bytes: number
+  removed: Removed
+}
+
+/** What `meta.context` and the `context` event hold: one record per document the review sends, each profile's guidelines then its do-not-report text, each in the order they are joined. */
+export interface ContextRecord {
+  documents: ContextDocument[]
 }
 
 /** A confidence level a kept finding reaches; 'low' only when the policy enables it. */
@@ -413,6 +491,8 @@ export interface QuorumMeta {
   leftOut: LeftOutFile[]
   /** Advisory signals the harness read from the diff, and from the files left out as secrets, held back or skipped by a source, which come first: where a human should look. They change no verdict and no exit code. */
   flags: Flag[]
+  /** The documents the review read as policy and sent, each recorded by its hash, path, commit and counts and never its text: empty when no profile has one. */
+  context: ContextRecord
   /** What the review moved by itself, in the order it happened: empty when nothing moved. A setting an explicit option holds is never moved. */
   adaptations: Adaptation[]
   /** How many research calls and votes were reused from the review's store, counted from the `call` events that say `reused`: present when a store was given, even at 0. */
@@ -526,6 +606,14 @@ export interface ReviewInput {
    * empty name, can never be named. None when unset.
    */
   readonly send?: readonly string[]
+  /**
+   * The repository documents of the review, which a reader of the repository (`readContext`) hands over: each is sent with the
+   * profile it names, after the profile's own and its config documents, cleaned and capped as they are. Each names the commit
+   * the review's source reads documents from, which the core checks against `source`: a range's base, a path review's commit,
+   * a local source's head. A `diff` source, and a local source before a first commit, names none and takes no document. None
+   * when unset.
+   */
+  readonly context?: ReviewContext
 }
 
 /**
@@ -608,6 +696,8 @@ export interface Quorum {
    * sends once more and the calls a bad reply sends once more; `fits` says whether `expected` and what the calls in flight reserve are within
    * `maxReviewTokens`. It is an estimate, not a promise: a review still reserves each call against the cap.
    * A file held back as a secret costs nothing, and one `input.send` names is counted, as `review` sends it.
+   * `context` is the review's repository documents, counted as `review` sends them: a document that leaves a research provider
+   * less than 1024 tokens of diff is refused as `review` refuses it. An estimate names no source, so it checks no document's commit.
    * `limits` are the cap and the deadline the estimate is made under, in place of the quorum's, as `review`'s
    * `maxReviewTokens` and `reviewTimeoutMs` are: `Estimate.maxReviewTokens`, `reviewTimeoutMs`, `fits` and `held` read them.
    * `findingsCap`, as `review` takes it, moves `Estimate.findingsCap`, each profile's `votes` and `worst`, and `inFlight`
@@ -615,7 +705,7 @@ export interface Quorum {
    * `expected` do not depend on it, as `maxFindings` sizes every request.
    * Throws a `ConfigError` for an input or a limit `review` would refuse.
    */
-  readonly estimate: (input: { readonly diff: string, readonly send?: readonly string[] }, limits?: { readonly maxReviewTokens?: number, readonly reviewTimeoutMs?: number, readonly findingsCap?: number }) => Estimate
+  readonly estimate: (input: { readonly diff: string, readonly send?: readonly string[], readonly context?: ReviewContext }, limits?: { readonly maxReviewTokens?: number, readonly reviewTimeoutMs?: number, readonly findingsCap?: number }) => Estimate
   /** Settings that cannot take full effect, such as a policy level that never applies; each starts at its profile id. */
   readonly warnings: readonly string[]
   /**
@@ -677,6 +767,11 @@ export type QuorumEvent
   = | { type: 'run:start', profiles: string[], providers: Record<string, ProfileProviders> }
     /** The files the review leaves out, as `meta.leftOut` holds them, the input's first: sent once right after `run:start` when there is one. */
     | { type: 'left-out', files: LeftOutFile[] }
+    /**
+     * The documents the review sends as policy, as `meta.context` holds them: sent once, right after `run:start` and `left-out`
+     * and before the gaps, when a profile has one. Counts, hashes, paths, commits and code words only, never a text.
+     */
+    | { type: 'context', context: ContextRecord }
     /** An advisory flag, read from the diff or from the files left out as secrets, sent before any stage starts. */
     | { type: 'flag', flag: Flag }
     /**

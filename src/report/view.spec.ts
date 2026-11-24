@@ -127,6 +127,7 @@ describe('publicView', () => {
         ],
         leftOut: reportMeta().leftOut,
         flags: reportMeta().flags,
+        context: { documents: [] },
         adaptations: [],
       },
     }
@@ -142,6 +143,7 @@ describe('publicView', () => {
       'incomplete',
       'leftOut',
       'flags',
+      'context',
       'adaptations',
     ])
     expect(Object.keys(view.meta.profiles.security)).toEqual([
@@ -213,6 +215,57 @@ describe('publicView', () => {
     expect(view.meta.adaptations).toEqual(adaptations)
     expect(view.meta.adaptations).not.toBe(result.meta.adaptations)
     expect(view.meta.adaptations[0]).not.toBe(result.meta.adaptations[0])
+  })
+
+  it('keeps meta.context in the public view, as a copy', () => {
+    const documents = [
+      {
+        profile: 'security',
+        kind: 'guidelines',
+        origin: 'profile',
+        status: 'read',
+        bytes: 12,
+        removed: { characters: 1, comments: 0, entities: 0 },
+      },
+      {
+        profile: 'security',
+        kind: 'do-not-report',
+        origin: 'repository',
+        path: 'REVIEW.md',
+        commit: 'c'.repeat(40),
+        sha256: 'a'.repeat(64),
+        status: 'read',
+        bytes: 40,
+        removed: { characters: 0, comments: 1, entities: 2 },
+      },
+    ] as const
+    const result = reportResult({
+      meta: {
+        ...reportMeta(),
+        context: {
+          documents: documents.map(document => ({
+            ...document,
+            removed: { ...document.removed },
+          })),
+        },
+      },
+    })
+    const view = publicView(result)
+    expect(view.meta.context).toEqual({ documents })
+    expect(view.meta.context).not.toBe(result.meta.context)
+    expect(view.meta.context.documents[1]).not.toBe(result.meta.context.documents[1])
+    expect(view.meta.context.documents[1].removed).not.toBe(result.meta.context.documents[1].removed)
+    // A record that is no record quorum writes is no view.
+    expect(() => publicView(reportResult({
+      meta: {
+        ...reportMeta(),
+        context: {
+          documents: [
+            { ...documents[0], kind: 'rules' } as never,
+          ],
+        },
+      },
+    }))).toThrow('the public view is not one quorum writes, at meta.context.documents.0')
   })
 
   it('keeps a moved finding\'s citedLine in the public view', () => {

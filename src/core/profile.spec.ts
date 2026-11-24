@@ -360,3 +360,185 @@ describe('profile', () => {
     expect(Object.isFrozen(defaultPolicy)).toBe(true)
   })
 })
+
+describe('the documents of a profile', () => {
+  const naming: Profile = { ...valid, id: 'naming' }
+  const config = (kind: 'guidelines' | 'do-not-report', text: string, extra: Record<string, unknown> = {}): NonNullable<Profile['documents']>[number] => ({
+    profile: 'naming',
+    kind,
+    origin: { kind: 'config' },
+    text,
+    ...extra,
+  })
+  const nested = (levels: number): string => '<'.repeat(levels) + '!---->'.repeat(levels)
+
+  it.each<[string, Partial<Profile>, string, string]>([
+    [
+      'guidelines of 16 385 bytes',
+      {
+        guidelines: 'g'.repeat(16_385),
+      },
+      'naming.guidelines',
+      'holds 16385 bytes once cleaned, over the 16 KiB a guidelines document may hold',
+    ],
+    [
+      'doNotReport of 8 193 bytes',
+      {
+        doNotReport: 'd'.repeat(8193),
+      },
+      'naming.doNotReport',
+      'holds 8193 bytes once cleaned, over the 8 KiB a do-not-report document may hold',
+    ],
+    [
+      'guidelines of 10 000 bytes and a document of 7 000',
+      {
+        guidelines: 'g'.repeat(10_000),
+        documents: [
+          config('guidelines', 'f'.repeat(7000)),
+        ],
+      },
+      'naming.documents.0',
+      'takes the profile\'s guidelines to 17000 bytes once cleaned, over the 16 KiB they may hold in all',
+    ],
+    [
+      'doNotReport of 5 000 bytes and a document of 4 000',
+      {
+        doNotReport: 'd'.repeat(5000),
+        documents: [
+          config('do-not-report', 'f'.repeat(4000)),
+        ],
+      },
+      'naming.documents.0',
+      'takes the profile\'s do-not-report text to 9000 bytes once cleaned, over the 8 KiB it may hold in all',
+    ],
+    [
+      'document of origin repository',
+      {
+        documents: [
+          {
+            profile: 'naming',
+            kind: 'guidelines',
+            origin: {
+              kind: 'repository',
+              path: 'REVIEW.md',
+              commit: 'c'.repeat(40),
+            },
+            text: 'x',
+          },
+        ],
+      },
+      'naming.documents.0.origin',
+      'must be a config document: a { repository } document comes from the review\'s context',
+    ],
+    [
+      'document of another profile',
+      {
+        documents: [
+          config('guidelines', 'x', { profile: 'other' }),
+        ],
+      },
+      'naming.documents.0.profile',
+      'must name the profile that holds it',
+    ],
+    [
+      '17 documents of one kind',
+      {
+        documents: Array.from({ length: 17 }, () => config('guidelines', 'x')),
+      },
+      'naming.documents',
+      'must hold at most 16 documents of one kind',
+    ],
+    [
+      'guidelines nested 16 levels deep',
+      {
+        guidelines: nested(16),
+      },
+      'naming.guidelines',
+      'nests HTML comments or character references too deep to clean in 16 passes: remove them',
+    ],
+    [
+      'document nested 16 levels deep',
+      {
+        documents: [
+          config('do-not-report', nested(16)),
+        ],
+      },
+      'naming.documents.0',
+      'nests HTML comments or character references too deep to clean in 16 passes: remove them',
+    ],
+  ])('refuses a profile whose %s', (_name, fields, path, message) => {
+    expect(profileIssues({
+      ...naming,
+      ...fields,
+    })).toEqual([
+      { path, message },
+    ])
+  })
+
+  it('accepts 16 documents of each kind, each within its cap', () => {
+    const documents = [
+      ...Array.from({ length: 16 }, () => config('guidelines', 'x'.repeat(1024))),
+      ...Array.from({ length: 16 }, () => config('do-not-report', 'y'.repeat(512))),
+    ]
+    expect(profileIssues({ ...naming, documents })).toEqual([])
+  })
+
+  it('accepts a profile at its caps once cleaned, comments not counted', () => {
+    const comments = `<!-- ${'c'.repeat(1991)} -->`
+    expect(comments).toHaveLength(2000)
+    const text = 'g'.repeat(16_384)
+    expect(profileIssues({ ...naming, guidelines: `${text}${comments}` })).toEqual([])
+    expect(profileIssues({
+      ...naming,
+      documents: [
+        config('guidelines', `${comments}${text}${comments}`),
+      ],
+    })).toEqual([])
+    expect(profileIssues({ ...naming, doNotReport: `${'d'.repeat(8192)}${comments}` })).toEqual([])
+  })
+
+  it('counts bytes in UTF-8, not characters', () => {
+    expect(profileIssues({
+      ...naming,
+      guidelines: 'é'.repeat(8193),
+    })).toEqual([
+      { path: 'naming.guidelines', message: 'holds 16386 bytes once cleaned, over the 16 KiB a guidelines document may hold' },
+    ])
+  })
+
+  it('reports an own text over its cap beside the documents that take the total over, never a text', () => {
+    const issues = profileIssues({
+      ...naming,
+      guidelines: 'SECRET'.repeat(3000),
+      documents: [
+        config('guidelines', 'x'),
+      ],
+    })
+    expect(issues.map(issue => issue.path)).toEqual(['naming.guidelines', 'naming.documents.0'])
+    expect(JSON.stringify(issues)).not.toContain('SECRET')
+  })
+
+  it('reports a doNotReport, documents and a document that are none of the right type as issues, never a TypeError', () => {
+    expect(profileIssues({ ...naming, doNotReport: 7 } as unknown as Profile)).toEqual([
+      { path: 'naming.doNotReport', message: 'must be a string' },
+    ])
+    expect(profileIssues({ ...naming, documents: 'REVIEW.md' } as unknown as Profile)).toEqual([
+      { path: 'naming.documents', message: 'must be an array of documents' },
+    ])
+    expect(profileIssues({
+      ...naming,
+      documents: [
+        null,
+        {
+          profile: 'naming',
+          kind: 'guidelines',
+          origin: { kind: 'config' },
+          text: 3,
+        },
+      ],
+    } as unknown as Profile)).toEqual([
+      { path: 'naming.documents.0', message: 'must be an object' },
+      { path: 'naming.documents.1.text', message: 'must be a string' },
+    ])
+  })
+})

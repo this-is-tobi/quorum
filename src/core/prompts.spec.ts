@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { CompletionRequest } from './ports.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { TemplatePart } from './prompts.ts'
-import { fence, FINDING_FIELDS, renderTemplate, requestDigest, researchRequest, templateParts, UNTRUSTED_CONTENT_NOTICE, voteRequest } from './prompts.ts'
+import { DO_NOT_REPORT_LINE, doNotReportInstructions, fence, FINDING_FIELDS, renderTemplate, requestDigest, researchRequest, templateParts, UNTRUSTED_CONTENT_NOTICE, voteRequest } from './prompts.ts'
 
 const finding = {
   id: '0123456789ab',
@@ -383,6 +383,45 @@ describe('requestDigest', () => {
       output: { name: 'x', schema: {} },
     })).toBeUndefined()
     expect(requestDigest({ ...one })).toBeUndefined()
+  })
+})
+
+describe('the do-not-report text', () => {
+  const findingsLine = (n: number): string => `List at most ${n} findings, the most serious first. For each, quote the shortest verbatim span of the diff that shows it.`
+
+  it('puts the do-not-report text right after the instructions, before the findings line, in research alone', () => {
+    expect(DO_NOT_REPORT_LINE).toBe('This review does not report:')
+    const request = researchRequest(doNotReportInstructions('Review names.', 'Style.\nNaming.'), 'diff --git a/x b/x')
+    expect(request.system.split('\n\n').slice(0, 4)).toEqual([
+      'Review names.',
+      'This review does not report:\nStyle.\nNaming.',
+      findingsLine(50),
+      FINDING_FIELDS,
+    ])
+    // A vote carries the lens's instructions as given: the text reaches the finder alone.
+    expect(voteRequest('Judge.', finding, '+exec(cmd)').system).not.toContain(DO_NOT_REPORT_LINE)
+  })
+
+  it('leaves the instructions as they are for a text that is blank or absent', () => {
+    expect(doNotReportInstructions('x', '  ')).toBe('x')
+    expect(doNotReportInstructions('x', '')).toBe('x')
+    expect(doNotReportInstructions('x', undefined)).toBe('x')
+    expect(doNotReportInstructions('x', '\n\t ')).toBe('x')
+  })
+
+  it('writes the text as it is given, a {{ in it included', () => {
+    expect(doNotReportInstructions('x', 'Keep {{lens.id}} and \\{{ alone.')).toBe('x\n\nThis review does not report:\nKeep {{lens.id}} and \\{{ alone.')
+  })
+
+  it('gives two requests that differ only in the do-not-report text, or only in the guidelines, two digests', () => {
+    const build = (doNotReport: string | undefined, guidelines?: string): string | undefined => requestDigest(researchRequest(doNotReportInstructions('Review.', doNotReport), 'diff --git a/x b/x', guidelines))
+    const base = build('Style.')
+    expect(build('Style.')).toBe(base)
+    expect(build('Naming.')).not.toBe(base)
+    expect(build(undefined)).not.toBe(base)
+    expect(build('Style.', 'Use parameters.')).not.toBe(base)
+    expect(build('Style.', 'Use prepared statements.')).not.toBe(build('Style.', 'Use parameters.'))
+    expect(build(undefined)).toBe(requestDigest(researchRequest('Review.', 'diff --git a/x b/x')))
   })
 })
 

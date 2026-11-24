@@ -119,6 +119,7 @@ export function reportMeta(): QuorumMeta {
         detail: 'U+202E on 1 added line(s)',
       },
     ],
+    context: { documents: [] },
     adaptations: [],
   }
 }

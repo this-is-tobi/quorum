@@ -106,6 +106,12 @@ describe('profileBudgets', () => {
       thresholds: thresholdsFor(securityProfile),
       failOn: 'high',
       gating: true,
+      texts: {
+        prompt: 'R',
+        guidelines: [],
+        doNotReport: [],
+        records: [],
+      },
     }
   }
 

@@ -4,14 +4,15 @@ Every model call quorum makes has the same layout: the profile's instructions an
 
 ## The layout of a request
 
-The system message is four parts, and six in a research request, joined by blank lines, and only the first comes from the profile:
+The system message is four parts, and six in a research request, seven when the profile has do-not-report text, joined by blank lines, and only the first two come from the profile:
 
 1. **The profile's instructions**: the research template rendered, or the vote template rendered for one lens ([Templates](#templates)).
-2. **The findings line**, in a research request only: `List at most <N> findings, the most serious first. For each, quote the shortest verbatim span of the diff that shows it.` `N` is what the research reply's budget holds, 50 at most ([Reply budgets](./20-configuration.md#reply-budgets)); a request of a provider that states no budget asks for `maxFindings`. The quote is only checked against the diff, so a shorter one costs nothing and bounds the largest part of a finding. A vote request has no such line.
-3. **The fields of a finding**, in a research request only, for every profile: ``Every finding has all five fields: `file`, its path as the diff names it; `line`, its line in the new file (for removed code, the nearest line that survives); `quote`, the code that shows it, copied verbatim without the leading +, - or space; `category`, its kind, as the instructions above define it; and `summary`, why it is a finding, in a sentence or two.`` So a profile's instructions say what to look for, what a quote holds and what a category means, and name no field otherwise ([Writing a profile](./40-profiles.md#writing-a-profile)). A vote request has no such paragraph.
-4. **The reply format**: `Respond with ONLY a JSON object matching this JSON Schema:`, then the schema of the reply this call expects.
-5. **The [data notice](#the-data-notice)**, naming each block of the user message.
-6. **The [untrusted-content notice](#the-untrusted-content-notice)**, always last.
+2. **The do-not-report paragraph**, in a research request whose profile has do-not-report text, right after the instructions: `This review does not report:`, a line feed, then the profile's do-not-report documents joined by a blank line, as they were cleaned ([Documents](#documents)). A vote request has none: the text reaches the finder alone.
+3. **The findings line**, in a research request only: `List at most <N> findings, the most serious first. For each, quote the shortest verbatim span of the diff that shows it.` `N` is what the research reply's budget holds, 50 at most ([Reply budgets](./20-configuration.md#reply-budgets)); a request of a provider that states no budget asks for `maxFindings`. The quote is only checked against the diff, so a shorter one costs nothing and bounds the largest part of a finding. A vote request has no such line.
+4. **The fields of a finding**, in a research request only, for every profile: ``Every finding has all five fields: `file`, its path as the diff names it; `line`, its line in the new file (for removed code, the nearest line that survives); `quote`, the code that shows it, copied verbatim without the leading +, - or space; `category`, its kind, as the instructions above define it; and `summary`, why it is a finding, in a sentence or two.`` So a profile's instructions say what to look for, what a quote holds and what a category means, and name no field otherwise ([Writing a profile](./40-profiles.md#writing-a-profile)). A vote request has no such paragraph.
+5. **The reply format**: `Respond with ONLY a JSON object matching this JSON Schema:`, then the schema of the reply this call expects.
+6. **The [data notice](#the-data-notice)**, naming each block of the user message.
+7. **The [untrusted-content notice](#the-untrusted-content-notice)**, always last.
 
 The user message holds the data, each block in its own fence, joined by blank lines:
 
@@ -19,6 +20,8 @@ The user message holds the data, each block in its own fence, joined by blank li
 | --- | --- |
 | Research, one per profile, or one per part of a large change | The diff; or, for a change in parts, the parts block, then the part's diff; then the guidelines, when the profile has them |
 | Vote, one per lens per finding | The claim, the evidence, the diff section of the cited file; then the guidelines, when the profile has them |
+
+The guidelines block holds the profile's documents of that kind joined by a blank line, in this order: the text a program set on the profile (`guidelines`), the profile's own `documents`, then the repository documents the review brings (`context`), each cleaned and the blank ones left out ([Documents](#documents)). A profile with no document sends the requests it sent before, with no guidelines block and no paragraph.
 
 The claim is two lines, `Finding: <file>:<line> [<category>]` and `Claim by the finder (unverified): <summary>`. Its category and summary, and, for a diff without per-file headers, its file name (cleaned, capped at 260 characters), are the only text a model wrote that a voter reads. The file name's hidden characters show as `<U+XXXX>`, so a name that holds a line break cannot add a line to the claim. The evidence is the code the harness read from the diff around the cited line, and the diff section is the cited file's part of the diff, or the whole diff when no single section matches. For a voter whose provider states a window that the section does not fit, the diff section is the file's header and the hunks nearest the cited line that fit, the cited hunk among them ([Research in parts](./20-configuration.md#research-in-parts)).
 
@@ -102,6 +105,17 @@ One vote in a {{panel.size}}-voter panel - you do not see the other votes. Refut
 Judge only from the blocks you receive. Default keep=false unless genuinely convinced.
 ```
 
+## Documents
+
+Guidelines and do-not-report text are documents, read as policy: the guidelines as the criteria to judge by, the do-not-report text as what the finder is told not to report. The core cleans each one it sends, whoever read it, with [`cleanProse`](../95-reference/30-library-api.md#cleanprose): the hidden characters, the HTML comments and the numeric character references go; other Markdown a renderer hides, a link reference definition, stays. Each is capped once cleaned, in UTF-8 bytes:
+
+| Kind | One document | All of a profile's documents of the kind |
+| --- | --- | --- |
+| `guidelines` | 16 KiB | 16 KiB |
+| `do-not-report` | 8 KiB | 8 KiB |
+
+A document over its cap, or nested so deep that sixteen passes of the cleaner still change it, is refused before any call, never cut, and no message holds its text ([the library page](../95-reference/30-library-api.md#documents) has the messages). The do-not-report paragraph is appended after the instructions are rendered, so a `{{` in a document is text. Every document a request carries is part of the request's digest, so a review kept with `--state` and rerun after a guideline changed reuses no stored research reply or vote; the do-not-report text is in the research request alone, so a changed one moves the research replies and leaves the votes of the same findings as they were. Each document is recorded in the result's `meta.context`, by its hash, path, commit and counts, never its text: [The context](../95-reference/20-json-result.md#the-context).
+
 ## Templates
 
 A template is text with `{{name}}` placeholders, and no logic: no condition, no loop, no filter. Each template takes its own variables:
@@ -117,7 +131,7 @@ A template is text with `{{name}}` placeholders, and no logic: no condition, no 
 - **`\{{` is a literal `{{`.** The backslash is dropped and no placeholder opens, so `\{{name}}` is sent as `{{name}}`. A lone `}}` is text as written, and so is a backslash before anything else.
 - **Two edges follow.** `{{{lens.id}}}` is refused, since its first `{{` meets a brace before it closes. `\\{{` is a backslash and a literal `{{`, as each `\{{` is an escape, so a template cannot send a backslash right before a placeholder.
 - **Both templates are rendered**, when the quorum is created: the vote template once per lens, the research template once, with no variable. Its `\{{` reads as `{{` too, where 0.12.0 sent the research template as written.
-- **Guidelines are no template.** A `{{` in them is text, and a `\{{` is sent as written.
+- **Documents are no template.** A `{{` in a profile's guidelines or do-not-report text is text, and a `\{{` is sent as written.
 
 ## The data notice
 
@@ -150,11 +164,11 @@ Each fence is `<untrusted-<label>-<nonce>>` before the block and the same tag cl
 
 ## What is not configurable
 
-A profile sets its instructions, its lenses, its policy, its `failOn` and its guidelines. It cannot change these:
+A profile sets its instructions, its lenses, its policy, its `failOn`, its guidelines and its do-not-report text. It cannot change these:
 
 | Fixed | Why |
 | --- | --- |
-| The fences, and data only in the user message | Every block of attacker-influenced data, and the guidelines, is fenced as data: no template can put data in the system message, or take it out of its fence |
+| The fences, and data only in the user message | Every block of attacker-influenced data, and the guidelines, is fenced as data: no template can put data in the system message, or take it out of its fence. The do-not-report paragraph is the one document in the system message, and it holds the text of a profile's documents alone, never a line of the diff |
 | The findings line, the fields of a finding, the piece's position line, the data notice and the untrusted-content notice | Only the code knows which blocks a request carries, how many findings its reply can hold and which piece of a split part a request is, and a template has no logic to say so; the notices, the findings line and the fields come after the profile's instructions, which cannot remove or reword them, and the position line is in the parts block, which the profile does not write. The fields are the one contract every profile shares, so a profile cannot leave one unnamed |
 | The reply schemas | The research reply is `{ findings }` with five fields per finding, and a vote is `{ keep, reasoning }`, with no confidence field to fill |
 | Blind votes | A vote request is built from the finding, the lens, the diff context and the profile's guidelines, and no template variable exposes another vote |
