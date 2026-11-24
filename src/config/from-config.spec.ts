@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { documentSha256 } from '../core/documents.ts'
 import { ConfigError, ProviderError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
@@ -176,6 +177,103 @@ describe('fromConfig', () => {
       },
     })).toEqual([
       { path: 'profiles.team.prompts.research', message: 'must be a string' },
+    ])
+  })
+
+  it('takes a program\'s { text } documents, as the loader gives them', async () => {
+    const fetchMock = stubReview(ollamaReply)
+    const guideline = 'Name things for what they do.'
+    const skipped = 'Generated files.'
+    const quorum = await fromConfig({
+      profiles: {
+        naming: {
+          prompts: { research: 'Find naming issues.', vote: 'Judge from {{lens.id}}: {{lens.question}}' },
+          lenses: [
+            { id: 'grounded', question: 'Is it backed by a convention?' },
+          ],
+          guidelines: [
+            { text: guideline },
+          ],
+          doNotReport: [
+            { text: skipped },
+          ],
+        },
+      },
+    }, {
+      env: { QUORUM_RESEARCH_MODEL: 'qwen', QUORUM_RESEARCH_CONTEXT_TOKENS: '131072' },
+    })
+    const result = await quorum.review({ diff })
+    const bodies = fetchMock.mock.calls.map((_, call) => JSON.stringify(sent(fetchMock, call).body))
+    // The research asks for what to skip and the votes never see it; every request carries the guideline.
+    expect(bodies.length).toBeGreaterThan(1)
+    expect(bodies.every(body => body.includes(guideline))).toBe(true)
+    expect(bodies[0]).toContain(`This review does not report:\\n${skipped}`)
+    expect(bodies.slice(1).some(body => body.includes(skipped))).toBe(false)
+    expect(result.meta.context.documents).toEqual([
+      {
+        profile: 'naming',
+        kind: 'guidelines',
+        origin: 'config',
+        sha256: documentSha256(guideline),
+        status: 'read',
+        bytes: guideline.length,
+        removed: { characters: 0, comments: 0, entities: 0 },
+      },
+      {
+        profile: 'naming',
+        kind: 'do-not-report',
+        origin: 'config',
+        sha256: documentSha256(skipped),
+        status: 'read',
+        bytes: skipped.length,
+        removed: { characters: 0, comments: 0, entities: 0 },
+      },
+    ])
+  })
+
+  it('refuses a { file } document in a ConfigInput, which reads no file, and a document over its cap, at its entry', async () => {
+    const team = {
+      prompts: { research: 'r', vote: 'v' },
+      lenses: [
+        { id: 'a', question: 'q' },
+      ],
+    }
+    const providers = {
+      local: {
+        protocol: 'openai-compatible',
+        baseUrl: 'http://localhost:11434/v1',
+        model: 'm',
+        contextTokens: 131072,
+      },
+    }
+    expect(await issuesOf({
+      providers,
+      profiles: {
+        team: {
+          ...team,
+          guidelines: [
+            { file: 'g.md' },
+          ],
+        },
+      },
+    })).toEqual([
+      { path: 'profiles.team.guidelines.0.text', message: 'is required' },
+      { path: 'profiles.team.guidelines.0.file', message: 'is not a known field' },
+    ])
+    expect(await issuesOf({
+      providers,
+      profiles: {
+        team: {
+          ...team,
+          guidelines: [
+            {
+              text: 'x'.repeat(16_385),
+            },
+          ],
+        },
+      },
+    })).toEqual([
+      { path: 'profiles.team.guidelines.0', message: 'holds 16385 bytes once cleaned, over the 16 KiB a guidelines document may hold' },
     ])
   })
 

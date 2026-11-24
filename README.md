@@ -77,6 +77,7 @@ The report goes to stdout: the text report on a terminal, the JSON result on a p
 - [Configuration](./docs/20-using/20-configuration.md) *- The config file and its trust model in CI, the `QUORUM_*` variables and the voter's fallback, the context size each provider states, running Claude Code, the keys, `--print-config`, and the errors a bad setting causes*
 - [Providers](./docs/20-using/30-providers.md) *- The provider port, the shipped adapters and their options, Claude Code run isolated as a provider, the presets, `ProviderError`, and writing a provider of your own*
 - [Profiles](./docs/20-using/40-profiles.md) *- The security profile, writing your own, several in one review, gating and guidelines*
+- [Rules and guidelines](./docs/20-using/45-rules-and-guidelines.md) *- Guidelines and do-not-report text as files of a config, what each request carries of them, the caps, the cleaner and the cost*
 - [Lenses and policy](./docs/20-using/50-lenses-and-policy.md) *- The panel's questions, the rules that turn kept votes into a confidence, failed votes, and what a level means*
 - [Prompts](./docs/20-using/60-prompts.md) *- The layout of every request, the templates and their variables, the notices, and what is not configurable*
 - [Benchmarks](./docs/20-using/70-bench.md) *- quorum bench: measure configurations on a suite of real bugs, write a suite, resume a run, and read the report and its intervals*

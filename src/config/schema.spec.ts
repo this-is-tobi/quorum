@@ -95,6 +95,14 @@ const FULL: QuorumConfigFile = {
         research: { file: './prompts/research.md' },
         vote: 'Judge from {{lens.id}}: {{lens.question}}',
       },
+      guidelines: [
+        { file: './guidelines/style.md' },
+        { file: '/etc/team/naming.md' },
+      ],
+      doNotReport: [
+        { file: './guidelines/skip.md' },
+      ],
+      builtInDoNotReport: false,
       lenses: [
         { id: 'grounded', question: 'Is it backed by a convention?' },
         { id: 'significant', question: 'Would a maintainer block on it?', provider: 'x-api' },
@@ -714,8 +722,8 @@ describe('configFileSchema', () => {
     ],
     [
       'a profile',
-      profile({ guidelines: 'be kind' }),
-      'profiles.team.guidelines',
+      profile({ guideline: 'be kind' }),
+      'profiles.team.guideline',
     ],
     [
       'a profile\'s roles',
@@ -896,6 +904,89 @@ describe('configFileSchema', () => {
       at('version', message),
     ])
     expect(issuesOf({ version: 1 })).toEqual([])
+  })
+
+  it.each<[string, Record<string, unknown>, ConfigIssue[]]>([
+    [
+      'guidelines list of 17',
+      {
+        guidelines: Array.from({ length: 17 }, (_, index) => ({ file: `g${index}.md` })),
+      },
+      [
+        at('profiles.team.guidelines', 'must hold at most 16 documents'),
+      ],
+    ],
+    [
+      'do-not-report list of 17',
+      {
+        doNotReport: Array.from({ length: 17 }, (_, index) => ({ file: `d${index}.md` })),
+      },
+      [
+        at('profiles.team.doNotReport', 'must hold at most 16 documents'),
+      ],
+    ],
+    [
+      'guidelines entry that holds a text, which a file config has no place for',
+      {
+        guidelines: [
+          { text: 'Use parameters.' },
+        ],
+      },
+      [
+        at('profiles.team.guidelines.0.file', 'is required'),
+        at('profiles.team.guidelines.0.text', 'is not a known field'),
+      ],
+    ],
+    [
+      'do-not-report entry that holds both file and another key',
+      {
+        doNotReport: [
+          { file: 'd.md', text: 'x' },
+        ],
+      },
+      [
+        at('profiles.team.doNotReport.0.text', 'is not a known field'),
+      ],
+    ],
+    [
+      'guidelines entry that is a string',
+      {
+        guidelines: ['g.md'],
+      },
+      [
+        at('profiles.team.guidelines.0', 'must be an object'),
+      ],
+    ],
+    [
+      'guidelines value that is no list',
+      {
+        guidelines: { file: 'g.md' },
+      },
+      [
+        at('profiles.team.guidelines', 'must be an array'),
+      ],
+    ],
+    [
+      'builtInDoNotReport that is no boolean',
+      { builtInDoNotReport: 'no' },
+      [
+        at('profiles.team.builtInDoNotReport', 'must be true or false'),
+      ],
+    ],
+  ])('refuses a %s', (_name, fields, issues) => {
+    expect(issuesOf(profile(fields))).toEqual(issues)
+    expect(issuesOf(profile(fields), configCodeSchema)).toEqual(issues)
+  })
+
+  it('takes 16 guidelines and 16 do-not-report entries, each { file }, in a file config and a code config', () => {
+    const full = {
+      guidelines: Array.from({ length: 16 }, (_, index) => ({ file: `g${index}.md` })),
+      doNotReport: Array.from({ length: 16 }, (_, index) => ({ file: `d${index}.md` })),
+      builtInDoNotReport: true,
+    }
+    expect(issuesOf(profile(full))).toEqual([])
+    expect(issuesOf(profile(full), configCodeSchema)).toEqual([])
+    expect(issuesOf(profile({ guidelines: [], doNotReport: [] }))).toEqual([])
   })
 
   it('refuses a lens list that is empty', () => {
@@ -1636,6 +1727,37 @@ describe('configInputSchema', () => {
       },
     })
   })
+
+  it('takes a document as { text } only, since a program\'s config is read from no file', () => {
+    const entry = (fields: Record<string, unknown>): unknown => ({
+      profiles: {
+        team: {
+          guidelines: [fields],
+          doNotReport: [fields],
+        },
+      },
+    })
+    expect(issuesOf(entry({ text: 'Use parameters.' }), configInputSchema)).toEqual([])
+    expect(issuesOf(entry({ file: 'g.md' }), configInputSchema)).toEqual([
+      at('profiles.team.guidelines.0.text', 'is required'),
+      at('profiles.team.guidelines.0.file', 'is not a known field'),
+      at('profiles.team.doNotReport.0.text', 'is required'),
+      at('profiles.team.doNotReport.0.file', 'is not a known field'),
+    ])
+    expect(issuesOf(entry({ text: 7 }), configInputSchema)).toEqual([
+      at('profiles.team.guidelines.0.text', 'must be a string'),
+      at('profiles.team.doNotReport.0.text', 'must be a string'),
+    ])
+    expect(issuesOf({
+      profiles: {
+        team: {
+          guidelines: Array.from({ length: 17 }, () => ({ text: 'x' })),
+        },
+      },
+    }, configInputSchema)).toEqual([
+      at('profiles.team.guidelines', 'must hold at most 16 documents'),
+    ])
+  })
 })
 
 describe('unknownName', () => {
@@ -1761,6 +1883,30 @@ describe('configJsonSchema', () => {
       maxItems: 100,
       items: { type: 'string' },
     })
+  })
+
+  it('advertises guidelines and doNotReport as at most 16 described { file } entries, and builtInDoNotReport as a boolean', () => {
+    const profile = [
+      'properties',
+      'profiles',
+      'additionalProperties',
+      'properties',
+    ]
+    for (const field of ['guidelines', 'doNotReport']) {
+      expect(node(...profile, field)).toMatchObject({
+        type: 'array',
+        maxItems: 16,
+        items: {
+          type: 'object',
+          properties: {
+            file: { type: 'string' },
+          },
+          required: ['file'],
+          additionalProperties: false,
+        },
+      })
+    }
+    expect(node(...profile, 'builtInDoNotReport')).toMatchObject({ type: 'boolean' })
   })
 
   it('is what schema/quorum.schema.json holds, byte for byte', () => {

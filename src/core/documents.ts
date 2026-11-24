@@ -377,7 +377,7 @@ function textProblem(kind: DocumentKind, text: string): string | undefined {
 }
 
 /** The bytes a cleaned text is sent as: none for a blank one. */
-function bytesOf(text: string): number {
+export function bytesOf(text: string): number {
   return text.trim() === ''
     ? 0
     : utf8Length(text)

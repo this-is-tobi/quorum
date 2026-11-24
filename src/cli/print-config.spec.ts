@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import type { ProfileBudgets } from '../core/budgets.ts'
+import { documentSha256 } from '../core/documents.ts'
 import type { Provider } from '../core/ports.ts'
+import type { Profile, ReviewDocument } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { printConfig } from './print-config.ts'
 
@@ -162,6 +164,127 @@ describe('printConfig', () => {
       send: ['src/.env', 'web/.env.production'],
     }), undefined)).toContain('\nexclude:\n  - "*.min.js"\nsend:\n  - src/.env\n  - web/.env.production\nwarnings: []\n')
     expect(printed(SPEC)).toContain('\nexclude: []\nsend: []\nwarnings: []\n')
+  })
+
+  it('prints each document as its hash and the base\'s own text as builtIn, never a text', () => {
+    const guideline = 'Name things for what they do. PLANTED-GUIDELINE'
+    const second = 'Prefer early returns.'
+    const skipped = 'Generated files. PLANTED-SKIP'
+    const base = 'Style and formatting. PLANTED-BASE'
+    const document = (kind: ReviewDocument['kind'], text: string): ReviewDocument => ({
+      profile: 'conventions',
+      kind,
+      // The hash is of the text as read, so a document whose cleaned text differs prints the hash of what its file held.
+      origin: {
+        kind: 'config',
+        sha256: documentSha256(`${text}<!-- hidden -->`),
+      },
+      text,
+    })
+    const profile: Profile = {
+      ...securityProfile,
+      id: 'conventions',
+      doNotReport: base,
+      documents: [
+        document('guidelines', guideline),
+        document('guidelines', second),
+        document('do-not-report', skipped),
+      ],
+    }
+    const voters = Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, 'a']))
+    const text = printConfig(config({ a: SPEC }, {
+      profiles: [
+        { profile, research: 'a', voters },
+      ],
+    }), undefined)
+    const hash = (value: string): string => `sha256:${documentSha256(value)}`
+    expect(text).toContain([
+      '    prompts:',
+      `      research: ${hash(securityProfile.prompts.research)}`,
+      `      vote: ${hash(securityProfile.prompts.vote)}`,
+      '    guidelines:',
+      `      - ${hash(`${guideline}<!-- hidden -->`)}`,
+      `      - ${hash(`${second}<!-- hidden -->`)}`,
+      '    doNotReport:',
+      `      - builtIn: ${hash(base)}`,
+      `      - ${hash(`${skipped}<!-- hidden -->`)}`,
+      'concurrency: auto',
+    ].join('\n'))
+    expect(text).not.toContain('PLANTED')
+    expect(text).not.toContain('Prefer early')
+    // A profile with only the base's text prints it alone, and one with only documents prints no builtIn.
+    const only = (fields: Partial<Profile>): string => printConfig(config({ a: SPEC }, {
+      profiles: [
+        {
+          profile: {
+            ...securityProfile,
+            ...fields,
+          },
+          research: 'a',
+          voters,
+        },
+      ],
+    }), undefined)
+    expect(only({ doNotReport: base })).toContain(`    doNotReport:\n      - builtIn: ${hash(base)}\nconcurrency: auto\n`)
+    expect(only({ doNotReport: base })).not.toContain('guidelines:')
+    expect(only({
+      documents: [
+        document('guidelines', second),
+      ],
+    })).not.toContain('doNotReport')
+    expect(only({
+      documents: [
+        document('guidelines', second),
+      ],
+    })).not.toContain('builtIn')
+    // A document whose reader computed no hash prints the hash of its text.
+    expect(only({
+      documents: [
+        {
+          profile: 'conventions',
+          kind: 'guidelines',
+          origin: { kind: 'config' },
+          text: second,
+        },
+      ],
+    })).toContain(`    guidelines:\n      - ${hash(second)}\n`)
+  })
+
+  it('prints a config with no document as 0.12.0 did', () => {
+    expect(printed(SPEC)).toBe([
+      'source: null',
+      'providers:',
+      '  a:',
+      '    protocol: openai-compatible',
+      '    origin: https://h.example',
+      '    model: m',
+      '    contextTokens: 131072',
+      'profiles:',
+      '  security:',
+      '    failOn: high',
+      '    research: a',
+      '    lenses:',
+      '      reachability: a',
+      '      impact: a',
+      '      defenses: a',
+      '    thresholds:',
+      '      high: 3',
+      '      medium: 2',
+      '      low: null',
+      '    prompts:',
+      `      research: sha256:${createHash('sha256').update(securityProfile.prompts.research).digest('hex')}`,
+      `      vote: sha256:${createHash('sha256').update(securityProfile.prompts.vote).digest('hex')}`,
+      'concurrency: auto',
+      'maxFindings: 50',
+      'partTokens: 32768',
+      'maxReviewTokens: 2000000',
+      'reviewTimeoutMs: 1800000',
+      'strict: false',
+      'exclude: []',
+      'send: []',
+      'warnings: []',
+      '',
+    ].join('\n'))
   })
 
   it('prints source null when no file was read, and the warnings it lists', () => {

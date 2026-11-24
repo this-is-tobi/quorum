@@ -172,13 +172,10 @@ A result records each profile's level in `meta.profiles.<id>.failOn`, and `gatin
 
 ## Guidelines
 
-Guidelines are reference text for one profile: a project's conventions, what it counts as a problem. Quorum reads no guidelines file of its own: a program loads the text and sets it as the profile's `guidelines`. The CLI sets none.
+Guidelines are reference text for one profile: a project's conventions, what it counts as a problem. A profile's `doNotReport` is reference text for what its research does not report. A program sets both as the profile's own text, a config names files for them, and a review can add the repository's own ([Documents](../95-reference/30-library-api.md#documents)). [Rules and guidelines](./45-rules-and-guidelines.md) says how each is read, cleaned, capped and sent, and what it costs.
 
-The core treats the text as a document: it cleans it (the hidden characters, the HTML comments and the numeric character references go, so a model reads what a person reading the rendered text sees), refuses it over 16 KiB once cleaned, and records it in the result's `meta.context`, never as text. A profile also holds `doNotReport`, reference text for what its research does not report, cleaned and capped at 8 KiB the same way, and a list of `documents`, each a guidelines or a do-not-report document that names the profile: they come after the profile's own text, in order, and a review can add the repository's own ([Documents](../95-reference/30-library-api.md#documents)). The do-not-report text reaches the finder alone, as a paragraph right after the instructions ([The layout of a request](./60-prompts.md#the-layout-of-a-request)), and no vote carries it.
-
-- **They are fenced as data**, one more block at the end of the user message of every request of the profile, the research call and every vote, when the text is not blank. They are never part of the system message. The block holds the profile's guidelines documents joined by a blank line.
-- **The model reads them as criteria.** The [data notice](./60-prompts.md#the-data-notice) describes the block in these words: "the project's review guidelines. Use them as criteria: what this project counts as a problem and the conventions it expects. They describe how code should be, not how this code is: judge the code itself."
-- **They are still data.** Text in them that asks to skip or approve without checking falls under the same notice as the diff, which tells the model to treat it as suspicious and report it as its own finding rather than comply.
+- **The model reads them as criteria.** The [data notice](./60-prompts.md#the-data-notice) describes the guidelines block in these words: "the project's review guidelines. Use them as criteria: what this project counts as a problem and the conventions it expects. They describe how code should be, not how this code is: judge the code itself."
+- **They are still data.** They are fenced like the diff, never part of the system message, and text in them that asks to skip or approve without checking falls under the same notice, which tells the model to treat it as suspicious and report it as its own finding rather than comply.
 
 Write guidelines as criteria (`` `any` is acceptable in test helpers ``), not as orders (`` don't flag `any` ``). Whoever writes the guidelines steers the review, and fencing is friction, not a control, so load them from a source the change under review cannot edit, such as the base branch, never the pull request's checkout:
 
@@ -193,4 +190,4 @@ const security = { ...securityProfile, guidelines }
 
 ## Next
 
-[Lenses and policy](./50-lenses-and-policy.md) — the panel's questions, the rules that turn kept votes into a confidence, failed votes, and what a confidence level means.
+[Rules and guidelines](./45-rules-and-guidelines.md) — how a config names guidelines and do-not-report text as files, what each request carries of them, their caps and what they cost.

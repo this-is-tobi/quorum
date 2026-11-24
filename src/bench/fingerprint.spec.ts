@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ResolvedConfig } from '../config/resolve.ts'
 import type { ConfigInput } from '../config/schema.ts'
+import { documentSha256 } from '../core/documents.ts'
 import { resolvedConfig } from '../testing/bench.ts'
 import { canonicalSettings, fingerprint, newSalt, providerIdentity } from './fingerprint.ts'
 
@@ -137,6 +138,53 @@ describe('fingerprint', () => {
     expect(same(security({ failOn: 'medium' }), of(PROVIDER))).toBe(false)
     expect(same(security({ failOn: 'none' }), of(PROVIDER))).toBe(false)
     expect(canonicalSettings(security({ gating: false }))).toContain('"failOn":"none"')
+  })
+
+  it('moves a configuration\'s fingerprint with a file guideline\'s text, and keeps it for one that names none', () => {
+    const team = {
+      prompts: { research: 'Find style issues.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
+      lenses: [
+        { id: 'grounded', question: 'Backed by a convention?' },
+      ],
+    }
+    const configured = (fields: Record<string, unknown>): ResolvedConfig => resolvedConfig({
+      providers: { p: PROVIDER },
+      profiles: {
+        team: {
+          ...team,
+          ...fields,
+        },
+      },
+    } as ConfigInput)
+    const none = configured({})
+    // The form of a configuration with no document holds no key for one, so its fingerprint is the one 0.12.0 gave it.
+    expect(canonicalSettings(none)).not.toContain('"documents"')
+    expect(canonicalSettings(none)).not.toContain('"doNotReport"')
+    expect(fingerprint(none, SALT)).toBe('a420b59732101ceda4e6e9b3645f35183a944adcb7dd11339a4ab85837a874ad')
+    expect(same(configured({ guidelines: [], doNotReport: [] }), none)).toBe(true)
+
+    const guided = configured({
+      guidelines: [
+        { text: 'Use parameters.' },
+      ],
+    })
+    expect(same(guided, none)).toBe(false)
+    expect(canonicalSettings(guided)).toContain(documentSha256('Use parameters.'))
+    expect(same(guided, configured({
+      guidelines: [
+        { text: 'Use parameters.' },
+      ],
+    }))).toBe(true)
+    expect(same(configured({
+      guidelines: [
+        { text: 'Use named parameters.' },
+      ],
+    }), guided)).toBe(false)
+    expect(same(configured({
+      doNotReport: [
+        { text: 'Use parameters.' },
+      ],
+    }), guided)).toBe(false)
   })
 
   it('fills the defaults, so an unset limit and its default are alike', () => {
