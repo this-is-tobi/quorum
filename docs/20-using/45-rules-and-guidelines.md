@@ -1,6 +1,6 @@
 # Rules and guidelines
 
-A review judges a change by what its profile asks for, and a project can say more: the conventions it expects, and what it does not want reported. quorum reads that policy as documents, texts a person wrote, and a profile takes them from its config as files, or from the repository the change is in, at a commit quorum chooses and the change cannot. This page covers what a document is, how a config names one, how a file of the repository is read and from which commit, what every request carries of it, the caps and the cleaner, what `--print-config` shows, and what they cost.
+A review judges a change by what its profile asks for, and a project can say more: the conventions it expects, and what it does not want reported. quorum reads that policy as documents, texts a person wrote, and a profile takes them from its config as files, or from the repository the change is in, at a commit quorum chooses and the change cannot. This page covers what a document is, how a config names one, how a file of the repository is read and from which commit, the flag a change raises when it edits one, what every request carries of it, the caps and the cleaner, what `--print-config` shows, and what they cost.
 
 ## What a document is
 
@@ -102,6 +102,23 @@ A program that builds the quorum itself reads the documents with `readContext` a
 ### A commit you do not trust
 
 A repository document is as trusted as the commit it is read from. The base of a pull request is a commit the project already merged, and `HEAD` of your own clone is yours; a commit that a stranger, or an agent working in the project, can write is not. Under a git hook, an agent can write `HEAD`, so a config that runs there names `{ file }` documents kept outside the project instead, as the server's config is kept: [Git hooks](../90-recipes/30-git-hooks.md), [Claude Code](../90-recipes/20-claude-code.md). `quorum mcp` refuses a `{ repository }` document for the same reason ([The MCP server](./90-mcp.md#starting-it)), and `quorum bench` refuses one because a case is a patch with no commit ([Running a bench](./70-bench.md#running-a-bench)).
+
+## When the change edits a document
+
+A pull request can edit the very file its review reads as policy, or rename, copy, add or delete it. The review never obeys that edit: it reads the document at the commit its source names, so the change's text reaches no request as policy. It does not say nothing about it either. A change that touches the path of a `{ repository }` document raises an advisory `guideline-edited` flag, naming the profile and the commit the review read instead, so a person looks at what the change did to the file:
+
+```text
+flag: guideline-edited at "REVIEW.md" for security (the guidelines this review read for the profile from 1f3a9c2, not the change's version)
+```
+
+- **What raises it.** A section of the diff, the whole diff, so a file `exclude` leaves out or a file held back as a secret counts, that edits the path, renames or copies a file onto it, adds it or deletes it. The section names the path when its own path, a word of its `diff --git` header or a path its `---`, `+++`, `rename` or `copy` lines write is the document's path, as written or once a one-character prefix and its slash (`a/`, `b/`, `i/`, `w/`) are dropped. Those lines are read with no hunk parsing, so the flag may also be raised for a section whose hunk holds a line that reads like one of them: it fails closed.
+- **One flag per profile and path.** Two profiles that read `REVIEW.md` each get a flag, and a profile that reads one path as its guidelines and as its do-not-report text gets one flag that names both kinds, `the guidelines and do-not-report text this review read ...`. The flag is at the first section that names the path.
+- **Its fields.** `code`, the `profile`, and `file`, the section's own path, which is absent for a section whose header names no path quorum can read. It has no `line`: [A flag](../95-reference/20-json-result.md#a-flag).
+- **Its detail is quorum's words,** never a line of the file or of the diff: `the guidelines this review read for the profile from 1f3a9c2, not the change's version`, with `guidelines`, `do-not-report text` or both in place of the kind, and the commit's first 7 characters. For an optional document the commit lacked, which a change that adds the file hits, it reads `the guidelines this review looked for at 1f3a9c2 and did not find, not the change's version`.
+- **The change's version is never applied.** The flag changes no verdict, no gap and no exit code, and the edited file is read by no request: it is in the diff, reviewed as code. To adopt an edit, merge it, and the next review reads it from its new base. The flag is a hint for a person, and the commit the review reads from is the control: [The commit a document is read from](#the-commit-a-document-is-read-from).
+- **When it is not raised.** A path review (`--path`) raises none: its documents are the codebase's own, read at the commit it reviews, and a file of that name is the input, not a change to it. A `{ file }` document is no file of the repository, so a change cannot edit it. A section that names another path, `REVIEW.md.bak` or `docs/REVIEW.md` for a document `REVIEW.md`, raises none, nor does a review with no `{ repository }` document.
+
+It is in `meta.flags`, after the diff's flags, in a `flag` event, and in the `flag:` line before the stages, so the log, the text report and the Markdown summary each show it with its profile: [Advisory flags](../30-security/30-output-handling.md#advisory-flags).
 
 ## What each request carries
 

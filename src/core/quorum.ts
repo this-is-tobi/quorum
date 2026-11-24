@@ -15,7 +15,7 @@ import { ConfigError } from './errors.ts'
 import type { ConfigIssue, ProviderDownError } from './errors.ts'
 import { estimateReview } from './estimate.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
-import { diffFlags, secretFlags } from './flags.ts'
+import { diffFlags, documentFlags, secretFlags } from './flags.ts'
 import { leftOutIssues, mergeLeftOut, sendIssues, sourceIssues, sourceOf } from './inputs.ts'
 import { createLanes, REVIEW_CEILING } from './lanes.ts'
 import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, INTERRUPT_GRACE_MS, isLimitName, LimitError, limitGaps, maxReviewTokensProblem } from './limits.ts'
@@ -226,11 +226,14 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * counts, each file, reason and rule once, and a skipped one is no gap; the input's `source` is checked,
  * copied and recorded in `meta.source`, `{ kind: 'diff' }` when it names none. Its `skipped` files of the
  * rule `secret`, and the `secret` and `deleted-secret` files `meta.leftOut` lists, each raise one `secret-file`
- * flag, as many as `meta.leftOut` lists, ahead of the diff's flags and whatever the diff is.
+ * flag, as many as `meta.leftOut` lists, ahead of the diff's flags and whatever the diff is. A section of the
+ * whole diff that edits, renames, copies, adds or deletes the path of a repository document of `context` raises
+ * one `guideline-edited` flag for each profile and path, after the diff's flags, naming the profile and the
+ * commit the review read the document from instead; a path review raises none.
  * Everything it knows before a call is sent in this order: `run:start`, then a `left-out` event naming those files when it leaves one
  * out, then a `context` event holding `meta.context` when a profile has a document, then the gaps' `incomplete` events (each profile's `binary`, `submodule` and `secret` gaps, then its
- * `too-large` gap), then the `flag` events of the advisory flags, the `secret-file` flags first,
- * kept in `meta.flags`, none of which changes a verdict, then the stages. Each event is handed to the sink
+ * `too-large` gap), then the `flag` events of the advisory flags, the `secret-file` flags first and the
+ * `guideline-edited` flags last, kept in `meta.flags`, none of which changes a verdict, then the stages. Each event is handed to the sink
  * as a copy, so a sink that changes one changes nothing else. The review reports itself through
  * events, from `run:start` to `run:end`, and its result merges the profiles' verdicts and gaps in
  * profile order. `meta.profiles[<id>].invalidFindings` and `meta.usage` are counted from the
@@ -437,6 +440,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
     ...whole === undefined
       ? []
       : diffFlags(whole),
+    ...documentFlags(input.diff, input.context?.documents ?? [], source),
   ]
   // What the stages read: none when the filtered diff is blank, else the sections the flags read when nothing was left out.
   const sections = scope.diff.trim() === ''

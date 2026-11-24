@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { splitDiff } from './diff.ts'
-import { diffFlags, secretFlags } from './flags.ts'
-import type { Flag, LeftOutFile } from './types.ts'
+import { diffFlags, documentFlags, secretFlags } from './flags.ts'
+import type { DocumentKind, Flag, LeftOutFile, ReviewDocument, ReviewSource } from './types.ts'
 
 /** A diff that creates `path` with `lines`, so the added lines are numbered from 1. */
 function newFile(lines: readonly string[], path = 'src/a.js'): string {
@@ -454,5 +454,211 @@ describe('secretFlags', () => {
       ['code', 'detail'],
       ['code', 'detail'],
     ])
+  })
+})
+
+describe('documentFlags', () => {
+  const COMMIT = '1f3a9c2'.padEnd(40, '0')
+  const RANGE: ReviewSource = {
+    kind: 'range',
+    base: COMMIT,
+    mergeBase: COMMIT,
+    head: 'e'.repeat(40),
+    objectFormat: 'sha1',
+  }
+  const PATHS: ReviewSource = {
+    kind: 'paths',
+    commit: COMMIT,
+    paths: ['src'],
+    skips: true,
+    objectFormat: 'sha1',
+  }
+  const READ = 'the guidelines this review read for the profile from 1f3a9c2, not the change\'s version'
+  const MISSING = 'the guidelines this review looked for at 1f3a9c2 and did not find, not the change\'s version'
+
+  /** A repository document of `profile` at `path`, read at `COMMIT`, or with no text when `found` is false: an optional one the commit lacked. */
+  function document(path: string, profile = 'security', kind: DocumentKind = 'guidelines', found = true): ReviewDocument {
+    return {
+      profile,
+      kind,
+      origin: { kind: 'repository', path, commit: COMMIT },
+      ...found
+        ? { text: 'Rules.' }
+        : {},
+    }
+  }
+
+  /** A section of a diff that changes `path` in place. */
+  const edit = (path: string): string => [
+    `diff --git a/${path} b/${path}`,
+    'index 1111111..2222222 100644',
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    '@@ -1 +1 @@',
+    '-old',
+    '+new',
+  ].join('\n')
+
+  const flag = (detail: string, extra: Partial<Flag> = {}): Flag => ({
+    code: 'guideline-edited',
+    profile: 'security',
+    file: 'REVIEW.md',
+    detail,
+    ...extra,
+  })
+
+  it.each<[string, string, ReviewDocument, Flag]>([
+    [
+      'edits',
+      edit('REVIEW.md'),
+      document('REVIEW.md'),
+      flag(READ),
+    ],
+    [
+      'renames onto',
+      [
+        'diff --git a/NOTES.md b/REVIEW.md',
+        'similarity index 90%',
+        'rename from NOTES.md',
+        'rename to REVIEW.md',
+      ].join('\n'),
+      document('REVIEW.md'),
+      flag(READ),
+    ],
+    [
+      'deletes',
+      [
+        'diff --git a/REVIEW.md b/REVIEW.md',
+        'deleted file mode 100644',
+        'index 1111111..0000000',
+        '--- a/REVIEW.md',
+        '+++ /dev/null',
+        '@@ -1 +0,0 @@',
+        '-old',
+      ].join('\n'),
+      document('REVIEW.md'),
+      flag(READ),
+    ],
+    [
+      'adds',
+      [
+        'diff --git a/REVIEW.md b/REVIEW.md',
+        'new file mode 100644',
+        '--- /dev/null',
+        '+++ b/REVIEW.md',
+        '@@ -0,0 +1 @@',
+        '+new',
+      ].join('\n'),
+      document('REVIEW.md', 'security', 'guidelines', false),
+      flag(MISSING),
+    ],
+    [
+      'copies onto',
+      [
+        'diff --git a/NOTES.md b/REVIEW.md',
+        'similarity index 100%',
+        'copy from NOTES.md',
+        'copy to REVIEW.md',
+      ].join('\n'),
+      document('REVIEW.md'),
+      flag(READ),
+    ],
+    [
+      'edits, with i/ and w/ prefixes,',
+      edit('REVIEW.md').replaceAll('a/REVIEW.md', 'i/REVIEW.md').replaceAll('b/REVIEW.md', 'w/REVIEW.md'),
+      document('REVIEW.md'),
+      flag(READ),
+    ],
+  ])('raises guideline-edited for a section that %s the document\'s path', (_name, diff, doc, expected) => {
+    const flags = documentFlags(diff, [doc], RANGE)
+    expect(flags).toEqual([expected])
+    expect(Object.keys(flags[0] as Flag)).toEqual(['code', 'profile', 'file', 'detail'])
+  })
+
+  it('raises one flag per profile and path, for each profile that reads it, at the first section that names it', () => {
+    const flags = documentFlags([
+      edit('REVIEW.md'),
+      edit('docs/rules.md'),
+      edit('REVIEW.md'),
+      edit('docs/rules.md'),
+    ].join('\n'), [
+      document('REVIEW.md', 'naming'),
+      document('REVIEW.md', 'security'),
+      document('docs/rules.md', 'security'),
+    ], RANGE)
+    expect(flags).toEqual([
+      flag(READ, { profile: 'naming' }),
+      flag(READ),
+      flag(READ, { file: 'docs/rules.md' }),
+    ])
+  })
+
+  it('names every kind a profile reads the path as, in one flag', () => {
+    const both = documentFlags(edit('REVIEW.md'), [
+      document('REVIEW.md', 'security', 'guidelines'),
+      document('REVIEW.md', 'security', 'do-not-report'),
+    ], RANGE)
+    expect(both).toEqual([
+      flag('the guidelines and do-not-report text this review read for the profile from 1f3a9c2, not the change\'s version'),
+    ])
+    expect(documentFlags(edit('skip.md'), [
+      document('skip.md', 'security', 'do-not-report', false),
+    ], RANGE)).toEqual([
+      flag('the do-not-report text this review looked for at 1f3a9c2 and did not find, not the change\'s version', { file: 'skip.md' }),
+    ])
+  })
+
+  it('reads the path a section names anywhere, and flags the section\'s own file, or none when its header names no path', () => {
+    const named = documentFlags([
+      edit('src/a.js'),
+      '--- a/REVIEW.md',
+      edit('REVIEW.md'),
+    ].join('\n'), [
+      document('REVIEW.md'),
+    ], RANGE)
+    // The first section is the one whose lines name the path: a hunk row can read like a `---` line, and the answer fails closed.
+    expect(named).toEqual([
+      flag(READ, { file: 'src/a.js' }),
+    ])
+
+    const forged = documentFlags('diff --git a/REVIEW.md\n+text', [
+      document('REVIEW.md'),
+    ], RANGE)
+    expect(forged).toEqual([
+      { code: 'guideline-edited', profile: 'security', detail: READ },
+    ])
+    expect(Object.keys(forged[0] as Flag)).toEqual(['code', 'profile', 'detail'])
+
+    // A header with a word more reads as a path with a space, and the word that names the document still raises the flag.
+    const extra = documentFlags('diff --git a/REVIEW.md b/REVIEW.md c\n+text', [
+      document('REVIEW.md'),
+    ], RANGE)
+    expect(extra).toEqual([
+      flag(READ, { file: 'REVIEW.md c' }),
+    ])
+  })
+
+  it('raises none for a path review, a file document, or a section that names another path', () => {
+    const edited = edit('REVIEW.md')
+    expect(documentFlags(edited, [
+      document('REVIEW.md'),
+    ], PATHS)).toEqual([])
+    const configured: ReviewDocument = {
+      profile: 'security',
+      kind: 'guidelines',
+      origin: { kind: 'config' },
+      text: 'Rules.',
+    }
+    expect(documentFlags(edited, [configured], RANGE)).toEqual([])
+    expect(documentFlags(edit('REVIEW.md.bak'), [
+      document('REVIEW.md'),
+    ], RANGE)).toEqual([])
+    expect(documentFlags(edit('docs/REVIEW.md'), [
+      document('REVIEW.md'),
+    ], RANGE)).toEqual([])
+    expect(documentFlags(edit('REVIEW.md'), [], RANGE)).toEqual([])
+    expect(documentFlags('', [
+      document('REVIEW.md'),
+    ], RANGE)).toEqual([])
   })
 })

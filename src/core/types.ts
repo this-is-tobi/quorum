@@ -376,19 +376,21 @@ export interface CoverageEntry {
   left?: LeftRange[]
 }
 
-/** What an advisory flag points at: hidden characters, text addressed to an AI reviewer, or a file held back or skipped as a secret, by its name or a credential it holds. */
-export type FlagCode = 'hidden-characters' | 'ai-addressed-text' | 'secret-file'
+/** What an advisory flag points at: hidden characters, text addressed to an AI reviewer, a file held back or skipped as a secret, by its name or a credential it holds, or a change that edits a document its review read from the repository. */
+export type FlagCode = 'hidden-characters' | 'ai-addressed-text' | 'secret-file' | 'guideline-edited'
 
 /**
- * An advisory signal the harness read by code, before any model saw it, from the diff or from the files
- * the input's source left out: it tells a human where to look, and never changes a verdict, a confidence
- * or an exit code.
+ * An advisory signal the harness read by code, before any model saw it, from the diff, from the files
+ * the input's source left out or from the documents the review read: it tells a human where to look, and
+ * never changes a verdict, a confidence or an exit code.
  */
 export interface Flag {
   code: FlagCode
-  /** The diff's own path for the file, or the path of a file held back or skipped as a secret; absent for a diff without per-file headers, and for the text no header names. */
+  /** The profile the flag is about, for a flag about one: a `guideline-edited` flag. Absent for every other. */
+  profile?: string
+  /** The diff's own path for the file, or the path of a file held back or skipped as a secret; absent for a diff without per-file headers, for the text no header names, and for a `guideline-edited` flag of a section whose header names no readable path. */
   file?: string
-  /** The first added line, in the new file, the flag is about; absent when it is about the file name, and for a `secret-file` flag. */
+  /** The first added line, in the new file, the flag is about; absent when it is about the file name, and for a `secret-file` or a `guideline-edited` flag. */
   line?: number
   /** What was found, in words the code wrote: code points or the names of patterns, never text of the diff. */
   detail: string

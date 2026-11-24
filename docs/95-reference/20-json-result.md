@@ -60,7 +60,7 @@ A failed vote counts as a reject. Its `failure` holds only what the code read, n
 | `usage` | object | Only when at least one call reported valid counts: `inputTokens` and `outputTokens` summed over those calls, then `costUsd`, summed over the calls that reported one, when any did |
 | `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's gaps for the files left out first, then its `too-large` gap, then its research gaps, then its panel's, then its limits'. A review is complete when this list and `unreviewed` are both empty |
 | `leftOut` | entry[] | Every file the review left out, once per file, reason and rule: the files its source left out before it made the diff first, then the diff's own in its order: [A file left out](#a-file-left-out). Empty when it left none out, a blank diff included |
-| `flags` | flag[] | The advisory flags, the `secret-file` flags of the files left out first, in the order `leftOut` lists them, then those read from the diff, file by file in its order: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
+| `flags` | flag[] | The advisory flags, the `secret-file` flags of the files left out first, in the order `leftOut` lists them, then those read from the diff, file by file in its order, then the `guideline-edited` flags, in the order of the review's documents: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
 | `context` | object | The documents the review read as policy and sent, `documents`, one record for each: [The context](#the-context). Required, and empty when no profile has a document, a blank diff included. A result of 0.12.0 has none, and `readResult` refuses it |
 | `adaptations` | entry[] | What the review moved by itself, in the order it happened: [The adaptations](#the-adaptations). Required, and empty when nothing moved, a blank diff included |
 | `concurrency` | object | Only when the review made a call: what each provider's lane did, one entry per provider id, keyed by it: [The lanes](#the-lanes) |
@@ -210,9 +210,10 @@ A file is held back by its name, or by a line of it that holds a credential. Its
 
 | Field | Type | Holds |
 | --- | --- | --- |
-| `code` | `"hidden-characters"`, `"ai-addressed-text"` or `"secret-file"` | What the flag is about |
-| `file` | string | The path of the file the flag is about: the diff's own path, or for `secret-file` the path of the file held back or skipped. The key is absent for a diff without per-file headers, and for a `secret-file` flag about the text no header names |
-| `line` | number | The first added line, in the new file, that the flag is about. The key is absent for a flag about the file name, and for `secret-file` |
+| `code` | `"hidden-characters"`, `"ai-addressed-text"`, `"secret-file"` or `"guideline-edited"` | What the flag is about |
+| `profile` | string | The id of the profile the flag is about, for a flag about one: a `guideline-edited` flag. The key is absent for every other flag |
+| `file` | string | The path of the file the flag is about: the diff's own path, or for `secret-file` the path of the file held back or skipped. For `guideline-edited` it is the own path of the section of the diff that touches the document. The key is absent for a diff without per-file headers, for a `secret-file` flag about the text no header names, and for a `guideline-edited` flag about a section whose header names no path quorum can read |
+| `line` | number | The first added line, in the new file, that the flag is about. The key is absent for a flag about the file name, for `secret-file` and for `guideline-edited` |
 | `detail` | string | What was found, in words the code wrote, never text of the diff |
 
 A file raises at most one flag for each row of this table, in this order:
@@ -227,8 +228,12 @@ A file raises at most one flag for each row of this table, in this order:
 | `secret-file` | A file named as a secret that the change deletes whole | Absent | `deletes a file named as a secret, so no model was sent any of it: the history still holds the file, so rotate what it held` |
 | `secret-file` | A file a path review skipped by its name | Absent | `named as a secret, so a path review sent none of it: check that it belongs in the repository` |
 | `secret-file` | A file a path review skipped by a credential in its text | Absent | `holds what reads as a credential, so a path review sent none of it: remove it from the repository, and rotate it if it is real` |
+| `guideline-edited` | A section of the diff that edits, renames, copies, adds or deletes the path of a document the review read from the repository | Absent | `the guidelines this review read for the profile from 1f3a9c2, not the change's version` |
+| `guideline-edited` | The same, for an optional document the commit lacked | Absent | `the guidelines this review looked for at 1f3a9c2 and did not find, not the change's version` |
 
 A `secret-file` flag comes from `meta.leftOut`, not from the diff: one for each `skipped` file of the rule `secret`, `secret` file and `deleted-secret` file, in its order, ahead of the diff's flags. The detail of a held file by a credential names the kind in words (`a private key`, `an AWS key`, `a GitHub token`, `a Slack token or webhook`, `a Google API key`, `a Stripe key`, `an Anthropic key` or `an OpenAI key`), and a `deleted-secret` entry that names a kind, which only the input's `leftOut` can hold, reads `deletes a file that holds what reads as an AWS key, so no model was sent any of it: the history still holds it, so rotate it`. A flag quotes no line of the file. A secret that an `exclude` pattern matched first is listed as `excluded` and raises none. A detail names at most eight code points or patterns, then `and N more`. [Advisory flags](../30-security/30-output-handling.md#advisory-flags) says what each code looks for. A flag never changes a verdict, a gap or the exit code.
+
+A `guideline-edited` flag comes from the repository documents of the review, not from a file's lines: one for each profile and path, after the diff's flags, in the order the documents are listed, at the first section of the diff that names the path. Its `detail` names the kind, `guidelines`, `do-not-report text` or both joined by `and`, and the first 7 characters of the commit the review read, or looked for, the document at, and quotes nothing of the file or the diff. A path review raises none, and a `{ file }` document none: [When the change edits a document](../20-using/45-rules-and-guidelines.md#when-the-change-edits-a-document).
 
 ### The context
 
