@@ -51,7 +51,8 @@ export const EXACT_WORDS: NumberWords = {
 
 /**
  * The lines a path review prints once its estimate is made, before any call: one per profile, starting with
- * `[<id>] ` when several run, then the whole review's two lines, never prefixed: its cost (the research's expected
+ * `[<id>] ` when several run, and ending with what the profile's documents add to each research request and each vote when
+ * they add anything, then the whole review's two lines, never prefixed: its cost (the research's expected
  * spend, the worst case with every vote and every part recovered, and what its calls in flight reserve) and its
  * bounds (the review's token cap, deadline and finding cap, where each came from, and that the config sets none of
  * them when it sets none). The expected figure is the research's alone, as the votes are in the worst case only, and
@@ -65,11 +66,14 @@ export function estimateLines(estimate: Estimate, bounds: Bounds, words: NumberW
   const prefixed = entries.length > 1
   const noneSet = bounds.cap !== 'config' && bounds.deadline === 'longest' && bounds.findings !== 'config'
   return [
-    ...entries.map(([id, { parts, expected, votes, worst }]) => {
+    ...entries.map(([id, { parts, expected, votes, worst, documents }]) => {
       const prefix = prefixed
         ? profilePrefix(id)
         : ''
-      return `${prefix}estimate: ${parts.length} research part(s), about ${words.tokens(expected)} tokens expected for them; then up to ${votes} vote(s), at most ${words.tokens(worst)} tokens in all`
+      const added = documents.research > 0 || documents.vote > 0
+        ? `; its documents add ${words.tokens(documents.research)} tokens to each research request and ${words.tokens(documents.vote)} to each vote`
+        : ''
+      return `${prefix}estimate: ${parts.length} research part(s), about ${words.tokens(expected)} tokens expected for them; then up to ${votes} vote(s), at most ${words.tokens(worst)} tokens in all${added}`
     }),
     `estimate: research about ${words.tokens(estimate.expected)} tokens expected, at most ${words.tokens(estimate.worst)} with every vote and every part recovered, ${words.tokens(estimate.inFlight)} of them reserved at once`,
     `bounds: the token cap ${capWords(estimate, bounds, words)}; the deadline ${deadlineWords(estimate, bounds, words)}; the finding cap ${findingsWords(estimate, bounds)}${noneSet

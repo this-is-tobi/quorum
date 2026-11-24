@@ -4,10 +4,11 @@ import { profileBudgets, replyBudget, roomIssues } from './budgets.ts'
 import type { BudgetSettings, ReplyFacts } from './budgets.ts'
 import type { CompletionRequest, Provider } from './ports.ts'
 import { thresholdsFor } from './profile.ts'
-import { renderTemplate } from './prompts.ts'
+import { doNotReportInstructions, renderTemplate, researchRequest } from './prompts.ts'
 import { targetOf } from './stages/context.ts'
 import type { ProfileRun } from './stages/context.ts'
 import { replyLimit, requestTokens } from './tokens.ts'
+import type { Profile } from './types.ts'
 
 const UNSET: ReplyFacts = { thinking: 'default' }
 
@@ -202,7 +203,7 @@ describe('profileBudgets', () => {
     expect(rest).toEqual([])
     expect(issue.path).toBe('profiles.security')
     // 8192 less 1791 for the text, 4096 for the template and 2048 for the reply leaves 257.
-    expect(issue.message).toBe('the research request on cli leaves 257 tokens for the diff, less than the 1024 a hunk may need: contextTokens 8192 counts 1791 for the instructions, guidelines and rules, 4096 for the chat template and 2048 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window')
+    expect(issue.message).toBe('the research request on cli leaves 257 tokens for the diff, less than the 1024 a hunk may need: contextTokens 8192 counts 1791 for the instructions, 4096 for the chat template and 2048 for the reply: lower maxTokens, or state a larger window')
     // The same window with the usual 512 leaves room.
     const usual = realRun(guarded('local', 8192), guarded('local', 200_000))
     expect(roomIssues('security', profileBudgets(usual, target => target.window, settings), usual, settings.maxFindings)).toEqual([])
@@ -220,15 +221,140 @@ describe('profileBudgets', () => {
       return issue.message
     }
     // 1791 tokens of text, 512 for the template and 2000 for the reply fill a window of 4303, which leaves a room of 0.
-    expect(refused(4303)).toBe('the research request on local leaves 0 tokens for the diff, less than the 1024 a hunk may need: contextTokens 4303 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 2000 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window')
+    expect(refused(4303)).toBe('the research request on local leaves 0 tokens for the diff, less than the 1024 a hunk may need: contextTokens 4303 counts 1791 for the instructions, 512 for the chat template and 2000 for the reply: lower maxTokens, or state a larger window')
     // One token fewer is a room of -1: the other tokens are 1 over, and every figure stays exact.
-    expect(refused(4302)).toBe('the research request on local leaves no tokens for the diff, its other tokens 1 over the window, where a hunk may need 1024: contextTokens 4302 counts 1791 for the instructions, guidelines and rules, 512 for the chat template and 2000 for the reply: shorten the guidelines or rules, lower maxTokens, or state a larger window')
+    expect(refused(4302)).toBe('the research request on local leaves no tokens for the diff, its other tokens 1 over the window, where a hunk may need 1024: contextTokens 4302 counts 1791 for the instructions, 512 for the chat template and 2000 for the reply: lower maxTokens, or state a larger window')
     // A voter's refusal reads the same way.
     const run = realRun(guarded('local', 200_000), {
       ...guarded('small', 1000),
     })
     const messages = roomIssues('security', profileBudgets(run, target => target.window, settings), run, settings.maxFindings).map(issue => issue.message)
     expect(messages).toHaveLength(3)
-    for (const message of messages) expect(message).toMatch(/^the vote request on small for the longest finding leaves no tokens for the diff, its other tokens \d+ over the window, where a hunk may need 1024: contextTokens 1000 counts \d+ for the instructions, guidelines and finding, 512 for the chat template and \d+ for the reply: shorten the guidelines, lower maxTokens, or state a larger window$/)
+    for (const message of messages) expect(message).toMatch(/^the vote request on small for the longest finding leaves no tokens for the diff, its other tokens \d+ over the window, where a hunk may need 1024: contextTokens 1000 counts \d+ for the instructions and the finding, 512 for the chat template and \d+ for the reply: lower maxTokens, or state a larger window$/)
+  })
+
+  /** A program's profile with two lenses, which the tests below give guidelines and do-not-report text. */
+  const naming: Profile = {
+    id: 'naming',
+    prompts: { research: 'Review this diff for names that mislead.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
+    lenses: [
+      { id: 'clarity', question: 'Does the name mislead?' },
+      { id: 'brevity', question: 'Is the name longer than it needs to be?' },
+    ],
+  }
+
+  /** The run `createQuorum` compiles for `naming`, `documents` being its joined guidelines and do-not-report text: the research instructions end with the do-not-report paragraph, and a vote carries the guidelines alone. */
+  function documented(research: Provider, voter: Provider, documents: { readonly guidelines?: string, readonly doNotReport?: string } = {}): ProfileRun {
+    const prompt = naming.prompts.research
+    const panel = String(naming.lenses.length)
+    return {
+      id: naming.id,
+      research: {
+        instructions: doNotReportInstructions(prompt, documents.doNotReport),
+        ...targetOf(research),
+      },
+      lenses: naming.lenses.map(lens => ({
+        id: lens.id,
+        instructions: renderTemplate(naming.prompts.vote, { 'lens.id': lens.id, 'lens.question': lens.question, 'panel.size': panel }),
+        ...targetOf(voter),
+      })),
+      thresholds: thresholdsFor(naming),
+      failOn: 'high',
+      gating: true,
+      texts: {
+        prompt,
+        guidelines: documents.guidelines === undefined
+          ? []
+          : [documents.guidelines],
+        doNotReport: documents.doNotReport === undefined
+          ? []
+          : [documents.doNotReport],
+        records: [],
+      },
+      ...documents.guidelines === undefined
+        ? {}
+        : { guidelines: documents.guidelines },
+      ...documents.doNotReport === undefined
+        ? {}
+        : { doNotReport: documents.doNotReport },
+    }
+  }
+
+  /** The messages of `run`'s refusals at a quorum's default settings. */
+  const refusals = (run: ProfileRun): string[] => roomIssues(run.id, profileBudgets(run, target => target.window, settings), run, settings.maxFindings).map(issue => issue.message)
+
+  /** The number each figure of a refusal that names its parts is, as `(\d+)` groups of `pattern`, after the window. */
+  const figuresOf = (message: string, pattern: RegExp): number[] => {
+    const found = pattern.exec(message)
+    if (found === null) throw new Error(`no match in: ${message}`)
+    return found.slice(1).map(Number)
+  }
+
+  it('refuses a profile whose guidelines leave its research less than 1024 tokens, naming their tokens and the fix', () => {
+    const run = documented(guarded('local', 32_768), guarded('big', 200_000), {
+      guidelines: 'g'.repeat(16_000),
+      doNotReport: 'd'.repeat(5228),
+    })
+    const [message, ...rest] = refusals(run)
+    expect(rest).toEqual([])
+    // 32768 less 512 for the template and 8192 for the reply leaves 24064 for the instructions and the documents: the guidelines' 16000 bytes and their block's words, the do-not-report text's 5228 and the line that opens its paragraph.
+    expect(message).toBe('the research request on local leaves 812 tokens for the diff, less than the 1024 a hunk may need: contextTokens 32768 counts 23252 for the instructions (1685), the guidelines (16308) and the do-not-report text (5259), 512 for the chat template and 8192 for the reply: shorten the guidelines or the do-not-report text, lower maxTokens, or state a larger window')
+    const [room, window, fixed, instructions, guidelines, doNotReport, template, reply] = figuresOf(message, /leaves (\d+) tokens.*contextTokens (\d+) counts (\d+) for the instructions \((\d+)\), the guidelines \((\d+)\) and the do-not-report text \((\d+)\), (\d+) for the chat template and (\d+) for the reply/)
+    // The figures add up: the three parts to the fixed tokens, and every term to the window.
+    expect(instructions + guidelines + doNotReport).toBe(fixed)
+    expect(room + fixed + template + reply).toBe(window)
+    // The same profile with no document has the instructions alone in its figures.
+    expect(requestTokens(researchRequest(run.texts.prompt, '', undefined, undefined, { findings: 50, replyTokens: 8192 }))).toBe(instructions)
+  })
+
+  it('names the instructions alone, and no document to shorten, for a profile with none', () => {
+    const run = documented(guarded('local', 3200), guarded('big', 200_000))
+    const [message, ...rest] = refusals(run)
+    expect(rest).toEqual([])
+    const [fixed] = figuresOf(message, /counts (\d+) for the instructions, \d+ for the chat template/)
+    expect(message).toBe(`the research request on local leaves ${3200 - fixed - 512 - 800} tokens for the diff, less than the 1024 a hunk may need: contextTokens 3200 counts ${fixed} for the instructions, 512 for the chat template and 800 for the reply: lower maxTokens, or state a larger window`)
+  })
+
+  it('names the largest document first in the fix, and only the documents present', () => {
+    const voter = guarded('big', 200_000)
+    // The do-not-report text is the larger: it comes first, and the guidelines are named after it.
+    const [both] = refusals(documented(guarded('local', 16_384), voter, {
+      guidelines: 'g'.repeat(3000),
+      doNotReport: 'd'.repeat(6000),
+    }))
+    expect(both).toMatch(/the instructions \(\d+\), the guidelines \(\d+\) and the do-not-report text \(\d+\), \d+ for the chat template/)
+    expect(both).toMatch(/: shorten the do-not-report text or the guidelines, lower maxTokens, or state a larger window$/)
+    // One document alone is named in the parts and in the fix, and the other is never mentioned.
+    const [alone] = refusals(documented(guarded('local', 8192), voter, {
+      doNotReport: 'd'.repeat(4500),
+    }))
+    expect(alone).toMatch(/counts \d+ for the instructions \(\d+\) and the do-not-report text \(\d+\), \d+ for the chat template/)
+    expect(alone).toMatch(/: shorten the do-not-report text, lower maxTokens, or state a larger window$/)
+    expect(alone).not.toContain('guidelines')
+    const [guidelinesAlone] = refusals(documented(guarded('local', 8192), voter, {
+      guidelines: 'g'.repeat(4500),
+    }))
+    expect(guidelinesAlone).toMatch(/counts \d+ for the instructions \(\d+\) and the guidelines \(\d+\), \d+ for the chat template/)
+    expect(guidelinesAlone).toMatch(/: shorten the guidelines, lower maxTokens, or state a larger window$/)
+    expect(guidelinesAlone).not.toContain('do-not-report')
+  })
+
+  it('names the guidelines in a vote\'s refusal', () => {
+    const run = documented(guarded('big', 200_000), guarded('small', 10_000), {
+      guidelines: 'g'.repeat(2500),
+      doNotReport: 'd'.repeat(500),
+    })
+    const messages = refusals(run)
+    expect(messages).toHaveLength(2)
+    for (const message of messages) {
+      expect(message).toMatch(/^the vote request on small for the longest finding leaves \d+ tokens for the diff, less than the 1024 a hunk may need: contextTokens 10000 counts \d+ for the instructions and the finding \(\d+\) and the guidelines \(\d+\), 512 for the chat template and 2500 for the reply: shorten the guidelines, lower maxTokens, or state a larger window$/)
+      const [room, fixed, instructions, guidelines, template, reply] = figuresOf(message, /leaves (\d+) tokens.*counts (\d+) for the instructions and the finding \((\d+)\) and the guidelines \((\d+)\), (\d+) for the chat template and (\d+) for the reply/)
+      expect(instructions + guidelines).toBe(fixed)
+      expect(room + fixed + template + reply).toBe(10_000)
+      // A vote carries the guidelines and never the do-not-report text.
+      expect(guidelines).toBeGreaterThan(2500)
+      expect(guidelines).toBeLessThan(2500 + 600)
+      expect(message).not.toContain('do-not-report')
+    }
   })
 })
