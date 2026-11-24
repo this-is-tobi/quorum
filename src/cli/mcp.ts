@@ -51,6 +51,7 @@ const OPTIONS = {
 const ROOT_MESSAGE = 'must be an absolute path to a directory'
 const TERMINAL_MESSAGE = 'reads MCP messages on standard input, which is a terminal here: let an MCP client start it, as claude mcp add quorum -- quorum mcp does'
 const INSIDE_MESSAGE = 'names a file inside the project, which the calling agent can change: keep the server\'s config outside the project'
+const FILE_INSIDE_MESSAGE = 'names a file inside the project, which the calling agent can change: keep it outside the project, as the server\'s config is'
 const REPOSITORY_MESSAGE = 'reads a document of the repository, which the calling agent can commit to: name the file with { file }, kept outside the project'
 const TOKENS_FLAG = '--max-session-tokens'
 const TOKENS_MESSAGE = 'must be a whole number of tokens, from 1'
@@ -104,13 +105,32 @@ async function projectRoot(io: CliIO): Promise<{ real: string, given: string }> 
 }
 
 /**
+ * Whether the file `named` lies inside the root, in any way the calling agent can make it: the path as typed
+ * (resolved, never through `realpath`, against the root as given and as a real path), the path with its
+ * directory resolved, or the file it leads to. The agent can write in the root, so it can change a file there,
+ * and link or relink one, even a link it typed the path through to a directory outside; a file in a directory
+ * of the root that a link outside leads to is the agent's to repoint all the same. A path that does not
+ * resolve is checked as typed alone.
+ */
+async function insideRoot(named: string, root: { real: string, given: string }): Promise<boolean> {
+  const typed = resolve(named)
+  if (isInside(typed, root.given) || isInside(typed, root.real)) return true
+  const real = await realpath(named).catch(() => undefined)
+  if (real === undefined) return false
+  const parent = await realpath(dirname(named)).catch(() => undefined)
+  const linked = parent === undefined
+    ? real
+    : join(parent, basename(named))
+  return isInside(real, root.real) || isInside(linked, root.real)
+}
+
+/**
  * The config file the launch names, as a real path, or `undefined` when none is named: `--config` against the
  * launch directory, else `QUORUM_CONFIG`, which must be absolute (a relative one is refused first, a path given
- * or not, as `readNamedConfig` refuses it). It is refused when it lies inside the root, whether the path as typed
- * (resolved, never through `realpath`, against the root as given and as a real path), the path with its
- * directory resolved, or the file it leads to does, since the calling agent can write in the root and so can
- * change a config there, and link or relink one, even a link it typed the path through to a directory outside.
- * A path that does not resolve is returned as named, for `readNamedConfig` to word.
+ * or not, as `readNamedConfig` refuses it). It is refused when it lies inside the root (`insideRoot`), since
+ * the calling agent can write in the root and so can change a config there. The path returned is the real one,
+ * checked again, so a link the agent repoints between the checks leads nowhere inside. A path that does not
+ * resolve is returned as named, for `readNamedConfig` to word.
  */
 async function namedConfig(io: CliIO, flag: string | undefined, root: { real: string, given: string }): Promise<string | undefined> {
   const fromEnv = envValue(io.env, 'QUORUM_CONFIG')
@@ -122,15 +142,10 @@ async function namedConfig(io: CliIO, flag: string | undefined, root: { real: st
   const refuse = (): ConfigError => refusal(flag === undefined
     ? 'QUORUM_CONFIG'
     : '--config', INSIDE_MESSAGE)
-  const typed = resolve(named)
-  if (isInside(typed, root.given) || isInside(typed, root.real)) throw refuse()
+  if (await insideRoot(named, root)) throw refuse()
   const real = await realpath(named).catch(() => undefined)
   if (real === undefined) return named
-  const parent = await realpath(dirname(named)).catch(() => undefined)
-  const linked = parent === undefined
-    ? real
-    : join(parent, basename(named))
-  if (isInside(real, root.real) || isInside(linked, root.real)) throw refuse()
+  if (await insideRoot(real, root)) throw refuse()
   return real
 }
 
@@ -156,14 +171,16 @@ function streamOf<T extends Readable | Writable>(value: unknown): T {
  * 7. the config: its path is resolved and refused when it lies inside the root as typed, or by its real path,
  *    and only then is the file read. The check comes first because reading a config can run it as code, with the
  *    operator's keys in the environment, and a config inside the root is one the calling agent could have written;
- * 8. the profiles' resolution, `--profile` the selection, so a config whose provider cannot be built, or whose
+ * 8. the prompt and document files the config names, which were read with it (a text runs no code): each that
+ *    lies inside the root, by the check the config file got (`insideRoot`), is refused at its config path;
+ * 9. the profiles' resolution, `--profile` the selection, so a config whose provider cannot be built, or whose
  *    selection runs nothing, is refused before the client is served; so is a profile that lists a `{ repository }`
  *    document, at its entry, since the calling agent can commit to the repository that document is read from;
  *    and the session budget, which
  *    `--max-session-tokens` sets and which may not be below the config's `maxReviewTokens`, since no review
  *    could start: four times that cap when it is not given;
- * 9. the banner on stderr, as the review command prints it;
- * 10. the server, over standard input and output, with the review's progress lines on stderr.
+ * 10. the banner on stderr, as the review command prints it;
+ * 11. the server, over standard input and output, with the review's progress lines on stderr.
  *
  * A `ConfigError` exits 2, and any other failure 3, with its lines on stderr. Nothing but the protocol's
  * messages is ever written to stdout, apart from `--help`.
@@ -199,7 +216,11 @@ export async function runMcp(io: CliIO, argv: readonly string[]): Promise<number
       throw refusal('', sdk.SDK_ABSENT)
     })
     const path = await namedConfig(io, values.config, root)
-    const { input } = await readNamedConfig({ cwd: io.cwd, env: io.env, configPath: path })
+    const { input, files } = await readNamedConfig({ cwd: io.cwd, env: io.env, configPath: path })
+    // A prompt or document file steers the review as the config does, so one the calling agent can change is refused as the config is.
+    const inside = await Promise.all(files.map(file => insideRoot(file.path, root)))
+    const changeable = files.filter((_, index) => inside[index])
+    if (changeable.length > 0) throw new ConfigError(changeable.map(({ at }) => ({ path: at, message: FILE_INSIDE_MESSAGE })))
     const selection = values.profile === undefined
       ? undefined
       : { ids: values.profile, path: '--profile' }
