@@ -285,7 +285,8 @@ describe('rulesSent', () => {
     expect(rulesSent([license, noAny], ['src/x.ts'])).toEqual([license, noAny])
     // A diff with no header names its one file '', which no pattern of a directory matches, and which every rule without paths takes.
     expect(rulesSent([noAny, license], [''])).toEqual([license])
-    expect(rulesSent([noAny, license], [])).toEqual([license])
+    // A change with no file at all sends no request, so no rule, the ones with no paths too.
+    expect(rulesSent([noAny, license], [])).toEqual([])
     expect(rulesSent([], ['src/x.ts'])).toEqual([])
   })
 

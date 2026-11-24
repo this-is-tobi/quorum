@@ -413,6 +413,8 @@ export function resultWith(parts: {
           failOn: 'high',
           gating: true,
           invalidFindings: 0,
+          rules: { listed: 0, sent: 0 },
+          invalidRules: 0,
           coverage: [],
         },
       },

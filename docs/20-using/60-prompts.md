@@ -19,7 +19,7 @@ The user message holds the data, each block in its own fence, joined by blank li
 | Request | Blocks, in order |
 | --- | --- |
 | Research, one per profile, or one per part of a large change | The diff; or, for a change in parts, the parts block, then the part's diff; then the rules, when the profile sends some; then the guidelines, when the profile has them |
-| Vote, one per lens per finding | The claim, the evidence, the diff section of the cited file; then the guidelines, when the profile has them |
+| Vote, one per lens per finding | The claim, the evidence, the diff section of the cited file; then the rule the finding cites, when it cites one; then the guidelines, when the profile has them |
 
 The guidelines block holds the profile's documents of that kind joined by a blank line, in this order: the text a program set on the profile (`guidelines`), the profile's own `documents`, then the repository documents the review brings (`context`), each cleaned and the blank ones left out ([Documents](#documents)). A profile with no document sends the requests it sent before, with no guidelines block and no paragraph.
 
@@ -134,7 +134,24 @@ A rule with several patterns lists them after `for`, separated by `, `, and a ru
 
 A profile that lists a rule asks each finding for a sixth field, `rule`, and its reply schema requires it: the id of the rule the finding breaks, or an empty string when it breaks none. The profile asks for it when no rule applies to the change too, so the request's shape depends on the profile and never on the files, and a request with no rule applying carries the six fields and no block. A reply whose `rule` is absent or `null` reads as naming no rule, as an absent category reads as an empty one, and one whose `rule` is no string leaves its finding unreadable, reported with the others the harness could not read.
 
-A profile that lists no rule sends the five fields, the schema and the requests it always did: the security profile lists none, and its requests keep the digests of 0.12.0. Every rule is part of the digest of the requests that carry it, its text, its patterns and its position, so a review kept with `--state` and rerun after a rule changed reuses no stored research reply. No vote carries a rule. The startup refusal counts the whole block of the rules a profile lists, whatever files a change holds: [Room accounting](./20-configuration.md#room-accounting).
+A profile that lists no rule sends the five fields, the schema and the requests it always did: the security profile lists none, and its requests keep the digests of 0.12.0. Every rule is part of the digest of the requests that carry it, its text, its patterns and its position, so a review kept with `--state` and rerun after a rule changed reuses no stored research reply, and no stored vote of a finding that cites it. No vote carries the rules block: a vote carries the one rule its finding cites ([The citation](#the-citation)). The startup refusal counts the whole block of the rules a profile lists, whatever files a change holds, and a vote's rule at the largest rule it lists: [Room accounting](./20-configuration.md#room-accounting).
+
+### The citation
+
+A finding's `rule` is the finder's word for a rule, so code checks it once the finding is anchored, on the line of its quote when the harness moved it. The trimmed `rule` must name a rule of the ones this review sent whose `paths` match the finding's file, and a rule with no `paths` matches every file. A citation that holds stays, as the rule's own id in the configuration and never the finder's text, and the finding's votes read that rule. Any other citation is refused: a rule that does not exist, one this review did not send, one whose `paths` do not match the file. A profile that sets `requireRule` drops a finding whose citation is refused, and one that cites none; any other profile keeps the finding with no rule.
+
+Each refusal counts in the profile's `invalidRules`, apart from `invalidFindings`, which counts the findings outside the diff, and is sent as a `finding:invalid` event of cause `rule`. Its reason names the finding's file, JSON-quoted and cut at 80 characters, and its line, and never what the finder cited: `"src/a.ts":3 cites no rule this review sent`, or `"src/a.ts":3 cites no rule, which the profile requires`. A reply whose finding cites a wrong rule was read, so it is never sent once more and records no gap: a refused citation is one finding's, never its reply's.
+
+A vote of a finding that cites a rule carries that rule in a block of its own, after the diff section and before the guidelines, written as the rules block writes one rule, and the data notice describes it:
+
+```text
+no-any, for src/**:
+No any outside tests.
+```
+
+`the review rule the finding says the code breaks, as the review's configuration states it: its id, the files it applies to and its text.` A vote of a finding that cites none, and every vote of a profile that lists no rule, carries no such block and is the request it always was.
+
+A profile that sets `requireRule` and sends no rule for a change, because none of its rules applies to a file of the change, asks its finder nothing: every finding would be dropped for want of a rule to cite, so no call is made, every file reads `reviewed`, the research stage says `parts: 0`, and its estimate costs nothing. A profile that requires a rule and lists none is the same.
 
 ## Templates
 
@@ -169,9 +186,10 @@ The descriptions are written by the code, never by a profile, since only the cod
 | The diff section, in a vote request | `untrusted-diff-<nonce>` | the diff section of the cited file, or the whole diff when the file has no section of its own. |
 | The diff section, in a vote whose voter's window does not hold it | `untrusted-diff-<nonce>` | part of the diff section of the cited file: its header and the hunks nearest the cited line, since the whole section does not fit. |
 | The review rules, in a research request of a profile that sends some | `untrusted-rules-<nonce>` | the review rules of this review, each with its id, the files it applies to and its text. They are criteria, as guidelines are: a finding that breaks one names its id in rule. |
+| The rule a finding cites, in a vote request of a finding that cites one | `untrusted-rule-<nonce>` | the review rule the finding says the code breaks, as the review's configuration states it: its id, the files it applies to and its text. |
 | The guidelines | `untrusted-guidelines-<nonce>` | the project's review guidelines. Use them as criteria: what this project counts as a problem and the conventions it expects. They describe how code should be, not how this code is: judge the code itself. |
 
-The guidelines and rules lines say what the text is for and not who wrote it: quorum receives a string from its caller and cannot vouch for it, so it never ranks guidelines or rules above the other fenced data.
+The guidelines, rules and rule lines say what the text is for and not who wrote it: quorum receives a string from its caller and cannot vouch for it, so it never ranks guidelines or rules above the other fenced data.
 
 ## The untrusted-content notice
 

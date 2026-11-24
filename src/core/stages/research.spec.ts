@@ -116,7 +116,12 @@ describe('checkReply', () => {
   })
 
   it('treats an explicit empty list as a complete result', () => {
-    expect(checkReply(reply([]), sections, 'security')).toEqual({ findings: [], invalid: [], incomplete: [] })
+    expect(checkReply(reply([]), sections, 'security')).toEqual({
+      findings: [],
+      invalid: [],
+      invalidRules: [],
+      incomplete: [],
+    })
   })
 
   it('verifies only the first maxFindings reported findings and records the rest as capped', () => {
@@ -338,7 +343,12 @@ describe('checkReplies', () => {
   })
 
   it('reads no reply as a complete result', () => {
-    expect(checkReplies([], sections, 'security')).toEqual({ findings: [], invalid: [], incomplete: [] })
+    expect(checkReplies([], sections, 'security')).toEqual({
+      findings: [],
+      invalid: [],
+      invalidRules: [],
+      incomplete: [],
+    })
   })
 
   it('keeps the fingerprint when a push shifts the finding\'s line', () => {

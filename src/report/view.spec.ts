@@ -119,6 +119,8 @@ describe('publicView', () => {
             gating: true,
             discarded: 1,
             invalidFindings: 0,
+            rules: { listed: 0, sent: 0 },
+            invalidRules: 0,
             coverage: security.coverage,
           },
         },
@@ -152,6 +154,8 @@ describe('publicView', () => {
       'gating',
       'discarded',
       'invalidFindings',
+      'rules',
+      'invalidRules',
       'coverage',
     ])
     expect(Object.keys(view.kept[0])).toEqual(Object.keys(SQL))
@@ -182,10 +186,53 @@ describe('publicView', () => {
       'gating',
       'discarded',
       'invalidFindings',
+      'rules',
+      'invalidRules',
       'coverage',
       'recovery',
     ])
     expect(publicView(reportResult()).meta.profiles.security).not.toHaveProperty('recovery')
+  })
+
+  it('keeps a finding\'s rule and a profile\'s rule counts in the public view', () => {
+    const base = reportMeta()
+    const cited: Verdict = {
+      ...SQL,
+      rule: 'no-any',
+    }
+    const result = reportResult({
+      kept: [cited],
+      meta: {
+        ...base,
+        profiles: {
+          security: {
+            ...base.profiles.security,
+            rules: { listed: 3, sent: 2 },
+            invalidRules: 1,
+          },
+        },
+      },
+    })
+    const view = publicView(result)
+    expect(view.kept[0].rule).toBe('no-any')
+    expect(view.kept[0]).toEqual({ ...cited, votes: PUBLIC_VOTES.kept })
+    // A finding that cites none holds no rule, as the result's does.
+    expect(view.unreviewed[0]).not.toHaveProperty('rule')
+    expect(view.meta.profiles.security.rules).toEqual({ listed: 3, sent: 2 })
+    expect(view.meta.profiles.security.invalidRules).toBe(1)
+    // The counts are copies, and the result's own are left as they were.
+    expect(view.meta.profiles.security.rules).not.toBe(result.meta.profiles.security.rules)
+    expect(result.meta.profiles.security.rules).toEqual({ listed: 3, sent: 2 })
+    // A view is the same whatever it is made of, and every one passes the strict schema.
+    expect(publicView(view)).toBe(view)
+    expect(inertJson(view)).toContain('"rule": "no-any"')
+    // A rule that is no id is no view quorum writes: a reporter writes a rule's id bare.
+    expect(() => publicView({
+      ...result,
+      kept: [
+        { ...cited, rule: 'No Any: [x](y)' },
+      ],
+    })).toThrow('the public view is not one quorum writes, at kept.0.rule')
   })
 
   it('keeps meta.adaptations in the public view, as a copy', () => {

@@ -13,11 +13,11 @@ import type { Ask } from '../prompts.ts'
 import { halves, unitsOf } from '../recovery.ts'
 import type { Piece } from '../recovery.ts'
 import { replyLimit, tokenBound } from '../tokens.ts'
-import type { CallFailure, Finding, FindingDetails, IncompleteEntry, Position, ProfileMeta, QuorumEvent } from '../types.ts'
-import { collapse, verifyFindings } from '../verify.ts'
+import type { CallFailure, Finding, FindingDetails, IncompleteEntry, Position, ProfileMeta, QuorumEvent, ReviewRule } from '../types.ts'
+import { checkCitations, collapse, verifyFindings } from '../verify.ts'
 import type { VerifiedFinding } from '../verify.ts'
 import { isTooLarge, lackOf, ownData, providerFailure, refusalMessage } from '../facts.ts'
-import { callProvider, roomOf } from './context.ts'
+import { asksNothing, callProvider, roomOf } from './context.ts'
 import type { ProfileRun, RunContext } from './context.ts'
 import { dedupKey } from './dedup.ts'
 
@@ -30,6 +30,12 @@ export interface ResearchOutcome {
    * code outside the diff, or names no file). An unreadable finding is reported in `incomplete` only.
    */
   invalid: string[]
+  /**
+   * One reason per finding whose rule citation failed its check, in the findings' order: it names no rule the review sent whose paths
+   * match its file, or, in a profile that requires a rule, it names none. Each reason names the finding's file and line and never what
+   * the finder cited; the finding is dropped in a profile that requires a rule, and goes on with no rule in any other.
+   */
+  invalidRules: string[]
   /** What the run could not review: findings the harness could not read, findings beyond the cap, a reply whose findings were all unusable, research requests refused as too large, research that failed, or research a provider that was down never got. */
   incomplete: IncompleteEntry[]
   /**
@@ -131,6 +137,8 @@ function lineCount(text: string): number {
 /**
  * Plan a profile's research of the filtered `diff`, whose sections are `sections`, before any stage runs.
  * The research is one request holding the whole diff, which is what 0.5.0 sent, when:
+ * 0. the profile asks its research nothing (`asksNothing`: it requires a rule and sends none): no request is made, so nothing is
+ *    packed and no hunk is set aside;
  * 1. the research provider states no room: no request is built to ask, so no nonce is drawn;
  * 2. the room of the one-request research with an empty diff is no safe integer or is negative: its guard
  *    then refuses the request as it always did;
@@ -153,7 +161,7 @@ function lineCount(text: string): number {
  */
 export function planResearch(run: ProfileRun, diff: string, sections: readonly DiffSection[], settings: { readonly partTokens: number, readonly maxFindings: number, readonly replyTokens?: number }): ResearchPlan {
   const whole: ResearchPlan = { sections }
-  if (run.research.room === undefined) return whole
+  if (asksNothing(run) || run.research.room === undefined) return whole
   const { instructions } = run.research
   const { partTokens } = settings
   const ask: Ask = { findings: settings.maxFindings, replyTokens: settings.replyTokens }
@@ -188,6 +196,19 @@ interface Reply {
   readonly text: string
   readonly label?: string
   readonly asked?: number
+}
+
+/** What a profile that lists review rules checks each finding's citation against: the rules its review sent, and whether it requires a finding to cite one. */
+interface Citation {
+  readonly rules: readonly ReviewRule[]
+  readonly requireRule: boolean
+}
+
+/** What a run's findings are checked against: undefined for a profile that lists no rule, whose findings hold no rule. */
+function citationOf(run: ProfileRun): Citation | undefined {
+  return run.sent === undefined
+    ? undefined
+    : { rules: run.sent, requireRule: run.requireRule }
 }
 
 /** What reading research replies comes to: what the panel receives, and the gaps of the reading. */
@@ -228,13 +249,15 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
  * profile never has two of one reason. A saturated reply below `maxFindings` is split and never gets here, unless
  * its piece is at the floor.
  *
- * With `withRule`, the replies are a profile's that lists review rules, and each finding is read with its sixth field,
- * `rule` (see `parseResearchReply`).
+ * With `citation`, the replies are a profile's that lists review rules: each finding is read with its sixth field, `rule` (see
+ * `parseResearchReply`), and, once `verifyFindings` has anchored it, its citation is checked against `citation.rules`, the rules
+ * the review sent, by `checkCitations`, which `invalidRules` reports. A finding dropped for its citation only was read and
+ * anchored in the diff: it is no unusable finding, so it does not make a reply's findings all unusable.
  *
  * @throws OutputError when a reply is not one JSON object holding a `findings` array and nothing else
  * @throws RangeError when `maxFindings` is not a positive integer
  */
-export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMap<string, string>, profile: string, maxFindings = DEFAULT_MAX_FINDINGS, withRule = false): Reading {
+export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMap<string, string>, profile: string, maxFindings = DEFAULT_MAX_FINDINGS, citation?: Citation): Reading {
   if (!Number.isInteger(maxFindings) || maxFindings < 1) {
     throw new RangeError(`maxFindings must be a positive integer, got ${maxFindings}`)
   }
@@ -245,7 +268,7 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
   for (const { text, label, asked } of replies) {
     // A reply past the cap is parsed for its envelope and its count alone: its entries are not read.
     const left = maxFindings - details.length - unreadable.length
-    const parsed = parseResearchReply(text, Math.max(left, 1), withRule)
+    const parsed = parseResearchReply(text, Math.max(left, 1), citation !== undefined)
     listed += parsed.listed
     if (asked !== undefined && parsed.listed >= asked) saturated.push(asked)
     if (left < 1) continue
@@ -255,8 +278,11 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
       : `${label}: ${reason}`))
   }
   const checked = verifyFindings(details, sections)
+  const cited = citation === undefined
+    ? { findings: checked.findings, invalid: [] }
+    : checkCitations(checked.findings, citation.rules, citation.requireRule)
   const ranks = new Map<string, Map<string, number>>()
-  const findings = checked.findings.map((finding): Finding => ({
+  const findings = cited.findings.map((finding): Finding => ({
     id: findingId(profile, finding.file, finding.line, finding.category),
     fingerprint: rankedFingerprint(ranks, profile, finding),
     profile,
@@ -271,22 +297,30 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
     : undefined
   const capped = [asks, cap].filter(words => words !== undefined).join(': ')
   if (capped !== '') incomplete.push({ profile, reason: 'findings-capped', detail: capped })
-  if (listed > 0 && findings.length === 0) {
+  if (listed > 0 && checked.findings.length === 0) {
     const reported = `${listed} finding(s) reported`
     const detail = listed > maxFindings
       ? `${reported}, the first ${maxFindings} read, none usable`
       : `${reported}, none usable`
     incomplete.push({ profile, reason: 'research-unusable', detail })
   }
-  return { findings, invalid: checked.invalid, incomplete }
+  return {
+    findings,
+    invalid: checked.invalid,
+    invalidRules: cited.invalid,
+    incomplete,
+  }
 }
 
 /**
  * The research stage of one profile, as `plan` lays it out: a change within one request is researched by one
  * call to its research provider, with the profile's research instructions, the diff, the rules the review sends it
  * (`run.sent`) and the guidelines, and a large change is researched in parts, one call each, whose replies
- * `checkReplies` turns into what the panel receives. Each finding dropped for citing code outside the diff is reported by a `finding:invalid` event,
+ * `checkReplies` turns into what the panel receives. Each finding dropped for citing code outside the diff is reported by a `finding:invalid` event, and so is each rule citation that failed its check, with the cause `rule`,
  * and each gap by an `incomplete` event.
+ *
+ * A profile that asks its research nothing (`asksNothing`: it requires a rule and sends none) makes no call, and its one part is
+ * `reviewed`: every finding would be dropped for want of a rule to cite.
  *
  * A change in one request (no packing, or a packing of one part, whatever its text) goes through one call, or none for
  * a part of white space alone, which is `reviewed` all the same. A research request its provider refused as too large (a `too-large` `ProviderError`) was not
@@ -333,6 +367,7 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
  * @throws whatever the parser throws for a reply that is no `OutputError`: a bug, not a reply
  */
 export async function research(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, diff: string, sections: ReadonlyMap<string, string>): Promise<ResearchOutcome> {
+  if (asksNothing(run)) return nothingRead(['reviewed'])
   const { packing } = plan
   if (packing === undefined) return researchInOne(ctx, run, plan, diff, sections)
   if (packing.parts.length === 0) return nothingRead([])
@@ -350,6 +385,7 @@ function nothingRead(parts: PartOutcome[]): ResearchOutcome {
   return {
     findings: [],
     invalid: [],
+    invalidRules: [],
     incomplete: [],
     parts,
   }
@@ -792,7 +828,7 @@ async function researchInOne(ctx: RunContext, run: ProfileRun, plan: ResearchPla
   return reported(ctx, run, {
     ...checkReplies([
       { text: leaf.text, asked: leaf.asked },
-    ], sections, run.id, ctx.findingsCap, run.sent !== undefined),
+    ], sections, run.id, ctx.findingsCap, citationOf(run)),
     parts: ['reviewed'],
   })
 }
@@ -860,7 +896,7 @@ function concluded(ctx: RunContext, run: ProfileRun, scope: Scope, packing: Pack
         },
       ]
     : []))
-  const read = checkReplies(replies, sections, run.id, ctx.findingsCap, run.sent !== undefined)
+  const read = checkReplies(replies, sections, run.id, ctx.findingsCap, citationOf(run))
   const cutOff = cutOffGap(run.id, scope, runs.flatMap(({ leaves }) => leaves))
   return reported(ctx, run, {
     ...read,
@@ -930,9 +966,17 @@ function cutOffGap(profile: string, scope: Scope, leaves: readonly Leaf[]): Inco
       }
 }
 
-/** Sends the events of a finished research, the `finding:invalid` ones then the `incomplete` ones, and returns its outcome. */
+/** Sends the events of a finished research, the `finding:invalid` ones (the findings outside the diff, then the citations that failed, each with the cause `rule`) then the `incomplete` ones, and returns its outcome. */
 function reported(ctx: RunContext, run: ProfileRun, outcome: ResearchOutcome): ResearchOutcome {
   for (const reason of outcome.invalid) ctx.emit({ type: 'finding:invalid', profile: run.id, reason })
+  for (const reason of outcome.invalidRules) {
+    ctx.emit({
+      type: 'finding:invalid',
+      profile: run.id,
+      reason,
+      cause: 'rule',
+    })
+  }
   for (const entry of outcome.incomplete) ctx.emit({ type: 'incomplete', entry })
   return outcome
 }
@@ -943,6 +987,7 @@ function gap(ctx: RunContext, entry: IncompleteEntry, outcome: PartOutcome): Res
   return {
     findings: [],
     invalid: [],
+    invalidRules: [],
     incomplete: [entry],
     parts: [outcome],
   }

@@ -26,6 +26,7 @@ Each list keeps the order in which the finder listed its findings, the first pro
 | `line` | number | The line of the new file the finding is at, inside a hunk of the diff: the line the finder cited, or, for a finding the harness moved to its quote, the quote's line, with `citedLine` holding the cited one. The `id`, the `fingerprint`, the `evidence` and `evidenceRow` are taken at this line |
 | `citedLine` | number | The line the finder cited, present only when the harness moved the finding to the nearest occurrence of its quote in the cited file's section, before the panel voted: `line` is then that occurrence. The key is absent for a finding that stayed where it was cited, as one does whose quote stands more than 64 times in its window, which a quote that frequent cannot place, or at the nearest distance twice. [The quote check](../30-security/10-threat-model.md#code-derived-evidence-and-the-quote-check) says when a finding moves |
 | `category` | string | The finder's category, cleaned and capped at 80 characters; the security profile asks for a CWE. A finding whose category is absent, `null` or blank once cleaned reads `uncategorized`, and its `id` and `fingerprint` are taken of that word |
+| `rule` | string | The id of the review rule the finding cites, checked by code once the finding is anchored: a rule this review sent whose `paths` match `file`, written as the configuration states its id and never as the finder wrote it. The key is absent when the finding cites none, and when its citation failed the check in a profile that does not require a rule: [The citation](../20-using/60-prompts.md#the-citation) |
 | `summary` | string | The finder's claim, cleaned and capped at 500 characters |
 | `evidence` | string | The diff's lines around `line`, up to two on each side within its hunk, each with its `+`, `-` or space marker, read from the diff by the harness and capped at 2,000 characters |
 | `evidenceRow` | number | The index, from 0, of the row of `evidence` that shows `line`: a reader marks it and numbers the rows around it, a `+` or space row counting a new-file line and a `-` row none. The key is absent when no row shows the line, as for a hunk that only deletes lines, or when the evidence's cap of 2,000 characters cut that row |
@@ -66,7 +67,7 @@ A failed vote counts as a reject. Its `failure` holds only what the code read, n
 | `concurrency` | object | Only when the review made a call: what each provider's lane did, one entry per provider id, keyed by it: [The lanes](#the-lanes) |
 | `reused` | object | Only when the review was given a state directory (`--state`, or a `store` in the library), even when nothing was reused: `research`, the research calls, and `votes`, the votes, that the store answered instead of a provider, whole numbers of at least 0, counted from the `call` events that say `reused`: [Saved state](../20-using/20-configuration.md#saved-state). A call the store answered spends nothing and adds nothing to `usage` |
 
-A usage count is valid when it is a finite number of at least 0. A failed call's usage counts too, when its reply reported valid counts, as a reply refused or cut off at its token limit does. `meta.usage` and each `invalidFindings` are counted from the review's own events, so `meta` and the events cannot disagree.
+A usage count is valid when it is a finite number of at least 0. A failed call's usage counts too, when its reply reported valid counts, as a reply refused or cut off at its token limit does. `meta.usage` and each `invalidFindings` and `invalidRules` are counted from the review's own events, so `meta` and the events cannot disagree.
 
 ### Per profile
 
@@ -77,6 +78,8 @@ A usage count is valid when it is a finite number of at least 0. A failed call's
 | `failOn` | string | The level at or above which its kept findings exit `1`: `high`, `medium` or `low`; `none` for an advisory profile: [Gating](../20-using/40-profiles.md#gating) |
 | `gating` | boolean | `true` unless `failOn` is `none`. A result of an earlier release has no `failOn`, and a reader takes `gating: false` as `none` and anything else as `high` |
 | `invalidFindings` | number | How many findings it dropped for citing code outside the diff |
+| `rules` | object | `listed`, how many review rules the profile lists, whatever their origin, and `sent`, how many of them the review sent: those whose `paths` match a file of the filtered diff, and every rule with none, when the filtered diff has a file: a change with no file at all, a blank diff or one whose every file `exclude` leaves out, sends no request, so `sent` is 0 for it, the rules with no `paths` too. `{ "listed": 0, "sent": 0 }` for a profile that lists none. Required in every result of this release |
+| `invalidRules` | number | How many rule citations failed their check: a finding's `rule` that names no rule the review sent whose `paths` match its file, and, in a profile that requires a rule, a finding that cites none. Each is a [`finding:invalid` event](./30-library-api.md#events) of cause `rule`, which counts here, and a finding outside the diff is one without a cause, which counts in `invalidFindings`: the two stay apart. In a profile that requires a rule, each of them dropped its finding; in any other, the finding went on with no `rule` |
 | `coverage` | entry[] | Every file of the diff once, in its order, with how much of it the profile's research reviewed: [Coverage](#coverage) |
 | `recovery` | object | What recovery did for the profile's research, present only when it split a research part ([Recovering a cut-off part](../20-using/20-configuration.md#recovering-a-cut-off-part)): `parts`, how many parts it split, `pieces`, how many final pieces they ended with, each read or left at the floor, not every piece asked on the way, `saturated`, how many of those splits were of a reply that listed as many findings as it was asked for at most, and `unreadHunks`, how many hunks the floor left unread in the parts it split, cut off even alone: a part cut off at the floor at once was not split, so it has no entry here, and its hunks are in the `reply-cut-off` gap. The key is absent for a profile that split none, and a result of an earlier release has none |
 
@@ -237,7 +240,7 @@ A `guideline-edited` flag comes from the repository documents of the review, not
 
 ### The context
 
-`meta.context` records the documents each profile read as policy and the review sent: a profile's guidelines, do-not-report text and review rules, its documents and the repository documents the review brought ([Documents](./30-library-api.md#documents)). It holds one key, `documents`, a list with one record for each document, in the order of the review's profiles and, for a profile, its guidelines, then its do-not-report text, then its rules, each in the order they were joined: the profile's own text, its config documents, then the repository's. The same record is the `context` event the review sent before its stages ([Events](./30-library-api.md#events)). A record holds a hash, a path, a commit and counts, never a document's text.
+`meta.context` records the documents each profile read as policy and the review sent: a profile's guidelines, do-not-report text and review rules, its documents and the repository documents the review brought ([Documents](./30-library-api.md#documents)). It holds one key, `documents`, a list with one record for each document, in the order of the review's profiles and, for a profile, its guidelines, then its do-not-report text, then its rules, each in the order they were joined: the profile's own text, its config documents, then the repository's. The same record is the `context` event the review sent before its stages ([Events](./30-library-api.md#events)), which holds besides it `rules`, how many rules each profile that lists one lists and sent, as `meta.profiles.<id>.rules` records them. A record holds a hash, a path, a commit and counts, never a document's text.
 
 | Field | Type | Holds |
 | --- | --- | --- |
@@ -252,7 +255,7 @@ A `guideline-edited` flag comes from the repository documents of the review, not
 | `rules` | number | How many rules a rules document holds, 0 for one that is missing. The key is there for `rules` alone |
 | `removed` | object | What the cleaner removed from the text, `characters`, `comments` and `entities`: the hidden characters by code point, the HTML comments and the numeric character references by construct, counting what the document's reader removed and what the core removed again: [Prose a model reads as policy](../30-security/30-output-handling.md#prose-a-review-reads-as-policy) |
 
-A review whose profiles have no document records `{ "documents": [] }` and sends no `context` event. The record is schema-strict: `readResult` refuses a `kind`, an `origin` or a `status` it does not know, a hash that is not 64 lowercase hexadecimal digits, a record of a repository document with no path or commit, a record of any other origin with one, a rules record with no count and a record of another kind with one. The public view keeps `meta.context` whole.
+A review whose profiles have no document and none of which lists a review rule or requires one (`requireRule`) records `{ "documents": [] }` and sends no `context` event: a profile that lists or requires a rule is in the event, in its `rules`, though it holds no document. The record is schema-strict: `readResult` refuses a `kind`, an `origin` or a `status` it does not know, a hash that is not 64 lowercase hexadecimal digits, a record of a repository document with no path or commit, a record of any other origin with one, a rules record with no count and a record of another kind with one. The public view keeps `meta.context` whole.
 
 ### The adaptations
 
@@ -331,7 +334,7 @@ Each gap makes the review incomplete, as an unreviewed finding does: the CLI exi
 | `meta.profiles.<id>.recovery` | Kept as it is, when the profile has one: four counts |
 | An incomplete entry | `profile`, `reason`, then `file` when it has one, and no `detail`: a report describes a gap by its reason, in fixed words |
 
-Everything else is as in the full result: the findings with their evidence, the profiles' policy, `failOn`, `gating`, `invalidFindings` and coverage, the files left out, a held file's name, reason and rule included, and the flags with their details. `meta` is written in this order: `version`, `view`, `startedAt`, `durationMs`, `source`, `profiles`, `incomplete`, `leftOut`, `flags`, `context`, `adaptations`, then `reused` when the review has one; a profile in this one: `policy`, `failOn`, `gating`, `discarded`, `invalidFindings`, `coverage`.
+Everything else is as in the full result: the findings with their evidence and the id of the rule each cites, the profiles' policy, `failOn`, `gating`, `invalidFindings`, `rules`, `invalidRules` and coverage, the files left out, a held file's name, reason and rule included, and the flags with their details. `meta` is written in this order: `version`, `view`, `startedAt`, `durationMs`, `source`, `profiles`, `incomplete`, `leftOut`, `flags`, `context`, `adaptations`, then `reused` when the review has one; a profile in this one: `policy`, `failOn`, `gating`, `discarded`, `invalidFindings`, `rules`, `invalidRules`, `coverage`.
 
 ```json
 {
@@ -369,6 +372,8 @@ Everything else is as in the full result: the findings with their evidence, the 
         "gating": true,
         "discarded": 1,
         "invalidFindings": 0,
+        "rules": { "listed": 0, "sent": 0 },
+        "invalidRules": 0,
         "coverage": [{ "file": "src/users.js", "status": "reviewed" }]
       }
     },
@@ -560,6 +565,11 @@ A review of a diff that touches three files, run on the one provider, named `def
         "failOn": "high",
         "gating": true,
         "invalidFindings": 1,
+        "rules": {
+          "listed": 0,
+          "sent": 0
+        },
+        "invalidRules": 0,
         "coverage": [
           {
             "file": "src/users.js",

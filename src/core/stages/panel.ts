@@ -8,7 +8,7 @@ import { confidenceFor, undecidedLevel, verdictStatus } from '../policy.ts'
 import type { CompletionRequest } from '../ports.ts'
 import { voteRequest } from '../prompts.ts'
 import { tokenBound } from '../tokens.ts'
-import type { Confidence, Finding, IncompleteEntry, LensVote, Verdict, VerdictStatus, Vote, VoteFailure } from '../types.ts'
+import type { Confidence, Finding, IncompleteEntry, LensVote, ReviewRule, Verdict, VerdictStatus, Vote, VoteFailure } from '../types.ts'
 import { isTooLarge, lackOf, providerFailure, refusalMessage } from '../facts.ts'
 import { callProvider, roomOf } from './context.ts'
 import type { LensRun, ProfileRun, RunContext } from './context.ts'
@@ -222,21 +222,33 @@ function requestFor(ctx: RunContext, run: ProfileRun, finding: Finding, lens: Le
       ceiling,
     }, stated.window, ctx.maxFindings).vote
   const ask = { replyTokens }
+  const rule = citedRule(run, finding)
   const nearest = lens.room === undefined
     ? undefined
-    : nearestContext(run, finding, lens, context.sections, ask)
+    : nearestContext(run, finding, lens, context.sections, ask, rule)
   return nearest === undefined
-    ? voteRequest(lens.instructions, finding, context.text, run.guidelines, false, ask)
-    : voteRequest(lens.instructions, finding, nearest, run.guidelines, true, ask)
+    ? voteRequest(lens.instructions, finding, context.text, run.guidelines, false, ask, rule)
+    : voteRequest(lens.instructions, finding, nearest, run.guidelines, true, ask, rule)
 }
 
-/** The partial context of a voter that states a room, or undefined when the whole section fits, or nothing of it does. */
-function nearestContext(run: ProfileRun, finding: Finding, lens: LensRun, sections: ReadonlyMap<string, string>, ask: { readonly replyTokens?: number }): string | undefined {
+/**
+ * The rule `finding` cites, as the review sent it, so as the configuration states it: the rule of `run.sent` whose id the finding
+ * names. A finding that cites none has none, and so has one whose rule the review did not send, which its check has already
+ * dropped from the finding.
+ */
+function citedRule(run: ProfileRun, finding: Finding): ReviewRule | undefined {
+  return finding.rule === undefined
+    ? undefined
+    : run.sent?.find(rule => rule.id === finding.rule)
+}
+
+/** The partial context of a voter that states a room, or undefined when the whole section fits, or nothing of it does. The rooms are asked of the requests that carry the rule the finding cites. */
+function nearestContext(run: ProfileRun, finding: Finding, lens: LensRun, sections: ReadonlyMap<string, string>, ask: { readonly replyTokens?: number }, rule: ReviewRule | undefined): string | undefined {
   const section = sectionFor(sections, finding.file)
   if (section === undefined) return undefined
-  const room = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines, false, ask))
+  const room = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines, false, ask, rule))
   if (room === undefined || tokenBound(section.text) <= room) return undefined
-  const partialRoom = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines, true, ask))
+  const partialRoom = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines, true, ask, rule))
   return partialRoom === undefined
     ? undefined
     : nearestHunks(section.text, hunksOf(sections, section.path, section.text), finding.line, partialRoom)

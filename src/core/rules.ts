@@ -203,9 +203,11 @@ export function cleanedRules(rules: readonly ReviewRule[]): { readonly rules: re
 /**
  * The rules of `rules` a review sends, in order: each rule with no `paths`, which applies to every file, and each whose
  * patterns (`excludeMatcher`, in `exclude`'s syntax) match one of `files`, the paths of the change's sections as the diff
- * names them, the empty name for a section with none.
+ * names them, the empty name for a section with none. A change with no section at all, a diff left blank by `exclude` or by the
+ * files held back, sends no request and so no rule: none, whatever the rules' paths.
  */
 export function rulesSent(rules: readonly ReviewRule[], files: readonly string[]): ReviewRule[] {
+  if (files.length === 0) return []
   return rules.filter(rule => rule.paths === undefined || files.some(excludeMatcher(rule.paths)))
 }
 

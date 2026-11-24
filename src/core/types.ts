@@ -36,6 +36,12 @@ export interface Finding {
   citedLine?: number
   /** The finder's category, cleaned and capped like the summary. */
   category: string
+  /**
+   * The id of the review rule the finding cites, checked by code: a rule the review sent whose `paths` match `file`, as the
+   * configuration states its id (never the finder's text for it). Absent, never `undefined`, when it cites none, or when its
+   * citation failed the check in a profile that does not require a rule.
+   */
+  rule?: string
   /** The finder's claim, stripped of control, format and other invisible characters and capped. */
   summary: string
   /** The diff lines around `line` with their +, - or space markers (a line's trailing carriage return removed), capped. */
@@ -156,6 +162,12 @@ export interface Profile {
    * profile that lists none sends its requests as it always did.
    */
   readonly rules?: readonly ReviewRule[]
+  /**
+   * Whether every finding must cite a rule the review sent: a finding that cites none, or whose citation fails its check, is dropped
+   * and counted in `meta.profiles.<id>.invalidRules`, and a profile that requires a rule and sends none asks its finder nothing.
+   * `false` when unset: a finding whose citation fails goes on with no rule, and one that cites none is kept as it is.
+   */
+  readonly requireRule?: boolean
 }
 
 /**
@@ -444,6 +456,10 @@ export interface ProfileMeta {
   gating: boolean
   /** How many findings it dropped for citing code outside the diff. */
   invalidFindings: number
+  /** How many review rules the profile lists, whatever their origin, and how many of them the review sent: those whose `paths` match a file of the filtered diff, and every rule with none when it has a file (a change with no file at all sends no rule). `{ listed: 0, sent: 0 }` for a profile with none. */
+  rules: { listed: number, sent: number }
+  /** How many citations failed their check: a finding's `rule` that names no rule the review sent whose `paths` match its file, and, in a profile that requires a rule, a finding that cites none. Counted apart from `invalidFindings`. */
+  invalidRules: number
   /**
    * Every file of the input diff once, in its order, with how much of it this profile's research
    * reviewed: `reviewed` when a research request that carried all of the file's text was answered with a
@@ -799,14 +815,17 @@ export type QuorumEvent
     | { type: 'left-out', files: LeftOutFile[] }
     /**
      * The documents the review sends as policy, as `meta.context` holds them: sent once, right after `run:start` and `left-out`
-     * and before the gaps, when a profile has one. Counts, hashes, paths, commits and code words only, never a text.
+     * and before the gaps, when a profile has one. Counts, hashes, paths, commits and code words only, never a text. `rules` is
+     * present when a profile lists a review rule, and holds, for each profile that does, how many it lists and how many the review
+     * sends (`meta.profiles.<id>.rules`).
      */
-    | { type: 'context', context: ContextRecord }
+    | { type: 'context', context: ContextRecord, rules?: Record<string, { listed: number, sent: number }> }
     /** An advisory flag, read from the diff or from the files left out as secrets, sent before any stage starts. */
     | { type: 'flag', flag: Flag }
     /**
      * A stage of one profile starts. `parts` is the research's part count, the plan's (1 when the change is not
-     * packed, 0 when no part holds any of it), and `votes` the panel's vote count, its findings times its lenses.
+     * packed, 0 when no part holds any of it, and for a profile that requires a rule and sends none, which asks its research
+     * nothing), and `votes` the panel's vote count, its findings times its lenses.
      */
     | { type: 'stage:start', profile: string, stage: StageName, parts?: number, votes?: number }
     /** A stage of one profile ends; `count` is the findings it produced, or the verdicts for `panel`. */
@@ -915,8 +934,12 @@ export type QuorumEvent
      * provider and role in a review. Whoever wrote the state directory wrote it. It holds a provider's id and a code word only.
      */
     | { type: 'stored-refused', provider: string, role: 'research' | 'vote' }
-    /** A finding was dropped for citing code outside the diff, with the reason. */
-    | { type: 'finding:invalid', profile: string, reason: string }
+    /**
+     * A finding was dropped for citing code outside the diff, with the reason, or, with `cause` `rule`, a finding's rule citation
+     * failed its check (the finding is dropped with it in a profile that requires a rule): the reason names the finding's file and
+     * line, never the rule the finder cited.
+     */
+    | { type: 'finding:invalid', profile: string, reason: string, cause?: 'rule' }
     /** A gap was recorded, as `meta.incomplete` will hold it. */
     | { type: 'incomplete', entry: IncompleteEntry }
     /**

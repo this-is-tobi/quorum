@@ -7,6 +7,7 @@ import { DEFAULT_MAX_FINDINGS, researchRequest, voteRequest } from './prompts.ts
 import type { PartOf } from './prompts.ts'
 import { reservationOf, roomOf } from './stages/context.ts'
 import type { LensRun, ProfileRun, Target } from './stages/context.ts'
+import { largestRule } from './rules.ts'
 import { requestTokens, VOTE_TOKENS } from './tokens.ts'
 import type { DocumentKind } from './types.ts'
 import { longestFinding } from './verify.ts'
@@ -193,7 +194,8 @@ const PART_POSITION: PartOf = {
 
 /**
  * Whether `run` has documents of each kind to put in its requests: the guidelines and the do-not-report text when the profile
- * holds some, and the rules when it sends a rule, since a profile that lists rules and sends none carries no block.
+ * holds some, and the rules when it sends a rule, since a profile that lists rules and sends none carries no block, and its
+ * votes no rule.
  */
 const CARRIES: Readonly<Record<DocumentKind, (run: ProfileRun) => boolean>> = {
   guidelines: run => run.guidelines !== undefined,
@@ -228,13 +230,17 @@ export function researchProbe(run: ProfileRun, replyTokens: number | undefined, 
 
 /**
  * The vote request of `lens` for the longest finding, over an empty diff: the one the estimate's bound and the startup refusal size a vote by.
- * With `without`, the same request built without the documents of those kinds, of which a vote carries the guidelines alone.
+ * It carries the largest rule the run sends, the most a vote of a finding that cites one holds, since the finding does not exist yet.
+ * With `without`, the same request built without the documents of those kinds, of which a vote carries the guidelines and that one rule.
  */
 export function voteProbe(run: ProfileRun, lens: LensRun, replyTokens: number | undefined, without: readonly DocumentKind[] = []): ReturnType<typeof voteRequest> {
   const guidelines = without.includes('guidelines')
     ? undefined
     : run.guidelines
-  return voteRequest(lens.instructions, longestFinding(''), '', guidelines, false, { replyTokens })
+  const rule = without.includes('rules')
+    ? undefined
+    : largestRule(run.sent ?? [])
+  return voteRequest(lens.instructions, longestFinding(''), '', guidelines, false, { replyTokens }, rule)
 }
 
 /** The rooms of a profile's research and the worst case of its parts, or none when its research provider states no room. */
@@ -306,11 +312,17 @@ function freezeBudgets(budgets: ProfileBudgets): ProfileBudgets {
   return Object.freeze(budgets)
 }
 
-/** What a refusal calls each kind of document. */
+/** What a refusal calls each kind of document, in its terms and in its fix. */
 const DOCUMENT_WORDS: Readonly<Record<DocumentKind, string>> = {
   guidelines: 'the guidelines',
   'do-not-report': 'the do-not-report text',
   rules: 'the rules',
+}
+
+/** What a vote's refusal calls each kind of document in its terms: a vote carries the one rule its finding cites, counted at the largest, but the fix still names the rules. */
+const VOTE_WORDS: Readonly<Record<DocumentKind, string>> = {
+  ...DOCUMENT_WORDS,
+  rules: 'the rule it cites, at the largest',
 }
 
 /** What every refusal ends on, after the documents it names to shorten, when it names any. */
@@ -322,18 +334,24 @@ interface Part {
   readonly tokens: number
 }
 
+/** The term of one document: the words that name it in the refusal's terms, and the words the fix names it by, which a fix reuses as they are for every request. */
+interface DocumentPart extends Part {
+  readonly fix: string
+}
+
 /** The terms a request's fixed tokens are split into: its instructions, and each document it carries. */
 interface Parts {
   readonly instructions: Part
-  readonly documents: readonly Part[]
+  readonly documents: readonly DocumentPart[]
 }
 
 /**
  * The `fixed` tokens of a request as terms that add up to them: each document `present` is what the request holds more than the
- * one `probe` builds without it, and the instructions, named `words`, are the rest, the finding or the fences included.
+ * one `probe` builds without it, named in the terms as `named` says (the fix names it as `DOCUMENT_WORDS` does), and the
+ * instructions, named `words`, are the rest, the finding or the fences included.
  */
-function partsOf(fixed: number, words: string, present: readonly DocumentKind[], probe: (without: DocumentKind) => CompletionRequest): Parts {
-  const documents = present.map(kind => ({ words: DOCUMENT_WORDS[kind], tokens: fixed - requestTokens(probe(kind)) }))
+function partsOf(fixed: number, words: string, present: readonly DocumentKind[], probe: (without: DocumentKind) => CompletionRequest, named: Readonly<Record<DocumentKind, string>> = DOCUMENT_WORDS): Parts {
+  const documents = present.map(kind => ({ words: named[kind], fix: DOCUMENT_WORDS[kind], tokens: fixed - requestTokens(probe(kind)) }))
   return {
     instructions: { words, tokens: fixed - documents.reduce((total, document) => total + document.tokens, 0) },
     documents,
@@ -352,7 +370,7 @@ function fixOf({ documents }: Parts): string {
   const largest = documents.toSorted((first, second) => second.tokens - first.tokens)
   return largest.length === 0
     ? LOWER
-    : `shorten ${largest.map(document => document.words).join(' or ')}, ${LOWER}`
+    : `shorten ${largest.map(document => document.fix).join(' or ')}, ${LOWER}`
 }
 
 /**
@@ -380,9 +398,11 @@ function refusal(subject: string, facts: { readonly room: number, readonly windo
  *
  * The fixed text is split in the figures that add up to it: the instructions, and each document the request carries, which is
  * the tokens of the request less those of the same request built without that document, so a person reads what to shorten. A
- * research request carries the guidelines, the do-not-report text and the rules, a vote the guidelines; a profile with none
- * names the instructions alone. The rules are the whole block of every rule the run lists, since the run given is the
- * compiled one or a review's before it narrows to the rules a change sends: the refusal does not depend on the change's files.
+ * research request carries the guidelines, the do-not-report text and the rules, a vote the guidelines and the one rule its finding
+ * cites; a profile with none names the instructions alone. The rules are the whole block of every rule the run lists, since the run
+ * given is the compiled one or a review's before it narrows to the rules a change sends: the refusal does not depend on the
+ * change's files. A vote's rule is counted at the largest rule the run lists, `the rule it cites, at the largest`, and the fix names
+ * it as the rules, since shortening any of them is what lowers it.
  *
  * A provider that states no room is checked by nothing here, and neither is one that states a room and no window or reply
  * budget, whose message could not name its figures: the size guard of each of its requests stays.
@@ -411,7 +431,7 @@ export function roomIssues(id: string, budgets: ProfileBudgets, run: ProfileRun,
       window,
       fixed,
       reply: replyTokens,
-      parts: partsOf(fixed, 'the instructions and the finding', presentOf(run, ['guidelines']), without => voteProbe(run, lens, replyTokens, [without])),
+      parts: partsOf(fixed, 'the instructions and the finding', presentOf(run, ['guidelines', 'rules']), without => voteProbe(run, lens, replyTokens, [without]), VOTE_WORDS),
     }))
   }
   return [...messages].map(message => ({ path, message }))

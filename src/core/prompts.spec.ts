@@ -4,7 +4,7 @@ import { securityProfile } from '../profiles/security.ts'
 import { researchReplyJsonSchema, researchReplyWithRuleJsonSchema } from './output.ts'
 import type { TemplatePart } from './prompts.ts'
 import { DO_NOT_REPORT_LINE, doNotReportInstructions, fence, FINDING_FIELDS, FINDING_FIELDS_WITH_RULE, renderTemplate, requestDigest, researchRequest, templateParts, UNTRUSTED_CONTENT_NOTICE, voteRequest } from './prompts.ts'
-import { rulesBlock } from './rules.ts'
+import { ruleEntry, rulesBlock } from './rules.ts'
 import type { ReviewRule } from './types.ts'
 
 const finding = {
@@ -532,6 +532,58 @@ describe('review rules', () => {
     // A profile that lists rules and sends none still asks for the sixth field, so it is no request of a profile with none.
     expect(build([])).not.toBe(build(undefined))
     expect(build([])).not.toBe(base)
+  })
+
+  it('sends a vote the rule its finding cites, after the diff and before the guidelines, and a vote of a finding with none no rule block', () => {
+    const cited = { ...finding, file: 'src/x.ts', rule: 'no-any' }
+    const request = voteRequest('Judge.', cited, diff, 'Use parameters.', false, { replyTokens: 1024 }, noAny)
+    const [claimTag, evidenceTag, diffTag, ruleTag, guidelinesTag] = tagsOf(request)
+    expect([
+      claimTag,
+      evidenceTag,
+      diffTag,
+      ruleTag,
+      guidelinesTag,
+    ].map(tag => tag.split('-')[1])).toEqual([
+      'claim',
+      'evidence',
+      'diff',
+      'rule',
+      'guidelines',
+    ])
+    // The block is the rule as the configuration states it, as the rules block writes one entry: its id, its patterns and its text.
+    expect(blockOf(request, 'rule')).toBe('no-any, for src/**:\nNo any outside tests.')
+    expect(blockOf(request, 'rule')).toBe(ruleEntry(noAny))
+    const { content } = request.messages[0]
+    expect(content.indexOf(`<${ruleTag}>`)).toBeGreaterThan(content.indexOf(`</${diffTag}>`))
+    expect(content.indexOf(`<${guidelinesTag}>`)).toBeGreaterThan(content.indexOf(`</${ruleTag}>`))
+    // The data notice carries the spec's line, and the finding's claim names no rule: the id is in the block alone.
+    expect(request.system).toContain(`- <${ruleTag}>: the review rule the finding says the code breaks, as the review's configuration states it: its id, the files it applies to and its text.\n`)
+    expect(blockOf(request, 'claim')).not.toContain('no-any')
+    // A rule with no paths is written as it is for every file, and a vote carries one rule, never the rules block.
+    expect(blockOf(voteRequest('Judge.', finding, diff, undefined, false, {}, license), 'rule')).toBe('license, for every file:\nEach file starts with the license header.')
+    expect(request.messages[0].content).not.toContain('untrusted-rules')
+    // A part of the section is described as one, and the rule follows it.
+    const partial = voteRequest('Judge.', cited, diff, undefined, true, {}, noAny)
+    expect(tagsOf(partial).map(tag => tag.split('-')[1])).toEqual(['claim', 'evidence', 'diff', 'rule'])
+    expect(partial.system).toContain('part of the diff section of the cited file')
+    // A finding that cites none gets no block, and the request is the one a profile with no rule sends, digest for digest.
+    const none = voteRequest('Judge.', finding, diff, 'Use parameters.', false, { replyTokens: 1024 })
+    expect(tagsOf(none).map(tag => tag.split('-')[1])).toEqual([
+      'claim',
+      'evidence',
+      'diff',
+      'guidelines',
+    ])
+    expect(none.messages[0].content).not.toContain('untrusted-rule')
+    expect(none.system).not.toContain('the review rule the finding says')
+    expect(requestDigest(voteRequest('Judge.', finding, diff, 'Use parameters.', false, { replyTokens: 1024 }, undefined))).toBe(requestDigest(none))
+    // The store key holds the rule: another text, or another rule, is another digest.
+    const digest = (rule: ReviewRule | undefined): string | undefined => requestDigest(voteRequest('Judge.', cited, diff, undefined, false, {}, rule))
+    expect(digest({ ...noAny })).toBe(digest(noAny))
+    expect(digest({ ...noAny, text: 'No any anywhere.' })).not.toBe(digest(noAny))
+    expect(digest(license)).not.toBe(digest(noAny))
+    expect(digest(noAny)).not.toBe(digest(undefined))
   })
 })
 

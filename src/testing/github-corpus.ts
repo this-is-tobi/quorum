@@ -112,6 +112,8 @@ export function corpusResult(): QuorumResult {
         security: {
           ...base.profiles.security,
           invalidFindings: 0,
+          rules: { listed: 0, sent: 0 },
+          invalidRules: 0,
           coverage: kept.map(({ file }) => ({ file, status: 'reviewed' as const })),
         },
       },

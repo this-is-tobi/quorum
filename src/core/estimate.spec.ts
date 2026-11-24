@@ -1161,14 +1161,101 @@ describe('estimate', () => {
     expect(addedDocs).toBeLessThan(added)
     expect(onlyDocs.parts.map((part, index) => part - plainDocs.parts[index])).toEqual(plainDocs.parts.map(() => addedDocs))
     // documents.research is the block alone, the sixth field being part of the instructions: the request with the rules sent less the one with an empty block.
-    expect(both.documents).toEqual({ research: research(rules) - research([]), vote: 0 })
-    expect(onlyDocs.documents).toEqual({ research: research([rules[1]]) - research([]), vote: 0 })
+    // A vote carries the largest rule sent, as the vote of a finding that cites it does, so documents.vote is what that one rule adds to a vote.
+    const voteAdd = (rule: ReviewRule): number => reserved(voteRequest('Judge', longestFinding(''), '', undefined, false, { replyTokens: 9216 }, rule)) - reserved(voteRequest('Judge', longestFinding(''), '', undefined, false, { replyTokens: 9216 }))
+    expect(both.documents).toEqual({
+      research: research(rules) - research([]),
+      vote: voteAdd(rules[1]),
+    })
+    expect(onlyDocs.documents).toEqual({
+      research: research([rules[1]]) - research([]),
+      vote: voteAdd(rules[1]),
+    })
     expect(plain.documents).toEqual({ research: 0, vote: 0 })
     expect(both.documents.research).toBeGreaterThan(Buffer.byteLength(rulesBlock(rules)))
-    // No vote carries a rule: the votes' bounds are those of the profile with none.
-    expect(both.vote).toEqual(plain.vote)
+    // Each vote's bound holds that one rule more than the profile with none: the license rule, the longer of the two.
+    expect(voteAdd(rules[1])).toBeGreaterThan(voteAdd(rules[0]))
+    for (const lens of ['clarity', 'brevity']) {
+      expect(both.vote[lens] - plain.vote[lens]).toBe(voteAdd(rules[1]))
+      expect(onlyDocs.vote[lens] - plainDocs.vote[lens]).toBe(voteAdd(rules[1]))
+    }
     // A profile whose research makes no call adds nothing to any.
     expect(estimateOf(listed, '').documents).toEqual({ research: 0, vote: 0 })
+  })
+
+  it('states no call for a profile that requires a rule and sends none, and counts the largest rule sent in each vote', () => {
+    const rules: ReviewRule[] = [
+      {
+        id: 'no-any',
+        text: 'No any outside tests.',
+        paths: ['src/**'],
+      },
+      {
+        id: 'license',
+        text: 'Each file starts with the license header, and the notice names its year.',
+        paths: ['src/**', 'docs/**'],
+      },
+    ]
+    const naming: Profile = {
+      id: 'naming',
+      prompts: { research: 'Review this diff for names that mislead.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
+      lenses: [
+        { id: 'clarity', question: 'Does the name mislead?' },
+        { id: 'brevity', question: 'Is the name longer than it needs to be?' },
+      ],
+    }
+    const estimateOf = (profile: Profile, diff: string): Estimate => createQuorum({
+      profiles: [profile],
+      partTokens: 8192,
+    }, portsFor(profile, windowed(200_000, () => '{"findings":[]}'))).estimate({ diff })
+    const docs = addedFile('docs/a.md', 200)
+    const source = addedFile('src/x.ts', 200)
+    const required: Profile = {
+      ...naming,
+      rules: [rules[0]],
+      requireRule: true,
+    }
+    // A change of docs and the rule of src alone: it sends none, so the profile's research makes no call and nothing is reserved.
+    const none = estimateOf(required, docs)
+    expect(none.profiles.naming).toEqual({
+      parts: [],
+      votes: 0,
+      vote: {},
+      expected: 0,
+      worst: 0,
+      findings: 50,
+      provider: 'windowed',
+      documents: { research: 0, vote: 0 },
+    })
+    expect(none).toMatchObject({
+      expected: 0,
+      worst: 0,
+      inFlight: 0,
+      held: 0,
+      fits: true,
+    })
+    // The same profile, as it states it, with no requireRule, or with a change the rule applies to, makes calls.
+    expect(estimateOf({ ...required, requireRule: false }, docs).profiles.naming.parts.length).toBeGreaterThan(0)
+    expect(estimateOf(required, source).profiles.naming.parts.length).toBeGreaterThan(0)
+    // A profile that requires a rule and lists none sends none, too.
+    expect(estimateOf({ ...naming, requireRule: true }, source).profiles.naming.parts).toEqual([])
+    // A review that sends a rule counts the largest one sent in each lens's vote: the change of src sends both, whose longer is the license's.
+    const listed = estimateOf({ ...naming, rules }, source)
+    const plain = estimateOf(naming, source)
+    const reserved = (request: CompletionRequest): number => requestTokens(request) + RESERVE
+    const add = (rule: ReviewRule): number => reserved(voteRequest('Judge', longestFinding(''), '', undefined, false, { replyTokens: 9216 }, rule)) - reserved(voteRequest('Judge', longestFinding(''), '', undefined, false, { replyTokens: 9216 }))
+    expect(add(rules[1])).toBeGreaterThan(add(rules[0]))
+    for (const lens of ['clarity', 'brevity']) expect(listed.profiles.naming.vote[lens] - plain.profiles.naming.vote[lens]).toBe(add(rules[1]))
+    expect(listed.profiles.naming.documents.vote).toBe(add(rules[1]))
+    // A change of docs sends the license rule alone, and a change that sends none counts no rule in a vote.
+    const license = estimateOf({ ...naming, rules }, docs)
+    expect(license.profiles.naming.documents.vote).toBe(add(rules[1]))
+    const lone = estimateOf({
+      ...naming,
+      rules: [rules[0]],
+    }, docs)
+    expect(lone.profiles.naming.vote).toEqual(estimateOf(naming, docs).profiles.naming.vote)
+    expect(lone.profiles.naming.documents).toEqual({ research: 0, vote: 0 })
   })
 
   it('refuses an input a review would refuse, as a ConfigError', () => {

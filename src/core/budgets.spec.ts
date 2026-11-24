@@ -4,12 +4,13 @@ import { profileBudgets, replyBudget, roomIssues } from './budgets.ts'
 import type { BudgetSettings, ReplyFacts } from './budgets.ts'
 import type { CompletionRequest, Provider } from './ports.ts'
 import { thresholdsFor } from './profile.ts'
-import { doNotReportInstructions, renderTemplate, researchRequest } from './prompts.ts'
+import { doNotReportInstructions, renderTemplate, researchRequest, voteRequest } from './prompts.ts'
 import { targetOf } from './stages/context.ts'
 import type { ProfileRun } from './stages/context.ts'
-import { rulesBlock } from './rules.ts'
+import { ruleEntry, rulesBlock } from './rules.ts'
 import { replyLimit, requestTokens, utf8Length } from './tokens.ts'
 import type { Profile, ReviewRule } from './types.ts'
+import { longestFinding } from './verify.ts'
 
 const UNSET: ReplyFacts = { thinking: 'default' }
 
@@ -116,6 +117,7 @@ describe('profileBudgets', () => {
         records: [],
       },
       rules: [],
+      requireRule: false,
     }
   }
 
@@ -276,6 +278,7 @@ describe('profileBudgets', () => {
         records: [],
       },
       rules: documents.rules ?? [],
+      requireRule: false,
       ...documents.rules === undefined || documents.rules.length === 0
         ? {}
         : { sent: documents.rules },
@@ -419,14 +422,50 @@ describe('profileBudgets', () => {
     expect(rules).toBeGreaterThan(5000)
   })
 
-  it('names no rule in a vote\'s refusal, which carries none', () => {
-    const run = documented(guarded('big', 1_000_000), guarded('small', 1000), { rules: listed })
-    const messages = refusals(run)
-    expect(messages).toHaveLength(2)
-    for (const message of messages) {
-      expect(message).toMatch(/^the vote request on small for the longest finding /)
-      expect(message).toContain('for the instructions and the finding, 512 for the chat template')
-      expect(message).not.toContain('rules')
+  it('counts the largest rule in a vote\'s refusal, as the rule it cites in its terms and as the rules in its fix', () => {
+    const ask = { replyTokens: 2000 }
+    const guidelines = 'g'.repeat(1000)
+    const [largest] = listed
+    const probe = (instructions: string, withGuidelines: boolean, rule?: ReviewRule): number => requestTokens(voteRequest(instructions, longestFinding(''), '', withGuidelines
+      ? guidelines
+      : undefined, false, ask, rule))
+    const { instructions } = documented(guarded('big', 1_000_000), guarded('big', 1_000_000)).lenses[0]
+    // A window that leaves the first lens's vote 800 tokens of diff beside the guidelines and the largest rule, with a reply of 2000 and 512 for the chat template.
+    const fixed = probe(instructions, true, largest)
+    const window = fixed + 512 + 2000 + 800
+    const run = documented(guarded('big', 1_000_000), {
+      ...guarded('small', window),
+      maxTokens: 2000,
+    }, { guidelines, rules: listed })
+    const [message, ...rest] = refusals(run)
+    expect(rest).toHaveLength(1)
+    const rule = fixed - probe(instructions, true)
+    const held = fixed - probe(instructions, false, largest)
+    expect(message).toBe(`the vote request on small for the longest finding leaves 800 tokens for the diff, less than the 1024 a hunk may need: contextTokens ${window} counts ${fixed} for the instructions and the finding (${fixed - held - rule}), the guidelines (${held}) and the rule it cites, at the largest (${rule}), 512 for the chat template and 2000 for the reply: shorten the rules or the guidelines, lower maxTokens, or state a larger window`)
+    // The largest rule alone is counted, the entry of the 3000 bytes with its words, never the block of both.
+    expect(rule).toBeGreaterThan(utf8Length(ruleEntry(largest)))
+    expect(rule).toBeLessThan(utf8Length(ruleEntry(largest)) + 600)
+    expect(rule).toBeLessThan(utf8Length(rulesBlock(listed)))
+    // The fix names the documents, never the rule a vote cites by the words of its term, and no rule's text is in the message.
+    expect(message).not.toContain('shorten the rule it cites')
+    expect(message).not.toMatch(/a{20}|b{20}/)
+    // The research request of the same run carries the whole block, and names it the rules.
+    expect(refusals(documented(guarded('local', 3200), guarded('big', 1_000_000), { rules: listed }))[0]).toMatch(/ and the rules \(\d+\), 512 for the chat template/)
+    // A profile with no guidelines counts the rule alone, beside the instructions, and the fix names the rules.
+    const lone = probe(instructions, false, largest)
+    const alone = documented(guarded('big', 1_000_000), {
+      ...guarded('small', lone + 512 + 2000 + 800),
+      maxTokens: 2000,
+    }, { rules: listed })
+    expect(refusals(alone)[0]).toBe(`the vote request on small for the longest finding leaves 800 tokens for the diff, less than the 1024 a hunk may need: contextTokens ${lone + 512 + 2000 + 800} counts ${lone} for the instructions and the finding (${lone - rule}) and the rule it cites, at the largest (${rule}), 512 for the chat template and 2000 for the reply: shorten the rules, lower maxTokens, or state a larger window`)
+    // A run that sends no rule has no rule to count in a vote: the room that vote had with one is more than it needs.
+    expect(refusals({ ...run, sent: [] })).toEqual([])
+    // A run that lists no rule names no rule in a vote's refusal.
+    const plain = refusals(documented(guarded('big', 1_000_000), guarded('small', 1000)))
+    expect(plain).toHaveLength(2)
+    for (const each of plain) {
+      expect(each).toContain('for the instructions and the finding, 512 for the chat template')
+      expect(each).not.toContain('rule')
     }
   })
 

@@ -253,6 +253,155 @@ describe('the schemas of a result', () => {
     }).success).toBe(true)
   })
 
+  it('reads a verdict\'s rule by the id\'s pattern, and a profile\'s rules and invalidRules as counts', () => {
+    // A verdict that cites a rule holds it after its category, where the core writes it, so a result read back is written as it was.
+    const cited = Object.fromEntries(Object.entries(SQL).flatMap(([key, value]) => key === 'category'
+      ? [
+          [key, value],
+          ['rule', 'no-any'],
+        ]
+      : [
+          [key, value],
+        ])) as typeof SQL
+    const base = reportResult().meta
+    const result = reportResult({
+      kept: [cited],
+      meta: {
+        ...base,
+        profiles: {
+          security: {
+            ...base.profiles.security,
+            rules: { listed: 3, sent: 2 },
+            invalidRules: 1,
+          },
+        },
+      },
+    })
+    expect(Object.keys(cited).slice(5, 8)).toEqual(['category', 'rule', 'summary'])
+    const full = saved(result)
+    expect(resultSchema.parse(full)).toEqual(full)
+    expect(JSON.stringify(resultSchema.parse(full))).toBe(JSON.stringify(full))
+    const view = saved(publicView(result))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(JSON.stringify(publicViewSchema.parse(view))).toBe(JSON.stringify(view))
+    expect(view.kept[0].rule).toBe('no-any')
+    expect(view.meta.profiles.security).toMatchObject({
+      rules: { listed: 3, sent: 2 },
+      invalidRules: 1,
+    })
+    // A rule is an id of the pattern, and a verdict that cites none holds none.
+    for (const rule of [
+      'No-Any',
+      '1st',
+      '',
+      'x'.repeat(65),
+      'no any',
+      'no-any\n# heading',
+      7,
+      null,
+    ]) {
+      expect(resultSchema.safeParse({
+        ...full,
+        kept: [
+          { ...full.kept[0], rule },
+        ],
+      }).success, String(rule)).toBe(false)
+      expect(publicViewSchema.safeParse({
+        ...view,
+        kept: [
+          { ...view.kept[0], rule },
+        ],
+      }).success, String(rule)).toBe(false)
+    }
+    for (const rule of [
+      'a',
+      'no-any',
+      'a.b_c-d',
+      'x'.repeat(64),
+    ]) {
+      expect(resultSchema.safeParse({
+        ...full,
+        kept: [
+          { ...full.kept[0], rule },
+        ],
+      }).success, rule).toBe(true)
+    }
+    expect(resultSchema.safeParse({
+      ...full,
+      unreviewed: [
+        { ...full.unreviewed[0], rule: 'license' },
+      ],
+    }).success).toBe(true)
+    // The counts are required in a profile's meta, the public view's too, whole numbers, and each holds no field but its own.
+    const profile = (meta: { profiles: Record<string, Forged> }, changes: Forged): Forged => ({
+      ...meta,
+      profiles: {
+        security: {
+          ...meta.profiles.security,
+          ...changes,
+        },
+      },
+    })
+    const { rules: _rules, invalidRules: _invalid, ...security } = full.meta.profiles.security
+    const { rules: _publicRules, invalidRules: _publicInvalid, ...publicSecurity } = view.meta.profiles.security
+    expect(resultSchema.safeParse({
+      ...full,
+      meta: {
+        ...full.meta,
+        profiles: { security },
+      },
+    }).success).toBe(false)
+    expect(publicViewSchema.safeParse({
+      ...view,
+      meta: {
+        ...view.meta,
+        profiles: { security: publicSecurity },
+      },
+    }).success).toBe(false)
+    expect(resultSchema.safeParse({
+      ...full,
+      meta: {
+        ...full.meta,
+        profiles: {
+          security: {
+            ...security,
+            rules: { listed: 0, sent: 0 },
+          },
+        },
+      },
+    }).success).toBe(false)
+    for (const forged of [
+      {
+        rules: { listed: -1, sent: 0 },
+      },
+      {
+        rules: { listed: 1.5, sent: 0 },
+      },
+      {
+        rules: { listed: 1 },
+      },
+      {
+        rules: { listed: 1, sent: 1, extra: 1 },
+      },
+      {
+        rules: [1, 1],
+      },
+      { rules: 3 },
+      { invalidRules: -1 },
+      { invalidRules: 0.5 },
+      { invalidRules: '1' },
+    ] as Forged[]) {
+      expect(resultSchema.safeParse({
+        ...full,
+        meta: profile(full.meta, forged),
+      }).success, JSON.stringify(forged)).toBe(false)
+      expect(publicViewSchema.safeParse({
+        ...view,
+        meta: profile(view.meta, forged),
+      }).success, JSON.stringify(forged)).toBe(false)
+    }
+  })
+
   it('reads meta.reused strictly, in the public view too, and does not require it', () => {
     const result = reportResult({
       meta: {

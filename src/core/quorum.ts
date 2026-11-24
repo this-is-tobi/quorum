@@ -28,7 +28,7 @@ import type { EventSink, ProfilePorts, Provider, QuorumPorts, ReplyStore } from 
 import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
 import { doNotReportInstructions, renderTemplate } from './prompts.ts'
 import { ownData } from './facts.ts'
-import { addUsage, elapsed, stage, targetOf, withSent } from './stages/context.ts'
+import { addUsage, asksNothing, elapsed, stage, targetOf, withSent } from './stages/context.ts'
 import type { ProfileRun, RunContext } from './stages/context.ts'
 import { dedup } from './stages/dedup.ts'
 import { panel } from './stages/panel.ts'
@@ -78,6 +78,8 @@ type EstimateLimits = NonNullable<Parameters<Quorum['estimate']>[1]>
 interface Tally {
   usage?: Usage
   readonly invalidFindings: Map<string, number>
+  /** The citations that failed their check, from the `finding:invalid` events whose cause is `rule`, apart from the findings outside the diff. */
+  readonly invalidRules: Map<string, number>
   /** The research calls and the votes a store answered, counted from the `call` events that say `reused`. */
   readonly reused: { research: number, votes: number }
 }
@@ -356,6 +358,15 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * in every part, after the diff and before the guidelines, and asks for a sixth field of each finding, `rule`. A rule without
  * `paths` applies to every file. A profile that lists none sends its requests as it always did.
  *
+ * Once a finding is anchored, the rule it cites is checked by code (`checkCitations`): a rule the review sent whose `paths` match the
+ * finding's file stays, as the configuration's id, and its voters read that rule's block, after the diff and before the guidelines; any
+ * other citation is dropped, the finding with it when `Profile.requireRule` holds, and so is a finding that cites none then. Each is
+ * a `finding:invalid` event of cause `rule` and counted in `meta.profiles.<id>.invalidRules`, apart from `invalidFindings`, which
+ * counts the findings outside the diff; a reply whose finding cites a wrong rule is read, and sent once more never. A profile that
+ * requires a rule and sends none asks its research nothing: it makes no call, reads every part `reviewed` and says `parts: 0`.
+ * `meta.profiles.<id>.rules` records how many rules the profile lists and how many the review sent, and the `context` event holds the
+ * same for each profile that lists one.
+ *
  * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut`, a `send` or a `context` it cannot take (a repository document of a profile the quorum lacks, of another origin, at a commit the source does not read documents from, of a `diff` source, over its cap once cleaned or too deep to clean), repository documents that leave a research provider less than 1024 tokens of diff, options that are not an object, a `signal` that is not an AbortSignal, a `store` that is no object with a `get` and a `put` function, a `maxReviewTokens` or a `reviewTimeoutMs` out of range, a `findingsCap` that is no positive integer
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
  * @throws the error of a sink that throws
@@ -480,6 +491,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
   }))
   const tally: Tally = {
     invalidFindings: new Map(),
+    invalidRules: new Map(),
     reused: { research: 0, votes: 0 },
   }
   const emit = (event: QuorumEvent): void => {
@@ -490,7 +502,12 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
         ? 'research'
         : 'votes'] += 1
     }
-    if (event.type === 'finding:invalid') tally.invalidFindings.set(event.profile, (tally.invalidFindings.get(event.profile) ?? 0) + 1)
+    if (event.type === 'finding:invalid') {
+      const counts = event.cause === 'rule'
+        ? tally.invalidRules
+        : tally.invalidFindings
+      counts.set(event.profile, (counts.get(event.profile) ?? 0) + 1)
+    }
     try {
       sink?.(structuredClone(event))
     } catch (error) {
@@ -538,7 +555,16 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
     ])),
   })
   if (leftOut.length > 0) emit({ type: 'left-out', files: leftOut })
-  if (record.documents.length > 0) emit({ type: 'context', context: record })
+  const rules = ruleCounts(runs)
+  if (record.documents.length > 0 || rules !== undefined) {
+    emit({
+      type: 'context',
+      context: record,
+      ...rules === undefined
+        ? {}
+        : { rules },
+    })
+  }
   for (const run of runs) {
     for (const entry of gaps.get(run.id) ?? []) emit({ type: 'incomplete', entry })
   }
@@ -595,7 +621,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
     source,
     profiles: Object.fromEntries(runs.map((run, index) => [
       run.id,
-      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, coverageOf(scope, filtered, outcomes[index]?.packing ?? plans[index]?.packing, outcomes[index]?.parts ?? []), outcomes[index]?.recovery),
+      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, tally.invalidRules.get(run.id) ?? 0, coverageOf(scope, filtered, outcomes[index]?.packing ?? plans[index]?.packing, outcomes[index]?.parts ?? []), outcomes[index]?.recovery),
     ])),
     ...(tally.usage === undefined
       ? {}
@@ -674,7 +700,11 @@ async function reviewAll(ctx: RunContext, runs: readonly ProfileRun[], plans: re
  * gap of each limit that stopped its work, reported by an `incomplete` event once the panel's stage has ended.
  */
 async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, diff: string, sections: ReadonlyMap<string, string>): Promise<ProfileOutcome> {
-  const researched = await stage(ctx, run.id, 'research', () => research(ctx, run, plan, diff, sections), outcome => outcome.findings.length, { parts: plan.packing?.parts.length ?? 1 })
+  // A profile that asks its research nothing has no part to read: its research makes no call.
+  const parts = asksNothing(run)
+    ? 0
+    : plan.packing?.parts.length ?? 1
+  const researched = await stage(ctx, run.id, 'research', () => research(ctx, run, plan, diff, sections), outcome => outcome.findings.length, { parts })
   const candidates = await stage(ctx, run.id, 'dedup', () => dedup(researched.findings), found => found.length)
   const judged = await stage(ctx, run.id, 'panel', () => panel(ctx, run, candidates, sections, diff), outcome => outcome.kept.length + outcome.discarded.length + outcome.unreviewed.length, { votes: candidates.length * run.lenses.length })
   const limits = limitGaps(run.id, researched.parts.map(limitOf), [
@@ -814,13 +844,31 @@ function providersOf(run: ProfileRun): ProfileProviders {
   }
 }
 
-function profileMeta(run: ProfileRun, invalidFindings: number, coverage: CoverageEntry[], recovery: ProfileMeta['recovery']): ProfileMeta {
+/** How many review rules a run lists and how many its review sends: `sent` is none for a run that lists none, whose requests carry no rule. */
+function ruleCountOf(run: ProfileRun): { listed: number, sent: number } {
+  return { listed: run.rules.length, sent: run.sent?.length ?? 0 }
+}
+
+/** The rules each profile that lists one lists and sends, as the `context` event holds them, by profile id; undefined when no profile lists a rule. */
+function ruleCounts(runs: readonly ProfileRun[]): Record<string, { listed: number, sent: number }> | undefined {
+  const listing = runs.filter(run => run.rules.length > 0)
+  return listing.length === 0
+    ? undefined
+    : Object.fromEntries(listing.map(run => [
+        run.id,
+        ruleCountOf(run),
+      ]))
+}
+
+function profileMeta(run: ProfileRun, invalidFindings: number, invalidRules: number, coverage: CoverageEntry[], recovery: ProfileMeta['recovery']): ProfileMeta {
   return {
     providers: providersOf(run),
     policy: { ...run.thresholds },
     failOn: run.failOn,
     gating: run.gating,
     invalidFindings,
+    rules: ruleCountOf(run),
+    invalidRules,
     coverage,
     ...recovery === undefined
       ? {}
@@ -856,6 +904,7 @@ function compile(profile: Profile, ports: ProfilePorts): ProfileRun {
     thresholds: Object.freeze(thresholdsFor(profile)),
     failOn,
     gating: failOn !== 'none',
+    requireRule: profile.requireRule === true,
     ...texts,
   })
 }
